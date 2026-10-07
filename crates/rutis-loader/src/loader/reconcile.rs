@@ -133,18 +133,37 @@ impl Inner {
     /// unloads the fibers themselves. Only the instance that registered
     /// the context (same token) can remove it, so a late cleanup of an old
     /// instance leaves a newer one alone.
-    pub(super) fn detach(&self, group: Option<Slot>, token: u64) {
-        let mut state = self.state.lock().unwrap();
-        if state.groups.get(&group).map(|g| g.token) != Some(token) {
+    pub(super) fn detach(self: &Arc<Self>, group: Option<Slot>, token: u64) {
+        let (disposals, events) = {
+            let mut state = self.state.lock().unwrap();
+            if state.groups.get(&group).map(|g| g.token) != Some(token) {
+                return;
+            }
+            state.groups.remove(&group);
+            // A rebuilt instance starts its stopped copies again.
+            if let Some(slot) = group.as_ref().filter(|s| Self::is_instance(&state, s)) {
+                let scope = slot.scope;
+                state.stopped.retain(|s, _| s.scope != scope);
+            }
+            Self::forget(&mut state, group, token);
+            // Instances created in the context go with it.
+            Self::prune_instances(&mut state)
+        };
+        if disposals.is_empty() && events.is_empty() {
             return;
         }
-        state.groups.remove(&group);
-        // A rebuilt instance starts its stopped copies again.
-        if let Some(slot) = group.as_ref().filter(|s| Self::is_instance(&state, s)) {
-            let scope = slot.scope;
-            state.stopped.retain(|s, _| s.scope != scope);
-        }
-        Self::forget(&mut state, group, token);
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let inner = self.clone();
+        runtime.spawn(async move {
+            for disposal in disposals {
+                disposal.await;
+            }
+            for event in events {
+                inner.emit(event);
+            }
+        });
     }
 
     /// Drop the records spawned in the group context `group` registered
@@ -196,7 +215,8 @@ impl Inner {
     }
 
     /// Spawn instances whose group fiber is gone but which still stand (an
-    /// instance rebuilt after its group's scope changed).
+    /// instance rebuilt after its group's scope changed), in the context
+    /// they were created in.
     pub(super) fn respawn_instances(self: &Arc<Self>, state: &mut State) {
         let mut missing: Vec<u64> = state
             .instances
@@ -222,6 +242,9 @@ impl Inner {
             else {
                 continue;
             };
+            if parent_token != instance.parent_token {
+                continue;
+            }
             let Some(&index) = state.desired.by_id.get(&slot.row) else {
                 continue;
             };
@@ -369,8 +392,10 @@ impl Inner {
     }
 
     /// Remove instances that no longer stand: their group row is gone, no
-    /// longer instanced or wanted, moved, or the instance enclosing them
-    /// was removed. Their records go too.
+    /// longer instanced or wanted, moved, the instance enclosing them was
+    /// removed, or the group context they were created in is gone (rebuilt
+    /// or unloaded; the plugins that created them create them again).
+    /// Their records go too.
     pub(super) fn prune_instances(state: &mut State) -> Dropped {
         let mut disposals: Vec<rutis::BoxFuture<'static, ()>> = Vec::new();
         let mut events = Vec::new();
@@ -390,6 +415,8 @@ impl Inner {
                             .as_ref()
                             .and_then(|p| p.scope)
                             .is_some_and(|outer| !state.instances.contains_key(&outer))
+                        || state.groups.get(&instance.parent).map(|g| g.token)
+                            != Some(instance.parent_token)
                 })
                 .map(|(n, _)| *n)
                 .collect();

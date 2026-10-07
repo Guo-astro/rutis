@@ -72,7 +72,7 @@ loader.remove_instance(b1.plugin).await?;
 
 ### 3.1 `create_instance(&ctx, group_id)`
 
-- **父实例由 ctx 确定**：从 `ctx` 所属的受管插件开始，沿 loader 记录的父子关系向上，找到该分组配置父级的实例，作为父实例。顶层分组传 loader 的 ctx 或其祖先 ctx。找不到时报错。
+- **父实例由 ctx 确定**：从 `ctx` 所属的受管插件开始，沿 loader 记录的父子关系向上，找到该分组配置父级的实例，作为父实例。顶层分组可以向上走到 loader 为止；不是运行中受管插件的 ctx 只能用于顶层分组，且必须是 loader 的 ctx 或其祖先 ctx（无关分支、已结束插件的 ctx 都会被拒绝）。找不到时报错。
   - 因此可以在父实例内任何受管插件里调用，不必拿到父实例本身的 ctx。
   - loader 只沿自己记录的关系查找，不依赖内核的祖先查询。
 - 目标必须是 `instanced` 分组，且未禁用、有效；否则报错。
@@ -82,8 +82,8 @@ loader.remove_instance(b1.plugin).await?;
 | 结果 | 含义 |
 | --- | --- |
 | `Active` | 已运行 |
-| `Waiting` | 在等依赖的服务 |
-| `Failed(error)` | 解析、校验、表达式求值或 `apply` 失败 |
+| `Waiting` | 在等依赖的服务，或它在实例内的上级分组在等 |
+| `Failed(error)` | 解析、校验、表达式求值或 `apply` 失败（本行，或它在实例内的上级分组） |
 | `Skipped` | 子行或它在实例内的上级分组被禁用 |
 
 - 子行失败不影响实例创建，实例是否可用由调用方根据 `report` 判断。实例的分组 fiber 本身失败时返回错误，并移除该实例。
@@ -93,7 +93,7 @@ loader.remove_instance(b1.plugin).await?;
 
 - `remove_instance(plugin)` 卸载该实例及其子树。
 - 业务直接关闭实例的 fiber（例如 `FiberView::shutdown()`）也可以，loader 观察到卸载后只更新记账，不重复卸载。
-- 父实例关闭时，其下所有实例随子树卸载。
+- 实例随创建它的分组 ctx 存亡：父实例关闭，或该 ctx 被重建、卸载（例如所在分组的 `isolate` 改变）时，其中的实例随子树卸载并移除（`InstanceRemoved`），由创建它们的插件或业务在新 ctx 中重新创建。
 - 实例不写入配置。进程重启后由业务重新创建，例如按数据库恢复会话时逐个 `create_instance`。
 
 ## 4. 工厂
@@ -130,11 +130,11 @@ builtins.register_with::<LoopConfig, _, _>("dim/loop", |build: &Build| {
 | 删除或禁用实例中的行 | 在每个实例里卸载 |
 | 修改实例中行的配置 | `injects()` 不变时在原 fiber 上更新；改变时建立新 fiber，rutis 沿依赖重载下游 |
 | 禁用或删除 `instanced` 分组 | 关闭它的全部实例；之后 `create_instance` 被拒绝 |
-| 修改 `instanced` 分组的 `isolate`、`inject` | 按普通分组规则重建每个实例，沿用创建时的 `with` 值 |
+| 修改 `instanced` 分组的 `isolate`、`inject` | 按普通分组规则重建每个实例，沿用创建时的 `with` 值；其中创建的实例被移除（§3.2） |
 | `rename_module`、`reload` | 全部实例 dry-run 后一起应用；任一新失败则全部回到旧模块 |
 | volatile / overlay 层 | 同样作用于全部实例 |
 
-- 编辑先在全部实例上 dry-run，任一失败则整次编辑回滚，不写可编辑层，旧代继续运行。
+- 编辑先在全部实例上 dry-run（编辑分组时，对其下每个插件按分组将给出的上下文 dry-run），任一失败则整次编辑回滚，不写可编辑层，旧代继续运行。
 - 新创建的实例按当前配置装载。
 - 是否在运行中修改、何时修改由应用决定。下游如何处理重载由各插件按自身合同处理。
 

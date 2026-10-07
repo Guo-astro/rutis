@@ -81,10 +81,12 @@ impl<'a> IntoFuture for CreateInstance<'a> {
 
 impl Loader {
     /// Create an instance of the instanced group `group`. The parent is
-    /// found from `ctx`: the instance (or group) of `group`'s configuration
-    /// parent that `ctx`'s plugin belongs to, through any managed plugin
-    /// inside it; for a top-level group, the loader's context or any
-    /// context outside the loader's plugins.
+    /// found from `ctx`: walking up from `ctx`'s plugin through the loader's
+    /// records, the instance (or group) of `group`'s configuration parent;
+    /// for a top-level group, the walk may end at the loader. A context
+    /// that is no running plugin of the loader's is accepted only for a
+    /// top-level group, and only when it is the loader's own or one above
+    /// it.
     ///
     /// Waits until the rows inside settle. Does not take the operation lock,
     /// so a plugin can create instances from its own `apply`.
@@ -105,6 +107,20 @@ impl Loader {
     ) -> Result<Instance, LoaderError> {
         let inner = &self.inner;
         inner.check_open()?;
+        let (loader_ctx, managed) = {
+            let state = inner.state.lock().unwrap();
+            let loader_ctx = state
+                .groups
+                .get(&None)
+                .map(|g| g.ctx.clone())
+                .ok_or(LoaderError::Closed)?;
+            let managed = state
+                .running
+                .values()
+                .any(|r| r.view.instance() == ctx.instance());
+            (loader_ctx, managed)
+        };
+        let above = !managed && above_loader(&loader_ctx, &ctx);
         let (number, view) = {
             let mut state = inner.state.lock().unwrap();
             let state = &mut *state;
@@ -135,7 +151,7 @@ impl Loader {
                     "{group:?} or a group above it is disabled"
                 )));
             }
-            let parent = parent_of(state, &ctx, row.parent.as_deref())?;
+            let parent = parent_of(state, &ctx, above, row.parent.as_deref())?;
             let (parent_ctx, parent_token) = state
                 .groups
                 .get(&parent)
@@ -169,6 +185,7 @@ impl Loader {
                 InstanceRecord {
                     group: group.clone(),
                     parent,
+                    parent_token,
                     values: Arc::new(values),
                     plugin: view.id,
                     kernel: view.instance(),
@@ -287,14 +304,44 @@ impl Loader {
     }
 }
 
+/// Whether `ctx` is the loader's context or one of its ancestors.
+fn above_loader(loader: &Ctx, ctx: &Ctx) -> bool {
+    let target = ctx.instance();
+    if loader.instance() == target || loader.root_view().map(|v| v.instance()) == Some(target) {
+        return true;
+    }
+    let plugins = loader.diagnostics().plugins;
+    let mut current = plugins.iter().find(|p| p.instance == loader.instance());
+    while let Some(plugin) = current {
+        if plugin.instance == target {
+            return true;
+        }
+        current = plugin
+            .parent
+            .and_then(|parent| plugins.iter().find(|p| p.id == parent));
+    }
+    false
+}
+
 /// The group context the new instance goes in: walk up from `ctx`'s
-/// plugin through the loader's records to a group of row `parent`.
-fn parent_of(state: &State, ctx: &Ctx, parent: Option<&str>) -> Result<Option<Slot>, LoaderError> {
+/// plugin through the loader's records to a group of row `parent`. `above`:
+/// `ctx` is no plugin of the loader's but the loader's context or above it.
+fn parent_of(
+    state: &State,
+    ctx: &Ctx,
+    above: bool,
+    parent: Option<&str>,
+) -> Result<Option<Slot>, LoaderError> {
     let mut current = state
         .running
         .iter()
         .find(|(_, r)| r.view.instance() == ctx.instance())
         .map(|(slot, _)| slot.clone());
+    if current.is_none() && !above {
+        return Err(LoaderError::InvalidEntry(
+            "the context is not a running loader plugin, the loader's context, or above it".into(),
+        ));
+    }
     loop {
         match current {
             None if parent.is_none() => return Ok(None),
@@ -315,12 +362,31 @@ fn parent_of(state: &State, ctx: &Ctx, parent: Option<&str>) -> Result<Option<Sl
     }
 }
 
+/// The result of a fiber that has a record.
+fn fiber_result(id: &str, view: &FiberView) -> InstanceResult {
+    let snapshot = view.state();
+    match snapshot.state {
+        FiberState::Active => InstanceResult::Active,
+        FiberState::Failed => InstanceResult::Failed(LoaderError::Rejected {
+            id: id.to_owned(),
+            error: snapshot
+                .error
+                .unwrap_or_else(|| Arc::new(CordisError::PluginFailed("failed".into()))),
+        }),
+        _ => InstanceResult::Waiting,
+    }
+}
+
 /// Each row inside instance `number`, in tree order.
 fn report(state: &State, number: u64) -> Vec<(String, InstanceResult)> {
     let Some(instance) = state.instances.get(&number) else {
         return Vec::new();
     };
-    let mut out = Vec::new();
+    let own = state.running.get(&Slot {
+        row: instance.group.clone(),
+        scope: Some(number),
+    });
+    let mut out: Vec<(String, InstanceResult)> = Vec::new();
     for row in &state.desired.rows {
         let Some(group) = state.desired.instanced_group(row) else {
             continue;
@@ -341,21 +407,23 @@ fn report(state: &State, number: u64) -> Vec<(String, InstanceResult)> {
         } else if let Some(rejected) = state.rejected.get(&slot) {
             InstanceResult::Failed(rejected.clone())
         } else if let Some(running) = state.running.get(&slot) {
-            let snapshot = running.view.state();
-            match snapshot.state {
-                FiberState::Active => InstanceResult::Active,
-                FiberState::Failed => InstanceResult::Failed(LoaderError::Rejected {
-                    id: row.id.clone(),
-                    error: snapshot
-                        .error
-                        .unwrap_or_else(|| Arc::new(CordisError::PluginFailed("failed".into()))),
-                }),
-                _ => InstanceResult::Waiting,
-            }
+            fiber_result(&row.id, &running.view)
         } else if let Some(Err(error)) = row.name.as_ref().and_then(|n| state.resolved.get(n)) {
             InstanceResult::Failed(error.clone())
         } else {
-            InstanceResult::Skipped
+            // Not spawned: its group has not loaded its children. The row
+            // is where its group is (waiting, or failed).
+            let parent = if row.parent.as_deref() == Some(instance.group.as_str()) {
+                own.map(|running| fiber_result(&instance.group, &running.view))
+            } else {
+                out.iter()
+                    .find(|(id, _)| Some(id) == row.parent.as_ref())
+                    .map(|(_, result)| result.clone())
+            };
+            match parent {
+                Some(InstanceResult::Active) | None => InstanceResult::Skipped,
+                Some(result) => result,
+            }
         };
         out.push((row.id.clone(), result));
     }

@@ -72,7 +72,7 @@ loader.remove_instance(b1.plugin).await?;
 
 ### 3.1 `create_instance(&ctx, group_id)`
 
-- **The parent instance comes from the ctx**: starting at the managed plugin that `ctx` belongs to, the loader walks up the parent relationships it recorded until it finds the instance of the group's configuration parent, and uses it as the parent instance. Top-level groups take the loader's ctx or an ancestor ctx. If none is found, the call fails.
+- **The parent instance comes from the ctx**: starting at the managed plugin that `ctx` belongs to, the loader walks up the parent relationships it recorded until it finds the instance of the group's configuration parent, and uses it as the parent instance. For a top-level group the walk may end at the loader; a ctx that is not a running managed plugin is accepted only for a top-level group, and only when it is the loader's ctx or an ancestor of it (an unrelated branch or the ctx of a plugin that has ended is refused). If none is found, the call fails.
   - It can therefore be called from any managed plugin inside the parent instance, without holding the parent instance's own ctx.
   - The loader only walks relationships it recorded and does not rely on a kernel ancestry query.
 - The target must be an `instanced` group that is enabled and valid; otherwise the call fails.
@@ -82,8 +82,8 @@ loader.remove_instance(b1.plugin).await?;
 | Result | Meaning |
 | --- | --- |
 | `Active` | Running |
-| `Waiting` | Waiting for services it depends on |
-| `Failed(error)` | Resolution, validation, expression evaluation, or `apply` failed |
+| `Waiting` | Waiting for services it depends on, or a group above it inside the instance is |
+| `Failed(error)` | Resolution, validation, expression evaluation, or `apply` failed (its own, or that of a group above it inside the instance) |
 | `Skipped` | The child row, or a group above it inside the instance, is disabled |
 
 - Child failures do not fail creation; the caller decides from `report` whether the instance is usable. If the instance's group fiber itself fails, the call returns an error and the instance is removed.
@@ -93,7 +93,7 @@ loader.remove_instance(b1.plugin).await?;
 
 - `remove_instance(plugin)` disposes the instance and its subtree.
 - Business logic can also close the instance's fiber directly (for example `FiberView::shutdown()`); the loader observes the disposal and only updates bookkeeping, without disposing again.
-- When a parent instance closes, every instance beneath it is disposed with the subtree.
+- An instance goes with the group context it was created in: when a parent instance closes, or that context is rebuilt or unloaded (for example its group's `isolate` changes), every instance in it is disposed with the subtree and removed (`InstanceRemoved`). The plugins or business code that created them create them again in the new context.
 - Instances are not written to configuration. After a process restart, business logic creates them again, for example calling `create_instance` for each conversation restored from a database.
 
 ## 4. Factories
@@ -130,11 +130,11 @@ A change to a configuration row acts on all of that row's copies:
 | Delete or disable a row inside instances | Disposed in every instance |
 | Change the config of a row inside instances | Updated on the same fiber when `injects()` is unchanged; otherwise a new fiber is created and rutis reloads dependents |
 | Disable or delete an `instanced` group | All its instances are closed; later `create_instance` calls are refused |
-| Change an `instanced` group's `isolate` or `inject` | Each instance is rebuilt by ordinary group rules, reusing the `with` value from creation |
+| Change an `instanced` group's `isolate` or `inject` | Each instance is rebuilt by ordinary group rules, reusing the `with` value from creation; instances created inside it are removed (§3.2) |
 | `rename_module`, `reload` | All instances dry-run, then applied together; any new failure returns all to the old module |
 | Volatile / overlay layers | Likewise applied to all instances |
 
-- An edit is first dry-run on every instance; any failure rolls back the whole edit, writes no editable layer, and leaves the previous generation running.
+- An edit is first dry-run on every instance (an edit to a group dry-runs every plugin below it, in the contexts the group would give them); any failure rolls back the whole edit, writes no editable layer, and leaves the previous generation running.
 - Newly created instances load from the current configuration.
 - Whether and when to change configuration at runtime is the application's decision. How dependents handle a reload follows each plugin's own contract.
 

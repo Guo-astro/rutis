@@ -723,3 +723,116 @@ async fn stored_layers_and_new_instances_give_the_same_state() {
     t.create("A").await;
     assert_eq!(t.take_log(), ["doc A", "read saved A"]);
 }
+
+#[tokio::test]
+async fn rebuilding_an_outer_instance_recreates_the_inner_ones_once() {
+    let mut catalog = ServiceCatalog::new();
+    catalog.register::<Shared>("shared");
+    let s = setup_with(NESTED, MemStore::default(), catalog).await;
+    s.create("A").await;
+    assert_eq!(s.copies("page-reader").len(), 1);
+    let mut isolate = BTreeMap::new();
+    isolate.insert("shared".to_owned(), Isolate::Private);
+    s.loader.set_isolate("doc", isolate).await.unwrap();
+    // The page went with the old doc context; `creator` created a new one.
+    let copies = s.copies("page-reader");
+    assert_eq!(copies.len(), 1, "{copies:?}");
+    assert_eq!(running(&copies[0]), Some(FiberState::Active));
+    let removed = s
+        .changes
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| matches!(c, LoaderChanged::InstanceRemoved { group, .. } if group == "page"))
+        .count();
+    assert_eq!(removed, 1);
+}
+
+#[tokio::test]
+async fn a_group_edit_is_checked_on_the_plugins_below_it() {
+    let s = setup(DOC).await;
+    s.create("A").await;
+    for (id, name, group, parent) in [("g", "", true, "doc"), ("inner", "doc-reader", false, "g")] {
+        let entry = NewEntry {
+            id: Some(id.into()),
+            name: name.into(),
+            group,
+            ..NewEntry::default()
+        };
+        s.loader.create(entry, Some(parent), None).await.unwrap();
+    }
+    s.take_log();
+    let before = s.store.patches();
+    // Out of `doc`, the reader in `g` has no instance to read from:
+    // refused before anything is unloaded.
+    let error = s.loader.move_to("g", None, None).await.unwrap_err();
+    assert!(matches!(error, LoaderError::Rejected { .. }), "{error}");
+    assert!(s.take_log().is_empty());
+    assert_eq!(s.store.patches(), before);
+    let copies = s.copies("inner");
+    assert_eq!(copies.len(), 1);
+    assert_eq!(running(&copies[0]), Some(FiberState::Active));
+}
+
+#[tokio::test]
+async fn rows_under_a_waiting_group_are_waiting() {
+    let mut catalog = ServiceCatalog::new();
+    catalog.register::<Shared>("shared");
+    let s = setup_with(
+        r#"[{ "insert": [
+        { "id": "doc", "group": true, "instanced": true, "config": [
+            { "id": "g", "group": true, "inject": ["shared"], "config": [
+                { "id": "child", "name": "echo" }
+            ] }
+        ] }
+    ] }]"#,
+        MemStore::default(),
+        catalog,
+    )
+    .await;
+    let a = s.create("A").await;
+    assert!(
+        matches!(
+            a.report.as_slice(),
+            [(g, InstanceResult::Waiting), (child, InstanceResult::Waiting)]
+                if g == "g" && child == "child"
+        ),
+        "{:?}",
+        a.report
+    );
+}
+
+/// Keeps the context it is applied in.
+struct Hold(Arc<Mutex<Option<Ctx>>>);
+
+impl Plugin for Hold {
+    fn name(&self) -> &str {
+        "hold"
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        Box::pin(async move {
+            *self.0.lock().unwrap() = Some(ctx.clone());
+            Ok(Effect::Done)
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_top_level_instance_needs_the_loader_context_or_above() {
+    let s = setup(DOC).await;
+    let held = Arc::new(Mutex::new(None));
+    let hold = s.root.plugin(Hold(held.clone()));
+    (&hold).await.unwrap();
+    let branch = held.lock().unwrap().clone().unwrap();
+    // A branch beside the loader is neither its context nor above it.
+    assert!(matches!(
+        s.loader.create_instance(&branch, "doc").await,
+        Err(LoaderError::InvalidEntry(_))
+    ));
+    // Nor is it once that plugin ended.
+    hold.dispose().await.unwrap();
+    assert!(s.loader.create_instance(&branch, "doc").await.is_err());
+    // The root, above the loader, still works.
+    s.create("B").await;
+}

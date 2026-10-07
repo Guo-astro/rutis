@@ -1,10 +1,11 @@
 //! Imperative edits: rewrite the editable layer, dry run, reconcile, roll
 //! back, and persist through the pending queue.
 
+use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
-use rutis::CordisError;
+use rutis::{CordisError, Ctx};
 
 use crate::edit::{apply_edit, Edit};
 use crate::error::Failure;
@@ -12,7 +13,95 @@ use crate::patch::Layer;
 use crate::resolver::Build;
 use crate::{LoaderError, PersistError};
 
-use super::{Inner, LoaderChanged, PendingEditDropped, Slot};
+use super::desired::{Desired, Row};
+use super::{Inner, LoaderChanged, PendingEditDropped, Slot, State};
+
+/// Where one copy would run: its context without its own scope, and the
+/// instances enclosing it.
+type Target = (Option<Ctx>, Build);
+
+/// Whether `row` is inside the group `top`.
+fn below(desired: &Desired, row: &Row, top: &str) -> bool {
+    let mut parent = row.parent.as_deref();
+    while let Some(id) = parent {
+        if id == top {
+            return true;
+        }
+        parent = desired.row(id).and_then(|r| r.parent.as_deref());
+    }
+    false
+}
+
+/// The instances a row's copies run in under `desired`: `None` outside
+/// instanced groups, else each instance of its instanced group.
+fn copies(state: &State, desired: &Desired, row: &Row) -> Vec<Option<u64>> {
+    let Some(group) = desired.instanced_group(row) else {
+        return vec![None];
+    };
+    let mut numbers: Vec<u64> = state
+        .instances
+        .iter()
+        .filter(|(_, instance)| instance.group == group.id)
+        .map(|(n, _)| *n)
+        .collect();
+    numbers.sort_unstable();
+    numbers.into_iter().map(Some).collect()
+}
+
+/// The context the copy of `leaf` in `scope` would run in, without its own
+/// scope, when `top` (the leaf or a group above it) is applied afresh: the
+/// running context above `top`, with the scope of `top` and of each group
+/// between them applied.
+fn dry_context(
+    state: &State,
+    desired: &Desired,
+    leaf: &Row,
+    top: &str,
+    scope: Option<u64>,
+    root: Option<&Ctx>,
+) -> Result<Option<Ctx>, LoaderError> {
+    let mut groups: Vec<&Row> = Vec::new();
+    let mut current = scope;
+    let mut row = leaf;
+    let anchor = loop {
+        let parent = if row.instanced {
+            match current.and_then(|n| state.instances.get(&n)) {
+                Some(instance) => instance.parent.clone(),
+                None => return Ok(None),
+            }
+        } else {
+            row.parent.clone().map(|id| Slot {
+                row: id,
+                scope: current,
+            })
+        };
+        if row.id == top {
+            break parent;
+        }
+        let Some(parent) = parent else {
+            break None;
+        };
+        let Some(next) = desired.row(&parent.row) else {
+            return Ok(None);
+        };
+        current = parent.scope;
+        row = next;
+        groups.push(row);
+    };
+    let base = match state.groups.get(&anchor) {
+        Some(group) => group.ctx.clone(),
+        None if anchor.as_ref().is_none_or(|a| a.scope.is_none()) => match root {
+            Some(root) => root.clone(),
+            None => return Ok(None),
+        },
+        None => return Ok(None),
+    };
+    let mut ctx = base;
+    for group in groups.into_iter().rev() {
+        ctx = group.scope.as_ref().map_err(Clone::clone)?.context(&ctx);
+    }
+    Ok(Some(ctx))
+}
 
 /// How many times a version conflict is resolved by replaying the pending
 /// queue before giving up with [`LoaderError::Conflict`].
@@ -21,81 +110,84 @@ const CONFLICT_RETRIES: usize = 3;
 impl Inner {
     /// Check a row would start: resolve, validate the config, build and
     /// validate the instance, for every copy (each instance it runs in).
-    /// Nothing is spawned. With `resolved`, check that module instead of
-    /// resolving the name.
+    /// For a group, check every plugin below it the same way, in the
+    /// contexts the group would give them; one already failing is left to
+    /// reconcile. Nothing is spawned. With `resolved`, check that module
+    /// instead of resolving the name.
     pub(super) async fn dry_run(
         &self,
         layers: &[Layer],
         id: &str,
         resolved: Option<Arc<crate::resolver::Resolved>>,
     ) -> Result<(), LoaderError> {
-        // Where each copy would run: its group context, and the instances
-        // enclosing it for factories that depend on them.
-        let (desired, targets) = {
+        // The plugins to check, and where each copy would run: its context
+        // without the plugin's own scope, and the instances enclosing it.
+        let (desired, checks) = {
             let state = self.state.lock().unwrap();
             let root = state.groups.get(&None).map(|g| g.ctx.clone());
             let desired = self.build_desired(layers, root.as_ref());
-            let mut targets: Vec<(Option<u64>, Option<rutis::Ctx>, Build)> = Vec::new();
-            if let Some(row) = desired.row(id) {
-                match desired.instanced_group(row) {
-                    None => {
-                        let parent = row.parent.clone().map(Slot::global);
-                        let base = state
-                            .groups
-                            .get(&parent)
-                            .map(|g| g.ctx.clone())
-                            .or(root.clone());
-                        targets.push((None, base, Self::build_for(&state, None)));
-                    }
-                    Some(group) => {
-                        let mut numbers: Vec<u64> = state
-                            .instances
-                            .iter()
-                            .filter(|(_, instance)| instance.group == group.id)
-                            .map(|(n, _)| *n)
-                            .collect();
-                        numbers.sort_unstable();
-                        for number in numbers {
-                            let parent = if row.id == group.id {
-                                state.instances[&number].parent.clone()
-                            } else {
-                                row.parent.clone().map(|row| Slot {
-                                    row,
-                                    scope: Some(number),
-                                })
-                            };
-                            let base = state.groups.get(&parent).map(|g| g.ctx.clone());
-                            targets.push((
-                                Some(number),
-                                base,
-                                Self::build_for(&state, Some(number)),
-                            ));
-                        }
+            let Some(row) = desired.row(id) else {
+                return Ok(());
+            };
+            if let Some(invalid) = &row.invalid {
+                return Err(invalid.clone());
+            }
+            if let Err(e) = &row.disabled {
+                return Err(e.clone());
+            }
+            if row.group {
+                row.scope.as_ref().map_err(Clone::clone)?;
+            }
+            if !desired.wanted(row) {
+                return Ok(());
+            }
+            let failing: HashSet<String> = Self::failures(&state)
+                .into_iter()
+                .map(|(f, _)| f.id)
+                .collect();
+            let mut checks: Vec<(usize, Vec<Target>)> = Vec::new();
+            for (index, leaf) in desired.rows.iter().enumerate() {
+                if leaf.group
+                    || !desired.wanted(leaf)
+                    || (leaf.id != id && (failing.contains(&leaf.id) || !below(&desired, leaf, id)))
+                {
+                    continue;
+                }
+                let mut targets = Vec::new();
+                for scope in copies(&state, &desired, leaf) {
+                    let base = dry_context(&state, &desired, leaf, id, scope, root.as_ref())?;
+                    targets.push((base, Self::build_for(&state, scope)));
+                }
+                checks.push((index, targets));
+            }
+            (desired, checks)
+        };
+        for (index, targets) in checks {
+            let row = &desired.rows[index];
+            let name = row.name.clone().unwrap_or_default();
+            let module = match (&resolved, row.id == id) {
+                (Some(resolved), true) => resolved.clone(),
+                (_, true) => self.resolver.resolve(&name).await?,
+                (_, false) => {
+                    let cached = self.state.lock().unwrap().resolved.get(&name).cloned();
+                    match cached {
+                        Some(result) => result?,
+                        None => self.resolver.resolve(&name).await?,
                     }
                 }
-            }
-            (desired, targets)
-        };
-        let Some(row) = desired.row(id) else {
-            return Ok(());
-        };
-        if let Some(invalid) = &row.invalid {
-            return Err(invalid.clone());
+            };
+            self.dry_run_copies(row, &module, targets)?;
         }
-        if let Err(e) = &row.disabled {
-            return Err(e.clone());
-        }
-        if row.group {
-            row.scope.as_ref().map_err(Clone::clone)?;
-        }
-        if row.group || !desired.wanted(row) {
-            return Ok(());
-        }
-        let name = row.name.clone().unwrap_or_default();
-        let resolved = match resolved {
-            Some(resolved) => resolved,
-            None => self.resolver.resolve(&name).await?,
-        };
+        Ok(())
+    }
+
+    /// Check each copy of the plugin row `row` would start in its context.
+    fn dry_run_copies(
+        &self,
+        row: &Row,
+        resolved: &crate::resolver::Resolved,
+        targets: Vec<Target>,
+    ) -> Result<(), LoaderError> {
         // Evaluate where the plugin would run: its group, with its isolates.
         let scope = if resolved.foreign_scope {
             super::desired::RowScope::default()
@@ -103,10 +195,10 @@ impl Inner {
             row.scope.clone()?
         };
         let rejected = |error: CordisError| LoaderError::Rejected {
-            id: id.to_owned(),
+            id: row.id.clone(),
             error: Arc::new(error),
         };
-        for (_, base, build) in targets {
+        for (base, build) in targets {
             let ctx = base.map(|ctx| scope.context(&ctx));
             let config = self.eval().value(&row.config, ctx.as_ref())?;
             let checked = catch_unwind(AssertUnwindSafe(|| {

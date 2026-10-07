@@ -318,6 +318,9 @@ struct InstanceRecord {
     group: String,
     /// The group context it is created in.
     parent: Option<Slot>,
+    /// The token that context was registered under: the instance goes
+    /// with that context, and is not carried over to a rebuilt one.
+    parent_token: u64,
     /// Values given with `with`, for factories.
     values: Values,
     /// The group fiber and its `ctx.instance()`; both change when the
