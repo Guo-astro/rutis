@@ -18,8 +18,18 @@ use super::plugins::{EntryConfig, EntryFactory, GroupPlugin};
 use super::{EntryInfo, EntryStatus, Group, Inner, LoaderChanged, ReconcileReport, Running, State};
 
 /// The module's own injects followed by the row's `inject`, deduplicated.
-fn combined_injects(resolved: &Resolved, scope: &RowScope) -> Vec<TypeKey> {
-    let mut keys = resolved.factory.injects().to_vec();
+fn combined_injects(resolved: &Resolved, scope: &RowScope, row: &Row) -> Vec<TypeKey> {
+    let mut keys: Vec<_> = resolved
+        .factory
+        .injects()
+        .iter()
+        .map(|key| {
+            row.catalog
+                .as_ref()
+                .map(|c| c.mapped_key(key))
+                .unwrap_or_else(|| key.clone())
+        })
+        .collect();
     for key in scope.inject_keys() {
         if !keys.contains(key) {
             keys.push(key.clone());
@@ -39,6 +49,13 @@ fn effective_scope(resolved: &Resolved, row: &Row) -> Option<RowScope> {
 }
 
 impl Inner {
+    pub(super) fn row_eval<'a>(&'a self, row: &'a Row) -> Eval<'a> {
+        Eval {
+            expressions: self.expressions.as_deref(),
+            catalog: row.catalog.as_ref().unwrap_or(&self.catalog),
+        }
+    }
+
     pub(super) fn eval(&self) -> Eval<'_> {
         Eval {
             expressions: self.expressions.as_deref(),
@@ -48,8 +65,78 @@ impl Inner {
 
     /// Compose `layers` and read the rows, evaluating `disabled` with the
     /// root context.
-    pub(super) fn build_desired(&self, layers: &[Layer], root: Option<&Ctx>) -> Desired {
-        Desired::from_composed(apply_patches(layers), &self.eval(), root)
+    pub(super) fn build_desired(
+        &self,
+        layers: &[Layer],
+        root: Option<&Ctx>,
+        state: &State,
+    ) -> Desired {
+        let composed = apply_patches(layers);
+        let mut mount_of = std::collections::HashMap::<String, String>::new();
+        let mut flat = Vec::new();
+        let mut owners = std::collections::HashMap::new();
+        for row in composed.flat {
+            let mount = row
+                .value
+                .get("mount")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| row.parent.as_ref().and_then(|p| mount_of.get(p).cloned()));
+            if let Some(mount) = mount {
+                if let Some(id) = &row.id {
+                    mount_of.insert(id.clone(), mount.clone());
+                }
+                for (owner, (kind, _, _)) in &state.mounts {
+                    if kind != &mount {
+                        continue;
+                    }
+                    let mut expanded = row.clone();
+                    if let Some(module) = row.value.get("name").and_then(Value::as_str) {
+                        expanded.value["name"] =
+                            Value::String(crate::resolver::instance_name(module, owner));
+                    }
+                    expanded.id = row
+                        .id
+                        .as_ref()
+                        .map(|id| serde_json::json!(["mount", owner, id]).to_string());
+                    expanded.parent = Some(
+                        row.parent
+                            .as_ref()
+                            .filter(|id| mount_of.get(*id) == Some(&mount))
+                            .map(|id| serde_json::json!(["mount", owner, id]).to_string())
+                            .unwrap_or_else(|| owner.clone()),
+                    );
+                    if let Some(id) = &expanded.id {
+                        owners.insert(id.clone(), owner.clone());
+                    }
+                    flat.push(expanded);
+                }
+            } else {
+                flat.push(row);
+            }
+        }
+        let mut desired =
+            Desired::from_composed(crate::Composed { flat, ..composed }, &self.eval(), root);
+        for row in &mut desired.rows {
+            if let Some((_, ctx, _)) = owners
+                .get(&row.id)
+                .and_then(|owner| state.mounts.get(owner))
+            {
+                let catalog = self.catalog.for_instance(ctx.instance());
+                row.scope = row.raw_scope.resolve(&catalog);
+                row.disabled = match row.value.get("disabled") {
+                    Some(value) => Eval {
+                        expressions: self.expressions.as_deref(),
+                        catalog: &catalog,
+                    }
+                    .value(value, Some(ctx))
+                    .map(|v| crate::patch::truthy(&v)),
+                    None => Ok(false),
+                };
+                row.catalog = Some(catalog);
+            }
+        }
+        desired
     }
 
     pub(super) fn next_token(&self) -> u64 {
@@ -185,7 +272,7 @@ impl Inner {
                 continue;
             }
             let resolved = resolved.expect("a leaf row resolved above");
-            let config = match self.eval().value(&row.config, Some(&row_ctx)) {
+            let config = match self.row_eval(row).value(&row.config, Some(&row_ctx)) {
                 Ok(config) => config,
                 Err(error) => {
                     state.rejected.insert(id, error);
@@ -209,7 +296,7 @@ impl Inner {
                 continue;
             }
             state.rejected.remove(&id);
-            let injects = combined_injects(&resolved, &rust_scope);
+            let injects = combined_injects(&resolved, &rust_scope, row);
             let view = row_ctx.plugin_with(
                 EntryFactory {
                     name: name.clone(),
@@ -264,6 +351,18 @@ impl Inner {
                 let mut state = inner.state.lock().unwrap();
                 match state.running.get(&id) {
                     Some(running) if running.view.id == view.id => {
+                        // An expanded row is already an ordinary runtime plugin.
+                        // Retain its disposed fiber so reconciliation cannot recreate
+                        // it or write its runtime identifier into the template.
+                        if state
+                            .desired
+                            .row(&id)
+                            .is_some_and(|row| row.source != row.id)
+                        {
+                            drop(state);
+                            inner.emit(LoaderChanged::SelfDisposed { id, error: None });
+                            return;
+                        }
                         let running = state.running.remove(&id).unwrap();
                         let key = Some(id.clone());
                         if state.groups.get(&key).map(|g| g.token) == Some(running.token) {
@@ -372,7 +471,7 @@ impl Inner {
             let mut state = self.state.lock().unwrap();
             let before = Self::failures(&state);
             let root = state.groups.get(&None).map(|g| g.ctx.clone());
-            state.desired = self.build_desired(&state.composed_layers(), root.as_ref());
+            state.desired = self.build_desired(&state.composed_layers(), root.as_ref(), &state);
             let names: Vec<String> = state
                 .desired
                 .rows
@@ -414,7 +513,7 @@ impl Inner {
                     match state.resolved.get(&name) {
                         Some(Ok(resolved))
                             if effective_scope(resolved, row).is_some_and(|s| {
-                                combined_injects(resolved, &s) == running.injects
+                                combined_injects(resolved, &s, row) == running.injects
                             }) && resolved.factory.name() == running.factory_name => {}
                         _ => continue,
                     }
@@ -429,7 +528,7 @@ impl Inner {
                         state.running[*id]
                             .parent
                             .as_ref()
-                            .is_some_and(|p| !keep.contains(p))
+                            .is_some_and(|p| !keep.contains(p) && !state.mounts.contains_key(p))
                     })
                     .cloned()
                     .collect();
@@ -487,7 +586,7 @@ impl Inner {
                     continue;
                 };
                 // Expressions are evaluated where the plugin runs.
-                let desired = match self.eval().value(&row.config, Some(&running.ctx)) {
+                let desired = match self.row_eval(row).value(&row.config, Some(&running.ctx)) {
                     Ok(value) => value,
                     Err(error) => {
                         unevaluable.push((id.clone(), error));

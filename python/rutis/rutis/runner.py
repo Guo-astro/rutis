@@ -29,7 +29,7 @@ from typing import Any, Callable
 from . import plugin as sdk
 from .peer import Peer, RemoteFuture
 
-FEATURES = ["rows.v2", "hosts", "leaf"]
+FEATURES = ["rows.v2", "rows.names", "hosts", "leaf"]
 
 
 class HostProxy:
@@ -83,6 +83,7 @@ class Row:
     module: str
     config: Any
     exports: dict
+    names: dict = field(default_factory=dict)
     cleanups: list = field(default_factory=list)
     provided: list = field(default_factory=list)
 
@@ -93,10 +94,10 @@ class Context(sdk.Context):
         self._row = row
 
     def use(self, name: str) -> Any:
-        return self._runtime.lookup(name)
+        return self._runtime.lookup(self._row.names.get(name, name))
 
     def provide(self, name: str, value: Any) -> Callable[[], None]:
-        return self._runtime.provide(self._row, name, value)
+        return self._runtime.provide(self._row, self._row.names.get(name, name), value)
 
     def effect(self, cleanup: Callable) -> None:
         self._row.cleanups.append(cleanup)
@@ -110,6 +111,7 @@ class Runtime:
         self.hosts: dict[str, HostProxy] = {}
         self.slots: dict[str, Slot] = {}
         self.handles: dict[str, dict] = {}
+        self.generations: dict[str, int] = {}
         self.version = 0
         self.closing = False
         # The source file of each plugin module when it was imported.
@@ -154,7 +156,8 @@ class Runtime:
         slot.object = current
         slot.handle = None
         if current is not None:
-            slot.generation += 1
+            slot.generation = self.generations.get(name, 0) + 1
+            self.generations[name] = slot.generation
             slot.handle = name if slot.generation == 1 else f"{name}#{slot.generation}"
             self.handles[slot.handle] = {"name": name, "object": current, "current": True, "released": False}
         self.version += 1
@@ -171,17 +174,29 @@ class Runtime:
 
     # ── Rows ─────────────────────────────────────────────────────
 
-    async def load(self, key: str, module: str, config: Any, exports: dict | None) -> None:
+    async def load(self, key: str, module: str, config: Any, exports: dict | None,
+                   names: dict | None = None) -> None:
         if key in self.rows:
             raise ValueError(f"row {key} is already loaded")
+        names = {} if names is None else names
+        if not isinstance(names, dict) or any(
+            not isinstance(local, str) or not isinstance(actual, str)
+            or not local or not actual or "#" in actual
+            for local, actual in names.items()
+        ):
+            raise ValueError("service names must map nonempty strings to projectable names")
         exports = exports or {}
+        mapped_exports = {names.get(name, name): methods for name, methods in exports.items()}
+        if len(mapped_exports) != len(exports):
+            raise ValueError("exported service names must be distinct")
+        exports = mapped_exports
         for name in exports:
             if "#" in name:
                 raise ValueError(f"service name {name} cannot be projected")
             if name in self.slots:
                 raise ValueError(f"service {name} is already exported by row {self.slots[name].row}")
         plugin = _supported(sdk.load(self.module(module)), module)
-        row = Row(key, module, config, exports)
+        row = Row(key, module, config, exports, dict(names))
         self.rows[key] = row
         for name, methods in exports.items():
             self.slots[name] = Slot(key, set(methods))
@@ -226,7 +241,9 @@ class Runtime:
         if row is None:
             raise ValueError(f"row {key} is not loaded")
         await self.unload(key)
-        await self.load(key, row.module, config, row.exports)
+        local_names = {actual: local for local, actual in row.names.items()}
+        exports = {local_names.get(name, name): methods for name, methods in row.exports.items()}
+        await self.load(key, row.module, config, exports, row.names)
 
     def module(self, name: str):
         """The plugin module, imported again when its source file changed
@@ -286,7 +303,8 @@ class Runtime:
             return self._dispose_and_drain()
         if method == "rows.load":
             key, module, config, _isolate, _inject, *rest = list(args) + [None] * (6 - len(args))
-            return self.load(key, str(module), config, rest[0] if rest else None)
+            return self.load(key, str(module), config, rest[0] if rest else None,
+                             rest[1] if len(rest) > 1 else None)
         if method == "rows.update":
             key, config = args
             return self.update(key, config)

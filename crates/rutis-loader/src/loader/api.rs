@@ -34,6 +34,84 @@ fn generate_id(taken: impl Fn(&str) -> bool) -> String {
 }
 
 impl Loader {
+    /// Load matching configuration beneath a host context.
+    pub async fn register_mount(&self, kind: &str, ctx: &rutis::Ctx) -> Result<(), LoaderError> {
+        let _op = self.inner.op.lock().await;
+        self.inner.check_open()?;
+        let root = self.inner.root().ok_or(LoaderError::Closed)?;
+        if kind.is_empty() || root.root_view().map(|v| v.id) != ctx.root_view().map(|v| v.id) {
+            return Err(LoaderError::InvalidEntry(
+                "mount requires a nonempty kind and the loader's root".into(),
+            ));
+        }
+        let owner = format!("rutis-mount:{}", ctx.instance());
+        let token = self.inner.next_token();
+        {
+            let mut state = self.inner.state.lock().unwrap();
+            if state.mounts.contains_key(&owner) {
+                return Err(LoaderError::InvalidEntry(
+                    "host is already registered".into(),
+                ));
+            }
+            state
+                .mounts
+                .insert(owner.clone(), (kind.to_owned(), ctx.clone(), token));
+            state.groups.insert(
+                Some(owner.clone()),
+                super::Group {
+                    ctx: ctx.clone(),
+                    token,
+                },
+            );
+        }
+        let loader = self.clone();
+        let cleanup_owner = owner.clone();
+        if let Err(error) = ctx.effect(move || {
+            rutis::Effect::AsyncDisposer(Box::new(move || {
+                Box::pin(async move {
+                    loader.unregister_mount_token(&cleanup_owner, token).await;
+                    Ok(())
+                })
+            }))
+        }) {
+            let mut state = self.inner.state.lock().unwrap();
+            state.mounts.remove(&owner);
+            state.groups.remove(&Some(owner));
+            return Err(LoaderError::InvalidEntry(error.to_string()));
+        }
+        self.inner.reconcile_inner().await;
+        Ok(())
+    }
+
+    async fn unregister_mount_token(&self, owner: &str, token: u64) {
+        let _op = self.inner.op.lock().await;
+        {
+            let mut state = self.inner.state.lock().unwrap();
+            if state.mounts.get(owner).map(|(_, _, t)| *t) != Some(token) {
+                return;
+            }
+            state.mounts.remove(owner);
+            state.groups.remove(&Some(owner.to_owned()));
+        }
+        self.inner.reconcile_inner().await;
+    }
+
+    /// Unload plugins registered beneath this host.
+    pub async fn unregister_mount(&self, ctx: &rutis::Ctx) {
+        let owner = format!("rutis-mount:{}", ctx.instance());
+        let token = self
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .mounts
+            .get(&owner)
+            .map(|(_, _, t)| *t);
+        if let Some(token) = token {
+            self.unregister_mount_token(&owner, token).await;
+        }
+    }
+
     /// Replace the layers and bring the running tree to them. Queued,
     /// unsaved edits are replayed on the new editable layer and saved.
     pub async fn reconcile(
@@ -164,12 +242,30 @@ impl Loader {
         state.desired.row(id).map(|row| Inner::info(&state, row))
     }
 
+    #[cfg(all(unix, feature = "runtimes"))]
+    pub(crate) fn row_service_key(
+        &self,
+        instance: rutis::InstanceId,
+        name: &str,
+    ) -> Option<rutis::TypeKey> {
+        let state = self.inner.state.lock().unwrap();
+        let (id, _) = state
+            .running
+            .iter()
+            .find(|(_, r)| r.view.instance() == instance)?;
+        let row = state.desired.row(id)?;
+        row.catalog
+            .as_ref()
+            .unwrap_or(&self.inner.catalog)
+            .key(name)
+    }
+
     /// The row whose fiber has `instance` (the plugin's `ctx.instance()`).
     /// Answers from inside `apply`: the loader records a fiber before its
     /// first load runs.
     pub fn row(&self, instance: rutis::InstanceId) -> Option<RowInfo> {
         let state = self.inner.state.lock().unwrap();
-        let (id, _) = state
+        let (id, running) = state
             .running
             .iter()
             .find(|(_, r)| r.view.instance() == instance)?;
@@ -178,6 +274,11 @@ impl Loader {
             id: id.clone(),
             isolate: row.raw_scope.isolate.clone(),
             inject: row.raw_scope.inject.clone(),
+            names: row
+                .catalog
+                .as_ref()
+                .map(|catalog| catalog.instance_names(&running.ctx))
+                .unwrap_or_default(),
         })
     }
 

@@ -116,11 +116,26 @@ impl Plugin for LoaderPlugin {
             let token = self.loader.inner.next_token();
             self.loader.inner.attach(None, token, ctx);
             let weak = Arc::downgrade(&self.loader.inner);
-            Ok(Effect::Disposer(Box::new(move || {
-                if let Some(inner) = weak.upgrade() {
-                    inner.detach(None, token);
-                }
-                Ok(())
+            Ok(Effect::AsyncDisposer(Box::new(move || {
+                Box::pin(async move {
+                    if let Some(inner) = weak.upgrade() {
+                        let disposals = {
+                            let mut state = inner.state.lock().unwrap();
+                            state.mounts.clear();
+                            state.groups.clear();
+                            state
+                                .running
+                                .drain()
+                                .map(|(_, running)| running.view.dispose())
+                                .collect::<Vec<_>>()
+                        };
+                        for disposal in disposals {
+                            let _ = disposal.await;
+                        }
+                        inner.detach(None, token);
+                    }
+                    Ok(())
+                })
             })))
         })
     }

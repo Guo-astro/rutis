@@ -14,12 +14,21 @@ use serde_json::Value;
 
 use crate::LoaderError;
 
-type Probe = Arc<dyn Fn(&Ctx) -> bool + Send + Sync>;
-type Read = Arc<dyn Fn(&Ctx) -> Option<Value> + Send + Sync>;
+type Probe = Arc<dyn Fn(&Ctx, TypeKey) -> bool + Send + Sync>;
+type Read = Arc<dyn Fn(&Ctx, TypeKey) -> Option<Value> + Send + Sync>;
+
+/// Whether a registered service is shared globally or belongs to a host instance.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ServiceScope {
+    #[default]
+    Global,
+    Instance,
+}
 
 #[derive(Clone)]
 struct Service {
     key: TypeKey,
+    scope: ServiceScope,
     exists: Probe,
     /// Present for services expressions may read.
     read: Option<Read>,
@@ -54,12 +63,12 @@ impl ServiceCatalog {
         name: impl Into<String>,
         key: TypeKey,
     ) -> &mut Self {
-        let probe = key.clone();
         self.services.insert(
             name.into(),
             Service {
                 key,
-                exists: Arc::new(move |ctx: &Ctx| ctx.get_as::<T>(probe.clone()).is_some()),
+                scope: ServiceScope::Global,
+                exists: Arc::new(move |ctx: &Ctx, key| ctx.get_as::<T>(key).is_some()),
                 read: None,
             },
         );
@@ -80,15 +89,14 @@ impl ServiceCatalog {
         name: impl Into<String>,
         key: TypeKey,
     ) -> &mut Self {
-        let probe = key.clone();
-        let reader = key.clone();
         self.services.insert(
             name.into(),
             Service {
                 key,
-                exists: Arc::new(move |ctx: &Ctx| ctx.get_as::<T>(probe.clone()).is_some()),
-                read: Some(Arc::new(move |ctx: &Ctx| {
-                    ctx.get_as::<T>(reader.clone())
+                scope: ServiceScope::Global,
+                exists: Arc::new(move |ctx: &Ctx, key| ctx.get_as::<T>(key).is_some()),
+                read: Some(Arc::new(move |ctx: &Ctx, key| {
+                    ctx.get_as::<T>(key)
                         .and_then(|value| serde_json::to_value(&*value).ok())
                 })),
             },
@@ -120,6 +128,60 @@ impl ServiceCatalog {
     #[cfg(all(unix, feature = "runtimes"))]
     pub fn is_shared(&self, name: &str) -> bool {
         self.key(name) == Some(rutis_bridge::session::host_key(name))
+    }
+
+    /// Set the scope of an explicitly registered service.
+    pub fn set_scope(&mut self, name: &str, scope: ServiceScope) -> Result<&mut Self, LoaderError> {
+        self.services
+            .get_mut(name)
+            .ok_or_else(|| LoaderError::UnknownService(vec![name.to_owned()]))?
+            .scope = scope;
+        Ok(self)
+    }
+
+    /// Resolve registered instance keys for a particular host.
+    pub(crate) fn for_instance(&self, owner: rutis::InstanceId) -> Self {
+        let mut catalog = self.clone();
+        for service in catalog.services.values_mut() {
+            if service.scope == ServiceScope::Instance {
+                service.key = service.key.clone().with_instance(owner);
+            }
+        }
+        catalog
+    }
+
+    pub(crate) fn mapped_key(&self, key: &TypeKey) -> TypeKey {
+        self.services
+            .values()
+            .find(|service| {
+                service
+                    .key
+                    .instance_id()
+                    .is_some_and(|owner| key.clone().with_instance(owner) == service.key)
+            })
+            .map(|service| service.key.clone())
+            .unwrap_or_else(|| key.clone())
+    }
+
+    pub(crate) fn instance_names(&self, ctx: &Ctx) -> std::collections::BTreeMap<String, String> {
+        self.services
+            .iter()
+            .filter_map(|(name, service)| {
+                let owner = service.key.instance_id()?;
+                let encoded = serde_json::json!([
+                    name,
+                    owner.to_string(),
+                    ctx.scope_for(&service.key).as_deref()
+                ])
+                .to_string();
+                let hex: String = encoded
+                    .as_bytes()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                Some((name.clone(), format!("rutis-instance:{hex}")))
+            })
+            .collect()
     }
 
     /// The key of a named service.
@@ -183,7 +245,9 @@ impl<'a> ExprScope<'a> {
             .services
             .get(name)
             .ok_or_else(|| LoaderError::UnknownService(vec![name.to_owned()]))?;
-        Ok(self.ctx.is_some_and(|ctx| (service.exists)(ctx)))
+        Ok(self
+            .ctx
+            .is_some_and(|ctx| (service.exists)(ctx, service.key.clone())))
     }
 
     /// The value of a readable service, `None` while it is absent. Services
@@ -198,7 +262,7 @@ impl<'a> ExprScope<'a> {
             .read
             .as_ref()
             .ok_or_else(|| LoaderError::NotReadable(name.to_owned()))?;
-        Ok(self.ctx.and_then(|ctx| read(ctx)))
+        Ok(self.ctx.and_then(|ctx| read(ctx, service.key.clone())))
     }
 }
 

@@ -11,6 +11,18 @@ use serde_json::Value;
 
 use crate::LoaderError;
 
+/// Decode a loader-generated runtime name; ordinary module names are unchanged.
+pub fn module_name(name: &str) -> String {
+    name.strip_prefix("rutis-instance:")
+        .and_then(|encoded| serde_json::from_str::<(String, String)>(encoded).ok())
+        .map(|(module, _)| module)
+        .unwrap_or_else(|| name.to_owned())
+}
+
+pub(crate) fn instance_name(module: &str, owner: &str) -> String {
+    format!("rutis-instance:{}", serde_json::json!([module, owner]))
+}
+
 /// What a name resolves to.
 pub struct Resolved {
     pub factory: Arc<dyn PluginFactory<Value>>,
@@ -114,7 +126,7 @@ impl Builtins {
 
 impl Resolver for Builtins {
     fn resolve<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<Resolved>, LoaderError>> {
-        let found = self.entries.get(name).cloned();
+        let found = self.entries.get(&module_name(name)).cloned();
         Box::pin(async move {
             found.ok_or_else(|| LoaderError::NotFound {
                 name: name.to_owned(),

@@ -489,7 +489,7 @@ impl Ctx {
     }
 
     /// scope 解析:沿 Ctx 父链回溯,取该键最近的 isolate 覆盖(§四:保留父链查找)。
-    pub(crate) fn scope_for(&self, key: &TypeKey) -> Option<ScopeId> {
+    pub fn scope_for(&self, key: &TypeKey) -> Option<Arc<str>> {
         let mut current = Some(self.clone());
         while let Some(ctx) = current {
             if let Some((k, scope)) = &ctx.0.isolate {

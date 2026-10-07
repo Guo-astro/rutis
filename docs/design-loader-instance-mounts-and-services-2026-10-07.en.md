@@ -71,6 +71,14 @@ internal service name = encode(service name, owner, effective isolation location
 - Bridge host registration, exports, notifications, and withdrawal use internal service names in existing string tables and reference counts.
 - In-process native access retains original objects; cross-language calls use existing proxies and object handles.
 
+### Remote and Protocol Loading
+
+Both local and remote Runtime `rows.load` and Peer `plugins.load` carry the `names` mapping above. Each Resolver extracts the original module name from the runtime name. The execution endpoint loads that module and applies the mapping to dependencies, service lookup, provision, and exports; forwarding to a Runtime preserves the mapping.
+
+Before loading, capability negotiation confirms that the receiving endpoint supports name mappings. If a mapping is required and unsupported, loading returns an explicit error. Unloading retains each path's existing load key and unload operation to clean up the corresponding plugin and services.
+
+Acceptance covers both remote Runtime and Peer paths: two hosts loading the same plugin have isolated instance services and shared global services; unloading one does not affect the other.
+
 ## 4. Management and Unloading
 
 Management operations target the expanded ordinary plugins. Configuration-row operations first select all corresponding plugins and then use existing processing paths. Source relationships select the targets.

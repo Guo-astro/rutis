@@ -49,7 +49,7 @@ const rows = new Map() // key -> { fiber, inner, config, exports }
 // rutis services registered one by one (`hosts.*`): name -> withdraw
 const hosts = new Map()
 // What this runner supports beyond protocol 2, reported by `mount`.
-const FEATURES = ['rows.v2', 'hosts', 'leaf.js']
+const FEATURES = ['rows.v2', 'rows.names', 'hosts', 'leaf.js']
 
 // Each exported service slot is projected as a sequence of object handles.
 // A handle always addresses the object it was created for; when the slot
@@ -57,6 +57,7 @@ const FEATURES = ['rows.v2', 'hosts', 'leaf.js']
 // The first object of a slot uses the service name as its handle.
 const slots = new Map() // name -> { methods, scope, object, identity, handle, generation, exporter }
 const handles = new Map() // handle -> { name, object, current, released }
+const generations = new Map() // service name -> last object generation
 
 // Cordis wraps Service instances in a new tracing proxy on every read; the
 // proxy reports its target under this symbol. Compare targets, not wrappers.
@@ -70,7 +71,7 @@ const identity = value => (value !== null && (typeof value === 'object' || typeo
 function exporter(name, slot, parent = ctx) {
   return parent.plugin({
     name: `interop-export:${name}`,
-    inject: [name],
+    inject: [slot.localName ?? name],
     apply(scope) {
       slot.scope = scope
       refresh()
@@ -85,7 +86,7 @@ function exporter(name, slot, parent = ctx) {
 
 function read(slot, name) {
   if (!slot.scope) return undefined
-  try { return slot.scope.get(name) } catch { return undefined }
+  try { return slot.scope.get(slot.localName ?? name) } catch { return undefined }
 }
 
 function retire(handle) {
@@ -114,7 +115,8 @@ function refresh() {
     slot.identity = current
     slot.handle = null
     if (object !== undefined) {
-      slot.generation++
+      slot.generation = (generations.get(name) ?? 0) + 1
+      generations.set(name, slot.generation)
       slot.handle = slot.generation === 1 ? name : `${name}#${slot.generation}`
       handles.set(slot.handle, { name, object, current: true, released: false })
     }
@@ -202,9 +204,16 @@ const fiberOf = wrapped => Object.hasOwn(wrapped, 'then') ? Object.getPrototypeO
 // One row: `isolate` as [name, label] pairs (rows naming a label share its
 // scope), `inject` as extra service names gating the row. With `inject`, the
 // plugin runs inside a gate fiber (`inner`), from the row's latest config.
-async function loadRow([key, entry, config, isolate, inject, exports]) {
+async function loadRow([key, entry, config, isolate, inject, exports, mapping = {}]) {
   if (rows.has(key)) throw new Error(`row ${key} is already loaded`)
-  const names = Object.keys(exports ?? {})
+  if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)
+    || Object.entries(mapping).some(([local, actual]) => !local || typeof actual !== 'string' || !actual || actual.includes('#'))) {
+    throw new Error('service names must map nonempty strings to projectable names')
+  }
+  const actual = name => Object.hasOwn(mapping, name) ? mapping[name] : name
+  const localNames = Object.keys(exports ?? {})
+  const names = localNames.map(actual)
+  if (new Set(names).size !== names.length) throw new Error('exported service names must be distinct')
   for (const name of names) {
     if (name.includes('#')) throw new Error(`service name ${name} cannot be projected`)
     const owner = [...rows].find(([, row]) => row.exports.includes(name))
@@ -213,6 +222,7 @@ async function loadRow([key, entry, config, isolate, inject, exports]) {
   const plugin = await pluginOf(entry)
   let scope = ctx
   for (const [name, label] of isolate ?? []) scope = scope.isolate(name, Symbol.for(`rutis-row:${label}`))
+  for (const [name, target] of Object.entries(mapping)) scope = scope.isolate(name, Symbol.for(target))
   const row = { fiber: undefined, inner: undefined, config, exports: names }
   const fiber = fiberOf(inject?.length
     ? scope.plugin({ name: `row:${key}`, inject, apply(gated) { row.inner = fiberOf(gated.plugin(plugin, row.config)) } })
@@ -222,8 +232,9 @@ async function loadRow([key, entry, config, isolate, inject, exports]) {
   rows.set(key, row)
   // The row's services are read from its own scope, like a consumer of it
   // would, so an isolated row exports the service of its isolated scope.
-  for (const name of names) {
-    const slot = { methods: new Set(Object.keys(exports[name] ?? {})), scope: undefined, object: undefined, identity: undefined, handle: null, generation: 0, version: 0 }
+  for (const localName of localNames) {
+    const name = actual(localName)
+    const slot = { localName, methods: new Set(Object.keys(exports[localName] ?? {})), scope: undefined, object: undefined, identity: undefined, handle: null, generation: 0, version: 0 }
     slots.set(name, slot)
     slot.exporter = exporter(name, slot, scope)
   }
@@ -432,7 +443,17 @@ function dispatch(target, method, args) {
         // the users and withdraws it after the last one.
         const [name, methods] = args ?? []
         if (hosts.has(name)) throw new Error(`host service ${name} is already provided`)
-        hosts.set(name, ctx.provide(name, hostProxy(name, methods ?? {})))
+        let scope = ctx
+        let local = name
+        if (name.startsWith('rutis-instance:')) {
+          const encoded = name.slice('rutis-instance:'.length)
+          if (!/^(?:[0-9a-f]{2})+$/.test(encoded)) throw new Error('invalid instance service name')
+          const decoded = JSON.parse(Buffer.from(encoded, 'hex').toString('utf8'))
+          if (!Array.isArray(decoded) || typeof decoded[0] !== 'string' || !decoded[0]) throw new Error('invalid instance service name')
+          local = decoded[0]
+          scope = scope.isolate(local, Symbol.for(name))
+        }
+        hosts.set(name, scope.provide(local, hostProxy(name, methods ?? {})))
         return null
       }
       case 'hosts.withdraw': {
