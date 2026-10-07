@@ -1,119 +1,199 @@
-# 一份配置加载多个普通插件
+# 按需创建插件实例
 
 [English](design-loader-instance-mounts-and-services-2026-10-07.en.md)
 
 设计提案 · 关联 [#158](https://github.com/arcships/rutis/issues/158)、[#159](https://github.com/arcships/rutis/issues/159) · 代码基线 `330ff51`
 
-## 1. 基本关系
+## 1. 背景
 
-同一份配置可以在多个宿主实例下加载。展开后的每一项都是普通插件，进入现有 loader 的运行表，使用现有插件管理与生命周期。
+应用需要自己管理自己的插件：装哪些插件、配置是什么，都由一份配置决定，并能在运行中动态修改。
 
-```text
-配置 assistant
-      |
-      +-- 文档 A 的 ctx --> assistant@A --> 普通插件
-      |
-      +-- 文档 B 的 ctx --> assistant@B --> 普通插件
-```
+有些插件需要按业务对象各开一份，实例何时出现由业务决定。例如每个会话一组插件，会话里每个分支再一组。这是插件体系的通用问题（参见 IntelliJ 的 project 级服务、依赖注入框架的 scoped 生命周期）。框架不支持时，只能由插件自己维护按对象划分的状态，或由宿主另写一套装配层；两者都绕开了框架的依赖、生命周期、重载与诊断。
 
-配置保留模块名；运行记录保留配置行、宿主和实际插件的对应关系。
+rutis 内核已经提供实例子树、实例键和子树永久卸载。本设计补上 loader 侧：用配置声明每个实例里装哪些插件，并在配置变化时同步到所有实例。
 
-## 2. 加载
+分工：
+
+- **业务**决定实例什么时候创建、什么时候关闭；
+- **loader**决定每个实例里装哪些插件、用什么配置。
+
+本设计不修改 rutis 内核，也不在框架中引入业务分类。
+
+## 2. 配置
+
+只增加一个属性：**分组可以声明 `instanced: true`**。
+
+- 普通分组（来自 Cordis）由 reconcile 在父级下装载一次，子行装在分组的 ctx 里。
+- `instanced` 分组不由 reconcile 装载，只通过 `create_instance` 创建，可以有多个实例。每个实例是一个独立的分组 fiber，子行在每个实例里各装一份。
 
 ```yaml
-- id: assistant
-  mount: document
-  name: assistant-plugin
-  inject: [document]
+- id: session
+  group: true
+  instanced: true
+  config:
+    - id: session-scope
+      name: dim/session-scope
+    - id: tool-registry
+      name: dim/tool-registry
+    - id: timeline-tree
+      name: dim/timeline-tree
+    - id: branch
+      group: true
+      instanced: true
+      config:
+        - id: branch-scope
+          name: dim/branch-scope
+        - id: loop
+          name: dim/loop
+        - id: tool-executor
+          name: dim/tool-executor
+- id: aimux
+  name: dim/aimux
 ```
 
-宿主创建文档后，通过 `register_mount("document", ctx)` 把加载位置交给 loader。loader 将匹配的配置展开，在该 ctx 下加载插件。`mount` 可放在顶层行或分组，后代继承；分组及后代保持原有父子关系。
+规则：
 
-宿主 ctx 与 loader 属于同一 root。挂载记录使用宿主实例身份和现有加载代次，重复登记同一有效挂载报错。
+- 实例的位置由配置树决定：实例建在其配置父级的 ctx 下。顶层的 `instanced` 分组建在 loader 的 ctx 下；嵌套的建在它所属的那个外层实例里。
+- 实例里的普通行和普通分组自动装载；嵌套的 `instanced` 分组需要再调用 `create_instance`。
+- 同一实例里的插件是平级关系，相互关系由 `injects` 表达。例如 `tool-registry` 依赖 `session-scope` 提供的服务，会等它就绪；`loop` 依赖全局的 `aimux`。
+- 不在任何 `instanced` 分组之下的行，行为与现在相同。
+- `instanced` 只能用在分组上；写在插件行上，该行无效。
 
-加载时分两步：
+## 3. 接口
 
-1. 为配置行生成该宿主下的运行标识，并记录来源。
-2. 生成实例运行名称，交给现有 `resolve(name)`，得到工厂和依赖，再走普通插件加载流程。
+```rust
+let s1 = loader.create_instance(&ctx, "session").with(assembly).await?;
 
-```text
-assistant-plugin + 宿主 A --> resolve(运行名称 A) --> 工厂 A
-assistant-plugin + 宿主 B --> resolve(运行名称 B) --> 工厂 B
+// 在 session 实例里的任何插件中，例如 timeline-tree 创建分支：
+let b1 = loader.create_instance(ctx, "branch").await?;
+
+loader.remove_instance(b1.plugin).await?;
 ```
 
-Resolver 从运行名称取出原模块名和宿主信息。模块查找使用原模块名；解析缓存使用完整运行名称。工厂可持有宿主信息，返回对应的实例依赖。
+### 3.1 `create_instance(&ctx, group_id)`
 
-`@A`、`@B` 是显示示例。内部使用可无歧义编解码的名称，包含模块和挂载身份，保留原模块名中的特殊字符。
+- **父实例由 ctx 确定**：从 `ctx` 所属的受管插件开始，沿 loader 记录的父子关系向上，找到该分组配置父级的实例，作为父实例。顶层分组传 loader 的 ctx 或其祖先 ctx。找不到时报错。
+  - 因此可以在父实例内任何受管插件里调用，不必拿到父实例本身的 ctx。
+  - loader 只沿自己记录的关系查找，不依赖内核的祖先查询。
+- 目标必须是 `instanced` 分组，且未禁用、有效；否则报错。
+- `.with(value)` 附带一个业务值（任意 `Send + Sync` 类型），交给实例内插件的工厂（§4）。
+- 返回前等待：实例的子行稳定。返回 `Instance { plugin, view, report }`，`report` 列出每个子行的结果：
 
-## 3. 服务映射
-
-服务沿用现有登记方式，指定全局或实例作用域，默认全局。Rust 类型信息和跨语言方法描述仍按现有方式登记。
-
-实例服务使用现有键：
-
-```text
-document@A --> host_key("document").with_instance(A)
-document@B --> host_key("document").with_instance(B)
-```
-
-插件仍按 `document` 访问服务。加载前根据宿主确定实际服务键，供依赖、隔离、表达式和跨语言访问共同使用。全局服务保持共享；实例服务沿用所属上下文的有效隔离位置。
-
-跨语言加载通过 `rows.load` 传递名字映射：
-
-```text
-names = { 插件本地服务名: 内部服务名 }
-内部服务名 = encode(服务名, owner, 有效隔离位置)
-```
-
-- Node 在现有 Cordis root 下，通过 `isolate(name, symbol)` 将本地名映射到对应服务位置。
-- Python 通过当前行的映射查找和提供服务。
-- 映射覆盖已声明的实例服务，插件内部子插件可继续使用这些本地名。
-- bridge 的 host、导出、通知和撤销使用内部服务名，沿用现有字符串表与引用计数。
-- 同进程原生访问保留原对象，跨语言调用使用现有代理和对象 handle。
-
-### 远程与协议加载
-
-本地和远程 Runtime 的 `rows.load`、Peer 的 `plugins.load` 均传递上述 `names` 映射。各 Resolver 从运行名称取出原模块名，实际执行端按原模块名加载插件，并将映射用于依赖、服务查询、提供和导出；转接到 Runtime 时继续传递该映射。
-
-加载前通过能力协商确认接收端支持名字映射；需要映射而对端不支持时，明确报错。卸载继续使用各路径现有的加载 key 和卸载操作，清理对应插件及服务。
-
-验收覆盖远程 Runtime 和 Peer 两条路径：两个宿主加载同一插件时实例服务隔离，全局服务共享，卸载其中一个不影响另一个。
-
-## 4. 管理与卸载
-
-管理操作以展开后的普通插件为目标。配置行操作先找到它对应的全部插件，再交给现有流程处理；来源对应关系用于选择目标。
-
-| 操作 | 目标与处理 |
+| 结果 | 含义 |
 | --- | --- |
-| 修改配置行 | 该行展开出的全部插件，使用现有校验、更新和恢复流程 |
-| 查询或管理一个运行插件 | 按运行标识使用普通插件操作 |
-| 插件启动、依赖等待、失败或停止 | 使用普通插件的状态与生命周期；处理对象是该运行插件 |
-| 卸载、禁用或删除配置行 | 卸载该行展开出的全部插件；分组包括后代 |
-| 关闭宿主或撤销挂载 | 卸载该宿主下由 loader 加载的插件 |
-| 卸载 loader | 卸载所有受管插件，包括外部宿主下的插件 |
+| `Active` | 已运行 |
+| `Waiting` | 在等依赖的服务 |
+| `Failed(error)` | 解析、校验、表达式求值或 `apply` 失败 |
+| `Skipped` | 子行被禁用 |
 
-运行插件的标识与模板标识分开：单个插件的生命周期处理定位该插件，配置操作定位模板及其展开结果。
+- 子行失败不影响实例创建，实例是否可用由调用方根据 `report` 判断。
+- 可以在插件自己的 `apply` 中调用并等待。
 
-卸载沿用普通插件的清理流程，并等待对应清理结束。配置行到插件、宿主到插件的对应关系随加载和卸载维护。
+### 3.2 关闭实例
 
-## 5. 实现落点与验收
+- `remove_instance(plugin)` 卸载该实例及其子树。
+- 业务直接关闭实例的 fiber（例如 `FiberView::shutdown()`）也可以，loader 观察到卸载后只更新记账，不重复卸载。
+- 父实例关闭时，其下所有实例随子树卸载。
+- 实例不写入配置。进程重启后由业务重新创建，例如按数据库恢复会话时逐个 `create_instance`。
 
-| 落点 | 改动 |
+## 4. 工厂
+
+实例里的插件常需要知道自己在哪个实例里，用来生成实例键。
+
+```rust
+builtins.register_with("dim/loop", |build: &Build| {
+    let scope = BranchScope {
+        session: SessionScope { instance: build.instance("session")? },
+        instance: build.instance("branch")?,
+    };
+    Ok(LoopFactory::new(scope))
+});
+```
+
+- `Build` 提供：
+  - `instance(group_id)`：所在实例链上该分组实例的 `InstanceId`，即那个分组 fiber 的 `ctx.instance()`；
+  - `value::<T>()`：实例链上最近一次 `with` 提供的该类型的值。
+- 同一实例里的插件都在该分组 fiber 的子树内，因此用这个 `InstanceId` 生成的实例键对它们都可见。提供实例服务的插件（如 `session-scope`）也用这个 id，而不是自己 fiber 的 `ctx.instance()`。
+- 普通 `register` 的插件不变，在每个实例里使用同一个工厂。
+- `Resolved` 可以带一个按 `Build` 生成工厂的构造函数；解析缓存仍按模块名，不随实例增长。
+- loader 不改写工厂返回的 `injects()`。
+
+## 5. 动态更新
+
+对配置行的修改作用于这一行的全部实例：
+
+| 修改 | 结果 |
 | --- | --- |
-| loader | 接收宿主 ctx，展开配置，将运行行接入现有运行表；按来源选择管理和卸载目标 |
-| Resolver | 解码运行名称，按原模块查找代码，构造持有宿主信息的工厂；缓存与刷新使用一致的名称 |
-| 服务登记与查询 | 按作用域和 owner 计算实际键，复用已有实例键与隔离查询 |
-| bridge、Node、Python | 加载时传递名字映射，现有服务索引使用映射后的名称 |
+| 在 `instanced` 分组中新增行 | 在该分组的每个实例里装载 |
+| 删除或禁用实例中的行 | 在每个实例里卸载 |
+| 修改实例中行的配置 | `injects()` 不变时在原 fiber 上更新；改变时建立新 fiber，rutis 沿依赖重载下游 |
+| 禁用或删除 `instanced` 分组 | 关闭它的全部实例；之后 `create_instance` 被拒绝 |
+| 修改 `instanced` 分组的 `isolate`、`inject` | 按普通分组规则重建每个实例，沿用创建时的 `with` 值 |
+| `rename_module`、`reload` | 全部实例 dry-run 后一起应用；任一新失败则全部回到旧模块 |
+| volatile / overlay 层 | 同样作用于全部实例 |
 
-验收以普通插件行为为基准：
+- 编辑先在全部实例上 dry-run，任一失败则整次编辑回滚，不写可编辑层，旧代继续运行。
+- 新创建的实例按当前配置装载。
+- 是否在运行中修改、何时修改由应用决定。下游如何处理重载由各插件按自身合同处理。
 
-- 两个宿主各加载一份插件，构造和服务访问互相独立，全局服务仍共享。
-- 展开后的插件与直接加载的插件具有一致的启动、更新、失败、停止及重启行为。
-- 修改配置行作用于全部展开结果；卸载配置行清理全部结果。
-- 关闭一个宿主只清理其插件；卸载 loader 清理全部受管插件。
-- Rust、Node、Python 的实例服务映射一致，Node 原生对象和子插件行为保留。
-- 重载后旧对象和旧清理动作不会作用于新的插件。
+## 6. 管理与诊断
 
-实现依据：[运行表](../crates/rutis-loader/src/loader/mod.rs#L228)、[装载与清理](../crates/rutis-loader/src/loader/reconcile.rs#L64)、[更新流程](../crates/rutis-loader/src/loader/commit.rs#L85)、[Resolver](../crates/rutis-loader/src/resolver.rs#L15)、[实例服务键](../crates/rutis/src/key.rs#L166)、[跨语言加载](../crates/rutis-bridge/src/runtime/process.rs#L570)。
+| 操作 | 对行 id | 对实例（`PluginId`） |
+| --- | --- | --- |
+| `update`、`set_disabled`、`set_inject`、`set_isolate`、`rename_module`、`move_to`、`remove`、`reload` | 按 §5 作用于全部实例 | — |
+| `restart` | 重启该行的全部副本 | `restart_instance`：只重启这一个 |
+| `get` | 行条目 | — |
+| `locate(plugin)` / `row(instance)` | — | 返回所属行 id |
 
-状态：设计提案，待实现与验证。
+- `entries()` 按树序列出行；在实例里的行，后面跟着它在每个实例中的条目。`instanced` 分组即使没有实例也可见。
+- `EntryInfo` 新增 `instance: Option<InstanceInfo>`，包含所在实例的 `PluginId` 与实例链。
+- `LoaderChanged` 新增 `InstanceCreated`、`InstanceRemoved`；指向行的事件带实例信息。
+- 实例中的插件 `dispose_self`：只停这一份，记录为 `Stopped`，不写配置；`restart_instance`、对该行的修改或实例重建会让它重新启动。不在实例中的行，`dispose_self` 不变。
+
+## 7. 以 dim-agent 为例
+
+| dim-agent 现状 | 使用 loader 后 |
+| --- | --- |
+| `SessionScopePlugin` 用自己的 `ctx.instance()` 提供 Session 服务 | `session` 分组里的 `session-scope` 行；用 `build.instance("session")` 提供 |
+| `session_plugin(\|scope: &SessionScope\| P)`，在 SessionScope Active 后 `install` | `session` 分组里的行；工厂用 `build.instance("session")`；靠 `injects` 等 `session-scope` 就绪 |
+| `timeline_plugin(\|scope: &BranchScope\| P)` | `branch` 分组里的行；工厂用 `build.instance("session")`、`build.instance("branch")` |
+| `ctx.plugin(SessionScopePlugin(assembly))` 后 `wait_active` | `create_instance(&ctx, "session").with(assembly)`，按 `report` 判断，再照旧 `validate` |
+| `TimelineFactory::build` 中建 BranchScope 并 `wait_active` | `create_instance(ctx, "branch").with(branch_assembly)` |
+| 关闭：`FiberView::shutdown()` | 不变 |
+| 能力集合在发布前固定 | 由应用决定是否在运行中修改配置 |
+
+## 8. 不在范围
+
+- **实例内的跨语言插件与按名字的实例服务**（#159）：第二期，在本设计的实例链上解析名字。
+- **只对某个实例生效的覆盖**（#158 需求 8）：overlay 仍是全局的。
+- **Windows**：见 #160。
+
+## 9. 验收
+
+- 一份配置同时管理全局行与两层 `instanced` 分组；创建、关闭、再创建后运行态与配置一致。
+- 两个实例里的同名插件按各自实例键提供和读取服务，互不可见；内层实例的插件能读取外层实例的服务；同一实例内的插件靠 `injects` 等待彼此。
+- 在实例内的任意受管插件中以其 ctx 调用 `create_instance` 能找到正确的父实例；配置父级不匹配时报错。
+- `report` 正确报告 `Active`、`Waiting`、`Failed`。
+- 新增、删除、修改、`reload` 实例中的行立即作用于全部实例；`injects()` 改变时下游随之重载；任一实例 dry-run 失败时整次编辑回滚。
+- 修改 `instanced` 分组的 `isolate` / `inject` 时实例重建，`with` 值保留。
+- 实例中的插件 `dispose_self` 只停这一份，可恢复；配置不变。
+- 关闭实例后，其子树、记账与诊断条目全部清除；多轮创建与关闭不增长。
+- 用存下来的配置在新 loader 里 reconcile 并重新创建实例，得到相同运行态。
+
+## 10. 与当前实现（`2d577a5`）的关系
+
+当前实现基于"宿主登记挂载点、模板行按类别展开"，与本设计的模型不同，需要改写：
+
+| 本设计 | 当前实现 |
+| --- | --- |
+| `instanced` 分组 | `mount: <类别>` |
+| `create_instance(&ctx, group)`，实例建在配置树的位置 | `register_mount(kind, ctx)`，装进宿主提供的 ctx |
+| 工厂用 `Build` 取实例链与业务值 | 编码进运行名称；`Builtins` 丢弃挂载信息 |
+| 不改写 `injects()`，不改内核 | `mapped_key` 改写门控键；`Ctx::scope_for` 改为 `pub` |
+| 跨语言放第二期 | 已实现 `names` 映射与 `ServiceScope` |
+
+可复用的部分：按全部展开项 dry-run 与回滚、宿主关闭时只更新记账的清理逻辑、登记代次防止旧清理误伤。
+
+实现依据：[运行表](../crates/rutis-loader/src/loader/mod.rs#L228)、[装载与清理](../crates/rutis-loader/src/loader/reconcile.rs#L64)、[更新流程](../crates/rutis-loader/src/loader/commit.rs#L85)、[分组](../crates/rutis-loader/src/loader/plugins.rs)、[Resolver](../crates/rutis-loader/src/resolver.rs#L15)、[实例服务键](../crates/rutis/src/key.rs#L166)。
+
+状态：设计提案；当前实现需按 §10 改写。
