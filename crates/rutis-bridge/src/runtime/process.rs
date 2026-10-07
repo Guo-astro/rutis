@@ -577,53 +577,10 @@ impl Process {
         exports: &serde_json::Map<String, Value>,
         observer: Arc<dyn ServiceEvents>,
     ) -> Result<(), Error> {
-        self.load_row_mapped(
-            key,
-            entry,
-            config,
-            isolate,
-            inject,
-            exports,
-            &Default::default(),
-            observer,
-        )
-        .await
-    }
-
-    /// Load a row with plugin-local service names mapped to shared wire names.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn load_row_mapped(
-        &self,
-        key: &str,
-        entry: &Path,
-        config: Value,
-        isolate: &[(String, String)],
-        inject: &[String],
-        exports: &serde_json::Map<String, Value>,
-        mapping: &std::collections::BTreeMap<String, String>,
-        observer: Arc<dyn ServiceEvents>,
-    ) -> Result<(), Error> {
-        if !mapping.is_empty() {
-            self.require("rows.names")?;
-        }
-        if mapping
-            .iter()
-            .any(|(local, actual)| local.is_empty() || actual.is_empty() || actual.contains('#'))
-        {
-            return Err(Error::Value("invalid service name mapping".into()));
-        }
         if !exports.is_empty() {
             self.require("rows.v2")?;
         }
-        let names: Vec<String> = exports
-            .keys()
-            .map(|name| mapping.get(name).unwrap_or(name).clone())
-            .collect();
-        if names.iter().collect::<std::collections::HashSet<_>>().len() != names.len() {
-            return Err(Error::Value(
-                "exported service names must be distinct".into(),
-            ));
-        }
+        let names: Vec<String> = exports.keys().cloned().collect();
         {
             // Registered before loading: the row's services may appear
             // while it starts.
@@ -640,7 +597,7 @@ impl Process {
             .call_async(
                 "",
                 "rows.load",
-                json!([key, entry, config, isolate, inject, exports, mapping]),
+                json!([key, entry, config, isolate, inject, exports]),
             )
             .await;
         if loaded.is_err() {

@@ -45,9 +45,7 @@ mod services;
 pub use channel::{Channel, ConnectError, PeerId};
 pub use compose::{Features, PeerHandle, PeerPlugin};
 pub use events::{node_event, EventsPlugin, NodeEvent};
-pub use host::{
-    Described, HostPlugin, Installed, PluginCatalog, ServiceKeys, ServiceNames, StaticCatalog,
-};
+pub use host::{Described, HostPlugin, Installed, PluginCatalog, ServiceKeys, StaticCatalog};
 pub use identity::{
     fingerprint, identity_key, Credential, Identity, IdentityPlugin, Presented, StaticIdentity,
 };

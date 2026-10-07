@@ -93,56 +93,20 @@ impl PluginCatalog for StaticCatalog {
 
 /// A catalog's factory as a factory a fiber owns, with the row's injected
 /// services added to its own dependencies.
-/// Service name mapping supplied with a hosted plugin load.
-#[derive(Clone, Default)]
-pub struct ServiceNames(pub std::collections::BTreeMap<String, String>);
-
 struct Shared {
     factory: Arc<dyn PluginFactory<Json>>,
     injects: Vec<TypeKey>,
-    names: ServiceNames,
-}
-
-struct MappedPlugin {
-    plugin: Box<dyn Plugin>,
-    names: ServiceNames,
-}
-
-impl Plugin for MappedPlugin {
-    fn name(&self) -> &str {
-        self.plugin.name()
-    }
-    fn injects(&self) -> &[TypeKey] {
-        self.plugin.injects()
-    }
-    fn validate(&self) -> Result<(), CordisError> {
-        self.plugin.validate()
-    }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            ctx.provide(self.names.clone())?;
-            self.plugin.apply(ctx).await
-        })
-    }
 }
 
 impl Shared {
-    fn new(
-        factory: Arc<dyn PluginFactory<Json>>,
-        extra: Vec<TypeKey>,
-        names: ServiceNames,
-    ) -> Self {
+    fn new(factory: Arc<dyn PluginFactory<Json>>, extra: Vec<TypeKey>) -> Self {
         let mut injects = factory.injects().to_vec();
         for key in extra {
             if !injects.contains(&key) {
                 injects.push(key);
             }
         }
-        Self {
-            factory,
-            injects,
-            names,
-        }
+        Self { factory, injects }
     }
 }
 
@@ -157,15 +121,7 @@ impl PluginFactory<Json> for Shared {
         self.factory.validate_config(config)
     }
     fn build(&self, config: &Json) -> Result<Box<dyn Plugin>, CordisError> {
-        let plugin = self.factory.build(config)?;
-        if self.names.0.is_empty() {
-            Ok(plugin)
-        } else {
-            Ok(Box::new(MappedPlugin {
-                plugin,
-                names: self.names.clone(),
-            }))
-        }
+        self.factory.build(config)
     }
 }
 
@@ -267,23 +223,6 @@ impl Host {
             None | Some(Json::Null) => Vec::new(),
             Some(inject) => crate::session::decode(inject)?,
         };
-        let names: std::collections::BTreeMap<String, String> = match args.next() {
-            None | Some(Json::Null) => Default::default(),
-            Some(names) => crate::session::decode(names)?,
-        };
-        if names
-            .iter()
-            .any(|(local, actual)| local.is_empty() || actual.is_empty() || actual.contains('#'))
-        {
-            return Err(Error::Value("invalid service name mapping".into()));
-        }
-        for local in names.keys() {
-            if (self.services)(local).is_none() {
-                return Err(Error::Value(format!(
-                    "{local} is not a service {name} can use here"
-                )));
-            }
-        }
         self.installed(&name)?;
         let key_of = |service: &str| {
             (self.services)(service).ok_or_else(|| {
@@ -293,17 +232,8 @@ impl Host {
         // The row's scope: each isolated service under its label, kept
         // apart from other peers' labels.
         let mut scope = self.ctx.clone();
-        if !names.is_empty() {
-            scope = scope.isolate(
-                TypeKey::of::<ServiceNames>(),
-                &format!("peer:{}/row:{key}", self.peer),
-            );
-        }
         for (service, label) in &isolate {
             scope = scope.isolate(key_of(service)?, &format!("peer:{}/{label}", self.peer));
-        }
-        for (local, actual) in &names {
-            scope = scope.isolate(key_of(local)?, actual);
         }
         let extra = inject
             .iter()
@@ -321,10 +251,7 @@ impl Host {
                 if loaded.contains_key(&key) {
                     return Err(Error::Value(format!("{key} is already loaded")));
                 }
-                let view = scope.plugin_with(
-                    Shared::new(found.factory, extra, ServiceNames(names)),
-                    config,
-                );
+                let view = scope.plugin_with(Shared::new(found.factory, extra), config);
                 loaded.insert(key, view.clone());
                 view
             };

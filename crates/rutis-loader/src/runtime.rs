@@ -40,7 +40,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Listener, Plugin, PluginFactory, TypeKey};
-use rutis_bridge::runtime::{HostLease, Process, Projection, Runtime, RuntimeHandle};
+use rutis_bridge::runtime::{
+    row_projection, HostLease, Process, Projection, Runtime, RuntimeHandle,
+};
 use rutis_bridge::session::{host_key, HostDispatch};
 use serde_json::{json, Map, Value};
 
@@ -213,8 +215,7 @@ impl RuntimeResolver {
 impl Resolver for RuntimeResolver {
     fn resolve<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<Resolved>, LoaderError>> {
         Box::pin(async move {
-            let module = crate::resolver::module_name(name);
-            let Some(entry) = self.naming.entry(&self.runtime, &module) else {
+            let Some(entry) = self.naming.entry(&self.runtime, name) else {
                 return Err(LoaderError::NotFound {
                     name: name.to_owned(),
                 });
@@ -443,26 +444,8 @@ impl JsRow {
         // The shared services the plugin injects, registered in Cordis for
         // as long as the row runs. One served by a row of this same process
         // is already there natively.
-        let loader = ctx.get::<Loader>();
-        let row = loader
-            .as_ref()
-            .and_then(|loader| loader.row(ctx.instance()));
-        let names = row
-            .as_ref()
-            .map(|row| row.names.clone())
-            .or_else(|| {
-                ctx.get::<rutis_bridge::ServiceNames>()
-                    .map(|names| names.0.clone())
-            })
-            .unwrap_or_default();
-        let service_key = |name: &str| {
-            loader
-                .as_ref()
-                .and_then(|loader| loader.row_service_key(ctx.instance(), name))
-                .unwrap_or_else(|| host_key(name))
-        };
         for name in &self.gated {
-            let dispatch = ctx.require_as::<dyn HostDispatch>(service_key(name))?;
+            let dispatch = ctx.require_as::<dyn HostDispatch>(host_key(name))?;
             if dispatch
                 .origin()
                 .is_some_and(|origin| origin == process.connection().tag())
@@ -470,11 +453,7 @@ impl JsRow {
                 continue;
             }
             let lease = process
-                .lease_host(
-                    names.get(name).map(String::as_str).unwrap_or(name),
-                    dispatch,
-                    runtime.host_methods(name),
-                )
+                .lease_host(name, dispatch, runtime.host_methods(name))
                 .await
                 .map_err(failed)?;
             leases.push(lease);
@@ -488,31 +467,16 @@ impl JsRow {
         let (isolate, inject) = row.map(|row| (row.isolate, row.inject)).unwrap_or_default();
         // The row's services are published from this fiber, so they go when
         // it does.
-        let projection = Projection::new();
-        for (name, methods) in &self.provides {
-            let methods = methods.clone();
-            projection.service_keyed::<dyn HostDispatch>(
-                names.get(name).unwrap_or(name),
-                service_key(name),
-                move |process, handle| {
-                    Arc::new(rutis_bridge::runtime::RowService::new(
-                        process,
-                        handle,
-                        methods.clone(),
-                    ))
-                },
-            );
-        }
+        let projection = row_projection(&self.provides);
         projection.attach(ctx, process.clone())?;
         if let Err(error) = process
-            .load_row_mapped(
+            .load_row_exporting(
                 &key,
                 &self.entry,
                 self.config.clone(),
                 &isolate,
                 &inject,
                 &self.provides,
-                &names,
                 projection.clone(),
             )
             .await

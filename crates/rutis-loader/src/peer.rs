@@ -89,8 +89,7 @@ impl PeerResolver {
 impl Resolver for PeerResolver {
     fn resolve<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<Resolved>, LoaderError>> {
         Box::pin(async move {
-            let module = crate::resolver::module_name(name);
-            let Some((peer_id, plugin)) = Self::split(&module) else {
+            let Some((peer_id, plugin)) = Self::split(name) else {
                 return Err(LoaderError::NotFound {
                     name: name.to_owned(),
                 });
@@ -318,15 +317,13 @@ impl Plugin for PeerRow {
             let row = ctx
                 .get::<Loader>()
                 .and_then(|loader| loader.row(ctx.instance()));
-            let (isolate, inject, names) = row
-                .map(|row| (row.isolate, row.inject, row.names))
-                .unwrap_or_default();
+            let (isolate, inject) = row.map(|row| (row.isolate, row.inject)).unwrap_or_default();
             let isolate: Vec<(String, String)> = isolate;
             let loaded = session
                 .invoke_async(
                     "",
                     "plugins.load",
-                    json!([key, self.plugin, self.config, isolate, inject, names]).into(),
+                    json!([key, self.plugin, self.config, isolate, inject]).into(),
                 )
                 .await
                 .map_err(failed)?;

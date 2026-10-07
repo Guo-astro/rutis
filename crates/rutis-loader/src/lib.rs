@@ -18,7 +18,7 @@ mod resolver;
 mod runtime;
 mod volatile;
 
-pub use catalog::{ExprScope, Expressions, ServiceCatalog, ServiceScope};
+pub use catalog::{ExprScope, Expressions, ServiceCatalog};
 pub use edit::{apply_edit, Edit};
 pub use error::{Failure, LoaderError, PersistError};
 pub use loader::{

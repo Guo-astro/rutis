@@ -570,48 +570,6 @@ async fn a_hosted_plugin_keeps_its_rows_isolate_and_inject() {
     let _ = tokio::time::timeout(Duration::from_secs(5), pending).await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn hosted_service_names_isolate_and_unload_independently() {
-    let (main, mac, _link) = linked().await;
-    let starts = Arc::new(AtomicU64::new(0));
-    let catalog =
-        StaticCatalog::new().with("provider", Described::default(), Provider(starts.clone()));
-    mac.plugin(HostPlugin::new(id("main"), Arc::new(catalog)));
-    let peer = main.get_as::<Peer>(peer_key(&id("mac"))).unwrap();
-    let mut offers = peer.offers();
-    eventually(|| offers.borrow_and_update().epoch("plugins"), "the host").await;
-    let session = peer.connection();
-    for key in ["a", "b"] {
-        settle(
-            session
-                .invoke_async(
-                    "",
-                    "plugins.load",
-                    json!([key, "provider", {}, [], [], {"svc": key}]).into(),
-                )
-                .await
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    }
-    let a = mac.isolate(host_key("svc"), "a");
-    let b = mac.isolate(host_key("svc"), "b");
-    assert!(a.get_as::<dyn HostDispatch>(host_key("svc")).is_some());
-    assert!(b.get_as::<dyn HostDispatch>(host_key("svc")).is_some());
-    assert!(mac.get_as::<dyn HostDispatch>(host_key("svc")).is_none());
-    settle(
-        session
-            .invoke_async("", "plugins.unload", json!(["a"]).into())
-            .await
-            .unwrap(),
-    )
-    .await
-    .unwrap();
-    assert!(a.get_as::<dyn HostDispatch>(host_key("svc")).is_none());
-    assert!(b.get_as::<dyn HostDispatch>(host_key("svc")).is_some());
-}
-
 /// A service name the host cannot map refuses the load: it is not dropped.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_hosted_plugin_with_an_unknown_service_is_refused() {

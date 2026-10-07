@@ -76,8 +76,6 @@ pub struct RowInfo {
     pub isolate: Vec<(String, String)>,
     /// `inject`: extra service names the row waits for.
     pub inject: Vec<String>,
-    /// Local service names mapped to their instance wire names.
-    pub names: BTreeMap<String, String>,
 }
 
 /// A new row for [`Loader::create`].
@@ -237,7 +235,6 @@ struct State {
     version: Version,
     pending: Vec<Edit>,
     desired: Desired,
-    mounts: HashMap<String, (String, Ctx, u64)>,
     resolved: HashMap<String, Result<Arc<Resolved>, LoaderError>>,
     /// Running group contexts; `None` is the loader's own (the root).
     groups: HashMap<Option<String>, Group>,

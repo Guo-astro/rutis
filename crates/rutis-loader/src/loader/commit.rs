@@ -27,74 +27,59 @@ impl Inner {
         id: &str,
         resolved: Option<Arc<crate::resolver::Resolved>>,
     ) -> Result<(), LoaderError> {
-        let (desired, bases) = {
+        let (desired, base) = {
             let state = self.state.lock().unwrap();
             let root = state.groups.get(&None).map(|g| g.ctx.clone());
-            let desired = self.build_desired(layers, root.as_ref(), &state);
-            let bases: std::collections::HashMap<_, _> = desired
-                .rows
-                .iter()
-                .map(|row| {
-                    let parent = state
-                        .groups
-                        .get(&row.parent)
-                        .map(|g| g.ctx.clone())
-                        .or(root.clone());
-                    (row.id.clone(), parent)
-                })
-                .collect();
-            (desired, bases)
+            let desired = self.build_desired(layers, root.as_ref());
+            let parent = desired
+                .row(id)
+                .and_then(|row| state.groups.get(&row.parent))
+                .map(|g| g.ctx.clone());
+            (desired, parent.or(root))
         };
-        for row in desired
-            .rows
-            .iter()
-            .filter(|row| row.id == id || row.source == id)
-        {
-            let base = bases.get(&row.id).cloned().flatten();
-            if let Some(invalid) = &row.invalid {
-                return Err(invalid.clone());
-            }
-            if let Err(e) = &row.disabled {
-                return Err(e.clone());
-            }
-            if row.group {
-                row.scope.as_ref().map_err(Clone::clone)?;
-            }
-            if row.group || !desired.wanted(row) {
-                continue;
-            }
-            let name = row.name.clone().unwrap_or_default();
-            let resolved = match &resolved {
-                Some(resolved) => resolved.clone(),
-                None => self.resolver.resolve(&name).await?,
-            };
-            // Evaluate where the plugin would run: its group, with its isolates.
-            let scope = if resolved.foreign_scope {
-                super::desired::RowScope::default()
-            } else {
-                row.scope.clone()?
-            };
-            let ctx = base.map(|ctx| scope.context(&ctx));
-            let config = self.row_eval(row).value(&row.config, ctx.as_ref())?;
-            let checked = catch_unwind(AssertUnwindSafe(|| {
-                resolved.factory.validate_config(&config)?;
-                resolved.factory.build(&config)?.validate()
-            }));
-            let rejected = |error: CordisError| LoaderError::Rejected {
-                id: id.to_owned(),
-                error: Arc::new(error),
-            };
-            match checked {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => return Err(rejected(error)),
-                Err(_) => {
-                    return Err(rejected(CordisError::PluginFailed(
-                        "panicked during the dry run".into(),
-                    )))
-                }
-            }
+        let Some(row) = desired.row(id) else {
+            return Ok(());
+        };
+        if let Some(invalid) = &row.invalid {
+            return Err(invalid.clone());
         }
-        Ok(())
+        if let Err(e) = &row.disabled {
+            return Err(e.clone());
+        }
+        if row.group {
+            row.scope.as_ref().map_err(Clone::clone)?;
+        }
+        if row.group || !desired.wanted(row) {
+            return Ok(());
+        }
+        let name = row.name.clone().unwrap_or_default();
+        let resolved = match resolved {
+            Some(resolved) => resolved,
+            None => self.resolver.resolve(&name).await?,
+        };
+        // Evaluate where the plugin would run: its group, with its isolates.
+        let scope = if resolved.foreign_scope {
+            super::desired::RowScope::default()
+        } else {
+            row.scope.clone()?
+        };
+        let ctx = base.map(|ctx| scope.context(&ctx));
+        let config = self.eval().value(&row.config, ctx.as_ref())?;
+        let checked = catch_unwind(AssertUnwindSafe(|| {
+            resolved.factory.validate_config(&config)?;
+            resolved.factory.build(&config)?.validate()
+        }));
+        let rejected = |error: CordisError| LoaderError::Rejected {
+            id: id.to_owned(),
+            error: Arc::new(error),
+        };
+        match checked {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(rejected(error)),
+            Err(_) => Err(rejected(CordisError::PluginFailed(
+                "panicked during the dry run".into(),
+            ))),
+        }
     }
 
     /// Apply one edit in memory: rewrite the editable layer, dry-run,

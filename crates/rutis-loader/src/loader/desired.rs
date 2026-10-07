@@ -19,8 +19,6 @@ pub(super) struct Desired {
 
 pub(super) struct Row {
     pub(super) id: String,
-    pub(super) source: String,
-    pub(super) catalog: Option<ServiceCatalog>,
     pub(super) parent: Option<String>,
     pub(super) value: Value,
     pub(super) name: Option<String>,
@@ -270,12 +268,6 @@ impl Desired {
             let scope = raw_scope.resolve(eval.catalog);
             desired.by_id.insert(id.clone(), desired.rows.len());
             desired.rows.push(Row {
-                source: value
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or(&id)
-                    .to_owned(),
-                catalog: None,
                 id,
                 parent: flat.parent,
                 value,
@@ -304,9 +296,7 @@ impl Desired {
         }
         match &row.parent {
             None => true,
-            Some(parent) => self
-                .row(parent)
-                .map_or(parent.starts_with("rutis-mount:"), |p| self.wanted(p)),
+            Some(parent) => self.row(parent).is_some_and(|p| self.wanted(p)),
         }
     }
 }
