@@ -5,6 +5,7 @@ Data-driven plugin management for [rutis](https://github.com/arcships/rutis): wh
 - `reconcile` converges the running plugins to the layers; imperative edits (`create`, `update`, `set_disabled`, `move_to`, `remove`, …) change the editable layer, wait for the tree to settle and roll back on failure; `Persist` saves edits.
 - `inject` / `isolate` name services through a `ServiceCatalog`; `{ "__jsExpr": … }` expressions are evaluated by `LoaderOptions::expressions`.
 - Volatile config fields change without a restart; a plugin can unload itself.
+- An `instanced` group runs once per instance the application creates (`create_instance(&ctx, "session")`, `remove_instance`); edits reach every instance, and factories registered with `Builtins::register_with` build instance keys from `Build::instance`.
 
 Plugin sources (`Resolver`):
 

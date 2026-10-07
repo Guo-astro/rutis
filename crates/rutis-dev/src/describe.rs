@@ -53,6 +53,7 @@ pub fn entry(e: &EntryInfo, dev: bool) -> Value {
         EntryStatus::Disabled => ("disabled", None, None),
         EntryStatus::Inactive => ("inactive", None, None),
         EntryStatus::Unresolved(error) => ("unresolved", None, Some(error.to_string())),
+        EntryStatus::Stopped => ("stopped", None, None),
         EntryStatus::Running(s) => (
             "running",
             Some(format!("{:?}", s.state)),
@@ -68,6 +69,7 @@ pub fn entry(e: &EntryInfo, dev: bool) -> Value {
         "error": error,
         "rejected": e.rejected.as_ref().map(|r| r.to_string()),
         "plugin": e.plugin.map(id),
+        "instance": e.instance.as_ref().map(|i| id(i.plugin)),
         "dev": dev,
         "meta": e.meta,
         "hasSchema": e.schema.is_some(),

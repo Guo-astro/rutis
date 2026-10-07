@@ -12,7 +12,7 @@ use crate::LoaderError;
 
 use super::{
     Editable, EntryInfo, Inner, Isolate, Loader, LoaderChanged, NewEntry, PendingEditDropped,
-    ReconcileReport, RowInfo,
+    ReconcileReport, RowInfo, Slot,
 };
 
 fn generate_id(taken: impl Fn(&str) -> bool) -> String {
@@ -148,20 +148,31 @@ impl Loader {
         self.inner.persist_queue(None).await
     }
 
-    /// Every row in tree order.
+    /// Every row in tree order. A row inside instanced groups is listed
+    /// itself, then once per instance it runs in
+    /// ([`EntryInfo::instance`]).
     pub fn entries(&self) -> Vec<EntryInfo> {
+        let state = self.inner.state.lock().unwrap();
+        let mut out = Vec::new();
+        for row in &state.desired.rows {
+            out.push(Inner::info(&state, row, None));
+            if state.desired.instanced_group(row).is_some() {
+                for scope in Inner::scopes(&state, row) {
+                    out.push(Inner::info(&state, row, scope));
+                }
+            }
+        }
+        out
+    }
+
+    /// The row `id` itself (for a row inside instanced groups, without a
+    /// copy's state; see [`Loader::entries`]).
+    pub fn get(&self, id: &str) -> Option<EntryInfo> {
         let state = self.inner.state.lock().unwrap();
         state
             .desired
-            .rows
-            .iter()
-            .map(|row| Inner::info(&state, row))
-            .collect()
-    }
-
-    pub fn get(&self, id: &str) -> Option<EntryInfo> {
-        let state = self.inner.state.lock().unwrap();
-        state.desired.row(id).map(|row| Inner::info(&state, row))
+            .row(id)
+            .map(|row| Inner::info(&state, row, None))
     }
 
     /// The row whose fiber has `instance` (the plugin's `ctx.instance()`).
@@ -169,13 +180,13 @@ impl Loader {
     /// first load runs.
     pub fn row(&self, instance: rutis::InstanceId) -> Option<RowInfo> {
         let state = self.inner.state.lock().unwrap();
-        let (id, _) = state
+        let (slot, _) = state
             .running
             .iter()
             .find(|(_, r)| r.view.instance() == instance)?;
-        let row = state.desired.row(id)?;
+        let row = state.desired.row(&slot.row)?;
         Some(RowInfo {
-            id: id.clone(),
+            id: slot.row.clone(),
             isolate: row.raw_scope.isolate.clone(),
             inject: row.raw_scope.inject.clone(),
         })
@@ -188,7 +199,7 @@ impl Loader {
             let records: HashMap<PluginId, String> = state
                 .running
                 .iter()
-                .map(|(id, r)| (r.view.id, id.clone()))
+                .map(|(slot, r)| (r.view.id, slot.row.clone()))
                 .collect();
             (records, state.groups.get(&None).map(|g| g.ctx.clone()))
         };
@@ -231,14 +242,14 @@ impl Loader {
     pub fn evaluated(&self, id: &str) -> Option<Result<Value, LoaderError>> {
         let state = self.inner.state.lock().unwrap();
         let row = state.desired.row(id)?;
-        if let Some(running) = state.running.get(id) {
+        if let Some(running) = state.running.get(&Slot::global(id)) {
             if !running.group {
                 return Some(Ok(running.config.clone()));
             }
         }
         let base = state
             .groups
-            .get(&row.parent)
+            .get(&row.parent.clone().map(Slot::global))
             .or(state.groups.get(&None))
             .map(|g| match &row.scope {
                 Ok(scope) => scope.context(&g.ctx),
@@ -267,6 +278,9 @@ impl Loader {
         object.insert("name".into(), Value::String(entry.name));
         if entry.group {
             object.insert("group".into(), Value::Bool(true));
+        }
+        if entry.instanced {
+            object.insert("instanced".into(), Value::Bool(true));
         }
         if entry.disabled {
             object.insert("disabled".into(), Value::Bool(true));
@@ -301,7 +315,7 @@ impl Loader {
             .lock()
             .unwrap()
             .running
-            .get(&id)
+            .get(&Slot::global(&id))
             .map(|r| r.view.clone());
         Ok((id, view))
     }
@@ -481,26 +495,38 @@ impl Loader {
         Ok(report)
     }
 
-    /// Restart a row's fiber. Changes no layer and persists nothing.
+    /// Restart a row's fiber, or every copy of a row inside instances.
+    /// Changes no layer and persists nothing.
     pub async fn restart(&self, id: &str) -> Result<(), LoaderError> {
-        let view = self
-            .inner
-            .state
-            .lock()
-            .unwrap()
-            .running
-            .get(id)
-            .map(|r| r.view.clone())
-            .ok_or_else(|| LoaderError::UnknownEntry(id.to_owned()))?;
-        view.restart().await.map_err(|error| LoaderError::Rejected {
-            id: id.to_owned(),
-            error,
-        })
+        let views: Vec<_> = {
+            let state = self.inner.state.lock().unwrap();
+            let mut views: Vec<_> = state
+                .running
+                .iter()
+                .filter(|(slot, _)| slot.row == id)
+                .map(|(slot, r)| (slot.clone(), r.view.clone()))
+                .collect();
+            views.sort_by(|a, b| a.0.cmp(&b.0));
+            views.into_iter().map(|(_, view)| view).collect()
+        };
+        if views.is_empty() {
+            return Err(LoaderError::UnknownEntry(id.to_owned()));
+        }
+        let mut first_error = None;
+        for view in views {
+            if let Err(error) = view.restart().await {
+                first_error.get_or_insert(LoaderError::Rejected {
+                    id: id.to_owned(),
+                    error,
+                });
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Wait until no row is in transition.
     pub async fn settled(&self) {
-        self.inner.settle().await
+        self.inner.settle(None).await
     }
 }
 

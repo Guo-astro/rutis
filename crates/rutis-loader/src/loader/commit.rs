@@ -9,9 +9,10 @@ use rutis::CordisError;
 use crate::edit::{apply_edit, Edit};
 use crate::error::Failure;
 use crate::patch::Layer;
+use crate::resolver::Build;
 use crate::{LoaderError, PersistError};
 
-use super::{Inner, LoaderChanged, PendingEditDropped};
+use super::{Inner, LoaderChanged, PendingEditDropped, Slot};
 
 /// How many times a version conflict is resolved by replaying the pending
 /// queue before giving up with [`LoaderError::Conflict`].
@@ -19,23 +20,61 @@ const CONFLICT_RETRIES: usize = 3;
 
 impl Inner {
     /// Check a row would start: resolve, validate the config, build and
-    /// validate the instance. Nothing is spawned.
-    /// With `resolved`, check that module instead of resolving the name.
+    /// validate the instance, for every copy (each instance it runs in).
+    /// Nothing is spawned. With `resolved`, check that module instead of
+    /// resolving the name.
     pub(super) async fn dry_run(
         &self,
         layers: &[Layer],
         id: &str,
         resolved: Option<Arc<crate::resolver::Resolved>>,
     ) -> Result<(), LoaderError> {
-        let (desired, base) = {
+        // Where each copy would run: its group context, and the instances
+        // enclosing it for factories that depend on them.
+        let (desired, targets) = {
             let state = self.state.lock().unwrap();
             let root = state.groups.get(&None).map(|g| g.ctx.clone());
             let desired = self.build_desired(layers, root.as_ref());
-            let parent = desired
-                .row(id)
-                .and_then(|row| state.groups.get(&row.parent))
-                .map(|g| g.ctx.clone());
-            (desired, parent.or(root))
+            let mut targets: Vec<(Option<u64>, Option<rutis::Ctx>, Build)> = Vec::new();
+            if let Some(row) = desired.row(id) {
+                match desired.instanced_group(row) {
+                    None => {
+                        let parent = row.parent.clone().map(Slot::global);
+                        let base = state
+                            .groups
+                            .get(&parent)
+                            .map(|g| g.ctx.clone())
+                            .or(root.clone());
+                        targets.push((None, base, Self::build_for(&state, None)));
+                    }
+                    Some(group) => {
+                        let mut numbers: Vec<u64> = state
+                            .instances
+                            .iter()
+                            .filter(|(_, instance)| instance.group == group.id)
+                            .map(|(n, _)| *n)
+                            .collect();
+                        numbers.sort_unstable();
+                        for number in numbers {
+                            let parent = if row.id == group.id {
+                                state.instances[&number].parent.clone()
+                            } else {
+                                row.parent.clone().map(|row| Slot {
+                                    row,
+                                    scope: Some(number),
+                                })
+                            };
+                            let base = state.groups.get(&parent).map(|g| g.ctx.clone());
+                            targets.push((
+                                Some(number),
+                                base,
+                                Self::build_for(&state, Some(number)),
+                            ));
+                        }
+                    }
+                }
+            }
+            (desired, targets)
         };
         let Some(row) = desired.row(id) else {
             return Ok(());
@@ -63,23 +102,32 @@ impl Inner {
         } else {
             row.scope.clone()?
         };
-        let ctx = base.map(|ctx| scope.context(&ctx));
-        let config = self.eval().value(&row.config, ctx.as_ref())?;
-        let checked = catch_unwind(AssertUnwindSafe(|| {
-            resolved.factory.validate_config(&config)?;
-            resolved.factory.build(&config)?.validate()
-        }));
         let rejected = |error: CordisError| LoaderError::Rejected {
             id: id.to_owned(),
             error: Arc::new(error),
         };
-        match checked {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(rejected(error)),
-            Err(_) => Err(rejected(CordisError::PluginFailed(
-                "panicked during the dry run".into(),
-            ))),
+        for (_, base, build) in targets {
+            let ctx = base.map(|ctx| scope.context(&ctx));
+            let config = self.eval().value(&row.config, ctx.as_ref())?;
+            let checked = catch_unwind(AssertUnwindSafe(|| {
+                let factory = match &resolved.scoped {
+                    Some(scoped) => scoped(&build)?,
+                    None => resolved.factory.clone(),
+                };
+                factory.validate_config(&config)?;
+                factory.build(&config)?.validate()
+            }));
+            match checked {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => return Err(rejected(error)),
+                Err(_) => {
+                    return Err(rejected(CordisError::PluginFailed(
+                        "panicked during the dry run".into(),
+                    )))
+                }
+            }
         }
+        Ok(())
     }
 
     /// Apply one edit in memory: rewrite the editable layer, dry-run,
@@ -109,11 +157,18 @@ impl Inner {
                 self.dry_run(&next_composed, id, None).await?;
             }
         }
-        // A rename changes the module: resolve it afresh.
-        if let Edit::Rename { name, .. } = edit {
-            self.state.lock().unwrap().resolved.remove(name);
+        {
+            let mut state = self.state.lock().unwrap();
+            // A rename changes the module: resolve it afresh.
+            if let Edit::Rename { name, .. } = edit {
+                state.resolved.remove(name);
+            }
+            // A change to a row starts its stopped copies again.
+            if let Some(id) = edit.id() {
+                state.stopped.retain(|slot, _| slot.row != id);
+            }
+            state.layers = next;
         }
-        self.state.lock().unwrap().layers = next;
         let report = self.reconcile_inner().await;
         if report.new_failures.is_empty() {
             return Ok(());

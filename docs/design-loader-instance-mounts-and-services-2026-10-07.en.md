@@ -77,16 +77,16 @@ loader.remove_instance(b1.plugin).await?;
   - The loader only walks relationships it recorded and does not rely on a kernel ancestry query.
 - The target must be an `instanced` group that is enabled and valid; otherwise the call fails.
 - `.with(value)` attaches a business value (any `Send + Sync` type) for the factories of plugins in the instance (§4).
-- It waits until the instance's child rows settle, then returns `Instance { plugin, view, report }`; `report` lists each child row's result:
+- It waits until the instance's child rows settle, then returns `Instance { plugin, view, report }`; `report` lists `(row id, InstanceResult)` for each row inside the instance in tree order (nested `instanced` groups excluded):
 
 | Result | Meaning |
 | --- | --- |
 | `Active` | Running |
 | `Waiting` | Waiting for services it depends on |
 | `Failed(error)` | Resolution, validation, expression evaluation, or `apply` failed |
-| `Skipped` | The child row is disabled |
+| `Skipped` | The child row, or a group above it inside the instance, is disabled |
 
-- Child failures do not fail creation; the caller decides from `report` whether the instance is usable.
+- Child failures do not fail creation; the caller decides from `report` whether the instance is usable. If the instance's group fiber itself fails, the call returns an error and the instance is removed.
 - It can be called and awaited from a plugin's own `apply`.
 
 ### 3.2 Closing Instances
@@ -101,7 +101,7 @@ loader.remove_instance(b1.plugin).await?;
 Plugins inside an instance often need to know which instance they are in, to build instance keys.
 
 ```rust
-builtins.register_with("dim/loop", |build: &Build| {
+builtins.register_with::<LoopConfig, _, _>("dim/loop", |build: &Build| {
     let scope = BranchScope {
         session: SessionScope { instance: build.instance("session")? },
         instance: build.instance("branch")?,
@@ -112,10 +112,12 @@ builtins.register_with("dim/loop", |build: &Build| {
 
 - `Build` provides:
   - `instance(group_id)`: the `InstanceId` of that group's instance on the instance chain, which is that group fiber's `ctx.instance()`;
-  - `value::<T>()`: the nearest value of that type supplied with `with` along the instance chain.
+  - `value::<T>()`: the nearest value of that type supplied with `with` along the instance chain;
+  - `instances()`: the whole instance chain, innermost first.
 - Plugins in one instance are all inside that group fiber's subtree, so instance keys built from this `InstanceId` are visible to all of them. Plugins that provide instance services (such as `session-scope`) also use this id rather than their own fiber's `ctx.instance()`.
 - Plugins registered with plain `register` are unchanged and use the same factory in every instance.
-- A `Resolved` can carry a constructor that builds the factory from `Build`; the resolution cache stays keyed by module name and does not grow with instances.
+- A plugin registered with `register_with` cannot load outside any instance (the row is `Unresolved`).
+- `Resolved` gains `scoped: Option<ScopedFactory>`, which builds each copy's factory from `Build`; the resolution cache stays keyed by module name and does not grow with instances.
 - The loader does not rewrite the `injects()` a factory returns.
 
 ## 5. Dynamic Updates
@@ -147,8 +149,8 @@ A change to a configuration row acts on all of that row's copies:
 
 - `entries()` lists rows in tree order; a row inside instances is followed by its entry in each instance. `instanced` groups are visible even with no instances.
 - `EntryInfo` gains `instance: Option<InstanceInfo>`, with the containing instance's `PluginId` and instance chain.
-- `LoaderChanged` gains `InstanceCreated` and `InstanceRemoved`; events that refer to a row carry instance information.
-- A plugin inside an instance calling `dispose_self` stops only that copy, recorded as `Stopped`, without writing configuration; `restart_instance`, a change to that row, or a rebuild of the instance starts it again. `dispose_self` on rows outside instances is unchanged.
+- `LoaderChanged` gains `InstanceCreated { group, plugin }`, `InstanceRemoved { group, plugin }`, and `Stopped { id, instance, plugin }`.
+- A plugin inside an instance calling `dispose_self` stops only that copy: its status is `EntryStatus::Stopped`, `EntryInfo.plugin` keeps its last fiber, and no configuration is written; `restart_instance(plugin)`, a change to that row, or a rebuild of the instance starts it again. `dispose_self` on rows outside instances is unchanged.
 
 ## 7. Example: dim-agent
 
@@ -180,20 +182,17 @@ A change to a configuration row acts on all of that row's copies:
 - After an instance closes, its subtree, bookkeeping, and diagnostic entries are all removed; repeated creation and closing does not grow state.
 - Reconciling stored configuration in a new loader and creating instances again yields the same runtime state.
 
-## 10. Relationship to the Current Implementation (`2d577a5`)
+## 10. Implementation
 
-The current implementation is built on "hosts register mounts, template rows expand by kind", a different model from this design, and needs rewriting:
-
-| This design | Current implementation |
+| Location | Content |
 | --- | --- |
-| `instanced` groups | `mount: <kind>` |
-| `create_instance(&ctx, group)`, instances placed by the configuration tree | `register_mount(kind, ctx)`, loading into a host-supplied ctx |
-| Factories get the instance chain and business value from `Build` | Encoded into runtime names; `Builtins` discards mount information |
-| `injects()` not rewritten; no kernel change | `mapped_key` rewrites gating keys; `Ctx::scope_for` made `pub` |
-| Cross-language in a second phase | `names` mapping and `ServiceScope` implemented |
+| `crates/rutis-loader/src/loader/mod.rs` | Running records keyed by `Slot { row, scope }`: `scope` is the enclosing instance's number, `None` outside instances |
+| `crates/rutis-loader/src/loader/instances.rs` | `create_instance`, `remove_instance`, `restart_instance`, and `report` |
+| `crates/rutis-loader/src/loader/reconcile.rs` | Loading and updating copies, rebuilding instances, pruning instances that no longer stand, the three cases of `dispose_self` |
+| `crates/rutis-loader/src/loader/commit.rs` | Edits dry-run on every copy |
+| `crates/rutis-loader/src/resolver.rs` | `Build`, `ScopedFactory`, `Builtins::register_with` |
+| `crates/rutis-loader/tests/instances.rs` | Acceptance in §9 |
 
-Reusable parts: dry run and rollback across all expansions, cleanup that only updates bookkeeping when a host closes, and registration generations that keep stale cleanups from affecting new registrations.
+Implementation references: [runtime table](../crates/rutis-loader/src/loader/mod.rs), [instances](../crates/rutis-loader/src/loader/instances.rs), [loading and cleanup](../crates/rutis-loader/src/loader/reconcile.rs), [update flow](../crates/rutis-loader/src/loader/commit.rs), [Resolver](../crates/rutis-loader/src/resolver.rs), [instance service keys](../crates/rutis/src/key.rs#L166).
 
-Implementation references: [runtime table](../crates/rutis-loader/src/loader/mod.rs#L228), [loading and cleanup](../crates/rutis-loader/src/loader/reconcile.rs#L64), [update flow](../crates/rutis-loader/src/loader/commit.rs#L85), [groups](../crates/rutis-loader/src/loader/plugins.rs), [Resolver](../crates/rutis-loader/src/resolver.rs#L15), [instance service keys](../crates/rutis/src/key.rs#L166).
-
-Status: design proposal; the current implementation needs rewriting per §10.
+Status: implemented (`rutis-loader`); for cross-language, see §8.

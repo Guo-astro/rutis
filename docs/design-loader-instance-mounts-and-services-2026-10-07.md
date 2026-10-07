@@ -77,16 +77,16 @@ loader.remove_instance(b1.plugin).await?;
   - loader 只沿自己记录的关系查找，不依赖内核的祖先查询。
 - 目标必须是 `instanced` 分组，且未禁用、有效；否则报错。
 - `.with(value)` 附带一个业务值（任意 `Send + Sync` 类型），交给实例内插件的工厂（§4）。
-- 返回前等待：实例的子行稳定。返回 `Instance { plugin, view, report }`，`report` 列出每个子行的结果：
+- 返回前等待：实例的子行稳定。返回 `Instance { plugin, view, report }`，`report` 按树序列出实例里每一行（不含嵌套的 `instanced` 分组）的 `(行 id, InstanceResult)`：
 
 | 结果 | 含义 |
 | --- | --- |
 | `Active` | 已运行 |
 | `Waiting` | 在等依赖的服务 |
 | `Failed(error)` | 解析、校验、表达式求值或 `apply` 失败 |
-| `Skipped` | 子行被禁用 |
+| `Skipped` | 子行或它在实例内的上级分组被禁用 |
 
-- 子行失败不影响实例创建，实例是否可用由调用方根据 `report` 判断。
+- 子行失败不影响实例创建，实例是否可用由调用方根据 `report` 判断。实例的分组 fiber 本身失败时返回错误，并移除该实例。
 - 可以在插件自己的 `apply` 中调用并等待。
 
 ### 3.2 关闭实例
@@ -101,7 +101,7 @@ loader.remove_instance(b1.plugin).await?;
 实例里的插件常需要知道自己在哪个实例里，用来生成实例键。
 
 ```rust
-builtins.register_with("dim/loop", |build: &Build| {
+builtins.register_with::<LoopConfig, _, _>("dim/loop", |build: &Build| {
     let scope = BranchScope {
         session: SessionScope { instance: build.instance("session")? },
         instance: build.instance("branch")?,
@@ -112,10 +112,12 @@ builtins.register_with("dim/loop", |build: &Build| {
 
 - `Build` 提供：
   - `instance(group_id)`：所在实例链上该分组实例的 `InstanceId`，即那个分组 fiber 的 `ctx.instance()`；
-  - `value::<T>()`：实例链上最近一次 `with` 提供的该类型的值。
+  - `value::<T>()`：实例链上最近一次 `with` 提供的该类型的值；
+  - `instances()`：整条实例链，由内向外。
 - 同一实例里的插件都在该分组 fiber 的子树内，因此用这个 `InstanceId` 生成的实例键对它们都可见。提供实例服务的插件（如 `session-scope`）也用这个 id，而不是自己 fiber 的 `ctx.instance()`。
 - 普通 `register` 的插件不变，在每个实例里使用同一个工厂。
-- `Resolved` 可以带一个按 `Build` 生成工厂的构造函数；解析缓存仍按模块名，不随实例增长。
+- `register_with` 登记的插件不在任何实例里时无法装载（行为 `Unresolved`）。
+- `Resolved` 新增 `scoped: Option<ScopedFactory>`，按 `Build` 生成每个副本的工厂；解析缓存仍按模块名，不随实例增长。
 - loader 不改写工厂返回的 `injects()`。
 
 ## 5. 动态更新
@@ -147,8 +149,8 @@ builtins.register_with("dim/loop", |build: &Build| {
 
 - `entries()` 按树序列出行；在实例里的行，后面跟着它在每个实例中的条目。`instanced` 分组即使没有实例也可见。
 - `EntryInfo` 新增 `instance: Option<InstanceInfo>`，包含所在实例的 `PluginId` 与实例链。
-- `LoaderChanged` 新增 `InstanceCreated`、`InstanceRemoved`；指向行的事件带实例信息。
-- 实例中的插件 `dispose_self`：只停这一份，记录为 `Stopped`，不写配置；`restart_instance`、对该行的修改或实例重建会让它重新启动。不在实例中的行，`dispose_self` 不变。
+- `LoaderChanged` 新增 `InstanceCreated { group, plugin }`、`InstanceRemoved { group, plugin }` 与 `Stopped { id, instance, plugin }`。
+- 实例中的插件 `dispose_self`：只停这一份，状态为 `EntryStatus::Stopped`，`EntryInfo.plugin` 保留它最后的 fiber，不写配置；`restart_instance(plugin)`、对该行的修改或实例重建会让它重新启动。不在实例中的行，`dispose_self` 不变。
 
 ## 7. 以 dim-agent 为例
 
@@ -180,20 +182,17 @@ builtins.register_with("dim/loop", |build: &Build| {
 - 关闭实例后，其子树、记账与诊断条目全部清除；多轮创建与关闭不增长。
 - 用存下来的配置在新 loader 里 reconcile 并重新创建实例，得到相同运行态。
 
-## 10. 与当前实现（`2d577a5`）的关系
+## 10. 实现
 
-当前实现基于"宿主登记挂载点、模板行按类别展开"，与本设计的模型不同，需要改写：
-
-| 本设计 | 当前实现 |
+| 位置 | 内容 |
 | --- | --- |
-| `instanced` 分组 | `mount: <类别>` |
-| `create_instance(&ctx, group)`，实例建在配置树的位置 | `register_mount(kind, ctx)`，装进宿主提供的 ctx |
-| 工厂用 `Build` 取实例链与业务值 | 编码进运行名称；`Builtins` 丢弃挂载信息 |
-| 不改写 `injects()`，不改内核 | `mapped_key` 改写门控键；`Ctx::scope_for` 改为 `pub` |
-| 跨语言放第二期 | 已实现 `names` 映射与 `ServiceScope` |
+| `crates/rutis-loader/src/loader/mod.rs` | 运行记录按 `Slot { row, scope }` 记录：`scope` 为所在实例编号，实例外为 `None` |
+| `crates/rutis-loader/src/loader/instances.rs` | `create_instance`、`remove_instance`、`restart_instance` 与 `report` |
+| `crates/rutis-loader/src/loader/reconcile.rs` | 按副本装载、更新、重建实例、清理失效实例，`dispose_self` 的三种处理 |
+| `crates/rutis-loader/src/loader/commit.rs` | 编辑在全部副本上 dry-run |
+| `crates/rutis-loader/src/resolver.rs` | `Build`、`ScopedFactory`、`Builtins::register_with` |
+| `crates/rutis-loader/tests/instances.rs` | §9 的验收 |
 
-可复用的部分：按全部展开项 dry-run 与回滚、宿主关闭时只更新记账的清理逻辑、登记代次防止旧清理误伤。
+实现依据：[运行表](../crates/rutis-loader/src/loader/mod.rs)、[实例](../crates/rutis-loader/src/loader/instances.rs)、[装载与清理](../crates/rutis-loader/src/loader/reconcile.rs)、[更新流程](../crates/rutis-loader/src/loader/commit.rs)、[Resolver](../crates/rutis-loader/src/resolver.rs)、[实例服务键](../crates/rutis/src/key.rs#L166)。
 
-实现依据：[运行表](../crates/rutis-loader/src/loader/mod.rs#L228)、[装载与清理](../crates/rutis-loader/src/loader/reconcile.rs#L64)、[更新流程](../crates/rutis-loader/src/loader/commit.rs#L85)、[分组](../crates/rutis-loader/src/loader/plugins.rs)、[Resolver](../crates/rutis-loader/src/resolver.rs#L15)、[实例服务键](../crates/rutis/src/key.rs#L166)。
-
-状态：设计提案；当前实现需按 §10 改写。
+状态：已实现（`rutis-loader`），跨语言部分见 §8。

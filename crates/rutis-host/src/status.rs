@@ -12,6 +12,7 @@ pub fn describe(status: &EntryStatus) -> String {
         EntryStatus::Disabled => "disabled".into(),
         EntryStatus::Inactive => "inactive".into(),
         EntryStatus::Unresolved(error) => format!("unresolved: {error}"),
+        EntryStatus::Stopped => "stopped in its instance".into(),
         EntryStatus::Running(snapshot) => match snapshot.state {
             FiberState::Pending => "waiting for its services".into(),
             FiberState::Loading => "starting".into(),
@@ -33,7 +34,11 @@ pub fn follow(loader: Loader) {
         loop {
             let mut now = BTreeMap::new();
             for entry in loader.entries() {
-                now.insert(entry.id.clone(), describe(&entry.status));
+                let key = match &entry.instance {
+                    Some(instance) => format!("{} in {:?}", entry.id, instance.plugin),
+                    None => entry.id.clone(),
+                };
+                now.insert(key, describe(&entry.status));
             }
             for (id, line) in &now {
                 if shown.get(id) != Some(line) {
