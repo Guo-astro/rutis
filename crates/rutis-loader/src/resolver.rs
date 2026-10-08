@@ -12,7 +12,8 @@ use serde_json::Value;
 
 use crate::LoaderError;
 
-/// What a name resolves to.
+/// What a name resolves to: [`Resolved::new`], then the `with_` methods.
+#[non_exhaustive]
 pub struct Resolved {
     pub factory: Arc<dyn PluginFactory<Value>>,
     /// JSON Schema of the config, for forms and comparison only; the
@@ -28,6 +29,41 @@ pub struct Resolved {
     /// Builds the factory for each copy from the instances it runs in
     /// ([`Builtins::register_with`]). Without it, every copy uses `factory`.
     pub scoped: Option<ScopedFactory>,
+}
+
+impl Resolved {
+    /// `factory`, with no schema, no metadata, and the row's `isolate` and
+    /// `inject` applied by the loader.
+    pub fn new(factory: Arc<dyn PluginFactory<Value>>) -> Self {
+        Resolved {
+            factory,
+            schema: None,
+            meta: Value::Null,
+            foreign_scope: false,
+            scoped: None,
+        }
+    }
+
+    pub fn with_schema(mut self, schema: Option<Value>) -> Self {
+        self.schema = schema;
+        self
+    }
+
+    pub fn with_meta(mut self, meta: Value) -> Self {
+        self.meta = meta;
+        self
+    }
+
+    /// See [`Resolved::foreign_scope`].
+    pub fn with_foreign_scope(mut self) -> Self {
+        self.foreign_scope = true;
+        self
+    }
+
+    pub fn with_scoped(mut self, scoped: ScopedFactory) -> Self {
+        self.scoped = Some(scoped);
+        self
+    }
 }
 
 /// Builds a copy's factory from the instances it runs in.

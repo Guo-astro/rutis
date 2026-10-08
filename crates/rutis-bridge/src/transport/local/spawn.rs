@@ -50,6 +50,7 @@ pub struct Spawn {
 /// [`Handover::Loopback`]; elsewhere too when [`HANDOVER_VARIABLE`] is
 /// `loopback` (to run Windows' path on Unix).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Handover {
     /// One end of a socket pair, as fd 3.
     Inherit,

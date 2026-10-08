@@ -60,19 +60,19 @@ impl Resolver for DylibResolver {
             let entry = resolved
                 .entry(module.library_sha256().to_owned())
                 .or_insert_with(|| {
-                    Arc::new(Resolved {
-                        schema: module.schema().cloned(),
-                        meta: json!({
-                            "source": "dylib",
-                            "id": module.id(),
-                            "version": module.version(),
-                            "librarySha256": module.library_sha256(),
-                            "dir": dir.to_string_lossy(),
-                        }),
-                        factory: Arc::new(ModuleFactory { module }),
-                        foreign_scope: false,
-                        scoped: None,
-                    })
+                    let schema = module.schema().cloned();
+                    let meta = json!({
+                        "source": "dylib",
+                        "id": module.id(),
+                        "version": module.version(),
+                        "librarySha256": module.library_sha256(),
+                        "dir": dir.to_string_lossy(),
+                    });
+                    Arc::new(
+                        Resolved::new(Arc::new(ModuleFactory { module }))
+                            .with_schema(schema)
+                            .with_meta(meta),
+                    )
                 });
             Ok(entry.clone())
         })
