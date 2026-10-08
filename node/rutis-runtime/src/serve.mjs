@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import { createServer } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import * as websocket from './channel/websocket.mjs'
 import { frame } from './channel/unix.mjs'
@@ -10,6 +12,39 @@ import { ENDPOINT_PROTOCOL } from './session.mjs'
 // rows, proxies, references, its Cordis Context) ends with that child. A
 // newer connection takes over: the old one is closed as replaced, the old
 // child cleans up and exits, and only then does a new child greet.
+//
+// The child gets its socket as fd 3; on Windows, where an inherited pipe is
+// not a socket, it dials a loopback address instead and presents a one-time
+// token first (RUTIS_LOCAL_HANDOVER=loopback does the same elsewhere).
+const LOOPBACK = process.platform === 'win32' || process.env.RUTIS_LOCAL_HANDOVER === 'loopback'
+const TOKEN = 'RUTIS_CHANNEL_TOKEN'
+
+// A loopback listener for one child: its `tcp:` address, and the socket of
+// the first connection that presents `token`.
+async function loopback(token) {
+  const server = createServer()
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
+  const accepted = new Promise(resolve => {
+    server.on('connection', socket => {
+      // Read the token line by hand: anything after it is the session.
+      let seen = Buffer.alloc(0)
+      const onData = chunk => {
+        seen = Buffer.concat([seen, chunk])
+        const end = seen.indexOf(10)
+        if (end < 0) { if (seen.length > 256) socket.destroy(); return }
+        socket.off('data', onData)
+        if (seen.subarray(0, end).toString() !== token) return socket.destroy()
+        socket.pause()
+        const rest = seen.subarray(end + 1)
+        if (rest.length) socket.unshift(rest)
+        server.close()
+        resolve(socket)
+      }
+      socket.on('data', onData)
+    })
+  })
+  return { address: `tcp:127.0.0.1:${server.address().port}`, accepted, server }
+}
 export async function serve({ spec, id, peer, anchor }) {
   const runner = fileURLToPath(new URL('./runner.mjs', import.meta.url))
   let current
@@ -44,17 +79,26 @@ export async function serve({ spec, id, peer, anchor }) {
     }
   }
 
-  function start(ws, link) {
-    const args = [...process.execArgv, runner, 'fd:3', '--id', id, '--format', 'endpoint']
+  async function start(ws, link) {
+    const token = LOOPBACK ? randomBytes(32).toString('hex') : undefined
+    const listener = LOOPBACK ? await loopback(token) : undefined
+    const args = [...process.execArgv, runner, listener?.address ?? 'fd:3', '--id', id, '--format', 'endpoint']
     if (peer) args.push('--peer', peer)
     args.push(anchor)
-    const child = spawn(process.execPath, args, { stdio: ['ignore', 'inherit', 'inherit', 'pipe'] })
+    const child = spawn(process.execPath, args, {
+      stdio: LOOPBACK ? ['ignore', 'inherit', 'inherit'] : ['ignore', 'inherit', 'inherit', 'pipe'],
+      env: LOOPBACK ? { ...process.env, [TOKEN]: token } : process.env,
+    })
     const session = { ws, child }
-    session.childChannel = frame(child.stdio[3], {
+    child.once('exit', () => { listener?.server.close(); if (current === session) { current = undefined; ws.close('runtime session ended') } })
+    const socket = LOOPBACK
+      ? await Promise.race([listener.accepted, new Promise(resolve => child.once('exit', () => resolve(undefined)))])
+      : child.stdio[3]
+    if (!socket) return session
+    session.childChannel = frame(socket, {
       message: text => ws.send(text),
       closed: () => { if (current === session) ws.close('runtime session ended') },
     })
-    child.once('exit', () => { if (current === session) { current = undefined; ws.close('runtime session ended') } })
     link.attach(session.childChannel)
     return session
   }
@@ -71,7 +115,7 @@ export async function serve({ spec, id, peer, anchor }) {
           await stop(old)
         }
         if (link.ended) return
-        current = start(ws, link)
+        current = await start(ws, link)
       })
     },
   }, { protocol: `rutis.${ENDPOINT_PROTOCOL}`, ...websocket.optionsFromEnvironment() })
