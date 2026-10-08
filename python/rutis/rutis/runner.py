@@ -40,11 +40,14 @@ FEATURES = ["rows.v2", "hosts", "leaf", "scopes"]
 
 def scoped_id(name: str, label: str | None) -> str:
     """How the service `name` is identified in the scope `label`: the name
-    outside any scope, the name, a NUL and the label inside one. Neither
-    may contain NUL, so no two pairs share an id."""
-    if "\0" in name or (label and "\0" in label):
+    outside any scope (no label: None), the name, a NUL and the label inside
+    one. Neither may contain NUL and a label may not be empty, so no two
+    pairs share an id."""
+    if "\0" in name or (label is not None and "\0" in label):
         raise ValueError(f"service {name!r} or its scope label contains NUL")
-    return f"{name}\0{label}" if label else name
+    if label == "":
+        raise ValueError(f"service {name!r} has an empty scope label")
+    return name if label is None else f"{name}\0{label}"
 
 
 def handle_of(id: str, generation: int) -> str:
@@ -216,6 +219,8 @@ class Runtime:
             raise ValueError(f"row {key} is already loaded")
         exports = exports or {}
         row = Row(key, module, config, exports, dict(isolate or {}))
+        for name, label in row.isolate.items():
+            scoped_id(name, label)
         for name in exports:
             if "#" in name:
                 raise ValueError(f"service name {name} cannot be projected")

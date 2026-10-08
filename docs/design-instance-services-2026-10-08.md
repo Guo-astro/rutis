@@ -70,7 +70,7 @@ catalog.register_shared_instance("timeline", "session"); // session 实例内的
 运行时进程是共享的（每种语言一个进程，服务所有实例的行），所以进程里的登记也要区分实例。做法是复用 `isolate`：
 
 - 每个副本对实例内名字自动带上一条 isolate，标签为该实例的 `rutis-loader/instance/<InstanceId>`；配置里已经 isolate 了这个名字时，用配置的标签（#161 起已经按副本 / 按实例区分）。
-- 进程里一个服务的身份是 **(名字, 标签)**，在协议上写作 id：无标签时就是 `name`，有标签时是 `name` + NUL + `label`。名字和标签都不允许含 NUL，因此不同的 (名字, 标签) 不会得到同一个 id（全局名字 `x@L` 不会被当成标签 `L` 下的 `x`）。导出槽、句柄、宿主代理、`host:<id>` 调用目标都按 id 登记。
+- 进程里一个服务的身份是 **(名字, 标签)**，在协议上写作 id：无标签时就是 `name`，有标签时是 `name` + NUL + `label`。名字和标签都不允许含 NUL、标签不允许为空，因此不同的 (名字, 标签) 不会得到同一个 id（全局名字 `x@L` 不会被当成标签 `L` 下的 `x`）。导出槽、句柄、宿主代理、`host:<id>` 调用目标都按 id 登记。
 - 插件看到的仍是名字 `x`：Node 用 Cordis 的 isolate，同标签的行共享一个作用域；Python 运行时按行的 isolate 表查找。
 
 协议变化（新增特性 `scopes`）：

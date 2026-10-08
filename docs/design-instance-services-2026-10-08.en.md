@@ -70,7 +70,7 @@ A `JsRow` (a TS / Python row) is built per copy by a `scoped` factory, with the 
 A runtime process is shared (one process per language serves the rows of every instance), so its registrations must tell instances apart too. This reuses `isolate`:
 
 - each copy automatically isolates the instance names it may use, under the label `rutis-loader/instance/<InstanceId>` of that instance; when its configuration already isolates the name, the configured label is used (since #161, those labels are already per copy / per instance).
-- A service in the process is identified by **(name, label)**, written on the wire as an id: `name` without a label, `name` + NUL + `label` with one. Names and labels may not contain NUL, so no two pairs share an id (a global name like `x@L` cannot pass for `x` in scope `L`). Export slots, handles, host proxies and the `host:<id>` call targets are registered by id.
+- A service in the process is identified by **(name, label)**, written on the wire as an id: `name` without a label, `name` + NUL + `label` with one. Names and labels may not contain NUL and a label may not be empty, so no two pairs share an id (a global name like `x@L` cannot pass for `x` in scope `L`). Export slots, handles, host proxies and the `host:<id>` call targets are registered by id.
 - Plugins still see the name `x`: Node uses Cordis isolation, so rows with the same label share one scope; the Python runtime looks names up through the row's isolate table.
 
 Protocol changes (new feature `scopes`):
