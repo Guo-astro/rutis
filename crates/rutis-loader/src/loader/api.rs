@@ -254,7 +254,10 @@ impl Loader {
             .get(&row.parent.clone().map(Slot::global))
             .or(state.groups.get(&None))
             .map(|g| match &row.scope {
-                Ok(scope) => scope.context(&g.ctx, None),
+                Ok(scope) => match scope.bind(&crate::resolver::Build::default()) {
+                    Ok(scope) => scope.context(&g.ctx, None),
+                    Err(_) => g.ctx.clone(),
+                },
                 Err(_) => g.ctx.clone(),
             });
         Some(self.inner.eval().value(&row.config, base.as_ref()))

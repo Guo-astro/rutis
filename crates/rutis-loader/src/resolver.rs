@@ -37,6 +37,7 @@ pub type ScopedFactory =
 pub(crate) type Values = Arc<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>;
 
 /// Where a copy runs: the instances of instanced groups enclosing it.
+#[derive(Default)]
 pub struct Build {
     /// Innermost first.
     pub(crate) chain: Vec<BuildLink>,

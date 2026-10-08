@@ -5,8 +5,9 @@ use std::collections::{BTreeMap, HashMap};
 use rutis::{Ctx, TypeKey};
 use serde_json::Value;
 
-use crate::catalog::{ExprScope, Expressions, ServiceCatalog};
+use crate::catalog::{ExprScope, Expressions, NameKey, ServiceCatalog};
 use crate::patch::{truthy, Composed, Owner, PatchWarning};
+use crate::resolver::Build;
 use crate::LoaderError;
 
 #[derive(Default)]
@@ -38,9 +39,46 @@ pub(super) struct Row {
     pub(super) invalid: Option<LoaderError>,
 }
 
-/// The row's `isolate` and `inject`, resolved through the catalog.
+/// The row's `isolate` and `inject`, resolved through the catalog. Names
+/// inside instances get their keys per copy ([`RowScope::bind`]).
 #[derive(Clone, Default)]
 pub(super) struct RowScope {
+    /// (service name, key, label), sorted by name.
+    pub(super) isolate: Vec<(String, NameKey, String)>,
+    /// (service name, key), sorted by name.
+    pub(super) inject: Vec<(String, NameKey)>,
+}
+
+impl RowScope {
+    /// The keys for a copy running in `build`'s instances.
+    pub(super) fn bind(&self, build: &Build) -> Result<BoundScope, LoaderError> {
+        Ok(BoundScope {
+            isolate: self
+                .isolate
+                .iter()
+                .map(|(name, key, label)| Ok((name.clone(), key.key(name, build)?, label.clone())))
+                .collect::<Result<_, LoaderError>>()?,
+            inject: self
+                .inject
+                .iter()
+                .map(|(name, key)| Ok((name.clone(), key.key(name, build)?)))
+                .collect::<Result<_, LoaderError>>()?,
+        })
+    }
+
+    /// The instanced groups whose services the row names.
+    fn groups(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.isolate
+            .iter()
+            .map(|(name, key, _)| (name, key))
+            .chain(self.inject.iter().map(|(name, key)| (name, key)))
+            .filter_map(|(name, key)| key.group().map(|group| (name.as_str(), group)))
+    }
+}
+
+/// A copy's `isolate` and `inject` keys.
+#[derive(Clone, Default)]
+pub(super) struct BoundScope {
     /// (service name, key, label), sorted by name.
     pub(super) isolate: Vec<(String, TypeKey, String)>,
     /// (service name, key), sorted by name.
@@ -57,7 +95,7 @@ pub(super) fn copy_label(label: &str, copy: Option<u64>) -> String {
     }
 }
 
-impl RowScope {
+impl BoundScope {
     /// `parent` with every isolate applied, for the copy in instance `copy`.
     pub(super) fn context(&self, parent: &Ctx, copy: Option<u64>) -> Ctx {
         self.isolate
@@ -92,8 +130,19 @@ pub(super) struct Eval<'a> {
 }
 
 impl Eval<'_> {
-    /// `raw` with every expression node replaced by its value.
+    /// `raw` with every expression node replaced by its value, outside
+    /// instances.
     pub(super) fn value(&self, raw: &Value, ctx: Option<&Ctx>) -> Result<Value, LoaderError> {
+        self.value_in(raw, ctx, &Build::default())
+    }
+
+    /// [`Eval::value`] for a copy running in `build`'s instances.
+    pub(super) fn value_in(
+        &self,
+        raw: &Value,
+        ctx: Option<&Ctx>,
+        build: &Build,
+    ) -> Result<Value, LoaderError> {
         if !contains_expression(raw) {
             return Ok(raw.clone());
         }
@@ -102,7 +151,7 @@ impl Eval<'_> {
                 "no expression evaluator is installed".into(),
             ));
         };
-        let scope = ExprScope::new(ctx, self.catalog);
+        let scope = ExprScope::in_instances(ctx, self.catalog, build);
         interpolate(raw, &|source| expressions.evaluate(source, &scope))
     }
 }
@@ -148,7 +197,7 @@ impl RawScope {
 
     /// Map the names to keys through the catalog.
     pub(super) fn resolve(&self, catalog: &ServiceCatalog) -> Result<RowScope, LoaderError> {
-        let keys = catalog.keys(
+        let keys = catalog.name_keys(
             self.isolate
                 .iter()
                 .map(|(name, _)| name.as_str())
@@ -303,7 +352,48 @@ impl Desired {
                 invalid,
             });
         }
+        desired.check_instance_names();
         desired
+    }
+
+    /// A row naming a service inside instances of a group must be in that
+    /// group (or be it): elsewhere the name has no key.
+    fn check_instance_names(&mut self) {
+        let mut misplaced = Vec::new();
+        for (index, row) in self.rows.iter().enumerate() {
+            let Ok(scope) = &row.scope else {
+                continue;
+            };
+            let enclosing = self.enclosing_instances(row);
+            if let Some((name, group)) = scope
+                .groups()
+                .find(|(_, group)| !enclosing.iter().any(|g| g == group))
+            {
+                misplaced.push((
+                    index,
+                    LoaderError::OutsideInstance {
+                        name: name.to_owned(),
+                        group: group.to_owned(),
+                    },
+                ));
+            }
+        }
+        for (index, error) in misplaced {
+            self.rows[index].scope = Err(error);
+        }
+    }
+
+    /// The instanced groups enclosing `row`, itself included.
+    fn enclosing_instances(&self, row: &Row) -> Vec<String> {
+        let mut groups = Vec::new();
+        let mut current = Some(row);
+        while let Some(row) = current {
+            if row.instanced {
+                groups.push(row.id.clone());
+            }
+            current = row.parent.as_deref().and_then(|id| self.row(id));
+        }
+        groups
     }
 
     pub(super) fn row(&self, id: &str) -> Option<&Row> {

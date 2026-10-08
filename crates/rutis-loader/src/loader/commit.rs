@@ -98,10 +98,12 @@ fn dry_context(
     };
     let mut ctx = base;
     for (group, copy) in groups.into_iter().rev() {
+        let build = Inner::build_for(state, copy);
         ctx = group
             .scope
             .as_ref()
             .map_err(Clone::clone)?
+            .bind(&build)?
             .context(&ctx, copy);
     }
     Ok(Some(ctx))
@@ -221,18 +223,23 @@ impl Inner {
             // Evaluate where the plugin would run: its group, with its
             // isolates.
             let scope = if resolved.foreign_scope {
-                super::desired::RowScope::default()
+                super::desired::BoundScope::default()
             } else {
-                match &row.scope {
-                    Ok(scope) => scope.clone(),
+                match row
+                    .scope
+                    .as_ref()
+                    .map_err(Clone::clone)
+                    .and_then(|s| s.bind(&build))
+                {
+                    Ok(scope) => scope,
                     Err(error) => {
-                        check(Err(error.clone()))?;
+                        check(Err(error))?;
                         continue;
                     }
                 }
             };
             let ctx = base.map(|ctx| scope.context(&ctx, copy));
-            let config = match self.eval().value(&row.config, ctx.as_ref()) {
+            let config = match self.eval().value_in(&row.config, ctx.as_ref(), &build) {
                 Ok(config) => config,
                 Err(error) => {
                     check(Err(error))?;
