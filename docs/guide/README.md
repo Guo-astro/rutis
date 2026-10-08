@@ -17,12 +17,12 @@
 | 谁装 | Rust（crates.io） | Node（npm） | Python（PyPI） |
 | --- | --- | --- | --- |
 | 插件作者 | `rutis-sdk`（dylib 插件） | `@arcships/rutis` | `rutis` |
-| 宿主（运行插件） | `rutis`、`rutis-loader`、`rutis-bridge` | `@arcships/rutis-runtime` | `rutis` |
+| 宿主（运行插件） | `rutis`、`rutis-loader`、`rutis-bridge`、`rutis-dylib` | `@arcships/rutis-runtime` | `rutis` |
 | 不写 Rust 的宿主 | `rutis-host` | `@arcships/rutis-host` | `rutis-host` |
 
-除内核 `rutis` 外，这些包一起发布、版本号相同（发布列车）。内核和 `rutis-sdk` 等 dylib 工具独立发版；列车 0.7.x 基于内核 0.6.1。
+这些包（包括内核 `rutis` 和 dylib 工具链）一起发布、版本号相同（发布列车，当前为 0.8）。各个 rutis 包请使用同一个版本。
 
-用过 `rutis-interop` 的项目见[迁移指南](../migration-interop-to-0.7.md)。
+从 0.7 升级见 [0.7 → 0.8](../migration-0.7-to-0.8.md)。用过 `rutis-interop` 的项目见[迁移指南](../migration-interop-to-0.7.md)。
 
 ## 环境
 

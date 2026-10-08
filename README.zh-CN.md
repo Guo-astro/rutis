@@ -161,11 +161,11 @@ stateDiagram-v2
 | 用途 | Rust（crates.io） | Node（npm） | Python（PyPI） |
 | --- | --- | --- | --- |
 | 内核 | [`rutis`](https://crates.io/crates/rutis) | | |
-| 写插件 | [`rutis-sdk`](crates/rutis-sdk)（dylib 插件） | [`@arcships/rutis`](https://www.npmjs.com/package/@arcships/rutis) | [`rutis`](https://pypi.org/project/rutis/) |
-| 在应用中运行插件 | [`rutis-loader`](https://crates.io/crates/rutis-loader)、[`rutis-bridge`](https://crates.io/crates/rutis-bridge) | [`@arcships/rutis-runtime`](https://www.npmjs.com/package/@arcships/rutis-runtime) | [`rutis`](https://pypi.org/project/rutis/) |
+| 写插件 | [`rutis-sdk`](https://crates.io/crates/rutis-sdk)（dylib 插件） | [`@arcships/rutis`](https://www.npmjs.com/package/@arcships/rutis) | [`rutis`](https://pypi.org/project/rutis/) |
+| 在应用中运行插件 | [`rutis-loader`](https://crates.io/crates/rutis-loader)、[`rutis-bridge`](https://crates.io/crates/rutis-bridge)、[`rutis-dylib`](https://crates.io/crates/rutis-dylib)（dylib 插件） | [`@arcships/rutis-runtime`](https://www.npmjs.com/package/@arcships/rutis-runtime) | [`rutis`](https://pypi.org/project/rutis/) |
 | 不写 Rust 的宿主 | [`rutis-host`](https://crates.io/crates/rutis-host) | [`@arcships/rutis-host`](https://www.npmjs.com/package/@arcships/rutis-host) | [`rutis-host`](https://pypi.org/project/rutis-host/) |
 
-内核独立发版，当前为 0.6。其余包组成发布列车，一起发布、版本相同，当前为 0.7，基于内核 0.6。
+以上所有包（包括内核和 dylib 工具链）组成发布列车，一起发布、版本相同，当前为 0.8。各个 rutis 包请使用同一个版本。
 
 ## 文档
 
@@ -175,7 +175,7 @@ stateDiagram-v2
 - **[内核能力一览](docs/core-features.md)** — 配置热更新、动态事件、拦截、诊断，以及各自的使用边界。
 - **[API 文档](https://docs.rs/rutis)** — docs.rs 上的完整参考。
 - **设计与决策** — [内核设计](docs/design-rust-port.md)、[与 Cordis 的逐条对拍](docs/cordis-spec-parity-2026-08-18.md)，以及 [docs](docs) 目录下的全部设计记录。
-- **升级** — [从 rutis-interop 迁移到 0.7](docs/migration-interop-to-0.7.md) · [0.6.0 → 0.6.1](docs/migration-0.6.0-to-0.6.1.md) · [0.5 → 0.6](docs/migration-0.5-to-0.6.md) · [0.3 → 0.5](docs/migration-0.3-to-0.5.md) · [0.1 → 0.2](docs/migration-0.1-to-0.2.md)
+- **升级** — [0.7 → 0.8](docs/migration-0.7-to-0.8.md) · [从 rutis-interop 迁移到 0.7](docs/migration-interop-to-0.7.md) · [0.6.0 → 0.6.1](docs/migration-0.6.0-to-0.6.1.md) · [0.5 → 0.6](docs/migration-0.5-to-0.6.md) · [0.3 → 0.5](docs/migration-0.3-to-0.5.md) · [0.1 → 0.2](docs/migration-0.1-to-0.2.md)
 
 ## 用 rutis 构建
 
