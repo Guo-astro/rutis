@@ -54,11 +54,13 @@ const FEATURES = ['rows.v2', 'hosts', 'leaf.js', 'scopes']
 // A service in a scope: rows isolating `name` with `label` share it, and the
 // same name in another scope (another instance, say) is another service.
 // Export slots, host proxies and `host:<id>` targets go by this id
-// (`scopes`): the name outside any scope, the name, a NUL and the label
-// inside one. Neither may contain NUL, so no two pairs share an id.
+// (`scopes`): the name outside any scope (no label: undefined or null), the
+// name, a NUL and the label inside one. Neither may contain NUL and a label
+// may not be empty, so no two pairs share an id.
 const scopedId = (name, label) => {
   if (name.includes('\0') || label?.includes('\0')) throw new Error(`service ${JSON.stringify(name)} or its scope label contains NUL`)
-  return label ? `${name}\0${label}` : name
+  if (label === '') throw new Error(`service ${JSON.stringify(name)} has an empty scope label`)
+  return label == null ? name : `${name}\0${label}`
 }
 // The handle of a slot's `generation`th object. A scoped id's handles are
 // marked with a NUL too: a label may contain `#`.
@@ -233,7 +235,10 @@ async function loadRow([key, entry, config, isolate, inject, exports]) {
   }
   const plugin = await pluginOf(entry)
   let scope = ctx
-  for (const [name, label] of isolate ?? []) scope = scope.isolate(name, isolated(name, label))
+  for (const [name, label] of isolate ?? []) {
+    scopedId(name, label)
+    scope = scope.isolate(name, isolated(name, label))
+  }
   const row = { fiber: undefined, inner: undefined, config, exports: ids }
   const fiber = fiberOf(inject?.length
     ? scope.plugin({ name: `row:${key}`, inject, apply(gated) { row.inner = fiberOf(gated.plugin(plugin, row.config)) } })

@@ -26,8 +26,8 @@ type Slots = Arc<Mutex<HashMap<String, (Option<String>, u64)>>>;
 
 /// How the runtime identifies the service `name` in the scope `label` (a
 /// row's `isolate` label for it): `name` outside any scope, `name`, a NUL
-/// and `label` inside one. Neither may contain NUL ([`check_scoped`]), so
-/// no two (name, label) pairs share an id. Export slots, host proxies and
+/// and `label` inside one. Neither may contain NUL, and a label may not be
+/// empty ([`check_scoped`]), so no two (name, label) pairs share an id. Export slots, host proxies and
 /// `host:<id>` call targets are registered by it, so the same name in two
 /// scopes (two instances, say) does not collide. A runtime takes labels
 /// only with the `scopes` feature.
@@ -43,6 +43,11 @@ fn check_scoped(name: &str, label: Option<&str>) -> Result<(), Error> {
     if name.contains('\0') || label.is_some_and(|label| label.contains('\0')) {
         return Err(Error::Value(format!(
             "service {name:?} or its scope label contains NUL"
+        )));
+    }
+    if label == Some("") {
+        return Err(Error::Value(format!(
+            "service {name:?} has an empty scope label"
         )));
     }
     Ok(())

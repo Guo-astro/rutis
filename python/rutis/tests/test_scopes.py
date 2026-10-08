@@ -27,6 +27,9 @@ class ScopedIds(unittest.TestCase):
             scoped_id("x\0y", None)
         with self.assertRaises(ValueError):
             scoped_id("x", "L\0M")
+        # An empty label is refused: it would pass for no label.
+        with self.assertRaises(ValueError):
+            scoped_id("x", "")
 
     def test_a_global_name_cannot_reach_a_scoped_service(self):
         seen = {}
@@ -51,6 +54,16 @@ class ScopedIds(unittest.TestCase):
 
         asyncio.run(run())
         self.assertEqual(seen, {"outside": None, "inside": "private"})
+
+    def test_an_empty_label_is_refused(self):
+        def provide(ctx, config):
+            ctx.provide("x", "private")
+
+        runtime = Runtime()
+        provider = module("empty_label_provider", provide)
+        with self.assertRaises(ValueError):
+            asyncio.run(runtime.load("p", provider, {}, None, {"x": ""}))
+        self.assertNotIn("x", runtime.services)
 
 
 if __name__ == "__main__":
