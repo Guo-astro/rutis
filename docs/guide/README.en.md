@@ -26,7 +26,7 @@ Projects that used `rutis-interop`: see the [migration guide](../migration-inter
 
 ## Requirements
 
-- Linux or macOS. Local plugin execution depends on Unix; use WSL on Windows.
+- Linux, macOS or Windows x64 (MSVC). Embedded in Rust, Node / Python plugins run on all three; the `rutis-host` command and the `Process::launch` / `Process::mount` compatibility API are still Unix-only (use WSL on Windows).
 - Node 24 or later for TypeScript / JavaScript plugins.
 - Python 3.12 or later for Python plugins.
 - Rust 1.85 or later, only when embedding rutis in Rust.

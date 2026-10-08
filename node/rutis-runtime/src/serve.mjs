@@ -21,11 +21,15 @@ const TOKEN = 'RUTIS_CHANNEL_TOKEN'
 
 // A loopback listener for one child: its `tcp:` address, and the socket of
 // the first connection that presents `token`.
-async function loopback(token) {
+export async function loopback(token) {
   const server = createServer()
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
   const accepted = new Promise(resolve => {
     server.on('connection', socket => {
+      // A connection that fails before it authenticates is dropped alone:
+      // its error must not end this process.
+      const onError = () => socket.destroy()
+      socket.on('error', onError)
       // Read the token line by hand: anything after it is the session.
       let seen = Buffer.alloc(0)
       const onData = chunk => {
@@ -37,6 +41,8 @@ async function loopback(token) {
         socket.pause()
         const rest = seen.subarray(end + 1)
         if (rest.length) socket.unshift(rest)
+        // From here the session's framing handles its errors.
+        socket.off('error', onError)
         server.close()
         resolve(socket)
       }
@@ -94,7 +100,12 @@ export async function serve({ spec, id, peer, anchor }) {
     const socket = LOOPBACK
       ? await Promise.race([listener.accepted, new Promise(resolve => child.once('exit', () => resolve(undefined)))])
       : child.stdio[3]
-    if (!socket) return session
+    if (!socket) {
+      // The child ended before connecting: so does the session, now, since
+      // no later exit will.
+      ws.close('runtime session ended: its process exited before connecting')
+      return undefined
+    }
     session.childChannel = frame(socket, {
       message: text => ws.send(text),
       closed: () => { if (current === session) ws.close('runtime session ended') },

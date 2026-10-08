@@ -217,7 +217,16 @@ async fn loopback(spawn: &Spawn) -> Result<Started, ConnectError> {
         .args(&spawn.trailing)
         .spawn()
         .map_err(|error| cannot_start(spawn, error))?;
-    adopt(&child);
+    // A process that would outlive its host is not started.
+    if let Err(reason) = adopt(&child) {
+        let _ = child.start_kill();
+        return Err(ConnectError::Incompatible {
+            reason: format!(
+                "cannot tie {} to this process's lifetime: {reason}",
+                spawn.program.to_string_lossy()
+            ),
+        });
+    }
     let stream = loop {
         let mut stream = tokio::select! {
             accepted = listener.accept() => accepted.map_err(retryable)?.0,
@@ -525,29 +534,35 @@ fn peek_exit(_pid: u32) -> Option<std::process::ExitStatus> {
 
 /// On Windows, put the process in a job that is closed, ending every
 /// process in it, when this process ends however it does: a runtime does
-/// not outlive its host. Elsewhere, the process ends when its channel
-/// closes.
+/// not outlive its host. A process that cannot be put in it is an error.
+/// Elsewhere, the process ends when its channel closes.
 #[cfg(windows)]
-fn adopt(child: &tokio::process::Child) {
+fn adopt(child: &tokio::process::Child) -> Result<(), String> {
     use std::sync::OnceLock;
     use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
-    static JOB: OnceLock<Option<usize>> = OnceLock::new();
-    let Some(job) = *JOB.get_or_init(|| job().map(|handle| handle as usize)) else {
-        return;
-    };
-    if let Some(process) = child.raw_handle() {
-        // SAFETY: both handles are live: the job for this process's
-        // lifetime, the child's while it is owned.
-        unsafe {
-            AssignProcessToJobObject(job as _, process as _);
-        }
+    static JOB: OnceLock<Result<usize, String>> = OnceLock::new();
+    let job = JOB
+        .get_or_init(|| job().map(|handle| handle as usize))
+        .clone()?;
+    let process = child
+        .raw_handle()
+        .ok_or_else(|| "the process has no handle".to_owned())?;
+    // SAFETY: both handles are live: the job for this process's lifetime,
+    // the child's while it is owned.
+    let assigned = unsafe { AssignProcessToJobObject(job as _, process as _) };
+    match assigned {
+        0 => Err(format!(
+            "cannot assign it to a job: {}",
+            std::io::Error::last_os_error()
+        )),
+        _ => Ok(()),
     }
 }
 
 /// A job that ends its processes when its last handle closes: the one this
 /// process holds until it ends.
 #[cfg(windows)]
-fn job() -> Option<windows_sys::Win32::Foundation::HANDLE> {
+fn job() -> Result<windows_sys::Win32::Foundation::HANDLE, String> {
     use windows_sys::Win32::System::JobObjects::{
         CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -557,7 +572,10 @@ fn job() -> Option<windows_sys::Win32::Foundation::HANDLE> {
     unsafe {
         let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
         if job.is_null() {
-            return None;
+            return Err(format!(
+                "cannot create a job: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -567,9 +585,17 @@ fn job() -> Option<windows_sys::Win32::Foundation::HANDLE> {
             &limits as *const _ as *const _,
             std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         );
-        (set != 0).then_some(job)
+        match set {
+            0 => Err(format!(
+                "cannot set up a job: {}",
+                std::io::Error::last_os_error()
+            )),
+            _ => Ok(job),
+        }
     }
 }
 
 #[cfg(not(windows))]
-fn adopt(_child: &tokio::process::Child) {}
+fn adopt(_child: &tokio::process::Child) -> Result<(), String> {
+    Ok(())
+}
