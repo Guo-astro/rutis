@@ -67,8 +67,15 @@ jobs:
           BINARY="rutis-host${{ matrix.exe }}"
           cp "target/${{ matrix.target }}/release/${BINARY}" "stage/${NAME}/"
           cp crates/rutis-host/README.md LICENSE "stage/${NAME}/"
-          tar -C stage -czf "dist/${NAME}.tar.gz" "${NAME}"
-          (cd dist && sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256" 2>/dev/null || shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
+          # A .zip on Windows, where it opens without extra tools.
+          if [[ -n "${{ matrix.exe }}" ]]; then
+            ARCHIVE="${NAME}.zip"
+            (cd stage && 7z a -tzip "../dist/${ARCHIVE}" "${NAME}" >/dev/null)
+          else
+            ARCHIVE="${NAME}.tar.gz"
+            tar -C stage -czf "dist/${ARCHIVE}" "${NAME}"
+          fi
+          (cd dist && sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256" 2>/dev/null || shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256")
           mkdir -p npm-bin && cp "target/${{ matrix.target }}/release/${BINARY}" "npm-bin/${BINARY}"
       - uses: actions/upload-artifact@v4
         with:
@@ -223,7 +230,7 @@ jobs:
           merge-multiple: true
       - name: Release
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/rutis-host-*.tar.gz dist/rutis-host-*.tar.gz.sha256 \
+          gh release create "$GITHUB_REF_NAME" dist/rutis-host-* \
             --title "rutis $GITHUB_REF_NAME" \
             --notes-file "docs/releases/${GITHUB_REF_NAME#v}.en.md"
         env:

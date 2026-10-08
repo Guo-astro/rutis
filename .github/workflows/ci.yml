@@ -170,6 +170,12 @@ jobs:
       - run: cargo build --locked --release -p rutis-host --target x86_64-pc-windows-msvc
       - name: the binary runs
         run: target/x86_64-pc-windows-msvc/release/rutis-host.exe help
+      - name: the release archive (a .zip, as release.yml makes it)
+        run: |
+          mkdir -p stage/rutis-host dist
+          cp target/x86_64-pc-windows-msvc/release/rutis-host.exe stage/rutis-host/
+          (cd stage && 7z a -tzip ../dist/rutis-host.zip rutis-host >/dev/null)
+          7z l dist/rutis-host.zip | grep -q 'rutis-host.exe'
       - name: npm platform package
         run: |
           node node/rutis-host/scripts/platform-package.mjs win32 x64 target/x86_64-pc-windows-msvc/release/rutis-host.exe npm/win32-x64
