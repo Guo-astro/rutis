@@ -206,15 +206,11 @@ async fn dial_back(spawn: &Spawn) -> Result<Started, ConnectError> {
 const TOKEN_WAIT: Duration = Duration::from_secs(10);
 
 async fn loopback(spawn: &Spawn) -> Result<Started, ConnectError> {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .map_err(retryable)?;
-    let address = listener.local_addr().map_err(retryable)?;
-    let token = token().map_err(retryable)?;
+    let listener = Loopback::bind().await.map_err(retryable)?;
     let mut child = spawn
         .command()
-        .env(CHANNEL_TOKEN, &token)
-        .arg(format!("tcp:{address}"))
+        .env(CHANNEL_TOKEN, listener.token())
+        .arg(listener.address())
         .args(&spawn.trailing)
         .spawn()
         .map_err(|error| cannot_start(spawn, error))?;
@@ -228,48 +224,85 @@ async fn loopback(spawn: &Spawn) -> Result<Started, ConnectError> {
             ),
         });
     }
-    // Anyone on this machine can connect: only the process knows the token.
-    // Each connection presents it on its own, so one that stays silent does
-    // not hold up the process's; those still presenting when it has are
-    // dropped with this set.
-    let mut presenting = tokio::task::JoinSet::new();
-    let stream = loop {
-        tokio::select! {
-            accepted = listener.accept() => {
-                let (mut stream, _) = accepted.map_err(retryable)?;
-                let token = token.clone();
-                presenting.spawn(async move {
-                    let presented = tokio::time::timeout(TOKEN_WAIT, read_line(&mut stream)).await;
-                    matches!(presented, Ok(Ok(line)) if line == token).then_some(stream)
-                });
-            }
-            Some(presented) = presenting.join_next(), if !presenting.is_empty() => {
-                if let Ok(Some(stream)) = presented {
-                    break stream;
+    let channel = tokio::select! {
+        channel = listener.accept() => channel.map_err(retryable)?,
+        status = child.wait() => return Err(ConnectError::Retryable {
+            reason: format!("the process exited before connecting: {}", describe(status)),
+        }),
+    };
+    Ok((channel, Child::watch(child), None))
+}
+
+/// A loopback listener for one process, and the token that process
+/// presents ([`Handover::Loopback`]).
+pub(crate) struct Loopback {
+    listener: tokio::net::TcpListener,
+    address: std::net::SocketAddr,
+    token: String,
+}
+
+impl Loopback {
+    pub(crate) async fn bind() -> std::io::Result<Self> {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+        let address = listener.local_addr()?;
+        Ok(Self {
+            listener,
+            address,
+            token: token()?,
+        })
+    }
+
+    /// The channel argument the process gets: `tcp:<host>:<port>`.
+    pub(crate) fn address(&self) -> String {
+        format!("tcp:{}", self.address)
+    }
+
+    /// The token, for the process's [`CHANNEL_TOKEN`].
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// The channel of the first connection that presents the token. Anyone
+    /// on this machine can connect: only the process knows the token. Each
+    /// connection presents it on its own, so one that stays silent does not
+    /// hold up the process's; those still presenting when it has are
+    /// dropped. Waits for ever: the caller races it with the process.
+    pub(crate) async fn accept(self) -> std::io::Result<Channel> {
+        let mut presenting = tokio::task::JoinSet::new();
+        let stream = loop {
+            tokio::select! {
+                accepted = self.listener.accept() => {
+                    let (mut stream, _) = accepted?;
+                    let token = self.token.clone();
+                    presenting.spawn(async move {
+                        let presented = tokio::time::timeout(TOKEN_WAIT, read_line(&mut stream)).await;
+                        matches!(presented, Ok(Ok(line)) if line == token).then_some(stream)
+                    });
+                }
+                Some(presented) = presenting.join_next(), if !presenting.is_empty() => {
+                    if let Ok(Some(stream)) = presented {
+                        break stream;
+                    }
                 }
             }
-            status = child.wait() => return Err(ConnectError::Retryable {
-                reason: format!("the process exited before connecting: {}", describe(status)),
-            }),
-        }
-    };
-    drop(presenting);
-    let stream = stream.into_std().map_err(retryable)?;
-    stream.set_nonblocking(false).map_err(retryable)?;
-    let _ = stream.set_nodelay(true);
-    let reader = stream.try_clone().map_err(retryable)?;
-    let closer = Arc::new(ShutTcp(stream.try_clone().map_err(retryable)?));
-    let channel = lines::channel(
-        reader,
-        stream,
-        closer,
-        ChannelInfo {
-            transport: "tcp",
-            peer: None,
-            label: String::new(),
-        },
-    );
-    Ok((channel, Child::watch(child), None))
+        };
+        drop(presenting);
+        let stream = stream.into_std()?;
+        stream.set_nonblocking(false)?;
+        let _ = stream.set_nodelay(true);
+        let reader = stream.try_clone()?;
+        let closer = Arc::new(ShutTcp(stream.try_clone()?));
+        Ok(lines::channel(
+            reader,
+            stream,
+            closer,
+            ChannelInfo {
+                transport: "tcp",
+                peer: None,
+                label: String::new(),
+            },
+        ))
+    }
 }
 
 /// A random token, hex encoded.
@@ -515,7 +548,7 @@ fn peek_exit(pid: u32) -> Option<std::process::ExitStatus> {
 /// Waits until the process `pid` ends and reports its exit code, through a
 /// handle of its own, independently of any runtime.
 #[cfg(windows)]
-fn peek_exit(pid: u32) -> Option<std::process::ExitStatus> {
+pub(crate) fn peek_exit(pid: u32) -> Option<std::process::ExitStatus> {
     use std::os::windows::process::ExitStatusExt;
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{
@@ -550,7 +583,7 @@ fn peek_exit(_pid: u32) -> Option<std::process::ExitStatus> {
 /// not outlive its host. A process that cannot be put in it is an error.
 /// Elsewhere, the process ends when its channel closes.
 #[cfg(windows)]
-fn adopt(child: &tokio::process::Child) -> Result<(), String> {
+pub(crate) fn adopt(child: &tokio::process::Child) -> Result<(), String> {
     use std::sync::OnceLock;
     use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
     static JOB: OnceLock<Result<usize, String>> = OnceLock::new();
@@ -609,6 +642,6 @@ fn job() -> Result<windows_sys::Win32::Foundation::HANDLE, String> {
 }
 
 #[cfg(not(windows))]
-fn adopt(_child: &tokio::process::Child) -> Result<(), String> {
+pub(crate) fn adopt(_child: &tokio::process::Child) -> Result<(), String> {
     Ok(())
 }

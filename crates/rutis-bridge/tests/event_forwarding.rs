@@ -1,4 +1,3 @@
-#![cfg(unix)]
 //! Cordis events forwarded to rutis listeners: `emit` is fire and forget,
 //! `parallel` waits until the rutis listeners are done.
 

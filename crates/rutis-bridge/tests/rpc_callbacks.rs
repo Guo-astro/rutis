@@ -1,4 +1,3 @@
-#![cfg(unix)]
 use rutis_bridge::runtime::Process;
 use rutis_bridge::session::{Error, Value};
 use serde_json::json;
@@ -288,6 +287,8 @@ async fn fixture_passes(peer: Connection, mut child: tokio::process::Child) {
     peer.closed().await;
 }
 
+/// The fixture dials back a Unix socket.
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle() {
     let directory = tempfile::tempdir().unwrap();

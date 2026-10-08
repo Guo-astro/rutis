@@ -1,5 +1,3 @@
-#![cfg(unix)]
-
 use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
@@ -137,7 +135,11 @@ async fn process_exit_fails_both_pending_and_subsequent_calls() {
     );
     match process.call("lifecycle", "crash", json!([])) {
         Err(Error::Transport(message)) => {
-            assert_eq!(message, "Cordis process exited with exit status: 17")
+            // `exit status: 17` on Unix, `exit code: 17` on Windows.
+            assert!(
+                message.starts_with("Cordis process exited with exit ") && message.ends_with(" 17"),
+                "{message}"
+            )
         }
         other => panic!("expected a transport error, got {other:?}"),
     }

@@ -1,5 +1,4 @@
 //! Error graphs must survive a Rust relay without losing native JS structure.
-#![cfg(unix)]
 use std::io::Write;
 use std::path::Path;
 

@@ -1,4 +1,3 @@
-#![cfg(unix)]
 //! Real published Cordis plugins mounted through rutis-bridge, compared with
 //! the same calls in native Cordis. Scenarios live in `node/baseline`;
 //! run `npm --prefix node/baseline ci` first, otherwise this test skips.

@@ -16,7 +16,6 @@ pub mod build;
 #[cfg(unix)]
 pub mod server;
 
-#[cfg(unix)]
 pub use crate::runtime::{EmitToCordis, Events, Host, Mount, Process, Projection};
 /// What generated code uses, by the paths it names them with.
 pub use crate::session as rpc;
@@ -45,8 +44,6 @@ pub fn npm_root(built: &str) -> std::path::PathBuf {
 #[macro_export]
 macro_rules! include_mounts {
     () => {
-        // Mounts are generated on Unix only; elsewhere there is nothing to include.
-        #[cfg(unix)]
         include!(concat!(env!("OUT_DIR"), "/rutis_bridge_mounts.rs"));
     };
 }

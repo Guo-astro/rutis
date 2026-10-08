@@ -1,4 +1,3 @@
-#![cfg(unix)]
 //! A Cordis service slot projected into rutis follows replacement and
 //! withdrawal through public rutis API, while earlier snapshots keep
 //! addressing their original object.

@@ -1,4 +1,3 @@
-#![cfg(unix)]
 //! Dropping an async call cancels it: the AbortSignal the Cordis method
 //! received aborts, the late reply is discarded, and the session goes on.
 

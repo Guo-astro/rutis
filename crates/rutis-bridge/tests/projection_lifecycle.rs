@@ -1,4 +1,3 @@
-#![cfg(unix)]
 //! Regressions for service projection and export lifecycle (PR #73 review of
 //! 908da2c): withdrawal/re-registration ordering, handles held across
 //! reentrant replacement, cycles after close, stable identity of Service
