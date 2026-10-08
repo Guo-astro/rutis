@@ -141,7 +141,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: node scripts/train.mjs
       - name: cargo package
-        run: cargo package --locked -p rutis-bridge -p rutis-loader -p rutis-host
+        run: cargo package --locked $(node scripts/train.mjs --crates | sed 's/[^ ]*/-p &/g')
       - name: npm pack
         run: |
           for package in node/rutis node/rutis-runtime node/rutis-host; do
@@ -164,27 +164,29 @@ jobs:
           manylinux: "2_28"
           args: --release --locked --manifest-path crates/rutis-host/Cargo.toml --out wheels
 
-  # rutis 相对 crates.io 最新版的公开 API 变化：发现破坏性变更时给出警告，
-  # 并在 job 摘要中列出，提示发布时需要提升的版本；不使 CI 失败（0.x 允许在
-  # minor 版本中破坏）。真正的拦截在 publish-rutis.yml：版本号不允许的破坏性
-  # 变更会使发布失败。
+  # 列车里已发布的 crate 相对 crates.io 最新版的公开 API 变化：发现破坏性变更
+  # 时给出警告，并在 job 摘要中列出，提示发布时需要提升的版本；不使 CI 失败
+  # （0.x 允许在 minor 版本中破坏）。真正的拦截在 release.yml：版本号不允许的
+  # 破坏性变更会使发布失败。
   semver-rutis:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/install-action@cargo-semver-checks
-      - name: Report API changes since the latest rutis release
+      - name: Report API changes since the latest release
         run: |
-          if cargo semver-checks -p rutis > semver.txt 2>&1; then
-            echo "No breaking change since the latest rutis release." >> "$GITHUB_STEP_SUMMARY"
-          elif ! grep -q 'semver requires new' semver.txt; then
-            # The tool itself failed (e.g. the baseline could not be built).
-            cat semver.txt
-            exit 1
-          else
-            echo "::warning title=rutis semver::Breaking API changes since the latest crates.io release; the next rutis release must bump the minor version (0.x). See the job summary."
-            { echo '### Breaking changes since the latest rutis release'; echo; echo '```'; sed 's/\x1b\[[0-9;]*m//g' semver.txt | grep -vE '^\s+(Building|Built|Parsing|Parsed|Checking|Checked|Compiling|Downloaded|Updating)'; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          fi
+          for crate in rutis rutis-bridge rutis-loader rutis-host; do
+            if cargo semver-checks -p "$crate" > semver.txt 2>&1; then
+              echo "No breaking change in $crate since its latest release." >> "$GITHUB_STEP_SUMMARY"
+            elif ! grep -q 'semver requires new' semver.txt; then
+              # The tool itself failed (e.g. the baseline could not be built).
+              cat semver.txt
+              exit 1
+            else
+              echo "::warning title=$crate semver::Breaking API changes since the latest crates.io release; the next train release must bump the minor version (0.x). See the job summary."
+              { echo "### Breaking changes in $crate since its latest release"; echo; echo '```'; sed 's/\x1b\[[0-9;]*m//g' semver.txt | grep -vE '^\s+(Building|Built|Parsing|Parsed|Checking|Checked|Compiling|Downloaded|Updating)'; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
 
   dylib-linux:
     runs-on: ubuntu-24.04

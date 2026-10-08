@@ -1,15 +1,17 @@
 # The release train, tag vX.Y.Z: everything released together at one version
 # (scripts/train.mjs checks it).
 #
-#   crates.io  rutis-bridge, rutis-loader, rutis-host
+#   crates.io  rutis (the kernel), rutis-bridge, rutis-loader, rutis-host,
+#              and the dylib toolchain: rutis-sdk, rutis-dylib,
+#              rutis-dylib-meta, rutis-dylib-launcher
 #   npm        @arcships/rutis, @arcships/rutis-runtime, @arcships/rutis-host
 #              (and its platform packages @arcships/rutis-host-<os>-<cpu>)
 #   PyPI       rutis, rutis-host (a wheel per platform)
 #   GitHub     rutis-host binaries
 #
 # Each publish skips what its registry already has, so a release that fails
-# halfway is finished by running it again. The kernel releases on its own
-# (rutis-v*, publish-rutis.yml); rutis-cli too (cli-v*, release-cli.yml).
+# halfway is finished by running it again. rutis-cli releases on its own
+# (cli-v*, release-cli.yml).
 name: release
 
 on:
@@ -105,12 +107,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
+      # A release whose version does not allow its API changes (a breaking
+      # change in a patch release) fails here, before publishing. Crates not
+      # yet on crates.io have nothing to compare with.
+      - name: Check semver against the latest crates.io release
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: rutis,rutis-bridge,rutis-loader,rutis-host
       - name: Package (each crate built from its package, against the others)
-        run: cargo package --locked -p rutis-bridge -p rutis-loader -p rutis-host
-      - name: Publish what crates.io does not have
+        run: cargo package --locked $(node scripts/train.mjs --crates | sed 's/[^ ]*/-p &/g')
+      - name: Publish what crates.io does not have, each after those it depends on
         run: |
           version="${GITHUB_REF_NAME#v}"
-          for crate in rutis-bridge rutis-loader rutis-host; do
+          for crate in $(node scripts/train.mjs --crates); do
             if curl -sf -A "rutis release (github.com/arcships/rutis)" "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
               echo "$crate $version is already published"
             else

@@ -30,7 +30,7 @@ on:
       - "rust-toolchain.toml"
       - ".github/workflows/dylib-windows.yml"
   push:
-    tags: ["v*", "rutis-v*", "loader-v*"]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
