@@ -164,7 +164,12 @@ async fn remote_with_start_delay(language: Language, start_delay_ms: u64) -> Rem
             break address.to_owned();
         }
     };
-    tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+    // What the runtime reports later goes to the test's output.
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = lines.next_line().await {
+            eprintln!("runtime: {line}");
+        }
+    });
     Remote {
         _process: process,
         address,

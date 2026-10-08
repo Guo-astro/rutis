@@ -102,7 +102,12 @@ async fn remote_python(project: &Path) -> (tokio::process::Child, String) {
             break address.to_owned();
         }
     };
-    tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+    // What the runtime reports later goes to the test's output.
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = lines.next_line().await {
+            eprintln!("runtime: {line}");
+        }
+    });
     (child, address)
 }
 
@@ -234,7 +239,12 @@ async fn a_remote_node_runtime_resolves_and_runs_npm_rows() {
             break address.to_owned();
         }
     };
-    tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+    // What the runtime reports later goes to the test's output.
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = lines.next_line().await {
+            eprintln!("runtime: {line}");
+        }
+    });
 
     let root = Ctx::root().unwrap();
     root.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Clock::default()))
