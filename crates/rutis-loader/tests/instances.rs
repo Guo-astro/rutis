@@ -45,6 +45,9 @@ struct Cfg {
     reject_in: Option<String>,
     #[serde(default)]
     quit: bool,
+    /// Fails in `apply` in the instance whose title this is.
+    #[serde(default)]
+    fail_in: Option<String>,
 }
 
 #[derive(Clone)]
@@ -71,6 +74,11 @@ impl Plugin for Probe {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
         Box::pin(async move {
+            if self.config.fail_in.as_deref() == Some(self.title.as_str()) {
+                return Err(CordisError::PluginFailed(
+                    format!("failed in {}", self.title).into(),
+                ));
+            }
             let label = &self.config.label;
             let line = match &self.mode {
                 Mode::Echo => format!("apply {label}"),
@@ -835,4 +843,69 @@ async fn a_top_level_instance_needs_the_loader_context_or_above() {
     assert!(s.loader.create_instance(&branch, "doc").await.is_err());
     // The root, above the loader, still works.
     s.create("B").await;
+}
+
+#[tokio::test]
+async fn a_failing_copy_does_not_exempt_the_others_from_a_group_check() {
+    let s = setup(DOC).await;
+    s.create("A").await;
+    for (id, name, group, parent, config) in [
+        ("g", "", true, "doc", json!(null)),
+        (
+            "inner",
+            "doc-reader",
+            false,
+            "g",
+            json!({ "label": "i", "fail_in": "B" }),
+        ),
+    ] {
+        let entry = NewEntry {
+            id: Some(id.into()),
+            name: name.into(),
+            group,
+            config,
+            ..NewEntry::default()
+        };
+        s.loader.create(entry, Some(parent), None).await.unwrap();
+    }
+    // The copy in B fails in apply; the one in A runs.
+    let b = s.create("B").await;
+    assert!(
+        b.report
+            .iter()
+            .any(|(id, r)| id == "inner" && matches!(r, InstanceResult::Failed(_))),
+        "{:?}",
+        b.report
+    );
+    s.take_log();
+    let error = s.loader.move_to("g", None, None).await.unwrap_err();
+    assert!(matches!(error, LoaderError::Rejected { .. }), "{error}");
+    // The healthy copy in A kept running.
+    assert!(s.take_log().is_empty());
+}
+
+#[tokio::test]
+async fn a_failure_already_there_does_not_block_a_group_edit() {
+    let mut catalog = ServiceCatalog::new();
+    catalog.register::<Shared>("shared");
+    let (s, report) = setup_report(
+        r#"[{ "insert": [
+        { "id": "doc", "group": true, "instanced": true, "config": [
+            { "id": "g", "group": true, "config": [
+                { "id": "bad", "name": "echo", "config": { "invalid": true } },
+                { "id": "good", "name": "echo", "config": { "label": "x" } }
+            ] }
+        ] }
+    ] }]"#,
+        MemStore::default(),
+        catalog,
+    )
+    .await;
+    assert!(report.failures.is_empty(), "{report:?}");
+    s.create("A").await;
+    let mut isolate = BTreeMap::new();
+    isolate.insert("shared".to_owned(), Isolate::Private);
+    // `bad` is refused the same way before and after.
+    s.loader.set_isolate("g", isolate).await.unwrap();
+    assert_eq!(running(&s.copies("good")[0]), Some(FiberState::Active));
 }

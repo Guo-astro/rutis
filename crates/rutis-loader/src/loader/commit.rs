@@ -110,9 +110,10 @@ const CONFLICT_RETRIES: usize = 3;
 impl Inner {
     /// Check a row would start: resolve, validate the config, build and
     /// validate the instance, for every copy (each instance it runs in).
-    /// For a group, check every plugin below it the same way, in the
-    /// contexts the group would give them; one already failing is left to
-    /// reconcile. Nothing is spawned. With `resolved`, check that module
+    /// For a group, check every copy of every plugin below it the same way,
+    /// in the contexts the group would give them; an error that is already
+    /// a failure of that row (same id and message, as `commit` compares) is
+    /// left to reconcile. Nothing is spawned. With `resolved`, check that module
     /// instead of resolving the name.
     pub(super) async fn dry_run(
         &self,
@@ -122,7 +123,7 @@ impl Inner {
     ) -> Result<(), LoaderError> {
         // The plugins to check, and where each copy would run: its context
         // without the plugin's own scope, and the instances enclosing it.
-        let (desired, checks) = {
+        let (desired, checks, failing) = {
             let state = self.state.lock().unwrap();
             let root = state.groups.get(&None).map(|g| g.ctx.clone());
             let desired = self.build_desired(layers, root.as_ref());
@@ -141,15 +142,15 @@ impl Inner {
             if !desired.wanted(row) {
                 return Ok(());
             }
-            let failing: HashSet<String> = Self::failures(&state)
+            let failing: HashSet<(String, String)> = Self::failures(&state)
                 .into_iter()
-                .map(|(f, _)| f.id)
+                .map(|(f, _)| (f.id, f.error))
                 .collect();
             let mut checks: Vec<(usize, Vec<Target>)> = Vec::new();
             for (index, leaf) in desired.rows.iter().enumerate() {
                 if leaf.group
                     || !desired.wanted(leaf)
-                    || (leaf.id != id && (failing.contains(&leaf.id) || !below(&desired, leaf, id)))
+                    || (leaf.id != id && !below(&desired, leaf, id))
                 {
                     continue;
                 }
@@ -160,39 +161,57 @@ impl Inner {
                 }
                 checks.push((index, targets));
             }
-            (desired, checks)
+            (desired, checks, failing)
         };
         for (index, targets) in checks {
             let row = &desired.rows[index];
+            // The edited row itself must start; a plugin below a group only
+            // must not fail in a new way.
+            let tolerated = |error: &LoaderError| {
+                row.id != id && failing.contains(&(row.id.clone(), error.to_string()))
+            };
             let name = row.name.clone().unwrap_or_default();
             let module = match (&resolved, row.id == id) {
-                (Some(resolved), true) => resolved.clone(),
-                (_, true) => self.resolver.resolve(&name).await?,
+                (Some(resolved), true) => Ok(resolved.clone()),
+                (_, true) => self.resolver.resolve(&name).await,
                 (_, false) => {
                     let cached = self.state.lock().unwrap().resolved.get(&name).cloned();
                     match cached {
-                        Some(result) => result?,
-                        None => self.resolver.resolve(&name).await?,
+                        Some(result) => result,
+                        None => self.resolver.resolve(&name).await,
                     }
                 }
             };
-            self.dry_run_copies(row, &module, targets)?;
+            match module {
+                Ok(module) => self.dry_run_copies(row, &module, targets, &tolerated)?,
+                Err(error) if tolerated(&error) => {}
+                Err(error) => return Err(error),
+            }
         }
         Ok(())
     }
 
     /// Check each copy of the plugin row `row` would start in its context.
+    /// A copy failing with an error `tolerated` accepts does not count.
     fn dry_run_copies(
         &self,
         row: &Row,
         resolved: &crate::resolver::Resolved,
         targets: Vec<Target>,
+        tolerated: &dyn Fn(&LoaderError) -> bool,
     ) -> Result<(), LoaderError> {
+        let check = |result: Result<(), LoaderError>| match result {
+            Err(error) if !tolerated(&error) => Err(error),
+            _ => Ok(()),
+        };
         // Evaluate where the plugin would run: its group, with its isolates.
         let scope = if resolved.foreign_scope {
             super::desired::RowScope::default()
         } else {
-            row.scope.clone()?
+            match &row.scope {
+                Ok(scope) => scope.clone(),
+                Err(error) => return check(Err(error.clone())),
+            }
         };
         let rejected = |error: CordisError| LoaderError::Rejected {
             id: row.id.clone(),
@@ -200,7 +219,13 @@ impl Inner {
         };
         for (base, build) in targets {
             let ctx = base.map(|ctx| scope.context(&ctx));
-            let config = self.eval().value(&row.config, ctx.as_ref())?;
+            let config = match self.eval().value(&row.config, ctx.as_ref()) {
+                Ok(config) => config,
+                Err(error) => {
+                    check(Err(error))?;
+                    continue;
+                }
+            };
             let checked = catch_unwind(AssertUnwindSafe(|| {
                 let factory = match &resolved.scoped {
                     Some(scoped) => scoped(&build)?,
@@ -209,15 +234,14 @@ impl Inner {
                 factory.validate_config(&config)?;
                 factory.build(&config)?.validate()
             }));
-            match checked {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => return Err(rejected(error)),
-                Err(_) => {
-                    return Err(rejected(CordisError::PluginFailed(
-                        "panicked during the dry run".into(),
-                    )))
-                }
-            }
+            let result = match checked {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(rejected(error)),
+                Err(_) => Err(rejected(CordisError::PluginFailed(
+                    "panicked during the dry run".into(),
+                ))),
+            };
+            check(result)?;
         }
         Ok(())
     }
