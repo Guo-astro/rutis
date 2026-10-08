@@ -118,6 +118,7 @@ impl Isolate {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum EntryStatus {
     /// The row itself is disabled.
     Disabled,
@@ -135,6 +136,7 @@ pub enum EntryStatus {
 
 /// The instance an entry runs in.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct InstanceInfo {
     /// The instance's group fiber.
     pub plugin: PluginId,
@@ -144,6 +146,7 @@ pub struct InstanceInfo {
 }
 
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct EntryInfo {
     pub id: String,
     /// The row as composed (raw; expressions are not evaluated).

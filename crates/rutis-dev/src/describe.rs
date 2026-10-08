@@ -59,6 +59,7 @@ pub fn entry(e: &EntryInfo, dev: bool) -> Value {
             Some(format!("{:?}", s.state)),
             s.error.as_ref().map(|e| e.to_string()),
         ),
+        status => ("unknown", Some(format!("{status:?}")), None),
     };
     json!({
         "id": e.id,

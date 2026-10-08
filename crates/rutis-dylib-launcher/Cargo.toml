@@ -2,7 +2,7 @@
 name = "rutis-dylib-launcher"
 description = "Pre-execution artifact verifier for a rutis dylib host bundle"
 edition.workspace = true
-version = "0.1.0"
+version = "0.8.0"
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true

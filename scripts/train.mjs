@@ -1,6 +1,7 @@
 // The release train: the packages released together at one version.
 //   node scripts/train.mjs            print the version; fail on a mismatch
-//   node scripts/train.mjs v0.7.0     also fail unless the version is 0.7.0
+//   node scripts/train.mjs v0.8.0     also fail unless the version is 0.8.0
+//   node scripts/train.mjs --crates   the crates, in publishing order
 import { readFileSync } from 'node:fs'
 
 const root = new URL('../', import.meta.url)
@@ -10,20 +11,34 @@ const cargo = path => read(path).match(/^version = "([^"]+)"/m)?.[1]
 const pyproject = path => read(path).match(/^version = "([^"]+)"/m)?.[1]
 const dependency = (path, name) => read(path).match(new RegExp(`^${name} = \\{[^}]*version = "([^"]+)"`, 'm'))?.[1]
 
+// The crates, in the order they are published (each after those it depends on).
+export const crates = [
+  'rutis',
+  'rutis-dylib-meta',
+  'rutis-sdk',
+  'rutis-bridge',
+  'rutis-loader',
+  'rutis-dylib',
+  'rutis-host',
+  'rutis-dylib-launcher',
+]
+const manifest = name => `crates/${name}/Cargo.toml`
+
 const versions = {
-  'crates/rutis-bridge': cargo('crates/rutis-bridge/Cargo.toml'),
-  'crates/rutis-loader': cargo('crates/rutis-loader/Cargo.toml'),
-  'crates/rutis-host': cargo('crates/rutis-host/Cargo.toml'),
+  ...Object.fromEntries(crates.map(name => [`crates/${name}`, cargo(manifest(name))])),
   'npm @arcships/rutis': json('node/rutis/package.json').version,
   'npm @arcships/rutis-runtime': json('node/rutis-runtime/package.json').version,
   'npm @arcships/rutis-host': json('node/rutis-host/package.json').version,
   'pypi rutis': pyproject('python/rutis/pyproject.toml'),
+  // What the Python runtime says it is when it greets.
+  'pypi rutis (implementation)': read('python/rutis/rutis/peer.py').match(/^IMPLEMENTATION = \{"name": "rutis", "version": "([^"]+)"\}/m)?.[1],
 }
 const host = json('node/rutis-host/package.json')
 const references = {
-  'rutis-loader → rutis-bridge': dependency('crates/rutis-loader/Cargo.toml', 'rutis-bridge'),
-  'rutis-host → rutis-bridge': dependency('crates/rutis-host/Cargo.toml', 'rutis-bridge'),
-  'rutis-host → rutis-loader': dependency('crates/rutis-host/Cargo.toml', 'rutis-loader'),
+  // Every dependency of a crate in the train on another one.
+  ...Object.fromEntries(crates.flatMap(from => crates
+    .map(to => [`${from} → ${to}`, dependency(manifest(from), to)])
+    .filter(([, found]) => found !== undefined))),
   '@arcships/rutis-host → @arcships/rutis-runtime': host.dependencies['@arcships/rutis-runtime'],
   ...Object.fromEntries(Object.entries(host.optionalDependencies).map(([name, version]) => [`@arcships/rutis-host → ${name}`, version])),
 }
@@ -33,7 +48,7 @@ const references = {
 // verbatim; node/rutis-host/package.json lists them in optionalDependencies. Checking that
 // `npm @arcships/rutis-host` and its optionalDependencies match the train therefore also
 // guarantees the platform packages are at the train version.
-const version = versions['crates/rutis-bridge']
+const version = versions['crates/rutis']
 const wrong = Object.entries({ ...versions, ...references })
   .filter(([, v]) => v !== version)
   .map(([what, found]) => `${what} is ${found}, not ${version}`)
@@ -42,9 +57,10 @@ const [major, minor] = version.split('.').map(Number)
 const range = major === 0 ? `rutis>=0.${minor},<0.${minor + 1}` : `rutis>=${major},<${major + 1}`
 if (!read('crates/rutis-host/pyproject.toml').includes(`"${range}"`)) wrong.push(`pypi rutis-host must depend on "${range}"`)
 const tag = process.argv[2]
-if (tag && tag !== `v${version}`) wrong.push(`the tag is ${tag}, but the train is at ${version}`)
+if (tag && tag !== '--crates' && tag !== `v${version}`) wrong.push(`the tag is ${tag}, but the train is at ${version}`)
 if (wrong.length) {
   for (const line of wrong) console.error(line)
   process.exit(1)
 }
-console.log(version)
+if (process.argv[2] === '--crates') console.log(crates.join(' '))
+else console.log(version)

@@ -10,7 +10,7 @@ Areas where reports are especially valuable: node links (authentication, TLS, th
 
 ## Supported versions
 
-rutis is at 0.x. Fixes go into the latest release of each package: the `rutis` core, and the 0.7 release train (`rutis-bridge`, `rutis-loader`, `rutis-host` and the npm and PyPI packages).
+rutis is at 0.x. Fixes go into the latest release of the 0.8 release train (the `rutis` core, `rutis-bridge`, `rutis-loader`, `rutis-host`, the dylib toolchain, and the npm and PyPI packages).
 
 ## 报告漏洞
 
@@ -22,4 +22,4 @@ rutis is at 0.x. Fixes go into the latest release of each package: the `rutis` c
 
 ## 支持的版本
 
-rutis 处于 0.x。修复会发布在各包的最新版本中：内核 `rutis`，以及 0.7 发布列车（`rutis-bridge`、`rutis-loader`、`rutis-host` 及 npm、PyPI 包）。
+rutis 处于 0.x。修复会发布在 0.8 发布列车的最新版本中（内核 `rutis`、`rutis-bridge`、`rutis-loader`、`rutis-host`、dylib 工具链及 npm、PyPI 包）。
