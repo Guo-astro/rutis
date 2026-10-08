@@ -42,7 +42,7 @@ The nightly stress workflow also runs two soak tests (repeated link disconnect/r
 
 ## 0.8.0
 
-From this release the core and the dylib toolchain are in the train: push only `v0.8.0`; the `rutis-v*` tags and publish-rutis.yml are retired. `rutis-sdk`, `rutis-dylib`, `rutis-dylib-meta` and `rutis-dylib-launcher` are published to crates.io for the first time. Before releasing, re-add the `rutis-host` trusted publisher on PyPI with environment `pypi-host` (#154).
+From this release the core and the dylib toolchain are in the train: push only `v0.8.0`; the `rutis-v*` tags and publish-rutis.yml are retired. `rutis-sdk`, `rutis-dylib`, `rutis-dylib-meta` and `rutis-dylib-launcher` are published to crates.io for the first time.
 
 ## 0.7.0
 

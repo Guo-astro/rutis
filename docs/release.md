@@ -42,7 +42,7 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 ## 0.8.0
 
-内核和 dylib 工具链从这一版起并入列车，只推 `v0.8.0`；`rutis-v*` tag 和 publish-rutis.yml 停用。`rutis-sdk`、`rutis-dylib`、`rutis-dylib-meta`、`rutis-dylib-launcher` 是首次发布到 crates.io。发布前在 PyPI 上把 `rutis-host` 的 trusted publisher 重新加上，environment 填 `pypi-host`（#154）。
+内核和 dylib 工具链从这一版起并入列车，只推 `v0.8.0`；`rutis-v*` tag 和 publish-rutis.yml 停用。`rutis-sdk`、`rutis-dylib`、`rutis-dylib-meta`、`rutis-dylib-launcher` 是首次发布到 crates.io。
 
 ## 0.7.0
 
