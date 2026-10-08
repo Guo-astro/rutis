@@ -1,5 +1,5 @@
 //! Python rows alone: no Node runtime is compiled or started.
-#![cfg(all(unix, feature = "python"))]
+#![cfg(feature = "python")]
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};

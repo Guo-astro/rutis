@@ -2,7 +2,7 @@
 //! services resolved between rows natively, per-row load/update/unload,
 //! isolate and inject forwarded, schemastery schema exported; services
 //! shared with rutis by name (multilanguage M1).
-#![cfg(all(unix, feature = "node"))]
+#![cfg(feature = "node")]
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -222,7 +222,10 @@ async fn volatile_changes_reach_cordis_in_place() {
     let tunable = dir.path().join("tunable.mjs");
     std::fs::write(
         &tunable,
-        TUNABLE.replace("COSMOKIT", &format!("file://{}", cosmokit.display())),
+        TUNABLE.replace(
+            "COSMOKIT",
+            url::Url::from_file_path(&cosmokit).unwrap().as_str(),
+        ),
     )
     .unwrap();
 
@@ -351,7 +354,10 @@ async fn volatile_changes_are_never_dropped() {
     let waiting = write(
         "waiting.mjs",
         TUNABLE
-            .replace("COSMOKIT", &format!("file://{}", cosmokit.display()))
+            .replace(
+                "COSMOKIT",
+                url::Url::from_file_path(&cosmokit).unwrap().as_str(),
+            )
             .replace("['probe']", "['probe', 'late']"),
     );
     let plain = write("plain.mjs", PLAIN.to_owned());
@@ -659,6 +665,7 @@ async fn a_runtime_that_cannot_start_does_not_block_resolution() {
 // ── Unloading a runtime that is still starting ──────────────────
 
 /// A runtime package whose runner records its PID and never connects.
+#[cfg(unix)]
 fn hanging_runtime(dir: &Path) -> PathBuf {
     let package = dir.join("hanging");
     std::fs::create_dir_all(package.join("src")).unwrap();
@@ -677,6 +684,7 @@ fn hanging_runtime(dir: &Path) -> PathBuf {
     package
 }
 
+#[cfg(unix)]
 fn pids(package: &Path) -> Vec<i32> {
     std::fs::read_to_string(package.join("pids"))
         .unwrap_or_default()
@@ -686,6 +694,7 @@ fn pids(package: &Path) -> Vec<i32> {
 }
 
 /// Gone, or a zombie waiting to be reaped: it no longer runs.
+#[cfg(unix)]
 fn stopped(pid: i32) -> bool {
     let out = std::process::Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
@@ -695,6 +704,7 @@ fn stopped(pid: i32) -> bool {
     stat.trim().is_empty() || stat.trim().starts_with('Z')
 }
 
+#[cfg(unix)]
 async fn starting(runtime: &FiberView, package: &Path, count: usize) {
     until("the runner to start", || {
         pids(package).len() >= count && runtime.state().state == FiberState::Loading
@@ -702,6 +712,8 @@ async fn starting(runtime: &FiberView, package: &Path, count: usize) {
     .await;
 }
 
+/// Watches the runner processes with `ps`.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_starting_runtime_can_be_disposed_or_restarted() {
     let dir = tempfile::tempdir().unwrap();

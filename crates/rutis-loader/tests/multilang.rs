@@ -2,7 +2,7 @@
 //! JavaScript (`definePlugin`, in the Node runtime) and in Python (in the
 //! Python runtime) behave the same under rutis-loader, and use each other's
 //! services across the two processes.
-#![cfg(all(unix, feature = "node", feature = "python"))]
+#![cfg(all(feature = "node", feature = "python"))]
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -203,7 +203,7 @@ fn write_plugins(dir: &Path) -> (PathBuf, PathBuf) {
         .join("node/rutis/src/index.mjs")
         .canonicalize()
         .unwrap();
-    let plugin = format!("file://{}", plugin.display());
+    let plugin = url::Url::from_file_path(&plugin).unwrap().to_string();
     for (name, text) in [
         ("js_provider", JS_PROVIDER),
         ("js_consumer", JS_CONSUMER),

@@ -63,6 +63,13 @@ jobs:
       - name: cargo test (rutis-loader, every row kind)
         run: cargo test -p rutis-loader --features node,python,peer
 
+      # The same rows with the runtimes started as on Windows: a loopback
+      # channel and a one-time token instead of an inherited socket.
+      - name: cargo test (rutis-loader runtimes, loopback channels)
+        env:
+          RUTIS_LOCAL_HANDOVER: loopback
+        run: cargo test -p rutis-loader --features node,python,peer --test runtime_rows --test python_rows --test multilang --test leases --test instance_runtimes
+
       # Both runtimes, every transport, and the conformance suites.
       - name: cargo test (rutis-bridge, all features)
         run: cargo test -p rutis-bridge --all-features
@@ -214,6 +221,27 @@ jobs:
         run: bash tools/test-dylib-repro.sh
       - name: external plugin build against a prebuilt SDK
         run: bash tools/test-sdk-bundle.sh
+
+  # The runtimes on Windows: Node and Python processes on loopback
+  # channels, rows of both languages, peers and WebSocket links.
+  runtimes-windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm --prefix node/rutis-runtime ci
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install "websockets>=13"
+      - name: cargo test (rutis-loader, every row kind)
+        run: cargo test -p rutis-loader --features node,python,peer
+      - name: cargo test (rutis-bridge, all features)
+        run: cargo test -p rutis-bridge --all-features
 
   static-platforms:
     strategy:

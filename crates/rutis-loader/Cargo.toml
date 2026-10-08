@@ -21,7 +21,7 @@ rutis-bridge = { path = "../rutis-bridge", version = "0.7.0", optional = true, d
 
 [features]
 # Plugins of other languages as rows, each language in its own runtime
-# process (Unix). Enable the languages the application uses:
+# process. Enable the languages the application uses:
 # JavaScript/TypeScript (Cordis and leaf plugins) in Node.
 node = ["runtimes", "rutis-bridge/node", "dep:url"]
 # Python leaf plugins (`py:<name>` rows).
@@ -34,4 +34,5 @@ peer = ["dep:rutis-bridge"]
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 tempfile = "3"
+url = "2"
 rutis-bridge = { path = "../rutis-bridge", features = ["node", "python", "websocket", "testing"] }

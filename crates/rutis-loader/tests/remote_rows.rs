@@ -3,8 +3,8 @@
 //! link. The loader manages its rows as it does a local runtime's: the
 //! rows inject a Rust service and provide one back, and they stop when the
 //! runtime goes away. Needs a Python with `websockets`
-//! (RUTIS_PYTHON, else python3).
-#![cfg(all(unix, feature = "python"))]
+//! (RUTIS_PYTHON, else python3; python on Windows).
+#![cfg(feature = "python")]
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -77,7 +77,8 @@ async fn eventually<T>(mut check: impl FnMut() -> Option<T>, what: &str) -> T {
 
 /// Start the remote runtime: `gpu`, accepting `main` with a token.
 async fn remote_python(project: &Path) -> (tokio::process::Child, String) {
-    let python = std::env::var("RUTIS_PYTHON").unwrap_or_else(|_| "python3".into());
+    let python = std::env::var("RUTIS_PYTHON")
+        .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
     let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python/rutis");
     let mut child = tokio::process::Command::new(python)
         .args(["-m", "rutis", "listen:ws://127.0.0.1:0/rutis"])
