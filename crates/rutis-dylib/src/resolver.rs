@@ -71,6 +71,7 @@ impl Resolver for DylibResolver {
                         }),
                         factory: Arc::new(ModuleFactory { module }),
                         foreign_scope: false,
+                        scoped: None,
                     })
                 });
             Ok(entry.clone())

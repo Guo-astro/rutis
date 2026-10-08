@@ -4,18 +4,20 @@
 //! - `desired`: the composed tree as rows the loader can act on;
 //! - `plugins`: the kernel glue (entry factory, group and loader plugins);
 //! - `reconcile`: driving fibers towards the desired tree;
-//! - `commit`: imperative edits, rollback and the persistence queue.
+//! - `commit`: imperative edits, rollback and the persistence queue;
+//! - `instances`: instances of `instanced` groups, created on demand.
 
 mod api;
 mod commit;
 mod desired;
+mod instances;
 mod plugins;
 mod reconcile;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
-use rutis::{Ctx, Event, FiberView, PluginId, Snapshot, TypeKey};
+use rutis::{Ctx, Event, FiberView, InstanceId, PluginId, Snapshot, TypeKey};
 
 use serde_json::Value;
 
@@ -24,10 +26,11 @@ use crate::edit::Edit;
 use crate::error::Failure;
 use crate::patch::{Layer, Owner, PatchWarning};
 use crate::persist::{NoPersist, Persist, Version};
-use crate::resolver::{Resolved, Resolver};
+use crate::resolver::{Resolved, Resolver, Values};
 use crate::LoaderError;
 
 use desired::Desired;
+pub use instances::{CreateInstance, Instance, InstanceResult};
 pub use plugins::LoaderPlugin;
 
 pub struct LoaderOptions {
@@ -86,6 +89,8 @@ pub struct NewEntry {
     pub name: String,
     pub config: Value,
     pub group: bool,
+    /// An instanced group: created only through [`Loader::create_instance`].
+    pub instanced: bool,
     pub disabled: bool,
     /// Catalog names of extra services the row waits for.
     pub inject: Vec<String>,
@@ -119,6 +124,21 @@ pub enum EntryStatus {
     /// The row cannot run: invalid, unknown module, or unsupported content.
     Unresolved(LoaderError),
     Running(Snapshot),
+    /// A copy inside an instance disposed itself; only that copy stopped.
+    /// [`Loader::restart_instance`] with [`EntryInfo::plugin`] (its last
+    /// fiber), a change to the row, or a rebuild of the instance starts it
+    /// again.
+    Stopped,
+}
+
+/// The instance an entry runs in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceInfo {
+    /// The instance's group fiber.
+    pub plugin: PluginId,
+    /// Enclosing instances, innermost first: (group id, the group fiber's
+    /// `ctx.instance()`).
+    pub chain: Vec<(String, InstanceId)>,
 }
 
 #[derive(Clone)]
@@ -138,6 +158,10 @@ pub struct EntryInfo {
     pub view: Option<FiberView>,
     pub schema: Option<Value>,
     pub meta: Value,
+    /// For a copy of a row inside an instance, that instance. A row inside
+    /// instanced groups is listed once without it (the row itself), then
+    /// once per instance.
+    pub instance: Option<InstanceInfo>,
 }
 
 impl std::fmt::Debug for EntryInfo {
@@ -151,6 +175,7 @@ impl std::fmt::Debug for EntryInfo {
             .field("status", &self.status)
             .field("rejected", &self.rejected)
             .field("plugin", &self.plugin)
+            .field("instance", &self.instance)
             .finish_non_exhaustive()
     }
 }
@@ -180,6 +205,23 @@ pub enum LoaderChanged {
     SelfDisposed {
         id: String,
         error: Option<String>,
+    },
+    /// The copy `plugin` of row `id` inside the instance `instance`
+    /// disposed itself; only that copy stopped and no layer changed.
+    Stopped {
+        id: String,
+        instance: PluginId,
+        plugin: PluginId,
+    },
+    /// An instance of the instanced group `group` was created.
+    InstanceCreated {
+        group: String,
+        plugin: PluginId,
+    },
+    /// An instance of `group` was removed, closed, or dropped with its row.
+    InstanceRemoved {
+        group: String,
+        plugin: PluginId,
     },
 }
 
@@ -237,15 +279,77 @@ struct State {
     desired: Desired,
     resolved: HashMap<String, Result<Arc<Resolved>, LoaderError>>,
     /// Running group contexts; `None` is the loader's own (the root).
-    groups: HashMap<Option<String>, Group>,
-    running: HashMap<String, Running>,
-    /// Rows whose config the plugin refused: at spawn (the row does not
+    groups: HashMap<Option<Slot>, Group>,
+    running: HashMap<Slot, Running>,
+    /// Copies whose config the plugin refused: at spawn (the copy does not
     /// run) or on update (the plugin keeps running its previous config).
-    rejected: HashMap<String, LoaderError>,
+    rejected: HashMap<Slot, LoaderError>,
+    /// Instances of instanced groups, by number (see [`Slot::scope`]).
+    instances: HashMap<u64, InstanceRecord>,
+    /// Copies inside instances that disposed themselves, with the fiber
+    /// they had; not respawned until restarted or their row changes.
+    stopped: HashMap<Slot, PluginId>,
     /// Source of spawn tokens; see [`Running::token`].
     next_token: u64,
     /// Last root context, kept to notice a host shutdown after unmount.
     last_root: Option<Ctx>,
+}
+
+/// Where a fiber runs: its row, and the instance it belongs to (`None`
+/// outside instanced groups). An instanced group's own fiber has its own
+/// instance as `scope`; the rows inside it share that scope.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct Slot {
+    row: String,
+    scope: Option<u64>,
+}
+
+impl Slot {
+    fn global(row: impl Into<String>) -> Self {
+        Self {
+            row: row.into(),
+            scope: None,
+        }
+    }
+}
+
+/// One failing copy, as reconcile compares them before and after a change:
+/// the failure, the copy (its instance number, `None` outside instances),
+/// and the row as composed.
+#[derive(Clone, PartialEq, Eq)]
+struct Failing {
+    failure: Failure,
+    scope: Option<u64>,
+    value: String,
+}
+
+impl Failing {
+    /// The failures as reported: one per row and error.
+    fn public<'a>(failing: impl Iterator<Item = &'a Failing>) -> Vec<Failure> {
+        let mut out: Vec<Failure> = Vec::new();
+        for f in failing {
+            if !out.contains(&f.failure) {
+                out.push(f.failure.clone());
+            }
+        }
+        out
+    }
+}
+
+/// One instance of an instanced group.
+struct InstanceRecord {
+    group: String,
+    /// The group context it is created in.
+    parent: Option<Slot>,
+    /// The token that context was registered under: the instance goes
+    /// with that context, and is not carried over to a rebuilt one.
+    parent_token: u64,
+    /// Values given with `with`, for factories.
+    values: Values,
+    /// The group fiber and its `ctx.instance()`; both change when the
+    /// instance is rebuilt.
+    plugin: PluginId,
+    kernel: InstanceId,
 }
 
 /// A running group's context, tagged with the token of the spawn that owns
@@ -256,7 +360,7 @@ struct Group {
 }
 
 struct Running {
-    parent: Option<String>,
+    parent: Option<Slot>,
     /// Unique per spawn. A group registers its context under this token.
     token: u64,
     /// Token of the group context this row was spawned in.

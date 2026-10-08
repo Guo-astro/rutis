@@ -7,12 +7,14 @@ use serde_json::Value;
 
 use crate::resolver::{Resolved, Resolver};
 
-use super::{Inner, Loader, LoaderOptions, State};
+use super::{Inner, Loader, LoaderOptions, Slot, State};
 
-/// One generation's module and evaluated config.
+/// One generation's module, the factory it gives this copy, and the
+/// evaluated config.
 #[derive(Clone)]
 pub(super) struct EntryConfig {
     pub(super) resolved: Arc<Resolved>,
+    pub(super) factory: Arc<dyn PluginFactory<Value>>,
     pub(super) value: Value,
 }
 
@@ -31,11 +33,11 @@ impl PluginFactory<EntryConfig> for EntryFactory {
     }
 
     fn validate_config(&self, config: &EntryConfig) -> Result<(), CordisError> {
-        config.resolved.factory.validate_config(&config.value)
+        config.factory.validate_config(&config.value)
     }
 
     fn build(&self, config: &EntryConfig) -> Result<Box<dyn Plugin>, CordisError> {
-        config.resolved.factory.build(&config.value)
+        config.factory.build(&config.value)
     }
 }
 
@@ -43,7 +45,7 @@ impl PluginFactory<EntryConfig> for EntryFactory {
 /// group unloads them through the kernel's cascade.
 pub(super) struct GroupPlugin {
     pub(super) inner: Weak<Inner>,
-    pub(super) id: String,
+    pub(super) slot: Slot,
     /// Keys from the row's `inject`.
     pub(super) injects: Vec<TypeKey>,
     /// The token of the spawn that created this plugin.
@@ -52,7 +54,7 @@ pub(super) struct GroupPlugin {
 
 impl Plugin for GroupPlugin {
     fn name(&self) -> &str {
-        &self.id
+        &self.slot.row
     }
 
     fn injects(&self) -> &[TypeKey] {
@@ -65,12 +67,12 @@ impl Plugin for GroupPlugin {
                 return Ok(Effect::Done);
             };
             let token = self.token;
-            inner.attach(Some(self.id.clone()), token, ctx);
+            inner.attach(Some(self.slot.clone()), token, ctx);
             let weak = self.inner.clone();
-            let id = self.id.clone();
+            let slot = self.slot.clone();
             Ok(Effect::Disposer(Box::new(move || {
                 if let Some(inner) = weak.upgrade() {
-                    inner.detach(Some(id), token);
+                    inner.detach(Some(slot), token);
                 }
                 Ok(())
             })))
@@ -119,6 +121,8 @@ impl Plugin for LoaderPlugin {
             Ok(Effect::Disposer(Box::new(move || {
                 if let Some(inner) = weak.upgrade() {
                     inner.detach(None, token);
+                    // Instances live in the loader's tree: they go with it.
+                    inner.state.lock().unwrap().instances.clear();
                 }
                 Ok(())
             })))

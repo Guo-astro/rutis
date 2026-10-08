@@ -23,6 +23,8 @@ pub(super) struct Row {
     pub(super) value: Value,
     pub(super) name: Option<String>,
     pub(super) group: bool,
+    /// An instanced group: not spawned by reconcile, only as instances.
+    pub(super) instanced: bool,
     pub(super) owner: Owner,
     pub(super) overridden: BTreeMap<String, usize>,
     /// Evaluated with the loader's root context.
@@ -244,6 +246,7 @@ impl Desired {
             }
             let value = flat.value;
             let group = value.get("group").is_some_and(truthy);
+            let instanced = value.get("instanced").is_some_and(truthy);
             let name = value.get("name").and_then(Value::as_str).map(str::to_owned);
             let disabled = match value.get("disabled") {
                 Some(d) => eval.value(d, root).map(|d| truthy(&d)),
@@ -259,6 +262,13 @@ impl Desired {
                     RawScope::default(),
                     Some(LoaderError::InvalidEntry(format!("{id:?} has no name"))),
                 )
+            } else if instanced && !group {
+                (
+                    RawScope::default(),
+                    Some(LoaderError::InvalidEntry(format!(
+                        "{id:?} is instanced but not a group"
+                    ))),
+                )
             } else {
                 match parse_scope(&id, &value) {
                     Ok(raw) => (raw, None),
@@ -273,6 +283,7 @@ impl Desired {
                 value,
                 name,
                 group,
+                instanced,
                 owner: flat.owner,
                 overridden: flat.overridden,
                 disabled,
@@ -287,6 +298,19 @@ impl Desired {
 
     pub(super) fn row(&self, id: &str) -> Option<&Row> {
         self.by_id.get(id).map(|&i| &self.rows[i])
+    }
+
+    /// The nearest instanced group enclosing `row`, or `row` itself when it
+    /// is one: its copies run once per instance of that group.
+    pub(super) fn instanced_group<'a>(&'a self, row: &'a Row) -> Option<&'a Row> {
+        let mut current = Some(row);
+        while let Some(row) = current {
+            if row.instanced {
+                return Some(row);
+            }
+            current = row.parent.as_deref().and_then(|id| self.row(id));
+        }
+        None
     }
 
     /// The row and every enclosing group are enabled and valid.

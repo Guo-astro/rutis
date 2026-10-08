@@ -252,6 +252,7 @@ impl Resolver for RuntimeResolver {
                         "schema": "unavailable: the Cordis runtime is not running",
                     }),
                     foreign_scope: true,
+                    scoped: None,
                 }));
             };
             let described = process
@@ -299,6 +300,7 @@ impl Resolver for RuntimeResolver {
                     "provides": described.provides,
                 }),
                 foreign_scope: true,
+                scoped: None,
             });
             if caches {
                 self.resolved
@@ -566,6 +568,7 @@ mod stale_tests {
             schema: None,
             meta: json!({ "entry": entry, "version": version }),
             foreign_scope: true,
+            scoped: None,
         })
     }
 

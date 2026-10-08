@@ -73,6 +73,7 @@ impl PeerResolver {
             schema: None,
             meta: json!({ "source": "peer", "peer": peer.to_string(), "plugin": plugin, "schema": format!("unavailable: {why}") }),
             foreign_scope: true,
+            scoped: None,
         })
     }
 
@@ -140,6 +141,7 @@ impl Resolver for PeerResolver {
                     "integrity": described.get("integrity"),
                 }),
                 foreign_scope: true,
+                scoped: None,
             }))
         })
     }

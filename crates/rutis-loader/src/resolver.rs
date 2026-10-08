@@ -1,10 +1,11 @@
 //! Module name → plugin factory.
 
+use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use rutis::{BoxFuture, CordisError, Plugin, PluginFactory, TypeKey};
+use rutis::{BoxFuture, CordisError, InstanceId, Plugin, PluginFactory, TypeKey};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -24,6 +25,59 @@ pub struct Resolved {
     /// neither resolves them through its catalog nor applies them, and the
     /// plugin reads them with `Loader::row`.
     pub foreign_scope: bool,
+    /// Builds the factory for each copy from the instances it runs in
+    /// ([`Builtins::register_with`]). Without it, every copy uses `factory`.
+    pub scoped: Option<ScopedFactory>,
+}
+
+/// Builds a copy's factory from the instances it runs in.
+pub type ScopedFactory =
+    Arc<dyn Fn(&Build) -> Result<Arc<dyn PluginFactory<Value>>, CordisError> + Send + Sync>;
+
+pub(crate) type Values = Arc<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>;
+
+/// Where a copy runs: the instances of instanced groups enclosing it.
+pub struct Build {
+    /// Innermost first.
+    pub(crate) chain: Vec<BuildLink>,
+}
+
+pub(crate) struct BuildLink {
+    pub(crate) group: String,
+    pub(crate) instance: InstanceId,
+    pub(crate) values: Values,
+}
+
+impl Build {
+    /// The `ctx.instance()` of the enclosing instance of `group`: plugins in
+    /// that instance can provide and read keys qualified with it.
+    pub fn instance(&self, group: &str) -> Result<InstanceId, CordisError> {
+        self.chain
+            .iter()
+            .find(|link| link.group == group)
+            .map(|link| link.instance)
+            .ok_or_else(|| {
+                CordisError::PluginFailed(format!("not inside an instance of {group:?}").into())
+            })
+    }
+
+    /// The nearest value of type `T` given with `with` to an enclosing
+    /// instance.
+    pub fn value<T: Send + Sync + 'static>(&self) -> Option<Arc<T>> {
+        self.chain.iter().find_map(|link| {
+            link.values
+                .get(&TypeId::of::<T>())
+                .cloned()
+                .and_then(|value| value.downcast::<T>().ok())
+        })
+    }
+
+    /// The enclosing instances, innermost first: (group id, instance).
+    pub fn instances(&self) -> impl Iterator<Item = (&str, InstanceId)> {
+        self.chain
+            .iter()
+            .map(|link| (link.group.as_str(), link.instance))
+    }
 }
 
 impl std::fmt::Debug for Resolved {
@@ -32,6 +86,7 @@ impl std::fmt::Debug for Resolved {
             .field("factory", &self.factory.name())
             .field("schema", &self.schema.is_some())
             .field("meta", &self.meta)
+            .field("scoped", &self.scoped.is_some())
             .finish()
     }
 }
@@ -91,11 +146,40 @@ impl Builtins {
         self.insert(name, Arc::new(factory), schema)
     }
 
+    /// Register a plugin whose factory depends on the instances it runs
+    /// in: `build` makes the factory for each copy, typically from
+    /// [`Build::instance`]. Outside instanced groups such a row fails.
+    pub fn register_with<C, F, B>(&mut self, name: impl Into<String>, build: B) -> &mut Self
+    where
+        C: DeserializeOwned + JsonSchema + Send + Sync + 'static,
+        F: PluginFactory<C>,
+        B: Fn(&Build) -> Result<F, CordisError> + Send + Sync + 'static,
+    {
+        let name = name.into();
+        let schema = serde_json::to_value(schemars::schema_for!(C)).ok();
+        let scoped: ScopedFactory = Arc::new(move |at: &Build| {
+            let factory: Arc<dyn PluginFactory<Value>> = Arc::new(Json::<C, F>::new(build(at)?));
+            Ok(factory)
+        });
+        let factory = Arc::new(Unscoped { name: name.clone() });
+        self.insert_resolved(name, factory, schema, Some(scoped))
+    }
+
     fn insert(
         &mut self,
         name: impl Into<String>,
         factory: Arc<dyn PluginFactory<Value>>,
         schema: Option<Value>,
+    ) -> &mut Self {
+        self.insert_resolved(name, factory, schema, None)
+    }
+
+    fn insert_resolved(
+        &mut self,
+        name: impl Into<String>,
+        factory: Arc<dyn PluginFactory<Value>>,
+        schema: Option<Value>,
+        scoped: Option<ScopedFactory>,
     ) -> &mut Self {
         let name = name.into();
         let meta = serde_json::json!({ "source": "builtin" });
@@ -106,6 +190,7 @@ impl Builtins {
                 schema,
                 meta,
                 foreign_scope: false,
+                scoped,
             }),
         );
         self
@@ -211,6 +296,23 @@ where
 
     fn build(&self, config: &Value) -> Result<Box<dyn Plugin>, CordisError> {
         self.inner.build(&decode::<C>(config)?)
+    }
+}
+
+/// The factory of a `register_with` plugin outside any instance.
+struct Unscoped {
+    name: String,
+}
+
+impl PluginFactory<Value> for Unscoped {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn build(&self, _config: &Value) -> Result<Box<dyn Plugin>, CordisError> {
+        Err(CordisError::PluginFailed(
+            format!("{} runs only inside an instanced group", self.name).into(),
+        ))
     }
 }
 
