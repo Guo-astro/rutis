@@ -425,8 +425,10 @@ export function apply(ctx) {
     let process = shared.lock().unwrap().clone().unwrap();
 
     let error = process.call("control", "cycle", json!([])).unwrap_err();
+    // `exit status: 17` on Unix, `exit code: 17` on Windows.
+    let error = error.to_string();
     assert!(
-        error.to_string().contains("exited with exit status: 17"),
+        error.contains("exited with exit ") && error.ends_with(" 17"),
         "{error}"
     );
     settle().await;

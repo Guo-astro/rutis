@@ -77,3 +77,5 @@ match &entry.status {
 ## Windows
 
 Node / Python runtimes, remote runtimes, cross-language shared services, the `Process::launch` / `Process::mount` compatibility API, the Cordis mount bindings and the `rutis-host` command now run natively on Windows x64 with no code changes; WSL is no longer needed.
+
+`rutis_bridge::include_mounts!()` now includes the generated mounts on Windows too (it compiled to nothing there before). A `build.rs` that skips `from_manifest()` on Windows must skip the macro there as well: `#[cfg(unix)] rutis_bridge::include_mounts!();`. A `build.rs` that always calls `from_manifest()`, as the Cordis guide shows, needs no change.

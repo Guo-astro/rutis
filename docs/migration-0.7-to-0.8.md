@@ -77,3 +77,5 @@ match &entry.status {
 ## Windows
 
 Node / Python 运行时、远程运行时、跨语言共享服务、`Process::launch` / `Process::mount` 兼容接口、Cordis 挂载绑定和 `rutis-host` 命令，现在都可以在 Windows x64 上原生运行，不需要改代码，也不再需要 WSL。
+
+`rutis_bridge::include_mounts!()` 现在在 Windows 上也会引入生成的挂载模块（以前在 Windows 上展开为空）。在 Windows 上跳过 `from_manifest()` 的 `build.rs`，也要在 Windows 上跳过这个宏：`#[cfg(unix)] rutis_bridge::include_mounts!();`。像 Cordis 指南那样总是调用 `from_manifest()` 的 `build.rs` 不用改。
