@@ -12,9 +12,12 @@ use crate::config::{HostConfig, NodeRuntime, PythonRuntime, Runtimes};
 /// The configuration that runs the plugin project in `dir`, and the id of
 /// its row.
 pub fn dev_config(dir: &Path) -> Result<(HostConfig, String), String> {
-    let dir = dir
-        .canonicalize()
-        .map_err(|error| format!("{}: {error}", dir.display()))?;
+    // Absolute, not canonical: on Windows a canonical path is a `\\?\` one,
+    // which the runtimes are then given as their project.
+    let dir = std::path::absolute(dir)
+        .ok()
+        .filter(|dir| dir.is_dir())
+        .ok_or_else(|| format!("{}: not a directory", dir.display()))?;
     let (row, runtimes) = if dir.join("package.json").exists() {
         node_row(&dir)?
     } else if dir.join("pyproject.toml").exists() {

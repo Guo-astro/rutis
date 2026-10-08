@@ -6,6 +6,6 @@ The Node runtime of [rutis](https://github.com/arcships/rutis): the process that
 - `@arcships/rutis-runtime/bridge` makes a Cordis application a rutis node: `Link`, `Export`, `Import`, `Host`, `Events`.
 - `src/generate.mjs` generates Rust bindings for Cordis plugins mounted with rutis-bridge's `cordis` feature.
 
-The runtime and the rutis-bridge crate speak the same protocol version (`rutisProtocol`); builds check it. Linux and macOS; Node 24 or later.
+The runtime and the rutis-bridge crate speak the same protocol version (`rutisProtocol`); builds check it. Linux, macOS and Windows (x64); Node 24 or later.
 
 Guides (Chinese): [Cordis](https://github.com/arcships/rutis/blob/main/docs/guide/cordis.md), [nodes](https://github.com/arcships/rutis/blob/main/docs/guide/nodes.md).

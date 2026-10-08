@@ -7,7 +7,7 @@ Except for `rutis-cli` (`cli-v*`, `release-cli.yml`), these packages share a ver
 | Registry | Packages |
 | --- | --- |
 | crates.io | `rutis` (the core), `rutis-bridge`, `rutis-loader`, `rutis-host`; the dylib toolchain `rutis-sdk`, `rutis-dylib`, `rutis-dylib-meta`, `rutis-dylib-launcher` |
-| npm | `@arcships/rutis`, `@arcships/rutis-runtime`, `@arcships/rutis-host` and `@arcships/rutis-host-{linux,darwin}-{x64,arm64}` |
+| npm | `@arcships/rutis`, `@arcships/rutis-runtime`, `@arcships/rutis-host` and `@arcships/rutis-host-{linux,darwin}-{x64,arm64}`, `@arcships/rutis-host-win32-x64` |
 | PyPI | `rutis`, `rutis-host` (wheels for each platform) |
 | GitHub Release | `rutis-host` binaries |
 
@@ -16,7 +16,7 @@ Except for `rutis-cli` (`cli-v*`, `release-cli.yml`), these packages share a ver
 1. Update versions in the Cargo.toml of every crate listed in `crates` in `scripts/train.mjs` (including the dependency versions between them and from other workspace crates); `node/rutis`, `node/rutis-runtime`, and `node/rutis-host` package.json files (including the runtime and platform package versions used by `@arcships/rutis-host`); `python/rutis/pyproject.toml` and `IMPLEMENTATION` in `python/rutis/rutis/peer.py`; and the `rutis` range in `crates/rutis-host/pyproject.toml`. `node scripts/train.mjs` checks that they match, and CI runs it too.
 2. Merge to `main` and confirm the CI `release-dry-run` passes (all packages can be built).
 3. Run the smoke test on two machines before publishing (see below).
-4. Create and push a tag such as `vX.Y.Z`. `release.yml` checks versions, builds binaries and wheels for four platforms, semver-checks the crates already on crates.io, publishes the crates in dependency order (`node scripts/train.mjs --crates`), then the npm and PyPI packages, and creates a GitHub Release (its notes come from `docs/releases/X.Y.Z.en.md`, which must exist before tagging). Each step skips versions already present in its registry, so after fixing a mid-release failure you can rerun it.
+4. Create and push a tag such as `vX.Y.Z`. `release.yml` checks versions, builds binaries and wheels for five platforms, semver-checks the crates already on crates.io, publishes the crates in dependency order (`node scripts/train.mjs --crates`), then the npm and PyPI packages, and creates a GitHub Release (its notes come from `docs/releases/X.Y.Z.en.md`, which must exist before tagging). Each step skips versions already present in its registry, so after fixing a mid-release failure you can rerun it.
 
 Required configuration: GitHub environment `release` with `CARGO_TOKEN` and `NPM_TOKEN`, and environments `pypi` and `pypi-host`. On PyPI, the trusted publisher of `rutis` points to `release.yml` with environment `pypi`, and that of `rutis-host` to environment `pypi-host`: the two must differ, or a release gets a token valid for only one of them.
 

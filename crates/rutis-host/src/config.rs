@@ -170,7 +170,15 @@ impl HostConfig {
         // it needs an absolute path, so fall back when the base is relative.
         for row in &mut self.rows {
             if let Some(name) = row["name"].as_str() {
-                if name.starts_with("./") || name.starts_with("../") {
+                let relative = ["./", "../"]
+                    .iter()
+                    .chain(if cfg!(windows) {
+                        &[".\\", "..\\"][..]
+                    } else {
+                        &[]
+                    })
+                    .any(|prefix| name.starts_with(prefix));
+                if relative {
                     row["name"] = json!(file_url(&base.join(name)));
                 }
             }
