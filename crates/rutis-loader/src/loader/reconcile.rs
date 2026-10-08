@@ -18,8 +18,8 @@ use crate::LoaderError;
 use super::desired::{Desired, Eval, Row, RowScope};
 use super::plugins::{EntryConfig, EntryFactory, GroupPlugin};
 use super::{
-    EntryInfo, EntryStatus, Group, Inner, InstanceInfo, LoaderChanged, ReconcileReport, Running,
-    Slot, State,
+    EntryInfo, EntryStatus, Failing, Group, Inner, InstanceInfo, LoaderChanged, ReconcileReport,
+    Running, Slot, State,
 };
 
 /// The factory's own injects followed by the row's `inject`, deduplicated.
@@ -629,15 +629,21 @@ impl Inner {
         }
     }
 
-    pub(super) fn failures(state: &State) -> Vec<(Failure, String)> {
-        let mut out: Vec<(Failure, String)> = Vec::new();
-        let mut push = |id: &str, error: String, value: &Value| {
-            let failure = Failure {
-                id: id.to_owned(),
-                error,
+    /// Every failing copy. A failure is new only if the same copy did not
+    /// fail the same way with the same row before.
+    pub(super) fn failures(state: &State) -> Vec<Failing> {
+        let mut out: Vec<Failing> = Vec::new();
+        let mut push = |id: &str, scope: Option<u64>, error: String, value: &Value| {
+            let failing = Failing {
+                failure: Failure {
+                    id: id.to_owned(),
+                    error,
+                },
+                scope,
+                value: value.to_string(),
             };
-            if !out.iter().any(|(f, _)| f == &failure) {
-                out.push((failure, value.to_string()));
+            if !out.contains(&failing) {
+                out.push(failing);
             }
         };
         for row in &state.desired.rows {
@@ -652,11 +658,11 @@ impl Inner {
                 continue;
             }
             if let Some(invalid) = &row.invalid {
-                push(&row.id, invalid.to_string(), &row.value);
+                push(&row.id, None, invalid.to_string(), &row.value);
                 continue;
             }
             if let Err(e) = &row.disabled {
-                push(&row.id, e.to_string(), &row.value);
+                push(&row.id, None, e.to_string(), &row.value);
                 continue;
             }
             if matches!(row.disabled, Ok(true)) {
@@ -685,7 +691,7 @@ impl Inner {
                     }
                 };
                 if let Some(error) = error {
-                    push(&row.id, error, &row.value);
+                    push(&row.id, scope, error, &row.value);
                 }
             }
         }
@@ -959,16 +965,12 @@ impl Inner {
 
         let state = self.state.lock().unwrap();
         let after = Self::failures(&state);
-        let new_failures = after
-            .iter()
-            .filter(|f| !before.contains(f))
-            .map(|(f, _)| f.clone())
-            .collect();
+        let new_failures = Failing::public(after.iter().filter(|f| !before.contains(f)));
         ReconcileReport {
             warnings: state.desired.warnings.clone(),
             issues: state.desired.issues.clone(),
             new_failures,
-            failures: after.into_iter().map(|(f, _)| f).collect(),
+            failures: Failing::public(after.iter()),
         }
     }
 

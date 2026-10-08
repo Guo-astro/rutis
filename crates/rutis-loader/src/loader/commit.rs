@@ -1,7 +1,6 @@
 //! Imperative edits: rewrite the editable layer, dry run, reconcile, roll
 //! back, and persist through the pending queue.
 
-use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
@@ -14,11 +13,11 @@ use crate::resolver::Build;
 use crate::{LoaderError, PersistError};
 
 use super::desired::{Desired, Row};
-use super::{Inner, LoaderChanged, PendingEditDropped, Slot, State};
+use super::{Failing, Inner, LoaderChanged, PendingEditDropped, Slot, State};
 
-/// Where one copy would run: its context without its own scope, and the
-/// instances enclosing it.
-type Target = (Option<Ctx>, Build);
+/// Where one copy would run: its instance (`None` outside instances), its
+/// context without its own scope, and the instances enclosing it.
+type Target = (Option<u64>, Option<Ctx>, Build);
 
 /// Whether `row` is inside the group `top`.
 fn below(desired: &Desired, row: &Row, top: &str) -> bool {
@@ -111,9 +110,9 @@ impl Inner {
     /// Check a row would start: resolve, validate the config, build and
     /// validate the instance, for every copy (each instance it runs in).
     /// For a group, check every copy of every plugin below it the same way,
-    /// in the contexts the group would give them; an error that is already
-    /// a failure of that row (same id and message, as `commit` compares) is
-    /// left to reconcile. Nothing is spawned. With `resolved`, check that module
+    /// in the contexts the group would give them; an error that copy (same
+    /// row and instance) already fails with is left to reconcile. Nothing
+    /// is spawned. With `resolved`, check that module
     /// instead of resolving the name.
     pub(super) async fn dry_run(
         &self,
@@ -142,9 +141,9 @@ impl Inner {
             if !desired.wanted(row) {
                 return Ok(());
             }
-            let failing: HashSet<(String, String)> = Self::failures(&state)
+            let failing: Vec<(Option<u64>, Failure)> = Self::failures(&state)
                 .into_iter()
-                .map(|(f, _)| (f.id, f.error))
+                .map(|f| (f.scope, f.failure))
                 .collect();
             let mut checks: Vec<(usize, Vec<Target>)> = Vec::new();
             for (index, leaf) in desired.rows.iter().enumerate() {
@@ -157,7 +156,7 @@ impl Inner {
                 let mut targets = Vec::new();
                 for scope in copies(&state, &desired, leaf) {
                     let base = dry_context(&state, &desired, leaf, id, scope, root.as_ref())?;
-                    targets.push((base, Self::build_for(&state, scope)));
+                    targets.push((scope, base, Self::build_for(&state, scope)));
                 }
                 checks.push((index, targets));
             }
@@ -165,10 +164,14 @@ impl Inner {
         };
         for (index, targets) in checks {
             let row = &desired.rows[index];
-            // The edited row itself must start; a plugin below a group only
-            // must not fail in a new way.
-            let tolerated = |error: &LoaderError| {
-                row.id != id && failing.contains(&(row.id.clone(), error.to_string()))
+            // The edited row itself must start; a copy of a plugin below a
+            // group only must not fail in a new way.
+            let tolerated = |scope: Option<u64>, error: &LoaderError| {
+                let failure = Failure {
+                    id: row.id.clone(),
+                    error: error.to_string(),
+                };
+                row.id != id && failing.contains(&(scope, failure))
             };
             let name = row.name.clone().unwrap_or_default();
             let module = match (&resolved, row.id == id) {
@@ -184,7 +187,7 @@ impl Inner {
             };
             match module {
                 Ok(module) => self.dry_run_copies(row, &module, targets, &tolerated)?,
-                Err(error) if tolerated(&error) => {}
+                Err(error) if targets.iter().all(|(scope, ..)| tolerated(*scope, &error)) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -192,32 +195,37 @@ impl Inner {
     }
 
     /// Check each copy of the plugin row `row` would start in its context.
-    /// A copy failing with an error `tolerated` accepts does not count.
+    /// A copy failing with an error `tolerated` accepts for it does not
+    /// count.
     fn dry_run_copies(
         &self,
         row: &Row,
         resolved: &crate::resolver::Resolved,
         targets: Vec<Target>,
-        tolerated: &dyn Fn(&LoaderError) -> bool,
+        tolerated: &dyn Fn(Option<u64>, &LoaderError) -> bool,
     ) -> Result<(), LoaderError> {
-        let check = |result: Result<(), LoaderError>| match result {
-            Err(error) if !tolerated(&error) => Err(error),
-            _ => Ok(()),
-        };
-        // Evaluate where the plugin would run: its group, with its isolates.
-        let scope = if resolved.foreign_scope {
-            super::desired::RowScope::default()
-        } else {
-            match &row.scope {
-                Ok(scope) => scope.clone(),
-                Err(error) => return check(Err(error.clone())),
-            }
-        };
         let rejected = |error: CordisError| LoaderError::Rejected {
             id: row.id.clone(),
             error: Arc::new(error),
         };
-        for (base, build) in targets {
+        for (copy, base, build) in targets {
+            let check = |result: Result<(), LoaderError>| match result {
+                Err(error) if !tolerated(copy, &error) => Err(error),
+                _ => Ok(()),
+            };
+            // Evaluate where the plugin would run: its group, with its
+            // isolates.
+            let scope = if resolved.foreign_scope {
+                super::desired::RowScope::default()
+            } else {
+                match &row.scope {
+                    Ok(scope) => scope.clone(),
+                    Err(error) => {
+                        check(Err(error.clone()))?;
+                        continue;
+                    }
+                }
+            };
             let ctx = base.map(|ctx| scope.context(&ctx));
             let config = match self.eval().value(&row.config, ctx.as_ref()) {
                 Ok(config) => config,
@@ -294,11 +302,11 @@ impl Inner {
         // Compare with the state before the edit, not before the rollback.
         let rollback: Vec<Failure> = {
             let state = self.state.lock().unwrap();
-            Self::failures(&state)
-                .into_iter()
-                .filter(|f| !before.contains(f))
-                .map(|(f, _)| f)
-                .collect()
+            Failing::public(
+                Self::failures(&state)
+                    .iter()
+                    .filter(|f| !before.contains(f)),
+            )
         };
         if rollback.is_empty() {
             Err(LoaderError::ApplyFailed {

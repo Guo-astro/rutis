@@ -313,6 +313,29 @@ impl Slot {
     }
 }
 
+/// One failing copy, as reconcile compares them before and after a change:
+/// the failure, the copy (its instance number, `None` outside instances),
+/// and the row as composed.
+#[derive(Clone, PartialEq, Eq)]
+struct Failing {
+    failure: Failure,
+    scope: Option<u64>,
+    value: String,
+}
+
+impl Failing {
+    /// The failures as reported: one per row and error.
+    fn public<'a>(failing: impl Iterator<Item = &'a Failing>) -> Vec<Failure> {
+        let mut out: Vec<Failure> = Vec::new();
+        for f in failing {
+            if !out.contains(&f.failure) {
+                out.push(f.failure.clone());
+            }
+        }
+        out
+    }
+}
+
 /// One instance of an instanced group.
 struct InstanceRecord {
     group: String,

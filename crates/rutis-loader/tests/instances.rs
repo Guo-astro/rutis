@@ -195,6 +195,23 @@ fn resolver(log: &Log) -> Builtins {
             log: l.clone(),
         })
     });
+    // Like `doc-reader`, but in instance "B" it fails the way it does
+    // outside any instance: the same error from another copy.
+    let l = log.clone();
+    builtins.register_with::<Cfg, _, _>("picky-reader", move |build| {
+        if title(build) == "B" {
+            return Err(CordisError::PluginFailed(
+                format!("not inside an instance of {:?}", "doc").into(),
+            ));
+        }
+        let key = TypeKey::instance::<Doc>(build.instance("doc")?);
+        Ok(ProbeFactory {
+            mode: Mode::ReadDoc(key.clone()),
+            injects: vec![key],
+            title: title(build),
+            log: l.clone(),
+        })
+    });
     let l = log.clone();
     builtins.register_with::<Cfg, _, _>("page-scope", move |build| {
         Ok(ProbeFactory {
@@ -908,4 +925,38 @@ async fn a_failure_already_there_does_not_block_a_group_edit() {
     // `bad` is refused the same way before and after.
     s.loader.set_isolate("g", isolate).await.unwrap();
     assert_eq!(running(&s.copies("good")[0]), Some(FiberState::Active));
+}
+
+#[tokio::test]
+async fn the_same_error_in_another_copy_does_not_excuse_a_new_one() {
+    let s = setup(DOC).await;
+    s.create("A").await;
+    for (id, name, group, parent) in [
+        ("g", "", true, "doc"),
+        ("inner", "picky-reader", false, "g"),
+    ] {
+        let entry = NewEntry {
+            id: Some(id.into()),
+            name: name.into(),
+            group,
+            config: json!({ "label": "i" }),
+            ..NewEntry::default()
+        };
+        s.loader.create(entry, Some(parent), None).await.unwrap();
+    }
+    // The copy in B fails with the error a copy outside `doc` would give.
+    let b = s.create("B").await;
+    assert!(
+        b.report
+            .iter()
+            .any(|(id, r)| id == "inner" && matches!(r, InstanceResult::Failed(_))),
+        "{:?}",
+        b.report
+    );
+    s.take_log();
+    let before = s.store.patches();
+    let error = s.loader.move_to("g", None, None).await.unwrap_err();
+    assert!(matches!(error, LoaderError::Rejected { .. }), "{error}");
+    assert!(s.take_log().is_empty());
+    assert_eq!(s.store.patches(), before);
 }

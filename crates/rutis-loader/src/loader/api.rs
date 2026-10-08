@@ -11,8 +11,8 @@ use crate::patch::{Layer, Patch};
 use crate::LoaderError;
 
 use super::{
-    Editable, EntryInfo, Inner, Isolate, Loader, LoaderChanged, NewEntry, PendingEditDropped,
-    ReconcileReport, RowInfo, Slot,
+    Editable, EntryInfo, Failing, Inner, Isolate, Loader, LoaderChanged, NewEntry,
+    PendingEditDropped, ReconcileReport, RowInfo, Slot,
 };
 
 fn generate_id(taken: impl Fn(&str) -> bool) -> String {
@@ -73,10 +73,7 @@ impl Loader {
             }
             let _ = inner.persist_queue(None).await;
             let state = inner.state.lock().unwrap();
-            report.failures = Inner::failures(&state)
-                .into_iter()
-                .map(|(f, _)| f)
-                .collect();
+            report.failures = Failing::public(Inner::failures(&state).iter());
         }
         inner.emit(LoaderChanged::Reconciled);
         Ok(report)
@@ -474,11 +471,11 @@ impl Loader {
             inner.reconcile_inner().await;
             let lingering: Vec<crate::Failure> = {
                 let state = inner.state.lock().unwrap();
-                Inner::failures(&state)
-                    .into_iter()
-                    .filter(|f| !before.contains(f))
-                    .map(|(f, _)| f)
-                    .collect()
+                Failing::public(
+                    Inner::failures(&state)
+                        .iter()
+                        .filter(|f| !before.contains(f)),
+                )
             };
             return Err(if lingering.is_empty() {
                 LoaderError::ApplyFailed {
