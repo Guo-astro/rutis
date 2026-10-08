@@ -13,37 +13,24 @@
 pub(crate) use crate::session::*;
 
 mod access;
-#[cfg(unix)]
 mod events;
-#[cfg(unix)]
 mod local;
-#[cfg(unix)]
 mod plugin;
-#[cfg(unix)]
 mod process;
-#[cfg(unix)]
 mod projection;
-#[cfg(unix)]
 mod rows;
-#[cfg(unix)]
 pub(crate) mod spawn;
-#[cfg(all(unix, feature = "testing"))]
+#[cfg(feature = "testing")]
 pub mod testing;
 #[cfg(unix)]
 pub(crate) mod unix;
 
 pub use access::RuntimeAccessPlugin;
-#[cfg(unix)]
 pub use events::{EmitToCordis, EventSink, Events};
-#[cfg(unix)]
 pub use local::LocalRuntime;
-#[cfg(unix)]
 pub use plugin::{Runtime, RuntimeHandle, RuntimePlugin, RuntimeState};
-#[cfg(unix)]
 pub use process::{scoped_id, Host, HostLease, Launcher, Mount, Process, RowSchema, ServiceEvents};
-#[cfg(unix)]
 pub use projection::Projection;
-#[cfg(unix)]
 pub use rows::{row_projection, row_projection_with, RowService};
 
 use std::sync::Arc;

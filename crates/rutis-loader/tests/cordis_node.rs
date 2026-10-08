@@ -2,7 +2,7 @@
 //! loopback WebSocket (node/rutis-runtime/test/fixtures/cordis-node.mjs): each
 //! imports the other's service, rutis rows are hosted in Cordis, events
 //! cross both ways. The Cordis side reports on stdout.
-#![cfg(all(unix, feature = "peer"))]
+#![cfg(feature = "peer")]
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

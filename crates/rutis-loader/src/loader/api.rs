@@ -410,7 +410,7 @@ impl Loader {
     /// describe it was unreachable) again: as [`Loader::reload`], except that
     /// a failure replaces the provisional resolution, so the row shows it
     /// (`Unresolved`) instead of starting on the placeholder.
-    #[cfg(any(all(unix, feature = "runtimes"), feature = "peer"))]
+    #[cfg(any(feature = "runtimes", feature = "peer"))]
     pub(crate) async fn refresh(&self, id: &str) -> Result<ReconcileReport, LoaderError> {
         self.resolve_again(id, true).await
     }

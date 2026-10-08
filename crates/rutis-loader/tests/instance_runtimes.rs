@@ -1,7 +1,7 @@
 //! Shared service names inside instances, across languages: each instance's
 //! TS and Python rows use and provide that instance's services, though
 //! every instance's rows share one process per language.
-#![cfg(all(unix, feature = "node", feature = "python"))]
+#![cfg(all(feature = "node", feature = "python"))]
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -250,7 +250,10 @@ async fn fixture() -> Fixture {
     let js = dir.path().join("js_row.mjs");
     std::fs::write(
         &js,
-        JS_ROW.replace("PLUGIN", &format!("file://{}", plugin.display())),
+        JS_ROW.replace(
+            "PLUGIN",
+            url::Url::from_file_path(&plugin).unwrap().as_str(),
+        ),
     )
     .unwrap();
 

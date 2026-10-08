@@ -1,10 +1,13 @@
 //! Starting processes on a channel: the process gets one end of a socket
 //! pair as fd 3 (`fd:3`), or, when it cannot take one, a socket path in a
-//! private directory that it dials back. The channel owns the process:
-//! closing it, or dropping all of it, ends the process, and its end says how
-//! the process ended.
+//! private directory that it dials back (Unix); or a loopback TCP address
+//! to dial, presenting a one-time token first (every platform; the only
+//! one on Windows). The channel owns the process: closing it, or dropping
+//! all of it, ends the process, and its end says how the process ended.
 use std::ffi::OsString;
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -20,6 +23,12 @@ use crate::transport::local::lines;
 
 /// The fd a process finds its channel on (`fd:3`).
 pub const CHANNEL_FD: i32 = 3;
+
+/// The environment variable holding the token a process started with
+/// [`Handover::Loopback`] presents, as its first line, on the address it is
+/// given (`tcp:127.0.0.1:<port>`). It should remove it from its own
+/// environment once read.
+pub const CHANNEL_TOKEN: &str = "RUTIS_CHANNEL_TOKEN";
 
 /// A process `spawn:<name>` starts: `program args… <channel> trailing…`,
 /// where `<channel>` is `fd:3` or the socket path to dial.
@@ -37,13 +46,19 @@ pub struct Spawn {
     pub peer: PeerId,
 }
 
-/// How the process gets its channel.
+/// How the process gets its channel. On Windows, every process gets
+/// [`Handover::Loopback`]; elsewhere too when [`HANDOVER_VARIABLE`] is
+/// `loopback` (to run Windows' path on Unix).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handover {
     /// One end of a socket pair, as fd 3.
     Inherit,
     /// A socket path the process dials.
     DialBack,
+    /// A loopback TCP address the process dials (`tcp:127.0.0.1:<port>`),
+    /// sending the token in [`CHANNEL_TOKEN`] and a newline first; other
+    /// connections are turned away.
+    Loopback,
 }
 
 impl Spawn {
@@ -81,11 +96,23 @@ fn retryable(error: std::io::Error) -> ConnectError {
     }
 }
 
+/// Set to `loopback` to start every process with [`Handover::Loopback`].
+pub const HANDOVER_VARIABLE: &str = "RUTIS_LOCAL_HANDOVER";
+
 /// Start `spawn` and connect it.
 pub(crate) async fn start(spawn: &Spawn) -> Result<Channel, ConnectError> {
-    let (channel, child, directory) = match spawn.handover {
+    let forced =
+        !cfg!(unix) || std::env::var_os(HANDOVER_VARIABLE).is_some_and(|value| value == "loopback");
+    let handover = match forced {
+        true => Handover::Loopback,
+        false => spawn.handover,
+    };
+    let (channel, child, directory) = match handover {
+        #[cfg(unix)]
         Handover::Inherit => inherit(spawn)?,
+        #[cfg(unix)]
         Handover::DialBack => dial_back(spawn).await?,
+        _ => loopback(spawn).await?,
     };
     let Channel {
         sender,
@@ -114,6 +141,7 @@ pub(crate) async fn start(spawn: &Spawn) -> Result<Channel, ConnectError> {
 
 type Started = (Channel, Child, Option<tempfile::TempDir>);
 
+#[cfg(unix)]
 fn inherit(spawn: &Spawn) -> Result<Started, ConnectError> {
     let (ours, theirs) = UnixStream::pair().map_err(retryable)?;
     let fd = theirs.as_raw_fd();
@@ -144,6 +172,7 @@ fn inherit(spawn: &Spawn) -> Result<Started, ConnectError> {
     Ok((socket(ours, "fd")?, Child::watch(child), None))
 }
 
+#[cfg(unix)]
 async fn dial_back(spawn: &Spawn) -> Result<Started, ConnectError> {
     let directory = tempfile::Builder::new()
         .prefix("rutis-spawn-")
@@ -171,6 +200,108 @@ async fn dial_back(spawn: &Spawn) -> Result<Started, ConnectError> {
     ))
 }
 
+/// How long a connection to the loopback listener may take to present its
+/// token.
+const TOKEN_WAIT: Duration = Duration::from_secs(10);
+
+async fn loopback(spawn: &Spawn) -> Result<Started, ConnectError> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .map_err(retryable)?;
+    let address = listener.local_addr().map_err(retryable)?;
+    let token = token().map_err(retryable)?;
+    let mut child = spawn
+        .command()
+        .env(CHANNEL_TOKEN, &token)
+        .arg(format!("tcp:{address}"))
+        .args(&spawn.trailing)
+        .spawn()
+        .map_err(|error| cannot_start(spawn, error))?;
+    // A process that would outlive its host is not started.
+    if let Err(reason) = adopt(&child) {
+        let _ = child.start_kill();
+        return Err(ConnectError::Incompatible {
+            reason: format!(
+                "cannot tie {} to this process's lifetime: {reason}",
+                spawn.program.to_string_lossy()
+            ),
+        });
+    }
+    // Anyone on this machine can connect: only the process knows the token.
+    // Each connection presents it on its own, so one that stays silent does
+    // not hold up the process's; those still presenting when it has are
+    // dropped with this set.
+    let mut presenting = tokio::task::JoinSet::new();
+    let stream = loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (mut stream, _) = accepted.map_err(retryable)?;
+                let token = token.clone();
+                presenting.spawn(async move {
+                    let presented = tokio::time::timeout(TOKEN_WAIT, read_line(&mut stream)).await;
+                    matches!(presented, Ok(Ok(line)) if line == token).then_some(stream)
+                });
+            }
+            Some(presented) = presenting.join_next(), if !presenting.is_empty() => {
+                if let Ok(Some(stream)) = presented {
+                    break stream;
+                }
+            }
+            status = child.wait() => return Err(ConnectError::Retryable {
+                reason: format!("the process exited before connecting: {}", describe(status)),
+            }),
+        }
+    };
+    drop(presenting);
+    let stream = stream.into_std().map_err(retryable)?;
+    stream.set_nonblocking(false).map_err(retryable)?;
+    let _ = stream.set_nodelay(true);
+    let reader = stream.try_clone().map_err(retryable)?;
+    let closer = Arc::new(ShutTcp(stream.try_clone().map_err(retryable)?));
+    let channel = lines::channel(
+        reader,
+        stream,
+        closer,
+        ChannelInfo {
+            transport: "tcp",
+            peer: None,
+            label: String::new(),
+        },
+    );
+    Ok((channel, Child::watch(child), None))
+}
+
+/// A random token, hex encoded.
+fn token() -> std::io::Result<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|error| std::io::Error::other(error.to_string()))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// The first line of `stream`, without its newline; at most 256 bytes.
+async fn read_line(stream: &mut tokio::net::TcpStream) -> std::io::Result<String> {
+    use tokio::io::AsyncReadExt;
+    let mut line = Vec::new();
+    loop {
+        let byte = stream.read_u8().await?;
+        if byte == b'\n' {
+            return Ok(String::from_utf8_lossy(&line).into_owned());
+        }
+        if line.len() == 256 {
+            return Err(std::io::Error::other("token line too long"));
+        }
+        line.push(byte);
+    }
+}
+
+struct ShutTcp(std::net::TcpStream);
+
+impl Closer for ShutTcp {
+    fn close(&self, _reason: &str) {
+        let _ = self.0.shutdown(std::net::Shutdown::Both);
+    }
+}
+
 /// A program that cannot be started is configuration, not a passing fault.
 fn cannot_start(spawn: &Spawn, error: std::io::Error) -> ConnectError {
     let reason = format!("cannot start {}: {error}", spawn.program.to_string_lossy());
@@ -182,6 +313,7 @@ fn cannot_start(spawn: &Spawn, error: std::io::Error) -> ConnectError {
     }
 }
 
+#[cfg(unix)]
 fn socket(stream: UnixStream, transport: &'static str) -> Result<Channel, ConnectError> {
     stream.set_nonblocking(false).map_err(retryable)?;
     let reader = stream.try_clone().map_err(retryable)?;
@@ -347,6 +479,7 @@ fn describe(status: std::io::Result<std::process::ExitStatus>) -> String {
 
 /// Waits until the process `pid` ends and reports its status without reaping
 /// it (tokio still does), independently of any runtime.
+#[cfg(unix)]
 fn peek_exit(pid: u32) -> Option<std::process::ExitStatus> {
     use std::os::unix::process::ExitStatusExt;
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -376,4 +509,105 @@ fn peek_exit(pid: u32) -> Option<std::process::ExitStatus> {
         _ => status,
     };
     Some(std::process::ExitStatus::from_raw(raw))
+}
+
+/// Waits until the process `pid` ends and reports its exit code, through a
+/// handle of its own, independently of any runtime.
+#[cfg(windows)]
+fn peek_exit(pid: u32) -> Option<std::process::ExitStatus> {
+    use std::os::windows::process::ExitStatusExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, WaitForSingleObject, INFINITE,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    };
+    // SAFETY: plain Win32 calls on a handle this function owns and closes.
+    unsafe {
+        let handle = OpenProcess(
+            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            pid,
+        );
+        if handle.is_null() {
+            return None;
+        }
+        let mut code = 0u32;
+        let ended = WaitForSingleObject(handle, INFINITE) == WAIT_OBJECT_0
+            && GetExitCodeProcess(handle, &mut code) != 0;
+        CloseHandle(handle);
+        ended.then(|| std::process::ExitStatus::from_raw(code))
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn peek_exit(_pid: u32) -> Option<std::process::ExitStatus> {
+    None
+}
+
+/// On Windows, put the process in a job that is closed, ending every
+/// process in it, when this process ends however it does: a runtime does
+/// not outlive its host. A process that cannot be put in it is an error.
+/// Elsewhere, the process ends when its channel closes.
+#[cfg(windows)]
+fn adopt(child: &tokio::process::Child) -> Result<(), String> {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+    static JOB: OnceLock<Result<usize, String>> = OnceLock::new();
+    let job = JOB
+        .get_or_init(|| job().map(|handle| handle as usize))
+        .clone()?;
+    let process = child
+        .raw_handle()
+        .ok_or_else(|| "the process has no handle".to_owned())?;
+    // SAFETY: both handles are live: the job for this process's lifetime,
+    // the child's while it is owned.
+    let assigned = unsafe { AssignProcessToJobObject(job as _, process as _) };
+    match assigned {
+        0 => Err(format!(
+            "cannot assign it to a job: {}",
+            std::io::Error::last_os_error()
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// A job that ends its processes when its last handle closes: the one this
+/// process holds until it ends.
+#[cfg(windows)]
+fn job() -> Result<windows_sys::Win32::Foundation::HANDLE, String> {
+    use windows_sys::Win32::System::JobObjects::{
+        CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    // SAFETY: plain Win32 calls; the job handle is kept for the process's
+    // lifetime.
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return Err(format!(
+                "cannot create a job: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let set = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &limits as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        match set {
+            0 => Err(format!(
+                "cannot set up a job: {}",
+                std::io::Error::last_os_error()
+            )),
+            _ => Ok(job),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn adopt(_child: &tokio::process::Child) -> Result<(), String> {
+    Ok(())
 }

@@ -1,6 +1,7 @@
 import { ConnectError } from './errors.mjs'
 import { ENDPOINT_PROTOCOL } from '../session.mjs'
 import * as fd from './fd.mjs'
+import * as tcp from './tcp.mjs'
 import * as unix from './unix.mjs'
 import * as websocket from './websocket.mjs'
 
@@ -14,6 +15,8 @@ const PROTOCOL = `rutis.${ENDPOINT_PROTOCOL}`
 // Specs:
 //   `unix:<path>` or a bare path   dial a Unix socket
 //   `fd:<n>`                       an inherited socket
+//   `tcp:<host>:<port>`            dial a loopback address, presenting the
+//                                  token in RUTIS_CHANNEL_TOKEN first
 //   `ws://…`, `wss://…`            dial a WebSocket endpoint
 //   `listen:ws://…`, `listen:wss://…`
 //                                  listen, and take the first connection
@@ -25,6 +28,7 @@ export async function open(spec, handlers, options = websocket.optionsFromEnviro
   const scheme = /^([a-z][a-z0-9+.-]*):/.exec(spec)?.[1]
   if (scheme === undefined || scheme === 'unix') return unix.open(spec, handlers)
   if (scheme === 'fd') return fd.open(spec, handlers)
+  if (scheme === 'tcp') return tcp.open(spec, handlers)
   if (scheme === 'ws' || scheme === 'wss') return websocket.open(spec, handlers, { protocol: PROTOCOL, ...options })
   if (scheme === 'listen') return listenOnce(spec.slice('listen:'.length), handlers, options)
   throw new ConnectError('incompatible', `no channel for ${scheme}: addresses`)

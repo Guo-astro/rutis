@@ -3057,6 +3057,7 @@ name = "rutis-bridge"
 version = "0.7.0"
 dependencies = [
  "futures-util",
+ "getrandom 0.2.17",
  "libc",
  "proc-macro2",
  "quote",
@@ -3075,6 +3076,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite 0.30.0",
  "toml",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

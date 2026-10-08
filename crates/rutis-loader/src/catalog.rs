@@ -204,7 +204,7 @@ impl ServiceCatalog {
     /// `host_key(name)`, provided by Rust or by a row of any runtime. Rows
     /// that inject a shared name wait for it in rutis; other names a
     /// JavaScript row injects are left to Cordis.
-    #[cfg(all(unix, feature = "runtimes"))]
+    #[cfg(feature = "runtimes")]
     pub fn register_shared(&mut self, name: impl Into<String>) -> &mut Self {
         let name = name.into();
         let key = rutis_bridge::session::host_key(&name);
@@ -261,7 +261,7 @@ impl ServiceCatalog {
 
     /// The instance names usable in `build`'s instances, with the instance
     /// each resolves to: what a copy there isolates by instance.
-    #[cfg(all(unix, feature = "runtimes"))]
+    #[cfg(feature = "runtimes")]
     pub(crate) fn instance_names(&self, build: &Build) -> Vec<(String, rutis::InstanceId)> {
         let mut names: Vec<(String, rutis::InstanceId)> = self
             .services
