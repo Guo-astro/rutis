@@ -231,6 +231,10 @@ struct Fixture {
     root: Ctx,
     loader: Loader,
     probe: Probe,
+    /// The rows as reconciled.
+    rows: Value,
+    /// The TS row's file.
+    js: PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -295,7 +299,7 @@ async fn fixture() -> Fixture {
             { "id": "reader", "name": "reader" }
         ] }
     ] }]);
-    let patches: Vec<Patch> = serde_json::from_value(rows).unwrap();
+    let patches: Vec<Patch> = serde_json::from_value(rows.clone()).unwrap();
     let report = loader
         .reconcile(vec![Layer::new("rows", patches)], None)
         .await
@@ -305,6 +309,8 @@ async fn fixture() -> Fixture {
         root,
         loader,
         probe,
+        rows,
+        js,
         _dir: dir,
     }
 }
@@ -392,5 +398,32 @@ async fn a_removed_instance_leaves_nothing_behind() {
     // The runtimes forgot A's registrations: a new instance takes the same
     // names in them again.
     fixture.create("C").await;
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// A language row outside the group of an instance name it uses is
+/// unresolved, saying where it belongs, though the loader leaves its scope
+/// to the runtime.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_language_row_outside_its_instances_is_unresolved() {
+    let fixture = fixture().await;
+    let mut rows = fixture.rows.clone();
+    rows[0]["insert"].as_array_mut().unwrap().push(json!({
+        "id": "outside", "name": fixture.js.to_string_lossy(), "inject": ["tools"]
+    }));
+    let patches: Vec<Patch> = serde_json::from_value(rows).unwrap();
+    let report = fixture
+        .loader
+        .reconcile(vec![Layer::new("rows", patches)], None)
+        .await
+        .unwrap();
+    let failed: Vec<_> = report.failures.iter().map(|f| f.id.as_str()).collect();
+    assert_eq!(failed, ["outside"], "{report:?}");
+    match fixture.loader.get("outside").unwrap().status {
+        EntryStatus::Unresolved(rutis_loader::LoaderError::OutsideInstance { name, group }) => {
+            assert_eq!((name.as_str(), group.as_str()), ("tools", "session"))
+        }
+        other => panic!("{other:?}"),
+    }
     fixture.root.shutdown().await.unwrap();
 }

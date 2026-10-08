@@ -25,15 +25,27 @@ pub struct Host {
 type Slots = Arc<Mutex<HashMap<String, (Option<String>, u64)>>>;
 
 /// How the runtime identifies the service `name` in the scope `label` (a
-/// row's `isolate` label for it): `name` outside any scope, `name@label`
-/// inside one. Export slots, host proxies and `host:<id>` call targets are
-/// registered by it, so the same name in two scopes (two instances, say)
-/// does not collide. A runtime takes labels only with the `scopes` feature.
+/// row's `isolate` label for it): `name` outside any scope, `name`, a NUL
+/// and `label` inside one. Neither may contain NUL ([`check_scoped`]), so
+/// no two (name, label) pairs share an id. Export slots, host proxies and
+/// `host:<id>` call targets are registered by it, so the same name in two
+/// scopes (two instances, say) does not collide. A runtime takes labels
+/// only with the `scopes` feature.
 pub fn scoped_id(name: &str, label: Option<&str>) -> String {
     match label {
         None => name.to_owned(),
-        Some(label) => format!("{name}@{label}"),
+        Some(label) => format!("{name}\0{label}"),
     }
+}
+
+/// Refuse a name or label [`scoped_id`] cannot keep apart.
+fn check_scoped(name: &str, label: Option<&str>) -> Result<(), Error> {
+    if name.contains('\0') || label.is_some_and(|label| label.contains('\0')) {
+        return Err(Error::Value(format!(
+            "service {name:?} or its scope label contains NUL"
+        )));
+    }
+    Ok(())
 }
 
 /// A service a row exports: its name, and who follows its changes.
@@ -618,6 +630,9 @@ impl Process {
         if !exports.is_empty() {
             self.require("rows.v2")?;
         }
+        for name in exports.keys() {
+            check_scoped(name, label_of(isolate, name))?;
+        }
         let scoped: Vec<(String, String)> = exports
             .keys()
             .map(|name| (scoped_id(name, label_of(isolate, name)), name.clone()))
@@ -749,6 +764,7 @@ impl Process {
         if label.is_some() {
             self.require("scopes")?;
         }
+        check_scoped(name, label)?;
         let id = scoped_id(name, label);
         let _changing = self.host_changes.lock().await;
         let first = {

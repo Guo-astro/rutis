@@ -37,6 +37,11 @@ pub(super) struct Row {
     /// scope itself (`Resolved::foreign_scope`) do without it.
     pub(super) scope: Result<RowScope, LoaderError>,
     pub(super) invalid: Option<LoaderError>,
+    /// A service inside instances the row's `isolate` or `inject` names,
+    /// though the row is outside them. For every row, whoever applies its
+    /// scope: a resolver that handles scope itself does not see the
+    /// catalog's scopes.
+    pub(super) misplaced: Option<LoaderError>,
 }
 
 /// The row's `isolate` and `inject`, resolved through the catalog. Names
@@ -64,15 +69,6 @@ impl RowScope {
                 .map(|(name, key)| Ok((name.clone(), key.key(name, build)?)))
                 .collect::<Result<_, LoaderError>>()?,
         })
-    }
-
-    /// The instanced groups whose services the row names.
-    fn groups(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.isolate
-            .iter()
-            .map(|(name, key, _)| (name, key))
-            .chain(self.inject.iter().map(|(name, key)| (name, key)))
-            .filter_map(|(name, key)| key.group().map(|group| (name.as_str(), group)))
     }
 }
 
@@ -350,36 +346,42 @@ impl Desired {
                 raw_scope,
                 scope,
                 invalid,
+                misplaced: None,
             });
         }
-        desired.check_instance_names();
+        desired.check_instance_names(eval.catalog);
         desired
     }
 
     /// A row naming a service inside instances of a group must be in that
     /// group (or be it): elsewhere the name has no key.
-    fn check_instance_names(&mut self) {
+    fn check_instance_names(&mut self, catalog: &ServiceCatalog) {
         let mut misplaced = Vec::new();
         for (index, row) in self.rows.iter().enumerate() {
-            let Ok(scope) = &row.scope else {
-                continue;
-            };
             let enclosing = self.enclosing_instances(row);
-            if let Some((name, group)) = scope
-                .groups()
-                .find(|(_, group)| !enclosing.iter().any(|g| g == group))
-            {
-                misplaced.push((
-                    index,
-                    LoaderError::OutsideInstance {
-                        name: name.to_owned(),
-                        group: group.to_owned(),
-                    },
-                ));
+            let names = row
+                .raw_scope
+                .isolate
+                .iter()
+                .map(|(name, _)| name)
+                .chain(&row.raw_scope.inject);
+            let outside = names.filter_map(|name| {
+                let group = catalog.name_key(name)?.group()?.to_owned();
+                (!enclosing.contains(&group)).then(|| LoaderError::OutsideInstance {
+                    name: name.clone(),
+                    group,
+                })
+            });
+            if let Some(error) = outside.into_iter().next() {
+                misplaced.push((index, error));
             }
         }
         for (index, error) in misplaced {
-            self.rows[index].scope = Err(error);
+            let row = &mut self.rows[index];
+            if row.scope.is_ok() {
+                row.scope = Err(error.clone());
+            }
+            row.misplaced = Some(error);
         }
     }
 

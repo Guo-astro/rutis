@@ -16,9 +16,9 @@ use serde_json::{json, Value};
 
 type Log = Arc<Mutex<Vec<String>>>;
 
-/// The service `tools` names, one per `session` instance.
-#[derive(Debug)]
-#[allow(dead_code)]
+/// The service `tools` names, one per `session` instance; expressions read
+/// it as its title.
+#[derive(Debug, serde::Serialize)]
 struct Tools(String);
 
 /// The instance's title, given with `with`.
@@ -121,15 +121,21 @@ fn resolver(log: &Log) -> Builtins {
     builtins
 }
 
-/// `{ "__jsExpr": "has tools" }` → whether `tools` is there.
+/// `{ "__jsExpr": "has tools" }` → whether `tools` is there; `read tools`
+/// → its value.
 struct HasExpr;
 
 impl Expressions for HasExpr {
     fn evaluate(&self, expr: &str, scope: &ExprScope<'_>) -> Result<Value, LoaderError> {
-        let name = expr
-            .strip_prefix("has ")
-            .ok_or_else(|| LoaderError::Expression(format!("unknown expression {expr}")))?;
-        Ok(Value::Bool(scope.has(name)?))
+        if let Some(name) = expr.strip_prefix("has ") {
+            return Ok(Value::Bool(scope.has(name)?));
+        }
+        if let Some(name) = expr.strip_prefix("read ") {
+            return Ok(scope.read(name)?.unwrap_or(Value::Null));
+        }
+        Err(LoaderError::Expression(format!(
+            "unknown expression {expr}"
+        )))
     }
 }
 
@@ -166,7 +172,7 @@ impl Setup {
 async fn setup(base: Value) -> (Setup, rutis_loader::ReconcileReport) {
     let log = Log::default();
     let mut catalog = ServiceCatalog::new();
-    catalog.register_instance::<Tools>("tools", "session");
+    catalog.readable_instance::<Tools>("tools", "session");
     let store = MemStore::default();
     let root = Ctx::root().unwrap();
     let plugin = LoaderPlugin::new(
@@ -270,4 +276,12 @@ async fn expressions_see_the_copy_s_instance() {
     let log = s.take_log();
     assert!(log.contains(&"echo A true".to_owned()), "{log:?}");
     assert!(log.contains(&"echo B false".to_owned()), "{log:?}");
+    // And read the value of their own instance's service.
+    s.loader
+        .update("user", json!({ "label": { "__jsExpr": "read tools" } }))
+        .await
+        .unwrap();
+    let log = s.take_log();
+    assert!(log.contains(&"echo A \"A\"".to_owned()), "{log:?}");
+    assert!(log.contains(&"echo B null".to_owned()), "{log:?}");
 }

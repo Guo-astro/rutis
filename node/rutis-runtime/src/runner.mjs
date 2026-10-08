@@ -54,8 +54,15 @@ const FEATURES = ['rows.v2', 'hosts', 'leaf.js', 'scopes']
 // A service in a scope: rows isolating `name` with `label` share it, and the
 // same name in another scope (another instance, say) is another service.
 // Export slots, host proxies and `host:<id>` targets go by this id
-// (`scopes`); a service outside any scope is just its name.
-const scopedId = (name, label) => label ? `${name}@${label}` : name
+// (`scopes`): the name outside any scope, the name, a NUL and the label
+// inside one. Neither may contain NUL, so no two pairs share an id.
+const scopedId = (name, label) => {
+  if (name.includes('\0') || label?.includes('\0')) throw new Error(`service ${JSON.stringify(name)} or its scope label contains NUL`)
+  return label ? `${name}\0${label}` : name
+}
+// The handle of a slot's `generation`th object. A scoped id's handles are
+// marked with a NUL too: a label may contain `#`.
+const handleOf = (id, generation) => generation === 1 ? id : `${id}${id.includes('\0') ? '\0' : '#'}${generation}`
 // Cordis keys an isolated service by its symbol alone, so the symbol names
 // the service as well as the label: two names isolated with one label are
 // two services.
@@ -125,7 +132,7 @@ function refresh() {
     slot.handle = null
     if (object !== undefined) {
       slot.generation++
-      slot.handle = slot.generation === 1 ? id : `${id}#${slot.generation}`
+      slot.handle = handleOf(id, slot.generation)
       handles.set(slot.handle, { name: id, object, current: true, released: false })
     }
     slot.version = ++version

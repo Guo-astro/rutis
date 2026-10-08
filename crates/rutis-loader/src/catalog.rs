@@ -150,6 +150,33 @@ impl ServiceCatalog {
         self
     }
 
+    /// [`ServiceCatalog::register_instance`] for a service whose value
+    /// expressions may read, serialized to JSON: in a copy, the value of
+    /// its own instance's service.
+    pub fn readable_instance<T: Serialize + Send + Sync + 'static>(
+        &mut self,
+        name: impl Into<String>,
+        group: impl Into<String>,
+    ) -> &mut Self {
+        self.readable_instance_keyed::<T>(name, group, TypeKey::of::<T>())
+    }
+
+    /// [`ServiceCatalog::readable_instance`] with an explicit key, qualified
+    /// with the instance.
+    pub fn readable_instance_keyed<T: Serialize + Send + Sync + 'static>(
+        &mut self,
+        name: impl Into<String>,
+        group: impl Into<String>,
+        key: TypeKey,
+    ) -> &mut Self {
+        let key = NameKey::Instance {
+            group: group.into(),
+            base: key,
+        };
+        self.insert(name, key, probe::<T>(), Some(reader::<T>()));
+        self
+    }
+
     /// Name a service whose value expressions may read, serialized to JSON.
     /// Meant for small host-owned values such as startup parameters.
     pub fn readable<T: Serialize + Send + Sync + 'static>(

@@ -17,8 +17,8 @@ row here provides it, so those calls never leave the process.
 A row's `isolate` gives some names a scope label: rows isolating a name with
 the same label share it, and the same name under another label (another
 instance, say) is another service. Services, host proxies and export slots
-are registered by id (`scopes`): the name outside any scope, `name@label`
-inside one.
+are registered by id (`scopes`): the name outside any scope, the name, a
+NUL and the label inside one.
 """
 
 from __future__ import annotations
@@ -39,8 +39,20 @@ FEATURES = ["rows.v2", "hosts", "leaf", "scopes"]
 
 
 def scoped_id(name: str, label: str | None) -> str:
-    """How the service `name` is identified in the scope `label`."""
-    return f"{name}@{label}" if label else name
+    """How the service `name` is identified in the scope `label`: the name
+    outside any scope, the name, a NUL and the label inside one. Neither
+    may contain NUL, so no two pairs share an id."""
+    if "\0" in name or (label and "\0" in label):
+        raise ValueError(f"service {name!r} or its scope label contains NUL")
+    return f"{name}\0{label}" if label else name
+
+
+def handle_of(id: str, generation: int) -> str:
+    """The handle of a slot's `generation`th object. A scoped id's handles
+    are marked with a NUL too: a label may contain `#`."""
+    if generation == 1:
+        return id
+    return f"{id}{chr(0) if chr(0) in id else '#'}{generation}"
 
 
 class HostProxy:
@@ -176,7 +188,7 @@ class Runtime:
         slot.handle = None
         if current is not None:
             slot.generation += 1
-            slot.handle = id if slot.generation == 1 else f"{id}#{slot.generation}"
+            slot.handle = handle_of(id, slot.generation)
             self.handles[slot.handle] = {"name": id, "object": current, "current": True, "released": False}
         self.version += 1
         if self.peer is not None and not self.closing:

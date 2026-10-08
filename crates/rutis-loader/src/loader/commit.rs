@@ -223,6 +223,10 @@ impl Inner {
             // Evaluate where the plugin would run: its group, with its
             // isolates.
             let scope = if resolved.foreign_scope {
+                if let Some(misplaced) = &row.misplaced {
+                    check(Err(misplaced.clone()))?;
+                    continue;
+                }
                 super::desired::BoundScope::default()
             } else {
                 match row

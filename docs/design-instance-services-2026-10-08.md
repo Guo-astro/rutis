@@ -35,6 +35,7 @@ catalog.register_shared_instance("timeline", "session"); // session 实例内的
 | `register_instance::<T>(name, group)` | `TypeKey::of::<T>()` 带上所在 `group` 实例的 `InstanceId` |
 | `register_instance_keyed::<T>(name, group, key)` | `key` 带上该实例的 `InstanceId`（命名、动态键） |
 | `register_shared_instance(name, group)` | `host_key_in(name, instance)` = `host_key(name)` 带上该实例的 `InstanceId` |
+| `readable_instance::<T>(name, group)`、`readable_instance_keyed` | 同 `register_instance{,_keyed}`，表达式还可以用 `read` 读取本实例服务的值 |
 
 - `group` 是一个 `instanced` 分组的 id。一行使用该名字时，取它所在实例链上**最近的 `group` 实例**：嵌套实例里的行可以用外层实例的服务。
 - 每个名字只有一种归属：要么全局，要么属于某一种实例。**没有回退**——实例内的名字不会在实例外解析成全局服务，反之亦然。需要"默认实现、个别实例替换"时，在实例里放一行提供该名字的插件，默认实现转发给全局服务。
@@ -50,7 +51,7 @@ catalog.register_shared_instance("timeline", "session"); // session 实例内的
 | 表达式 `has` / `read` | 固定的键 | 求值时用副本的实例链解析 |
 | 语言行的门控与宿主（`RuntimeResolver`） | 解析模块时固定为 `host_key(name)` | 每个副本由 `scoped` 工厂按实例链生成 |
 
-- **组装期检查**：一行的 `isolate` / `inject` 用了实例内名字，而它不在该 `group` 之下时，这一行无效（`Unresolved`），错误说明该名字需要放在哪个分组里。配置写错位置会在装载时直接报出。
+- **组装期检查**：一行的 `isolate` / `inject` 用了实例内名字，而它不在该 `group` 之下时，这一行无效（`Unresolved`），错误说明该名字需要放在哪个分组里。配置写错位置会在装载时直接报出。自行处理作用域的行（语言行、peer 行）同样适用。
 - 表达式在实例外引用实例内名字时报错，而不是返回 `false`。
 - `ExprScope::new(ctx, catalog)` 不变（全局）；新增 `ExprScope::in_instances(ctx, catalog, build)`。
 
@@ -69,7 +70,7 @@ catalog.register_shared_instance("timeline", "session"); // session 实例内的
 运行时进程是共享的（每种语言一个进程，服务所有实例的行），所以进程里的登记也要区分实例。做法是复用 `isolate`：
 
 - 每个副本对实例内名字自动带上一条 isolate，标签为该实例的 `rutis-loader/instance/<InstanceId>`；配置里已经 isolate 了这个名字时，用配置的标签（#161 起已经按副本 / 按实例区分）。
-- 进程里一个服务的身份是 **(名字, 标签)**，在协议上写作 id：无标签时就是 `name`，有标签时是 `name@label`。导出槽、句柄、宿主代理、`host:<id>` 调用目标都按 id 登记。
+- 进程里一个服务的身份是 **(名字, 标签)**，在协议上写作 id：无标签时就是 `name`，有标签时是 `name` + NUL + `label`。名字和标签都不允许含 NUL，因此不同的 (名字, 标签) 不会得到同一个 id（全局名字 `x@L` 不会被当成标签 `L` 下的 `x`）。导出槽、句柄、宿主代理、`host:<id>` 调用目标都按 id 登记。
 - 插件看到的仍是名字 `x`：Node 用 Cordis 的 isolate，同标签的行共享一个作用域；Python 运行时按行的 isolate 表查找。
 
 协议变化（新增特性 `scopes`）：
@@ -108,7 +109,7 @@ catalog.register_shared_instance("timeline", "session"); // session 实例内的
 ## 7. 兼容性
 
 - 只注册全局名字的应用，行为和协议都不变；
-- 新增的公开接口：`ServiceCatalog::register_instance{,_keyed}`、`register_shared_instance`、`key_in`，`ExprScope::in_instances`，`host_key_in`，`Process::lease_host_in`，`row_projection_with`，`ExportPlugin::with_keys` / `ImportPlugin::with_keys`，`Features::services`；
+- 新增的公开接口：`ServiceCatalog::register_instance{,_keyed}`、`readable_instance{,_keyed}`、`register_shared_instance`、`key_in`，`ExprScope::in_instances`，`host_key_in`，`Process::lease_host_in`，`row_projection_with`，`ExportPlugin::with_keys` / `ImportPlugin::with_keys`，`Features::services`；
 - `ServiceCatalog::key(name)` 只返回全局名字的键；实例内名字用 `key_in(name, build)`。
 
 ## 8. 验收
