@@ -2,125 +2,148 @@
 
 [中文](design-philosophy.md) · [Core design](design-rust-port.en.md) · [Core features](core-features.en.md)
 
-This document explains why rutis is shaped the way it is, and what to rely on when deciding whether a capability belongs in it. The mechanisms are in the individual design documents; this one covers only the starting point and the principles that follow from it.
+Status: current. Date: 2026-10-08.
 
-## In one sentence
+**rutis is an application operating system for software that iterates on itself and adapts to its environment: a harness for connecting and adapting.**
 
-**rutis is a shell for connecting and adapting, designed for software that iterates on itself.** It provides a stable plugin infrastructure in Rust and, through plugins in other languages and on other machines, connects to more runtimes, system processes and devices, so that a host program can build, understand and iterate on its own connections to its environment.
+Its lifecycle model comes from [Cordis](https://github.com/shigma/cordis), but it starts from a different place: Cordis runs a plugin ecosystem inside one process; rutis lets a host program connect to more runtimes, processes and devices by itself, and understand and iterate on those connections.
 
-## 1. Starting point
+This document explains that starting point, and the shape, costs and principles that follow from it. The mechanisms are in the individual design documents.
 
-### Designed for software that iterates on itself and adapts to its environment
+## 1. Software has to adapt to its environment by itself
 
-When software is itself an agent, or is developed by agents, its most important ability is to deal with its environment and surroundings quickly and form connections, and to understand and iterate on how it connects to that environment.
+When software is itself an agent, or is developed by agents, what matters most is that it can deal with its environment and surroundings quickly and form connections, and that it can understand and iterate on its own ability to connect to that environment.
 
-Here the party that makes and initiates connections is the software host itself, not whoever maintains the environment. Protocols such as MCP solve the problem from the other side: the environment's maintainers wrap capabilities as servers, and the host uses what others have already built, so what it can reach depends on what others have made. rutis is about the host's side: when the host needs to connect to something, it writes a plugin itself (in whichever language fits best, possibly written by an agent), loads it, tries it, changes it, replaces it. The two do not conflict, and an MCP client can be just another plugin the host loads; but the environment should not decide where the host's capabilities end.
+**The party that makes and initiates connections is the software host itself, not whoever maintains the environment.** That is why rutis is not an MCP-style protocol. MCP solves the problem on the environment's side: the environment's maintainers wrap capabilities as servers and the host calls them. The connection stays outside the host, and what the host can do depends on what exists outside it. rutis solves the problem on the host's side: whatever the host needs to reach, it writes a plugin for (in whichever language fits best, possibly written by an agent), tries it, changes it, replaces it, and from then on the connection is part of the host, with a lifecycle, observable and cleaned up. The two can coexist, and an MCP client can be just another plugin in the host; but the environment should not decide where the host's capabilities end.
 
-So what rutis gives the host is the ability to adapt itself:
+So what matters more and more is that the host itself has **the ability to adapt and to iterate on how it reaches its environment**:
 
-| The host needs to | rutis provides |
-| --- | --- |
-| Make connections | Plugins in any connected language, run in this process, another process or on another machine |
-| Understand its connections | `diagnostics()` lists each plugin's state, dependencies and service bindings; the service name directory; the dependencies and service shapes plugins declare; the cleanup tree |
-| Iterate on its connections | Reload on file change in dev mode; hot configuration updates; consumers reload automatically when a provider is replaced; the loader keeps reconciling against configuration |
-| Iterate without breaking | Dependency gating, exactly-once cleanup and rollback on failure: loading, unloading and replacing often leaves nothing behind |
+- **Make connections**: write plugins in any connected language and run them in this process, another process or on another machine;
+- **Understand connections**: `diagnostics()` lists each plugin's state, dependencies and service bindings; `rutis-host check` lists each row's dependencies and the services it provides;
+- **Iterate on connections**: reload when code changes, update configuration live, and have the plugins using an implementation follow along when it is replaced;
+- **Iterate without breaking**: nothing starts before its dependencies are ready, every cleanup runs exactly once on unload, and failures roll back. Loading, unloading and replacing often leaves nothing behind.
 
-### A plugin system is a small application operating system
+## 2. A plugin system is a small application operating system
 
-Once a program accepts plugins, it has to answer the questions an operating system answers: what starts first, what happens while a dependency is missing, who has to restart when a part is replaced, whether unloading left anything behind, how parts call each other. rutis puts these questions into a small kernel and answers them with one set of lifecycle rules:
+Once a program accepts plugins, it has to answer the questions an operating system answers: what starts first, what happens while a dependency is missing, who has to restart when a part is replaced, whether unloading left anything behind, how parts call each other. rutis puts these questions into a small core:
 
 | Operating system | rutis |
 | --- | --- |
 | Kernel: small, stable, rarely changed | The `rutis` core, depending only on tokio, tokio-util and thiserror |
-| Processes | Plugin fibers; language runtimes, remote nodes and dylibs are plugins too |
+| Processes | Plugins; language runtimes, remote nodes and dylibs are plugins too |
 | System calls | Services, provided and used by name or by type |
-| Drivers | Mounts and bridges: Cordis mounts, language runtime plugins, node links |
-| Scheduling and supervision | Dependency gating, dependency-driven reload, the loader reconciling against configuration |
-| Resource reclamation | Exactly-once LIFO cleanup, rolled back on failure |
-| Observability | `diagnostics()`, the cleanup tree, pre-dispatch observation |
+| Drivers | Mounts and bridges: language runtimes, node links, Cordis mounts |
+| Scheduling and reclamation | Start once dependencies are ready, stop when they go away, clean up in reverse order of registration |
 
-### Rust at the core, other languages to connect
+The "peripherals" of this operating system are other runtimes and system processes. **Plugins in other languages and on other machines are not add-ons; they are the reason it exists**: every runtime or machine connected is one more set of capabilities the host can reach.
 
-The parts that must stay stable are in Rust: the core, the lifecycle, scheduling and cleanup, which must not fail over the long term. Connecting and adapting go to whichever language fits best: Python has the ML and data ecosystem, Node has npm and existing Cordis plugins, Swift can call macOS system frameworks directly, and remote nodes reach devices and processes on other machines. This is the shape of an agent harness: a stable trunk with limbs that can grow and be replaced at any time. Once you are no longer limited to one runtime and one language, the problems you can solve and the resources you can reach multiply.
+## 3. Rust at the core, other languages to connect and adapt
 
-### From trying to stable is one path
+```mermaid
+flowchart LR
+    subgraph host["Host (Rust)"]
+        core["rutis core<br/>lifecycle · dependencies · cleanup"]
+        rust["Rust / dylib plugins"]
+    end
+    node["Node runtime<br/>npm ecosystem, Cordis plugins"]
+    py["Python runtime<br/>ML and data ecosystem"]
+    peer["Nodes on other machines<br/>their processes and devices"]
+    core --- rust
+    core <--> node
+    core <--> py
+    core <-->|WebSocket + TLS| peer
+```
 
-Trying things out and making them stable is necessarily a process, and multi-language runtimes naturally cover the whole path from experimental code to production:
+The plugin system has to be more stable than anything running on it, and easy to extend and to maintain stably over the long term. So the core is written in Rust, the lifecycle model is implemented only there, and every semantic guarantee is pinned by tests; the other languages have only a small SDK and do not replicate the framework.
 
-1. **Try**: write a plugin quickly in Python or TypeScript, possibly generated by an agent, reloaded on every change under `rutis-host dev`.
-2. **Prove**: run it as a loader row in a real host, depending on and depended on by other plugins through services; the service's name and shape settle at this step.
-3. **Solidify**: rewrite the parts that have stood the test of time in Rust (built into the host, or as a dylib plugin) for stability and performance.
+Connecting and adapting go to whichever language fits best. This matches the idea of an agent harness: a stable core, plus runtimes that can be connected and replaced at any time. Once a host no longer stops at one runtime and one language, the problems it can solve and the resources it can reach are no longer bounded by any single ecosystem.
 
-Between steps, the plugins using the capability do not change: to them, the same service simply has a new provider (see principle 10). This is the same idea as the [dual-core architecture](design-dual-core-2026-08-20.en.md)'s "TS is the lab, Rust takes the graduates", extended to every connected language.
+## 4. Borrowing each language's ecosystem, from trying to stable
 
-### Three commitments
+Runtimes in different languages bring the ecosystems of their language stacks: Python brings ML and data processing, Node brings npm and existing Cordis plugins, and remote nodes bring the processes and devices of another machine.
 
-1. **Stable infrastructure.** The plugin system has to be more stable than anything running on it, and easy to extend and maintain over the long term. So the core is written in Rust, the model is implemented once, and every semantic guarantee is pinned by tests.
-2. **Connecting to more runtimes and processes.** Capabilities already live across different language stacks, processes and machines. Plugins in other languages and on other machines are not add-ons; they are the reason the system exists. Each runtime or machine it connects to is one more set of capabilities the host can use.
-3. **Letting the host adapt to its environment and devices.** With these connections, a host can use what is available where it runs: system frameworks on macOS, Python's ML ecosystem on a server, devices on another machine. A capability can also be solidified step by step along the path in the previous section, without changing the plugins that use it.
+Trying and stabilizing is necessarily a process, and multi-language runtimes naturally cover the whole path from experimental code to production:
 
-## 2. The fundamental difference from Cordis
+1. **Try**: connect quickly with Python or TypeScript, possibly written by an agent, reloaded on every change under `rutis-host dev`;
+2. **Prove**: run it in a real host, using and used by other plugins through services; the service's name and methods settle at this step;
+3. **Solidify**: rewrite the parts that have stood the test of time in Rust for stability and performance.
 
-rutis takes its lifecycle model from [Cordis](https://github.com/shigma/cordis), and the core semantics agree; see the [spec-by-spec parity check](cordis-spec-parity-2026-08-18.en.md). The fundamental difference is the world each one faces:
+The path works because of the lifecycle model inherited from Cordis: **a plugin depends on a service's name, not on an implementation**, and when the implementation changes, the plugins depending on it stop and start again on their own. So changing the implementation language or where it runs is, to its users, the same service with a new provider:
+
+```mermaid
+flowchart LR
+    subgraph s1["Try"]
+        p1["planner"] -->|calendar| c1["Python plugin"]
+    end
+    subgraph s2["Move to the internal network"]
+        p2["planner"] -->|calendar| c2["Plugin on an internal node"]
+    end
+    subgraph s3["Solidify"]
+        p3["planner"] -->|calendar| c3["Rust implementation"]
+    end
+    s1 ~~~ s2 ~~~ s3
+```
+
+Across all three stages, not one line of `planner` changes and the host does not restart. This is the same idea as the [dual-core architecture](design-dual-core-2026-08-20.en.md)'s "TS is the lab, Rust takes the graduates", extended to every connected language.
+
+## 5. The fundamental difference from Cordis
+
+rutis inherits its lifecycle model from Cordis, and the core semantics agree; see the [spec-by-spec parity check](cordis-spec-parity-2026-08-18.en.md). Cordis is the core of Koishi. It lets a large number of plugin authors write plugins that load and unload cleanly with hardly a thought about lifecycle; for a system whose parts all live in one Node process, its implicit style built on JS language features is the right choice.
+
+The fundamental difference is that rutis is designed around the idea of a harness for connecting and adapting:
 
 | | Cordis | rutis |
 | --- | --- | --- |
-| World | Closed: every part lives in the same Node process | Open: parts are spread across languages, processes and machines |
-| Where capabilities come from | The framework's own plugin ecosystem (Cordis plugins on npm) | Connecting to runtimes, processes and ecosystems that already exist; no ecosystem of its own |
-| Main users | Many plugin authors | The people who assemble a system around a host |
-| Where the value is | Plugins are easy to write; the ecosystem grows | How much it can connect to and adapt to, with a lifecycle that holds at every boundary |
-| What it may rely on | A single JS thread, one shared object world, language features such as Proxy | Only explicit contracts: once a process boundary is crossed, every implicit convention breaks |
+| What it is for | Running a plugin ecosystem inside one process | Letting a host connect to and adapt to its environment |
+| Where capabilities come from | The framework's own plugins (Cordis plugins on npm) | Connecting to runtimes, processes, devices and ecosystems that already exist; no ecosystem of its own |
+| Where the parts are | One Node process | Different languages, processes and machines |
+| What it may rely on | A single JS thread, shared objects, language features such as Proxy | Only explicit contracts: once a process boundary is crossed, implicit conventions break |
 
-So rutis is not a translation of Cordis. Mechanisms that only hold in a closed world, such as Proxy property access, traceable and caller-shadow, `Context.filter` and the `internal/*` hook surface, are not carried over. Problems that only appear in an open world, such as ordering across threads, withdrawing services across processes, reconnecting after a drop and protocol versions, are treated as first-class.
+So rutis is not a translation of Cordis. Mechanisms that only hold within one process (Proxy property access, rewriting the context per caller, `Context.filter`, the `internal/*` hooks) are not carried over; problems that only appear across processes (ordering across threads, withdrawing services across processes, reconnecting after a drop, protocol versions) are treated as first-class.
 
-## 3. Principles that follow
+## 6. Costs
 
-### The core
+- **Processes and latency**: each language needs at least one process, and a synchronous cross-language call takes about 30µs (measured on the Node side), far slower than a call within a process. Capabilities called often should eventually be solidified in Rust or placed in the same runtime.
+- **Weaker semantics**: across a process boundary, events can only be notifications, waterfalls are not forwarded, and `instanceof` does not hold; see the [boundary rules](requirements-protocol-plugins.en.md) §5.
+- **Failure scope**: plugins in one runtime share a process; if one crashes the process, the others in it stop too. Isolation means more runtime instances.
+- **Environment requirements**: each language used needs its environment (Node 24+, Python 3.12+), deployed along with it.
+- **More verbose code**: obtaining services and passing the context explicitly takes a few more words than Cordis's `ctx.foo`.
+- **Maintenance surface**: every language connected is one more runtime and one more SDK to maintain over the long term.
 
-1. **The model is implemented once, in the Rust core.** Dependency gating, starting and stopping, reloading, cleanup and hot configuration updates exist in one implementation, in rutis. Other languages do not replicate the framework ([multi-language design](design-multilang-runtimes-2026-10-03.en.md) §2).
-2. **Compatibility work happens outside the core.** Adapting to a new runtime or protocol happens in bridges, mounts and runtime plugins ([mount requirements](requirements-protocol-plugins.en.md) §1). The core changes only for its own semantics.
-3. **Guarantees are written down and pinned by tests.** Properties that come for free in one process, such as handling events in emission order, disappear across threads and processes. rutis rebuilds the guarantees it needs one by one, records them in the decision table and fixes them with deterministic tests ([core design](design-rust-port.en.md) D31). Guarantees it does not make are written down too.
-4. **Extension points are opened for concrete needs, and kept narrow.** There is no catch-all hook surface. When there is a real consumer, an interface is opened at that action's boundary, as with pre-dispatch observation and service read/write interception ([observation and interception design](design-cordis-observation.en.md)).
+## 7. Principles and how to decide
 
-### Connecting
+This section follows from the claims above and is written mainly for contributors.
 
-5. **Whatever rutis connects to is a plugin.** Language runtimes, remote nodes and Cordis mounts are ordinary plugins or loader rows under the same lifecycle: when a runtime process crashes, the plugins depending on it stop; when a connection comes back, they start again. A connection has no privileges outside the lifecycle.
-6. **Plugins in other languages are leaves.** One runtime plugin and one process per language; the language side needs only a small SDK: `apply`, use services, provide services, return cleanup. The one exception is Node, which keeps full Cordis so that existing Cordis plugins on npm can be reused.
-7. **Contracts cover only what crossing a boundary actually needs.** A cross-language call needs a service name and a method shape (sync or async); that is the contract. There is no general type IR or code generation layer for it. Where strong types are needed, such as a Rust application mounting Cordis plugins, they are generated for that one boundary.
-8. **What cannot be done across a boundary becomes a boundary rule, not a pretense.** A cross-process `emit` is only a notification, waterfalls are not forwarded, a sync call cannot wait on the other side's event loop; these are written in the [boundary rules](requirements-protocol-plugins.en.md) §5. Saying clearly that something cannot be done is better than degrading silently.
-9. **Isolation on demand.** By default, one process per language and in-process calls skip IPC; an unstable plugin can be put in a separate runtime instance.
+### Principles
 
-### Adapting
+1. **The model is implemented once, in the Rust core**; plugins in other languages are leaves with a small SDK ([multi-language design](design-multilang-runtimes-2026-10-03.en.md)).
+2. **Compatibility work happens outside the core** ([mount requirements](requirements-protocol-plugins.en.md) §1).
+3. **Guarantees are written down and pinned by tests**; guarantees not made are written down too ([core design](design-rust-port.en.md) D31).
+4. **Extension points are opened for concrete needs, and kept narrow**; no catch-all hooks ([observation and interception design](design-cordis-observation.en.md)).
+5. **Whatever rutis connects to is a plugin**: runtimes, nodes and mounts are under the same lifecycle, with no special privileges.
+6. **Contracts cover only what crossing a boundary needs**: service names and method shapes (sync or async), no general type layer.
+7. **What cannot be done across a boundary becomes a boundary rule**, not a silent degradation.
+8. **Dependency declarations contain only service names**, never languages or locations.
+9. **Configuration describes the desired state**, which the loader keeps reconciling; the host does not hand-write start and stop sequences.
+10. **Explicit over implicit**: implicit mechanisms do not cross a process boundary.
 
-10. **Changing the implementation language is changing the provider.** Moving a service from a Python implementation to a Rust one is, to the core, an ordinary provider replacement: the old provider unloads, the new one appears, and consumers are evicted and reloaded automatically. Dependency-driven reload serves hot plugging in Cordis; in rutis it is also how a service changes language or location without downtime.
-11. **Users do not care where a provider is.** A plugin that depends on `llm` can get it from a Rust plugin in the same process, a Python plugin, or another machine. Dependency declarations mention neither language nor location.
-12. **Configuration describes the desired state.** The loader describes what should run as layered configuration and keeps reconciling. When the environment changes, the configuration changes and rutis converges to it; the host does not hand-write start and stop sequences.
+### Deciding whether a capability belongs
 
-### Explicitness
+1. Does it widen what a host can connect to or adapt to, or help the host understand and iterate on its own connections? A runtime is worth connecting for the ecosystem it brings, not to support one more language.
+2. Can it live outside the core?
+3. Does it still hold across a process boundary?
+4. Does it have a concrete user?
+5. Can its guarantees be written as tests?
 
-13. **Explicit over implicit.** Services are obtained explicitly with `require` / `get`, dependencies are written in declarations, and `TypedPlugin` checks them at compile time. When a service registers resources on behalf of its caller, the caller passes its own `Ctx` explicitly instead of having `this` rewritten implicitly as in Cordis. Implicit mechanisms are convenient within one object world, but they do not cross a process boundary.
+## 8. Open questions
 
-## 4. Deciding whether a capability belongs
-
-When a new capability is proposed, ask in order:
-
-1. **Does it widen what rutis can connect to or adapt to, or help the host understand and iterate on its own connections?** Whether a runtime is worth connecting depends on the ecosystem it brings, not on supporting one more language. Python brings the ML and data ecosystem, Swift brings macOS system capabilities; shell-like languages that can only pass data have no use for services, gating and cleanup, so they become a command-style tool runtime and stay out of the plugin protocol.
-2. **Can it live outside the core?** Whatever fits in a bridge, mount, runtime plugin, the loader or the host does not go into the core.
-3. **Does it still hold across a boundary?** Mechanisms that hold only within one process or one language do not enter cross-boundary contracts; where they are truly needed, they are implemented locally at a single boundary with their scope written down.
-4. **Does it have a concrete user?** Extension points and compatibility layers without a consumer are not built; when one appears, a narrow interface is opened at that action's boundary.
-5. **Can its guarantees be written as tests?** Semantic promises that cannot be stated or tested are not made. For example, the core does not promise dependency cycle detection: services can be registered dynamically, so a cycle cannot be proven.
-
-## 5. Open questions
-
-- **Permissions.** Trust is currently per trusted peer: `Host` is only opened to trusted peers, and plugins in one group share an address space and must trust each other. The more devices and external runtimes rutis connects to, the more it needs capability-level authorization: which node or plugin may provide or use which services.
-- **Contract evolution.** A service name plus method shapes is enough for today's cross-language calls. For "Python first, Rust later" to be seamless, the data shapes of one service must also stay the same across languages; for now that relies on convention.
-- **Cycle diagnostics.** The core does not promise cycle detection, but the loader and host already know the `provides` that plugins declare, and could report suspected cycles as diagnostics.
+- **Permissions**: trust is currently per trusted peer. The more devices and external runtimes a host connects to, the finer the authorization it needs: which node or plugin may provide or use which services.
+- **Contract evolution**: for "Python first, Rust later" to be seamless, the data shapes of one service must also stay the same across languages; for now that relies on convention.
+- **Cycle diagnostics**: the core does not promise cycle detection, but the loader and host know the services plugins declare and could report suspected cycles.
+- **More runtimes**: runtimes for macOS system capabilities (Swift) and for Go are planned ([multi-language design](design-multilang-runtimes-2026-10-03.en.md) §11), to be added one by one as real needs appear.
 
 ## Related documents
 
-- [Core design](design-rust-port.en.md): the five pillars and the decision table
-- [Spec-by-spec parity check against Cordis](cordis-spec-parity-2026-08-18.en.md)
-- [Dual-core architecture](design-dual-core-2026-08-20.en.md): TS is the lab, Rust takes the graduates
-- [Multi-language decision record](decision-multilang-2026-10-03.en.md) and [multi-language plugin design](design-multilang-runtimes-2026-10-03.en.md)
-- [Mounting Cordis plugins: requirements](requirements-protocol-plugins.en.md)
-- [Remote plugins](design-remote-plugins-2026-10-03.en.md)
+- [Writing a Python plugin](guide/python-plugin.en.md) · [Writing a TypeScript plugin](guide/typescript-plugin.en.md) · [Connecting nodes](guide/nodes.en.md) · [Embedding in a Rust application](guide/rust-host.en.md)
+- [Core design](design-rust-port.en.md) · [Parity check against Cordis](cordis-spec-parity-2026-08-18.en.md) · [Dual-core architecture](design-dual-core-2026-08-20.en.md)
+- [Multi-language decision record](decision-multilang-2026-10-03.en.md) · [Multi-language plugin design](design-multilang-runtimes-2026-10-03.en.md) · [Remote plugins](design-remote-plugins-2026-10-03.en.md)
