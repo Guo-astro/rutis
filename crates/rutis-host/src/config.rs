@@ -82,9 +82,30 @@ pub struct PythonRuntime {
     #[serde(default = "here")]
     pub project: PathBuf,
     /// The interpreter; by default `$VIRTUAL_ENV/bin/python`, then the
-    /// project's `.venv/bin/python`, then `python3`.
+    /// project's `.venv/bin/python`, then `python3` (on Windows,
+    /// `Scripts\python.exe` in those environments, then `python`).
     #[serde(default)]
     pub python: Option<PathBuf>,
+}
+
+/// The interpreter of the virtual environment `venv`.
+pub fn venv_python(venv: &Path) -> PathBuf {
+    match cfg!(windows) {
+        true => venv.join("Scripts").join("python.exe"),
+        false => venv.join("bin").join("python"),
+    }
+}
+
+/// The interpreter used when no environment names one.
+pub const DEFAULT_PYTHON: &str = if cfg!(windows) { "python" } else { "python3" };
+
+/// `path` as a `file:` URL (percent-encoded, with a drive letter on
+/// Windows); a relative path, which has none, as `file://<path>`.
+pub fn file_url(path: &Path) -> String {
+    match url::Url::from_file_path(path) {
+        Ok(url) => url.into(),
+        Err(()) => format!("file://{}", path.display()),
+    }
 }
 
 fn here() -> PathBuf {
@@ -150,12 +171,7 @@ impl HostConfig {
         for row in &mut self.rows {
             if let Some(name) = row["name"].as_str() {
                 if name.starts_with("./") || name.starts_with("../") {
-                    let path = base.join(name);
-                    let name = match url::Url::from_file_path(&path) {
-                        Ok(url) => url.into(),
-                        Err(()) => format!("file://{}", path.display()),
-                    };
-                    row["name"] = json!(name);
+                    row["name"] = json!(file_url(&base.join(name)));
                 }
             }
         }
@@ -252,6 +268,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn paths_are_relative_to_the_file() {
         let mut config: HostConfig = serde_json::from_value(json!({
             "runtimes": { "node": {}, "py": { "python": ".venv/bin/python" } }

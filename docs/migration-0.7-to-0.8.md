@@ -76,4 +76,4 @@ match &entry.status {
 
 ## Windows
 
-嵌入 Rust 时，Node / Python 运行时、远程运行时和跨语言共享服务现在可以在 Windows 上原生运行，不需要改代码。`rutis-host` 命令和 `Process::launch` / `Process::mount` 兼容接口仍只支持 Unix，在 Windows 上会返回明确的错误；使用它们的项目在 Windows 上继续用 WSL。
+Node / Python 运行时、远程运行时、跨语言共享服务、`Process::launch` / `Process::mount` 兼容接口、Cordis 挂载绑定和 `rutis-host` 命令，现在都可以在 Windows x64 上原生运行，不需要改代码，也不再需要 WSL。

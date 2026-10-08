@@ -19,6 +19,6 @@ rutis-host run [rutis.json]             # run a host
 }
 ```
 
-Install: `npx @arcships/rutis-host`, `uvx rutis-host`, `cargo install rutis-host`, or a binary from the GitHub release. Linux and macOS; on Windows, use WSL.
+Install: `npx @arcships/rutis-host`, `uvx rutis-host`, `cargo install rutis-host`, or a binary from the GitHub release. Linux and macOS (x64 and arm64), and Windows (x64).
 
 Guide (Chinese): [docs/guide/rutis-host.md](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.md).

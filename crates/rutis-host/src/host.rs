@@ -17,7 +17,7 @@ use rutis_loader::{
     PeerResolver, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
 };
 
-use crate::config::{token, HostConfig, NodeRuntime, PythonRuntime};
+use crate::config::{token, venv_python, HostConfig, NodeRuntime, PythonRuntime, DEFAULT_PYTHON};
 
 pub struct Host {
     /// The host runs while this lives.
@@ -236,11 +236,9 @@ fn python(py: &PythonRuntime) -> Result<LocalRuntime, Error> {
     let interpreter = py
         .python
         .clone()
-        .or_else(|| {
-            std::env::var_os("VIRTUAL_ENV").map(|venv| PathBuf::from(venv).join("bin/python"))
-        })
-        .or_else(|| Some(py.project.join(".venv/bin/python")).filter(|venv| venv.exists()))
-        .unwrap_or_else(|| PathBuf::from("python3"));
+        .or_else(|| std::env::var_os("VIRTUAL_ENV").map(|venv| venv_python(Path::new(&venv))))
+        .or_else(|| Some(venv_python(&py.project.join(".venv"))).filter(|venv| venv.exists()))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_PYTHON));
     // A source checkout of the rutis package (tests, development of rutis).
     let source = std::env::var_os("RUTIS_PYTHON_PATH");
     let mut check = std::process::Command::new(&interpreter);
@@ -316,10 +314,10 @@ mod tests {
         .unwrap();
         let node_plugin = |word: &str| {
             format!(
-                "import {{ definePlugin }} from 'file://{}'\n\
+                "import {{ definePlugin }} from '{}'\n\
                  export default definePlugin({{ provides: {{ greeter: {{ hello: 'sync' }} }}, apply(ctx) {{\n\
                  ctx.provide('greeter', {{ hello: name => '{word}, ' + name }}) }} }})\n",
-                sdk.display()
+                crate::config::file_url(&sdk)
             )
         };
         let entry = dir.path().join("greeter.mjs");
@@ -334,7 +332,7 @@ mod tests {
                 ..Runtimes::default()
             },
             listen: Vec::new(),
-            rows: vec![json!({ "id": "greeter", "name": format!("file://{}", entry.display()) })],
+            rows: vec![json!({ "id": "greeter", "name": crate::config::file_url(&entry) })],
         };
         let host = Host::start(&config).await.unwrap();
         host.runtimes_ready().await.unwrap();
@@ -394,7 +392,8 @@ mod tests {
              def apply(ctx, config):\n    ctx.provide('greeter', Greeter())\n",
         )
         .unwrap();
-        let python = std::env::var("RUTIS_PYTHON").unwrap_or_else(|_| "python3".into());
+        let python =
+            std::env::var("RUTIS_PYTHON").unwrap_or_else(|_| crate::config::DEFAULT_PYTHON.into());
         let mut child = tokio::process::Command::new(python)
             .args([
                 "-m",

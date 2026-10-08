@@ -7,14 +7,10 @@
 //! rutis-host new <name> --lang node|python
 //! ```
 
-#[cfg(unix)]
 mod config;
-#[cfg(unix)]
 mod host;
 mod new;
-#[cfg(unix)]
 mod project;
-#[cfg(unix)]
 mod status;
 
 /// The plugin API this host supports; plugins needing more cannot run here.
@@ -83,12 +79,6 @@ fn new_project(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn serve(_: &str, _: &[String]) -> Result<(), String> {
-    Err("running plugins needs Linux or macOS (on Windows, use WSL)".into())
-}
-
-#[cfg(unix)]
 fn serve(command: &str, args: &[String]) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -103,12 +93,10 @@ fn serve(command: &str, args: &[String]) -> Result<(), String> {
     })
 }
 
-#[cfg(unix)]
 fn config_file(args: &[String]) -> std::path::PathBuf {
     std::path::PathBuf::from(args.first().map(String::as_str).unwrap_or("rutis.json"))
 }
 
-#[cfg(unix)]
 async fn run(args: &[String]) -> Result<(), String> {
     let config = config::HostConfig::read(&config_file(args))?;
     let host = host::Host::start(&config).await?;
@@ -121,7 +109,6 @@ async fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(unix)]
 async fn dev(args: &[String]) -> Result<(), String> {
     use std::time::Duration;
 
@@ -158,7 +145,6 @@ async fn dev(args: &[String]) -> Result<(), String> {
     }
 }
 
-#[cfg(unix)]
 async fn check(args: &[String]) -> Result<(), String> {
     let path = config_file(args);
     let config = match (args.first(), path.exists()) {

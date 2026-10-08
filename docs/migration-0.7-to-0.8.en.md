@@ -76,4 +76,4 @@ match &entry.status {
 
 ## Windows
 
-Embedded in Rust, Node / Python runtimes, remote runtimes and cross-language shared services now run natively on Windows with no code changes. The `rutis-host` command and the `Process::launch` / `Process::mount` compatibility API are still Unix-only and return a clear error on Windows; projects using them keep using WSL there.
+Node / Python runtimes, remote runtimes, cross-language shared services, the `Process::launch` / `Process::mount` compatibility API, the Cordis mount bindings and the `rutis-host` command now run natively on Windows x64 with no code changes; WSL is no longer needed.
