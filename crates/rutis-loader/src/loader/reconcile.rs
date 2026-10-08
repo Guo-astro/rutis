@@ -290,6 +290,12 @@ impl Inner {
         let foreign = resolved.as_ref().is_some_and(|r| r.foreign_scope);
         let build = Self::build_for(state, slot.scope);
         let rust_scope = if foreign {
+            // Its scope is the plugin's own business, but a name it cannot
+            // have where it is still fails it.
+            if let Some(misplaced) = &row.misplaced {
+                state.rejected.insert(slot, misplaced.clone());
+                return None;
+            }
             BoundScope::default()
         } else {
             match row

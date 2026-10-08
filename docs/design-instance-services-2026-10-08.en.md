@@ -35,6 +35,7 @@ catalog.register_shared_instance("timeline", "session"); // a cross-language ser
 | `register_instance::<T>(name, group)` | `TypeKey::of::<T>()` with the `InstanceId` of the enclosing `group` instance |
 | `register_instance_keyed::<T>(name, group, key)` | `key` with that instance's `InstanceId` (named or dynamic keys) |
 | `register_shared_instance(name, group)` | `host_key_in(name, instance)` = `host_key(name)` with that instance's `InstanceId` |
+| `readable_instance::<T>(name, group)`, `readable_instance_keyed` | As `register_instance{,_keyed}`, and expressions can `read` the value of the instance's service |
 
 - `group` is the id of an `instanced` group. A row using the name gets the **nearest `group` instance** on its instance chain, so rows in a nested instance can use the outer instance's services.
 - Each name has one scope: global, or one kind of instance. **There is no fallback**: an instance name never resolves to a global service outside the instance, nor the other way round. For "a default implementation that some instances replace", put a row providing the name inside the instance, whose default implementation forwards to the global service.
@@ -50,7 +51,7 @@ Names become keys in three places, and all three now resolve **per copy**: from 
 | Expressions `has` / `read` | A fixed key | Resolved from the copy's instance chain when evaluated |
 | Gating and hosts of language rows (`RuntimeResolver`) | Fixed to `host_key(name)` when the module resolves | Each copy's factory is built by a `scoped` factory from its instance chain |
 
-- **Checked when composing**: a row whose `isolate` / `inject` uses an instance name but which is not inside that `group` is invalid (`Unresolved`), and the error says which group the name needs. A misplaced row is reported as soon as the configuration loads.
+- **Checked when composing**: a row whose `isolate` / `inject` uses an instance name but which is not inside that `group` is invalid (`Unresolved`), and the error says which group the name needs. A misplaced row is reported as soon as the configuration loads. This applies to rows whose resolver handles scope itself (language rows, peer rows) too.
 - An expression that refers to an instance name outside the instance fails rather than returning `false`.
 - `ExprScope::new(ctx, catalog)` is unchanged (global); `ExprScope::in_instances(ctx, catalog, build)` is added.
 
@@ -69,7 +70,7 @@ A `JsRow` (a TS / Python row) is built per copy by a `scoped` factory, with the 
 A runtime process is shared (one process per language serves the rows of every instance), so its registrations must tell instances apart too. This reuses `isolate`:
 
 - each copy automatically isolates the instance names it may use, under the label `rutis-loader/instance/<InstanceId>` of that instance; when its configuration already isolates the name, the configured label is used (since #161, those labels are already per copy / per instance).
-- A service in the process is identified by **(name, label)**, written on the wire as an id: `name` without a label, `name@label` with one. Export slots, handles, host proxies and the `host:<id>` call targets are registered by id.
+- A service in the process is identified by **(name, label)**, written on the wire as an id: `name` without a label, `name` + NUL + `label` with one. Names and labels may not contain NUL, so no two pairs share an id (a global name like `x@L` cannot pass for `x` in scope `L`). Export slots, handles, host proxies and the `host:<id>` call targets are registered by id.
 - Plugins still see the name `x`: Node uses Cordis isolation, so rows with the same label share one scope; the Python runtime looks names up through the row's isolate table.
 
 Protocol changes (new feature `scopes`):
@@ -108,7 +109,7 @@ Limits and errors:
 ## 7. Compatibility
 
 - Applications that register only global names see no change in behavior or protocol;
-- New public API: `ServiceCatalog::register_instance{,_keyed}`, `register_shared_instance`, `key_in`, `ExprScope::in_instances`, `host_key_in`, `Process::lease_host_in`, `row_projection_with`, `ExportPlugin::with_keys` / `ImportPlugin::with_keys`, `Features::services`;
+- New public API: `ServiceCatalog::register_instance{,_keyed}`, `readable_instance{,_keyed}`, `register_shared_instance`, `key_in`, `ExprScope::in_instances`, `host_key_in`, `Process::lease_host_in`, `row_projection_with`, `ExportPlugin::with_keys` / `ImportPlugin::with_keys`, `Features::services`;
 - `ServiceCatalog::key(name)` returns keys of global names only; use `key_in(name, build)` for instance names.
 
 ## 8. Acceptance
