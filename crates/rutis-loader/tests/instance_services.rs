@@ -18,6 +18,7 @@ type Log = Arc<Mutex<Vec<String>>>;
 
 /// The service `tools` names, one per `session` instance.
 #[derive(Debug)]
+#[allow(dead_code)]
 struct Tools(String);
 
 /// The instance's title, given with `with`.

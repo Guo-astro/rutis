@@ -40,11 +40,11 @@ pub use local::LocalRuntime;
 #[cfg(unix)]
 pub use plugin::{Runtime, RuntimeHandle, RuntimePlugin, RuntimeState};
 #[cfg(unix)]
-pub use process::{Host, HostLease, Launcher, Mount, Process, RowSchema, ServiceEvents};
+pub use process::{scoped_id, Host, HostLease, Launcher, Mount, Process, RowSchema, ServiceEvents};
 #[cfg(unix)]
 pub use projection::Projection;
 #[cfg(unix)]
-pub use rows::{row_projection, RowService};
+pub use rows::{row_projection, row_projection_with, RowService};
 
 use std::sync::Arc;
 

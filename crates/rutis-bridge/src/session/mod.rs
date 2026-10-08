@@ -26,7 +26,7 @@ pub mod testing;
 
 pub use objects::{arg, decode_value, JsError, ObjectRef, RemoteFunction};
 pub use rpc::*;
-pub use services::{host_key, HostDispatch};
+pub use services::{host_key, host_key_in, HostDispatch};
 
 /// What [`Error`] says about a session that ended or a call that failed.
 #[derive(Debug, Clone, thiserror::Error)]

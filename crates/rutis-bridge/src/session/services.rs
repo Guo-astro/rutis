@@ -31,3 +31,9 @@ pub trait HostDispatch: Send + Sync + 'static {
 pub fn host_key(name: &str) -> TypeKey {
     TypeKey::keyed_dynamic::<dyn HostDispatch>(name.to_owned())
 }
+
+/// The key of the host service `name` inside the instance subtree
+/// `instance`: seen only from that subtree, so each instance has its own.
+pub fn host_key_in(name: &str, instance: rutis::InstanceId) -> TypeKey {
+    host_key(name).with_instance(instance)
+}
