@@ -811,8 +811,13 @@ impl Connection {
                 }
             })
             .map_err(transport)?;
-        peer.write(hello)?;
-        Ok(peer)
+        // The far end's greeting can fail the handshake before this side
+        // greets (it is incompatible): `ready` reports that, as it would
+        // have a moment later.
+        match peer.write(hello) {
+            Err(error) if !matches!(error, Error::Handshake(_)) => Err(error),
+            _ => Ok(peer),
+        }
     }
 
     /// What ended the session, once it ended.

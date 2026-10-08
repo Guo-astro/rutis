@@ -109,11 +109,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.1
       # A release whose version does not allow its API changes (a breaking
       # change in a patch release) fails here, before publishing. Crates not
-      # yet on crates.io have nothing to compare with.
+      # yet on crates.io have nothing to compare with, and rutis-host has no
+      # library.
       - name: Check semver against the latest crates.io release
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
-          package: rutis,rutis-bridge,rutis-loader,rutis-host
+          package: rutis,rutis-bridge,rutis-loader
       - name: Package (each crate built from its package, against the others)
         run: cargo package --locked $(node scripts/train.mjs --crates | sed 's/[^ ]*/-p &/g')
       - name: Publish what crates.io does not have, each after those it depends on

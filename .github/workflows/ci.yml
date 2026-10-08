@@ -175,7 +175,8 @@ jobs:
       - uses: taiki-e/install-action@cargo-semver-checks
       - name: Report API changes since the latest release
         run: |
-          for crate in rutis rutis-bridge rutis-loader rutis-host; do
+          # rutis-host has no library, so no API to compare.
+          for crate in rutis rutis-bridge rutis-loader; do
             if cargo semver-checks -p "$crate" > semver.txt 2>&1; then
               echo "No breaking change in $crate since its latest release." >> "$GITHUB_STEP_SUMMARY"
             elif ! grep -q 'semver requires new' semver.txt; then
