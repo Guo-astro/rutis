@@ -21,7 +21,12 @@ use crate::session::{host_key, Error, HostDispatch};
 use rutis::{BoxFuture, CordisError, Ctx, Disposer, Effect, Plugin, TypeKey};
 use serde_json::{json, Value as Json};
 
-use crate::{peer_key, Offered, Peer};
+use crate::{peer_key, Offered, Peer, ServiceKeys};
+
+/// `host_key(name)` for every name: the default mapping.
+fn by_name() -> ServiceKeys {
+    Arc::new(|name: &str| Some(host_key(name)))
+}
 
 fn failed(label: &str, error: impl std::fmt::Display) -> CordisError {
     CordisError::PluginFailed(format!("{label}: {error}").into())
@@ -36,6 +41,7 @@ pub struct ExportPlugin {
     label: String,
     names: Vec<String>,
     injects: [TypeKey; 1],
+    keys: ServiceKeys,
 }
 
 impl ExportPlugin {
@@ -44,7 +50,16 @@ impl ExportPlugin {
             label: format!("rutis-bridge/export#{peer}"),
             names: names.into_iter().map(Into::into).collect(),
             injects: [peer_key(&peer)],
+            keys: by_name(),
         }
+    }
+
+    /// Read each service at `keys(name)` instead of `host_key(name)` (a
+    /// service inside an instance, say); a name without a key fails the
+    /// export.
+    pub fn with_keys(mut self, keys: ServiceKeys) -> Self {
+        self.keys = keys;
+        self
     }
 }
 
@@ -62,11 +77,19 @@ impl Plugin for ExportPlugin {
             let peer = ctx
                 .get_as::<Peer>(self.injects[0].clone())
                 .ok_or_else(|| failed(&self.label, "the peer is gone"))?;
-            for name in &self.names {
+            let keys = self
+                .names
+                .iter()
+                .map(|name| {
+                    (self.keys)(name)
+                        .ok_or_else(|| failed(&self.label, format!("{name} is not a service here")))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            for (name, key) in self.names.iter().zip(keys) {
                 ctx.plugin(ExportOne {
                     label: format!("{}/{name}", self.label),
                     service: name.clone(),
-                    injects: [host_key(name)],
+                    injects: [key],
                     peer: peer.clone(),
                 });
             }
@@ -200,6 +223,7 @@ pub struct ImportPlugin {
     peer: PeerId,
     names: HashSet<String>,
     injects: [TypeKey; 1],
+    keys: ServiceKeys,
 }
 
 impl ImportPlugin {
@@ -209,7 +233,16 @@ impl ImportPlugin {
             injects: [peer_key(&peer)],
             names: names.into_iter().map(Into::into).collect(),
             peer,
+            keys: by_name(),
         }
+    }
+
+    /// Provide each service at `keys(name)` instead of `host_key(name)` (a
+    /// service inside an instance, say); a name without a key fails the
+    /// import.
+    pub fn with_keys(mut self, keys: ServiceKeys) -> Self {
+        self.keys = keys;
+        self
     }
 }
 
@@ -293,7 +326,8 @@ struct Importer {
     ctx: Ctx,
     session: Connection,
     peer: PeerId,
-    names: HashSet<String>,
+    /// The imported names, with the key each is provided under here.
+    names: HashMap<String, TypeKey>,
     services: Mutex<HashMap<String, Imported>>,
 }
 
@@ -311,10 +345,10 @@ impl Importer {
         let name: String = crate::session::decode(take(&mut fields, "name")?.json()?)?;
         let version: u64 = crate::session::decode(take(&mut fields, "version")?.json()?)?;
         let shape = take(&mut fields, "shape")?.json()?;
-        if !self.names.contains(&name) {
+        let Some(key) = self.names.get(&name).cloned() else {
             // Not imported here: the reference is dropped, which releases it.
             return Ok(Value::Undefined);
-        }
+        };
         let kinds: BTreeMap<String, String> = crate::session::decode(shape.clone())?;
         let asynchronous = kinds
             .iter()
@@ -343,7 +377,6 @@ impl Importer {
             return Ok(Value::Undefined);
         }
         let previous = services.remove(&name);
-        let key = host_key(&name);
         let replacing = previous
             .as_ref()
             .is_some_and(|previous| previous.provided.is_some());
@@ -392,7 +425,7 @@ impl Importer {
             .json()?;
         let name: String = crate::session::decode(fields["name"].clone())?;
         let version: u64 = crate::session::decode(fields["version"].clone())?;
-        if !self.names.contains(&name) {
+        if !self.names.contains_key(&name) {
             return Ok(Value::Undefined);
         }
         let removed = {
@@ -449,11 +482,21 @@ impl Plugin for ImportPlugin {
             let peer = ctx
                 .get_as::<Peer>(self.injects[0].clone())
                 .ok_or_else(|| failed(&self.label, "the peer is gone"))?;
+            let names = self
+                .names
+                .iter()
+                .map(|name| {
+                    let key = (self.keys)(name).ok_or_else(|| {
+                        failed(&self.label, format!("{name} is not a service here"))
+                    })?;
+                    Ok((name.clone(), key))
+                })
+                .collect::<Result<HashMap<_, _>, CordisError>>()?;
             let importer = Arc::new(Importer {
                 ctx: ctx.clone(),
                 session: peer.connection().clone(),
                 peer: self.peer.clone(),
-                names: self.names.clone(),
+                names,
                 services: Mutex::default(),
             });
             let offered: Offered = peer

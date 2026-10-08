@@ -84,14 +84,21 @@ impl Drop for RowService {
 /// Attach it from the row's own context and pass it to
 /// [`Process::load_row_exporting`] as the observer.
 pub fn row_projection(provides: &Map<String, Value>) -> Arc<Projection> {
+    row_projection_with(provides, host_key)
+}
+
+/// [`row_projection`] publishing each service under `key(name)` instead
+/// (`host_key_in(name, instance)` for a service inside an instance).
+pub fn row_projection_with(
+    provides: &Map<String, Value>,
+    key: impl Fn(&str) -> rutis::TypeKey,
+) -> Arc<Projection> {
     let projection = Projection::new();
     for (name, methods) in provides {
         let methods = methods.clone();
-        projection.service_keyed::<dyn HostDispatch>(
-            name,
-            host_key(name),
-            move |process, handle| Arc::new(RowService::new(process, handle, methods.clone())),
-        );
+        projection.service_keyed::<dyn HostDispatch>(name, key(name), move |process, handle| {
+            Arc::new(RowService::new(process, handle, methods.clone()))
+        });
     }
     projection
 }

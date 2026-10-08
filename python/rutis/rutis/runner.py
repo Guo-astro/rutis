@@ -8,11 +8,17 @@ restarts and configuration. This process only runs what it is told:
 - `rows.schema` reports what a module declares (config schema, injected
   services, provided services and their method kinds);
 - `hosts.provide` / `hosts.withdraw` register rutis services by name;
-- the services a row exports are reported with `service(name, handle,
+- the services a row exports are reported with `service(id, handle,
   version)` notifications, and calls to a handle reach the object.
 
 Within the process, `ctx.use(name)` returns the object itself when another
 row here provides it, so those calls never leave the process.
+
+A row's `isolate` gives some names a scope label: rows isolating a name with
+the same label share it, and the same name under another label (another
+instance, say) is another service. Services, host proxies and export slots
+are registered by id (`scopes`): the name outside any scope, the name, a
+NUL and the label inside one.
 """
 
 from __future__ import annotations
@@ -29,12 +35,33 @@ from typing import Any, Callable
 from . import plugin as sdk
 from .peer import Peer, RemoteFuture
 
-FEATURES = ["rows.v2", "hosts", "leaf"]
+FEATURES = ["rows.v2", "hosts", "leaf", "scopes"]
+
+
+def scoped_id(name: str, label: str | None) -> str:
+    """How the service `name` is identified in the scope `label`: the name
+    outside any scope (no label: None), the name, a NUL and the label inside
+    one. Neither may contain NUL and a label may not be empty, so no two
+    pairs share an id."""
+    if "\0" in name or (label is not None and "\0" in label):
+        raise ValueError(f"service {name!r} or its scope label contains NUL")
+    if label == "":
+        raise ValueError(f"service {name!r} has an empty scope label")
+    return name if label is None else f"{name}\0{label}"
+
+
+def handle_of(id: str, generation: int) -> str:
+    """The handle of a slot's `generation`th object. A scoped id's handles
+    are marked with a NUL too: a label may contain `#`."""
+    if generation == 1:
+        return id
+    return f"{id}{chr(0) if chr(0) in id else '#'}{generation}"
 
 
 class HostProxy:
     """A rutis service: its declared methods call through the session,
-    synchronously or as coroutines."""
+    synchronously or as coroutines. `name` is the service's id, which its
+    calls target."""
 
     def __init__(self, peer: Peer, name: str, methods: dict):
         self._peer = peer
@@ -72,6 +99,7 @@ class Slot:
 
     row: str
     methods: set
+    name: str = ""
     object: Any = None
     handle: str | None = None
     generation: int = 0
@@ -83,8 +111,15 @@ class Row:
     module: str
     config: Any
     exports: dict
+    # Service name -> scope label.
+    isolate: dict = field(default_factory=dict)
     cleanups: list = field(default_factory=list)
+    # Ids of the services it provided.
     provided: list = field(default_factory=list)
+
+    def id(self, name: str) -> str:
+        """The id of `name` as this row sees it."""
+        return scoped_id(name, self.isolate.get(name))
 
 
 class Context(sdk.Context):
@@ -93,7 +128,7 @@ class Context(sdk.Context):
         self._row = row
 
     def use(self, name: str) -> Any:
-        return self._runtime.lookup(name)
+        return self._runtime.lookup(self._row.id(name))
 
     def provide(self, name: str, value: Any) -> Callable[[], None]:
         return self._runtime.provide(self._row, name, value)
@@ -106,9 +141,9 @@ class Runtime:
     def __init__(self) -> None:
         self.peer: Peer | None = None
         self.rows: dict[str, Row] = {}
-        self.services: dict[str, tuple[str, Any]] = {}  # name -> (row key, object)
-        self.hosts: dict[str, HostProxy] = {}
-        self.slots: dict[str, Slot] = {}
+        self.services: dict[str, tuple[str, Any]] = {}  # id -> (row key, object)
+        self.hosts: dict[str, HostProxy] = {}  # id -> proxy
+        self.slots: dict[str, Slot] = {}  # id -> slot
         self.handles: dict[str, dict] = {}
         self.version = 0
         self.closing = False
@@ -117,35 +152,36 @@ class Runtime:
 
     # ── Services ─────────────────────────────────────────────────
 
-    def lookup(self, name: str) -> Any:
-        if name in self.services:
-            return self.services[name][1]
-        if name in self.hosts:
-            return self.hosts[name]
-        raise LookupError(f"service {name} is not available")
+    def lookup(self, id: str) -> Any:
+        if id in self.services:
+            return self.services[id][1]
+        if id in self.hosts:
+            return self.hosts[id]
+        raise LookupError(f"service {id} is not available")
 
     def provide(self, row: Row, name: str, value: Any) -> Callable[[], None]:
-        if name in self.services:
-            raise ValueError(f"service {name} is already provided by row {self.services[name][0]}")
-        self.services[name] = (row.key, value)
-        row.provided.append(name)
-        self._refresh(name)
+        id = row.id(name)
+        if id in self.services:
+            raise ValueError(f"service {id} is already provided by row {self.services[id][0]}")
+        self.services[id] = (row.key, value)
+        row.provided.append(id)
+        self._refresh(id)
 
         def withdraw() -> None:
-            if self.services.get(name, (None, None))[1] is value:
-                del self.services[name]
-                if name in row.provided:
-                    row.provided.remove(name)
-                self._refresh(name)
+            if self.services.get(id, (None, None))[1] is value:
+                del self.services[id]
+                if id in row.provided:
+                    row.provided.remove(id)
+                self._refresh(id)
 
         return withdraw
 
-    def _refresh(self, name: str) -> None:
+    def _refresh(self, id: str) -> None:
         """Report the object now in an exported slot, under a new handle."""
-        slot = self.slots.get(name)
+        slot = self.slots.get(id)
         if slot is None:
             return
-        provided = self.services.get(name)
+        provided = self.services.get(id)
         current = provided[1] if provided is not None and provided[0] == slot.row else None
         if current is slot.object:
             return
@@ -155,11 +191,11 @@ class Runtime:
         slot.handle = None
         if current is not None:
             slot.generation += 1
-            slot.handle = name if slot.generation == 1 else f"{name}#{slot.generation}"
-            self.handles[slot.handle] = {"name": name, "object": current, "current": True, "released": False}
+            slot.handle = handle_of(id, slot.generation)
+            self.handles[slot.handle] = {"name": id, "object": current, "current": True, "released": False}
         self.version += 1
         if self.peer is not None and not self.closing:
-            self.peer.notify("", "service", [name, slot.handle, self.version])
+            self.peer.notify("", "service", [id, slot.handle, self.version])
 
     def _retire(self, handle: str) -> None:
         entry = self.handles.get(handle)
@@ -171,20 +207,31 @@ class Runtime:
 
     # ── Rows ─────────────────────────────────────────────────────
 
-    async def load(self, key: str, module: str, config: Any, exports: dict | None) -> None:
+    async def load(
+        self,
+        key: str,
+        module: str,
+        config: Any,
+        exports: dict | None,
+        isolate: dict | None = None,
+    ) -> None:
         if key in self.rows:
             raise ValueError(f"row {key} is already loaded")
         exports = exports or {}
+        row = Row(key, module, config, exports, dict(isolate or {}))
+        for name, label in row.isolate.items():
+            scoped_id(name, label)
         for name in exports:
             if "#" in name:
                 raise ValueError(f"service name {name} cannot be projected")
-            if name in self.slots:
-                raise ValueError(f"service {name} is already exported by row {self.slots[name].row}")
+            if row.id(name) in self.slots:
+                raise ValueError(
+                    f"service {row.id(name)} is already exported by row {self.slots[row.id(name)].row}"
+                )
         plugin = _supported(sdk.load(self.module(module)), module)
-        row = Row(key, module, config, exports)
         self.rows[key] = row
         for name, methods in exports.items():
-            self.slots[name] = Slot(key, set(methods))
+            self.slots[row.id(name)] = Slot(key, set(methods), name)
         try:
             cleanup = await _settle(plugin.apply(Context(self, row), config))
             if cleanup is not None:
@@ -192,7 +239,7 @@ class Runtime:
                     raise TypeError("apply must return a cleanup function or None")
                 row.cleanups.append(cleanup)
             for name in exports:
-                self._refresh(name)
+                self._refresh(row.id(name))
         except BaseException:
             await self.unload(key)
             raise
@@ -202,13 +249,13 @@ class Runtime:
         if row is None:
             return
         # Withdrawals first: rutis hears them before the plugin goes away.
-        for name in list(row.provided):
-            if self.services.get(name, (None,))[0] == key:
-                del self.services[name]
-                self._refresh(name)
+        for id in list(row.provided):
+            if self.services.get(id, (None,))[0] == key:
+                del self.services[id]
+                self._refresh(id)
         row.provided.clear()
         for name in row.exports:
-            slot = self.slots.pop(name, None)
+            slot = self.slots.pop(row.id(name), None)
             if slot is not None and slot.handle is not None:
                 self._retire(slot.handle)
         errors = []
@@ -226,7 +273,7 @@ class Runtime:
         if row is None:
             raise ValueError(f"row {key} is not loaded")
         await self.unload(key)
-        await self.load(key, row.module, config, row.exports)
+        await self.load(key, row.module, config, row.exports, row.isolate)
 
     def module(self, name: str):
         """The plugin module, imported again when its source file changed
@@ -285,8 +332,9 @@ class Runtime:
             self.closing = True
             return self._dispose_and_drain()
         if method == "rows.load":
-            key, module, config, _isolate, _inject, *rest = list(args) + [None] * (6 - len(args))
-            return self.load(key, str(module), config, rest[0] if rest else None)
+            key, module, config, isolate, _inject, *rest = list(args) + [None] * (6 - len(args))
+            labels = {name: label for name, label in (isolate or [])}
+            return self.load(key, str(module), config, rest[0] if rest else None, labels)
         if method == "rows.update":
             key, config = args
             return self.update(key, config)
@@ -295,10 +343,12 @@ class Runtime:
         if method == "rows.schema":
             return self.describe(str(args[0]))
         if method == "hosts.provide":
-            name, methods = args
-            if name in self.hosts:
-                raise ValueError(f"host service {name} is already provided")
-            self.hosts[name] = HostProxy(self.peer, name, methods or {})
+            # With a label, only rows isolating the name with it see it.
+            name, methods, label, *_ = list(args) + [None]
+            id = scoped_id(name, label)
+            if id in self.hosts:
+                raise ValueError(f"host service {id} is already provided")
+            self.hosts[id] = HostProxy(self.peer, id, methods or {})
             return None
         if method == "hosts.withdraw":
             self.hosts.pop(args[0], None)

@@ -15,7 +15,7 @@ use crate::resolver::{Build, BuildLink, Resolved};
 use crate::volatile::{volatile_change, volatile_paths, VolatileUpdate};
 use crate::LoaderError;
 
-use super::desired::{Desired, Eval, Row, RowScope};
+use super::desired::{BoundScope, Desired, Eval, Row};
 use super::plugins::{EntryConfig, EntryFactory, GroupPlugin};
 use super::{
     EntryInfo, EntryStatus, Failing, Group, Inner, InstanceInfo, LoaderChanged, ReconcileReport,
@@ -23,7 +23,7 @@ use super::{
 };
 
 /// The factory's own injects followed by the row's `inject`, deduplicated.
-fn combined_injects(factory: &dyn PluginFactory<Value>, scope: &RowScope) -> Vec<TypeKey> {
+fn combined_injects(factory: &dyn PluginFactory<Value>, scope: &BoundScope) -> Vec<TypeKey> {
     let mut keys = factory.injects().to_vec();
     for key in scope.inject_keys() {
         if !keys.contains(key) {
@@ -33,13 +33,14 @@ fn combined_injects(factory: &dyn PluginFactory<Value>, scope: &RowScope) -> Vec
     keys
 }
 
-/// The catalog scope a row runs with: none for a resolver that handles
-/// scope itself, else the row's resolved scope (`None` when it failed).
-fn effective_scope(resolved: &Resolved, row: &Row) -> Option<RowScope> {
+/// The catalog scope a copy in `build`'s instances runs with: none for a
+/// resolver that handles scope itself, else the row's scope with the
+/// copy's keys (`None` when it failed).
+fn effective_scope(resolved: &Resolved, row: &Row, build: &Build) -> Option<BoundScope> {
     if resolved.foreign_scope {
-        Some(RowScope::default())
+        Some(BoundScope::default())
     } else {
-        row.scope.as_ref().ok().cloned()
+        row.scope.as_ref().ok()?.bind(build).ok()
     }
 }
 
@@ -287,18 +288,30 @@ impl Inner {
             }
         };
         let foreign = resolved.as_ref().is_some_and(|r| r.foreign_scope);
+        let build = Self::build_for(state, slot.scope);
         let rust_scope = if foreign {
-            RowScope::default()
+            // Its scope is the plugin's own business, but a name it cannot
+            // have where it is still fails it.
+            if let Some(misplaced) = &row.misplaced {
+                state.rejected.insert(slot, misplaced.clone());
+                return None;
+            }
+            BoundScope::default()
         } else {
-            match &row.scope {
-                Ok(scope) => scope.clone(),
+            match row
+                .scope
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|s| s.bind(&build))
+            {
+                Ok(scope) => scope,
                 Err(error) => {
-                    state.rejected.insert(slot, error.clone());
+                    state.rejected.insert(slot, error);
                     return None;
                 }
             }
         };
-        let row_ctx = rust_scope.context(ctx);
+        let row_ctx = rust_scope.context(ctx, slot.scope);
         let extra: Vec<TypeKey> = rust_scope.inject_keys().cloned().collect();
         state.next_token += 1;
         let token = state.next_token;
@@ -342,7 +355,7 @@ impl Inner {
                 return None;
             }
         };
-        let config = match self.eval().value(&row.config, Some(&row_ctx)) {
+        let config = match self.eval().value_in(&row.config, Some(&row_ctx), &build) {
             Ok(config) => config,
             Err(error) => {
                 state.rejected.insert(slot, error);
@@ -752,7 +765,8 @@ impl Inner {
                             else {
                                 continue;
                             };
-                            let same = effective_scope(resolved, row).is_some_and(|s| {
+                            let build = Self::build_for(state, slot.scope);
+                            let same = effective_scope(resolved, row, &build).is_some_and(|s| {
                                 combined_injects(factory.as_ref(), &s) == running.injects
                             }) && factory.name() == running.factory_name;
                             if !same {
@@ -843,7 +857,11 @@ impl Inner {
                     continue;
                 };
                 // Expressions are evaluated where the plugin runs.
-                let desired = match self.eval().value(&row.config, Some(&running.ctx)) {
+                let build = Self::build_for(state, slot.scope);
+                let desired = match self
+                    .eval()
+                    .value_in(&row.config, Some(&running.ctx), &build)
+                {
                     Ok(value) => value,
                     Err(error) => {
                         unevaluable.push((slot.clone(), error));

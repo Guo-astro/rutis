@@ -34,6 +34,9 @@ pub struct Features {
     /// How the host maps the service names of a row's `isolate` and
     /// `inject` to keys; by default `host_key(name)`.
     pub host_services: Option<ServiceKeys>,
+    /// How export and import map service names to keys; by default
+    /// `host_key(name)`.
+    pub services: Option<ServiceKeys>,
     /// The peer is the runtime instance of this name
     /// (`RuntimeSession#<name>`).
     pub runtime: Option<String>,
@@ -106,10 +109,20 @@ impl PeerPlugin {
 fn spawn(ctx: &Ctx, link: &LinkConfig, features: &Features, part: Part) -> Option<FiberView> {
     let peer = link.peer.clone();
     match part {
-        Part::Export => (!features.export.is_empty())
-            .then(|| ctx.plugin(ExportPlugin::new(peer, features.export.clone()))),
-        Part::Import => (!features.import.is_empty())
-            .then(|| ctx.plugin(ImportPlugin::new(peer, features.import.clone()))),
+        Part::Export => (!features.export.is_empty()).then(|| {
+            let export = ExportPlugin::new(peer, features.export.clone());
+            ctx.plugin(match &features.services {
+                Some(keys) => export.with_keys(keys.clone()),
+                None => export,
+            })
+        }),
+        Part::Import => (!features.import.is_empty()).then(|| {
+            let import = ImportPlugin::new(peer, features.import.clone());
+            ctx.plugin(match &features.services {
+                Some(keys) => import.with_keys(keys.clone()),
+                None => import,
+            })
+        }),
         Part::Events => {
             let (outbound, inbound) = features.events();
             if outbound.is_empty() && inbound.is_empty() {

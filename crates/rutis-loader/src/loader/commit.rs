@@ -59,7 +59,8 @@ fn dry_context(
     scope: Option<u64>,
     root: Option<&Ctx>,
 ) -> Result<Option<Ctx>, LoaderError> {
-    let mut groups: Vec<&Row> = Vec::new();
+    // Each group between, with the instance its copy is in.
+    let mut groups: Vec<(&Row, Option<u64>)> = Vec::new();
     let mut current = scope;
     let mut row = leaf;
     let anchor = loop {
@@ -85,7 +86,7 @@ fn dry_context(
         };
         current = parent.scope;
         row = next;
-        groups.push(row);
+        groups.push((row, current));
     };
     let base = match state.groups.get(&anchor) {
         Some(group) => group.ctx.clone(),
@@ -96,8 +97,14 @@ fn dry_context(
         None => return Ok(None),
     };
     let mut ctx = base;
-    for group in groups.into_iter().rev() {
-        ctx = group.scope.as_ref().map_err(Clone::clone)?.context(&ctx);
+    for (group, copy) in groups.into_iter().rev() {
+        let build = Inner::build_for(state, copy);
+        ctx = group
+            .scope
+            .as_ref()
+            .map_err(Clone::clone)?
+            .bind(&build)?
+            .context(&ctx, copy);
     }
     Ok(Some(ctx))
 }
@@ -216,18 +223,27 @@ impl Inner {
             // Evaluate where the plugin would run: its group, with its
             // isolates.
             let scope = if resolved.foreign_scope {
-                super::desired::RowScope::default()
+                if let Some(misplaced) = &row.misplaced {
+                    check(Err(misplaced.clone()))?;
+                    continue;
+                }
+                super::desired::BoundScope::default()
             } else {
-                match &row.scope {
-                    Ok(scope) => scope.clone(),
+                match row
+                    .scope
+                    .as_ref()
+                    .map_err(Clone::clone)
+                    .and_then(|s| s.bind(&build))
+                {
+                    Ok(scope) => scope,
                     Err(error) => {
-                        check(Err(error.clone()))?;
+                        check(Err(error))?;
                         continue;
                     }
                 }
             };
-            let ctx = base.map(|ctx| scope.context(&ctx));
-            let config = match self.eval().value(&row.config, ctx.as_ref()) {
+            let ctx = base.map(|ctx| scope.context(&ctx, copy));
+            let config = match self.eval().value_in(&row.config, ctx.as_ref(), &build) {
                 Ok(config) => config,
                 Err(error) => {
                     check(Err(error))?;

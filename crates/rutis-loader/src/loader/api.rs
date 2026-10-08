@@ -184,7 +184,12 @@ impl Loader {
         let row = state.desired.row(&slot.row)?;
         Some(RowInfo {
             id: slot.row.clone(),
-            isolate: row.raw_scope.isolate.clone(),
+            isolate: row
+                .raw_scope
+                .isolate
+                .iter()
+                .map(|(name, label)| (name.clone(), super::desired::copy_label(label, slot.scope)))
+                .collect(),
             inject: row.raw_scope.inject.clone(),
         })
     }
@@ -249,7 +254,10 @@ impl Loader {
             .get(&row.parent.clone().map(Slot::global))
             .or(state.groups.get(&None))
             .map(|g| match &row.scope {
-                Ok(scope) => scope.context(&g.ctx),
+                Ok(scope) => match scope.bind(&crate::resolver::Build::default()) {
+                    Ok(scope) => scope.context(&g.ctx, None),
+                    Err(_) => g.ctx.clone(),
+                },
                 Err(_) => g.ctx.clone(),
             });
         Some(self.inner.eval().value(&row.config, base.as_ref()))

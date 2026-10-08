@@ -24,6 +24,46 @@ pub struct Host {
 
 type Slots = Arc<Mutex<HashMap<String, (Option<String>, u64)>>>;
 
+/// How the runtime identifies the service `name` in the scope `label` (a
+/// row's `isolate` label for it): `name` outside any scope, `name`, a NUL
+/// and `label` inside one. Neither may contain NUL, and a label may not be
+/// empty ([`check_scoped`]), so no two (name, label) pairs share an id. Export slots, host proxies and
+/// `host:<id>` call targets are registered by it, so the same name in two
+/// scopes (two instances, say) does not collide. A runtime takes labels
+/// only with the `scopes` feature.
+pub fn scoped_id(name: &str, label: Option<&str>) -> String {
+    match label {
+        None => name.to_owned(),
+        Some(label) => format!("{name}\0{label}"),
+    }
+}
+
+/// Refuse a name or label [`scoped_id`] cannot keep apart.
+fn check_scoped(name: &str, label: Option<&str>) -> Result<(), Error> {
+    if name.contains('\0') || label.is_some_and(|label| label.contains('\0')) {
+        return Err(Error::Value(format!(
+            "service {name:?} or its scope label contains NUL"
+        )));
+    }
+    if label == Some("") {
+        return Err(Error::Value(format!(
+            "service {name:?} has an empty scope label"
+        )));
+    }
+    Ok(())
+}
+
+/// A service a row exports: its name, and who follows its changes.
+type Exported = (String, Arc<dyn ServiceEvents>);
+
+/// The label `isolate` gives `name`, if it isolates it.
+fn label_of<'a>(isolate: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    isolate
+        .iter()
+        .find(|(isolated, _)| isolated == name)
+        .map(|(_, label)| label.as_str())
+}
+
 /// A host service registered with the Node side, and how many leases use
 /// it. Hosts of a mount stay for the process's lifetime.
 struct HostEntry {
@@ -36,8 +76,9 @@ struct HostEntry {
 struct Imports {
     slots: Slots,
     events: Option<Arc<dyn ServiceEvents>>,
-    /// Observers of the services rows export, by service name.
-    exported: Mutex<HashMap<String, Arc<dyn ServiceEvents>>>,
+    /// Observers of the services rows export, by id ([`scoped_id`]), with
+    /// the service's name.
+    exported: Mutex<HashMap<String, Exported>>,
     hosts: Mutex<HashMap<String, HostEntry>>,
     forwarded: Option<Arc<dyn EventSink>>,
 }
@@ -157,20 +198,21 @@ impl Launcher {
     }
 }
 impl Imports {
-    fn update(&self, name: String, handle: Option<String>, version: u64) {
+    /// The slot `id` now holds `handle`.
+    fn update(&self, id: String, handle: Option<String>, version: u64) {
         {
             let mut slots = self.slots.lock().unwrap();
-            let entry = slots.entry(name.clone()).or_insert((None, 0));
+            let entry = slots.entry(id.clone()).or_insert((None, 0));
             if version <= entry.1 {
                 return;
             }
             *entry = (handle.clone(), version);
         }
         if let Some(events) = &self.events {
-            events.changed(&name, handle.clone(), version);
+            events.changed(&id, handle.clone(), version);
         }
-        let exported = self.exported.lock().unwrap().get(&name).cloned();
-        if let Some(observer) = exported {
+        let exported = self.exported.lock().unwrap().get(&id).cloned();
+        if let Some((name, observer)) = exported {
             observer.changed(&name, handle, version);
         }
     }
@@ -287,7 +329,8 @@ pub struct Process {
     child: Option<crate::runtime::spawn::Child>,
     /// Reported by the runner when mounting.
     features: std::sync::OnceLock<Vec<String>>,
-    /// The services each loaded row exports, by row key.
+    /// The services each loaded row exports, by row key (ids, see
+    /// [`scoped_id`]).
     exports: Mutex<HashMap<String, Vec<String>>>,
     /// Serializes `hosts.provide` / `hosts.withdraw`, so a lease returns only
     /// once its service is registered on the Node side, and a withdrawal
@@ -319,13 +362,14 @@ pub struct RowSchema {
 #[must_use = "a lease is given back only by HostLease::release"]
 pub struct HostLease {
     process: Arc<Process>,
-    name: String,
+    /// See [`scoped_id`].
+    id: String,
 }
 
 impl HostLease {
     /// Give the lease back; the last one withdraws the service from Cordis.
     pub async fn release(self) -> Result<(), Error> {
-        self.process.release_host(&self.name).await
+        self.process.release_host(&self.id).await
     }
 }
 
@@ -565,7 +609,9 @@ impl Process {
     /// Load row `key` like [`Process::load_row`], exporting the services in
     /// `exports` (`{ name: { method: "sync" | "async" } }`) to `observer`:
     /// it hears every change of each service, read from the row's scope,
-    /// until the row is unloaded. A name another row exports is refused.
+    /// until the row is unloaded. A service another row exports in the same
+    /// scope is refused; a name the row isolates is exported in the scope
+    /// of its label ([`scoped_id`]), which needs the runtime's `scopes`.
     #[allow(clippy::too_many_arguments)]
     pub async fn load_row_exporting(
         &self,
@@ -580,19 +626,29 @@ impl Process {
         if !exports.is_empty() {
             self.require("rows.v2")?;
         }
-        let names: Vec<String> = exports.keys().cloned().collect();
+        for name in exports.keys() {
+            check_scoped(name, label_of(isolate, name))?;
+        }
+        let scoped: Vec<(String, String)> = exports
+            .keys()
+            .map(|name| (scoped_id(name, label_of(isolate, name)), name.clone()))
+            .collect();
+        if exports.keys().any(|name| label_of(isolate, name).is_some()) {
+            self.require("scopes")?;
+        }
         {
             // Registered before loading: the row's services may appear
             // while it starts.
             let mut exported = self.imports.exported.lock().unwrap();
-            if let Some(name) = names.iter().find(|name| exported.contains_key(*name)) {
-                return Err(Error::Value(format!("service {name} is already exported")));
+            if let Some((id, _)) = scoped.iter().find(|(id, _)| exported.contains_key(id)) {
+                return Err(Error::Value(format!("service {id} is already exported")));
             }
-            for name in &names {
-                exported.insert(name.clone(), observer.clone());
+            for (id, name) in &scoped {
+                exported.insert(id.clone(), (name.clone(), observer.clone()));
             }
         }
-        self.exports.lock().unwrap().insert(key.to_owned(), names);
+        let ids = scoped.into_iter().map(|(id, _)| id).collect();
+        self.exports.lock().unwrap().insert(key.to_owned(), ids);
         let loaded = self
             .call_async(
                 "",
@@ -612,22 +668,21 @@ impl Process {
     /// observer only after this: without the withdrawal here, a late one
     /// finds no observer and the service stays projected.
     fn forget_exports(&self, key: &str) {
-        let names = self.exports.lock().unwrap().remove(key);
+        let ids = self.exports.lock().unwrap().remove(key);
         let observers: Vec<_> = {
             let mut exported = self.imports.exported.lock().unwrap();
-            names
-                .into_iter()
+            ids.into_iter()
                 .flatten()
-                .filter_map(|name| exported.remove(&name).map(|observer| (name, observer)))
+                .filter_map(|id| exported.remove(&id).map(|found| (id, found)))
                 .collect()
         };
-        for (name, observer) in observers {
+        for (id, (name, observer)) in observers {
             let version = self
                 .imports
                 .slots
                 .lock()
                 .unwrap()
-                .get(&name)
+                .get(&id)
                 .map_or(0, |(_, version)| *version);
             observer.changed(&name, None, version);
         }
@@ -687,22 +742,41 @@ impl Process {
         dispatch: Arc<dyn HostDispatch>,
         methods: Option<Value>,
     ) -> Result<HostLease, Error> {
+        self.lease_host_in(name, None, dispatch, methods).await
+    }
+
+    /// [`Process::lease_host`] in the scope `label` (the row's `isolate`
+    /// label for `name`): only rows isolating `name` with that label see
+    /// it, and the same name in other scopes is another service. A label
+    /// needs the runtime's `scopes`.
+    pub async fn lease_host_in(
+        self: &Arc<Self>,
+        name: &str,
+        label: Option<&str>,
+        dispatch: Arc<dyn HostDispatch>,
+        methods: Option<Value>,
+    ) -> Result<HostLease, Error> {
         self.require("hosts")?;
+        if label.is_some() {
+            self.require("scopes")?;
+        }
+        check_scoped(name, label)?;
+        let id = scoped_id(name, label);
         let _changing = self.host_changes.lock().await;
         let first = {
             let mut hosts = self.imports.hosts.lock().unwrap();
-            match hosts.get_mut(name) {
+            match hosts.get_mut(&id) {
                 Some(entry) => {
                     entry.leases = entry
                         .leases
                         .checked_add(1)
-                        .ok_or_else(|| Error::Value(format!("host lease overflow for {name}")))?;
+                        .ok_or_else(|| Error::Value(format!("host lease overflow for {id}")))?;
                     entry.dispatch = dispatch.clone();
                     false
                 }
                 None => {
                     hosts.insert(
-                        name.to_owned(),
+                        id.clone(),
                         HostEntry {
                             dispatch: dispatch.clone(),
                             leases: 1,
@@ -716,37 +790,38 @@ impl Process {
             let methods = methods
                 .or_else(|| dispatch.methods())
                 .unwrap_or_else(|| json!({}));
-            if let Err(error) = self
-                .call_async("", "hosts.provide", json!([name, methods]))
-                .await
-            {
-                self.imports.hosts.lock().unwrap().remove(name);
+            let args = match label {
+                None => json!([name, methods]),
+                Some(label) => json!([name, methods, label]),
+            };
+            if let Err(error) = self.call_async("", "hosts.provide", args).await {
+                self.imports.hosts.lock().unwrap().remove(&id);
                 return Err(error);
             }
         }
         Ok(HostLease {
             process: self.clone(),
-            name: name.to_owned(),
+            id,
         })
     }
 
-    async fn release_host(&self, name: &str) -> Result<(), Error> {
+    async fn release_host(&self, id: &str) -> Result<(), Error> {
         let _changing = self.host_changes.lock().await;
         let last = {
             let mut hosts = self.imports.hosts.lock().unwrap();
-            let Some(entry) = hosts.get_mut(name) else {
+            let Some(entry) = hosts.get_mut(id) else {
                 return Ok(());
             };
             entry.leases -= 1;
             let last = entry.leases == 0;
             if last {
-                hosts.remove(name);
+                hosts.remove(id);
             }
             last
         };
         match last {
             true => self
-                .call_async("", "hosts.withdraw", json!([name]))
+                .call_async("", "hosts.withdraw", json!([id]))
                 .await
                 .map(|_| ()),
             false => Ok(()),

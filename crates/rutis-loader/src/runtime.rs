@@ -34,6 +34,12 @@
 //! - the services the plugin declares it provides are published from the
 //!   row's own fiber, so Rust plugins and other runtimes' rows can inject
 //!   them.
+//!
+//! A shared name inside instances ([`ServiceCatalog::register_shared_instance`])
+//! is each instance's own: a copy gates, leases and publishes it at
+//! `host_key_in(name, instance)`, and in the runtime process it isolates
+//! the name under its instance's label, so rows of other instances, which
+//! share the process, do not see it.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -41,11 +47,12 @@ use std::sync::{Arc, Mutex};
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Listener, Plugin, PluginFactory, TypeKey};
 use rutis_bridge::runtime::{
-    row_projection, HostLease, Process, Projection, Runtime, RuntimeHandle,
+    row_projection_with, HostLease, Process, Projection, Runtime, RuntimeHandle,
 };
 use rutis_bridge::session::{host_key, HostDispatch};
 use serde_json::{json, Map, Value};
 
+use crate::resolver::{Build, ScopedFactory};
 use crate::{
     volatile_key, Loader, LoaderError, Resolved, Resolver, ServiceCatalog, VolatileUpdate,
 };
@@ -237,6 +244,14 @@ impl Resolver for RuntimeResolver {
             // before the row may start.
             let Some(process) = self.runtime.ready().await else {
                 self.offline.lock().unwrap().insert(name.to_owned());
+                let module = JsModule {
+                    name: name.to_owned(),
+                    runtime: self.runtime.name().to_owned(),
+                    entry: entry.clone(),
+                    gated: Vec::new(),
+                    provides: Map::new(),
+                    catalog: self.catalog.clone(),
+                };
                 return Ok(Arc::new(Resolved {
                     factory: Arc::new(JsFactory::new(
                         name,
@@ -252,7 +267,7 @@ impl Resolver for RuntimeResolver {
                         "schema": "unavailable: the Cordis runtime is not running",
                     }),
                     foreign_scope: true,
-                    scoped: None,
+                    scoped: Some(module.scoped()),
                 }));
             };
             let described = process
@@ -283,6 +298,14 @@ impl Resolver for RuntimeResolver {
                 .cloned()
                 .collect();
             self.offline.lock().unwrap().remove(name);
+            let module = JsModule {
+                name: name.to_owned(),
+                runtime: self.runtime.name().to_owned(),
+                entry: entry.clone(),
+                gated: gated.clone(),
+                provides: described.provides.clone(),
+                catalog: self.catalog.clone(),
+            };
             let resolved = Arc::new(Resolved {
                 factory: Arc::new(JsFactory::new(
                     name,
@@ -300,7 +323,7 @@ impl Resolver for RuntimeResolver {
                     "provides": described.provides,
                 }),
                 foreign_scope: true,
-                scoped: None,
+                scoped: Some(module.scoped()),
             });
             if caches {
                 self.resolved
@@ -313,17 +336,79 @@ impl Resolver for RuntimeResolver {
     }
 }
 
-struct JsFactory {
+/// What a row module declares, from which each copy's factory is built
+/// with the keys of the instances it runs in.
+#[derive(Clone)]
+struct JsModule {
     name: String,
     runtime: String,
     entry: PathBuf,
     /// The injected services that gate the row in rutis.
     gated: Vec<String>,
     provides: Map<String, Value>,
+    catalog: ServiceCatalog,
+}
+
+impl JsModule {
+    fn scoped(self) -> ScopedFactory {
+        Arc::new(move |build: &Build| {
+            let factory: Arc<dyn PluginFactory<Value>> = Arc::new(self.factory(build)?);
+            Ok(factory)
+        })
+    }
+
+    /// The factory of a copy running in `build`'s instances.
+    fn factory(&self, build: &Build) -> Result<JsFactory, CordisError> {
+        // A shared name resolves through the catalog (inside instances, to
+        // the instance's key); any other name a leaf runtime gates on is
+        // shared by name.
+        let key = |name: &str| -> Result<TypeKey, CordisError> {
+            match self.catalog.is_shared(name) {
+                true => self.catalog.key_in(name, build).map_err(failed),
+                false => Ok(host_key(name)),
+            }
+        };
+        let keyed = |names: &mut dyn Iterator<Item = &String>| {
+            names
+                .map(|name| Ok((name.clone(), key(name)?)))
+                .collect::<Result<Vec<_>, CordisError>>()
+        };
+        let scopes = self
+            .catalog
+            .instance_names(build)
+            .into_iter()
+            .filter(|(name, _)| self.catalog.is_shared(name))
+            .map(|(name, instance)| (name, format!("rutis-loader/instance/{instance}")))
+            .collect();
+        Ok(JsFactory::with_keys(
+            &self.name,
+            &self.runtime,
+            self.entry.clone(),
+            keyed(&mut self.gated.iter())?,
+            self.provides.clone(),
+            keyed(&mut self.provides.keys())?,
+            scopes,
+        ))
+    }
+}
+
+struct JsFactory {
+    name: String,
+    runtime: String,
+    entry: PathBuf,
+    /// The injected services that gate the row in rutis, with their keys.
+    gated: Vec<(String, TypeKey)>,
+    provides: Map<String, Value>,
+    /// The key each provided service is published under.
+    provided: Vec<(String, TypeKey)>,
+    /// Shared names inside the copy's instances, with their instance's
+    /// label: isolated in the runtime so other instances do not see them.
+    scopes: Vec<(String, String)>,
     injects: Vec<TypeKey>,
 }
 
 impl JsFactory {
+    /// The factory of a copy outside instances.
     fn new(
         name: &str,
         runtime: &str,
@@ -331,8 +416,31 @@ impl JsFactory {
         gated: Vec<String>,
         provides: Map<String, Value>,
     ) -> Self {
+        let gated = gated
+            .into_iter()
+            .map(|name| {
+                let key = host_key(&name);
+                (name, key)
+            })
+            .collect();
+        let provided = provides
+            .keys()
+            .map(|name| (name.clone(), host_key(name)))
+            .collect();
+        Self::with_keys(name, runtime, entry, gated, provides, provided, Vec::new())
+    }
+
+    fn with_keys(
+        name: &str,
+        runtime: &str,
+        entry: PathBuf,
+        gated: Vec<(String, TypeKey)>,
+        provides: Map<String, Value>,
+        provided: Vec<(String, TypeKey)>,
+        scopes: Vec<(String, String)>,
+    ) -> Self {
         let injects = std::iter::once(RuntimeRows::key(runtime))
-            .chain(gated.iter().map(|name| host_key(name)))
+            .chain(gated.iter().map(|(_, key)| key.clone()))
             .collect();
         Self {
             name: name.to_owned(),
@@ -340,6 +448,8 @@ impl JsFactory {
             entry,
             gated,
             provides,
+            provided,
+            scopes,
             injects,
         }
     }
@@ -362,6 +472,8 @@ impl PluginFactory<Value> for JsFactory {
             config: config.clone(),
             gated: self.gated.clone(),
             provides: self.provides.clone(),
+            provided: self.provided.clone(),
+            scopes: self.scopes.clone(),
             injects: self.injects.clone(),
         }))
     }
@@ -373,8 +485,10 @@ struct JsRow {
     runtime: String,
     entry: PathBuf,
     config: Value,
-    gated: Vec<String>,
+    gated: Vec<(String, TypeKey)>,
     provides: Map<String, Value>,
+    provided: Vec<(String, TypeKey)>,
+    scopes: Vec<(String, String)>,
     injects: Vec<TypeKey>,
 }
 
@@ -443,11 +557,28 @@ impl JsRow {
         leases: &mut Vec<HostLease>,
     ) -> Result<(String, Arc<Projection>), CordisError> {
         let process = runtime.process();
+        let row = ctx
+            .get::<Loader>()
+            .and_then(|loader| loader.row(ctx.instance()));
+        let (mut isolate, inject) = row.map(|row| (row.isolate, row.inject)).unwrap_or_default();
+        // Shared names inside the row's instances are isolated under the
+        // instance's label, unless its config isolates them already.
+        for (name, label) in &self.scopes {
+            if !isolate.iter().any(|(isolated, _)| isolated == name) {
+                isolate.push((name.clone(), label.clone()));
+            }
+        }
+        let label_of = |name: &str| {
+            isolate
+                .iter()
+                .find(|(isolated, _)| isolated == name)
+                .map(|(_, label)| label.clone())
+        };
         // The shared services the plugin injects, registered in Cordis for
-        // as long as the row runs. One served by a row of this same process
-        // is already there natively.
-        for name in &self.gated {
-            let dispatch = ctx.require_as::<dyn HostDispatch>(host_key(name))?;
+        // as long as the row runs, in the row's scope for each. One served
+        // by a row of this same process is already there natively.
+        for (name, key) in &self.gated {
+            let dispatch = ctx.require_as::<dyn HostDispatch>(key.clone())?;
             if dispatch
                 .origin()
                 .is_some_and(|origin| origin == process.connection().tag())
@@ -455,7 +586,12 @@ impl JsRow {
                 continue;
             }
             let lease = process
-                .lease_host(name, dispatch, runtime.host_methods(name))
+                .lease_host_in(
+                    name,
+                    label_of(name).as_deref(),
+                    dispatch,
+                    runtime.host_methods(name),
+                )
                 .await
                 .map_err(failed)?;
             leases.push(lease);
@@ -463,13 +599,16 @@ impl JsRow {
         // The fiber identity keys the row on the Cordis side: unique, and
         // new for every generation.
         let key = ctx.instance().to_string();
-        let row = ctx
-            .get::<Loader>()
-            .and_then(|loader| loader.row(ctx.instance()));
-        let (isolate, inject) = row.map(|row| (row.isolate, row.inject)).unwrap_or_default();
         // The row's services are published from this fiber, so they go when
         // it does.
-        let projection = row_projection(&self.provides);
+        let provided = self.provided.clone();
+        let projection = row_projection_with(&self.provides, move |name| {
+            provided
+                .iter()
+                .find(|(provided, _)| provided == name)
+                .map(|(_, key)| key.clone())
+                .unwrap_or_else(|| host_key(name))
+        });
         projection.attach(ctx, process.clone())?;
         if let Err(error) = process
             .load_row_exporting(

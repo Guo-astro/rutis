@@ -46,17 +46,36 @@ let version = 0
 let emits = new Set() // events the rutis side may emit here
 // Rows: plugins rutis-loader manages one by one in this Context (`rows.*`).
 const rows = new Map() // key -> { fiber, inner, config, exports }
-// rutis services registered one by one (`hosts.*`): name -> withdraw
+// rutis services registered one by one (`hosts.*`): id -> withdraw
 const hosts = new Map()
 // What this runner supports beyond protocol 2, reported by `mount`.
-const FEATURES = ['rows.v2', 'hosts', 'leaf.js']
+const FEATURES = ['rows.v2', 'hosts', 'leaf.js', 'scopes']
+
+// A service in a scope: rows isolating `name` with `label` share it, and the
+// same name in another scope (another instance, say) is another service.
+// Export slots, host proxies and `host:<id>` targets go by this id
+// (`scopes`): the name outside any scope (no label: undefined or null), the
+// name, a NUL and the label inside one. Neither may contain NUL and a label
+// may not be empty, so no two pairs share an id.
+const scopedId = (name, label) => {
+  if (name.includes('\0') || label?.includes('\0')) throw new Error(`service ${JSON.stringify(name)} or its scope label contains NUL`)
+  if (label === '') throw new Error(`service ${JSON.stringify(name)} has an empty scope label`)
+  return label == null ? name : `${name}\0${label}`
+}
+// The handle of a slot's `generation`th object. A scoped id's handles are
+// marked with a NUL too: a label may contain `#`.
+const handleOf = (id, generation) => generation === 1 ? id : `${id}${id.includes('\0') ? '\0' : '#'}${generation}`
+// Cordis keys an isolated service by its symbol alone, so the symbol names
+// the service as well as the label: two names isolated with one label are
+// two services.
+const isolated = (name, label) => Symbol.for(`rutis-row:${JSON.stringify([label, name])}`)
 
 // Each exported service slot is projected as a sequence of object handles.
 // A handle always addresses the object it was created for; when the slot
 // changes, the Rust side receives a new handle and replaces its native proxy.
-// The first object of a slot uses the service name as its handle.
-const slots = new Map() // name -> { methods, scope, object, identity, handle, generation, exporter }
-const handles = new Map() // handle -> { name, object, current, released }
+// The first object of a slot uses its id (scopedId) as its handle.
+const slots = new Map() // id -> { name, methods, scope, object, identity, handle, generation, exporter }
+const handles = new Map() // handle -> { name: slot id, object, current, released }
 
 // Cordis wraps Service instances in a new tracing proxy on every read; the
 // proxy reports its target under this symbol. Compare targets, not wrappers.
@@ -100,8 +119,8 @@ function retire(handle) {
 // internal/set for property assignment; a direct ctx.set() emits nothing and
 // is observed after the next call into this process.
 function refresh() {
-  for (const [name, slot] of slots) {
-    const object = read(slot, name)
+  for (const [id, slot] of slots) {
+    const object = read(slot, slot.name)
     const current = identity(object)
     if (current === slot.identity) {
       // Same service, possibly read through a new exporter scope: calls must
@@ -115,12 +134,12 @@ function refresh() {
     slot.handle = null
     if (object !== undefined) {
       slot.generation++
-      slot.handle = slot.generation === 1 ? name : `${name}#${slot.generation}`
-      handles.set(slot.handle, { name, object, current: true, released: false })
+      slot.handle = handleOf(id, slot.generation)
+      handles.set(slot.handle, { name: id, object, current: true, released: false })
     }
     slot.version = ++version
     if (mounted && !closing) {
-      peer.callAsync('', 'service', [name, slot.handle, slot.version]).catch(() => {})
+      peer.callAsync('', 'service', [id, slot.handle, slot.version]).catch(() => {})
     }
   }
 }
@@ -205,15 +224,22 @@ const fiberOf = wrapped => Object.hasOwn(wrapped, 'then') ? Object.getPrototypeO
 async function loadRow([key, entry, config, isolate, inject, exports]) {
   if (rows.has(key)) throw new Error(`row ${key} is already loaded`)
   const names = Object.keys(exports ?? {})
-  for (const name of names) {
+  // A name the row isolates is exported in the scope of its label.
+  const labelOf = name => (isolate ?? []).find(([isolatedName]) => isolatedName === name)?.[1]
+  const ids = names.map(name => scopedId(name, labelOf(name)))
+  for (const [index, name] of names.entries()) {
     if (name.includes('#')) throw new Error(`service name ${name} cannot be projected`)
-    const owner = [...rows].find(([, row]) => row.exports.includes(name))
-    if (owner || slots.has(name)) throw new Error(`service ${name} is already exported${owner ? ` by row ${owner[0]}` : ''}`)
+    const id = ids[index]
+    const owner = [...rows].find(([, row]) => row.exports.includes(id))
+    if (owner || slots.has(id)) throw new Error(`service ${id} is already exported${owner ? ` by row ${owner[0]}` : ''}`)
   }
   const plugin = await pluginOf(entry)
   let scope = ctx
-  for (const [name, label] of isolate ?? []) scope = scope.isolate(name, Symbol.for(`rutis-row:${label}`))
-  const row = { fiber: undefined, inner: undefined, config, exports: names }
+  for (const [name, label] of isolate ?? []) {
+    scopedId(name, label)
+    scope = scope.isolate(name, isolated(name, label))
+  }
+  const row = { fiber: undefined, inner: undefined, config, exports: ids }
   const fiber = fiberOf(inject?.length
     ? scope.plugin({ name: `row:${key}`, inject, apply(gated) { row.inner = fiberOf(gated.plugin(plugin, row.config)) } })
     : scope.plugin(plugin, config))
@@ -222,9 +248,9 @@ async function loadRow([key, entry, config, isolate, inject, exports]) {
   rows.set(key, row)
   // The row's services are read from its own scope, like a consumer of it
   // would, so an isolated row exports the service of its isolated scope.
-  for (const name of names) {
-    const slot = { methods: new Set(Object.keys(exports[name] ?? {})), scope: undefined, object: undefined, identity: undefined, handle: null, generation: 0, version: 0 }
-    slots.set(name, slot)
+  for (const [index, name] of names.entries()) {
+    const slot = { name, methods: new Set(Object.keys(exports[name] ?? {})), scope: undefined, object: undefined, identity: undefined, handle: null, generation: 0, version: 0 }
+    slots.set(ids[index], slot)
     slot.exporter = exporter(name, slot, scope)
   }
   try {
@@ -242,11 +268,11 @@ async function unloadRow(key) {
   const row = rows.get(key)
   if (!row) return null
   rows.delete(key)
-  for (const name of row.exports) {
-    const slot = slots.get(name)
+  for (const id of row.exports) {
+    const slot = slots.get(id)
     await slot?.exporter?.dispose()
     if (slot) retire(slot.handle)
-    slots.delete(name)
+    slots.delete(id)
   }
   await row.fiber.dispose()
   return null
@@ -334,13 +360,15 @@ function commitVolatile(fiber, raw) {
 // A rutis service seen from Cordis: bound methods call the Rust host
 // (synchronously or returning a Promise, as declared); any other method is
 // reported as not provided rather than silently missing. It is not an
-// instance of the class the plugin declares (boundary rule 7).
-function hostProxy(name, methods) {
+// instance of the class the plugin declares (boundary rule 7). `id` is the
+// service's id (scopedId), which its calls target.
+function hostProxy(id, methods) {
+  const name = id
   const target = {}
   for (const [method, kind] of Object.entries(methods)) {
     target[method] = kind === 'async'
-      ? (...args) => peer.callAsync(`host:${name}`, method, args)
-      : (...args) => peer.call(`host:${name}`, method, args)
+      ? (...args) => peer.callAsync(`host:${id}`, method, args)
+      : (...args) => peer.call(`host:${id}`, method, args)
   }
   const passthrough = new Set(['then', 'toJSON', 'constructor'])
   return new Proxy(target, {
@@ -359,7 +387,7 @@ function mount(args) {
   fibers = []
   for (const [name, methods] of Object.entries(args.services ?? {})) {
     if (name.includes('#')) throw new Error(`service name ${name} cannot be projected`)
-    slots.set(name, { methods: new Set(methods), scope: undefined, object: undefined, identity: undefined, handle: null, generation: 0, version: 0 })
+    slots.set(name, { name, methods: new Set(methods), scope: undefined, object: undefined, identity: undefined, handle: null, generation: 0, version: 0 })
   }
   const plugins = args.plugins ?? [{ entry: pluginPath, config: args.config }]
   emits = new Set(args.emits ?? [])
@@ -429,10 +457,13 @@ function dispatch(target, method, args) {
       case 'rows.schema': return describe(args?.[0])
       case 'hosts.provide': {
         // A rutis service, registered for the rows that use it; rutis counts
-        // the users and withdraws it after the last one.
-        const [name, methods] = args ?? []
-        if (hosts.has(name)) throw new Error(`host service ${name} is already provided`)
-        hosts.set(name, ctx.provide(name, hostProxy(name, methods ?? {})))
+        // the users and withdraws it after the last one. With a label, only
+        // rows isolating the name with that label see it.
+        const [name, methods, label] = args ?? []
+        const id = scopedId(name, label)
+        if (hosts.has(id)) throw new Error(`host service ${id} is already provided`)
+        const scope = label ? ctx.isolate(name, isolated(name, label)) : ctx
+        hosts.set(id, scope.provide(name, hostProxy(id, methods ?? {})))
         return null
       }
       case 'hosts.withdraw': {

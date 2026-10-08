@@ -73,6 +73,12 @@ pub enum LoaderError {
     /// Service names the catalog does not know.
     #[error("unknown services: {}", .0.join(", "))]
     UnknownService(Vec<String>),
+    /// A service inside instances of `group`, used where no such instance
+    /// encloses the row.
+    #[error(
+        "{name:?} is a service inside {group:?} instances: put the row in the {group:?} group"
+    )]
+    OutsideInstance { name: String, group: String },
     /// An expression read a service that is not registered as readable.
     #[error("service {0:?} is not readable from expressions")]
     NotReadable(String),

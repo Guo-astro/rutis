@@ -37,11 +37,13 @@ pub type ScopedFactory =
 pub(crate) type Values = Arc<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>;
 
 /// Where a copy runs: the instances of instanced groups enclosing it.
+#[derive(Default, Clone)]
 pub struct Build {
     /// Innermost first.
     pub(crate) chain: Vec<BuildLink>,
 }
 
+#[derive(Clone)]
 pub(crate) struct BuildLink {
     pub(crate) group: String,
     pub(crate) instance: InstanceId,
@@ -172,6 +174,19 @@ impl Builtins {
         schema: Option<Value>,
     ) -> &mut Self {
         self.insert_resolved(name, factory, schema, None)
+    }
+
+    /// Register a factory taking the raw JSON config, built per copy from
+    /// the instances it runs in.
+    #[cfg(feature = "peer")]
+    pub(crate) fn register_raw_with(
+        &mut self,
+        name: impl Into<String>,
+        factory: Arc<dyn PluginFactory<Value>>,
+        scoped: ScopedFactory,
+        schema: Option<Value>,
+    ) -> &mut Self {
+        self.insert_resolved(name, factory, schema, Some(scoped))
     }
 
     fn insert_resolved(
