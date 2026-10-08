@@ -251,10 +251,30 @@ pub struct Loader {
 }
 
 impl Loader {
-    /// The key the catalog gives the service `name`.
+    /// The key the catalog gives the service `name` for a copy running in
+    /// `build`'s instances.
     #[cfg(feature = "peer")]
-    pub(crate) fn service_key(&self, name: &str) -> Option<rutis::TypeKey> {
-        self.inner.catalog.key(name)
+    pub(crate) fn service_key_in(
+        &self,
+        name: &str,
+        build: &crate::Build,
+    ) -> Result<rutis::TypeKey, LoaderError> {
+        self.inner.catalog.key_in(name, build)
+    }
+
+    /// The key a service crossing between nodes or languages has in
+    /// `build`'s instances: a shared name through the catalog, any other
+    /// name `host_key(name)`.
+    #[cfg(feature = "peer")]
+    pub(crate) fn shared_key_in(
+        &self,
+        name: &str,
+        build: &crate::Build,
+    ) -> Result<rutis::TypeKey, LoaderError> {
+        match self.inner.catalog.is_shared(name) {
+            true => self.inner.catalog.key_in(name, build),
+            false => Ok(rutis_bridge::session::host_key(name)),
+        }
     }
 }
 

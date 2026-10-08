@@ -53,6 +53,7 @@ impl NameKey {
         }
     }
 
+    #[cfg(any(feature = "runtimes", feature = "peer"))]
     fn base(&self) -> &TypeKey {
         match self {
             NameKey::Global(key) | NameKey::Instance { base: key, .. } => key,
@@ -233,6 +234,7 @@ impl ServiceCatalog {
 
     /// The instance names usable in `build`'s instances, with the instance
     /// each resolves to: what a copy there isolates by instance.
+    #[cfg(all(unix, feature = "runtimes"))]
     pub(crate) fn instance_names(&self, build: &Build) -> Vec<(String, rutis::InstanceId)> {
         let mut names: Vec<(String, rutis::InstanceId)> = self
             .services

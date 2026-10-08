@@ -18,7 +18,7 @@ use rutis_bridge::session::{settle, Value as RpcValue};
 use rutis_bridge::{peer_key, Peer};
 use serde_json::{json, Value};
 
-use crate::{Loader, LoaderError, Resolved, Resolver};
+use crate::{Build, Loader, LoaderError, Resolved, Resolver};
 
 const PREFIX: &str = "peer:";
 
@@ -357,11 +357,20 @@ impl Plugin for PeerRow {
 /// node relay them.
 pub struct LoaderCatalog {
     loader: Loader,
+    /// The instances the hosted plugins run in, for factories built per
+    /// instance.
+    build: Build,
 }
 
 impl LoaderCatalog {
     pub fn new(loader: Loader) -> Self {
-        Self { loader }
+        Self::in_instances(loader, Build::default())
+    }
+
+    /// The catalog of a host running in `build`'s instances: plugins whose
+    /// factory depends on the instance get that instance's.
+    pub fn in_instances(loader: Loader, build: Build) -> Self {
+        Self { loader, build }
     }
 }
 
@@ -372,13 +381,17 @@ impl rutis_bridge::PluginCatalog for LoaderCatalog {
                 return None;
             }
             let resolved = self.loader.resolve(name).await.ok()?;
+            let factory = match &resolved.scoped {
+                Some(scoped) => scoped(&self.build).ok()?,
+                None => resolved.factory.clone(),
+            };
             Some(rutis_bridge::Installed {
                 described: rutis_bridge::Described {
                     schema: resolved.schema.clone(),
                     version: resolved.meta["version"].as_str().map(str::to_owned),
                     integrity: resolved.meta["integrity"].as_str().map(str::to_owned),
                 },
-                factory: resolved.factory.clone(),
+                factory,
             })
         })
     }
@@ -467,7 +480,9 @@ impl NodeConfig {
         link
     }
 
-    fn features(&self, loader: Option<&Loader>) -> rutis_bridge::Features {
+    /// The features, for a link running in `build`'s instances: names
+    /// map to that instance's services.
+    fn features(&self, loader: Option<&Loader>, build: &Build) -> rutis_bridge::Features {
         rutis_bridge::Features {
             export: self.export.clone(),
             import: self.import.clone(),
@@ -477,18 +492,50 @@ impl NodeConfig {
                 .then(|| loader.cloned())
                 .flatten()
                 .map(|loader| {
-                    Arc::new(LoaderCatalog::new(loader)) as Arc<dyn rutis_bridge::PluginCatalog>
+                    Arc::new(LoaderCatalog::in_instances(loader, build.clone()))
+                        as Arc<dyn rutis_bridge::PluginCatalog>
                 }),
             // The peer's rows name services as this loader's catalog does.
             host_services: (self.host)
                 .then(|| loader.cloned())
                 .flatten()
                 .map(|loader| {
-                    Arc::new(move |name: &str| loader.service_key(name))
+                    let build = build.clone();
+                    Arc::new(move |name: &str| loader.service_key_in(name, &build).ok())
                         as rutis_bridge::ServiceKeys
                 }),
+            services: loader.cloned().map(|loader| {
+                let build = build.clone();
+                Arc::new(move |name: &str| loader.shared_key_in(name, &build).ok())
+                    as rutis_bridge::ServiceKeys
+            }),
             runtime: self.runtime.clone(),
         }
+    }
+
+    /// Refuse what a link in `build`'s instances cannot do: a service
+    /// exported or imported by a name that has no key there, and, inside
+    /// instances, features that publish keys the rest of the tree uses
+    /// (`rows`, `runtime`): every instance's link would publish the same.
+    fn check(&self, loader: Option<&Loader>, build: &Build) -> Result<(), CordisError> {
+        if build.instances().next().is_some() {
+            if self.rows {
+                return Err(failed(
+                    "a link inside instances cannot carry rows: put the `rows` link outside instanced groups",
+                ));
+            }
+            if self.runtime.is_some() {
+                return Err(failed(
+                    "a link inside instances cannot be a runtime: put the `runtime` link outside instanced groups",
+                ));
+            }
+        }
+        if let Some(loader) = loader {
+            for name in self.export.iter().chain(&self.import) {
+                loader.shared_key_in(name, build).map_err(failed)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -524,8 +571,13 @@ pub fn node_schema() -> Value {
 /// The `rutis-bridge/peer` row: a link and its features, composed; with
 /// `rows`, this loader's `peer:<peer>/…` rows run on the peer. Register it
 /// with [`register_peer_node`].
+///
+/// Inside instances, each instance has its own link: its `Peer#<peer>` is
+/// isolated under the instance's label, and what it exports, imports and
+/// hosts is that instance's.
 struct NodeFactory {
     resolver: Arc<PeerResolver>,
+    build: Build,
 }
 
 impl PluginFactory<Value> for NodeFactory {
@@ -541,6 +593,7 @@ impl PluginFactory<Value> for NodeFactory {
         Ok(Box::new(Node {
             config: NodeConfig::parse(config)?,
             resolver: self.resolver.clone(),
+            build: self.build.clone(),
         }))
     }
 }
@@ -548,21 +601,31 @@ impl PluginFactory<Value> for NodeFactory {
 /// Register the `rutis-bridge/peer` row type: share `resolver` with the
 /// loader's chain for its `peer:` rows.
 pub fn register_peer_node(builtins: &mut crate::Builtins, resolver: Arc<PeerResolver>) {
-    builtins.register_raw(
-        "rutis-bridge/peer",
-        NodeFactory { resolver },
-        Some(node_schema()),
-    );
+    let factory = Arc::new(NodeFactory {
+        resolver: resolver.clone(),
+        build: Build::default(),
+    });
+    let scoped: crate::ScopedFactory = Arc::new(move |build: &Build| {
+        let factory: Arc<dyn PluginFactory<Value>> = Arc::new(NodeFactory {
+            resolver: resolver.clone(),
+            build: build.clone(),
+        });
+        Ok(factory)
+    });
+    builtins.register_raw_with("rutis-bridge/peer", factory, scoped, Some(node_schema()));
 }
 
 struct Node {
     config: NodeConfig,
     resolver: Arc<PeerResolver>,
+    /// The instances the row's copy runs in.
+    build: Build,
 }
 
 struct Reconfigure {
     handle: rutis_bridge::PeerHandle,
     loader: Option<Loader>,
+    build: Build,
 }
 
 impl rutis::Listener<crate::VolatileUpdate> for Reconfigure {
@@ -573,8 +636,9 @@ impl rutis::Listener<crate::VolatileUpdate> for Reconfigure {
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async move {
             let config = NodeConfig::parse(&update.config)?;
+            config.check(self.loader.as_ref(), &self.build)?;
             self.handle
-                .set(config.features(self.loader.as_ref()))
+                .set(config.features(self.loader.as_ref(), &self.build))
                 .await
                 .map_err(failed)?;
             Ok(None)
@@ -590,13 +654,26 @@ impl Plugin for Node {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
         Box::pin(async move {
             let loader = ctx.get::<Loader>().map(|loader| (*loader).clone());
+            self.config.check(loader.as_ref(), &self.build)?;
             let composed = rutis_bridge::PeerPlugin::new(
                 self.config.link(),
-                self.config.features(loader.as_ref()),
+                self.config.features(loader.as_ref(), &self.build),
             )
             .map_err(failed)?;
             let handle = composed.handle();
-            ctx.plugin(composed);
+            // Inside instances, the link is the instance's own: its peer
+            // is kept apart from other instances' links to the same peer.
+            let scope = match self.build.instances().next() {
+                Some((_, instance)) => {
+                    let peer = PeerId::new(&self.config.peer).map_err(failed)?;
+                    ctx.isolate(
+                        peer_key(&peer),
+                        &format!("rutis-loader/instance/{instance}"),
+                    )
+                }
+                None => ctx.clone(),
+            };
+            scope.plugin(composed);
             if self.config.rows {
                 let peer = PeerId::new(&self.config.peer).map_err(failed)?;
                 ctx.plugin(PeerRowsPlugin::new(peer, self.resolver.clone()));
@@ -604,7 +681,11 @@ impl Plugin for Node {
             ctx.events().on(
                 ctx,
                 &crate::volatile_key(ctx),
-                Reconfigure { handle, loader },
+                Reconfigure {
+                    handle,
+                    loader,
+                    build: self.build.clone(),
+                },
             )?;
             Ok(Effect::Done)
         })

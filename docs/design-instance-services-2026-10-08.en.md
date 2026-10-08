@@ -83,7 +83,7 @@ Protocol changes (new feature `scopes`):
 
 - Rust requires `scopes` from the runtime only when a label is actually involved; rows without labels are byte-for-byte as today. A runtime without the feature fails instance services with "needs a runtime that supports `scopes`".
 - Both the Node and the Python runtime implement `scopes`; the Python runtime also gains `isolate` support (it ignores isolates today).
-- This also fixes two existing problems: a language row that isolates a name could not see the host proxy leased for it (proxies were registered in the root scope); two rows that each isolate and export the same name had the second one refused.
+- This also fixes three existing problems: a language row that isolates a name could not see the host proxy leased for it (proxies were registered in the root scope); two rows that each isolate and export the same name had the second one refused; in Node, two names isolated with one label landed in the same Cordis store slot (Cordis stores isolated services by symbol alone), and the symbol now carries the name as well as the label.
 
 ## 5. Peers
 
@@ -91,9 +91,13 @@ When a peer link (a `rutis-bridge/peer` row) sits in an `instanced` group, each 
 
 - `ExportPlugin` / `ImportPlugin` accept a name-to-key mapping (`ServiceKeys`), still `host_key(name)` by default; `Features` gains `services`, which the loader provides from the row's instance chain;
 - `HostPlugin` uses the same mapping, and the plugins it loads for the peer get factories built from the row's instance chain (a `register_with` plugin no longer gets the instance-less factory);
-- the protocol is unchanged: the link itself is per instance, so names do not collide on a link.
+- the protocol is unchanged: the link itself is per instance, so names do not collide on a link;
+- each instance's link isolates the `Peer#<id>` it provides under the instance's label, so one configuration gives each instance its own link without collisions. Instances' links usually go to different peers (one sandbox machine per conversation, say, its address read from an instance service by an expression): a peer tells links apart by identity, and cannot accept two links from the same node at once.
 
-A link outside instances that exports or imports an instance name fails that feature with "`tools` is a service inside `session` instances: put the link in the `session` group".
+Limits and errors:
+
+- a link outside instances that exports or imports an instance name fails, with "`tools` is a service inside `session` instances: put the row in the `session` group";
+- a link inside instances cannot turn on `rows` or `runtime`: the `PeerRows#<id>` and `RuntimeSession#<name>` they publish are global keys used by rows outside the link, and every instance would publish them. `peer:` rows and remote-runtime rows inside instances keep using links outside instances; a remote runtime goes through the same `scopes` as a local one, so instance services work there too.
 
 ## 6. Lifetime
 
@@ -126,4 +130,4 @@ A link outside instances that exports or imports an instance name fails that fea
 | `crates/rutis-bridge/src/runtime/process.rs`, `rows.rs` | Export slots and hosts by id; `lease_host_in`, `row_projection_with`; feature `scopes` |
 | `node/rutis-runtime/src/runner.mjs`, `python/rutis/rutis/runner.py` | `scopes`: registrations by (name, label); `isolate` in Python |
 | `crates/rutis-bridge/src/services.rs`, `compose.rs`, `crates/rutis-loader/src/peer.rs` | Export, import and host use the name mapping; the peer row provides the mapping and factories from its instance chain |
-| `crates/rutis-loader/tests/instance_services.rs` and others | §8's acceptance |
+| `crates/rutis-loader/tests/instance_services.rs`, `instance_runtimes.rs`, `instance_peers.rs` | §8's acceptance: Rust-side resolution, the Node and Python runtimes, peer links |

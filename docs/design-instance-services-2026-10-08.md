@@ -83,7 +83,7 @@ catalog.register_shared_instance("timeline", "session"); // session 实例内的
 
 - Rust 只在确实用到标签时要求运行时支持 `scopes`；无标签的行和现在逐字节相同。缺少该特性的运行时，实例内服务报错："需要支持 `scopes` 的运行时"。
 - Node 和 Python 运行时都实现 `scopes`；Python 运行时同时补上 `isolate`（目前忽略）。
-- 顺带修复两处已有问题：isolate 了某个名字的语言行看不到为它租用的宿主代理（代理登记在根作用域）；两行各自 isolate 同一名字并导出时，第二行被拒绝。
+- 顺带修复三处已有问题：isolate 了某个名字的语言行看不到为它租用的宿主代理（代理登记在根作用域）；两行各自 isolate 同一名字并导出时，第二行被拒绝；Node 里用同一个标签 isolate 两个名字时，两者落在 Cordis 的同一个存储位置（Cordis 只按 isolate 符号存储），现在符号同时包含名字和标签。
 
 ## 5. 节点
 
@@ -91,9 +91,13 @@ catalog.register_shared_instance("timeline", "session"); // session 实例内的
 
 - `ExportPlugin` / `ImportPlugin` 接受名字到键的映射（`ServiceKeys`），默认仍为 `host_key(name)`；`Features` 新增 `services`，由 loader 按该行的实例链提供；
 - `HostPlugin` 同样使用这份映射；宿主为对方装载的插件，工厂也按该行的实例链生成（`register_with` 的插件不再拿到无实例的工厂）；
-- 协议不变：连接本身就是按实例的，名字在一条连接里不会冲突。
+- 协议不变：连接本身就是按实例的，名字在一条连接里不会冲突；
+- 每个实例的连接提供的 `Peer#<id>` 以该实例的标签 isolate，同一配置在多个实例里各有一条连接，互不冲突。各实例的连接通常指向不同的对端（例如每个会话一台沙箱机器，用表达式读实例服务得到地址）：对端按身份区分连接，同一对端无法同时接受同一节点的两条连接。
 
-放在实例外的连接导出或导入实例内名字时，该功能报错："`tools` 是 `session` 实例内的服务，请把连接放在 `session` 分组里"。
+限制与报错：
+
+- 放在实例外的连接导出或导入实例内名字时，连接行报错："`tools` 是 `session` 实例内的服务，请把行放在 `session` 分组里"；
+- 实例里的连接不能开启 `rows` 或 `runtime`：它们发布的 `PeerRows#<id>`、`RuntimeSession#<name>` 是全局键，供实例外的行使用，每个实例都发布会冲突。实例里的 `peer:` 行和远程运行时的行照常使用实例外的连接；远程运行时与本地运行时走同一套 `scopes`，实例内服务同样可用。
 
 ## 6. 生命周期
 
@@ -126,4 +130,4 @@ catalog.register_shared_instance("timeline", "session"); // session 实例内的
 | `crates/rutis-bridge/src/runtime/process.rs`、`rows.rs` | 按 id 登记导出槽与宿主；`lease_host_in`、`row_projection_with`；特性 `scopes` |
 | `node/rutis-runtime/src/runner.mjs`、`python/rutis/rutis/runner.py` | `scopes`：按 (名字, 标签) 登记；Python 实现 `isolate` |
 | `crates/rutis-bridge/src/services.rs`、`compose.rs`，`crates/rutis-loader/src/peer.rs` | 导出、导入、宿主使用名字映射；节点行按实例链提供映射与工厂 |
-| `crates/rutis-loader/tests/instance_services.rs` 等 | §8 的验收 |
+| `crates/rutis-loader/tests/instance_services.rs`、`instance_runtimes.rs`、`instance_peers.rs` | §8 的验收：Rust 侧解析、Node 与 Python 运行时、节点连接 |
