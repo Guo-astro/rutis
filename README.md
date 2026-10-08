@@ -174,7 +174,7 @@ All of these, the core and the dylib toolchain included, form a release train: r
 - **[Development handbook](docs/development-handbook.en.md)** — API usage, resource cleanup, events, troubleshooting and verification.
 - **[Core features](docs/core-features.en.md)** — config hot update, dynamic events, interception, diagnostics, and the boundaries of each.
 - **[API docs](https://docs.rs/rutis)** — the complete reference on docs.rs.
-- **Design and decisions** — [core design](docs/design-rust-port.en.md), the [spec-by-spec parity check against Cordis](docs/cordis-spec-parity-2026-08-18.en.md), and every design record in [docs](docs).
+- **Design and decisions** — the [design philosophy](docs/design-philosophy.en.md), [core design](docs/design-rust-port.en.md), the [spec-by-spec parity check against Cordis](docs/cordis-spec-parity-2026-08-18.en.md), and every design record in [docs](docs).
 - **Upgrading** — [0.7 → 0.8](docs/migration-0.7-to-0.8.en.md) · [from rutis-interop to 0.7](docs/migration-interop-to-0.7.en.md) · [0.6.0 → 0.6.1](docs/migration-0.6.0-to-0.6.1.en.md) · [0.5 → 0.6](docs/migration-0.5-to-0.6.en.md) · [0.3 → 0.5](docs/migration-0.3-to-0.5.en.md) · [0.1 → 0.2](docs/migration-0.1-to-0.2.en.md)
 
 ## Built with rutis
