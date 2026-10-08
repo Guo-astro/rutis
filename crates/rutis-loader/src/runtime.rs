@@ -829,7 +829,8 @@ mod npm {
             // fileURLToPath; a remote host is not a local file.
             return url::Url::parse(name).ok()?.to_file_path().ok();
         }
-        if Path::new(name).is_absolute() {
+        // As in Node: `/…` is absolute on Windows too (on the current drive).
+        if name.starts_with('/') || Path::new(name).is_absolute() {
             return Some(PathBuf::from(name));
         }
         let mut parts = name.splitn(if name.starts_with('@') { 3 } else { 2 }, '/');
@@ -907,6 +908,7 @@ mod npm {
         }
 
         #[test]
+        #[cfg(unix)]
         fn file_urls_are_decoded() {
             let cases = [
                 ("file:///abs/p.mjs", "/abs/p.mjs"),
@@ -927,6 +929,27 @@ mod npm {
                 );
             }
             assert_eq!(resolve_entry(anchor, "file://server/share/p.mjs"), None);
+        }
+
+        #[test]
+        #[cfg(windows)]
+        fn file_urls_are_decoded() {
+            let cases = [
+                ("file:///C:/abs/p.mjs", r"C:\abs\p.mjs"),
+                ("file:///C:/my%20plugins/p.mjs", r"C:\my plugins\p.mjs"),
+                ("file:///C:/%E6%8F%92%E4%BB%B6/p.mjs", r"C:\插件\p.mjs"),
+                ("file:///C:/p.mjs#fragment", r"C:\p.mjs"),
+                ("file:///C:/p.mjs?v=2", r"C:\p.mjs"),
+                ("file://server/share/p.mjs", r"\\server\share\p.mjs"),
+            ];
+            let anchor = Path::new(r"C:\nowhere\package.json");
+            for (url, path) in cases {
+                assert_eq!(
+                    resolve_entry(anchor, url),
+                    Some(PathBuf::from(path)),
+                    "{url}"
+                );
+            }
         }
     }
 }
