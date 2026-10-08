@@ -95,3 +95,31 @@ async fn a_process_that_exits_before_connecting_says_so() {
         Ok(_) => panic!("a process that never connects has no channel"),
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_silent_connection_does_not_hold_up_the_process() {
+    let transport = LocalTransport::default();
+    // Something connects first and never presents a token; the process,
+    // right behind it, is still taken at once.
+    transport.spawner(
+        "behind",
+        script(
+            "silent = socket.create_connection((host, int(port)))\n\
+             time.sleep(0.2)\n\
+             s = connect(token)\n\
+             time.sleep(30)",
+        ),
+    );
+    let started = std::time::Instant::now();
+    let channel = transport
+        .dial(&Dial::address("spawn:behind"))
+        .await
+        .unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "took {:?}",
+        started.elapsed()
+    );
+    drop(channel);
+    transport.close_all();
+}

@@ -227,20 +227,32 @@ async fn loopback(spawn: &Spawn) -> Result<Started, ConnectError> {
             ),
         });
     }
+    // Anyone on this machine can connect: only the process knows the token.
+    // Each connection presents it on its own, so one that stays silent does
+    // not hold up the process's; those still presenting when it has are
+    // dropped with this set.
+    let mut presenting = tokio::task::JoinSet::new();
     let stream = loop {
-        let mut stream = tokio::select! {
-            accepted = listener.accept() => accepted.map_err(retryable)?.0,
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (mut stream, _) = accepted.map_err(retryable)?;
+                let token = token.clone();
+                presenting.spawn(async move {
+                    let presented = tokio::time::timeout(TOKEN_WAIT, read_line(&mut stream)).await;
+                    matches!(presented, Ok(Ok(line)) if line == token).then_some(stream)
+                });
+            }
+            Some(presented) = presenting.join_next(), if !presenting.is_empty() => {
+                if let Ok(Some(stream)) = presented {
+                    break stream;
+                }
+            }
             status = child.wait() => return Err(ConnectError::Retryable {
                 reason: format!("the process exited before connecting: {}", describe(status)),
             }),
-        };
-        // Anyone on this machine can connect: only the process knows the
-        // token.
-        let presented = tokio::time::timeout(TOKEN_WAIT, read_line(&mut stream)).await;
-        if matches!(presented, Ok(Ok(line)) if line == token) {
-            break stream;
         }
     };
+    drop(presenting);
     let stream = stream.into_std().map_err(retryable)?;
     stream.set_nonblocking(false).map_err(retryable)?;
     let _ = stream.set_nodelay(true);
