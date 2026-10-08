@@ -1,7 +1,13 @@
-# Windows dylib plugin tests. They take about 30 minutes, so they run only
-# when a pull request touches the dylib code, when a release tag is pushed,
-# or by hand (Actions → dylib-windows → Run workflow). Other Windows builds
-# are still checked on every change by ci.yml's static-platforms job.
+# Windows dylib plugin tests. They take about 25 minutes on pull requests
+# (40 with the reproducibility check), so they run only when a pull request
+# touches the dylib code, when a release tag is pushed, or by hand
+# (Actions → dylib-windows → Run workflow). Other Windows builds are still
+# checked on every change by ci.yml's static-platforms job.
+#
+# The reproducible-SDK check builds the SDK twice from scratch (about 15
+# minutes) and rarely breaks from ordinary changes, so pull requests skip it;
+# release tags and manual runs keep it. ci.yml's dylib-linux and dylib-macos
+# jobs still run the same script on every change.
 #
 # Changes elsewhere (the rutis kernel, dependency updates in Cargo.lock) can
 # also break Windows dylib plugins; those are caught at release time, or run
@@ -51,6 +57,7 @@ jobs:
       - name: launcher pre-execution verification, file locks and job object
         run: bash tools/test-dylib-launcher.sh
       - name: reproducible SDK across source and target paths
+        if: github.event_name != 'pull_request'
         run: bash tools/test-dylib-repro.sh
       - name: external plugin build against a prebuilt SDK
         run: bash tools/test-sdk-bundle.sh
