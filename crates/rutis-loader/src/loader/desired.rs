@@ -47,13 +47,23 @@ pub(super) struct RowScope {
     pub(super) inject: Vec<(String, TypeKey)>,
 }
 
+/// The scope label a copy uses: inside an instance (`copy` is its number),
+/// a label is the instance's own, so a private scope is one per copy and a
+/// named one is shared only within the instance.
+pub(super) fn copy_label(label: &str, copy: Option<u64>) -> String {
+    match copy {
+        None => label.to_owned(),
+        Some(number) => format!("{label}@{number}"),
+    }
+}
+
 impl RowScope {
-    /// `parent` with every isolate applied.
-    pub(super) fn context(&self, parent: &Ctx) -> Ctx {
+    /// `parent` with every isolate applied, for the copy in instance `copy`.
+    pub(super) fn context(&self, parent: &Ctx, copy: Option<u64>) -> Ctx {
         self.isolate
             .iter()
             .fold(parent.clone(), |ctx, (_, key, label)| {
-                ctx.isolate(key.clone(), label)
+                ctx.isolate(key.clone(), &copy_label(label, copy))
             })
     }
 

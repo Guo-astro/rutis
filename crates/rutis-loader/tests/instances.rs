@@ -58,6 +58,8 @@ enum Mode {
     ProvidePage(TypeKey),
     ReadPage { doc: TypeKey, page: TypeKey },
     CreatePage,
+    ProvideShared,
+    ReadShared,
 }
 
 struct Probe {
@@ -98,6 +100,14 @@ impl Plugin for Probe {
                     let doc = ctx.require_as::<Doc>(doc.clone())?;
                     let page = ctx.require_as::<Page>(page.clone())?;
                     format!("read page {} in {}", page.0, doc.0)
+                }
+                Mode::ProvideShared => {
+                    ctx.provide(Shared)?;
+                    format!("provide shared {}", self.title)
+                }
+                Mode::ReadShared => {
+                    ctx.require::<Shared>()?;
+                    format!("read shared {}", self.title)
                 }
                 Mode::CreatePage => {
                     let loader = ctx.require::<Loader>()?;
@@ -240,6 +250,24 @@ fn resolver(log: &Log) -> Builtins {
         Ok(ProbeFactory {
             mode: Mode::CreatePage,
             injects: vec![TypeKey::of::<Loader>()],
+            title: title(build),
+            log: l.clone(),
+        })
+    });
+    let l = log.clone();
+    builtins.register_with::<Cfg, _, _>("shared-provider", move |build| {
+        Ok(ProbeFactory {
+            mode: Mode::ProvideShared,
+            injects: vec![],
+            title: title(build),
+            log: l.clone(),
+        })
+    });
+    let l = log.clone();
+    builtins.register_with::<Cfg, _, _>("shared-reader", move |build| {
+        Ok(ProbeFactory {
+            mode: Mode::ReadShared,
+            injects: vec![TypeKey::of::<Shared>()],
             title: title(build),
             log: l.clone(),
         })
@@ -959,4 +987,38 @@ async fn the_same_error_in_another_copy_does_not_excuse_a_new_one() {
     assert!(matches!(error, LoaderError::Rejected { .. }), "{error}");
     assert!(s.take_log().is_empty());
     assert_eq!(s.store.patches(), before);
+}
+
+#[tokio::test]
+async fn isolate_scopes_are_per_copy_and_per_instance() {
+    let mut catalog = ServiceCatalog::new();
+    catalog.register::<Shared>("shared");
+    let s = setup_with(
+        r#"[{ "insert": [
+        { "id": "doc", "group": true, "instanced": true, "config": [
+            { "id": "private", "name": "shared-provider", "isolate": { "shared": true } },
+            { "id": "named", "name": "shared-provider", "isolate": { "shared": "L" } },
+            { "id": "reader", "name": "shared-reader", "isolate": { "shared": "L" } }
+        ] }
+    ] }]"#,
+        MemStore::default(),
+        catalog,
+    )
+    .await;
+    // Each instance has its own private and named scopes: no collision,
+    // and the reader sees the provider of its own instance.
+    for title in ["A", "B"] {
+        let instance = s.create(title).await;
+        assert!(
+            instance
+                .report
+                .iter()
+                .all(|(_, r)| matches!(r, InstanceResult::Active)),
+            "{title}: {:?}",
+            instance.report
+        );
+    }
+    let log = s.take_log();
+    assert!(log.contains(&"read shared A".to_owned()), "{log:?}");
+    assert!(log.contains(&"read shared B".to_owned()), "{log:?}");
 }

@@ -298,7 +298,7 @@ impl Inner {
                 }
             }
         };
-        let row_ctx = rust_scope.context(ctx);
+        let row_ctx = rust_scope.context(ctx, slot.scope);
         let extra: Vec<TypeKey> = rust_scope.inject_keys().cloned().collect();
         state.next_token += 1;
         let token = state.next_token;

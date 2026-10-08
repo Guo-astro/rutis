@@ -59,7 +59,8 @@ fn dry_context(
     scope: Option<u64>,
     root: Option<&Ctx>,
 ) -> Result<Option<Ctx>, LoaderError> {
-    let mut groups: Vec<&Row> = Vec::new();
+    // Each group between, with the instance its copy is in.
+    let mut groups: Vec<(&Row, Option<u64>)> = Vec::new();
     let mut current = scope;
     let mut row = leaf;
     let anchor = loop {
@@ -85,7 +86,7 @@ fn dry_context(
         };
         current = parent.scope;
         row = next;
-        groups.push(row);
+        groups.push((row, current));
     };
     let base = match state.groups.get(&anchor) {
         Some(group) => group.ctx.clone(),
@@ -96,8 +97,12 @@ fn dry_context(
         None => return Ok(None),
     };
     let mut ctx = base;
-    for group in groups.into_iter().rev() {
-        ctx = group.scope.as_ref().map_err(Clone::clone)?.context(&ctx);
+    for (group, copy) in groups.into_iter().rev() {
+        ctx = group
+            .scope
+            .as_ref()
+            .map_err(Clone::clone)?
+            .context(&ctx, copy);
     }
     Ok(Some(ctx))
 }
@@ -226,7 +231,7 @@ impl Inner {
                     }
                 }
             };
-            let ctx = base.map(|ctx| scope.context(&ctx));
+            let ctx = base.map(|ctx| scope.context(&ctx, copy));
             let config = match self.eval().value(&row.config, ctx.as_ref()) {
                 Ok(config) => config,
                 Err(error) => {

@@ -56,6 +56,7 @@ rutis 内核已经提供实例子树、实例键和子树永久卸载。本设�
 - 实例的位置由配置树决定：实例建在其配置父级的 ctx 下。顶层的 `instanced` 分组建在 loader 的 ctx 下；嵌套的建在它所属的那个外层实例里。
 - 实例里的普通行和普通分组自动装载；嵌套的 `instanced` 分组需要再调用 `create_instance`。
 - 同一实例里的插件是平级关系，相互关系由 `injects` 表达。例如 `tool-registry` 依赖 `session-scope` 提供的服务，会等它就绪；`loop` 依赖全局的 `aimux`。
+- 实例里的行的 `isolate` 按实例区分：`true` 是每个副本各自的私有作用域；命名标签（`isolate: { x: "label" }`）只在同一实例内共享，不同实例、实例外的同名标签互不相通。
 - 不在任何 `instanced` 分组之下的行，行为与现在相同。
 - `instanced` 只能用在分组上；写在插件行上，该行无效。
 

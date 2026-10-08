@@ -56,6 +56,7 @@ Rules:
 - The configuration tree decides where an instance goes: it is created beneath its configuration parent's ctx. A top-level `instanced` group is created beneath the loader's ctx; a nested one inside the outer instance it belongs to.
 - Ordinary rows and ordinary groups inside an instance load automatically; nested `instanced` groups need another `create_instance` call.
 - Plugins in one instance are siblings, and their relationships are expressed by `injects`. For example, `tool-registry` depends on a service provided by `session-scope` and waits for it; `loop` depends on the global `aimux`.
+- `isolate` on rows inside an instance is per instance: `true` is a private scope for each copy; a named label (`isolate: { x: "label" }`) is shared only within the same instance, not with other instances or with rows outside instances.
 - Rows under no `instanced` group behave as today.
 - `instanced` applies only to groups; on a plugin row it makes the row invalid.
 
