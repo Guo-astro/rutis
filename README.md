@@ -191,7 +191,7 @@ The core is versioned on its own and is at 0.6. The other packages form a releas
 rutis is at 0.x and its API is still evolving. Breaking changes are listed in the release notes and come with a migration guide.
 
 - **The core** is pure Rust with tokio, tokio-util and thiserror as its only dependencies; it needs Rust 1.85 or later.
-- **Language runtimes and rutis-host** run on Linux and macOS; on Windows, use WSL. They need Node 24+ or Python 3.12+.
+- **Language runtimes** (Node and Python rows, remote runtimes, shared services, peers) run on Linux, macOS and Windows x64 (MSVC); they need Node 24+ or Python 3.12+. Still Unix-only: the `Process::launch` / `Process::mount` compatibility API and the Cordis mount bindings generated with it, and the `rutis-host` command (use WSL on Windows).
 - **dylib plugins** load on Linux, macOS and Windows x64 (MSVC).
 
 ## Contributing

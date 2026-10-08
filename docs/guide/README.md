@@ -26,7 +26,7 @@
 
 ## 环境
 
-- Linux 或 macOS。本机运行插件依赖 Unix；Windows 上用 WSL。
+- Linux、macOS 或 Windows x64（MSVC）。在 Rust 里嵌入时，Node / Python 插件在三者上都能运行；`rutis-host` 命令和 `Process::launch` / `Process::mount` 兼容接口仍只支持 Unix，Windows 上用 WSL。
 - Node 24 或更高（TypeScript / JavaScript 插件）。
 - Python 3.12 或更高（Python 插件）。
 - Rust 1.85 或更高（只在 Rust 里嵌入时需要）。

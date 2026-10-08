@@ -183,7 +183,11 @@ fn wait(result: rutis::BoxFuture<'static, Result<(), Arc<CordisError>>>) -> Repl
 
 impl Host {
     fn installed(&self, name: &str) -> Result<(), Error> {
-        if name.starts_with("file:") || std::path::Path::new(name).is_absolute() {
+        // `/…` counts as a path on Windows too, as Node takes it.
+        if name.starts_with("file:")
+            || name.starts_with('/')
+            || std::path::Path::new(name).is_absolute()
+        {
             return Err(Error::Value(format!(
                 "{name}: a host loads installed plugins only, not files"
             )));

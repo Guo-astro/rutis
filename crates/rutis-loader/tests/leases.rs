@@ -3,8 +3,8 @@
 //! connection takes over only after the old lease is gone; a controller
 //! that reconnects gets a new lease. Each plugin start and cleanup is
 //! written to a log on the runtime's side. Python needs `websockets`
-//! (RUTIS_PYTHON, else python3).
-#![cfg(all(unix, feature = "node", feature = "python"))]
+//! (RUTIS_PYTHON, else python3; python on Windows).
+#![cfg(all(feature = "node", feature = "python"))]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -106,7 +106,8 @@ async fn remote_with_start_delay(language: Language, start_delay_ms: u64) -> Rem
                 ),
             )
             .unwrap();
-            let python = std::env::var("RUTIS_PYTHON").unwrap_or_else(|_| "python3".into());
+            let python = std::env::var("RUTIS_PYTHON")
+                .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
             let mut command = tokio::process::Command::new(python);
             command
                 .args(["-m", "rutis", "listen:ws://127.0.0.1:0/rutis"])
@@ -163,7 +164,12 @@ async fn remote_with_start_delay(language: Language, start_delay_ms: u64) -> Rem
             break address.to_owned();
         }
     };
-    tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+    // What the runtime reports later goes to the test's output.
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = lines.next_line().await {
+            eprintln!("runtime: {line}");
+        }
+    });
     Remote {
         _process: process,
         address,

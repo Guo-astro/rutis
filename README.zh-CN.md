@@ -191,7 +191,7 @@ stateDiagram-v2
 rutis 仍处于 0.x，API 还会演进。不兼容的变化会写进发布说明，并附迁移指南。
 
 - **内核** 是纯 Rust，依赖只有 tokio、tokio-util 和 thiserror；需要 Rust 1.85 或更高。
-- **语言运行时与 rutis-host** 支持 Linux 和 macOS，Windows 上请使用 WSL；需要 Node 24+ 或 Python 3.12+。
+- **语言运行时**（Node 与 Python 行、远程运行时、跨语言共享服务、节点）支持 Linux、macOS 和 Windows x64（MSVC）；需要 Node 24+ 或 Python 3.12+。仍只支持 Unix 的：`Process::launch` / `Process::mount` 兼容接口及用它生成的 Cordis 挂载绑定，以及 `rutis-host` 命令（Windows 上请用 WSL）。
 - **dylib 插件** 支持 Linux、macOS 和 Windows x64（MSVC）。
 
 ## 参与

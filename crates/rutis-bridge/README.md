@@ -4,7 +4,7 @@ Connect a [rutis](https://github.com/arcships/rutis) application to other proces
 
 - **Plugins in other languages** (`runtime`): TypeScript / JavaScript and Python plugins run in language runtimes, on this machine (`LocalRuntime::node`, `LocalRuntime::python`) or on another one (`RuntimePlugin::remote`); [rutis-loader](https://crates.io/crates/rutis-loader) manages them as rows.
 - **Links between nodes**: `LinkPlugin` dials or listens for one peer and reconnects; on the session, nodes share services (`ExportPlugin`, `ImportPlugin`), run plugins for each other (`HostPlugin`) and forward events (`EventsPlugin`). `PeerPlugin` composes them.
-- **Transports** (`transport`): Unix sockets and processes it starts (`local`), in-process channels (`memory`), WebSocket with TLS (`websocket`).
+- **Transports** (`transport`): Unix sockets and processes it starts (`local`; on Windows, processes on loopback channels), in-process channels (`memory`), WebSocket with TLS (`websocket`).
 - **Cordis plugins mounted in Rust** (`cordis`): published Cordis plugins with Rust bindings generated at build time.
 
 | feature | adds | default |

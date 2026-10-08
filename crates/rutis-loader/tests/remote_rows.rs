@@ -3,8 +3,8 @@
 //! link. The loader manages its rows as it does a local runtime's: the
 //! rows inject a Rust service and provide one back, and they stop when the
 //! runtime goes away. Needs a Python with `websockets`
-//! (RUTIS_PYTHON, else python3).
-#![cfg(all(unix, feature = "python"))]
+//! (RUTIS_PYTHON, else python3; python on Windows).
+#![cfg(feature = "python")]
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -77,7 +77,8 @@ async fn eventually<T>(mut check: impl FnMut() -> Option<T>, what: &str) -> T {
 
 /// Start the remote runtime: `gpu`, accepting `main` with a token.
 async fn remote_python(project: &Path) -> (tokio::process::Child, String) {
-    let python = std::env::var("RUTIS_PYTHON").unwrap_or_else(|_| "python3".into());
+    let python = std::env::var("RUTIS_PYTHON")
+        .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
     let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python/rutis");
     let mut child = tokio::process::Command::new(python)
         .args(["-m", "rutis", "listen:ws://127.0.0.1:0/rutis"])
@@ -101,7 +102,12 @@ async fn remote_python(project: &Path) -> (tokio::process::Child, String) {
             break address.to_owned();
         }
     };
-    tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+    // What the runtime reports later goes to the test's output.
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = lines.next_line().await {
+            eprintln!("runtime: {line}");
+        }
+    });
     (child, address)
 }
 
@@ -233,7 +239,12 @@ async fn a_remote_node_runtime_resolves_and_runs_npm_rows() {
             break address.to_owned();
         }
     };
-    tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+    // What the runtime reports later goes to the test's output.
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = lines.next_line().await {
+            eprintln!("runtime: {line}");
+        }
+    });
 
     let root = Ctx::root().unwrap();
     root.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Clock::default()))

@@ -27,7 +27,7 @@
 
 - Rust：仓库的 `rust-toolchain.toml` 固定了工具链，`rustup` 会自动安装。
 - Node 24 或更高，Python 3.12 或更高（改动语言运行时或宿主时需要）。
-- Linux 或 macOS。Windows 上请使用 WSL。
+- 开发整个仓库（rutis-host、rutis-dsh、`tools/` 下的 shell 脚本）需要 Linux 或 macOS，Windows 上请使用 WSL。语言运行时、rutis-loader 行和节点也可以在 Windows x64（MSVC）上原生构建和测试：`cargo test -p rutis-loader --features node,python,peer` 和 `cargo test -p rutis-bridge --all-features`，与 CI 的 `runtimes-windows` 一致。
 
 ## 运行测试
 
