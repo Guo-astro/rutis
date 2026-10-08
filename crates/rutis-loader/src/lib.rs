@@ -14,7 +14,7 @@ mod patch;
 mod peer;
 mod persist;
 mod resolver;
-#[cfg(all(unix, feature = "runtimes"))]
+#[cfg(feature = "runtimes")]
 mod runtime;
 mod volatile;
 
@@ -33,8 +33,8 @@ pub use peer::{
 };
 pub use persist::{NoPersist, Persist, Version};
 pub use resolver::{Build, Builtins, Chain, Resolved, Resolver, ScopedFactory};
-#[cfg(all(unix, feature = "node"))]
+#[cfg(feature = "node")]
 pub use runtime::resolve_entry;
-#[cfg(all(unix, feature = "runtimes"))]
+#[cfg(feature = "runtimes")]
 pub use runtime::{RuntimeResolver, RuntimeRows, RuntimeRowsPlugin};
 pub use volatile::{volatile_key, volatile_paths, VolatileUpdate};

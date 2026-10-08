@@ -484,6 +484,8 @@ function dispatch(target, method, args) {
 
 // Calls on exported objects and functions may replace services too.
 peer = await Process.connect(channelSpec, dispatch, () => { if (slots.size && !closing) refresh() }, endpoint)
+// Spent once connected: what this process starts does not inherit it.
+delete process.env.RUTIS_CHANNEL_TOKEN
 await peer.closed()
 closing = true
 await dispose()

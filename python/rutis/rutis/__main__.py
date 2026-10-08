@@ -2,7 +2,9 @@
 one runtime process.
 
 The channel is `fd:<n>`, a socket inherited from the process that started
-this one; `unix:<path>` (or a bare path), a socket to dial; or
+this one; `unix:<path>` (or a bare path), a socket to dial;
+`tcp:<host>:<port>`, a loopback address to dial, presenting the token in
+RUTIS_CHANNEL_TOKEN first (how processes are started on Windows); or
 `listen:ws://…` / `listen:wss://…`, a WebSocket address to listen on for the
 controlling rutis (the token it must present in RUTIS_TOKEN, a
 listener certificate and key in RUTIS_CERT and RUTIS_KEY).
@@ -20,9 +22,22 @@ from .peer import Peer
 from .runner import Runtime
 
 
+TOKEN = "RUTIS_CHANNEL_TOKEN"
+
+
 def open_channel(spec: str):
     if spec.startswith("fd:"):
         return socket.socket(fileno=int(spec[len("fd:"):]))
+    if spec.startswith("tcp:"):
+        host, _, port = spec[len("tcp:"):].rpartition(":")
+        # Spent once connected: what this process starts does not inherit it.
+        token = os.environ.pop(TOKEN, None)
+        if not token:
+            raise ValueError(f"{TOKEN} is not set for {spec}")
+        connection = socket.create_connection((host.strip("[]"), int(port)))
+        connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        connection.sendall(token.encode() + b"\n")
+        return connection
     path = spec[len("unix:"):] if spec.startswith("unix:") else spec
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     connection.connect(path)

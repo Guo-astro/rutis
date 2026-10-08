@@ -1,16 +1,16 @@
 //! The local transport: channels to processes on the same machine.
 //!
 //! [`LocalPlugin`] provides `Transport#local`. It dials Unix sockets
-//! (`unix:<path>`, or a bare path), framing messages by newline, and starts
-//! processes: `spawn:<name>` starts the process registered as `name`
-//! ([`LocalTransport::spawner`], a [`Spawn`]) on an inherited socket and
+//! (`unix:<path>`, or a bare path; Unix), framing messages by newline, and
+//! starts processes: `spawn:<name>` starts the process registered as `name`
+//! ([`LocalTransport::spawner`], a [`Spawn`]) on an inherited socket (Unix)
+//! or a loopback address with a one-time token (every platform) and
 //! connects it; the channel owns the process. Unloading the plugin closes
 //! every channel it opened, and so ends the processes it started.
 //!
 //! It knows nothing of what runs in the process: a language runtime started
 //! this way is composed on top ([`crate::runtime::LocalRuntime`]).
 
-#[cfg(unix)]
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -39,13 +39,11 @@ pub fn framed(
         },
     )
 }
-#[cfg(unix)]
 mod spawn;
 #[cfg(unix)]
 mod unix;
 
-#[cfg(unix)]
-pub use spawn::{Handover, Spawn, CHANNEL_FD};
+pub use spawn::{Handover, Spawn, CHANNEL_FD, CHANNEL_TOKEN, HANDOVER_VARIABLE};
 
 /// Provides `Transport#local`.
 #[derive(Default)]
@@ -82,14 +80,12 @@ impl Plugin for LocalPlugin {
 #[derive(Default)]
 pub struct LocalTransport {
     open: Mutex<Vec<Weak<dyn crate::channel::Closer>>>,
-    #[cfg(unix)]
     spawners: Mutex<HashMap<String, Spawn>>,
     trace: Mutex<Option<crate::channel::trace::Sink>>,
 }
 
 impl LocalTransport {
     /// Let `spawn:<name>` start `spawn`.
-    #[cfg(unix)]
     pub fn spawner(&self, name: &str, spawn: Spawn) {
         self.spawners.lock().unwrap().insert(name.to_owned(), spawn);
     }
@@ -139,7 +135,6 @@ impl Transport for LocalTransport {
 }
 
 impl LocalTransport {
-    #[cfg(unix)]
     async fn spawn(&self, name: &str) -> Result<Channel, ConnectError> {
         let spawn = self
             .spawners
@@ -151,13 +146,6 @@ impl LocalTransport {
                 reason: format!("nothing to spawn as {name}"),
             })?;
         spawn::start(&spawn).await
-    }
-
-    #[cfg(not(unix))]
-    async fn spawn(&self, _name: &str) -> Result<Channel, ConnectError> {
-        Err(ConnectError::Incompatible {
-            reason: "processes start on Unix only".into(),
-        })
     }
 }
 

@@ -15,8 +15,6 @@
 //! channel) comes from [`crate::runtime`] ([`Launcher`]); the transport only
 //! starts it.
 
-#![cfg(unix)]
-
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -71,16 +69,16 @@ impl LocalRuntime {
     /// Put `directory` ahead on the runtime's `PYTHONPATH`: a source checkout
     /// of the `rutis` package, or plugins that are not installed.
     pub fn python_path(mut self, directory: impl Into<PathBuf>) -> Self {
-        let mut path = std::ffi::OsString::from(directory.into());
-        if let Some((_, current)) = self
+        let current = self
             .launcher
             .env
             .iter()
             .find(|(name, _)| name == "PYTHONPATH")
-        {
-            path.push(":");
-            path.push(current);
-        }
+            .map(|(_, current)| current.clone());
+        let path = crate::runtime::process::search_path(
+            directory.into().into_os_string(),
+            current.as_deref(),
+        );
         self.launcher.env.retain(|(name, _)| name != "PYTHONPATH");
         self.launcher.env.push(("PYTHONPATH".into(), path));
         self

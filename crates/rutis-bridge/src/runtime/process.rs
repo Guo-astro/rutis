@@ -158,17 +158,15 @@ impl Launcher {
         }
     }
 
-    /// The Python runtime: `python3 -m rutis` (the `rutis` package installed
-    /// where that interpreter finds it), with `project` ahead of the
-    /// inherited `PYTHONPATH`, in `project`, on an inherited socket.
+    /// The Python runtime: `python3 -m rutis` (`python` on Windows; the
+    /// `rutis` package installed where that interpreter finds it), with
+    /// `project` ahead of the inherited `PYTHONPATH`, in `project`, on an
+    /// inherited socket (on Windows, a loopback address).
     #[cfg(feature = "python")]
     pub fn python(project: &std::path::Path) -> Self {
-        let mut path = std::ffi::OsString::from(project);
-        if let Some(inherited) = std::env::var_os("PYTHONPATH").filter(|p| !p.is_empty()) {
-            path.push(":");
-            path.push(inherited);
-        }
-        Launcher::new("python3")
+        let inherited = std::env::var_os("PYTHONPATH").filter(|p| !p.is_empty());
+        let path = search_path(project.into(), inherited.as_deref());
+        Launcher::new(if cfg!(windows) { "python" } else { "python3" })
             .arg("-m")
             .arg("rutis")
             .env("PYTHONPATH", path)
@@ -180,6 +178,17 @@ impl Launcher {
             .inherit_fd()
     }
 }
+/// `first` ahead of the search path `rest` (`PATH` syntax for the
+/// platform: `:` or `;` between entries).
+pub(crate) fn search_path(
+    first: std::ffi::OsString,
+    rest: Option<&std::ffi::OsStr>,
+) -> std::ffi::OsString {
+    let mut entries = vec![std::path::PathBuf::from(first)];
+    entries.extend(rest.into_iter().flat_map(std::env::split_paths));
+    std::env::join_paths(&entries).unwrap_or_else(|_| entries[0].clone().into_os_string())
+}
+
 impl Imports {
     /// The slot `id` now holds `handle`.
     fn update(&self, id: String, handle: Option<String>, version: u64) {

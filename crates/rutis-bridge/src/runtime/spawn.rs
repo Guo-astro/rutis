@@ -5,10 +5,14 @@
 //!
 //! Runtimes that get their sessions through a link are started by the local
 //! transport ([`crate::transport::local`]), which has its own spawner; this copy
-//! goes with the facade.
+//! goes with the facade, and starts processes on Unix only.
+#![cfg_attr(not(unix), allow(dead_code))]
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+#[cfg(unix)]
 use std::process::Stdio;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -19,6 +23,7 @@ use tokio::sync::{oneshot, watch};
 use crate::runtime::Error;
 
 /// The fd a runtime process finds its channel on (`fd:3`).
+#[cfg(unix)]
 const CHANNEL_FD: i32 = 3;
 
 /// How the process gets its channel.
@@ -39,6 +44,7 @@ pub(crate) struct Spawned {
     pub directory: Option<tempfile::TempDir>,
 }
 
+#[cfg(unix)]
 fn transport(error: std::io::Error) -> Error {
     Error::Transport(error.to_string())
 }
@@ -51,12 +57,22 @@ pub(crate) async fn spawn(
     first: &Path,
     connect: Connect,
 ) -> Result<Spawned, Error> {
-    match connect {
+    #[cfg(unix)]
+    return match connect {
         Connect::Inherit => inherit(command, first),
         Connect::DialBack => dial_back(command, first).await,
+    };
+    #[cfg(not(unix))]
+    {
+        let _ = (command, first, connect);
+        Err(Error::Transport(
+            "Process::launch and Process::mount start runtimes on Unix only: use LocalRuntime"
+                .into(),
+        ))
     }
 }
 
+#[cfg(unix)]
 fn inherit(mut command: tokio::process::Command, first: &Path) -> Result<Spawned, Error> {
     let (ours, theirs) = UnixStream::pair().map_err(transport)?;
     let fd = theirs.as_raw_fd();
@@ -98,6 +114,7 @@ fn inherit(mut command: tokio::process::Command, first: &Path) -> Result<Spawned
     })
 }
 
+#[cfg(unix)]
 async fn dial_back(mut command: tokio::process::Command, first: &Path) -> Result<Spawned, Error> {
     let directory = tempfile::Builder::new()
         .prefix("rutis-mount-")
@@ -290,6 +307,14 @@ fn record_exit(ended: &(Mutex<Option<String>>, Condvar), status: String) {
 
 /// Waits until the process `pid` ends and reports its status without reaping
 /// it (tokio still does), independently of any runtime.
+#[cfg(not(unix))]
+fn peek_exit(_pid: u32) -> Option<std::process::ExitStatus> {
+    None
+}
+
+/// Waits until the process `pid` ends and reports its status without reaping
+/// it (tokio still does), independently of any runtime.
+#[cfg(unix)]
 fn peek_exit(pid: u32) -> Option<std::process::ExitStatus> {
     use std::os::unix::process::ExitStatusExt;
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };

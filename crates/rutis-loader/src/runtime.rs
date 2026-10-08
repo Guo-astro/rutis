@@ -829,7 +829,7 @@ mod npm {
             // fileURLToPath; a remote host is not a local file.
             return url::Url::parse(name).ok()?.to_file_path().ok();
         }
-        if name.starts_with('/') {
+        if Path::new(name).is_absolute() {
             return Some(PathBuf::from(name));
         }
         let mut parts = name.splitn(if name.starts_with('@') { 3 } else { 2 }, '/');
