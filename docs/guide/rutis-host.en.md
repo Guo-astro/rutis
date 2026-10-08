@@ -57,7 +57,7 @@ The endpoint ID of this node. Connected nodes see this name. Defaults to `host`.
 | Key | Fields | Purpose |
 | --- | --- | --- |
 | `node` | `project` (default `.`), `runtime` | Starts the Node runtime. Plugin packages are resolved from `project`'s `package.json`. Install `@arcships/rutis-runtime` there, specify it with `runtime`, or use the copy included with the npm distribution of rutis-host. |
-| `py` | `project` (default `.`), `python` | Starts the Python runtime. The interpreter defaults to `$VIRTUAL_ENV/bin/python`, then `<project>/.venv/bin/python`, then `python3`. Its environment must contain `rutis` and the plugins. |
+| `py` | `project` (default `.`), `python` | Starts the Python runtime. The interpreter defaults to `$VIRTUAL_ENV/bin/python`, then `<project>/.venv/bin/python`, then `python3` (on Windows, `Scripts\python.exe` and `python`). Its environment must contain `rutis` and the plugins. |
 | `remote` | `name`, `language` | A runtime on another machine, connected through a node row with `"runtime": "<name>"`; see [Connect nodes](nodes.en.md). |
 
 If a runtime package is missing, startup fails and prints an installation command.

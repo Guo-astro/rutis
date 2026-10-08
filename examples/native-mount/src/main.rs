@@ -1,3 +1,5 @@
+// build.rs generates the mounts on Unix only.
+#[cfg(unix)]
 rutis_bridge::include_mounts!();
 
 #[cfg(unix)]

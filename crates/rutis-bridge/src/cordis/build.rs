@@ -355,7 +355,7 @@ pub fn from_manifest() -> Result<(), Box<dyn std::error::Error>> {
             .generate()
             .map_err(|error| format!("mount {name}: {error}"))?;
         declarations.push_str(&format!(
-            "#[cfg(unix)]\n#[allow(clippy::all, dead_code, unused_imports)]\npub mod {name} {{ include!(concat!(env!(\"OUT_DIR\"), \"/{name}.rs\")); }}\n"
+            "#[allow(clippy::all, dead_code, unused_imports)]\npub mod {name} {{ include!(concat!(env!(\"OUT_DIR\"), \"/{name}.rs\")); }}\n"
         ));
     }
     let output = std::path::PathBuf::from(std::env::var("OUT_DIR")?);

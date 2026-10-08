@@ -1,4 +1,3 @@
-#![cfg(unix)]
 //! Rows exporting services to rutis and using host services leased one by
 //! one: what rutis-loader builds JavaScript rows on.
 

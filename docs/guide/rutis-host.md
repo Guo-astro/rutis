@@ -57,7 +57,7 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 | 键 | 字段 | 作用 |
 | --- | --- | --- |
 | `node` | `project`（默认 `.`）、`runtime` | 启动 Node 运行时。插件包从 `project` 的 `package.json` 解析；`@arcships/rutis-runtime` 装在这里（或由 `runtime` 指定，或用 npm 版 rutis-host 自带的） |
-| `py` | `project`（默认 `.`）、`python` | 启动 Python 运行时。解释器默认依次为 `$VIRTUAL_ENV/bin/python`、`<project>/.venv/bin/python`、`python3`，它的环境里要装 `rutis` 和插件 |
+| `py` | `project`（默认 `.`）、`python` | 启动 Python 运行时。解释器默认依次为 `$VIRTUAL_ENV/bin/python`、`<project>/.venv/bin/python`、`python3`（Windows 上为 `Scripts\python.exe` 和 `python`），它的环境里要装 `rutis` 和插件 |
 | `remote` | `name`、`language` | 别的机器上的运行时，经 `rows` 里 `"runtime": "<name>"` 的节点行连接，见 [连接节点](nodes.md) |
 
 缺少运行时包时，启动失败并给出安装命令。

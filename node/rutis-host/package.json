@@ -31,6 +31,7 @@
     "@arcships/rutis-host-darwin-arm64": "0.8.0",
     "@arcships/rutis-host-darwin-x64": "0.8.0",
     "@arcships/rutis-host-linux-arm64": "0.8.0",
-    "@arcships/rutis-host-linux-x64": "0.8.0"
+    "@arcships/rutis-host-linux-x64": "0.8.0",
+    "@arcships/rutis-host-win32-x64": "0.8.0"
   }
 }

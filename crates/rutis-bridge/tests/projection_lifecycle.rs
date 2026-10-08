@@ -1,4 +1,3 @@
-#![cfg(unix)]
 //! Regressions for service projection and export lifecycle (PR #73 review of
 //! 908da2c): withdrawal/re-registration ordering, handles held across
 //! reentrant replacement, cycles after close, stable identity of Service
@@ -426,22 +425,22 @@ export function apply(ctx) {
     let process = shared.lock().unwrap().clone().unwrap();
 
     let error = process.call("control", "cycle", json!([])).unwrap_err();
+    // `exit status: 17` on Unix, `exit code: 17` on Windows.
+    let error = error.to_string();
     assert!(
-        error.to_string().contains("exited with exit status: 17"),
+        error.contains("exited with exit ") && error.ends_with(" 17"),
         "{error}"
     );
     settle().await;
     assert!(ctx.get::<Counter>().is_none());
     assert!(*stopped.lock().unwrap());
-    assert_eq!(
-        process.exit_status().as_deref(),
-        Some("exited with exit status: 17")
+    let status = process.exit_status().unwrap();
+    assert!(
+        status.starts_with("exited with exit ") && status.ends_with(" 17"),
+        "{status}"
     );
     drop(process);
-    let disposed = view.dispose().await.unwrap_err();
-    assert!(
-        disposed.to_string().contains("exit status: 17"),
-        "{disposed}"
-    );
+    let disposed = view.dispose().await.unwrap_err().to_string();
+    assert!(disposed.contains(&status), "{disposed}");
     ctx.shutdown().await.unwrap();
 }

@@ -45,6 +45,7 @@ jobs:
           - { os: ubuntu-24.04, target: aarch64-unknown-linux-musl, container: "messense/rust-musl-cross:aarch64-musl", npm: linux-arm64 }
           - { os: macos-14, target: x86_64-apple-darwin, npm: darwin-x64 }
           - { os: macos-14, target: aarch64-apple-darwin, npm: darwin-arm64 }
+          - { os: windows-2025, target: x86_64-pc-windows-msvc, npm: win32-x64, exe: .exe }
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
     steps:
@@ -63,11 +64,12 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           NAME="rutis-host-${VERSION}-${{ matrix.target }}"
           mkdir -p "stage/${NAME}" dist
-          cp "target/${{ matrix.target }}/release/rutis-host" "stage/${NAME}/"
+          BINARY="rutis-host${{ matrix.exe }}"
+          cp "target/${{ matrix.target }}/release/${BINARY}" "stage/${NAME}/"
           cp crates/rutis-host/README.md LICENSE "stage/${NAME}/"
           tar -C stage -czf "dist/${NAME}.tar.gz" "${NAME}"
           (cd dist && sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256" 2>/dev/null || shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
-          mkdir -p npm-bin && cp "target/${{ matrix.target }}/release/rutis-host" "npm-bin/rutis-host"
+          mkdir -p npm-bin && cp "target/${{ matrix.target }}/release/${BINARY}" "npm-bin/${BINARY}"
       - uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.npm }}
@@ -87,6 +89,7 @@ jobs:
           - { os: ubuntu-24.04, target: aarch64, manylinux: "2_28" }
           - { os: macos-14, target: x86_64-apple-darwin }
           - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: windows-2025, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -150,7 +153,8 @@ jobs:
         run: |
           for dir in binary-*; do
             platform="${dir#binary-}"
-            node node/rutis-host/scripts/platform-package.mjs "${platform%-*}" "${platform##*-}" "$dir/npm-bin/rutis-host" "npm/$platform"
+            binary=$(ls "$dir"/npm-bin/rutis-host*)
+            node node/rutis-host/scripts/platform-package.mjs "${platform%-*}" "${platform##*-}" "$binary" "npm/$platform"
           done
       - name: Publish what npm does not have
         run: |

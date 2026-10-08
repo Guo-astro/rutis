@@ -10,9 +10,9 @@ const require = createRequire(import.meta.url)
 const platform = `${process.platform}-${process.arch}`
 let binary
 try {
-  binary = require.resolve(`@arcships/rutis-host-${platform}/bin/rutis-host`)
+  binary = require.resolve(`@arcships/rutis-host-${platform}/bin/rutis-host${process.platform === 'win32' ? '.exe' : ''}`)
 } catch {
-  process.stderr.write(`rutis-host: no binary for ${platform} (Linux and macOS on x64 and arm64 are supported; on Windows, use WSL)\n`)
+  process.stderr.write(`rutis-host: no binary for ${platform} (Linux and macOS on x64 and arm64, and Windows on x64, are supported)\n`)
   process.exit(1)
 }
 const env = { ...process.env }

@@ -1,4 +1,3 @@
-#![cfg(unix)]
 //! The Python runtime speaks the same protocol and row contract as the Node
 //! one: describe, load with exports, lease hosts, sync and async calls,
 //! callbacks into Rust from a synchronous call, unload.
@@ -64,10 +63,8 @@ fn sdk() -> PathBuf {
 }
 
 async fn python(project: &Path) -> Arc<Process> {
-    let mut path = sdk().into_os_string();
-    path.push(":");
-    path.push(project);
-    let launcher = Launcher::new("python3")
+    let path = std::env::join_paths([sdk(), project.to_path_buf()]).unwrap();
+    let launcher = Launcher::new(python3())
         .arg("-m")
         .arg("rutis")
         // No working directory of its own: it runs where the test does.
@@ -179,11 +176,9 @@ async fn python_rows_follow_the_row_contract() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_without_the_row_contract_fails_to_start() {
     let dir = tempfile::tempdir().unwrap();
-    let mut path = sdk().into_os_string();
-    path.push(":");
-    path.push(dir.path());
+    let path = std::env::join_paths([sdk(), dir.path().to_path_buf()]).unwrap();
     // The Python runtime, made to report no features, like an old runner.
-    let launcher = Launcher::new("python3")
+    let launcher = Launcher::new(python3())
         .arg("-c")
         .arg(
             "import runpy, rutis.runner as r; r.FEATURES = []; \
@@ -212,10 +207,8 @@ async fn a_runtime_without_the_row_contract_fails_to_start() {
 async fn unloading_a_row_withdraws_its_services_without_waiting_for_the_runtime() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("weather_plugin.py"), WEATHER).unwrap();
-    let mut path = sdk().into_os_string();
-    path.push(":");
-    path.push(dir.path());
-    let launcher = Launcher::new("python3")
+    let path = std::env::join_paths([sdk(), dir.path().to_path_buf()]).unwrap();
+    let launcher = Launcher::new(python3())
         .arg("-c")
         .arg(
             "import runpy, rutis.peer as p\n\
@@ -276,4 +269,11 @@ async fn unloading_a_row_withdraws_its_services_without_waiting_for_the_runtime(
     lease.release().await.unwrap();
     process.dispose().await.unwrap();
     ctx.shutdown().await.unwrap();
+}
+
+/// The Python interpreter: `RUTIS_PYTHON`, else `python3` (`python` on
+/// Windows).
+fn python3() -> String {
+    std::env::var("RUTIS_PYTHON")
+        .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into())
 }

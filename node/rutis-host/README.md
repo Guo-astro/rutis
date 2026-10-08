@@ -8,4 +8,4 @@ cd greeter && npm install
 npx rutis-host dev
 ```
 
-Linux and macOS, x64 and arm64; on Windows, use WSL.
+Linux and macOS (x64 and arm64), and Windows (x64).

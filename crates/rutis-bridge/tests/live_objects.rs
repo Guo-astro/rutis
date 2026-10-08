@@ -1,4 +1,3 @@
-#![cfg(unix)]
 //! Objects with behaviour cross by reference: Rust reads live properties,
 //! calls methods, and passing an object back hands Cordis the original.
 

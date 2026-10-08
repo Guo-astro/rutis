@@ -1,4 +1,3 @@
-#![cfg(unix)]
 //! A group of plugins shares one Cordis Context: dependencies between them
 //! resolve natively, and a dependency nothing in the group provides fails
 //! the mount with its name.

@@ -39,7 +39,7 @@ pub fn framed(
         },
     )
 }
-mod spawn;
+pub(crate) mod spawn;
 #[cfg(unix)]
 mod unix;
 

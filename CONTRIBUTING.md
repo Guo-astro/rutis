@@ -27,7 +27,7 @@ Thank you for spending time on rutis. A bug report, a sentence in the docs that 
 
 - Rust: `rust-toolchain.toml` pins the toolchain, and `rustup` installs it automatically.
 - Node 24+ and Python 3.12+, when working on the language runtimes or the host.
-- Linux or macOS for working on the whole repository (rutis-host, rutis-dsh, the shell scripts under `tools/`); on Windows, use WSL. The language runtimes, rutis-loader rows and peers also build and test natively on Windows x64 (MSVC): `cargo test -p rutis-loader --features node,python,peer` and `cargo test -p rutis-bridge --all-features`, as the `runtimes-windows` CI job runs them.
+- Linux or macOS for working on the whole repository (rutis-dsh, the shell scripts under `tools/`); on Windows, use WSL. The language runtimes, rutis-loader rows, peers and rutis-host also build and test natively on Windows x64 (MSVC): `cargo test -p rutis-loader --features node,python,peer`, `cargo test -p rutis-bridge --all-features` and `cargo test -p rutis-host`, as the `runtimes-windows` CI job runs them.
 
 ## Running the tests
 

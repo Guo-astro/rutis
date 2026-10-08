@@ -84,38 +84,6 @@ pub(crate) fn channel(stream: UnixStream, label: &str) -> Result<Channel, Error>
     })
 }
 
-/// Ends the channel, however it ends, with the error `disconnected` builds.
-struct Disconnected {
-    receiver: Box<dyn Receiver>,
-    disconnected: Option<Box<dyn FnOnce() -> Error + Send>>,
-}
-impl Receiver for Disconnected {
-    fn recv(&mut self) -> Result<Option<Vec<u8>>, ChannelError> {
-        match self.receiver.recv() {
-            Ok(Some(message)) => Ok(Some(message)),
-            _ => Err(ChannelError::Closed {
-                reason: match self.disconnected.take() {
-                    Some(disconnected) => disconnected().to_string(),
-                    None => "peer disconnected".into(),
-                },
-            }),
-        }
-    }
-}
-
-/// Replace how the channel reports its end: `disconnected` runs on the
-/// reader thread once the far end is gone, and may block.
-pub(crate) fn on_disconnect(
-    mut channel: Channel,
-    disconnected: Box<dyn FnOnce() -> Error + Send>,
-) -> Channel {
-    channel.receiver = Box::new(Disconnected {
-        receiver: channel.receiver,
-        disconnected: Some(disconnected),
-    });
-    channel
-}
-
 impl Connection {
     /// A session on a connected Unix socket: [`Connection::open`] on its
     /// newline-framed channel.
@@ -135,7 +103,10 @@ impl Connection {
         dispatch: Arc<dyn Dispatch>,
         disconnected: Box<dyn FnOnce() -> Error + Send>,
     ) -> Result<Self, Error> {
-        Self::open(on_disconnect(channel(stream, "")?, disconnected), dispatch)
+        Self::open(
+            crate::runtime::spawn::on_disconnect(channel(stream, "")?, disconnected),
+            dispatch,
+        )
     }
 }
 

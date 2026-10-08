@@ -1,4 +1,3 @@
-#![cfg(unix)]
 //! rutis services provided to mounted Cordis plugins: the plugins inject them
 //! natively, call them synchronously or asynchronously, and disposers the
 //! host returns run when Cordis cleans up.

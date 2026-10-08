@@ -1,12 +1,13 @@
 //! How the `Process` compatibility facade starts its runtime process: on an
 //! inherited socket (fd 3) or, for runtimes that cannot take one, on a Unix
-//! socket in a private directory that the process dials back; how it ends
-//! is watched and reported as the session's end.
+//! socket in a private directory that the process dials back; on Windows
+//! (or with `RUTIS_LOCAL_HANDOVER=loopback`), on a loopback address with a
+//! one-time token, as the local transport does. How it ends is watched and
+//! reported as the session's end.
 //!
 //! Runtimes that get their sessions through a link are started by the local
-//! transport ([`crate::transport::local`]), which has its own spawner; this copy
-//! goes with the facade, and starts processes on Unix only.
-#![cfg_attr(not(unix), allow(dead_code))]
+//! transport ([`crate::transport::local`]), which has its own spawner; this
+//! copy goes with the facade.
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
@@ -17,7 +18,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use crate::channel::Channel;
+use crate::channel::{Channel, ChannelError, Receiver};
 use tokio::sync::{oneshot, watch};
 
 use crate::runtime::Error;
@@ -33,6 +34,9 @@ pub(crate) enum Connect {
     Inherit,
     /// A socket path the process dials: `<path> <first>`.
     DialBack,
+    /// A loopback address the process dials, presenting a token first:
+    /// `tcp:<host>:<port> <first>`.
+    Loopback,
 }
 
 /// A started runtime process and the channel it connected.
@@ -57,19 +61,83 @@ pub(crate) async fn spawn(
     first: &Path,
     connect: Connect,
 ) -> Result<Spawned, Error> {
-    #[cfg(unix)]
-    return match connect {
+    match connect {
+        #[cfg(unix)]
         Connect::Inherit => inherit(command, first),
+        #[cfg(unix)]
         Connect::DialBack => dial_back(command, first).await,
-    };
-    #[cfg(not(unix))]
-    {
-        let _ = (command, first, connect);
-        Err(Error::Transport(
-            "Process::launch and Process::mount start runtimes on Unix only: use LocalRuntime"
-                .into(),
-        ))
+        _ => loopback(command, first).await,
     }
+}
+
+async fn loopback(mut command: tokio::process::Command, first: &Path) -> Result<Spawned, Error> {
+    use crate::transport::local::spawn::{adopt, Loopback, CHANNEL_TOKEN};
+    let transport = |error: std::io::Error| Error::Transport(error.to_string());
+    let listener = Loopback::bind().await.map_err(transport)?;
+    let mut child = command
+        .env(CHANNEL_TOKEN, listener.token())
+        .arg(listener.address())
+        .arg(first)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(transport)?;
+    // A process that would outlive its host is not started.
+    if let Err(reason) = adopt(&child) {
+        let _ = child.start_kill();
+        return Err(Error::Transport(format!(
+            "cannot tie the runtime process to this process's lifetime: {reason}"
+        )));
+    }
+    let channel = tokio::select! {
+        channel = listener.accept() => channel.map_err(transport)?,
+        status = child.wait() => return Err(Error::Transport(match status {
+            Ok(status) => format!("Cordis process exited before connecting: {status}"),
+            Err(error) => format!("Cordis process exited before connecting: {error}"),
+        })),
+    };
+    let child = Child::watch(child);
+    let channel = on_disconnect(channel, Box::new(child.disconnected()));
+    Ok(Spawned {
+        channel: traced(channel),
+        child,
+        directory: None,
+    })
+}
+
+/// Ends the channel, however it ends, with the error `disconnected` builds.
+struct Disconnected {
+    receiver: Box<dyn Receiver>,
+    disconnected: Option<Box<dyn FnOnce() -> Error + Send>>,
+}
+
+impl Receiver for Disconnected {
+    fn recv(&mut self) -> Result<Option<Vec<u8>>, ChannelError> {
+        match self.receiver.recv() {
+            Ok(Some(message)) => Ok(Some(message)),
+            _ => Err(ChannelError::Closed {
+                reason: match self.disconnected.take() {
+                    Some(disconnected) => disconnected().to_string(),
+                    None => "peer disconnected".into(),
+                },
+            }),
+        }
+    }
+}
+
+/// Replace how the channel reports its end: `disconnected` runs on the
+/// reader thread once the far end is gone, and may block.
+pub(crate) fn on_disconnect(
+    mut channel: Channel,
+    disconnected: Box<dyn FnOnce() -> Error + Send>,
+) -> Channel {
+    channel.receiver = Box::new(Disconnected {
+        receiver: channel.receiver,
+        disconnected: Some(disconnected),
+    });
+    channel
 }
 
 #[cfg(unix)]
@@ -106,7 +174,7 @@ fn inherit(mut command: tokio::process::Command, first: &Path) -> Result<Spawned
     let child = Child::watch(child);
     let mut channel = crate::runtime::unix::channel(ours, "")?;
     channel.info.transport = "fd";
-    let channel = crate::runtime::unix::on_disconnect(channel, Box::new(child.disconnected()));
+    let channel = on_disconnect(channel, Box::new(child.disconnected()));
     Ok(Spawned {
         channel: traced(channel),
         child,
@@ -140,7 +208,7 @@ async fn dial_back(mut command: tokio::process::Command, first: &Path) -> Result
     };
     let stream = stream.into_std().map_err(transport)?;
     let child = Child::watch(child);
-    let channel = crate::runtime::unix::on_disconnect(
+    let channel = on_disconnect(
         crate::runtime::unix::channel(stream, "")?,
         Box::new(child.disconnected()),
     );
@@ -194,9 +262,13 @@ pub(crate) fn command(
     if let Some(cwd) = &launcher.cwd {
         command.current_dir(cwd);
     }
-    let connect = match launcher.inherit_fd {
-        true => Connect::Inherit,
-        false => Connect::DialBack,
+    let loopback = !cfg!(unix)
+        || std::env::var_os(crate::transport::local::HANDOVER_VARIABLE)
+            .is_some_and(|value| value == "loopback");
+    let connect = match (loopback, launcher.inherit_fd) {
+        (true, _) => Connect::Loopback,
+        (false, true) => Connect::Inherit,
+        (false, false) => Connect::DialBack,
     };
     Ok((command, connect))
 }
@@ -305,9 +377,12 @@ fn record_exit(ended: &(Mutex<Option<String>>, Condvar), status: String) {
     ended.1.notify_all();
 }
 
-/// Waits until the process `pid` ends and reports its status without reaping
-/// it (tokio still does), independently of any runtime.
-#[cfg(not(unix))]
+/// Waits until the process `pid` ends and reports its status, independently
+/// of any runtime.
+#[cfg(windows)]
+use crate::transport::local::spawn::peek_exit;
+
+#[cfg(not(any(unix, windows)))]
 fn peek_exit(_pid: u32) -> Option<std::process::ExitStatus> {
     None
 }

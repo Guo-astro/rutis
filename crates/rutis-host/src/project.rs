@@ -113,7 +113,8 @@ fn python_row(dir: &Path) -> Result<(Value, Runtimes), String> {
     let runtimes = Runtimes {
         py: Some(PythonRuntime {
             project,
-            python: Some(dir.join(".venv/bin/python")).filter(|venv| venv.exists()),
+            python: Some(crate::config::venv_python(&dir.join(".venv")))
+                .filter(|venv| venv.exists()),
         }),
         ..Runtimes::default()
     };
@@ -178,7 +179,7 @@ fn id_of(name: &str) -> String {
 }
 
 fn file_url(path: &Path) -> String {
-    format!("file://{}", path.display())
+    crate::config::file_url(path)
 }
 
 /// The files a change in which reloads the plugin: sources, not
