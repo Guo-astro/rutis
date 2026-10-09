@@ -18,7 +18,7 @@ Against the criteria of the [design philosophy](design-philosophy.en.md) §7:
 4. It has a concrete user: TS projects that use only Bun.
 5. Its guarantees can be pinned by the existing conformance tests.
 
-**Bun is not a new language.** It runs the same runtime package (`runner.mjs`), the same protocol and the same SDK (`@arcships/rutis`) as Node. This design adds no new kind of runtime; it gives the Node runtime an **engine** option.
+**Bun is not a new language.** It runs the same runtime package (`runner.mjs`), the same protocol and the same SDK (`@arcships/rutis`) as Node. This design adds no new kind of runtime. It gives JS runtimes an **engine** option, and lets a host have several named local JS runtimes, so Node and Bun can run side by side (§4).
 
 ## 2. Findings
 
@@ -54,42 +54,22 @@ What does not work as is:
 ### 3.1 Rust
 
 ```rust
-Launcher::node(package)          // unchanged: node --import tsx <package>/src/runner.mjs
-Launcher::bun(package)           // new: bun --no-install <package>/src/runner.mjs
-Launcher::js(package, Engine)    // new: picks one of the two by Engine::{Node, Bun}
-LocalRuntime::bun(package, anchor)  // new: the runtime is still named "node"
+pub enum Engine { Node, Bun }
+
+Launcher::node(package)            // unchanged: node --import tsx <package>/src/runner.mjs
+Launcher::bun(package)             // new: bun --no-install <package>/src/runner.mjs
+Launcher::js(package, engine)      // new: picks one of the two by engine
+
+LocalRuntime::node(package, anchor)              // unchanged: named "node", engine Node
+LocalRuntime::js(name, engine, package, anchor)  // new: any name, any engine
 ```
 
-- **Runtime and row names do not change.** `LocalRuntime::bun` provides `Runtime#node`, and unprefixed npm row names are resolved by `RuntimeResolver::node` as before. Plugins and configuration do not know whether they run on Node or Bun, which is principle 8: dependency declarations contain only service names. A host has one `node` runtime at a time, so the engine is one or the other; if both are needed, the second one is a remote runtime.
-- **`program`**: by default `bun` (`bun.exe` on Windows) found on `PATH`. A path can be given instead, to pin a version or use a project-local Bun.
-- **fd:3**: with Bun, the inherited socket is used only when both of these hold:
-  - the runtime package's `rutisChannels` lists `"fd"`;
-  - the runtime package declares Bun support (§3.3).
-
-  Otherwise the launcher falls back to dial-back (Unix) or loopback (Windows), so an old package never fails silently under Bun.
-- **`RUTIS_JS_ENGINE`**: set to `bun`, it makes `Launcher::node` start Bun. This is a switch for the test matrix and for trying Bun out, following the precedent of `RUTIS_LOCAL_HANDOVER=loopback` (`transport/local/spawn.rs:101`). An engine named in configuration takes precedence over the variable.
+- **`program`**: by default `node` / `bun` found on `PATH` (with `.exe` on Windows). A path can be given instead, to pin a version or use a project-local Bun.
+- **fd:3**: with Bun, the inherited socket is used only when the runtime package's `rutisChannels` lists `"fd"` **and** the package declares Bun support (§3.2). Otherwise the launcher falls back to dial-back (Unix) or loopback (Windows), so an old package never fails silently under Bun.
+- **`RUTIS_JS_ENGINE`**: set to `bun`, it starts every JS runtime whose engine is not named explicitly with Bun. This is a switch for the test matrix and for trying Bun out, following `RUTIS_LOCAL_HANDOVER=loopback` (`transport/local/spawn.rs:101`). An engine named in configuration takes precedence.
 - **No new cargo feature.** Everything stays under the `node` feature.
 
-### 3.2 Configuration
-
-`runtimes.node` in `rutis.json` gains two fields (`NodeRuntime`, `crates/rutis-host/src/config.rs:69`):
-
-```json
-{
-  "runtimes": {
-    "node": { "project": ".", "engine": "bun", "program": "/opt/bun/bin/bun" }
-  }
-}
-```
-
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `engine` | `"node"` | `"node"` or `"bun"` |
-| `program` | `node` or `bun`, looked up on `PATH` | The engine's executable |
-
-**Remote runtimes**: `@arcships/rutis-runtime`'s serve can run under Bun on another machine, and the `remote` entry still says `"language": "node"`. The language and the protocol are the same; the engine is the remote side's choice.
-
-### 3.3 What the runtime package declares
+### 3.2 What the runtime package declares
 
 `@arcships/rutis-runtime`'s package.json gains:
 
@@ -97,27 +77,79 @@ LocalRuntime::bun(package, anchor)  // new: the runtime is still named "node"
 "rutisEngines": ["node", "bun"]
 ```
 
-- The host reads this before starting Bun. A package that does not list `bun` (for example 0.8 and earlier) is rejected without being started:
+The host reads this before starting Bun. A package that does not list `bun` (0.8 and earlier) is rejected without being started: "@arcships/rutis-runtime <version> does not support Bun; install 0.9 or later". At startup the runtime checks Bun's version; below the supported minimum (1.3 for now) it exits with a clear error before greeting, and the host reports `exited before connecting` with that error.
 
-  ```
-  @arcships/rutis-runtime <version> does not support Bun; install 0.9 or later
-  ```
-
-- At startup the runtime checks Bun's version. Below the supported minimum (1.3 for now) it exits with a clear error before greeting, and the host reports `exited before connecting` with that error.
-
-### 3.4 The JS runtime package
+### 3.3 The JS runtime package
 
 1. **`channel/fd.mjs`**: use `net.connect({ fd })` when `process.versions.bun` is set.
-2. **`runner.mjs`'s `fresh()`**: under Bun, when the entry file has changed, delete `realpathSync(entry)` from `require.cache` and import again. A reload replaces only the entry module; the modules it imports stay cached. That is what the query string does under Node, so the semantics do not change.
-3. **Diagnostics**: the runtime includes its engine and version (for example `bun 1.3.14`) when it describes itself, so `rutis-host check` and `diagnostics()` show which engine a runtime runs on. This is "understanding connections" in design philosophy §1.
+2. **`runner.mjs`'s `fresh()`**: under Bun, when the entry file has changed, delete `realpathSync(entry)` from `require.cache` and import again. A reload replaces only the entry module and the modules it imports stay cached, which is what the query string does under Node, so the semantics do not change.
+3. **Diagnostics**: the runtime includes its engine and version (for example `bun 1.3.14`) when it describes itself; `rutis-host check` and `diagnostics()` list each runtime's name, engine and version. This is "understanding connections" in design philosophy §1.
 4. **The WebSocket client**: see §5.
 
-## 4. Plugin projects and rutis-host
+## 4. Several JS runtimes side by side
 
-- **`rutis-host new --lang node`**: the generated project does not change. The closing hint gains one line: "With Bun: `bun install`, and set `engine: "bun"` in rutis.json". There is no `--lang bun`, because the plugin code is the same.
-- **The `tsx` dependency**: unused under Bun, but kept in the template so the same project runs on either engine.
-- **`bunx @arcships/rutis-host`**: the platform binary packages are chosen through `optionalDependencies` with `os` / `cpu`. Bun supports this, but it has not been verified. It belongs to the install smoke tests of S9 ([#193](https://github.com/arcships/rutis/issues/193)).
-- **`bun install`'s isolated linker layout**: whether plugins and the runtime still resolve the same Cordis under this layout has not been verified. Bun resolves by realpath, so they are expected to. The loader row tests of §6 cover it.
+A host can have **any number of named local JS runtimes**, each with its own engine and project. Node next to Bun is one case; several instances of the same engine for isolation is another (design philosophy §6: "isolation means more runtime instances").
+
+### 4.1 Which runtime a row runs in
+
+The prefix rule that Python rows and remote runtimes already use (`<runtime name>:<module>`):
+
+| The row's `name` | Runs in |
+| --- | --- |
+| `@foo/weather`, `./plugin.ts` (no prefix) | **The default JS runtime** |
+| `bun:@foo/weather`, `bun:./plugin.ts` | The runtime named `bun` |
+| `sandbox:@foo/weather` | The runtime named `sandbox` |
+
+- **The default JS runtime**: the one marked `"default": true`; otherwise the one named `node`; otherwise the only local JS runtime, if there is just one. If none of these applies, unprefixed rows are invalid (`Unresolved`), and the error lists the prefixes available.
+- npm package names contain no `:`, and a Windows drive letter is one character while runtime names are at least two, so nothing is ambiguous.
+- Remote JS runtimes (`remote` with `language: "node"`) resolve as before.
+- `RuntimeResolver::node(handle)` resolves unprefixed names and the `<name>:` prefix; the new `RuntimeResolver::node_prefixed(handle)` resolves only the `<name>:` prefix. In the implementation this is an optional prefix on `Naming::Npm` (`crates/rutis-loader/src/runtime.rs:69`).
+
+### 4.2 Configuration
+
+`runtimes.node` stays as it is (named `node`, engine Node); a new list `runtimes.js` is added:
+
+```json
+{
+  "runtimes": {
+    "node": { "project": "." },
+    "js": [
+      { "name": "bun", "engine": "bun", "project": "." },
+      { "name": "sandbox", "engine": "node", "project": "./sandbox" }
+    ]
+  },
+  "rows": [
+    { "id": "weather", "name": "@foo/weather" },
+    { "id": "report", "name": "bun:./report.ts", "inject": ["weather"] }
+  ]
+}
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `name` | Required | The runtime's name and row prefix; at least two characters, and not the name of `py` or of a remote runtime |
+| `engine` | `"node"` | `"node"` or `"bun"` |
+| `project` | `.` | Plugin packages resolve from this `package.json`; runtimes may share a project |
+| `runtime` | The project's `@arcships/rutis-runtime` | As in `runtimes.node` |
+| `program` | Looked up on `PATH` | The engine's executable |
+| `default` | `false` | Unprefixed rows run here |
+
+A Bun-only project writes a single `{ "name": "bun", "engine": "bun" }`; as the only JS runtime, it is the default.
+
+### 4.3 Semantics when runtimes coexist
+
+- **Services are shared across runtimes as usual**: a plugin in `node` injects `weather` provided in `bun` the same way it uses a service from another language (`host_key`), and dependency declarations do not change (principle 8).
+- **Native Cordis sharing stays within one runtime**: each runtime has its own Cordis Context. Plugins that rely on Cordis's in-process features to work together (group mounts, direct replacement with `ctx.set` and so on) belong in the same runtime; across runtimes the boundary rules of the requirements §5 apply, as across any process.
+- **Failure scope is per runtime**: a runtime that crashes withdraws only its own services; plugins in other runtimes wait by the dependency rules and are otherwise unaffected.
+- **Processes**: one process per runtime. Whether a runtime with no rows exits or starts on demand follows the existing runtimes' behaviour and is not changed here.
+
+### 4.4 Plugin projects and rutis-host
+
+- `rutis-host new --lang node` generates the same project; the closing hint gains the Bun variant (`bun install`, and `{ "name": "bun", "engine": "bun" }` in `runtimes.js`). There is no `--lang bun`: the plugin code is the same.
+- The template's `tsx` dependency is unused under Bun but kept, so the same project runs on either engine.
+- `rutis-host dev`: the plugin under development runs in the default JS runtime; `rutis.dev.json` can choose the engine with the same `runtimes`.
+- `bunx @arcships/rutis-host`: the platform binary packages are chosen through `optionalDependencies` with `os` / `cpu`. Bun supports this but it is unverified; it belongs to S9 ([#193](https://github.com/arcships/rutis/issues/193)).
+- Whether plugins and the runtime resolve the same Cordis under `bun install`'s isolated linker layout is unverified (Bun resolves by realpath, so they are expected to); the loader row tests of §6 cover it.
 
 ## 5. The WebSocket client
 
@@ -141,7 +173,7 @@ Local runtimes started by the host use fd, unix or tcp and never get here. A run
 
 ## 6. Tests
 
-These tests pin the promises above. Each adds a Bun column to an existing test rather than a new suite.
+These tests pin the promises above. The engine tests add a Bun column to existing tests rather than a new suite; coexistence needs new tests.
 
 | Layer | Test | Change |
 | --- | --- | --- |
@@ -153,6 +185,8 @@ These tests pin the promises above. Each adds a Bun column to an existing test r
 | Security | New | In a directory without node_modules, importing a package that is not installed fails rather than downloading it |
 | WebSocket | `websocket_cross.rs` | Step 1: assert that dialing from Bun fails as `incompatible` instead of hanging. Step 2: the same categorisation assertions as Node |
 | JS unit tests | `node/rutis-runtime/test` | Also run under `bun test`. Today 2 tests fail in each of channel and websocket, and handshake times out; not every cause is confirmed, so each needs fixing or marking |
+| Coexistence | New in `rutis-loader/tests/runtime_rows.rs` | Runtimes `node` and `bun` in one host: unprefixed and `bun:` rows land in their runtimes; a service provided in `bun` is used by a plugin in `node` and the other way round; killing the `bun` process withdraws only its services while `node`'s rows wait by their dependencies; two instances of one engine are isolated from each other |
+| Default runtime | New in `rutis-host`'s config / host tests | The default rule (`default`, the one named `node`, the only one); with several candidates and none chosen, unprefixed rows are invalid and the error lists the prefixes; duplicate runtime names and names shorter than two characters are configuration errors |
 | E2E | S2 [#186](https://github.com/arcships/rutis/issues/186), S3 [#187](https://github.com/arcships/rutis/issues/187) | One Bun variant each |
 
 **CI**: a new `runtimes-bun` job on Linux and macOS installs a pinned Bun with `oven-sh/setup-bun` and runs:
@@ -175,12 +209,12 @@ Windows joins after item 2 of §7 is verified.
 
 - **Deno.** Its Node compatibility layer and permission model differ more; it gets its own evaluation when there is a need.
 - **Bun-only APIs** (`Bun.spawn`, `Bun.serve` and so on). The runtime package uses Node-compatible APIs with a few branches, and both engines share one codebase.
-- **Two local `node` runtimes, one on Node and one on Bun, in the same host.** Use a remote runtime for that.
 
 ## 9. Phases
 
 | Phase | Contents |
 | --- | --- |
-| B1 | §3; items 1–3 of §3.4; step 1 of §5; the tests of §6 except step 2 of WebSocket; the CI job `runtimes-bun` (Linux, macOS) |
-| B2 | Step 2 of §5: dialing WebSocket from Bun |
-| B3 | Windows; performance numbers; the `bunx` install smoke test (part of S9) |
+| B1 | §4: several named local JS runtimes side by side (independent of the engine; useful with Node alone, for isolation) and its tests |
+| B2 | §3: the Bun engine, the runtime package's declaration and fixes; step 1 of §5; the engine tests of §6; the CI job `runtimes-bun` (Linux, macOS) |
+| B3 | Step 2 of §5: dialing WebSocket from Bun |
+| B4 | Windows; performance numbers; the `bunx` install smoke test (part of S9) |

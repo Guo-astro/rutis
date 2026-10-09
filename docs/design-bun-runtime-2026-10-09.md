@@ -18,7 +18,7 @@ Bun 也是 JS 生态里常见的运行时。它原生运行 TS，不需要 tsx�
 4. 有具体用户：只用 Bun 的 TS 项目。
 5. 它的保证可以用现有的契约测试来钉住。
 
-**Bun 不是一种新语言。** 它和 Node 跑同一个运行时包（`runner.mjs`）、同一份协议、同一个 SDK（`@arcships/rutis`）。本设计不新增运行时种类，只给 Node 运行时加一个**引擎**选项。
+**Bun 不是一种新语言。** 它和 Node 跑同一个运行时包（`runner.mjs`）、同一份协议、同一个 SDK（`@arcships/rutis`）。本设计不新增运行时种类，而是给 JS 运行时加一个**引擎**选项，并让一个宿主可以有多个具名的本地 JS 运行时，Node 与 Bun 可以并存（§4）。
 
 ## 2. 调研结论
 
@@ -54,42 +54,22 @@ Bun 也是 JS 生态里常见的运行时。它原生运行 TS，不需要 tsx�
 ### 3.1 Rust 侧
 
 ```rust
-Launcher::node(package)          // 不变：node --import tsx <package>/src/runner.mjs
-Launcher::bun(package)           // 新增：bun --no-install <package>/src/runner.mjs
-Launcher::js(package, Engine)    // 新增：按 Engine::{Node, Bun} 选择以上两者之一
-LocalRuntime::bun(package, anchor)  // 新增：运行时名仍为 "node"
+pub enum Engine { Node, Bun }
+
+Launcher::node(package)            // 不变：node --import tsx <package>/src/runner.mjs
+Launcher::bun(package)             // 新增：bun --no-install <package>/src/runner.mjs
+Launcher::js(package, engine)      // 新增：按 engine 选择以上两者之一
+
+LocalRuntime::node(package, anchor)              // 不变：名为 "node"，引擎 Node
+LocalRuntime::js(name, engine, package, anchor)  // 新增：任意名字、任意引擎
 ```
 
-- **运行时名和行名不变。** `LocalRuntime::bun` 提供的仍是 `Runtime#node`，未加前缀的 npm 行名照旧由 `RuntimeResolver::node` 解析。插件和配置不感知自己跑在 Node 还是 Bun 上，这符合原则 8：依赖声明只含服务名。一个宿主同一时间只有一个 `node` 运行时，引擎二选一；如果确实需要两个引擎并存，用远程运行时（`remote`）挂第二个。
-- **`program`**：默认在 `PATH` 上找 `bun`（Windows 上是 `bun.exe`）；也可以指定路径，用于固定版本或使用项目内的 Bun。
-- **fd:3**：引擎为 Bun 时，必须同时满足下面两点才走 fd:3 继承：
-  - 运行时包的 `rutisChannels` 含 `"fd"`；
-  - 运行时包声明支持 Bun（§3.3）。
+- **`program`**：默认在 `PATH` 上找 `node` / `bun`（Windows 上带 `.exe`）；可以指定路径，用于固定版本或使用项目内的 Bun。
+- **fd:3**：引擎为 Bun 时，只有运行时包的 `rutisChannels` 含 `"fd"` **并且**声明支持 Bun（§3.2）才走 fd:3 继承，否则退回 dial-back（Unix）或 loopback（Windows），旧包不会在 Bun 下静默失效。
+- **`RUTIS_JS_ENGINE`**：设为 `bun` 时，没有明确写引擎的 JS 运行时都用 Bun 启动。这是给测试矩阵和临时试用的开关，与 `RUTIS_LOCAL_HANDOVER=loopback`（`transport/local/spawn.rs:101`）同一做法；配置里写明的引擎优先。
+- **不新增 cargo feature**，都在 `node` feature 下。
 
-  不满足就退回 dial-back（Unix）或 loopback（Windows），旧包因此不会在 Bun 下静默失效。
-- **`RUTIS_JS_ENGINE`**：设为 `bun` 时，`Launcher::node` 改用 Bun 启动。这是给测试矩阵和临时试用准备的开关，做法与现有的 `RUTIS_LOCAL_HANDOVER=loopback`（`transport/local/spawn.rs:101`）一致。配置里写明的引擎优先于这个变量。
-- **不新增 cargo feature。** 改动都在 `node` feature 下。
-
-### 3.2 配置
-
-`rutis.json` 的 `runtimes.node` 增加两个字段，见 `crates/rutis-host/src/config.rs:69` 的 `NodeRuntime`：
-
-```json
-{
-  "runtimes": {
-    "node": { "project": ".", "engine": "bun", "program": "/opt/bun/bin/bun" }
-  }
-}
-```
-
-| 字段 | 默认 | 说明 |
-| --- | --- | --- |
-| `engine` | `"node"` | `"node"` 或 `"bun"` |
-| `program` | `node` 或 `bun`，在 `PATH` 上查找 | 引擎的可执行文件 |
-
-**远程运行时**：在另一台机器上用 Bun 跑 `@arcships/rutis-runtime` 的 serve，`remote` 的 `language` 仍写 `"node"`。语言和协议都相同，引擎是对端自己的选择。
-
-### 3.3 运行时包的声明
+### 3.2 运行时包的声明
 
 `@arcships/rutis-runtime` 的 package.json 增加：
 
@@ -97,28 +77,79 @@ LocalRuntime::bun(package, anchor)  // 新增：运行时名仍为 "node"
 "rutisEngines": ["node", "bun"]
 ```
 
-- 宿主用 Bun 启动之前先读这个字段。没有声明 `bun` 时（比如 0.8 及更早的包）直接报错：
+宿主用 Bun 启动前读取它；没有声明 `bun` 的包（0.8 及更早）直接报错"@arcships/rutis-runtime <版本> does not support Bun; install 0.9 or later"，不尝试启动。运行时启动时检查 Bun 版本，低于支持的最低版本（暂定 1.3）时在问候前以明确的错误退出，宿主报 `exited before connecting` 并带上这条错误。
 
-  ```
-  @arcships/rutis-runtime <版本> does not support Bun; install 0.9 or later
-  ```
+### 3.3 JS 运行时包
 
-  不会尝试启动。
-- 运行时启动时检查 Bun 的版本。低于支持的最低版本（暂定 1.3）时，在问候之前以明确的错误退出，宿主报 `exited before connecting`，附带这条错误。
-
-### 3.4 JS 运行时包
-
-1. **`channel/fd.mjs`**：在 `process.versions.bun` 下用 `net.connect({ fd })`。
-2. **`runner.mjs` 的 `fresh()`**：在 Bun 下，入口文件变化时删除 `require.cache` 里 `realpathSync(entry)` 这一项，再导入。重载只换入口模块，入口导入的其他模块继续用缓存，这与 Node 下用查询串的做法一致，语义不变。
-3. **诊断**：运行时在描述自己时带上引擎和版本（如 `bun 1.3.14`）。`rutis-host check` 的输出和 `diagnostics()` 能看出某个运行时跑在什么引擎上，对应设计哲学 §1 的"认识连接"。
+1. **`channel/fd.mjs`**：`process.versions.bun` 下用 `net.connect({ fd })`。
+2. **`runner.mjs` 的 `fresh()`**：Bun 下入口文件变化时，删除 `require.cache` 中 `realpathSync(entry)` 一项再导入。重载只换入口模块、它导入的模块仍用缓存，与 Node 下用查询串的语义相同。
+3. **诊断**：运行时在描述自己时带上引擎和版本（如 `bun 1.3.14`），`rutis-host check` 和 `diagnostics()` 列出每个运行时的名字、引擎与版本——设计哲学 §1 的"认识连接"。
 4. **WebSocket 客户端**：见 §5。
 
-## 4. 插件项目与 rutis-host
+## 4. 多个 JS 运行时并存
 
-- **`rutis-host new --lang node`**：生成的项目不变。完成提示里补一句"用 Bun 时：`bun install`，并在 rutis.json 里设 `engine: "bun"`"。不新增 `--lang bun`，因为插件代码完全相同。
-- **`tsx` 依赖**：在 Bun 下不会用到，但保留在模板里，让同一个项目两种引擎都能跑。
-- **`bunx @arcships/rutis-host`**：平台二进制包通过 `optionalDependencies` 加上 `os` / `cpu` 选择，Bun 支持这种写法，但还没验证。归入 S9（[#193](https://github.com/arcships/rutis/issues/193)）的安装冒烟测试。
-- **`bun install` 的隔离链接布局**：在这种布局下，插件解析到的 Cordis 和运行时解析到的 Cordis 是否是同一份，还没验证。Bun 按 realpath 解析，预计一致。由 §6 的 loader 行测试覆盖。
+一个宿主可以有**任意多个具名的本地 JS 运行时**，各自选择引擎和项目。Node 与 Bun 并存只是其中一种情况；同一引擎开多个实例用于隔离（设计哲学 §6"隔离意味着更多运行时实例"）也是。
+
+### 4.1 行属于哪个运行时
+
+沿用 Python 行与远程运行时已有的前缀规则（`<运行时名>:<模块>`）：
+
+| 行的 `name` | 运行在 |
+| --- | --- |
+| `@foo/weather`、`./plugin.ts`（不带前缀） | **默认 JS 运行时** |
+| `bun:@foo/weather`、`bun:./plugin.ts` | 名为 `bun` 的运行时 |
+| `sandbox:@foo/weather` | 名为 `sandbox` 的运行时 |
+
+- **默认 JS 运行时**：配置里标了 `"default": true` 的那个；没有标时，名为 `node` 的那个；只有一个本地 JS 运行时时，就是它。都不满足时，不带前缀的行无效（`Unresolved`），错误列出可用的前缀。
+- npm 包名不含 `:`，Windows 盘符只有一个字母，运行时名要求至少两个字符，不会混淆。
+- 远程 JS 运行时（`remote`，`language: "node"`）的解析方式不变。
+- `RuntimeResolver::node(handle)` 解析不带前缀的名字和 `<名字>:` 前缀；新增 `RuntimeResolver::node_prefixed(handle)`，只解析 `<名字>:` 前缀。实现上是给 `Naming::Npm` 加一个可选前缀（`crates/rutis-loader/src/runtime.rs:69`）。
+
+### 4.2 配置
+
+`runtimes.node` 保持不变（名为 `node`、引擎 Node）；新增 `runtimes.js` 列表：
+
+```json
+{
+  "runtimes": {
+    "node": { "project": "." },
+    "js": [
+      { "name": "bun", "engine": "bun", "project": "." },
+      { "name": "sandbox", "engine": "node", "project": "./sandbox" }
+    ]
+  },
+  "rows": [
+    { "id": "weather", "name": "@foo/weather" },
+    { "id": "report", "name": "bun:./report.ts", "inject": ["weather"] }
+  ]
+}
+```
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `name` | 必填 | 运行时名，也是行名前缀；至少两个字符，不能与 `py`、远程运行时重名 |
+| `engine` | `"node"` | `"node"` 或 `"bun"` |
+| `project` | `.` | 插件包从这里的 `package.json` 解析；几个运行时可以共用一个项目 |
+| `runtime` | 项目里的 `@arcships/rutis-runtime` | 同 `runtimes.node` |
+| `program` | 在 `PATH` 上找 | 引擎的可执行文件 |
+| `default` | `false` | 不带前缀的行跑在这里 |
+
+只用 Bun 的项目写一个 `{ "name": "bun", "engine": "bun" }` 即可，它是唯一的 JS 运行时，自然是默认。
+
+### 4.3 并存时的语义
+
+- **服务照常跨运行时共享**：`bun` 里提供的 `weather`，`node` 里的插件 `inject` 即可，与跨语言服务走同一条路（`host_key`），依赖声明不变（原则 8）。
+- **Cordis 的原生共享只在一个运行时内**：每个运行时有自己的 Cordis Context。依赖 Cordis 进程内特性互相配合的插件（同组挂载、`ctx.set` 直接替换等）要放在同一个运行时；跨运行时就按需求文档 §5 的边界规则，与跨进程相同。
+- **故障范围按运行时划分**：一个运行时崩溃只撤回它的服务，其他运行时的插件按依赖规则等待，不受牵连。
+- **加载与资源**：每个运行时一个进程；运行时没有行时是否退出、按需启动，沿用现有运行时的行为，不在本设计改变。
+
+### 4.4 插件项目与 rutis-host
+
+- `rutis-host new --lang node` 生成的项目不变；完成提示补一句用 Bun 时的写法（`bun install`，`runtimes.js` 加 `{ "name": "bun", "engine": "bun" }`）。不新增 `--lang bun`：插件代码相同。
+- 模板里的 `tsx` 依赖在 Bun 下用不到，但保留，同一个项目两种引擎都能跑。
+- `rutis-host dev`：开发中的插件跑在默认 JS 运行时；`rutis.dev.json` 可以用同样的 `runtimes` 指定引擎。
+- `bunx @arcships/rutis-host`：平台二进制包靠 `optionalDependencies` + `os` / `cpu`，Bun 支持但未验证，归入 S9（[#193](https://github.com/arcships/rutis/issues/193)）。
+- `bun install` 的隔离链接布局下，插件与运行时解析到的 Cordis 是否同一份未验证（Bun 按 realpath 解析，预计一致），由 §6 的 loader 行测试覆盖。
 
 ## 5. WebSocket 客户端
 
@@ -142,7 +173,7 @@ LocalRuntime::bun(package, anchor)  // 新增：运行时名仍为 "node"
 
 ## 6. 测试
 
-用测试把上面的承诺钉住。都是在现有测试上加一列 Bun，不另写一套。
+用测试把上面的承诺钉住。引擎相关的都是在现有测试上加一列 Bun，不另写一套；并存相关的是新增测试。
 
 | 层 | 测试 | 改动 |
 | --- | --- | --- |
@@ -154,6 +185,8 @@ LocalRuntime::bun(package, anchor)  // 新增：运行时名仍为 "node"
 | 安全 | 新增 | 在没有 node_modules 的目录里引用一个未安装的包时，加载失败，不会自动下载 |
 | WebSocket | `websocket_cross.rs` | 第一阶段断言 Bun 拨出以 `incompatible` 失败而不是挂起；第二阶段改为与 Node 一样的分类断言 |
 | JS 单元测试 | `node/rutis-runtime/test` | 同时用 `bun test` 运行。现在 channel 和 websocket 各有 2 个失败、handshake 超时，原因未全部确认，需要逐个处理或标注 |
+| 并存 | `rutis-loader/tests/runtime_rows.rs` 新增 | 同一宿主里 `node`、`bun` 两个运行时：不带前缀与 `bun:` 前缀的行各自落在对应运行时；`bun` 提供的服务被 `node` 里的插件使用，反之亦然；杀掉 `bun` 进程只撤回它的服务，`node` 的行按依赖等待；两个同引擎实例互相隔离 |
+| 默认运行时 | `rutis-host` 的 config / host 测试新增 | 默认规则（`default`、名为 `node`、唯一一个）；多个候选且未指定时不带前缀的行无效，错误列出可用前缀；运行时名重名、短于两个字符时配置报错 |
 | E2E | S2 [#186](https://github.com/arcships/rutis/issues/186)、S3 [#187](https://github.com/arcships/rutis/issues/187) | 各加一个 Bun 变体 |
 
 **CI**：新增 `runtimes-bun` job，在 Linux 和 macOS 上用 `oven-sh/setup-bun` 固定版本安装 Bun，然后：
@@ -176,12 +209,12 @@ Windows 等 §7 第 2 条验证之后再加入。
 
 - **Deno。** Deno 的 Node 兼容层和权限模型差别更大，有需求时另行评估。
 - **Bun 专有 API**（`Bun.spawn`、`Bun.serve` 等）。运行时包只用 Node 兼容 API 加少量分支，两种引擎共用一份代码。
-- **同一个宿主里同时有 Node 和 Bun 两个本地 `node` 运行时。** 需要时用远程运行时。
 
 ## 9. 分阶段
 
 | 阶段 | 内容 |
 | --- | --- |
-| B1 | §3、§3.4 的 1–3 条、§5 第一阶段，以及 §6 中除 WebSocket 第二阶段以外的测试，加 CI `runtimes-bun`（Linux、macOS） |
-| B2 | §5 第二阶段：Bun 下拨出 WebSocket |
-| B3 | Windows；性能数据；`bunx` 安装冒烟（并入 S9） |
+| B1 | §4：多个具名本地 JS 运行时并存（与引擎无关，只用 Node 也有用：隔离）及其测试 |
+| B2 | §3：Bun 引擎、运行时包声明与修补；§5 第一阶段；§6 中引擎相关的测试；CI `runtimes-bun`（Linux、macOS） |
+| B3 | §5 第二阶段：Bun 下拨出 WebSocket |
+| B4 | Windows；性能数据；`bunx` 安装冒烟（并入 S9） |
