@@ -154,13 +154,16 @@ fn run_project(s: &Scenario, dir: &str, host: &Path, probe: &rutis_e2e::Probe, r
         Ok(json!("Hello, Ada"))
     );
     stop(&mut running);
+    #[cfg(unix)]
     probe.event(&mut running, "stopped");
 }
 
 fn stop(host: &mut Host) {
     #[cfg(unix)]
     host.signal(libc_sigterm());
-    // Windows: no SIGTERM, and Ctrl-C to a console is #232.
+    // Windows: no SIGTERM, and Ctrl-C to a console is #232; killed, the
+    // host cleans nothing up, so the callers check its probe's stop on Unix
+    // only.
     #[cfg(windows)]
     host.kill();
     let status = host.wait_exit();
@@ -323,6 +326,7 @@ fn pypi_installs_and_runs_this_build() {
     probe.started(&mut running);
     assert_eq!(probe.call(&mut running, "greeter", "hello", json!(["Ada"])), Ok(json!("Hello, Ada")));
     stop(&mut running);
+    #[cfg(unix)]
     probe.event(&mut running, "stopped");
 
     // pip in a plain venv.

@@ -91,7 +91,8 @@ jobs:
           const runners = {
             'linux-x64': { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-musl', wheel: 'x86_64', node: '22', python: '3.12' },
             'linux-arm64': { os: 'ubuntu-24.04-arm', target: 'aarch64-unknown-linux-musl', wheel: 'aarch64', node: '22', python: '3.12' },
-            'darwin-x64': { os: 'macos-13', target: 'x86_64-apple-darwin', wheel: 'x86_64-apple-darwin', node: '26', python: '3.x' },
+            // The Intel macOS runner (macos-13 is retired).
+            'darwin-x64': { os: 'macos-15-intel', target: 'x86_64-apple-darwin', wheel: 'x86_64-apple-darwin', node: '26', python: '3.x' },
             'darwin-arm64': { os: 'macos-15', target: 'aarch64-apple-darwin', wheel: 'aarch64-apple-darwin', node: '26', python: '3.x' },
             'win32-x64': { os: 'windows-2025', target: 'x86_64-pc-windows-msvc', wheel: 'x86_64-pc-windows-msvc', node: '26', python: '3.x' },
           }
