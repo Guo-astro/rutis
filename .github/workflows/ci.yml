@@ -357,6 +357,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The examples' build scripts need the Node runtime (as in lint).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: node/rutis-runtime/package-lock.json
+      - run: npm --prefix node/rutis-runtime ci
       - name: cargo +1.88 check
         run: cargo +1.88 check --workspace --exclude rutis-agent --exclude rutis-cli --locked
 
