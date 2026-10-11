@@ -89,6 +89,41 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 
 A new test file that starts processes or opens channels goes into these lists. The `multiprocess` job of the nightly `stress.yml` repeats the tests of these lists too (§2).
 
+### The conformance matrix
+
+Where bridge's conformance suites run: which implementations, which channels, which platforms (risk C10, #176). Kept by hand: a change to a cell or a skip reason changes this table too. A skipped cell is marked `ignore = "reason"` in its test, which `cargo test` prints; where a whole platform does not compile a test, the reason is a comment next to its `cfg`.
+
+The session contract (`session::testing::session` and the malformed-frame checks `malformed`, `tests/runtime_conformance.rs`):
+
+| Implementation | Channel | Linux | macOS | Windows |
+| --- | --- | --- | --- | --- |
+| Rust | memory | Runs | Runs | Runs |
+| Node, Python | Unix socket | Runs | Runs | Skipped: no Unix sockets on Windows, where runtimes connect on loopback |
+| Node, Python | loopback TCP (with a one-time token) | Runs | Runs | Runs |
+| Go | Unix socket | Runs (malformed frames skipped: defect #294) | As Linux | Skipped: as above |
+| Go | loopback TCP | Runs (malformed frames skipped: defect #294) | As Linux | Runs (malformed frames skipped: defect #294) |
+| Bun | Unix socket, loopback TCP | Runs (malformed frames on the Unix socket only) | Runs | Not compiled: Bun on Windows is not a declared platform |
+
+The runtime contract (`runtime::testing::runtime`, `tests/session_matrix.rs`):
+
+| Implementation | Channel | Linux | macOS | Windows |
+| --- | --- | --- | --- | --- |
+| Node, Python, Go | inherited socket (`fd:3`) | Runs | Runs | Skipped: Windows hands no descriptor over, only loopback |
+| Node, Python, Go | socket path dialed back | Runs | Runs | Skipped: as above |
+| Node, Python, Go | loopback TCP | Skipped: `Process` picks loopback only from the process-wide `RUTIS_LOCAL_HANDOVER`; a column of its own comes in step 2 | Skipped: as Linux | Runs |
+| Node, Python, Go | WebSocket (the runtime listens, Rust dials) | Runs | Runs | Runs |
+| Bun | `fd:3`, socket path dialed back | Runs; `runtimes-bun` reruns with `RUTIS_LOCAL_HANDOVER=loopback` | Runs | Not compiled: as above |
+| A Node package without `fd` falls back to dialing back | — | Runs | Runs | Skipped: Windows has loopback only |
+
+The node contract (`rutis_bridge::testing::node`):
+
+| Implementation | Channel | Linux | macOS | Windows |
+| --- | --- | --- | --- | --- |
+| Rust node | memory (`tests/node_conformance.rs`) | Runs | Runs on main | Runs on main |
+| Cordis node | WebSocket (`tests/websocket_conformance.rs`) | Runs | Runs | Runs |
+
+Other bridge test files compiled on Unix only (each says why next to its `cfg`): `bun_runtime.rs`, `bun_channel.rs` (Bun); `local_spawn.rs` (the `fd:3` and dial-back handovers; `local_loopback.rs` covers Windows' loopback handover); `local_plugin.rs` (Unix sockets); `local_stdio.rs` (`dup2`); `concurrent_launch.rs` (descriptors inherited across fork/exec); the two soaks on Linux only (they read `/proc`).
+
 ### What each kind of change runs on a pull request
 
 | Change | Jobs | Expected time (push to result) |

@@ -5,6 +5,8 @@
 //! only what the project installed, the project's `.env` is not read, an
 //! uncaught error ends the process, an edited plugin is imported again, and
 //! a Bun older than the package supports is refused.
+// Unix only (Q7.8): Bun on Windows is not a declared platform of the Bun
+// runtime.
 #![cfg(all(unix, feature = "bun"))]
 
 use std::path::{Path, PathBuf};

@@ -1,8 +1,11 @@
 """The session conformance target, served by the Python session: connects
-to the Unix socket given as the first argument as endpoint `python`,
-expecting `main`, and serves `conformance` until the session ends."""
+to the channel given as the first argument (a Unix socket path, or
+`tcp:<host>:<port>`, presenting the token in RUTIS_CHANNEL_TOKEN first) as
+endpoint `python`, expecting `main`, and serves `conformance` until the
+session ends."""
 
 import asyncio
+import os
 import socket
 import sys
 
@@ -61,9 +64,20 @@ class Conformance:
         return fn()
 
 
-async def main(path: str) -> None:
+def dial(spec: str) -> socket.socket:
+    if spec.startswith("tcp:"):
+        host, _, port = spec[len("tcp:"):].rpartition(":")
+        connection = socket.create_connection((host.strip("[]"), int(port)))
+        connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        connection.sendall(os.environ["RUTIS_CHANNEL_TOKEN"].encode() + b"\n")
+        return connection
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    connection.connect(path)
+    connection.connect(spec)
+    return connection
+
+
+async def main(spec: str) -> None:
+    connection = dial(spec)
     service = Conformance()
 
     def dispatch(target, method, args):

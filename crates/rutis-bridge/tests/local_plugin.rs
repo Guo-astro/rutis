@@ -1,5 +1,6 @@
 //! The local transport as a native plugin: it dials Unix sockets while
 //! mounted, classifies failures by kind, and unloading closes its channels.
+// Unix only (Q7.8): the plugin dials Unix socket paths.
 #![cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;

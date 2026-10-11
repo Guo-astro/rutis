@@ -1,6 +1,9 @@
 //! `spawn:<name>`: the transport starts a process on a channel it owns. The
 //! process takes the channel as fd 3, or dials a socket path back; the
 //! channel's end says how the process ended, and closing it ends the process.
+// Unix only (Q7.8): the Inherit (fd:3) and DialBack (socket path)
+// handovers, driven by `sh` scripts; Windows has only the loopback
+// handover, covered by local_loopback.rs.
 #![cfg(unix)]
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::transport::local::{Handover, LocalTransport, Spawn};
