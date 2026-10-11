@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/arcships/rutis/go/rutis/internal/peer"
+	"github.com/arcships/rutis/go/rutis/internal/testwait"
 )
 
 const testProtocol = "rutis.3"
@@ -143,7 +144,7 @@ func (c *client) send(fin bool, opcode byte, payload []byte, masked bool) {
 
 // next reads the next frame the listener sends.
 func (c *client) next() (byte, []byte) {
-	_ = c.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = c.conn.SetReadDeadline(time.Now().Add(testwait.HangGuard))
 	var head [2]byte
 	if _, err := io.ReadFull(c.reader, head[:]); err != nil {
 		c.t.Fatal(err)
@@ -178,13 +179,22 @@ func (c *client) closed() int {
 
 func accept(t *testing.T, accepted <-chan *wsConn) *wsConn {
 	t.Helper()
-	select {
-	case conn := <-accepted:
-		return conn
-	case <-time.After(5 * time.Second):
-		t.Fatal("no connection accepted")
-		return nil
-	}
+	return testwait.Within(t, "the accepted connection", accepted)
+}
+
+type received struct {
+	message []byte
+	err     error
+}
+
+// recv is conn.Recv() within the hang guard.
+func recv(t *testing.T, conn *wsConn) ([]byte, error) {
+	t.Helper()
+	got := testwait.Do(t, "a message", func() received {
+		message, err := conn.Recv()
+		return received{message, err}
+	})
+	return got.message, got.err
 }
 
 func TestMessagesCrossInBothDirections(t *testing.T) {
@@ -194,7 +204,7 @@ func TestMessagesCrossInBothDirections(t *testing.T) {
 	// A message in two fragments.
 	c.send(false, 0x1, []byte("hel"), true)
 	c.send(true, 0x0, []byte("lo"), true)
-	message, err := conn.Recv()
+	message, err := recv(t, conn)
 	if err != nil || string(message) != "hello" {
 		t.Fatalf("%q %v", message, err)
 	}
@@ -207,7 +217,7 @@ func TestMessagesCrossInBothDirections(t *testing.T) {
 	// A ping is answered while the listener reads.
 	c.send(true, 0x9, []byte("are you there"), true)
 	c.send(true, 0x1, []byte("after"), true)
-	if message, err := conn.Recv(); err != nil || string(message) != "after" {
+	if message, err := recv(t, conn); err != nil || string(message) != "after" {
 		t.Fatalf("%q %v", message, err)
 	}
 	if opcode, payload := c.next(); opcode != 0xA || string(payload) != "are you there" {
@@ -234,7 +244,7 @@ func TestBrokenFramesCloseWithTheirCode(t *testing.T) {
 		client := dial(t, address)
 		conn := accept(t, accepted)
 		c.send(client)
-		if _, err := conn.Recv(); err == nil {
+		if _, err := recv(t, conn); err == nil {
 			t.Errorf("%s: the message should be refused", c.name)
 		}
 		if code := client.closed(); code != c.code {
@@ -243,13 +253,22 @@ func TestBrokenFramesCloseWithTheirCode(t *testing.T) {
 	}
 }
 
+// Timing is what this tests: by tolerance
+// (docs/design-test-clocks-2026-10-11.md §3.3), ping and timeout ten times
+// apart, so that a stalled machine does not drop the controller before the
+// first ping; no bound on how fast it is dropped (only a hang guard).
 func TestASilentControllerIsDropped(t *testing.T) {
-	t.Setenv("RUTIS_HEARTBEAT", "20,150")
+	t.Setenv("RUTIS_HEARTBEAT", "100,1000")
 	accepted, address := startListener(t)
 	c := dial(t, address)
 	accept(t, accepted)
 	pinged := false
+	// Pings keep coming until it is dropped: bound the whole wait.
+	deadline := time.Now().Add(testwait.HangGuard)
 	for {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out (%v): the silent controller to be dropped", testwait.HangGuard)
+		}
 		opcode, payload := c.next()
 		if opcode == 0x9 {
 			pinged = true
@@ -273,7 +292,7 @@ func TestANewerControllerTakesOver(t *testing.T) {
 	plugin := Define(Plugin[NoConfig]{Name: "noop", Apply: func(*Ctx, NoConfig) error { return nil }})
 	endpoint := &peer.Endpoint{Local: "runtime", Declare: []string{"runtime"}}
 	go func() { _ = listen("ws://127.0.0.1:0/rutis", endpoint, []*Definition{plugin}) }()
-	address := <-addresses
+	address := testwait.Within(t, "the listener's address", addresses)
 	first := dial(t, address)
 	if opcode, payload := first.next(); opcode != 0x1 || !strings.Contains(string(payload), `"op":"hello"`) {
 		t.Fatalf("the session greets: %d %q", opcode, payload)
