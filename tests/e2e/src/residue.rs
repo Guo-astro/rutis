@@ -240,10 +240,14 @@ fn list() -> Option<Vec<Process>> {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn list() -> Option<Vec<Process>> {
-    let output = std::process::Command::new("ps")
+    let ps = std::process::Command::new("ps")
         .args(["-A", "-o", "pid=,ppid=,pgid=,stat=,command="])
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .spawn()
         .ok()?;
+    // ps lists itself: a child of this process, but no host's residue.
+    let own = ps.id();
+    let output = ps.wait_with_output().ok()?;
     let processes = String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| {
@@ -252,6 +256,9 @@ fn list() -> Option<Vec<Process>> {
             let ppid = fields.next()?.parse().ok()?;
             let pgid = fields.next()?.parse().ok()?;
             let state = fields.next()?;
+            if pid == own {
+                return None;
+            }
             Some(Process {
                 pid,
                 ppid,
@@ -299,11 +306,12 @@ fn sockets(dir: &Path, residue: &mut Residue) {
 }
 
 /// What is left in the hosts' temporary directory. tsx keeps its compile
-/// cache there (`tsx-<uid>`) on purpose, across runs; it is not residue.
+/// cache there (`tsx-<uid>`), and Node its own (`node-compile-cache`, which
+/// tsx turns on), on purpose, across runs; they are not residue.
 fn temporary(tmp: &Path, residue: &mut Residue) {
     for entry in std::fs::read_dir(tmp).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with("tsx-") {
+        if !name.starts_with("tsx-") && name != "node-compile-cache" {
             residue
                 .found
                 .push(format!("temporary file left: {}", entry.path().display()));
