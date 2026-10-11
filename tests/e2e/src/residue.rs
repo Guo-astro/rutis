@@ -305,13 +305,17 @@ fn sockets(dir: &Path, residue: &mut Residue) {
     }
 }
 
-/// What is left in the hosts' temporary directory. tsx keeps its compile
-/// cache there (`tsx-<uid>`), and Node its own (`node-compile-cache`, which
-/// tsx turns on), on purpose, across runs; they are not residue.
+/// What is left in the hosts' temporary directory. Tools keep some files
+/// there on purpose, across runs; they are not residue: tsx its compile
+/// cache (`tsx-<uid>`), Node its own (`node-compile-cache`, which tsx turns
+/// on), uv its locks (`uv-<hash>.lock`, in install scenarios).
 fn temporary(tmp: &Path, residue: &mut Residue) {
     for entry in std::fs::read_dir(tmp).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with("tsx-") && name != "node-compile-cache" {
+        let kept = name.starts_with("tsx-")
+            || name == "node-compile-cache"
+            || (name.starts_with("uv-") && name.ends_with(".lock"));
+        if !kept {
             residue
                 .found
                 .push(format!("temporary file left: {}", entry.path().display()));

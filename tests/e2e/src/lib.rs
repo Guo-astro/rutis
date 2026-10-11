@@ -133,6 +133,8 @@ pub enum Lang {
 pub struct Scenario {
     name: String,
     dir: PathBuf,
+    /// Installed mode ([`Scenario::installed`]).
+    installed: bool,
     hosts: RefCell<Vec<host::Started>>,
     ports: RefCell<Vec<u16>>,
     secrets: RefCell<Vec<String>>,
@@ -152,11 +154,27 @@ impl Scenario {
         Self {
             name: name.to_owned(),
             dir,
+            installed: false,
             hosts: RefCell::new(Vec::new()),
             ports: RefCell::new(Vec::new()),
             secrets: RefCell::new(Vec::new()),
             finished: Cell::new(false),
         }
+    }
+
+    /// A scenario in installed mode, for what a user installs (S9, #193):
+    /// the host and its runtimes come from the packages the scenario
+    /// installs, never from this checkout. Every program it starts gets a
+    /// new home directory (`home/` in the scenario, with the npm and uv
+    /// caches in it), none of this checkout's runtimes (no
+    /// `RUTIS_NODE_RUNTIME`, `RUTIS_PYTHON_PATH`), none of the caller's
+    /// `NODE_PATH`, `PYTHONPATH`, `VIRTUAL_ENV`, and a `PATH` without
+    /// `~/.cargo/bin` or this checkout's `target/`.
+    pub fn installed(name: &str) -> Self {
+        let mut scenario = Self::new(name);
+        scenario.installed = true;
+        std::fs::create_dir_all(scenario.dir.join("home")).expect("the scenario's home");
+        scenario
     }
 
     /// The scenario's directory.
@@ -412,14 +430,57 @@ impl Scenario {
         for name in ["TMPDIR", "TMP", "TEMP"] {
             command.env(name, &tmp);
         }
-        command
-            .env("RUTIS_NODE_RUNTIME", repo().join("node/rutis-runtime"))
-            .env("RUTIS_PYTHON_PATH", repo().join("python/rutis"));
+        if self.installed {
+            self.clean_environment(&mut command);
+        } else {
+            command
+                .env("RUTIS_NODE_RUNTIME", repo().join("node/rutis-runtime"))
+                .env("RUTIS_PYTHON_PATH", repo().join("python/rutis"));
+        }
         command.envs(env.iter().copied());
         let name = format!("host-{}", self.hosts.borrow().len() + 1);
         let (host, started) = Host::spawn(&name, command);
         self.hosts.borrow_mut().push(started);
         host
+    }
+
+    /// The environment of installed mode ([`Scenario::installed`]).
+    fn clean_environment(&self, command: &mut std::process::Command) {
+        for name in [
+            "RUTIS_NODE_RUNTIME",
+            "RUTIS_PYTHON_PATH",
+            "NODE_PATH",
+            "NODE_OPTIONS",
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "VIRTUAL_ENV",
+            "CONDA_PREFIX",
+            "UV_PROJECT_ENVIRONMENT",
+        ] {
+            command.env_remove(name);
+        }
+        let home = self.dir.join("home");
+        command
+            .env("HOME", &home)
+            .env("npm_config_cache", home.join(".npm"))
+            .env("npm_config_update_notifier", "false")
+            .env("npm_config_fund", "false")
+            .env("npm_config_audit", "false")
+            .env("UV_CACHE_DIR", home.join(".uv"))
+            .env("PIP_NO_CACHE_DIR", "1")
+            .env("PIP_DISABLE_PIP_VERSION_CHECK", "1");
+        #[cfg(windows)]
+        command
+            .env("USERPROFILE", &home)
+            .env("APPDATA", home.join("AppData/Roaming"))
+            .env("LOCALAPPDATA", home.join("AppData/Local"));
+        if let Some(path) = std::env::var_os("PATH") {
+            let target = repo().join("target");
+            let kept: Vec<PathBuf> = std::env::split_paths(&path)
+                .filter(|dir| !dir.ends_with(".cargo/bin") && !dir.starts_with(&target))
+                .collect();
+            command.env("PATH", std::env::join_paths(kept).expect("PATH"));
+        }
     }
 
     /// Run the residue checks and return what they found, without failing.
