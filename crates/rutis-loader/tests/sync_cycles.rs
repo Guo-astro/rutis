@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use rutis::{Ctx, FiberState};
 use rutis_bridge::runtime::LocalRuntime;
@@ -16,10 +17,13 @@ use rutis_loader::{
     Chain, EntryStatus, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver,
     RuntimeRowsPlugin, ServiceCatalog,
 };
-use rutis_test_support::{recv_within, until, HANG_GUARD};
+use rutis_test_support::{recv_within, Guard, HANG_GUARD};
 use serde_json::{json, Value};
 
-// Every wait is guarded by HANG_GUARD (Q7.1): a cycle the host misses
+/// Twice HANG_GUARD: several Node and Python runtimes start cold (#238).
+const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
+
+// Every wait has a hang guard (Q7.1): a cycle the host misses
 // hangs. The gate and each synchronous forward hold a worker of the test's
 // runtime while they wait; the tests use 8, twice what they hold at most.
 
@@ -210,7 +214,7 @@ impl HostDispatch for Gate {
         state.waiting.push(name.clone());
         changed.notify_all();
         let (state, timeout) = changed
-            .wait_timeout_while(state, HANG_GUARD, |state| {
+            .wait_timeout_while(state, COLD.0, |state| {
                 !state.open.contains(&name)
                     && !(state.parties > 0 && state.waiting.len() >= state.parties)
             })
@@ -278,7 +282,7 @@ fn call(root: &Ctx, name: &str, method: &str) -> mpsc::Receiver<Result<Value, St
 
 fn answer(result: &mpsc::Receiver<Result<Value, String>>, what: &str) -> Value {
     result
-        .recv_timeout(HANG_GUARD)
+        .recv_timeout(COLD.0)
         .unwrap_or_else(|_| panic!("{what} hangs: the runtimes wait on each other"))
         .unwrap_or_else(|error| panic!("{what} failed: {error}"))
 }
@@ -397,7 +401,7 @@ async fn two_node_runtimes_calling_each_other() {
         .collect();
     fixture.loader.reconcile(rows(rows_of), None).await.unwrap();
     let (loader, root) = (fixture.loader.clone(), fixture.root.clone());
-    until(
+    COLD.until(
         || {
             ["aw", "bw", "a", "b"].iter().all(|id| active(&loader, id))
                 && ["a_work", "b_work", "a_svc", "b_svc"]
@@ -477,7 +481,7 @@ async fn one_node_and_two_python_runtimes() {
         .await
         .unwrap();
     let (loader, root) = (fixture.loader.clone(), fixture.root.clone());
-    until(
+    COLD.until(
         || {
             ["n", "nb", "p1", "p2", "p2b"]
                 .iter()

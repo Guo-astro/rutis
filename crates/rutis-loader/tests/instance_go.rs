@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory, TypeKey};
 use rutis_bridge::session::{
@@ -14,10 +15,13 @@ use rutis_loader::{
     Build, Builtins, Chain, GoBinaries, GoResolver, GoRuntimes, Layer, Loader, LoaderOptions,
     LoaderPlugin, Patch, ServiceCatalog,
 };
-use rutis_test_support::eventually_with;
+use rutis_test_support::{Guard, HANG_GUARD};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
+
+/// Twice HANG_GUARD: the Go runtime starts cold (#238).
+const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 // ── Rust plugins ────────────────────────────────────────────────
 
@@ -43,7 +47,7 @@ impl Probe {
     }
 
     async fn wait_for(&self, line: &str) {
-        eventually_with(
+        COLD.eventually_with(
             || self.has(line).then_some(()),
             &format!("{line:?} recorded"),
             || format!("{:?}", self.0.lock().unwrap()),

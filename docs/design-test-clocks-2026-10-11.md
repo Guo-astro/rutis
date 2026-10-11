@@ -270,7 +270,7 @@ Node 22+ 有 `mock.timers`，Bun 有假定时器，但被测的心跳都跨 sock
 | `tests/bun_multilang.rs:313-320` | `loop { sleep(10ms) }` 无上限 | U | 外 | `eventually` |
 | `tests/instances.rs:390`、`tests/lifecycle.rs:154` | `eventually` 5 s | C | — | 共用函数 |
 | `tests/loader.rs:568`、`:592` | 5 s | C | — | `within` |
-| `tests/leases.rs:138`、`:377`、`:400` | 600 / 400 ms 停止延迟（夹具） | E | 外 | 夹具改为由测试放行；`:374` 提到的抖动：`quick()` 设 `jitter: 0.0` |
+| `tests/leases.rs:138`、`:377`、`:400` | 600 / 400 ms 停止延迟（夹具） | E | 外 | 夹具改为由测试放行；`:374` 提到的抖动：`quick()` 设 `jitter: 0.0`。**实现（第 2 个 PR，#278）与此不同**：只设 `jitter: 0.0`，延迟按 W 保留并标注 `// clock: widen`——`takeover` 的断言不管延迟多长都成立，延迟只撑开回归需要的窗口（延迟不够时只会漏报）；由测试放行要改 Node、Go 两份夹具，留作后续 |
 | `tests/fixtures/go/cmd/logger/main.go:34` | 夹具计时 | E | 外 | 同上，由测试放行 |
 | 夹具 sleep 其余 4 处 | 模拟慢操作 | H | — | 不改 |
 | 等待辅助函数：`eventually` 7 份、`until` 4 份、`Probe::wait_for` 约 9 份、`multilang_go` 的 `Fixture::until`（超时时输出状态，保留为 `eventually_with` 的用法范例） | 10–30 s | D | — | 第 2 个 PR 换成共用函数 |
@@ -360,3 +360,5 @@ Node 22+ 有 `mock.timers`，Bun 有假定时器，但被测的心跳都跨 sock
 ### A.9 结果取决于夹具时长的 H（按 A 处理）
 
 `crates/rutis-loader/tests/runtime_rows.rs:994`、`bun/rutis-bun/test/fixtures/crashing-worker.ts:12`、`bun/rutis-bun/test/fixtures/channel-relay.ts:15`、`crates/rutis-loader/tests/leases.rs:138`。
+
+第 2 个 PR（#278）的处理：`runtime_rows.rs:994` 的夹具没改——`:1101`、`:1119` 改写后不再用时间，`later` 的时长与结果无关；`leases.rs:138` 按 W 保留（见 A.2）。

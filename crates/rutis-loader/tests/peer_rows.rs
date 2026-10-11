@@ -198,6 +198,36 @@ async fn rows_wait_for_the_host_then_run_there_once() {
         1,
         "started once, on its resolved declarations"
     );
+    // Nor again after it ran: a marker, another row on the same host. The
+    // loader's operation lock serializes this reconcile with the resolving
+    // again that would restart `g` (`PeerRowsPlugin` refreshes the rows of
+    // the host's offer, then provides `PeerRows`), so once the marker runs,
+    // such a restart has happened.
+    nodes
+        .loader
+        .reconcile(
+            vec![Layer::new(
+                "rows",
+                serde_json::from_value(json!([{ "insert": [
+                    { "id": "g", "name": "peer:mac/greeter", "config": { "text": "hi" } },
+                    { "id": "x", "name": "peer:mac/not-installed", "config": {} },
+                    { "id": "h", "name": "peer:mac/greeter", "config": { "text": "marker", "as": "h" } }
+                ] }]))
+                .unwrap(),
+            )],
+            None,
+        )
+        .await
+        .unwrap();
+    eventually(|| greeting_as(&nodes.mac, "h"), "the marker row").await;
+    assert_eq!(nodes.starts.load(Ordering::SeqCst), 2, "g once, h once");
+    assert_eq!(nodes.loader.get("g").unwrap().plugin.unwrap(), fibers[1]);
+    assert_eq!(
+        nodes.transitions.loads(&fibers).await,
+        1,
+        "{:?}",
+        fibers.map(|fiber| nodes.transitions.of(fiber))
+    );
     let schema = nodes.loader.schema_of("peer:mac/greeter").await.unwrap();
     assert_eq!(schema.unwrap()["properties"]["text"]["type"], "string");
 

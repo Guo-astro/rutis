@@ -12,8 +12,11 @@ use rutis_bridge::session::{Reply, Value as RpcValue};
 use rutis_loader::{
     Chain, Layer, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin,
 };
-use rutis_test_support::eventually_with;
+use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
+
+/// Twice HANG_GUARD: the Python runtime starts cold (#238).
+const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 #[derive(Clone, Default)]
 struct Probe(Arc<Mutex<Vec<String>>>);
@@ -32,7 +35,7 @@ impl HostDispatch for Probe {
 
 impl Probe {
     async fn wait_for(&self, line: &str) {
-        eventually_with(
+        COLD.eventually_with(
             || {
                 self.0
                     .lock()

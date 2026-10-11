@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, PluginFactory, TypeKey};
 use rutis_bridge::runtime::LocalRuntime;
@@ -15,10 +16,13 @@ use rutis_loader::{
     Build, Builtins, Chain, EntryInfo, EntryStatus, Instance, InstanceResult, Layer, Loader,
     LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
 };
-use rutis_test_support::eventually_with;
+use rutis_test_support::{Guard, HANG_GUARD};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
+
+/// Twice HANG_GUARD: the Node and Python runtimes start cold (#238).
+const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 // ── The language rows ───────────────────────────────────────────
 
@@ -81,7 +85,7 @@ impl Probe {
     }
 
     async fn wait_for(&self, line: &str) {
-        eventually_with(
+        COLD.eventually_with(
             || self.has(line).then_some(()),
             &format!("{line:?} recorded"),
             || format!("{:?}", self.0.lock().unwrap()),

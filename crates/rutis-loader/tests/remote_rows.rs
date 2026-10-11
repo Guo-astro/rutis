@@ -8,6 +8,7 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
@@ -20,9 +21,12 @@ use rutis_bridge::{Credential, IdentityPlugin, LinkConfig, LinkPlugin, StaticIde
 use rutis_loader::{
     Chain, Layer, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin,
 };
-use rutis_test_support::{eventually, within};
+use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
 use tokio::io::AsyncBufReadExt;
+
+/// Twice HANG_GUARD: the remote runtimes start cold (#238).
+const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 const WEATHER: &str = r#"
 inject = ["clock"]
@@ -79,19 +83,20 @@ async fn remote_python(project: &Path) -> (tokio::process::Child, String) {
         .spawn()
         .unwrap();
     let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
-    let address = within("the runtime's address", async {
-        loop {
-            let line = lines
-                .next_line()
-                .await
-                .unwrap()
-                .expect("the runtime's address");
-            if let Some(address) = line.strip_prefix("rutis: listening on ") {
-                break address.to_owned();
+    let address = COLD
+        .within("the runtime's address", async {
+            loop {
+                let line = lines
+                    .next_line()
+                    .await
+                    .unwrap()
+                    .expect("the runtime's address");
+                if let Some(address) = line.strip_prefix("rutis: listening on ") {
+                    break address.to_owned();
+                }
             }
-        }
-    })
-    .await;
+        })
+        .await;
     // What the runtime reports later goes to the test's output.
     tokio::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {
@@ -146,11 +151,12 @@ async fn a_remote_python_runtime_runs_loader_rows() {
         .unwrap();
 
     // The row runs over there, and its service is here.
-    let weather = eventually(
-        || root.get_as::<dyn HostDispatch>(host_key("weather")),
-        "the remote row's service",
-    )
-    .await;
+    let weather = COLD
+        .eventually(
+            || root.get_as::<dyn HostDispatch>(host_key("weather")),
+            "the remote row's service",
+        )
+        .await;
     assert!(handle.is_remote() && handle.supports("leaf"));
     let today = weather.invoke("today", json!([]).into()).unwrap();
     assert_eq!(today.json().unwrap(), json!("remote at 1"));
@@ -158,7 +164,7 @@ async fn a_remote_python_runtime_runs_loader_rows() {
 
     // The runtime goes away: its rows stop and their services go.
     runtime_process.start_kill().unwrap();
-    eventually(
+    COLD.eventually(
         || {
             root.get_as::<dyn HostDispatch>(host_key("weather"))
                 .is_none()
@@ -167,7 +173,7 @@ async fn a_remote_python_runtime_runs_loader_rows() {
         "the withdrawal",
     )
     .await;
-    eventually(
+    COLD.eventually(
         || {
             matches!(
                 *link_state.borrow(),
@@ -219,19 +225,20 @@ async fn a_remote_node_runtime_resolves_and_runs_npm_rows() {
         .spawn()
         .unwrap();
     let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
-    let address = within("the runtime's address", async {
-        loop {
-            let line = lines
-                .next_line()
-                .await
-                .unwrap()
-                .expect("the runtime's address");
-            if let Some(address) = line.strip_prefix("rutis: listening on ") {
-                break address.to_owned();
+    let address = COLD
+        .within("the runtime's address", async {
+            loop {
+                let line = lines
+                    .next_line()
+                    .await
+                    .unwrap()
+                    .expect("the runtime's address");
+                if let Some(address) = line.strip_prefix("rutis: listening on ") {
+                    break address.to_owned();
+                }
             }
-        }
-    })
-    .await;
+        })
+        .await;
     // What the runtime reports later goes to the test's output.
     tokio::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {
@@ -279,11 +286,12 @@ async fn a_remote_node_runtime_resolves_and_runs_npm_rows() {
         .reconcile(vec![Layer::new("rows", patches)], None)
         .await
         .unwrap();
-    let weather = eventually(
-        || root.get_as::<dyn HostDispatch>(host_key("weather")),
-        "the remote npm row's service",
-    )
-    .await;
+    let weather = COLD
+        .eventually(
+            || root.get_as::<dyn HostDispatch>(host_key("weather")),
+            "the remote npm row's service",
+        )
+        .await;
     assert_eq!(
         weather
             .invoke("today", json!([]).into())
@@ -293,17 +301,18 @@ async fn a_remote_node_runtime_resolves_and_runs_npm_rows() {
         json!("node at 1")
     );
     // A package the runtime does not have is unresolved, not a failure.
-    let missing = eventually(
-        || {
-            let entry = loader.get("x")?;
-            match entry.status {
-                rutis_loader::EntryStatus::Unresolved(error) => Some(error),
-                _ => None,
-            }
-        },
-        "the missing package unresolved",
-    )
-    .await;
+    let missing = COLD
+        .eventually(
+            || {
+                let entry = loader.get("x")?;
+                match entry.status {
+                    rutis_loader::EntryStatus::Unresolved(error) => Some(error),
+                    _ => None,
+                }
+            },
+            "the missing package unresolved",
+        )
+        .await;
     assert!(
         matches!(missing, rutis_loader::LoaderError::NotFound { .. }),
         "{missing:?}"
@@ -365,16 +374,18 @@ async fn remote_rows_share_the_runtime_session() {
         )
         .await
         .unwrap();
-    let weather = eventually(
-        || root.get_as::<dyn HostDispatch>(host_key("weather")),
-        "weather",
-    )
-    .await;
-    let second = eventually(
-        || root.get_as::<dyn HostDispatch>(host_key("second")),
-        "second",
-    )
-    .await;
+    let weather = COLD
+        .eventually(
+            || root.get_as::<dyn HostDispatch>(host_key("weather")),
+            "weather",
+        )
+        .await;
+    let second = COLD
+        .eventually(
+            || root.get_as::<dyn HostDispatch>(host_key("second")),
+            "second",
+        )
+        .await;
     assert_eq!(
         weather.origin(),
         second.origin(),
@@ -390,7 +401,7 @@ async fn remote_rows_share_the_runtime_session() {
         )
         .await
         .unwrap();
-    eventually(
+    COLD.eventually(
         || {
             root.get_as::<dyn HostDispatch>(host_key("weather"))
                 .is_none()

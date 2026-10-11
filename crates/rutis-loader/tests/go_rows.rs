@@ -14,8 +14,11 @@ use rutis_loader::{
     Chain, EntryStatus, GoBinaries, GoResolver, GoRuntimeState, GoRuntimes, GoRuntimesHandle,
     Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
 };
-use rutis_test_support::{eventually, eventually_with, until, within};
+use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
+
+/// Twice HANG_GUARD: Go runtimes start cold, one per binary (#238).
+const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 /// The fixture binaries (`tests/fixtures/go/cmd/*`), built once.
 fn built() -> &'static Path {
@@ -217,7 +220,7 @@ async fn rows_find_their_binary_and_call_across_binaries() {
         .await
         .unwrap();
     let loader = fixture.loader.clone();
-    until(
+    COLD.until(
         || {
             state(&loader, "ping") == Some(FiberState::Active)
                 && state(&loader, "caller") == Some(FiberState::Active)
@@ -297,7 +300,7 @@ async fn a_plugin_in_two_binaries_is_named_with_its_runtime() {
         .await
         .unwrap();
     let loader = fixture.loader.clone();
-    until(
+    COLD.until(
         || state(&loader, "p") == Some(FiberState::Active),
         "the qualified row",
     )
@@ -338,7 +341,7 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
     let loader = fixture.loader.clone();
     // A row's services are published once its runtime reports them, after
     // the row is active.
-    until(
+    COLD.until(
         || {
             ["ping", "caller", "spare"].iter().all(|id| {
                 state(&loader, id) == Some(FiberState::Active)
@@ -350,7 +353,7 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
     .await;
     let crashed = call(&fixture.root, "ping", "crash", json!([])).await;
     let runtimes = fixture.runtimes.clone();
-    eventually_with(
+    COLD.eventually_with(
         || {
             matches!(
                 runtime_state(&runtimes, "go-netkit"),
@@ -365,7 +368,7 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
         },
     )
     .await;
-    until(
+    COLD.until(
         || {
             state(&loader, "ping") != Some(FiberState::Active)
                 && state(&loader, "caller") != Some(FiberState::Active)
@@ -401,7 +404,7 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
         .await
         .unwrap();
     let runtimes = fixture.runtimes.clone();
-    until(
+    COLD.until(
         || runtime_state(&runtimes, "go-spare") == Some(GoRuntimeState::NotStarted),
         "the idle stop of spare",
     )
@@ -412,7 +415,7 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
     ));
     // A restart does.
     fixture.runtimes.restart("go-netkit").await.unwrap();
-    until(
+    COLD.until(
         || {
             ["ping", "caller"].iter().all(|id| {
                 state(&loader, id) == Some(FiberState::Active)
@@ -447,7 +450,7 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
         .await
         .unwrap();
     let loader = fixture.loader.clone();
-    until(
+    COLD.until(
         || {
             state(&loader, "ping") == Some(FiberState::Active)
                 && state(&loader, "spare") == Some(FiberState::Active)
@@ -455,7 +458,9 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
         "the rows",
     )
     .await;
-    let ping = eventually(|| service(&fixture.root, "ping"), "ping's service").await;
+    let ping = COLD
+        .eventually(|| service(&fixture.root, "ping"), "ping's service")
+        .await;
     // In use: it keeps running past the idle time. The marker: spare, used
     // no longer, stops once idle. go-netkit started no later, so unused it
     // would be idle as long: a sweep decides every runtime's stop in one
@@ -468,7 +473,7 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
         .await
         .unwrap();
     let runtimes = fixture.runtimes.clone();
-    until(
+    COLD.until(
         || runtime_state(&runtimes, "go-spare") == Some(GoRuntimeState::NotStarted),
         "the idle stop of spare",
     )
@@ -491,7 +496,7 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
     );
 
     fixture.loader.reconcile(layer(vec![]), None).await.unwrap();
-    until(
+    COLD.until(
         || runtime_state(&runtimes, "go-netkit") == Some(GoRuntimeState::NotStarted),
         "the idle stop",
     )
@@ -502,7 +507,7 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
         .reconcile(layer(vec![row("ping", "go:ping")]), None)
         .await
         .unwrap();
-    until(
+    COLD.until(
         || state(&loader, "ping") == Some(FiberState::Active),
         "the row again",
     )
@@ -528,7 +533,7 @@ async fn a_replaced_binary_takes_effect_when_its_runtime_restarts() {
         .await
         .unwrap();
     let loader = fixture.loader.clone();
-    until(
+    COLD.until(
         || state(&loader, "ping") == Some(FiberState::Active),
         "the row",
     )
@@ -565,7 +570,7 @@ async fn a_replaced_binary_takes_effect_when_its_runtime_restarts() {
 
     fixture.runtimes.restart("go-netkit").await.unwrap();
     fixture.loader.reload("extra").await.unwrap();
-    until(
+    COLD.until(
         || {
             state(&loader, "ping") == Some(FiberState::Active)
                 && state(&loader, "extra") == Some(FiberState::Active)
@@ -573,7 +578,7 @@ async fn a_replaced_binary_takes_effect_when_its_runtime_restarts() {
         "both rows on the new binary",
     )
     .await;
-    until(
+    COLD.until(
         || {
             let service = service(&fixture.root, "ping");
             service
@@ -598,7 +603,7 @@ async fn a_new_build_takes_effect_when_its_runtime_restarts() {
         .await
         .unwrap();
     let loader = fixture.loader.clone();
-    until(
+    COLD.until(
         || state(&loader, "ping") == Some(FiberState::Active),
         "the row",
     )
@@ -608,7 +613,7 @@ async fn a_new_build_takes_effect_when_its_runtime_restarts() {
     let build = install(&builds, "netkit2", "netkit-2");
     fixture.resolver.replace("go-netkit", &build);
     fixture.runtimes.restart("go-netkit").await.unwrap();
-    until(
+    COLD.until(
         || {
             service(&fixture.root, "ping")
                 .and_then(|service| service.invoke("echo", json!(["new"]).into()).ok())
@@ -637,7 +642,7 @@ async fn a_restart_given_up_half_way_leaves_the_runtime_usable() {
         .await
         .unwrap();
     let loader = fixture.loader.clone();
-    until(
+    COLD.until(
         || state(&loader, "ping") == Some(FiberState::Active),
         "the row",
     )
@@ -649,18 +654,18 @@ async fn a_restart_given_up_half_way_leaves_the_runtime_usable() {
         fixture.runtimes.restart("go-netkit"),
     )
     .await;
-    until(
+    COLD.until(
         || state(&loader, "ping") == Some(FiberState::Active),
         "the row again",
     )
     .await;
-    within(
+    COLD.within(
         "a restart after one given up",
         fixture.runtimes.restart("go-netkit"),
     )
     .await
     .unwrap();
-    until(
+    COLD.until(
         || state(&loader, "ping") == Some(FiberState::Active),
         "the row after the restart",
     )

@@ -8,6 +8,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rutis::{Ctx, FiberState, FiberView};
 use rutis_bridge::runtime::LocalRuntime;
@@ -17,8 +18,11 @@ use rutis_loader::{
     Chain, EntryStatus, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver,
     RuntimeRowsPlugin, ServiceCatalog,
 };
-use rutis_test_support::{eventually_with, until};
+use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
+
+/// Twice HANG_GUARD: the Node and Python runtimes start cold (#238).
+const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 // ── The plugins, once per language ──────────────────────────────
 
@@ -184,7 +188,7 @@ impl Probe {
     }
 
     async fn wait_for(&self, line: &str) {
-        eventually_with(
+        COLD.eventually_with(
             || self.position(line).map(|_| ()),
             &format!("{line:?} recorded"),
             || format!("{:?}", self.lines()),
@@ -399,7 +403,7 @@ async fn a_provider_that_goes_stops_only_its_users() {
         let loader = &fixture.loader;
         let all = all_rows(&fixture);
         loader.reconcile(rows(all.clone()), None).await.unwrap();
-        until(
+        COLD.until(
             || {
                 ["pp", "pc", "pl", "jp", "jc", "jl"]
                     .iter()
@@ -418,7 +422,7 @@ async fn a_provider_that_goes_stops_only_its_users() {
         };
         let provider_bye = format!("{prefix} provider: bye");
         fixture.probe.wait_for(&provider_bye).await;
-        until(
+        COLD.until(
             || {
                 users
                     .iter()
@@ -474,7 +478,7 @@ async fn injected_services_gate_the_plugin() {
         .unwrap();
     let fiber = |id: &str| loader.get(id).unwrap().plugin.unwrap();
     let first = [fiber("pg"), fiber("jg")];
-    until(
+    COLD.until(
         || {
             ["pg", "jg"].iter().all(|id| {
                 loader
@@ -485,6 +489,7 @@ async fn injected_services_gate_the_plugin() {
         "both rows to know their injects",
     )
     .await;
+    // The states now; that they stay so until `llm` comes, `loads` checks below.
     assert_eq!(row_state(loader, "pg"), Some(FiberState::Pending));
     assert_eq!(row_state(loader, "jg"), Some(FiberState::Pending));
 
@@ -509,7 +514,7 @@ async fn injected_services_gate_the_plugin() {
     llm.dispose().await.unwrap();
     fixture.probe.wait_for("py gated: bye").await;
     fixture.probe.wait_for("js gated: bye").await;
-    until(
+    COLD.until(
         || {
             row_state(loader, "pg") == Some(FiberState::Pending)
                 && row_state(loader, "jg") == Some(FiberState::Pending)
@@ -537,7 +542,7 @@ async fn a_dead_python_process_stops_only_its_rows() {
     fixture.probe.wait_for("py local: native").await;
     all.push(py_row("px", "py_exit"));
     loader.reconcile(rows(all), None).await.unwrap();
-    until(
+    COLD.until(
         || {
             ["pp", "pc", "pl", "jc"]
                 .iter()

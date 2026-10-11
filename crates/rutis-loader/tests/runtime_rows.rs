@@ -645,6 +645,7 @@ async fn rows_resolved_offline_wait_for_what_they_inject() {
         "the row to know its injects",
     )
     .await;
+    // The state now; that it stays so until `greeter` comes, `loads` checks below.
     assert_eq!(row_state(&loader, "c"), Some(FiberState::Pending));
     assert!(probe.take().is_empty());
 
@@ -1036,6 +1037,7 @@ const QUIT: &str = r#"
 export const name = 'quit'
 export const inject = ['probe']
 export function apply(ctx, config) {
+  // A marker for the test: each start of the plugin.
   ctx.probe.record(`${config.tag}: start`)
   ctx.effect(() => () => ctx.probe.record(`${config.tag}: bye`))
   const quit = () => ctx.fiber.dispose()

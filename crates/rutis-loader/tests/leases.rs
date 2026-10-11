@@ -23,9 +23,12 @@ use rutis_bridge::{
 use rutis_loader::{
     Chain, Layer, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin,
 };
-use rutis_test_support::{eventually, within};
+use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::json;
 use tokio::io::AsyncBufReadExt;
+
+/// Twice HANG_GUARD: the remote runtimes (Python, Node, Go) start cold (#238).
+const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
@@ -58,7 +61,7 @@ impl Remote {
     }
 
     async fn wait_for(&self, line: &str) {
-        eventually(
+        COLD.eventually(
             || self.lines().iter().any(|l| l == line).then_some(()),
             &format!("{line:?} in {:?}", self.lines()),
         )
@@ -168,19 +171,20 @@ async fn remote_with_start_delay(language: Language, start_delay_ms: u64) -> Rem
         .spawn()
         .unwrap();
     let mut lines = tokio::io::BufReader::new(process.stderr.take().unwrap()).lines();
-    let address = within("the runtime's address", async {
-        loop {
-            let line = lines
-                .next_line()
-                .await
-                .unwrap()
-                .expect("the runtime's address");
-            if let Some(address) = line.strip_prefix("rutis: listening on ") {
-                break address.to_owned();
+    let address = COLD
+        .within("the runtime's address", async {
+            loop {
+                let line = lines
+                    .next_line()
+                    .await
+                    .unwrap()
+                    .expect("the runtime's address");
+                if let Some(address) = line.strip_prefix("rutis: listening on ") {
+                    break address.to_owned();
+                }
             }
-        }
-    })
-    .await;
+        })
+        .await;
     // What the runtime reports later goes to the test's output.
     tokio::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {
@@ -300,12 +304,13 @@ async fn takeover(language: Language, stop_delay_ms: u64) {
         stop_a < start_b,
         "the old lease goes before the new one starts: {lines:?}"
     );
-    eventually(
+    COLD.eventually(
         || matches!(*first.states.borrow(), LinkState::Stopped { .. }).then_some(()),
         "the replaced controller stopped without reconnecting",
     )
     .await;
-    assert_eq!(lines, ["start a", "stop a", "start b"]);
+    // Read again: once a stopped, it adds nothing, so b keeps its lease.
+    assert_eq!(remote.lines(), ["start a", "stop a", "start b"]);
     first.link.dispose().await.unwrap();
     drop(second);
 }
@@ -314,22 +319,23 @@ async fn a_reconnecting_controller_gets_a_new_lease(language: Language) {
     let remote = remote(language).await;
     let controller = controller(&remote, "a").await;
     remote.wait_for("start a").await;
-    let peer = eventually(
-        || controller.root.get_as::<Peer>(peer_key(&id("remote"))),
-        "the peer",
-    )
-    .await;
+    let peer = COLD
+        .eventually(
+            || controller.root.get_as::<Peer>(peer_key(&id("remote"))),
+            "the peer",
+        )
+        .await;
     let generation = peer.generation();
     peer.connection()
         .close(rutis_bridge::session::Error::Transport("cut".into()));
     drop(peer);
     remote.wait_for("stop a").await;
-    eventually(
+    COLD.eventually(
         || matches!(*controller.states.borrow(), LinkState::Ready { generation: g } if g > generation).then_some(()),
         "the link back",
     )
     .await;
-    eventually(
+    COLD.eventually(
         || (remote.lines().iter().filter(|l| *l == "start a").count() == 2).then_some(()),
         "the row loaded again",
     )

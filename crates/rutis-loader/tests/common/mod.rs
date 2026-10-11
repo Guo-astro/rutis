@@ -304,12 +304,24 @@ pub fn state(loader: &Loader, id: &str) -> Option<FiberState> {
 }
 
 /// The state changes of every fiber under a root (`FiberStatusChanged`).
-/// One fiber's changes arrive in the order it made them: they are queued
-/// under its transition lock (D24) and dispatched on one event key in
-/// emission order (D31). So once a change of a fiber is here, every earlier
-/// change of that fiber is too.
+///
+/// One fiber's changes arrive in the order it made them: the fiber's own
+/// drive task (`drive` in crates/rutis/src/fiber.rs) changes its state under
+/// its transition lock, numbering each change (`seq`, from 1) and queueing
+/// it (`set_state`, D24), then emits the queue outside the lock
+/// (`flush_status`), on one event key, dispatched in emission order (D31).
+/// That is not assumed here but checked: [`Transitions::loads`] asserts that
+/// each fiber's changes arrived numbered 1, 2, 3, … with none missing (a
+/// listener registered too late would miss the first). So once a change of
+/// a fiber is here, every earlier change of it is too.
+///
+/// What it is for: a row must not start before what it injects. The rows
+/// of these tests use the injected service in their apply, so a start
+/// without it fails (Failed is neither Active nor Disposed, and
+/// [`Transitions::loads`] then waits until the hang guard), and a start
+/// that is undone by a restart is counted.
 #[derive(Clone, Default)]
-pub struct Transitions(Arc<Mutex<Vec<(PluginId, FiberState)>>>);
+pub struct Transitions(Arc<Mutex<Vec<(PluginId, u64, FiberState)>>>);
 
 impl Transitions {
     pub fn on(root: &Ctx) -> Self {
@@ -330,8 +342,8 @@ impl Transitions {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(id, _)| *id == plugin)
-            .map(|(_, state)| *state)
+            .filter(|(id, _, _)| *id == plugin)
+            .map(|(_, _, state)| *state)
             .collect()
     }
 
@@ -355,10 +367,21 @@ impl Transitions {
             "the fibers to settle",
         )
         .await;
-        plugins
-            .iter()
-            .flat_map(|plugin| self.of(*plugin))
-            .filter(|state| *state == FiberState::Loading)
+        let seen = self.0.lock().unwrap().clone();
+        for plugin in plugins {
+            let numbers: Vec<u64> = seen
+                .iter()
+                .filter(|(id, _, _)| id == plugin)
+                .map(|(_, seq, _)| *seq)
+                .collect();
+            let expected: Vec<u64> = (1..=numbers.len() as u64).collect();
+            assert_eq!(
+                numbers, expected,
+                "{plugin:?}: changes missed or out of order"
+            );
+        }
+        seen.iter()
+            .filter(|(id, _, state)| plugins.contains(id) && *state == FiberState::Loading)
             .count()
     }
 }
@@ -369,7 +392,7 @@ impl Listener<FiberStatusChanged> for Transitions {
         _ctx: &'a Ctx,
         e: &'a FiberStatusChanged,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        self.0.lock().unwrap().push((e.plugin_id, e.to));
+        self.0.lock().unwrap().push((e.plugin_id, e.seq, e.to));
         Box::pin(async { Ok(None) })
     }
 }

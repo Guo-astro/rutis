@@ -9,6 +9,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use rutis::{Ctx, FiberState};
 use rutis_bridge::runtime::LocalRuntime;
@@ -18,8 +19,11 @@ use rutis_loader::{
     Chain, EntryStatus, GoBinaries, GoResolver, GoRuntimes, Layer, Loader, LoaderOptions,
     LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
 };
-use rutis_test_support::eventually_with;
+use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
+
+/// Twice HANG_GUARD: the Node, Python and Go runtimes start cold (#238).
+const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 const PY_PROVIDER: &str = r#"
 class Weather:
@@ -110,7 +114,7 @@ impl Probe {
     }
 
     async fn wait_for(&self, line: &str) {
-        eventually_with(
+        COLD.eventually_with(
             || self.position(line).map(|_| ()),
             &format!("{line:?} recorded"),
             || format!("{:?}", self.lines()),
@@ -249,30 +253,32 @@ impl Fixture {
     }
 
     /// Wait for `done`; on a timeout, say where every row and Go runtime is.
+    /// Three runtimes start cold together (#238): three times HANG_GUARD.
     async fn wait_until(&self, what: &str, mut done: impl FnMut() -> bool) {
-        eventually_with(
-            || done().then_some(()),
-            what,
-            || {
-                let rows: Vec<String> = self
-                    .loader
-                    .entries()
-                    .into_iter()
-                    .map(|entry| format!("{}: {:?}", entry.id, entry.status))
-                    .collect();
-                let runtimes: Vec<String> = self
-                    .go
-                    .runtimes()
-                    .into_iter()
-                    .map(|runtime| format!("{}: {:?}", runtime.name, runtime.state))
-                    .collect();
-                format!(
-                    "recorded: {:?}\nrows: {rows:#?}\ngo runtimes: {runtimes:?}",
-                    self.probe.lines()
-                )
-            },
-        )
-        .await
+        Guard(HANG_GUARD * 3)
+            .eventually_with(
+                || done().then_some(()),
+                what,
+                || {
+                    let rows: Vec<String> = self
+                        .loader
+                        .entries()
+                        .into_iter()
+                        .map(|entry| format!("{}: {:?}", entry.id, entry.status))
+                        .collect();
+                    let runtimes: Vec<String> = self
+                        .go
+                        .runtimes()
+                        .into_iter()
+                        .map(|runtime| format!("{}: {:?}", runtime.name, runtime.state))
+                        .collect();
+                    format!(
+                        "recorded: {:?}\nrows: {rows:#?}\ngo runtimes: {runtimes:?}",
+                        self.probe.lines()
+                    )
+                },
+            )
+            .await
     }
 }
 
@@ -401,6 +407,7 @@ async fn injected_services_gate_a_go_plugin() {
         .await
         .unwrap();
     let first = loader.get("gg").unwrap().plugin.unwrap();
+    // The state now; that it stays so until `llm` comes, `loads` checks below.
     assert_eq!(row_state(loader, "gg"), Some(FiberState::Pending));
     let llm = fixture
         .root
