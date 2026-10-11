@@ -89,10 +89,11 @@ pub(crate) fn check(
     hosts: &[Started],
     ports: &[u16],
     secrets: &[String],
+    wait: Duration,
 ) -> Residue {
     let mut residue = Residue::default();
     stop_running(hosts, &mut residue);
-    let left = processes(scenario, hosts, crate::hang_guard(), &mut residue);
+    let left = processes(scenario, hosts, wait, &mut residue);
     // Reported, then ended: a failed scenario leaves nothing running.
     for process in &left {
         // SAFETY: kill(2) on a process just listed as running and the
@@ -295,12 +296,30 @@ struct Process {
 /// those whose marker is `ours`; the hosts and the processes of their
 /// groups; and the children of all these, transitively. A process with
 /// another marker never belongs (another scenario's, or another host's).
+///
+/// The hosts' ids count only while they still name the hosts: a host's
+/// pid while it is a child of this process (running, or exited and not
+/// yet waited for); its group while no other process has its pid (a pid
+/// is not given out while a group of that id has members). Once a host
+/// has been waited for, its pid may be another program's.
 #[cfg(unix)]
 fn members<'a>(
     processes: &'a [Process],
     ours: &dyn Fn(&str) -> bool,
     hosts: &[u32],
 ) -> Vec<&'a Process> {
+    let me = std::process::id();
+    let holder = |pid: u32| processes.iter().find(|process| process.pid == pid);
+    let pids: Vec<u32> = hosts
+        .iter()
+        .copied()
+        .filter(|&pid| holder(pid).is_some_and(|process| process.ppid == me))
+        .collect();
+    let groups: Vec<u32> = hosts
+        .iter()
+        .copied()
+        .filter(|&pid| pids.contains(&pid) || holder(pid).is_none())
+        .collect();
     let candidate =
         |process: &Process| !process.zombie && process.marker.as_deref().is_none_or(ours);
     let mut found: HashSet<u32> = processes
@@ -308,8 +327,8 @@ fn members<'a>(
         .filter(|process| candidate(process))
         .filter(|process| {
             process.marker.is_some()
-                || hosts.contains(&process.pid)
-                || hosts.contains(&process.pgid)
+                || pids.contains(&process.pid)
+                || groups.contains(&process.pgid)
         })
         .map(|process| process.pid)
         .collect();
@@ -502,7 +521,19 @@ fn procargs(pid: libc::c_int) -> Option<(String, Option<String>)> {
             _ => 1 << 20,
         }
     });
-    let mut buffer = vec![0u8; argmax];
+    // One buffer per thread, reused: the residue checks list every
+    // process every 50 ms while they wait.
+    thread_local! {
+        static BUFFER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    BUFFER.with_borrow_mut(|buffer| {
+        buffer.resize(argmax, 0);
+        procargs_into(pid, buffer)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn procargs_into(pid: libc::c_int, buffer: &mut [u8]) -> Option<(String, Option<String>)> {
     let mut size = buffer.len();
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
     // SAFETY: sysctl(3) writing at most `size` bytes into the buffer.
@@ -519,7 +550,7 @@ fn procargs(pid: libc::c_int) -> Option<(String, Option<String>)> {
     if ok != 0 || size < 4 {
         return None;
     }
-    buffer.truncate(size);
+    let buffer = &buffer[..size];
     let argc = i32::from_ne_bytes(buffer[..4].try_into().unwrap()).max(0) as usize;
     let mut strings = buffer[4..].split(|&byte| byte == 0);
     let _executable = strings.next()?;
@@ -736,7 +767,14 @@ mod tests {
         let dir = crate::root().join(&scenario);
         std::fs::create_dir_all(&dir).unwrap();
         let begun = Instant::now();
-        let residue = check(&scenario, &dir, std::slice::from_ref(&started), &[], &[]);
+        let residue = check(
+            &scenario,
+            &dir,
+            std::slice::from_ref(&started),
+            &[],
+            &[],
+            crate::hang_guard(),
+        );
         // Killed, not waited out: well within the hang guard.
         assert!(begun.elapsed() < crate::hang_guard(), "{residue:?}");
         assert_eq!(residue.found.len(), 1, "{residue:?}");
@@ -807,7 +845,14 @@ mod tests {
         host.expect("token=");
         host.wait_exit();
 
-        let residue = check(&scenario, &dir, &[started], &[port], &["e2e-secret".into()]);
+        let residue = check(
+            &scenario,
+            &dir,
+            &[started],
+            &[port],
+            &["e2e-secret".into()],
+            crate::hang_guard(),
+        );
         let report = residue.report();
         assert!(report.contains("socket file"), "{report}");
         assert!(report.contains(&format!("port {port}")), "{report}");

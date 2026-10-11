@@ -73,3 +73,86 @@ fn a_proxy_relays_cuts_and_restores() {
     server.join().expect("the echo server");
     drop(proxy);
 }
+
+/// A client that sends its request, half-closes, then reads the reply
+/// gets the reply: an end of stream is passed on as a half-close, not as
+/// the end of the connection.
+#[test]
+fn a_half_close_is_passed_on() {
+    let s = Scenario::new("proxy-half-close");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let target = listener.local_addr().unwrap();
+    // Reads the request to its end, then answers.
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("the server's accept");
+        stream.set_read_timeout(Some(hang_guard())).unwrap();
+        let mut request = String::new();
+        stream
+            .read_to_string(&mut request)
+            .expect("the request, to its end");
+        write!(stream, "got {request}").expect("the reply");
+    });
+    let proxy = s.proxy(target);
+
+    let mut stream = TcpStream::connect(proxy.addr()).unwrap();
+    stream.set_read_timeout(Some(hang_guard())).unwrap();
+    stream.write_all(b"request").unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).expect("the reply");
+    assert_eq!(reply, "got request");
+
+    server.join().expect("the server");
+    drop(stream);
+    s.finish();
+}
+
+/// A cut in the middle of a transfer ends it on both sides: the client
+/// sees its connection end, the server's writes fail.
+#[test]
+fn a_cut_ends_a_transfer_in_progress() {
+    let s = Scenario::new("proxy-cut-transfer");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let target = listener.local_addr().unwrap();
+    // Writes until its connection is closed.
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("the server's accept");
+        let chunk = [b'x'; 4096];
+        while stream.write_all(&chunk).is_ok() {}
+    });
+    let proxy = s.proxy(target);
+
+    let mut stream = TcpStream::connect(proxy.addr()).unwrap();
+    stream.set_read_timeout(Some(hang_guard())).unwrap();
+    // Reads on its own thread, so the proxy is never blocked writing to it.
+    let (receiving, received) = std::sync::mpsc::channel();
+    let client = std::thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => return Ok(()),
+                Ok(n) => {
+                    let _ = receiving.send(n);
+                }
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    return Err("the connection did not end within the hang guard");
+                }
+                // A reset ends it too.
+                Err(_) => return Ok(()),
+            }
+        }
+    });
+    received
+        .recv_timeout(hang_guard())
+        .expect("data through the proxy");
+
+    proxy.cut();
+    client
+        .join()
+        .expect("the client")
+        .expect("the client's connection ends");
+    server.join().expect("the server");
+    s.finish();
+}

@@ -36,24 +36,46 @@ fn a_runtime_that_outlives_its_killed_host_is_found() {
     );
     let mut host = s.host(["run", "rutis.json"]);
     host.expect("stray: running");
+    // The runtime is the host's: by its marker (Unix), in its job
+    // (Windows, where the harness sees the program's path only).
+    let runtime = if cfg!(windows) {
+        "node"
+    } else {
+        "rutis-runtime"
+    };
+    let started = s.descendants(&host);
+    assert!(
+        started
+            .iter()
+            .any(|(_, command)| command.to_lowercase().contains(runtime)),
+        "the Node runtime is not among the host's processes: {started:?}"
+    );
     host.kill();
     host.wait_exit();
 
-    // Unix: the runtime stays, and is found by its marker.
+    // Unix: the runtime stays, in a group of its own, its parent init;
+    // still found, and the residue checks report it (and kill it). No wait:
+    // it would not end.
     #[cfg(unix)]
     {
         let left = s.descendants(&host);
         assert!(
             left.iter()
                 .any(|(_, command)| command.contains("rutis-runtime")),
-            "the Node runtime is not found: {left:?}"
+            "the Node runtime is not found after its host died: {left:?}"
         );
-        for (pid, _) in left {
-            // SAFETY: kill(2) on processes the scenario started.
-            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-        }
+        let residue = s.residue_within(std::time::Duration::ZERO);
+        assert!(
+            residue
+                .found
+                .iter()
+                .any(|item| item.contains("rutis-runtime") && item.contains("host-1")),
+            "the residue checks miss the Node runtime:\n{}",
+            residue.report()
+        );
     }
     // Windows: rutis-host's job, closed when the host ends, ends the
     // runtime with it; the residue checks wait for the host's job to empty.
+    // Unix: what the check above found it killed; this checks it is gone.
     s.finish();
 }

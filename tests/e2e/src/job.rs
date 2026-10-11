@@ -12,6 +12,10 @@
 //!
 //! rutis-host puts the runtimes it starts in a job of its own; jobs nest
 //! (Windows 8 and later), so they are in this one too, and listed with it.
+//! The job does not allow breaking away (no `JOB_OBJECT_LIMIT_BREAKAWAY_OK`
+//! or `_SILENT_BREAKAWAY_OK`): a process in it that asks for
+//! `CREATE_BREAKAWAY_FROM_JOB` fails to start its child rather than lose
+//! it, so nothing a host starts gets out of the residue check.
 
 use std::io;
 use std::os::windows::io::RawHandle;
@@ -171,13 +175,24 @@ pub(crate) fn image(pid: u32) -> String {
         if process.is_null() {
             return "?".into();
         }
-        let mut buffer = [0u16; 1024];
-        let mut length = buffer.len() as u32;
-        let ok = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length);
-        CloseHandle(process);
-        match ok {
-            0 => "?".into(),
-            _ => String::from_utf16_lossy(&buffer[..length as usize]),
+        // Long paths need more than MAX_PATH; up to the 32 767 characters
+        // of an extended path.
+        let mut image = None;
+        let mut capacity = 1024;
+        while capacity <= 32 * 1024 {
+            let mut buffer = vec![0u16; capacity];
+            let mut length = buffer.len() as u32;
+            if QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length) != 0 {
+                image = Some(String::from_utf16_lossy(&buffer[..length as usize]));
+                break;
+            }
+            // Not ERROR_INSUFFICIENT_BUFFER: give up.
+            if io::Error::last_os_error().raw_os_error() != Some(122) {
+                break;
+            }
+            capacity *= 4;
         }
+        CloseHandle(process);
+        image.unwrap_or_else(|| "?".into())
     }
 }

@@ -540,7 +540,18 @@ impl Scenario {
     }
 
     /// Run the residue checks and return what they found, without failing.
+    /// Like [`Scenario::finish`], it closes the proxies for good (their
+    /// ports are checked) and kills what it finds left running, so the
+    /// scenario cannot go on after it; end it with `finish`, which checks
+    /// again.
     pub fn residue(&self) -> Residue {
+        self.residue_within(hang_guard())
+    }
+
+    /// [`Scenario::residue`], waiting at most `wait` (instead of the hang
+    /// guard) for the processes to exit: for a scenario that expects
+    /// residue, and should not wait the hang guard out for it.
+    pub fn residue_within(&self, wait: Duration) -> Residue {
         // Closed first: their ports are checked.
         let failed: Vec<String> = self
             .proxies
@@ -554,6 +565,7 @@ impl Scenario {
             &self.hosts.borrow(),
             &self.ports.borrow(),
             &self.secrets.borrow(),
+            wait,
         );
         residue.found.extend(failed);
         residue

@@ -3,14 +3,21 @@
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 /// A TCP proxy on a loopback port to a target address: each connection to
-/// [`Proxy::addr`] is relayed to a new connection to the target. Made by
+/// [`Proxy::addr`] is relayed to a new connection to the target, both
+/// ways, half-closes included. Made by
 /// [`Scenario::proxy`](crate::Scenario::proxy); closed when it is dropped
 /// or the scenario ends.
+///
+/// What goes wrong in the proxy itself (a thread that panics, a listener
+/// that fails) is residue of the scenario. What happens on a relayed
+/// connection (a reset, an unreachable target) is the network's
+/// behaviour: it is passed on as a closed connection, not reported.
 pub struct Proxy {
     shared: Arc<Shared>,
 }
@@ -27,9 +34,13 @@ struct State {
     accepting: Option<(JoinHandle<()>, Arc<AtomicBool>)>,
     /// Closed for good: `restore` does not reopen it.
     closed: bool,
+    /// Bumped by every cut: a connection accepted before it and set up
+    /// after it is closed at once.
+    generation: u64,
     /// The connections relayed now.
     connections: Vec<Weak<Connection>>,
-    /// The relaying threads, two per connection.
+    /// One thread per accepted connection; it joins the connection's other
+    /// relaying thread before it ends.
     relays: Vec<JoinHandle<()>>,
     /// What went wrong in the proxy's own threads; the scenario's end
     /// reports it as residue.
@@ -40,14 +51,31 @@ struct State {
 struct Connection {
     client: TcpStream,
     server: TcpStream,
+    /// Cut: the relaying threads stop.
     closed: AtomicBool,
+    /// How many directions reached their end of stream.
+    ended: AtomicU8,
 }
 
-/// How often a relaying thread blocked in a read checks whether its
-/// connection was closed. Shutting a socket down wakes such a read on
-/// Unix; on Windows it does not (the read returns once the peer closes, or
-/// after FIN_WAIT_2's two minutes), so the thread has to look.
-const CHECK_CLOSED: std::time::Duration = std::time::Duration::from_millis(100);
+/// How long setting up a relayed connection may wait for the target. A
+/// loopback target answers at once, or refuses (Windows retries a refused
+/// connect for about two seconds); this bounds a cut waiting for a setup.
+const CONNECT: Duration = Duration::from_secs(5);
+
+/// Windows: how often a relaying thread blocked in a read checks whether
+/// its connection was cut. Shutting a socket down wakes such a read on
+/// Unix, not on Windows (there the read returns once the peer closes, or
+/// after FIN_WAIT_2's two minutes). A read that times out on Windows leaves
+/// the socket "indeterminate" by the documentation; in practice no data is
+/// lost (it timed out because none came), and the alternative, closing the
+/// handle under a blocked read, is worse.
+#[cfg(windows)]
+const CHECK_CUT: Duration = Duration::from_millis(100);
+
+/// The proxy's port range: below every platform's ephemeral range (Linux
+/// 32768–60999, macOS and Windows 49152–65535), so no outgoing connection
+/// takes the port as its source port while the proxy is cut.
+const PORTS: std::ops::Range<u16> = 20000..32000;
 
 impl Connection {
     fn close(&self) {
@@ -55,11 +83,48 @@ impl Connection {
         let _ = self.client.shutdown(Shutdown::Both);
         let _ = self.server.shutdown(Shutdown::Both);
     }
+
+    /// Relay `from` to the other end until its end of stream, which is
+    /// passed on as a half-close; the connection closes once both ways have
+    /// ended, or on an error (a reset is passed on as one).
+    fn relay(&self, mut from: TcpStream, to_server: bool) {
+        let mut to = match to_server {
+            true => &self.server,
+            false => &self.client,
+        };
+        let mut buffer = [0u8; 16 * 1024];
+        loop {
+            match from.read(&mut buffer) {
+                Ok(0) => {
+                    let _ = to.shutdown(Shutdown::Write);
+                    if self.ended.fetch_add(1, Ordering::SeqCst) == 1 {
+                        self.close();
+                    }
+                    return;
+                }
+                Ok(n) => {
+                    if to.write_all(&buffer[..n]).is_err() {
+                        break;
+                    }
+                }
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    if self.closed.load(Ordering::SeqCst) {
+                        return;
+                    }
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        self.close();
+    }
 }
 
 impl Proxy {
     pub(crate) fn start(target: SocketAddr) -> Proxy {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("a port for the proxy");
+        let listener = listen();
         let addr = listener.local_addr().expect("the proxy's address");
         let shared = Arc::new(Shared {
             addr,
@@ -86,16 +151,31 @@ impl Proxy {
         self.shared.stop(false);
     }
 
-    /// Bring the network back: listen on the same address again.
+    /// Bring the network back: listen on the same address again. Fails the
+    /// scenario if something else took the port meanwhile.
     pub fn restore(&self) {
-        let state = self.shared.state.lock().unwrap();
+        let mut state = self.shared.state.lock().unwrap();
         assert!(!state.closed, "the proxy is closed: the scenario ended");
-        if state.accepting.is_some() {
+        if state
+            .accepting
+            .as_ref()
+            .is_some_and(|(thread, _)| !thread.is_finished())
+        {
             return;
         }
+        // Not listening, or its listener failed (an error, reported):
+        // listen anew.
+        let failed = state.accepting.take();
         drop(state);
-        let listener = TcpListener::bind(self.shared.addr)
-            .unwrap_or_else(|error| panic!("the proxy cannot listen again: {error}"));
+        if let Some((thread, _)) = failed {
+            self.shared.join(thread, "the accepting thread");
+        }
+        let listener = TcpListener::bind(self.shared.addr).unwrap_or_else(|error| {
+            panic!(
+                "the proxy cannot listen on {} again: {error}",
+                self.shared.addr
+            )
+        });
         self.shared.accept(listener);
     }
 }
@@ -106,12 +186,32 @@ impl Drop for Proxy {
     }
 }
 
+/// A listener on a free loopback port of [`PORTS`].
+fn listen() -> TcpListener {
+    use std::hash::{BuildHasher, RandomState};
+    let span = u64::from(PORTS.end - PORTS.start);
+    let first = RandomState::new().hash_one(std::process::id()) % span;
+    let mut last = None;
+    for offset in 0..span.min(200) {
+        let port = PORTS.start + ((first + offset * 7919) % span) as u16;
+        match TcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => return listener,
+            Err(error) => last = Some(error),
+        }
+    }
+    panic!("no free port for the proxy in {PORTS:?}: {last:?}");
+}
+
 impl Shared {
-    /// Accept on `listener` until stopped.
+    /// Accept on `listener` until stopped; each connection is set up and
+    /// relayed by threads of its own, so a slow target never holds up the
+    /// accept (or a cut waiting for it).
     fn accept(self: &Arc<Self>, listener: TcpListener) {
         let shared = self.clone();
         let stopped = Arc::new(AtomicBool::new(false));
         let stop = stopped.clone();
+        let mut state = self.state.lock().unwrap();
+        let generation = state.generation;
         let thread = std::thread::spawn(move || {
             for client in listener.incoming() {
                 // `stop` wakes this thread with a connection of its own.
@@ -119,26 +219,41 @@ impl Shared {
                     return;
                 }
                 match client {
-                    Ok(client) => shared.relay(client),
+                    Ok(client) => {
+                        let relayed = shared.clone();
+                        let thread = std::thread::spawn(move || relayed.relay(client, generation));
+                        shared.add_relay(thread);
+                    }
+                    Err(error) if error.kind() == ErrorKind::Interrupted => {}
                     Err(error) => {
-                        shared
-                            .state
-                            .lock()
-                            .unwrap()
-                            .errors
-                            .push(format!("proxy {}: accept failed: {error}", shared.addr));
+                        shared.error(&format!("accept failed: {error}"));
                         return;
                     }
                 }
             }
         });
-        self.state.lock().unwrap().accepting = Some((thread, stopped));
+        state.accepting = Some((thread, stopped));
+    }
+
+    /// Keep `thread`; join those already finished, so their panics are
+    /// reported now.
+    fn add_relay(&self, thread: JoinHandle<()>) {
+        let mut state = self.state.lock().unwrap();
+        let (finished, running) = std::mem::take(&mut state.relays)
+            .into_iter()
+            .partition(|relay| relay.is_finished());
+        state.relays = running;
+        state.relays.push(thread);
+        drop(state);
+        for relay in finished {
+            self.join(relay, "a relaying thread");
+        }
     }
 
     /// Relay `client` to a new connection to the target; if the target
     /// cannot be reached, close `client`, as an unreachable network would.
-    fn relay(&self, client: TcpStream) {
-        let Ok(server) = TcpStream::connect(self.target) else {
+    fn relay(&self, client: TcpStream, generation: u64) {
+        let Ok(server) = TcpStream::connect_timeout(&self.target, CONNECT) else {
             let _ = client.shutdown(Shutdown::Both);
             return;
         };
@@ -148,52 +263,32 @@ impl Shared {
             let _ = server.shutdown(Shutdown::Both);
             return;
         };
+        #[cfg(windows)]
         for reader in [&client_reader, &server_reader] {
-            let _ = reader.set_read_timeout(Some(CHECK_CLOSED));
+            let _ = reader.set_read_timeout(Some(CHECK_CUT));
         }
         let connection = Arc::new(Connection {
             client,
             server,
             closed: AtomicBool::new(false),
+            ended: AtomicU8::new(0),
         });
         let mut state = self.state.lock().unwrap();
+        if state.generation != generation {
+            // Cut while it was being set up.
+            drop(state);
+            connection.close();
+            return;
+        }
         state.connections.retain(|weak| weak.strong_count() > 0);
         state.connections.push(Arc::downgrade(&connection));
-        state.relays.retain(|relay| !relay.is_finished());
-        for (mut from, to) in [(client_reader, true), (server_reader, false)] {
+        drop(state);
+        let back = {
             let connection = connection.clone();
-            state.relays.push(std::thread::spawn(move || {
-                let mut to = match to {
-                    true => &connection.server,
-                    false => &connection.client,
-                };
-                let mut buffer = [0u8; 16 * 1024];
-                // Either way ending ends the connection: the tests need no
-                // half-closed connections.
-                loop {
-                    match from.read(&mut buffer) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            if to.write_all(&buffer[..n]).is_err() {
-                                break;
-                            }
-                        }
-                        Err(error)
-                            if matches!(
-                                error.kind(),
-                                ErrorKind::WouldBlock | ErrorKind::TimedOut
-                            ) =>
-                        {
-                            if connection.closed.load(Ordering::SeqCst) {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-                connection.close();
-            }));
-        }
+            std::thread::spawn(move || connection.relay(server_reader, false))
+        };
+        connection.relay(client_reader, true);
+        self.join(back, "a relaying thread");
     }
 
     /// Stop accepting and close the connections, waiting for the threads;
@@ -201,6 +296,7 @@ impl Shared {
     fn stop(&self, closed: bool) {
         let mut state = self.state.lock().unwrap();
         state.closed |= closed;
+        state.generation += 1;
         let accepting = state.accepting.take();
         drop(state);
         if let Some((accepting, stopped)) = accepting {
@@ -208,11 +304,10 @@ impl Shared {
             // listener. The connect fails only if it is not listening.
             stopped.store(true, Ordering::SeqCst);
             let _ = TcpStream::connect(self.addr);
-            if accepting.join().is_err() {
-                self.error("the accepting thread panicked");
-            }
+            self.join(accepting, "the accepting thread");
         }
-        // No connection comes any more.
+        // No connection comes any more; one being set up sees the new
+        // generation and closes itself.
         let mut state = self.state.lock().unwrap();
         let connections = std::mem::take(&mut state.connections);
         let relays = std::mem::take(&mut state.relays);
@@ -221,9 +316,13 @@ impl Shared {
             connection.close();
         }
         for relay in relays {
-            if relay.join().is_err() {
-                self.error("a relaying thread panicked");
-            }
+            self.join(relay, "a relaying thread");
+        }
+    }
+
+    fn join(&self, thread: JoinHandle<()>, what: &str) {
+        if thread.join().is_err() {
+            self.error(&format!("{what} panicked"));
         }
     }
 

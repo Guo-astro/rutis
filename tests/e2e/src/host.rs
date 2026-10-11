@@ -260,13 +260,29 @@ impl Host {
     /// it still gets, and rutis-host stops on either. It needs the console
     /// this test process runs in, which the host shares.
     pub fn ctrl_c(&self) {
+        if self.status.is_some() {
+            self.fail("Ctrl-C to a host that has exited");
+        }
         #[cfg(unix)]
         self.signal_group(libc::SIGINT);
         #[cfg(windows)]
         {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
             use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
+            use windows_sys::Win32::System::Threading::WaitForSingleObject;
+            // Only to a host still running: a group id that no longer
+            // exists may be taken as 0, every process on the console (this
+            // test run with its other scenarios). The harness holds the
+            // host's handle, so its id is not reused meanwhile.
+            // SAFETY: the handle is live while `child` is owned.
+            let running =
+                unsafe { WaitForSingleObject(self.child.as_raw_handle() as _, 0) } == WAIT_TIMEOUT;
+            if !running {
+                self.fail("Ctrl-C to a host that has exited");
+            }
             // SAFETY: a plain Win32 call; the group is the host's, made for
-            // it when it was started.
+            // it when it was started, and it still runs.
             if unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, self.pid()) } == 0 {
                 let error = std::io::Error::last_os_error();
                 self.fail(&format!("Ctrl-Break failed: {error}"));
