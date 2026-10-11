@@ -529,4 +529,11 @@ peer = await Process.connect(channelSpec, dispatch, () => { if (slots.size && !c
 delete process.env.RUTIS_CHANNEL_TOKEN
 await peer.closed()
 closing = true
+// A session this side ended because the far end broke the protocol is a
+// failure, said on stderr and in the exit status: ending normally made the
+// host report "exited normally" and nothing else (#225).
+if (peer.fault) {
+  console.error(`rutis runtime: the session ended: ${peer.fault.message}`)
+  process.exitCode = 1
+}
 await dispose()

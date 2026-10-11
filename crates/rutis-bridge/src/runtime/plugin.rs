@@ -308,6 +308,14 @@ impl Plugin for RuntimePlugin {
                             // plugin may stop only because its session went.
                             return Ok(());
                         }
+                        // The session ended, and the plugin stops because it
+                        // went, before the watcher (aborted above) saw it:
+                        // both follow the same end, in either order. The
+                        // process still ended on its own, and says so.
+                        if owner.connection().close_reason().is_some() {
+                            state.send_replace(RuntimeState::Down(ended_status(&owner)));
+                            return Ok(());
+                        }
                         state.send_replace(RuntimeState::Idle);
                         owner.dispose().await.map_err(Into::into)
                     })
@@ -351,15 +359,19 @@ async fn watch_exit(
     service: Arc<Mutex<Option<Disposer>>>,
 ) {
     process.closed().await;
-    // A process started here says how it ended; a session through a link
-    // ends with its channel's reason (for a local runtime, the same).
-    let status = match (process.exit_status(), process.connection().close_reason()) {
+    state.send_replace(RuntimeState::Down(ended_status(&process)));
+    withdraw(&service).await;
+}
+
+/// How the process of a session that ended went: a process started here
+/// says how it ended; a session through a link ends with its channel's
+/// reason (for a local runtime, the same).
+fn ended_status(process: &Process) -> String {
+    match (process.exit_status(), process.connection().close_reason()) {
         (Some(status), _) => format!("runtime process {status}"),
         (None, Some(reason)) => format!("runtime ended: {reason}"),
         (None, None) => "runtime disconnected".to_owned(),
-    };
-    state.send_replace(RuntimeState::Down(status));
-    withdraw(&service).await;
+    }
 }
 
 async fn withdraw(service: &Mutex<Option<Disposer>>) {

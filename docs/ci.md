@@ -21,9 +21,27 @@
 | --- | --- | --- |
 | `ci.yml` | 每个 PR；每次推送 main | 测试和检查（下文） |
 | `dylib-windows.yml` | PR 改了 dylib 相关文件（与 `dylib` 开关相同）；每次推送 main；打 `v*` tag；手动 | Windows 上的 dylib 测试 |
-| `stress.yml` | 每晚；手动 | 重复运行内核测试；网络长时间测试 |
+| `stress.yml` | 每晚；手动 | 重复运行内核测试和多进程测试；网络长时间测试（下文） |
 | `ci-stats.yml` | 每周；手动 | 统计 CI 的耗时和失败 |
 | `release.yml`、`release-cli.yml` | 打 tag | 发布 |
+
+### 每晚的 `stress.yml`
+
+只偶尔失败的测试，在 PR 上碰巧撞到时会挡住和它无关的人。`stress.yml` 每晚把这类测试重复跑很多轮，让偶发失败先在夜里出现。它不在 PR 上跑，不影响 PR 的时间。三个任务同时运行：
+
+| 任务 | 做什么 |
+| --- | --- |
+| `rutis` | 内核测试重复 `rounds` 轮（默认 20）。每轮换测试线程数（1、2、全部核数）、打乱顺序、换种子，每五轮用一次 release 构建。第一次失败就停 |
+| `multiprocess` | bridge、loader 中会启动进程、打开本地通道、启动运行时进程的测试，也就是 `ci.yml` 的 `PLATFORM_TESTS_BRIDGE`、`PLATFORM_TESTS_LOADER` 两个列表（加进列表的新测试文件，这里自动跟着跑）。运行时和 `rust` 任务相同：Node 24、Bun 1.4.0、Python 3.12（含 websockets）、Go oldstable。测试只构建一次，然后重复 `rounds` 轮，每轮换测试线程数、打乱顺序、换种子。某一轮失败也跑完所有轮，最后才让任务失败 |
+| `soak` | bridge 的 WebSocket 和本地通道长时间测试，各 `soak_secs` 秒（默认 600） |
+
+整个 workflow 的时间由最慢的任务决定：`soak` 约 21 分钟；`multiprocess` 估计 30–45 分钟（构建约 10 分钟，每轮约 1–1.5 分钟）。
+
+- 失败不重试（规范 Q7.3）。
+- 每轮在日志里打印线程数和种子。作业摘要里有每一轮的结果表、失败的测试名和它失败的轮次，以及重放命令：用同样的种子、线程数和顺序重跑那个测试文件。
+- `multiprocess` 有失败时，每一轮每个测试文件的输出都作为 artifact `multiprocess-logs` 上传，保留 14 天。
+- 手动运行：Actions 页面选 `stress`，点 “Run workflow”，可以改 `rounds` 和 `soak_secs`；或者 `gh workflow run stress.yml -f rounds=50`。三个任务都会运行。
+- 夜里出现的失败按 §7 处理：登记 issue，再想办法稳定复现。
 
 ## 3. PR 上怎么决定跑哪些任务
 
@@ -66,7 +84,7 @@
 
 `ci.yml` 顶部的 `PLATFORM_TESTS_BRIDGE`、`PLATFORM_TESTS_LOADER` 列出 PR 上 macOS、Windows 跑哪些测试文件：会启动进程、打开本地通道（Unix socket、继承的 socket、loopback 交接）、启动运行时进程、使用 WebSocket 的测试，加上两个 crate 的单元测试（`--lib`）；rutis-host 的测试全跑。其余测试（内存通道上的协议、行的配置和生命周期等）只依赖 Rust 代码本身，PR 上在 Linux 的 `rust` 任务里跑，main 上三个平台都跑。
 
-新加的测试文件如果会启动进程或打开通道，要加进这两个列表。
+新加的测试文件如果会启动进程或打开通道，要加进这两个列表。每晚 `stress.yml` 的 `multiprocess` 任务也按这两个列表重复运行（§2）。
 
 ### 每种改动在 PR 上跑什么
 
