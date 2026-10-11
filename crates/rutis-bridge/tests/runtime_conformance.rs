@@ -132,6 +132,25 @@ async fn go_meets_the_session_contract() {
     run(far).await;
 }
 
+/// Q6.2.2, Q6.2.3, risk P3: the Go session ends the session on the same
+/// malformed and dangling frames as every other implementation (#294);
+/// Go's `encoding/json` replaces invalid UTF-8 instead of failing, so the
+/// channel checks each frame.
+#[cfg(feature = "go")]
+#[tokio::test(flavor = "multi_thread")]
+async fn go_ends_the_session_on_malformed_frames() {
+    tokio::task::spawn_blocking(|| {
+        let started = Started(Default::default());
+        let binary = go_binary("./internal/fixtures/session");
+        malformed(|| {
+            let mut command = std::process::Command::new(&binary);
+            started.open(command)
+        })
+    })
+    .await
+    .unwrap();
+}
+
 #[cfg(feature = "bun")]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_meets_the_session_contract() {
