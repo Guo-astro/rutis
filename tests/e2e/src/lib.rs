@@ -266,17 +266,32 @@ impl Scenario {
         #[cfg(unix)]
         std::os::unix::fs::symlink(target, &link)
             .unwrap_or_else(|error| panic!("link {}: {error}", link.display()));
-        // A junction needs no privilege, unlike a symbolic link.
+        // A junction needs no privilege, unlike a symbolic link. Its paths
+        // rebuilt with `\` (cmd reads `/@arcships` as a switch of mklink),
+        // without the `\\?\` of a canonical path.
         #[cfg(windows)]
-        assert!(std::process::Command::new("cmd")
-            .arg("/C")
-            .arg("mklink")
-            .arg("/J")
-            .arg(&link)
-            .arg(target)
-            .status()
-            .expect("mklink")
-            .success());
+        {
+            let plain = |path: &Path| {
+                let path: PathBuf = path.components().collect();
+                let path = path.display().to_string();
+                PathBuf::from(path.strip_prefix(r"\\?\").unwrap_or(&path))
+            };
+            let (link, target) = (plain(&link), plain(target));
+            assert!(
+                std::process::Command::new("cmd")
+                    .arg("/C")
+                    .arg("mklink")
+                    .arg("/J")
+                    .arg(&link)
+                    .arg(&target)
+                    .status()
+                    .expect("mklink")
+                    .success(),
+                "mklink /J {} {}",
+                link.display(),
+                target.display()
+            );
+        }
     }
 
     /// Make the project a Node project whose `@arcships/rutis` is this

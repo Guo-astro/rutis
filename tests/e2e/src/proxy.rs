@@ -1,7 +1,7 @@
 //! A TCP proxy between two processes of a scenario, to break the network
 //! between them and bring it back (S5, #189) without containers.
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -40,10 +40,18 @@ struct State {
 struct Connection {
     client: TcpStream,
     server: TcpStream,
+    closed: AtomicBool,
 }
+
+/// How often a relaying thread blocked in a read checks whether its
+/// connection was closed. Shutting a socket down wakes such a read on
+/// Unix; on Windows it does not (the read returns once the peer closes, or
+/// after FIN_WAIT_2's two minutes), so the thread has to look.
+const CHECK_CLOSED: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl Connection {
     fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
         let _ = self.client.shutdown(Shutdown::Both);
         let _ = self.server.shutdown(Shutdown::Both);
     }
@@ -140,7 +148,14 @@ impl Shared {
             let _ = server.shutdown(Shutdown::Both);
             return;
         };
-        let connection = Arc::new(Connection { client, server });
+        for reader in [&client_reader, &server_reader] {
+            let _ = reader.set_read_timeout(Some(CHECK_CLOSED));
+        }
+        let connection = Arc::new(Connection {
+            client,
+            server,
+            closed: AtomicBool::new(false),
+        });
         let mut state = self.state.lock().unwrap();
         state.connections.retain(|weak| weak.strong_count() > 0);
         state.connections.push(Arc::downgrade(&connection));
@@ -155,9 +170,25 @@ impl Shared {
                 let mut buffer = [0u8; 16 * 1024];
                 // Either way ending ends the connection: the tests need no
                 // half-closed connections.
-                while let Ok(n @ 1..) = from.read(&mut buffer) {
-                    if to.write_all(&buffer[..n]).is_err() {
-                        break;
+                loop {
+                    match from.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if to.write_all(&buffer[..n]).is_err() {
+                                break;
+                            }
+                        }
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                ErrorKind::WouldBlock | ErrorKind::TimedOut
+                            ) =>
+                        {
+                            if connection.closed.load(Ordering::SeqCst) {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
                     }
                 }
                 connection.close();
