@@ -8,6 +8,7 @@ use serde_json::json;
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct MyConfig {
+    #[allow(dead_code, reason = "the example shows the schema, not its use")]
     level: u32,
 }
 

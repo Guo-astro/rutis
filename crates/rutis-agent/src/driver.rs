@@ -677,6 +677,7 @@ fn tool_result_ids(m: &ModelMessage) -> Vec<String> {
 ///   2) 只保留 block 内被保留 call 覆盖的 tool_result,丢弃孤儿结果;
 ///   3) 剥离后为空的 assistant 丢弃;user/system 及纯文本 assistant 原样保留;
 ///   4) 无前置 assistant 的顶层 tool 视为孤儿丢弃。
+///
 /// 纯函数,不修改 session 本身。
 pub(crate) fn sanitize_history(msgs: &[ModelMessage]) -> Vec<ModelMessage> {
     let n = msgs.len();
@@ -701,7 +702,7 @@ pub(crate) fn sanitize_history(msgs: &[ModelMessage]) -> Vec<ModelMessage> {
             j += 1;
         }
         let block_results: std::collections::HashSet<String> =
-            block.iter().map(|t| tool_result_ids(t)).flatten().collect();
+            block.iter().flat_map(|t| tool_result_ids(t)).collect();
         let kept_calls: std::collections::HashSet<String> = tool_call_ids(m)
             .into_iter()
             .filter(|c| block_results.contains(c))
@@ -739,6 +740,201 @@ pub(crate) fn sanitize_history(msgs: &[ModelMessage]) -> Vec<ModelMessage> {
         i = j;
     }
     out
+}
+
+impl Agent for AgentDriver {
+    fn id(&self) -> SessionId {
+        self.session.lock().unwrap().id()
+    }
+
+    fn status(&self) -> AgentStatus {
+        self.status.get()
+    }
+
+    fn session(&self) -> SessionSnapshot {
+        let session = self.session.lock().unwrap();
+        SessionSnapshot::new(
+            session.id(),
+            session.messages(),
+            session.summary().map(str::to_owned),
+            session.todo().map(str::to_owned),
+            session.tokens_used(),
+        )
+    }
+
+    fn compact(&self, summary: String, keep: usize) -> (usize, usize) {
+        let result = {
+            let mut session = self.session.lock().unwrap();
+            session.compact(summary, keep)
+        };
+        // 压缩后立即落盘(路径已配置时),让摘要跨代保留
+        self.persist_session();
+        result
+    }
+
+    fn set_todo(&self, todo: String) {
+        {
+            let mut session = self.session.lock().unwrap();
+            session.set_todo(todo);
+        }
+        // 立即落盘:中断后恢复时待办可用
+        self.persist_session();
+    }
+
+    fn cancel(&self) {
+        self.cancel.lock().unwrap().cancel();
+    }
+
+    fn followup<'a>(&'a self, input: &'a str) -> BoxFuture<'a, Result<String, AgentError>> {
+        Box::pin(async move {
+            // 防重入(Fix 1):整个 turn(push user + run_loop)持锁串行,
+            // 并发 followup 排队执行,
+            // 不会交错写 session 造成历史乱序/悬空 tool_call。
+            let _guard = self.turn_lock.lock().await;
+
+            // 原子 turn(Fix 2):记录 turn 前长度,失败时回滚本轮所有 push。
+            let before = self.session.lock().unwrap().messages().len();
+            self.session.lock().unwrap().push(ModelMessage::user(input));
+            let token = self.fresh_turn_token();
+            self.status.set(AgentStatus::Running);
+            let out = self.run_loop(&token).await;
+            self.status.set(AgentStatus::Idle);
+            // 失败回滚:移除本轮 push 的悬挂 user + 半成品 assistant/tool,
+            // 恢复 turn 前状态,避免坏历史累积(否则每次失败都留一条 user,
+            // 连排 + 越滚越长,最终每次请求都非法/超长)。
+            if out.is_err() {
+                self.session.lock().unwrap().truncate_to(before);
+            }
+            self.emit_turn_end(self.id(), &out);
+            // 保存时机 ①:每 turn 结束原子落盘(未配置路径 = no-op)
+            self.persist_session();
+            out
+        })
+    }
+}
+
+/// agent driver 插件:`injects = [llm, tools]` 双门控,就绪后提供
+/// `dyn Agent` 服务;fiber 卸载经 `ctx.cancelled()` watcher 级联取消
+/// 当前 turn(session 保留,重载即新 driver 新 session)。
+pub struct AgentDriverPlugin {
+    max_steps: usize,
+    system_prompt: Option<String>,
+    session_path: Option<PathBuf>,
+    token_budget: Option<u64>,
+    inject_keys: Vec<TypeKey>,
+}
+
+impl AgentDriverPlugin {
+    pub fn new(max_steps: usize) -> Self {
+        Self {
+            max_steps,
+            system_prompt: None,
+            session_path: None,
+            token_budget: None,
+            inject_keys: vec![llm_key(), tools_key()],
+        }
+    }
+
+    /// 启用跨轮 token 预算上限(成本保护,codex thread_goals 第二增量)。
+    /// 默认关闭(向后兼容);开启后累计 tokens_used 超预算中断为
+    /// `AgentError::BudgetLimit`,成本硬保护。
+    pub fn with_token_budget(mut self, budget: u64) -> Self {
+        self.token_budget = Some(budget);
+        self
+    }
+
+    /// 静态 system prompt(minimal mode persona);每步作为 instructions 前置。
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = Some(prompt.into());
+        self
+    }
+
+    /// 启用 session 持久化:`apply` 时从 path 恢复(失败静默降级为新
+    /// Session),此后每 turn 结束 + fiber 卸载原子落盘。
+    pub fn with_session_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.session_path = Some(path.into());
+        self
+    }
+
+    /// 启用默认 session 持久化路径(`<cwd>/.rutis/session.json`)。
+    /// 人用宿主的推荐入口:一行启用跨会话记忆。
+    pub fn with_default_session_path(mut self) -> Self {
+        self.session_path = Some(default_session_path());
+        self
+    }
+}
+
+impl Default for AgentDriverPlugin {
+    fn default() -> Self {
+        Self::new(16)
+    }
+}
+
+impl Plugin for AgentDriverPlugin {
+    fn name(&self) -> &str {
+        "agent-driver"
+    }
+
+    fn injects(&self) -> &[TypeKey] {
+        &self.inject_keys
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        Box::pin(async move {
+            // 双门控保证此处 llm + tools 必在
+            let llm = ctx
+                .get_as::<dyn LanguageModel>(llm_key())
+                .ok_or_else(|| CordisError::InjectUnsatisfied(vec!["llm".to_string()]))?;
+            let tools = ctx
+                .get_as::<ToolRegistry>(tools_key())
+                .ok_or_else(|| CordisError::InjectUnsatisfied(vec!["tools".to_string()]))?;
+            let driver = Arc::new(AgentDriver::new(
+                llm,
+                tools,
+                ctx.clone(),
+                self.max_steps,
+                self.system_prompt.clone(),
+                self.session_path.clone(),
+                self.token_budget,
+            ));
+            ctx.provide_as::<dyn Agent>(agent_key(), driver.clone())?;
+            // 持久化路径服务:自我控制工具(`self_status`/`self_persist`)读取
+            ctx.provide_as::<Option<PathBuf>>(
+                session_path_key(),
+                Arc::new(self.session_path.clone()),
+            )?;
+
+            // fiber 卸载 → 落盘 session(持久化路径已配置时)。
+            // 保存时机 ②:挂 effect disposer,后注册→先清理(LIFO),
+            // 保证卸载时 session 是最后一代快照。
+            let persist_driver = driver.clone();
+            ctx.effect(move || {
+                let driver = persist_driver.clone();
+                Effect::AsyncDisposer(Box::new(move || {
+                    let driver = driver.clone();
+                    Box::pin(async move {
+                        driver.persist_session();
+                        Ok(())
+                    })
+                }))
+            })?;
+
+            // fiber 卸载 → cancel 当前 turn(driver 内 token 级联停止)
+            let watcher_ctx = ctx.clone();
+            let watcher_driver = driver.clone();
+            ctx.effect(move || {
+                let watcher_ctx = watcher_ctx.clone();
+                let driver = watcher_driver.clone();
+                let handle = watcher_ctx.handle().clone();
+                handle.spawn(async move {
+                    watcher_ctx.cancelled().await;
+                    driver.cancel();
+                });
+                Effect::Done
+            })?;
+            Ok(Effect::Done)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1237,200 +1433,5 @@ mod tests {
         tools_v.dispose().await.unwrap();
         driver_v.dispose().await.unwrap();
         let _ = std::fs::remove_file(&path);
-    }
-}
-
-impl Agent for AgentDriver {
-    fn id(&self) -> SessionId {
-        self.session.lock().unwrap().id()
-    }
-
-    fn status(&self) -> AgentStatus {
-        self.status.get()
-    }
-
-    fn session(&self) -> SessionSnapshot {
-        let session = self.session.lock().unwrap();
-        SessionSnapshot::new(
-            session.id(),
-            session.messages(),
-            session.summary().map(str::to_owned),
-            session.todo().map(str::to_owned),
-            session.tokens_used(),
-        )
-    }
-
-    fn compact(&self, summary: String, keep: usize) -> (usize, usize) {
-        let result = {
-            let mut session = self.session.lock().unwrap();
-            session.compact(summary, keep)
-        };
-        // 压缩后立即落盘(路径已配置时),让摘要跨代保留
-        self.persist_session();
-        result
-    }
-
-    fn set_todo(&self, todo: String) {
-        {
-            let mut session = self.session.lock().unwrap();
-            session.set_todo(todo);
-        }
-        // 立即落盘:中断后恢复时待办可用
-        self.persist_session();
-    }
-
-    fn cancel(&self) {
-        self.cancel.lock().unwrap().cancel();
-    }
-
-    fn followup<'a>(&'a self, input: &'a str) -> BoxFuture<'a, Result<String, AgentError>> {
-        Box::pin(async move {
-            // 防重入(Fix 1):整个 turn(push user + run_loop)持锁串行,
-            // 并发 followup 排队执行,
-            // 不会交错写 session 造成历史乱序/悬空 tool_call。
-            let _guard = self.turn_lock.lock().await;
-
-            // 原子 turn(Fix 2):记录 turn 前长度,失败时回滚本轮所有 push。
-            let before = self.session.lock().unwrap().messages().len();
-            self.session.lock().unwrap().push(ModelMessage::user(input));
-            let token = self.fresh_turn_token();
-            self.status.set(AgentStatus::Running);
-            let out = self.run_loop(&token).await;
-            self.status.set(AgentStatus::Idle);
-            // 失败回滚:移除本轮 push 的悬挂 user + 半成品 assistant/tool,
-            // 恢复 turn 前状态,避免坏历史累积(否则每次失败都留一条 user,
-            // 连排 + 越滚越长,最终每次请求都非法/超长)。
-            if out.is_err() {
-                self.session.lock().unwrap().truncate_to(before);
-            }
-            self.emit_turn_end(self.id(), &out);
-            // 保存时机 ①:每 turn 结束原子落盘(未配置路径 = no-op)
-            self.persist_session();
-            out
-        })
-    }
-}
-
-/// agent driver 插件:`injects = [llm, tools]` 双门控,就绪后提供
-/// `dyn Agent` 服务;fiber 卸载经 `ctx.cancelled()` watcher 级联取消
-/// 当前 turn(session 保留,重载即新 driver 新 session)。
-pub struct AgentDriverPlugin {
-    max_steps: usize,
-    system_prompt: Option<String>,
-    session_path: Option<PathBuf>,
-    token_budget: Option<u64>,
-    inject_keys: Vec<TypeKey>,
-}
-
-impl AgentDriverPlugin {
-    pub fn new(max_steps: usize) -> Self {
-        Self {
-            max_steps,
-            system_prompt: None,
-            session_path: None,
-            token_budget: None,
-            inject_keys: vec![llm_key(), tools_key()],
-        }
-    }
-
-    /// 启用跨轮 token 预算上限(成本保护,codex thread_goals 第二增量)。
-    /// 默认关闭(向后兼容);开启后累计 tokens_used 超预算中断为
-    /// `AgentError::BudgetLimit`,成本硬保护。
-    pub fn with_token_budget(mut self, budget: u64) -> Self {
-        self.token_budget = Some(budget);
-        self
-    }
-
-    /// 静态 system prompt(minimal mode persona);每步作为 instructions 前置。
-    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
-        self.system_prompt = Some(prompt.into());
-        self
-    }
-
-    /// 启用 session 持久化:`apply` 时从 path 恢复(失败静默降级为新
-    /// Session),此后每 turn 结束 + fiber 卸载原子落盘。
-    pub fn with_session_path(mut self, path: impl Into<PathBuf>) -> Self {
-        self.session_path = Some(path.into());
-        self
-    }
-
-    /// 启用默认 session 持久化路径(`<cwd>/.rutis/session.json`)。
-    /// 人用宿主的推荐入口:一行启用跨会话记忆。
-    pub fn with_default_session_path(mut self) -> Self {
-        self.session_path = Some(default_session_path());
-        self
-    }
-}
-
-impl Default for AgentDriverPlugin {
-    fn default() -> Self {
-        Self::new(16)
-    }
-}
-
-impl Plugin for AgentDriverPlugin {
-    fn name(&self) -> &str {
-        "agent-driver"
-    }
-
-    fn injects(&self) -> &[TypeKey] {
-        &self.inject_keys
-    }
-
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            // 双门控保证此处 llm + tools 必在
-            let llm = ctx
-                .get_as::<dyn LanguageModel>(llm_key())
-                .ok_or_else(|| CordisError::InjectUnsatisfied(vec!["llm".to_string()]))?;
-            let tools = ctx
-                .get_as::<ToolRegistry>(tools_key())
-                .ok_or_else(|| CordisError::InjectUnsatisfied(vec!["tools".to_string()]))?;
-            let driver = Arc::new(AgentDriver::new(
-                llm,
-                tools,
-                ctx.clone(),
-                self.max_steps,
-                self.system_prompt.clone(),
-                self.session_path.clone(),
-                self.token_budget,
-            ));
-            ctx.provide_as::<dyn Agent>(agent_key(), driver.clone())?;
-            // 持久化路径服务:自我控制工具(`self_status`/`self_persist`)读取
-            ctx.provide_as::<Option<PathBuf>>(
-                session_path_key(),
-                Arc::new(self.session_path.clone()),
-            )?;
-
-            // fiber 卸载 → 落盘 session(持久化路径已配置时)。
-            // 保存时机 ②:挂 effect disposer,后注册→先清理(LIFO),
-            // 保证卸载时 session 是最后一代快照。
-            let persist_driver = driver.clone();
-            ctx.effect(move || {
-                let driver = persist_driver.clone();
-                Effect::AsyncDisposer(Box::new(move || {
-                    let driver = driver.clone();
-                    Box::pin(async move {
-                        driver.persist_session();
-                        Ok(())
-                    })
-                }))
-            })?;
-
-            // fiber 卸载 → cancel 当前 turn(driver 内 token 级联停止)
-            let watcher_ctx = ctx.clone();
-            let watcher_driver = driver.clone();
-            ctx.effect(move || {
-                let watcher_ctx = watcher_ctx.clone();
-                let driver = watcher_driver.clone();
-                let handle = watcher_ctx.handle().clone();
-                handle.spawn(async move {
-                    watcher_ctx.cancelled().await;
-                    driver.cancel();
-                });
-                Effect::Done
-            })?;
-            Ok(Effect::Done)
-        })
     }
 }

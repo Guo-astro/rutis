@@ -204,6 +204,7 @@ impl Session {
     /// 1) 丢弃孤儿 tool_result(前面无配对 tool_call);
     /// 2) 剥离 assistant 里未紧邻 tool_result 的悬空 tool_call;
     /// 3) 裁掉尾部连续无 assistant 回复的 user(自主续跑失败死循环的残留)。
+    ///
     /// 复用 `driver::sanitize_history`(与每次请求前的在线规整同一套逻辑)。
     /// 返回裁掉前/后的消息数,便于调用方观测。
     pub fn sanitize(&mut self) -> (usize, usize) {
