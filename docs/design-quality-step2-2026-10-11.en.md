@@ -2,7 +2,7 @@
 
 [中文](design-quality-step2-2026-10-11.md)
 
-Status: plan, under review. Date: 2026-10-11. Base: `main` `ebf0711` (0.9.1).
+Status: plan, under review (Q1, Q2, Q4, Q5, Q6 decided on 2026-10-11). Date: 2026-10-11. Base: `main` `ebf0711` (0.9.1).
 Related: [#183](https://github.com/arcships/rutis/issues/183) step two. Based on: [quality standard](quality-standard.en.md) ("the standard"); [quality status](quality-status.en.md) ("status") §4 risks, §9.2 plan.
 
 This document schedules the 12 issues left in step two together: what each one does and does not do, what it depends on, which PRs it splits into, and what the maintainer needs to decide first. Details of each PR (test names, assertions, output formats) are written in that PR; the ones that need a design of their own (S4, S5, #178) only get scope and key choices here.
@@ -14,14 +14,14 @@ Out of scope: the step-one leftover #265 (the CI `e2e` job; this plan depends on
 | # | Conclusion | § |
 | --- | --- | --- |
 | C1 | 12 items, about 21 PRs, in three waves: first the foundations others depend on (registry skeleton, E2E residue on Windows and macOS, #265), then unit / contract tests for the protocol and the core, last the three black-box scenarios | 9 |
-| C2 | **S3 and S4 rely on editing the configuration while running, but `rutis-host run` does not watch `rutis.json`, and a runtime killed with `kill -9` is never started again.** Proposal: don't add config watching to `run` in 0.10; S3 recovers by restarting the host; S4 uses a fixture Rust host that re-reads its configuration on a stdin command (decision Q1) | 3 |
-| C3 | **There is no mechanism behind S5's "revoke the token"** (the identity is read from environment variables once, at start). Proposal: rewrite it as "after B restarts with another token, A's reconnect is refused with a readable category"; no revocation feature (decision Q2) | 3.3 |
+| C2 | **S3 and S4 rely on editing the configuration while running, but `rutis-host run` does not watch `rutis.json`, and a runtime killed with `kill -9` is never started again.** Decided: no config watching in `run` for 0.10; S3 recovers by restarting the host; S4 uses a fixture Rust host that re-reads its configuration on a stdin command (Q1); whether `run` should support configuration changes while running is #274 | 3 |
+| C3 | **There is no mechanism behind S5's "revoke the token"** (the identity is read from environment variables once, at start). Decided: revocation while running becomes a requirement on remote, #273; in 0.10 S5 tests "after B restarts with another token, A's reconnect is refused with a readable category", and adds live revocation once #273 is done (Q2) | 3.3 |
 | C4 | The E2E harness has a gap to close first: `rutis-host`'s runtime processes each get a process group of their own, so **on macOS a runtime left behind after its host died is not found** (Linux finds it through the subreaper). Fixed in the same PR as #232's Windows Job Object | 3.4 |
 | C5 | #178 splits into 5 PRs: fault injection and links; boundary rules 3/4/5/7; SDK alignment; negative TLS; cross-language value round-trip property tests. **There are 8 boundary rules** (not 7); 1, 2, 6 and 8 already have tests | 4 |
 | C6 | Value round-trips use `proptest` (new dev dependency), generating values only on the Rust side and passing them through the existing `conformance-session` echo fixtures for Node, Python, Go and Bun; the comparison rules come from the value conversion table in `guide/plugin-api.md` | 4.5 |
 | C7 | #176 only splits `cfg(unix)` and adds the missing cells, no generated matrix; the matrix report is a hand-written table in `docs/ci.md` | 5 |
 | C8 | #206 doesn't compare the two sides with each other; the testing tool and the real runtime are each compared **against the same expectations file**. The Node `conformance-weather` fixture cannot be loaded by the testing tool today and gets a default export first | 6 |
-| C9 | #207: none of the persisted formats has a format version field. Don't add one; keep a sample per version, back-filled from the 0.8.0 and 0.9.0 tags; one more step in `docs/release.md` | 7 |
+| C9 | #207: none of the persisted formats has a format version field. Decided to add one (Q4); also keep a sample per version, back-filled from the 0.8.0 and 0.9.0 tags; one more step in `docs/release.md` | 7 |
 | C10 | #181 lands its skeleton and numbering first, so #177's and #178's tests cite numbers directly; at the 0.10 release the registry is the baseline, and the Q9.4.4 release gate applies from 0.11 (decision Q3) | 8.2 |
 
 ## 2. Remaining items and the risks they cover
@@ -87,7 +87,7 @@ Node B: `python -m rutis listen:ws://127.0.0.1:<port>/rutis …` (per `guide/nod
 | 5 | Restart B with another token | A's reconnect is refused; A's output shows a readable refusal category; the token value appears in no output (B7) |
 | 6 | Switch to wss: B's certificate names a host other than `localhost`; another run with an expired certificate | A's connection is refused (E6 between two processes) |
 
-- The issue's "revoke A's token" has no mechanism behind it and is rewritten as step 5 (decision Q2).
+- The issue's "revoke A's token" has no mechanism behind it; in 0.10 it becomes step 5. Revocation while running is the requirement in #273, and S5 gains a step once it is done (Q2).
 - A's link state isn't in the status lines; it can only be judged from row states and A's error output. If the review wants it, a separate issue adds link state to the status lines (not in this PR).
 - The listener's address isn't printed, so the harness reserves a port with `port()` instead of using `:0`.
 - The nightly version with containers and netem (E12) is in step three.
@@ -115,7 +115,7 @@ Host A is a fixture Rust host `tests/e2e/fixture-host` (a bin crate in the works
 | 3 | Remove the link; switch to the built-in Rust `calendar` | results come from Rust; the connection to B is closed |
 | Throughout | `planner`'s row unchanged | A's pid unchanged (G5); the probe keeps calling during each switch and every call either succeeds or fails explicitly (G2); nothing of the old implementation remains after each switch (G3) |
 
-A stdin command rather than watching the file: the scenario decides when the switch happens, independent of a polling interval (standard Q7.1). If decision Q1 chooses "`run` watches the configuration", stages 1 and 2 could use `rutis-host`, but stage 3 still needs a host that can register Rust rows.
+A stdin command rather than watching the file: the scenario decides when the switch happens, independent of a polling interval (standard Q7.1). If #274 decides that `run` supports configuration changes while running, stages 1 and 2 could use `rutis-host`, but stage 3 still needs a host that can register Rust rows.
 
 ## 4. Protocol layer (#178)
 
@@ -205,7 +205,16 @@ Approach:
 - Test: current code reads every version's samples and gets that version's expectation; samples no longer supported go in `rejected/`, asserting the error explains the migration.
 - Back-fill samples from the 0.8.0, 0.9.0 and 0.9.1 tags (from that time's documentation examples and test configurations); one more per release from now on.
 - `docs/release.md` step 1 gains "save this version's samples"; the PR template gains "Changed a persisted format?".
-- No format version field (decision Q4).
+**Format version field (Q4: decided to add)**:
+
+| Format | Field | Rules |
+| --- | --- | --- |
+| `rutis.json` | top-level `"format": 1` | optional, read as 1 when absent (no file before 0.10 has it); written by `rutis-host new`; a higher number than supported is an error: "this file is format N, this rutis-host reads up to M; upgrade rutis-host" |
+| dsh user layer `cordis.patch.yml` | open, one of two (decided in #207's PR) | one: the file becomes `{format: 1, patches: [...]}`, still accepting a top-level array as 1 — but bundle layers use the same array form, so two spellings would coexist; two: the version goes in the profile's `package.json` (for example `"rutis": {"profileFormat": 1}`), covering every file of the profile and leaving the user layer file unchanged. Leaning to two |
+| the loader's `Persist` | none | the loader writes no files; the format belongs to whoever implements `Persist` (dsh) |
+
+- An older version is read with that version's meaning, guarded by the sample tests; a newer version is refused explicitly, saying what to upgrade.
+- This is a user-visible format change, stated in the 0.10 release notes under standard §9.3; the field is optional, so no migration is needed.
 
 ## 8. Core and the registry
 
@@ -268,13 +277,13 @@ Wave 3 (black-box scenarios)
 
 CI changes needed (stated in each PR, added by a CI PR): `rutis[network]` in the `e2e` job (S5); a Windows E2E job (after #232); optionally, more `proptest` cases at nightly than the 256 on PRs.
 
-## 10. Decisions for the maintainer
+## 10. Decisions for the maintainer (review of 2026-10-11)
 
 | # | Question | Proposal |
 | --- | --- | --- |
-| Q1 | S3 and S4 need configuration edits while running, which `run` doesn't support. Add config watching to `run`, or test with a fixture host? | Don't change `run` in 0.10: S3 recovers by restarting the host (which is the current promise), S4 uses the fixture host. Whether `run` should watch its configuration goes into a separate issue together with status §10 item 2 (B4) |
-| Q2 | S5's "revoke the token" has no mechanism | rewrite as "after B restarts with another token, the reconnect is refused"; live revocation becomes a separate feature issue, not in 0.10 |
-| Q3 | From which version does the registry's release gate (Q9.4.4) apply | baseline at 0.10, enforced from 0.11 |
-| Q4 | Add a version field to the persisted formats? | No; the sample tests catch changes; add one under standard §9.3 when an incompatible change is really needed |
-| Q5 | What to do when a value round-trip goes beyond the conversion table (large integers and so on) | first document the current behaviour in the table and register it as "explicitly not guaranteed"; changing the implementation is a separate issue |
-| Q6 | After this plan is merged, does each item get its own PR, or does implementation continue in this PR? | One PR each (each stays small, and CI selects by change); this PR holds only the plan |
+| Q1 | S3 and S4 need configuration edits while running, which `run` doesn't support. Add config watching to `run`, or test with a fixture host? | **Decided**: `run` unchanged in 0.10; S3 recovers by restarting the host, S4 uses the fixture host; whether `run` supports configuration changes while running is #274 |
+| Q2 | S5's "revoke the token" has no mechanism | **Decided**: a requirement on remote, #273; in 0.10 S5 tests the refusal after a restart with another token |
+| Q3 | From which version does the registry's release gate (Q9.4.4) apply | **Open**: baseline at 0.10, enforced from 0.11 |
+| Q4 | Add a version field to the persisted formats? | **Decided**: yes, see §7; where the dsh user layer keeps it is decided in #207's PR |
+| Q5 | What to do when a value round-trip goes beyond the conversion table (large integers and so on) | **Decided**: first document the current behaviour in the table and register it as "explicitly not guaranteed"; changing the implementation is a separate issue |
+| Q6 | After this plan is merged, does each item get its own PR, or does implementation continue in this PR? | **Decided**: one PR each; this PR holds only the plan |
