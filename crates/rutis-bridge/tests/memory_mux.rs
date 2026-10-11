@@ -187,12 +187,15 @@ impl Logical {
     }
 }
 
+/// Where the answer to an open request goes.
+type Reply = std::sync::mpsc::Sender<Result<String, (Failure, String)>>;
+
 /// One physical connection and the logical channels on it.
 struct Physical {
     sender: Mutex<Box<dyn Sender>>,
     closer: Arc<dyn Closer>,
     channels: Mutex<HashMap<u32, Arc<Logical>>>,
-    pending: Mutex<HashMap<u32, std::sync::mpsc::Sender<Result<String, (Failure, String)>>>>,
+    pending: Mutex<HashMap<u32, Reply>>,
     next: AtomicU32,
     alive: Mutex<bool>,
 }

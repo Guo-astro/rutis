@@ -23,6 +23,7 @@
 | `dylib-windows.yml` | PR 改了 dylib 相关文件（与 `dylib` 开关相同）；每次推送 main；打 `v*` tag；手动 | Windows 上的 dylib 测试 |
 | `stress.yml` | 每晚；手动 | 重复运行内核测试和多进程测试；网络长时间测试（下文） |
 | `ci-stats.yml` | 每周；手动 | 统计 CI 的耗时和失败 |
+| `deps.yml` | 每周；手动 | 依赖漏洞检查：`cargo deny check advisories`（不含示例项目）、`@arcships/rutis-runtime` 的 `npm audit`、Python 包的 `pip-audit`。不在 PR 上跑，不阻止合并；失败时 GitHub 通知维护者 |
 | `release.yml`、`release-cli.yml` | 打 tag | 发布 |
 
 ### 每晚的 `stress.yml`
@@ -32,7 +33,7 @@
 | 任务 | 做什么 |
 | --- | --- |
 | `rutis` | 内核测试重复 `rounds` 轮（默认 20）。每轮换测试线程数（1、2、全部核数）、打乱顺序、换种子，每五轮用一次 release 构建。第一次失败就停 |
-| `multiprocess` | bridge、loader 中会启动进程、打开本地通道、启动运行时进程的测试，也就是 `ci.yml` 的 `PLATFORM_TESTS_BRIDGE`、`PLATFORM_TESTS_LOADER` 两个列表（加进列表的新测试文件，这里自动跟着跑）。运行时和 `rust` 任务相同：Node 24、Bun 1.4.0、Python 3.10（含 websockets）、Go oldstable。测试只构建一次，然后重复 `rounds` 轮，每轮换测试线程数、打乱顺序、换种子。某一轮失败也跑完所有轮，最后才让任务失败 |
+| `multiprocess` | bridge、loader 中会启动进程、打开本地通道、启动运行时进程的测试，也就是 `ci.yml` 的 `PLATFORM_TESTS_BRIDGE`、`PLATFORM_TESTS_LOADER` 两个列表（加进列表的新测试文件，这里自动跟着跑）。运行时和 `rust` 任务相同（§9）。测试只构建一次，然后重复 `rounds` 轮，每轮换测试线程数、打乱顺序、换种子。某一轮失败也跑完所有轮，最后才让任务失败 |
 | `soak` | bridge 的 WebSocket 和本地通道长时间测试，各 `soak_secs` 秒（默认 600） |
 
 整个 workflow 的时间由最慢的任务决定：`soak` 约 21 分钟；`multiprocess` 估计 30–45 分钟（构建约 10 分钟，每轮约 1–1.5 分钟）。
@@ -65,10 +66,12 @@
 | 任务 | 机器 | PR 上 | main 上多做的 | 内容 |
 | --- | --- | --- | --- | --- |
 | `links` | Linux | `docs` | — | 检查 Markdown 里的相对链接 |
-| `rust` | Linux | `code` | Linux 上 loopback 方式启动运行时的重跑 | 全部 Rust 测试，每项只跑一次：工作区（除 bridge、loader）、loader 全部行类型、bridge 全部 feature。用最低支持版本：Node 24（#219 合并后改 22）、Bun 1.4.0、Python 3.10、Go oldstable |
+| `rust` | Linux | `code` | Linux 上 loopback 方式启动运行时的重跑 | 全部 Rust 测试，每项只跑一次：工作区（除 bridge、loader）、loader 全部行类型、bridge 全部 feature。用最低支持版本（§9） |
 | `js-py` | Linux | `code` | — | `scripts/train.mjs`；Node 包（`node/rutis`、`rutis-runtime`、`rutis-host`）和 rutis-dsh 的 dsh 测试；Python 单元测试 |
-| `checks` | Linux | 只在 `all` 时 | 整个任务 | `cargo check --workspace --all-targets`；bridge、loader 各个 feature 组合的编译检查和 `--no-run`。这些检查发现的是少见的 feature 组合编译错误，不跑测试 |
-| `network-macos` | macOS | `code`：只跑和平台有关的测试 | bridge、loader 全部测试；`node/rutis` 测试 | Node 26、最新 Bun、Go stable 下的进程启动、本地通道、运行时进程、WebSocket、rutis-host 测试；Node 运行时和 Python 包的测试；整个工作区的编译检查 |
+| `lint` | Linux | `code` | — | `cargo fmt --check`；`cargo clippy --workspace --all-targets --all-features -- -D warnings`。与测试并行。没有基线：警告在引入它的 PR 里改掉，升级工具链带来的新 lint 在升级的 PR 里改掉 |
+| `msrv` | Linux | 只在 `all` 时（改了 `Cargo.lock`、`Cargo.toml` 等） | 整个任务 | 用声明的 MSRV（`Cargo.toml` 的 `rust-version`）和仓库的 `Cargo.lock` 编译库和二进制（`cargo +<版本> check --workspace`，不含示例项目 `rutis-agent`、`rutis-cli`） |
+| `checks` | Linux | 只在 `all` 时 | 整个任务 | bridge、loader 各个 feature 组合的编译检查和 `--no-run`（整个工作区的编译由 `lint` 的 clippy 覆盖）。这些检查发现的是少见的 feature 组合编译错误，不跑测试 |
+| `network-macos` | macOS | `code`：只跑和平台有关的测试 | bridge、loader 全部测试；`node/rutis` 测试 | 最新版本（§9）下的进程启动、本地通道、运行时进程、WebSocket、rutis-host 测试；Node 运行时和 Python 包的测试；整个工作区的编译检查 |
 | `runtimes-windows` | Windows | `code`：只跑和平台有关的测试 | bridge、loader 全部测试 | 同上，在 Windows 上（进程用 loopback 方式启动）；Go SDK 测试；整个工作区的编译检查 |
 | `runtimes-bun` | Linux | `bun`：Bun 1.4.0 | Linux 最新版；macOS 1.4.0 | Bun 运行时的全部测试，包括 loopback 方式启动的重跑 |
 | `runtimes-go` | Linux | `go`：Go oldstable | Linux stable；macOS oldstable；Linux 上 loopback 方式启动的重跑 | Go SDK 与 Go 运行时的全部测试 |
@@ -91,9 +94,9 @@
 | 改动 | 运行的任务 | 预计时间（推送到结果） |
 | --- | --- | --- |
 | 只有文档 | `changes`、`links` | 约 1 分钟 |
-| 内核 `crates/rutis` | `rust`、`js-py`、`network-macos`、`runtimes-windows` | 约 5–8 分钟 |
+| 内核 `crates/rutis` | `rust`、`js-py`、`lint`、`network-macos`、`runtimes-windows` | 约 5–8 分钟 |
 | bridge、loader、host | 再加 `runtimes-bun`、`runtimes-go`（Linux 各一个版本） | 约 6–9 分钟 |
-| 只有 Python 包 | `rust`、`js-py`、`network-macos`、`runtimes-windows` | 约 5–8 分钟 |
+| 只有 Python 包 | `rust`、`js-py`、`lint`、`network-macos`、`runtimes-windows` | 约 5–8 分钟 |
 | 改了 `package.json`、`pyproject.toml`、`crates/*/Cargo.toml` | 再加三个打包任务和 `semver-rutis` | 不变，打包任务与测试并行 |
 | dylib | 再加 dylib 任务；`dylib-windows.yml` | 约 20–25 分钟（dylib 的预算） |
 | CI 配置、`Cargo.lock`、根 `Cargo.toml` | 全部，同 main | 约 25 分钟 |
@@ -113,7 +116,8 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 1. **它防的是哪类问题，放在哪一级。** 级别是 PR、main、每日（`stress.yml`）、每周。默认放 main 或每日；只有必须在合并前拦住的问题才放 PR。放 main 的检查失败了，按 §7 优先处理，同样会被发现，只是晚一点。
 2. **放 PR 的，写明它占多少时间。** 它不能让关键路径（最慢的那个任务）变长：放进一个并行的 Linux 任务，或者在已有任务里替换掉别的内容。不新增 macOS、Windows 任务；macOS、Windows 上只跑和平台有关的测试（§4）。
 3. **能替换就不新增。** 例如支持矩阵的最低版本：把 Linux 任务里的版本换成最低版本，macOS 保持最新版，而不是再加一个任务跑最低版本。
-4. **目标：普通代码 PR 从推送到出结果不超过 10 分钟，排队也算在内。** 用 `node tools/ci-stats.mjs [次数]` 测量（每周的 `ci-stats.yml` 也会跑）。超出时，从关键路径上的任务开始调整：拆成并行任务，或者把成本高、很少失败的部分移到 main。
+4. **目标：普通代码 PR 从推送到出结果不超过 10 分钟，排队也算在内。** 用 `node tools/ci-stats.mjs [次数] [workflow] [--since 日期]` 测量（每周的 `ci-stats.yml` 也会跑），看"ordinary code"一行：第一次运行、跑了 `rust`、没跑 `checks` 和 `dylib-` 任务的 PR。
+5. **结果会因外部数据变化的检查不放 PR。** 漏洞库、新版本发布会让代码没变的 PR 失败；这类检查放每周（`deps.yml`）。超出时，从关键路径上的任务开始调整：拆成并行任务，或者把成本高、很少失败的部分移到 main。
 
 把这几条的答案写进 PR 描述。
 
@@ -129,7 +133,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 ### 加一种语言运行时
 
 1. `changes` 加一个这种语言的开关，包括它的运行时目录，以及 `crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host`。
-2. 在 `rust`（最低支持版本）和 `network-macos`（最新版本）里安装这种语言，在已有的 bridge、loader、host 测试步骤里加上它的 feature；它的测试文件按 §4 加进 `PLATFORM_TESTS_*`。
+2. 在 `rust`（最低支持版本）和 `network-macos`（最新版本）里安装这种语言（§9），在已有的 bridge、loader、host 测试步骤里加上它的 feature；它的测试文件按 §4 加进 `PLATFORM_TESTS_*`。
 3. 如果要测多个版本，加一个 `runtimes-<语言>` 任务：按第 1 步的开关运行，加进 `ci-ok`，PR 上只在 Linux 跑最低支持版本；其他版本和 macOS 只在 main 上跑（做法见 `runtimes-bun` 和 `changes` 的 `bun-matrix`）。
 4. 发布相关：`release-dry-run`、`scripts/train.mjs`、`release.yml` 都加上它的包。
 5. 更新 §3、§4。
@@ -157,3 +161,21 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 - PR 只能读取 main 和它自己的缓存。PR 不保存，是为了不占用仓库 10 GB 的缓存空间，把 main 的缓存挤掉。
 - 加任务时照此设置（`ci.yml` 里 `rust` 任务的 `rust-cache` 处有说明）。
 - 不能用缓存的检查（SDK 可复现构建）放在 main 上，PR 只在 `repro` 打开时运行。
+
+## 9. 版本
+
+规则：每种语言，Linux 任务用最低支持版本，macOS 和 Windows 任务用最新版本。最低版本在每个 PR 上都验证，最新版本在 macOS、Windows 上验证，不为版本单独加任务。
+
+| | 声明在哪 | Linux（`rust`、`js-py`、`checks`、`lint`、`runtimes-go`、`runtimes-bun`、`stress.yml` 的 `multiprocess`） | `network-macos`、`runtimes-windows` |
+| --- | --- | --- | --- |
+| Node | 各 npm 包 `package.json` 的 `engines.node` | 声明的最低主版本 | 最新的偶数主版本，手动升级 |
+| Python | `python/rutis/pyproject.toml` 的 `requires-python` | 声明的最低版本 | `3.x`，自动跟随；新版本让 PR 失败时，临时写死上一版并另开 PR 修 |
+| websockets | `python/rutis/pyproject.toml` 的 `network` extra | `==<下限>.*` | `>=<下限>` |
+| Bun | `bun/rutis-bun/package.json` 的 `engines.bun` | 声明的最低版本 | `latest` |
+| Go | `go/rutis/go.mod` | `oldstable` | `stable` |
+| Rust 工具链 | `rust-toolchain.toml` | 所有 workflow 的 `dtolnay/rust-toolchain@<版本>` 与它相同 | 同左 |
+| MSRV | 根 `Cargo.toml` 的 `rust-version` | `msrv` 任务（main） | — |
+
+`runtimes-go`、`runtimes-bun` 在 main 上的 macOS 矩阵项里，Node、Python 只是跨语言行的对端，和 Linux 一样用最低版本。发布用的 Node（`release.yml` 和 `ci.yml` 的 `release-*` 任务）是发布工具的版本，不属于支持矩阵。
+
+**改了声明，要在同一个 PR 里改 CI 的版本**：改 `engines`、`requires-python`、websockets 下限或 `rust-version` 的 PR，同时改上表里对应任务的版本；否则声明的最低版本没有经过验证（Q10.3）。

@@ -27,6 +27,10 @@ pub fn loaded_sdk_id() -> &'static str {
 
 /// A C ABI diagnostic query. The independent launcher performs the actual
 /// pre-execution file verification before any SDK code can run.
+///
+/// # Safety
+///
+/// `buf` is null or points to at least `cap` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn rutis_sdk_boot_id(buf: *mut u8, cap: usize) -> usize {
     let bytes = SDK_ID.as_bytes();

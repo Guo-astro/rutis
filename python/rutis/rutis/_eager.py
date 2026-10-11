@@ -13,8 +13,11 @@ the first step already finished, it returns a finished future instead; the
 task then ends the same way on its first step and is dropped. Like the
 native eager start, it does not go through the loop's task factory.
 
-It sets the current task through `asyncio.tasks._current_tasks`, private
-but stable on 3.10 and 3.11, which receive only security fixes.
+It sets the current task with `asyncio.tasks._swap_current_task` where
+there is one (3.12+, what the native eager start uses; from 3.14
+`current_task()` no longer reads the dict below), else through
+`asyncio.tasks._current_tasks`, private but stable on 3.10 and 3.11, which
+receive only security fixes.
 """
 
 from __future__ import annotations
@@ -28,6 +31,19 @@ from typing import Any, Coroutine
 _UNSTARTED = object()
 
 
+def _swap_dict(loop: asyncio.AbstractEventLoop, task: asyncio.Task | None) -> asyncio.Task | None:
+    previous = _tasks._current_tasks.get(loop)
+    if task is None:
+        _tasks._current_tasks.pop(loop, None)
+    else:
+        _tasks._current_tasks[loop] = task
+    return previous
+
+
+# Makes `task` the loop's current task (None: none), returns the previous.
+_swap = getattr(_tasks, "_swap_current_task", _swap_dict)
+
+
 def start(loop: asyncio.AbstractEventLoop, coro: Coroutine, context: contextvars.Context) -> asyncio.Future:
     """`asyncio.Task(coro, loop=loop, context=context, eager_start=True)`."""
     rest = _Rest(coro, context)
@@ -35,8 +51,7 @@ def start(loop: asyncio.AbstractEventLoop, coro: Coroutine, context: contextvars
     if not loop.is_running():
         # Native eager start does not run the first step either.
         return task
-    previous = _tasks._current_tasks.get(loop)
-    _tasks._current_tasks[loop] = task
+    previous = _swap(loop, task)
     try:
         try:
             rest.waited = context.run(coro.send, None)
@@ -53,10 +68,7 @@ def start(loop: asyncio.AbstractEventLoop, coro: Coroutine, context: contextvars
         except BaseException as error:  # noqa: BLE001 - the task's outcome
             rest.outcome = (False, error)
     finally:
-        if previous is None:
-            _tasks._current_tasks.pop(loop, None)
-        else:
-            _tasks._current_tasks[loop] = previous
+        _swap(loop, previous)
     task.add_done_callback(_retrieve)
     return _finished(loop, rest.outcome)
 

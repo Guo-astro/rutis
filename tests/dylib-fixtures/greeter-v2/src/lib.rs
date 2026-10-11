@@ -1,4 +1,10 @@
 #![cfg(feature = "export")]
+// `changed_identity` and `fail_once` are exclusive versions of this plugin:
+// with both on (`--all-features`), nothing is exported.
+#![cfg_attr(
+    all(feature = "changed_identity", feature = "fail_once"),
+    allow(dead_code, reason = "exclusive versions: nothing is exported")
+)]
 
 use rutis_sdk::rutis::{
     BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, PluginFactory, Snapshot, TypeKey,

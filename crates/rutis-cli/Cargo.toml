@@ -5,7 +5,6 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-rust-version.workspace = true
 readme = "README.md"
 keywords = ["llm", "agent", "coding", "cli", "tui"]
 categories = ["command-line-utilities"]

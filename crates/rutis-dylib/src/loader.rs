@@ -177,8 +177,12 @@ impl Loader {
         self
     }
 
-    /// Loads trusted code. The caller is responsible for accepting that library
-    /// initializers run inside the host as soon as `dlopen` is called.
+    /// Loads trusted code.
+    ///
+    /// # Safety
+    ///
+    /// The caller is responsible for accepting that library initializers run
+    /// inside the host as soon as `dlopen` is called.
     pub unsafe fn load(&self, dir: impl AsRef<Path>) -> Result<Arc<Module>, LoadError> {
         let manifest_path = dir.as_ref().join("plugin.toml");
         let source = fs::read_to_string(&manifest_path)

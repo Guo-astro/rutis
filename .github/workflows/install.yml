@@ -12,7 +12,7 @@
 #                 after publishing, from the registries (source: registry)
 #   by hand       any version and source
 #
-# The minimum versions go on Linux (Node 22, Python 3.12 until #196 lands);
+# The minimum versions go on Linux (Node 22, Python 3.10);
 # macOS and Windows take the latest (docs/ci.md §9).
 name: install
 
@@ -89,8 +89,8 @@ jobs:
           const platforms = process.env.PLATFORMS ? JSON.parse(process.env.PLATFORMS)
             : process.env.EVENT === 'pull_request' ? ['linux-x64'] : main
           const runners = {
-            'linux-x64': { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-musl', wheel: 'x86_64', node: '22', python: '3.12' },
-            'linux-arm64': { os: 'ubuntu-24.04-arm', target: 'aarch64-unknown-linux-musl', wheel: 'aarch64', node: '22', python: '3.12' },
+            'linux-x64': { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-musl', wheel: 'x86_64', node: '22', python: '3.10' },
+            'linux-arm64': { os: 'ubuntu-24.04-arm', target: 'aarch64-unknown-linux-musl', wheel: 'aarch64', node: '22', python: '3.10' },
             // The Intel macOS runner (macos-13 is retired).
             'darwin-x64': { os: 'macos-15-intel', target: 'x86_64-apple-darwin', wheel: 'x86_64-apple-darwin', node: '26', python: '3.x' },
             'darwin-arm64': { os: 'macos-15', target: 'aarch64-apple-darwin', wheel: 'aarch64-apple-darwin', node: '26', python: '3.x' },

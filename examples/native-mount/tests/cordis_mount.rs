@@ -4,10 +4,7 @@
 async fn cordis_mounts_the_original_rust_plugin() {
     let node = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime");
     let mut child = tokio::process::Command::new("node")
-        .args([
-            "--test",
-            "test/fixtures/rust-mount.test.mjs",
-        ])
+        .args(["--test", "test/fixtures/rust-mount.test.mjs"])
         .current_dir(node)
         .env("RUTIS_BINDINGS", concat!(env!("OUT_DIR"), "/rutis.mjs"))
         .env("RUTIS_EXECUTABLE", env!("CARGO_BIN_EXE_rutis-counter"))
