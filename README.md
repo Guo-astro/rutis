@@ -225,7 +225,7 @@ The [design philosophy](docs/design-philosophy.en.md) explains these choices, an
 
 Go plugins use the module [`github.com/arcships/rutis/go/rutis`](go/rutis): the SDK, and the runtime each plugin binary carries.
 
-All of these form a release train: released together at one version, currently 0.8. Use the same version for every rutis package.
+All of these form a release train: released together at one version, currently 0.9. Use the same version for every rutis package.
 
 ## Built with rutis
 
@@ -245,7 +245,7 @@ All of these form a release train: released together at one version, currently 0
 - **[Core features](docs/core-features.en.md)**: config hot update, dynamic events, interception, diagnostics, and the boundaries of each.
 - **[API docs](https://docs.rs/rutis)**: the complete reference on docs.rs.
 - **Design records**: the [core design](docs/design-rust-port.en.md), the [spec-by-spec parity check against Cordis](docs/cordis-spec-parity-2026-08-18.en.md), and every design record in [docs](docs).
-- **Upgrading**: [0.7 → 0.8](docs/migration-0.7-to-0.8.en.md) · [from rutis-interop to 0.7](docs/migration-interop-to-0.7.en.md) · [0.6.0 → 0.6.1](docs/migration-0.6.0-to-0.6.1.en.md) · [0.5 → 0.6](docs/migration-0.5-to-0.6.en.md) · [0.3 → 0.5](docs/migration-0.3-to-0.5.en.md) · [0.1 → 0.2](docs/migration-0.1-to-0.2.en.md)
+- **Upgrading**: [0.8 → 0.9](docs/migration-0.8-to-0.9.en.md) · [0.7 → 0.8](docs/migration-0.7-to-0.8.en.md) · [from rutis-interop to 0.7](docs/migration-interop-to-0.7.en.md) · [0.6.0 → 0.6.1](docs/migration-0.6.0-to-0.6.1.en.md) · [0.5 → 0.6](docs/migration-0.5-to-0.6.en.md) · [0.3 → 0.5](docs/migration-0.3-to-0.5.en.md) · [0.1 → 0.2](docs/migration-0.1-to-0.2.en.md)
 
 ## Platforms and status
 
