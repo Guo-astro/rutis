@@ -7,10 +7,10 @@ import os
 import queue
 import socket
 import threading
-import time
 import unittest
 
 import background
+from support import HANG_GUARD, blocking_within, eventually_blocking
 
 try:
     from websockets.exceptions import ConnectionClosed, InvalidStatus
@@ -39,7 +39,7 @@ def listen(**options):
         )
 
     threading.Thread(target=run, daemon=True).start()
-    return addresses.get(timeout=5), channels
+    return addresses.get(timeout=HANG_GUARD), channels
 
 
 def dial(address, token="secret", protocol=PROTOCOL, **options):
@@ -52,13 +52,13 @@ class WebSocketTest(background.TestCase):
     def test_messages_cross_and_an_orderly_close_is_a_normal_end(self):
         address, channels = listen()
         client = dial(address)
-        channel = channels.get(timeout=5)
+        channel = channels.get(timeout=HANG_GUARD)
         client.send('{"op":"hello"}')
-        self.assertEqual(channel.recv(), b'{"op":"hello"}')
+        self.assertEqual(blocking_within("the message", channel.recv), b'{"op":"hello"}')
         channel.send(b'{"a":"x\\ny"}')
-        self.assertEqual(client.recv(timeout=5), '{"a":"x\\ny"}')
+        self.assertEqual(client.recv(timeout=HANG_GUARD), '{"a":"x\\ny"}')
         client.close(1001)
-        self.assertIsNone(channel.recv())
+        self.assertIsNone(blocking_within("the end", channel.recv))
 
     def test_a_closed_listener_refuses_new_connections_and_keeps_established_ones(self):
         # #197: before websockets 17, close() raised in a background thread
@@ -71,11 +71,11 @@ class WebSocketTest(background.TestCase):
             dial(listener.address)
         for client, channel in zip((first, second), channels):
             client.send("{}")
-            self.assertEqual(channel.recv(), b"{}")
+            self.assertEqual(blocking_within("the message", channel.recv), b"{}")
             channel.send(b"[]")
-            self.assertEqual(client.recv(timeout=5), "[]")
+            self.assertEqual(client.recv(timeout=HANG_GUARD), "[]")
             client.close()
-            self.assertIsNone(channel.recv())
+            self.assertIsNone(blocking_within("the end", channel.recv))
 
     def test_closing_twice_stops_once(self):
         listener = websocket.listen("ws://127.0.0.1:0/rutis", PROTOCOL, "secret", announce=lambda _: None)
@@ -274,61 +274,84 @@ runpy.run_module("rutis", run_name="__main__")
     def test_a_takeover_closes_with_4002(self):
         address, channels = listen()
         client = dial(address)
-        channels.get(timeout=5).replaced()
-        with self.assertRaises(ConnectionClosed) as closed:
-            client.recv(timeout=5)
-        self.assertEqual(closed.exception.rcvd.code, 4002)
+        channels.get(timeout=HANG_GUARD).replaced()
+        self.assertEqual(closed_code(client), 4002)
 
     def test_sending_over_the_limit_closes_with_1009(self):
         address, channels = listen()
         client = dial(address)
-        channel = channels.get(timeout=5)
+        channel = channels.get(timeout=HANG_GUARD)
         limit, websocket.MAX_MESSAGE = websocket.MAX_MESSAGE, 64
         try:
             with self.assertRaises(ConnectionError):
                 channel.send(b"x" * 65)
         finally:
             websocket.MAX_MESSAGE = limit
-        with self.assertRaises(ConnectionClosed) as closed:
-            client.recv(timeout=5)
-        self.assertEqual(closed.exception.rcvd.code, 1009)
+        self.assertEqual(closed_code(client), 1009)
 
     def test_heartbeats_find_a_half_open_connection(self):
-        os.environ["RUTIS_HEARTBEAT"] = "100,400"
+        # Timing is what this tests, across a socket: by tolerance
+        # (docs/design-test-clocks-2026-10-11.md §3.3), ping and timeout ten
+        # times apart, "still connected" after a count of pings rather than
+        # a time, no bound on how fast the timeout is found (only a hang
+        # guard).
+        os.environ["RUTIS_HEARTBEAT"] = "100,1000"
         try:
             address, channels = listen()
         finally:
             del os.environ["RUTIS_HEARTBEAT"]
-        relay, frozen = freezable_relay(int(address.rsplit(":", 1)[1].split("/")[0]))
-        client = dial(f"ws://127.0.0.1:{relay}/rutis", ping_interval=None)
-        channel = channels.get(timeout=5)
+        relay = FreezableRelay(int(address.rsplit(":", 1)[1].split("/")[0]))
+        client = dial(f"ws://127.0.0.1:{relay.port}/rutis", ping_interval=None)
+        channel = channels.get(timeout=HANG_GUARD)
+        # Alive while pings flow: through more pings and pongs than fit in
+        # one timeout (at most 20: this side pings, and is answered, every
+        # 100 ms; the client does not ping).
+        before = relay.carried
+        eventually_blocking("pings through the relay", lambda: relay.carried >= before + 30)
         client.send("{}")
-        self.assertEqual(channel.recv(), b"{}")
-        frozen.set()
-        started = time.monotonic()
+        self.assertEqual(blocking_within("the message", channel.recv), b"{}")
+        relay.frozen.set()
         with self.assertRaises(ConnectionError):
-            channel.recv()
-        self.assertLess(time.monotonic() - started, 3)
+            blocking_within("the heartbeat timeout", channel.recv)
 
 
-def freezable_relay(port):
-    """A TCP relay that can stop carrying bytes without closing anything."""
-    listener = socket.create_server(("127.0.0.1", 0))
-    frozen = threading.Event()
+def closed_code(client):
+    """The close code `client` receives. A connection still open after
+    HANG_GUARD fails the test as such, not as an unexpected TimeoutError."""
+    try:
+        client.recv(timeout=HANG_GUARD)
+    except ConnectionClosed as closed:
+        return closed.rcvd.code
+    except TimeoutError:
+        raise AssertionError(f"not closed within {HANG_GUARD} s") from None
+    raise AssertionError("a message instead of the close")
 
-    def pump(source, target):
-        while data := source.recv(65536):
-            if not frozen.is_set():
-                target.sendall(data)
 
-    def serve():
-        client, _ = listener.accept()
-        upstream = socket.create_connection(("127.0.0.1", port))
-        for source, target in ((client, upstream), (upstream, client)):
-            threading.Thread(target=pump, args=(source, target), daemon=True).start()
+class FreezableRelay:
+    """A TCP relay that can stop carrying bytes without closing anything. It
+    counts what it carried (each read it passed on)."""
 
-    threading.Thread(target=serve, daemon=True).start()
-    return listener.getsockname()[1], frozen
+    def __init__(self, port):
+        listener = socket.create_server(("127.0.0.1", 0))
+        self.port = listener.getsockname()[1]
+        self.frozen = threading.Event()
+        self.carried = 0
+        lock = threading.Lock()
+
+        def pump(source, target):
+            while data := source.recv(65536):
+                if not self.frozen.is_set():
+                    target.sendall(data)
+                    with lock:
+                        self.carried += 1
+
+        def serve():
+            client, _ = listener.accept()
+            upstream = socket.create_connection(("127.0.0.1", port))
+            for source, target in ((client, upstream), (upstream, client)):
+                threading.Thread(target=pump, args=(source, target), daemon=True).start()
+
+        threading.Thread(target=serve, daemon=True).start()
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import threading
 import unittest
 
 import background
+from support import HANG_GUARD, within
 
 from rutis.peer import Peer
 
@@ -14,7 +15,7 @@ from rutis.peer import Peer
 class PeerTests(background.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.ours, self.theirs = socket.socketpair()
-        self.theirs.settimeout(5)
+        self.theirs.settimeout(HANG_GUARD)
         self.peer = Peer(self.ours, lambda target, method, args: None)
         self.peer._handshake = True
         self.lines = self.theirs.makefile("rb")
@@ -277,7 +278,7 @@ class CapabilityTests(background.IsolatedAsyncioTestCase):
 
     async def session(self, capabilities):
         ours, theirs = socket.socketpair()
-        theirs.settimeout(5)
+        theirs.settimeout(HANG_GUARD)
         self.addCleanup(ours.close)
         self.addCleanup(theirs.close)
         peer = Peer(ours, lambda target, method, args: Weather(), endpoint={"local": "py", "expected": "main"})
@@ -288,9 +289,8 @@ class CapabilityTests(background.IsolatedAsyncioTestCase):
         hello = {"op": "hello", "version": 3, "endpoint": "main", "capabilities": capabilities}
         peer._receive(hello)
         peer._receive({"op": "invoke", "id": "main:1", "path": [], "target": "svc", "method": "get", "args": {"type": "data", "value": []}})
-        # The call runs on the loop: let it.
-        await asyncio.sleep(0.05)
-        return json.loads(lines.readline())
+        # The call runs on the loop: read its reply off the loop.
+        return json.loads(await within("the reply", asyncio.to_thread(lines.readline)))
 
     async def test_an_object_is_refused_to_a_far_end_without_objects(self):
         reply = await self.session(["signals"])
