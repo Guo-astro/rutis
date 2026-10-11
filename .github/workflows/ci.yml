@@ -343,12 +343,13 @@ jobs:
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   # The declared MSRV (rust-version in Cargo.toml) builds the libraries and
-  # binaries, with our Cargo.lock (Q10.3). Main only: a dependency that needs
-  # a newer rustc arrives with a Cargo.lock change, which turns on every job
-  # anyway. rutis-agent and rutis-cli are examples and declare no MSRV.
+  # binaries, with our Cargo.lock (Q10.3). With `all`: on main, and on pull
+  # requests that change Cargo.lock or Cargo.toml, which is how a dependency
+  # that needs a newer rustc arrives. rutis-agent and rutis-cli are examples
+  # and declare no MSRV.
   msrv:
     needs: changes
-    if: github.event_name == 'push' && needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.all == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

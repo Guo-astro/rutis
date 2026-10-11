@@ -128,7 +128,7 @@ D6：`checks` 里的 `cargo check --workspace --all-targets` 删掉。`network-m
 - 根 `Cargo.toml` 的 `rust-version` 改为 `"1.88"`。
 - `crates/rutis-agent`、`crates/rutis-cli` 是示例项目，去掉 `rust-version.workspace = true`，不声明 MSRV。
 - README、`docs/guide/README.md`（中英）里"Rust 1.85"改为 1.88。
-- 检查：main 上（`push` 到 main）一个 Linux 任务 `msrv`：`dtolnay/rust-toolchain@1.88`，`cargo +1.88 check --workspace --exclude rutis-agent --exclude rutis-cli --locked`。只检查库和二进制（测试依赖 `rcgen`、`time` 要 1.88，同样能过，但不承诺）。约 3 分钟，不加进 PR。
+- 检查：一个 Linux 任务 `msrv`，只在 `all` 时运行（main，以及改了 `Cargo.lock`、`Cargo.toml` 的 PR）：`dtolnay/rust-toolchain@1.88`，`cargo +1.88 check --workspace --exclude rutis-agent --exclude rutis-cli --locked`。只检查库和二进制（测试依赖 `rcgen`、`time` 要 1.88，同样能过，但不承诺）。约 3 分钟，普通 PR 不跑。
 
 以后不通过时：把那个依赖锁在旧版本（`cargo update -p <依赖> --precise <版本>`），或者提高 `rust-version` 并同步改 README、guide。提高 `rust-version` 是用户能看到的变化，由维护者决定。
 

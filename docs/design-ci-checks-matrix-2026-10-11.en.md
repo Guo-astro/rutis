@@ -128,7 +128,7 @@ D6: `cargo check --workspace --all-targets` is removed from `checks`. The same c
 - The root `Cargo.toml`'s `rust-version` becomes `"1.88"`.
 - `crates/rutis-agent` and `crates/rutis-cli` are example projects: they drop `rust-version.workspace = true` and declare no MSRV.
 - "Rust 1.85" in `README.md`, `README.zh-CN.md` and `docs/guide/README.md` / `.en.md` becomes 1.88.
-- Check: a Linux job `msrv` on main (`push` to main): `dtolnay/rust-toolchain@1.88`, `cargo +1.88 check --workspace --exclude rutis-agent --exclude rutis-cli --locked`. Libraries and binaries only (the test dependencies `rcgen` and `time` need 1.88 and pass too, but are not promised). About 3 minutes, not on PRs.
+- Check: a Linux job `msrv`, run with `all` (main, and pull requests that change `Cargo.lock` or `Cargo.toml`): `dtolnay/rust-toolchain@1.88`, `cargo +1.88 check --workspace --exclude rutis-agent --exclude rutis-cli --locked`. Libraries and binaries only (the test dependencies `rcgen` and `time` need 1.88 and pass too, but are not promised). About 3 minutes, not on ordinary PRs.
 
 When it fails later: pin that dependency to an older version (`cargo update -p <dep> --precise <version>`), or raise `rust-version` and update the README and guide with it. Raising `rust-version` is user-visible and the maintainer's decision.
 
