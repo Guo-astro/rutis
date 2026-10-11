@@ -14,6 +14,7 @@ class Conformance:
         self.held = None
         self.started = False
         self.aborted = False
+        self.kept = {}
         self.peer: Peer | None = None
 
     def echo(self, value):
@@ -59,6 +60,21 @@ class Conformance:
 
     def reenter(self, fn):
         return fn()
+
+    # The release-count property test (risk P4).
+    def keep(self, slot, fn, *_copies):
+        self.kept[slot] = fn
+
+    def free(self, slot):
+        fn = self.kept.pop(slot, None)
+        if fn is not None:
+            self.peer.release(fn)
+
+    def make(self):
+        return lambda value: value
+
+    def tables(self):
+        return self.peer.references()
 
 
 async def main(path: str) -> None:

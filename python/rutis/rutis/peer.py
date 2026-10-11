@@ -632,6 +632,12 @@ class Peer:
         """Release an imported reference now instead of at collection."""
         self._release(proxy._record)
 
+    def references(self) -> dict:
+        """Reference table sizes: exported (granted, not yet released by the
+        far end) and imported (not yet released). Diagnostics for tests
+        (risk P4)."""
+        return {"exports": len(self._exports), "imports": len(self._imports)}
+
     def _export(self, ref: int, kind: str | None = None) -> _Export:
         entry = self._exports.get(ref)
         if entry is None or (kind is not None and entry.kind != kind):
