@@ -165,9 +165,9 @@ In one line: **declare dependencies → gated loading → provider changes → c
 | Running plugins in your app | [`rutis-loader`](https://crates.io/crates/rutis-loader), [`rutis-bridge`](https://crates.io/crates/rutis-bridge), [`rutis-dylib`](https://crates.io/crates/rutis-dylib) (dylib plugins) | [`@arcships/rutis-runtime`](https://www.npmjs.com/package/@arcships/rutis-runtime) | [`rutis`](https://pypi.org/project/rutis/) |
 | A host without Rust | [`rutis-host`](https://crates.io/crates/rutis-host) | [`@arcships/rutis-host`](https://www.npmjs.com/package/@arcships/rutis-host) | [`rutis-host`](https://pypi.org/project/rutis-host/) |
 
-Go plugins use the module [`github.com/arcships/rutis/go/rutis`](go/rutis) (the SDK and the runtime a plugin binary carries).
+Bun plugins run in [`@arcships/rutis-bun`](https://www.npmjs.com/package/@arcships/rutis-bun) (the Bun runtime; plugins use `@arcships/rutis`). Go plugins use the module [`github.com/arcships/rutis/go/rutis`](go/rutis) (the SDK and the runtime a plugin binary carries).
 
-All of these, the core and the dylib toolchain included, form a release train: released together at one version, currently 0.8. Use the same version for every rutis package.
+All of these, the core and the dylib toolchain included, form a release train: released together at one version, currently 0.9. Use the same version for every rutis package.
 
 ## Documentation
 
@@ -177,7 +177,7 @@ All of these, the core and the dylib toolchain included, form a release train: r
 - **[Core features](docs/core-features.en.md)** — config hot update, dynamic events, interception, diagnostics, and the boundaries of each.
 - **[API docs](https://docs.rs/rutis)** — the complete reference on docs.rs.
 - **Design and decisions** — the [design philosophy](docs/design-philosophy.en.md), [core design](docs/design-rust-port.en.md), the [spec-by-spec parity check against Cordis](docs/cordis-spec-parity-2026-08-18.en.md), and every design record in [docs](docs).
-- **Upgrading** — [0.7 → 0.8](docs/migration-0.7-to-0.8.en.md) · [from rutis-interop to 0.7](docs/migration-interop-to-0.7.en.md) · [0.6.0 → 0.6.1](docs/migration-0.6.0-to-0.6.1.en.md) · [0.5 → 0.6](docs/migration-0.5-to-0.6.en.md) · [0.3 → 0.5](docs/migration-0.3-to-0.5.en.md) · [0.1 → 0.2](docs/migration-0.1-to-0.2.en.md)
+- **Upgrading** — [0.8 → 0.9](docs/migration-0.8-to-0.9.en.md) · [0.7 → 0.8](docs/migration-0.7-to-0.8.en.md) · [from rutis-interop to 0.7](docs/migration-interop-to-0.7.en.md) · [0.6.0 → 0.6.1](docs/migration-0.6.0-to-0.6.1.en.md) · [0.5 → 0.6](docs/migration-0.5-to-0.6.en.md) · [0.3 → 0.5](docs/migration-0.3-to-0.5.en.md) · [0.1 → 0.2](docs/migration-0.1-to-0.2.en.md)
 
 ## Built with rutis
 

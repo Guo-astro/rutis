@@ -7,13 +7,14 @@
 | 注册表 | 包 |
 | --- | --- |
 | crates.io | `rutis`（内核）、`rutis-bridge`、`rutis-loader`、`rutis-host`；dylib 工具链 `rutis-sdk`、`rutis-dylib`、`rutis-dylib-meta`、`rutis-dylib-launcher` |
-| npm | `@arcships/rutis`、`@arcships/rutis-runtime`、`@arcships/rutis-host`（及 `@arcships/rutis-host-{linux,darwin}-{x64,arm64}`、`@arcships/rutis-host-win32-x64`） |
+| npm | `@arcships/rutis`、`@arcships/rutis-runtime`、`@arcships/rutis-bun`、`@arcships/rutis-host`（及 `@arcships/rutis-host-{linux,darwin}-{x64,arm64}`、`@arcships/rutis-host-win32-x64`） |
 | PyPI | `rutis`、`rutis-host`（各平台的 wheel） |
+| Go | `github.com/arcships/rutis/go/rutis`（tag `go/rutis/vX.Y.Z`，由 release.yml 打） |
 | GitHub Release | `rutis-host` 二进制 |
 
 ## 步骤
 
-1. 改版本号：`scripts/train.mjs` 里 `crates` 列出的每个 crate 的 Cargo.toml（以及它们之间、和工作区其他 crate 对它们的依赖版本），`node/rutis`、`node/rutis-runtime`、`node/rutis-host` 的 package.json（`@arcships/rutis-host` 依赖的运行时和平台包版本），`python/rutis/pyproject.toml` 和 `python/rutis/rutis/peer.py` 的 `IMPLEMENTATION`，`crates/rutis-host/pyproject.toml` 里 `rutis` 的范围。`node scripts/train.mjs` 检查它们一致，CI 也会跑。
+1. 改版本号：`scripts/train.mjs` 里 `crates` 列出的每个 crate 的 Cargo.toml（以及它们之间、和工作区其他 crate 对它们的依赖版本），`node/rutis`、`node/rutis-runtime`、`bun/rutis-bun`、`node/rutis-host` 的 package.json（`@arcships/rutis-host` 依赖的运行时和平台包版本），`python/rutis/pyproject.toml` 和 `python/rutis/rutis/peer.py` 的 `IMPLEMENTATION`，`go/rutis/version.go` 的 `Version`，`crates/rutis-host/pyproject.toml` 里 `rutis` 的范围。`node scripts/train.mjs` 检查它们一致，CI 也会跑。
 2. 合并到 main，CI 的 `release-dry-run` 通过（各包都能打包）。
 3. 发布前在两台机器上跑一次冒烟（下文）。
 4. 打 tag `vX.Y.Z` 并推送。release.yml：核对版本 → 构建五个平台的二进制和 wheel → 对已发布过的 crate 做 semver 检查，按依赖顺序（`node scripts/train.mjs --crates`）发布 crate，再发布 npm 包、PyPI 包 → 创建 GitHub Release（说明取自 `docs/releases/X.Y.Z.en.md`，打 tag 前要写好）。各步只发布注册表里还没有的版本，中途失败时修好后重新运行即可。
@@ -39,6 +40,10 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 再用发布的包从零走一遍 [写一个 TypeScript 插件](guide/typescript-plugin.md) 和 [写一个 Python 插件](guide/python-plugin.md)。
 
 每晚的 stress 工作流还跑两个浸泡测试（link 反复断开重连、进程反复拉起结束），检查文件描述符、线程数不增长、进程都被回收。
+
+## 0.9.0
+
+Bun 运行时 `@arcships/rutis-bun` 和 Go 模块 `go/rutis` 首次发布。npm 上 `@arcships/rutis-bun` 是新包名，`NPM_TOKEN` 要能在 `@arcships` 下发布新包；Go 模块由 release.yml 打 `go/rutis/v0.9.0` tag 发布，Go module proxy 从这个 tag 取。发布前 `rutis-host new --lang bun|go` 生成的项目装不上依赖。
 
 ## 0.8.0
 

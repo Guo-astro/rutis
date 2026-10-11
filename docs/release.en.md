@@ -7,13 +7,14 @@ Except for `rutis-cli` (`cli-v*`, `release-cli.yml`), these packages share a ver
 | Registry | Packages |
 | --- | --- |
 | crates.io | `rutis` (the core), `rutis-bridge`, `rutis-loader`, `rutis-host`; the dylib toolchain `rutis-sdk`, `rutis-dylib`, `rutis-dylib-meta`, `rutis-dylib-launcher` |
-| npm | `@arcships/rutis`, `@arcships/rutis-runtime`, `@arcships/rutis-host` and `@arcships/rutis-host-{linux,darwin}-{x64,arm64}`, `@arcships/rutis-host-win32-x64` |
+| npm | `@arcships/rutis`, `@arcships/rutis-runtime`, `@arcships/rutis-bun`, `@arcships/rutis-host` and `@arcships/rutis-host-{linux,darwin}-{x64,arm64}`, `@arcships/rutis-host-win32-x64` |
 | PyPI | `rutis`, `rutis-host` (wheels for each platform) |
+| Go | `github.com/arcships/rutis/go/rutis` (the tag `go/rutis/vX.Y.Z`, pushed by release.yml) |
 | GitHub Release | `rutis-host` binaries |
 
 ## Steps
 
-1. Update versions in the Cargo.toml of every crate listed in `crates` in `scripts/train.mjs` (including the dependency versions between them and from other workspace crates); `node/rutis`, `node/rutis-runtime`, and `node/rutis-host` package.json files (including the runtime and platform package versions used by `@arcships/rutis-host`); `python/rutis/pyproject.toml` and `IMPLEMENTATION` in `python/rutis/rutis/peer.py`; and the `rutis` range in `crates/rutis-host/pyproject.toml`. `node scripts/train.mjs` checks that they match, and CI runs it too.
+1. Update versions in the Cargo.toml of every crate listed in `crates` in `scripts/train.mjs` (including the dependency versions between them and from other workspace crates); `node/rutis`, `node/rutis-runtime`, `bun/rutis-bun`, and `node/rutis-host` package.json files (including the runtime and platform package versions used by `@arcships/rutis-host`); `python/rutis/pyproject.toml` and `IMPLEMENTATION` in `python/rutis/rutis/peer.py`; `Version` in `go/rutis/version.go`; and the `rutis` range in `crates/rutis-host/pyproject.toml`. `node scripts/train.mjs` checks that they match, and CI runs it too.
 2. Merge to `main` and confirm the CI `release-dry-run` passes (all packages can be built).
 3. Run the smoke test on two machines before publishing (see below).
 4. Create and push a tag such as `vX.Y.Z`. `release.yml` checks versions, builds binaries and wheels for five platforms, semver-checks the crates already on crates.io, publishes the crates in dependency order (`node scripts/train.mjs --crates`), then the npm and PyPI packages, and creates a GitHub Release (its notes come from `docs/releases/X.Y.Z.en.md`, which must exist before tagging). Each step skips versions already present in its registry, so after fixing a mid-release failure you can rerun it.
@@ -39,6 +40,10 @@ Expected behavior: the dialer prints `clock: <n>` every second. After a network 
 Then use the published packages to follow [Write a TypeScript plugin](guide/typescript-plugin.en.md) and [Write a Python plugin](guide/python-plugin.en.md) from a clean environment.
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
+
+## 0.9.0
+
+The Bun runtime `@arcships/rutis-bun` and the Go module `go/rutis` are released for the first time. `@arcships/rutis-bun` is a new name on npm: `NPM_TOKEN` must be able to publish new packages under `@arcships`. The Go module is released by the tag `go/rutis/v0.9.0`, which release.yml pushes and the Go module proxy serves from. Until then, projects made by `rutis-host new --lang bun|go` cannot install their dependencies.
 
 ## 0.8.0
 
