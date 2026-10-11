@@ -259,3 +259,129 @@ async fn check_without_a_configuration_checks_the_project() {
     );
     assert_eq!(checked.status, 0);
 }
+
+/// A plugin that injects `inject` and provides `provides` (JavaScript
+/// literals).
+fn injecting(inject: &str, provides: &str) -> String {
+    format!(
+        "import {{ definePlugin }} from '{}'\n\
+         export default definePlugin({{ inject: {inject}, provides: {provides}, apply() {{}} }})\n",
+        sdk()
+    )
+}
+
+/// A row that waits for a service no row provides cannot run: check says
+/// which and what to do, and fails. One provided only by a disabled row
+/// says so; one a link imports is provided. It passed before (#258).
+/// risk: A6
+#[tokio::test(flavor = "multi_thread")]
+async fn check_fails_on_a_service_nothing_provides() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        &[
+            ("package.json", r#"{ "name": "app", "type": "module" }"#),
+            ("chat.mjs", &injecting("['llm']", "{}")),
+            ("search.mjs", &injecting("['index']", "{}")),
+            (
+                "indexer.mjs",
+                &injecting("[]", "{ index: { find: 'sync' } }"),
+            ),
+            ("notes.mjs", &injecting("['calendar']", "{}")),
+            (
+                "rutis.json",
+                &configuration(serde_json::json!([
+                    { "id": "chat", "name": "./chat.mjs" },
+                    { "id": "search", "name": "./search.mjs" },
+                    { "id": "indexer", "name": "./indexer.mjs", "disabled": true },
+                    { "id": "notes", "name": "./notes.mjs" },
+                    { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "import": ["calendar"] } }
+                ])),
+            ),
+        ],
+    );
+    let python = repo().join("python/rutis");
+    let checked = check(
+        dir.path(),
+        &["rutis.json"],
+        &[("RUTIS_PYTHON_PATH", &python)],
+    )
+    .await;
+    let stdout: Vec<&str> = checked
+        .stdout
+        .lines()
+        .filter(|line| !line.starts_with("  config: "))
+        .collect();
+    assert_eq!(
+        stdout,
+        [
+            "plugin API: 1 (supported by this host)",
+            "chat (file://<dir>/chat.mjs): cannot run: nothing provides llm",
+            "  inject: [\"llm\"]",
+            "  provides: {}",
+            "  llm: add a row that provides it, or import it from a peer (import: [\"llm\"])",
+            "search (file://<dir>/search.mjs): cannot run: nothing provides index",
+            "  inject: [\"index\"]",
+            "  provides: {}",
+            "  index: only disabled rows provide it (indexer): enable one, or add a row that provides it",
+            "indexer (file://<dir>/indexer.mjs): disabled",
+            "notes (file://<dir>/notes.mjs): ok",
+            "  inject: [\"calendar\"]",
+            "  provides: {}",
+            "office (rutis-bridge/peer): ok",
+        ]
+    );
+    assert_eq!(
+        checked.stderr,
+        "rutis-host: 2 row(s) or binaries cannot run\n"
+    );
+    assert_eq!(checked.status, 1);
+}
+
+/// A service only a row whose declarations are not known may provide (a
+/// remote runtime's, not connected during the check) is not known to be
+/// missing: check says so and passes.
+/// risk: A6
+#[tokio::test(flavor = "multi_thread")]
+async fn check_passes_a_service_that_may_come_from_a_remote_runtime() {
+    let dir = tempfile::tempdir().unwrap();
+    let configuration = serde_json::json!({
+        "runtimes": {
+            "node": { "runtime": repo().join("node/rutis-runtime") },
+            "remote": [{ "name": "gpu", "language": "python" }]
+        },
+        "rows": [
+            { "id": "chat", "name": "./chat.mjs" },
+            { "id": "gpu", "name": "rutis-bridge/peer", "config": { "peer": "gpu", "dial": "wss://gpu.example.com/rutis", "runtime": "gpu" } },
+            { "id": "embedder", "name": "gpu:embedder" }
+        ]
+    });
+    write(
+        dir.path(),
+        &[
+            ("package.json", r#"{ "name": "app", "type": "module" }"#),
+            ("chat.mjs", &injecting("['embeddings']", "{}")),
+            ("rutis.json", &configuration.to_string()),
+        ],
+    );
+    let checked = check(dir.path(), &["rutis.json"], &[]).await;
+    let stdout: Vec<&str> = checked
+        .stdout
+        .lines()
+        .filter(|line| !line.starts_with("  config: "))
+        .collect();
+    assert_eq!(
+        stdout,
+        [
+            "plugin API: 1 (supported by this host)",
+            "chat (file://<dir>/chat.mjs): ok",
+            "  inject: [\"embeddings\"]",
+            "  provides: {}",
+            "  embeddings: not known to be provided; it may come from embedder (the gpu runtime is not running)",
+            "gpu (rutis-bridge/peer): ok",
+            "embedder (gpu:embedder): ok",
+        ]
+    );
+    assert_eq!(checked.stderr, "");
+    assert_eq!(checked.status, 0);
+}

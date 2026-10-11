@@ -8,6 +8,7 @@
 //! - `instances`: instances of `instanced` groups, created on demand.
 
 mod api;
+mod check;
 mod commit;
 mod desired;
 mod instances;
@@ -29,6 +30,7 @@ use crate::persist::{NoPersist, Persist, Version};
 use crate::resolver::{Resolved, Resolver, Values};
 use crate::LoaderError;
 
+pub use check::{CheckReport, Provider, Requirement, RowCheck, RowStatus, Supply, Unknown};
 use desired::Desired;
 pub use instances::{CreateInstance, Instance, InstanceResult};
 pub use plugins::LoaderPlugin;

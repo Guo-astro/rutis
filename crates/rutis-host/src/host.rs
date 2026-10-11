@@ -219,6 +219,19 @@ impl Host {
             .map_err(|error| error.to_string())
     }
 
+    /// Check `rows` without running them ([`rutis_loader::Loader::check`]).
+    pub async fn check(
+        &self,
+        rows: Vec<serde_json::Value>,
+    ) -> Result<rutis_loader::CheckReport, Error> {
+        let patches: Vec<Patch> = serde_json::from_value(serde_json::json!([{ "insert": rows }]))
+            .map_err(|error| format!("rows: {error}"))?;
+        Ok(self
+            .loader
+            .check(&[Layer::new("rutis.json", patches)])
+            .await)
+    }
+
     /// Shut the root down: every row and runtime unloads, each cleanup
     /// running once. Waits up to `deadline` for the cleanups; after it,
     /// the shutdown goes on and the error says so.
