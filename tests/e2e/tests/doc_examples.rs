@@ -56,18 +56,26 @@ fn follow(example: &Value) {
             running.expect(until);
             running.ctrl_c();
             let status = running.wait_exit();
-            assert_eq!(status.code(), Some(0), "{at}: {command} after Ctrl-C: {status}");
+            assert_eq!(
+                status.code(),
+                Some(0),
+                "{at}: {command} after Ctrl-C: {status}"
+            );
             continue;
         }
         for line in lines {
             if let Some(dir) = line.strip_prefix("cd ") {
-                cwd = std::path::Path::new(&cwd).join(dir.trim()).display().to_string();
+                cwd = std::path::Path::new(&cwd)
+                    .join(dir.trim())
+                    .display()
+                    .to_string();
                 continue;
             }
             let mut command = s.program(&cwd, "sh", ["-c", line], &[]);
             let status = command.wait_exit();
             if !status.success() {
-                let output: Vec<String> = command.lines().into_iter().map(|line| line.text).collect();
+                let output: Vec<String> =
+                    command.lines().into_iter().map(|line| line.text).collect();
                 panic!("{at}: {line}: {status}\n  {}", output.join("\n  "));
             }
         }

@@ -21,10 +21,9 @@ const IGNORED: &str = "needs built packages: install.yml runs it with RUTIS_E2E_
 
 /// Where the built packages are (npm/, wheels/, binary/).
 fn artifacts() -> PathBuf {
-    PathBuf::from(
-        std::env::var_os("RUTIS_E2E_ARTIFACTS")
-            .expect("RUTIS_E2E_ARTIFACTS: the directory package.yml or tools/install/local-artifacts.sh made"),
-    )
+    PathBuf::from(std::env::var_os("RUTIS_E2E_ARTIFACTS").expect(
+        "RUTIS_E2E_ARTIFACTS: the directory package.yml or tools/install/local-artifacts.sh made",
+    ))
 }
 
 /// The packages from the registries (after a release), not the artifacts.
@@ -54,14 +53,25 @@ fn artifact(dir: &str, prefix: &str, suffix: &str) -> PathBuf {
             name.starts_with(prefix) && name.ends_with(suffix)
         })
         .collect();
-    assert_eq!(found.len(), 1, "{prefix}*{suffix} in {}: {found:?}", dir.display());
+    assert_eq!(
+        found.len(),
+        1,
+        "{prefix}*{suffix} in {}: {found:?}",
+        dir.display()
+    );
     found.into_iter().next().unwrap()
 }
 
 /// The npm tarball of `@arcships/<package>` at this version.
 fn npm_tarball(package: &str) -> PathBuf {
-    let file = artifacts().join("npm").join(format!("arcships-{package}-{}.tgz", version()));
-    assert!(file.exists(), "{} is not among the artifacts", file.display());
+    let file = artifacts()
+        .join("npm")
+        .join(format!("arcships-{package}-{}.tgz", version()));
+    assert!(
+        file.exists(),
+        "{} is not among the artifacts",
+        file.display()
+    );
     file
 }
 
@@ -202,7 +212,16 @@ fn npm_installs_and_runs_this_build() {
         &json!({ "name": "install-npm", "private": true, "type": "module" }),
     );
     if from_registry() {
-        run(&s, "npm", npm(), &["install", &format!("@arcships/rutis-host@{version}"), &format!("@arcships/rutis@{version}")]);
+        run(
+            &s,
+            "npm",
+            npm(),
+            &[
+                "install",
+                &format!("@arcships/rutis-host@{version}"),
+                &format!("@arcships/rutis@{version}"),
+            ],
+        );
     } else {
         // From the files: this platform's package by name, the others left
         // out (they are on no registry yet for an unreleased build).
@@ -212,18 +231,32 @@ fn npm_installs_and_runs_this_build() {
             npm_tarball("rutis-runtime"),
             npm_tarball("rutis"),
         ];
-        let files: Vec<String> = files.iter().map(|file| file.display().to_string()).collect();
+        let files: Vec<String> = files
+            .iter()
+            .map(|file| file.display().to_string())
+            .collect();
         let mut args = vec!["install", "--omit=optional"];
         args.extend(files.iter().map(String::as_str));
         run(&s, "npm", npm(), &args);
         // This build's packages, not a registry's.
-        let lock: Value =
-            serde_json::from_str(&std::fs::read_to_string(s.path("npm/package-lock.json")).unwrap()).unwrap();
-        for package in ["rutis-host", &format!("rutis-host-{platform}"), "rutis-runtime", "rutis"] {
-            let resolved = lock["packages"][format!("node_modules/@arcships/{package}")]["resolved"]
+        let lock: Value = serde_json::from_str(
+            &std::fs::read_to_string(s.path("npm/package-lock.json")).unwrap(),
+        )
+        .unwrap();
+        for package in [
+            "rutis-host",
+            &format!("rutis-host-{platform}"),
+            "rutis-runtime",
+            "rutis",
+        ] {
+            let resolved = lock["packages"][format!("node_modules/@arcships/{package}")]
+                ["resolved"]
                 .as_str()
                 .unwrap_or_default();
-            assert!(resolved.starts_with("file:"), "@arcships/{package} came from {resolved:?}");
+            assert!(
+                resolved.starts_with("file:"),
+                "@arcships/{package} came from {resolved:?}"
+            );
         }
     }
     // Only this platform's binary.
@@ -256,11 +289,23 @@ fn npm_installs_and_runs_this_build() {
 
     // B6: without this platform's package, the launcher says so.
     if !from_registry() {
-        s.write_json("bare/package.json", &json!({ "name": "bare", "private": true }));
+        s.write_json(
+            "bare/package.json",
+            &json!({ "name": "bare", "private": true }),
+        );
         let host = npm_tarball("rutis-host").display().to_string();
         let runtime = npm_tarball("rutis-runtime").display().to_string();
-        run(&s, "bare", npm(), &["install", "--omit=optional", &host, &runtime]);
-        let bare = s.path(if cfg!(windows) { "bare/node_modules/.bin/rutis-host.cmd" } else { "bare/node_modules/.bin/rutis-host" });
+        run(
+            &s,
+            "bare",
+            npm(),
+            &["install", "--omit=optional", &host, &runtime],
+        );
+        let bare = s.path(if cfg!(windows) {
+            "bare/node_modules/.bin/rutis-host.cmd"
+        } else {
+            "bare/node_modules/.bin/rutis-host"
+        });
         let mut missing = s.program("bare", &bare, ["--version"], &[]);
         assert_eq!(missing.wait_exit().code(), Some(1));
         missing.expect(&format!("no binary for {platform}"));
@@ -303,7 +348,12 @@ fn pypi_installs_and_runs_this_build() {
     // uv, as the Python guide does: a project with rutis-host as a dev
     // dependency, run with `uv run`.
     std::fs::create_dir_all(s.path("uv")).unwrap();
-    run(&s, "uv", "uv", &["init", "--bare", "--no-workspace", "--name", "install-uv"]);
+    run(
+        &s,
+        "uv",
+        "uv",
+        &["init", "--bare", "--no-workspace", "--name", "install-uv"],
+    );
     let mut add = vec!["add", "--dev"];
     add.extend(&source);
     add.push(&requirement);
@@ -317,7 +367,10 @@ fn pypi_installs_and_runs_this_build() {
         &["-c", "import importlib.metadata, rutis; print(importlib.metadata.version('rutis'), rutis.__file__)"],
     );
     let line = where_.expect(&version);
-    assert!(line.contains(&venv.display().to_string()) || line.contains(".venv"), "{line}");
+    assert!(
+        line.contains(&venv.display().to_string()) || line.contains(".venv"),
+        "{line}"
+    );
     identity(&s, "uv", &venv_program(&venv, "rutis-host"));
     s.write("uv/greeter.py", GREETER_PY);
     let probe = s.probe_in("uv", "probe", Lang::Python, &["greeter"]);
@@ -332,7 +385,10 @@ fn pypi_installs_and_runs_this_build() {
     let mut running = s.program("uv", "uv", ["run", "--no-sync", "rutis-host", "run"], &[]);
     running.expect("greeter: running");
     probe.started(&mut running);
-    assert_eq!(probe.call(&mut running, "greeter", "hello", json!(["Ada"])), Ok(json!("Hello, Ada")));
+    assert_eq!(
+        probe.call(&mut running, "greeter", "hello", json!(["Ada"])),
+        Ok(json!("Hello, Ada"))
+    );
     stop(&mut running);
     #[cfg(unix)]
     probe.event(&mut running, "stopped");
@@ -347,13 +403,23 @@ fn pypi_installs_and_runs_this_build() {
     run(&s, "pip", venv_python(&venv), &install);
     identity(&s, "pip", &venv_program(&venv, "rutis-host"));
     // The wheel holds what the runtime imports.
-    run(&s, "pip", venv_python(&venv), &["-c", "import rutis.peer, rutis.runner, rutis.channel"]);
+    run(
+        &s,
+        "pip",
+        venv_python(&venv),
+        &["-c", "import rutis.peer, rutis.runner, rutis.channel"],
+    );
 
     // B6: an interpreter without the rutis package: the host says how to
     // install it.
     s.write("bare/greeter.py", GREETER_PY);
     std::fs::create_dir_all(s.path("bare")).unwrap();
-    run(&s, "bare", python(), &["-m", "venv", "--without-pip", "empty"]);
+    run(
+        &s,
+        "bare",
+        python(),
+        &["-m", "venv", "--without-pip", "empty"],
+    );
     s.write_json(
         "bare/rutis.json",
         &json!({
@@ -373,15 +439,28 @@ fn pypi_installs_and_runs_this_build() {
 fn the_release_binary_runs_this_build() {
     let s = Scenario::installed("install-binary");
     let version = version();
-    let archive = artifact("binary", &format!("rutis-host-{version}-"), if cfg!(windows) { ".zip" } else { ".tar.gz" });
+    let archive = artifact(
+        "binary",
+        &format!("rutis-host-{version}-"),
+        if cfg!(windows) { ".zip" } else { ".tar.gz" },
+    );
     // The archive matches its checksum.
-    let sum = std::fs::read_to_string(format!("{}.sha256", archive.display())).expect("the .sha256");
+    let sum =
+        std::fs::read_to_string(format!("{}.sha256", archive.display())).expect("the .sha256");
     let expected = sum.split_whitespace().next().unwrap().to_owned();
     std::fs::create_dir_all(s.path("bin")).unwrap();
     let mut actual = s.program(
         "bin",
         if cfg!(windows) { "certutil" } else { "shasum" },
-        if cfg!(windows) { vec!["-hashfile".to_owned(), archive.display().to_string(), "SHA256".into()] } else { vec!["-a".into(), "256".into(), archive.display().to_string()] },
+        if cfg!(windows) {
+            vec![
+                "-hashfile".to_owned(),
+                archive.display().to_string(),
+                "SHA256".into(),
+            ]
+        } else {
+            vec!["-a".into(), "256".into(), archive.display().to_string()]
+        },
         &[],
     );
     assert!(actual.wait_exit().success());
@@ -391,22 +470,38 @@ fn the_release_binary_runs_this_build() {
     // does not, and takes `D:` for a remote host.
     let unpack = match cfg!(windows) {
         true => {
-            let tar = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot")).join("System32/tar.exe");
+            let tar = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+                .join("System32/tar.exe");
             run(&s, "bin", tar, &["-xf", &archive.display().to_string()])
         }
         false => run(&s, "bin", "tar", &["-xzf", &archive.display().to_string()]),
     };
     drop(unpack);
-    let name = archive.file_name().unwrap().to_string_lossy().replace(".tar.gz", "").replace(".zip", "");
-    let host = s.path("bin").join(&name).join(if cfg!(windows) { "rutis-host.exe" } else { "rutis-host" });
+    let name = archive
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .replace(".tar.gz", "")
+        .replace(".zip", "");
+    let host = s.path("bin").join(&name).join(if cfg!(windows) {
+        "rutis-host.exe"
+    } else {
+        "rutis-host"
+    });
     for file in ["README.md", "LICENSE"] {
-        assert!(s.path("bin").join(&name).join(file).exists(), "{file} in the archive");
+        assert!(
+            s.path("bin").join(&name).join(file).exists(),
+            "{file} in the archive"
+        );
     }
     identity(&s, "", &host);
 
     // B6: a Node row with no Node runtime installed: the host says how.
     s.write("bare/greeter.ts", GREETER_TS);
-    s.write_json("bare/package.json", &json!({ "name": "bare", "private": true, "type": "module" }));
+    s.write_json(
+        "bare/package.json",
+        &json!({ "name": "bare", "private": true, "type": "module" }),
+    );
     s.write_json(
         "bare/rutis.json",
         &json!({ "runtimes": { "node": {} }, "rows": [{ "id": "greeter", "name": "./greeter.ts" }] }),
@@ -418,9 +513,21 @@ fn the_release_binary_runs_this_build() {
     // A project with a TS and a Python row, their runtimes installed into
     // the project as the deployment guide says: the TS probe calls the
     // Python greeter.
-    s.write_json("app/package.json", &json!({ "name": "app", "private": true, "type": "module" }));
+    s.write_json(
+        "app/package.json",
+        &json!({ "name": "app", "private": true, "type": "module" }),
+    );
     if from_registry() {
-        run(&s, "app", npm(), &["install", &format!("@arcships/rutis-runtime@{version}"), &format!("@arcships/rutis@{version}")]);
+        run(
+            &s,
+            "app",
+            npm(),
+            &[
+                "install",
+                &format!("@arcships/rutis-runtime@{version}"),
+                &format!("@arcships/rutis@{version}"),
+            ],
+        );
     } else {
         let runtime = npm_tarball("rutis-runtime").display().to_string();
         let sdk = npm_tarball("rutis").display().to_string();
