@@ -200,31 +200,52 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{{
 fn prepare(s: &Scenario, kind: Kind) {
     match kind {
         Kind::Node => {
-            s.link("demo/node_modules/@arcships/rutis", &repo().join("node/rutis"));
+            s.link(
+                "demo/node_modules/@arcships/rutis",
+                &repo().join("node/rutis"),
+            );
             s.link(
                 "demo/node_modules/tsx",
                 &repo().join("node/rutis-runtime/node_modules/tsx"),
             );
         }
         Kind::Bun => {
-            s.link("demo/node_modules/@arcships/rutis", &repo().join("node/rutis"));
-            s.link("demo/node_modules/@arcships/rutis-bun", &repo().join("bun/rutis-bun"));
+            s.link(
+                "demo/node_modules/@arcships/rutis",
+                &repo().join("node/rutis"),
+            );
+            s.link(
+                "demo/node_modules/@arcships/rutis-bun",
+                &repo().join("bun/rutis-bun"),
+            );
         }
         Kind::Python => {
-            let mut venv = s.program("demo", "python3", ["-m", "venv", "--without-pip", ".venv"], &[]);
+            let mut venv = s.program(
+                "demo",
+                "python3",
+                ["-m", "venv", "--without-pip", ".venv"],
+                &[],
+            );
             assert!(venv.wait_exit().success(), "python3 -m venv");
         }
         Kind::Go => {
             let sdk = repo().join("go/rutis");
             s.edit("demo/go.mod", |module| {
-                format!("{module}\nreplace github.com/arcships/rutis/go/rutis => {}\n", sdk.display())
+                format!(
+                    "{module}\nreplace github.com/arcships/rutis/go/rutis => {}\n",
+                    sdk.display()
+                )
             });
         }
     }
 }
 
 /// Go builds use the module cache, never the network.
-const GO_ENV: &[(&str, &str)] = &[("GOPROXY", "off"), ("GOTOOLCHAIN", "local"), ("GOFLAGS", "-mod=mod")];
+const GO_ENV: &[(&str, &str)] = &[
+    ("GOPROXY", "off"),
+    ("GOTOOLCHAIN", "local"),
+    ("GOFLAGS", "-mod=mod"),
+];
 
 /// The template's own tests.
 fn template_tests(s: &Scenario, kind: Kind) -> Host {
@@ -269,7 +290,10 @@ fn edited(kind: Kind, host: &mut Host, probe: &Probe) {
 /// After a broken edit: the error line, which names the source file.
 fn failed(kind: Kind, host: &mut Host) -> String {
     let (what, prefix) = match kind {
-        Kind::Go => ("the failed build", "demo: the build failed; the last build keeps running"),
+        Kind::Go => (
+            "the failed build",
+            "demo: the build failed; the last build keeps running",
+        ),
         _ => ("the failed reload", "demo: cannot reload: "),
     };
     let line = host.wait_for(what, |line| line.starts_with(prefix));
@@ -349,7 +373,11 @@ fn dev_loop(kind: Kind) {
         probe.started(&mut dev);
     }
     assert_eq!(greet(&probe, &mut dev), json!("Hello, Ada! (v2)"));
-    assert_eq!(dev.count("demo v2 cleanup"), 0, "v2 was unloaded by a failed edit");
+    assert_eq!(
+        dev.count("demo v2 cleanup"),
+        0,
+        "v2 was unloaded by a failed edit"
+    );
 
     // 7. A fix: v3 runs; v2 was cleaned up exactly once.
     s.replace(&source, kind.version(3));

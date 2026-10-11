@@ -216,14 +216,17 @@ impl Scenario {
     /// records it coarsely, so a watcher comparing times sees the change.
     pub fn replace(&self, relative: impl AsRef<Path>, contents: impl AsRef<[u8]>) {
         let path = self.path(relative);
-        let before = std::fs::metadata(&path).and_then(|meta| meta.modified()).ok();
+        let before = std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .ok();
         let name = path.file_name().expect("a file name").to_string_lossy();
         let part = path.with_file_name(format!(".{name}.part"));
         std::fs::write(&part, contents)
             .unwrap_or_else(|error| panic!("{}: {error}", part.display()));
-        std::fs::rename(&part, &path)
-            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-        let after = std::fs::metadata(&path).and_then(|meta| meta.modified()).ok();
+        std::fs::rename(&part, &path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let after = std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .ok();
         if let (Some(before), Some(after)) = (before, after) {
             if after <= before {
                 let later = before + Duration::from_secs(1);
