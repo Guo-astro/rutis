@@ -154,6 +154,36 @@ fn identity(s: &Scenario, dir: &str, host: &Path) {
 /// guides do), call the greeter through the probe, stop with SIGTERM to the
 /// main process as a process manager does: exit code 0, the probe stopped.
 fn run_project(s: &Scenario, dir: &str, host: &Path, probe: &rutis_e2e::Probe, rows: &[&str]) {
+    run_project_until(s, dir, host, probe, rows, stop);
+}
+
+/// [`run_project`], stopped with Ctrl-C as a terminal sends it: SIGINT to
+/// the whole process group, the launcher and rutis-host both. One Ctrl-C
+/// must stay one (#267): the cleanups run, exit code 0.
+#[cfg(unix)]
+fn run_project_to_ctrl_c(
+    s: &Scenario,
+    dir: &str,
+    host: &Path,
+    probe: &rutis_e2e::Probe,
+    rows: &[&str],
+) {
+    run_project_until(s, dir, host, probe, rows, |host| {
+        host.ctrl_c();
+        let status = host.wait_exit();
+        host.wait_output_end();
+        assert_eq!(status.code(), Some(0), "after Ctrl-C: {status}");
+    });
+}
+
+fn run_project_until(
+    s: &Scenario,
+    dir: &str,
+    host: &Path,
+    probe: &rutis_e2e::Probe,
+    rows: &[&str],
+    stop: impl FnOnce(&mut Host),
+) {
     let mut running = s.program(dir, host, ["run"], &[]);
     for row in rows {
         running.expect(&format!("{row}: running"));
@@ -286,6 +316,9 @@ fn npm_installs_and_runs_this_build() {
         }),
     );
     run_project(&s, "npm", &launcher, &probe, &["greeter"]);
+    // The launcher in a terminal (#267).
+    #[cfg(unix)]
+    run_project_to_ctrl_c(&s, "npm", &launcher, &probe, &["greeter"]);
 
     // B6: without this platform's package, the launcher says so.
     if !from_registry() {

@@ -20,8 +20,21 @@ if (!env.RUTIS_NODE_RUNTIME) {
   try { env.RUTIS_NODE_RUNTIME = dirname(require.resolve('@arcships/rutis-runtime/package.json')) } catch {}
 }
 const child = spawn(binary, process.argv.slice(2), { stdio: 'inherit', env })
-for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal))
+// A terminal sends Ctrl-C (SIGINT) and its hang-up (SIGHUP) to the whole
+// process group, and Windows sends its console events to every process on
+// the console: rutis-host gets them itself. Forwarded too, one Ctrl-C would
+// reach it twice, and a second signal ends it before its cleanups (#267);
+// on Windows, child.kill ends the process outright. Those only keep this
+// launcher waiting for rutis-host to stop. SIGTERM, which a service manager
+// sends to the main process alone, is forwarded.
+const shared = process.platform === 'win32' ? ['SIGINT', 'SIGBREAK', 'SIGHUP'] : ['SIGINT', 'SIGHUP']
+const forwarded = process.platform === 'win32' ? [] : ['SIGTERM']
+for (const signal of shared) process.on(signal, () => {})
+for (const signal of forwarded) process.on(signal, () => child.kill(signal))
 child.on('exit', (code, signal) => {
-  if (signal) process.kill(process.pid, signal)
-  else process.exit(code ?? 1)
+  if (signal) {
+    // End the same way, which a listener would otherwise catch.
+    process.removeAllListeners(signal)
+    process.kill(process.pid, signal)
+  } else process.exit(code ?? 1)
 })
