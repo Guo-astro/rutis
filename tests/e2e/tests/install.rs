@@ -161,11 +161,19 @@ fn run_project(s: &Scenario, dir: &str, host: &Path, probe: &rutis_e2e::Probe, r
 fn stop(host: &mut Host) {
     #[cfg(unix)]
     host.signal(libc_sigterm());
-    // Windows: no SIGTERM, and Ctrl-C to a console is #232; killed, the
+    // Windows: no SIGTERM, and Ctrl-C to a console is #232. A service
+    // manager ends the whole tree: the main process is a launcher (npm's
+    // .cmd, uv) whose rutis-host and runtimes outlive it alone. Killed, the
     // host cleans nothing up, so the callers check its probe's stop on Unix
     // only.
     #[cfg(windows)]
-    host.kill();
+    {
+        let status = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &host.pid().to_string()])
+            .status()
+            .expect("taskkill");
+        assert!(status.success(), "taskkill /T: {status}");
+    }
     let status = host.wait_exit();
     host.wait_output_end();
     #[cfg(unix)]
@@ -379,8 +387,13 @@ fn the_release_binary_runs_this_build() {
     assert!(actual.wait_exit().success());
     actual.expect(&expected);
     // Unpacked.
+    // Windows' own tar (bsdtar) opens a .zip; the GNU tar on a bash PATH
+    // does not, and takes `D:` for a remote host.
     let unpack = match cfg!(windows) {
-        true => run(&s, "bin", "tar", &["-xf", &archive.display().to_string()]),
+        true => {
+            let tar = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot")).join("System32/tar.exe");
+            run(&s, "bin", tar, &["-xf", &archive.display().to_string()])
+        }
         false => run(&s, "bin", "tar", &["-xzf", &archive.display().to_string()]),
     };
     drop(unpack);
