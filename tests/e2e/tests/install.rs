@@ -201,11 +201,11 @@ fn run_project_until(
 fn stop(host: &mut Host) {
     #[cfg(unix)]
     host.signal(libc_sigterm());
-    // Windows: no SIGTERM, and Ctrl-C to a console is #232. A service
-    // manager ends the whole tree: the main process is a launcher (npm's
-    // .cmd, uv) whose rutis-host and runtimes outlive it alone. Killed, the
-    // host cleans nothing up, so the callers check its probe's stop on Unix
-    // only.
+    // Windows: no SIGTERM, and stopping with Ctrl-Break (`Host::ctrl_c`)
+    // is #266. A service manager ends the whole tree: the main process is
+    // a launcher (npm's .cmd, uv) whose rutis-host and runtimes outlive it
+    // alone. Killed, the host cleans nothing up, so the callers check its
+    // probe's stop on Unix only.
     #[cfg(windows)]
     {
         let status = std::process::Command::new("taskkill")

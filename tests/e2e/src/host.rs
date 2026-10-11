@@ -1,5 +1,7 @@
-//! A `rutis-host` process: started in its own process group (Unix), its
-//! stdout and stderr captured line by line, waited on with a hang guard.
+//! A `rutis-host` process: started with its scenario's marker in its
+//! environment, in its own process group (Unix) or Job Object (Windows),
+//! its stdout and stderr captured line by line, waited on with a hang
+//! guard.
 
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -84,33 +86,67 @@ pub(crate) struct Started {
     pub name: String,
     pub pid: u32,
     pub output: Arc<Output>,
+    /// The job it and everything it starts are in.
+    #[cfg(windows)]
+    pub job: Arc<crate::job::Job>,
 }
 
-/// A running `rutis-host`. Dropping it kills its process group (Unix), so
-/// a failing scenario leaves nothing behind; on Windows only the host
-/// itself, its runtimes ending with its job (a Job Object of the harness's
-/// own is #232).
+/// A running `rutis-host`. Dropping it while it runs kills it with its
+/// process group (Unix) or its whole job (Windows), so a failing scenario
+/// leaves nothing behind.
 pub struct Host {
     name: String,
+    #[cfg_attr(not(unix), allow(dead_code))]
+    marker: String,
     child: Child,
     output: Arc<Output>,
     status: Option<ExitStatus>,
+    #[cfg(windows)]
+    job: Arc<crate::job::Job>,
 }
 
 impl Host {
-    pub(crate) fn spawn(name: &str, mut command: Command) -> (Host, Started) {
+    /// Start `command` with [`MARKER`](crate::MARKER) `marker`, which every
+    /// process it starts inherits: the residue checks find them by it.
+    pub(crate) fn spawn(name: &str, marker: &str, mut command: Command) -> (Host, Started) {
         command
+            .env(crate::MARKER, marker)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // Its own group: what it starts can be found, and signalled, as a
-        // group (the runtimes inherit it).
+        // Its own group, which a terminal's Ctrl-C would signal
+        // ([`Host::ctrl_c`]). Only the host's: rutis-host puts each runtime
+        // in a group of its own.
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        // Its own console process group (the target of
+        // [`Host::ctrl_c`]), and suspended until it is in its job.
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(
+            &mut command,
+            windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP
+                | windows_sys::Win32::System::Threading::CREATE_SUSPENDED,
+        );
+        #[cfg(windows)]
+        let job = Arc::new(
+            crate::job::Job::new().unwrap_or_else(|error| panic!("cannot create a job: {error}")),
+        );
         let mut child = command
             .spawn()
             .unwrap_or_else(|error| panic!("cannot start {:?}: {error}", command.get_program()));
         crate::residue::started(child.id());
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            let placed = job
+                .assign(child.as_raw_handle())
+                .and_then(|()| crate::job::resume(child.id()));
+            if let Err(error) = placed {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("cannot start {:?} in a job: {error}", command.get_program());
+            }
+        }
         let output = Arc::new(Output::default());
         output
             .clone()
@@ -122,18 +158,34 @@ impl Host {
             name: name.to_owned(),
             pid: child.id(),
             output: output.clone(),
+            #[cfg(windows)]
+            job: job.clone(),
         };
         let host = Host {
             name: name.to_owned(),
+            marker: marker.to_owned(),
             child,
             output,
             status: None,
+            #[cfg(windows)]
+            job,
         };
         (host, started)
     }
 
     pub fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    /// Its value of [`MARKER`](crate::MARKER).
+    #[cfg(unix)]
+    pub(crate) fn marker(&self) -> &str {
+        &self.marker
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn job(&self) -> &crate::job::Job {
+        &self.job
     }
 
     /// Everything it wrote so far, stdout and stderr in arrival order.
@@ -203,10 +255,23 @@ impl Host {
     }
 
     /// Ctrl-C as a terminal sends it: SIGINT to the host's process group
-    /// (Unix).
-    #[cfg(unix)]
+    /// (Unix). On Windows, Ctrl-Break to the host's console process group:
+    /// a process started in a new group has Ctrl-C turned off, Ctrl-Break
+    /// it still gets, and rutis-host stops on either. It needs the console
+    /// this test process runs in, which the host shares.
     pub fn ctrl_c(&self) {
+        #[cfg(unix)]
         self.signal_group(libc::SIGINT);
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
+            // SAFETY: a plain Win32 call; the group is the host's, made for
+            // it when it was started.
+            if unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, self.pid()) } == 0 {
+                let error = std::io::Error::last_os_error();
+                self.fail(&format!("Ctrl-Break failed: {error}"));
+            }
+        }
     }
 
     /// How many lines so far contain `text`. To count "exactly once", wait
@@ -295,6 +360,8 @@ impl Drop for Host {
             unsafe {
                 libc::killpg(self.pid() as i32, libc::SIGKILL);
             }
+            #[cfg(windows)]
+            self.job.terminate();
             let _ = self.child.kill();
             let _ = self.child.wait();
         }

@@ -37,18 +37,30 @@
 //! scenario directories go), `RUTIS_E2E_TIMEOUT` (the hang guard, seconds).
 
 mod host;
+#[cfg(windows)]
+mod job;
+mod proxy;
 mod residue;
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
 
 pub use host::{Host, Line, Stream};
+pub use proxy::Proxy;
 pub use residue::Residue;
+
+/// The environment variable that marks every process a scenario starts,
+/// and everything those start: `<scenario>/<host>`, the scenario's
+/// directory name and the host's name (`host-1`, …). The residue checks
+/// find a scenario's processes by it wherever they went: rutis-host puts
+/// each runtime in a process group of its own, and once the host has died
+/// a runtime's parent is init (launchd), not the host.
+pub const MARKER: &str = "RUTIS_E2E_SCENARIO";
 
 /// How long any wait lasts before the scenario fails as hung: 30 s, or
 /// `RUTIS_E2E_TIMEOUT` seconds. It only guards against hangs (Q7.1).
@@ -132,11 +144,15 @@ pub enum Lang {
 /// ```
 pub struct Scenario {
     name: String,
+    /// Unique among the scenarios running on the machine: the directory's
+    /// name. Its hosts' [`MARKER`] starts with it.
+    id: String,
     dir: PathBuf,
     /// Installed mode ([`Scenario::installed`]).
     installed: bool,
     hosts: RefCell<Vec<host::Started>>,
     ports: RefCell<Vec<u16>>,
+    proxies: RefCell<Vec<Arc<proxy::Shared>>>,
     secrets: RefCell<Vec<String>>,
     finished: Cell<bool>,
 }
@@ -146,17 +162,20 @@ impl Scenario {
         static COUNT: AtomicU64 = AtomicU64::new(0);
         residue::watch_orphans();
         let n = COUNT.fetch_add(1, Ordering::Relaxed);
-        let dir = root().join(format!("{name}-{}-{n}", std::process::id()));
+        let id = format!("{name}-{}-{n}", std::process::id());
+        let dir = root().join(&id);
         let _ = std::fs::remove_dir_all(&dir);
         for sub in ["project", "tmp", "probes"] {
             std::fs::create_dir_all(dir.join(sub)).expect("the scenario directory");
         }
         Self {
             name: name.to_owned(),
+            id,
             dir,
             installed: false,
             hosts: RefCell::new(Vec::new()),
             ports: RefCell::new(Vec::new()),
+            proxies: RefCell::new(Vec::new()),
             secrets: RefCell::new(Vec::new()),
             finished: Cell::new(false),
         }
@@ -338,6 +357,27 @@ impl Scenario {
         port
     }
 
+    /// A TCP proxy on a free loopback port to `target`, for a network
+    /// that breaks ([`Proxy::cut`]) and comes back ([`Proxy::restore`]).
+    /// The scenario's end closes it, with its connections and threads, and
+    /// checks that its port is free again.
+    pub fn proxy(&self, target: std::net::SocketAddr) -> Proxy {
+        let proxy = Proxy::start(target);
+        self.ports.borrow_mut().push(proxy.addr().port());
+        self.proxies.borrow_mut().push(proxy.shared());
+        proxy
+    }
+
+    /// The processes `host` started, directly or not, that still run, and
+    /// what they run; not the host itself. Unix: those carrying its
+    /// [`MARKER`] (and their children, and its process group, for what
+    /// does not show its environment), with their command lines. Windows:
+    /// those in its job, with their programs' paths (another process's
+    /// command line is not readable there).
+    pub fn descendants(&self, host: &Host) -> Vec<(u32, String)> {
+        residue::descendants(host)
+    }
+
     /// A fresh credential (a token for `RUTIS_TOKEN`, say); after the
     /// scenario no captured output may contain it.
     pub fn secret(&self) -> String {
@@ -439,7 +479,8 @@ impl Scenario {
         }
         command.envs(env.iter().copied());
         let name = format!("host-{}", self.hosts.borrow().len() + 1);
-        let (host, started) = Host::spawn(&name, command);
+        let marker = format!("{}/{name}", self.id);
+        let (host, started) = Host::spawn(&name, &marker, command);
         self.hosts.borrow_mut().push(started);
         host
     }
@@ -485,17 +526,28 @@ impl Scenario {
 
     /// Run the residue checks and return what they found, without failing.
     pub fn residue(&self) -> Residue {
-        residue::check(
+        // Closed first: their ports are checked.
+        let failed: Vec<String> = self
+            .proxies
+            .borrow()
+            .iter()
+            .flat_map(|proxy| proxy.close())
+            .collect();
+        let mut residue = residue::check(
+            &self.id,
             &self.dir,
             &self.hosts.borrow(),
             &self.ports.borrow(),
             &self.secrets.borrow(),
-        )
+        );
+        residue.found.extend(failed);
+        residue
     }
 
     /// End the scenario: the residue checks (Q5.4.2) must find nothing.
     /// Stop the hosts first: a host still running is residue, and is killed
-    /// with its process group (Unix) before the other checks. On success the
+    /// with its process group (Unix) or job (Windows) before the other
+    /// checks; the proxies are closed. On success the
     /// directory is removed; otherwise it stays, with the hosts' output and
     /// the residue in `logs/`.
     pub fn finish(self) {
