@@ -299,6 +299,10 @@ impl Resolver for RuntimeResolver {
                     }),
                     foreign_scope: true,
                     scoped: Some(module.scoped()),
+                    declares: Some(unknown(format!(
+                        "the {} runtime is not running",
+                        self.runtime.name()
+                    ))),
                 }));
             };
             let described = process
@@ -360,6 +364,11 @@ impl Resolver for RuntimeResolver {
     }
 }
 
+/// Declarations not known, and why.
+pub(crate) fn unknown(why: String) -> crate::Declarations {
+    Arc::new(move |_: &Value| Err(why.clone()))
+}
+
 /// The resolution of a row `name` whose plugin `entry` runs in the runtime
 /// named `runtime` and declares `described`; `gated` are the injected names
 /// rutis gates it on.
@@ -372,6 +381,10 @@ pub(crate) fn leaf_resolved(
     catalog: &ServiceCatalog,
     meta: Value,
 ) -> Resolved {
+    let declared = crate::Declared {
+        requires: gated.clone(),
+        provides: described.provides.keys().cloned().collect(),
+    };
     let module = JsModule {
         name: name.to_owned(),
         runtime: runtime.to_owned(),
@@ -392,6 +405,7 @@ pub(crate) fn leaf_resolved(
         meta,
         foreign_scope: true,
         scoped: Some(module.scoped()),
+        declares: Some(Arc::new(move |_: &Value| Ok(declared.clone()))),
     }
 }
 
@@ -803,6 +817,7 @@ mod stale_tests {
             meta: json!({ "entry": entry, "version": version }),
             foreign_scope: true,
             scoped: None,
+            declares: None,
         })
     }
 

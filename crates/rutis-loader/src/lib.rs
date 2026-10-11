@@ -22,9 +22,10 @@ pub use catalog::{ExprScope, Expressions, ServiceCatalog};
 pub use edit::{apply_edit, Edit};
 pub use error::{Failure, LoaderError, PersistError};
 pub use loader::{
-    CreateInstance, Editable, EntryInfo, EntryStatus, Instance, InstanceInfo, InstanceResult,
-    Isolate, Loader, LoaderChanged, LoaderOptions, LoaderPlugin, NewEntry, PendingEditDropped,
-    ReconcileReport, RowInfo,
+    CheckReport, CreateInstance, Editable, EntryInfo, EntryStatus, Instance, InstanceInfo,
+    InstanceResult, Isolate, Loader, LoaderChanged, LoaderOptions, LoaderPlugin, NewEntry,
+    PendingEditDropped, Provider, ReconcileReport, Requirement, RowCheck, RowInfo, RowStatus,
+    Supply, Unknown,
 };
 pub use patch::{apply_patches, Composed, ComposedRow, Layer, Owner, Patch, PatchWarning};
 #[cfg(feature = "peer")]
@@ -32,7 +33,9 @@ pub use peer::{
     node_schema, register_peer_node, LoaderCatalog, PeerResolver, PeerRows, PeerRowsPlugin,
 };
 pub use persist::{NoPersist, Persist, Version};
-pub use resolver::{Build, Builtins, Chain, Resolved, Resolver, ScopedFactory};
+pub use resolver::{
+    Build, Builtins, Chain, Declarations, Declared, Resolved, Resolver, ScopedFactory,
+};
 #[cfg(feature = "node")]
 pub use runtime::resolve_entry;
 #[cfg(feature = "runtimes")]
