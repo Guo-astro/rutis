@@ -43,7 +43,7 @@ ENDPOINT_PROTOCOL = 3
 CAPABILITIES = ["signals", "reentrant-sync", "sync-wait", "sync-stack"]
 # What it declares in the compat format, where older hosts ignore it.
 COMPAT_CAPABILITIES = ["reentrant-sync", "sync-wait", "sync-stack"]
-IMPLEMENTATION = {"name": "rutis", "version": "0.8.0"}
+IMPLEMENTATION = {"name": "rutis", "version": "0.9.0"}
 MAX_SAFE = 9_007_199_254_740_991
 _ENDPOINT_ID = re.compile(r"^[a-z0-9-]+$")
 # In the compat format, this session's ids are `node:`/`rust:`; another
