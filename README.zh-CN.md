@@ -165,9 +165,9 @@ stateDiagram-v2
 | 在应用中运行插件 | [`rutis-loader`](https://crates.io/crates/rutis-loader)、[`rutis-bridge`](https://crates.io/crates/rutis-bridge)、[`rutis-dylib`](https://crates.io/crates/rutis-dylib)（dylib 插件） | [`@arcships/rutis-runtime`](https://www.npmjs.com/package/@arcships/rutis-runtime) | [`rutis`](https://pypi.org/project/rutis/) |
 | 不写 Rust 的宿主 | [`rutis-host`](https://crates.io/crates/rutis-host) | [`@arcships/rutis-host`](https://www.npmjs.com/package/@arcships/rutis-host) | [`rutis-host`](https://pypi.org/project/rutis-host/) |
 
-Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)（SDK，以及插件二进制自带的运行时）。
+Bun 插件运行在 [`@arcships/rutis-bun`](https://www.npmjs.com/package/@arcships/rutis-bun) 上（Bun 运行时；插件用 `@arcships/rutis`）。Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)（SDK，以及插件二进制自带的运行时）。
 
-以上所有包（包括内核和 dylib 工具链）组成发布列车，一起发布、版本相同，当前为 0.8。各个 rutis 包请使用同一个版本。
+以上所有包（包括内核和 dylib 工具链）组成发布列车，一起发布、版本相同，当前为 0.9。各个 rutis 包请使用同一个版本。
 
 ## 文档
 
@@ -177,7 +177,7 @@ Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)（SDK，以�
 - **[内核能力一览](docs/core-features.md)** — 配置热更新、动态事件、拦截、诊断，以及各自的使用边界。
 - **[API 文档](https://docs.rs/rutis)** — docs.rs 上的完整参考。
 - **设计与决策** — [设计哲学](docs/design-philosophy.md)、[内核设计](docs/design-rust-port.md)、[与 Cordis 的逐条对拍](docs/cordis-spec-parity-2026-08-18.md)，以及 [docs](docs) 目录下的全部设计记录。
-- **升级** — [0.7 → 0.8](docs/migration-0.7-to-0.8.md) · [从 rutis-interop 迁移到 0.7](docs/migration-interop-to-0.7.md) · [0.6.0 → 0.6.1](docs/migration-0.6.0-to-0.6.1.md) · [0.5 → 0.6](docs/migration-0.5-to-0.6.md) · [0.3 → 0.5](docs/migration-0.3-to-0.5.md) · [0.1 → 0.2](docs/migration-0.1-to-0.2.md)
+- **升级** — [0.8 → 0.9](docs/migration-0.8-to-0.9.md) · [0.7 → 0.8](docs/migration-0.7-to-0.8.md) · [从 rutis-interop 迁移到 0.7](docs/migration-interop-to-0.7.md) · [0.6.0 → 0.6.1](docs/migration-0.6.0-to-0.6.1.md) · [0.5 → 0.6](docs/migration-0.5-to-0.6.md) · [0.3 → 0.5](docs/migration-0.3-to-0.5.md) · [0.1 → 0.2](docs/migration-0.1-to-0.2.md)
 
 ## 用 rutis 构建
 
@@ -193,7 +193,7 @@ Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)（SDK，以�
 rutis 仍处于 0.x，API 还会演进。不兼容的变化会写进发布说明，并附迁移指南。
 
 - **内核** 是纯 Rust，依赖只有 tokio、tokio-util 和 thiserror；需要 Rust 1.88 或更高。
-- **语言运行时与 rutis-host**（Node、Python 与 Go 行、远程运行时、跨语言共享服务、节点、Cordis 挂载）支持 Linux、macOS 和 Windows x64（MSVC）；需要 Node 22+ 或 Python 3.12+；Go 插件是编译好的二进制，构建时需要 Go 1.24+。
+- **语言运行时与 rutis-host**（Node、Python 与 Go 行、远程运行时、跨语言共享服务、节点、Cordis 挂载）支持 Linux、macOS 和 Windows x64（MSVC）；需要 Node 22+ 或 Python 3.10+；Go 插件是编译好的二进制，构建时需要 Go 1.24+。
 - **dylib 插件** 支持 Linux、macOS 和 Windows x64（MSVC）。
 
 ## 参与
