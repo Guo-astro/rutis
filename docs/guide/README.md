@@ -30,6 +30,6 @@
 
 - Linux、macOS 或 Windows x64（MSVC）。
 - Node 22 或更高，或 Bun 1.4 或更高（TypeScript / JavaScript 插件）。
-- Python 3.12 或更高（Python 插件）。
+- Python 3.10 或更高（Python 插件）。
 - Go 1.24 或更高（只在写 Go 插件、构建二进制时需要；运行 Go 插件二进制不需要）。
 - Rust 1.85 或更高（只在 Rust 里嵌入时需要）。

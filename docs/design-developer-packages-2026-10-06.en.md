@@ -275,7 +275,7 @@ Rust host authors embed `rutis-loader` and `rutis-bridge`; row format is the sam
 |---|---|---|
 | OS | Linux, macOS | Local runtimes require Unix; use WSL on Windows |
 | Node | Currently says 26 | No Node 26-specific feature was found in the code. Test with Node 24 (LTS) during implementation and lower the requirement to 24 if it passes |
-| Python | 3.12 or later | |
+| Python | 3.10 or later | |
 | Rust (embedded host) | MSRV 1.85 | Unchanged |
 
 ## 11. Documentation Structure
