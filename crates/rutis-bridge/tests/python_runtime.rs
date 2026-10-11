@@ -5,12 +5,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use rutis::Ctx;
 use rutis_bridge::runtime::{row_projection, Launcher, Mount, Process};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value as RpcValue};
+use rutis_test_support::until;
 use serde_json::{json, Value};
 
 const WEATHER: &str = r#"
@@ -81,16 +81,6 @@ async fn python(project: &Path) -> Arc<Process> {
     .unwrap()
 }
 
-async fn eventually(mut check: impl FnMut() -> bool, what: &str) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !check() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn python_rows_follow_the_row_contract() {
     let dir = tempfile::tempdir().unwrap();
@@ -131,7 +121,7 @@ async fn python_rows_follow_the_row_contract() {
         .await
         .unwrap();
     let key = host_key("weather");
-    eventually(
+    until(
         || ctx.get_as::<dyn HostDispatch>(key.clone()).is_some(),
         "the weather service",
     )
@@ -160,7 +150,7 @@ async fn python_rows_follow_the_row_contract() {
     drop(weather);
 
     process.unload_row("w").await.unwrap();
-    eventually(
+    until(
         || ctx.get_as::<dyn HostDispatch>(key.clone()).is_none(),
         "the withdrawal",
     )
@@ -253,14 +243,14 @@ async fn unloading_a_row_withdraws_its_services_without_waiting_for_the_runtime(
         .await
         .unwrap();
     let key = host_key("weather");
-    eventually(
+    until(
         || ctx.get_as::<dyn HostDispatch>(key.clone()).is_some(),
         "the weather service",
     )
     .await;
 
     process.unload_row("w").await.unwrap();
-    eventually(
+    until(
         || ctx.get_as::<dyn HostDispatch>(key.clone()).is_none(),
         "the withdrawal",
     )

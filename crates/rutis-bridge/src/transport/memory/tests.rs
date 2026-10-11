@@ -1,4 +1,5 @@
 use super::*;
+use rutis_test_support::{eventually_blocking, recv_within};
 use std::time::Duration;
 
 #[test]
@@ -25,6 +26,7 @@ fn faults_delay_go_half_open_and_drop() {
     faults.delay(Duration::from_millis(50));
     let started = std::time::Instant::now();
     a.sender.send(b"slow").unwrap();
+    // A lower bound only: a slow machine cannot make it fail (#231).
     assert!(started.elapsed() >= Duration::from_millis(50));
     assert_eq!(b.receiver.recv().unwrap().unwrap(), b"slow");
 
@@ -38,11 +40,17 @@ fn faults_delay_go_half_open_and_drop() {
         got.send(()).unwrap();
         (a, message)
     });
-    assert!(receiving.recv_timeout(Duration::from_millis(100)).is_err());
+    // "swallowed" reached the half-open end and was dropped there.
+    eventually_blocking(
+        || (faults.swallowed() == 1).then_some(()),
+        "the swallowed message",
+    );
     faults.heal();
     b.sender.send(b"after").unwrap();
-    receiving.recv_timeout(Duration::from_secs(3)).unwrap();
+    recv_within("the message after healing", &receiving);
     let (mut a, message) = receiver.join().unwrap();
+    // The first message to arrive is the one after healing: neither
+    // "swallowed" nor anything else got through while half-open.
     assert_eq!(message.unwrap().unwrap(), b"after");
 
     faults.drop_and_close("gone");
@@ -66,7 +74,7 @@ fn delivers_in_order_with_boundaries_and_ends_normally() {
 
 #[test]
 fn a_full_buffer_blocks_the_sender_until_the_receiver_reads() {
-    let (mut a, mut b) = pair();
+    let (mut a, mut b, sent_into, _) = pair_watched();
     for _ in 0..CAPACITY {
         a.sender.send(b"x").unwrap();
     }
@@ -75,24 +83,33 @@ fn a_full_buffer_blocks_the_sender_until_the_receiver_reads() {
         a.sender.send(b"last").unwrap();
         sent.send(()).unwrap();
     });
-    assert!(done.recv_timeout(Duration::from_millis(100)).is_err());
+    // Blocked: waiting on the full direction, and not done.
+    eventually_blocking(
+        || (sent_into.waiting() == 1).then_some(()),
+        "the blocked sender",
+    );
+    assert!(done.try_recv().is_err());
     b.receiver.recv().unwrap();
-    done.recv_timeout(Duration::from_secs(3)).unwrap();
+    recv_within("the send once there is room", &done);
     sender.join().unwrap();
 }
 
 #[test]
 fn close_is_idempotent_and_wakes_blocked_send_and_receive() {
-    let (mut a, b) = pair();
+    let (mut a, b, a_sends_into, _) = pair_watched();
     for _ in 0..CAPACITY {
         a.sender.send(b"x").unwrap();
     }
     let closer = a.closer.clone();
     let blocked_send = std::thread::spawn(move || a.sender.send(b"blocked"));
-    let (mut c, _d) = pair();
+    let (mut c, _d, _, c_receives_from) = pair_watched();
     let closer_c = c.closer.clone();
     let blocked_recv = std::thread::spawn(move || c.receiver.recv());
-    std::thread::sleep(Duration::from_millis(50));
+    // Both block before the close.
+    eventually_blocking(
+        || (a_sends_into.waiting() == 1 && c_receives_from.waiting() == 1).then_some(()),
+        "the blocked send and receive",
+    );
     closer.close("first");
     closer.close("second");
     closer_c.close("done");

@@ -553,6 +553,9 @@ mod tests {
 
         // Past the second the channel's end used to wait for: still
         // waiting, since the process is still running.
+        // clock: weak-negative — "not yet ended" has no event while the
+        // process runs; a slow machine can only miss an early end, never
+        // fail. The end with the exit status below is the positive half.
         assert!(
             end.recv_timeout(Duration::from_secs(2)).is_err(),
             "the channel ended before the process did"
@@ -583,14 +586,14 @@ mod tests {
             .unwrap();
     }
 
-    /// Sends until a send fails (for at most 5s): on macOS a socket whose
+    /// Sends until a send fails (for at most 10s): on macOS a socket whose
     /// far end closed still takes writes until the receiver has seen the end.
     fn send_until_it_fails(
         mut sender: Box<dyn Sender>,
     ) -> mpsc::Receiver<Result<(), ChannelError>> {
         let (sent, send) = mpsc::channel();
         std::thread::spawn(move || {
-            for _ in 0..500 {
+            for _ in 0..1000 {
                 if let Err(error) = sender.send(b"{}") {
                     let _ = sent.send(Err(error));
                     return;
@@ -601,8 +604,9 @@ mod tests {
         send
     }
 
-    /// Long enough for anything here to settle, short of a hung suite.
-    const SETTLED: Duration = Duration::from_secs(5);
+    /// Long enough for anything here to settle, short of a hung suite: only
+    /// a hang guard (#231).
+    const SETTLED: Duration = Duration::from_secs(10);
 
     /// #250: a send that fails because the process closed its channel says
     /// how the process ended, as the receiver does, instead of ending the
@@ -622,6 +626,8 @@ mod tests {
         std::thread::spawn(move || received.send(receiver.recv()).unwrap());
         let send = send_until_it_fails(sender);
 
+        // clock: weak-negative — as above: the send has nothing to report
+        // while it waits; the exit status it ends with is the positive half.
         assert!(
             send.recv_timeout(Duration::from_millis(500)).is_err(),
             "the send ended before the process did"
@@ -652,6 +658,8 @@ mod tests {
         } = channel;
         std::thread::spawn(move || receiver.recv());
         let send = send_until_it_fails(sender);
+        // clock: weak-negative — as above; the release by the close is the
+        // positive half.
         assert!(
             send.recv_timeout(Duration::from_millis(500)).is_err(),
             "the send waits for the process"
@@ -659,7 +667,7 @@ mod tests {
 
         closer.close("closed here");
         let error = send
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(SETTLED)
             .expect("the close releases the send")
             .unwrap_err();
         assert!(!error.to_string().contains("exit status"), "{error}");

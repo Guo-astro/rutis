@@ -7,19 +7,23 @@ use std::path::Path;
 use std::time::Duration;
 
 use rutis_bridge::runtime::Process;
-use rutis_bridge::session::Value;
+use rutis_bridge::session::{settle, Value};
+use rutis_test_support::until;
 use serde_json::json;
 
 const PLUGIN: &str = r#"
 export function apply(ctx) {
   let aborted = false
+  let started = false
   ctx.provide('work', {
     async wait(signal) {
+      started = true
       await new Promise((resolve, reject) => {
         signal.addEventListener('abort', () => { aborted = true; reject(signal.reason) })
       })
     },
     aborted() { return aborted },
+    started() { return started },
     ping() { return 'pong' },
   })
 }
@@ -33,31 +37,47 @@ async fn a_dropped_call_aborts_its_signal_and_the_session_continues() {
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime"),
         plugin.path(),
         json!({}),
-        json!({ "work": ["wait", "aborted", "ping"] }),
+        json!({ "work": ["wait", "aborted", "started", "ping"] }),
     )
     .await
     .unwrap();
     let work = process.service("work").unwrap();
 
-    let waited = tokio::time::timeout(
-        Duration::from_millis(100),
-        process.invoke_async(&work, "wait", vec![Value::Signal]),
-    )
-    .await;
-    assert!(waited.is_err(), "the call only ends when cancelled");
+    {
+        // The invoke answers at once with the method's Promise; awaiting it
+        // is the call that is dropped (between the two is the next test).
+        let promise = process
+            .connection()
+            .invoke_async(&work, "wait", Value::List(vec![Value::Signal]))
+            .await
+            .unwrap();
+        let awaited = settle(promise);
+        let mut awaited = std::pin::pin!(awaited);
+        // Dropped once the method runs (and waits for its signal), while its
+        // Promise is awaited.
+        tokio::select! {
+            // The call first: polled, it sends what is then dropped.
+            biased;
+            ended = &mut awaited => panic!("the call only ends when cancelled: {ended:?}"),
+            () = until(
+                || process.call(&work, "started", json!([])).unwrap() == json!(true),
+                "the method started",
+            ) => {}
+        }
+    }
 
     // The abort reaches the method, whose rejection arrives after the caller
     // gave up: it is discarded instead of breaking the session.
-    let mut aborted = false;
-    for _ in 0..50 {
-        aborted = process.call(&work, "aborted", json!([])).unwrap() == json!(true);
-        if aborted && process.connection().orphans() > 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(aborted, "the Cordis method's AbortSignal was not aborted");
-    assert!(process.connection().orphans() > 0);
+    until(
+        || process.call(&work, "aborted", json!([])).unwrap() == json!(true),
+        "the Cordis method's AbortSignal aborted",
+    )
+    .await;
+    until(
+        || process.connection().orphans() > 0,
+        "its late reply discarded",
+    )
+    .await;
     assert_eq!(
         process.call(&work, "ping", json!([])).unwrap(),
         json!("pong")
@@ -90,16 +110,14 @@ async fn dropping_between_the_reply_and_its_await_still_cancels() {
             std::task::Poll::Ready(())
         })
         .await;
+        // clock: widen — gives the reply time to arrive before the drop, the
+        // window the test is about; the assertion holds whether it did.
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let mut aborted = false;
-    for _ in 0..50 {
-        aborted = process.call(&work, "aborted", json!([])).unwrap() == json!(true);
-        if aborted {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(aborted, "the call was dropped without a cancel");
+    until(
+        || process.call(&work, "aborted", json!([])).unwrap() == json!(true),
+        "the cancel of the dropped call",
+    )
+    .await;
     process.dispose().await.unwrap();
 }

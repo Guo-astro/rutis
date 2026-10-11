@@ -16,6 +16,8 @@ tokio-util = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# Path only: cargo publish drops it.
+rutis-test-support = { path = "../rutis-test-support" }
 # Paused clock (`start_paused`) for the tests that check something has not
 # happened yet.
 tokio = { workspace = true, features = ["test-util"] }

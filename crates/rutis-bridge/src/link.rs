@@ -8,7 +8,7 @@
 //! or what the families registered on the peer do.
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::channel::{Channel, Closer, ConnectError, PeerId};
 use crate::session::rpc::{Connection, Endpoint, Format};
@@ -253,7 +253,9 @@ struct Live {
     operations: Arc<Operations>,
     /// In a mutex only to make `Live` shareable while the link awaits.
     provided: Mutex<Option<Disposer>>,
-    since: Instant,
+    /// tokio's clock, the same as std's unless paused: a test on the
+    /// paused clock can check the reset after `stable` (#231).
+    since: tokio::time::Instant,
 }
 
 impl Live {
@@ -358,7 +360,7 @@ impl Link {
             closer,
             operations,
             provided: Mutex::new(Some(provided)),
-            since: Instant::now(),
+            since: tokio::time::Instant::now(),
         })
     }
 

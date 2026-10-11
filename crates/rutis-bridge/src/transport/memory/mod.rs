@@ -26,6 +26,10 @@ struct State {
     finished: bool,
     /// Closed by either end: no more sends, receivers stop.
     closed: Option<String>,
+    /// Threads waiting on this direction, for tests that need "it blocks"
+    /// as a state to wait for rather than a pause (#231).
+    #[cfg(test)]
+    waiting: usize,
 }
 
 #[derive(Default)]
@@ -38,6 +42,32 @@ impl Direction {
     fn update(&self, change: impl FnOnce(&mut State)) {
         change(&mut self.state.lock().unwrap());
         self.changed.notify_all();
+    }
+
+    /// Wait for a change, counted in `waiting` under test.
+    fn wait<'a>(
+        &self,
+        state: std::sync::MutexGuard<'a, State>,
+    ) -> std::sync::MutexGuard<'a, State> {
+        #[cfg(test)]
+        let state = {
+            let mut state = state;
+            state.waiting += 1;
+            state
+        };
+        #[allow(unused_mut)]
+        let mut state = self.changed.wait(state).unwrap();
+        #[cfg(test)]
+        {
+            state.waiting -= 1;
+        }
+        state
+    }
+
+    /// How many threads wait on this direction now.
+    #[cfg(test)]
+    fn waiting(&self) -> usize {
+        self.state.lock().unwrap().waiting
     }
 }
 
@@ -56,7 +86,7 @@ impl Sender for MemorySender {
                 self.0.changed.notify_all();
                 return Ok(());
             }
-            state = self.0.changed.wait(state).unwrap();
+            state = self.0.wait(state);
         }
     }
 }
@@ -85,7 +115,7 @@ impl Receiver for MemoryReceiver {
             if state.finished || state.closed.is_some() {
                 return Ok(None);
             }
-            state = self.incoming.changed.wait(state).unwrap();
+            state = self.incoming.wait(state);
         }
     }
 }
@@ -140,6 +170,14 @@ fn end(incoming: &Arc<Direction>, outgoing: &Arc<Direction>, label: &str) -> Cha
 pub fn pair() -> (Channel, Channel) {
     let (a, b) = (Arc::default(), Arc::default());
     (end(&a, &b, ""), end(&b, &a, ""))
+}
+
+/// [`pair`], with what the first channel sends into and what it receives
+/// from, to see who is blocked.
+#[cfg(test)]
+fn pair_watched() -> (Channel, Channel, Arc<Direction>, Arc<Direction>) {
+    let (a, b): (Arc<Direction>, Arc<Direction>) = (Arc::default(), Arc::default());
+    (end(&a, &b, ""), end(&b, &a, ""), b, a)
 }
 
 /// Provides `Transport#memory`. Clones share one transport, so a test can

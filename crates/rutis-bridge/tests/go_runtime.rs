@@ -7,12 +7,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
 
 use rutis::Ctx;
 use rutis_bridge::runtime::{row_projection, Launcher, Mount, Process};
 use rutis_bridge::session::{host_key, Error, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value as RpcValue};
+use rutis_test_support::until;
 use serde_json::{json, Value};
 
 fn repo() -> PathBuf {
@@ -68,16 +68,6 @@ async fn go(project: &Path) -> Arc<Process> {
     .unwrap()
 }
 
-async fn eventually(mut check: impl FnMut() -> bool, what: &str) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !check() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
-}
-
 /// Load `entry` as row `key` and wait for its service `name`.
 async fn service(
     process: &Arc<Process>,
@@ -103,7 +93,7 @@ async fn service(
         .await
         .unwrap();
     let key = host_key(name);
-    eventually(
+    until(
         || ctx.get_as::<dyn HostDispatch>(key.clone()).is_some(),
         name,
     )
@@ -183,7 +173,7 @@ async fn go_rows_follow_the_row_contract() {
         .await
         .unwrap();
     let key = host_key("weather");
-    eventually(
+    until(
         || {
             ctx.get_as::<dyn HostDispatch>(key.clone())
                 .and_then(|weather| weather.invoke("today", json!([]).into()).ok())
@@ -195,7 +185,7 @@ async fn go_rows_follow_the_row_contract() {
     .await;
 
     process.unload_row("w").await.unwrap();
-    eventually(
+    until(
         || ctx.get_as::<dyn HostDispatch>(key.clone()).is_none(),
         "the withdrawal",
     )
@@ -212,9 +202,29 @@ async fn a_dropped_async_call_cancels_the_methods_context() {
     let ctx = Ctx::root().unwrap();
     let work = service(&process, &ctx, "p", "probe", json!(null), "work").await;
     let waiting = work.invoke("wait", json!([]).into()).unwrap();
-    let _ = tokio::time::timeout(Duration::from_millis(100), settle(waiting)).await;
+    {
+        let settled = settle(waiting);
+        let mut settled = std::pin::pin!(settled);
+        // Dropped once the method runs (and waits for its context).
+        let probe = work.clone();
+        tokio::select! {
+            // The call first: polled, it sends what is then dropped.
+            biased;
+            ended = &mut settled => panic!("the call only ends when cancelled: {ended:?}"),
+            () = until(
+                move || {
+                    probe
+                        .invoke("started", json!([]).into())
+                        .ok()
+                        .and_then(|value| value.json().ok())
+                        == Some(json!(true))
+                },
+                "the method started",
+            ) => {}
+        }
+    }
     let probe = work.clone();
-    eventually(
+    until(
         move || {
             probe
                 .invoke("aborted", json!([]).into())

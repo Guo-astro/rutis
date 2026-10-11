@@ -24,6 +24,7 @@ func (e *named) Name() string  { return e.name }
 type conformance struct {
 	mu      sync.Mutex
 	held    *peer.RemoteFunction
+	started bool
 	aborted bool
 	session *peer.Peer
 }
@@ -89,6 +90,9 @@ func (c *conformance) dispatch(ctx context.Context, target, method string, args 
 		if signal == nil {
 			return nil, fmt.Errorf("abortable needs a signal")
 		}
+		c.mu.Lock()
+		c.started = true
+		c.mu.Unlock()
 		select {
 		case <-signal.Done():
 		case <-ctx.Done():
@@ -97,6 +101,10 @@ func (c *conformance) dispatch(ctx context.Context, target, method string, args 
 		c.aborted = true
 		c.mu.Unlock()
 		return peer.Undefined, nil
+	case "started":
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.started, nil
 	case "aborted":
 		c.mu.Lock()
 		defer c.mu.Unlock()
