@@ -3023,6 +3023,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 name = "rutis"
 version = "0.9.0"
 dependencies = [
+ "rutis-test-support",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
@@ -3065,6 +3066,7 @@ dependencies = [
  "rustls",
  "rustls-native-certs",
  "rutis",
+ "rutis-test-support",
  "serde",
  "serde_json",
  "sha2",
@@ -3225,6 +3227,13 @@ dependencies = [
  "sha2",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "rutis-test-support"
+version = "0.0.0"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]

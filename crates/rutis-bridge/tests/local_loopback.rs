@@ -5,6 +5,7 @@
 use rutis_bridge::channel::{ChannelError, PeerId};
 use rutis_bridge::transport::local::{Handover, LocalTransport, Spawn, CHANNEL_TOKEN};
 use rutis_bridge::{Dial, Transport};
+use rutis_test_support::within;
 
 fn python() -> String {
     std::env::var("RUTIS_PYTHON")
@@ -99,6 +100,10 @@ async fn a_process_that_exits_before_connecting_says_so() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_silent_connection_does_not_hold_up_the_process() {
     let transport = LocalTransport::default();
+    // A silent connection is dropped only after an hour: if it held up the
+    // process's, this would hang (and fail by the hang guard) rather than
+    // pass slowly (#231).
+    transport.token_wait(std::time::Duration::from_secs(3600));
     // Something connects first and never presents a token; the process,
     // right behind it, is still taken at once.
     transport.spawner(
@@ -110,16 +115,12 @@ async fn a_silent_connection_does_not_hold_up_the_process() {
              time.sleep(30)",
         ),
     );
-    let started = std::time::Instant::now();
-    let channel = transport
-        .dial(&Dial::address("spawn:behind"))
-        .await
-        .unwrap();
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(5),
-        "took {:?}",
-        started.elapsed()
-    );
+    let channel = within(
+        "the process's channel",
+        transport.dial(&Dial::address("spawn:behind")),
+    )
+    .await
+    .unwrap();
     drop(channel);
     transport.close_all();
 }

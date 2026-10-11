@@ -14,6 +14,7 @@ use rutis_bridge::{
     peer_key, protocol, Credential, Dial, Failure, Identity, IdentityPlugin, LinkConfig,
     LinkPlugin, LinkState, Peer, Retry, StaticIdentity, Transport,
 };
+use rutis_test_support::{eventually, HANG_GUARD};
 use serde_json::json;
 use tokio::sync::watch;
 
@@ -26,22 +27,11 @@ fn quick() -> Retry {
         initial: Duration::from_millis(20),
         max: Duration::from_millis(200),
         rejected: Duration::from_millis(100),
-        handshake: Duration::from_secs(2),
+        handshake: HANG_GUARD,
+        // No jitter: the same delays every run (#231).
+        jitter: 0.0,
         ..Retry::default()
     }
-}
-
-async fn eventually<T>(mut check: impl FnMut() -> Option<T>, what: &str) -> T {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if let Some(found) = check() {
-                return found;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
 async fn state(

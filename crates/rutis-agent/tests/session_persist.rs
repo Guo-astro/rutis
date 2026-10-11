@@ -201,7 +201,7 @@ async fn session_restored_after_driver_restart() {
     assert_eq!(agent2.id().generation(), id1.generation() + 1);
     // 历史连续:第二轮 prompt 含第一轮的 user/assistant 消息
     let _ = soon(agent2.followup("q3")).await.unwrap();
-    let calls = llm2.calls.lock().unwrap();
+    let calls = llm2.calls.lock().unwrap().clone();
     let texts = calls[0].message_texts();
     let flat: Vec<String> = texts.iter().map(|(_, t)| t.clone()).collect();
     assert!(flat.iter().any(|t| t == "q1"), "第二轮看到 q1: {flat:?}");
@@ -347,7 +347,7 @@ async fn restored_session_carries_memory_pointer() {
     assert_eq!(agent2.id().generation(), 2, "恢复后是第 2 代");
     let _ = soon(agent2.followup("q3")).await.unwrap();
 
-    let calls = llm2.calls.lock().unwrap();
+    let calls = llm2.calls.lock().unwrap().clone();
     let texts = calls[0].message_texts();
     let system_texts: Vec<String> = texts
         .iter()
@@ -394,7 +394,7 @@ async fn fresh_session_never_has_memory_pointer() {
     // 两轮都无记忆指针(generation 恒为 1)
     let _ = soon(agent.followup("q1")).await.unwrap();
     let _ = soon(agent.followup("q2")).await.unwrap();
-    let calls = llm.calls.lock().unwrap();
+    let calls = llm.calls.lock().unwrap().clone();
     for (i, call) in calls.iter().enumerate() {
         let texts = call.message_texts();
         let joined: String = texts
@@ -494,7 +494,7 @@ async fn compacted_session_injects_summary_into_prompt() {
     assert!(before > after);
 
     let _ = soon(agent.followup("q3")).await.unwrap();
-    let calls = llm.calls.lock().unwrap();
+    let calls = llm.calls.lock().unwrap().clone();
     let texts = calls[2].message_texts();
     let joined: String = texts
         .iter()
@@ -576,7 +576,7 @@ async fn todo_injected_into_prompt() {
 
     // 第一轮(无待办):system 不含"待办"
     let _ = soon(agent.followup("q1")).await.unwrap();
-    let calls = llm.calls.lock().unwrap();
+    let calls = llm.calls.lock().unwrap().clone();
     let joined: String = calls[0]
         .message_texts()
         .iter()
@@ -590,7 +590,7 @@ async fn todo_injected_into_prompt() {
     // 设置待办 → 第二轮 system 含"待办/下一步"
     agent.set_todo("continue the dsh bridge work".to_string());
     let _ = soon(agent.followup("q2")).await.unwrap();
-    let calls = llm.calls.lock().unwrap();
+    let calls = llm.calls.lock().unwrap().clone();
     let joined: String = calls[1]
         .message_texts()
         .iter()
@@ -641,7 +641,7 @@ async fn todo_survives_restart_and_injects() {
         Some("finish the self-todo feature")
     );
     let _ = soon(agent2.followup("resume")).await.unwrap();
-    let calls = llm2.calls.lock().unwrap();
+    let calls = llm2.calls.lock().unwrap().clone();
     let joined: String = calls[0]
         .message_texts()
         .iter()

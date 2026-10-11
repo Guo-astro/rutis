@@ -119,7 +119,7 @@ mod bundle_env_tests {
             library_path.clone(),
             other.clone(),
         ];
-        let saved = names.clone().map(|name| std::env::var_os(name));
+        let saved = names.clone().map(std::env::var_os);
         std::env::set_var("RUTIS_DYLIB_LAUNCHER", "1");
         std::env::set_var(&saved_library_path, "/caller/libs");
         std::env::set_var(&saved_other, "/caller/preload");

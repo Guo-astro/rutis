@@ -4,7 +4,7 @@
 import { Client } from '../../src/client.ts'
 
 const [channel] = process.argv.slice(2)
-let held: ((value: unknown) => unknown) | undefined, aborted = false
+let held: ((value: unknown) => unknown) | undefined, started = false, aborted = false
 let session: Client
 const conformance: Record<string, (...args: any[]) => unknown> = {
   echo: value => value,
@@ -14,7 +14,8 @@ const conformance: Record<string, (...args: any[]) => unknown> = {
   hold: fn => { held = fn },
   fire: value => { if (!held) throw new Error('nothing held'); return held(value) },
   drop: () => { if (held) session.release(held); held = undefined },
-  abortable: (signal: AbortSignal) => new Promise<void>(resolve => signal.addEventListener('abort', () => { aborted = true; resolve() })),
+  abortable: (signal: AbortSignal) => { started = true; return new Promise<void>(resolve => signal.addEventListener('abort', () => { aborted = true; resolve() })) },
+  started: () => started,
   aborted: () => aborted,
   reenter: fn => fn(),
 }

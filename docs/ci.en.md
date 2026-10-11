@@ -23,6 +23,7 @@ This document describes how CI runs today and what to do when changing it. The r
 | `dylib-windows.yml` | Pull requests touching dylib files (the same files as the `dylib` switch); every push to main; `v*` tags; by hand | Dylib tests on Windows |
 | `stress.yml` | Nightly; by hand | Kernel tests and multi-process tests repeated; long network tests (below) |
 | `ci-stats.yml` | Weekly; by hand | CI timings and failures |
+| `deps.yml` | Weekly; by hand | Dependency vulnerability checks: `cargo deny check advisories` (without the example projects), `npm audit` of `@arcships/rutis-runtime`, `pip-audit` of the Python package. Not on pull requests and does not block merges; GitHub notifies the maintainer on failure |
 | `release.yml`, `release-cli.yml` | Tags | Releases |
 
 ### The nightly `stress.yml`
@@ -32,7 +33,7 @@ A test that fails only now and then, when it happens to fail on a pull request, 
 | Job | What it does |
 | --- | --- |
 | `rutis` | The kernel tests, `rounds` times (default 20). Each round changes the number of test threads (1, 2, all cores), shuffles the order and takes a new seed; every fifth round is a release build. Stops at the first failure |
-| `multiprocess` | The bridge and loader tests that start processes, open local channels or start runtime processes: the `PLATFORM_TESTS_BRIDGE` and `PLATFORM_TESTS_LOADER` lists of `ci.yml` (a test file added to them runs here too). The same runtimes as the `rust` job: Node 24, Bun 1.4.0, Python 3.10 with websockets, Go oldstable. The tests are built once, then run `rounds` times, each round with a different number of test threads, a shuffled order and a new seed. A failing round does not stop the others; the job fails at the end |
+| `multiprocess` | The bridge and loader tests that start processes, open local channels or start runtime processes: the `PLATFORM_TESTS_BRIDGE` and `PLATFORM_TESTS_LOADER` lists of `ci.yml` (a test file added to them runs here too). The same runtimes as the `rust` job (§9). The tests are built once, then run `rounds` times, each round with a different number of test threads, a shuffled order and a new seed. A failing round does not stop the others; the job fails at the end |
 | `soak` | The bridge's long WebSocket and local-channel tests, `soak_secs` seconds each (default 600) |
 
 The slowest job sets the time of the workflow: `soak` takes about 21 minutes; `multiprocess` an estimated 30–45 minutes (about 10 minutes to build, 1–1.5 minutes a round).
@@ -65,10 +66,12 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 | Job | Runner | Pull requests | Added on main | What it does |
 | --- | --- | --- | --- | --- |
 | `links` | Linux | `docs` | — | Checks relative links in Markdown |
-| `rust` | Linux | `code` | The rerun with runtimes started over loopback, on Linux | Every Rust test, once: the workspace (but bridge and loader), the loader with every row kind, the bridge with every feature. With the oldest supported versions: Node 24 (22 once #219 merges), Bun 1.4.0, Python 3.10, Go oldstable |
+| `rust` | Linux | `code` | The rerun with runtimes started over loopback, on Linux | Every Rust test, once: the workspace (but bridge and loader), the loader with every row kind, the bridge with every feature. With the oldest supported versions (§9) |
 | `js-py` | Linux | `code` | — | `scripts/train.mjs`; the Node packages' tests (`node/rutis`, `rutis-runtime`, `rutis-host`) and rutis-dsh's dsh tests; the Python unit tests |
-| `checks` | Linux | Only with `all` | The whole job | `cargo check --workspace --all-targets`; build checks and `--no-run` of the bridge and loader feature combinations. They find rare feature-combination build errors and run no tests |
-| `network-macos` | macOS | `code`: only the tests that depend on the platform | All bridge and loader tests; the `node/rutis` tests | Process start, local channels, runtime processes, WebSocket and rutis-host tests with Node 26, the latest Bun and Go stable; the Node runtime's and the Python package's tests; a build check of the whole workspace |
+| `lint` | Linux | `code` | — | `cargo fmt --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`. In parallel with the tests. No baseline: a warning is fixed in the PR that introduces it, and new lints from a toolchain upgrade in the upgrade PR |
+| `msrv` | Linux | Only with `all` (`Cargo.lock`, `Cargo.toml` and the like changed) | The whole job | Builds the libraries and binaries with the declared MSRV (`rust-version` in `Cargo.toml`) and the repository's `Cargo.lock` (`cargo +<version> check --workspace`, without the example projects `rutis-agent` and `rutis-cli`) |
+| `checks` | Linux | Only with `all` | The whole job | Build checks and `--no-run` of the bridge and loader feature combinations (the whole workspace's build is covered by `lint`'s clippy). They find rare feature-combination build errors and run no tests |
+| `network-macos` | macOS | `code`: only the tests that depend on the platform | All bridge and loader tests; the `node/rutis` tests | Process start, local channels, runtime processes, WebSocket and rutis-host tests with the latest versions (§9); the Node runtime's and the Python package's tests; a build check of the whole workspace |
 | `runtimes-windows` | Windows | `code`: only the tests that depend on the platform | All bridge and loader tests | The same on Windows (processes start over loopback); the Go SDK tests; a build check of the whole workspace |
 | `runtimes-bun` | Linux | `bun`: Bun 1.4.0 | Linux latest; macOS 1.4.0 | Every Bun runtime test, with the reruns over loopback |
 | `runtimes-go` | Linux | `go`: Go oldstable | Linux stable; macOS oldstable; the reruns over loopback on Linux | Every Go SDK and Go runtime test |
@@ -91,9 +94,9 @@ A new test file that starts processes or opens channels goes into these lists. T
 | Change | Jobs | Expected time (push to result) |
 | --- | --- | --- |
 | Documentation only | `changes`, `links` | About 1 minute |
-| Kernel `crates/rutis` | `rust`, `js-py`, `network-macos`, `runtimes-windows` | About 5–8 minutes |
+| Kernel `crates/rutis` | `rust`, `js-py`, `lint`, `network-macos`, `runtimes-windows` | About 5–8 minutes |
 | Bridge, loader, host | Adds `runtimes-bun`, `runtimes-go` (one version each, Linux) | About 6–9 minutes |
-| Python package only | `rust`, `js-py`, `network-macos`, `runtimes-windows` | About 5–8 minutes |
+| Python package only | `rust`, `js-py`, `lint`, `network-macos`, `runtimes-windows` | About 5–8 minutes |
 | `package.json`, `pyproject.toml`, `crates/*/Cargo.toml` | Adds the three packaging jobs and `semver-rutis` | Unchanged; they run beside the tests |
 | Dylib | Adds the dylib jobs; `dylib-windows.yml` | About 20–25 minutes (the dylib budget) |
 | CI configuration, `Cargo.lock`, the root `Cargo.toml` | Everything, as on main | About 25 minutes |
@@ -113,7 +116,8 @@ CI gets slow one added check at a time. Before adding a check (a new job, a new 
 1. **What problem does it prevent, and in which tier does it run?** The tiers are pull requests, main, daily (`stress.yml`) and weekly. The default is main or daily; only problems that must be stopped before a merge go on pull requests. A check on main still finds the problem, a little later, and a failure there is fixed first (§7).
 2. **On pull requests, how much time does it take?** It must not make the critical path (the slowest job) longer: put it in a parallel Linux job, or replace something in an existing job. No new macOS or Windows jobs; macOS and Windows run only the tests that depend on the platform (§4).
 3. **Replace rather than add.** For example, the oldest version of a support matrix: switch the Linux job to the oldest version and keep macOS on the latest, instead of adding a job for the oldest version.
-4. **Target: an ordinary code pull request gets its result within 10 minutes of the push, queueing included.** Measure it with `node tools/ci-stats.mjs [runs]` (the weekly `ci-stats.yml` runs it too). When it is over, start with the job on the critical path: split it into parallel jobs, or move costly parts that rarely fail to main.
+4. **Target: an ordinary code pull request gets its result within 10 minutes of the push, queueing included.** Measure it with `node tools/ci-stats.mjs [runs] [workflow] [--since date]` (the weekly `ci-stats.yml` runs it too) and read the "ordinary code" row: first attempts that ran `rust` but neither `checks` nor a `dylib-` job. When it is over, start with the job on the critical path: split it into parallel jobs, or move costly parts that rarely fail to main.
+5. **Checks whose result changes with outside data stay off pull requests.** Advisory databases and new releases can fail a PR whose code did not change; such checks run weekly (`deps.yml`).
 
 Write the answers in the pull request description.
 
@@ -129,7 +133,7 @@ Write the answers in the pull request description.
 ### Adding a language runtime
 
 1. Add a switch for the language to `changes`, covering its runtime directory and `crates/rutis-bridge`, `crates/rutis-loader`, `crates/rutis-host`.
-2. Install the language in `rust` (the oldest supported version) and `network-macos` (the latest), and add its feature to their existing bridge, loader and host test steps; add its test files to `PLATFORM_TESTS_*` as §4 says.
+2. Install the language in `rust` (the oldest supported version) and `network-macos` (the latest) (§9), and add its feature to their existing bridge, loader and host test steps; add its test files to `PLATFORM_TESTS_*` as §4 says.
 3. To test several versions, add a `runtimes-<language>` job: it runs on the switch from step 1, is listed in `ci-ok`, and on pull requests runs only the oldest supported version on Linux. Other versions and macOS run only on main (see `runtimes-bun` and the `bun-matrix` output of `changes`).
 4. Releases: add its package to `release-dry-run`, `scripts/train.mjs` and `release.yml`.
 5. Update §3 and §4.
@@ -157,3 +161,21 @@ Write the answers in the pull request description.
 - A pull request can read only main's caches and its own. Pull requests save none, so that they do not fill the repository's 10 GB and push main's caches out.
 - New jobs do the same (see the note at the `rust-cache` of the `rust` job in `ci.yml`).
 - Checks that cannot use caches (reproducible SDK builds) run on main, and on pull requests only when `repro` is on.
+
+## 9. Versions
+
+Rule: for each language, Linux jobs use the oldest supported version, macOS and Windows jobs the latest. The minimum is verified on every pull request, the latest on macOS and Windows, with no job added just for a version.
+
+| | Declared in | Linux (`rust`, `js-py`, `checks`, `lint`, `runtimes-go`, `runtimes-bun`, `stress.yml`'s `multiprocess`) | `network-macos`, `runtimes-windows` |
+| --- | --- | --- | --- |
+| Node | `engines.node` in each npm package's `package.json` | The declared oldest major | The latest even major, bumped by hand |
+| Python | `requires-python` in `python/rutis/pyproject.toml` | The declared oldest | `3.x`, follows automatically; when a new release fails a PR, pin the previous one temporarily and fix it in a separate PR |
+| websockets | The `network` extra in `python/rutis/pyproject.toml` | `==<lower bound>.*` | `>=<lower bound>` |
+| Bun | `engines.bun` in `bun/rutis-bun/package.json` | The declared oldest | `latest` |
+| Go | `go/rutis/go.mod` | `oldstable` | `stable` |
+| Rust toolchain | `rust-toolchain.toml` | Every workflow's `dtolnay/rust-toolchain@<version>` equals it | Same |
+| MSRV | `rust-version` in the root `Cargo.toml` | The `msrv` job (main) | — |
+
+In the macOS entries of `runtimes-go` and `runtimes-bun` on main, Node and Python are only the far end of cross-language rows and use the oldest versions, as on Linux. The Node used for releases (`release.yml` and `ci.yml`'s `release-*` jobs) is the release tooling's version and not part of the support matrix.
+
+**Change CI versions in the same PR as a declaration**: a PR that changes `engines`, `requires-python`, the websockets lower bound or `rust-version` also changes the versions of the matching jobs in the table above; otherwise the declared minimum is unverified (Q10.3).

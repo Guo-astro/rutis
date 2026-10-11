@@ -192,7 +192,7 @@ Bun 插件运行在 [`@arcships/rutis-bun`](https://www.npmjs.com/package/@arcsh
 
 rutis 仍处于 0.x，API 还会演进。不兼容的变化会写进发布说明，并附迁移指南。
 
-- **内核** 是纯 Rust，依赖只有 tokio、tokio-util 和 thiserror；需要 Rust 1.85 或更高。
+- **内核** 是纯 Rust，依赖只有 tokio、tokio-util 和 thiserror；需要 Rust 1.88 或更高。
 - **语言运行时与 rutis-host**（Node、Python 与 Go 行、远程运行时、跨语言共享服务、节点、Cordis 挂载）支持 Linux、macOS 和 Windows x64（MSVC）；需要 Node 22+ 或 Python 3.10+；Go 插件是编译好的二进制，构建时需要 Go 1.24+。
 - **dylib 插件** 支持 Linux、macOS 和 Windows x64（MSVC）。
 

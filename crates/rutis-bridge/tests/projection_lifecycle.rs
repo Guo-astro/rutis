@@ -7,11 +7,11 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, ServiceIntercept, TypeKey};
 use rutis_bridge::runtime::{Process, Projection};
 use rutis_bridge::session::{decode, decode_value, Error};
+use rutis_test_support::{until, within};
 use serde_json::{json, Value};
 
 fn package() -> PathBuf {
@@ -91,13 +91,6 @@ impl Plugin for Mount {
     }
 }
 
-async fn settle() {
-    for _ in 0..20 {
-        tokio::task::yield_now().await;
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-}
-
 async fn mounted() -> (tempfile::NamedTempFile, Ctx, rutis::FiberView, Shared) {
     let mut file = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
     file.write_all(COUNTER.as_bytes()).unwrap();
@@ -118,8 +111,14 @@ async fn withdrawal_and_immediate_reregistration_keep_the_service() {
     let (_file, ctx, view, shared) = mounted().await;
     let process = shared.lock().unwrap().clone().unwrap();
     process.call("control", "cycle", json!([9])).unwrap();
-    settle().await;
-    assert_eq!(ctx.get::<Counter>().unwrap().current().unwrap(), 9.0);
+    until(
+        || {
+            ctx.get::<Counter>()
+                .is_some_and(|counter| counter.current().ok() == Some(9.0))
+        },
+        "the counter at 9.0",
+    )
+    .await;
     drop(process);
     view.dispose().await.unwrap();
     ctx.shutdown().await.unwrap();
@@ -147,7 +146,16 @@ async fn a_proxy_held_during_reentrant_replacement_stays_callable() {
         .unwrap()
         .call("swap", json!([2]))
         .unwrap();
-    settle().await;
+    until(
+        || {
+            held.lock().unwrap().is_some()
+                && ctx
+                    .get::<Counter>()
+                    .is_some_and(|counter| counter.current().ok() == Some(3.0))
+        },
+        "the reentrant replacement published",
+    )
+    .await;
     let held = held.lock().unwrap().take().unwrap();
     assert_eq!(held.current().unwrap(), 2.0);
     assert_eq!(ctx.get::<Counter>().unwrap().current().unwrap(), 3.0);
@@ -166,8 +174,7 @@ async fn a_disposed_mount_frees_its_process() {
     shared.lock().unwrap().take();
     view.dispose().await.unwrap();
     ctx.shutdown().await.unwrap();
-    settle().await;
-    assert!(weak.upgrade().is_none(), "the process is still referenced");
+    until(|| weak.upgrade().is_none(), "the process freed").await;
 }
 
 // Review #7: a method that replaces the service and then throws still
@@ -181,8 +188,14 @@ async fn a_throwing_method_still_refreshes_the_slot() {
         .call("swapThenFail", json!([9]))
         .unwrap_err();
     assert!(error.to_string().contains("after swap"));
-    settle().await;
-    assert_eq!(ctx.get::<Counter>().unwrap().current().unwrap(), 9.0);
+    until(
+        || {
+            ctx.get::<Counter>()
+                .is_some_and(|counter| counter.current().ok() == Some(9.0))
+        },
+        "the counter at 9.0",
+    )
+    .await;
     view.dispose().await.unwrap();
     ctx.shutdown().await.unwrap();
 }
@@ -214,10 +227,12 @@ async fn service_method_effects_end_with_the_mount_and_handles_stay_stable() {
     }
     assert_eq!(process.service("ticker").as_deref(), Some("ticker"));
     // The interval registered by start() must not keep Node alive.
-    tokio::time::timeout(Duration::from_secs(5), process.dispose())
-        .await
-        .expect("disposal waits for an effect nothing cleans up")
-        .unwrap();
+    within(
+        "disposal, which must not wait for an effect nothing cleans up",
+        process.dispose(),
+    )
+    .await
+    .unwrap();
 }
 
 // Review #4: Service.check gates export like native injection.
@@ -332,17 +347,31 @@ async fn a_retried_publication_keeps_its_handle() {
 
     // The first publication of the value-2 object is denied...
     process.call("control", "swap", json!([2])).unwrap();
-    settle().await;
+    // Denied: the intercept has said so, and the slot keeps the old object.
+    until(|| *denied.lock().unwrap(), "the denied publication").await;
     assert_eq!(ctx.get::<Counter>().unwrap().current().unwrap(), 1.0);
     // ...and retried when another slot changes.
     process.call("control", "bump", json!([5])).unwrap();
-    settle().await;
+    until(
+        || {
+            ctx.get::<Counter>()
+                .is_some_and(|counter| counter.current().ok() == Some(2.0))
+        },
+        "the counter at 2.0",
+    )
+    .await;
     let kept = ctx.get::<Counter>().unwrap();
     assert_eq!(kept.current().unwrap(), 2.0);
     // Replacing it again must not invalidate the retried proxy's handle.
     process.call("control", "swap", json!([3])).unwrap();
-    settle().await;
-    assert_eq!(ctx.get::<Counter>().unwrap().current().unwrap(), 3.0);
+    until(
+        || {
+            ctx.get::<Counter>()
+                .is_some_and(|counter| counter.current().ok() == Some(3.0))
+        },
+        "the counter at 3.0",
+    )
+    .await;
     assert_eq!(kept.current().unwrap(), 2.0);
     drop((kept, process));
     view.dispose().await.unwrap();
@@ -357,8 +386,14 @@ async fn a_call_on_an_exported_object_refreshes_the_slots() {
     remote
         .call("swap", vec![rutis_bridge::session::arg(&9).unwrap()])
         .unwrap();
-    settle().await;
-    assert_eq!(ctx.get::<Counter>().unwrap().current().unwrap(), 9.0);
+    until(
+        || {
+            ctx.get::<Counter>()
+                .is_some_and(|counter| counter.current().ok() == Some(9.0))
+        },
+        "the counter at 9.0",
+    )
+    .await;
     let handle = process.service("counter").unwrap();
     assert_eq!(
         process.call(&handle, "current", json!([])).unwrap(),
@@ -431,9 +466,11 @@ export function apply(ctx) {
         error.contains("exited with exit ") && error.ends_with(" 17"),
         "{error}"
     );
-    settle().await;
-    assert!(ctx.get::<Counter>().is_none());
-    assert!(*stopped.lock().unwrap());
+    until(
+        || ctx.get::<Counter>().is_none() && *stopped.lock().unwrap(),
+        "the service withdrawn and its consumer stopped",
+    )
+    .await;
     let status = process.exit_status().unwrap();
     assert!(
         status.starts_with("exited with exit ") && status.ends_with(" 17"),

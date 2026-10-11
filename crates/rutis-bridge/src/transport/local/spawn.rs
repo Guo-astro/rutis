@@ -149,7 +149,7 @@ fn retryable(error: std::io::Error) -> ConnectError {
 pub const HANDOVER_VARIABLE: &str = "RUTIS_LOCAL_HANDOVER";
 
 /// Start `spawn` and connect it.
-pub(crate) async fn start(spawn: &Spawn) -> Result<Channel, ConnectError> {
+pub(crate) async fn start(spawn: &Spawn, token_wait: Duration) -> Result<Channel, ConnectError> {
     let forced =
         !cfg!(unix) || std::env::var_os(HANDOVER_VARIABLE).is_some_and(|value| value == "loopback");
     let handover = match forced {
@@ -161,7 +161,7 @@ pub(crate) async fn start(spawn: &Spawn) -> Result<Channel, ConnectError> {
         Handover::Inherit => inherit(spawn)?,
         #[cfg(unix)]
         Handover::DialBack => dial_back(spawn).await?,
-        _ => loopback(spawn).await?,
+        _ => loopback(spawn, token_wait).await?,
     };
     let Channel {
         sender,
@@ -334,11 +334,14 @@ async fn dial_back(spawn: &Spawn) -> Result<Started, ConnectError> {
 }
 
 /// How long a connection to the loopback listener may take to present its
-/// token.
-const TOKEN_WAIT: Duration = Duration::from_secs(10);
+/// token, unless the transport says otherwise ([`LocalTransport::token_wait`]).
+///
+/// [`LocalTransport::token_wait`]: super::LocalTransport::token_wait
+pub(crate) const TOKEN_WAIT: Duration = Duration::from_secs(10);
 
-async fn loopback(spawn: &Spawn) -> Result<Started, ConnectError> {
-    let listener = Loopback::bind().await.map_err(retryable)?;
+async fn loopback(spawn: &Spawn, token_wait: Duration) -> Result<Started, ConnectError> {
+    let mut listener = Loopback::bind().await.map_err(retryable)?;
+    listener.wait = token_wait;
     let mut command = spawn.command();
     #[cfg(unix)]
     hand_over(&mut command, None);
@@ -373,6 +376,8 @@ pub(crate) struct Loopback {
     listener: tokio::net::TcpListener,
     address: std::net::SocketAddr,
     token: String,
+    /// How long a connection may take to present the token.
+    pub(crate) wait: Duration,
 }
 
 impl Loopback {
@@ -383,6 +388,7 @@ impl Loopback {
             listener,
             address,
             token: token()?,
+            wait: TOKEN_WAIT,
         })
     }
 
@@ -408,8 +414,9 @@ impl Loopback {
                 accepted = self.listener.accept() => {
                     let (mut stream, _) = accepted?;
                     let token = self.token.clone();
+                    let wait = self.wait;
                     presenting.spawn(async move {
-                        let presented = tokio::time::timeout(TOKEN_WAIT, read_line(&mut stream)).await;
+                        let presented = tokio::time::timeout(wait, read_line(&mut stream)).await;
                         matches!(presented, Ok(Ok(line)) if line == token).then_some(stream)
                     });
                 }

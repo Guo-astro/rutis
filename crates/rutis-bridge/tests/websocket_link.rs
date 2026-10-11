@@ -3,7 +3,6 @@
 #![cfg(feature = "websocket")]
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
@@ -12,23 +11,11 @@ use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin
 use rutis_bridge::{
     peer_key, Credential, IdentityPlugin, LinkConfig, LinkPlugin, Peer, StaticIdentity,
 };
+use rutis_test_support::eventually;
 use serde_json::json;
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
-}
-
-async fn eventually<T>(mut check: impl FnMut() -> Option<T>) -> T {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if let Some(found) = check() {
-                return found;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("timed out")
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -74,8 +61,8 @@ async fn two_rust_endpoints_link_over_websocket() {
         &address,
     )));
 
-    let at_main = eventually(|| main.get_as::<Peer>(peer_key(&id("mac")))).await;
-    let at_mac = eventually(|| mac.get_as::<Peer>(peer_key(&id("main")))).await;
+    let at_main = eventually(|| main.get_as::<Peer>(peer_key(&id("mac"))), "the link").await;
+    let at_mac = eventually(|| mac.get_as::<Peer>(peer_key(&id("main"))), "the link").await;
     let _offered = at_mac
         .register(
             "clock",

@@ -382,7 +382,7 @@ fn render(frame: &mut Frame, app: &mut App) {
     ScrollbackPane::new().render_with_scratch(
         conv,
         frame.buffer_mut(),
-        &mut app.scrollback,
+        &app.scrollback,
         &mut app.scratch,
     );
 

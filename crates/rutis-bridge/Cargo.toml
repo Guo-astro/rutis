@@ -71,6 +71,8 @@ cordis = ["node", "dep:proc-macro2", "dep:quote", "dep:syn", "dep:toml"]
 testing = []
 
 [dev-dependencies]
+# Path only: cargo publish drops it.
+rutis-test-support = { path = "../rutis-test-support" }
 rcgen = "0.14"
 tempfile = "3"
 tokio = { workspace = true }

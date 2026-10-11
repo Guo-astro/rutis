@@ -16,6 +16,7 @@ use rutis::Ctx;
 use rutis_bridge::runtime::{row_projection, Launcher, Mount, Process};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value as RpcValue};
+use rutis_test_support::{recv_within, until, within, HANG_GUARD};
 use serde_json::{json, Value};
 
 const WEATHER: &str = r#"
@@ -66,19 +67,12 @@ async fn mount(launcher: Launcher, project: &Path) -> Result<Arc<Process>, Strin
 }
 
 async fn bun(project: &Path) -> Arc<Process> {
-    mount(Launcher::bun(None, &package(), project), project)
-        .await
-        .unwrap()
-}
-
-async fn eventually(mut check: impl FnMut() -> bool, what: &str) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !check() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+    // A registry nothing listens on: a download attempt fails at once
+    // instead of fetching (the runtime runs with --no-install).
+    let launcher = Launcher::bun(None, &package(), project)
+        .env("BUN_CONFIG_REGISTRY", "http://127.0.0.1:9/")
+        .env("NPM_CONFIG_REGISTRY", "http://127.0.0.1:9/");
+    mount(launcher, project).await.unwrap()
 }
 
 /// Load `entry` as row `key` exporting what it provides, and wait for its
@@ -107,7 +101,7 @@ async fn load(
         .unwrap();
     let name = described.provides.keys().next().unwrap().clone();
     let service = host_key(&name);
-    eventually(
+    until(
         || ctx.get_as::<dyn HostDispatch>(service.clone()).is_some(),
         &name,
     )
@@ -176,7 +170,7 @@ async fn bun_rows_follow_the_row_contract() {
     drop(weather);
 
     process.unload_row("w").await.unwrap();
-    eventually(
+    until(
         || ctx.get_as::<dyn HostDispatch>(key.clone()).is_none(),
         "the withdrawal",
     )
@@ -219,16 +213,13 @@ async fn packages_resolve_from_the_project_only() {
         Err(rutis_bridge::session::Error::Remote { name, .. }) => assert_eq!(name, "NotFound"),
         other => panic!("an unknown package should be NotFound, got {other:?}"),
     }
-    let started = std::time::Instant::now();
+    // Nothing is downloaded: the registry is unreachable (bun()), and
+    // nothing lands in the project.
     let error = process
         .describe_row(Path::new("./needs.ts"))
         .await
         .expect_err("an uninstalled import fails");
     assert!(error.to_string().contains("left-pad"), "{error}");
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "nothing is downloaded"
-    );
     assert!(!dir.path().join("node_modules/left-pad").exists());
     process.dispose().await.unwrap();
 }
@@ -269,13 +260,18 @@ export function apply(ctx) { ctx.provide('probe', { value: () => process.env.RUT
 /// without that would never happen.
 #[tokio::test(flavor = "multi_thread")]
 async fn incoming_calls_run_while_a_synchronous_call_waits() {
-    struct Gate(Mutex<std::sync::mpsc::Receiver<()>>);
+    /// Waits until opened; says when a call has entered it.
+    struct Gate(
+        Mutex<std::sync::mpsc::Receiver<()>>,
+        std::sync::mpsc::Sender<()>,
+    );
     impl HostDispatch for Gate {
         fn invoke(&self, _method: &str, _args: RpcValue) -> Reply {
+            let _ = self.1.send(());
             self.0
                 .lock()
                 .unwrap()
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(HANG_GUARD)
                 .map_err(|_| rutis_bridge::session::Error::Value("never opened".into()))?;
             Ok(json!("opened").into())
         }
@@ -298,8 +294,9 @@ export function apply(ctx) {
     .unwrap();
     let process = bun(dir.path()).await;
     let (open, opened) = std::sync::mpsc::channel();
+    let (enter, entered) = std::sync::mpsc::channel();
     let lease = process
-        .lease_host("gate", Arc::new(Gate(Mutex::new(opened))), None)
+        .lease_host("gate", Arc::new(Gate(Mutex::new(opened), enter)), None)
         .await
         .unwrap();
     let ctx = Ctx::root().unwrap();
@@ -308,15 +305,15 @@ export function apply(ctx) {
 
     let passing = door.clone();
     let pass = tokio::task::spawn_blocking(move || passing.invoke("pass", json!([]).into()));
-    tokio::time::sleep(Duration::from_millis(100)).await;
     // `pass` waits in Bun for the gate; `knock` must still be answered.
+    let entered = tokio::task::spawn_blocking(move || recv_within("pass at the gate", &entered));
+    entered.await.unwrap();
     let knocking = door.clone();
-    let knock = tokio::time::timeout(
-        Duration::from_secs(5),
+    let knock = within(
+        "an unrelated call while a synchronous call waits",
         tokio::task::spawn_blocking(move || knocking.invoke("knock", json!([]).into())),
     )
     .await
-    .expect("an unrelated call runs while a synchronous call waits")
     .unwrap()
     .unwrap();
     assert_eq!(knock.json().unwrap(), json!("knocked"));
@@ -401,7 +398,7 @@ async fn an_edited_plugin_is_imported_again() {
     assert_eq!(greet(&ctx), json!("Hello"));
     process.unload_row("g").await.unwrap();
     projection.close();
-    eventually(
+    until(
         || {
             ctx.get_as::<dyn HostDispatch>(host_key("greeter"))
                 .is_none()
@@ -498,7 +495,7 @@ async fn unloading_a_row_withdraws_its_services_without_waiting_for_the_runtime(
     let ctx = Ctx::root().unwrap();
     let projection = load(&process, &ctx, "w", Path::new("./weather.ts"), json!({})).await;
     process.unload_row("w").await.unwrap();
-    eventually(
+    until(
         || {
             ctx.get_as::<dyn HostDispatch>(host_key("weather"))
                 .is_none()

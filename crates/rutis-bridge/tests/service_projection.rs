@@ -9,6 +9,7 @@ use std::sync::Arc;
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin};
 use rutis_bridge::runtime::{Process, Projection};
 use rutis_bridge::session::{decode, Error};
+use rutis_test_support::until;
 use serde_json::json;
 
 // What the generator emits for one exported service.
@@ -89,13 +90,6 @@ impl Plugin for Mount {
     }
 }
 
-async fn settle() {
-    for _ in 0..20 {
-        tokio::task::yield_now().await;
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn projected_service_follows_replacement_and_withdrawal() {
     let mut file = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
@@ -125,16 +119,24 @@ async fn projected_service_follows_replacement_and_withdrawal() {
     // A released, replaced object is dropped on the Cordis side.
     let released = first.handle.clone();
     drop(first);
-    settle().await;
-    assert!(process.call(&released, "current", json!([])).is_err());
+    until(
+        || process.call(&released, "current", json!([])).is_err(),
+        "the released object dropped",
+    )
+    .await;
 
     // Withdrawal removes the native binding; a new provide publishes again.
     process.call("control", "withdraw", json!([])).unwrap();
-    settle().await;
-    assert!(ctx.get::<Counter>().is_none());
+    until(|| ctx.get::<Counter>().is_none(), "the binding withdrawn").await;
     process.call("control", "restore", json!([5])).unwrap();
-    settle().await;
-    assert_eq!(ctx.get::<Counter>().unwrap().current().unwrap(), 5.0);
+    until(
+        || {
+            ctx.get::<Counter>()
+                .is_some_and(|counter| counter.current().ok() == Some(5.0))
+        },
+        "the counter at 5.0",
+    )
+    .await;
     assert_eq!(second.current().unwrap(), 2.0);
 
     drop(second);

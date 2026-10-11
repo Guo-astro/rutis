@@ -219,11 +219,10 @@ jobs:
           # own would crowd main's out of the repository's 10 GB.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # The oldest Node the packages support (node/rutis engines.node).
-      # Lower to 22 when #219 lands.
+      # The oldest Node the packages support (engines.node).
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
           cache: npm
           cache-dependency-path: |
             node/rutis-runtime/package-lock.json
@@ -240,12 +239,12 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      # The oldest Python (requires-python). websockets: pin the oldest
-      # supported (15.*) when #218 lands.
+      # The oldest Python (requires-python) and the
+      # oldest websockets (rutis[network]).
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - run: python3 -m pip install "websockets>=13"
+      - run: python3 -m pip install "websockets==15.*"
       # The older of the two Go releases supported.
       - uses: actions/setup-go@v5
         with:
@@ -281,10 +280,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      # The oldest Node the packages support; lower to 22 when #219 lands.
+      # The oldest Node the packages support (engines.node).
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
           cache: npm
           cache-dependency-path: |
             node/rutis-runtime/package-lock.json
@@ -298,15 +297,75 @@ jobs:
       # dsh (web UI and agent loop) served by aimux in the rutis-dsh host.
       - run: npm --prefix crates/rutis-dsh/dsh ci
       - run: npm --prefix crates/rutis-dsh/dsh test
-      # The Python package on the oldest Python (requires-python); websockets:
-      # the oldest supported (15.*) when #218 lands.
+      # The Python package on the oldest Python (requires-python) and
+      # the oldest websockets.
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
       # WebSocket channels of the Python runtime (rutis[network]).
-      - run: python3 -m pip install "websockets>=13"
+      - run: python3 -m pip install "websockets==15.*"
       - run: python3 -m unittest discover -s tests
         working-directory: python/rutis
+
+  # fmt and clippy, in parallel with the tests (not on the critical path).
+  # clippy compiles the whole workspace with all features, so `checks` does
+  # not repeat a plain `cargo check`. Warnings fail the job; there is no
+  # baseline (#204).
+  lint:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo fmt --all --check
+      # The examples' build scripts need the Node runtime, and rutis-dsh
+      # compiles its web host only when dsh is installed.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            node/rutis-runtime/package-lock.json
+            crates/rutis-dsh/dsh/package-lock.json
+      - run: npm --prefix node/rutis-runtime ci
+      - run: npm --prefix crates/rutis-dsh/dsh ci
+      # `--all-features` turns on the dylib fixtures' `export` feature, which
+      # reads the SDK artifact hash at compile time (as in sdk-repro).
+      - name: cargo clippy
+        run: |
+          export RUTIS_SDK_ARTIFACT_SHA256="$(printf '0%.0s' {1..64})"
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  # The declared MSRV (rust-version in Cargo.toml) builds the libraries and
+  # binaries, with our Cargo.lock (Q10.3). With `all`: on main, and on pull
+  # requests that change Cargo.lock or Cargo.toml, which is how a dependency
+  # that needs a newer rustc arrives. rutis-agent and rutis-cli are examples
+  # and declare no MSRV.
+  msrv:
+    needs: changes
+    if: needs.changes.outputs.all == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The examples' build scripts need the Node runtime (as in lint).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: node/rutis-runtime/package-lock.json
+      - run: npm --prefix node/rutis-runtime ci
+      - name: cargo +1.88 check
+        run: cargo +1.88 check --workspace --exclude rutis-agent --exclude rutis-cli --locked
 
   checks:
     needs: changes
@@ -321,16 +380,13 @@ jobs:
       # rutis-dsh compiles its web host only when dsh is installed.
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
           cache: npm
           cache-dependency-path: |
             node/rutis-runtime/package-lock.json
             crates/rutis-dsh/dsh/package-lock.json
       - run: npm --prefix node/rutis-runtime ci
       - run: npm --prefix crates/rutis-dsh/dsh ci
-
-      - name: cargo check (all targets)
-        run: cargo check --workspace --all-targets
 
       # An application compiles only the parts it enables.
       - name: cargo check (feature sets)
@@ -385,12 +441,12 @@ jobs:
           cache-dependency-path: go/rutis/go.mod
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
       - run: npm --prefix node/rutis-runtime ci
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - run: python3 -m pip install "websockets>=13"
+      - run: python3 -m pip install "websockets==15.*"
       - name: gofmt
         run: test -z "$(gofmt -l go crates/rutis-loader/tests/fixtures/go)"
       - name: go vet and test (SDK, fixtures)
@@ -441,11 +497,11 @@ jobs:
       # Node and Python for the rows that use Bun's services and back.
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
       - run: npm --prefix node/rutis-runtime ci
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
       - run: bun --version
       - run: bun test
         working-directory: bun/rutis-bun
@@ -497,8 +553,8 @@ jobs:
       - run: npm --prefix node/rutis-runtime test
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - run: python3 -m pip install "websockets>=13"
+          python-version: '3.x'
+      - run: python3 -m pip install "websockets>=15"
       - run: python3 -m unittest discover -s tests
         working-directory: python/rutis
       - uses: oven-sh/setup-bun@v2
@@ -731,12 +787,12 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '26'
       - run: npm --prefix node/rutis-runtime ci
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - run: python -m pip install "websockets>=13"
+          python-version: '3.x'
+      - run: python -m pip install "websockets>=15"
       - uses: actions/setup-go@v5
         with:
           go-version: stable
@@ -868,6 +924,8 @@ jobs:
       - links
       - rust
       - js-py
+      - lint
+      - msrv
       - checks
       - network-macos
       - runtimes-bun

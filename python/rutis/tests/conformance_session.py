@@ -12,6 +12,7 @@ from rutis.peer import Peer
 class Conformance:
     def __init__(self) -> None:
         self.held = None
+        self.started = False
         self.aborted = False
         self.peer: Peer | None = None
 
@@ -43,6 +44,7 @@ class Conformance:
         self.held = None
 
     async def abortable(self, signal):
+        self.started = True
         try:
             await signal.wait()
         finally:
@@ -51,6 +53,9 @@ class Conformance:
 
     def is_aborted(self):
         return self.aborted
+
+    def is_started(self):
+        return self.started
 
     def reenter(self, fn):
         return fn()
@@ -64,7 +69,7 @@ async def main(path: str) -> None:
     def dispatch(target, method, args):
         if target != "conformance":
             raise LookupError(f"no target {target}")
-        name = "is_aborted" if method == "aborted" else method
+        name = {"aborted": "is_aborted", "started": "is_started"}.get(method, method)
         operation = getattr(service, name, None)
         if operation is None or name.startswith("_"):
             raise LookupError(f"no method {method}")

@@ -32,4 +32,4 @@ Upgrading from 0.8: see [0.8 → 0.9](../migration-0.8-to-0.9.en.md); from 0.7: 
 - Node 22 or later, or Bun 1.4 or later, for TypeScript / JavaScript plugins.
 - Python 3.10 or later for Python plugins.
 - Go 1.24 or later only to write Go plugins and build their binaries; running a Go plugin binary needs no Go.
-- Rust 1.85 or later, only when embedding rutis in Rust.
+- Rust 1.88 or later, only when embedding rutis in Rust. This version is verified with the repository's `Cargo.lock`; when an older Rust resolves dependencies itself, setting `resolver.incompatible-rust-versions = "fallback"` in the Cargo configuration makes Cargo pick dependency versions that work.

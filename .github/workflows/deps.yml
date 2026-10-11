@@ -1,0 +1,54 @@
+# Weekly vulnerability checks of what we publish (#204): Rust advisories,
+# the npm dependencies of @arcships/rutis-runtime (which @arcships/rutis-host
+# brings in), and the Python package with its network extra. Advisory
+# databases change daily, so the result can change while the code does not;
+# that is why this runs weekly and not on pull requests, and does not block
+# merges. A failure reaches the maintainer through GitHub's failed-workflow
+# notification. The example projects rutis-agent and rutis-cli, rutis-dsh's
+# dsh project and node/baseline are not published and not checked.
+
+name: deps
+
+on:
+  schedule:
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny --all-features --exclude rutis-agent --exclude rutis-cli check advisories
+
+  npm-audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm --prefix node/rutis-runtime audit --omit=dev --audit-level=high
+
+  pip-audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      # The package in its own environment, so that pip-audit's own
+      # dependencies are not what gets audited.
+      - run: |
+          python3 -m venv "$RUNNER_TEMP/pkg"
+          # The venv's own pip is not ours to audit: bring it up to date.
+          "$RUNNER_TEMP/pkg/bin/pip" install --upgrade pip
+          "$RUNNER_TEMP/pkg/bin/pip" install "./python/rutis[network]"
+          python3 -m pip install pip-audit
+          PIPAPI_PYTHON_LOCATION="$RUNNER_TEMP/pkg/bin/python" pip-audit

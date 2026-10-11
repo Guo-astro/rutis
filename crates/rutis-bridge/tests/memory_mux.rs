@@ -21,6 +21,7 @@ use rutis_bridge::{
     Peer, Presented, Refusal, Registered, Registration, RegistrationError, Registrations, Retry,
     StaticIdentity, Transport,
 };
+use rutis_test_support::{recv_within, HANG_GUARD};
 
 /// Messages a logical channel may have in flight before the far end
 /// consumed them.
@@ -186,12 +187,15 @@ impl Logical {
     }
 }
 
+/// Where the answer to an open request goes.
+type Reply = std::sync::mpsc::Sender<Result<String, (Failure, String)>>;
+
 /// One physical connection and the logical channels on it.
 struct Physical {
     sender: Mutex<Box<dyn Sender>>,
     closer: Arc<dyn Closer>,
     channels: Mutex<HashMap<u32, Arc<Logical>>>,
-    pending: Mutex<HashMap<u32, std::sync::mpsc::Sender<Result<String, (Failure, String)>>>>,
+    pending: Mutex<HashMap<u32, Reply>>,
     next: AtomicU32,
     alive: Mutex<bool>,
 }
@@ -507,10 +511,9 @@ impl Transport for Mux {
                 .map_err(|error| ConnectError::Retryable {
                     reason: error.to_string(),
                 })?;
-            let answer =
-                tokio::task::spawn_blocking(move || answer.recv_timeout(Duration::from_secs(5)))
-                    .await
-                    .unwrap();
+            let answer = tokio::task::spawn_blocking(move || answer.recv_timeout(HANG_GUARD))
+                .await
+                .unwrap();
             match answer {
                 Ok(Ok(_peer)) => Ok(channel),
                 Ok(Err((failure, reason))) => {
@@ -586,10 +589,7 @@ fn logical_channels_meet_the_channel_contract() {
                 ),
             )
             .unwrap();
-        (
-            dialed,
-            delivered.recv_timeout(Duration::from_secs(5)).unwrap(),
-        )
+        (dialed, recv_within("the delivered message", &delivered))
     });
     // Every pair shared one physical connection.
     assert_eq!(dialer.physicals_made.load(Ordering::SeqCst), 1);

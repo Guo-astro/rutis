@@ -4,12 +4,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use rutis::Ctx;
 use rutis_bridge::runtime::{row_projection, Mount, Process};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value as RpcValue};
+use rutis_test_support::until;
 use serde_json::{json, Value};
 
 const WEATHER: &str = r#"
@@ -73,16 +73,6 @@ async fn rows_process(dir: &Path) -> Arc<Process> {
     .unwrap()
 }
 
-async fn eventually(mut check: impl FnMut() -> bool, what: &str) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !check() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn describe_reports_config_inject_and_provides() {
     let dir = tempfile::tempdir().unwrap();
@@ -132,7 +122,7 @@ async fn row_services_reach_rutis_and_hosts_are_leased() {
         )
         .await
         .unwrap();
-    eventually(|| process.service("inspector").is_some(), "the inspector").await;
+    until(|| process.service("inspector").is_some(), "the inspector").await;
     let has_clock = || -> bool {
         let handle = process.service("inspector").unwrap();
         rutis_bridge::session::decode(process.call(&handle, "has", json!(["clock"])).unwrap())
@@ -171,7 +161,7 @@ async fn row_services_reach_rutis_and_hosts_are_leased() {
         .await
         .unwrap();
     let key = host_key("weather");
-    eventually(
+    until(
         || ctx.get_as::<dyn HostDispatch>(key.clone()).is_some(),
         "the weather service",
     )
@@ -211,7 +201,7 @@ async fn row_services_reach_rutis_and_hosts_are_leased() {
 
     // Unloading the row withdraws its service from rutis.
     process.unload_row("weather").await.unwrap();
-    eventually(
+    until(
         || ctx.get_as::<dyn HostDispatch>(key.clone()).is_none(),
         "the withdrawal",
     )

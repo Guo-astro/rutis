@@ -19,23 +19,11 @@ use rutis_bridge::{
     peer_key, Credential, ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin, Peer,
     Retry, StaticIdentity,
 };
+use rutis_test_support::eventually;
 use serde_json::{json, Value as Json};
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
-}
-
-async fn eventually<T>(mut check: impl FnMut() -> Option<T>, what: &str) -> T {
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            if let Some(found) = check() {
-                return found;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
 struct Clock(AtomicU64);

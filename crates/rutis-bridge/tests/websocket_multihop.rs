@@ -143,7 +143,8 @@ async fn a_reexported_service_calls_back_into_a_waiting_node_runtime() {
 
 /// While Node's main thread waits in a synchronous call longer than the
 /// heartbeat timeout, its I/O worker keeps answering pings: the connection
-/// survives.
+/// survives. By tolerance (#231): ping and timeout ten times apart, and the
+/// call lasts more than twice the timeout (the fixture sleeps 2.5 s).
 #[tokio::test(flavor = "multi_thread")]
 async fn node_answers_heartbeats_while_its_main_thread_waits() {
     use rutis_bridge::session::{Connection, Dispatch, Endpoint, Format};
@@ -162,7 +163,7 @@ async fn node_answers_heartbeats_while_its_main_thread_waits() {
 
     let quick = Limits {
         ping: Duration::from_millis(100),
-        timeout: Duration::from_millis(400),
+        timeout: Duration::from_millis(1000),
         ..Limits::default()
     };
     let transport = WebSocketTransport::start(
@@ -197,7 +198,7 @@ async fn node_answers_heartbeats_while_its_main_thread_waits() {
         .arg(node.join("test/fixtures/sync-heartbeat.mjs"))
         .arg(&address)
         .env("RUTIS_TOKEN", "node-token")
-        .env("RUTIS_HEARTBEAT", "100,400")
+        .env("RUTIS_HEARTBEAT", "100,1000")
         .current_dir(&node)
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -221,5 +222,5 @@ async fn node_answers_heartbeats_while_its_main_thread_waits() {
         .expect("the call returned")
         .unwrap()
         .unwrap();
-    assert_eq!(line, "survived 1500");
+    assert_eq!(line, "survived 2500");
 }
