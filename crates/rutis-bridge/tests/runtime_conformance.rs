@@ -229,3 +229,21 @@ async fn python_ends_the_session_on_malformed_frames() {
     .await
     .unwrap();
 }
+
+#[cfg(feature = "bun")]
+#[tokio::test(flavor = "multi_thread")]
+async fn bun_ends_the_session_on_malformed_frames() {
+    tokio::task::spawn_blocking(|| {
+        let started = Started(Default::default());
+        malformed(|| {
+            let mut command = std::process::Command::new("bun");
+            command
+                .args(["--no-install", "--no-env-file"])
+                .arg(repo().join("bun/rutis-bun/test/fixtures/conformance-session.ts"))
+                .current_dir(repo().join("bun/rutis-bun"));
+            started.open(command)
+        })
+    })
+    .await
+    .unwrap();
+}

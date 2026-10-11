@@ -37,6 +37,7 @@ env:
     --test instance_runtimes --test go_rows --test multilang_go
     --test instance_go --test remote_rows --test cordis_node
     --test bun_rows --test bun_instances --test bun_multilang
+    --test sync_cycles
 
 # A new push to a pull request cancels its run still in progress; on main
 # every merge runs to the end (Q12.4).
@@ -272,7 +273,7 @@ jobs:
         if: needs.changes.outputs.all == 'true'
         env:
           RUTIS_LOCAL_HANDOVER: loopback
-        run: cargo test -p rutis-loader --features node,python,go,peer --test runtime_rows --test python_rows --test multilang --test leases --test instance_runtimes --test go_rows --test multilang_go --test instance_go
+        run: cargo test -p rutis-loader --features node,python,go,peer --test runtime_rows --test python_rows --test multilang --test leases --test instance_runtimes --test go_rows --test multilang_go --test instance_go --test sync_cycles
 
   js-py:
     needs: changes

@@ -205,6 +205,61 @@ fn a_file_named_relative_to_the_working_directory() {
     assert!(config.runtimes.node.unwrap().project.is_absolute());
 }
 
+/// The same configuration read by a relative and by an absolute path, and
+/// rebased onto a relative directory, resolves `./`, `../` and subdirectory
+/// rows to the same files.
+/// risk: B5 (#226)
+#[test]
+fn relative_and_absolute_configurations_name_the_same_files() {
+    let dir = tempfile::Builder::new()
+        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .unwrap();
+    let rows = r#"{ "runtimes": { "node": {} }, "rows": [
+        { "id": "a", "name": "./a.mjs" },
+        { "id": "b", "name": "../shared/b.mjs" },
+        { "id": "c", "name": "./sub/c.mjs" }
+    ] }"#;
+    write(
+        dir.path(),
+        &[
+            ("app/rutis.json", rows),
+            ("app/a.mjs", ""),
+            ("shared/b.mjs", ""),
+            ("app/sub/c.mjs", ""),
+        ],
+    );
+    let files = |config: &HostConfig| -> Vec<PathBuf> {
+        config
+            .rows
+            .iter()
+            .map(|row| {
+                let name = row["name"].as_str().unwrap();
+                let file = url::Url::parse(name)
+                    .unwrap()
+                    .to_file_path()
+                    .unwrap_or_else(|()| panic!("{name}: not a local file"));
+                file.canonicalize()
+                    .unwrap_or_else(|error| panic!("{name}: {error}"))
+            })
+            .collect()
+    };
+    let expected: Vec<PathBuf> = ["app/a.mjs", "shared/b.mjs", "app/sub/c.mjs"]
+        .iter()
+        .map(|file| dir.path().join(file).canonicalize().unwrap())
+        .collect();
+    let absolute = dir.path().join("app/rutis.json");
+    let cwd = std::env::current_dir().unwrap();
+    let relative = relative_to(&absolute, &cwd);
+    assert!(relative.is_relative(), "{}", relative.display());
+    assert_eq!(files(&HostConfig::read(&absolute).unwrap()), expected);
+    assert_eq!(files(&HostConfig::read(&relative).unwrap()), expected);
+    // `rebase` itself, as a library caller would use it.
+    let mut config: HostConfig = serde_json::from_str(rows).unwrap();
+    config.rebase(relative.parent().unwrap());
+    assert_eq!(files(&config), expected);
+    assert!(config.runtimes.node.unwrap().project.is_absolute());
+}
+
 /// `path` relative to `base` (both absolute).
 fn relative_to(path: &Path, base: &Path) -> PathBuf {
     let path = path

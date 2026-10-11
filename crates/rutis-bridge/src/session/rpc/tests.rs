@@ -87,6 +87,7 @@ async fn admitted_call_pins_its_target_before_a_following_counted_release() {
                 path: vec![],
                 reference: *reference,
                 args: WireValue::Data(json!([])),
+                sync: false,
             },
         );
         send(
@@ -179,6 +180,7 @@ async fn an_old_release_does_not_remove_a_concurrent_new_grant() {
                 path: vec![id.clone()],
                 reference,
                 args: WireValue::Data(json!([])),
+                sync: false,
             },
         );
         assert!(matches!(read(&mut reader), Frame::Return { id, .. } if id == "node:1"));
@@ -324,6 +326,7 @@ async fn a_cancel_for_an_unknown_call_is_ignored() {
                 target: "t".into(),
                 method: "echo".into(),
                 args: data(json!("still here")),
+                sync: false,
             },
         );
         (echoed, remote)
@@ -486,6 +489,7 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
                     reference: 1,
                     method: None,
                     args,
+                    ..
                 } => {
                     let n = data_of(args)[0].as_i64().unwrap();
                     paths.push(path);
@@ -495,6 +499,7 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
                     id,
                     path,
                     reference: 2,
+                    ..
                 } => {
                     paths.push(path);
                     a.ret(id, data(json!(7)));
@@ -560,12 +565,14 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
             reference: function,
             method: None,
             args: data(json!([20])),
+            sync: false,
         };
         assert_eq!(b.call(1, call), json!(40));
         let wait = Frame::Await {
             id: "node:2".into(),
             path: path.clone(),
             reference: future,
+            sync: false,
         };
         assert_eq!(b.call(2, wait), json!(7));
         let method = Frame::Call {
@@ -574,6 +581,7 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
             reference: object,
             method: Some("greet".into()),
             args: data(json!([])),
+            sync: false,
         };
         assert_eq!(b.call(3, method), json!("greet"));
         let get = Frame::Get {
@@ -581,6 +589,7 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
             path: path.clone(),
             reference: object,
             property: "name".into(),
+            sync: false,
         };
         assert_eq!(b.call(4, get), json!("name"));
         // Outside any Rust call chain: forwarded asynchronously.
@@ -590,6 +599,7 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
             reference: function,
             method: None,
             args: data(json!([1])),
+            sync: false,
         };
         assert_eq!(b.call(5, unrelated), json!(2));
         // A mismatched operation is refused without reaching the owner,
@@ -598,6 +608,7 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
             id: "node:6".into(),
             path: vec![],
             reference: function,
+            sync: false,
         });
         assert!(matches!(b.read(), Frame::Throw { id, .. } if id == "node:6"));
         b.ret(id, WireValue::Undefined);
@@ -685,6 +696,7 @@ async fn a_reverse_call_through_a_relay_reaches_the_waiting_session() {
             target: "svc".into(),
             method: "hold".into(),
             args: data(json!([])),
+            sync: false,
         });
         b_waiting.send(()).unwrap();
         let Frame::Invoke {
@@ -708,6 +720,7 @@ async fn a_reverse_call_through_a_relay_reaches_the_waiting_session() {
             reference: function,
             method: None,
             args: data(json!([4])),
+            sync: false,
         };
         let value = b.call(2, callback);
         b.ret(id, data(value));
@@ -725,6 +738,7 @@ async fn a_reverse_call_through_a_relay_reaches_the_waiting_session() {
             target: "svc".into(),
             method: "forward".into(),
             args: WireValue::List(vec![reference(1, Kind::Function, false)]),
+            sync: false,
         });
         let frame = a.read();
         let Frame::Call {
