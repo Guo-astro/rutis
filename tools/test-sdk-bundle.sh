@@ -396,32 +396,34 @@ grep -Eq 'tokio_stream|tokio-stream|pin_project' "$base/e2d.stdout" || {
 }
 
 # E7: the packer refuses a plugin workspace whose rust-toolchain.toml does
-# not match the bundle's pin, with the pin named — never the misleading
-# E0514 from metadata loading. The refusal is a plain string comparison of
-# `rustc --version` run in the plugin workspace against the bundle's pin;
-# the workspace's own pin is what rustup picks when cargo runs there.
+# not match the bundle's pin, with both pins named — never the misleading
+# E0514 from metadata loading. The refusal compares the two files' channels
+# before rustup or cargo runs in the workspace, so the workspace pins a
+# toolchain that does not exist: no second toolchain is needed, nothing is
+# downloaded (RUSTUP_AUTO_INSTALL=0), and the check always runs (#193).
 echo "[sdk-bundle-test] E7: a mismatched workspace pin is refused"
 bundle_pin="$(grep '^channel' "$base/sdk-bundle/rust-toolchain.toml" | sed 's/.*= *"//;s/"//')"
-other_pin="$(rustup toolchain list 2>/dev/null | awk -F' ' '{print $1}' | sed 's/-x86_64.*//;s/-aarch64.*//' | grep -vxF "$bundle_pin" | head -1)"
-if test -z "$other_pin"; then
-  echo "[sdk-bundle-test] E7: skipped (no non-pinned toolchain installed)"
-else
-  sed_inplace "s/channel = \"$bundle_pin\"/channel = \"$other_pin\"/" "$base/external/plugin-v1/rust-toolchain.toml"
-  rm -rf "$base/external/plugin-v1/target"
-  if with_timeout 900 env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS cargo xtask pack-plugin \
-    --manifest-path "$base/external/plugin-v1/Cargo.toml" \
-    --bundle "$base/sdk-bundle" --features export --output "$base/bad-out" \
-    > "$base/e7.stdout" 2>&1; then
-    echo "a mismatched workspace pin was accepted" >&2
-    exit 1
-  fi
-  grep -Fq 'rust-toolchain.toml' "$base/e7.stdout"
-  if grep -q 'E0514' "$base/e7.stdout"; then
-    echo "the check surfaced as E0514 instead of the version check" >&2
-    exit 1
-  fi
-  sed_inplace "s/channel = \"$other_pin\"/channel = \"$bundle_pin\"/" "$base/external/plugin-v1/rust-toolchain.toml"
+other_pin="0.0.0-e7"
+sed_inplace "s/channel = \"$bundle_pin\"/channel = \"$other_pin\"/" "$base/external/plugin-v1/rust-toolchain.toml"
+rm -rf "$base/external/plugin-v1/target"
+if with_timeout 900 env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS RUSTUP_AUTO_INSTALL=0 cargo xtask pack-plugin \
+  --manifest-path "$base/external/plugin-v1/Cargo.toml" \
+  --bundle "$base/sdk-bundle" --features export --output "$base/bad-out" \
+  > "$base/e7.stdout" 2>&1; then
+  echo "a mismatched workspace pin was accepted" >&2
+  exit 1
 fi
+if ! grep -Fq "the plugin workspace pins $other_pin, but the bundle's SDK was built with $bundle_pin" "$base/e7.stdout" \
+  || ! grep -Fq 'rust-toolchain.toml' "$base/e7.stdout"; then
+  echo "E7: the refusal does not name both pins:" >&2
+  cat "$base/e7.stdout" >&2
+  exit 1
+fi
+if grep -q 'E0514' "$base/e7.stdout"; then
+  echo "the check surfaced as E0514 instead of the version check" >&2
+  exit 1
+fi
+sed_inplace "s/channel = \"$other_pin\"/channel = \"$bundle_pin\"/" "$base/external/plugin-v1/rust-toolchain.toml"
 
 # E8b: an ambient RUSTFLAGS replaces the injected flags entirely; the packer
 # refuses up front instead of silently building against nothing.
