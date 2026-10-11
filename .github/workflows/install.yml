@@ -1,0 +1,199 @@
+# Install smoke tests (S9, #193; quality standard Q6.15, Q12.1): rutis-host
+# installed as a user gets it, from npm, from PyPI and as the release
+# binary, in a new directory, running a minimal project
+# (tests/e2e/tests/install.rs). One job per platform runs the three
+# channels one after another.
+#
+#   main          builds this commit's packages (package.yml) on three
+#                 platforms and installs them
+#   pull request  only when packaging or these tests change: Linux x64
+#   release.yml   calls it twice: before publishing, on every platform,
+#                 with the packages it built (source: local, build: false);
+#                 after publishing, from the registries (source: registry)
+#   by hand       any version and source
+#
+# The minimum versions go on Linux (Node 22, Python 3.12 until #196 lands);
+# macOS and Windows take the latest (docs/ci.md §9).
+name: install
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - .github/workflows/package.yml
+      - .github/workflows/install.yml
+      - tests/e2e/**
+      - tools/install/**
+      - tools/doc-examples.mjs
+      - node/*/package.json
+      - bun/rutis-bun/package.json
+      - python/rutis/pyproject.toml
+      - crates/rutis-host/pyproject.toml
+  workflow_dispatch:
+    inputs:
+      source:
+        description: local (build this commit) or registry (a published version)
+        default: local
+      version:
+        description: The version (default this commit's)
+        default: ""
+  workflow_call:
+    inputs:
+      source:
+        type: string
+        default: local
+      version:
+        type: string
+        default: ""
+      platforms:
+        description: The npm platforms, as a JSON list (default the main set)
+        type: string
+        default: ""
+      build:
+        description: Build the packages here (false when the caller built them in this run)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-${{ github.event.pull_request.number || github.sha }}-${{ inputs.source || 'local' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      platforms: ${{ steps.plan.outputs.platforms }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      build: ${{ steps.plan.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+      # The guides' example markers parse (the examples run after a release).
+      - run: node tools/doc-examples.mjs --check
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          SOURCE: ${{ inputs.source || 'local' }}
+          VERSION: ${{ inputs.version }}
+          PLATFORMS: ${{ inputs.platforms }}
+          BUILD: ${{ inputs.build }}
+        run: |
+          node - <<'EOF' >> "$GITHUB_OUTPUT"
+          const version = process.env.VERSION || require('./node/rutis-host/package.json').version
+          const all = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64']
+          const main = ['linux-x64', 'darwin-arm64', 'win32-x64']
+          const platforms = process.env.PLATFORMS ? JSON.parse(process.env.PLATFORMS)
+            : process.env.EVENT === 'pull_request' ? ['linux-x64'] : main
+          const runners = {
+            'linux-x64': { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-musl', wheel: 'x86_64', node: '22', python: '3.12' },
+            'linux-arm64': { os: 'ubuntu-24.04-arm', target: 'aarch64-unknown-linux-musl', wheel: 'aarch64', node: '22', python: '3.12' },
+            'darwin-x64': { os: 'macos-13', target: 'x86_64-apple-darwin', wheel: 'x86_64-apple-darwin', node: '26', python: '3.x' },
+            'darwin-arm64': { os: 'macos-15', target: 'aarch64-apple-darwin', wheel: 'aarch64-apple-darwin', node: '26', python: '3.x' },
+            'win32-x64': { os: 'windows-2025', target: 'x86_64-pc-windows-msvc', wheel: 'x86_64-pc-windows-msvc', node: '26', python: '3.x' },
+          }
+          const matrix = platforms.map(platform => {
+            if (!all.includes(platform)) throw new Error(`unknown platform ${platform}`)
+            return { platform, ...runners[platform] }
+          })
+          // Build here unless the caller did, or the packages are published.
+          const build = process.env.SOURCE === 'local' && process.env.BUILD !== 'false'
+          console.log(`version=${version}`)
+          console.log(`platforms=${JSON.stringify(platforms)}`)
+          console.log(`matrix=${JSON.stringify(matrix)}`)
+          console.log(`build=${build}`)
+          EOF
+
+  package:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    uses: ./.github/workflows/package.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      platforms: ${{ needs.plan.outputs.platforms }}
+
+  install:
+    needs: [plan, package]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.package.result == 'success' || needs.package.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUTIS_E2E_VERSION: ${{ needs.plan.outputs.version }}
+      RUTIS_E2E_SOURCE: ${{ inputs.source || 'local' }}
+    steps:
+      - uses: actions/checkout@v4
+      # Only to compile the scenarios: what they run is what they install.
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v6
+      # This run's packages: the ones package.yml built.
+      - if: env.RUTIS_E2E_SOURCE == 'local'
+        uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: ${{ runner.temp }}/downloaded/packages
+      - if: env.RUTIS_E2E_SOURCE == 'local'
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-${{ matrix.wheel }}
+          path: ${{ runner.temp }}/downloaded/wheels-${{ matrix.wheel }}
+      - if: env.RUTIS_E2E_SOURCE == 'local'
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-${{ matrix.platform }}
+          path: ${{ runner.temp }}/downloaded/binary-${{ matrix.platform }}
+      - name: lay the packages out
+        if: env.RUTIS_E2E_SOURCE == 'local'
+        run: |
+          art="$RUNNER_TEMP/artifacts"
+          down="$RUNNER_TEMP/downloaded"
+          mkdir -p "$art/npm" "$art/wheels" "$art/binary"
+          cp "$down"/packages/npm/*.tgz "$art/npm/"
+          cp "$down"/packages/wheels/*.whl "$art/wheels/"
+          cp "$down/wheels-${{ matrix.wheel }}"/*.whl "$art/wheels/"
+          cp "$down/binary-${{ matrix.platform }}"/dist/* "$art/binary/"
+          ls -R "$art"
+      - name: download the released binary
+        if: env.RUTIS_E2E_SOURCE == 'registry'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/artifacts/binary"
+          gh release download "v$RUTIS_E2E_VERSION" -p "rutis-host-$RUTIS_E2E_VERSION-${{ matrix.target }}*" -D "$RUNNER_TEMP/artifacts/binary"
+      - name: the install scenarios
+        env:
+          RUTIS_E2E_ARTIFACTS: ${{ runner.temp }}/artifacts
+          RUTIS_E2E_DIR: ${{ runner.temp }}/e2e
+        run: |
+          node --version; python3 --version 2>/dev/null || python --version; uv --version
+          cargo test --locked -p rutis-e2e --test install -- --ignored --test-threads=1
+      # The guides install from the registries, so their examples run once
+      # the version is published.
+      - name: the guides' examples
+        if: env.RUTIS_E2E_SOURCE == 'registry' && runner.os == 'Linux'
+        env:
+          RUTIS_E2E_DIR: ${{ runner.temp }}/e2e
+        run: cargo test --locked -p rutis-e2e --test doc_examples -- --ignored
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: install-${{ matrix.platform }}-${{ env.RUTIS_E2E_SOURCE }}
+          path: ${{ runner.temp }}/e2e
+          retention-days: 14
