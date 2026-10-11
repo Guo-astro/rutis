@@ -4,10 +4,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin};
+use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory};
 use rutis_loader::{
-    Builtins, Declared, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, Provider, RowStatus,
-    ServiceCatalog, Supply, Unknown,
+    Builtins, Chain, Declared, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch,
+    Provider, Resolved, Resolver, RowStatus, ServiceCatalog, Supply, Unknown,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -30,6 +30,29 @@ impl Plugin for Counted {
 #[allow(dead_code)]
 struct Sized {
     size: u32,
+}
+
+struct CountedFactory(Arc<AtomicUsize>);
+
+impl PluginFactory<Value> for CountedFactory {
+    fn build(&self, _config: &Value) -> Result<Box<dyn Plugin>, CordisError> {
+        Ok(Box::new(Counted(self.0.clone())))
+    }
+}
+
+/// `foreign`: a plugin that handles its row's `isolate` and `inject`
+/// itself (as a runtime's), declaring nothing it waits for.
+struct Foreign(Arc<Resolved>);
+
+impl Resolver for Foreign {
+    fn resolve<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<Resolved>, LoaderError>> {
+        let found = (name == "foreign").then(|| self.0.clone());
+        Box::pin(async move {
+            found.ok_or_else(|| LoaderError::NotFound {
+                name: name.to_owned(),
+            })
+        })
+    }
 }
 
 /// Plugins that declare from their config what they require and provide
@@ -74,8 +97,13 @@ async fn loader(applied: &Arc<AtomicUsize>) -> (Ctx, Loader) {
     );
     let mut catalog = ServiceCatalog::new();
     catalog.register::<String>("clock");
+    let foreign = Foreign(Arc::new(
+        Resolved::new(Arc::new(CountedFactory(applied.clone())))
+            .with_foreign_scope()
+            .with_declared(Declared::default()),
+    ));
     let plugin = LoaderPlugin::new(
-        builtins,
+        Chain::new().with(builtins).with(foreign),
         LoaderOptions {
             catalog,
             ..LoaderOptions::default()
@@ -225,4 +253,22 @@ async fn rows_that_cannot_start_fail_and_provide_nothing() {
     let failing: Vec<&str> = report.failing().map(|row| row.id.as_str()).collect();
     assert_eq!(failing, ["missing", "sized", "chat"]);
     assert_eq!(applied.load(Ordering::SeqCst), 0);
+}
+
+/// A row whose plugin handles its `inject` itself waits in rutis only for
+/// the names rutis shares; its runtime resolves the others natively, so
+/// they are not checked here.
+/// risk: A6 (#258)
+#[tokio::test(flavor = "multi_thread")]
+async fn a_foreign_rows_own_inject_counts_only_names_rutis_shares() {
+    let applied = Arc::new(AtomicUsize::new(0));
+    let (_root, loader) = loader(&applied).await;
+    let report = loader
+        .check(&layers(json!([
+            { "id": "cordis", "name": "foreign", "inject": ["native-only", "clock"] },
+        ])))
+        .await;
+    // `clock` is the application's own service, not shared by name.
+    assert_eq!(supplies(&report, "cordis"), []);
+    assert_eq!(report.failing().count(), 0);
 }

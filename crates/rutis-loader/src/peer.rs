@@ -601,14 +601,14 @@ impl PluginFactory<Value> for NodeFactory {
     }
 }
 
-/// Register the `rutis-bridge/peer` row type: share `resolver` with the
-/// loader's chain for its `peer:` rows.
 /// Declarations of a row that runs on `peer`, not known here, and why.
 fn runs_on(peer: &PeerId, why: &str) -> crate::Declarations {
     let why = format!("it runs on {peer}: {why}");
     Arc::new(move |_: &Value| Err(why.clone()))
 }
 
+/// Register the `rutis-bridge/peer` row type: share `resolver` with the
+/// loader's chain for its `peer:` rows.
 pub fn register_peer_node(builtins: &mut crate::Builtins, resolver: Arc<PeerResolver>) {
     let factory = Arc::new(NodeFactory {
         resolver: resolver.clone(),

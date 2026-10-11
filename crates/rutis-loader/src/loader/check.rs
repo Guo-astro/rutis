@@ -202,7 +202,10 @@ impl Loader {
         let supplies: Vec<Vec<Requirement>> = rows
             .iter()
             .map(|check| {
-                let RowStatus::Checked { declared, .. } = &check.status else {
+                let RowStatus::Checked {
+                    resolved, declared, ..
+                } = &check.status
+                else {
                     return Vec::new();
                 };
                 let row = desired.row(&check.id).expect("a row of the tree");
@@ -210,7 +213,17 @@ impl Loader {
                     .as_ref()
                     .map(|declared| declared.requires.iter().map(String::as_str).collect())
                     .unwrap_or_default();
-                names.extend(row.raw_scope.inject.iter().map(String::as_str));
+                // The row's own `inject`: the loader gates it on each name,
+                // unless its plugin handles them itself, where it waits in
+                // rutis only for the names rutis shares (the others its
+                // runtime resolves natively).
+                names.extend(
+                    row.raw_scope
+                        .inject
+                        .iter()
+                        .filter(|name| !resolved.foreign_scope || catalog.shares(name))
+                        .map(String::as_str),
+                );
                 names.sort_unstable();
                 names.dedup();
                 names
