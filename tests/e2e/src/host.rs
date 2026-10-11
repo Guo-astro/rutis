@@ -202,6 +202,23 @@ impl Host {
         }
     }
 
+    /// Ctrl-C as a terminal sends it: SIGINT to the host's process group
+    /// (Unix).
+    #[cfg(unix)]
+    pub fn ctrl_c(&self) {
+        self.signal_group(libc::SIGINT);
+    }
+
+    /// How many lines so far contain `text`. To count "exactly once", wait
+    /// for the output to end first ([`Host::wait_output_end`]).
+    pub fn count(&self, text: &str) -> usize {
+        self.output
+            .lines()
+            .iter()
+            .filter(|line| line.text.contains(text))
+            .count()
+    }
+
     /// Kill the host process alone (SIGKILL; TerminateProcess on Windows):
     /// what it started has to end by itself.
     pub fn kill(&mut self) {
@@ -209,6 +226,27 @@ impl Host {
             if let Err(error) = self.child.kill() {
                 self.fail(&format!("kill failed: {error}"));
             }
+        }
+    }
+
+    /// Wait until the host's output has ended (stdout and stderr closed:
+    /// it and everything it started that shares them are gone), within the
+    /// hang guard. Then [`Host::count`] counts everything it wrote.
+    pub fn wait_output_end(&mut self) {
+        let deadline = Instant::now() + hang_guard();
+        let mut state = self.output.state.lock().unwrap();
+        while state.closed < 2 {
+            let now = Instant::now();
+            if now >= deadline {
+                drop(state);
+                self.fail(&format!("its output did not end within {:?}", hang_guard()));
+            }
+            state = self
+                .output
+                .changed
+                .wait_timeout(state, deadline - now)
+                .unwrap()
+                .0;
         }
     }
 
