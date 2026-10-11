@@ -1080,6 +1080,7 @@ version = "0.1.0"
 dependencies = [
  "rutis",
  "rutis-bridge",
+ "rutis-test-support",
  "tempfile",
  "tokio",
 ]
@@ -3101,6 +3102,7 @@ version = "0.1.0"
 dependencies = [
  "rutis",
  "rutis-loader",
+ "rutis-test-support",
  "serde_json",
  "tempfile",
  "tokio",
@@ -3119,6 +3121,7 @@ dependencies = [
  "rutis",
  "rutis-bridge",
  "rutis-loader",
+ "rutis-test-support",
  "saphyr-parser",
  "semver",
  "serde",
@@ -3196,6 +3199,7 @@ dependencies = [
  "rutis",
  "rutis-bridge",
  "rutis-loader",
+ "rutis-test-support",
  "serde",
  "serde_json",
  "tempfile",

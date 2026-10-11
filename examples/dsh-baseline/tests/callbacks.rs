@@ -4,11 +4,11 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use dsh_baseline::{credentials, fs, invariants, jobs};
 use rutis::{Ctx, Plugin};
 use rutis_bridge::cordis::serde_json::json;
+use rutis_test_support::until;
 
 async fn mount(ctx: &Ctx, plugin: impl Plugin + 'static) {
     let view = ctx.plugin(plugin);
@@ -57,12 +57,11 @@ async fn cordis_calls_rust_closures_and_rust_calls_returned_functions() {
             })
         })
         .unwrap();
-    for _ in 0..100 {
-        if installed.load(Ordering::SeqCst) > 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    until(
+        || installed.load(Ordering::SeqCst) > 0,
+        "the installer is called",
+    )
+    .await;
     assert_eq!(installed.load(Ordering::SeqCst), 1);
     unregister.call(vec![]).unwrap();
 
@@ -96,17 +95,21 @@ async fn cordis_calls_rust_closures_and_rust_calls_returned_functions() {
         })
         .await
         .unwrap();
-    for attempt in 0..100 {
-        if changes.load(Ordering::SeqCst) > 0 {
-            break;
-        }
-        std::fs::write(work.join("a.txt"), format!("change {attempt}")).unwrap();
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(
-        changes.load(Ordering::SeqCst) > 0,
-        "the watch callback never ran"
-    );
+    // The watch may start after `watch` returns: change the file until it
+    // has seen a change.
+    let mut attempt = 0;
+    until(
+        || {
+            if changes.load(Ordering::SeqCst) > 0 {
+                return true;
+            }
+            attempt += 1;
+            std::fs::write(work.join("a.txt"), format!("change {attempt}")).unwrap();
+            false
+        },
+        "the watch callback runs",
+    )
+    .await;
     stop.call_async(vec![]).await.unwrap();
 
     // A returned synchronous function.

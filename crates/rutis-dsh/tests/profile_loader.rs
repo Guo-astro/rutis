@@ -9,6 +9,7 @@ use std::time::Duration;
 use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin};
 use rutis_dsh::profile::{self, watch, ProfileContext, ProfileContextService};
 use rutis_loader::{Builtins, EntryStatus, Loader, LoaderError, LoaderPlugin, NewEntry};
+use rutis_test_support::eventually_with;
 use serde_json::{json, Value};
 
 type Log = Arc<Mutex<Vec<String>>>;
@@ -254,39 +255,32 @@ async fn external_changes_reload() {
     let mut text = user_file(&context);
     text.push_str("- insert:\n    - id: added\n      name: echo\n");
     std::fs::write(context.user_layer_path(), &text).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while state(&loader, "added") != Some(FiberState::Active) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    reloaded("reload", &reloads, || {
+        state(&loader, "added") == Some(FiberState::Active)
     })
-    .await
-    .unwrap_or_else(|_| panic!("reload: {:?}", reloads.lock().unwrap()));
+    .await;
 
     // A broken file keeps the running tree.
     std::fs::write(context.user_layer_path(), "- [ unclosed\n").unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !reloads
+    reloaded("failed reload reported", &reloads, || {
+        reloads
             .lock()
             .unwrap()
             .iter()
             .any(|r| r.starts_with("Failed"))
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
     })
-    .await
-    .expect("failed reload reported");
+    .await;
     assert_eq!(state(&loader, "added"), Some(FiberState::Active));
 }
 
-async fn until(what: &str, reloads: &Arc<Mutex<Vec<String>>>, done: impl Fn() -> bool) {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !done() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+/// Until `done()`, with the watcher's reports so far in the failure.
+async fn reloaded(what: &str, reloads: &Arc<Mutex<Vec<String>>>, done: impl Fn() -> bool) {
+    eventually_with(
+        || done().then_some(()),
+        what,
+        || format!("reloads: {:?}", reloads.lock().unwrap()),
+    )
     .await
-    .unwrap_or_else(|_| panic!("{what}: {:?}", reloads.lock().unwrap()));
 }
 
 #[tokio::test]
@@ -323,7 +317,7 @@ async fn broken_bundles_and_includes_keep_the_tree_and_recover() {
 
     // A broken include is a failed reload, not an empty include.
     std::fs::write(&include, "- [ unclosed\n").unwrap();
-    until("include failure", &reloads, || failures() == 1).await;
+    reloaded("include failure", &reloads, || failures() == 1).await;
     assert_eq!(state(&loader, "inc:inc-child"), Some(FiberState::Active));
     // Fixing it is seen: the file stayed watched.
     std::fs::write(
@@ -331,14 +325,14 @@ async fn broken_bundles_and_includes_keep_the_tree_and_recover() {
         "- id: inc-child\n  name: echo\n- id: inc-2\n  name: echo\n",
     )
     .unwrap();
-    until("include recovery", &reloads, || {
+    reloaded("include recovery", &reloads, || {
         state(&loader, "inc:inc-2") == Some(FiberState::Active)
     })
     .await;
 
     // A bundle file gone mid-install keeps the bundle's rows.
     std::fs::remove_file(&base).unwrap();
-    until("bundle failure", &reloads, || failures() == 2).await;
+    reloaded("bundle failure", &reloads, || failures() == 2).await;
     assert_eq!(state(&loader, "from-base"), Some(FiberState::Active));
     assert!(reloads
         .lock()
@@ -352,7 +346,7 @@ async fn broken_bundles_and_includes_keep_the_tree_and_recover() {
         format!("{base_text}    - id: base-2\n      name: echo\n"),
     )
     .unwrap();
-    until("bundle recovery", &reloads, || {
+    reloaded("bundle recovery", &reloads, || {
         state(&loader, "base-2") == Some(FiberState::Active)
     })
     .await;
