@@ -1,5 +1,5 @@
 //! The session protocol versions the SDKs greet with are this crate's
-//! (risk P8). The Python and Node runtimes write them as literals; a change
+//! (risk P8). The Python, Node, Bun and Go runtimes write them as literals; a change
 //! to one side only would be found at the handshake of a released pair.
 //! The constants are read from the source, so the check needs no
 //! interpreter and runs wherever this crate's tests do.
@@ -62,6 +62,55 @@ fn the_node_runtime_greets_with_this_crates_protocol_versions() {
     let path = "node/rutis-runtime/src/session.mjs";
     assert_eq!(
         constant(&read(path), path, "export const ENDPOINT_PROTOCOL = "),
+        ENDPOINT_PROTOCOL,
+        "{path}"
+    );
+}
+
+// guarantee: bridge/version-refusal (proposed); risk P8.
+#[test]
+fn the_bun_runtime_greets_with_this_crates_protocol_versions() {
+    let path = "bun/rutis-bun/package.json";
+    let package: serde_json::Value = serde_json::from_str(&read(path)).unwrap();
+    assert_eq!(
+        package["rutisProtocol"].as_u64(),
+        Some(PROTOCOL.into()),
+        "{path}"
+    );
+    let path = "bun/rutis-bun/src/session.ts";
+    assert_eq!(
+        constant(&read(path), path, "export const ENDPOINT_PROTOCOL = "),
+        ENDPOINT_PROTOCOL,
+        "{path}"
+    );
+}
+
+/// The value of `<name> = <number>` in a Go `const ( … )` block of `source`.
+fn go_constant(source: &str, path: &str, name: &str) -> u32 {
+    let mut found = source.lines().filter_map(|line| {
+        let (left, value) = line.trim().split_once('=')?;
+        (left.trim() == name).then(|| {
+            value
+                .trim()
+                .parse()
+                .unwrap_or_else(|_| panic!("{path}: `{name} ={value}` is not a number"))
+        })
+    });
+    let value = found
+        .next()
+        .unwrap_or_else(|| panic!("{path}: no constant {name}"));
+    assert!(found.next().is_none(), "{path}: {name} twice");
+    value
+}
+
+// guarantee: bridge/version-refusal (proposed); risk P8.
+#[test]
+fn the_go_runtime_greets_with_this_crates_protocol_versions() {
+    let path = "go/rutis/internal/peer/peer.go";
+    let source = read(path);
+    assert_eq!(go_constant(&source, path, "Protocol"), PROTOCOL, "{path}");
+    assert_eq!(
+        go_constant(&source, path, "EndpointProtocol"),
         ENDPOINT_PROTOCOL,
         "{path}"
     );
