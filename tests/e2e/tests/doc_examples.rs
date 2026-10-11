@@ -56,9 +56,20 @@ fn follow(example: &Value) {
             running.expect(until);
             running.ctrl_c();
             let status = running.wait_exit();
+            running.wait_output_end();
+            // rutis-host says so when its cleanups did not finish.
             assert_eq!(
-                status.code(),
-                Some(0),
+                running.count("did not finish"),
+                0,
+                "{at}: {command} after Ctrl-C"
+            );
+            // npm runs the command through sh, and dash (Debian's and
+            // Ubuntu's sh) ends itself with the SIGINT once its child has
+            // exited, however that exited; npm then ends with it (#270).
+            let through_sh = command.starts_with("npx ")
+                && std::os::unix::process::ExitStatusExt::signal(&status) == Some(libc::SIGINT);
+            assert!(
+                status.code() == Some(0) || through_sh,
                 "{at}: {command} after Ctrl-C: {status}"
             );
             continue;
