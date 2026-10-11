@@ -45,12 +45,8 @@ async fn start(runtime: Runtime, via: Via, dir: &Path) -> (Arc<Process>, PathBuf
             let package = repo().join("node/rutis-runtime");
             let anchor = dir.join("package.json");
             std::fs::write(&anchor, "{}").unwrap();
-            let entry = dir.join("weather.mjs");
-            std::fs::copy(
-                repo().join("node/rutis-runtime/test/fixtures/conformance-weather.mjs"),
-                &entry,
-            )
-            .unwrap();
+            // Loaded where it is: it imports the SDK by path.
+            let entry = repo().join("node/rutis-runtime/test/fixtures/conformance-weather.mjs");
             let launcher = Launcher::new("node")
                 .arg("--import")
                 .arg("tsx")

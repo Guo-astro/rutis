@@ -113,7 +113,7 @@ async fn go_rows_follow_the_row_contract() {
     assert_eq!(described.inject, ["clock"]);
     assert_eq!(
         Value::Object(described.provides.clone()),
-        json!({ "weather": { "today": "sync", "later": "async", "each": "sync", "crash": "sync" } })
+        json!({ "weather": { "today": "sync", "later": "async", "each": "sync", "echo": "sync", "crash": "sync" } })
     );
     assert_eq!(
         described.config.unwrap()["properties"]["city"],
