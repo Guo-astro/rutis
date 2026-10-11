@@ -12,17 +12,28 @@ import (
 // Work is the `work` service.
 type Work struct {
 	mu      sync.Mutex
+	started bool
 	aborted bool
 	counter *Counter
 }
 
 // Wait blocks until its caller cancels.
 func (w *Work) Wait(ctx context.Context) error {
+	w.mu.Lock()
+	w.started = true
+	w.mu.Unlock()
 	<-ctx.Done()
 	w.mu.Lock()
 	w.aborted = true
 	w.mu.Unlock()
 	return ctx.Err()
+}
+
+// Started reports that Wait runs (a test drops its call after that).
+func (w *Work) Started() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.started
 }
 
 func (w *Work) Aborted() bool {
@@ -89,7 +100,7 @@ func (c *Counter) Add(n int) int {
 var Plugin = rutis.Define(rutis.Plugin[rutis.NoConfig]{
 	Name: "probe",
 	Provides: rutis.Provides{"work": rutis.MethodsOf[*Work](
-		rutis.Sync("Aborted", "Ping", "Fail", "Named", "Boom", "Counter", "Record", "Sum"),
+		rutis.Sync("Started", "Aborted", "Ping", "Fail", "Named", "Boom", "Counter", "Record", "Sum"),
 	)},
 	Apply: func(ctx *rutis.Ctx, _ rutis.NoConfig) error {
 		ctx.Provide("work", &Work{counter: &Counter{}})

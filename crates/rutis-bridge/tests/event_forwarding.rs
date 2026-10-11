@@ -10,6 +10,7 @@ use rutis::{Ctx, Event, EventKey};
 use rutis_bridge::runtime::{EmitToCordis, Events, Mount, Process};
 use rutis_bridge::session::Value;
 use rutis_bridge::session::{arg, decode_value, Error};
+use rutis_test_support::{eventually, until};
 use serde_json::json;
 
 const PLUGIN: &str = r#"
@@ -88,12 +89,7 @@ async fn cordis_events_reach_rutis_listeners() {
 
     // emit returns at once; the event still arrives.
     process.call(&bus, "fire", json!([1])).unwrap();
-    for _ in 0..100 {
-        if seen.lock().unwrap().len() == 2 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    until(|| seen.lock().unwrap().len() == 2, "the emitted event").await;
     assert_eq!(seen.lock().unwrap()[1], (1.0, "emit".to_string()));
 
     events.close();
@@ -177,14 +173,14 @@ async fn rutis_events_reach_cordis_listeners() {
             }),
         )
         .unwrap();
-    let mut seen = json!([]);
-    for _ in 0..100 {
-        seen = process.call(&probe, "seen", json!([])).unwrap();
-        if seen.as_array().unwrap().len() == 2 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let seen = eventually(
+        || {
+            let seen = process.call(&probe, "seen", json!([])).unwrap();
+            (seen.as_array().unwrap().len() == 2).then_some(seen)
+        },
+        "both events",
+    )
+    .await;
     assert_eq!(seen, json!([["a", 1], ["b", 2]]));
     ctx.shutdown().await.unwrap();
     process.dispose().await.unwrap();

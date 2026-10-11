@@ -4,7 +4,7 @@
 import { Process } from '../../src/client.mjs'
 
 const [channel] = process.argv.slice(2)
-let held, aborted = false
+let held, started = false, aborted = false
 let session
 const conformance = {
   echo: value => value,
@@ -14,7 +14,8 @@ const conformance = {
   hold: fn => { held = fn },
   fire: value => { if (!held) throw new Error('nothing held'); return held(value) },
   drop: () => { if (held) session.release(held); held = undefined },
-  abortable: signal => new Promise(resolve => signal.addEventListener('abort', () => { aborted = true; resolve() })),
+  abortable: signal => { started = true; return new Promise(resolve => signal.addEventListener('abort', () => { aborted = true; resolve() })) },
+  started: () => started,
   aborted: () => aborted,
   reenter: fn => fn(),
 }

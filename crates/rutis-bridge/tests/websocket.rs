@@ -17,6 +17,7 @@ use rutis_bridge::{
     fingerprint, transport_key, Credential, Dial, Identity, Registered, Registration,
     StaticIdentity, Transport,
 };
+use rutis_test_support::{eventually_blocking, recv_within};
 
 const PROTOCOL: &str = "rutis.2";
 
@@ -100,7 +101,7 @@ fn meets_the_channel_contract() {
         let peer = format!("peer-{}", count.fetch_add(1, Ordering::SeqCst));
         let (registered, accepted) = accept(&server, &peer, &peer);
         let dialed = block_on(client.dial(&dial_as(address(&server), &peer, &peer))).unwrap();
-        let accepted = accepted.recv_timeout(Duration::from_secs(5)).unwrap();
+        let accepted = recv_within("the accepted connection", &accepted);
         assert_eq!(dialed.info.peer, Some(id("main")));
         assert_eq!(accepted.info.peer, Some(id(&peer)));
         kept.lock().unwrap().push(registered);
@@ -273,7 +274,7 @@ async fn wss_verifies_the_server_and_accepts_client_certificates() {
         .dial(&dial_as(address.clone(), "mac", "mac-token"))
         .await
         .unwrap();
-    let mut accepted = accepted.recv_timeout(Duration::from_secs(5)).unwrap();
+    let mut accepted = recv_within("the accepted connection", &accepted);
     dialed.sender.send(b"{\"over\":\"tls\"}").unwrap();
     assert_eq!(
         accepted.receiver.recv().unwrap().unwrap(),
@@ -327,7 +328,7 @@ async fn wss_verifies_the_server_and_accepts_client_certificates() {
         )
         .await
         .unwrap();
-    let accepted = accepted.recv_timeout(Duration::from_secs(5)).unwrap();
+    let accepted = recv_within("the accepted connection", &accepted);
     assert_eq!(accepted.info.peer, Some(id("pi")));
 }
 
@@ -378,7 +379,7 @@ fn connected(
 ) -> (Channel, Channel, Registered) {
     let (registered, accepted) = accept(server, "mac", "mac-token");
     let dialed = block_on(client.dial(&dial_as(address(server), "mac", "mac-token"))).unwrap();
-    let accepted = accepted.recv_timeout(Duration::from_secs(5)).unwrap();
+    let accepted = recv_within("the accepted connection", &accepted);
     (dialed, accepted, registered)
 }
 
@@ -462,12 +463,15 @@ fn an_orderly_close_reads_as_a_normal_end() {
 }
 
 /// A TCP relay that can stop carrying bytes without closing anything: a
-/// half-open connection, as a vanished network leaves it.
-fn freezable_relay(target: SocketAddr) -> (SocketAddr, Arc<AtomicBool>) {
+/// half-open connection, as a vanished network leaves it. It counts what it
+/// carried (each read it passed on).
+fn freezable_relay(target: SocketAddr) -> (SocketAddr, Arc<AtomicBool>, Arc<AtomicUsize>) {
     let listener = std::net::TcpListener::bind(loopback()).unwrap();
     let address = listener.local_addr().unwrap();
     let frozen = Arc::new(AtomicBool::new(false));
     let freeze = frozen.clone();
+    let carried = Arc::new(AtomicUsize::new(0));
+    let count = carried.clone();
     std::thread::spawn(move || {
         for client in listener.incoming() {
             let Ok(client) = client else { return };
@@ -477,6 +481,7 @@ fn freezable_relay(target: SocketAddr) -> (SocketAddr, Arc<AtomicBool>) {
                 (upstream, client),
             ] {
                 let frozen = freeze.clone();
+                let count = count.clone();
                 std::thread::spawn(move || {
                     use std::io::{Read, Write};
                     let mut buffer = [0u8; 16 * 1024];
@@ -494,43 +499,56 @@ fn freezable_relay(target: SocketAddr) -> (SocketAddr, Arc<AtomicBool>) {
                         if to.write_all(&buffer[..n]).is_err() {
                             return;
                         }
+                        count.fetch_add(1, Ordering::SeqCst);
                     }
                 });
             }
         }
     });
-    (address, frozen)
+    (address, frozen, carried)
 }
 
+/// Timing is what this tests, across the transport's own threads: by
+/// tolerance (docs/design-test-clocks-2026-10-11.md §3.3), ping and timeout
+/// ten times apart, "still connected" after a count of pings rather than a
+/// time, no bound on how fast the timeout is found (only a hang guard).
 #[test]
 fn heartbeats_find_a_half_open_connection() {
     let quick = Limits {
         ping: Duration::from_millis(100),
-        timeout: Duration::from_millis(400),
+        timeout: Duration::from_millis(1000),
         ..Limits::default()
     };
     let server = server(quick.clone());
     let client = client(quick);
-    let (relay, frozen) = freezable_relay(server.local_addr("public").unwrap());
+    let (relay, frozen, carried) = freezable_relay(server.local_addr("public").unwrap());
     let (_r, accepted) = accept(&server, "mac", "mac-token");
     let mut dialed =
         block_on(client.dial(&dial_as(format!("ws://{relay}/rutis"), "mac", "mac-token"))).unwrap();
-    let mut accepted = accepted.recv_timeout(Duration::from_secs(5)).unwrap();
-    // Alive while pings flow, longer than the timeout.
-    std::thread::sleep(Duration::from_millis(800));
+    let mut accepted = recv_within("the accepted connection", &accepted);
+    // Alive while pings flow: through more pings and pongs than fit in two
+    // timeouts.
+    let before = carried.load(Ordering::SeqCst);
+    eventually_blocking(
+        || (carried.load(Ordering::SeqCst) >= before + 40).then_some(()),
+        "pings through the relay",
+    );
     dialed.sender.send(b"still here").unwrap();
     assert_eq!(accepted.receiver.recv().unwrap().unwrap(), b"still here");
 
     frozen.store(true, Ordering::SeqCst);
-    let started = std::time::Instant::now();
-    for channel in [&mut dialed, &mut accepted] {
-        let ended = channel.receiver.recv();
+    for channel in [dialed, accepted] {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut channel = channel;
+            let _ = tx.send(channel.receiver.recv());
+        });
+        let ended = recv_within("the heartbeat timeout", &rx);
         assert!(
             matches!(&ended, Err(rutis_bridge::channel::ChannelError::Closed { reason }) if reason.contains("heartbeat timeout")),
             "{ended:?}"
         );
     }
-    assert!(started.elapsed() < Duration::from_secs(3));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -557,7 +575,7 @@ async fn the_plugin_provides_the_transport_and_unloading_closes_everything() {
         .dial(&dial_as(address.clone(), "mac", "mac-token"))
         .await
         .unwrap();
-    let mut accepted = accepted.recv_timeout(Duration::from_secs(5)).unwrap();
+    let mut accepted = recv_within("the accepted connection", &accepted);
     drop((transport, running));
 
     view.dispose().await.unwrap();

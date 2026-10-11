@@ -16,29 +16,19 @@ use rutis_bridge::{
     Credential, ExportPlugin, Identity, IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin,
     Retry, StaticIdentity,
 };
+use rutis_test_support::eventually;
 use serde_json::{json, Value as Json};
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
 }
 
-async fn eventually<T>(mut check: impl FnMut() -> Option<T>, what: &str) -> T {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if let Some(found) = check() {
-                return found;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
-}
-
 fn quick() -> Retry {
     Retry {
         initial: Duration::from_millis(20),
         max: Duration::from_millis(200),
+        // No jitter: the same delays every run (#231).
+        jitter: 0.0,
         ..Retry::default()
     }
 }

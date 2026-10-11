@@ -1,9 +1,9 @@
 use std::io::Write;
 use std::path::Path;
-use std::time::Duration;
 
 use rutis_bridge::runtime::Process;
 use rutis_bridge::session::Error;
+use rutis_test_support::{within, HANG_GUARD};
 use serde_json::json;
 
 #[tokio::test(flavor = "current_thread")]
@@ -42,7 +42,7 @@ async fn cleanup_releases_an_in_flight_call() {
         process.call("lifecycle", "started", json!([])).unwrap(),
         json!(true)
     );
-    let disposed = tokio::time::timeout(Duration::from_secs(2), process.dispose()).await;
+    let disposed = tokio::time::timeout(HANG_GUARD, process.dispose()).await;
     if disposed.is_err() {
         pending.abort();
         let _ = pending.await;
@@ -143,9 +143,8 @@ async fn process_exit_fails_both_pending_and_subsequent_calls() {
         }
         other => panic!("expected a transport error, got {other:?}"),
     }
-    assert!(tokio::time::timeout(Duration::from_secs(2), pending)
+    assert!(within("the pending call's end", pending)
         .await
-        .unwrap()
         .unwrap()
         .is_err());
     assert!(process.call("lifecycle", "started", json!([])).is_err());

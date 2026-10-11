@@ -1,5 +1,6 @@
 use rutis_bridge::runtime::Process;
 use rutis_bridge::session::{Error, Value};
+use rutis_test_support::within;
 use serde_json::json;
 use std::io::Write;
 use std::path::Path;
@@ -511,10 +512,7 @@ async fn close_cancels_shared_executor_even_with_a_retained_reference() {
     observed.recv().await.unwrap();
     peer.connection()
         .close(Error::Transport("explicit close".into()));
-    tokio::time::timeout(std::time::Duration::from_secs(2), completed.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    within("the completion", completed.recv()).await.unwrap();
     assert!(future.wait_async().await.is_err());
 }
 

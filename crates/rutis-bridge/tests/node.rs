@@ -15,23 +15,11 @@ use rutis_bridge::{
     IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin, NodeEvent, Peer, Retry, StaticCatalog,
     StaticIdentity,
 };
+use rutis_test_support::{eventually, within};
 use serde_json::{json, Value as Json};
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
-}
-
-async fn eventually<T>(mut check: impl FnMut() -> Option<T>, what: &str) -> T {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if let Some(found) = check() {
-                return found;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
 fn quick() -> Retry {
@@ -39,6 +27,8 @@ fn quick() -> Retry {
         initial: Duration::from_millis(20),
         max: Duration::from_millis(200),
         rejected: Duration::from_millis(100),
+        // No jitter: the same delays every run (#231).
+        jitter: 0.0,
         ..Retry::default()
     }
 }
@@ -173,6 +163,33 @@ fn futures_now(future: impl std::future::Future<Output = Reply> + Send + 'static
     .unwrap()
 }
 
+/// `services.announce` of a `clock` whose `now` is 7, as an exporter sends
+/// it: the importer's reply.
+async fn announce(
+    session: &rutis_bridge::session::Connection,
+    name: &str,
+    version: u64,
+) -> Result<Value, rutis_bridge::session::Error> {
+    let record = Value::Record(
+        [
+            ("name".to_owned(), Value::Data(json!(name))),
+            (
+                "service".to_owned(),
+                Value::Record(
+                    [("now".to_owned(), Value::callback(|_| Ok(json!(7).into())))].into(),
+                ),
+            ),
+            ("shape".to_owned(), Value::Data(json!({ "now": "sync" }))),
+            ("version".to_owned(), Value::Data(json!(version))),
+        ]
+        .into(),
+    );
+    let reply = session
+        .invoke_async("", "services.announce", Value::List(vec![record]))
+        .await?;
+    settle(reply).await
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_import_never_replaces_a_service_provided_here() {
     let (main, mac, _) = linked().await;
@@ -180,9 +197,23 @@ async fn an_import_never_replaces_a_service_provided_here() {
         .unwrap();
     mac.provide_as::<dyn HostDispatch>(host_key("clock"), clock(7))
         .unwrap();
-    main.plugin(ExportPlugin::new(id("mac"), ["clock"]));
     mac.plugin(ImportPlugin::new(id("main"), ["clock"]));
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let at_main = main.get_as::<Peer>(peer_key(&id("mac"))).unwrap();
+    let mut offers = at_main.offers();
+    eventually(
+        || offers.borrow_and_update().epoch("services"),
+        "the importer",
+    )
+    .await;
+    // Announced as main's exporter does. The importer decides before it
+    // replies (services.rs, Importer::announce), so the reply is the
+    // decision: refused, with the reason.
+    let refused = announce(&at_main.connection(), "clock", 1).await;
+    let error = refused.expect_err("an import over a local service is refused");
+    assert!(
+        error.to_string().contains("already provided here"),
+        "{error}"
+    );
     let local = mac.get_as::<dyn HostDispatch>(host_key("clock")).unwrap();
     let now = tokio::task::spawn_blocking(move || local.invoke("now", Value::List(vec![])))
         .await
@@ -197,6 +228,10 @@ async fn an_export_waits_for_the_far_end_to_offer_services() {
     main.provide_as::<dyn HostDispatch>(host_key("clock"), clock(0))
         .unwrap();
     main.plugin(ExportPlugin::new(id("mac"), ["clock"]));
+    // clock: weak-negative — the exporter waiting for an offer leaves
+    // nothing to observe across the session's threads; a slow machine can
+    // only miss a premature export here, never fail. The late import below
+    // is the positive half.
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(mac.get_as::<dyn HostDispatch>(host_key("clock")).is_none());
     // Importing later still gets it: the exporter announces on the offer.
@@ -553,6 +588,10 @@ async fn a_hosted_plugin_keeps_its_rows_isolate_and_inject() {
         [["svc", "M"]],
         ["needed"]
     ])));
+    // clock: weak-negative — a row gated on an injected service shows no
+    // state the far end can wait on; a slow machine can only miss an early
+    // start here, never fail. The start once it is there is the positive
+    // half.
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(
         starts.load(Ordering::SeqCst),
@@ -567,7 +606,7 @@ async fn a_hosted_plugin_keeps_its_rows_isolate_and_inject() {
         "the start once it is there",
     )
     .await;
-    let _ = tokio::time::timeout(Duration::from_secs(5), pending).await;
+    let _ = within("the injected row's load", pending).await;
 }
 
 /// A service name the host cannot map refuses the load: it is not dropped.
@@ -670,8 +709,9 @@ async fn an_announcement_older_than_a_withdrawal_is_stale() {
         "clock withdrawn",
     )
     .await;
+    // The importer decides before it replies (services.rs,
+    // Importer::announce): once announce(2) returns, it was ignored or not.
     announce(2).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         mac.get_as::<dyn HostDispatch>(host_key("clock")).is_none(),
         "an announcement older than the withdrawal is stale"
