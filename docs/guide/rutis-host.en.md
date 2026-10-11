@@ -19,9 +19,21 @@ The npm distribution includes the Node runtime (`@arcships/rutis-runtime`), and 
 | --- | --- |
 | `rutis-host run [rutis.json]` | Runs the configuration and prints each row's status changes. Press Ctrl-C to stop (see [Stopping and exit status](#stopping-and-exit-status)). |
 | `rutis-host dev [directory]` | Runs a plugin project with its `rutis.dev.json` file and reloads it when files change; a Go project is rebuilt, restarting only its runtime. |
-| `rutis-host check [rutis.json]` | Resolves each row and prints its version, dependencies, provided services, and configuration schema, and lists every Go binary (runtime name, SDK, plugin API, plugins). Exits with a nonzero status if a row or binary cannot run. Without `rutis.json`, checks the plugin project in the current directory. |
+| `rutis-host check [rutis.json]` | Without running any plugin, checks that each row can run (see [Checking a configuration](#checking-a-configuration)) and prints its version, dependencies, provided services, and configuration schema, and lists every Go binary (runtime name, SDK, plugin API, plugins). Exits with a nonzero status if a row or binary cannot run. Without `rutis.json`, checks the plugin project in the current directory. |
 | `rutis-host new <name> --lang node\|bun\|python\|go` | Creates a plugin project. |
 | `rutis-host go add <module>@<version> [rutis.json]` | `go install`s a plugin binary into `runtimes.go.dir` with the machine's Go toolchain. |
+
+## Checking a configuration
+
+For each row (except disabled ones), `check` verifies that:
+
+- its plugin is found and resolves;
+- the row passes the checks made before loading (scopes, and the config of built-in plugins such as link rows);
+- every service it waits for (its plugin's `inject`, plus the row's own `inject`) is provided by another row: as plugins declare in `provides`, and a link row provides what it `import`s.
+
+A row waiting for a service no row provides would wait forever: `check` says which service is missing and what to do, and exits with 1; when only disabled rows provide it, it names them. What some rows provide is not known during the check (runtimes on other machines, which the check does not connect to, and `peer:` rows); a service missing then is only reported as possibly coming from them, not as a failure.
+
+A plugin's own config is validated by its runtime when it loads; `check` prints its schema.
 
 ## Stopping and exit status
 

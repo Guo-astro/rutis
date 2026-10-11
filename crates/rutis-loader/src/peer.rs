@@ -74,6 +74,7 @@ impl PeerResolver {
             meta: json!({ "source": "peer", "peer": peer.to_string(), "plugin": plugin, "schema": format!("unavailable: {why}") }),
             foreign_scope: true,
             scoped: None,
+            declares: Some(runs_on(peer, why)),
         })
     }
 
@@ -142,6 +143,8 @@ impl Resolver for PeerResolver {
                 }),
                 foreign_scope: true,
                 scoped: None,
+                // The peer says what the plugin needs and provides there.
+                declares: Some(runs_on(&peer_id, "what it declares is known there")),
             }))
         })
     }
@@ -600,6 +603,12 @@ impl PluginFactory<Value> for NodeFactory {
 
 /// Register the `rutis-bridge/peer` row type: share `resolver` with the
 /// loader's chain for its `peer:` rows.
+/// Declarations of a row that runs on `peer`, not known here, and why.
+fn runs_on(peer: &PeerId, why: &str) -> crate::Declarations {
+    let why = format!("it runs on {peer}: {why}");
+    Arc::new(move |_: &Value| Err(why.clone()))
+}
+
 pub fn register_peer_node(builtins: &mut crate::Builtins, resolver: Arc<PeerResolver>) {
     let factory = Arc::new(NodeFactory {
         resolver: resolver.clone(),
@@ -613,6 +622,24 @@ pub fn register_peer_node(builtins: &mut crate::Builtins, resolver: Arc<PeerReso
         Ok(factory)
     });
     builtins.register_raw_with("rutis-bridge/peer", factory, scoped, Some(node_schema()));
+    // A link provides what it imports; what the peer itself offers is
+    // known only once it is connected, and is not a service of this node
+    // until imported.
+    builtins.declare(
+        "rutis-bridge/peer",
+        Arc::new(|config: &Value| {
+            let provides = config["import"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|name| name.as_str().map(str::to_owned))
+                .collect();
+            Ok(crate::Declared {
+                requires: Vec::new(),
+                provides,
+            })
+        }),
+    );
 }
 
 struct Node {

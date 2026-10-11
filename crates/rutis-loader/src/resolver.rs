@@ -29,7 +29,27 @@ pub struct Resolved {
     /// Builds the factory for each copy from the instances it runs in
     /// ([`Builtins::register_with`]). Without it, every copy uses `factory`.
     pub scoped: Option<ScopedFactory>,
+    /// What a row of it waits for in rutis and provides there, by service
+    /// name, from the row's config ([`Loader::check`](crate::Loader::check)).
+    /// Without it, nothing is known of either.
+    pub declares: Option<Declarations>,
 }
+
+/// The services a row waits for in rutis and those it provides there, by
+/// name, as its plugin declares them before it runs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Declared {
+    /// Waited for in rutis before the row starts (its plugin's `inject`
+    /// that rutis gates; the row's own `inject` comes on top).
+    pub requires: Vec<String>,
+    /// Provided in rutis while the row runs.
+    pub provides: Vec<String>,
+}
+
+/// A row's [`Declared`] from its config (the raw config, expressions
+/// unevaluated), or why it is not known yet (what describes the plugin is
+/// unreachable, say).
+pub type Declarations = Arc<dyn Fn(&Value) -> Result<Declared, String> + Send + Sync>;
 
 impl Resolved {
     /// `factory`, with no schema, no metadata, and the row's `isolate` and
@@ -41,6 +61,7 @@ impl Resolved {
             meta: Value::Null,
             foreign_scope: false,
             scoped: None,
+            declares: None,
         }
     }
 
@@ -62,6 +83,17 @@ impl Resolved {
 
     pub fn with_scoped(mut self, scoped: ScopedFactory) -> Self {
         self.scoped = Some(scoped);
+        self
+    }
+
+    /// What every row of it waits for and provides, whatever its config.
+    pub fn with_declared(self, declared: Declared) -> Self {
+        self.with_declarations(Arc::new(move |_: &Value| Ok(declared.clone())))
+    }
+
+    /// See [`Resolved::declares`].
+    pub fn with_declarations(mut self, declares: Declarations) -> Self {
+        self.declares = Some(declares);
         self
     }
 }
@@ -125,6 +157,7 @@ impl std::fmt::Debug for Resolved {
             .field("schema", &self.schema.is_some())
             .field("meta", &self.meta)
             .field("scoped", &self.scoped.is_some())
+            .field("declares", &self.declares.is_some())
             .finish()
     }
 }
@@ -242,8 +275,26 @@ impl Builtins {
                 meta,
                 foreign_scope: false,
                 scoped,
+                declares: None,
             }),
         );
+        self
+    }
+
+    /// Say what rows of the registered plugin `name` wait for and provide,
+    /// from their config ([`Resolved::declares`]). Does nothing for a name
+    /// not registered.
+    pub fn declare(&mut self, name: &str, declares: Declarations) -> &mut Self {
+        if let Some(entry) = self.entries.get_mut(name) {
+            *entry = Arc::new(Resolved {
+                factory: entry.factory.clone(),
+                schema: entry.schema.clone(),
+                meta: entry.meta.clone(),
+                foreign_scope: entry.foreign_scope,
+                scoped: entry.scoped.clone(),
+                declares: Some(declares),
+            });
+        }
         self
     }
 }

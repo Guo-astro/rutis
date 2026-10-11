@@ -9,6 +9,7 @@
 //! ```
 
 use rutis_host::{config, host, new, project, status};
+use rutis_loader::{RowStatus, Supply};
 
 mod stop;
 
@@ -361,13 +362,39 @@ async fn check(args: &[String]) -> Result<(), String> {
             }
         }
     }
-    let mut failed = 0;
-    for row in config.rows() {
-        let id = row["id"].as_str().unwrap_or("?");
-        let name = row["name"].as_str().unwrap_or("");
-        match host.loader.resolve(name).await {
-            Ok(resolved) => {
-                println!("{id} ({name}): ok");
+    let report = host.check(config.rows()).await?;
+    for issue in &report.issues {
+        eprintln!("rutis-host: warning: {issue}");
+    }
+    let mut failed = report.failing().count();
+    for row in &report.rows {
+        let (id, name) = (&row.id, &row.name);
+        match &row.status {
+            RowStatus::Disabled => println!("{id} ({name}): disabled"),
+            RowStatus::Failed(error) => {
+                println!("{id} ({name}): {error}");
+                if let rutis_loader::LoaderError::NotFound { .. } = error {
+                    println!(
+                        "  install it where its runtime finds it (a runtime under runtimes), \
+                         or correct the row's name"
+                    );
+                }
+            }
+            RowStatus::Checked {
+                resolved, requires, ..
+            } => {
+                let missing: Vec<&str> = requires
+                    .iter()
+                    .filter(|requirement| matches!(requirement.supply, Supply::Missing { .. }))
+                    .map(|requirement| requirement.service.as_str())
+                    .collect();
+                match missing.is_empty() {
+                    true => println!("{id} ({name}): ok"),
+                    false => println!(
+                        "{id} ({name}): cannot run: nothing provides {}",
+                        missing.join(", ")
+                    ),
+                }
                 // A plugin needing a newer plugin API does not resolve: its
                 // runtime refuses it, saying what to upgrade.
                 let meta = &resolved.meta;
@@ -379,17 +406,13 @@ async fn check(args: &[String]) -> Result<(), String> {
                 if let Some(schema) = &resolved.schema {
                     println!("  config: {schema}");
                 }
-            }
-            Err(error) => {
-                failed += 1;
-                println!("{id} ({name}): {error}");
-                if let rutis_loader::LoaderError::NotFound { .. } = error {
-                    println!(
-                        "  install it where its runtime finds it (a runtime under runtimes), \
-                         or correct the row's name"
-                    );
+                for requirement in requires {
+                    if let Some(line) = supply_line(&requirement.service, &requirement.supply) {
+                        println!("  {line}");
+                    }
                 }
             }
+            _ => println!("{id} ({name}): not checked"),
         }
     }
     if let Some(go) = &host.go {
@@ -443,6 +466,29 @@ async fn check(args: &[String]) -> Result<(), String> {
     match failed {
         0 => Ok(()),
         n => Err(format!("{n} row(s) or binaries cannot run")),
+    }
+}
+
+/// `check`'s line for a service a row waits for: what to do when nothing
+/// provides it, what may when that is not known; none when it is provided.
+fn supply_line(service: &str, supply: &Supply) -> Option<String> {
+    match supply {
+        Supply::Missing { disabled } if !disabled.is_empty() => Some(format!(
+            "{service}: only disabled rows provide it ({}): enable one, or add a row that provides it",
+            disabled.join(", ")
+        )),
+        Supply::Missing { .. } => Some(format!(
+            "{service}: add a row that provides it, or import it from a peer (import: [\"{service}\"])"
+        )),
+        Supply::Unknown(sources) => Some(format!(
+            "{service}: not known to be provided; it may come from {}",
+            sources
+                .iter()
+                .map(|source| format!("{} ({})", source.row, source.why))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        _ => None,
     }
 }
 
