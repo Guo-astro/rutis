@@ -208,7 +208,7 @@ async fn an_import_never_replaces_a_service_provided_here() {
     // Announced as main's exporter does. The importer decides before it
     // replies (services.rs, Importer::announce), so the reply is the
     // decision: refused, with the reason.
-    let refused = announce(&at_main.connection(), "clock", 1).await;
+    let refused = announce(at_main.connection(), "clock", 1).await;
     let error = refused.expect_err("an import over a local service is refused");
     assert!(
         error.to_string().contains("already provided here"),
