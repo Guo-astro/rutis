@@ -240,11 +240,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      # Python 3.12 until #196 lands. websockets: pin the oldest supported
-      # (15.*) when #218 lands.
+      # The oldest Python (requires-python). websockets: pin the oldest
+      # supported (15.*) when #218 lands.
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.10'
       - run: python3 -m pip install "websockets>=13"
       # The older of the two Go releases supported.
       - uses: actions/setup-go@v5
@@ -298,11 +298,11 @@ jobs:
       # dsh (web UI and agent loop) served by aimux in the rutis-dsh host.
       - run: npm --prefix crates/rutis-dsh/dsh ci
       - run: npm --prefix crates/rutis-dsh/dsh test
-      # The Python package. Python 3.12 until #196 lands; websockets: the
-      # oldest supported (15.*) when #218 lands.
+      # The Python package on the oldest Python (requires-python); websockets:
+      # the oldest supported (15.*) when #218 lands.
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.10'
       # WebSocket channels of the Python runtime (rutis[network]).
       - run: python3 -m pip install "websockets>=13"
       - run: python3 -m unittest discover -s tests
@@ -389,7 +389,7 @@ jobs:
       - run: npm --prefix node/rutis-runtime ci
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.10'
       - run: python3 -m pip install "websockets>=13"
       - name: gofmt
         run: test -z "$(gofmt -l go crates/rutis-loader/tests/fixtures/go)"
@@ -445,7 +445,7 @@ jobs:
       - run: npm --prefix node/rutis-runtime ci
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.10'
       - run: bun --version
       - run: bun test
         working-directory: bun/rutis-bun

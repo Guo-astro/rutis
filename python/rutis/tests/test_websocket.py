@@ -136,6 +136,132 @@ class WebSocketTest(background.TestCase):
                 self.assertFalse(thread.is_alive(), thread.name)
         self.assertEqual(len(background.expected()), 1)
 
+    def test_accept_raises_once_a_failed_accept_stops_serving(self):
+        # #196 (left from #218): serve_forever() returns when accept() fails
+        # (EMFILE, say) and websockets drops the error; accept() then
+        # blocked for ever. Here serve_forever returns at once, as it does.
+        real_serve = websocket.serve
+
+        def returning_serve(*args, **kwargs):
+            server = real_serve(*args, **kwargs)
+
+            def serve_forever():
+                if hasattr(server, "socket_closed"):
+                    server.socket_closed.set()
+
+            server.serve_forever = serve_forever
+            return server
+
+        websocket.serve = returning_serve
+        try:
+            listener = websocket.listen("ws://127.0.0.1:0/rutis", PROTOCOL, "secret", announce=lambda _: None)
+        finally:
+            websocket.serve = real_serve
+        raised: queue.Queue = queue.Queue()
+
+        def accept():
+            try:
+                listener.accept()
+            except BaseException as error:  # noqa: BLE001 - what the test checks
+                raised.put(error)
+
+        threading.Thread(target=accept, daemon=True).start()
+        error = raised.get(timeout=10)
+        self.assertIsInstance(error, OSError)
+        self.assertIn("stopped", str(error))
+        with self.assertRaisesRegex(OSError, "stopped"):
+            listener.accept()
+        with self.assertRaisesRegex(OSError, "stopped"):
+            listener.close()
+        with self.assertRaises(ConnectionRefusedError):
+            dial(listener.address)
+
+    def test_accept_after_close_raises(self):
+        listener = websocket.listen("ws://127.0.0.1:0/rutis", PROTOCOL, "secret", announce=lambda _: None)
+        listener.close()
+        with self.assertRaises(ConnectionError):
+            listener.accept()
+
+    @unittest.skipIf(os.name != "posix", "RLIMIT_NOFILE is POSIX")
+    def test_running_out_of_file_descriptors_makes_accept_raise(self):
+        # The real failure: a listener whose accept() hits EMFILE.
+        script = """
+import os, resource, sys
+from rutis import websocket
+resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
+listener = websocket.listen("ws://127.0.0.1:0/rutis", "rutis.2", "secret", announce=lambda a: print(a, flush=True))
+held = []
+try:
+    while True:
+        held.append(os.open(os.devnull, os.O_RDONLY))
+except OSError:
+    pass
+print("full", flush=True)
+try:
+    listener.accept()
+except OSError as error:
+    print("accept raised:", error, flush=True)
+    sys.exit(3)
+"""
+        import subprocess
+        import sys
+        from urllib.parse import urlsplit
+
+        package = os.path.dirname(os.path.dirname(os.path.abspath(websocket.__file__)))
+        child = subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, "PYTHONPATH": package},
+        )
+        try:
+            address = urlsplit(child.stdout.readline().strip())
+            self.assertEqual(child.stdout.readline().strip(), "full")
+            with socket.create_connection((address.hostname, address.port), timeout=10):
+                code = child.wait(timeout=10)
+            out = child.stdout.read()
+        finally:
+            child.kill()
+            child.wait()
+            child.stdout.close()
+            child.stderr.close()
+        self.assertEqual(code, 3, out)
+        self.assertIn("accept raised:", out)
+        self.assertIn("stopped", out)
+
+    def test_a_listening_runtime_whose_accept_fails_exits_non_zero(self):
+        # python -m rutis listen:… ends, with the reason on stderr and exit
+        # code 1, instead of a process that cannot be reconnected to.
+        script = """
+import runpy, sys
+from rutis import websocket
+
+class Listener:
+    address = "ws://127.0.0.1:1/rutis"
+    def accept(self):
+        raise OSError("the WebSocket listener stopped: accepting a connection failed")
+    def close(self):
+        pass
+
+websocket.listen = lambda *args, **kwargs: Listener()
+sys.argv = ["rutis", "listen:ws://127.0.0.1:0/rutis", "--id", "py", "--peer", "main", "."]
+runpy.run_module("rutis", run_name="__main__")
+"""
+        import subprocess
+        import sys
+
+        package = os.path.dirname(os.path.dirname(os.path.abspath(websocket.__file__)))
+        done = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "PYTHONPATH": package},
+        )
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("accepting a connection failed", done.stderr)
+
     def test_wrong_or_missing_credentials_and_protocols_are_refused(self):
         address, _ = listen()
         cases = [("guess", PROTOCOL, 403), (None, PROTOCOL, 401), ("secret", "rutis.99", 400)]

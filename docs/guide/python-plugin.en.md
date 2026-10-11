@@ -1,6 +1,6 @@
 # Write a Python Plugin
 
-This guide covers creating a project, publishing it, and using it from a host. Python 3.12 or later is required. The examples use [uv](https://docs.astral.sh/uv/), but pip and venv work too.
+This guide covers creating a project, publishing it, and using it from a host. Python 3.10 or later is required. The examples use [uv](https://docs.astral.sh/uv/), but pip and venv work too.
 
 ## 1. Create a project
 
