@@ -17,6 +17,7 @@ use rutis_loader::{
     Chain, EntryStatus, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch,
     RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
 };
+use rutis_test_support::{eventually_with, until, within};
 use serde_json::{json, Value};
 
 #[derive(Clone, Default)]
@@ -40,13 +41,12 @@ impl Probe {
     }
 
     async fn wait_for(&self, line: &str) {
-        tokio::time::timeout(Duration::from_secs(15), async {
-            while self.position(line).is_none() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
+        eventually_with(
+            || self.position(line).map(|_| ()),
+            &format!("{line:?} recorded"),
+            || format!("{:?}", self.0.lock().unwrap()),
+        )
         .await
-        .unwrap_or_else(|_| panic!("{line:?} not recorded: {:?}", self.0.lock().unwrap()));
     }
 }
 
@@ -169,16 +169,6 @@ fn state(loader: &Loader, id: &str) -> Option<FiberState> {
     }
 }
 
-async fn until(what: &str, mut done: impl FnMut() -> bool) {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        while !done() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
-}
-
 /// A row waits for what it injects; within the process it gets the
 /// provider's own object; when the provider goes, only its user stops, and
 /// before the provider does.
@@ -199,9 +189,10 @@ async fn rows_gate_share_and_stop_with_their_provider() {
     let remaining: Vec<Value> = all.into_iter().filter(|r| r["id"] != "p").collect();
     loader.reconcile(layer(remaining), None).await.unwrap();
     fixture.probe.wait_for("provider: bye").await;
-    until("the user to wait", || {
-        state(loader, "u") == Some(FiberState::Pending)
-    })
+    until(
+        || state(loader, "u") == Some(FiberState::Pending),
+        "the user to wait",
+    )
     .await;
     assert_eq!(state(loader, "b"), Some(FiberState::Active));
     assert!(
@@ -299,20 +290,24 @@ async fn a_dead_process_stops_the_rows_until_restart() {
     let mut dying = base.clone();
     dying.push(row("x", "./exit.ts"));
     loader.reconcile(layer(dying), None).await.unwrap();
-    until("rows waiting after the process ended", || {
-        ["p", "u"]
-            .iter()
-            .all(|id| state(loader, id) == Some(FiberState::Pending))
-    })
+    until(
+        || {
+            ["p", "u"]
+                .iter()
+                .all(|id| state(loader, id) == Some(FiberState::Pending))
+        },
+        "rows waiting after the process ended",
+    )
     .await;
 
     loader.reconcile(layer(base), None).await.unwrap();
     fixture.probe.0.lock().unwrap().clear();
     fixture.runtime.restart().await.unwrap();
     fixture.probe.wait_for("user: sunny (native)").await;
-    until("rows running again", || {
-        state(loader, "u") == Some(FiberState::Active)
-    })
+    until(
+        || state(loader, "u") == Some(FiberState::Active),
+        "rows running again",
+    )
     .await;
     fixture.root.shutdown().await.unwrap();
 }
@@ -333,12 +328,11 @@ async fn a_runtime_that_cannot_start_does_not_block_resolution() {
     let plugin = LoaderPlugin::new(Chain::new().with_shared(resolver), LoaderOptions::default());
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    let report = tokio::time::timeout(
-        Duration::from_secs(10),
+    let report = within(
+        "resolution, which does not wait for a failed runtime",
         loader.reconcile(layer(vec![row("b", "./bystander.ts")]), None),
     )
     .await
-    .expect("resolution does not wait for a failed runtime")
     .unwrap();
     assert!(report.failures.is_empty(), "{report:?}");
     assert_eq!(state(&loader, "b"), Some(FiberState::Pending));

@@ -12,6 +12,7 @@ use rutis_bridge::session::{Reply, Value as RpcValue};
 use rutis_loader::{
     Chain, Layer, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin,
 };
+use rutis_test_support::eventually_with;
 use serde_json::{json, Value};
 
 #[derive(Clone, Default)]
@@ -31,13 +32,19 @@ impl HostDispatch for Probe {
 
 impl Probe {
     async fn wait_for(&self, line: &str) {
-        tokio::time::timeout(Duration::from_secs(15), async {
-            while !self.0.lock().unwrap().iter().any(|l| l == line) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
+        eventually_with(
+            || {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|l| l == line)
+                    .then_some(())
+            },
+            &format!("{line:?} recorded"),
+            || format!("{:?}", self.0.lock().unwrap()),
+        )
         .await
-        .unwrap_or_else(|_| panic!("{line:?} not recorded: {:?}", self.0.lock().unwrap()));
     }
 }
 

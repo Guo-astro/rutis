@@ -5,7 +5,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, PluginFactory, TypeKey};
 use rutis_bridge::runtime::LocalRuntime;
@@ -16,6 +15,7 @@ use rutis_loader::{
     Build, Builtins, Chain, EntryInfo, EntryStatus, Instance, InstanceResult, Layer, Loader,
     LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
 };
+use rutis_test_support::eventually_with;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -81,13 +81,12 @@ impl Probe {
     }
 
     async fn wait_for(&self, line: &str) {
-        tokio::time::timeout(Duration::from_secs(15), async {
-            while !self.has(line) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
+        eventually_with(
+            || self.has(line).then_some(()),
+            &format!("{line:?} recorded"),
+            || format!("{:?}", self.0.lock().unwrap()),
+        )
         .await
-        .unwrap_or_else(|_| panic!("{line:?} not recorded: {:?}", self.0.lock().unwrap()));
     }
 }
 

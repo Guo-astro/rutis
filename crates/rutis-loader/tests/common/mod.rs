@@ -3,7 +3,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, PluginFactory, TypeKey};
+use rutis::{
+    BoxFuture, CordisError, Ctx, Effect, EventKey, FiberState, FiberStatusChanged, Listener,
+    Plugin, PluginFactory, PluginId, TypeKey,
+};
 use rutis_loader::{
     Builtins, Edit, Editable, EntryStatus, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin,
     Patch, Persist, PersistError, Resolved, Resolver, Version,
@@ -297,5 +300,76 @@ pub fn state(loader: &Loader, id: &str) -> Option<FiberState> {
     match loader.get(id)?.status {
         EntryStatus::Running(snapshot) => Some(snapshot.state),
         _ => None,
+    }
+}
+
+/// The state changes of every fiber under a root (`FiberStatusChanged`).
+/// One fiber's changes arrive in the order it made them: they are queued
+/// under its transition lock (D24) and dispatched on one event key in
+/// emission order (D31). So once a change of a fiber is here, every earlier
+/// change of that fiber is too.
+#[derive(Clone, Default)]
+pub struct Transitions(Arc<Mutex<Vec<(PluginId, FiberState)>>>);
+
+impl Transitions {
+    pub fn on(root: &Ctx) -> Self {
+        let transitions = Self::default();
+        root.events()
+            .on(
+                root,
+                &EventKey::<FiberStatusChanged>::of(),
+                transitions.clone(),
+            )
+            .unwrap();
+        transitions
+    }
+
+    /// The states `plugin` went to, in order.
+    pub fn of(&self, plugin: PluginId) -> Vec<FiberState> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(id, _)| *id == plugin)
+            .map(|(_, state)| *state)
+            .collect()
+    }
+
+    /// How often the fibers `plugins` (one row's, say) loaded, counted once
+    /// each of them is active or disposed: a start before that is counted.
+    pub async fn loads(&self, plugins: &[PluginId]) -> usize {
+        let mut unique: Vec<PluginId> = Vec::new();
+        for plugin in plugins {
+            if !unique.contains(plugin) {
+                unique.push(*plugin);
+            }
+        }
+        let plugins = &unique;
+        rutis_test_support::until(
+            || {
+                plugins.iter().all(|plugin| {
+                    let states = self.of(*plugin);
+                    states.contains(&FiberState::Active) || states.contains(&FiberState::Disposed)
+                })
+            },
+            "the fibers to settle",
+        )
+        .await;
+        plugins
+            .iter()
+            .flat_map(|plugin| self.of(*plugin))
+            .filter(|state| *state == FiberState::Loading)
+            .count()
+    }
+}
+
+impl Listener<FiberStatusChanged> for Transitions {
+    fn call<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        e: &'a FiberStatusChanged,
+    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
+        self.0.lock().unwrap().push((e.plugin_id, e.to));
+        Box::pin(async { Ok(None) })
     }
 }

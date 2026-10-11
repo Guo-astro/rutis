@@ -36,7 +36,9 @@ runtimes = ["dep:rutis-bridge"]
 peer = ["dep:rutis-bridge"]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
+# Path only: cargo publish drops it.
+rutis-test-support = { path = "../rutis-test-support" }
+tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = "3"
 url = "2"
 rutis-bridge = { path = "../rutis-bridge", features = ["node", "python", "websocket", "testing"] }

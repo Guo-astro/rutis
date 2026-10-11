@@ -5,9 +5,10 @@
 //! its users first; what a Go plugin injects gates it.
 #![cfg(all(feature = "node", feature = "python", feature = "go"))]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
 
 use rutis::{Ctx, FiberState};
 use rutis_bridge::runtime::LocalRuntime;
@@ -17,6 +18,7 @@ use rutis_loader::{
     Chain, EntryStatus, GoBinaries, GoResolver, GoRuntimes, Layer, Loader, LoaderOptions,
     LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
 };
+use rutis_test_support::eventually_with;
 use serde_json::{json, Value};
 
 const PY_PROVIDER: &str = r#"
@@ -108,13 +110,12 @@ impl Probe {
     }
 
     async fn wait_for(&self, line: &str) {
-        tokio::time::timeout(Duration::from_secs(20), async {
-            while self.position(line).is_none() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
+        eventually_with(
+            || self.position(line).map(|_| ()),
+            &format!("{line:?} recorded"),
+            || format!("{:?}", self.lines()),
+        )
         .await
-        .unwrap_or_else(|_| panic!("{line:?} not recorded: {:?}", self.lines()));
     }
 }
 
@@ -243,36 +244,35 @@ impl Fixture {
     /// Wait for `line`; on a timeout, say where every row and Go runtime is.
     async fn expect(&self, line: &str) {
         let what = format!("{line:?} to be recorded");
-        self.until(&what, || self.probe.position(line).is_some())
+        self.wait_until(&what, || self.probe.position(line).is_some())
             .await;
     }
 
     /// Wait for `done`; on a timeout, say where every row and Go runtime is.
-    async fn until(&self, what: &str, mut done: impl FnMut() -> bool) {
-        let waited = tokio::time::timeout(Duration::from_secs(30), async {
-            while !done() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await;
-        if waited.is_err() {
-            let rows: Vec<String> = self
-                .loader
-                .entries()
-                .into_iter()
-                .map(|entry| format!("{}: {:?}", entry.id, entry.status))
-                .collect();
-            let runtimes: Vec<String> = self
-                .go
-                .runtimes()
-                .into_iter()
-                .map(|runtime| format!("{}: {:?}", runtime.name, runtime.state))
-                .collect();
-            panic!(
-                "timed out waiting for {what}; recorded: {:?}\nrows: {rows:#?}\ngo runtimes: {runtimes:?}",
-                self.probe.lines()
-            );
-        }
+    async fn wait_until(&self, what: &str, mut done: impl FnMut() -> bool) {
+        eventually_with(
+            || done().then_some(()),
+            what,
+            || {
+                let rows: Vec<String> = self
+                    .loader
+                    .entries()
+                    .into_iter()
+                    .map(|entry| format!("{}: {:?}", entry.id, entry.status))
+                    .collect();
+                let runtimes: Vec<String> = self
+                    .go
+                    .runtimes()
+                    .into_iter()
+                    .map(|runtime| format!("{}: {:?}", runtime.name, runtime.state))
+                    .collect();
+                format!(
+                    "recorded: {:?}\nrows: {rows:#?}\ngo runtimes: {runtimes:?}",
+                    self.probe.lines()
+                )
+            },
+        )
+        .await
     }
 }
 
@@ -347,7 +347,7 @@ async fn a_go_provider_that_goes_stops_its_users_first() {
     let all = all_rows(&fixture);
     loader.reconcile(layer(all.clone()), None).await.unwrap();
     fixture
-        .until("every row to run", || {
+        .wait_until("every row to run", || {
             ["pp", "pg", "jp", "jg", "gp", "gc", "gl"]
                 .iter()
                 .all(|id| row_state(loader, id) == Some(FiberState::Active))
@@ -357,7 +357,7 @@ async fn a_go_provider_that_goes_stops_its_users_first() {
     loader.reconcile(layer(remaining), None).await.unwrap();
     fixture.probe.wait_for("go provider: bye").await;
     fixture
-        .until("the users to wait", || {
+        .wait_until("the users to wait", || {
             ["pg", "jg", "gl"]
                 .iter()
                 .all(|id| row_state(loader, id) == Some(FiberState::Pending))
@@ -395,21 +395,32 @@ async fn a_go_provider_that_goes_stops_its_users_first() {
 async fn injected_services_gate_a_go_plugin() {
     let fixture = fixture().await;
     let loader = &fixture.loader;
+    let transitions = common::Transitions::on(&fixture.root);
     loader
         .reconcile(layer(vec![named("gg", "go:go_gated")]), None)
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let first = loader.get("gg").unwrap().plugin.unwrap();
     assert_eq!(row_state(loader, "gg"), Some(FiberState::Pending));
     let llm = fixture
         .root
         .provide_as::<dyn HostDispatch>(host_key("llm"), Arc::new(Llm))
         .unwrap();
     fixture.probe.wait_for("go gated: 42").await;
+    // It did not start before `llm`: its fibers loaded once, for it. An
+    // earlier start's Loading comes before the changes `loads` waits for
+    // (one fiber's changes arrive in order).
+    let fibers = [first, loader.get("gg").unwrap().plugin.unwrap()];
+    assert_eq!(
+        transitions.loads(&fibers).await,
+        1,
+        "{:?}",
+        fibers.map(|fiber| transitions.of(fiber))
+    );
     llm.dispose().await.unwrap();
     fixture.probe.wait_for("go gated: bye").await;
     fixture
-        .until("the row to wait again", || {
+        .wait_until("the row to wait again", || {
             row_state(loader, "gg") == Some(FiberState::Pending)
         })
         .await;

@@ -23,24 +23,12 @@ use rutis_bridge::{
 use rutis_loader::{
     Chain, Layer, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin,
 };
+use rutis_test_support::{eventually, within};
 use serde_json::json;
 use tokio::io::AsyncBufReadExt;
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
-}
-
-async fn eventually<T>(mut check: impl FnMut() -> Option<T>, what: &str) -> T {
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            if let Some(found) = check() {
-                return found;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -180,16 +168,19 @@ async fn remote_with_start_delay(language: Language, start_delay_ms: u64) -> Rem
         .spawn()
         .unwrap();
     let mut lines = tokio::io::BufReader::new(process.stderr.take().unwrap()).lines();
-    let address = loop {
-        let line = lines
-            .next_line()
-            .await
-            .unwrap()
-            .expect("the runtime's address");
-        if let Some(address) = line.strip_prefix("rutis: listening on ") {
-            break address.to_owned();
+    let address = within("the runtime's address", async {
+        loop {
+            let line = lines
+                .next_line()
+                .await
+                .unwrap()
+                .expect("the runtime's address");
+            if let Some(address) = line.strip_prefix("rutis: listening on ") {
+                break address.to_owned();
+            }
         }
-    };
+    })
+    .await;
     // What the runtime reports later goes to the test's output.
     tokio::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {
@@ -241,6 +232,7 @@ async fn controller_with_options(
         .retry(Retry {
             initial: Duration::from_millis(50),
             max: Duration::from_millis(300),
+            jitter: 0.0,
             ..Retry::default()
         });
     config.reconnect = reconnect;
@@ -372,8 +364,10 @@ async fn node_takeover_after_the_old_lease_is_gone() {
 #[tokio::test(flavor = "multi_thread")]
 async fn node_takeover_with_slow_start_and_cleanup() {
     // Stretch both cleanup and module loading beyond the maximum retry delay
-    // (including jitter). With reconnect left enabled on a, b is repeatedly
+    // (no jitter). With reconnect left enabled on a, b is repeatedly
     // evicted before applying its row; this used to time out waiting for b.
+    // clock: widen — the delays only make the window the regression needs;
+    // what `takeover` asserts holds whatever they are.
     takeover(Language::Node, 600).await;
 }
 
@@ -397,6 +391,8 @@ async fn go_takeover_after_the_old_lease_is_gone() {
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_takeover_with_a_slow_cleanup() {
+    // clock: widen — a cleanup slower than the maximum retry delay; what
+    // `takeover` asserts holds whatever it is.
     takeover(Language::Go, 400).await;
 }
 

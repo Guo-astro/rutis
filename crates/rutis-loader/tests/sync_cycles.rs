@@ -7,7 +7,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::time::Duration;
 
 use rutis::{Ctx, FiberState};
 use rutis_bridge::runtime::LocalRuntime;
@@ -17,12 +16,12 @@ use rutis_loader::{
     Chain, EntryStatus, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver,
     RuntimeRowsPlugin, ServiceCatalog,
 };
+use rutis_test_support::{recv_within, until, HANG_GUARD};
 use serde_json::{json, Value};
 
-/// The hang guard of every wait (Q7.1): a cycle the host misses hangs.
-/// The gate and each synchronous forward hold a worker of the test's
-/// runtime while they wait; the tests use 8, twice what they hold at most.
-const GUARD: Duration = Duration::from_secs(20);
+// Every wait is guarded by HANG_GUARD (Q7.1): a cycle the host misses
+// hangs. The gate and each synchronous forward hold a worker of the test's
+// runtime while they wait; the tests use 8, twice what they hold at most.
 
 // ── Two Node runtimes calling each other ────────────────────────
 // Services of different rows, so no two rows wait for each other's.
@@ -211,7 +210,7 @@ impl HostDispatch for Gate {
         state.waiting.push(name.clone());
         changed.notify_all();
         let (state, timeout) = changed
-            .wait_timeout_while(state, GUARD, |state| {
+            .wait_timeout_while(state, HANG_GUARD, |state| {
                 !state.open.contains(&name)
                     && !(state.parties > 0 && state.waiting.len() >= state.parties)
             })
@@ -257,16 +256,6 @@ fn active(loader: &Loader, id: &str) -> bool {
     )
 }
 
-async fn until(what: &str, mut done: impl FnMut() -> bool) {
-    tokio::time::timeout(GUARD, async {
-        while !done() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
-}
-
 fn service(root: &Ctx, name: &str) -> Option<Arc<dyn HostDispatch>> {
     root.get_as::<dyn HostDispatch>(host_key(name))
 }
@@ -289,7 +278,7 @@ fn call(root: &Ctx, name: &str, method: &str) -> mpsc::Receiver<Result<Value, St
 
 fn answer(result: &mpsc::Receiver<Result<Value, String>>, what: &str) -> Value {
     result
-        .recv_timeout(GUARD)
+        .recv_timeout(HANG_GUARD)
         .unwrap_or_else(|_| panic!("{what} hangs: the runtimes wait on each other"))
         .unwrap_or_else(|error| panic!("{what} failed: {error}"))
 }
@@ -408,12 +397,15 @@ async fn two_node_runtimes_calling_each_other() {
         .collect();
     fixture.loader.reconcile(rows(rows_of), None).await.unwrap();
     let (loader, root) = (fixture.loader.clone(), fixture.root.clone());
-    until("the rows and their services", || {
-        ["aw", "bw", "a", "b"].iter().all(|id| active(&loader, id))
-            && ["a_work", "b_work", "a_svc", "b_svc"]
-                .iter()
-                .all(|name| service(&root, name).is_some())
-    })
+    until(
+        || {
+            ["aw", "bw", "a", "b"].iter().all(|id| active(&loader, id))
+                && ["a_work", "b_work", "a_svc", "b_svc"]
+                    .iter()
+                    .all(|name| service(&root, name).is_some())
+        },
+        "the rows and their services",
+    )
     .await;
 
     // No false positive: a nested call back on the caller's chain
@@ -485,17 +477,20 @@ async fn one_node_and_two_python_runtimes() {
         .await
         .unwrap();
     let (loader, root) = (fixture.loader.clone(), fixture.root.clone());
-    until("the rows and their services", || {
-        ["n", "nb", "p1", "p2", "p2b"]
-            .iter()
-            .all(|id| active(&loader, id))
-            && services.iter().all(|name| service(&root, name).is_some())
-    })
+    until(
+        || {
+            ["n", "nb", "p1", "p2", "p2b"]
+                .iter()
+                .all(|id| active(&loader, id))
+                && services.iter().all(|name| service(&root, name).is_some())
+        },
+        "the rows and their services",
+    )
     .await;
 
     let go = call(&fixture.root, "n_svc", "go");
     // `slow` holds at the gate: Node waits for s1, s1 for slow.
-    assert_eq!(arrivals.recv_timeout(GUARD).unwrap(), "slow");
+    assert_eq!(recv_within("the slow call at the gate", &arrivals), "slow");
     let kick = call(&fixture.root, "p1_svc", "kick");
     let kicked = answer(&kick, "p1.kick");
     let kicked = kicked.as_str().unwrap();

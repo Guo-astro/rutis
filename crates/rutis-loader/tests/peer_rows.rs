@@ -3,6 +3,8 @@
 //! plugins for `main`, whose loader manages them as rows.
 #![cfg(feature = "peer")]
 
+mod common;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,23 +20,11 @@ use rutis_loader::{
     Chain, EntryStatus, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch,
     PeerResolver, PeerRowsPlugin,
 };
+use rutis_test_support::eventually;
 use serde_json::{json, Value};
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
-}
-
-async fn eventually<T>(mut check: impl FnMut() -> Option<T>, what: &str) -> T {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if let Some(found) = check() {
-                return found;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
 /// Installed on mac: provides `Greeting` with its config's text (keyed by
@@ -83,6 +73,10 @@ struct Nodes {
     starts: Arc<AtomicUsize>,
     host: FiberView,
     mac_link: FiberView,
+    /// main's fibers' state changes, from before its rows exist.
+    transitions: common::Transitions,
+    /// Each row's fiber before mac linked in.
+    placeholders: std::collections::HashMap<String, rutis::PluginId>,
 }
 
 fn greeting(mac: &Ctx) -> Option<String> {
@@ -103,10 +97,12 @@ async fn nodes(rows: Value) -> Nodes {
     let quick = Retry {
         initial: Duration::from_millis(20),
         max: Duration::from_millis(200),
+        jitter: 0.0,
         ..Retry::default()
     };
 
     let main = Ctx::root().unwrap();
+    let transitions = common::Transitions::on(&main);
     let resolver = Arc::new(PeerResolver::new());
     let plugin = LoaderPlugin::new(
         Chain::new().with_shared(resolver.clone()),
@@ -119,6 +115,12 @@ async fn nodes(rows: Value) -> Nodes {
         .reconcile(vec![Layer::new("rows", patches)], None)
         .await
         .unwrap();
+    // Before anything is linked: the rows' fibers on their placeholders.
+    let placeholders = loader
+        .entries()
+        .into_iter()
+        .filter_map(|entry| Some((entry.id, entry.plugin?)))
+        .collect();
     (&main.plugin(MemoryPlugin::with_transport(transport.clone())))
         .await
         .unwrap();
@@ -163,6 +165,8 @@ async fn nodes(rows: Value) -> Nodes {
         starts,
         host,
         mac_link,
+        transitions,
+        placeholders,
     }
 }
 
@@ -175,7 +179,20 @@ async fn rows_wait_for_the_host_then_run_there_once() {
     .await;
     let greeting_now = eventually(|| greeting(&nodes.mac), "the hosted row").await;
     assert_eq!(greeting_now, "hi");
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Started once, on its resolved declarations: the row's fibers loaded
+    // once. A start on the placeholder resolution, restarted once resolved,
+    // would have loaded before the changes `loads` waits for (one fiber's
+    // changes arrive in order), and the greeter would have run twice.
+    let fibers = [
+        nodes.placeholders["g"],
+        nodes.loader.get("g").unwrap().plugin.unwrap(),
+    ];
+    assert_eq!(
+        nodes.transitions.loads(&fibers).await,
+        1,
+        "{:?}",
+        fibers.map(|fiber| nodes.transitions.of(fiber))
+    );
     assert_eq!(
         nodes.starts.load(Ordering::SeqCst),
         1,
@@ -429,6 +446,7 @@ async fn nodes_hosting_for_each_other_start_and_reconnect_without_deadlock() {
     let quick = Retry {
         initial: Duration::from_millis(20),
         max: Duration::from_millis(200),
+        jitter: 0.0,
         ..Retry::default()
     };
     async fn node(

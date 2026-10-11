@@ -8,7 +8,6 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
@@ -21,6 +20,7 @@ use rutis_bridge::{Credential, IdentityPlugin, LinkConfig, LinkPlugin, StaticIde
 use rutis_loader::{
     Chain, Layer, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin,
 };
+use rutis_test_support::{eventually, within};
 use serde_json::{json, Value};
 use tokio::io::AsyncBufReadExt;
 
@@ -62,19 +62,6 @@ fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
 }
 
-async fn eventually<T>(mut check: impl FnMut() -> Option<T>, what: &str) -> T {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            if let Some(found) = check() {
-                return found;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
-}
-
 /// Start the remote runtime: `gpu`, accepting `main` with a token.
 async fn remote_python(project: &Path) -> (tokio::process::Child, String) {
     let python = std::env::var("RUTIS_PYTHON")
@@ -92,16 +79,19 @@ async fn remote_python(project: &Path) -> (tokio::process::Child, String) {
         .spawn()
         .unwrap();
     let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
-    let address = loop {
-        let line = lines
-            .next_line()
-            .await
-            .unwrap()
-            .expect("the runtime's address");
-        if let Some(address) = line.strip_prefix("rutis: listening on ") {
-            break address.to_owned();
+    let address = within("the runtime's address", async {
+        loop {
+            let line = lines
+                .next_line()
+                .await
+                .unwrap()
+                .expect("the runtime's address");
+            if let Some(address) = line.strip_prefix("rutis: listening on ") {
+                break address.to_owned();
+            }
         }
-    };
+    })
+    .await;
     // What the runtime reports later goes to the test's output.
     tokio::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {
@@ -229,16 +219,19 @@ async fn a_remote_node_runtime_resolves_and_runs_npm_rows() {
         .spawn()
         .unwrap();
     let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
-    let address = loop {
-        let line = lines
-            .next_line()
-            .await
-            .unwrap()
-            .expect("the runtime's address");
-        if let Some(address) = line.strip_prefix("rutis: listening on ") {
-            break address.to_owned();
+    let address = within("the runtime's address", async {
+        loop {
+            let line = lines
+                .next_line()
+                .await
+                .unwrap()
+                .expect("the runtime's address");
+            if let Some(address) = line.strip_prefix("rutis: listening on ") {
+                break address.to_owned();
+            }
         }
-    };
+    })
+    .await;
     // What the runtime reports later goes to the test's output.
     tokio::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {

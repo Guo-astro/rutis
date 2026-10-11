@@ -7,7 +7,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use rutis::{Ctx, FiberState};
 use rutis_bridge::runtime::LocalRuntime;
@@ -17,6 +16,7 @@ use rutis_loader::{
     Chain, EntryStatus, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver,
     RuntimeRowsPlugin, ServiceCatalog,
 };
+use rutis_test_support::{eventually, eventually_with, within};
 use serde_json::{json, Value};
 
 const BUN_PROVIDER: &str = r#"
@@ -124,13 +124,19 @@ impl HostDispatch for Probe {
 
 impl Probe {
     async fn wait_for(&self, line: &str) {
-        tokio::time::timeout(Duration::from_secs(20), async {
-            while !self.0.lock().unwrap().iter().any(|l| l == line) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
+        eventually_with(
+            || {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|l| l == line)
+                    .then_some(())
+            },
+            &format!("{line:?} recorded"),
+            || format!("{:?}", self.0.lock().unwrap()),
+        )
         .await
-        .unwrap_or_else(|_| panic!("{line:?} not recorded: {:?}", self.0.lock().unwrap()));
     }
 }
 
@@ -310,20 +316,19 @@ async fn a_synchronous_chain_crosses_bun_and_python_and_back() {
         .await
         .unwrap();
     assert!(report.failures.is_empty(), "{report:?}");
-    let relay = loop {
-        if let Some(relay) = fixture.root.get_as::<dyn HostDispatch>(host_key("relay")) {
-            if state(&fixture.loader, "r") == Some(FiberState::Active) {
-                break relay;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    };
-    let answer = tokio::time::timeout(
-        Duration::from_secs(10),
+    let relay = eventually(
+        || {
+            let relay = fixture.root.get_as::<dyn HostDispatch>(host_key("relay"))?;
+            (state(&fixture.loader, "r") == Some(FiberState::Active)).then_some(relay)
+        },
+        "the relay row and its service",
+    )
+    .await;
+    let answer = within(
+        "the chain (a cycle of waits hangs)",
         tokio::task::spawn_blocking(move || relay.invoke("ask", json!([]).into())),
     )
     .await
-    .expect("the chain does not wait for ever")
     .unwrap()
     .unwrap();
     assert_eq!(answer.json().unwrap(), json!("py heard from bun"));

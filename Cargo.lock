@@ -3209,6 +3209,7 @@ version = "0.9.1"
 dependencies = [
  "rutis",
  "rutis-bridge",
+ "rutis-test-support",
  "schemars",
  "serde",
  "serde_json",
