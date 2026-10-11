@@ -49,6 +49,32 @@ test('a message longer than the limit ends the channel', async () => {
   a.destroy()
 })
 
+test('invalid UTF-8 ends the channel, even split across two reads', async () => {
+  for (const parts of [[Buffer.from('{"a":"\xff"}\n', 'latin1')], [Buffer.from([0x22, 0xe2, 0x82]), Buffer.from([0x22, 0x0a])]]) {
+    const [a, b] = await pair()
+    const got = collect()
+    frame(b, got.handlers)
+    a.write('ok\n')
+    for (const part of parts) { a.write(part); await Bun.sleep(10) }
+    a.write('never\n')
+    expect(await got.ended).toBe('received a message that is not valid UTF-8')
+    expect(got.messages).toEqual(['ok'])
+    a.destroy()
+  }
+})
+
+test('a leading BOM is kept, not stripped, and a valid split character is one', async () => {
+  const [a, b] = await pair()
+  const got = collect()
+  frame(b, got.handlers)
+  a.write(Buffer.from([0xef, 0xbb, 0xbf, 0x7b, 0x7d, 0x0a, 0xe2, 0x82]))
+  await Bun.sleep(10)
+  a.write(Buffer.from([0xac, 0x0a]))
+  a.end()
+  expect(await got.ended).toBeUndefined()
+  expect(got.messages).toEqual(['\ufeff{}', '\u20ac'])
+})
+
 test('a stream that ends inside a message fails', async () => {
   const [a, b] = await pair()
   const got = collect()

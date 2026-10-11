@@ -494,6 +494,13 @@ pub fn rebase(path: &[String], from: &str, to: &str) -> Vec<String> {
 }
 static NEXT_TAG: AtomicU64 = AtomicU64::new(1);
 
+/// What this side declares in a compat-format handshake: it marks its
+/// synchronous waits, and takes such marks (#228).
+const COMPAT_CAPABILITIES: [&str; 1] = ["sync-wait"];
+/// What a compat-format handshake may declare that means anything here; any
+/// other capability there is ignored, as before the format had any.
+const COMPAT_DECLARED: [&str; 3] = ["sync-wait", "sync-stack", "reentrant-sync"];
+
 struct Import {
     peer: Weak<SessionState>,
     id: u64,
@@ -602,6 +609,22 @@ struct Calls {
     closed: Option<Error>,
 }
 
+/// A call recorded in the wait graph ([`waits::forward`]) that leaves it
+/// unless it was sent.
+struct Unsent(Option<(String, String)>);
+impl Unsent {
+    fn sent(mut self) {
+        self.0 = None;
+    }
+}
+impl Drop for Unsent {
+    fn drop(&mut self) {
+        if let Some((session, id)) = self.0.take() {
+            waits::returned(&session, &id);
+        }
+    }
+}
+
 /// Cancels an async call whose future is dropped before it completes.
 struct CancelOnDrop {
     peer: Weak<SessionState>,
@@ -654,7 +677,8 @@ pub struct Endpoint {
     pub expected: Option<PeerId>,
     pub implementation: Implementation,
     /// What this side supports: `objects`, `signals`, `reentrant-sync`,
-    /// `forwarding`. Capabilities grant no permission.
+    /// `forwarding`, `sync-wait` (and, for a runtime with one thread and one
+    /// stack, `sync-stack`). Capabilities grant no permission.
     pub capabilities: Vec<String>,
 }
 
@@ -669,9 +693,15 @@ impl Endpoint {
                 name: "rutis-bridge".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
             },
-            capabilities: ["objects", "signals", "reentrant-sync", "forwarding"]
-                .map(String::from)
-                .to_vec(),
+            capabilities: [
+                "objects",
+                "signals",
+                "reentrant-sync",
+                "forwarding",
+                "sync-wait",
+            ]
+            .map(String::from)
+            .to_vec(),
         }
     }
 
@@ -703,6 +733,8 @@ struct SessionState {
     /// The far end's: `node:`, or `<endpoint>:` once it greeted.
     remote_prefix: std::sync::OnceLock<String>,
     greeting: std::sync::OnceLock<Greeting>,
+    /// What the far end declared in a compat-format handshake, if anything.
+    compat_capabilities: std::sync::OnceLock<Vec<String>>,
     writer: Mutex<Box<dyn Sender>>,
     closer: Arc<dyn Closer>,
     calls: Mutex<Calls>,
@@ -751,11 +783,12 @@ impl Connection {
             Format::Compat => (
                 "rust:".to_owned(),
                 std::sync::OnceLock::from("node:".to_owned()),
+                // Older runtimes ignore capabilities in a compat handshake.
                 Frame::Hello {
                     version: VERSION,
                     endpoint: None,
                     implementation: None,
-                    capabilities: None,
+                    capabilities: Some(COMPAT_CAPABILITIES.map(String::from).to_vec()),
                 },
             ),
             Format::Endpoint(endpoint) => (
@@ -776,6 +809,7 @@ impl Connection {
             local_prefix,
             remote_prefix,
             greeting: std::sync::OnceLock::new(),
+            compat_capabilities: std::sync::OnceLock::new(),
             closer,
             writer: Mutex::new(sender),
             calls: Mutex::new(Calls::default()),
@@ -839,11 +873,32 @@ impl Connection {
         self.0.greeting.get()
     }
 
-    /// Whether the far end declared `capability` (endpoint format). A
-    /// compat session declares none.
+    /// Whether the far end declared `capability`: in the endpoint format,
+    /// any; in the compat format, only those of [`COMPAT_DECLARED`] (older
+    /// far ends declare nothing there).
     pub fn supports(&self, capability: &str) -> bool {
-        self.greeting()
-            .is_some_and(|greeting| greeting.capabilities.iter().any(|c| c == capability))
+        let declared = match self.greeting() {
+            Some(greeting) => &greeting.capabilities,
+            None => match self.0.compat_capabilities.get() {
+                Some(capabilities) => capabilities,
+                None => return false,
+            },
+        };
+        declared.iter().any(|c| c == capability)
+    }
+    /// After the handshake: what the far end does while it waits
+    /// synchronously, for the wait-cycle check ([`waits`]).
+    fn record_profile(&self) {
+        waits::profile(
+            &self.0.tag,
+            waits::Profile {
+                // One thread, one stack: declared, not inferred (a Rust far
+                // end marks its waits but runs each call on its own thread).
+                stacked: self.supports("sync-wait") && self.supports("sync-stack"),
+                // Not declared: taken as non-reentrant (#228).
+                reentrant: self.supports("reentrant-sync"),
+            },
+        );
     }
     pub async fn ready(&self) -> Result<(), Error> {
         let mut ready = self.0.ready.subscribe();
@@ -874,6 +929,7 @@ impl Connection {
                 return;
             }
             calls.closed = Some(error.clone());
+            waits::ended(&self.0.tag);
             (
                 std::mem::take(&mut calls.waiting),
                 std::mem::take(&mut calls.incoming),
@@ -995,9 +1051,21 @@ impl Connection {
                 .next
                 .checked_add(1)
                 .ok_or_else(|| transport("call identifiers exhausted"))?;
-            format!("{}{}", self.0.local_prefix, calls.next)
+            (format!("{}{}", self.0.local_prefix, calls.next), calls.next)
         };
+        let (id, sequence) = id;
         let mut path = current_path();
+        // A call forwarded for a caller that waits synchronously: refused,
+        // not sent, if it would close a cycle of synchronous waits (#228).
+        let hop = waits::forward(&self.0.tag, &id, sequence, &path).map_err(|cycle| {
+            Error::SyncWaitCycle(format!(
+                "this synchronous call would wait on itself: {}",
+                cycle.join(" -> ")
+            ))
+        })?;
+        // Leaves the wait graph if the call is not sent after all.
+        let unsent = Unsent(hop.then(|| (self.0.tag.clone(), id.clone())));
+        let sync = matches!(waiting, Waiting::Sync { .. }) && self.supports("sync-wait");
         if let Operation::Await(_, origin) = &call {
             if let Waiting::Sync { origins, .. } = &mut waiting {
                 *origins = origin.clone();
@@ -1015,6 +1083,7 @@ impl Connection {
                 target: target.clone(),
                 method: method.clone(),
                 args: self.encode(args)?,
+                sync,
             },
             Operation::Call(reference, method, args) => Frame::Call {
                 id: id.clone(),
@@ -1022,17 +1091,20 @@ impl Connection {
                 reference: *reference,
                 method: method.clone(),
                 args: self.encode(args)?,
+                sync,
             },
             Operation::Get(reference, property) => Frame::Get {
                 id: id.clone(),
                 path,
                 reference: *reference,
                 property: property.clone(),
+                sync,
             },
             Operation::Await(reference, _) => Frame::Await {
                 id: id.clone(),
                 path,
                 reference: *reference,
+                sync,
             },
         };
         let mut blocked = Vec::new();
@@ -1075,6 +1147,7 @@ impl Connection {
             self.close(error.clone());
             return Err(error);
         }
+        unsent.sent();
         for (id, object) in blocked {
             self.finish_await(id, object.ready_on_blocked_executor());
         }
@@ -1126,6 +1199,7 @@ impl Connection {
                 calls.cancelled.insert(id.to_owned());
             }
         }
+        waits::returned(&self.0.tag, id);
         let _ = self.write(Frame::Cancel { id: id.to_owned() });
     }
     /// Late replies discarded after cancellations.
@@ -1194,7 +1268,13 @@ impl Connection {
                 id
             }
         };
-        grant(&mut exports, id, grants)
+        let mut wire = grant(&mut exports, id, grants)?;
+        // Runtimes before #225 accept only their own ids in a compat-format
+        // origin, as for relays; the object keeps its whole chain here.
+        if let (Format::Compat, WireValue::Reference { origin, .. }) = (&self.0.format, &mut wire) {
+            origin.retain(|entry| !entry.contains('/'));
+        }
+        Ok(wire)
     }
     fn decode(&self, value: WireValue) -> Reply {
         Ok(match value {
@@ -1294,6 +1374,15 @@ impl Connection {
                     "the far end speaks protocol {version}, this side {VERSION}"
                 )));
             }
+            if let Some(capabilities) = capabilities {
+                let _ = self.0.compat_capabilities.set(
+                    capabilities
+                        .into_iter()
+                        .filter(|c| COMPAT_DECLARED.contains(&c.as_str()))
+                        .collect(),
+                );
+            }
+            self.record_profile();
             return Ok(());
         };
         if version != crate::session::ENDPOINT_PROTOCOL {
@@ -1330,9 +1419,13 @@ impl Connection {
             implementation,
             capabilities: capabilities.unwrap_or_default(),
         });
+        self.record_profile();
         Ok(())
     }
     fn reply_target(&self, id: &str) -> Result<Option<Waiting>, Error> {
+        // On the reader thread, before any later frame of this session is
+        // read: the order the wait-cycle check relies on.
+        waits::returned(&self.0.tag, id);
         let mut calls = self.0.calls.lock().unwrap();
         if let Some(waiting) = calls.waiting.remove(id) {
             return Ok(Some(waiting));
@@ -1374,7 +1467,7 @@ impl Connection {
         if !matches!(*self.0.ready.borrow(), Some(Ok(()))) {
             return Err(transport("request before protocol handshake"));
         }
-        let (id, mut path, call) = match frame {
+        let (id, mut path, call, sync) = match frame {
             Frame::Return { id, value } => {
                 // Decode first: a discarded late reply still releases the
                 // references it granted when its values drop.
@@ -1397,6 +1490,8 @@ impl Connection {
                     let mut calls = self.0.calls.lock().unwrap();
                     (calls.awaiting.remove(&id), calls.incoming.remove(&id))
                 };
+                // The caller no longer waits for it.
+                waits::answered(&self.0.tag, &id);
                 drop((awaiting, incoming));
                 return Ok(());
             }
@@ -1428,10 +1523,12 @@ impl Connection {
                 target,
                 method,
                 args,
+                sync,
             } => (
                 id,
                 path,
                 Accepted::Invoke(target, method, self.decode(args)?),
+                sync,
             ),
             // Rust exports objects only as relays of other sessions' objects.
             Frame::Call {
@@ -1440,20 +1537,24 @@ impl Connection {
                 reference,
                 method: Some(method),
                 args,
+                sync,
             } => (
                 id,
                 path,
                 Accepted::Method(self.export_object(reference)?, method, self.decode(args)?),
+                sync,
             ),
             Frame::Get {
                 id,
                 path,
                 reference,
                 property,
+                sync,
             } => (
                 id,
                 path,
                 Accepted::Get(self.export_object(reference)?, property),
+                sync,
             ),
             Frame::Call {
                 id,
@@ -1461,16 +1562,19 @@ impl Connection {
                 reference,
                 method: None,
                 args,
+                sync,
             } => (
                 id,
                 path,
                 Accepted::Call(self.export(reference)?, self.decode(args)?),
+                sync,
             ),
             Frame::Await {
                 id,
                 path,
                 reference,
-            } => (id, path, Accepted::Await(self.export(reference)?)),
+                sync,
+            } => (id, path, Accepted::Await(self.export(reference)?), sync),
             Frame::Hello { .. } => unreachable!(),
         };
         if !id.starts_with(self.remote_prefix()) || path.contains(&id) {
@@ -1501,6 +1605,14 @@ impl Connection {
             | Accepted::Get(object, _) => object.executor.handle.clone(),
             Accepted::Invoke(..) => self.0.executor.clone(),
         };
+        // Its caller waits for it synchronously: what it forwards to another
+        // session is checked for wait cycles. Marked before anything can run
+        // or answer it, and outside this session's locks (the table is the
+        // whole process's); a call refused below closes the session, which
+        // drops its marks.
+        if sync {
+            waits::marked(&self.0.tag, &incoming.id);
+        }
         let delivery = {
             let mut calls = self.0.calls.lock().unwrap();
             if let Some(error) = &calls.closed {
@@ -1650,6 +1762,7 @@ impl Connection {
         }
     }
     fn respond(&self, id: String, result: Reply) {
+        waits::answered(&self.0.tag, &id);
         let result = {
             let mut writer = self.0.writer.lock().unwrap();
             let frame = match &result {
@@ -1719,6 +1832,7 @@ fn ended(label: &str, error: ChannelError) -> Error {
 }
 
 mod relay;
+mod waits;
 use relay::Relayed;
 
 // The tests script the far end over a memory channel.

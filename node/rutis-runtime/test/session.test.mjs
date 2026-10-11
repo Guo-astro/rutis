@@ -82,6 +82,22 @@ test('explicit release accounts repeated live imports without relying on GC', as
   peer.close()
 })
 
+test('a reference whose origin holds another session\'s tagged ids is taken (#225)', async () => {
+  const { peer, incoming, fault } = harness(() => {})
+  const origin = ['s1/rust:7', 's1/node:2', 'rust:12', 'node:1']
+  incoming.push({ op: 'return', id: 'node:1', value: { type: 'reference', value: { id: 1, kind: 'future', home: false, origin } } })
+  assert.ok(peer.invoke('test', 'later', []) instanceof Promise)
+  assert.equal(fault(), undefined)
+  // Untagged ids of another kind, and doubly tagged ones, are still refused.
+  for (const bad of ['py:1', 's1/s2/node:1', 's1/node:0']) {
+    const other = harness(() => {})
+    other.incoming.push({ op: 'return', id: 'node:1', value: { type: 'reference', value: { id: 1, kind: 'future', home: false, origin: [bad] } } })
+    assert.throws(() => other.peer.invoke('test', 'later', []), /invalid reference/, bad)
+    assert.match(other.fault()?.message ?? '', /invalid reference/, bad)
+  }
+  peer.close()
+})
+
 test('unsupported nested references fail explicitly and roll back partial grants', async () => {
   const callback = () => 42
   const { peer, sent, incoming, fault } = harness(() => {})

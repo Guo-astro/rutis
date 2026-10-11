@@ -26,6 +26,9 @@ export const TOKEN = 'RUTIS_CHANNEL_TOKEN'
 export const MAX_MESSAGE = 16 * 1024 * 1024
 // How long a channel that ended its side waits for the far end's end.
 const END_GRACE = 1000
+// Strict: invalid UTF-8 is not a frame, and decoding must not replace it
+// quietly; a leading BOM is kept, so the frame fails as JSON, as elsewhere.
+const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 export interface Handlers {
   message(text: string): void
@@ -53,7 +56,9 @@ export function frame(stream: Socket, { message, closed }: Handlers, limit = MAX
       const line = chunks.length ? Buffer.concat([...chunks, piece], length + piece.length) : piece
       chunks = []; length = 0
       start = at + 1
-      message(line.toString('utf8'))
+      let text: string
+      try { text = UTF8.decode(line) } catch { return fail('received a message that is not valid UTF-8') }
+      message(text)
       if (stream.destroyed) return
     }
     if (start < data.length) {
@@ -64,8 +69,9 @@ export function frame(stream: Socket, { message, closed }: Handlers, limit = MAX
   })
   stream.once('end', () => { if (length) failure ??= 'stream ended inside a message' })
   stream.once('close', () => closed(failure))
-  function tooLong() {
-    failure ??= `a message is longer than ${limit} bytes`
+  function tooLong() { fail(`a message is longer than ${limit} bytes`) }
+  function fail(reason: string) {
+    failure ??= reason
     chunks = []; length = 0
     stream.destroy()
   }

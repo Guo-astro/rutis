@@ -12,7 +12,7 @@ TLC explores every interleaving of language runtimes calling each other synchron
 | Which Rust thread gets an incoming call | M1 §7.2 | `rpc.rs` `receive`: the last id in `path` that a thread is synchronously waiting for |
 | Node runtime: non-reentrant | Multi-language design §9; [plugin API](../../docs/guide/plugin-api.en.md), "sync calls and reentrancy" | `node/rutis-runtime/src/session.mjs` `#requestSync`, `#run`: while waiting, runs only calls whose `path` names a call it waits for; puts the rest aside until its stack is empty |
 | Python runtime: reentrant | same | `python/rutis/rutis/peer.py` `_call_sync`, `_run`: while waiting, runs every incoming call |
-| Policies A and B | Multi-language design §9 | not implemented |
+| Policy B (A is not adopted) | Multi-language design §9 | `crates/rutis-bridge/src/session/rpc/waits.rs` (#228); the `sync` field of call frames and the `sync-wait` capability in `session.mjs`, `peer.py`, `bun/rutis-bun/src/session.ts` |
 
 ## Model
 

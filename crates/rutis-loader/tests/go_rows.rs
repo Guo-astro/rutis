@@ -127,14 +127,61 @@ fn runtime_state(runtimes: &GoRuntimesHandle, name: &str) -> Option<GoRuntimeSta
         .map(|runtime| runtime.state)
 }
 
-async fn until(what: &str, mut done: impl FnMut() -> bool) {
-    tokio::time::timeout(Duration::from_secs(20), async {
+async fn until(what: &str, done: impl FnMut() -> bool) {
+    until_or(what, done, String::new).await;
+}
+
+/// [`until`], saying what `describe` finds when it times out.
+async fn until_or(what: &str, mut done: impl FnMut() -> bool, describe: impl FnOnce() -> String) {
+    let waited = tokio::time::timeout(Duration::from_secs(20), async {
         while !done() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+    .await;
+    if waited.is_err() {
+        panic!("timed out waiting for {what}{}", describe());
+    }
+}
+
+/// Where the Go runtimes, the rows `ids` and the processes the local
+/// transport started are: for a wait that timed out.
+fn situation(fixture: &Fixture, ids: &[&str]) -> String {
+    let runtimes: Vec<String> = fixture
+        .runtimes
+        .runtimes()
+        .into_iter()
+        .map(|runtime| format!("{}: {:?}", runtime.name, runtime.state))
+        .collect();
+    let rows: Vec<String> = ids
+        .iter()
+        .map(|id| match fixture.loader.get(id) {
+            Some(entry) => format!("{id}: {:?}", entry.status),
+            None => format!("{id}: none"),
+        })
+        .collect();
+    let processes: Vec<String> = rutis_bridge::transport::local::running_processes()
+        .into_iter()
+        .map(|pid| match alive(pid) {
+            Some(true) => format!("{pid} (alive)"),
+            Some(false) => format!("{pid} (gone)"),
+            None => pid.to_string(),
+        })
+        .collect();
+    format!("\nruntimes: {runtimes:?}\nrows: {rows:?}\nprocesses not waited for: {processes:?}")
+}
+
+/// Whether the process `pid` still exists (a zombie not waited for does);
+/// `None` where this cannot tell (Windows has no `kill -0`).
+fn alive(pid: u32) -> Option<bool> {
+    if !cfg!(unix) {
+        return None;
+    }
+    let status = std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status();
+    Some(status.is_ok_and(|status| status.success()))
 }
 
 fn service(root: &Ctx, name: &str) -> Option<Arc<dyn HostDispatch>> {
@@ -300,20 +347,29 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
         .await
         .unwrap();
     let loader = fixture.loader.clone();
-    until("three rows", || {
-        ["ping", "caller", "spare"]
-            .iter()
-            .all(|id| state(&loader, id) == Some(FiberState::Active))
+    // A row's services are published once its runtime reports them, after
+    // the row is active.
+    until("three rows and their services", || {
+        ["ping", "caller", "spare"].iter().all(|id| {
+            state(&loader, id) == Some(FiberState::Active) && service(&fixture.root, id).is_some()
+        })
     })
     .await;
-    let _ = call(&fixture.root, "ping", "crash", json!([])).await;
+    let crashed = call(&fixture.root, "ping", "crash", json!([])).await;
     let runtimes = fixture.runtimes.clone();
-    until("the crashed runtime", || {
-        matches!(
-            runtime_state(&runtimes, "go-netkit"),
-            Some(GoRuntimeState::Stopped(_))
-        )
-    })
+    until_or(
+        "the crashed runtime",
+        || {
+            matches!(
+                runtime_state(&runtimes, "go-netkit"),
+                Some(GoRuntimeState::Stopped(_))
+            )
+        },
+        || {
+            let situation = situation(&fixture, &["ping", "caller", "spare"]);
+            format!("\nthe crash call: {crashed:?}{situation}")
+        },
+    )
     .await;
     until("its rows and their users stop", || {
         state(&loader, "ping") != Some(FiberState::Active)
@@ -340,9 +396,10 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
     ));
     // A restart does.
     fixture.runtimes.restart("go-netkit").await.unwrap();
-    until("the rows again", || {
-        state(&loader, "ping") == Some(FiberState::Active)
-            && state(&loader, "caller") == Some(FiberState::Active)
+    until("the rows and their services again", || {
+        ["ping", "caller"].iter().all(|id| {
+            state(&loader, id) == Some(FiberState::Active) && service(&fixture.root, id).is_some()
+        })
     })
     .await;
     assert_eq!(

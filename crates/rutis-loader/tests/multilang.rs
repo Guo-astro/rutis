@@ -130,6 +130,30 @@ export default definePlugin({
 })
 "#;
 
+// Python → Node → Python: a Python row awaits a JS service that awaits a
+// Python one (#225).
+const PY_ROUND_TRIP: &str = r#"
+inject = ["js_relay", "probe"]
+
+
+async def apply(ctx, config):
+    probe = ctx.use("probe")
+    probe.record(f"py round trip: {await ctx.use('js_relay').relay()}")
+    return lambda: probe.record("py round trip: bye")
+"#;
+
+const JS_RELAY: &str = r#"
+import { definePlugin } from 'PLUGIN'
+export default definePlugin({
+  inject: ['py_weather'],
+  provides: { js_relay: { relay: 'async' } },
+  apply(ctx) {
+    const weather = ctx.use('py_weather')
+    ctx.provide('js_relay', { async relay() { return `js relays ${await weather.later()}` } })
+  },
+})
+"#;
+
 // ── Harness ─────────────────────────────────────────────────────
 
 #[derive(Clone, Default)]
@@ -196,6 +220,7 @@ fn write_plugins(dir: &Path) -> (PathBuf, PathBuf) {
         ("py_consumer", PY_CONSUMER),
         ("py_local", PY_LOCAL),
         ("py_gated", PY_GATED),
+        ("py_round_trip", PY_ROUND_TRIP),
     ] {
         std::fs::write(py.join(format!("{name}.py")), text).unwrap();
     }
@@ -209,6 +234,7 @@ fn write_plugins(dir: &Path) -> (PathBuf, PathBuf) {
         ("js_consumer", JS_CONSUMER),
         ("js_local", JS_LOCAL),
         ("js_gated", JS_GATED),
+        ("js_relay", JS_RELAY),
     ] {
         std::fs::write(
             js.join(format!("{name}.mjs")),
@@ -239,7 +265,7 @@ async fn fixture() -> Fixture {
     root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let mut catalog = ServiceCatalog::new();
-    for name in ["probe", "llm", "py_weather", "js_weather"] {
+    for name in ["probe", "llm", "py_weather", "js_weather", "js_relay"] {
         catalog.register_shared(name);
     }
     let node = LocalRuntime::node(
@@ -338,6 +364,35 @@ async fn both_runtimes_start_cold_and_use_each_other() {
     probe.wait_for("js local: native").await;
     assert_eq!(fixture.node.state().state, FiberState::Active);
     assert_eq!(fixture.python.state().state, FiberState::Active);
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// Python awaits a Node service that awaits a Python one: the reply carries a
+/// future whose origin holds ids of the other session, tagged with it
+/// (`s1/node:2`), which the Node runtime refused, ending its session and
+/// with it the process (#225).
+/// risk: C4, C6
+#[tokio::test(flavor = "multi_thread")]
+async fn python_awaits_node_that_awaits_python() {
+    let fixture = fixture().await;
+    let report = fixture
+        .loader
+        .reconcile(
+            rows(vec![
+                py_row("pp", "py_provider"),
+                js_row(&fixture, "relay", "js_relay"),
+                py_row("rt", "py_round_trip"),
+            ]),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(report.failures.is_empty(), "{report:?}");
+    fixture
+        .probe
+        .wait_for("py round trip: js relays py later")
+        .await;
+    assert_eq!(fixture.node.state().state, FiberState::Active);
     fixture.root.shutdown().await.unwrap();
 }
 

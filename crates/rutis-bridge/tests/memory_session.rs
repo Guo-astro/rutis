@@ -31,9 +31,10 @@ async fn a_session_runs_on_a_memory_channel() {
     let (local, mut remote) = rutis_bridge::transport::memory::pair();
     let session = Connection::open(local, Arc::new(Echo)).unwrap();
     let far = std::thread::spawn(move || {
+        // Older far ends ignore the capabilities of a compat handshake.
         assert_eq!(
             read(&mut remote),
-            json!({ "op": "hello", "version": PROTOCOL })
+            json!({ "op": "hello", "version": PROTOCOL, "capabilities": ["sync-wait"] })
         );
         send(&mut remote, json!({ "op": "hello", "version": PROTOCOL }));
         // A call from here reaches the far end.

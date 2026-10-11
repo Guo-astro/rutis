@@ -13,10 +13,11 @@ use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use crate::channel::{Channel, ChannelError, Receiver};
+use crate::channel::{Channel, ChannelError, Closer, Receiver, Sender};
 use tokio::sync::{oneshot, watch};
 
 use crate::runtime::Error;
@@ -96,7 +97,7 @@ async fn loopback(mut command: tokio::process::Command, first: &Path) -> Result<
         })),
     };
     let child = Child::watch(child);
-    let channel = on_disconnect(channel, Box::new(child.disconnected()));
+    let channel = on_exit(channel, &child);
     Ok(Spawned {
         channel: traced(channel),
         child,
@@ -137,6 +138,92 @@ pub(crate) fn on_disconnect(
     channel
 }
 
+/// A send to a process that left says how it ended, as the receiver does.
+/// Its failure comes from the same end, often before the receiver has seen
+/// it, and would otherwise end the session first with its own error
+/// ("the channel ended", a broken pipe) (#250).
+///
+/// The local transport's `EndedSender` does the same for the runtimes it
+/// starts. Its closer ends the process, so its wait ends either way; this
+/// closer does not, so a close from this side, and a message the framing
+/// refuses, fail at once here instead of waiting for the process.
+struct ExitSender {
+    sender: Box<dyn Sender>,
+    ended: Arc<(Mutex<Option<String>>, Condvar)>,
+    closed: Arc<AtomicBool>,
+}
+
+impl Sender for ExitSender {
+    fn send(&mut self, message: &[u8]) -> Result<(), ChannelError> {
+        self.sender.send(message).map_err(|error| {
+            // Refused by the framing (over its limit, a raw newline):
+            // nothing the process did.
+            if crate::transport::local::lines::refuses(message) {
+                return error;
+            }
+            // Closed here, before or while waiting: the session ends for
+            // that.
+            match ended_unless(&self.ended, HANG_GUARD, || {
+                self.closed.load(Ordering::SeqCst)
+            }) {
+                Some(ended) => ChannelError::Closed {
+                    reason: ended.to_string(),
+                },
+                None => error,
+            }
+        })
+    }
+}
+
+/// Notes that this side closed the channel, for [`ExitSender`], waking a
+/// send that waits for the process.
+struct ClosedHere {
+    closer: Arc<dyn Closer>,
+    ended: Arc<(Mutex<Option<String>>, Condvar)>,
+    closed: Arc<AtomicBool>,
+}
+
+impl ClosedHere {
+    fn note(&self) {
+        let (status, changed) = &*self.ended;
+        let status = status.lock().unwrap();
+        self.closed.store(true, Ordering::SeqCst);
+        drop(status);
+        changed.notify_all();
+    }
+}
+
+impl Closer for ClosedHere {
+    fn close(&self, reason: &str) {
+        self.note();
+        self.closer.close(reason);
+    }
+
+    fn replaced(&self) {
+        self.note();
+        self.closer.replaced();
+    }
+}
+
+/// The channel of the process `child` started, ending either way with how
+/// the process ended. It must frame as
+/// [`lines`](crate::transport::local::lines) does, with its default limit.
+fn on_exit(channel: Channel, child: &Child) -> Channel {
+    let mut channel = on_disconnect(channel, Box::new(child.disconnected()));
+    let closed = Arc::new(AtomicBool::new(false));
+    channel.sender = Box::new(ExitSender {
+        sender: channel.sender,
+        ended: child.ended.clone(),
+        closed: closed.clone(),
+    });
+    channel.closer = Arc::new(ClosedHere {
+        closer: channel.closer,
+        ended: child.ended.clone(),
+        closed,
+    });
+    channel
+}
+
 #[cfg(unix)]
 fn inherit(mut command: tokio::process::Command, first: &Path) -> Result<Spawned, Error> {
     let (ours, theirs) = UnixStream::pair().map_err(transport)?;
@@ -153,7 +240,7 @@ fn inherit(mut command: tokio::process::Command, first: &Path) -> Result<Spawned
     let child = Child::watch(child);
     let mut channel = crate::runtime::unix::channel(ours, "")?;
     channel.info.transport = "fd";
-    let channel = on_disconnect(channel, Box::new(child.disconnected()));
+    let channel = on_exit(channel, &child);
     Ok(Spawned {
         channel: traced(channel),
         child,
@@ -185,10 +272,7 @@ async fn dial_back(mut command: tokio::process::Command, first: &Path) -> Result
     };
     let stream = stream.into_std().map_err(transport)?;
     let child = Child::watch(child);
-    let channel = on_disconnect(
-        crate::runtime::unix::channel(stream, "")?,
-        Box::new(child.disconnected()),
-    );
+    let channel = on_exit(crate::runtime::unix::channel(stream, "")?, &child);
     Ok(Spawned {
         channel: traced(channel),
         child,
@@ -342,19 +426,33 @@ const HANG_GUARD: Duration = Duration::from_secs(10);
 /// Waits for the process to end, as `ended` records it, and says how; a
 /// process still running after `guard` is reported as such.
 fn ended_with(ended: &(Mutex<Option<String>>, Condvar), guard: Duration) -> Error {
+    ended_unless(ended, guard, || false).expect("not stopped")
+}
+
+/// [`ended_with`], or `None` as soon as `stop` holds instead: checked under
+/// `ended`'s lock, so whoever makes it hold sets it under that lock and
+/// notifies.
+fn ended_unless(
+    ended: &(Mutex<Option<String>>, Condvar),
+    guard: Duration,
+    stop: impl Fn() -> bool,
+) -> Option<Error> {
     let (status, changed) = ended;
-    let status = changed
-        .wait_timeout_while(status.lock().unwrap(), guard, |status| status.is_none())
-        .unwrap()
-        .0
-        .clone();
-    Error::Transport(match status {
+    let (status, _) = changed
+        .wait_timeout_while(status.lock().unwrap(), guard, |status| {
+            status.is_none() && !stop()
+        })
+        .unwrap();
+    if status.is_none() && stop() {
+        return None;
+    }
+    Some(Error::Transport(match status.clone() {
         Some(status) => format!("Cordis process {status}"),
         None => format!(
             "Cordis process closed its channel but has not exited after {}s",
             guard.as_secs_f32()
         ),
-    })
+    }))
 }
 
 fn describe(status: std::io::Result<std::process::ExitStatus>) -> String {
@@ -474,6 +572,144 @@ mod tests {
             other => panic!("the channel should end with the exit status, got {other:?}"),
         }
         assert_eq!(child.exited().await, "exited with exit status: 17");
+    }
+
+    fn open_gate(gate: &Path) {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(gate)
+            .unwrap()
+            .write_all(b"exit\n")
+            .unwrap();
+    }
+
+    /// Sends until a send fails (for at most 5s): on macOS a socket whose
+    /// far end closed still takes writes until the receiver has seen the end.
+    fn send_until_it_fails(
+        mut sender: Box<dyn Sender>,
+    ) -> mpsc::Receiver<Result<(), ChannelError>> {
+        let (sent, send) = mpsc::channel();
+        std::thread::spawn(move || {
+            for _ in 0..500 {
+                if let Err(error) = sender.send(b"{}") {
+                    let _ = sent.send(Err(error));
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        send
+    }
+
+    /// Long enough for anything here to settle, short of a hung suite.
+    const SETTLED: Duration = Duration::from_secs(5);
+
+    /// #250: a send that fails because the process closed its channel says
+    /// how the process ended, as the receiver does, instead of ending the
+    /// session first with its own error.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_send_after_the_channel_ended_says_how_the_process_ended() {
+        let directory = tempfile::tempdir().unwrap();
+        let gate = fifo(directory.path());
+        let Spawned { channel, child, .. } =
+            inherit(closes_then_waits(&gate), Path::new("first")).unwrap();
+        let Channel {
+            sender,
+            mut receiver,
+            ..
+        } = channel;
+        let (received, receive) = mpsc::channel();
+        std::thread::spawn(move || received.send(receiver.recv()).unwrap());
+        let send = send_until_it_fails(sender);
+
+        assert!(
+            send.recv_timeout(Duration::from_millis(500)).is_err(),
+            "the send ended before the process did"
+        );
+        assert_eq!(child.status(), None);
+        open_gate(&gate);
+        let expected = ChannelError::Closed {
+            reason: "Cordis process exited with exit status: 17".into(),
+        };
+        assert_eq!(send.recv_timeout(SETTLED).unwrap(), Err(expected.clone()));
+        assert_eq!(receive.recv_timeout(SETTLED).unwrap(), Err(expected));
+    }
+
+    /// A send waiting for the process stops waiting once this side closes
+    /// the channel, and fails for that rather than for how the process
+    /// ended.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn closing_here_releases_a_waiting_send() {
+        let directory = tempfile::tempdir().unwrap();
+        let gate = fifo(directory.path());
+        let Spawned { channel, child, .. } =
+            inherit(closes_then_waits(&gate), Path::new("first")).unwrap();
+        let Channel {
+            sender,
+            mut receiver,
+            closer,
+            ..
+        } = channel;
+        std::thread::spawn(move || receiver.recv());
+        let send = send_until_it_fails(sender);
+        assert!(
+            send.recv_timeout(Duration::from_millis(500)).is_err(),
+            "the send waits for the process"
+        );
+
+        closer.close("closed here");
+        let error = send
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the close releases the send")
+            .unwrap_err();
+        assert!(!error.to_string().contains("exit status"), "{error}");
+        assert_eq!(child.status(), None);
+        open_gate(&gate);
+        child.exited().await;
+    }
+
+    /// A send after this side closed the channel fails for that, not for
+    /// how the process ended, and does not wait for the process.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_send_after_closing_here_fails_at_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let gate = fifo(directory.path());
+        let Spawned {
+            mut channel, child, ..
+        } = inherit(closes_then_waits(&gate), Path::new("first")).unwrap();
+        channel.closer.close("closed here");
+        let sending = std::time::Instant::now();
+        let error = channel.sender.send(b"{}").unwrap_err();
+        assert!(
+            sending.elapsed() < Duration::from_secs(1),
+            "the send waited"
+        );
+        assert!(!error.to_string().contains("exit status"), "{error}");
+        assert_eq!(child.status(), None);
+        open_gate(&gate);
+        child.exited().await;
+    }
+
+    /// A message the framing refuses (a raw newline, over its limit)
+    /// fails at once with that reason, whatever the process does.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_message_the_framing_refuses_fails_at_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let gate = fifo(directory.path());
+        let Spawned {
+            mut channel, child, ..
+        } = inherit(closes_then_waits(&gate), Path::new("first")).unwrap();
+        let sending = std::time::Instant::now();
+        let newline = channel.sender.send(b"a\nb").unwrap_err();
+        assert_eq!(newline.to_string(), "message contains a raw newline");
+        let over = channel
+            .sender
+            .send(&vec![b'x'; crate::transport::local::lines::MAX_MESSAGE + 1])
+            .unwrap_err();
+        assert!(over.to_string().contains("exceeds the limit"), "{over}");
+        assert!(sending.elapsed() < Duration::from_secs(1), "a send waited");
+        open_gate(&gate);
+        child.exited().await;
     }
 
     /// A process that closed its channel and does not exit ends the session
