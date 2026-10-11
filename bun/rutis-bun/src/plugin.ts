@@ -104,6 +104,22 @@ export class Modules {
       delete this.#require.cache[file]
     }
     if (stamp !== undefined) this.#stamps.set(file, stamp)
-    return import(file)
+    try {
+      return await import(file)
+    } catch (error) {
+      throw located(error)
+    }
   }
+}
+
+// Bun reports a syntax or resolution error as a BuildMessage or
+// ResolveMessage whose message has no location; its `position` has it. The
+// error that crosses to the host says where (`file:line:column`), as tsx's
+// and Python's do.
+function located(error: any): unknown {
+  const at = error?.position
+  if (!at || typeof at.file !== 'string' || typeof at.line !== 'number') return error
+  const where = `${at.file}:${at.line}:${at.column ?? 0}`
+  const text = typeof at.lineText === 'string' && at.lineText.trim() ? `\n  ${at.lineText.trim()}` : ''
+  return Object.assign(new Error(`${error.message} (${where})${text}`), { name: error.name, cause: error })
 }
