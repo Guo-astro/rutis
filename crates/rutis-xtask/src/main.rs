@@ -594,7 +594,15 @@ fn pack_plugin_bundle(args: &Args) -> Result<(), String> {
 
     let mut command = Command::new("rustup");
     command
-        .args(["run", &bundle_channel, "cargo", "build", "--release", "--locked", "--manifest-path"])
+        .args([
+            "run",
+            &bundle_channel,
+            "cargo",
+            "build",
+            "--release",
+            "--locked",
+            "--manifest-path",
+        ])
         .arg(&manifest);
     if !args.features.is_empty() {
         command.args(["--features", &args.features]);
@@ -806,7 +814,10 @@ fn toolchain_channel(dir: &Path) -> Result<String, String> {
             }
         }
     }
-    Err(format!("{}/rust-toolchain.toml has no channel", dir.display()))
+    Err(format!(
+        "{}/rust-toolchain.toml has no channel",
+        dir.display()
+    ))
 }
 
 fn home_dir() -> Result<PathBuf, String> {
@@ -1231,10 +1242,7 @@ fn write_cargo_config(bundle: &Path, sdk_name: &str) -> Result<(), String> {
     let sdk_hash = string(sdk_table, "artifact_sha256")?;
     // TOML strings treat \ as an escape; Windows paths must use /, which
     // both TOML and the Windows loader accept.
-    let forward_slashes = |path: &Path| {
-        path.to_string_lossy()
-            .replace('\\', "/")
-    };
+    let forward_slashes = |path: &Path| path.to_string_lossy().replace('\\', "/");
     let content = format!(
         "# Copy this file to the plugin workspace as .cargo/config.toml and\n\
          # adjust the three paths below to where you unpacked the bundle.\n\

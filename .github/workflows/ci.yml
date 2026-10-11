@@ -307,6 +307,41 @@ jobs:
       - run: python3 -m unittest discover -s tests
         working-directory: python/rutis
 
+  # fmt and clippy, in parallel with the tests (not on the critical path).
+  # clippy compiles the whole workspace with all features, so `checks` does
+  # not repeat a plain `cargo check`. Warnings fail the job; there is no
+  # baseline (#204).
+  lint:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo fmt --all --check
+      # The examples' build scripts need the Node runtime, and rutis-dsh
+      # compiles its web host only when dsh is installed.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            node/rutis-runtime/package-lock.json
+            crates/rutis-dsh/dsh/package-lock.json
+      - run: npm --prefix node/rutis-runtime ci
+      - run: npm --prefix crates/rutis-dsh/dsh ci
+      # `--all-features` turns on the dylib fixtures' `export` feature, which
+      # reads the SDK artifact hash at compile time (as in sdk-repro).
+      - name: cargo clippy
+        run: |
+          export RUTIS_SDK_ARTIFACT_SHA256="$(printf '0%.0s' {1..64})"
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
   checks:
     needs: changes
     if: needs.changes.outputs.all == 'true'
@@ -327,9 +362,6 @@ jobs:
             crates/rutis-dsh/dsh/package-lock.json
       - run: npm --prefix node/rutis-runtime ci
       - run: npm --prefix crates/rutis-dsh/dsh ci
-
-      - name: cargo check (all targets)
-        run: cargo check --workspace --all-targets
 
       # An application compiles only the parts it enables.
       - name: cargo check (feature sets)
@@ -867,6 +899,7 @@ jobs:
       - links
       - rust
       - js-py
+      - lint
       - checks
       - network-macos
       - runtimes-bun
