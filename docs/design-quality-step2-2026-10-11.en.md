@@ -2,7 +2,7 @@
 
 [中文](design-quality-step2-2026-10-11.md)
 
-Status: plan, under review (Q1, Q2, Q4, Q5, Q6 decided on 2026-10-11). Date: 2026-10-11. Base: `main` `ebf0711` (0.9.1).
+Status: plan; Q1–Q6 decided (2026-10-11). Date: 2026-10-11. Base: `main` `ebf0711` (0.9.1).
 Related: [#183](https://github.com/arcships/rutis/issues/183) step two. Based on: [quality standard](quality-standard.en.md) ("the standard"); [quality status](quality-status.en.md) ("status") §4 risks, §9.2 plan.
 
 This document schedules the 12 issues left in step two together: what each one does and does not do, what it depends on, which PRs it splits into, and what the maintainer needs to decide first. Details of each PR (test names, assertions, output formats) are written in that PR; the ones that need a design of their own (S4, S5, #178) only get scope and key choices here.
@@ -21,8 +21,8 @@ Out of scope: the step-one leftover #265 (the CI `e2e` job; this plan depends on
 | C6 | Value round-trips use `proptest` (new dev dependency), generating values only on the Rust side and passing them through the existing `conformance-session` echo fixtures for Node, Python, Go and Bun; the comparison rules come from the value conversion table in `guide/plugin-api.md` | 4.5 |
 | C7 | #176 only splits `cfg(unix)` and adds the missing cells, no generated matrix; the matrix report is a hand-written table in `docs/ci.md` | 5 |
 | C8 | #206 doesn't compare the two sides with each other; the testing tool and the real runtime are each compared **against the same expectations file**. The Node `conformance-weather` fixture cannot be loaded by the testing tool today and gets a default export first | 6 |
-| C9 | #207: none of the persisted formats has a format version field. Decided to add one (Q4); also keep a sample per version, back-filled from the 0.8.0 and 0.9.0 tags; one more step in `docs/release.md` | 7 |
-| C10 | #181 lands its skeleton and numbering first, so #177's and #178's tests cite numbers directly; at the 0.10 release the registry is the baseline, and the Q9.4.4 release gate applies from 0.11 (decision Q3) | 8.2 |
+| C9 | #207: none of the persisted formats has a format version field. `rutis.json` gets one (Q4); dsh's `cordis.patch.yml` is a Cordis configuration format, and Cordis configuration has no versioning, so it gets none; also keep a sample per version, back-filled from the 0.8.0 and 0.9.0 tags; one more step in `docs/release.md` | 7 |
+| C10 | #181 lands its skeleton and numbering first, so #177's and #178's tests cite numbers directly; at the 0.10 release the registry is the baseline, and the Q9.4.4 release gate applies from 0.11 (Q3) | 8.2 |
 
 ## 2. Remaining items and the risks they cover
 
@@ -210,7 +210,7 @@ Approach:
 | Format | Field | Rules |
 | --- | --- | --- |
 | `rutis.json` | top-level `"format": 1` | optional, read as 1 when absent (no file before 0.10 has it); written by `rutis-host new`; a higher number than supported is an error: "this file is format N, this rutis-host reads up to M; upgrade rutis-host" |
-| dsh user layer `cordis.patch.yml` | open, one of two (decided in #207's PR) | one: the file becomes `{format: 1, patches: [...]}`, still accepting a top-level array as 1 — but bundle layers use the same array form, so two spellings would coexist; two: the version goes in the profile's `package.json` (for example `"rutis": {"profileFormat": 1}`), covering every file of the profile and leaving the user layer file unchanged. Leaning to two |
+| dsh user layer `cordis.patch.yml` | none | it is a Cordis configuration format, and Cordis configuration has no versioning; rutis adds no version to it (nor to the profile's `package.json`). Compatibility rests on the sample tests alone: every version's samples must still read with the same meaning |
 | the loader's `Persist` | none | the loader writes no files; the format belongs to whoever implements `Persist` (dsh) |
 
 - An older version is read with that version's meaning, guarded by the sample tests; a newer version is refused explicitly, saying what to upgrade.
@@ -245,7 +245,7 @@ Two PRs: events and ordering (D24, D31, D29, async waterfall panic); lifecycle a
 - Numbers: `core/D1`–`core/D33` (D32 and D33 are in the config-hot-update document), `core/features.<section>`, `boundary/5.1`–`boundary/5.8`, `loader/<name>`, `instance/<name>`, `bridge/<name>`, `host/<name>`. About 100 rows, maintained by hand.
 - Test comments cite `guarantee: <number>` (3 places in the whole repository today); one more item in the PR template.
 - **The skeleton lands first** (numbering + D numbers + boundary rules); #177's and #178's PRs update the status of their rows in the same PR.
-- Q9.4.4 ("not verified" core promises must be zero at every release): the registry is the baseline at 0.10 and the gate applies from 0.11 (decision Q3).
+- Q9.4.4 ("not verified" core promises must be zero at every release): the registry is the baseline at 0.10 and the gate applies from 0.11 (Q3).
 
 ### 8.3 Real clocks (#231, 3 PRs left)
 
@@ -283,7 +283,7 @@ CI changes needed (stated in each PR, added by a CI PR): `rutis[network]` in the
 | --- | --- | --- |
 | Q1 | S3 and S4 need configuration edits while running, which `run` doesn't support. Add config watching to `run`, or test with a fixture host? | **Decided**: `run` unchanged in 0.10; S3 recovers by restarting the host, S4 uses the fixture host; whether `run` supports configuration changes while running is #274 |
 | Q2 | S5's "revoke the token" has no mechanism | **Decided**: a requirement on remote, #273; in 0.10 S5 tests the refusal after a restart with another token |
-| Q3 | From which version does the registry's release gate (Q9.4.4) apply | **Open**: baseline at 0.10, enforced from 0.11 |
-| Q4 | Add a version field to the persisted formats? | **Decided**: yes, see §7; where the dsh user layer keeps it is decided in #207's PR |
+| Q3 | From which version does the registry's release gate (Q9.4.4) apply | **Decided**: baseline at 0.10, enforced from 0.11 |
+| Q4 | Add a version field to the persisted formats? | **Decided**: yes for `rutis.json`, see §7; dsh's `cordis.patch.yml` follows Cordis and gets none |
 | Q5 | What to do when a value round-trip goes beyond the conversion table (large integers and so on) | **Decided**: first document the current behaviour in the table and register it as "explicitly not guaranteed"; changing the implementation is a separate issue |
 | Q6 | After this plan is merged, does each item get its own PR, or does implementation continue in this PR? | **Decided**: one PR each; this PR holds only the plan |
