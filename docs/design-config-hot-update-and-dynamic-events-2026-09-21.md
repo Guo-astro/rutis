@@ -274,9 +274,9 @@ M1 → M2 → M3。M1 先行的理由:独立收益最大、不动总线;M2 改 T
 
 ## 七 实施记录(2026-09-21 执行完毕;§八 为评审修复轮)
 
-**全部落地,全 workspace 测试全绿(新增 29:config_update 16 + event_keys 11 + host_events 2)**,clippy 对新增代码零警告(存量警告未动)。
+**全部落地,全 workspace 测试全绿(新增 29:config_update 16 + event_keys 11 + host_events 2)**(config_update 此后经 §十一 删减、§十二 增补,现为 15 条),clippy 对新增代码零警告(存量警告未动)。
 
-- **M1(D32)**:`PluginFactory`(plugin.rs)+ `Ctx::plugin_with/plugin_from`(ctx.rs,与 `plugin()` 共享 mount 收尾)+ `FiberView::update/current_config`(fiber.rs)。内部:`FiberInner.factory/config` 双字段,`ErasedFactory` 擦除适配;`load()` 经 `current_plugin()` 统一取实例,工厂模式每代重造。**实施中补的一个设计缺口**:`resolve_deps` 原从 `plugin` 实例读 injects,工厂模式 plugin 为 None → 门控失效(直接装载);已改为工厂模式从当前 config 派生(config 先 clone 出锁再进用户回调,防重入死锁)。`update` 的 dry-run 用户回调裹 catch_unwind。测试 16 条:tests/config_update.rs(§1.7 的 1-10 + 评审增补 11-16,第二轮复审再增 17,见 §八)。
+- **M1(D32)**:`PluginFactory`(plugin.rs)+ `Ctx::plugin_with/plugin_from`(ctx.rs,与 `plugin()` 共享 mount 收尾)+ `FiberView::update/current_config`(fiber.rs)。内部:`FiberInner.factory/config` 双字段,`ErasedFactory` 擦除适配;`load()` 经 `current_plugin()` 统一取实例,工厂模式每代重造。**实施中补的一个设计缺口**:`resolve_deps` 原从 `plugin` 实例读 injects,工厂模式 plugin 为 None → 门控失效(直接装载);已改为工厂模式从当前 config 派生(config 先 clone 出锁再进用户回调,防重入死锁)。`update` 的 dry-run 用户回调裹 catch_unwind。当时测试 16 条:tests/config_update.rs(§1.7 的 1-10 + 评审增补 11-16,第二轮复审再增 17,见 §八);现为 15 条,见 §十一、§十二。
 - **M2(D33)**:`Qualifier` 双轨 enum(key.rs,Static 零分配 / Dynamic `Arc<str>`;**Eq/Hash 手写按字符串内容**,derive 会按变体判等——测试抓出);bus 三个注册面键 `TypeId` → `TypeKey`,keyed API 全家桶(`on/once/on_waterfall/emit/parallel/serial/waterfall` 的 `_keyed` 变体,内部共享一条 TypeKey 路径)。TypeKey 失 `Copy` 的连锁由编译器全量暴露,registry 的 lookup/consumers_of/notify_key_changed 顺势改吃借用。测试 11 条:tests/event_keys.rs(含 parity 补拍:cordis events.spec 字符串事件名内核,原判"部分对拍"升级为可全拍)。
 - **M3**:rutis-cordis 新模块 events.rs(`HostEvent{name, payload, origin}` + `forward_host_events(ctx, observe)`——**转发先于 observe**(评审修订),恶形 evt 打一行截断日志后丢弃);rutis_dsh runner 的 on_notify 换装(stderr 摘要降为观察者)。e2e:tests/host_events.rs(MemoryWire 双名订阅 + origin 透传断言 + 恶形不进总线 + 观察者全量 + 桥断连后总线存活,2 条)。
 
@@ -368,7 +368,7 @@ M1 → M2 → M3。M1 先行的理由:独立收益最大、不动总线;M2 改 T
 - `PluginFactory::injects` 改 `fn injects(&self) -> &[TypeKey]`,与 `Plugin::injects` 完全对称;spawn 注册一次、终身不变。按配置选依赖的标准形态 = 拆多个插件、配置决定装哪个(与 cordis loader 生态一致)。
 - **删除的机制族**(约 -150 行):`FiberInner.spawn_injects` 基线快照、update 的漂移校验/基线写回/补注册、`register_inject` 指针去重、`InjectsUnavailable` 哨兵键、resolve_deps/spawn/update 对 injects 的三处 panic 边界、resolve_deps 的 config=None 分支。
 - **保留的修复**(与被删机制无关,各自独立成立):dry-run 三步(§1.3)、二次终态检查(§十-3 的 dispose 竞态)、post_join 终态错误(§十-4)、EventOrigin/observe/truncate 全套。
-- **测试影响**:删除 14/16/17/18(它们锁定的是被删机制的缺陷类——机制不存在则缺陷类不存在,这是优于"防住"的修复);config_update 18 → 14 条。
+- **测试影响**:删除 14/16/17/18(它们锁定的是被删机制的缺陷类——机制不存在则缺陷类不存在,这是优于"防住"的修复);config_update 18 → 14 条(§十二 又增测试 19,现为 15 条)。
 - `update()` 瘦回 ~50 行:终态检查 → factory 匹配 → dry-run → 二次终态检查 → 存 config → restart。
 
 **教训(写给后续批次)**:修复轮引入的新语义(哨兵/基线/恢复)复杂度与原设计同级,却没有走设计审视——三轮评审打出的全部第三层问题(歧义/逃逸/竞态)都源于此。**修复的语义复杂度达到设计级时,修复也必须先写清楚语义再动手。**

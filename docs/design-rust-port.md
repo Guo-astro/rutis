@@ -205,7 +205,7 @@ TS 96 spec 降级为灵感来源;其中纯范式部分(fiber/dispose/reentrant)�
 | events | emit fire-and-forget(异步安全读载荷,panic/Err 进 ErrorSink);parallel 全错误聚合;serial 顺序至短路;waterfall veto/包裹/最外层返回;prepend 顺序;once;监听器卸载与 dispatch 竞争确定 | `emit_async_safe`、`emit_error_sink`、`parallel_aggregates`、`serial_bails`、`waterfall_veto_around`、`prepend_order`、`once_once`、`listener_unload_race` |
 | registry | TypeId 注册/取回/重复错;显式 key 多实例;isolate 按 ServiceKey 隔离,同 label 合并;父链回溯 | `typed_roundtrip`、`keyed_multi_instance`、`isolate_scoping`、`parent_chain_lookup` |
 | reload | 门控重载顺序(消费者并发、provider 最后);清理期自访问有效;重入报错;isolate A 卸载不驱逐 B;单服务卸载不连带 | `eviction_order`、`self_access_during_cleanup`、`reentrant_provide_fails`、`isolate_no_cross_evict`、`single_service_evict` |
-| cancel | CancellationToken 停止 agent;fiber 卸载级联唤醒等待者;loading 中 cancel 唤醒观察 token 的插件;多次 cancel 幂等;父 cancel 传播子 | `agent_stop`、`cancel_wakes_awaiters`、`cancel_during_loading`、`cancel_idempotent`、`cancel_cascades` |
+| cancel | fiber 卸载级联唤醒等待者;loading 中 cancel 唤醒观察 token 的插件;多次 cancel 幂等;父 cancel 传播子 | `cancel_wakes_awaiters`、`cancel_during_loading`、`cancel_idempotent`、`cancel_cascades` |
 | agent(M3) | python examples 11 项范式语义 | `agent_*` 系列 |
 
 **验收**:≥30,目标 40;每个范式支柱至少 4 个正例 + 2 个失败模式。
