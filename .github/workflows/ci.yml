@@ -316,8 +316,18 @@ jobs:
           cache-dependency-path: go/rutis/go.mod
       - name: cargo test (end-to-end scenarios)
         run: cargo test -p rutis-e2e
-      # A failed scenario keeps its directory, with every host's output in
-      # logs/.
+      # A failed scenario keeps its directory, with every host's output and
+      # the residue found in logs/.
+      # The failed scenarios' directories, without what is not read for a
+      # diagnosis and that upload-artifact would follow or fail on: links
+      # into the checkout, sockets, installed packages and caches.
+      - name: prune the scenario directories
+        if: failure()
+        run: |
+          [ -d "$RUTIS_E2E_DIR" ] || exit 0
+          find "$RUTIS_E2E_DIR" \( -type l -o -type s -o -type p \) -delete
+          find "$RUTIS_E2E_DIR" -type d \( -name node_modules -o -name .venv -o -name .npm -o -name .uv -o -path '*/home/go' \) -prune -print |
+            while IFS= read -r dir; do chmod -R u+w "$dir"; rm -rf "$dir"; done
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -585,6 +595,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: macos-15
+    env:
+      # The end-to-end scenarios' directories (as in `e2e`).
+      RUTIS_E2E_DIR: /tmp/rutis-e2e
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
@@ -627,14 +640,22 @@ jobs:
       # them on the oldest).
       - name: cargo test (end-to-end scenarios)
         if: '!cancelled()'
-        env:
-          RUTIS_E2E_DIR: /tmp/rutis-e2e
         run: cargo test -p rutis-e2e
+      # The failed scenarios' directories, without what is not read for a
+      # diagnosis and that upload-artifact would follow or fail on: links
+      # into the checkout, sockets, installed packages and caches.
+      - name: prune the scenario directories
+        if: failure()
+        run: |
+          [ -d "$RUTIS_E2E_DIR" ] || exit 0
+          find "$RUTIS_E2E_DIR" \( -type l -o -type s -o -type p \) -delete
+          find "$RUTIS_E2E_DIR" -type d \( -name node_modules -o -name .venv -o -name .npm -o -name .uv -o -path '*/home/go' \) -prune -print |
+            while IFS= read -r dir; do chmod -R u+w "$dir"; rm -rf "$dir"; done
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: e2e-macos
-          path: /tmp/rutis-e2e
+          path: ${{ env.RUTIS_E2E_DIR }}
           retention-days: 14
       - name: keep workspace static builds available
         if: '!cancelled()'

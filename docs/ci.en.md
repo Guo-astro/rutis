@@ -24,7 +24,7 @@ This document describes how CI runs today and what to do when changing it. The r
 | `stress.yml` | Nightly; by hand | Kernel tests and multi-process tests repeated; long network tests (below) |
 | `ci-stats.yml` | Weekly; by hand | CI timings and failures |
 | `deps.yml` | Weekly; by hand | Dependency vulnerability checks: `cargo deny check advisories` (without the example projects), `npm audit` of `@arcships/rutis-runtime`, `pip-audit` of the Python package. Not on pull requests and does not block merges; GitHub notifies the maintainer on failure |
-| `install.yml` | Every push to main; pull requests touching packaging or the install tests (`package.yml`, `install.yml`, `tests/e2e/**` and others); called by `release.yml` on a release; by hand | Builds this commit's packages with `package.yml`, installs and runs them on three platforms on main (Linux x64 on pull requests): npm, PyPI, the release binary. The Windows binary, npm platform package and wheel, and the aarch64 wheel, are built here and in the five-platform install check before a release |
+| `install.yml` | Every push to main; pull requests touching packaging, build configuration or the install tests (`package.yml`, `install.yml`, `tests/e2e/**`, the packages' `package.json` and `pyproject.toml`, `node/rutis-host/scripts/**`, `Cargo.toml`, `Cargo.lock` and others); called by `release.yml` on a release; by hand | Builds this commit's packages with `package.yml`, installs and runs them: npm, PyPI, the release binary. Three platforms on main (linux-x64, darwin-arm64, win32-x64), only linux-x64 on pull requests. linux-arm64 and darwin-x64 (the aarch64 wheel among them) are built only in the five-platform install check before a release (`release.yml`) |
 | `release.yml`, `release-cli.yml` | Tags | Releases |
 
 ### The nightly `stress.yml`
@@ -81,7 +81,7 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 | `dylib-linux-launcher`, `dylib-linux-sdk-bundle` | Linux | `dylib` | — | Dylib tests, split into two jobs that run at the same time |
 | `dylib-linux-repro` | Linux | `repro` | The whole job | Reproducible SDK builds (built twice on one machine, in two directories) |
 | `dylib-macos` | macOS | `dylib` | The reproducible-build step | The same dylib tests, one after another in one job, sharing one bundle build; the reproducible-build step runs only when `repro` is on |
-| `release-dry-run` | Linux | `packaging` | The whole job | The release packages build (crates, npm packages, Python packages). `install.yml` builds and installs the binaries and wheels of each platform (§2) |
+| `release-dry-run` | Linux | `packaging` | The whole job | The release packages build (crates, npm packages, Python packages). `install.yml` builds and installs the binaries and wheels of each platform (§2): only Linux x64 on pull requests; Windows and macOS packaging is checked on main after the merge, aarch64 before a release |
 | `sdk-repro`, `sdk-repro-macos`, and their comparisons | Linux, macOS | Only with `all` | The whole jobs | Builds the SDK on two machines and checks the results are identical |
 | `ci-ok` | Linux | Always | — | The summary (§5) |
 

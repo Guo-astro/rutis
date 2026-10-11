@@ -24,7 +24,7 @@
 | `stress.yml` | 每晚；手动 | 重复运行内核测试和多进程测试；网络长时间测试（下文） |
 | `ci-stats.yml` | 每周；手动 | 统计 CI 的耗时和失败 |
 | `deps.yml` | 每周；手动 | 依赖漏洞检查：`cargo deny check advisories`（不含示例项目）、`@arcships/rutis-runtime` 的 `npm audit`、Python 包的 `pip-audit`。不在 PR 上跑，不阻止合并；失败时 GitHub 通知维护者 |
-| `install.yml` | 每次推送 main；PR 改了打包或安装测试（`package.yml`、`install.yml`、`tests/e2e/**` 等）；发布时由 `release.yml` 调用；手动 | 用 `package.yml` 构建这次提交的包，在 main 上三个平台（PR 上 Linux x64）安装并运行：npm、PyPI、release 二进制。Windows 的二进制、npm 平台包、wheel 和 aarch64 wheel 由这里和发布前的五平台安装检查构建 |
+| `install.yml` | 每次推送 main；PR 改了打包、构建配置或安装测试（`package.yml`、`install.yml`、`tests/e2e/**`、各包的 `package.json`、`pyproject.toml`、`node/rutis-host/scripts/**`、`Cargo.toml`、`Cargo.lock` 等）；发布时由 `release.yml` 调用；手动 | 用 `package.yml` 构建这次提交的包并安装运行：npm、PyPI、release 二进制。main 上三个平台（linux-x64、darwin-arm64、win32-x64），PR 上只有 linux-x64。linux-arm64、darwin-x64（含 aarch64 wheel）只在发布前的五平台安装检查（`release.yml`）里构建 |
 | `release.yml`、`release-cli.yml` | 打 tag | 发布 |
 
 ### 每晚的 `stress.yml`
@@ -81,7 +81,7 @@
 | `dylib-linux-launcher`、`dylib-linux-sdk-bundle` | Linux | `dylib` | — | dylib 测试，分两个任务同时跑 |
 | `dylib-linux-repro` | Linux | `repro` | 整个任务 | SDK 可复现构建（在一台机器上用两个目录各构建一次） |
 | `dylib-macos` | macOS | `dylib` | 可复现构建一步 | 同样的 dylib 测试，在一个任务里依次跑，共用一次构建的 bundle；可复现构建这一步只在 `repro` 打开时跑 |
-| `release-dry-run` | Linux | `packaging` | 整个任务 | 发布要用的包能构建（crate、npm 包、Python 包）。各平台的二进制和 wheel 由 `install.yml` 构建并安装（§2） |
+| `release-dry-run` | Linux | `packaging` | 整个任务 | 发布要用的包能构建（crate、npm 包、Python 包）。各平台的二进制和 wheel 由 `install.yml` 构建并安装（§2）：PR 上只有 Linux x64，Windows、macOS 的打包在合并后的 main 上检查，aarch64 在发布前检查 |
 | `sdk-repro`、`sdk-repro-macos` 及比对 | Linux、macOS | 只在 `all` 时 | 整个任务 | 在两台机器上分别构建 SDK，比较结果是否相同 |
 | `ci-ok` | Linux | 总是 | — | 汇总（§5） |
 
