@@ -151,9 +151,8 @@ class Listener:
         channel = self._accepted.get()
         if channel is not _STOPPED:
             return channel
-        # Every later accept() raises too; a connection that came in after
-        # the listener stopped is not left open.
-        self._accepted.put(_STOPPED)
+        # A connection that came in after the listener stopped is not left
+        # open; the marker goes back, so every later accept() raises too.
         while True:
             try:
                 late = self._accepted.get_nowait()
