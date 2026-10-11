@@ -342,6 +342,23 @@ jobs:
           export RUTIS_SDK_ARTIFACT_SHA256="$(printf '0%.0s' {1..64})"
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+  # The declared MSRV (rust-version in Cargo.toml) builds the libraries and
+  # binaries, with our Cargo.lock (Q10.3). Main only: a dependency that needs
+  # a newer rustc arrives with a Cargo.lock change, which turns on every job
+  # anyway. rutis-agent and rutis-cli are examples and declare no MSRV.
+  msrv:
+    needs: changes
+    if: github.event_name == 'push' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: cargo +1.88 check
+        run: cargo +1.88 check --workspace --exclude rutis-agent --exclude rutis-cli --locked
+
   checks:
     needs: changes
     if: needs.changes.outputs.all == 'true'
@@ -900,6 +917,7 @@ jobs:
       - rust
       - js-py
       - lint
+      - msrv
       - checks
       - network-macos
       - runtimes-bun
