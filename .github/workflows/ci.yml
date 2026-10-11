@@ -219,11 +219,10 @@ jobs:
           # own would crowd main's out of the repository's 10 GB.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # The oldest Node the packages support (node/rutis engines.node).
-      # Lower to 22 when #219 lands.
+      # The oldest Node the packages support (engines.node).
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
           cache: npm
           cache-dependency-path: |
             node/rutis-runtime/package-lock.json
@@ -240,12 +239,12 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      # Python 3.12 until #196 lands. websockets: pin the oldest supported
-      # (15.*) when #218 lands.
+      # The oldest Python (requires-python; 3.12 until #196 lands) and the
+      # oldest websockets (rutis[network]).
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python3 -m pip install "websockets>=13"
+      - run: python3 -m pip install "websockets==15.*"
       # The older of the two Go releases supported.
       - uses: actions/setup-go@v5
         with:
@@ -281,10 +280,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      # The oldest Node the packages support; lower to 22 when #219 lands.
+      # The oldest Node the packages support (engines.node).
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
           cache: npm
           cache-dependency-path: |
             node/rutis-runtime/package-lock.json
@@ -298,13 +297,13 @@ jobs:
       # dsh (web UI and agent loop) served by aimux in the rutis-dsh host.
       - run: npm --prefix crates/rutis-dsh/dsh ci
       - run: npm --prefix crates/rutis-dsh/dsh test
-      # The Python package. Python 3.12 until #196 lands; websockets: the
-      # oldest supported (15.*) when #218 lands.
+      # The Python package on the oldest Python (3.12 until #196 lands) and
+      # the oldest websockets.
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       # WebSocket channels of the Python runtime (rutis[network]).
-      - run: python3 -m pip install "websockets>=13"
+      - run: python3 -m pip install "websockets==15.*"
       - run: python3 -m unittest discover -s tests
         working-directory: python/rutis
 
@@ -321,7 +320,7 @@ jobs:
       # rutis-dsh compiles its web host only when dsh is installed.
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
           cache: npm
           cache-dependency-path: |
             node/rutis-runtime/package-lock.json
@@ -385,12 +384,12 @@ jobs:
           cache-dependency-path: go/rutis/go.mod
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
       - run: npm --prefix node/rutis-runtime ci
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python3 -m pip install "websockets>=13"
+      - run: python3 -m pip install "websockets==15.*"
       - name: gofmt
         run: test -z "$(gofmt -l go crates/rutis-loader/tests/fixtures/go)"
       - name: go vet and test (SDK, fixtures)
@@ -441,7 +440,7 @@ jobs:
       # Node and Python for the rows that use Bun's services and back.
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
       - run: npm --prefix node/rutis-runtime ci
       - uses: actions/setup-python@v5
         with:
@@ -497,8 +496,8 @@ jobs:
       - run: npm --prefix node/rutis-runtime test
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - run: python3 -m pip install "websockets>=13"
+          python-version: '3.x'
+      - run: python3 -m pip install "websockets>=15"
       - run: python3 -m unittest discover -s tests
         working-directory: python/rutis
       - uses: oven-sh/setup-bun@v2
@@ -731,12 +730,12 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '26'
       - run: npm --prefix node/rutis-runtime ci
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - run: python -m pip install "websockets>=13"
+          python-version: '3.x'
+      - run: python -m pip install "websockets>=15"
       - uses: actions/setup-go@v5
         with:
           go-version: stable

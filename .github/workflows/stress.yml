@@ -121,7 +121,7 @@ jobs:
       # The runtime versions of the `rust` job of ci.yml: the oldest supported.
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
           cache: npm
           cache-dependency-path: node/rutis-runtime/package-lock.json
       - run: npm --prefix node/rutis-runtime ci
@@ -131,7 +131,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python3 -m pip install "websockets>=13"
+      - run: python3 -m pip install "websockets==15.*"
       - uses: actions/setup-go@v5
         with:
           go-version: oldstable
