@@ -44,7 +44,7 @@ The nightly stress workflow also runs two soak tests (repeated link disconnect/r
 
 ## 0.9.0
 
-The Bun runtime `@arcships/rutis-bun` and the Go module `go/rutis` are released for the first time. `@arcships/rutis-bun` is a new name on npm: `NPM_TOKEN` must be able to publish new packages under `@arcships`. The Go module is released by the tag `go/rutis/v0.9.0`, which release.yml pushes and the Go module proxy serves from. Until then, projects made by `rutis-host new --lang bun|go` cannot install their dependencies.
+The Bun runtime `@arcships/rutis-bun` and the Go module `go/rutis` are released for the first time. `@arcships/rutis-bun` is a new name on npm: `NPM_TOKEN` must be able to publish new packages under `@arcships`. The Go module is released by the tag `go/rutis/v0.9.0`, which release.yml pushes and the Go module proxy serves from. Until then, projects made by `rutis-host new --lang bun|go` cannot install their dependencies. It is also the first release through the release gate and the check after publishing (#254): the linux-arm64 and darwin-x64 install cells have not run in CI before the tag.
 
 ## 0.8.0
 

@@ -44,7 +44,7 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 ## 0.9.0
 
-Bun 运行时 `@arcships/rutis-bun` 和 Go 模块 `go/rutis` 首次发布。npm 上 `@arcships/rutis-bun` 是新包名，`NPM_TOKEN` 要能在 `@arcships` 下发布新包；Go 模块由 release.yml 打 `go/rutis/v0.9.0` tag 发布，Go module proxy 从这个 tag 取。发布前 `rutis-host new --lang bun|go` 生成的项目装不上依赖。
+Bun 运行时 `@arcships/rutis-bun` 和 Go 模块 `go/rutis` 首次发布。npm 上 `@arcships/rutis-bun` 是新包名，`NPM_TOKEN` 要能在 `@arcships` 下发布新包；Go 模块由 release.yml 打 `go/rutis/v0.9.0` tag 发布，Go module proxy 从这个 tag 取。发布前 `rutis-host new --lang bun|go` 生成的项目装不上依赖。这也是第一次走发布门和发布后验证（#254）：linux-arm64、darwin-x64 两个安装格子在打 tag 前还没在 CI 上跑过。
 
 ## 0.8.0
 
