@@ -226,6 +226,15 @@ mod tests {
         assert!(
             plugin.starts_with("// Package netprobe") && plugin.contains("Name: \"net-probe\"")
         );
+        // Each project's dev configuration names its format (risk J3,
+        // guarantee: host/rutis-json-format).
+        for project in ["weather-plugin", "greeter", "bun-greeter", "net-probe"] {
+            let path = dir.path().join(project).join("rutis.dev.json");
+            let text = std::fs::read_to_string(&path).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["format"], crate::config::FORMAT, "{project}");
+            crate::config::HostConfig::read(&path).unwrap();
+        }
         assert_eq!(next_minor("0.2.0"), "0.3");
         assert_eq!(next_minor("1.4.2"), "2");
     }

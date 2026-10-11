@@ -196,7 +196,7 @@ async fn check_refuses_a_configuration_that_is_not_valid() {
     assert_eq!(checked.stdout, "");
     assert_eq!(
         checked.stderr,
-        "rutis-host: rutis.json: unknown field `row`, expected one of `id`, `runtimes`, `listen`, `rows` at line 1 column 7\n"
+        "rutis-host: rutis.json: unknown field `row`, expected one of `format`, `id`, `runtimes`, `listen`, `rows` at line 1 column 7\n"
     );
     assert_eq!(checked.status, 1);
 

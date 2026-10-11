@@ -57,6 +57,10 @@ async fn a_configuration_that_is_not_there_or_not_valid() {
             "<dir>/rutis.json: unknown variant `lazy`, expected `on-demand` or `eager` at line 1 column 51",
         ),
         (
+            r#"{ "format": 2, "services": {} }"#,
+            "<dir>/rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-host",
+        ),
+        (
             r#"{ "id": "Main Host" }"#,
             "id: invalid endpoint id \"Main Host\": use lowercase letters, digits and `-`",
         ),

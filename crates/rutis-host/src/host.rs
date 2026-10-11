@@ -596,6 +596,7 @@ mod tests {
         let entry = dir.path().join("greeter.mjs");
         std::fs::write(&entry, node_plugin("Hello")).unwrap();
         let config = HostConfig {
+            format: crate::config::FORMAT,
             id: "test".into(),
             runtimes: Runtimes {
                 node: Some(NodeRuntime {
@@ -633,6 +634,7 @@ mod tests {
         // The repository's rutis package, for an interpreter without it.
         std::env::set_var("RUTIS_PYTHON_PATH", repo().join("python/rutis"));
         let config = HostConfig {
+            format: crate::config::FORMAT,
             id: "test".into(),
             runtimes: Runtimes {
                 py: Some(PythonRuntime {
@@ -668,6 +670,7 @@ mod tests {
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
         std::fs::write(dir.path().join("greeter.ts"), bun_plugin("Hello")).unwrap();
         let config = HostConfig {
+            format: crate::config::FORMAT,
             id: "test".into(),
             runtimes: Runtimes {
                 bun: Some(BunRuntime {
@@ -694,6 +697,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn runtime_names_are_unique() {
         let config = |remote: &str| HostConfig {
+            format: crate::config::FORMAT,
             id: "test".into(),
             runtimes: Runtimes {
                 bun: Some(BunRuntime {
