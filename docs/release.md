@@ -14,9 +14,10 @@
 ## 步骤
 
 1. 改版本号：`scripts/train.mjs` 里 `crates` 列出的每个 crate 的 Cargo.toml（以及它们之间、和工作区其他 crate 对它们的依赖版本），`node/rutis`、`node/rutis-runtime`、`node/rutis-host` 的 package.json（`@arcships/rutis-host` 依赖的运行时和平台包版本），`python/rutis/pyproject.toml` 和 `python/rutis/rutis/peer.py` 的 `IMPLEMENTATION`，`crates/rutis-host/pyproject.toml` 里 `rutis` 的范围。`node scripts/train.mjs` 检查它们一致，CI 也会跑。
-2. 合并到 main，CI 的 `release-dry-run` 通过（各包都能打包）。
-3. 发布前在两台机器上跑一次冒烟（下文）。
-4. 打 tag `vX.Y.Z` 并推送。release.yml：核对版本 → 构建五个平台的二进制和 wheel → 对已发布过的 crate 做 semver 检查，按依赖顺序（`node scripts/train.mjs --crates`）发布 crate，再发布 npm 包、PyPI 包 → 创建 GitHub Release（说明取自 `docs/releases/X.Y.Z.en.md`，打 tag 前要写好）。各步只发布注册表里还没有的版本，中途失败时修好后重新运行即可。
+2. 合并到 main，CI 的 `release-dry-run` 通过（各包都能打包），main 上的 install.yml 通过（三个平台上从本次构建的包安装并运行）。
+3. 发布前在两台机器上跑一次网络冒烟（下文）。
+4. 打 tag `vX.Y.Z` 并推送。release.yml：核对版本 → 构建五个平台的二进制、wheel 和 npm 包（package.yml，与 main 同一份构建步骤）→ **发布门**：五个平台上从这些文件安装并运行（install.yml），有一个不通过就什么都不发布 → 对已发布过的 crate 做 semver 检查，按依赖顺序（`node scripts/train.mjs --crates`）发布 crate，再发布 npm 包、PyPI 包（发布的就是发布门装过的文件）→ 创建 GitHub Release（说明取自 `docs/releases/X.Y.Z.en.md`，打 tag 前要写好）→ **发布后验证**：等注册表能取到这个版本，在 Linux 上从注册表安装 npm、PyPI、二进制三种渠道并运行，`cargo install` 和 Go 模块，再照着指南里标记过的示例走一遍。各步只发布注册表里还没有的版本，中途失败时修好后重新运行即可。
+5. 发布后验证失败时，release.yml 自动开一个 issue（指派给维护者）。看运行的日志，判断是包本身坏了还是验证或注册表的问题：包坏了时，npm 上 `npm deprecate @arcships/<包>@X.Y.Z "<原因>"`，PyPI 上在项目页面 yank 这个版本，crates.io 上 `cargo yank --version X.Y.Z <crate>`，然后发布修正版本 X.Y.(Z+1)；不撤回已经发布的文件。
 
 需要的配置：GitHub environment `release`（`CARGO_TOKEN`、`NPM_TOKEN`）、`pypi` 和 `pypi-host`。PyPI 上 `rutis` 的 trusted publisher 指向 release.yml 与 environment `pypi`，`rutis-host` 的指向 environment `pypi-host`：两个项目的 publisher 不能完全相同，否则一次发布拿到的令牌只对其中一个有效。
 
@@ -36,7 +37,7 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 要看到：拨号方每秒打印 `clock: <n>`；断网后 30 秒内两边报告心跳超时并等待重连，恢复后 `ready, session <n+1>`；重启监听方后拨号方退避重连；错误的 token 是 `AuthRejected … 403`，不信任的 CA 是 `AuthRejected … UnknownIssuer`。
 
-再用发布的包从零走一遍 [写一个 TypeScript 插件](guide/typescript-plugin.md) 和 [写一个 Python 插件](guide/python-plugin.md)。
+[写一个 TypeScript 插件](guide/typescript-plugin.md) 已由发布后验证照着走（标记过的示例，`tools/doc-examples.mjs`）；[写一个 Python 插件](guide/python-plugin.md) 的示例在 #259 补全之前仍要人工用发布的包从零走一遍。
 
 每晚的 stress 工作流还跑两个浸泡测试（link 反复断开重连、进程反复拉起结束），检查文件描述符、线程数不增长、进程都被回收。
 

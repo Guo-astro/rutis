@@ -57,3 +57,13 @@ test('an edited module is imported again; an unchanged one is not', async () => 
   writeFileSync(file, 'export const value = 22')
   expect((await modules.import(locate('./edited.ts', dir))).value).toBe(22)
 })
+
+test('a module that does not parse fails with its file and line', async () => {
+  const dir = project()
+  const file = join(dir, 'broken.ts')
+  writeFileSync(file, 'export interface C {\n  a?: string\n}\n\nconst const = 1\n')
+  const error: any = await new Modules().import(locate('./broken.ts', dir)).catch(error => error)
+  expect(error.name).toBe('BuildMessage')
+  expect(error.message).toContain(`${realpathSync(file)}:5:`)
+  expect(error.message).toContain('const const = 1')
+})

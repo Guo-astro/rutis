@@ -243,6 +243,32 @@ impl ServiceCatalog {
             .is_some_and(|key| key.base() == &rutis_bridge::session::host_key(name))
     }
 
+    /// [`ServiceCatalog::is_shared`]; nothing is shared without runtimes or
+    /// links.
+    pub(crate) fn shares(&self, name: &str) -> bool {
+        #[cfg(any(feature = "runtimes", feature = "peer"))]
+        return self.is_shared(name);
+        #[cfg(not(any(feature = "runtimes", feature = "peer")))]
+        {
+            let _ = name;
+            false
+        }
+    }
+
+    /// Whether the application registered `name` for a service of its own
+    /// (a Rust service under its key), not a name rows share.
+    pub(crate) fn registered_by_host(&self, name: &str) -> bool {
+        let Some(service) = self.services.get(name) else {
+            return false;
+        };
+        #[cfg(any(feature = "runtimes", feature = "peer"))]
+        if service.key.base() == &rutis_bridge::session::host_key(name) {
+            return false;
+        }
+        let _ = service;
+        true
+    }
+
     /// The key of a global name; `None` for unknown names and for names
     /// inside instances (see [`ServiceCatalog::key_in`]).
     pub fn key(&self, name: &str) -> Option<TypeKey> {

@@ -133,6 +133,8 @@ pub enum Lang {
 pub struct Scenario {
     name: String,
     dir: PathBuf,
+    /// Installed mode ([`Scenario::installed`]).
+    installed: bool,
     hosts: RefCell<Vec<host::Started>>,
     ports: RefCell<Vec<u16>>,
     secrets: RefCell<Vec<String>>,
@@ -152,11 +154,27 @@ impl Scenario {
         Self {
             name: name.to_owned(),
             dir,
+            installed: false,
             hosts: RefCell::new(Vec::new()),
             ports: RefCell::new(Vec::new()),
             secrets: RefCell::new(Vec::new()),
             finished: Cell::new(false),
         }
+    }
+
+    /// A scenario in installed mode, for what a user installs (S9, #193):
+    /// the host and its runtimes come from the packages the scenario
+    /// installs, never from this checkout. Every program it starts gets a
+    /// new home directory (`home/` in the scenario, with the npm and uv
+    /// caches in it), none of this checkout's runtimes (no
+    /// `RUTIS_NODE_RUNTIME`, `RUTIS_PYTHON_PATH`), none of the caller's
+    /// `NODE_PATH`, `PYTHONPATH`, `VIRTUAL_ENV`, and a `PATH` without
+    /// `~/.cargo/bin` or this checkout's `target/`.
+    pub fn installed(name: &str) -> Self {
+        let mut scenario = Self::new(name);
+        scenario.installed = true;
+        std::fs::create_dir_all(scenario.dir.join("home")).expect("the scenario's home");
+        scenario
     }
 
     /// The scenario's directory.
@@ -191,6 +209,57 @@ impl Scenario {
         self.write(relative, edit(text));
     }
 
+    /// Replace a project file as an editor that saves atomically does: the
+    /// new contents go to a dot file in the same directory (which
+    /// `rutis-host dev` does not watch), renamed over the old one. The
+    /// modification time always changes, even on a file system that
+    /// records it coarsely, so a watcher comparing times sees the change.
+    pub fn replace(&self, relative: impl AsRef<Path>, contents: impl AsRef<[u8]>) {
+        let path = self.path(relative);
+        let before = std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .ok();
+        let name = path.file_name().expect("a file name").to_string_lossy();
+        let part = path.with_file_name(format!(".{name}.part"));
+        std::fs::write(&part, contents)
+            .unwrap_or_else(|error| panic!("{}: {error}", part.display()));
+        std::fs::rename(&part, &path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let after = std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .ok();
+        if let (Some(before), Some(after)) = (before, after) {
+            if after <= before {
+                let later = before + Duration::from_secs(1);
+                std::fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .and_then(|file| file.set_modified(later))
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            }
+        }
+    }
+
+    /// Link `target` (a directory of this checkout, say) at `relative` in
+    /// the project: a symbolic link on Unix, a junction on Windows.
+    pub fn link(&self, relative: impl AsRef<Path>, target: &Path) {
+        let link = self.path(relative);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, &link)
+            .unwrap_or_else(|error| panic!("link {}: {error}", link.display()));
+        // A junction needs no privilege, unlike a symbolic link.
+        #[cfg(windows)]
+        assert!(std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&link)
+            .arg(target)
+            .status()
+            .expect("mklink")
+            .success());
+    }
+
     /// Make the project a Node project whose `@arcships/rutis` is this
     /// checkout's `node/rutis` (linked, not installed from a registry).
     pub fn link_node_sdk(&self) {
@@ -200,28 +269,22 @@ impl Scenario {
                 &json!({ "name": "e2e-scenario", "private": true, "type": "module" }),
             );
         }
-        let link = self.path("node_modules/@arcships/rutis");
-        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
-        let target = repo().join("node/rutis");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&target, &link).expect("link @arcships/rutis");
-        // A junction needs no privilege, unlike a symbolic link.
-        #[cfg(windows)]
-        assert!(std::process::Command::new("cmd")
-            .arg("/C")
-            .arg("mklink")
-            .arg("/J")
-            .arg(&link)
-            .arg(&target)
-            .status()
-            .expect("mklink")
-            .success());
+        self.link("node_modules/@arcships/rutis", &repo().join("node/rutis"));
     }
 
     /// Add a probe row's plugin to the project: `<id>.ts`, or the Python
     /// module `<id>` (`-` as `_`). `inject` are the services it calls; it
     /// starts once they run. Put [`Probe::row`] in `rutis.json`.
     pub fn probe(&self, id: &str, lang: Lang, inject: &[&str]) -> Probe {
+        self.probe_in("", id, lang, inject)
+    }
+
+    /// [`Scenario::probe`], with the plugin file in the project's
+    /// subdirectory `dir`. A Node probe's row names its file by absolute
+    /// path, so it resolves wherever the configuration is; a Python probe
+    /// is the module `<id>`, found in the Python runtime's project, which
+    /// `dir` then has to be.
+    pub fn probe_in(&self, dir: &str, id: &str, lang: Lang, inject: &[&str]) -> Probe {
         let inject = serde_json::to_string(inject).unwrap();
         let (file, name, source) = match lang {
             Lang::Node => (
@@ -242,6 +305,11 @@ impl Scenario {
                         .replace("inject = INJECT", &format!("inject = {inject}")),
                 )
             }
+        };
+        let file = Path::new(dir).join(file);
+        let name = match lang {
+            Lang::Node => self.path(&file).display().to_string(),
+            Lang::Python => name,
         };
         self.write(file, source);
         let dir = self.dir.join("probes").join(id);
@@ -303,8 +371,53 @@ impl Scenario {
         I: IntoIterator<Item = S>,
         S: AsRef<std::ffi::OsStr>,
     {
-        let mut command = std::process::Command::new(host_program());
-        command.args(args).current_dir(self.path(""));
+        self.start(host_program(), "", args, env)
+    }
+
+    /// Start `rutis-host <args>` in the project's subdirectory `dir` (as a
+    /// user who has `cd`'d there).
+    pub fn host_in<I, S>(&self, dir: &str, args: I) -> Host
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.start(host_program(), dir, args, &[])
+    }
+
+    /// [`Scenario::host_in`] with more environment.
+    pub fn host_in_with<I, S>(&self, dir: &str, args: I, env: &[(&str, &str)]) -> Host
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.start(host_program(), dir, args, env)
+    }
+
+    /// Run another program (npm, python, bun, go) in the project's
+    /// subdirectory `dir`, with the same environment as a host; its exit
+    /// status from [`Host::wait_exit`]. It counts for the residue checks
+    /// like a host.
+    pub fn program<I, S>(
+        &self,
+        dir: &str,
+        program: impl AsRef<std::ffi::OsStr>,
+        args: I,
+        env: &[(&str, &str)],
+    ) -> Host
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.start(program.as_ref().into(), dir, args, env)
+    }
+
+    fn start<I, S>(&self, program: PathBuf, dir: &str, args: I, env: &[(&str, &str)]) -> Host
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        let mut command = std::process::Command::new(program);
+        command.args(args).current_dir(self.path(dir));
         for (name, _) in std::env::vars_os() {
             let name = name.to_string_lossy();
             if name.starts_with("RUTIS_TOKEN")
@@ -317,14 +430,57 @@ impl Scenario {
         for name in ["TMPDIR", "TMP", "TEMP"] {
             command.env(name, &tmp);
         }
-        command
-            .env("RUTIS_NODE_RUNTIME", repo().join("node/rutis-runtime"))
-            .env("RUTIS_PYTHON_PATH", repo().join("python/rutis"));
+        if self.installed {
+            self.clean_environment(&mut command);
+        } else {
+            command
+                .env("RUTIS_NODE_RUNTIME", repo().join("node/rutis-runtime"))
+                .env("RUTIS_PYTHON_PATH", repo().join("python/rutis"));
+        }
         command.envs(env.iter().copied());
         let name = format!("host-{}", self.hosts.borrow().len() + 1);
         let (host, started) = Host::spawn(&name, command);
         self.hosts.borrow_mut().push(started);
         host
+    }
+
+    /// The environment of installed mode ([`Scenario::installed`]).
+    fn clean_environment(&self, command: &mut std::process::Command) {
+        for name in [
+            "RUTIS_NODE_RUNTIME",
+            "RUTIS_PYTHON_PATH",
+            "NODE_PATH",
+            "NODE_OPTIONS",
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "VIRTUAL_ENV",
+            "CONDA_PREFIX",
+            "UV_PROJECT_ENVIRONMENT",
+        ] {
+            command.env_remove(name);
+        }
+        let home = self.dir.join("home");
+        command
+            .env("HOME", &home)
+            .env("npm_config_cache", home.join(".npm"))
+            .env("npm_config_update_notifier", "false")
+            .env("npm_config_fund", "false")
+            .env("npm_config_audit", "false")
+            .env("UV_CACHE_DIR", home.join(".uv"))
+            .env("PIP_NO_CACHE_DIR", "1")
+            .env("PIP_DISABLE_PIP_VERSION_CHECK", "1");
+        #[cfg(windows)]
+        command
+            .env("USERPROFILE", &home)
+            .env("APPDATA", home.join("AppData/Roaming"))
+            .env("LOCALAPPDATA", home.join("AppData/Local"));
+        if let Some(path) = std::env::var_os("PATH") {
+            let target = repo().join("target");
+            let kept: Vec<PathBuf> = std::env::split_paths(&path)
+                .filter(|dir| !dir.ends_with(".cargo/bin") && !dir.starts_with(&target))
+                .collect();
+            command.env("PATH", std::env::join_paths(kept).expect("PATH"));
+        }
     }
 
     /// Run the residue checks and return what they found, without failing.
