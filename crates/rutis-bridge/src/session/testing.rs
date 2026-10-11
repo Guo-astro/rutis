@@ -13,6 +13,7 @@
 //! | `fail(name, message)` | throws an error named `name` |
 //! | `hold(fn)` / `fire(value)` / `drop()` | keeps `fn`, calls it, lets it go |
 //! | `abortable(signal)` | returns a future that ends once `signal` aborts |
+//! | `started()` | whether an `abortable` call has reached it |
 //! | `aborted()` | whether such a signal aborted |
 //! | `reenter(fn)` | returns `fn()`; `fn` calls `echo` while the far end waits |
 //!
@@ -29,11 +30,15 @@ use crate::session::rpc::{settle, Connection, Dispatch, Reference, Reply, Value}
 use crate::session::Error;
 
 const TARGET: &str = "conformance";
+/// How long a wait lasts before the check fails as hung: only a hang
+/// guard (#231).
+const GUARD: Duration = Duration::from_secs(10);
 
 /// The `conformance` target, for a Rust far end.
 #[derive(Default)]
 pub struct Fixture {
     held: Mutex<Option<Reference>>,
+    started: AtomicBool,
     aborted: Arc<AtomicBool>,
 }
 
@@ -80,6 +85,7 @@ impl Dispatch for Fixture {
                 Ok(Value::Undefined)
             }
             "abortable" => {
+                self.started.store(true, Ordering::SeqCst);
                 // The signal argument aborts when the caller drops the call;
                 // a Rust callee sees it as the future being dropped.
                 let aborted = self.aborted.clone();
@@ -95,6 +101,7 @@ impl Dispatch for Fixture {
                     Ok(Value::Undefined)
                 }))
             }
+            "started" => Ok(json!(self.started.load(Ordering::SeqCst)).into()),
             "aborted" => Ok(json!(self.aborted.load(Ordering::SeqCst)).into()),
             "reenter" => {
                 let callback = next().reference()?;
@@ -294,22 +301,44 @@ pub fn session(far: &Connection) {
     );
 
     // Dropping an async call aborts the far end's signal.
-    runtime.block_on(async {
-        let pending = far.invoke_async(TARGET, "abortable", Value::List(vec![Value::Signal]));
-        let _ = tokio::time::timeout(Duration::from_millis(50), async {
-            let reply = pending.await?;
-            settle(reply).await
-        })
-        .await;
-    });
-    let aborted = (0..100).any(|_| {
-        std::thread::sleep(Duration::from_millis(20));
-        call("aborted", vec![])
+    let is_true = |method: &str| {
+        call(method, vec![])
             .ok()
             .and_then(|value| value.json().ok())
             == Some(json!(true))
+    };
+    runtime.block_on(async {
+        let pending = far.invoke_async(TARGET, "abortable", Value::List(vec![Value::Signal]));
+        let pending = async {
+            let reply = pending.await?;
+            settle(reply).await
+        };
+        let mut pending = std::pin::pin!(pending);
+        // Dropped once the far end runs it: a cancel ahead of the call would
+        // find nothing to abort (#231).
+        let deadline = std::time::Instant::now() + GUARD;
+        loop {
+            tokio::select! {
+                ended = &mut pending => panic!("abortable only ends when cancelled: {ended:?}"),
+                () = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+            if is_true("started") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "abortable never started"
+            );
+        }
     });
-    assert!(aborted, "cancelling a call aborts its signal");
+    let deadline = std::time::Instant::now() + GUARD;
+    while !is_true("aborted") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cancelling a call aborts its signal"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 
     // While the far end waits on a synchronous callback, the callback may
     // call the far end again: the call belongs to the chain it waits for.

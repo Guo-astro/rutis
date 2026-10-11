@@ -2,6 +2,7 @@
 //! slow delivery, a far end that vanishes, a connection that stays open but
 //! carries nothing (half-open).
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -22,6 +23,8 @@ struct State {
     /// The mode, and whether the channel was dropped.
     mode: Mutex<(Mode, bool)>,
     changed: Condvar,
+    /// Messages that arrived while half-open and were dropped.
+    swallowed: AtomicUsize,
 }
 
 /// Switches the faults of a channel made by [`fault`].
@@ -51,6 +54,12 @@ impl Faults {
     /// receives wait. Messages swallowed meanwhile are lost.
     pub fn half_open(&self) {
         self.set(Mode::HalfOpen);
+    }
+
+    /// How many arriving messages half-open has dropped so far: a test waits
+    /// for one to be gone before it heals the channel.
+    pub fn swallowed(&self) -> usize {
+        self.state.swallowed.load(Ordering::SeqCst)
     }
 
     /// Drop whatever is in flight and close, as a far end that disappears.
@@ -135,6 +144,10 @@ impl Receiver for FaultReceiver {
                 }
                 Mode::HalfOpen => {
                     // Swallowed. Wait until healed or dropped; then read on.
+                    if message.is_some() {
+                        self.state.swallowed.fetch_add(1, Ordering::SeqCst);
+                        self.state.changed.notify_all();
+                    }
                     while guard.0 == Mode::HalfOpen && !guard.1 {
                         guard = self.state.changed.wait(guard).unwrap();
                     }

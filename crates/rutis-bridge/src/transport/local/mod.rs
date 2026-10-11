@@ -87,9 +87,18 @@ pub struct LocalTransport {
     open: Mutex<Vec<Weak<dyn crate::channel::Closer>>>,
     spawners: Mutex<HashMap<String, Spawn>>,
     trace: Mutex<Option<crate::channel::trace::Sink>>,
+    token_wait: Mutex<Option<std::time::Duration>>,
 }
 
 impl LocalTransport {
+    /// How long a connection to a started process's loopback listener may
+    /// take to present its token before it is dropped: 10 s by default.
+    /// Connections present at once each on their own, so a silent one never
+    /// holds up the process's ([`Handover::Loopback`]).
+    pub fn token_wait(&self, wait: std::time::Duration) {
+        *self.token_wait.lock().unwrap() = Some(wait);
+    }
+
     /// Let `spawn:<name>` start `spawn`.
     pub fn spawner(&self, name: &str, spawn: Spawn) {
         self.spawners.lock().unwrap().insert(name.to_owned(), spawn);
@@ -150,7 +159,8 @@ impl LocalTransport {
             .ok_or_else(|| ConnectError::Incompatible {
                 reason: format!("nothing to spawn as {name}"),
             })?;
-        spawn::start(&spawn).await
+        let token_wait = self.token_wait.lock().unwrap().unwrap_or(spawn::TOKEN_WAIT);
+        spawn::start(&spawn, token_wait).await
     }
 }
 

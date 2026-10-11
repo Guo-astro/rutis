@@ -19,7 +19,8 @@ use std::time::Duration;
 use crate::channel::{Channel, ChannelError};
 
 /// How long a check waits for something that must happen.
-const PATIENCE: Duration = Duration::from_secs(5);
+/// Only a hang guard (#231).
+const PATIENCE: Duration = Duration::from_secs(10);
 
 /// How long a check waits before it fails rather than hangs.
 const GUARD: Duration = Duration::from_secs(10);
@@ -85,6 +86,8 @@ pub fn nothing_lost_while_the_receiver_lags((mut a, mut b): (Channel, Channel)) 
         }
         a
     });
+    // clock: widen — lets the sender fill the channel before reading, the
+    // case this checks; it holds either way.
     std::thread::sleep(Duration::from_millis(100));
     for n in 0..COUNT {
         let message = recv(&mut b).expect("a message");
@@ -107,6 +110,8 @@ pub fn close_is_idempotent_and_wakes_a_blocked_receive((mut a, _b): (Channel, Ch
         done.send(()).unwrap();
         result
     });
+    // clock: widen — gives the receive time to block before the close; a
+    // close before it is the same contract (the receive still ends).
     std::thread::sleep(Duration::from_millis(50));
     closer.close("first");
     closer.close("second");
@@ -134,6 +139,8 @@ pub fn close_wakes_a_blocked_send((mut a, _b): (Channel, Channel)) {
         done.send(()).unwrap();
         result
     });
+    // clock: widen — gives the send time to block on a full channel before
+    // the close; the assertion holds whether it did.
     std::thread::sleep(Duration::from_millis(100));
     closer.close("closed while sending");
     finished
@@ -146,7 +153,10 @@ pub fn close_wakes_a_blocked_send((mut a, _b): (Channel, Channel)) {
 /// it, and can no longer send for long.
 pub fn the_far_end_closing_ends_the_channel((mut a, mut b): (Channel, Channel)) {
     a.sender.send(b"last words").unwrap();
-    // Let the message leave before the close.
+    // clock: weak-negative — lets the message leave before the close. The
+    // channels do not all promise that a close after a send delivers it, so
+    // this checks the ones that do in practice; a slow machine can only
+    // make it pass for the wrong reason, not fail.
     std::thread::sleep(Duration::from_millis(20));
     a.closer.close("bye");
     assert_eq!(recv_or_end(&mut b).as_deref(), Some(&b"last words"[..]));
