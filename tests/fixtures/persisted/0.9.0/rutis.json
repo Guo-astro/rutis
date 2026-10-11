@@ -1,0 +1,40 @@
+{
+  "id": "main",
+  "runtimes": {
+    "node": { "project": ".", "runtime": "vendor/rutis-runtime" },
+    "py": { "project": "plugins", "python": "python3" },
+    "bun": { "project": "edge", "runtime": "vendor/rutis-bun", "program": "tools/bun" },
+    "go": { "dir": "plugins/go", "binaries": ["bin/netkit"], "start": "on-demand", "idle": 30, "project": "work" },
+    "remote": [
+      { "name": "gpu", "language": "python" },
+      { "name": "edge-go", "language": "go" }
+    ]
+  },
+  "listen": [
+    { "name": "public", "address": "0.0.0.0:7443", "cert": "tls/server.pem", "key": "tls/server.key" },
+    { "name": "local", "address": "127.0.0.1:7444" }
+  ],
+  "rows": [
+    { "id": "weather", "name": "weather-plugin", "config": { "city": "Oslo" }, "inject": ["llm"], "isolate": { "cache": true } },
+    { "id": "llm", "name": "py:llm_gateway", "isolate": { "http": "shared" } },
+    { "id": "edge-fn", "name": "bun:edge_fn" },
+    { "id": "dns", "name": "go:dns" },
+    { "id": "probe", "name": "go-netkit:probe" },
+    { "id": "local-tool", "name": "./tools/tool.ts" },
+    { "id": "old-tool", "name": "../shared/old-tool.mjs", "disabled": true },
+    { "id": "tools", "group": true, "config": [
+      { "id": "tool-a", "name": "./tools/a.ts", "config": { "level": 2 } },
+      { "id": "tool-b", "name": "tool-b-plugin", "disabled": false }
+    ] },
+    { "id": "per-session", "group": true, "instanced": true, "config": [
+      { "id": "session-state", "name": "session-state-plugin" }
+    ] },
+    { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["weather"] } },
+    { "id": "branch", "name": "rutis-bridge/peer", "config": { "peer": "branch", "listen": "public", "import": ["clock"] } },
+    { "id": "sidecar", "name": "rutis-bridge/peer", "config": { "peer": "sidecar", "dial": "/run/rutis/sidecar.sock" } },
+    { "id": "gpu", "name": "rutis-bridge/peer", "config": { "peer": "gpu", "dial": "wss://gpu.example.com/rutis", "runtime": "gpu" } },
+    { "id": "embedder", "name": "gpu:embedder" },
+    { "id": "edge-dns", "name": "edge-go:dns" },
+    { "id": "clock", "name": "peer:office/clock" }
+  ]
+}

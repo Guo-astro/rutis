@@ -1,0 +1,53 @@
+# Your patch layer for this dsh profile, applied after every bundle layer:
+# a top-level YAML array of loader patch entries (id-targeted config
+# overrides, disables, and insert lists; `!!js` expressions allowed).
+
+# Turn a bundle's row off.
+- id: timer
+  disabled: true
+
+# Override fields of a row, asserting its plugin.
+- id: llm-aimux
+  name: "@rutis/dsh-aimux"
+  config:
+    providers:
+      deepseek:
+        apiKey: !!js process.env.DEEPSEEK_API_KEY
+        baseUrl: https://api.deepseek.com
+    retries: 3
+    timeout: 1.5e3
+    fallback: null
+    stream: yes
+  inject: [session, tools]
+  isolate:
+    http: shared
+
+# Rows of my own, at the root.
+- insert:
+    - id: local
+      name: ./plugins/local.js
+      config:
+        level: !!js Number(process.env.LEVEL ?? 2)
+        tags: [a, "b c", 'd']
+    - id: shared-tool
+      name: ../shared/tool.mjs
+      disabled: false
+    - id: my-group
+      group: true
+      config:
+        - id: inner
+          name: ./plugins/inner.js
+        - id: npm-row
+          name: some-npm-plugin
+
+# Rows added to a bundle's group.
+- id: tools
+  insert:
+    - id: extra-tool
+      name: ./plugins/extra-tool.js
+      config: |
+        multi
+        line
+
+# An empty insert.
+- insert: []
