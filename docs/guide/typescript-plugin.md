@@ -4,6 +4,7 @@
 
 ## 1. 创建项目
 
+<!-- example: typescript run -->
 ```bash
 npx @arcships/rutis-host new greeter --lang node
 cd greeter
@@ -22,6 +23,7 @@ npm install
 
 ## 2. 写插件
 
+<!-- example: typescript file=greeter/src/index.ts -->
 ```ts
 import { definePlugin } from '@arcships/rutis'
 
@@ -58,6 +60,7 @@ export default definePlugin<Config>({
 
 `@arcships/rutis/testing` 不需要宿主，给插件提供假服务、调用它提供的服务：
 
+<!-- example: typescript file=greeter/test/index.test.ts -->
 ```ts
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -74,6 +77,7 @@ test('reports the weather of the configured city', async () => {
 })
 ```
 
+<!-- example: typescript run -->
 ```bash
 npm test
 ```
@@ -82,12 +86,14 @@ npm test
 
 ## 4. 在本地宿主里运行
 
+<!-- example: typescript run until="rutis-host dev: running greeter" order=99 -->
 ```bash
 npx rutis-host dev
 ```
 
 `dev` 把这个项目作为一行运行（源码 `src/index.ts`，不需要先构建），改了文件就重新加载它。插件需要的其他服务写在 `rutis.dev.json` 里，例如一个假的 `llm`：
 
+<!-- example: typescript file=greeter/rutis.dev.json -->
 ```json
 {
   "rows": [
@@ -97,6 +103,7 @@ npx rutis-host dev
 }
 ```
 
+<!-- example: typescript file=greeter/dev/fake-llm.ts -->
 ```ts
 // dev/fake-llm.ts
 import { definePlugin } from '@arcships/rutis'

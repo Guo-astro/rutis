@@ -12,8 +12,12 @@
 #              the Go module proxy serves it from there)
 #   GitHub     rutis-host binaries
 #
-# Each publish skips what its registry already has, so a release that fails
-# halfway is finished by running it again. rutis-cli releases on its own
+# The packages are built once (package.yml) and installed and run on every
+# platform before anything is published (install.yml); what is published is
+# those files. After publishing, each channel is installed again from its
+# registry; a failure opens an issue. Each publish skips what its registry
+# already has, so a release that fails halfway is finished by running it
+# again. rutis-cli releases on its own
 # (cli-v*, release-cli.yml).
 name: release
 
@@ -31,90 +35,38 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
       - run: node scripts/train.mjs "$GITHUB_REF_NAME"
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-  binaries:
+  # Built once, by the steps main builds with (package.yml); every
+  # platform is installed and run from these files before anything is
+  # published (install.yml, the release gate: Q13.1.6).
+  package:
     needs: verify
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-24.04, target: x86_64-unknown-linux-musl, container: "messense/rust-musl-cross:x86_64-musl", npm: linux-x64 }
-          - { os: ubuntu-24.04, target: aarch64-unknown-linux-musl, container: "messense/rust-musl-cross:aarch64-musl", npm: linux-arm64 }
-          - { os: macos-14, target: x86_64-apple-darwin, npm: darwin-x64 }
-          - { os: macos-14, target: aarch64-apple-darwin, npm: darwin-arm64 }
-          - { os: windows-2025, target: x86_64-pc-windows-msvc, npm: win32-x64, exe: .exe }
-    runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.1
-        if: matrix.container == ''
-        with:
-          targets: ${{ matrix.target }}
-      - name: add the target (container)
-        if: matrix.container != ''
-        run: rustup target add ${{ matrix.target }}
-      - run: cargo build --locked --release -p rutis-host --target ${{ matrix.target }}
-      - name: stage
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          NAME="rutis-host-${VERSION}-${{ matrix.target }}"
-          mkdir -p "stage/${NAME}" dist
-          BINARY="rutis-host${{ matrix.exe }}"
-          cp "target/${{ matrix.target }}/release/${BINARY}" "stage/${NAME}/"
-          cp crates/rutis-host/README.md LICENSE "stage/${NAME}/"
-          # A .zip on Windows, where it opens without extra tools.
-          if [[ -n "${{ matrix.exe }}" ]]; then
-            ARCHIVE="${NAME}.zip"
-            (cd stage && 7z a -tzip "../dist/${ARCHIVE}" "${NAME}" >/dev/null)
-          else
-            ARCHIVE="${NAME}.tar.gz"
-            tar -C stage -czf "dist/${ARCHIVE}" "${NAME}"
-          fi
-          (cd dist && sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256" 2>/dev/null || shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256")
-          mkdir -p npm-bin && cp "target/${{ matrix.target }}/release/${BINARY}" "npm-bin/${BINARY}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: binary-${{ matrix.npm }}
-          path: |
-            dist/
-            npm-bin/
+    uses: ./.github/workflows/package.yml
+    with:
+      version: ${{ needs.verify.outputs.version }}
+      platforms: '["linux-x64","linux-arm64","darwin-x64","darwin-arm64","win32-x64"]'
 
-  wheels:
-    needs: verify
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-24.04, target: x86_64, manylinux: auto }
-          # ring's assembly needs __ARM_ARCH, which the GCC of the default
-          # (manylinux2014) aarch64 cross image does not define.
-          - { os: ubuntu-24.04, target: aarch64, manylinux: "2_28" }
-          - { os: macos-14, target: x86_64-apple-darwin }
-          - { os: macos-14, target: aarch64-apple-darwin }
-          - { os: windows-2025, target: x86_64-pc-windows-msvc }
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          manylinux: ${{ matrix.manylinux || 'auto' }}
-          args: --release --locked --manifest-path crates/rutis-host/Cargo.toml --out wheels
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheels-${{ matrix.target }}
-          path: wheels/
+  install:
+    needs: [verify, package]
+    uses: ./.github/workflows/install.yml
+    with:
+      source: local
+      build: false
+      version: ${{ needs.verify.outputs.version }}
+      platforms: '["linux-x64","linux-arm64","darwin-x64","darwin-arm64","win32-x64"]'
 
   crates:
-    needs: [binaries, wheels]
+    needs: install
     runs-on: ubuntu-24.04
     environment: release
     steps:
@@ -144,7 +96,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
 
   npm:
-    needs: [binaries, wheels]
+    needs: install
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -156,33 +108,30 @@ jobs:
         with:
           node-version: '24'
           registry-url: https://registry.npmjs.org
+      # The tarballs the install gate installed and ran.
       - uses: actions/download-artifact@v4
         with:
-          pattern: binary-*
-      - name: Platform packages
-        run: |
-          for dir in binary-*; do
-            platform="${dir#binary-}"
-            binary=$(ls "$dir"/npm-bin/rutis-host*)
-            node node/rutis-host/scripts/platform-package.mjs "${platform%-*}" "${platform##*-}" "$binary" "npm/$platform"
-          done
+          name: packages
+          path: packages
       - name: Publish what npm does not have
         run: |
           version="${GITHUB_REF_NAME#v}"
           publish() {
-            name=$(node -p "require('./$1/package.json').name")
+            tarball="packages/npm/$1-$version.tgz"
+            name=$(tar -xOzf "$tarball" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0)).name")
             if npm view "$name@$version" version >/dev/null 2>&1; then
               echo "$name $version is already published"
             else
-              (cd "$1" && npm publish --provenance --access public)
+              npm publish "$tarball" --provenance --access public
             fi
           }
-          publish node/rutis
-          (cd node/rutis-runtime && npm ci --ignore-scripts)
-          publish node/rutis-runtime
-          publish bun/rutis-bun
-          for platform in npm/*; do publish "$platform"; done
-          publish node/rutis-host
+          publish arcships-rutis
+          publish arcships-rutis-runtime
+          publish arcships-rutis-bun
+          for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+            publish "arcships-rutis-host-$platform"
+          done
+          publish arcships-rutis-host
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -190,22 +139,25 @@ jobs:
   # trusted-publishing token to a single publisher, so two projects with
   # identical publishers (same workflow and environment) cannot share a job.
   pypi:
-    needs: [binaries, wheels]
+    needs: install
     runs-on: ubuntu-24.04
     environment: pypi
     permissions:
       contents: read
       id-token: write # trusted publishing
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv build python/rutis --out-dir dist
+      # The rutis package the install gate installed.
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: packages
+      - run: mkdir dist && cp packages/wheels/* dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true
 
   pypi-host:
-    needs: [binaries, wheels]
+    needs: install
     runs-on: ubuntu-24.04
     environment: pypi-host
     permissions:
@@ -263,3 +215,67 @@ jobs:
             --notes-file "docs/releases/${GITHUB_REF_NAME#v}.en.md"
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # After publishing: each channel from its registry, on Linux, and the
+  # crate and the Go module (Q6.15.3). The registries can take minutes to
+  # serve a new version; this waits for them first (a hang guard, not a
+  # synchronization). A failure opens an issue; whether to deprecate or
+  # yank is the maintainer's decision (docs/release.md, Q13.2).
+  published:
+    needs: [verify, github, go]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: wait for the registries
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          for i in $(seq 60); do
+            npm view "@arcships/rutis-host@$VERSION" version >/dev/null 2>&1 \
+              && curl -sf "https://pypi.org/pypi/rutis-host/$VERSION/json" >/dev/null \
+              && curl -sf -A "rutis release (github.com/arcships/rutis)" "https://crates.io/api/v1/crates/rutis-host/$VERSION" >/dev/null \
+              && exit 0
+            sleep 15
+          done
+          echo "the registries do not serve $VERSION after 15 minutes" >&2
+          exit 1
+      - name: the crate and the Go module
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          cargo install --locked "rutis-host@$VERSION" --root "$RUNNER_TEMP/cargo"
+          "$RUNNER_TEMP/cargo/bin/rutis-host" --version | grep -x "rutis-host $VERSION"
+          (cd "$RUNNER_TEMP" && go mod init check && GOFLAGS=-mod=mod go list -m "github.com/arcships/rutis/go/rutis@v$VERSION")
+
+  installed:
+    needs: [verify, published]
+    uses: ./.github/workflows/install.yml
+    with:
+      source: registry
+      version: ${{ needs.verify.outputs.version }}
+      platforms: '["linux-x64"]'
+
+  report:
+    needs: [verify, published, installed]
+    # Only for what was published: a failed gate published nothing.
+    if: failure() && needs.published.result != 'skipped'
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    steps:
+      - name: open an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" --assignee eric8810 \
+            --title "release $VERSION: the published packages failed to install or run" \
+            --body "The checks after publishing $VERSION failed: $RUN. Whether to deprecate (npm) or yank (PyPI, crates.io) the release and publish a fix is decided by hand; see docs/release.md."
