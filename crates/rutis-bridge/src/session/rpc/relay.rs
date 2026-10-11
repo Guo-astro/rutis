@@ -45,8 +45,9 @@ impl Connection {
         // the other session, and must progress while this connection's own
         // runtime is blocked by a synchronous call.
         let executor = self.background()?;
-        // Peers accept only their own native ids in an origin. The source
-        // session's entries are added back when an await is forwarded.
+        // Runtimes before #225 accept only their own native ids in an
+        // origin. The source session's entries are added back when an
+        // await is forwarded.
         let origin = rebase(&import.origin, source.tag(), self.tag())
             .into_iter()
             .filter(|entry| !entry.contains('/'))

@@ -41,15 +41,21 @@ fn file_url(path: &Path) -> String {
 const PYTHON_PLUGIN: &str = r#"
 import os, subprocess, sys, threading
 
+def say(line):
+    # One write per line: the runtimes share this output, and print() would
+    # write the newline separately, letting another process's line in.
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+
 def apply(ctx, config):
     out, row = config["out"], config["row"]
     if config.get("hold"):
         # A process of its own that never ends, sharing the output.
         child = subprocess.Popen([sys.executable, "-c", "import threading; threading.Event().wait()"])
-        print(f"plugin {row} started {child.pid}", flush=True)
-    print(f"plugin {row} applied in {os.getpid()}", flush=True)
+        say(f"plugin {row} started {child.pid}")
+    say(f"plugin {row} applied in {os.getpid()}")
     def cleanup():
-        print(f"plugin {row} cleanup started", flush=True)
+        say(f"plugin {row} cleanup started")
         if config.get("hold"):
             threading.Event().wait()
         with open(os.path.join(out, row + ".cleanup"), "a") as f:

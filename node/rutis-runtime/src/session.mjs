@@ -34,7 +34,12 @@ const PROTOCOL = MANIFEST.rutisProtocol
 export const ENDPOINT_PROTOCOL = 3
 // What this implementation supports in the endpoint format. It sends
 // objects but cannot receive them, so it does not declare `objects`.
-export const CAPABILITIES = ['signals']
+// `sync-wait`: its synchronous calls say so (`sync: true`), for the host's
+// wait-cycle check; `sync-stack`: calls run while it waits are stacked on
+// its one thread. It is not reentrant, so it does not declare that.
+export const CAPABILITIES = ['signals', 'sync-wait', 'sync-stack']
+// What it declares in the compat format, where older hosts ignore it.
+const COMPAT_CAPABILITIES = ['sync-wait', 'sync-stack']
 const ENDPOINT_ID = /^[a-z0-9-]+$/
 
 function checkData(value, seen = new Set()) {
@@ -92,8 +97,10 @@ export class Session {
   start() {
     this.#send(encode(this.#endpoint
       ? { op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: this.#endpoint.local, implementation: { name: MANIFEST.name, version: MANIFEST.version }, capabilities: [...CAPABILITIES, ...(this.#endpoint.declare ?? [])] }
-      : { op: 'hello', version: PROTOCOL }))
+      : { op: 'hello', version: PROTOCOL, capabilities: COMPAT_CAPABILITIES }))
   }
+  // What the far end declared (either format), once it greeted.
+  #declared = []
   // What the far end said of itself (endpoint format), once it greeted.
   greeting
   #greet(frame) {
@@ -102,6 +109,7 @@ export class Session {
     const fail = (category, message) => Object.assign(new Error(message), { category })
     if (!this.#endpoint) {
       if (frame.version !== PROTOCOL || frame.endpoint !== undefined) throw fail('incompatible', `incompatible session: the far end speaks protocol ${frame.version}, this side ${PROTOCOL}`)
+      if (Array.isArray(frame.capabilities)) this.#declared = frame.capabilities
       return
     }
     if (frame.version !== ENDPOINT_PROTOCOL) throw fail('incompatible', `incompatible session: the far end speaks protocol ${frame.version}, this side ${ENDPOINT_PROTOCOL}`)
@@ -113,6 +121,7 @@ export class Session {
     if (endpoint === this.#endpoint.local) throw fail('auth-rejected', `endpoint mismatch: the far end greeted as this endpoint (${endpoint})`)
     this.#remote = `${endpoint}:`
     this.greeting = { endpoint, implementation: frame.implementation, capabilities: Array.isArray(frame.capabilities) ? frame.capabilities : [] }
+    this.#declared = this.greeting.capabilities
   }
   supports(capability) { return this.greeting?.capabilities.includes(capability) ?? false }
   close(error = new Error('session closed')) {
@@ -121,12 +130,17 @@ export class Session {
     for (const pending of this.#pending.values()) pending({ ok: false, value: error })
     this.#pending.clear(); this.#exports.clear(); this.#imports.clear(); this.#queued.clear()
   }
-  #fault(error) { this.close(error); this.#abort?.(error) }
+  // What this side found wrong with the session, if that is what ended it
+  // (a frame it refused, say): not a normal end.
+  fault
+  #fault(error) { if (!this.#closed) this.fault = error; this.close(error); this.#abort?.(error) }
   // A call id in an invocation chain: one of either side's, possibly
   // tagged with the session it came through (`s3/mac:4`).
   #callId(id) {
     if (typeof id !== 'string') return false
-    if (!this.#endpoint) return /^(node|rust):[1-9][0-9]*$/.test(id)
+    // Compat: this session's ids are `node:`/`rust:`; another session's
+    // come tagged with it, whatever its format (`s1/node:3`, #225).
+    if (!this.#endpoint) return /^(node|rust|s[0-9]+\/[a-z0-9-]+):[1-9][0-9]*$/.test(id)
     return /^(s[0-9]+\/)?[a-z0-9-]+:[1-9][0-9]*$/.test(id)
   }
   #path() { return this.#syncPath ?? this.#context.getStore() ?? [] }
@@ -234,10 +248,13 @@ export class Session {
     if (!record) throw new Error('not an imported reference')
     this.#finalizer.unregister(record); this.#release(record)
   }
-  #request(op, fields, args, finish, origin = []) {
+  #request(op, fields, args, finish, origin = [], sync = false) {
     const id = this.#allocate(), grants = []
     try {
       const frame = { op, id, path: [...new Set([...this.#path(), ...origin])], ...fields, ...(op === 'await' ? {} : { args: this.#encode(args, grants, true) }) }
+      // This thread waits for the reply: a host that checks for wait
+      // cycles needs to know (#228); older hosts would refuse the field.
+      if (sync && this.#declared.includes('sync-wait')) frame.sync = true
       const encoded = encode(frame)
       this.#pending.set(id, finish); this.#send(encoded)
     } catch (error) { this.#pending.delete(id); this.#rollback(grants); throw error }
@@ -245,7 +262,7 @@ export class Session {
   }
   #requestSync(op, fields, args) {
     let result
-    const id = this.#request(op, fields, args, value => { result = value })
+    const id = this.#request(op, fields, args, value => { result = value }, [], true)
     this.#waiting.push(id)
     try {
       for (const job of this.#queued) this.#run(job)

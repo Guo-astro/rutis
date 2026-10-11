@@ -12,7 +12,7 @@
 | Rust 收到调用后交给哪个线程 | M1 §7.2 | `rpc.rs` `receive`：按 `path` 从后往前找正在同步等待的调用号 |
 | Node 运行时：不可重入 | 多语言设计 §九；[插件 API](../../docs/guide/plugin-api.md)"同步调用与可重入" | `node/rutis-runtime/src/session.mjs` `#requestSync`、`#run`：等待期间只执行 `path` 含自己等待号的调用，其余放到一边，栈空后再执行 |
 | Python 运行时：可重入 | 同上 | `python/rutis/rutis/peer.py` `_call_sync`、`_run`：等待期间执行所有进来的调用 |
-| 策略 A、B | 多语言设计 §九 | 尚未实现 |
+| 策略 B（A 不采用） | 多语言设计 §九 | `crates/rutis-bridge/src/session/rpc/waits.rs`（#228）；调用帧的 `sync` 字段和 `sync-wait` 能力见 `session.mjs`、`peer.py`、`bun/rutis-bun/src/session.ts` |
 
 ## 模型
 

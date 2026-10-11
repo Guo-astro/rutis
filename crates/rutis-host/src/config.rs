@@ -216,18 +216,25 @@ impl HostConfig {
             .into_iter()
             .map(|warning| format!("{}: {warning}", path.display()))
             .collect();
-        // Absolute, so a plugin file's row is a `file:` URL even when the
-        // file was named relative to the working directory.
         let base = match path.parent() {
             Some(dir) if !dir.as_os_str().is_empty() => dir,
             _ => Path::new("."),
         };
-        let base = std::path::absolute(base).unwrap_or_else(|_| base.to_owned());
-        config.rebase(&base);
+        config.rebase(base);
         Ok(config)
     }
 
+    /// Make the relative paths in this configuration relative to `base`.
+    /// `base` is made absolute first, so a plugin file's row is a `file:` URL
+    /// even when `base` was relative to the working directory (`rutis-host
+    /// run rutis.json`, the usual way): `file://./plugin.mjs` names no file.
     pub fn rebase(&mut self, base: &Path) {
+        // `Path::parent` of a bare file name is empty: the working directory.
+        let base = match base.as_os_str().is_empty() {
+            true => Path::new("."),
+            false => base,
+        };
+        let base = &std::path::absolute(base).unwrap_or_else(|_| base.to_owned());
         let at = |path: &mut PathBuf| {
             if path.is_relative() {
                 // Without the `.` components (`<base>/.` for the default
@@ -280,8 +287,7 @@ impl HostConfig {
             }
         }
         // A plugin file named relative to the configuration. `Url` percent-
-        // encodes spaces and the like, which a bare `display()` would not;
-        // it needs an absolute path, so fall back when the base is relative.
+        // encodes spaces and the like, which a bare `display()` would not.
         for row in &mut self.rows {
             if let Some(name) = row["name"].as_str() {
                 let relative = ["./", "../"]
@@ -526,10 +532,12 @@ mod tests {
             "runtimes": { "go": { "dir": "plugins/go", "binaries": ["bin/netkit"] } }
         }))
         .unwrap();
-        config.rebase(Path::new("/srv/host"));
+        // Absolute on every platform: on Windows, `/srv/host` gets a drive.
+        let base = std::path::absolute("/srv/host").unwrap();
+        config.rebase(&base);
         let go = config.runtimes.go.unwrap();
-        assert_eq!(go.dir.unwrap(), Path::new("/srv/host/plugins/go"));
-        assert_eq!(go.binaries[0], Path::new("/srv/host/bin/netkit"));
-        assert_eq!(go.project, Path::new("/srv/host/."));
+        assert_eq!(go.dir.unwrap(), base.join("plugins/go"));
+        assert_eq!(go.binaries[0], base.join("bin/netkit"));
+        assert_eq!(go.project, base.join("."));
     }
 }

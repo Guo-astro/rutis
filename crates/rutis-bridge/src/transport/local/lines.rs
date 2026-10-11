@@ -48,6 +48,13 @@ pub(crate) fn limited(
     }
 }
 
+/// Whether the framing refuses `message` itself, without it reaching the
+/// stream: over [`MAX_MESSAGE`] (which also ends the channel), or holding a
+/// raw newline.
+pub(crate) fn refuses(message: &[u8]) -> bool {
+    message.len() > MAX_MESSAGE || message.contains(&b'\n')
+}
+
 /// What both directions share: whether the channel ended, how to end it,
 /// and the size limit.
 #[derive(Clone)]

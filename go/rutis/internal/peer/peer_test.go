@@ -302,3 +302,19 @@ func TestConcurrentCallsGoOutInTheOrderOfTheirIdentities(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A reference's origin, in the compat format, holds this session's ids and
+// other sessions' tagged with them, whatever their format: refusing those
+// ended the session of a nested call (#225).
+func TestCompatOriginsTakeOtherSessionsTaggedIds(t *testing.T) {
+	for _, id := range []string{"node:1", "rust:12", "s1/rust:7", "s1/node:2", "s12/mac-2:3"} {
+		if !compatOrigin.MatchString(id) {
+			t.Errorf("%s: refused", id)
+		}
+	}
+	for _, id := range []string{"py:1", "node:0", "s1/s2/node:1", "s1/node", "S1/node:1", "node:01"} {
+		if compatOrigin.MatchString(id) {
+			t.Errorf("%s: taken", id)
+		}
+	}
+}
