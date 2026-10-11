@@ -32,7 +32,7 @@ A test that fails only now and then, when it happens to fail on a pull request, 
 | Job | What it does |
 | --- | --- |
 | `rutis` | The kernel tests, `rounds` times (default 20). Each round changes the number of test threads (1, 2, all cores), shuffles the order and takes a new seed; every fifth round is a release build. Stops at the first failure |
-| `multiprocess` | The bridge and loader tests that start processes, open local channels or start runtime processes: the `PLATFORM_TESTS_BRIDGE` and `PLATFORM_TESTS_LOADER` lists of `ci.yml` (a test file added to them runs here too). The same runtimes as the `rust` job: Node 24, Bun 1.4.0, Python 3.12 with websockets, Go oldstable. The tests are built once, then run `rounds` times, each round with a different number of test threads, a shuffled order and a new seed. A failing round does not stop the others; the job fails at the end |
+| `multiprocess` | The bridge and loader tests that start processes, open local channels or start runtime processes: the `PLATFORM_TESTS_BRIDGE` and `PLATFORM_TESTS_LOADER` lists of `ci.yml` (a test file added to them runs here too). The same runtimes as the `rust` job: Node 24, Bun 1.4.0, Python 3.10 with websockets, Go oldstable. The tests are built once, then run `rounds` times, each round with a different number of test threads, a shuffled order and a new seed. A failing round does not stop the others; the job fails at the end |
 | `soak` | The bridge's long WebSocket and local-channel tests, `soak_secs` seconds each (default 600) |
 
 The slowest job sets the time of the workflow: `soak` takes about 21 minutes; `multiprocess` an estimated 30–45 minutes (about 10 minutes to build, 1–1.5 minutes a round).
@@ -65,7 +65,7 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 | Job | Runner | Pull requests | Added on main | What it does |
 | --- | --- | --- | --- | --- |
 | `links` | Linux | `docs` | — | Checks relative links in Markdown |
-| `rust` | Linux | `code` | The rerun with runtimes started over loopback, on Linux | Every Rust test, once: the workspace (but bridge and loader), the loader with every row kind, the bridge with every feature. With the oldest supported versions: Node 24 (22 once #219 merges), Bun 1.4.0, Python 3.12, Go oldstable |
+| `rust` | Linux | `code` | The rerun with runtimes started over loopback, on Linux | Every Rust test, once: the workspace (but bridge and loader), the loader with every row kind, the bridge with every feature. With the oldest supported versions: Node 24 (22 once #219 merges), Bun 1.4.0, Python 3.10, Go oldstable |
 | `js-py` | Linux | `code` | — | `scripts/train.mjs`; the Node packages' tests (`node/rutis`, `rutis-runtime`, `rutis-host`) and rutis-dsh's dsh tests; the Python unit tests |
 | `checks` | Linux | Only with `all` | The whole job | `cargo check --workspace --all-targets`; build checks and `--no-run` of the bridge and loader feature combinations. They find rare feature-combination build errors and run no tests |
 | `network-macos` | macOS | `code`: only the tests that depend on the platform | All bridge and loader tests; the `node/rutis` tests | Process start, local channels, runtime processes, WebSocket and rutis-host tests with Node 26, the latest Bun and Go stable; the Node runtime's and the Python package's tests; a build check of the whole workspace |

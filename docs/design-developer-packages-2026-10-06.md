@@ -275,7 +275,7 @@ Rust 宿主作者用 `rutis-loader` 和 `rutis-bridge` 嵌入，行的格式与 
 | --- | --- | --- |
 | 操作系统 | Linux、macOS | 本机运行时依赖 Unix；Windows 用 WSL |
 | Node | 当前写的是 26 | 代码里没有找到依赖 26 的特性。实施时用 Node 24（LTS）跑一遍测试，能过就放宽到 24 |
-| Python | 3.12 及以上 | |
+| Python | 3.10 及以上 | |
 | Rust（嵌入宿主） | MSRV 1.85 | 不变 |
 
 ## 11. 文档结构

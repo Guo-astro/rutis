@@ -32,7 +32,7 @@
 | 任务 | 做什么 |
 | --- | --- |
 | `rutis` | 内核测试重复 `rounds` 轮（默认 20）。每轮换测试线程数（1、2、全部核数）、打乱顺序、换种子，每五轮用一次 release 构建。第一次失败就停 |
-| `multiprocess` | bridge、loader 中会启动进程、打开本地通道、启动运行时进程的测试，也就是 `ci.yml` 的 `PLATFORM_TESTS_BRIDGE`、`PLATFORM_TESTS_LOADER` 两个列表（加进列表的新测试文件，这里自动跟着跑）。运行时和 `rust` 任务相同：Node 24、Bun 1.4.0、Python 3.12（含 websockets）、Go oldstable。测试只构建一次，然后重复 `rounds` 轮，每轮换测试线程数、打乱顺序、换种子。某一轮失败也跑完所有轮，最后才让任务失败 |
+| `multiprocess` | bridge、loader 中会启动进程、打开本地通道、启动运行时进程的测试，也就是 `ci.yml` 的 `PLATFORM_TESTS_BRIDGE`、`PLATFORM_TESTS_LOADER` 两个列表（加进列表的新测试文件，这里自动跟着跑）。运行时和 `rust` 任务相同：Node 24、Bun 1.4.0、Python 3.10（含 websockets）、Go oldstable。测试只构建一次，然后重复 `rounds` 轮，每轮换测试线程数、打乱顺序、换种子。某一轮失败也跑完所有轮，最后才让任务失败 |
 | `soak` | bridge 的 WebSocket 和本地通道长时间测试，各 `soak_secs` 秒（默认 600） |
 
 整个 workflow 的时间由最慢的任务决定：`soak` 约 21 分钟；`multiprocess` 估计 30–45 分钟（构建约 10 分钟，每轮约 1–1.5 分钟）。
@@ -65,7 +65,7 @@
 | 任务 | 机器 | PR 上 | main 上多做的 | 内容 |
 | --- | --- | --- | --- | --- |
 | `links` | Linux | `docs` | — | 检查 Markdown 里的相对链接 |
-| `rust` | Linux | `code` | Linux 上 loopback 方式启动运行时的重跑 | 全部 Rust 测试，每项只跑一次：工作区（除 bridge、loader）、loader 全部行类型、bridge 全部 feature。用最低支持版本：Node 24（#219 合并后改 22）、Bun 1.4.0、Python 3.12、Go oldstable |
+| `rust` | Linux | `code` | Linux 上 loopback 方式启动运行时的重跑 | 全部 Rust 测试，每项只跑一次：工作区（除 bridge、loader）、loader 全部行类型、bridge 全部 feature。用最低支持版本：Node 24（#219 合并后改 22）、Bun 1.4.0、Python 3.10、Go oldstable |
 | `js-py` | Linux | `code` | — | `scripts/train.mjs`；Node 包（`node/rutis`、`rutis-runtime`、`rutis-host`）和 rutis-dsh 的 dsh 测试；Python 单元测试 |
 | `checks` | Linux | 只在 `all` 时 | 整个任务 | `cargo check --workspace --all-targets`；bridge、loader 各个 feature 组合的编译检查和 `--no-run`。这些检查发现的是少见的 feature 组合编译错误，不跑测试 |
 | `network-macos` | macOS | `code`：只跑和平台有关的测试 | bridge、loader 全部测试；`node/rutis` 测试 | Node 26、最新 Bun、Go stable 下的进程启动、本地通道、运行时进程、WebSocket、rutis-host 测试；Node 运行时和 Python 包的测试；整个工作区的编译检查 |

@@ -15,9 +15,10 @@ Except for `rutis-cli` (`cli-v*`, `release-cli.yml`), these packages share a ver
 ## Steps
 
 1. Update versions in the Cargo.toml of every crate listed in `crates` in `scripts/train.mjs` (including the dependency versions between them and from other workspace crates); `node/rutis`, `node/rutis-runtime`, `bun/rutis-bun`, and `node/rutis-host` package.json files (including the runtime and platform package versions used by `@arcships/rutis-host`); `python/rutis/pyproject.toml` and `IMPLEMENTATION` in `python/rutis/rutis/peer.py`; `Version` in `go/rutis/version.go`; and the `rutis` range in `crates/rutis-host/pyproject.toml`. `node scripts/train.mjs` checks that they match, and CI runs it too.
-2. Merge to `main` and confirm the CI `release-dry-run` passes (all packages can be built).
-3. Run the smoke test on two machines before publishing (see below).
-4. Create and push a tag such as `vX.Y.Z`. `release.yml` checks versions, builds binaries and wheels for five platforms, semver-checks the crates already on crates.io, publishes the crates in dependency order (`node scripts/train.mjs --crates`), then the npm and PyPI packages, and creates a GitHub Release (its notes come from `docs/releases/X.Y.Z.en.md`, which must exist before tagging). Each step skips versions already present in its registry, so after fixing a mid-release failure you can rerun it.
+2. Merge to `main` and confirm the CI `release-dry-run` passes (all packages can be built) and main's install.yml passes (this build's packages installed and run on three platforms).
+3. Run the network smoke test on two machines before publishing (see below).
+4. Create and push a tag such as `vX.Y.Z`. `release.yml` checks versions, builds the binaries, wheels and npm packages for five platforms (package.yml, the same build steps as main) → **release gate**: installs and runs those files on all five platforms (install.yml); if one fails, nothing is published → semver-checks the crates already on crates.io, publishes the crates in dependency order (`node scripts/train.mjs --crates`), then the npm and PyPI packages (exactly the files the gate installed) → creates a GitHub Release (its notes come from `docs/releases/X.Y.Z.en.md`, which must exist before tagging) → **after publishing**: waits until the registries serve the version, then on Linux installs and runs the npm, PyPI and binary channels from them, `cargo install` and the Go module, and follows the guides' marked examples. Each step skips versions already present in its registry, so after fixing a mid-release failure you can rerun it.
+5. When the check after publishing fails, release.yml opens an issue (assigned to the maintainer). Read the run's logs to tell a broken package from a problem of the check or a registry. For a broken package: on npm `npm deprecate @arcships/<package>@X.Y.Z "<reason>"`, on PyPI yank the version on the project page, on crates.io `cargo yank --version X.Y.Z <crate>`; then release the fix as X.Y.(Z+1). Published files are not withdrawn.
 
 Required configuration: GitHub environment `release` with `CARGO_TOKEN` and `NPM_TOKEN`, and environments `pypi` and `pypi-host`. On PyPI, the trusted publisher of `rutis` points to `release.yml` with environment `pypi`, and that of `rutis-host` to environment `pypi-host`: the two must differ, or a release gets a token valid for only one of them.
 
@@ -37,7 +38,7 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 Expected behavior: the dialer prints `clock: <n>` every second. After a network outage, both sides report a heartbeat timeout and wait to reconnect within 30 seconds; after recovery, they report `ready, session <n+1>`. Restarting the listener makes the dialer retry with backoff. A wrong token returns `AuthRejected … 403`; an untrusted CA returns `AuthRejected … UnknownIssuer`.
 
-Then use the published packages to follow [Write a TypeScript plugin](guide/typescript-plugin.en.md) and [Write a Python plugin](guide/python-plugin.en.md) from a clean environment.
+[Write a TypeScript plugin](guide/typescript-plugin.en.md) is followed by the check after publishing (its marked examples, `tools/doc-examples.mjs`); [Write a Python plugin](guide/python-plugin.en.md) still has to be followed by hand with the published packages from a clean environment until #259 completes its example.
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
 

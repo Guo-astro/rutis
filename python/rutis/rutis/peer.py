@@ -29,6 +29,7 @@ import traceback
 import weakref
 from typing import Any, Callable
 
+from . import _eager
 from .channel import SocketChannel
 
 PROTOCOL = 2
@@ -300,6 +301,11 @@ class Peer:
         self._context: contextvars.ContextVar[list] = contextvars.ContextVar("rutis_path", default=[])
         self._tasks: dict[str, asyncio.Future] = {}
         self._signals: dict[str, Signal] = {}
+        # Calls whose method is running its first step, and those of them
+        # cancelled meanwhile (a cancel read during a synchronous call the
+        # first step makes): the task, once it exists, is cancelled.
+        self._starting: set[str] = set()
+        self._cancel_early: set[str] = set()
         # (call, result) while a call's result is encoded.
         self._answering: tuple[str, Any] | None = None
         self._decoding_for: str | None = None
@@ -799,6 +805,8 @@ class Peer:
             task = self._tasks.get(call)
             if task is not None:
                 task.cancel()
+            elif call in self._starting:
+                self._cancel_early.add(call)
             return
         if op == "release":
             entry = self._export(frame.get("reference"))
@@ -900,6 +908,7 @@ class Peer:
                     entry.value.add_done_callback(lambda _done: self._respond(call, entry.result, business))
                 return
             value = None
+            self._starting.add(call)
             try:
                 try:
                     if frame["op"] == "get":
@@ -922,20 +931,25 @@ class Peer:
             except BaseException as error:  # noqa: BLE001 - every failure is the caller's
                 self._respond(call, (False, error), business)
         finally:
+            self._starting.discard(call)
+            self._cancel_early.discard(call)
             self._context.reset(token)
             self._sync_path = previous
 
     def _task(self, coroutine: Any, call: str | None = None) -> asyncio.Future:
         """A task for a returned coroutine, started at once like a JS async
-        function, so a coroutine that never suspends is already done."""
+        function, so a coroutine that never suspends is already done. 3.10
+        and 3.11 have no native eager start: `_eager` does the same."""
         context = contextvars.copy_context()
         if sys.version_info >= (3, 12):
             task = asyncio.Task(coroutine, loop=self.loop, context=context, eager_start=True)
         else:
-            task = self.loop.create_task(coroutine, context=context)
+            task = _eager.start(self.loop, coroutine, context)
         if call is not None and not task.done():
             self._tasks[call] = task
             task.add_done_callback(lambda _done: self._tasks.pop(call, None))
+            if call in self._cancel_early:
+                task.cancel()
         return task
 
     def _respond(self, call: str, result: tuple, business: bool) -> None:

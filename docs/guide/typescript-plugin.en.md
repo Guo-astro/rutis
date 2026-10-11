@@ -4,6 +4,7 @@ This guide covers creating a project, publishing it, and using it from a host. J
 
 ## 1. Create a project
 
+<!-- example: typescript-en run -->
 ```bash
 npx @arcships/rutis-host new greeter --lang node
 cd greeter
@@ -22,6 +23,7 @@ The generated project contains:
 
 ## 2. Write the plugin
 
+<!-- example: typescript-en file=greeter/src/index.ts -->
 ```ts
 import { definePlugin } from '@arcships/rutis'
 
@@ -58,6 +60,7 @@ The plugin depends only on `@arcships/rutis`. It does not need to know which hos
 
 `@arcships/rutis/testing` provides fake services and calls the services provided by the plugin without requiring a host:
 
+<!-- example: typescript-en file=greeter/test/index.test.ts -->
 ```ts
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -74,6 +77,7 @@ test('reports the weather of the configured city', async () => {
 })
 ```
 
+<!-- example: typescript-en run -->
 ```bash
 npm test
 ```
@@ -82,12 +86,14 @@ npm test
 
 ## 4. Run in a local host
 
+<!-- example: typescript-en run until="rutis-host dev: running greeter" order=99 -->
 ```bash
 npx rutis-host dev
 ```
 
 `dev` runs this project as a row using the source file `src/index.ts`, without a build, and reloads it when files change. Add other required services to `rutis.dev.json`, such as a fake `llm`:
 
+<!-- example: typescript-en file=greeter/rutis.dev.json -->
 ```json
 {
   "rows": [
@@ -97,6 +103,7 @@ npx rutis-host dev
 }
 ```
 
+<!-- example: typescript-en file=greeter/dev/fake-llm.ts -->
 ```ts
 // dev/fake-llm.ts
 import { definePlugin } from '@arcships/rutis'

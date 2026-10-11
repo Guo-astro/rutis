@@ -30,6 +30,6 @@ async with load(plugin, config={"city": "Oslo"}, services={"llm": FakeLlm()}) as
     assert await t.service("weather").today() == "sunny in Oslo"
 ```
 
-A host runs plugins with `python -m rutis <channel> <project>` (it starts that itself); `python -m rutis listen:wss://… --id <id> --peer <controller> <project>` runs a runtime a host on another machine controls (install `rutis[network]`). Packaged plugins register under the entry point group `rutis.plugins`. Python 3.12 or later; no dependencies.
+A host runs plugins with `python -m rutis <channel> <project>` (it starts that itself); `python -m rutis listen:wss://… --id <id> --peer <controller> <project>` runs a runtime a host on another machine controls (install `rutis[network]`). Packaged plugins register under the entry point group `rutis.plugins`. Python 3.10 or later; no dependencies.
 
 Start a project with `uvx rutis-host new <name> --lang python`. Guide (Chinese): [docs/guide/python-plugin.md](https://github.com/arcships/rutis/blob/main/docs/guide/python-plugin.md).

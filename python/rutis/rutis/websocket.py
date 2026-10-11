@@ -31,6 +31,8 @@ except ImportError as error:  # pragma: no cover - depends on the environment
 
 MAX_MESSAGE = 16 * 1024 * 1024
 GOING_AWAY, TOO_BIG, REPLACED = 1001, 1009, 4002
+# Queued after the last connection once nothing accepts any more.
+_STOPPED = object()
 
 
 def _heartbeat() -> tuple[float, float]:
@@ -121,6 +123,15 @@ class Listener:
     def _serve(self) -> None:
         try:
             self._server.serve_forever()
+            with self._lock:
+                closing = self._closing
+            if not closing:
+                # serve_forever() returns when accept() fails (EMFILE,
+                # ENFILE, ENOBUFS...); websockets drops the error itself.
+                self._failed.append(
+                    OSError("the WebSocket listener stopped: accepting a connection failed (for example, out of file descriptors)")
+                )
+                self._server.socket.close()
         except BaseException as error:
             # serve_forever() itself returns when accept() fails with an
             # OSError; anything it raises (its selector failing, say) means
@@ -131,10 +142,28 @@ class Listener:
             raise
         finally:
             self._stopped.set()
+            self._accepted.put(_STOPPED)
 
     def accept(self) -> "WebSocketChannel":
-        """Block until the next authenticated connection."""
-        return self._accepted.get()
+        """Block until the next authenticated connection. Once nothing
+        accepts any more (closed, or serving failed), raise at once: what
+        stopped the listener, or ConnectionError after close()."""
+        channel = self._accepted.get()
+        if channel is not _STOPPED:
+            return channel
+        # A connection that came in after the listener stopped is not left
+        # open; the marker goes back, so every later accept() raises too.
+        while True:
+            try:
+                late = self._accepted.get_nowait()
+            except queue.Empty:
+                break
+            if late is not _STOPPED:
+                late.close("the listener stopped")
+        self._accepted.put(_STOPPED)
+        if self._failed:
+            raise self._failed[0]
+        raise ConnectionError("the WebSocket listener is closed")
 
     def close(self) -> None:
         """Stop accepting: on return the listening socket is closed and a
