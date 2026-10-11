@@ -17,6 +17,7 @@ import logging
 import os
 import socket
 import sys
+import traceback
 
 from .peer import Peer
 from .runner import Runtime
@@ -121,7 +122,14 @@ async def serve(spec: str, endpoint: dict) -> None:
         waiting = {accepting} | ({current.peer.closed} if current else set())
         done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
         if accepting in done:
-            channel = accepting.result()
+            try:
+                channel = accepting.result()
+            except BaseException:
+                # Nothing accepts any more: a runtime nobody can reconnect
+                # to ends, so its process manager sees it and restarts it.
+                if current is not None:
+                    await current.end()
+                raise
             accepting = asyncio.ensure_future(asyncio.to_thread(listener.accept))
             if current is not None:
                 await current.end(replaced=True)
@@ -137,15 +145,19 @@ def main() -> None:
         channel, endpoint, project = parse(sys.argv[1:])
     except ValueError as error:
         sys.exit(str(error))
+    code = 0
     try:
         asyncio.run(run(channel, endpoint, project))
+    except Exception:  # noqa: BLE001 - reported; the exit code says it failed
+        traceback.print_exc()
+        code = 1
     finally:
         # Stray plugin threads must not keep the process alive: rutis waits
         # for it to exit.
         sys.stdout.flush()
         sys.stderr.flush()
         logging.shutdown()
-        os._exit(0)
+        os._exit(code)
 
 
 main()

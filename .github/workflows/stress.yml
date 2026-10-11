@@ -130,7 +130,7 @@ jobs:
           bun-version: 1.4.0
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.10'
       - run: python3 -m pip install "websockets==15.*"
       - uses: actions/setup-go@v5
         with:

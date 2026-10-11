@@ -54,6 +54,152 @@ class PeerTests(background.IsolatedAsyncioTestCase):
 
 
 
+class AsyncMethodTests(background.IsolatedAsyncioTestCase):
+    """`async def` methods start at once, like JS async functions (#196):
+    the first step runs before the reply, so one that never suspends is
+    already done, on every supported Python (eager start is native on
+    3.12+, emulated by rutis._eager on 3.10 and 3.11)."""
+
+    def session(self, dispatch):
+        ours, theirs = socket.socketpair()
+        theirs.settimeout(10)
+        self.addCleanup(ours.close)
+        self.addCleanup(theirs.close)
+        peer = Peer(ours, dispatch)
+        self.addCleanup(peer._channel.close)
+        self.addCleanup(peer.close)
+        peer._handshake = True
+        lines = theirs.makefile("rb")
+        self.addCleanup(lines.close)
+        return peer, theirs, lambda: json.loads(lines.readline())
+
+    @staticmethod
+    def invoke(call, path):
+        return {"op": "invoke", "id": call, "path": path, "target": "svc", "method": "m", "args": {"type": "data", "value": []}}
+
+    async def test_a_never_suspending_async_method_is_ready_inside_a_synchronous_chain(self):
+        # Risk P10: without eager start the task would not have run yet, and
+        # awaiting it on the chain would be a (false) SyncWaitCycle.
+        async def method():
+            return 5
+
+        peer, _theirs, read = self.session(lambda target, name, args: method())
+        peer._waiting.append("node:1")
+        peer._receive(self.invoke("rust:1", ["node:1"]))
+        reply = read()
+        self.assertEqual(reply["op"], "return", reply)
+        reference = reply["value"]["value"]["id"]
+        peer._receive({"op": "await", "id": "rust:2", "path": ["node:1"], "reference": reference})
+        peer._waiting.pop()
+        reply = read()
+        self.assertEqual(reply["op"], "return", reply)
+        self.assertEqual(reply["value"], {"type": "data", "value": 5})
+
+    async def test_the_first_step_runs_before_the_reply(self):
+        log = []
+        gate = asyncio.get_running_loop().create_future()
+
+        async def method():
+            log.append("first step")
+            await gate
+
+        peer, _theirs, read = self.session(lambda target, name, args: method())
+        peer._waiting.append("node:1")
+        peer._receive(self.invoke("rust:1", ["node:1"]))
+        peer._waiting.pop()
+        self.assertEqual(log, ["first step"])
+        self.assertEqual(read()["op"], "return")
+        gate.set_result(None)
+
+    async def test_an_error_in_the_first_step_or_after_it_is_thrown_to_the_awaiter(self):
+        gate = asyncio.get_running_loop().create_future()
+
+        async def at_once():
+            raise ValueError("at once")
+
+        async def later():
+            await gate
+            raise KeyError("later")
+
+        methods = iter([at_once, later])
+        peer, _theirs, read = self.session(lambda target, name, args: next(methods)())
+        for call, name, finish in (("rust:1", "ValueError", None), ("rust:3", "KeyError", gate)):
+            with self.subTest(name):
+                peer._receive(self.invoke(call, []))
+                reply = await asyncio.to_thread(read)
+                self.assertEqual(reply["op"], "return", reply)
+                reference = reply["value"]["value"]["id"]
+                peer._receive({"op": "await", "id": f"rust:{int(call[5:]) + 1}", "path": [], "reference": reference})
+                if finish is not None:
+                    finish.set_result(None)
+                reply = await asyncio.to_thread(read)
+                self.assertEqual(reply["op"], "throw", reply)
+                self.assertEqual(reply["error"]["name"], name)
+
+    async def test_calls_after_the_await_carry_the_call_in_their_path(self):
+        gate = asyncio.get_running_loop().create_future()
+        done = asyncio.get_running_loop().create_future()
+        peer = None
+
+        async def method():
+            await gate
+            peer.notify("other", "m", [])
+            done.set_result(None)
+
+        peer, _theirs, read = self.session(lambda target, name, args: method())
+        peer._receive(self.invoke("rust:1", []))
+        self.assertEqual((await asyncio.to_thread(read))["op"], "return")
+        gate.set_result(None)
+        await asyncio.wait_for(done, 10)
+        notification = await asyncio.to_thread(read)
+        self.assertEqual(notification["op"], "invoke")
+        self.assertIn("rust:1", notification["path"])
+
+    async def test_a_cancel_that_arrives_during_the_first_step_cancels_the_method(self):
+        # The first step makes a synchronous call; while it waits, the far
+        # end cancels this call. That cancel was ignored before #196.
+        log = []
+        gate = asyncio.get_running_loop().create_future()
+        peer = None
+
+        async def method():
+            peer.call("far", "m", [])
+            try:
+                await gate
+            except asyncio.CancelledError:
+                log.append("cancelled")
+                raise
+
+        peer, theirs, read = self.session(lambda target, name, args: method())
+        peer.start()
+        self.assertEqual(read()["op"], "hello")
+
+        def far_end():
+            # Two frames: the first step's synchronous call, answered after
+            # cancelling rust:1, and the reply to rust:1. Whatever their
+            # order, the call is answered, so a regression fails, not hangs.
+            reply = None
+            for _ in range(2):
+                frame = read()
+                if frame["op"] == "invoke":
+                    theirs.sendall((json.dumps({"op": "cancel", "id": "rust:1"}) + "\n").encode())
+                    theirs.sendall((json.dumps({"op": "return", "id": frame["id"], "value": {"type": "undefined"}}) + "\n").encode())
+                else:
+                    reply = frame
+            return reply
+
+        replying = asyncio.create_task(asyncio.to_thread(far_end))
+        peer._receive(self.invoke("rust:1", []))
+        reply = await asyncio.wait_for(replying, 10)
+        self.assertEqual(reply["op"], "return", reply)
+        for _ in range(10):
+            if log:
+                break
+            await asyncio.sleep(0)
+        self.assertEqual(log, ["cancelled"])
+        self.assertTrue(gate.cancelled())
+
+
 class MalformedFrameTests(unittest.IsolatedAsyncioTestCase):
     """Q6.2.3, risk P3: a frame of the wrong shape, or naming a call or
     reference this side does not have, ends the session; the cases of

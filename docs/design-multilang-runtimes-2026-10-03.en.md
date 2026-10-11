@@ -145,7 +145,7 @@ This is the same two-stage release (`Peer` / `PeerRows`) used by the remote desi
 
 | Language | Runtime process | Notes |
 | --- | --- | --- |
-| Python | One Python process, load by module name | Implement session layer from research prototype; one locked environment (uv project) per runtime; create another instance for dependency conflicts; Python 3.12+ |
+| Python | One Python process, load by module name | Implement session layer from research prototype; one locked environment (uv project) per runtime; create another instance for dependency conflicts; Python 3.10+ (on 3.10 and 3.11 rutis provides eager start, see the [Python 3.10 design](design-python-310-2026-10-11.en.md)) |
 | Swift / ObjC | One signed helper app using `dlopen` for plugin bundles | TCC permissions belong to helper, so it needs its own signature and usage description; Swift can call ObjC directly; Apple platforms only |
 | Go | Compile a group of plugins into one executable | Do not use Go `plugin` package; code change rebuilds and restarts group; deployment owns builds, host does not compile at runtime |
 
