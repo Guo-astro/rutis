@@ -1,7 +1,10 @@
 # The rutis kernel tests run many times over, to catch failures that depend
-# on how tasks interleave and show up only once in a while; the network
-# stack soaks (links cut and relinked, processes started and ended, over
-# and over) check that nothing piles up. Runs nightly and on demand.
+# on how tasks interleave and show up only once in a while; so do the
+# rutis-bridge and rutis-loader tests that start real runtime processes
+# (Node, Python, Bun, Go), which otherwise fail once in a while on someone
+# else's pull request. The network stack soaks (links cut and relinked,
+# processes started and ended, over and over) check that nothing piles up.
+# Runs nightly and on demand.
 #
 # Each round of the rutis tests varies what it can: the number of test
 # threads (1, 2, all cores), the test order (shuffled), the build (every
@@ -17,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       rounds:
-        description: How many times to run the rutis tests
+        description: How many times to run the rutis tests and the multi-process tests
         default: "20"
       soak_secs:
         description: How long each soak runs, in seconds
@@ -95,6 +98,155 @@ jobs:
           done
           cat "$summary" >> "$GITHUB_STEP_SUMMARY"
           exit $status
+
+  # The rutis-bridge and rutis-loader tests that start processes, open local
+  # channels or start runtime processes, many times over, with the runtimes
+  # of the `rust` job of ci.yml. Which test files: the PLATFORM_TESTS_BRIDGE
+  # and PLATFORM_TESTS_LOADER lists of ci.yml, so a test file added there is
+  # repeated here too.
+  #
+  # Each round varies the number of test threads (1, 2, all cores), the test
+  # order (shuffled) and the seed. A round runs every test binary even after
+  # one fails, and every round runs even after one fails, so the summary lists
+  # every failing test and round; the job fails at the end if any round
+  # failed. A failure is never retried. When a round fails, the output of
+  # every test binary of every round is uploaded.
+  multiprocess:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      # The runtime versions of the `rust` job of ci.yml: the oldest supported.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: node/rutis-runtime/package-lock.json
+      - run: npm --prefix node/rutis-runtime ci
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install "websockets>=13"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: oldstable
+          cache-dependency-path: go/rutis/go.mod
+      - name: Build the multi-process tests
+        # bash -eo pipefail: a failing build fails the step through jq.
+        # Each line of tests.tsv: package, features, target, package
+        # directory, test binary.
+        shell: bash
+        run: |
+          list="$RUNNER_TEMP/tests.tsv"
+          : > "$list"
+          build() {
+            package=$1 features=$2 targets=$3
+            [ -n "$targets" ] && [ "$targets" != null ] || { echo "::error::no $package test files in ci.yml"; exit 1; }
+            # shellcheck disable=SC2086 # the features and targets split into flags
+            cargo test -p "$package" $features $targets --no-run --message-format=json \
+              | jq -r --arg package "$package" --arg features "$features" \
+                  'select(.profile.test == true and .executable != null)
+                   | [$package, $features,
+                      (if .target.kind[0] == "lib" then "--lib" else "--test " + .target.name end),
+                      (.manifest_path | rtrimstr("/Cargo.toml")), .executable]
+                   | @tsv' >> "$list"
+          }
+          build rutis-bridge --all-features "$(yq -r '.env.PLATFORM_TESTS_BRIDGE' .github/workflows/ci.yml)"
+          build rutis-loader "--features node,python,go,bun,peer" "$(yq -r '.env.PLATFORM_TESTS_LOADER' .github/workflows/ci.yml)"
+          cut -f1,3 "$list"
+          # No binaries would make every round pass without running anything.
+          [ -s "$list" ] || { echo "::error::no test binaries"; exit 1; }
+      - name: Repeat the multi-process tests
+        # The test binaries run from their package directory, as under
+        # `cargo test`. Shuffling is an unstable libtest option; the
+        # RUSTC_BOOTSTRAP below reaches only the test binaries, not the
+        # build. A test binary still running after 5 minutes is stopped and
+        # counts as failed. Doc tests are not repeated.
+        shell: bash
+        env:
+          ROUNDS: ${{ inputs.rounds || '20' }}
+        run: |
+          case "$ROUNDS" in ""|*[!0-9]*) echo "::error::rounds must be a number"; exit 1;; esac
+          cores=$(nproc)
+          logs="$RUNNER_TEMP/multiprocess-logs"
+          failures="$RUNNER_TEMP/failures.tsv"
+          table="$RUNNER_TEMP/table.md"
+          replays="$RUNNER_TEMP/replays.md"
+          mkdir -p "$logs"
+          : > "$failures"; : > "$table"; : > "$replays"
+          for round in $(seq 1 "$ROUNDS"); do
+            case $((round % 3)) in 1) threads=1;; 2) threads=2;; *) threads=$cores;; esac
+            seed=$(od -An -N8 -tu8 /dev/urandom | tr -d ' ')
+            echo "round $round of $ROUNDS: --test-threads=$threads, seed $seed"
+            mkdir -p "$logs/round-$round"
+            failed=
+            while IFS=$'\t' read -r package features selector dir test; do
+              target=${selector#--test }; target=${target#--}
+              log="$logs/round-$round/$package-$target.txt"
+              code=0
+              (cd "$dir" && RUTIS_SEED=$seed RUSTC_BOOTSTRAP=1 timeout -k 30 300 "$test" -q \
+                --test-threads="$threads" -Z unstable-options --shuffle-seed "$seed") \
+                < /dev/null > "$log" 2>&1 || code=$?
+              [ "$code" -eq 0 ] && continue
+              # The tests that failed, one per line; a binary stopped or
+              # crashed without naming one counts as a whole.
+              names=$(sed -n 's/^---- \(.*\) stdout ----$/\1/p' "$log")
+              if [ "$code" -eq 124 ] || [ "$code" -eq 137 ]; then
+                names=$(printf '%s\n%s' "$names" "(timed out)" | sed '/^$/d')
+              elif [ -z "$names" ]; then
+                names="(exit status $code)"
+              fi
+              echo "::group::round $round: $package $target failed"
+              cat "$log"
+              echo "::endgroup::"
+              while IFS= read -r name; do
+                printf '%s\t%s\t%s\n' "$round" "$package $target" "$name" >> "$failures"
+              done <<< "$names"
+              failed="$failed${failed:+, }\`$package $target\` ($(wc -l <<< "$names"))"
+              echo "::error title=multi-process stress::round $round of $ROUNDS: $package $target failed: $(paste -sd, - <<< "$names") (--test-threads=$threads, seed $seed)"
+              echo "- round $round, $package $target: \`RUTIS_SEED=$seed RUSTC_BOOTSTRAP=1 cargo test -p $package $features $selector -- --test-threads=$threads -Z unstable-options --shuffle-seed $seed\`" >> "$replays"
+            done < "$RUNNER_TEMP/tests.tsv"
+            # The failing test binaries, with how many of their tests failed.
+            if [ -n "$failed" ]; then result="failed: $failed"; else result=passed; fi
+            echo "| $round | $threads | $seed | $result |" >> "$table"
+          done
+          {
+            echo "### Multi-process tests (rutis-bridge, rutis-loader), $ROUNDS rounds"
+            echo
+            echo "| round | test threads | seed | result |"
+            echo "| --- | --- | --- | --- |"
+            cat "$table"
+            if [ -s "$failures" ]; then
+              echo
+              echo "#### Failing tests"
+              echo
+              echo "| test | failed in rounds |"
+              echo "| --- | --- |"
+              awk -F'\t' '{ key = "`" $2 "::" $3 "`"
+                            if (key in rounds) rounds[key] = rounds[key] ", " $1
+                            else { order[n++] = key; rounds[key] = $1 } }
+                          END { for (i = 0; i < n; i++) print "| " order[i] " | " rounds[order[i]] " |" }' "$failures"
+              echo
+              echo "#### Replay"
+              echo
+              cat "$replays"
+              echo
+              echo "The output of every test binary of every round is in the \`multiprocess-logs\` artifact."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Any failing round fails the job, after all of them have run.
+          [ ! -s "$failures" ]
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: multiprocess-logs
+          path: ${{ runner.temp }}/multiprocess-logs
+          retention-days: 14
 
   soak:
     runs-on: ubuntu-24.04

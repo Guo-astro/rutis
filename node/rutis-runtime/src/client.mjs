@@ -59,6 +59,8 @@ export class Process {
     catch (error) { process.#port.postMessage({ abort: true }); await process.#exited; throw error }
   }
   get greeting() { return this.#session.greeting }
+  // What this side found wrong with the session, if that ended it.
+  get fault() { return this.#session.fault }
   call(target, method, args) { return this.#session.invoke(target, method, args) }
   callAsync(target, method, args) { return this.#session.invokeAsync(target, method, args) }
   release(value) { this.#session.release(value) }

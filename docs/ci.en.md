@@ -21,9 +21,27 @@ This document describes how CI runs today and what to do when changing it. The r
 | --- | --- | --- |
 | `ci.yml` | Every pull request; every push to main | Tests and checks (below) |
 | `dylib-windows.yml` | Pull requests touching dylib files (the same files as the `dylib` switch); every push to main; `v*` tags; by hand | Dylib tests on Windows |
-| `stress.yml` | Nightly; by hand | Kernel tests repeated; long network tests |
+| `stress.yml` | Nightly; by hand | Kernel tests and multi-process tests repeated; long network tests (below) |
 | `ci-stats.yml` | Weekly; by hand | CI timings and failures |
 | `release.yml`, `release-cli.yml` | Tags | Releases |
+
+### The nightly `stress.yml`
+
+A test that fails only now and then, when it happens to fail on a pull request, blocks someone whose change has nothing to do with it. `stress.yml` runs such tests many times over every night, so that these failures show up at night first. It does not run on pull requests and does not add to their time. Three jobs run side by side:
+
+| Job | What it does |
+| --- | --- |
+| `rutis` | The kernel tests, `rounds` times (default 20). Each round changes the number of test threads (1, 2, all cores), shuffles the order and takes a new seed; every fifth round is a release build. Stops at the first failure |
+| `multiprocess` | The bridge and loader tests that start processes, open local channels or start runtime processes: the `PLATFORM_TESTS_BRIDGE` and `PLATFORM_TESTS_LOADER` lists of `ci.yml` (a test file added to them runs here too). The same runtimes as the `rust` job: Node 24, Bun 1.4.0, Python 3.12 with websockets, Go oldstable. The tests are built once, then run `rounds` times, each round with a different number of test threads, a shuffled order and a new seed. A failing round does not stop the others; the job fails at the end |
+| `soak` | The bridge's long WebSocket and local-channel tests, `soak_secs` seconds each (default 600) |
+
+The slowest job sets the time of the workflow: `soak` takes about 21 minutes; `multiprocess` an estimated 30–45 minutes (about 10 minutes to build, 1–1.5 minutes a round).
+
+- Failures are not retried (standard Q7.3).
+- Each round prints its thread count and seed in the log. The job summary has a table of every round's result, the failing tests and the rounds they failed in, and replay commands that rerun the test file with the same seed, thread count and order.
+- When `multiprocess` fails, the output of every test file in every round is uploaded as the `multiprocess-logs` artifact, kept for 14 days.
+- To run it by hand: on the Actions page pick `stress` and "Run workflow", where `rounds` and `soak_secs` can be changed; or `gh workflow run stress.yml -f rounds=50`. All three jobs run.
+- A failure found at night is handled as in §7: open an issue, then find a way to reproduce it.
 
 ## 3. How a pull request picks its jobs
 
@@ -66,7 +84,7 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 
 `PLATFORM_TESTS_BRIDGE` and `PLATFORM_TESTS_LOADER`, at the top of `ci.yml`, list the test files macOS and Windows run on pull requests: those that start processes, open local channels (Unix sockets, an inherited socket, loopback handover), start runtime processes or use WebSocket, plus both crates' unit tests (`--lib`); rutis-host's tests all run. The other tests (protocol over memory channels, row configuration and lifecycle, and so on) depend only on the Rust code; pull requests run them on Linux in `rust`, and main runs them on all three platforms.
 
-A new test file that starts processes or opens channels goes into these lists.
+A new test file that starts processes or opens channels goes into these lists. The `multiprocess` job of the nightly `stress.yml` repeats the tests of these lists too (§2).
 
 ### What each kind of change runs on a pull request
 

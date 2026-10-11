@@ -34,8 +34,10 @@ const (
 )
 
 var (
-	endpointID     = regexp.MustCompile(`^[a-z0-9-]+$`)
-	compatOrigin   = regexp.MustCompile(`^(node|rust):[1-9][0-9]*$`)
+	endpointID = regexp.MustCompile(`^[a-z0-9-]+$`)
+	// In the compat format, this session's ids are `node:`/`rust:`; another
+	// session's come tagged with it, whatever its format (`s1/node:3`, #225).
+	compatOrigin   = regexp.MustCompile(`^(node|rust|s[0-9]+/[a-z0-9-]+):[1-9][0-9]*$`)
 	endpointOrigin = regexp.MustCompile(`^(s[0-9]+/)?[a-z0-9-]+:[1-9][0-9]*$`)
 	sequence       = regexp.MustCompile(`^[1-9][0-9]*$`)
 )

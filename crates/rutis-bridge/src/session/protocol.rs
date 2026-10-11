@@ -114,6 +114,9 @@ pub(crate) enum Frame {
         target: String,
         method: String,
         args: WireValue,
+        /// The caller waits for the reply synchronously (`sync-wait`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sync: bool,
     },
     /// Call a function reference, or a method of an object reference.
     Call {
@@ -123,6 +126,8 @@ pub(crate) enum Frame {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         method: Option<String>,
         args: WireValue,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sync: bool,
     },
     /// Read a property of an object reference (a live read).
     Get {
@@ -130,11 +135,15 @@ pub(crate) enum Frame {
         path: Vec<String>,
         reference: u64,
         property: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sync: bool,
     },
     Await {
         id: String,
         path: Vec<String>,
         reference: u64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sync: bool,
     },
     Return {
         id: String,
