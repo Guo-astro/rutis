@@ -16,7 +16,7 @@ Out of scope: installing from npm / PyPI (S9 [#193](https://github.com/arcships/
 | C3 | Step 2 uses the repository's packages (links to `node/rutis`, `bun/rutis-bun`, tsx; `RUTIS_PYTHON_PATH`; Go `replace`), no registry; installing from registries belongs to #193 | 3.3 |
 | C4 | Only exit codes and the few lines rutis itself writes are asserted, with the expectations in the test code (as in `check.rs`); third-party tool errors are only checked to name the file and line | 5 |
 | C5 | Every synchronization point is an output line or a process exit; files are changed by writing a dot file in the same directory and renaming it, with the mtime guaranteed to change; no sleep | 6 |
-| C6 | This PR covers Linux and macOS; Windows comes in a later PR after #232 | 7 |
+| C6 | This PR covers Linux and macOS; Windows comes in a later PR after #232 (done, see section 7) | 7 |
 | C7 | CI: a new parallel Linux `e2e` job, macOS inside `network-macos`, added by #204 (#256) | 8 |
 
 ## 2. Current state (code checked)
@@ -128,7 +128,9 @@ No sleep.
 
 ## 7. Platforms
 
-Linux and macOS: all four languages, Ctrl-C via `killpg(SIGINT)`. Windows comes in a separate PR after #232 (Job Object residue checks): without the process check, B2 cannot be verified on Windows; how to send Ctrl-C is decided then. Bun does not yet declare Windows support (Bun design §10), so it is skipped there with the reason written (Q7.8).
+Linux and macOS: all four languages, Ctrl-C via `killpg(SIGINT)`.
+
+Windows (after #232, run in CI's `runtimes-windows`): node, python and go, with the same steps and assertions. Each host is in a Job Object, whose process list the residue checks read; step 8's Ctrl-C is `Host::ctrl_c()` sending Ctrl-Break to the host's console process group (the host starts in a new group, where Ctrl-C is turned off and Ctrl-Break still arrives; rutis-host's `stop.rs` handles both; the runtimes are in groups of their own that rutis-host gives them, and do not get it). Only the scenario's preparation differs from Unix: Python is `python`, the venv's interpreter is `.venv\Scripts\python.exe` (step 5 asserts the interpreter is under `demo\.venv\Scripts`), `PYTHONPATH` is separated by `;`; npm is `npm.cmd`; go.mod's `replace` gets an absolute path without the `\\?\` prefix, separated by `/`; Go builds end in `.exe`, and step 7 still counts the files in `.rutis/go/`. Bun does not yet declare Windows support (Bun design §10): its test is ignored on Windows with the reason written (Q7.8).
 
 ## 8. CI and time
 
@@ -151,7 +153,7 @@ CI changes needed (added by #204's PR #256; this PR does not touch `ci.yml`):
 | A4 `dev` crashes or the old version stops serving after a broken change | P1 | Step 6: the old version keeps serving and is not unloaded; `dev` keeps running |
 | A6 `check` misjudges | P1 | Step 3 (a template project passes); a missing package is covered by `check.rs`; an unprovided `inject`: #258 |
 | A7 errors do not show file and line | P1 | Step 6 |
-| A8 Python venv path | P1 | Step 5's interpreter assertion; the Windows part after #232 |
+| A8 Python venv path | P1 | Step 5's interpreter assertion (`Scripts\python.exe` on Windows) |
 | B2 no cleanup or wrong exit code after Ctrl-C | P0 | Step 8 (under `dev`); under `run` covered by `signals.rs` |
 
 Explicitly not covered: A1 (#206); A5 repeated reloads (#192); B3, B10 (`cross_language.rs`, #192); B1 and registry installs (#193); B4 (`run` does not watch its configuration).
@@ -162,7 +164,7 @@ Explicitly not covered: A1 (#206); A5 repeated reloads (#192); B3, B10 (`cross_l
 | --- | --- |
 | E1 | Harness additions; the node and python tests in `dev_loop.rs` |
 | E2 | The bun and go tests |
-| Later PR | Windows (after #232) |
+| Later PR | Windows (after #232): node, python, go |
 
 Acceptance (all automatable):
 
