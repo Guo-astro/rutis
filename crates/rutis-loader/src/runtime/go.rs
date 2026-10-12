@@ -47,6 +47,17 @@ const SWEEP: Duration = Duration::from_millis(100);
 /// takes seconds when several start at once.
 const MANIFEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a failed manifest read stands before a row asking for a plugin
+/// no binary has gets it read again: a failure may pass, but a binary that
+/// keeps failing (or hangs until [`MANIFEST_TIMEOUT`]) is not run again on
+/// every lookup of a missing name.
+const FAILED_READ_STANDS: Duration = Duration::from_secs(5);
+
+/// How often starting a binary is tried while it is busy (ETXTBSY), and
+/// the first pause between tries, doubled after each.
+const BUSY_TRIES: u32 = 5;
+const BUSY_PAUSE: Duration = Duration::from_millis(10);
+
 // ── Binaries ─────────────────────────────────────────────────────
 
 /// Where Go binaries are: files, and directories whose Go binaries all
@@ -136,6 +147,8 @@ struct Binary {
     listed: bool,
     stamp: Stamp,
     manifest: Result<Arc<GoManifest>, String>,
+    /// When the manifest was read (on the async runtime's clock).
+    read_at: tokio::time::Instant,
 }
 
 /// A binary as [`GoResolver::binaries`] reports it.
@@ -156,19 +169,44 @@ pub fn read_go_manifest(path: &Path) -> Result<GoManifest, String> {
     read_manifest(path)
 }
 
+/// Run `spawn` again while it fails because the file is busy: on Linux a
+/// file just written cannot be run (ETXTBSY) while a process another
+/// thread is starting still holds it open for writing, until that process
+/// runs its own program a moment later (Go's os/exec and cargo retry too).
+fn retry_busy<T>(mut spawn: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    // ETXTBSY on Linux and macOS.
+    const ETXTBSY: i32 = 26;
+    let mut pause = BUSY_PAUSE;
+    let mut tries = 1;
+    loop {
+        match spawn() {
+            Err(error)
+                if cfg!(unix) && error.raw_os_error() == Some(ETXTBSY) && tries < BUSY_TRIES =>
+            {
+                std::thread::sleep(pause);
+                pause *= 2;
+                tries += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
 fn read_manifest(path: &Path) -> Result<GoManifest, String> {
-    let mut child = Command::new(path)
-        .arg("--rutis-manifest")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| match error.raw_os_error() {
-            // ENOEXEC (Unix), ERROR_BAD_EXE_FORMAT (Windows).
-            Some(8) if cfg!(unix) => wrong_platform(),
-            Some(193) if cfg!(windows) => wrong_platform(),
-            _ => format!("cannot run it: {error}"),
-        })?;
+    let mut child = retry_busy(|| {
+        Command::new(path)
+            .arg("--rutis-manifest")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+    })
+    .map_err(|error| match error.raw_os_error() {
+        // ENOEXEC (Unix), ERROR_BAD_EXE_FORMAT (Windows).
+        Some(8) if cfg!(unix) => wrong_platform(),
+        Some(193) if cfg!(windows) => wrong_platform(),
+        _ => format!("cannot run it: {error}"),
+    })?;
     let mut stdout = child.stdout.take().expect("piped");
     let mut stderr = child.stderr.take().expect("piped");
     let reading = std::thread::spawn(move || {
@@ -330,9 +368,10 @@ enum Force<'a> {
     None,
     All,
     Runtime(&'a str),
-    /// Those whose last read failed: the failure may have passed (a file
-    /// just written cannot run while a process starting elsewhere still
-    /// holds it open for writing, ETXTBSY on Linux).
+    /// Those whose last read failed at least [`FAILED_READ_STANDS`] ago:
+    /// the failure may have passed. (#306 most likely was ETXTBSY, which
+    /// `read_manifest` retries; that is inferred, not seen: any one-off
+    /// failure stayed cached while the file did not change.)
     Failed,
 }
 
@@ -467,6 +506,7 @@ impl GoResolver {
                                 changed: None,
                             },
                             manifest: Err("there is no such file".into()),
+                            read_at: tokio::time::Instant::now(),
                         });
                     }
                     self.state.lock().unwrap().scanned.remove(&path);
@@ -477,9 +517,10 @@ impl GoResolver {
                     Force::None => false,
                     Force::All => true,
                     Force::Runtime(name) => name == runtime,
-                    Force::Failed => previous
-                        .as_ref()
-                        .is_some_and(|previous| previous.manifest.is_err()),
+                    Force::Failed => previous.as_ref().is_some_and(|previous| {
+                        previous.manifest.is_err()
+                            && previous.read_at.elapsed() >= FAILED_READ_STANDS
+                    }),
                 };
                 let mut binary = match previous {
                     Some(previous) if !forced && previous.stamp == current => previous,
@@ -491,6 +532,7 @@ impl GoResolver {
                             listed,
                             stamp: current,
                             manifest,
+                            read_at: tokio::time::Instant::now(),
                         }
                     }
                 };
@@ -615,7 +657,17 @@ impl GoResolver {
         loop {
             if let Some(runtime) = named {
                 if let Some(binary) = binaries.iter().find(|binary| binary.runtime == runtime) {
-                    let (manifest, replaced) = self.manifest_of(binary).map_err(failed)?;
+                    let (manifest, replaced) = match self.manifest_of(binary) {
+                        Ok(read) => read,
+                        // A listed binary whose read failed: the rescan
+                        // below may read it again; it says why otherwise.
+                        Err(_) if !rescanned => {
+                            rescanned = true;
+                            binaries = self.scan(Force::Failed);
+                            continue;
+                        }
+                        Err(error) => return Err(failed(error)),
+                    };
                     if manifest.plugins.contains_key(plugin) {
                         return self.build(name, binary, &manifest, plugin);
                     }
@@ -682,7 +734,7 @@ impl GoResolver {
                 break;
             }
             // Not found: a binary may have been dropped into a directory,
-            // or a read that failed may succeed now (#306).
+            // or a read that failed a while ago may succeed now (#306).
             rescanned = true;
             binaries = self.scan(Force::Failed);
         }
@@ -967,11 +1019,21 @@ impl GoRuntimesHandle {
         // In a task: dropped half way, the restart would free the name while
         // the old runtime is still stopping, and the next start would run a
         // second process under it meanwhile (#307).
+        // Its error is logged there too: a caller that gave up never sees it.
         let inner = self.inner.clone();
         let runtime = name.to_owned();
-        tokio::spawn(async move { inner.restart_now(&runtime, busy).await })
-            .await
-            .map_err(|error| format!("the restart of {name} did not finish: {error}"))?
+        tokio::spawn(async move {
+            let result = inner.restart_now(&runtime, busy).await;
+            if let Err(error) = &result {
+                eprintln!("rutis-loader: cannot restart the Go runtime {runtime}: {error}");
+            }
+            result
+        })
+        .await
+        .map_err(|error| match error.is_panic() {
+            true => format!("the restart of {name} panicked"),
+            false => format!("the restart of {name} was cancelled: the async runtime stopped"),
+        })?
     }
 
     /// Every Go runtime: those that run, and the binaries not started.
@@ -1299,5 +1361,49 @@ impl Plugin for GoRuntime {
             })));
             Ok(Effect::Done)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn busy() -> std::io::Error {
+        std::io::Error::from_raw_os_error(26)
+    }
+
+    /// A start that fails while the file is busy is tried again (#306).
+    #[cfg(unix)]
+    #[test]
+    fn a_busy_file_is_started_again() {
+        let mut tries = 0;
+        let started = retry_busy(|| {
+            tries += 1;
+            match tries {
+                1 | 2 => Err(busy()),
+                _ => Ok(tries),
+            }
+        });
+        assert_eq!(started.unwrap(), 3);
+    }
+
+    /// Only so often, and other failures not at all.
+    #[test]
+    fn other_failures_and_a_file_that_stays_busy_are_not_tried_forever() {
+        let mut tries = 0;
+        let started: std::io::Result<()> = retry_busy(|| {
+            tries += 1;
+            Err(busy())
+        });
+        assert_eq!(started.unwrap_err().raw_os_error(), Some(26));
+        assert_eq!(tries, if cfg!(unix) { BUSY_TRIES } else { 1 });
+
+        let mut tries = 0;
+        let started: std::io::Result<()> = retry_busy(|| {
+            tries += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        });
+        assert!(started.is_err());
+        assert_eq!(tries, 1);
     }
 }
