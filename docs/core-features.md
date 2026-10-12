@@ -54,7 +54,7 @@ ctx.events().emit(&ctx, &key, Arc::new(event))?;
 
 ## 错误与 panic
 
-`apply` 的同步及异步 panic 会变成插件错误；`check()` panic 视为依赖未就绪；`waterfall` 回调 panic 向调用方传播。`settle` 仅是该 fiber 的 FIFO 栅栏，Pending 也可能是稳定结果。root 的 `dispose()` 后仍可重启，`shutdown()` 是最终关闭；丢弃等待 future 不会停止已启动的清理。`update(config)` 重新装配插件，不替换进程中的代码。提前 `Disposer::dispose()` 的失败立即返回给调用方，不自动通知 ErrorSink；`Ctx::take_cleanup_errors()` 可取走并释放这些历史错误。未取走的错误在终态卸载时进入结果，在重载时交给 ErrorSink。
+`apply` 的同步及异步 panic 会变成插件错误；`check()` panic 视为依赖未就绪；`waterfall` 回调 panic 向调用方传播。`settle` 仅是该 fiber 的 FIFO 栅栏，Pending 也可能是稳定结果。装载失败（构造、`validate` 或 `apply` 出错）的插件停在 Failed，只在依赖变化（提供者换代、摘除后恢复）时重新装载；同一组依赖的重复通知不会让它重试。root 的 `dispose()` 后仍可重启，`shutdown()` 是最终关闭；丢弃等待 future 不会停止已启动的清理。`update(config)` 重新装配插件，不替换进程中的代码。提前 `Disposer::dispose()` 的失败立即返回给调用方，不自动通知 ErrorSink；`Ctx::take_cleanup_errors()` 可取走并释放这些历史错误。未取走的错误在终态卸载时进入结果，在重载时交给 ErrorSink。
 
 ## 与 Cordis 的关系
 

@@ -161,6 +161,7 @@ Sources: `core/features.errors` in [core-features](core-features.en.md) "Errors 
 | Number | Content | Level | Status | Verification | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `core/features.errors` | Dropping the future that waits on `restart` / `update` does not stop a cleanup already started: the cleanup finishes and the plugin moves to its next generation | core promise | verified | `rutis/tests/lifecycle_order.rs::a_restart_dropped_after_its_cleanup_started_still_completes`, `::an_update_dropped_after_its_cleanup_started_still_completes`, `::a_restart_dropped_before_its_first_poll_starts_nothing`, `::an_update_dropped_before_its_first_poll_changes_nothing` | the last two also pin "dropped before its first poll, nothing happens" (the `restart` / `update` futures are lazy). That is not documented and is an implementation detail (Q3.3); if registration moves to call time, those two tests change with it |
+| `core/features.errors.failed-retry` | A plugin whose load failed (in construction, `validate` or `apply`) stays Failed and loads again only when its dependencies change; repeated notifications of the same dependencies (such as the per-key notifications of a provider becoming Active) do not retry it | contract behaviour | verified | `rutis/tests/failed_retry.rs::a_failed_apply_is_retried_only_when_its_dependencies_change`, `::a_failed_validate_is_retried_only_when_its_dependencies_change`, `::a_failed_build_is_retried_only_when_its_dependencies_change` | #327 |
 | `core/typed.lost-dependency-pending` | When a required dependency fails after gating and before it is read (withdrawn, provider inactive, or `check` refusing), the plugin returns to Pending instead of Failed and loads again when the dependency is back; without a failed strict read in that generation it is a plain failure (no loops) | core promise | verified | `rutis/tests/typed_plugin.rs::a_dependency_lost_before_it_is_read_returns_the_plugin_to_pending`, `::a_dependency_back_before_the_failure_is_handled_still_reloads`, `::a_dependency_withdrawn_before_apply_starts_returns_the_plugin_to_pending`, `::a_check_rejected_after_the_gate_returns_the_plugin_to_pending_even_if_it_recovers`, `::the_claim_without_a_failed_read_is_a_plain_failure` | dependency gating (Q3.1) |
 | `core/typed.lost-dependency-silent` | In that case the generation's `InjectUnsatisfied` does not reach the ErrorSink | contract behaviour | verified | `rutis/tests/typed_plugin.rs::a_lost_dependency_error_does_not_reach_the_error_sink` | |
 | `core/typed.lost-dependency-restart` | A `restart()` falling in that window returns Ok, and the plugin goes back to Pending or loads again | contract behaviour | verified | `rutis/tests/typed_plugin.rs::a_restart_in_the_lost_dependency_window_returns_ok` | |
@@ -249,13 +250,13 @@ Source: [plugin API](guide/plugin-api.en.md), quality standard Q6.7.
 | Scope | Verified | Partly verified | Not verified | Explicitly not guaranteed | Total |
 | --- | --- | --- | --- | --- | --- |
 | `core/D*` (without D20, D26, D27) | 26 | 3 | 0 | 1 | 30 |
-| `core/features.*`, `core/typed.*` | 6 | 0 | 0 | 0 | 6 |
+| `core/features.*`, `core/typed.*` | 7 | 0 | 0 | 0 | 7 |
 | `boundary/5.*` | 3 | 5 | 0 | 0 | 8 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
 | `bridge/*` | 13 | 3 | 0 | 1 | 17 |
 | `host/*`, `dsh/*` (§11) | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*` (§12) | 0 | 1 | 0 | 0 | 1 |
-| Total | 52 | 12 | 0 | 2 | 66 |
+| Total | 53 | 12 | 0 | 2 | 67 |
 
 17 core promises: 14 verified, 3 partly verified (D22, D28, 5.8), 0 not verified. 47 contract behaviours: 38 verified, 9 partly verified (D5, 5.2, 5.3, 5.4, 5.5, `bridge/large-and-deep-values`, `bridge/version-refusal`, `bridge/tls-client-certificate-verified`, `sdk/testing-matches-runtime`), 0 not verified.
 
