@@ -1,5 +1,5 @@
 //! The boundary rules for Cordis plugins (requirements-protocol-plugins §5)
-//! that concern events and host services: rules 3, 4, 5 and 7.
+//! that concern events and host services: rules 2, 3, 4, 5 and 7.
 //!
 //! Each test mounts `node/rutis-runtime/test/fixtures/boundary-rules.mjs`
 //! in the Node runtime, with listeners on the rutis side, and runs the same
@@ -87,6 +87,7 @@ events! {
     Chain = "boundary/chain";
     Link = "boundary/link";
     Waterfall = "boundary/wf";
+    WaterfallAsync = "boundary/wf-async";
 }
 
 /// A rutis listener: writes `tag` to the log; with `split`, writes
@@ -141,7 +142,7 @@ impl Mounted {
             Mount {
                 plugins: vec![(plugin.as_path(), json!({}))],
                 services: json!({
-                    "probe": ["late", "order", "serial", "bail", "waterfall", "announce", "internal", "host"],
+                    "probe": ["late", "order", "serial", "bail", "waterfall", "waterfallAsync", "announce", "internal", "host"],
                 }),
                 hosts: vec![Host {
                     name: "log".into(),
@@ -375,32 +376,36 @@ async fn a_rutis_serial_chain_takes_the_cordis_side_as_one_link() {
 
 /// guarantee: boundary/5.3
 ///
-/// Inside the Cordis link of a rutis `serial`, the Cordis listeners keep
-/// their native `serial` order: a finishes before b starts. Today the
-/// runtime re-emits into Cordis with `parallel` whatever the rutis mode, so
-/// the two async listeners overlap (a:start, b:start, a:end, b:end).
+/// Whatever the rutis dispatch, the Cordis group runs as a Cordis
+/// `parallel` (rule 3): the rutis listener re-emitting into Cordis does not
+/// know how it was dispatched. So inside the Cordis link of a rutis
+/// `serial`, the two async Cordis listeners start in registration order and
+/// overlap, as a native Cordis `parallel` runs them; natively, where they
+/// are listeners of the one serial, a finishes before b starts (#281).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "#281: a rutis serial reaches the Cordis listeners as a parallel"]
-async fn a_rutis_serial_runs_the_cordis_group_in_serial_order() {
+async fn a_rutis_serial_runs_the_cordis_group_as_a_cordis_parallel() {
     let (_, bridged) = rutis_serial_over_cordis().await;
     let reference = native("link");
     let cordis = |tag: &str| !tag.starts_with('R');
     assert_eq!(
+        side(&strings(&reference["log"]), cordis),
+        ["a:start", "a:end", "b:start", "b:end"]
+    );
+    assert_eq!(
         side(&bridged, cordis),
-        side(&strings(&reference["log"]), cordis)
+        ["a:start", "b:start", "a:end", "b:end"]
     );
 }
 
 /// guarantee: boundary/5.4
 ///
-/// A synchronous Cordis `bail` cannot wait for the rutis side, so the rule
-/// leaves two outcomes: an explicit error, or the native result (A, R, C,
-/// bailing with "C"). Today neither happens: the forwarding listener
-/// returns a Promise, which `bail` takes as the bail value, so C is skipped
-/// and the caller gets a Promise.
+/// A synchronous Cordis `bail` cannot wait for the rutis side (rule 4), so
+/// reaching the rutis group fails the `bail` with an error saying so: A has
+/// run, the rutis listener and C have not. Natively it runs R, A, C and
+/// bails with "C". Before #281 the forwarding listener's Promise was taken
+/// as the bail value.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "#281: a Cordis bail across the boundary short-circuits on a Promise"]
-async fn a_cordis_bail_across_the_boundary_fails_or_behaves_natively() {
+async fn a_cordis_bail_across_the_boundary_fails() {
     let log = Log::default();
     let ctx = Ctx::root().unwrap();
     ctx.events()
@@ -417,13 +422,14 @@ async fn a_cordis_bail_across_the_boundary_fails_or_behaves_natively() {
     assert_eq!(strings(&reference["log"]), ["R", "A", "C"]);
     assert_eq!(reference["result"], json!({ "value": "C" }));
     match result {
-        Err(Error::Remote { .. }) => {}
-        Ok(value) => {
-            assert_eq!(value, reference["result"]);
-            assert_eq!(log.entries(), ["A", "R", "C"]);
-        }
-        Err(error) => panic!("{error}"),
+        Err(Error::Remote { message, .. }) => assert_eq!(
+            message,
+            "event boundary/chain is forwarded to rutis, whose listeners run \
+             asynchronously: a synchronous bail cannot wait for them (use serial)"
+        ),
+        other => panic!("the bail did not fail: {other:?}"),
     }
+    assert_eq!(log.entries(), ["A"]);
 
     events.close();
     mounted.process.dispose().await.unwrap();
@@ -432,14 +438,14 @@ async fn a_cordis_bail_across_the_boundary_fails_or_behaves_natively() {
 
 /// guarantee: boundary/5.4
 ///
-/// A Cordis `waterfall` across the boundary: the rule allows an explicit
-/// error or the native result (A, R, C, then the final "end"). Today the
-/// forwarding listener never calls `next`, so the chain stops at the rutis
-/// side without an error: C and the final step are skipped and the caller
-/// gets a Promise.
+/// In a Cordis `waterfall` the rutis listeners are one asynchronous link
+/// (rule 4): when they are done, the link calls `next` once, and the chain
+/// goes on to C and the final step. The waterfall therefore returns a
+/// Promise, as natively when a middleware is async, which resolves to the
+/// native result "end". Natively, with every middleware synchronous, the
+/// result is "end" itself. Before #281 the chain stopped at the rutis side.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "#281: a Cordis waterfall across the boundary stops at the rutis side"]
-async fn a_cordis_waterfall_across_the_boundary_fails_or_behaves_natively() {
+async fn a_cordis_waterfall_takes_the_rutis_side_as_one_async_link() {
     let log = Log::default();
     let ctx = Ctx::root().unwrap();
     ctx.events()
@@ -450,19 +456,47 @@ async fn a_cordis_waterfall_across_the_boundary_fails_or_behaves_natively() {
     let mounted = Mounted::new(&log, Some((events.names(), events.clone())), &[]).await;
     events.attach(&ctx);
     mounted.call("late").await.unwrap();
-    let result = mounted.call("waterfall").await;
+    let result = mounted.call("waterfall").await.unwrap();
 
     let reference = native("waterfall");
     assert_eq!(strings(&reference["log"]), ["R", "A", "C"]);
     assert_eq!(reference["result"], json!({ "value": "end" }));
-    match result {
-        Err(Error::Remote { .. }) => {}
-        Ok(value) => {
-            assert_eq!(value, reference["result"]);
-            assert_eq!(log.entries(), ["A", "R", "C"]);
-        }
-        Err(error) => panic!("{error}"),
-    }
+    assert_eq!(result, json!({ "promise": true, "value": "end" }));
+    // The rutis link moved after A, whole (rule 3).
+    assert_eq!(log.entries(), ["A", "R", "C"]);
+
+    events.close();
+    mounted.process.dispose().await.unwrap();
+    ctx.shutdown().await.unwrap();
+}
+
+/// guarantee: boundary/5.4
+///
+/// A waterfall whose Cordis middleware is async reaches the rutis link
+/// after an await; the link still calls `next` once, and the result is the
+/// native one: a Promise of "end" (#281).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_async_cordis_waterfall_across_the_boundary_behaves_natively() {
+    let log = Log::default();
+    let ctx = Ctx::root().unwrap();
+    ctx.events()
+        .on(&ctx, &EventKey::<WaterfallAsync>::of(), mark(&log, "R"))
+        .unwrap();
+    let events = Events::new();
+    events.forward::<WaterfallAsync>("boundary/wf-async", |_| Ok(WaterfallAsync));
+    let mounted = Mounted::new(&log, Some((events.names(), events.clone())), &[]).await;
+    events.attach(&ctx);
+    mounted.call("late").await.unwrap();
+    let result = mounted.call("waterfallAsync").await.unwrap();
+
+    let reference = native("waterfall-async");
+    assert_eq!(strings(&reference["log"]), ["R", "A", "C"]);
+    assert_eq!(
+        reference["result"],
+        json!({ "promise": true, "value": "end" })
+    );
+    assert_eq!(result, reference["result"]);
+    assert_eq!(log.entries(), ["A", "R", "C"]);
 
     events.close();
     mounted.process.dispose().await.unwrap();
@@ -514,12 +548,11 @@ async fn internal_events_stay_on_the_cordis_side() {
 
 /// guarantee: boundary/5.5
 ///
-/// Asking the runtime itself to carry an `internal/*` event, in either
-/// direction, is a violation it can detect, so the mount fails with an
-/// error. Today only the binding generator refuses (generate.mjs); the
-/// runtime forwards whatever names the mount lists.
+/// Asking the runtime to carry an `internal/*` event, in either direction,
+/// is a violation it can detect, so the mount fails with an error naming
+/// the event: on the rutis side before the process starts, and in the Node
+/// runtime for a controller that sends such a mount anyway (#282).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "#282: the runtime carries internal/* events when a mount lists them"]
 async fn a_mount_listing_an_internal_event_fails() {
     let plugin = fixture("boundary-rules.mjs");
     let mut accepted = Vec::new();
@@ -544,8 +577,16 @@ async fn a_mount_listing_an_internal_event_fails() {
             },
         )
         .await;
+        let field = if events.is_empty() { "emits" } else { "events" };
         match mounted {
-            Err(error) => assert!(error.to_string().contains("internal/service"), "{error}"),
+            Err(Error::Value(message)) => assert_eq!(
+                message,
+                format!(
+                    "framework-internal events do not cross the boundary \
+                     (mount {field}): internal/service"
+                )
+            ),
+            Err(error) => panic!("{error}"),
             Ok(process) => {
                 process.dispose().await.unwrap();
                 accepted.push(format!("forwarding {events:?} / emitting {emits:?}"));
@@ -553,6 +594,31 @@ async fn a_mount_listing_an_internal_event_fails() {
         }
     }
     assert!(accepted.is_empty(), "mounts succeeded: {accepted:?}");
+
+    // The Node runtime checks the names before anything else in a mount.
+    let log = Log::default();
+    let mounted = Mounted::new(&log, None, &[]).await;
+    for field in ["events", "emits"] {
+        let refused = mounted
+            .process
+            .call_async(
+                "",
+                "mount",
+                json!({ field: ["boundary/order", "internal/service"] }),
+            )
+            .await;
+        match refused {
+            Err(Error::Remote { message, .. }) => assert_eq!(
+                message,
+                format!(
+                    "framework-internal events do not cross the boundary \
+                     (mount {field}): internal/service"
+                )
+            ),
+            other => panic!("the runtime took the mount: {other:?}"),
+        }
+    }
+    mounted.process.dispose().await.unwrap();
 }
 
 /// guarantee: boundary/5.7

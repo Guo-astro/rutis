@@ -176,10 +176,10 @@ PR 模板中有对应的检查项。
 | 编号 | 内容 | 级别 | 状态 | 验证 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `boundary/5.1` | 服务：`ctx.provide` / 属性赋值发布和换值；直接 `ctx.set` 换值不产生通知，rutis 侧在下一次调用该服务后切换到新对象 | 契约行为 | 已验证 | `rutis-bridge/tests/service_projection.rs::projected_service_follows_replacement_and_withdrawal`、`rutis-bridge/tests/projection_lifecycle.rs::a_throwing_method_still_refreshes_the_slot`、`::a_call_on_an_exported_object_refreshes_the_slots`、`::withdrawal_and_immediate_reregistration_keep_the_service` | |
-| `boundary/5.2` | 跨边界事件：`emit` 只是通知，返回时不保证 rutis 侧已执行；需要等待或结果时用 `parallel` / `serial` / `bail` | 契约行为 | 部分验证 | `rutis-bridge/tests/event_forwarding.rs::cordis_events_reach_rutis_listeners`、`::rutis_events_reach_cordis_listeners`、`rutis-bridge/tests/boundary_rules.rs::a_cordis_serial_chain_takes_the_rutis_side_as_one_link` | `emit`、`parallel` 与 Cordis 侧 `serial` 已验证；Cordis 侧对转发事件做 `bail` 静默降级（#281，`boundary_rules.rs::a_cordis_bail_across_the_boundary_fails_or_behaves_natively` 为 `#[ignore]`） |
-| `boundary/5.3` | 事件顺序：只在同一侧内保证原生顺序；另一侧的监听作为一组在固定位置执行；不支持依赖跨侧交错顺序 | 契约行为 | 部分验证 | `rutis-bridge/tests/boundary_rules.rs::cordis_events_reach_rutis_listeners_as_one_group`、`::rutis_events_reach_cordis_listeners_as_one_group` | rutis `serial` 到 Cordis 一侧时，Cordis 的一组不是原生 serial 顺序（#281，`::a_rutis_serial_runs_the_cordis_group_in_serial_order` 为 `#[ignore]`） |
-| `boundary/5.4` | 中间件链：waterfall / bail 链不跨侧交错；对方一组作为一个整体环节参与 | 契约行为 | 部分验证 | `rutis-bridge/tests/boundary_rules.rs::a_cordis_serial_chain_takes_the_rutis_side_as_one_link`、`::a_rutis_serial_chain_takes_the_cordis_side_as_one_link` | Cordis 侧对转发事件的同步 `bail` / `waterfall` 静默降级（#281，`::a_cordis_bail_across_the_boundary_fails_or_behaves_natively`、`::a_cordis_waterfall_across_the_boundary_fails_or_behaves_natively` 为 `#[ignore]`） |
-| `boundary/5.5` | 框架内部事件 `internal/*` 不跨边界 | 契约行为 | 部分验证 | `rutis-bridge/tests/boundary_rules.rs::internal_events_stay_on_the_cordis_side`、`node/rutis-runtime/test/generate.test.mjs`（`internal events are not forwarded in either direction`） | 只有绑定生成器拒绝；运行时挂载列出 `internal/*` 时不拒绝（#282，`::a_mount_listing_an_internal_event_fails` 为 `#[ignore]`） |
+| `boundary/5.2` | 跨边界事件：`emit` 只是通知，返回时不保证 rutis 侧已执行；需要等待或结果时用 `parallel` / `serial`（同步 `bail` 见 5.4） | 契约行为 | 已验证 | `rutis-bridge/tests/event_forwarding.rs::cordis_events_reach_rutis_listeners`、`::rutis_events_reach_cordis_listeners`、`rutis-bridge/tests/boundary_rules.rs::a_cordis_serial_chain_takes_the_rutis_side_as_one_link`、`::a_cordis_bail_across_the_boundary_fails` | `emit`、`parallel` 与 Cordis 侧 `serial` 已验证；同步 `bail` 明确报错（#281） |
+| `boundary/5.3` | 事件顺序：只在同一侧内保证原生顺序；另一侧的监听作为一组在固定位置执行，组内总是按该侧的 `parallel` 调度；不支持依赖跨侧交错顺序 | 契约行为 | 已验证 | `rutis-bridge/tests/boundary_rules.rs::cordis_events_reach_rutis_listeners_as_one_group`、`::rutis_events_reach_cordis_listeners_as_one_group`、`::a_rutis_serial_runs_the_cordis_group_as_a_cordis_parallel` | rutis `serial` 到达 Cordis 时 Cordis 一组按 `parallel` 执行，写进规则 3（#281）；按发起方的调度方式执行需要在协议里带上调度方式，未做 |
+| `boundary/5.4` | 中间件链：waterfall / bail 链不跨侧交错；对方一组作为一个整体环节参与；Cordis 同步 `bail` 到达转发的事件时报错；waterfall 中 rutis 一组是调用一次 `next` 的异步环节 | 契约行为 | 已验证 | `rutis-bridge/tests/boundary_rules.rs::a_cordis_serial_chain_takes_the_rutis_side_as_one_link`、`::a_rutis_serial_chain_takes_the_cordis_side_as_one_link`、`::a_cordis_bail_across_the_boundary_fails`、`::a_cordis_waterfall_takes_the_rutis_side_as_one_async_link`、`::an_async_cordis_waterfall_across_the_boundary_behaves_natively` | 全同步的 waterfall 跨边界后返回 Promise（值与原生相同），写进规则 4（#281） |
+| `boundary/5.5` | 框架内部事件 `internal/*` 不跨边界 | 契约行为 | 已验证 | `rutis-bridge/tests/boundary_rules.rs::internal_events_stay_on_the_cordis_side`、`::a_mount_listing_an_internal_event_fails`、`node/rutis-runtime/test/generate.test.mjs`（`internal events are not forwarded in either direction`） | 绑定生成器、`Process::mount` 与 Node 运行时都拒绝列出 `internal/*` 的挂载（#282） |
 | `boundary/5.6` | 同步等待：同步方法在执行中等待需要 Node 事件循环推进的结果（定时器、Promise）时返回 `SyncWaitCycle` 错误，不卡死 | 核心承诺 | 已验证 | `rutis-bridge/tests/rpc_callbacks.rs::node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle`（夹具 `node/rutis-runtime/test/fixtures/rpc-client.mjs` 断言 `SyncWaitCycle`）、`::sync_await_reports_known_executor_cycle_but_allows_ready_future`、`::sync_wait_detects_an_async_callback_already_running_on_its_runtime` | 跨边界做不到的事显式报错（Q3.1） |
 | `boundary/5.7` | 宿主提供的服务在 Cordis 侧是按接口生成的代理：按接口调用与原生一致，`instanceof` 不成立 | 契约行为 | 已验证 | `rutis-bridge/tests/boundary_rules.rs::a_host_service_is_a_proxy_not_an_instance_of_the_declared_class` | |
 | `boundary/5.8` | 事件循环：插件不得长期阻塞；兼容层不为调用加超时，rutis 侧需要超时时用异步方法并自行设置（超时即取消），卸载的等待时间由应用决定；未捕获的异常 / 拒绝结束整个 Node 进程，同一挂载的服务随之撤销 | 核心承诺 | 部分验证 | `rutis-bridge/tests/projection_lifecycle.rs::a_crashed_process_withdraws_its_services`、`rutis-bridge/tests/bun_runtime.rs::an_uncaught_error_ends_the_runtime`、`tests/e2e/tests/runtime_crash.rs::a_killed_runtime_fails_its_calls_and_a_restart_recovers` | 进程退出后撤销服务已验证（Node 用 `process.exit`；Python 运行时被 `kill -9` 时经 rutis-host 二进制验证，S3）；Node 上未捕获异常结束进程只在 Bun 运行时验证；"不加超时"没有断言 |
@@ -244,19 +244,19 @@ PR 模板中有对应的检查项。
 
 ---
 
-## 13. 统计（基准：`121eded` 之后合入 #284、#298 的 `main`）
+## 13. 统计（基准：`121eded` 之后合入 #284、#298 的 `main`，加上 #281、#282 的修复）
 
 | 范围 | 已验证 | 部分验证 | 未验证 | 明确不保证 | 合计 |
 | --- | --- | --- | --- | --- | --- |
 | `core/D*`（不含 D20、D26、D27） | 26 | 3 | 0 | 1 | 30 |
 | `core/features.*`、`core/typed.*` | 6 | 0 | 0 | 0 | 6 |
-| `boundary/5.*` | 3 | 5 | 0 | 0 | 8 |
+| `boundary/5.*` | 7 | 1 | 0 | 0 | 8 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
 | `bridge/*` | 13 | 3 | 0 | 1 | 17 |
 | `host/*`、`dsh/*`（§11） | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*`（§12） | 0 | 1 | 0 | 0 | 1 |
-| 合计 | 52 | 12 | 0 | 2 | 66 |
+| 合计 | 56 | 8 | 0 | 2 | 66 |
 
-核心承诺 17 条：已验证 14，部分验证 3（D22、D28、5.8），未验证 0。契约行为 47 条：已验证 38，部分验证 9（D5、5.2、5.3、5.4、5.5、`bridge/large-and-deep-values`、`bridge/version-refusal`、`bridge/tls-client-certificate-verified`、`sdk/testing-matches-runtime`），未验证 0。
+核心承诺 17 条：已验证 14，部分验证 3（D22、D28、5.8），未验证 0。契约行为 47 条：已验证 42，部分验证 5（D5、`bridge/large-and-deep-values`、`bridge/version-refusal`、`bridge/tls-client-certificate-verified`、`sdk/testing-matches-runtime`），未验证 0。
 
 **0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 0 条。从 0.11 起，新登记的条目（`loader/`、`host/` 等）如果是"未验证"，会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。

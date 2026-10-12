@@ -51,7 +51,7 @@ The compatibility layer preserves **framework contracts** strictly. Differences 
 | Language-stack difference (accepted) | Synchronous listeners have run when Cordis `emit` returns | Across the boundary, consistently use rutis's “emit and forget” behavior |
 | Language-stack difference (accepted) | The synchronous prefix of a JS async function runs immediately when called | Not guaranteed across the boundary |
 | Language-stack difference (accepted) | Listeners on both Cordis sides interleave one by one | Forward each side's listeners as a group |
-| Language-stack difference (accepted) | `bail` treats the returned Promise itself as a short-circuit value | Await the result across the boundary before deciding |
+| Language-stack difference (accepted) | `bail` treats the returned Promise itself as a short-circuit value | Use `serial` across the boundary, which awaits the result before deciding; a synchronous `bail` reaching a forwarded event fails (§5 rule 4) |
 | Language-stack difference (accepted) | A waterfall `next` callback can be called multiple times | Allow only one call across the boundary; report an error if called more than once |
 | Language-stack difference (accepted) | Immediate visibility between service replacement and reads | After replacement, the compatibility layer swaps the proxy on the rutis side; a stale object may be read briefly |
 
@@ -60,10 +60,10 @@ The compatibility layer preserves **framework contracts** strictly. Differences 
 Cordis plugins connected to rutis must follow these rules. Detectable violations must produce explicit errors at mount time or runtime, never silent downgrades.
 
 1. **Services:** Publish and replace services through `ctx.provide` or property assignment. Direct replacement with `ctx.set` emits no notification; the rutis side switches to the new object only after the next call to that service.
-2. **Cross-boundary events:** `emit` is a notification and does not guarantee that rutis has run its listeners when `emit` returns. Use `parallel`, `serial`, or `bail` when waiting or a result is required.
-3. **Event ordering:** Native ordering is guaranteed only on each side. Listeners on the other side run as a group in a fixed position. Do not depend on interleaving across sides.
-4. **Middleware chains:** Waterfall / bail chains do not interleave across sides; the other side's listeners participate as one stage.
-5. **Framework-internal events:** `internal/*` events do not cross the boundary.
+2. **Cross-boundary events:** `emit` is a notification and does not guarantee that rutis has run its listeners when `emit` returns. Use `parallel` or `serial` when waiting or a result is required (a synchronous `bail` cannot wait for rutis; see rule 4).
+3. **Event ordering:** Native ordering is guaranteed only on each side. Listeners on the other side run as a group in a fixed position. Do not depend on interleaving across sides. The group always runs as its own side's `parallel`, whatever dispatch the caller used: a rutis `serial` reaching Cordis runs the Cordis listeners as a Cordis `parallel` (started in order, their async parts may overlap, return values do not short-circuit), and likewise for a Cordis `serial` reaching rutis.
+4. **Middleware chains:** Waterfall / bail chains do not interleave across sides; the other side's listeners participate as one stage. A synchronous Cordis `bail` cannot wait for the rutis side and throws an error when it reaches an event forwarded to rutis; use `serial` to short-circuit. In a waterfall, the rutis group is one asynchronous stage that calls `next` once when it is done, so that waterfall returns a Promise (as natively when a middleware is async); a waterfall whose result is needed synchronously cannot be forwarded to rutis.
+5. **Framework-internal events:** `internal/*` events do not cross the boundary; a mount listing an `internal/*` event in either direction fails with an explicit error.
 6. **Synchronous waits:** A synchronous method cannot wait for a result that requires the Node event loop to advance (such as a timer or Promise). This returns `SyncWaitCycle`.
 7. **Host-provided services:** Services provided by rutis appear on the Cordis side as interface-generated proxy objects and work through the declared interface, but are not instances of the plugin's declared class. `instanceof` therefore fails.
 8. **Event loop:** Plugins must not block or hang the event loop for long periods. The compatibility layer adds no call timeout. For timeouts, the rutis side should use an async method and set its own timeout (which cancels the call); the application decides how long unload may wait. An uncaught exception or rejection ends the entire Node process, revoking all services from that mount.
