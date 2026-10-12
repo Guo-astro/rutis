@@ -48,6 +48,25 @@ export function hasEscapedKey(text) {
   return false
 }
 
+const HEX = /[0-9a-fA-F]/
+
+// The position of the first character JSON does not allow in the string
+// body `text[from, to)`: a control character, or what follows a backslash
+// when it does not make an escape.
+function badInString(text, from, to) {
+  for (let at = from; at < to; at++) {
+    const c = text.charCodeAt(at)
+    if (c < 32) return at
+    if (c !== 92) continue
+    const next = text[++at]
+    if (next === 'u') {
+      for (let digit = 1; digit <= 4; digit++) if (!HEX.test(text[at + digit])) return at + digit
+      at += 4
+    } else if (!'"\\/bfnrt'.includes(next)) return at
+  }
+  return from
+}
+
 const NUMBER = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y
 
 // The value of the JSON `text`, as `JSON.parse` gives it, but with objects
@@ -58,13 +77,22 @@ export function parseExactly(text) {
   const length = text.length
   let at = 0
   const fail = () => {
-    throw new SyntaxError(at < length ? `Unexpected token '${text[at]}' in JSON at position ${at}` : 'Unexpected end of JSON input')
+    if (at >= length) throw new SyntaxError('Unexpected end of JSON input')
+    const char = JSON.stringify(String.fromCodePoint(text.codePointAt(at)))
+    throw new SyntaxError(`Unexpected character ${char} in JSON at position ${at}`)
   }
   const space = () => { while (isSpace(text.charCodeAt(at))) at++ }
   const string = () => {
     const quote = closingQuote(text, at + 1)
     if (quote === -1) { at = length; fail() }
-    const value = JSON.parse(text.slice(at, quote + 1))
+    let value
+    try {
+      value = JSON.parse(text.slice(at, quote + 1))
+    } catch {
+      // Point at the character in the frame, not in the slice.
+      at = badInString(text, at + 1, quote)
+      fail()
+    }
     at = quote + 1
     return value
   }
@@ -77,7 +105,9 @@ export function parseExactly(text) {
     at++
     return name
   }
-  const stack = []
+  // The enclosing containers, as a linked list: an array's `push` would run
+  // setters on Array.prototype.
+  let up = null
   let container
   let name
   for (;;) {
@@ -91,8 +121,10 @@ export function parseExactly(text) {
       value = object ? {} : []
       if (text.charCodeAt(at) === (object ? 125 : 93)) at++
       else {
-        stack.push(container, name)
-        container = value
+        up = { container, name, up }
+        // Filled without a prototype, so no setter on one runs and
+        // `__proto__` is an ordinary key; the prototype is set on closing.
+        container = Object.setPrototypeOf(value, null)
         name = object ? key() : undefined
         continue
       }
@@ -103,9 +135,19 @@ export function parseExactly(text) {
     else {
       NUMBER.lastIndex = at
       const number = NUMBER.exec(text)
-      if (number === null) fail()
+      if (number === null) {
+        if (c === 45) at++
+        fail()
+      }
       value = Number(number[0])
       at = NUMBER.lastIndex
+      // `1.` and `1e`: the number is cut short where a digit is missing.
+      const after = text.charCodeAt(at)
+      if (after === 46 || after === 101 || after === 69) {
+        at++
+        if (text.charCodeAt(at) === 43 || text.charCodeAt(at) === 45) at++
+        fail()
+      }
     }
     for (;;) {
       if (container === undefined) {
@@ -114,10 +156,7 @@ export function parseExactly(text) {
         return value
       }
       const array = Array.isArray(container)
-      if (array) container.push(value)
-      // An own property, as JSON.parse makes it, not the prototype.
-      else if (name === '__proto__') Object.defineProperty(container, name, { value, writable: true, enumerable: true, configurable: true })
-      else container[name] = value
+      container[array ? container.length : name] = value
       space()
       const next = text.charCodeAt(at)
       if (next === 44) {
@@ -127,9 +166,10 @@ export function parseExactly(text) {
       }
       if (next !== (array ? 93 : 125)) fail()
       at++
-      value = container
-      name = stack.pop()
-      container = stack.pop()
+      value = Object.setPrototypeOf(container, array ? Array.prototype : Object.prototype)
+      name = up.name
+      container = up.container
+      up = up.up
     }
   }
 }

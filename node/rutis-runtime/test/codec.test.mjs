@@ -106,6 +106,39 @@ test('parseExactly rejects what JSON.parse rejects', () => {
   }
 })
 
+test('parseExactly makes own data properties, as JSON.parse does, despite setters on prototypes', () => {
+  // Counted without arrays: a push would run the Array.prototype setter.
+  let hits = 0
+  const setter = () => ({ set() { hits++ }, configurable: true })
+  Object.defineProperty(Object.prototype, 'evil', setter())
+  Object.defineProperty(Array.prototype, '0', setter())
+  try {
+    for (const text of ['{"\\n":1,"evil":42}', '[{"\\t":[7,{"evil":8}]}]']) {
+      const expected = JSON.parse(text.replace(/\\[nt]/g, 'x'))
+      const got = parseExactly(text)
+      assert.equal(hits, 0, text)
+      assert.equal(JSON.stringify(got).replace(/\\[nt]/g, 'x'), JSON.stringify(expected))
+    }
+    const object = decode('{"\\n":1,"evil":42}')
+    assert.deepEqual(Object.getOwnPropertyDescriptor(object, 'evil'), { value: 42, writable: true, enumerable: true, configurable: true })
+    const array = decode('[{"\\n":1},2]')
+    assert.ok(Object.hasOwn(array, '0'))
+    assert.equal(array.length, 2)
+    assert.equal(hits, 0)
+  } finally {
+    delete Object.prototype.evil
+    delete Array.prototype[0]
+  }
+})
+
+test('parseExactly reports the position in the whole text, as JSON.parse does', () => {
+  const position = run => { try { run() } catch (error) { return Number(/position (\d+)/.exec(error.message)?.[1]) } }
+  for (const text of ['{"\\n":"\\a"}', '{"\\n":"ab\u0001"}', '{"\\n":"\\u12x4"}', '{"\\n\\q":1}', '{"\\n":1,"b" 2}', '{"\\n":-x}', '{"\\n":1.}', '{"\\n":1e+]', '{"\\n":01}']) {
+    assert.equal(position(() => parseExactly(text)), position(() => JSON.parse(text)), text)
+  }
+  assert.throws(() => parseExactly('{"\\n":1,\ud800}'), { message: /"\\ud800" in JSON at position 8/ })
+})
+
 test('parseExactly agrees with JSON on mutated input, and names the position of an error', () => {
   // Seeds hold escaped keys and values, nesting and every kind of token;
   // mutations insert, delete or replace characters that JSON gives meaning to.
