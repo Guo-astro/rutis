@@ -626,9 +626,21 @@ jobs:
       # The runtime's channels, handshake and WebSocket.
       - run: npm --prefix node/rutis-runtime ci
       - run: npm --prefix node/rutis-runtime test
+      # setup-python's macOS builds install only under /Users/runner (the
+      # hosted image's user): a self-hosted runner takes uv's latest Python,
+      # in a virtual environment with pip.
       - uses: actions/setup-python@v5
+        if: runner.environment == 'github-hosted'
         with:
           python-version: '3.x'
+      - uses: astral-sh/setup-uv@v6
+        if: runner.environment == 'self-hosted'
+      - name: Python (self-hosted runner)
+        if: runner.environment == 'self-hosted'
+        run: |
+          uv python install 3
+          uv venv --seed --python-preference only-managed --python 3 "$RUNNER_TEMP/python"
+          echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
       - run: python3 -m pip install "websockets>=15"
       - run: python3 -m unittest discover -s tests
         working-directory: python/rutis
