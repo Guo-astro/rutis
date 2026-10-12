@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rutis::{Ctx, FiberView};
-use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle, RuntimePlugin, RuntimeState};
+use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
+use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle, RuntimePlugin, RuntimeState, Stdio};
 use rutis_bridge::transport::local::LocalPlugin;
 use rutis_bridge::transport::websocket::{
     Config, ListenerConfig, ServerTls, Trust, WebSocketPlugin,
@@ -15,7 +15,7 @@ use rutis_bridge::transport::websocket::{
 use rutis_bridge::{Credential, IdentityPlugin, PeerId, StaticIdentity};
 use rutis_loader::{
     register_peer_node, Builtins, Chain, GoBinaries, GoResolver, GoRuntimes, GoRuntimesHandle,
-    Layer, Loader, LoaderOptions, LoaderPlugin, Patch, PeerResolver, RuntimeResolver,
+    Layer, Loader, LoaderOptions, LoaderPlugin, Patch, PeerResolver, RuntimeResolver, RuntimeRows,
     RuntimeRowsPlugin, ServiceCatalog,
 };
 
@@ -23,6 +23,7 @@ use crate::config::{
     token, venv_python, BunRuntime, GoRuntime, GoStart, HostConfig, NodeRuntime, PythonRuntime,
     DEFAULT_PYTHON,
 };
+use crate::errln;
 
 pub struct Host {
     /// The host runs while this lives.
@@ -36,6 +37,12 @@ pub struct Host {
     /// The local runtimes' plugins, by name, to stop one
     /// ([`Host::stop_runtime`]).
     fibers: Vec<(String, FiberView)>,
+    /// The `rutis-bridge/peer` rows' resolver, which also knows their links'
+    /// states ([`PeerResolver::link_state`]).
+    pub peers: Arc<PeerResolver>,
+    /// Each configured listener (`listen`) and the address it is bound to,
+    /// in the configuration's order: with port 0, the port picked.
+    pub listening: Vec<(String, std::net::SocketAddr)>,
 }
 
 /// Registers rows compiled into a program ([`Embedding::builtins`]).
@@ -64,6 +71,19 @@ pub type Error = String;
 /// finished, however little of the deadline is left: longer than the
 /// local transport gives a process whose channel closed before killing it.
 pub const PROCESS_EXIT: Duration = Duration::from_secs(3);
+
+/// How long, once the runtime processes ended, a host waits for the rest
+/// of their output before it exits ([`output_written`]). Their output ends
+/// with them; only a process one of them started and left running keeps
+/// it open, and the host does not wait for that.
+pub const OUTPUT_GUARD: Duration = Duration::from_secs(2);
+
+/// Wait (up to [`OUTPUT_GUARD`]) until what the runtime processes wrote
+/// has all been passed on: what a program running a [`Host`] does last,
+/// so that their last lines are not lost when it exits (#332).
+pub fn output_written() {
+    rutis_bridge::transport::local::output_ended(OUTPUT_GUARD);
+}
 
 /// How long killed runtime processes may take to be gone.
 pub const KILLED_EXIT: Duration = Duration::from_secs(5);
@@ -107,9 +127,20 @@ impl Host {
             .await
             .map_err(|error| format!("the local transport: {error}"))?;
         let websocket = WebSocketPlugin::new(websocket(config)?)?;
-        (&root.plugin(websocket))
+        (&root.plugin(websocket.clone()))
             .await
             .map_err(|error| format!("the WebSocket transport: {error}"))?;
+        let listening = match websocket.transport() {
+            Some(transport) => config
+                .listen
+                .iter()
+                .filter_map(|listener| {
+                    let address = transport.local_addr(&listener.name)?;
+                    Some((listener.name.clone(), address))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         match embedding.identity {
             Some(identity) => root.plugin(identity),
             None => root.plugin(IdentityPlugin::new("host", identity(config)?)),
@@ -124,7 +155,7 @@ impl Host {
         if let Some(register) = embedding.builtins {
             register(&mut builtins);
         }
-        let mut chain = Chain::new().with(builtins).with_shared(peers);
+        let mut chain = Chain::new().with(builtins).with_shared(peers.clone());
         let go = match &config.runtimes.go {
             Some(go) => {
                 let resolver = Arc::new(go_resolver(config, go, &catalog)?);
@@ -134,7 +165,7 @@ impl Host {
             None => None,
         };
         if let Some(py) = &config.runtimes.py {
-            let runtime = python(py)?;
+            let runtime = whole_lines(python(py)?);
             let handle = runtime.handle();
             let rows = Arc::new(RuntimeResolver::modules(handle.clone()).with_catalog(&catalog));
             fibers.push(("py".to_owned(), root.plugin(runtime)));
@@ -143,7 +174,7 @@ impl Host {
             resolvers.push(rows);
         }
         if let Some(bun) = &config.runtimes.bun {
-            let runtime = bun_runtime(bun)?;
+            let runtime = whole_lines(bun_runtime(bun)?);
             let handle = runtime.handle();
             let rows = Arc::new(RuntimeResolver::modules(handle.clone()).with_catalog(&catalog));
             fibers.push(("bun".to_owned(), root.plugin(runtime)));
@@ -152,7 +183,7 @@ impl Host {
             resolvers.push(rows);
         }
         if let Some(node) = &config.runtimes.node {
-            let runtime = node_runtime(node)?;
+            let runtime = whole_lines(node_runtime(node)?);
             let handle = runtime.handle();
             let rows = Arc::new(RuntimeResolver::node(handle.clone()).with_catalog(&catalog));
             fibers.push(("node".to_owned(), root.plugin(runtime)));
@@ -197,7 +228,8 @@ impl Host {
         }
         let go = match go {
             Some((resolver, settings)) => {
-                let mut plugin = GoRuntimes::new(resolver.clone(), &settings.project);
+                let mut plugin = GoRuntimes::new(resolver.clone(), &settings.project)
+                    .output(Stdio::Lines, Stdio::Lines);
                 plugin = match settings.start {
                     GoStart::Eager => plugin.eager(),
                     GoStart::OnDemand => plugin.idle(Some(std::time::Duration::from_secs(
@@ -219,6 +251,8 @@ impl Host {
             resolvers,
             go,
             fibers,
+            peers,
+            listening,
         })
     }
 
@@ -239,7 +273,8 @@ impl Host {
             .map_err(|error| format!("stopping the {name} runtime: {error}"))
     }
 
-    /// Wait until every runtime runs, or say which one could not start.
+    /// Wait until every runtime runs and its rows may start, or say which
+    /// one could not start.
     pub async fn runtimes_ready(&self) -> Result<(), Error> {
         for (name, handle) in &self.runtimes {
             loop {
@@ -251,6 +286,36 @@ impl Host {
                     _ => handle.changed().await,
                 }
             }
+            // A running runtime releases its rows ([`RuntimeRows`]) once it
+            // has resolved again those resolved before it ran. Rows loaded
+            // before then wait for it, and the host would say it runs while
+            // they do (#314). A plugin injecting it applies once it is there.
+            let (released, rows) = tokio::sync::oneshot::channel();
+            // Disposed however the wait ends, a signal dropping it included:
+            // left mounted, it would count among what still runs.
+            let mut waiter = Unmount(Some(self.root.plugin(Released {
+                injects: [RuntimeRows::key(name)],
+                released: std::sync::Mutex::new(Some(released)),
+            })));
+            let down = async {
+                loop {
+                    if let RuntimeState::Down(reason) = handle.state() {
+                        return reason;
+                    }
+                    handle.changed().await;
+                }
+            };
+            let result = tokio::select! {
+                released = rows => released.map_err(|_| {
+                    // Only a plugin that never applied drops its sender.
+                    format!("the {name} runtime did not start: its rows were never released")
+                }),
+                reason = down => Err(format!("the {name} runtime did not start: {reason}")),
+            };
+            if let Some(waiter) = waiter.0.take() {
+                let _ = waiter.dispose().await;
+            }
+            result?;
         }
         Ok(())
     }
@@ -315,7 +380,7 @@ impl Host {
         let gone = rutis_bridge::transport::local::processes_ended();
         if tokio::time::timeout(KILLED_EXIT, gone).await.is_err() {
             let left = rutis_bridge::transport::local::running_processes();
-            eprintln!("rutis-host: processes {left:?} did not end when killed");
+            errln!("rutis-host: processes {left:?} did not end when killed");
         }
     }
 
@@ -487,6 +552,13 @@ fn identity(config: &HostConfig) -> Result<StaticIdentity, Error> {
     Ok(identity)
 }
 
+/// `runtime`, its output passed on a whole line at a time: a line a plugin
+/// writes in pieces (a Python `print` writes its newline separately) never
+/// has one of this host's lines, or another runtime's, inside it (#332).
+fn whole_lines(runtime: LocalRuntime) -> LocalRuntime {
+    runtime.stdout(Stdio::Lines).stderr(Stdio::Lines)
+}
+
 /// The Node runtime of `node.project`, with the `@arcships/rutis-runtime`
 /// package installed there (or given, or next to this program).
 fn node_runtime(node: &NodeRuntime) -> Result<LocalRuntime, Error> {
@@ -581,6 +653,43 @@ fn python(py: &PythonRuntime) -> Result<LocalRuntime, Error> {
         runtime = runtime.python_path(source);
     }
     Ok(runtime)
+}
+
+/// Says once a runtime's rows may start: it injects what they wait for.
+/// Temporary: [`Host::runtimes_ready`] mounts it while it waits, and
+/// disposes it once the wait ends.
+struct Released {
+    injects: [TypeKey; 1],
+    released: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+/// Disposes the plugin it holds when dropped: the dispose starts at once,
+/// nothing waits for it.
+struct Unmount(Option<FiberView>);
+
+impl Drop for Unmount {
+    fn drop(&mut self) {
+        if let Some(view) = self.0.take() {
+            drop(view.dispose());
+        }
+    }
+}
+
+impl Plugin for Released {
+    fn name(&self) -> &str {
+        "runtime-rows-released"
+    }
+
+    fn injects(&self) -> &[TypeKey] {
+        &self.injects
+    }
+
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        if let Some(released) = self.released.lock().unwrap().take() {
+            let _ = released.send(());
+        }
+        Box::pin(async { Ok(Effect::Done) })
+    }
 }
 
 #[cfg(test)]
@@ -701,6 +810,55 @@ mod tests {
         std::fs::write(dir.path().join("greeter.py"), python_plugin("Welcome")).unwrap();
         host.loader.reload("greeter").await.unwrap();
         assert_eq!(greeting(&host).await, "Welcome, Ada");
+    }
+
+    /// Once `runtimes_ready` returns, the rows of each runtime may start:
+    /// what they wait for ([`rutis_loader::RuntimeRows`]) is there, so a row
+    /// loaded then runs once loading returns. It used to return once the
+    /// runtime process was ready, and such a row could still wait: `run`
+    /// said it was running, and printed its state, while it did (#314).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rows_loaded_once_the_runtimes_are_ready_do_not_wait_for_them() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("plain.py"),
+            "def apply(ctx, config):\n    pass\n",
+        )
+        .unwrap();
+        // The repository's rutis package, for an interpreter without it.
+        std::env::set_var("RUTIS_PYTHON_PATH", repo().join("python/rutis"));
+        let config = HostConfig {
+            format: crate::config::FORMAT,
+            id: "test".into(),
+            runtimes: Runtimes {
+                py: Some(PythonRuntime {
+                    project: dir.path().to_owned(),
+                    python: std::env::var_os("RUTIS_PYTHON").map(PathBuf::from),
+                }),
+                ..Runtimes::default()
+            },
+            listen: Vec::new(),
+            rows: vec![json!({ "id": "plain", "name": "py:plain" })],
+            warnings: Vec::new(),
+        };
+        let host = Host::start(&config).await.unwrap();
+        RUNTIME_START
+            .within("the Python runtime", host.runtimes_ready())
+            .await
+            .unwrap();
+        // What the runtime's rows wait for.
+        let rows = host.root.get_as::<RuntimeRows>(RuntimeRows::key("py"));
+        assert!(rows.is_some(), "the runtime is ready, its rows not yet");
+        within("loading the row", host.load(config.rows()))
+            .await
+            .unwrap();
+        let entry = host
+            .loader
+            .entries()
+            .into_iter()
+            .find(|entry| entry.id == "plain")
+            .unwrap();
+        assert_eq!(crate::status::describe(&entry.status), "running");
     }
 
     /// Bun on Windows is not tested yet.

@@ -57,6 +57,14 @@ test('authentication, subprotocol and address failures carry categories', async 
   assert.equal(await category({ protocol: PROTOCOL, token: 'guess' }), 'auth-rejected')
   assert.equal(await category({ protocol: PROTOCOL }), 'auth-rejected')
   assert.equal(await category({ protocol: 'rutis.99', token: 'secret' }), 'incompatible')
+  // The refusal says which end to upgrade (standard Q6.2.4).
+  // guarantee: bridge/version-refusal
+  const refusal = async protocol => {
+    try { await open(listener.url, inbox().handlers, { protocol, token: 'secret' }); return 'opened' }
+    catch (error) { return error.message }
+  }
+  assert.match(await refusal('rutis.99'), /: this endpoint speaks rutis\.2, the dialer offered rutis\.99: upgrade this endpoint \(npm @arcships\/rutis-runtime\)$/)
+  assert.match(await refusal('rutis.1'), /: this endpoint speaks rutis\.2, the dialer offered rutis\.1: upgrade the dialer$/)
   await assert.rejects(open('ws://example.com/rutis', inbox().handlers, { protocol: PROTOCOL }), error => error.category === 'incompatible')
   const free = listener.url.replace(/:\d+\//, ':1/')
   await assert.rejects(open(free, inbox().handlers, { protocol: PROTOCOL, token: 'secret' }), error => error.category === 'retryable')

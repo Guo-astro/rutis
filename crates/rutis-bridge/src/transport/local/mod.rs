@@ -41,10 +41,12 @@ pub fn framed(
         },
     )
 }
+mod output;
 pub(crate) mod spawn;
 #[cfg(unix)]
 mod unix;
 
+pub use output::{output_ended, write_line, OutputStream, MAX_LINE};
 pub use spawn::{
     kill_processes, processes_ended, running_processes, Handover, Spawn, Stdio, CHANNEL_FD,
     CHANNEL_TOKEN, HANDOVER_VARIABLE,

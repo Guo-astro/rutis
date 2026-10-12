@@ -34,7 +34,7 @@
 | 任务 | 做什么 |
 | --- | --- |
 | `rutis` | 内核测试重复 `rounds` 轮（默认 20）。每轮换测试线程数（1、2、全部核数）、打乱顺序、换种子，每五轮用一次 release 构建。第一次失败就停 |
-| `multiprocess` | bridge、loader 中会启动进程、打开本地通道、启动运行时进程的测试，也就是 `ci.yml` 的 `PLATFORM_TESTS_BRIDGE`、`PLATFORM_TESTS_LOADER` 两个列表（加进列表的新测试文件，这里自动跟着跑）。运行时和 `rust` 任务相同（§9）。测试只构建一次，然后重复 `rounds` 轮，每轮换测试线程数、打乱顺序、换种子。某一轮失败也跑完所有轮，最后才让任务失败 |
+| `multiprocess` | bridge、loader 中会启动进程、打开本地通道、启动运行时进程的测试，也就是 PR 上 macOS、Windows 跑的那些测试文件：除 `ci.yml` 的 `PURE_TESTS_BRIDGE`、`PURE_TESTS_LOADER` 两个列表以外的全部测试文件（§4；新测试文件这里自动跟着跑）。运行时和 `rust` 任务相同（§9）。测试只构建一次，然后重复 `rounds` 轮，每轮换测试线程数、打乱顺序、换种子。某一轮失败也跑完所有轮，最后才让任务失败 |
 | `soak` | bridge 的 WebSocket 和本地通道长时间测试，各 `soak_secs` 秒（默认 600） |
 
 整个 workflow 的时间由最慢的任务决定：`soak` 约 21 分钟；`multiprocess` 估计 30–45 分钟（构建约 10 分钟，每轮约 1–1.5 分钟）。
@@ -70,7 +70,7 @@
 | `rust` | Linux | `code` | Linux 上 loopback 方式启动运行时的重跑 | 全部 Rust 测试，每项只跑一次：工作区（除 bridge、loader、`rutis-e2e`）、loader 全部行类型、bridge 全部 feature。用最低支持版本（§9） |
 | `e2e` | Linux | `code` | — | 端到端场景 `cargo test -p rutis-e2e`（`tests/e2e`：真实的 rutis-host 进程、项目目录、各语言的探针插件），与 `rust` 并行，用最低支持版本（§9）。失败时上传 `RUTIS_E2E_DIR`（失败场景的目录和日志）为 artifact `e2e-linux`。安装场景不在这里跑，由 `install.yml` 跑。同样的场景在 macOS 上由 `network-macos` 跑，在 Windows 上由 `runtimes-windows` 跑（只跑不限于 Unix 的场景） |
 | `js-py` | Linux | `code` | — | `scripts/train.mjs`；Node 包（`node/rutis`、`rutis-runtime`、`rutis-host`）和 rutis-dsh 的 dsh 测试；Python 单元测试 |
-| `lint` | Linux | `code` | — | `cargo fmt --check`；`cargo clippy --workspace --all-targets --all-features -- -D warnings`。与测试并行。没有基线：警告在引入它的 PR 里改掉，升级工具链带来的新 lint 在升级的 PR 里改掉 |
+| `lint` | Linux | `code` | — | `cargo fmt --check`；`PURE_TESTS_*` 里的每个名字都有对应的测试文件（§4）；`cargo clippy --workspace --all-targets --all-features -- -D warnings`。与测试并行。没有基线：警告在引入它的 PR 里改掉，升级工具链带来的新 lint 在升级的 PR 里改掉 |
 | `msrv` | Linux | 只在 `all` 时（改了 `Cargo.lock`、`Cargo.toml` 等） | 整个任务 | 用声明的 MSRV（`Cargo.toml` 的 `rust-version`）和仓库的 `Cargo.lock` 编译库和二进制（`cargo +<版本> check --workspace`，不含示例项目 `rutis-agent`、`rutis-cli`） |
 | `checks` | Linux | 只在 `all` 时 | 整个任务 | bridge、loader 各个 feature 组合的编译检查和 `--no-run`（整个工作区的编译由 `lint` 的 clippy 覆盖）。这些检查发现的是少见的 feature 组合编译错误，不跑测试 |
 | `network-macos` | macOS | `code`：只跑和平台有关的测试 | bridge、loader 全部测试；`node/rutis` 测试 | 最新版本（§9）下的进程启动、本地通道、运行时进程、WebSocket、rutis-host 测试；端到端场景（失败时上传 artifact `e2e-macos`）；Node 运行时和 Python 包的测试；整个工作区的编译检查 |
@@ -80,16 +80,16 @@
 | `semver-rutis` | Linux | `packaging` | 整个任务 | 公开 API 和上次发布相比有没有不兼容的改动（只提示） |
 | `dylib-linux-launcher`、`dylib-linux-sdk-bundle` | Linux | `dylib` | — | dylib 测试，分两个任务同时跑 |
 | `dylib-linux-repro` | Linux | `repro` | 整个任务 | SDK 可复现构建（在一台机器上用两个目录各构建一次） |
-| `dylib-macos` | macOS | `dylib` | 可复现构建一步 | 同样的 dylib 测试，在一个任务里依次跑，共用一次构建的 bundle；可复现构建这一步只在 `repro` 打开时跑 |
+| `dylib-macos` | macOS（自托管，§10） | `dylib` | 可复现构建一步 | 同样的 dylib 测试，在一个任务里依次跑，共用一次构建的 bundle；可复现构建这一步只在 `repro` 打开时跑 |
 | `release-dry-run` | Linux | `packaging` | 整个任务 | 发布要用的包能构建（crate、npm 包、Python 包）。各平台的二进制和 wheel 由 `install.yml` 构建并安装（§2）：PR 上只有 Linux x64，Windows、macOS 的打包在合并后的 main 上检查，aarch64 在发布前检查 |
-| `sdk-repro`、`sdk-repro-macos` 及比对 | Linux、macOS | 只在 `all` 时 | 整个任务 | 在两台机器上分别构建 SDK，比较结果是否相同 |
+| `sdk-repro`、`sdk-repro-macos` 及比对 | Linux、macOS（自托管，§10） | 只在 `all` 时 | 整个任务 | 在两台机器上分别构建 SDK，比较结果是否相同 |
 | `ci-ok` | Linux | 总是 | — | 汇总（§5） |
 
 ### 和平台有关的测试
 
-`ci.yml` 顶部的 `PLATFORM_TESTS_BRIDGE`、`PLATFORM_TESTS_LOADER` 列出 PR 上 macOS、Windows 跑哪些测试文件：会启动进程、打开本地通道（Unix socket、继承的 socket、loopback 交接）、启动运行时进程、使用 WebSocket 的测试，加上两个 crate 的单元测试（`--lib`）；rutis-host 的测试全跑。其余测试（内存通道上的协议、行的配置和生命周期等）只依赖 Rust 代码本身，PR 上在 Linux 的 `rust` 任务里跑，main 上三个平台都跑。
+PR 上 macOS、Windows 默认跑 bridge、loader 的全部测试文件和两个 crate 的单元测试（`--lib`），只跳过 `ci.yml` 顶部 `PURE_TESTS_BRIDGE`、`PURE_TESTS_LOADER` 列出的测试文件；rutis-host 的测试全跑。列表里的测试只依赖 Rust 代码本身：内存通道上的协议、行的配置和生命周期等，不启动进程、不开 socket、除了读 fixture 不碰文件、不依赖操作系统的行为。它们在各平台上结果相同，PR 上只在 Linux 的 `rust` 任务里跑，main 上三个平台都跑。跳过它们是为了让 macOS、Windows 的时间有上限。
 
-新加的测试文件如果会启动进程或打开通道，要加进这两个列表。每晚 `stress.yml` 的 `multiprocess` 任务也按这两个列表重复运行（§2）。
+传给 `cargo test` 的 `--lib --test <名字> ...` 由 `tools/platform-tests.sh` 在任务运行时生成：`crates/<crate>/tests/` 下的每个测试文件，去掉列表里的名字。所以新加的测试文件默认在三个平台上都跑，不需要记得登记；只有确定不启动进程、不打开通道或文件的测试才加进 `PURE_TESTS_*`。列表里的名字找不到对应文件时，脚本报错，`lint` 任务失败，重命名或删除测试文件不会让列表悄悄失效。每晚 `stress.yml` 的 `multiprocess` 任务用同一个脚本重复运行同一组测试（§2）。
 
 ### 一致性矩阵
 
@@ -177,7 +177,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 ### 加一种语言运行时
 
 1. `changes` 加一个这种语言的开关，包括它的运行时目录，以及 `crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host`。
-2. 在 `rust`、`e2e`（最低支持版本）和 `network-macos`（最新版本）里安装这种语言（§9），在已有的 bridge、loader、host 测试步骤里加上它的 feature；它的测试文件按 §4 加进 `PLATFORM_TESTS_*`。
+2. 在 `rust`、`e2e`（最低支持版本）和 `network-macos`（最新版本）里安装这种语言（§9），在已有的 bridge、loader、host 测试步骤里加上它的 feature；它的测试文件默认在 macOS、Windows 上跑（§4），不需要登记。
 3. 如果要测多个版本，加一个 `runtimes-<语言>` 任务：按第 1 步的开关运行，加进 `ci-ok`，PR 上只在 Linux 跑最低支持版本；其他版本和 macOS 只在 main 上跑（做法见 `runtimes-bun` 和 `changes` 的 `bun-matrix`）。
 4. 发布相关：`release-dry-run`、`scripts/train.mjs`、`release.yml` 都加上它的包。
 5. 更新 §3、§4。
@@ -203,6 +203,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 
 - 所有任务用 `Swatinem/rust-cache`，设置 `save-if: github.ref == 'refs/heads/main'`：只有 main 上的运行保存缓存。
 - PR 只能读取 main 和它自己的缓存。PR 不保存，是为了不占用仓库 10 GB 的缓存空间，把 main 的缓存挤掉。
+- 自托管的 macOS runner 不用 `rust-cache`，保留自己的 target 目录（§10）。
 - 加任务时照此设置（`ci.yml` 里 `rust` 任务的 `rust-cache` 处有说明）。
 - 不能用缓存的检查（SDK 可复现构建）放在 main 上，PR 只在 `repro` 打开时运行。
 
@@ -225,3 +226,27 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 `runtimes-go`、`runtimes-bun` 在 main 上的 macOS 矩阵项里，Node、Python 只是跨语言行的对端，和 Linux 一样用最低版本。发布用的 Node（`release.yml`、`package.yml` 和 `ci.yml` 的 `release-dry-run`）是发布工具的版本，不属于支持矩阵。
 
 **改了声明，要在同一个 PR 里改 CI 的版本**：改 `engines`、`requires-python`、websockets 下限或 `rust-version` 的 PR，同时改上表里对应任务的版本；否则声明的最低版本没有经过验证（Q10.3）。
+
+## 10. 自托管的 macOS runner
+
+`ci.yml` 的 `dylib-macos`、`sdk-repro-macos`，以及 `install.yml` 在 main 和 PR 上的 `darwin-arm64`，跑在自托管的 macOS runner 上：一台专用、隔离的 Mac，可以装多个 runner 实例，标签都是 `self-hosted, macOS, ARM64`（第一个实例叫 `macos-1`）。只做调度的小任务也在那里跑，免得排队等 GitHub 的 Linux runner：`ci.yml` 的 `changes`、`ci-ok`，`install.yml`、`package.yml` 的 `plan`（发布时，即 tag 上，`plan` 仍用 `ubuntu-24.04`）。只有一个实例时它们会排在正在跑的 macOS 任务后面，所以要多加实例。其余任务仍用 GitHub 的 runner：`network-macos`（暂时：在自托管的机器上，`rpc_callbacks` 启动的 Node 进程每次运行都有一个被 SIGKILL，见 #287；修好后把仓库变量 `NETWORK_MACOS_RUNNER` 设成 `["self-hosted","macOS","ARM64"]` 即可切过去，任务里的步骤两种 runner 都能跑）、`darwin-x64`（要 Intel 的 `macos-15-intel`）、`package.yml` 的 macOS 构建（发布用的文件）、`release.yml` 调用 `install.yml` 时的 `darwin-arm64`（发布前的检查用 `macos-15`）、`runtimes-go`/`runtimes-bun` 在 main 上的 macOS 矩阵项、Linux 和 Windows 的任务。
+
+**切回 GitHub 的 runner，不用改代码**：仓库变量 `MACOS_RUNNER`（Settings → Secrets and variables → Actions → Variables）是 `runs-on` 的 JSON 值，没设置时为 `["self-hosted","macOS","ARM64"]`。设成 `"macos-15"`（带引号）就全部回到 GitHub 的 macOS；删掉变量就回到自托管。`gh variable set MACOS_RUNNER --body '"macos-15"'`。调度任务用另一个变量 `GATE_RUNNER`，切回时设成 `"ubuntu-24.04"`。
+
+自托管的机器在任务之间保留状态，几个实例同时跑。这些任务开头和结尾（`if: always()`）运行 `tools/ci-self-hosted.sh`：
+
+- 结束这个实例之前的任务留下的进程：命令行或工作目录在这个实例的工作区、target 目录或场景目录下的进程，不碰 runner 本身和别的实例的任务；
+- 场景目录 `RUTIS_E2E_DIR` 是每个实例自己的 `/tmp/rutis-e2e-<runner 名>`（不用 `runner.temp`：Unix socket 路径在 macOS 上最长 104 字节，见 `tests/e2e/src/lib.rs`），开头和结尾清空；
+- 编译不用 `rust-cache`（它会把缓存再上传到 GitHub），`CARGO_TARGET_DIR` 是每个实例保留的 `~/.cache/rutis-ci/<runner 名>/target`，超过 30 GB（`RUTIS_CI_TARGET_MAX_GB`）时清空；`setup-node`、`setup-go` 的缓存也只在 GitHub 的 runner 上用；
+- Python 不用 `setup-python`（它的 macOS 版本只能装在 `/Users/runner` 下），用 uv 装的最新 Python，每个任务在 `runner.temp` 里建一个带 pip 的虚拟环境放进 `PATH`；
+- `tools/*.sh` 留在 `/tmp/rutis-*` 的目录超过 12 小时后删除。
+
+**加一个实例前，机器上要有**：
+
+1. runner 用 `./config.sh --labels self-hosted,macOS,ARM64 --name macos-<n>` 注册（名字在机器上唯一，目录和缓存按名字分开），`./svc.sh install && ./svc.sh start` 作为服务运行。
+2. 文件描述符上限 10240：在 `~/Library/LaunchAgents/actions.runner.*.plist` 里加 `SoftResourceLimits` 和 `HardResourceLimits`，各含 `NumberOfFiles` = `10240`，然后 `./svc.sh stop && ./svc.sh start`。
+3. rustup（`dtolnay/rust-toolchain` 用它装 `rust-toolchain.toml` 的版本）：`curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain none`。
+4. Xcode 命令行工具（`xcode-select --install`）：`cc`、`codesign`、`otool`、`lipo`。`sdk-repro-macos` 打印 Xcode 版本，只有命令行工具时打印它们的版本。
+5. 磁盘至少 100 GB 空闲（每个实例的 target 目录最多 30 GB，加上 `_work/_tool` 里的 Node、Python、Go、Bun）。
+6. 不睡眠：`sudo pmset -a sleep 0 disksleep 0`（或在系统设置里关掉）。
+7. 不需要 Homebrew：这些任务只用系统自带的 `bash`（3.2）、`perl`、`tar`、`shasum`、`lsof`、`jq`（macOS 15 起系统自带 `/usr/bin/jq`，`ci-ok` 要用），Node、Go、Bun、uv 由各自的 setup action 装进 `_work/_tool`，Python 由 uv 装进 `~/.local/share/uv`。

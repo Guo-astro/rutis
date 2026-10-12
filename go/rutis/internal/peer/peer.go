@@ -488,9 +488,49 @@ func holdsReference(value any) bool {
 	return false
 }
 
+// MaxDepth is how deep a value crossing a session may nest (#279): each
+// array or object (slice, map, struct) is a level, so 64 nested arrays
+// cross and 65 do not; a call's argument list is not a level. A deeper
+// value fails its own call here, before it is sent; the session goes on.
+const MaxDepth = 64
+
+// ErrTooDeep is the error of a call whose value nests deeper than MaxDepth.
+var ErrTooDeep = fmt.Errorf("value nested deeper than %d levels, the most a value crossing a session may nest", MaxDepth)
+
+// jsonDepth is how deep arrays and objects nest in a JSON text.
+func jsonDepth(text []byte) int {
+	depth, deepest, inString, escaped := 0, 0, false, false
+	for _, b := range text {
+		switch {
+		case inString && escaped:
+			escaped = false
+		case inString && b == '\\':
+			escaped = true
+		case inString:
+			inString = b != '"'
+		case b == '"':
+			inString = true
+		case b == '[' || b == '{':
+			depth++
+			deepest = max(deepest, depth)
+		case b == ']' || b == '}':
+			depth--
+		}
+	}
+	return deepest
+}
+
 // encode turns a value into its wire form; p.mu is held. `grants` collects
-// the exports it granted, for a rollback.
-func (p *Peer) encode(value any, grants *[]int64, origin []string) (map[string]any, error) {
+// the exports it granted, for a rollback; `depth` counts the arrays and
+// objects around the value (an argument list starts at -1: it is not a
+// level).
+func (p *Peer) encode(value any, grants *[]int64, origin []string, depth int) (map[string]any, error) {
+	switch value.(type) {
+	case []any, map[string]any, error:
+		if depth >= MaxDepth {
+			return nil, ErrTooDeep
+		}
+	}
 	switch v := value.(type) {
 	case UndefinedType:
 		return map[string]any{"type": "undefined"}, nil
@@ -519,7 +559,7 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string) (map[string]a
 		if holdsReference(v) {
 			items := make([]any, len(v))
 			for i, item := range v {
-				encoded, err := p.encode(item, grants, origin)
+				encoded, err := p.encode(item, grants, origin, depth+1)
 				if err != nil {
 					return nil, err
 				}
@@ -531,7 +571,7 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string) (map[string]a
 		if holdsReference(v) {
 			items := make(map[string]any, len(v))
 			for key, item := range v {
-				encoded, err := p.encode(item, grants, origin)
+				encoded, err := p.encode(item, grants, origin, depth+1)
 				if err != nil {
 					return nil, err
 				}
@@ -545,6 +585,9 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string) (map[string]a
 	data, err := marshal(plain(value))
 	if err != nil {
 		return nil, fmt.Errorf("%T cannot cross the boundary: %w", value, err)
+	}
+	if depth+jsonDepth(data) > MaxDepth {
+		return nil, ErrTooDeep
 	}
 	return map[string]any{"type": "data", "value": json.RawMessage(data)}, nil
 }
@@ -867,7 +910,7 @@ func (p *Peer) request(ctx context.Context, op string, fields map[string]any, ar
 		if args == nil {
 			args = []any{}
 		}
-		encoded, err := p.encode(args, &grants, chain)
+		encoded, err := p.encode(args, &grants, chain, -1)
 		if err != nil {
 			p.rollback(grants)
 			p.mu.Unlock()
@@ -1068,17 +1111,41 @@ func (p *Peer) issued(id string) bool {
 	return err == nil && n <= p.next
 }
 
+// versionMismatch says why the far end's protocol version is refused and
+// which end to upgrade (standard Q6.2.4): this side when the far end is
+// newer, naming the module to upgrade here; the far end when it is older,
+// naming its implementation when its handshake said.
+func versionMismatch(f *frame, local int) string {
+	far := strings.TrimSpace(string(f.Version))
+	mismatch := fmt.Sprintf("the far end speaks protocol %s, this side %d", far, local)
+	var version int
+	if json.Unmarshal(f.Version, &version) != nil || version == local {
+		return mismatch
+	}
+	if version > local {
+		return mismatch + ": upgrade this side (Go module github.com/arcships/rutis/go/rutis)"
+	}
+	var implementation struct {
+		Name    *string `json:"name"`
+		Version *string `json:"version"`
+	}
+	if json.Unmarshal(f.Implementation, &implementation) == nil && implementation.Name != nil && implementation.Version != nil {
+		return fmt.Sprintf("%s: upgrade the far end (%s %s)", mismatch, *implementation.Name, *implementation.Version)
+	}
+	return mismatch + ": upgrade the far end"
+}
+
 func (p *Peer) greet(f *frame) error {
 	var version int
 	_ = json.Unmarshal(f.Version, &version)
 	if p.opts.Endpoint == nil {
 		if version != Protocol || len(f.Endpoint) > 0 {
-			return fmt.Errorf("incompatible session: the far end speaks protocol %s, this side %d", strings.TrimSpace(string(f.Version)), Protocol)
+			return errors.New("incompatible session: " + versionMismatch(f, Protocol))
 		}
 		return nil
 	}
 	if version != EndpointProtocol {
-		return fmt.Errorf("incompatible session: the far end speaks protocol %s, this side %d", strings.TrimSpace(string(f.Version)), EndpointProtocol)
+		return errors.New("incompatible session: " + versionMismatch(f, EndpointProtocol))
 	}
 	var endpoint string
 	if json.Unmarshal(f.Endpoint, &endpoint) != nil || !endpointID.MatchString(endpoint) {
@@ -1262,7 +1329,7 @@ func (p *Peer) respond(id string, value any, failure error, chain []string) {
 	var err error
 	if failure == nil {
 		var encoded map[string]any
-		encoded, err = p.encode(value, &grants, chain)
+		encoded, err = p.encode(value, &grants, chain, 0)
 		if err == nil {
 			data, err = marshal(map[string]any{"op": "return", "id": id, "value": encoded})
 		}

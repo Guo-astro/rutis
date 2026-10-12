@@ -8,7 +8,7 @@
 //! rutis-host go add <module>@<version> [rutis.json]
 //! ```
 
-use rutis_host::{config, host, new, project, status};
+use rutis_host::{config, errln, host, new, outln, project, status};
 use rutis_loader::{RowStatus, Supply};
 
 mod stop;
@@ -52,22 +52,24 @@ fn main() {
         Some("new") => new_project(&args[1..]).map(|()| Stopped::Done),
         Some("go") => go_command(&args[1..]).map(|()| Stopped::Done),
         Some("--version" | "-V") => {
-            println!("rutis-host {}", env!("CARGO_PKG_VERSION"));
+            outln!("rutis-host {}", env!("CARGO_PKG_VERSION"));
             Ok(Stopped::Done)
         }
         Some("--help" | "-h" | "help") | None => {
-            println!("{USAGE}");
+            outln!("{USAGE}");
             Ok(Stopped::Done)
         }
         Some(command @ ("run" | "dev" | "check")) => serve(command, &args[1..]),
         Some(other) => Err(format!("unknown command {other}\n\n{USAGE}")),
     };
+    // The runtimes' last lines, still being passed on once they ended.
+    host::output_written();
     match result {
         Ok(Stopped::Done) => {}
         Ok(Stopped::Failed) => std::process::exit(1),
         Ok(Stopped::Unfinished) => std::process::exit(stop::UNFINISHED),
         Err(error) => {
-            eprintln!("rutis-host: {error}");
+            errln!("rutis-host: {error}");
             std::process::exit(1);
         }
     }
@@ -119,7 +121,7 @@ fn new_project(args: &[String]) -> Result<(), String> {
         "go" | "golang" => "go mod tidy && go test ./... && rutis-host dev",
         _ => "npm install && npm test && npx rutis-host dev",
     };
-    println!("created {name}/\nnext: cd {name} && {next}");
+    outln!("created {name}/\nnext: cd {name} && {next}");
     Ok(())
 }
 
@@ -140,7 +142,7 @@ fn serve(command: &str, args: &[String]) -> Result<Stopped, String> {
 /// Show what reading the configuration went on without.
 fn warn(config: &config::HostConfig) {
     for warning in &config.warnings {
-        eprintln!("rutis-host: warning: {warning}");
+        errln!("rutis-host: warning: {warning}");
     }
 }
 
@@ -154,13 +156,16 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     let config = config::HostConfig::read(&config_file(&args))?;
     warn(&config);
     let host = host::Host::start(&config).await?;
+    for line in status::listening(&host.listening) {
+        outln!("{line}");
+    }
     let started = async {
         host.runtimes_ready().await?;
         host.load(config.rows()).await
     };
     let signal = match start(&host, started, deadline, &mut signals).await {
         Started::Running => {
-            status::follow(host.loader.clone());
+            status::follow(host.loader.clone(), host.peers.clone());
             signals.next().await
         }
         Started::Signal(signal) => signal,
@@ -201,7 +206,7 @@ fn go_command(args: &[String]) -> Result<(), String> {
     if !status.success() {
         return Err(format!("go install {module} failed"));
     }
-    println!("installed {module} into {}", dir.display());
+    outln!("installed {module} into {}", dir.display());
     Ok(())
 }
 
@@ -229,7 +234,7 @@ async fn start(
     match started {
         Ok(()) => Started::Running,
         Err(error) => {
-            eprintln!("rutis-host: {error}");
+            errln!("rutis-host: {error}");
             Started::Failed(stop::finish(host, deadline, signals).await)
         }
     }
@@ -254,6 +259,9 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
     };
     let mut build = 1;
     let host = host::Host::start(&config).await?;
+    for line in status::listening(&host.listening) {
+        outln!("{line}");
+    }
     let started = async {
         host.runtimes_ready().await?;
         host.load(config.rows()).await
@@ -267,8 +275,8 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
     }
     // Before saying it runs: a change made once it says so is a change.
     let mut seen = project::sources(&dir);
-    println!("rutis-host dev: running {id}; changes reload it (Ctrl-C ends)");
-    status::follow(host.loader.clone());
+    outln!("rutis-host dev: running {id}; changes reload it (Ctrl-C ends)");
+    status::follow(host.loader.clone(), host.peers.clone());
     loop {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(400)) => {}
@@ -303,8 +311,8 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
                         }
                     };
                     match restarted {
-                        Ok(()) => println!("{}: rebuilt and restarted", go.runtime),
-                        Err(error) => println!("{}: cannot restart: {error}", go.runtime),
+                        Ok(()) => outln!("{}: rebuilt and restarted", go.runtime),
+                        Err(error) => outln!("{}: cannot restart: {error}", go.runtime),
                     }
                     let previous = go.dir.join(".rutis/go").join(match cfg!(windows) {
                         true => format!("{}-{}.exe", go.name, build - 1),
@@ -312,7 +320,7 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
                     });
                     let _ = std::fs::remove_file(previous);
                 }
-                Err(errors) => println!(
+                Err(errors) => outln!(
                     "{}: the build failed; the last build keeps running\n{errors}",
                     go.name
                 ),
@@ -337,8 +345,8 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
                 }
             };
             match reloaded {
-                Ok(_) => println!("{row}: reloaded"),
-                Err(error) => println!("{row}: cannot reload: {error}"),
+                Ok(_) => outln!("{row}: reloaded"),
+                Err(error) => outln!("{row}: cannot reload: {error}"),
             }
         }
     }
@@ -353,28 +361,28 @@ async fn check(args: &[String]) -> Result<(), String> {
     warn(&config);
     let host = host::Host::start(&config).await?;
     host.runtimes_ready().await?;
-    println!("plugin API: {PLUGIN_API} (supported by this host)");
+    outln!("plugin API: {PLUGIN_API} (supported by this host)");
     // Each local runtime: what implements it and what it runs on.
     for (name, runtime) in &host.runtimes {
         if let Some(process) = runtime.ready().await {
             if let Some(line) = runtime_line(name, process.about()) {
-                println!("{line}");
+                outln!("{line}");
             }
         }
     }
     let report = host.check(config.rows()).await?;
     for issue in &report.issues {
-        eprintln!("rutis-host: warning: {issue}");
+        errln!("rutis-host: warning: {issue}");
     }
     let mut failed = report.failing().count();
     for row in &report.rows {
         let (id, name) = (&row.id, &row.name);
         match &row.status {
-            RowStatus::Disabled => println!("{id} ({name}): disabled"),
+            RowStatus::Disabled => outln!("{id} ({name}): disabled"),
             RowStatus::Failed(error) => {
-                println!("{id} ({name}): {error}");
+                outln!("{id} ({name}): {error}");
                 if let rutis_loader::LoaderError::NotFound { .. } = error {
-                    println!(
+                    outln!(
                         "  install it where its runtime finds it (a runtime under runtimes), \
                          or correct the row's name"
                     );
@@ -389,8 +397,8 @@ async fn check(args: &[String]) -> Result<(), String> {
                     .map(|requirement| requirement.service.as_str())
                     .collect();
                 match missing.is_empty() {
-                    true => println!("{id} ({name}): ok"),
-                    false => println!(
+                    true => outln!("{id} ({name}): ok"),
+                    false => outln!(
                         "{id} ({name}): cannot run: nothing provides {}",
                         missing.join(", ")
                     ),
@@ -400,23 +408,23 @@ async fn check(args: &[String]) -> Result<(), String> {
                 let meta = &resolved.meta;
                 for field in ["runtime", "binary", "version", "inject", "provides"] {
                     if let Some(value) = meta.get(field).filter(|value| !value.is_null()) {
-                        println!("  {field}: {value}");
+                        outln!("  {field}: {value}");
                     }
                 }
                 if let Some(schema) = &resolved.schema {
-                    println!("  config: {schema}");
+                    outln!("  config: {schema}");
                 }
                 for requirement in requires {
                     if let Some(line) = supply_line(&requirement.service, &requirement.supply) {
-                        println!("  {line}");
+                        outln!("  {line}");
                     }
                 }
             }
-            _ => println!("{id} ({name}): not checked"),
+            _ => outln!("{id} ({name}): not checked"),
         }
     }
     if let Some(go) = &host.go {
-        println!("go binaries:");
+        outln!("go binaries:");
         for binary in go.resolver.binaries() {
             match &binary.manifest {
                 Ok(manifest) => {
@@ -432,7 +440,7 @@ async fn check(args: &[String]) -> Result<(), String> {
                         true => "compatible",
                         false => "incompatible: upgrade the host",
                     };
-                    println!(
+                    outln!(
                         "  {} ({}): {}sdk {}, plugin API {} ({api}), plugins: {}",
                         binary.runtime,
                         binary.path.display(),
@@ -451,16 +459,16 @@ async fn check(args: &[String]) -> Result<(), String> {
                 }
                 Err(error) => {
                     failed += 1;
-                    println!("  {} ({}): {error}", binary.runtime, binary.path.display());
+                    outln!("  {} ({}): {error}", binary.runtime, binary.path.display());
                     if let Some(hint) = quarantine_hint(&binary.path) {
-                        println!("    {hint}");
+                        outln!("    {hint}");
                     }
                 }
             }
         }
         for skipped in go.resolver.diagnostics() {
             failed += 1;
-            println!("  skipped {skipped}");
+            outln!("  skipped {skipped}");
         }
     }
     match failed {

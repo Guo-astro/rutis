@@ -32,8 +32,8 @@ pub const CHANNEL_FD: i32 = 3;
 pub const CHANNEL_TOKEN: &str = "RUTIS_CHANNEL_TOKEN";
 
 /// Where a process's standard input, output or error goes. The process
-/// that starts a runtime owns it, so there is no pipe to read: a stream is
-/// either this process's own or nothing.
+/// that starts a runtime owns it: a stream is this process's own, nothing,
+/// or (output only) this process's own a whole line at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Stdio {
@@ -44,14 +44,31 @@ pub enum Stdio {
     /// group, so a Ctrl-C in the terminal reaches it as well (otherwise it
     /// gets a group of its own, out of the terminal's reach).
     Inherit,
+    /// Output only: this process's own stream, a whole line at a time. The
+    /// process writes into a pipe; this process reads it as it comes and
+    /// writes each complete line to its own stream (standard output for
+    /// standard output, standard error for standard error) in one write,
+    /// as [`write_line`](super::write_line) does, so lines of processes
+    /// and of this process never run into each other. A last line without
+    /// a newline gets one when the output ends; a line longer than
+    /// [`MAX_LINE`](super::MAX_LINE) is passed on in pieces. The process
+    /// does not see a terminal. A host waits for what is left with
+    /// [`output_ended`](super::output_ended) before it exits. As standard
+    /// input, it is [`Stdio::Null`].
+    Lines,
 }
 
 impl Stdio {
-    pub(crate) fn process(self) -> std::process::Stdio {
-        match self {
-            Stdio::Null => std::process::Stdio::null(),
-            Stdio::Inherit => std::process::Stdio::inherit(),
-        }
+    /// The stream to give the process as its `stream` (`None`: its input).
+    pub(crate) fn process(
+        self,
+        stream: Option<super::OutputStream>,
+    ) -> std::io::Result<std::process::Stdio> {
+        Ok(match (self, stream) {
+            (Stdio::Null, _) | (Stdio::Lines, None) => std::process::Stdio::null(),
+            (Stdio::Inherit, _) => std::process::Stdio::inherit(),
+            (Stdio::Lines, Some(stream)) => super::output::pipe(stream)?,
+        })
     }
 }
 
@@ -112,14 +129,24 @@ impl Spawn {
         }
     }
 
-    fn command(&self) -> tokio::process::Command {
+    fn command(&self) -> Result<tokio::process::Command, ConnectError> {
+        use super::OutputStream;
+        let cannot = |error| cannot_start(self, error);
         let mut command = tokio::process::Command::new(&self.program);
         command
             .args(&self.args)
             .envs(self.env.iter().map(|(name, value)| (name, value)))
-            .stdin(self.stdin.process())
-            .stdout(self.stdout.process())
-            .stderr(self.stderr.process())
+            .stdin(self.stdin.process(None).map_err(cannot)?)
+            .stdout(
+                self.stdout
+                    .process(Some(OutputStream::Stdout))
+                    .map_err(cannot)?,
+            )
+            .stderr(
+                self.stderr
+                    .process(Some(OutputStream::Stderr))
+                    .map_err(cannot)?,
+            )
             .kill_on_drop(true);
         // Out of the terminal's reach: Ctrl-C there signals this process,
         // which unloads the process's plugins over the channel, and not the
@@ -135,7 +162,7 @@ impl Spawn {
         if let Some(cwd) = &self.cwd {
             command.current_dir(cwd);
         }
-        command
+        Ok(command)
     }
 }
 
@@ -206,12 +233,34 @@ type Started = (Channel, Child, Option<tempfile::TempDir>);
 /// whoever created it. A lock around rutis' own creations and forks would
 /// cover neither those nor forks by other code, and would serialize starts.
 ///
+/// macOS: libnotify sets up its globals the first time anything uses them,
+/// behind an `os_once`, and its fork handler in the child uses them too. A
+/// fork while another thread is inside that first setup leaves the child
+/// with a half-taken once, and the child aborts in the fork handler ("BUG IN
+/// CLIENT OF LIBPLATFORM: os_once_t is corrupt") before it can exec: the
+/// runtime process "exits with signal 9" (#287). Setting the globals up here,
+/// once, before this process's first fork, closes that window.
+#[cfg(target_os = "macos")]
+fn notify_ready_before_fork() {
+    extern "C" {
+        fn notify_is_valid_token(token: std::ffi::c_int) -> bool;
+    }
+    static READY: std::sync::Once = std::sync::Once::new();
+    // SAFETY: a read-only query on a token nobody holds (a negative one could
+    // be refused before the globals are touched); it sets up the globals.
+    READY.call_once(|| unsafe {
+        notify_is_valid_token(std::ffi::c_int::MAX);
+    });
+}
+
 /// Running a `pre_exec` hook makes std fork rather than `posix_spawn`.
 #[cfg(unix)]
 pub(crate) fn hand_over(
     command: &mut tokio::process::Command,
     channel: Option<std::os::fd::RawFd>,
 ) {
+    #[cfg(target_os = "macos")]
+    notify_ready_before_fork();
     let first = match channel {
         Some(_) => CHANNEL_FD + 1,
         None => CHANNEL_FD,
@@ -292,7 +341,7 @@ fn close_on_exec_from(first: i32, limit: i32) -> std::io::Result<()> {
 #[cfg(unix)]
 fn inherit(spawn: &Spawn) -> Result<Started, ConnectError> {
     let (ours, theirs) = UnixStream::pair().map_err(retryable)?;
-    let mut command = spawn.command();
+    let mut command = spawn.command()?;
     hand_over(&mut command, Some(theirs.as_raw_fd()));
     let child = command
         .arg(format!("fd:{CHANNEL_FD}"))
@@ -312,7 +361,7 @@ async fn dial_back(spawn: &Spawn) -> Result<Started, ConnectError> {
         .map_err(retryable)?;
     let path = directory.path().join("peer.sock");
     let listener = tokio::net::UnixListener::bind(&path).map_err(retryable)?;
-    let mut command = spawn.command();
+    let mut command = spawn.command()?;
     hand_over(&mut command, None);
     let mut child = command
         .arg(&path)
@@ -342,7 +391,7 @@ pub(crate) const TOKEN_WAIT: Duration = Duration::from_secs(10);
 async fn loopback(spawn: &Spawn, token_wait: Duration) -> Result<Started, ConnectError> {
     let mut listener = Loopback::bind().await.map_err(retryable)?;
     listener.wait = token_wait;
-    let mut command = spawn.command();
+    let mut command = spawn.command()?;
     #[cfg(unix)]
     hand_over(&mut command, None);
     let mut child = command

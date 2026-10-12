@@ -98,7 +98,9 @@ impl EventSink for Events {
 
 /// rutis → Cordis: a rutis listener that re-emits the event in the mounted
 /// Cordis Context with `parallel`, so a rutis `parallel` waits for the
-/// Cordis listeners while a rutis `emit` stays fire and forget. It belongs
+/// Cordis listeners while a rutis `emit` stays fire and forget. A listener
+/// does not know how it was dispatched, so a rutis `serial` also runs the
+/// Cordis group as a Cordis `parallel` (boundary rule 3). It belongs
 /// to the mounting plugin and ends with it.
 pub struct EmitToCordis<E> {
     process: Arc<crate::runtime::Process>,

@@ -160,9 +160,11 @@ pub enum LinkState {
         error: String,
         retry_in: Duration,
     },
-    /// The far end is incompatible: no more attempts until the link is
-    /// restarted or reconfigured.
-    Stopped { error: String },
+    /// No more attempts until the link is restarted or reconfigured: the
+    /// far end is incompatible (or the listener refused the registration,
+    /// also `Incompatible`), or a link that does not reconnect (a local
+    /// runtime's) ended, for `failure`.
+    Stopped { failure: Failure, error: String },
 }
 
 /// The link plugin: depends on `Transport#<kind>` and `Identity#<name>`,
@@ -410,12 +412,14 @@ impl Link {
                 },
             };
             if !self.config.reconnect {
-                self.state.send_replace(LinkState::Stopped { error });
+                self.state
+                    .send_replace(LinkState::Stopped { failure, error });
                 return;
             }
             match failure {
                 Failure::Incompatible => {
-                    self.state.send_replace(LinkState::Stopped { error });
+                    self.state
+                        .send_replace(LinkState::Stopped { failure, error });
                     return;
                 }
                 Failure::AuthRejected => self.wait(failure, error, retry.rejected).await,
@@ -441,6 +445,7 @@ impl Link {
             Ok(registered) => registered,
             Err(error) => {
                 self.state.send_replace(LinkState::Stopped {
+                    failure: Failure::Incompatible,
                     error: error.to_string(),
                 });
                 return;

@@ -1,6 +1,7 @@
 """rutis.testing: plugins tested without a host."""
 
 import asyncio
+import functools
 import unittest
 from dataclasses import dataclass
 
@@ -107,6 +108,11 @@ class Testing(background.TestCase):
                 self.assertEqual(t.service("store").first(), {"n": 1})
                 with self.assertRaisesRegex(PluginTestError, "cannot cross"):
                     t.service("store").put({1, 2})
+                # Nesting: 64 levels cross, 65 do not (#279).
+                nest = lambda depth: functools.reduce(lambda inner, _: [inner], range(depth), "bottom")
+                t.service("store").put(nest(64))
+                with self.assertRaisesRegex(PluginTestError, "nested deeper than 64 levels cannot cross"):
+                    t.service("store").put(nest(65))
                 with self.assertRaisesRegex(PluginTestError, "declared sync but returned an awaitable"):
                     t.service("store").wrong()
 

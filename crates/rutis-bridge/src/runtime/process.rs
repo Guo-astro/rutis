@@ -216,7 +216,9 @@ impl Launcher {
 
     /// The process's standard output: this process's by default
     /// ([`Stdio::Inherit`]); [`Stdio::Null`] discards it, for example so
-    /// that other runtimes do not draw over a terminal UI. For the whole
+    /// that other runtimes do not draw over a terminal UI; [`Stdio::Lines`]
+    /// passes it on a whole line at a time, so that it does not run into
+    /// this process's own lines (or other runtimes'). For the whole
     /// runtime process, as [`Launcher::stdin`].
     pub fn stdout(mut self, stdio: Stdio) -> Self {
         self.stdout = stdio;
@@ -224,8 +226,9 @@ impl Launcher {
     }
 
     /// The process's standard error: this process's by default
-    /// ([`Stdio::Inherit`]); [`Stdio::Null`] discards it. For the whole
-    /// runtime process, as [`Launcher::stdin`].
+    /// ([`Stdio::Inherit`]); [`Stdio::Null`] discards it, [`Stdio::Lines`]
+    /// passes it on a whole line at a time. For the whole runtime process,
+    /// as [`Launcher::stdin`].
     pub fn stderr(mut self, stdio: Stdio) -> Self {
         self.stderr = stdio;
         self
@@ -368,6 +371,30 @@ impl Dispatch for Imports {
         self.update(name, handle, version);
         Ok(RpcValue::Undefined)
     }
+}
+
+/// A mount carrying a Cordis `internal/*` event either way fails before
+/// anything starts (boundary rule 5: framework-internal events do not cross
+/// the boundary).
+fn check_events(mount: &Mount<'_>) -> Result<(), Error> {
+    let forwarded = mount.events.as_ref().map(|(names, _)| names.as_slice());
+    for (field, names) in [
+        ("events", forwarded.unwrap_or_default()),
+        ("emits", &mount.emits),
+    ] {
+        let internal: Vec<&str> = names
+            .iter()
+            .map(String::as_str)
+            .filter(|name| name.starts_with("internal/"))
+            .collect();
+        if !internal.is_empty() {
+            return Err(Error::Value(format!(
+                "framework-internal events do not cross the boundary (mount {field}): {}",
+                internal.join(", ")
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// What the `mount` call sends.
@@ -560,6 +587,7 @@ impl Process {
     /// Launch a mount: see [`Mount`].
     pub async fn mount(node_package: &Path, mount: Mount<'_>) -> Result<Arc<Self>, Error> {
         let (anchor, launcher) = (mount.anchor, mount.launcher);
+        check_events(&mount)?;
         let (started, plugins) = Started::from(mount);
         let plugin = match (plugins.first(), anchor) {
             (Some((plugin, _)), _) => *plugin,
@@ -594,6 +622,7 @@ impl Process {
         mount: Mount<'_>,
         format: crate::runtime::rpc::Format,
     ) -> Result<Arc<Self>, Error> {
+        check_events(&mount)?;
         let (started, _) = Started::from(mount);
         Self::start(channel, None, None, started, format).await
     }
@@ -652,6 +681,7 @@ impl Process {
         session: Arc<dyn RuntimeSession>,
         mount: Mount<'_>,
     ) -> Result<Arc<Self>, Error> {
+        check_events(&mount)?;
         let (started, _) = Started::from(mount);
         let (imports, rest) = Self::imports(started);
         let routed = session.route(imports.clone())?;

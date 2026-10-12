@@ -2,6 +2,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isAbsolute } from 'node:path'
 import { statSync } from 'node:fs'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { Process } from './client.mjs'
 import { toJsonSchema } from './schema.mjs'
 import { isLeaf, supported, toCordis } from './leaf.mjs'
@@ -408,10 +409,45 @@ function hostProxy(id, methods) {
   })
 }
 
+// How each forwarded event is being dispatched, from `internal/dispatch`,
+// which Cordis emits before it calls the listeners. The record follows the
+// dispatch's own execution (a serial or waterfall may reach the forwarding
+// listener after an await), and other dispatches running meanwhile keep
+// theirs: event name -> { type, values }. `values` is the dispatch's own
+// argument array, which a waterfall extends with its `next` before calling
+// the listeners.
+const dispatches = new AsyncLocalStorage()
+const sameValues = (a, b) => a.length === b.length && a.every((value, index) => Object.is(value, b[index]))
+
+// The forwarding listener of a Cordis event: the rutis listeners as one
+// group (boundary rule 4). `emit` ignores the returned Promise (fire and
+// forget); parallel / serial wait for the rutis listeners. A synchronous
+// bail cannot wait for them, so it fails; in a waterfall the rutis group is
+// one asynchronous link that calls `next` once when it is done. A listener
+// before this one dispatching the same event again with the same arguments
+// leaves that dispatch's record, so a bail then gets the Promise (#340).
+function forward(name, values) {
+  const record = dispatches.getStore()?.get(name)
+  const type = record && sameValues(record.values, values) ? record.type : 'emit'
+  if (type === 'bail') {
+    throw new Error(`event ${name} is forwarded to rutis, whose listeners run asynchronously: a synchronous bail cannot wait for them (use serial)`)
+  }
+  const next = type === 'waterfall' ? values.at(-1) : undefined
+  const done = peer.callAsync('', 'event', [name, next ? values.slice(0, -1) : values])
+  if (next) return done.then(() => next())
+  done.catch(() => {}) // an ignored emit must not become an unhandled rejection
+  return done
+}
+
 // A mount is a group of plugins sharing one Context, so dependencies between
 // them resolve natively. `args.plugins` lists [{ entry, config }] in load
 // order; a single-plugin mount passes only `args.config`.
 function mount(args) {
+  // Boundary rule 5: Cordis's own events stay on the Cordis side.
+  for (const [field, names] of [['events', args.events], ['emits', args.emits]]) {
+    const internal = (names ?? []).filter(name => String(name).startsWith('internal/'))
+    if (internal.length) throw new Error(`framework-internal events do not cross the boundary (mount ${field}): ${internal.join(', ')}`)
+  }
   if (fibers) throw new Error('plugins are already mounted')
   fibers = []
   for (const [name, methods] of Object.entries(args.services ?? {})) {
@@ -445,15 +481,14 @@ function mount(args) {
     mounted = true
     // Forward selected Cordis events to rutis. Registered after the plugins
     // started, so the rutis side runs as one group after the listeners the
-    // plugins registered while starting. emit ignores the returned Promise
-    // (fire and forget); parallel / serial wait for the rutis listeners.
-    for (const name of args.events ?? []) {
-      ctx.on(name, (...values) => {
-        const done = peer.callAsync('', 'event', [name, values])
-        done.catch(() => {}) // an ignored emit must not become an unhandled rejection
-        return done
+    // plugins registered while starting (boundary rules 3 and 4).
+    const forwarded = new Set(args.events ?? [])
+    if (forwarded.size) {
+      ctx.on('internal/dispatch', (type, name, values) => {
+        if (forwarded.has(name)) dispatches.enterWith(new Map(dispatches.getStore()).set(name, { type, values }))
       })
     }
+    for (const name of forwarded) ctx.on(name, (...values) => forward(name, values))
     return { services: Object.fromEntries([...slots].map(([name, slot]) => [name, [slot.handle, slot.version]])), features: FEATURES }
   })()
 }

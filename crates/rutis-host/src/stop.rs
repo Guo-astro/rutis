@@ -4,6 +4,8 @@
 
 use std::time::Duration;
 
+use rutis_host::errln;
+
 use crate::host::{Host, Unfinished, PROCESS_EXIT};
 
 /// How long cleanups may take after a signal, unless `--shutdown-timeout`
@@ -179,7 +181,7 @@ async fn recv(signal: &mut Option<tokio::signal::unix::Signal>) {
 /// After `signal`: shut the host down, waiting up to `deadline` for the
 /// cleanups, or until another signal.
 pub async fn stop(host: &Host, signal: &str, deadline: Duration, signals: &mut Signals) -> Stopped {
-    eprintln!(
+    errln!(
         "rutis-host: {signal}: stopping; cleanups have {} (again to exit at once)",
         seconds(deadline)
     );
@@ -209,16 +211,16 @@ pub async fn finish(host: &Host, deadline: Duration, signals: &mut Signals) -> S
         return Stopped::Done;
     };
     let (stopping, waiting) = host.still_running();
-    eprintln!("rutis-host: {why}");
+    errln!("rutis-host: {why}");
     for plugin in stopping {
-        eprintln!("  still stopping: {plugin}");
+        errln!("  still stopping: {plugin}");
     }
     if waiting > 0 {
-        eprintln!("  and {waiting} plugin(s) waiting for them");
+        errln!("  and {waiting} plugin(s) waiting for them");
     }
     let processes = rutis_bridge::transport::local::running_processes();
     if !processes.is_empty() {
-        eprintln!("  killing runtime processes {processes:?}");
+        errln!("  killing runtime processes {processes:?}");
     }
     host.kill_processes().await;
     Stopped::Unfinished

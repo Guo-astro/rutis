@@ -99,6 +99,30 @@ def _reason(error: ConnectionClosed) -> str:
     return f"closed ({frame.code}): {frame.reason}"
 
 
+def protocol_refusal(ours: str, offered: list[str]) -> str:
+    """Why a dialer that offered none of this endpoint's session protocol
+    is refused, saying which end to upgrade (standard Q6.2.4) when the
+    versions it offered (`rutis.<n>`) are all newer (this endpoint) or all
+    older (the dialer) than this endpoint's. The wording is rutis-bridge's
+    (`transport::websocket::listen::protocol_refusal`)."""
+
+    def version(protocol: str):
+        number = protocol[len("rutis."):]
+        return int(number) if protocol.startswith("rutis.") and number.isascii() and number.isdigit() else None
+
+    theirs = [protocol for protocol in offered if version(protocol) is not None]
+    reason = f"this endpoint speaks {ours}"
+    n = version(ours)
+    if n is None or not theirs:
+        return reason
+    reason += f", the dialer offered {', '.join(theirs)}"
+    if all(version(protocol) > n for protocol in theirs):
+        return f"{reason}: upgrade this endpoint (PyPI rutis)"
+    if all(version(protocol) < n for protocol in theirs):
+        return f"{reason}: upgrade the dialer"
+    return reason
+
+
 def _print_address(address: str) -> None:
     print(f"rutis: listening on {address}", file=sys.stderr, flush=True)
 
@@ -241,7 +265,7 @@ def listen(
             for item in value.split(",")
         ]
         if protocol not in offered:
-            return connection.respond(HTTPStatus.BAD_REQUEST, f"this endpoint speaks {protocol}\n")
+            return connection.respond(HTTPStatus.BAD_REQUEST, protocol_refusal(protocol, offered) + "\n")
         return None
 
     accepted: queue.Queue = queue.Queue()

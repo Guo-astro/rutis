@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,48 @@ import (
 
 	"github.com/arcships/rutis/go/rutis/internal/peer"
 )
+
+// protocolRefusal says why a dialer that offered none of this endpoint's
+// session protocol is refused, and which end to upgrade (standard Q6.2.4)
+// when the versions it offered (`rutis.<n>`) are all newer (this endpoint)
+// or all older (the dialer) than this endpoint's. The wording is
+// rutis-bridge's (`transport::websocket::listen::protocol_refusal`).
+func protocolRefusal(ours string, offered []string) string {
+	version := func(protocol string) (int, bool) {
+		number, ok := strings.CutPrefix(protocol, "rutis.")
+		if !ok || number == "" || strings.Trim(number, "0123456789") != "" {
+			return 0, false
+		}
+		n, err := strconv.Atoi(number)
+		return n, err == nil
+	}
+	reason := "this endpoint speaks " + ours
+	n, ok := version(ours)
+	var theirs []int
+	var names []string
+	for _, protocol := range offered {
+		if v, ok := version(protocol); ok {
+			theirs = append(theirs, v)
+			names = append(names, protocol)
+		}
+	}
+	if !ok || len(theirs) == 0 {
+		return reason
+	}
+	reason += ", the dialer offered " + strings.Join(names, ", ")
+	newer, older := true, true
+	for _, v := range theirs {
+		newer = newer && v > n
+		older = older && v < n
+	}
+	switch {
+	case newer:
+		return reason + ": upgrade this endpoint (Go module github.com/arcships/rutis/go/rutis)"
+	case older:
+		return reason + ": upgrade the dialer"
+	}
+	return reason
+}
 
 const (
 	goingAway   = 1001
@@ -146,16 +189,14 @@ func listenWebSocket(spec, protocol, token, cert, key string) (<-chan *wsConn, s
 			http.Error(w, "not accepted here", http.StatusForbidden)
 			return
 		}
-		offered := false
+		var offered []string
 		for _, value := range r.Header.Values("Sec-WebSocket-Protocol") {
 			for _, item := range strings.Split(value, ",") {
-				if strings.TrimSpace(item) == protocol {
-					offered = true
-				}
+				offered = append(offered, strings.TrimSpace(item))
 			}
 		}
-		if !offered {
-			http.Error(w, "this endpoint speaks "+protocol, http.StatusBadRequest)
+		if !slices.Contains(offered, protocol) {
+			http.Error(w, protocolRefusal(protocol, offered), http.StatusBadRequest)
 			return
 		}
 		challenge := r.Header.Get("Sec-WebSocket-Key")

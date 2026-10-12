@@ -29,6 +29,8 @@ export function apply(ctx) {
   ctx.on('boundary/link', async () => { mark('b:start'); await Promise.resolve(); mark('b:end') })
   // Rule 4: a waterfall whose middlewares call next once.
   ctx.on('boundary/wf', (value, next) => { mark('A'); return next() })
+  // The same with an async middleware, which reaches the rest after an await.
+  ctx.on('boundary/wf-async', async (value, next) => { mark('A'); await Promise.resolve(); return next() })
 
   // Rule 5: Cordis's own internal/* events, heard natively on this side.
   const internal = []
@@ -41,6 +43,7 @@ export function apply(ctx) {
       ctx.on('boundary/chain', () => { mark('C'); return 'C' })
       ctx.on('boundary/chain', () => { mark('D') })
       ctx.on('boundary/wf', (value, next) => { mark('C'); return next() })
+      ctx.on('boundary/wf-async', (value, next) => { mark('C'); return next() })
     },
     async order() { await ctx.serial('boundary/order') },
     async serial() { return await ctx.serial('boundary/chain') ?? null },
@@ -48,9 +51,14 @@ export function apply(ctx) {
       const result = ctx.bail('boundary/chain')
       return result instanceof Promise ? { promise: true } : { value: result ?? null }
     },
+    // The waterfall's result, and whether it came as a Promise.
     waterfall() {
       const result = ctx.waterfall('boundary/wf', 1, () => 'end')
-      return result instanceof Promise ? { promise: true } : { value: result ?? null }
+      return result instanceof Promise ? result.then(value => ({ promise: true, value: value ?? null })) : { value: result ?? null }
+    },
+    waterfallAsync() {
+      const result = ctx.waterfall('boundary/wf-async', 1, () => 'end')
+      return result instanceof Promise ? result.then(value => ({ promise: true, value: value ?? null })) : { value: result ?? null }
     },
     // Rule 5: provide a service here, so Cordis emits internal/service.
     announce() { ctx.provide('boundary-extra', { ok: true }) },
