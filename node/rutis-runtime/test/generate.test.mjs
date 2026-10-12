@@ -332,3 +332,21 @@ test('selected notification events become rutis event types', async () => {
     assert.throws(() => generate(file, root, { events: ['store/missing'] }), /no Cordis Events declaration found/)
   })
 })
+
+// guarantee: boundary/5.5 — internal/* events do not cross the boundary:
+// the bindings refuse to forward a notification under that prefix either
+// way, even one the plugin declares itself.
+test('internal events are not forwarded in either direction', async () => {
+  await fixture(`import type { Context } from '@deepseek-ai/cordis'
+    declare module '@deepseek-ai/cordis' {
+      interface Events {
+        'internal/mine'(key: string): void
+      }
+    }
+    export function apply(ctx: Context) { ctx.provide('store', { ping(): number { return 1 } }) }
+  `, file => {
+    const refused = /internal Cordis event internal\/mine is not forwarded/
+    assert.throws(() => generate(file, root, { events: ['internal/mine'] }), refused)
+    assert.throws(() => generate(file, root, { emits: ['internal/mine'] }), refused)
+  })
+})
