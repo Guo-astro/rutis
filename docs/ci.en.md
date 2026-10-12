@@ -124,7 +124,7 @@ The node contract (`rutis_bridge::testing::node`):
 | Rust node | memory (`tests/node_conformance.rs`) | Runs | Runs on main | Runs on main |
 | Cordis node | WebSocket (`tests/websocket_conformance.rs`) | Runs | Runs | Runs |
 
-Other bridge test files compiled on Unix only (each says why next to its `cfg`): `bun_runtime.rs`, `bun_channel.rs` (Bun); `local_spawn.rs` (the `fd:3` and dial-back handovers; `local_loopback.rs` covers Windows' loopback handover); `local_plugin.rs` (Unix sockets); `local_stdio.rs` (`dup2`); `concurrent_launch.rs` (descriptors inherited across fork/exec); the two soaks on Linux only (they read `/proc`).
+Other bridge test files compiled on Unix only (each says why next to its `cfg`): `bun_runtime.rs`, `bun_channel.rs` (Bun); `local_spawn.rs` (the `fd:3` and dial-back handovers; `local_loopback.rs` covers Windows' loopback handover); `local_plugin.rs`, `value_roundtrip.rs` (Unix sockets); `local_stdio.rs` (`dup2`); `concurrent_launch.rs` (descriptors inherited across fork/exec); the two soaks on Linux only (they read `/proc`).
 
 ### What each kind of change runs on a pull request
 
