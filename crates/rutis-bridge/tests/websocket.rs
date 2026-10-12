@@ -332,6 +332,247 @@ async fn wss_verifies_the_server_and_accepts_client_certificates() {
     assert_eq!(accepted.info.peer, Some(id("pi")));
 }
 
+// Negative TLS (risk E6): a certificate that is expired, not valid yet or
+// for another name is refused like one from an unknown CA, as an
+// authentication failure, and the bearer token never shows in the reason.
+// Validity periods are fixed dates far from any real clock, so these tests
+// do not depend on when they run.
+
+/// A token the refusals must never repeat (B7).
+const SECRET: &str = "e6-token-must-not-leak";
+
+type Validity = ((i32, u8, u8), (i32, u8, u8));
+/// Long expired, and not valid until long from now.
+const EXPIRED: Validity = ((2000, 1, 1), (2001, 1, 1));
+const NOT_YET_VALID: Validity = ((2100, 1, 1), (2101, 1, 1));
+
+/// A CA for the negative cases.
+struct TestCa {
+    pem: String,
+    issuer: rcgen::Issuer<'static, rcgen::KeyPair>,
+}
+
+fn test_ca() -> TestCa {
+    use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
+    let key = KeyPair::generate().unwrap();
+    let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    // What strict verifiers (OpenSSL's X509_STRICT, the default in Python
+    // 3.13) require of a CA.
+    params.key_usages = vec![
+        rcgen::KeyUsagePurpose::KeyCertSign,
+        rcgen::KeyUsagePurpose::CrlSign,
+        rcgen::KeyUsagePurpose::DigitalSignature,
+    ];
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "rutis negative TLS CA");
+    let pem = params.self_signed(&key).unwrap().pem();
+    TestCa {
+        pem,
+        issuer: Issuer::new(params, key),
+    }
+}
+
+/// A certificate and its key.
+struct Leaf {
+    chain_pem: String,
+    key_pem: String,
+    der: Vec<u8>,
+}
+
+/// A certificate for `names` signed by `ca`, valid over `validity` (rcgen's
+/// default, 1975 to 4096, when `None`).
+fn leaf(ca: &TestCa, names: &[&str], validity: Option<Validity>) -> Leaf {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let names = names
+        .iter()
+        .map(|name| name.to_string())
+        .collect::<Vec<_>>();
+    let mut params = rcgen::CertificateParams::new(names).unwrap();
+    params.use_authority_key_identifier_extension = true;
+    if let Some(((y0, m0, d0), (y1, m1, d1))) = validity {
+        params.not_before = rcgen::date_time_ymd(y0, m0, d0);
+        params.not_after = rcgen::date_time_ymd(y1, m1, d1);
+    }
+    let certificate = params.signed_by(&key, &ca.issuer).unwrap();
+    Leaf {
+        chain_pem: certificate.pem(),
+        key_pem: key.serialize_pem(),
+        der: certificate.der().to_vec(),
+    }
+}
+
+/// A TLS listener serving `certificate`, client certificates checked
+/// against `ca`, and the address to dial it by through `host`.
+fn tls_server(ca: &TestCa, certificate: &Leaf, host: &str) -> (Arc<WebSocketTransport>, String) {
+    let tls = ServerTls {
+        certificate_pem: certificate.chain_pem.clone().into_bytes(),
+        key_pem: certificate.key_pem.clone().into_bytes(),
+        client_ca_pem: Some(ca.pem.clone().into_bytes()),
+    };
+    let server = WebSocketTransport::start(
+        Config::new().listener(ListenerConfig::new("public", loopback(), id("main")).tls(tls)),
+    )
+    .unwrap();
+    let address = format!(
+        "wss://{host}:{}/rutis",
+        server.local_addr("public").unwrap().port()
+    );
+    (server, address)
+}
+
+/// A dialing transport that trusts only `ca`.
+fn trusting(ca: &TestCa) -> Arc<WebSocketTransport> {
+    WebSocketTransport::start(Config::new().trust(Trust::only(ca.pem.clone().into_bytes())))
+        .unwrap()
+}
+
+/// The reason of an authentication failure, which must not contain the
+/// token; anything else fails the test.
+fn auth_rejected(result: Result<Channel, ConnectError>) -> String {
+    match result {
+        Err(ConnectError::AuthRejected { reason }) => {
+            assert!(!reason.contains(SECRET), "the token leaked: {reason}");
+            reason
+        }
+        other => panic!("expected AuthRejected, got {other:?}"),
+    }
+}
+
+/// A server certificate outside its validity period is refused (before
+/// the token is sent), with a reason that names the problem.
+/// risk: E6
+/// guarantee: bridge/tls-server-verified
+#[tokio::test(flavor = "multi_thread")]
+async fn wss_refuses_an_expired_or_not_yet_valid_server_certificate() {
+    let ca = test_ca();
+    let client = trusting(&ca);
+    for (validity, expected) in [(EXPIRED, "expired"), (NOT_YET_VALID, "not valid yet")] {
+        let certificate = leaf(&ca, &["localhost"], Some(validity));
+        let (server, address) = tls_server(&ca, &certificate, "localhost");
+        let (_mac, _accepted) = accept(&server, "mac", SECRET);
+        let reason = auth_rejected(client.dial(&dial_as(address, "mac", SECRET)).await);
+        assert!(reason.contains(expected), "{expected}: {reason}");
+    }
+}
+
+/// A server certificate for another name is refused: one for
+/// `other.example` when dialing `localhost`, and one for `localhost` when
+/// dialing `127.0.0.1` (an IP address matches only an IP address entry).
+/// risk: E6
+/// guarantee: bridge/tls-server-verified
+#[tokio::test(flavor = "multi_thread")]
+async fn wss_refuses_a_server_certificate_for_another_name() {
+    let ca = test_ca();
+    let client = trusting(&ca);
+    for (name, host) in [("other.example", "localhost"), ("localhost", "127.0.0.1")] {
+        let certificate = leaf(&ca, &[name], None);
+        let (server, address) = tls_server(&ca, &certificate, host);
+        let (_mac, _accepted) = accept(&server, "mac", SECRET);
+        let reason = auth_rejected(client.dial(&dial_as(address, "mac", SECRET)).await);
+        assert!(reason.contains("not valid for name"), "{host}: {reason}");
+    }
+}
+
+/// An expired client certificate does not authenticate, even with the
+/// accepted fingerprint: the first connection the listener delivers is
+/// the one dialed afterwards with a token.
+/// risk: E6
+/// guarantee: bridge/tls-client-certificate-verified
+#[tokio::test(flavor = "multi_thread")]
+async fn wss_refuses_an_expired_client_certificate() {
+    let ca = test_ca();
+    let (server, address) = tls_server(&ca, &leaf(&ca, &["localhost"], None), "localhost");
+    let client = trusting(&ca);
+    let expired = leaf(&ca, &["pi"], Some(EXPIRED));
+
+    // Both registrations deliver to one queue, in order.
+    let (sender, delivered) = mpsc::channel();
+    let sender = Arc::new(Mutex::new(sender));
+    let deliver = |sender: Arc<Mutex<mpsc::Sender<Channel>>>| -> rutis_bridge::Deliver {
+        Box::new(move |channel| {
+            let _ = sender.lock().unwrap().send(channel);
+        })
+    };
+    let pi =
+        StaticIdentity::new(id("main")).accept_certificate(fingerprint(&expired.der), id("pi"));
+    let _pi = server
+        .register(Registration {
+            listener: "public".into(),
+            peer: id("pi"),
+            identity: Arc::new(pi),
+            protocol: PROTOCOL.into(),
+            deliver: deliver(sender.clone()),
+        })
+        .unwrap();
+    let mac = StaticIdentity::new(id("main")).accept_token(SECRET, id("mac"));
+    let _mac = server
+        .register(Registration {
+            listener: "public".into(),
+            peer: id("mac"),
+            identity: Arc::new(mac),
+            protocol: PROTOCOL.into(),
+            deliver: deliver(sender),
+        })
+        .unwrap();
+
+    let identity: Arc<dyn Identity> = Arc::new(StaticIdentity::new(id("pi")).present(
+        id("main"),
+        Credential::ClientCertificate {
+            chain_pem: expired.chain_pem.clone().into_bytes(),
+            key_pem: expired.key_pem.clone().into_bytes(),
+        },
+    ));
+    let refused = client
+        .dial(
+            &Dial::address(address.clone())
+                .peer(id("main"))
+                .identity(identity)
+                .protocol(PROTOCOL),
+        )
+        .await;
+    // Windows: refused, but as Retryable (the listener's close resets the
+    // connection before the alert is read): #300. Only the refusal is
+    // checked there until it is fixed.
+    if cfg!(windows) {
+        assert!(refused.is_err(), "an expired client certificate connected");
+    } else {
+        let reason = auth_rejected(refused);
+        assert!(reason.contains("CertificateExpired"), "{reason}");
+    }
+
+    let _dialed = client.dial(&dial_as(address, "mac", SECRET)).await.unwrap();
+    let first = recv_within("the accepted connection", &delivered);
+    assert_eq!(first.info.peer, Some(id("mac")));
+}
+
+/// Writes the certificates the Python WebSocket tests serve
+/// (`python/rutis/tests/tls/`, see its README): Python has no certificate
+/// generator without a new dependency, so they are committed. Run with
+/// `cargo test -p rutis-bridge --all-features --test websocket -- --ignored
+/// regenerate_python_tls_fixtures`. Keys are new on every run; the Python
+/// tests check the properties that matter (who signed, names, validity).
+#[test]
+#[ignore = "writes the Python test certificates; run by hand to regenerate them"]
+fn regenerate_python_tls_fixtures() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python/rutis/tests/tls");
+    std::fs::create_dir_all(&directory).unwrap();
+    let ca = test_ca();
+    std::fs::write(directory.join("ca.pem"), &ca.pem).unwrap();
+    for (name, names, validity) in [
+        ("localhost", &["localhost"][..], None),
+        ("expired", &["localhost"][..], Some(EXPIRED)),
+        ("not-yet-valid", &["localhost"][..], Some(NOT_YET_VALID)),
+        ("other-name", &["other.example"][..], None),
+    ] {
+        let certificate = leaf(&ca, names, validity);
+        std::fs::write(directory.join(format!("{name}.pem")), certificate.chain_pem).unwrap();
+        std::fs::write(directory.join(format!("{name}.key")), certificate.key_pem).unwrap();
+    }
+}
+
 #[test]
 fn listeners_off_loopback_need_tls() {
     let open = Config::new().listener(ListenerConfig::new(

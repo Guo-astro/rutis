@@ -5,10 +5,10 @@ mod common;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
 
 use common::{mounted, Scripted};
 use rutis_dsh::agent;
+use rutis_test_support::until;
 use serde_json::{json, Value};
 
 fn chunks(raw: Vec<String>) -> Vec<Value> {
@@ -83,13 +83,11 @@ async fn a_dsh_caller_that_stops_reading_stops_the_aimux_stream() {
     let first: Value =
         serde_json::from_str(&probe.first_chunk("endless", "m").await.unwrap()).unwrap();
     assert_eq!(first["type"], "block-start");
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !service.dropped.load(Ordering::SeqCst) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the aimux stream is dropped once the caller stops");
+    until(
+        || service.dropped.load(Ordering::SeqCst),
+        "the aimux stream is dropped once the caller stops",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

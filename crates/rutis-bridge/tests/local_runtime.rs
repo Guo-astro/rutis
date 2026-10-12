@@ -1,6 +1,7 @@
 //! A local runtime that cannot start, or ends before it greets, fails with
-//! how its process ended, and its handle says so.
-#![cfg(unix)]
+//! how its process ended, and its handle says so. Every handover: an
+//! inherited socket by default, loopback on Windows (and with
+//! `RUTIS_LOCAL_HANDOVER=loopback`).
 use rutis::{Ctx, FiberState};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::runtime::{Launcher, RuntimeState};
@@ -23,9 +24,18 @@ async fn failed_with(launcher: Launcher) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_that_exits_before_greeting_says_how() {
-    let launcher = Launcher::new("sh").arg("-c").arg("exit 17").inherit_fd();
-    let reason = failed_with(launcher).await;
-    assert!(reason.contains("exited with exit status: 17"), "{reason}");
+    #[cfg(unix)]
+    let (launcher, status) = (
+        Launcher::new("sh").arg("-c").arg("exit 17"),
+        "exited with exit status: 17",
+    );
+    #[cfg(windows)]
+    let (launcher, status) = (
+        Launcher::new("cmd").arg("/C").arg("exit 17"),
+        "exited with exit code: 17",
+    );
+    let reason = failed_with(launcher.inherit_fd()).await;
+    assert!(reason.contains(status), "{reason}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -49,6 +49,15 @@ A plugin and the services it uses may run in different processes. Across process
 | Symbols, bigints, Maps, Sets, binary data, cyclic references | Cannot cross processes. In TypeScript, Maps, Sets, and Dates are copied using JSON rules, so their contents are lost. |
 | Go structs, slices, `map[string]T` | Copied as JSON (by their `json` tags); a struct is always data, `rutis.Ref(v)` passes an object by reference. Integers beyond ±2^53−1, `[]byte`, channels and non-string map keys cannot cross |
 
+Numbers and nesting depth have the limits below. They describe current behaviour and are **not guaranteed** to stay this way (explicitly not guaranteed); a plugin that depends on them must handle them itself:
+
+- In JavaScript (Node, Bun) numbers are IEEE 754 doubles: an integer beyond ±(2^53−1) becomes the nearest double (2^53+1 arrives in JS as 2^53); `-0` becomes `0`; an integral float (Python's `2.0`) arrives in JS as `2` and leaves again as an integer. Pass large integers that must stay exact as strings.
+- From Node 24, an object key that is a single character JSON escapes (`"\n"`, `"\t"`, `"\u0000"`, `"\""`) may arrive in Node as `"\\"` (a V8 `JSON.parse` defect; two such keys merge into one; [#302](https://github.com/arcships/rutis/issues/302)). Node 22 and Bun are not affected.
+- Python keeps integers within 64 bits, and `-0.0`.
+- A float arriving on a Rust side (the host, or a plugin written in Rust) may differ from the value sent by one or two units in the last place (`1.0934904699147477e61` may arrive as `1.0934904699147475e61`) ([#290](https://github.com/arcships/rutis/issues/290)).
+- NaN and ±Infinity cannot cross.
+- Nesting depth: a value nested about 125 levels deep (each array or object is a level; an array or object holding references counts two levels on the wire, so about 62) makes the receiving Rust side end the **whole session**, not just fail the call ([#279](https://github.com/arcships/rutis/issues/279)). Keep nesting within 64 levels.
+
 Values are not copied within one process. Code that mutates an object after passing it may work in a unit test but fail across processes. The test tool's strict mode (enabled by default) applies the rules above to expose this early.
 
 ## Synchronous calls and reentrancy

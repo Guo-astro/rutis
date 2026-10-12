@@ -24,6 +24,7 @@ This document describes how CI runs today and what to do when changing it. The r
 | `stress.yml` | Nightly; by hand | Kernel tests and multi-process tests repeated; long network tests (below) |
 | `ci-stats.yml` | Weekly; by hand | CI timings and failures |
 | `deps.yml` | Weekly; by hand | Dependency vulnerability checks: `cargo deny check advisories` (without the example projects), `npm audit` of `@arcships/rutis-runtime`, `pip-audit` of the Python package. Not on pull requests and does not block merges; GitHub notifies the maintainer on failure |
+| `install.yml` | Every push to main; pull requests touching packaging, build configuration or the install tests (`package.yml`, `install.yml`, `tests/e2e/**`, the packages' `package.json` and `pyproject.toml`, `node/rutis-host/scripts/**`, `Cargo.toml`, `Cargo.lock` and others); called by `release.yml` on a release; by hand | Builds this commit's packages with `package.yml`, installs and runs them: npm, PyPI, the release binary. Three platforms on main (linux-x64, darwin-arm64, win32-x64), only linux-x64 on pull requests. linux-arm64 and darwin-x64 (the aarch64 wheel among them) are built only in the five-platform install check before a release (`release.yml`) |
 | `release.yml`, `release-cli.yml` | Tags | Releases |
 
 ### The nightly `stress.yml`
@@ -66,12 +67,13 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 | Job | Runner | Pull requests | Added on main | What it does |
 | --- | --- | --- | --- | --- |
 | `links` | Linux | `docs` | — | Checks relative links in Markdown |
-| `rust` | Linux | `code` | The rerun with runtimes started over loopback, on Linux | Every Rust test, once: the workspace (but bridge and loader), the loader with every row kind, the bridge with every feature. With the oldest supported versions (§9) |
+| `rust` | Linux | `code` | The rerun with runtimes started over loopback, on Linux | Every Rust test, once: the workspace (but bridge, loader and `rutis-e2e`), the loader with every row kind, the bridge with every feature. With the oldest supported versions (§9) |
+| `e2e` | Linux | `code` | — | The end-to-end scenarios, `cargo test -p rutis-e2e` (`tests/e2e`: real rutis-host processes, project directories, probe plugins of every language), beside `rust`, with the oldest supported versions (§9). On failure it uploads `RUTIS_E2E_DIR` (the failed scenarios' directories and logs) as the `e2e-linux` artifact. The install scenarios run in `install.yml`, not here |
 | `js-py` | Linux | `code` | — | `scripts/train.mjs`; the Node packages' tests (`node/rutis`, `rutis-runtime`, `rutis-host`) and rutis-dsh's dsh tests; the Python unit tests |
 | `lint` | Linux | `code` | — | `cargo fmt --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`. In parallel with the tests. No baseline: a warning is fixed in the PR that introduces it, and new lints from a toolchain upgrade in the upgrade PR |
 | `msrv` | Linux | Only with `all` (`Cargo.lock`, `Cargo.toml` and the like changed) | The whole job | Builds the libraries and binaries with the declared MSRV (`rust-version` in `Cargo.toml`) and the repository's `Cargo.lock` (`cargo +<version> check --workspace`, without the example projects `rutis-agent` and `rutis-cli`) |
 | `checks` | Linux | Only with `all` | The whole job | Build checks and `--no-run` of the bridge and loader feature combinations (the whole workspace's build is covered by `lint`'s clippy). They find rare feature-combination build errors and run no tests |
-| `network-macos` | macOS | `code`: only the tests that depend on the platform | All bridge and loader tests; the `node/rutis` tests | Process start, local channels, runtime processes, WebSocket and rutis-host tests with the latest versions (§9); the Node runtime's and the Python package's tests; a build check of the whole workspace |
+| `network-macos` | macOS | `code`: only the tests that depend on the platform | All bridge and loader tests; the `node/rutis` tests | Process start, local channels, runtime processes, WebSocket and rutis-host tests with the latest versions (§9); the end-to-end scenarios (on failure, the `e2e-macos` artifact); the Node runtime's and the Python package's tests; a build check of the whole workspace |
 | `runtimes-windows` | Windows | `code`: only the tests that depend on the platform | All bridge and loader tests | The same on Windows (processes start over loopback); the Go SDK tests; a build check of the whole workspace |
 | `runtimes-bun` | Linux | `bun`: Bun 1.4.0 | Linux latest; macOS 1.4.0 | Every Bun runtime test, with the reruns over loopback |
 | `runtimes-go` | Linux | `go`: Go oldstable | Linux stable; macOS oldstable; the reruns over loopback on Linux | Every Go SDK and Go runtime test |
@@ -79,7 +81,7 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 | `dylib-linux-launcher`, `dylib-linux-sdk-bundle` | Linux | `dylib` | — | Dylib tests, split into two jobs that run at the same time |
 | `dylib-linux-repro` | Linux | `repro` | The whole job | Reproducible SDK builds (built twice on one machine, in two directories) |
 | `dylib-macos` | macOS | `dylib` | The reproducible-build step | The same dylib tests, one after another in one job, sharing one bundle build; the reproducible-build step runs only when `repro` is on |
-| `release-dry-run`, `release-windows`, `release-wheel-aarch64` | Linux, Windows, Linux | `packaging` | The whole jobs | The release packages build |
+| `release-dry-run` | Linux | `packaging` | The whole job | The release packages build (crates, npm packages, Python packages). `install.yml` builds and installs the binaries and wheels of each platform (§2): only Linux x64 on pull requests; Windows and macOS packaging is checked on main after the merge, aarch64 before a release |
 | `sdk-repro`, `sdk-repro-macos`, and their comparisons | Linux, macOS | Only with `all` | The whole jobs | Builds the SDK on two machines and checks the results are identical |
 | `ci-ok` | Linux | Always | — | The summary (§5) |
 
@@ -89,15 +91,50 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 
 A new test file that starts processes or opens channels goes into these lists. The `multiprocess` job of the nightly `stress.yml` repeats the tests of these lists too (§2).
 
+### The conformance matrix
+
+Where bridge's conformance suites run: which implementations, which channels, which platforms (risk C10, #176). Kept by hand: a change to a cell or a skip reason changes this table too. A skipped cell is marked `ignore = "reason"` in its test, which `cargo test` prints; where a whole platform does not compile a test, the reason is a comment next to its `cfg`.
+
+The session contract (`session::testing::session` and the malformed-frame checks `malformed`, `tests/runtime_conformance.rs`):
+
+| Implementation | Channel | Linux | macOS | Windows |
+| --- | --- | --- | --- | --- |
+| Rust | memory | Runs | Runs | Runs |
+| Node, Python | Unix socket | Runs | Runs | Skipped: no Unix sockets on Windows, where runtimes connect on loopback |
+| Node, Python | loopback TCP (with a one-time token) | Runs | Runs | Runs |
+| Go | Unix socket | Runs (malformed frames skipped: defect #294) | As Linux | Skipped: as above |
+| Go | loopback TCP | Runs (malformed frames skipped: defect #294) | As Linux | Runs (malformed frames skipped: defect #294) |
+| Bun | Unix socket, loopback TCP | Runs (malformed frames on the Unix socket only) | Runs | Not compiled: Bun on Windows is not a declared platform |
+
+The runtime contract (`runtime::testing::runtime`, `tests/session_matrix.rs`):
+
+| Implementation | Channel | Linux | macOS | Windows |
+| --- | --- | --- | --- | --- |
+| Node, Python, Go | inherited socket (`fd:3`) | Runs | Runs | Skipped: Windows hands no descriptor over, only loopback |
+| Node, Python, Go | socket path dialed back | Runs | Runs | Skipped: as above |
+| Node, Python, Go | loopback TCP | Skipped: `Process` picks loopback only from the process-wide `RUTIS_LOCAL_HANDOVER`; a column of its own comes in step 2 | Skipped: as Linux | Runs |
+| Node, Python, Go | WebSocket (the runtime listens, Rust dials) | Runs | Runs | Runs |
+| Bun | `fd:3`, socket path dialed back | Runs; `runtimes-bun` reruns with `RUTIS_LOCAL_HANDOVER=loopback` | Runs | Not compiled: as above |
+| A Node package without `fd` falls back to dialing back | — | Runs | Runs | Skipped: Windows has loopback only |
+
+The node contract (`rutis_bridge::testing::node`):
+
+| Implementation | Channel | Linux | macOS | Windows |
+| --- | --- | --- | --- | --- |
+| Rust node | memory (`tests/node_conformance.rs`) | Runs | Runs on main | Runs on main |
+| Cordis node | WebSocket (`tests/websocket_conformance.rs`) | Runs | Runs | Runs |
+
+Other bridge test files compiled on Unix only (each says why next to its `cfg`): `bun_runtime.rs`, `bun_channel.rs` (Bun); `local_spawn.rs` (the `fd:3` and dial-back handovers; `local_loopback.rs` covers Windows' loopback handover); `local_plugin.rs` (Unix sockets); `local_stdio.rs` (`dup2`); `concurrent_launch.rs` (descriptors inherited across fork/exec); the two soaks on Linux only (they read `/proc`).
+
 ### What each kind of change runs on a pull request
 
 | Change | Jobs | Expected time (push to result) |
 | --- | --- | --- |
 | Documentation only | `changes`, `links` | About 1 minute |
-| Kernel `crates/rutis` | `rust`, `js-py`, `lint`, `network-macos`, `runtimes-windows` | About 5–8 minutes |
+| Kernel `crates/rutis` | `rust`, `e2e`, `js-py`, `lint`, `network-macos`, `runtimes-windows` | About 5–8 minutes |
 | Bridge, loader, host | Adds `runtimes-bun`, `runtimes-go` (one version each, Linux) | About 6–9 minutes |
-| Python package only | `rust`, `js-py`, `lint`, `network-macos`, `runtimes-windows` | About 5–8 minutes |
-| `package.json`, `pyproject.toml`, `crates/*/Cargo.toml` | Adds the three packaging jobs and `semver-rutis` | Unchanged; they run beside the tests |
+| Python package only | `rust`, `e2e`, `js-py`, `lint`, `network-macos`, `runtimes-windows` | About 5–8 minutes |
+| `package.json`, `pyproject.toml`, `crates/*/Cargo.toml` | Adds `release-dry-run` and `semver-rutis`; `install.yml` (Linux x64) when a package's `package.json` or `pyproject.toml` changes | Unchanged; they run beside the tests |
 | Dylib | Adds the dylib jobs; `dylib-windows.yml` | About 20–25 minutes (the dylib budget) |
 | CI configuration, `Cargo.lock`, the root `Cargo.toml` | Everything, as on main | About 25 minutes |
 
@@ -133,7 +170,7 @@ Write the answers in the pull request description.
 ### Adding a language runtime
 
 1. Add a switch for the language to `changes`, covering its runtime directory and `crates/rutis-bridge`, `crates/rutis-loader`, `crates/rutis-host`.
-2. Install the language in `rust` (the oldest supported version) and `network-macos` (the latest) (§9), and add its feature to their existing bridge, loader and host test steps; add its test files to `PLATFORM_TESTS_*` as §4 says.
+2. Install the language in `rust` and `e2e` (the oldest supported version) and `network-macos` (the latest) (§9), and add its feature to their existing bridge, loader and host test steps; add its test files to `PLATFORM_TESTS_*` as §4 says.
 3. To test several versions, add a `runtimes-<language>` job: it runs on the switch from step 1, is listed in `ci-ok`, and on pull requests runs only the oldest supported version on Linux. Other versions and macOS run only on main (see `runtimes-bun` and the `bun-matrix` output of `changes`).
 4. Releases: add its package to `release-dry-run`, `scripts/train.mjs` and `release.yml`.
 5. Update §3 and §4.
@@ -166,7 +203,7 @@ Write the answers in the pull request description.
 
 Rule: for each language, Linux jobs use the oldest supported version, macOS and Windows jobs the latest. The minimum is verified on every pull request, the latest on macOS and Windows, with no job added just for a version.
 
-| | Declared in | Linux (`rust`, `js-py`, `checks`, `lint`, `runtimes-go`, `runtimes-bun`, `stress.yml`'s `multiprocess`) | `network-macos`, `runtimes-windows` |
+| | Declared in | Linux (`rust`, `e2e`, `js-py`, `checks`, `lint`, `runtimes-go`, `runtimes-bun`, `stress.yml`'s `multiprocess`) | `network-macos`, `runtimes-windows` |
 | --- | --- | --- | --- |
 | Node | `engines.node` in each npm package's `package.json` | The declared oldest major | The latest even major, bumped by hand |
 | Python | `requires-python` in `python/rutis/pyproject.toml` | The declared oldest | `3.x`, follows automatically; when a new release fails a PR, pin the previous one temporarily and fix it in a separate PR |
@@ -176,6 +213,6 @@ Rule: for each language, Linux jobs use the oldest supported version, macOS and 
 | Rust toolchain | `rust-toolchain.toml` | Every workflow's `dtolnay/rust-toolchain@<version>` equals it | Same |
 | MSRV | `rust-version` in the root `Cargo.toml` | The `msrv` job (main) | — |
 
-In the macOS entries of `runtimes-go` and `runtimes-bun` on main, Node and Python are only the far end of cross-language rows and use the oldest versions, as on Linux. The Node used for releases (`release.yml` and `ci.yml`'s `release-*` jobs) is the release tooling's version and not part of the support matrix.
+In the macOS entries of `runtimes-go` and `runtimes-bun` on main, Node and Python are only the far end of cross-language rows and use the oldest versions, as on Linux. The Node used for releases (`release.yml`, `package.yml` and `ci.yml`'s `release-dry-run`) is the release tooling's version and not part of the support matrix.
 
 **Change CI versions in the same PR as a declaration**: a PR that changes `engines`, `requires-python`, the websockets lower bound or `rust-version` also changes the versions of the matching jobs in the table above; otherwise the declared minimum is unverified (Q10.3).

@@ -14,18 +14,23 @@ use std::path::Path;
 use common::{environment, normalize, repo, write};
 use rutis_host::config::HostConfig;
 use rutis_host::host::Host;
+use rutis_test_support::{Guard, HANG_GUARD};
 
 /// Read `text` as `<dir>/rutis.json` and start what it names, up to the
 /// runtimes running: the first error, as on any machine.
 async fn first_error(dir: &Path, text: &str) -> String {
     write(dir, &[("rutis.json", text)]);
-    let error = async {
+    let started = async {
         let config = HostConfig::read(&dir.join("rutis.json"))?;
         let host = Host::start(&config).await?;
         host.runtimes_ready().await
-    }
-    .await
-    .expect_err("an error");
+    };
+    // Some start a runtime (Node, Python, Bun) cold; twice HANG_GUARD, only
+    // against a hang.
+    let error = Guard(HANG_GUARD * 2)
+        .within(&format!("starting {text}"), started)
+        .await
+        .expect_err("an error");
     normalize(&error, dir)
 }
 

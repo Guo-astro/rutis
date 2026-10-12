@@ -241,6 +241,9 @@ export class Session {
     if (this.#imports.get(record.id) === record.weak) this.#imports.delete(record.id)
     if (!this.#closed) { try { this.#write({ op: 'release', reference: record.id, count: record.grants }) } catch (error) { this.#fault(error) } }
   }
+  // Reference table sizes: exported (granted, not yet released by the far
+  // end) and imported (not yet released). Diagnostics for tests (risk P4).
+  references() { return { exports: this.#exports.size, imports: this.#imports.size } }
   // Explicit release is an adapter/test operation. Session close does not wait
   // for JS GC; ordinary native functions are retained through their proxies.
   release(proxy) {

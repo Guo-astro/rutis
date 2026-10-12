@@ -30,7 +30,7 @@
 //! for an event. A failed scenario keeps its directory, with every host's
 //! output in `logs/`, under [`root`].
 //!
-//! Running: `npm --prefix node/rutis-runtime ci`, a `python3` (3.12 or
+//! Running: `npm --prefix node/rutis-runtime ci`, a `python3` (3.10 or
 //! newer; the checkout's `python/rutis` is used), then
 //! `cargo test -p rutis-e2e`, which builds `rutis-host` first. Settings:
 //! `RUTIS_E2E_HOST` (the program to test instead), `RUTIS_E2E_DIR` (where

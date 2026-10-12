@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 use common::*;
 use rutis::FiberState;
 use rutis_loader::{apply_patches, Editable, EntryStatus, Layer, LoaderError, NewEntry, Version};
+use rutis_test_support::{until, within};
 use serde_json::{json, Value};
 
 fn base() -> Vec<rutis_loader::Patch> {
@@ -565,13 +566,11 @@ async fn replay_drops_edits_that_no_longer_apply() {
         patches(json!([{ "id": "a", "disabled": true }]))
     );
     // Events are dispatched asynchronously; wait for the one we expect.
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while dropped.0.lock().unwrap().is_empty() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("PendingEditDropped was not emitted");
+    until(
+        || !dropped.0.lock().unwrap().is_empty(),
+        "PendingEditDropped emitted",
+    )
+    .await;
     assert_eq!(
         *dropped.0.lock().unwrap(),
         vec![rutis_loader::Edit::Update {
@@ -589,14 +588,13 @@ async fn concurrent_edits_do_not_deadlock() {
         .await
         .unwrap();
     let (one, two) = (loader.clone(), loader.clone());
-    let (u, r) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let (u, r) = within("the edits (a deadlock hangs)", async {
         tokio::join!(
             async move { one.update("n", json!({ "label": "n2" })).await },
             async move { two.remove("n").await },
         )
     })
-    .await
-    .expect("deadlock");
+    .await;
     // Edits are serialized: the update either ran first or found no row.
     assert!(r.is_ok());
     assert!(u.is_ok() || matches!(u, Err(LoaderError::UnknownEntry(_))));

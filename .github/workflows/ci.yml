@@ -193,8 +193,9 @@ jobs:
           fi
 
   # The Linux tests of an ordinary change, in parallel jobs so that the
-  # longest one sets the time (Q12.6.1): `rust` (every Rust test once),
-  # `js-py` (the Node and Python packages), and `checks` (compile checks of
+  # longest one sets the time (Q12.6.1): `rust` (every Rust test once, but the
+  # end-to-end scenarios), `e2e` (the scenarios), `js-py` (the Node and Python
+  # packages), and `checks` (compile checks of
   # feature combinations: on main and for changes that run everything, as
   # they catch rare errors and run no tests).
   #
@@ -252,9 +253,9 @@ jobs:
           cache-dependency-path: go/rutis/go.mod
 
       # rutis-bridge and rutis-loader run once each, below, with all their
-      # features (Q12.7).
-      - name: cargo test (workspace but rutis-bridge and rutis-loader)
-        run: cargo test --workspace --exclude rutis-bridge --exclude rutis-loader
+      # features (Q12.7); the end-to-end scenarios run in `e2e`.
+      - name: cargo test (workspace but rutis-bridge, rutis-loader and rutis-e2e)
+        run: cargo test --workspace --exclude rutis-bridge --exclude rutis-loader --exclude rutis-e2e
 
       # Plugins of other languages and of other nodes as rutis-loader rows.
       - name: cargo test (rutis-loader, every row kind)
@@ -273,6 +274,66 @@ jobs:
         env:
           RUTIS_LOCAL_HANDOVER: loopback
         run: cargo test -p rutis-loader --features node,python,go,peer --test runtime_rows --test python_rows --test multilang --test leases --test instance_runtimes --test go_rows --test multilang_go --test instance_go --test sync_cycles
+
+  # The end-to-end scenarios (tests/e2e): real rutis-host processes on
+  # project directories, with probe plugins of every language. In parallel
+  # with `rust`, on the same oldest versions; network-macos runs them on the
+  # latest. The install scenarios (ignored here) run in install.yml.
+  e2e:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      # Short, for the Unix socket paths under it (tests/e2e/src/lib.rs).
+      RUTIS_E2E_DIR: /tmp/rutis-e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The oldest Node (engines.node) and the Node runtime the host starts.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: node/rutis-runtime/package-lock.json
+      - run: npm --prefix node/rutis-runtime ci
+      # The oldest Bun (engines.bun).
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      # The oldest Python (requires-python) and the oldest websockets
+      # (rutis[network]); the scenarios use the checkout's python/rutis.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: python3 -m pip install "websockets==15.*"
+      # The older of the two Go releases supported.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: oldstable
+          cache-dependency-path: go/rutis/go.mod
+      - name: cargo test (end-to-end scenarios)
+        run: cargo test -p rutis-e2e
+      # A failed scenario keeps its directory, with every host's output and
+      # the residue found in logs/.
+      # The failed scenarios' directories, without what is not read for a
+      # diagnosis and that upload-artifact would follow or fail on: links
+      # into the checkout, sockets, installed packages and caches.
+      - name: prune the scenario directories
+        if: failure()
+        run: |
+          [ -d "$RUTIS_E2E_DIR" ] || exit 0
+          find "$RUTIS_E2E_DIR" \( -type l -o -type s -o -type p \) -delete
+          find "$RUTIS_E2E_DIR" -type d \( -name node_modules -o -name .venv -o -name .npm -o -name .uv -o -path '*/home/go' \) -prune -print |
+            while IFS= read -r dir; do chmod -R u+w "$dir"; rm -rf "$dir"; done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-linux
+          path: ${{ env.RUTIS_E2E_DIR }}
+          retention-days: 14
 
   js-py:
     needs: changes
@@ -534,6 +595,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: macos-15
+    env:
+      # The end-to-end scenarios' directories (as in `e2e`).
+      RUTIS_E2E_DIR: /tmp/rutis-e2e
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
@@ -572,6 +636,27 @@ jobs:
           cargo test -p rutis-bridge --all-features $BRIDGE_TESTS
           cargo test -p rutis-loader --features node,python,go,peer,bun $LOADER_TESTS
           cargo test -p rutis-host
+      # The end-to-end scenarios on the latest versions (the `e2e` job runs
+      # them on the oldest).
+      - name: cargo test (end-to-end scenarios)
+        if: '!cancelled()'
+        run: cargo test -p rutis-e2e
+      # The failed scenarios' directories, without what is not read for a
+      # diagnosis and that upload-artifact would follow or fail on: links
+      # into the checkout, sockets, installed packages and caches.
+      - name: prune the scenario directories
+        if: failure()
+        run: |
+          [ -d "$RUTIS_E2E_DIR" ] || exit 0
+          find "$RUTIS_E2E_DIR" \( -type l -o -type s -o -type p \) -delete
+          find "$RUTIS_E2E_DIR" -type d \( -name node_modules -o -name .venv -o -name .npm -o -name .uv -o -path '*/home/go' \) -prune -print |
+            while IFS= read -r dir; do chmod -R u+w "$dir"; rm -rf "$dir"; done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-macos
+          path: ${{ env.RUTIS_E2E_DIR }}
+          retention-days: 14
       - name: keep workspace static builds available
         if: '!cancelled()'
         run: cargo check --workspace --all-targets
@@ -606,56 +691,6 @@ jobs:
           uv build python/rutis --out-dir dist
           uvx maturin build --release --manifest-path crates/rutis-host/Cargo.toml --out dist
           ls dist
-
-  # The Windows artifacts of release.yml (binary, npm platform package,
-  # wheel), built before a tag needs them; on main and when packaging changes.
-  release-windows:
-    needs: changes
-    if: needs.changes.outputs.packaging == 'true'
-    runs-on: windows-2025
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.1
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - run: cargo build --locked --release -p rutis-host --target x86_64-pc-windows-msvc
-      - name: the binary runs
-        run: target/x86_64-pc-windows-msvc/release/rutis-host.exe help
-      - name: the release archive (a .zip, as release.yml makes it)
-        run: |
-          mkdir -p stage/rutis-host dist
-          cp target/x86_64-pc-windows-msvc/release/rutis-host.exe stage/rutis-host/
-          (cd stage && 7z a -tzip ../dist/rutis-host.zip rutis-host >/dev/null)
-          7z l dist/rutis-host.zip | grep -q 'rutis-host.exe'
-      - name: npm platform package
-        run: |
-          node node/rutis-host/scripts/platform-package.mjs win32 x64 target/x86_64-pc-windows-msvc/release/rutis-host.exe npm/win32-x64
-          (cd npm/win32-x64 && npm pack --dry-run)
-      - uses: PyO3/maturin-action@v1
-        with:
-          target: x86_64-pc-windows-msvc
-          args: --release --locked --manifest-path crates/rutis-host/Cargo.toml --out wheels
-
-  # The cross-compiled wheel of release.yml, built before a tag needs it; on
-  # main and when packaging changes.
-  release-wheel-aarch64:
-    needs: changes
-    if: needs.changes.outputs.packaging == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: PyO3/maturin-action@v1
-        with:
-          target: aarch64
-          manylinux: "2_28"
-          args: --release --locked --manifest-path crates/rutis-host/Cargo.toml --out wheels
 
   # 列车里已发布的 crate 相对 crates.io 最新版的公开 API 变化：发现破坏性变更
   # 时给出警告，并在 job 摘要中列出，提示发布时需要提升的版本；不使 CI 失败
@@ -923,6 +958,7 @@ jobs:
       - changes
       - links
       - rust
+      - e2e
       - js-py
       - lint
       - msrv
@@ -930,8 +966,6 @@ jobs:
       - network-macos
       - runtimes-bun
       - release-dry-run
-      - release-windows
-      - release-wheel-aarch64
       - semver-rutis
       - dylib-linux-launcher
       - dylib-linux-repro

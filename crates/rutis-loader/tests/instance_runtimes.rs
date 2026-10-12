@@ -16,9 +16,13 @@ use rutis_loader::{
     Build, Builtins, Chain, EntryInfo, EntryStatus, Instance, InstanceResult, Layer, Loader,
     LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
 };
+use rutis_test_support::{Guard, HANG_GUARD};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
+
+/// Twice HANG_GUARD: the Node and Python runtimes start cold (#238).
+const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 // ── The language rows ───────────────────────────────────────────
 
@@ -81,13 +85,12 @@ impl Probe {
     }
 
     async fn wait_for(&self, line: &str) {
-        tokio::time::timeout(Duration::from_secs(15), async {
-            while !self.has(line) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
+        COLD.eventually_with(
+            || self.has(line).then_some(()),
+            &format!("{line:?} recorded"),
+            || format!("{:?}", self.0.lock().unwrap()),
+        )
         .await
-        .unwrap_or_else(|_| panic!("{line:?} not recorded: {:?}", self.0.lock().unwrap()));
     }
 }
 

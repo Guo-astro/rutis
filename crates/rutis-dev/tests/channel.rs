@@ -3,11 +3,11 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory};
 use rutis_dev::{AuditRecord, DevChannel, DevOptions};
 use rutis_loader::{Builtins, Layer, LoaderError, LoaderOptions, LoaderPlugin, Resolved, Resolver};
+use rutis_test_support::within;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -94,9 +94,8 @@ impl Client {
     }
 
     async fn next(&mut self) -> Value {
-        let line = tokio::time::timeout(Duration::from_secs(5), self.lines.next_line())
+        let line = within("a line", self.lines.next_line())
             .await
-            .expect("a line")
             .unwrap()
             .expect("open");
         serde_json::from_str(&line).unwrap()
@@ -336,12 +335,9 @@ async fn a_path_that_is_not_a_socket_is_never_removed() {
 
 /// Run the `rutis-dev` binary against the channel.
 async fn cli(socket: &std::path::Path, args: &[&str]) -> (bool, Value) {
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_rutis-dev"))
-        .arg(socket)
-        .args(args)
-        .output()
-        .await
-        .unwrap();
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_rutis-dev"));
+    command.arg(socket).args(args).kill_on_drop(true);
+    let output = within("rutis-dev ends", command.output()).await.unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
     let value = serde_json::from_str(&stdout).unwrap_or_else(|_| {
         panic!(

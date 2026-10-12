@@ -17,7 +17,11 @@ use rutis_loader::{
     Chain, EntryStatus, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver,
     RuntimeRowsPlugin, ServiceCatalog,
 };
+use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
+
+/// Twice HANG_GUARD: the Bun, Node and Python runtimes start cold (#238).
+const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 const BUN_PROVIDER: &str = r#"
 export const provides = { bun_weather: { today: 'sync', later: 'async' } }
@@ -124,13 +128,19 @@ impl HostDispatch for Probe {
 
 impl Probe {
     async fn wait_for(&self, line: &str) {
-        tokio::time::timeout(Duration::from_secs(20), async {
-            while !self.0.lock().unwrap().iter().any(|l| l == line) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
+        COLD.eventually_with(
+            || {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|l| l == line)
+                    .then_some(())
+            },
+            &format!("{line:?} recorded"),
+            || format!("{:?}", self.0.lock().unwrap()),
+        )
         .await
-        .unwrap_or_else(|_| panic!("{line:?} not recorded: {:?}", self.0.lock().unwrap()));
     }
 }
 
@@ -310,22 +320,23 @@ async fn a_synchronous_chain_crosses_bun_and_python_and_back() {
         .await
         .unwrap();
     assert!(report.failures.is_empty(), "{report:?}");
-    let relay = loop {
-        if let Some(relay) = fixture.root.get_as::<dyn HostDispatch>(host_key("relay")) {
-            if state(&fixture.loader, "r") == Some(FiberState::Active) {
-                break relay;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    };
-    let answer = tokio::time::timeout(
-        Duration::from_secs(10),
-        tokio::task::spawn_blocking(move || relay.invoke("ask", json!([]).into())),
-    )
-    .await
-    .expect("the chain does not wait for ever")
-    .unwrap()
-    .unwrap();
+    let relay = COLD
+        .eventually(
+            || {
+                let relay = fixture.root.get_as::<dyn HostDispatch>(host_key("relay"))?;
+                (state(&fixture.loader, "r") == Some(FiberState::Active)).then_some(relay)
+            },
+            "the relay row and its service",
+        )
+        .await;
+    let answer = COLD
+        .within(
+            "the chain (a cycle of waits hangs)",
+            tokio::task::spawn_blocking(move || relay.invoke("ask", json!([]).into())),
+        )
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(answer.json().unwrap(), json!("py heard from bun"));
     fixture.root.shutdown().await.unwrap();
 }
