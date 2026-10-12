@@ -200,9 +200,11 @@ pub(crate) struct FiberInner {
     pub alive: AtomicBool,
     /// 本 fiber 提供的 (key, scope)。
     pub provided: Mutex<Vec<(TypeKey, Option<crate::key::ScopeId>)>>,
-    /// 等值合并键:上次成功装载解析到的依赖四元组集(§〇 epoch 语义)。
+    /// 等值合并键:最近一次装载(含失败的一代)解析到的依赖四元组集
+    /// (§〇 epoch 语义);Failed 的 fiber 只在依赖与之不同时重试。
     /// 亦是驱逐判定的唯一事实源(D21:消费者 = last_deps 含该四元组者;
     /// 含作用域——同一 fiber 在不同作用域提供的同键绑定不可混淆)。
+    /// 失败的 fiber 因此也算消费者:驱逐时对它重查,依赖缺失则保持 Failed。
     pub last_deps: Mutex<Option<HashSet<(PluginId, u64, TypeKey, Option<crate::key::ScopeId>)>>>,
     pub accesses: Mutex<Vec<ServiceAccess>>,
 }
@@ -562,7 +564,7 @@ impl FiberInner {
         let plugin = match this.current_plugin() {
             Ok(p) => p,
             Err(e) => {
-                Self::fail_load(this, e).await;
+                Self::fail_load(this, e, deps).await;
                 return;
             }
         };
@@ -572,11 +574,11 @@ impl FiberInner {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| plugin.validate())) {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
-                Self::fail_load(this, e).await;
+                Self::fail_load(this, e, deps).await;
                 return;
             }
             Err(p) => {
-                Self::fail_load(this, panic_error(p)).await;
+                Self::fail_load(this, panic_error(p), deps).await;
                 return;
             }
         }
@@ -640,7 +642,7 @@ impl FiberInner {
                     this.post(Intent::RefreshDeps);
                 }
             }
-            Err(e) => Self::fail_load(this, e).await,
+            Err(e) => Self::fail_load(this, e, deps).await,
         }
         this.flush_status();
     }
@@ -650,7 +652,13 @@ impl FiberInner {
     /// 装配失败保持原子性(支柱 1);清理错误路由 ErrorSink 且并入终态错误
     ///(0.2.3:原始装载错误在前、回滚错误随后聚合——join 方拿到完整失败
     /// 画面,sink 仍是额外观察者)。
-    async fn fail_load(this: &Arc<Self>, error: CordisError) {
+    /// 失败的这一代记下装载时的依赖 `deps`:只有依赖变化才重试,同一组依赖
+    /// 的重复通知(如提供者激活时逐键发出的通知)不再重新装载(#327)。
+    async fn fail_load(
+        this: &Arc<Self>,
+        error: CordisError,
+        deps: HashSet<(PluginId, u64, TypeKey, Option<ScopeId>)>,
+    ) {
         {
             let _admission = this.ctx.shared().admission.lock().unwrap();
             let mut tr = this.transition.lock().unwrap();
@@ -661,11 +669,8 @@ impl FiberInner {
 
         this.wait_events().await;
 
-        // 失败的这一代保留装载时的依赖：只有依赖变化才重试，同一组依赖的
-        // 重复通知不再重新装载（#327）
-        let loaded_with = this.last_deps.lock().unwrap().clone();
         let cleanup_errors = Self::drain_effects(this).await;
-        *this.last_deps.lock().unwrap() = loaded_with;
+        *this.last_deps.lock().unwrap() = Some(deps);
         let sink = this.ctx.error_sink();
         for e in &cleanup_errors {
             sink(e.clone());
