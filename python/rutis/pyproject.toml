@@ -14,6 +14,8 @@ Documentation = "https://github.com/arcships/rutis/tree/main/docs/guide"
 
 [project.optional-dependencies]
 # WebSocket channels: a runtime other machines reach (listen:ws://…, listen:wss://…).
+# listen:wss:// refuses to start on CPython 3.13.6, whose TLS sockets deadlock
+# (python/cpython#137583); 3.13.7 and later are fine.
 network = ["websockets>=15"]
 
 [build-system]

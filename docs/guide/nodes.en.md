@@ -95,6 +95,7 @@ An existing Cordis application can become a node through `@arcships/rutis-runtim
 ## Security
 
 - Use `wss://` for remote connections. A listener without TLS may bind only to a loopback address.
+- A Python runtime cannot listen on `wss://` with CPython 3.13.6: its TLS sockets deadlock when one thread is blocked reading while another writes ([python/cpython#137583](https://github.com/python/cpython/issues/137583)), so every handshake hangs, and rutis refuses to start `listen:wss://` on that version. Use 3.13.7 or later (3.13.5 and earlier, and 3.14, are not affected); `ws://` is not affected.
 - Use one token per peer (`RUTIS_TOKEN_<NODE>`) and set it only on the nodes that need it.
 - `host: true` lets a peer run any plugin installed on this node. Enable it only for trusted peers. It can load installed plugins, not file paths.
 - Nodes share services by name, and only services listed in `export` are shared.

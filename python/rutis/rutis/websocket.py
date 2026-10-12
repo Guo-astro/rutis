@@ -33,6 +33,23 @@ MAX_MESSAGE = 16 * 1024 * 1024
 GOING_AWAY, TOO_BIG, REPLACED = 1001, 1009, 4002
 # Queued after the last connection once nothing accepts any more.
 _STOPPED = object()
+# The interpreter this runs on; tests stand in another.
+_PYTHON = (sys.implementation.name, sys.version_info[:3])
+
+
+def tls_refusal(python=None) -> str | None:
+    """Why this interpreter cannot serve wss://, or None. CPython 3.13.6
+    deadlocks a TLS socket that one thread reads (blocked) while another
+    writes (python/cpython#137583), and the websockets threading server
+    always reads from a thread of its own: every handshake hangs. 3.13.5
+    and 3.13.7 or later are not affected, nor is ws://."""
+    implementation, version = python or _PYTHON
+    if implementation == "cpython" and tuple(version) == (3, 13, 6):
+        return (
+            "CPython 3.13.6 cannot serve wss:// (its TLS sockets deadlock when one thread "
+            "reads while another writes, python/cpython#137583): use 3.13.7 or later"
+        )
+    return None
 
 
 def _heartbeat() -> tuple[float, float]:
@@ -247,6 +264,9 @@ def listen(
     if secure:
         if not (cert and key):
             raise ValueError(f"{spec}: wss needs a certificate and key")
+        refusal = tls_refusal()
+        if refusal:
+            raise RuntimeError(f"{spec}: {refusal}")
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(cert, key)
     path = url.path or "/"
