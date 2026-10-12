@@ -44,6 +44,24 @@ CAPABILITIES = ["signals", "reentrant-sync", "sync-wait", "sync-stack"]
 # What it declares in the compat format, where older hosts ignore it.
 COMPAT_CAPABILITIES = ["reentrant-sync", "sync-wait", "sync-stack"]
 IMPLEMENTATION = {"name": "rutis", "version": "0.9.1"}
+
+
+def version_mismatch(far, local: int, implementation) -> str:
+    """Why a far end's protocol version is refused, saying which end to
+    upgrade (standard Q6.2.4): this side when the far end is newer, naming
+    the package to upgrade here; the far end when it is older, naming its
+    implementation when its handshake said."""
+    mismatch = f"the far end speaks protocol {far}, this side {local}"
+    if not isinstance(far, int) or isinstance(far, bool) or far == local:
+        return mismatch
+    if far > local:
+        return f"{mismatch}: upgrade this side (PyPI rutis)"
+    if isinstance(implementation, dict):
+        name, version = implementation.get("name"), implementation.get("version")
+        if isinstance(name, str) and isinstance(version, str):
+            return f"{mismatch}: upgrade the far end ({name} {version})"
+    return f"{mismatch}: upgrade the far end"
+
 MAX_SAFE = 9_007_199_254_740_991
 _ENDPOINT_ID = re.compile(r"^[a-z0-9-]+$")
 # In the compat format, this session's ids are `node:`/`rust:`; another
@@ -363,13 +381,13 @@ class Peer:
         version = frame.get("version")
         if self._endpoint is None:
             if version != PROTOCOL or "endpoint" in frame:
-                raise ValueError(f"incompatible session: the far end speaks protocol {version}, this side {PROTOCOL}")
+                raise ValueError(f"incompatible session: {version_mismatch(version, PROTOCOL, frame.get('implementation'))}")
             capabilities = frame.get("capabilities")
             self._declared = capabilities if isinstance(capabilities, list) else []
             return
         if version != ENDPOINT_PROTOCOL:
             raise ValueError(
-                f"incompatible session: the far end speaks protocol {version}, this side {ENDPOINT_PROTOCOL}"
+                f"incompatible session: {version_mismatch(version, ENDPOINT_PROTOCOL, frame.get('implementation'))}"
             )
         endpoint = frame.get("endpoint")
         if not isinstance(endpoint, str) or not _ENDPOINT_ID.match(endpoint):

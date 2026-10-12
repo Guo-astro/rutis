@@ -178,7 +178,20 @@ fn classify(host: &str, error: WsError) -> ConnectError {
     match error {
         WsError::Http(response) => {
             let status = response.status();
-            let reason = format!("{host}: upgrade refused with {status}");
+            let mut reason = format!("{host}: upgrade refused with {status}");
+            // The listener's own words (for a session protocol refusal,
+            // which end to upgrade): the first line, bounded, for the
+            // reader only.
+            if let Some(said) = response
+                .body()
+                .as_deref()
+                .map(String::from_utf8_lossy)
+                .and_then(|body| body.lines().next().map(str::trim).map(String::from))
+                .filter(|line| !line.is_empty())
+            {
+                reason.push_str(": ");
+                reason.extend(said.chars().take(200).filter(|c| !c.is_control()));
+            }
             match status.as_u16() {
                 401 | 403 => rejected(reason),
                 400 | 404 | 405 | 426 => incompatible(reason),
