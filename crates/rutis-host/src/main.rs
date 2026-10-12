@@ -152,6 +152,7 @@ fn config_file(args: &[String]) -> std::path::PathBuf {
 
 async fn run(args: &[String]) -> Result<Stopped, String> {
     let (deadline, args) = stop::deadline(args)?;
+    stop::pass_on(deadline);
     let mut signals = stop::Signals::listen()?;
     let config = config::HostConfig::read(&config_file(&args))?;
     warn(&config);
@@ -244,6 +245,7 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
     use std::time::Duration;
 
     let (deadline, args) = stop::deadline(args)?;
+    stop::pass_on(deadline);
     let mut signals = stop::Signals::listen()?;
     let dir = std::path::PathBuf::from(args.first().map(String::as_str).unwrap_or("."));
     // Go runtimes warn of calls that carry no call chain.

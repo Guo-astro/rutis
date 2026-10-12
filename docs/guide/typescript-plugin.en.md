@@ -86,7 +86,7 @@ npm test
 
 ## 4. Run in a local host
 
-<!-- example: typescript-en run until="rutis-host dev: running greeter" order=99 -->
+<!-- example: typescript-en run until="greeter: running" order=99 -->
 ```bash
 npx rutis-host dev
 ```

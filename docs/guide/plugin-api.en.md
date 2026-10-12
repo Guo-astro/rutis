@@ -34,6 +34,10 @@ The host controls when a plugin runs:
 
 Services obtained in `apply` remain valid while the plugin is running, so the plugin does not need to handle a service disappearing midway through its work.
 
+When the host stops, it unloads every plugin, each cleanup runs once, and then the runtime process exits. When the host goes away without unloading them (it was killed, or crashed), the runtime sees its connection to the host close, unloads every plugin itself, and exits; timers, sockets, threads or goroutines a plugin left behind do not keep it running.
+
+Cleanups have a deadline: when the host stops, the `--shutdown-timeout` of `rutis-host` (10 seconds by default, see [rutis-host](rutis-host.en.md#stopping-and-exit-status)); when the host went away, the runtime uses the same time (`rutis-host` passes it to its runtimes in the `RUTIS_SHUTDOWN_TIMEOUT` environment variable; 10 seconds without it). A cleanup not finished by then, and those after it, are not waited for: the runtime writes a line saying so on stderr and exits with status 1. So work that must happen should not rely on cleanup alone, and a cleanup should not wait without end. In Node and Bun, a cleanup that blocks synchronously (an endless loop) holds the thread, and the deadline cannot interrupt it.
+
 ## Passing values
 
 A plugin and the services it uses may run in different processes. Across processes:
@@ -49,6 +53,7 @@ A plugin and the services it uses may run in different processes. Across process
 | Symbols, bigints, Maps, Sets, TypeScript Dates, binary data, cyclic references, `NaN` / `Infinity` | Cannot cross processes (the call fails). Whether Maps, Sets, Dates, binary data and bigints should cross is decided in [#308](https://github.com/arcships/rutis/issues/308); until then both the real runtimes and the test tools refuse them |
 | `undefined` inside TypeScript data (holding no functions or objects with methods) | Becomes `null` |
 | Go structs, slices, `map[string]T` | Copied as JSON (by their `json` tags); a struct is always data, `rutis.Ref(v)` passes an object by reference. Integers beyond ±2^53−1, `[]byte`, channels and non-string map keys cannot cross |
+| Python `int` | Copied. An integer beyond ±(2^53−1) (absolute value above 9007199254740991) cannot cross processes: the side sending it refuses it before sending, failing only that call, with an error naming the limit (`integer beyond ±(2^53-1)`), and the session goes on; whether it is an argument or a result, at any nesting depth. The same limit as JavaScript's safe integers and Go. Pass larger integers as strings. `bool` is not affected. See [#356](https://github.com/arcships/rutis/issues/356) |
 | Values nested more than 64 levels deep | Cannot cross processes (the call fails, see below) |
 
 Nesting depth: a value nests at most **64 levels**. Each array / list / tuple, object / dictionary (dataclasses included), and Go slice, map or struct is a level, whether or not it holds references; an `Error` / exception passed as a value is a level too. A call's argument list is not a level: each argument may nest 64 levels; a result may nest 64 levels. The side that **would send** a deeper value refuses it before sending, failing only that call, with an error naming the limit (`value nested deeper than 64 levels`):
@@ -62,7 +67,7 @@ All five runtimes (Rust, Node, Bun, Python, Go) and the test tool's strict mode 
 Numbers have the limits below. They describe current behaviour and are **not guaranteed** to stay this way (explicitly not guaranteed); a plugin that depends on them must handle them itself:
 
 - In JavaScript (Node, Bun) numbers are IEEE 754 doubles: an integer beyond ±(2^53−1) becomes the nearest double (2^53+1 arrives in JS as 2^53); `-0` becomes `0`; an integral float (Python's `2.0`) arrives in JS as `2` and leaves again as an integer. Pass large integers that must stay exact as strings.
-- Python keeps integers within 64 bits, and `-0.0`.
+- Every integer Python sends is within ±(2^53−1) (larger ones cannot cross, see the table above); Python keeps `-0.0`.
 - NaN and ±Infinity cannot cross.
 
 Values are not copied within one process. Code that mutates an object after passing it may work in a unit test but fail across processes. The test tool's strict mode (enabled by default) applies the rules above to expose this early.

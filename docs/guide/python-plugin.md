@@ -4,6 +4,7 @@
 
 ## 1. 创建项目
 
+<!-- example: python run -->
 ```bash
 uvx rutis-host new weather --lang python
 cd weather
@@ -22,6 +23,7 @@ uv sync
 
 ## 2. 写插件
 
+<!-- example: python file=weather/src/weather/__init__.py -->
 ```python
 from rutis import define_plugin
 
@@ -55,6 +57,7 @@ plugin = define_plugin(
 
 `rutis.testing` 不需要宿主：
 
+<!-- example: python file=weather/tests/test_plugin.py -->
 ```python
 import asyncio
 import unittest
@@ -77,6 +80,7 @@ class Weather(unittest.TestCase):
         asyncio.run(go())
 ```
 
+<!-- example: python run -->
 ```bash
 uv run python -m unittest discover -s tests
 ```
@@ -85,12 +89,14 @@ uv run python -m unittest discover -s tests
 
 ## 4. 在本地宿主里运行
 
+<!-- example: python run until="weather: running" order=99 -->
 ```bash
 uv run rutis-host dev
 ```
 
-`dev` 用项目的 `.venv` 运行这个插件，改了文件就重新导入它。插件需要的其他服务写在 `rutis.dev.json` 里，例如项目里一个假的 `llm`（`src/fake_llm.py`，提供 `llm` 服务的插件模块）：
+`dev` 用项目的 `.venv` 运行这个插件，改了文件就重新导入它。插件需要的其他服务写在 `rutis.dev.json` 里，例如一个假的 `llm`（行名 `py:fake_llm` 指项目 `src/` 里的模块 `fake_llm`，内容在后面）：
 
+<!-- example: python file=weather/rutis.dev.json -->
 ```json
 {
   "rows": [
@@ -99,6 +105,26 @@ uv run rutis-host dev
   ]
 }
 ```
+
+<!-- example: python file=weather/src/fake_llm.py -->
+```python
+# src/fake_llm.py
+from rutis import define_plugin
+
+
+class FakeLlm:
+    async def ask(self, question):
+        return "sunny"
+
+
+def apply(ctx, config):
+    ctx.provide("llm", FakeLlm())
+
+
+plugin = define_plugin(apply, provides={"llm": FakeLlm})
+```
+
+`dev` 从项目的 `src/` 找插件模块，所以 `fake_llm` 不需要入口点，也不在构建出的 wheel 里（`pyproject.toml` 只打包 `src/weather`）。
 
 和插件 id 相同的那一行给插件本身加配置；其他行是一起运行的插件，也可以是 TypeScript 插件（这时 `rutis.dev.json` 里要加 `"runtimes": { "node": { "project": "." } }`）。`uv run rutis-host check` 列出每一行的依赖、提供的服务和配置 Schema，有问题时以非零状态退出。
 

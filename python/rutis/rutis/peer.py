@@ -205,10 +205,28 @@ def _too_deep() -> ValueError:
     )
 
 
+# The largest integer crossing a session (#356): ±(2^53−1), the integers a
+# JavaScript number holds exactly and the limit Go keeps. Past 2^64 Rust
+# would read one as a float. A larger one fails its own call here, before
+# it is sent; the session goes on. `bool` is an int and crosses as before.
+MAX_SAFE_INTEGER = 2**53 - 1
+
+
+def _too_large() -> ValueError:
+    # Without the integer: a very long one cannot even be written (Python
+    # limits int-to-str conversion).
+    return ValueError(
+        "integer beyond ±(2^53-1), the largest an integer crossing a session may be: send it as a string"
+    )
+
+
 def _data(value: Any, depth: int = 0) -> Any:
     """Plain data for the wire, or TypeError (ValueError if nested deeper
-    than MAX_DEPTH; `depth` counts the levels around it)."""
+    than MAX_DEPTH or an integer beyond ±MAX_SAFE_INTEGER; `depth` counts
+    the levels around it)."""
     if isinstance(value, _DATA):
+        if isinstance(value, int) and not -MAX_SAFE_INTEGER <= value <= MAX_SAFE_INTEGER:
+            raise _too_large()
         return value
     if isinstance(value, (list, tuple, dict)) and depth >= MAX_DEPTH:
         raise _too_deep()

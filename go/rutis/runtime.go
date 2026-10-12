@@ -374,8 +374,9 @@ func (rt *runtimeState) update(ctx context.Context, key string, config any) erro
 	return rt.load(ctx, key, r.entry, config, r.exports, r.isolate)
 }
 
-// dispose unloads every row, latest first.
-func (rt *runtimeState) dispose(ctx context.Context) {
+// dispose unloads every row, latest first. It returns ctx's error when it
+// gave up cleanups that had not finished by then.
+func (rt *runtimeState) dispose(ctx context.Context) error {
 	rt.mu.Lock()
 	rows := make([]*row, 0, len(rt.rows))
 	for _, r := range rt.rows {
@@ -393,9 +394,10 @@ func (rt *runtimeState) dispose(ctx context.Context) {
 		case <-done:
 		case <-ctx.Done():
 			fmt.Fprintf(os.Stderr, "rutis: gave up the cleanups of row %s and those after it: %v\n", rows[i].key, ctx.Err())
-			return
+			return ctx.Err()
 		}
 	}
+	return nil
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────

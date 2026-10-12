@@ -17,6 +17,7 @@ import logging
 import os
 import socket
 import sys
+import threading
 import traceback
 
 from .peer import Peer
@@ -98,7 +99,43 @@ async def run(channel: str, endpoint: dict | None, project: str) -> None:
     session = Session(open_channel(channel), endpoint)
     session.start()
     await session.peer.closed
+    # The rows go now, unless the host disposed them first: it went away
+    # (it was killed, say) and nothing else ends this process. Cleanups that
+    # do not finish within the deadline are given up (exit status 1), also
+    # one that blocks the event loop.
+    give_up_after(shutdown_deadline())
     await session.end()
+
+
+DEADLINE = "RUTIS_SHUTDOWN_TIMEOUT"
+
+
+def shutdown_deadline() -> float:
+    """How long cleanups may take once the session ended, in seconds:
+    RUTIS_SHUTDOWN_TIMEOUT (rutis-host passes its own deadline on), 10 by
+    default."""
+    try:
+        seconds = float(os.environ.get(DEADLINE, ""))
+    except ValueError:
+        return 10.0
+    return seconds if 0 < seconds < float("inf") else 10.0
+
+
+def give_up_after(seconds: float) -> None:
+    """End the process in `seconds` unless it ended before (main exits it
+    once the cleanups ran)."""
+
+    def give_up() -> None:
+        print(
+            f"rutis: cleanups did not finish within {seconds:g} s after the session ended; exiting",
+            file=sys.stderr,
+            flush=True,
+        )
+        os._exit(1)
+
+    timer = threading.Timer(seconds, give_up)
+    timer.daemon = True
+    timer.start()
 
 
 async def serve(spec: str, endpoint: dict) -> None:

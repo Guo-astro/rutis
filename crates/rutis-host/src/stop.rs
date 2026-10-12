@@ -89,6 +89,14 @@ fn deadline_in(
     Ok((deadline, rest))
 }
 
+/// Give the runtime processes this host starts the same deadline, in
+/// [`DEADLINE_VARIABLE`], which they inherit: a runtime whose host went
+/// away without unloading it (killed) unloads its rows itself, gives up
+/// the cleanups that did not finish by then, and exits.
+pub fn pass_on(deadline: Duration) {
+    std::env::set_var(DEADLINE_VARIABLE, deadline.as_secs_f64().to_string());
+}
+
 /// The termination signals: SIGINT, SIGTERM and SIGHUP; on Windows Ctrl-C,
 /// Ctrl-Break and closing the console. Listened to from the start, so a
 /// signal that comes while the host starts ends it once it has started.
