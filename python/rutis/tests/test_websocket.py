@@ -220,7 +220,14 @@ except OSError as error:
         try:
             address = urlsplit(child.stdout.readline().strip())
             self.assertEqual(child.stdout.readline().strip(), "full")
-            with socket.create_connection((address.hostname, address.port), timeout=10):
+            # The connection is what makes the child's accept fail; failing,
+            # the child closes its listener, which resets the connection
+            # queued there. When the reset comes before connect returns,
+            # connect raises it (#303): the child still goes on to exit.
+            try:
+                with socket.create_connection((address.hostname, address.port), timeout=10):
+                    code = child.wait(timeout=10)
+            except ConnectionResetError:
                 code = child.wait(timeout=10)
             out = child.stdout.read()
         finally:
