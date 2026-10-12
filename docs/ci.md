@@ -80,9 +80,9 @@
 | `semver-rutis` | Linux | `packaging` | 整个任务 | 公开 API 和上次发布相比有没有不兼容的改动（只提示） |
 | `dylib-linux-launcher`、`dylib-linux-sdk-bundle` | Linux | `dylib` | — | dylib 测试，分两个任务同时跑 |
 | `dylib-linux-repro` | Linux | `repro` | 整个任务 | SDK 可复现构建（在一台机器上用两个目录各构建一次） |
-| `dylib-macos` | macOS | `dylib` | 可复现构建一步 | 同样的 dylib 测试，在一个任务里依次跑，共用一次构建的 bundle；可复现构建这一步只在 `repro` 打开时跑 |
+| `dylib-macos` | macOS（自托管，§10） | `dylib` | 可复现构建一步 | 同样的 dylib 测试，在一个任务里依次跑，共用一次构建的 bundle；可复现构建这一步只在 `repro` 打开时跑 |
 | `release-dry-run` | Linux | `packaging` | 整个任务 | 发布要用的包能构建（crate、npm 包、Python 包）。各平台的二进制和 wheel 由 `install.yml` 构建并安装（§2）：PR 上只有 Linux x64，Windows、macOS 的打包在合并后的 main 上检查，aarch64 在发布前检查 |
-| `sdk-repro`、`sdk-repro-macos` 及比对 | Linux、macOS | 只在 `all` 时 | 整个任务 | 在两台机器上分别构建 SDK，比较结果是否相同 |
+| `sdk-repro`、`sdk-repro-macos` 及比对 | Linux、macOS（自托管，§10） | 只在 `all` 时 | 整个任务 | 在两台机器上分别构建 SDK，比较结果是否相同 |
 | `ci-ok` | Linux | 总是 | — | 汇总（§5） |
 
 ### 和平台有关的测试
@@ -203,6 +203,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 
 - 所有任务用 `Swatinem/rust-cache`，设置 `save-if: github.ref == 'refs/heads/main'`：只有 main 上的运行保存缓存。
 - PR 只能读取 main 和它自己的缓存。PR 不保存，是为了不占用仓库 10 GB 的缓存空间，把 main 的缓存挤掉。
+- 自托管的 macOS runner 不用 `rust-cache`，保留自己的 target 目录（§10）。
 - 加任务时照此设置（`ci.yml` 里 `rust` 任务的 `rust-cache` 处有说明）。
 - 不能用缓存的检查（SDK 可复现构建）放在 main 上，PR 只在 `repro` 打开时运行。
 
@@ -225,3 +226,27 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 `runtimes-go`、`runtimes-bun` 在 main 上的 macOS 矩阵项里，Node、Python 只是跨语言行的对端，和 Linux 一样用最低版本。发布用的 Node（`release.yml`、`package.yml` 和 `ci.yml` 的 `release-dry-run`）是发布工具的版本，不属于支持矩阵。
 
 **改了声明，要在同一个 PR 里改 CI 的版本**：改 `engines`、`requires-python`、websockets 下限或 `rust-version` 的 PR，同时改上表里对应任务的版本；否则声明的最低版本没有经过验证（Q10.3）。
+
+## 10. 自托管的 macOS runner
+
+`ci.yml` 的 `dylib-macos`、`sdk-repro-macos`，以及 `install.yml` 在 main 和 PR 上的 `darwin-arm64`，跑在自托管的 macOS runner 上：一台专用、隔离的 Mac，可以装多个 runner 实例，标签都是 `self-hosted, macOS, ARM64`（第一个实例叫 `macos-1`）。只做调度的小任务也在那里跑，免得排队等 GitHub 的 Linux runner：`ci.yml` 的 `changes`、`ci-ok`，`install.yml`、`package.yml` 的 `plan`（发布时，即 tag 上，`plan` 仍用 `ubuntu-24.04`）。只有一个实例时它们会排在正在跑的 macOS 任务后面，所以要多加实例。其余任务仍用 GitHub 的 runner：`network-macos`（暂时：在自托管的机器上，`rpc_callbacks` 启动的 Node 进程每次运行都有一个被 SIGKILL，见 #287；修好后把仓库变量 `NETWORK_MACOS_RUNNER` 设成 `["self-hosted","macOS","ARM64"]` 即可切过去，任务里的步骤两种 runner 都能跑）、`darwin-x64`（要 Intel 的 `macos-15-intel`）、`package.yml` 的 macOS 构建（发布用的文件）、`release.yml` 调用 `install.yml` 时的 `darwin-arm64`（发布前的检查用 `macos-15`）、`runtimes-go`/`runtimes-bun` 在 main 上的 macOS 矩阵项、Linux 和 Windows 的任务。
+
+**切回 GitHub 的 runner，不用改代码**：仓库变量 `MACOS_RUNNER`（Settings → Secrets and variables → Actions → Variables）是 `runs-on` 的 JSON 值，没设置时为 `["self-hosted","macOS","ARM64"]`。设成 `"macos-15"`（带引号）就全部回到 GitHub 的 macOS；删掉变量就回到自托管。`gh variable set MACOS_RUNNER --body '"macos-15"'`。调度任务用另一个变量 `GATE_RUNNER`，切回时设成 `"ubuntu-24.04"`。
+
+自托管的机器在任务之间保留状态，几个实例同时跑。这些任务开头和结尾（`if: always()`）运行 `tools/ci-self-hosted.sh`：
+
+- 结束这个实例之前的任务留下的进程：命令行或工作目录在这个实例的工作区、target 目录或场景目录下的进程，不碰 runner 本身和别的实例的任务；
+- 场景目录 `RUTIS_E2E_DIR` 是每个实例自己的 `/tmp/rutis-e2e-<runner 名>`（不用 `runner.temp`：Unix socket 路径在 macOS 上最长 104 字节，见 `tests/e2e/src/lib.rs`），开头和结尾清空；
+- 编译不用 `rust-cache`（它会把缓存再上传到 GitHub），`CARGO_TARGET_DIR` 是每个实例保留的 `~/.cache/rutis-ci/<runner 名>/target`，超过 30 GB（`RUTIS_CI_TARGET_MAX_GB`）时清空；`setup-node`、`setup-go` 的缓存也只在 GitHub 的 runner 上用；
+- Python 不用 `setup-python`（它的 macOS 版本只能装在 `/Users/runner` 下），用 uv 装的最新 Python，每个任务在 `runner.temp` 里建一个带 pip 的虚拟环境放进 `PATH`；
+- `tools/*.sh` 留在 `/tmp/rutis-*` 的目录超过 12 小时后删除。
+
+**加一个实例前，机器上要有**：
+
+1. runner 用 `./config.sh --labels self-hosted,macOS,ARM64 --name macos-<n>` 注册（名字在机器上唯一，目录和缓存按名字分开），`./svc.sh install && ./svc.sh start` 作为服务运行。
+2. 文件描述符上限 10240：在 `~/Library/LaunchAgents/actions.runner.*.plist` 里加 `SoftResourceLimits` 和 `HardResourceLimits`，各含 `NumberOfFiles` = `10240`，然后 `./svc.sh stop && ./svc.sh start`。
+3. rustup（`dtolnay/rust-toolchain` 用它装 `rust-toolchain.toml` 的版本）：`curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain none`。
+4. Xcode 命令行工具（`xcode-select --install`）：`cc`、`codesign`、`otool`、`lipo`。`sdk-repro-macos` 打印 Xcode 版本，只有命令行工具时打印它们的版本。
+5. 磁盘至少 100 GB 空闲（每个实例的 target 目录最多 30 GB，加上 `_work/_tool` 里的 Node、Python、Go、Bun）。
+6. 不睡眠：`sudo pmset -a sleep 0 disksleep 0`（或在系统设置里关掉）。
+7. 不需要 Homebrew：这些任务只用系统自带的 `bash`（3.2）、`perl`、`tar`、`shasum`、`lsof`、`jq`（macOS 15 起系统自带 `/usr/bin/jq`，`ci-ok` 要用），Node、Go、Bun、uv 由各自的 setup action 装进 `_work/_tool`，Python 由 uv 装进 `~/.local/share/uv`。

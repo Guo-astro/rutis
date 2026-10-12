@@ -44,8 +44,12 @@ jobs:
   # What the change touches. The mapping from paths to jobs is reviewed like
   # code; a job skipped on a pull request that then fails on main means a
   # path is missing here (Q12.3.3).
+  #
+  # This job and ci-ok only orchestrate: they run on the self-hosted macOS
+  # runners (docs/ci.md §10); the repository variable GATE_RUNNER (JSON)
+  # switches them, e.g. to "ubuntu-24.04".
   changes:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.GATE_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     permissions:
       contents: read
       pull-requests: read
@@ -595,20 +599,33 @@ jobs:
   network-macos:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: macos-15
+    # GitHub's macOS for now: on the self-hosted runners the Node processes
+    # of rpc_callbacks are SIGKILLed at launch (#287). The repository
+    # variable NETWORK_MACOS_RUNNER (JSON) switches it, e.g. to
+    # ["self-hosted","macOS","ARM64"]; the steps below work on both
+    # (docs/ci.md §10).
+    runs-on: ${{ fromJSON(vars.NETWORK_MACOS_RUNNER || '"macos-15"') }}
     env:
-      # The end-to-end scenarios' directories (as in `e2e`).
+      # The end-to-end scenarios' directories (as in `e2e`); on a
+      # self-hosted runner, its own (tools/ci-self-hosted.sh).
       RUTIS_E2E_DIR: /tmp/rutis-e2e
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The caches of setup-node and setup-go only on hosted runners: a
+      # self-hosted runner keeps its own, and restoring over it fails.
       - uses: actions/setup-node@v4
         with:
           node-version: '26'
-          cache: npm
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: node/rutis-runtime/package-lock.json
       # The SDK's own tests do not depend on the platform: full runs only.
       - run: npm --prefix node/rutis test
@@ -616,9 +633,21 @@ jobs:
       # The runtime's channels, handshake and WebSocket.
       - run: npm --prefix node/rutis-runtime ci
       - run: npm --prefix node/rutis-runtime test
+      # setup-python's macOS builds install only under /Users/runner (the
+      # hosted image's user): a self-hosted runner takes uv's latest Python,
+      # in a virtual environment with pip.
       - uses: actions/setup-python@v5
+        if: runner.environment == 'github-hosted'
         with:
           python-version: '3.x'
+      - uses: astral-sh/setup-uv@v6
+        if: runner.environment == 'self-hosted'
+      - name: Python (self-hosted runner)
+        if: runner.environment == 'self-hosted'
+        run: |
+          uv python install 3
+          uv venv --seed --python-preference only-managed --python 3 "$RUNNER_TEMP/python"
+          echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
       - run: python3 -m pip install "websockets>=15"
       - run: python3 -m unittest discover -s tests
         working-directory: python/rutis
@@ -628,6 +657,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: go/rutis/go.mod
       - name: cargo test (network stack, runtimes, host)
         env:
@@ -646,6 +676,12 @@ jobs:
       - name: cargo test (end-to-end scenarios)
         if: '!cancelled()'
         run: cargo test -p rutis-e2e
+      # Who killed a process that ended with SIGKILL (#287): the kernel's
+      # memory pressure kills and code signing rejections.
+      - name: kernel kills in the system log
+        if: failure()
+        run: |
+          /usr/bin/log show --last 20m --style compact --predicate 'process == "kernel" AND (eventMessage CONTAINS[c] "memorystatus" OR eventMessage CONTAINS "CODE SIGNING" OR eventMessage CONTAINS[c] "kill")' | tail -n 200
       # The failed scenarios' directories, without what is not read for a
       # diagnosis and that upload-artifact would follow or fail on: links
       # into the checkout, sockets, installed packages and caches.
@@ -665,6 +701,9 @@ jobs:
       - name: keep workspace static builds available
         if: '!cancelled()'
         run: cargo check --workspace --all-targets
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   # What a release publishes, packaged on main and when packaging changes
   # (Q12.1): the crates build from their packages, the npm packages pack, the
@@ -780,11 +819,16 @@ jobs:
   dylib-macos:
     needs: changes
     if: needs.changes.outputs.dylib == 'true'
-    runs-on: macos-15
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: plugin file checks
@@ -805,6 +849,9 @@ jobs:
         run: bash tools/test-dylib-repro.sh
       - name: external plugin build against a prebuilt SDK
         run: bash tools/test-sdk-bundle.sh "${{ steps.bundle.outputs.dir }}"
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   # The runtimes on Windows: Node, Python and Go processes on loopback
   # channels, rows of every language, peers and WebSocket links; and the
@@ -911,11 +958,13 @@ jobs:
           name: sdk-hash-${{ matrix.slot }}
           path: ${{ runner.temp }}/sdk.sha
 
-  # Same as sdk-repro, on two separate macOS runners.
+  # Same as sdk-repro, on two macOS runners (self-hosted: two runner
+  # instances, or one twice; the paths differ by slot either way). Builds in
+  # runner.temp, which the runner empties.
   sdk-repro-macos:
     needs: changes
     if: needs.changes.outputs.all == 'true'
-    runs-on: macos-15
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     strategy:
       matrix:
         slot: [a, b]
@@ -932,7 +981,8 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: '13.0'
         run: |
           mkdir -p "$CARGO_HOME"
-          xcodebuild -version
+          # Xcode, or on a self-hosted runner perhaps only its command line tools.
+          xcodebuild -version 2>/dev/null || pkgutil --pkg-info=com.apple.pkg.CLTools_Executables
           export RUSTFLAGS="--remap-path-prefix=$PWD=/src --remap-path-prefix=$CARGO_HOME=/cargo --remap-path-prefix=$CARGO_TARGET_DIR=/target"
           export RUTIS_SDK_LOCKFILE="$PWD/Cargo.lock"
           export RUTIS_SDK_ARTIFACT_SHA256="$(printf '0%.0s' {1..64})"
@@ -997,7 +1047,7 @@ jobs:
       - sdk-repro-macos
       - sdk-repro-compare
       - sdk-repro-macos-compare
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.GATE_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     steps:
       - name: every selected job passed
         env:
