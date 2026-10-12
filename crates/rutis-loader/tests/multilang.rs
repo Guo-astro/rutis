@@ -4,6 +4,8 @@
 //! services across the two processes.
 #![cfg(all(feature = "node", feature = "python"))]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -16,7 +18,11 @@ use rutis_loader::{
     Chain, EntryStatus, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver,
     RuntimeRowsPlugin, ServiceCatalog,
 };
+use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
+
+/// Twice HANG_GUARD: the Node and Python runtimes start cold (#238).
+const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 // ── The plugins, once per language ──────────────────────────────
 
@@ -182,13 +188,12 @@ impl Probe {
     }
 
     async fn wait_for(&self, line: &str) {
-        tokio::time::timeout(Duration::from_secs(15), async {
-            while self.position(line).is_none() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
+        COLD.eventually_with(
+            || self.position(line).map(|_| ()),
+            &format!("{line:?} recorded"),
+            || format!("{:?}", self.lines()),
+        )
         .await
-        .unwrap_or_else(|_| panic!("{line:?} not recorded: {:?}", self.lines()));
     }
 }
 
@@ -322,16 +327,6 @@ fn row_state(loader: &Loader, id: &str) -> Option<FiberState> {
     }
 }
 
-async fn until(what: &str, mut done: impl FnMut() -> bool) {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        while !done() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
-}
-
 fn all_rows(fixture: &Fixture) -> Vec<Value> {
     vec![
         py_row("pp", "py_provider"),
@@ -408,11 +403,14 @@ async fn a_provider_that_goes_stops_only_its_users() {
         let loader = &fixture.loader;
         let all = all_rows(&fixture);
         loader.reconcile(rows(all.clone()), None).await.unwrap();
-        until("every row to run", || {
-            ["pp", "pc", "pl", "jp", "jc", "jl"]
-                .iter()
-                .all(|id| row_state(loader, id) == Some(FiberState::Active))
-        })
+        COLD.until(
+            || {
+                ["pp", "pc", "pl", "jp", "jc", "jl"]
+                    .iter()
+                    .all(|id| row_state(loader, id) == Some(FiberState::Active))
+            },
+            "every row to run",
+        )
         .await;
 
         let remaining: Vec<Value> = all.into_iter().filter(|r| r["id"] != provider).collect();
@@ -424,11 +422,14 @@ async fn a_provider_that_goes_stops_only_its_users() {
         };
         let provider_bye = format!("{prefix} provider: bye");
         fixture.probe.wait_for(&provider_bye).await;
-        until("the users to wait", || {
-            users
-                .iter()
-                .all(|id| row_state(loader, id) == Some(FiberState::Pending))
-        })
+        COLD.until(
+            || {
+                users
+                    .iter()
+                    .all(|id| row_state(loader, id) == Some(FiberState::Pending))
+            },
+            "the users to wait",
+        )
         .await;
         for id in others {
             assert_eq!(
@@ -464,6 +465,7 @@ async fn a_provider_that_goes_stops_only_its_users() {
 async fn injected_services_gate_the_plugin() {
     let fixture = fixture().await;
     let loader = &fixture.loader;
+    let transitions = common::Transitions::on(&fixture.root);
     loader
         .reconcile(
             rows(vec![
@@ -474,15 +476,20 @@ async fn injected_services_gate_the_plugin() {
         )
         .await
         .unwrap();
-    until("both rows to know their injects", || {
-        ["pg", "jg"].iter().all(|id| {
-            loader
-                .get(id)
-                .is_some_and(|entry| entry.meta["inject"].is_array())
-        })
-    })
+    let fiber = |id: &str| loader.get(id).unwrap().plugin.unwrap();
+    let first = [fiber("pg"), fiber("jg")];
+    COLD.until(
+        || {
+            ["pg", "jg"].iter().all(|id| {
+                loader
+                    .get(id)
+                    .is_some_and(|entry| entry.meta["inject"].is_array())
+            })
+        },
+        "both rows to know their injects",
+    )
     .await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // The states now; that they stay so until `llm` comes, `loads` checks below.
     assert_eq!(row_state(loader, "pg"), Some(FiberState::Pending));
     assert_eq!(row_state(loader, "jg"), Some(FiberState::Pending));
 
@@ -492,13 +499,28 @@ async fn injected_services_gate_the_plugin() {
         .unwrap();
     fixture.probe.wait_for("py gated: 42").await;
     fixture.probe.wait_for("js gated: 42").await;
+    // Neither started before `llm`: each row's fibers loaded once, for it.
+    // An earlier start's Loading comes before the changes `loads` waits
+    // for (one fiber's changes arrive in order).
+    for (index, id) in ["pg", "jg"].into_iter().enumerate() {
+        let fibers = [first[index], fiber(id)];
+        assert_eq!(
+            transitions.loads(&fibers).await,
+            1,
+            "{id}: {:?}",
+            fibers.map(|fiber| transitions.of(fiber))
+        );
+    }
     llm.dispose().await.unwrap();
     fixture.probe.wait_for("py gated: bye").await;
     fixture.probe.wait_for("js gated: bye").await;
-    until("both rows to wait again", || {
-        row_state(loader, "pg") == Some(FiberState::Pending)
-            && row_state(loader, "jg") == Some(FiberState::Pending)
-    })
+    COLD.until(
+        || {
+            row_state(loader, "pg") == Some(FiberState::Pending)
+                && row_state(loader, "jg") == Some(FiberState::Pending)
+        },
+        "both rows to wait again",
+    )
     .await;
     fixture.root.shutdown().await.unwrap();
 }
@@ -520,11 +542,14 @@ async fn a_dead_python_process_stops_only_its_rows() {
     fixture.probe.wait_for("py local: native").await;
     all.push(py_row("px", "py_exit"));
     loader.reconcile(rows(all), None).await.unwrap();
-    until("the Python rows to wait", || {
-        ["pp", "pc", "pl", "jc"]
-            .iter()
-            .all(|id| row_state(loader, id) == Some(FiberState::Pending))
-    })
+    COLD.until(
+        || {
+            ["pp", "pc", "pl", "jc"]
+                .iter()
+                .all(|id| row_state(loader, id) == Some(FiberState::Pending))
+        },
+        "the Python rows to wait",
+    )
     .await;
     assert_eq!(row_state(loader, "jp"), Some(FiberState::Active));
     assert_eq!(row_state(loader, "jl"), Some(FiberState::Active));
