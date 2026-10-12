@@ -599,9 +599,12 @@ jobs:
   network-macos:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    # The self-hosted macOS runners (docs/ci.md §10); the repository
-    # variable MACOS_RUNNER (JSON) switches to another, e.g. "macos-15".
-    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
+    # GitHub's macOS for now: on the self-hosted runners the Node processes
+    # of rpc_callbacks are SIGKILLed at launch (#287). The repository
+    # variable NETWORK_MACOS_RUNNER (JSON) switches it, e.g. to
+    # ["self-hosted","macOS","ARM64"]; the steps below work on both
+    # (docs/ci.md §10).
+    runs-on: ${{ fromJSON(vars.NETWORK_MACOS_RUNNER || '"macos-15"') }}
     env:
       # The end-to-end scenarios' directories (as in `e2e`); on a
       # self-hosted runner, its own (tools/ci-self-hosted.sh).
@@ -673,6 +676,12 @@ jobs:
       - name: cargo test (end-to-end scenarios)
         if: '!cancelled()'
         run: cargo test -p rutis-e2e
+      # Who killed a process that ended with SIGKILL (#287): the kernel's
+      # memory pressure kills and code signing rejections.
+      - name: kernel kills in the system log
+        if: failure()
+        run: |
+          /usr/bin/log show --last 20m --style compact --predicate 'process == "kernel" AND (eventMessage CONTAINS[c] "memorystatus" OR eventMessage CONTAINS "CODE SIGNING" OR eventMessage CONTAINS[c] "kill")' | tail -n 200
       # The failed scenarios' directories, without what is not read for a
       # diagnosis and that upload-artifact would follow or fail on: links
       # into the checkout, sockets, installed packages and caches.
