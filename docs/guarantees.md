@@ -35,7 +35,8 @@
 | `loader/` | `loader/<名字>` | rutis-loader 设计 | 预留 |
 | `instance/` | `instance/<名字>` | 实例子树与实例服务设计 | 预留 |
 | `bridge/` | `bridge/<名字>` | 会话协议、运行时、链路相关设计 | 预留 |
-| `host/` | `host/<名字>` | rutis-host 设计与用户文档 | 预留 |
+| `host/` | `host/<名字>` | rutis-host 设计与用户文档 | 预留；`host/rutis-json-format` 已登记（#207） |
+| `dsh/` | `dsh/<名字>` | rutis-dsh 设计与文档 | 预留；`dsh/user-layer-format` 已登记（#207） |
 | `sdk/` | `sdk/<名字>` | 插件 SDK 与测试工具：[插件 API](guide/plugin-api.md)、质量规范 Q6.7 | `sdk/testing-matches-runtime` 已登记（#206） |
 
 `D` 编号沿用设计文档里的决策编号（包括复述其他编号的 D20、D27 和已并入 D27 的 D26），方便与设计文档、测试注释对照。新族的 `<名字>` 用短横线连接的英文小写短语（如 `loader/rollback`）。
@@ -167,7 +168,18 @@ PR 模板中有对应的检查项。
 
 ---
 
-## 8. 插件 SDK：`sdk/*`
+## 8. 持久化格式：`host/rutis-json-format`、`dsh/user-layer-format`
+
+出处：[design-quality-step2-2026-10-11](design-quality-step2-2026-10-11.md) §七；用户文档 [rutis-host](guide/rutis-host.md) 的 `format` 一节；发布流程见 [release](release.md) 的"持久化样本"（#207，风险 J3）。
+
+| 编号 | 内容 | 级别 | 状态 | 验证 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `host/rutis-json-format` | `rutis.json` 顶层 `format` 是格式版本，可省略、省略按 1 读；比本 rutis-host 支持的新时，在读其他字段之前拒绝并说明升级 rutis-host；`rutis-host new` 生成的文件写上它；每个已发布版本的 `rutis.json`（0.8.0 起）仍按当时的含义读出 | 契约行为 | 已验证 | `rutis-host/tests/config.rs::the_format_is_checked`、`rutis-host/tests/errors.rs::a_configuration_that_is_not_there_or_not_valid`、`rutis-host/tests/persisted.rs::every_release_s_rutis_json_reads_as_it_did`、`::formats_no_longer_read_are_refused`、`rutis-host/src/new.rs::projects_are_created_with_their_names_filled_in` | 样本与期望在 `tests/fixtures/persisted/<版本>/`，0.8.0、0.9.0、0.9.1 的期望由各自 tag 的解析器生成 |
+| `dsh/user-layer-format` | dsh 用户层 `<profile>/cordis.patch.yml`（Cordis 的配置格式）没有格式版本；每个已发布版本写下的用户层（0.8.0 起）仍读出同样的 patch | 契约行为 | 已验证 | `rutis-dsh/tests/persisted.rs::every_release_s_user_layer_reads_as_it_did` | 不加版本字段（Cordis 的配置没有版本管理），兼容只靠样本；读不出的旧格式没有显式拒绝 |
+
+---
+
+## 9. 插件 SDK：`sdk/*`
 
 出处：[插件 API](guide/plugin-api.md)、质量规范 Q6.7。
 
@@ -177,13 +189,14 @@ PR 模板中有对应的检查项。
 
 ---
 
-## 9. 统计（基准 `2e77fdc`，另加 `sdk/*`）
+## 10. 统计（基准 `2e77fdc`，另加 §8、§9）
 
 | 范围 | 已验证 | 部分验证 | 未验证 | 明确不保证 | 合计 |
 | --- | --- | --- | --- | --- | --- |
 | `core/D*`（不含 D20、D26、D27） | 19 | 8 | 2 | 1 | 30 |
 | `boundary/5.*` | 2 | 2 | 4 | 0 | 8 |
-| `sdk/*`（#206） | 0 | 1 | 0 | 0 | 1 |
-| 合计 | 21 | 11 | 6 | 1 | 39 |
+| `host/`、`dsh/`（§8） | 2 | 0 | 0 | 0 | 2 |
+| `sdk/*`（§9，#206） | 0 | 1 | 0 | 0 | 1 |
+| 合计 | 23 | 11 | 6 | 1 | 41 |
 
 其中核心承诺 10 条：已验证 5（D6、D14、D21、D32、5.6），部分验证 5（D7、D22、D28、D30、5.8），未验证 0。未验证的契约行为 6 条（D8、D29、5.3、5.4、5.5、5.7），作为 0.10 的基线。核心承诺的划分由维护者确认，可以调整。

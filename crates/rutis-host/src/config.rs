@@ -2,6 +2,7 @@
 //!
 //! ```json
 //! {
+//!   "format": 1,
 //!   "id": "main",
 //!   "runtimes": {
 //!     "node": { "project": "." },
@@ -20,6 +21,11 @@
 //! name crosses between languages and nodes by name. A field the host does
 //! not know is an error; in a row, a warning (the row runs without it), so
 //! a misspelt one is not dropped without a word.
+//!
+//! `format` is the file's format, 1 when absent (no file before 0.10 has
+//! one). A file of a newer format than this host reads is refused before
+//! anything else in it is read, saying what to upgrade: its other fields
+//! may mean what this host does not know.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -30,6 +36,9 @@ use serde_json::{json, Value};
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostConfig {
+    /// The file's format (1 when absent); at most [`FORMAT`].
+    #[serde(default = "default_format", deserialize_with = "format")]
+    pub format: u64,
     /// This node's endpoint id, which linked peers see.
     #[serde(default = "default_id")]
     pub id: String,
@@ -49,6 +58,49 @@ pub struct HostConfig {
 
 fn default_id() -> String {
     "host".into()
+}
+
+/// The newest `rutis.json` format this host reads. Formats start at 1.
+pub const FORMAT: u64 = 1;
+
+fn default_format() -> u64 {
+    1
+}
+
+/// `format`, refused when it is not one this host reads.
+fn format<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    let format = u64::deserialize(deserializer)?;
+    check_format(format).map_err(serde::de::Error::custom)?;
+    Ok(format)
+}
+
+fn check_format(format: u64) -> Result<(), String> {
+    match format {
+        0 => Err(format!(
+            "format 0 is not a rutis.json format: formats start at 1, and this rutis-host reads up to {FORMAT}"
+        )),
+        format if format > FORMAT => Err(format!(
+            "this file is format {format}, this rutis-host reads up to {FORMAT}: upgrade rutis-host"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// The file's `format`, checked before the rest of the file: a newer
+/// format's other fields are unknown here, and the error to show is the
+/// format's. Anything else wrong (not JSON, a `format` that is not a
+/// whole number) is left to the full read, which says where.
+fn check_newer_format(text: &str) -> Result<(), String> {
+    #[derive(Deserialize)]
+    struct Format {
+        format: Option<Value>,
+    }
+    match serde_json::from_str::<Format>(text) {
+        Ok(Format {
+            format: Some(Value::Number(format)),
+        }) => format.as_u64().map_or(Ok(()), check_format),
+        _ => Ok(()),
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -207,6 +259,7 @@ impl HostConfig {
             ),
             _ => format!("{}: {error}", path.display()),
         })?;
+        check_newer_format(&text).map_err(|error| format!("{}: {error}", path.display()))?;
         let mut config: Self =
             serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
         let mut ignored = Vec::new();

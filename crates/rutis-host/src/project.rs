@@ -46,6 +46,7 @@ pub fn dev_config(dir: &Path) -> Result<(HostConfig, String), String> {
     let id = rows[0]["id"].as_str().unwrap_or("plugin").to_owned();
     let own_ids: Vec<Value> = rows.iter().map(|row| row["id"].clone()).collect();
     let mut config = HostConfig {
+        format: crate::config::FORMAT,
         id: "dev".into(),
         runtimes,
         listen: Vec::new(),

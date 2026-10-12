@@ -55,6 +55,7 @@ On Unix, a signal `rutis-host` was started ignoring (SIGHUP under `nohup`, for e
 
 ```json
 {
+  "format": 1,
   "id": "main",
   "runtimes": {
     "node": { "project": "." },
@@ -80,6 +81,16 @@ On Unix, a signal `rutis-host` was started ignoring (SIGHUP under `nohup`, for e
 Relative paths in the file are resolved from the directory containing the file.
 
 An unknown field is an error: the host does not start, and says the file, the line and column, and the fields allowed there. An unknown field in `rows` is a warning: the row runs (without it), and before starting the host says the file, which row, and the fields a row has. A misspelt field is never silently ignored.
+
+### `format`
+
+The file's format version, currently `1`. It may be omitted, and is then read as `1` (files from before 0.10 have no such field and are read as before); the `rutis.dev.json` that `rutis-host new` generates includes it. A file of a newer format than this `rutis-host` supports is not read; the host reports an error before starting, for example:
+
+```text
+rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-host
+```
+
+Upgrade `rutis-host` in that case. The format version increases only when the meaning of `rutis.json` changes, and the release notes say so.
 
 ### `id`
 

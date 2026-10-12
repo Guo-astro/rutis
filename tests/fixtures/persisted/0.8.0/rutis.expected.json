@@ -1,0 +1,140 @@
+{
+  "format": 1,
+  "id": "main",
+  "runtimes": {
+    "node": {
+      "project": "<dir>",
+      "runtime": "<dir>/vendor/rutis-runtime"
+    },
+    "py": {
+      "project": "<dir>/plugins",
+      "python": "<dir>/.venv/bin/python"
+    },
+    "remote": [
+      {
+        "name": "gpu",
+        "language": "python"
+      },
+      {
+        "name": "edge",
+        "language": "node"
+      }
+    ]
+  },
+  "listen": [
+    {
+      "name": "public",
+      "address": "0.0.0.0:7443",
+      "cert": "<dir>/tls/server.pem",
+      "key": "<dir>/tls/server.key"
+    },
+    {
+      "name": "local",
+      "address": "127.0.0.1:7444"
+    }
+  ],
+  "rows": [
+    {
+      "id": "weather",
+      "name": "weather-plugin",
+      "config": {
+        "city": "Oslo"
+      },
+      "inject": [
+        "llm"
+      ],
+      "isolate": {
+        "cache": true
+      }
+    },
+    {
+      "id": "llm",
+      "name": "py:llm_gateway",
+      "isolate": {
+        "http": "shared"
+      }
+    },
+    {
+      "id": "local-tool",
+      "name": "file://<dir>/tools/tool.ts"
+    },
+    {
+      "id": "old-tool",
+      "name": "file://<dir>/../shared/old-tool.mjs",
+      "disabled": true
+    },
+    {
+      "id": "tools",
+      "group": true,
+      "config": [
+        {
+          "id": "tool-a",
+          "name": "./tools/a.ts",
+          "config": {
+            "level": 2
+          }
+        },
+        {
+          "id": "tool-b",
+          "name": "tool-b-plugin",
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "id": "office",
+      "name": "rutis-bridge/peer",
+      "config": {
+        "peer": "office",
+        "dial": "wss://office.example.com/rutis",
+        "export": [
+          "weather"
+        ],
+        "transport": "websocket",
+        "identity": "host"
+      }
+    },
+    {
+      "id": "branch",
+      "name": "rutis-bridge/peer",
+      "config": {
+        "peer": "branch",
+        "listen": "public",
+        "import": [
+          "clock"
+        ],
+        "transport": "websocket",
+        "identity": "host"
+      }
+    },
+    {
+      "id": "sidecar",
+      "name": "rutis-bridge/peer",
+      "config": {
+        "peer": "sidecar",
+        "dial": "/run/rutis/sidecar.sock",
+        "transport": "local",
+        "identity": "host"
+      }
+    },
+    {
+      "id": "gpu",
+      "name": "rutis-bridge/peer",
+      "config": {
+        "peer": "gpu",
+        "dial": "wss://gpu.example.com/rutis",
+        "runtime": "gpu",
+        "transport": "websocket",
+        "identity": "host"
+      }
+    },
+    {
+      "id": "embedder",
+      "name": "gpu:embedder"
+    },
+    {
+      "id": "clock",
+      "name": "peer:office/clock"
+    }
+  ]
+}

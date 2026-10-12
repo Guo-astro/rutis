@@ -35,7 +35,8 @@ Numbers have the form `<family>/<name>` and are never reused; when a guarantee i
 | `loader/` | `loader/<name>` | rutis-loader designs | reserved |
 | `instance/` | `instance/<name>` | instance subtree and instance service designs | reserved |
 | `bridge/` | `bridge/<name>` | session protocol, runtime and link designs | reserved |
-| `host/` | `host/<name>` | rutis-host designs and user documentation | reserved |
+| `host/` | `host/<name>` | rutis-host designs and user documentation | reserved; `host/rutis-json-format` registered (#207) |
+| `dsh/` | `dsh/<name>` | rutis-dsh designs and documentation | reserved; `dsh/user-layer-format` registered (#207) |
 | `sdk/` | `sdk/<name>` | plugin SDKs and test tools: [plugin API](guide/plugin-api.en.md), quality standard Q6.7 | `sdk/testing-matches-runtime` registered (#206) |
 
 `D` numbers keep the decision numbers of the design documents (including D20 and D27, which restate other numbers, and D26, merged into D27), so they line up with the designs and the test comments. In new families `<name>` is a short lower-case English phrase joined by hyphens (e.g. `loader/rollback`).
@@ -167,7 +168,18 @@ Source: [requirements-protocol-plugins](requirements-protocol-plugins.en.md) §5
 
 ---
 
-## 8. Plugin SDKs: `sdk/*`
+## 8. Persisted formats: `host/rutis-json-format`, `dsh/user-layer-format`
+
+Source: [design-quality-step2-2026-10-11](design-quality-step2-2026-10-11.md) §7; the `format` section of the user documentation [rutis-host](guide/rutis-host.en.md); the release process in "Persisted samples" of [release](release.en.md) (#207, risk J3).
+
+| Number | Content | Level | Status | Verification | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `host/rutis-json-format` | The top-level `format` of `rutis.json` is its format version, optional and read as 1 when absent; a newer one than this rutis-host supports is refused before any other field is read, saying to upgrade rutis-host; `rutis-host new` writes it in the files it generates; every released version's `rutis.json` (from 0.8.0) still reads with the meaning it had then | contract behaviour | verified | `rutis-host/tests/config.rs::the_format_is_checked`, `rutis-host/tests/errors.rs::a_configuration_that_is_not_there_or_not_valid`, `rutis-host/tests/persisted.rs::every_release_s_rutis_json_reads_as_it_did`, `::formats_no_longer_read_are_refused`, `rutis-host/src/new.rs::projects_are_created_with_their_names_filled_in` | samples and expectations in `tests/fixtures/persisted/<version>/`; the expectations of 0.8.0, 0.9.0 and 0.9.1 were produced by each tag's own parser |
+| `dsh/user-layer-format` | The dsh user layer `<profile>/cordis.patch.yml` (a Cordis configuration format) has no format version; the user layer each released version wrote (from 0.8.0) still reads as the same patches | contract behaviour | verified | `rutis-dsh/tests/persisted.rs::every_release_s_user_layer_reads_as_it_did` | no version field (Cordis configuration is not versioned), so compatibility rests on the samples alone; an old format that no longer reads is not refused explicitly |
+
+---
+
+## 9. Plugin SDKs: `sdk/*`
 
 Source: [plugin API](guide/plugin-api.en.md), quality standard Q6.7.
 
@@ -177,13 +189,14 @@ Source: [plugin API](guide/plugin-api.en.md), quality standard Q6.7.
 
 ---
 
-## 9. Counts (baseline `2e77fdc`, plus `sdk/*`)
+## 10. Counts (baseline `2e77fdc`, plus §8 and §9)
 
 | Scope | Verified | Partly verified | Not verified | Explicitly not guaranteed | Total |
 | --- | --- | --- | --- | --- | --- |
 | `core/D*` (without D20, D26, D27) | 19 | 8 | 2 | 1 | 30 |
 | `boundary/5.*` | 2 | 2 | 4 | 0 | 8 |
-| `sdk/*` (#206) | 0 | 1 | 0 | 0 | 1 |
-| Total | 21 | 11 | 6 | 1 | 39 |
+| `host/`, `dsh/` (§8) | 2 | 0 | 0 | 0 | 2 |
+| `sdk/*` (§9, #206) | 0 | 1 | 0 | 0 | 1 |
+| Total | 23 | 11 | 6 | 1 | 41 |
 
 Of these, 10 are core promises: 5 verified (D6, D14, D21, D32, 5.6), 5 partly verified (D7, D22, D28, D30, 5.8), 0 not verified. The 6 unverified contract behaviours (D8, D29, 5.3, 5.4, 5.5, 5.7) are the 0.10 baseline. The maintainer confirms which rows are core promises and may change them.
