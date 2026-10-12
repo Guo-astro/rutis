@@ -233,12 +233,34 @@ type Started = (Channel, Child, Option<tempfile::TempDir>);
 /// whoever created it. A lock around rutis' own creations and forks would
 /// cover neither those nor forks by other code, and would serialize starts.
 ///
+/// macOS: libnotify sets up its globals the first time anything uses them,
+/// behind an `os_once`, and its fork handler in the child uses them too. A
+/// fork while another thread is inside that first setup leaves the child
+/// with a half-taken once, and the child aborts in the fork handler ("BUG IN
+/// CLIENT OF LIBPLATFORM: os_once_t is corrupt") before it can exec: the
+/// runtime process "exits with signal 9" (#287). Setting the globals up here,
+/// once, before this process's first fork, closes that window.
+#[cfg(target_os = "macos")]
+fn notify_ready_before_fork() {
+    extern "C" {
+        fn notify_is_valid_token(token: std::ffi::c_int) -> bool;
+    }
+    static READY: std::sync::Once = std::sync::Once::new();
+    // SAFETY: a read-only query on a token nobody holds (a negative one could
+    // be refused before the globals are touched); it sets up the globals.
+    READY.call_once(|| unsafe {
+        notify_is_valid_token(std::ffi::c_int::MAX);
+    });
+}
+
 /// Running a `pre_exec` hook makes std fork rather than `posix_spawn`.
 #[cfg(unix)]
 pub(crate) fn hand_over(
     command: &mut tokio::process::Command,
     channel: Option<std::os::fd::RawFd>,
 ) {
+    #[cfg(target_os = "macos")]
+    notify_ready_before_fork();
     let first = match channel {
         Some(_) => CHANNEL_FD + 1,
         None => CHANNEL_FD,
