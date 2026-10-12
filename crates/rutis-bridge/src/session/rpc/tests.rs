@@ -1028,4 +1028,79 @@ mod endpoint_format {
         let result = endpoint.ready().await;
         assert!(matches!(result, Err(Error::Transport(_))), "{result:?}");
     }
+
+    /// Why a session that greets in `format` refuses a far end greeting
+    /// with `version` (and `implementation`, in the endpoint format).
+    async fn refusal(
+        format: Option<Endpoint>,
+        version: u32,
+        implementation: Option<Implementation>,
+    ) -> String {
+        let (local, mut far) = far_pair();
+        let endpoint = format.is_some();
+        send(
+            &mut far,
+            Frame::Hello {
+                version,
+                endpoint: endpoint.then(|| "far".into()),
+                implementation,
+                capabilities: endpoint.then(Vec::new),
+            },
+        );
+        let session = match format {
+            Some(format) => {
+                Connection::open_with(local, Arc::new(NoExports), Format::Endpoint(format))
+            }
+            None => Connection::open(local, Arc::new(NoExports)),
+        }
+        .unwrap_or_else(|error| panic!("open: {error:?}"));
+        match session.ready().await {
+            Err(Error::Handshake(Handshake::Incompatible(reason))) => reason,
+            other => panic!("expected an incompatible handshake: {other:?}"),
+        }
+    }
+
+    // Risk P8, standard Q6.2.4: the refusal of another protocol version
+    // says which end to upgrade: this side, naming what to upgrade here,
+    // when the far end is newer; the far end, naming its implementation
+    // when it said, when it is older.
+    // guarantee: bridge/version-refusal
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_far_end_of_another_protocol_version_is_told_which_end_to_upgrade() {
+        let ours = crate::session::ENDPOINT_PROTOCOL;
+        let rust = || Some(Endpoint::rust(id("main")));
+        assert_eq!(
+            refusal(rust(), 99, None).await,
+            format!(
+                "the far end speaks protocol 99, this side {ours}: \
+                 upgrade this side (Rust crates rutis-host / rutis-bridge)"
+            )
+        );
+        assert_eq!(
+            refusal(None, 99, None).await,
+            format!(
+                "the far end speaks protocol 99, this side {VERSION}: \
+                 upgrade this side (Rust crates rutis-host / rutis-bridge)"
+            )
+        );
+        let older = Implementation {
+            name: "rutis".into(),
+            version: "0.1.0".into(),
+        };
+        assert_eq!(
+            refusal(rust(), 1, Some(older)).await,
+            format!(
+                "the far end speaks protocol 1, this side {ours}: \
+                 upgrade the far end (rutis 0.1.0)"
+            )
+        );
+        assert_eq!(
+            refusal(rust(), 1, None).await,
+            format!("the far end speaks protocol 1, this side {ours}: upgrade the far end")
+        );
+        assert_eq!(
+            refusal(None, 1, None).await,
+            format!("the far end speaks protocol 1, this side {VERSION}: upgrade the far end")
+        );
+    }
 }

@@ -370,3 +370,37 @@ func TestCompatOriginsTakeOtherSessionsTaggedIds(t *testing.T) {
 		}
 	}
 }
+
+// Risk P8: a far end that greets with a protocol version this side does
+// not speak is refused at the handshake, and the refusal says which end to
+// upgrade (standard Q6.2.4): this side, naming its module, when the far end
+// is newer; the far end, naming its implementation when it said, when it
+// is older. The wording is rutis-bridge's (`session::rpc::version_mismatch`).
+// guarantee: bridge/version-refusal
+func TestAFarEndOfAnotherProtocolVersionIsRefusedSayingWhichEndToUpgrade(t *testing.T) {
+	const module = "upgrade this side (Go module github.com/arcships/rutis/go/rutis)"
+	endpoint := &Endpoint{Local: "go"}
+	for _, c := range []struct {
+		endpoint *Endpoint
+		far      string
+		version  int
+		ours     int
+		hint     string
+	}{
+		{endpoint, `{"op":"hello","version":99,"endpoint":"main","capabilities":[]}`, 99, EndpointProtocol, module},
+		{nil, `{"op":"hello","version":99}`, 99, Protocol, module},
+		{endpoint, `{"op":"hello","version":1,"endpoint":"main","implementation":{"name":"rutis","version":"0.1.0"},"capabilities":[]}`, 1, EndpointProtocol, "upgrade the far end (rutis 0.1.0)"},
+		{endpoint, `{"op":"hello","version":1,"endpoint":"main","capabilities":[]}`, 1, EndpointProtocol, "upgrade the far end"},
+		{nil, `{"op":"hello","version":1}`, 1, Protocol, "upgrade the far end"},
+	} {
+		var f frame
+		if err := json.Unmarshal([]byte(c.far), &f); err != nil {
+			t.Fatal(err)
+		}
+		p := &Peer{opts: Options{Endpoint: c.endpoint}}
+		want := fmt.Sprintf("incompatible session: the far end speaks protocol %d, this side %d: %s", c.version, c.ours, c.hint)
+		if err := p.greet(&f); err == nil || err.Error() != want {
+			t.Errorf("%s: got %v, want %q", c.far, err, want)
+		}
+	}
+}

@@ -140,10 +140,30 @@ async fn authentication_routing_and_compatibility_failures_carry_their_category(
     let other_protocol = client
         .dial(&dial_as(address(&server), "mac", "mac-token").protocol("rutis.99"))
         .await;
-    assert!(
-        matches!(other_protocol, Err(ConnectError::Incompatible { .. })),
-        "{other_protocol:?}"
-    );
+    // The refusal says which end to upgrade (standard Q6.2.4).
+    // guarantee: bridge/version-refusal
+    match &other_protocol {
+        Err(ConnectError::Incompatible { reason }) => assert!(
+            reason.ends_with(&format!(
+                "this endpoint speaks {PROTOCOL}, the dialer offered rutis.99: \
+                 upgrade this endpoint (Rust crates rutis-host / rutis-bridge)"
+            )),
+            "{reason}"
+        ),
+        other => panic!("{other:?}"),
+    }
+    let older = client
+        .dial(&dial_as(address(&server), "mac", "mac-token").protocol("rutis.1"))
+        .await;
+    match &older {
+        Err(ConnectError::Incompatible { reason }) => assert!(
+            reason.ends_with(&format!(
+                "this endpoint speaks {PROTOCOL}, the dialer offered rutis.1: upgrade the dialer"
+            )),
+            "{reason}"
+        ),
+        other => panic!("{other:?}"),
+    }
     let wrong_path = client
         .dial(&Dial {
             address: address(&server).replace("/rutis", "/other"),

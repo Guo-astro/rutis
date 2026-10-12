@@ -1068,17 +1068,41 @@ func (p *Peer) issued(id string) bool {
 	return err == nil && n <= p.next
 }
 
+// versionMismatch says why the far end's protocol version is refused and
+// which end to upgrade (standard Q6.2.4): this side when the far end is
+// newer, naming the module to upgrade here; the far end when it is older,
+// naming its implementation when its handshake said.
+func versionMismatch(f *frame, local int) string {
+	far := strings.TrimSpace(string(f.Version))
+	mismatch := fmt.Sprintf("the far end speaks protocol %s, this side %d", far, local)
+	var version int
+	if json.Unmarshal(f.Version, &version) != nil || version == local {
+		return mismatch
+	}
+	if version > local {
+		return mismatch + ": upgrade this side (Go module github.com/arcships/rutis/go/rutis)"
+	}
+	var implementation struct {
+		Name    *string `json:"name"`
+		Version *string `json:"version"`
+	}
+	if json.Unmarshal(f.Implementation, &implementation) == nil && implementation.Name != nil && implementation.Version != nil {
+		return fmt.Sprintf("%s: upgrade the far end (%s %s)", mismatch, *implementation.Name, *implementation.Version)
+	}
+	return mismatch + ": upgrade the far end"
+}
+
 func (p *Peer) greet(f *frame) error {
 	var version int
 	_ = json.Unmarshal(f.Version, &version)
 	if p.opts.Endpoint == nil {
 		if version != Protocol || len(f.Endpoint) > 0 {
-			return fmt.Errorf("incompatible session: the far end speaks protocol %s, this side %d", strings.TrimSpace(string(f.Version)), Protocol)
+			return errors.New("incompatible session: " + versionMismatch(f, Protocol))
 		}
 		return nil
 	}
 	if version != EndpointProtocol {
-		return fmt.Errorf("incompatible session: the far end speaks protocol %s, this side %d", strings.TrimSpace(string(f.Version)), EndpointProtocol)
+		return errors.New("incompatible session: " + versionMismatch(f, EndpointProtocol))
 	}
 	var endpoint string
 	if json.Unmarshal(f.Endpoint, &endpoint) != nil || !endpointID.MatchString(endpoint) {

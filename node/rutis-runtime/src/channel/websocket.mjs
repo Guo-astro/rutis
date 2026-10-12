@@ -23,6 +23,24 @@ const truncate = reason => {
   return bytes.subarray(0, end).toString()
 }
 
+const MANIFEST = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
+
+// Why a dialer that offered none of this endpoint's session protocol is
+// refused, saying which end to upgrade (standard Q6.2.4) when the versions
+// it offered (`rutis.<n>`) are all newer (this endpoint) or all older (the
+// dialer) than this endpoint's. The wording is rutis-bridge's
+// (`transport::websocket::listen::protocol_refusal`).
+export function protocolRefusal(ours, offered) {
+  const version = protocol => /^rutis\.(\d+)$/.exec(protocol)?.[1]
+  const theirs = offered.filter(version)
+  const reason = `this endpoint speaks ${ours}`
+  if (version(ours) === undefined || theirs.length === 0) return reason
+  const n = Number(version(ours)), listed = `${reason}, the dialer offered ${theirs.join(', ')}`
+  if (theirs.every(p => Number(version(p)) > n)) return `${listed}: upgrade this endpoint (npm ${MANIFEST.name})`
+  if (theirs.every(p => Number(version(p)) < n)) return `${listed}: upgrade the dialer`
+  return listed
+}
+
 const loopback = host => {
   const bare = host.replace(/^\[|\]$/g, '')
   return bare === 'localhost' || (isIP(bare) === 4 && bare.startsWith('127.')) || bare === '::1'
@@ -117,8 +135,19 @@ export function open(spec, handlers, { protocol, token, ca, limits = LIMITS } = 
       const status = response.statusCode
       category = status === 401 || status === 403 ? 'auth-rejected'
         : [400, 404, 405, 426].includes(status) ? 'incompatible' : 'retryable'
-      socket.terminate()
-      reject(new ConnectError(category, `${url.host}: upgrade refused with ${status}`))
+      // The listener's own words (for a session protocol refusal, which
+      // end to upgrade): the first line, bounded, for the reader only.
+      let body = ''
+      response.setEncoding('utf8')
+      response.on('data', chunk => { if (body.length < 1024) body += chunk })
+      const refuse = () => {
+        socket.terminate()
+        const said = (body.split('\n')[0] ?? '').trim().slice(0, 200).replace(/[\u0000-\u001f\u007f]/g, '')
+        reject(new ConnectError(category, `${url.host}: upgrade refused with ${status}${said ? `: ${said}` : ''}`))
+      }
+      response.once('end', refuse)
+      response.once('error', refuse)
+      response.once('close', refuse)
     })
     socket.once('error', error => {
       const certificate = typeof error.code === 'string' && (/CERT|SIGNATURE|ALTNAME|ISSUER/.test(error.code))
@@ -154,7 +183,7 @@ export function listen(spec, { handlers, accepted }, { protocol, token, cert, ke
       if (presented === undefined) return done(false, 401, 'credentials required')
       if (!token || !sameSecret(presented, token)) return done(false, 403, 'not accepted here')
       const offered = (req.headers['sec-websocket-protocol'] ?? '').split(',').map(p => p.trim())
-      if (!offered.includes(protocol)) return done(false, 400, `this endpoint speaks ${protocol}`)
+      if (!offered.includes(protocol)) return done(false, 400, protocolRefusal(protocol, offered))
       done(true)
     },
   })

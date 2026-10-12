@@ -17,6 +17,30 @@ use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode};
 use crate::transport::websocket::connection::{self, Io};
 use crate::transport::websocket::{ListenerConfig, Shared};
 
+/// Why a dialer that offered none of this endpoint's session protocol is
+/// refused, saying which end to upgrade (standard Q6.2.4) when the
+/// versions it offered (`rutis.<n>`) are all newer (this endpoint) or all
+/// older (the dialer) than this endpoint's.
+fn protocol_refusal(ours: &str, offered: &[&str]) -> String {
+    let version = |protocol: &str| protocol.strip_prefix("rutis.")?.parse::<u32>().ok();
+    let theirs: Vec<(&str, u32)> = offered
+        .iter()
+        .filter_map(|protocol| Some((*protocol, version(protocol)?)))
+        .collect();
+    let mut reason = format!("this endpoint speaks {ours}");
+    let Some(ours) = version(ours).filter(|_| !theirs.is_empty()) else {
+        return reason;
+    };
+    let names: Vec<&str> = theirs.iter().map(|(name, _)| *name).collect();
+    reason.push_str(&format!(", the dialer offered {}", names.join(", ")));
+    if theirs.iter().all(|(_, n)| *n > ours) {
+        reason.push_str(": upgrade this endpoint (Rust crates rutis-host / rutis-bridge)");
+    } else if theirs.iter().all(|(_, n)| *n < ours) {
+        reason.push_str(": upgrade the dialer");
+    }
+    reason
+}
+
 /// A running listener.
 pub(crate) struct Listening {
     pub local: PeerId,
@@ -192,17 +216,18 @@ async fn accept(
                 return Err(refuse(StatusCode::FORBIDDEN, "ambiguous credentials"));
             }
         };
-        let offered = request
+        let offered: Vec<&str> = request
             .headers()
             .get_all("Sec-WebSocket-Protocol")
             .iter()
             .filter_map(|value| value.to_str().ok())
             .flat_map(|value| value.split(','))
-            .any(|offered| offered.trim() == ticket.protocol);
-        if !offered {
+            .map(str::trim)
+            .collect();
+        if !offered.contains(&ticket.protocol.as_str()) {
             return Err(refuse(
                 StatusCode::BAD_REQUEST,
-                &format!("this endpoint speaks {}", ticket.protocol),
+                &protocol_refusal(&ticket.protocol, &offered),
             ));
         }
         let protocol = HeaderValue::from_str(&ticket.protocol)
