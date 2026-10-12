@@ -36,7 +36,7 @@ Numbers have the form `<family>/<name>` and are never reused; when a guarantee i
 | `instance/` | `instance/<design>.<section>` | instance designs: `subtrees` = [design-instance-subtrees](design-instance-subtrees.en.md), `services` = [design-instance-services-2026-10-08](design-instance-services-2026-10-08.en.md) | partly registered |
 | `bridge/` | `bridge/<name>` | sessions, links, carriers, cross-language values: [design-remote-plugins-2026-10-03](design-remote-plugins-2026-10-03.en.md), [requirements-protocol-plugins](requirements-protocol-plugins.en.md) §6, [plugin API](guide/plugin-api.en.md), quality standard Q6.2, Q6.5 | partly registered |
 | `loader/` | `loader/<name>` | rutis-loader designs | reserved |
-| `host/` | `host/<name>` | rutis-host designs and user documentation | reserved; `host/rutis-json-format` registered (#207) |
+| `host/` | `host/<name>` | rutis-host designs and user documentation | reserved; `host/rutis-json-format` registered (#207), `host/link-state-output` registered (#321) |
 | `dsh/` | `dsh/<name>` | rutis-dsh designs and documentation | reserved; `dsh/user-layer-format` registered (#207) |
 | `sdk/` | `sdk/<name>` | plugin SDKs and test tools: [plugin API](guide/plugin-api.en.md), quality standard Q6.7 | `sdk/testing-matches-runtime` registered (#206) |
 
@@ -244,7 +244,17 @@ Source: [plugin API](guide/plugin-api.en.md), quality standard Q6.7.
 
 ---
 
-## 13. Counts (baseline: `main` after `121eded` with #284, #298, #334 and #335 merged, plus the fixes for #281 and #282)
+## 13. Host output: `host/link-state-output`
+
+Source: "What `run` prints" in the user documentation [rutis-host](guide/rutis-host.en.md), and the reconnecting part of [Connect Nodes](guide/nodes.en.md) (#321).
+
+| Number | Content | Level | Status | Verification | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `host/link-state-output` | `rutis-host run` prints at start, once per listener, the address it is bound to (`rutis-host: listening on <name> <address>`); each change of a node row's link state prints one line, apart from the row's state lines: `<row id>: link connected`, `link down (<reason>); retrying in <time>`, `link refused: auth-rejected (<reason>); retrying in 30s`, `link stopped: incompatible (<reason>)`; the category comes from the link's classification of the failure (`Failure`), never from the error's text; a refused token and a server certificate for another name or expired are all reported as `auth-rejected`; no token appears in the output | Contract behaviour | Verified | `rutis-host/src/status.rs::tests::each_link_state_has_its_line`, `rutis-host/tests/links.rs::a_link_reports_connected_and_down`, `::an_unreachable_far_end_is_reported_as_down`, `::a_refused_token_is_reported_by_its_category_without_it`, `::an_incompatible_far_end_is_reported_as_stopped`; `tests/e2e/tests/nodes.rs::a_refused_reconnect_is_reported_by_its_category`, `::a_refused_certificate_is_reported_by_its_category` | The reason in parentheses is for people; its wording is not guaranteed. States are checked every 200 ms and only changes are printed; a shorter state may not be printed |
+
+---
+
+## 14. Counts (baseline: `main` after `121eded` with #284, #298, #334 and #335 merged, plus the fixes for #281 and #282, and #321)
 
 | Scope | Verified | Partly verified | Not verified | Explicitly not guaranteed | Total |
 | --- | --- | --- | --- | --- | --- |
@@ -254,9 +264,10 @@ Source: [plugin API](guide/plugin-api.en.md), quality standard Q6.7.
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
 | `bridge/*` | 15 | 1 | 0 | 1 | 17 |
 | `host/*`, `dsh/*` (§11) | 2 | 0 | 0 | 0 | 2 |
+| `host/*` (§13) | 1 | 0 | 0 | 0 | 1 |
 | `sdk/*` (§12) | 0 | 1 | 0 | 0 | 1 |
-| Total | 58 | 6 | 0 | 2 | 66 |
+| Total | 59 | 6 | 0 | 2 | 67 |
 
-17 core promises: 14 verified, 3 partly verified (D22, D28, 5.8), 0 not verified. 47 contract behaviours: 44 verified, 3 partly verified (D5, `bridge/large-and-deep-values`, `sdk/testing-matches-runtime`), 0 not verified.
+17 core promises: 14 verified, 3 partly verified (D22, D28, 5.8), 0 not verified. 48 contract behaviours: 45 verified, 3 partly verified (D5, `bridge/large-and-deep-values`, `sdk/testing-matches-runtime`), 0 not verified.
 
 **0.10 baseline**: 0 unverified core promises, 0 unverified contract behaviours. From 0.11 on, a newly registered row (`loader/`, `host/`, …) that is "not verified" would push the contract number above the baseline (Q9.4.4), so new rows should be registered together with their tests. The maintainer confirms which rows are core promises and may change them.
