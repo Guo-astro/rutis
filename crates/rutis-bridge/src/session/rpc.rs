@@ -878,6 +878,9 @@ impl Connection {
         let weak = Arc::downgrade(&peer.0);
         std::thread::Builder::new()
             .name("rutis-reader".into())
+            // Set, not left to RUST_MIN_STACK: a frame within
+            // MAX_FRAME_DEPTH takes about 450 KiB to parse in a debug build.
+            .stack_size(READER_STACK)
             .spawn(move || {
                 let result: Result<(), Error> = (|| loop {
                     let message = match receiver.recv() {
@@ -1944,6 +1947,10 @@ pub const MAX_DEPTH: usize = 64;
 /// is margin. A deeper frame fails its call, or, if no call can be told
 /// from it, ends the session.
 pub(crate) const MAX_FRAME_DEPTH: usize = 2 * MAX_DEPTH + 16;
+
+/// The reader thread's stack: room for parsing, decoding and dropping a
+/// frame [`MAX_FRAME_DEPTH`] deep, whatever `RUST_MIN_STACK` says.
+pub(crate) const READER_STACK: usize = 2 << 20;
 
 fn too_deep() -> Error {
     Error::Value(format!(

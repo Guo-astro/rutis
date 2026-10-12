@@ -57,7 +57,13 @@ def _cross(value: Any, where: str, data: bool = False, depth: int = 0) -> Any:
         data = data or not _holds_reference(value)
         return {key: _cross(item, f"{where}.{key}", data, depth + 1) for key, item in value.items()}
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return _cross(dataclasses.asdict(value), where, True, depth)
+        try:
+            fields = dataclasses.asdict(value)
+        except RecursionError:
+            raise PluginTestError(
+                f"{where}: a value nested deeper than {MAX_DEPTH} levels cannot cross between processes"
+            ) from None
+        return _cross(fields, where, True, depth)
     # An exception passed as a value crosses as data: its name and message.
     if isinstance(value, BaseException) and not data:
         return {"name": type(value).__name__, "message": str(value)}

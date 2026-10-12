@@ -1060,39 +1060,146 @@ fn depth_is_counted_in_arrays_and_objects() {
     assert!(deeper_than(text, 2));
 }
 
-/// The deepest frame a far end within the limit sends (and the margin
-/// past it) parses on a thread with the reader's stack, in a debug build
-/// too.
-#[test]
-fn the_deepest_frame_allowed_parses_on_the_readers_stack() {
-    // frame + argument list + MAX_DEPTH lists + reference.
-    let args = wire_lists(MAX_DEPTH + 1);
+/// How deep arrays and objects nest in `text`, as the reader counts.
+fn frame_depth(text: &str) -> usize {
+    (0..).find(|&n| !deeper_than(text.as_bytes(), n)).unwrap()
+}
+const REFERENCE: &str =
+    r#"{"value":{"id":1,"kind":"function","home":false,"origin":["node:1"]},"type":"reference"}"#;
+/// Records `depth` deep around a reference, `value` before `type`.
+fn wire_records(depth: usize) -> String {
+    (0..depth).fold(REFERENCE.to_string(), |inner, _| {
+        format!(r#"{{"value":{{"k":{inner}}},"type":"record"}}"#)
+    })
+}
+/// A JSON object `depth` deep.
+fn objects(depth: usize) -> String {
+    (0..depth).fold("1".to_string(), |inner, _| format!(r#"{{"k":{inner}}}"#))
+}
+fn invoke_frame(id: &str, args: &str) -> String {
+    format!(r#"{{"args":{args},"op":"invoke","id":"{id}","path":[],"target":"t","method":"m"}}"#)
+}
+/// Invocations of each kind exactly [`MAX_FRAME_DEPTH`] deep: lists and
+/// records around a reference (two levels each), a data object.
+fn deepest_invocations() -> Vec<(&'static str, String)> {
+    let levels = (MAX_FRAME_DEPTH - 4) / 2;
+    let frames = vec![
+        ("lists", invoke_frame("node:1", &wire_lists(levels))),
+        ("records", invoke_frame("node:2", &wire_records(levels))),
+        (
+            "a data object",
+            invoke_frame(
+                "node:3",
+                &format!(
+                    r#"{{"value":{},"type":"data"}}"#,
+                    objects(MAX_FRAME_DEPTH - 2)
+                ),
+            ),
+        ),
+    ];
+    for (kind, frame) in &frames {
+        assert_eq!(frame_depth(frame), MAX_FRAME_DEPTH, "{kind}");
+    }
+    frames
+}
+/// A throw whose error graph makes it exactly [`MAX_FRAME_DEPTH`] deep.
+fn deepest_throw(id: &str) -> String {
     let frame = format!(
-        r#"{{"args":{args},"op":"invoke","id":"node:1","path":[],"target":"t","method":"m"}}"#
+        r#"{{"error":{{"graph":{},"name":"E","message":"deep"}},"op":"throw","id":"{id}"}}"#,
+        objects(MAX_FRAME_DEPTH - 2)
     );
-    assert!(!deeper_than(frame.as_bytes(), MAX_FRAME_DEPTH));
-    let deepest = (MAX_FRAME_DEPTH - 4) / 2;
-    let margin = format!(
-        r#"{{"args":{},"op":"invoke","id":"node:1","path":[],"target":"t","method":"m"}}"#,
-        wire_lists(deepest)
-    );
-    assert!(!deeper_than(margin.as_bytes(), MAX_FRAME_DEPTH));
-    assert!(deeper_than(margin.as_bytes(), MAX_FRAME_DEPTH - 2));
+    assert_eq!(frame_depth(&frame), MAX_FRAME_DEPTH);
+    frame
+}
+
+/// A frame the deepest a far end within the limit sends parses.
+#[test]
+fn a_frame_from_within_the_limit_is_within_the_frame_depth() {
+    let frame = invoke_frame("node:1", &wire_lists(MAX_DEPTH + 1));
+    assert_eq!(frame_depth(&frame), 2 * MAX_DEPTH + 6);
+    assert!(frame_depth(&frame) <= MAX_FRAME_DEPTH);
+    assert!(matches!(
+        parse_frame(frame.as_bytes()),
+        Ok(Frame::Invoke { .. })
+    ));
+}
+
+/// Frames exactly [`MAX_FRAME_DEPTH`] deep, of every kind (lists and
+/// records holding references, a data object, an error graph), go the
+/// real receive path: parsed and decoded on the reader thread (its stack
+/// set explicitly, [`READER_STACK`]), dropped after the call. In a debug
+/// build too. Parsing alone is also checked on a thread with that stack.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_deepest_frames_allowed_go_the_receive_path_on_the_readers_stack() {
+    let mut frames = deepest_invocations();
+    frames.push(("an error graph", deepest_throw("main:1")));
     std::thread::Builder::new()
-        .name("rutis-reader".into())
+        .stack_size(READER_STACK)
         .spawn(move || {
-            assert!(matches!(
-                parse_frame(frame.as_bytes()),
-                Ok(Frame::Invoke { .. })
-            ));
-            assert!(matches!(
-                parse_frame(margin.as_bytes()),
-                Ok(Frame::Invoke { .. })
-            ));
+            for (kind, frame) in frames {
+                assert!(parse_frame(frame.as_bytes()).is_ok(), "{kind}");
+            }
         })
         .unwrap()
         .join()
         .unwrap();
+
+    struct Nothing;
+    impl Dispatch for Nothing {
+        fn invoke(&self, _: &Connection, _: &str, _: &str, args: Value) -> Reply {
+            drop(args);
+            Ok(Value::Undefined)
+        }
+    }
+    let (peer, remote) = connected(Arc::new(Nothing));
+    let (answered, calls) = tokio::sync::oneshot::channel();
+    let remote = tokio::task::spawn_blocking(move || {
+        let mut remote = Remote::start(remote);
+        // Skip the releases of the references the calls carried.
+        let reply = |remote: &mut Remote| loop {
+            match remote.read() {
+                Frame::Release { .. } => continue,
+                frame => return frame,
+            }
+        };
+        for (kind, frame) in deepest_invocations() {
+            remote
+                .writer
+                .sender
+                .lock()
+                .unwrap()
+                .send(frame.as_bytes())
+                .unwrap();
+            match reply(&mut remote) {
+                Frame::Return { .. } => {}
+                Frame::Throw { error, .. } => panic!("{kind}: {}", error.message),
+                _ => panic!("{kind}: a return expected"),
+            }
+        }
+        answered.send(()).unwrap();
+        // This side calls; the reply is a throw with the deepest graph.
+        let Frame::Invoke { id, .. } = reply(&mut remote) else {
+            panic!("invoke expected")
+        };
+        let throw = deepest_throw(&id);
+        remote
+            .writer
+            .sender
+            .lock()
+            .unwrap()
+            .send(throw.as_bytes())
+            .unwrap();
+        remote
+    });
+    calls.await.unwrap();
+    let thrown = peer.invoke_async("t", "m", Value::Undefined).await;
+    assert!(
+        matches!(&thrown, Err(Error::Remote { graph: Some(_), .. })),
+        "the deep error arrives"
+    );
+    drop(thrown);
+    let _remote = remote.await.unwrap();
+    assert!(peer.close_reason().is_none());
 }
 
 struct EchoArgs;

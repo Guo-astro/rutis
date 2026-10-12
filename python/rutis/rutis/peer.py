@@ -157,18 +157,20 @@ def _is_live(value: Any) -> bool:
     return True
 
 
-def _holds_reference(value: Any, seen: set | None = None) -> bool:
+def _holds_reference(value: Any, seen: set | None = None, depth: int = 0) -> bool:
+    """Whether `value` holds a reference. Not looked for past MAX_DEPTH
+    levels: a value that deep fails as data, too deep (#279)."""
     if isinstance(value, (RemoteFunction, RemoteFuture)):
         return True
     if callable(value) or _is_future(value) or _is_live(value):
         return True
     if isinstance(value, (list, tuple, dict)):
         seen = seen if seen is not None else set()
-        if id(value) in seen:
+        if id(value) in seen or depth > MAX_DEPTH:
             return False
         seen.add(id(value))
         items = value.values() if isinstance(value, dict) else value
-        return any(_holds_reference(item, seen) for item in items)
+        return any(_holds_reference(item, seen, depth + 1) for item in items)
     return False
 
 
@@ -199,7 +201,12 @@ def _data(value: Any, depth: int = 0) -> Any:
             raise TypeError("only string keys cross the boundary")
         return {key: _data(item, depth + 1) for key, item in value.items() if item is not UNDEFINED}
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return _data(dataclasses.asdict(value), depth)
+        try:
+            fields = dataclasses.asdict(value)
+        except RecursionError:
+            # asdict recurses with no limit of its own.
+            raise _too_deep() from None
+        return _data(fields, depth)
     if value is UNDEFINED:
         return None
     raise TypeError(f"{type(value).__name__} cannot cross the boundary")
