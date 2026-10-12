@@ -36,6 +36,7 @@ Numbers have the form `<family>/<name>` and are never reused; when a guarantee i
 | `instance/` | `instance/<name>` | instance subtree and instance service designs | reserved |
 | `bridge/` | `bridge/<name>` | session protocol, runtime and link designs | reserved |
 | `host/` | `host/<name>` | rutis-host designs and user documentation | reserved |
+| `sdk/` | `sdk/<name>` | plugin SDKs and test tools: [plugin API](guide/plugin-api.en.md), quality standard Q6.7 | `sdk/testing-matches-runtime` registered (#206) |
 
 `D` numbers keep the decision numbers of the design documents (including D20 and D27, which restate other numbers, and D26, merged into D27), so they line up with the designs and the test comments. In new families `<name>` is a short lower-case English phrase joined by hyphens (e.g. `loader/rollback`).
 
@@ -166,12 +167,23 @@ Source: [requirements-protocol-plugins](requirements-protocol-plugins.en.md) §5
 
 ---
 
-## 8. Counts (baseline `2e77fdc`)
+## 8. Plugin SDKs: `sdk/*`
+
+Source: [plugin API](guide/plugin-api.en.md), quality standard Q6.7.
+
+| Number | Content | Level | Status | Verification | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `sdk/testing-matches-runtime` | The test tools (`@arcships/rutis/testing`, `rutis.testing`, strict mode) give the same results for calls on a plugin as a real runtime: sync, async, callbacks, errors crossing the boundary (name and message only), values copied or refused; known differences are bounded and written down ([plugin API](guide/plugin-api.en.md), "Where the test tool differs from a real runtime"; marked `allowed` in the expectations file) | contract behaviour | partly verified | `rutis-bridge/src/runtime/testing.rs::runtime` (run by `rutis-bridge/tests/session_matrix.rs` on every channel of Node, Python, Go and Bun), `node/rutis/test/conformance.test.mjs`, `python/rutis/tests/test_conformance.py::Conformance::test_the_testing_tool_returns_what_the_real_runtime_does` | Both sides are checked against one expectations file, `rutis-bridge/src/runtime/testing/weather.expected.json` (Q6.7.2). Go's `rutistest` and the Bun test tool are not yet compared; Maps, Sets, Dates, binary data and bigints are refused under the current rules, pending #308 |
+
+---
+
+## 9. Counts (baseline `2e77fdc`, plus `sdk/*`)
 
 | Scope | Verified | Partly verified | Not verified | Explicitly not guaranteed | Total |
 | --- | --- | --- | --- | --- | --- |
 | `core/D*` (without D20, D26, D27) | 19 | 8 | 2 | 1 | 30 |
 | `boundary/5.*` | 2 | 2 | 4 | 0 | 8 |
-| Total | 21 | 10 | 6 | 1 | 38 |
+| `sdk/*` (#206) | 0 | 1 | 0 | 0 | 1 |
+| Total | 21 | 11 | 6 | 1 | 39 |
 
 Of these, 10 are core promises: 5 verified (D6, D14, D21, D32, 5.6), 5 partly verified (D7, D22, D28, D30, 5.8), 0 not verified. The 6 unverified contract behaviours (D8, D29, 5.3, 5.4, 5.5, 5.7) are the 0.10 baseline. The maintainer confirms which rows are core promises and may change them.

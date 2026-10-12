@@ -46,7 +46,7 @@ A plugin and the services it uses may run in different processes. Across process
 | `Error` / exceptions | Passed as a value: copied as data `{ name, message }` (in TypeScript also `stack`). Thrown: the other side receives an error with the same name and message (in TypeScript a built-in error class keeps its class, any other is an `Error`; in Python a `rutis.peer.RemoteError` whose `name` is the original class name); other attributes are not passed |
 | Functions, Promises / coroutines | Passed by reference: the other side calls or awaits the original |
 | Objects with methods, class instances | Passed by reference: the other side receives a proxy that calls the original object |
-| Symbols, bigints, Maps, Sets, TypeScript Dates, binary data, cyclic references, `NaN` / `Infinity` | Cannot cross processes (the call fails) |
+| Symbols, bigints, Maps, Sets, TypeScript Dates, binary data, cyclic references, `NaN` / `Infinity` | Cannot cross processes (the call fails). Whether Maps, Sets, Dates, binary data and bigints should cross is decided in [#308](https://github.com/arcships/rutis/issues/308); until then both the real runtimes and the test tools refuse them |
 | `undefined` inside TypeScript data (holding no functions or objects with methods) | Becomes `null` |
 | Go structs, slices, `map[string]T` | Copied as JSON (by their `json` tags); a struct is always data, `rutis.Ref(v)` passes an object by reference. Integers beyond ±2^53−1, `[]byte`, channels and non-string map keys cannot cross |
 
@@ -73,7 +73,7 @@ The test tools (`@arcships/rutis/testing`, `rutis.testing`) and the real runtime
 | Python: an exception that crosses is a `RemoteError` whose `__cause__` is the original exception | For debugging; a real runtime's `RemoteError` has no `__cause__` |
 | TypeScript: only plugins written with `definePlugin` load, not Cordis plugins | The test tool does not include Cordis |
 
-With strict mode off (`strict: false`), values skip the table above and other differences can appear. Go's `rutistest` and Bun are not yet checked against this file.
+Maps, Sets, Dates, binary data and bigints are refused on both sides, so they are not a difference; whether they will cross later is [#308](https://github.com/arcships/rutis/issues/308). With strict mode off (`strict: false`), values skip the table above and other differences can appear. Go's `rutistest` and Bun are not yet checked against this file.
 
 ## Synchronous calls and reentrancy
 

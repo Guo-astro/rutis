@@ -46,7 +46,7 @@ Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（�
 | `Error` / 异常 | 作为值传递时复制为数据 `{ name, message }`（TypeScript 另带 `stack`）；抛出时另一端得到同名、同消息的错误（TypeScript 中内置错误类保留类，其余是 `Error`；Python 中是 `rutis.peer.RemoteError`，`name` 是原来的类名），其他属性不传 |
 | 函数、Promise / 协程 | 按引用：另一端调用或 await 的是原来那个 |
 | 带方法的对象、类的实例 | 按引用：另一端拿到代理，调用的是原对象 |
-| symbol、bigint、Map、Set、TypeScript 的 Date、二进制、循环引用、`NaN` / `Infinity` | 不能跨进程（调用失败） |
+| symbol、bigint、Map、Set、TypeScript 的 Date、二进制、循环引用、`NaN` / `Infinity` | 不能跨进程（调用失败）。Map、Set、Date、二进制、bigint 是否改为可传递由 [#308](https://github.com/arcships/rutis/issues/308) 决定，在此之前真实运行时和测试工具都拒绝它们 |
 | TypeScript 数据（不含函数、带方法的对象）里的 `undefined` | 变成 `null` |
 | Go 的结构体、切片、`map[string]T` | 按 JSON 复制（遵循 `json` 标签）；结构体一律是数据，要按引用传对象写 `rutis.Ref(v)`。超出 ±2^53−1 的整数、`[]byte`、channel、非字符串键的 map 不能跨进程 |
 
@@ -73,7 +73,7 @@ Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（�
 | Python：跨过边界的异常是 `RemoteError`，它的 `__cause__` 是原来的异常 | 方便调试；真实运行时的 `RemoteError` 没有 `__cause__` |
 | TypeScript：只能加载 `definePlugin` 写的插件，不能加载 Cordis 插件 | 测试工具不包含 Cordis |
 
-关闭严格模式（`strict: false`）时值不经过上表，以上之外的差异都可能出现。Go 的 `rutistest` 和 Bun 尚未对这份期望文件比对。
+Map、Set、Date、二进制、bigint 两边都拒绝，这不是差异；它们以后是否可以传递见 [#308](https://github.com/arcships/rutis/issues/308)。关闭严格模式（`strict: false`）时值不经过上表，以上之外的差异都可能出现。Go 的 `rutistest` 和 Bun 尚未对这份期望文件比对。
 
 ## 同步调用与可重入
 
