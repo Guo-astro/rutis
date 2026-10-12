@@ -12,11 +12,14 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use rutis::{BoxFuture, CordisError, Ctx, Disposer, Effect, Plugin, PluginFactory, TypeKey};
+use rutis::{
+    BoxFuture, CordisError, Ctx, Disposer, Effect, InstanceId, Plugin, PluginFactory, TypeKey,
+};
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{settle, Value as RpcValue};
-use rutis_bridge::{peer_key, Peer};
+use rutis_bridge::{peer_key, LinkState, Peer};
 use serde_json::{json, Value};
+use tokio::sync::watch;
 
 use crate::{Build, Loader, LoaderError, Resolved, Resolver};
 
@@ -45,6 +48,10 @@ struct Directory {
     peers: Mutex<HashMap<PeerId, Arc<Peer>>>,
     /// Names resolved without their peer, to resolve again.
     stale: Mutex<HashSet<String>>,
+    /// The running `rutis-bridge/peer` rows' links, by the row's fiber
+    /// ([`PeerResolver::link_state`]), each with the token of the apply
+    /// that registered it.
+    links: Mutex<HashMap<InstanceId, (u64, rutis_bridge::PeerHandle)>>,
 }
 
 /// Resolves `peer:<id>/<plugin>` rows. Share one between the loader's
@@ -76,6 +83,19 @@ impl PeerResolver {
             scoped: None,
             declares: Some(runs_on(peer, why)),
         })
+    }
+
+    /// What the link of the `rutis-bridge/peer` row running as the fiber
+    /// `row` is doing: `row` is the row's [`FiberView::instance`]
+    /// (`EntryInfo::view`), for each copy inside instances too. `None`
+    /// when that fiber is no running peer row of this resolver, or its
+    /// link has not started yet. For a host to report the link's state
+    /// beside the row's.
+    ///
+    /// [`FiberView::instance`]: rutis::FiberView::instance
+    pub fn link_state(&self, row: InstanceId) -> Option<watch::Receiver<LinkState>> {
+        let links = self.directory.links.lock().unwrap();
+        links.get(&row).and_then(|(_, handle)| handle.link_state())
     }
 
     fn take_stale(&self, peer: &PeerId) -> HashSet<String> {
@@ -642,6 +662,9 @@ pub fn register_peer_node(builtins: &mut crate::Builtins, resolver: Arc<PeerReso
     );
 }
 
+/// Tokens of [`Directory::links`] entries.
+static NEXT_LINK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 struct Node {
     config: NodeConfig,
     resolver: Arc<PeerResolver>,
@@ -688,6 +711,24 @@ impl Plugin for Node {
             )
             .map_err(failed)?;
             let handle = composed.handle();
+            // The host reads the link's state by the row's fiber.
+            let row = ctx.instance();
+            let token = NEXT_LINK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let links = self.resolver.directory.clone();
+            links
+                .links
+                .lock()
+                .unwrap()
+                .insert(row, (token, handle.clone()));
+            ctx.effect(move || {
+                Effect::Disposer(Box::new(move || {
+                    let mut links = links.links.lock().unwrap();
+                    if links.get(&row).is_some_and(|(mine, _)| *mine == token) {
+                        links.remove(&row);
+                    }
+                    Ok(())
+                }))
+            })?;
             // Inside instances, the link is the instance's own: its peer
             // is kept apart from other instances' links to the same peer.
             let scope = match self.build.instances().next() {

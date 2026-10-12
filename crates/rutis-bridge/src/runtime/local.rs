@@ -238,7 +238,7 @@ impl Plugin for LocalRuntime {
                 if let RuntimeState::Down(reason) = handle.state() {
                     break reason;
                 }
-                if let LinkState::Stopped { error } = &*link_state.borrow() {
+                if let LinkState::Stopped { error, .. } = &*link_state.borrow() {
                     break error.clone();
                 }
                 tokio::select! {

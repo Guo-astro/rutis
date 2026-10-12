@@ -27,6 +27,16 @@
 - `dial` 是 `wss://…`（跨机器，必须 TLS），或 `ws://127.0.0.1…`（本机回环）。
 - 自签证书：把签发它的 CA 放进拨号方的 `RUTIS_CA`。
 - 断开后重连：从 0.5 秒开始退避，最长 30 秒；凭据被拒（403、证书不受信任）时每 30 秒重试一次；协议不兼容时停止并报告。
+- `rutis-host run` 在 link 的状态变化时打印一行，带可读的类别，不带 token；节点行自己的 `running` 只说明这一行在运行，不说明连上了：
+
+  ```
+  office: link connected
+  office: link down (127.0.0.1:7443: Connection refused (os error 61)); retrying in 2.1s
+  office: link refused: auth-rejected (office.example.com: upgrade refused with 403 Forbidden); retrying in 30s
+  office: link stopped: incompatible (office does not declare runtime)
+  ```
+
+  `auth-rejected` 是凭据被拒（token 不对、证书名字不符或过期、CA 不受信任），`incompatible` 是不兼容（不再重试），`link down` 是暂时连不上。完整格式见 [rutis-host 打印什么](rutis-host.md#run-打印什么)。
 - 监听方的 link 还没就绪时连进来的拨号方会被要求重试，所以两端可以按任意顺序启动。
 
 ## 在 link 上做什么

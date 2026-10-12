@@ -36,6 +36,12 @@ pub struct Host {
     /// The local runtimes' plugins, by name, to stop one
     /// ([`Host::stop_runtime`]).
     fibers: Vec<(String, FiberView)>,
+    /// The `rutis-bridge/peer` rows' resolver, which also knows their links'
+    /// states ([`PeerResolver::link_state`]).
+    pub peers: Arc<PeerResolver>,
+    /// Each configured listener (`listen`) and the address it is bound to,
+    /// in the configuration's order: with port 0, the port picked.
+    pub listening: Vec<(String, std::net::SocketAddr)>,
 }
 
 /// Registers rows compiled into a program ([`Embedding::builtins`]).
@@ -107,9 +113,20 @@ impl Host {
             .await
             .map_err(|error| format!("the local transport: {error}"))?;
         let websocket = WebSocketPlugin::new(websocket(config)?)?;
-        (&root.plugin(websocket))
+        (&root.plugin(websocket.clone()))
             .await
             .map_err(|error| format!("the WebSocket transport: {error}"))?;
+        let listening = match websocket.transport() {
+            Some(transport) => config
+                .listen
+                .iter()
+                .filter_map(|listener| {
+                    let address = transport.local_addr(&listener.name)?;
+                    Some((listener.name.clone(), address))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         match embedding.identity {
             Some(identity) => root.plugin(identity),
             None => root.plugin(IdentityPlugin::new("host", identity(config)?)),
@@ -124,7 +141,7 @@ impl Host {
         if let Some(register) = embedding.builtins {
             register(&mut builtins);
         }
-        let mut chain = Chain::new().with(builtins).with_shared(peers);
+        let mut chain = Chain::new().with(builtins).with_shared(peers.clone());
         let go = match &config.runtimes.go {
             Some(go) => {
                 let resolver = Arc::new(go_resolver(config, go, &catalog)?);
@@ -219,6 +236,8 @@ impl Host {
             resolvers,
             go,
             fibers,
+            peers,
+            listening,
         })
     }
 
