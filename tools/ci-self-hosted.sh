@@ -148,5 +148,9 @@ if [ "$phase" = start ]; then
     echo "CARGO_TARGET_DIR=$target"
     echo "CARGO_BUILD_JOBS=$jobs"
     echo "RUST_TEST_THREADS=$jobs"
+    # A GOROOT of the machine's own Go (the Linux runners' image sets one)
+    # would pair setup-go's go command with another release's compiler.
+    # Empty, go finds its own.
+    [ -z "${GOROOT:-}" ] || echo "GOROOT="
   } >> "$GITHUB_ENV"
 fi
