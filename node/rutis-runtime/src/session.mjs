@@ -32,6 +32,20 @@ const PROTOCOL = MANIFEST.rutisProtocol
 // The endpoint format: endpoint ids in the handshake and the call ids,
 // capabilities, either side calling the other.
 export const ENDPOINT_PROTOCOL = 3
+
+// Why a far end's protocol version is refused, saying which end to upgrade
+// (standard Q6.2.4): this side when the far end is newer, naming the
+// package to upgrade here; the far end when it is older, naming its
+// implementation when its handshake said.
+export function versionMismatch(far, local, implementation) {
+  const mismatch = `the far end speaks protocol ${far}, this side ${local}`
+  if (typeof far !== 'number' || far === local) return mismatch
+  if (far > local) return `${mismatch}: upgrade this side (npm ${MANIFEST.name})`
+  const { name, version } = implementation ?? {}
+  return typeof name === 'string' && typeof version === 'string'
+    ? `${mismatch}: upgrade the far end (${name} ${version})`
+    : `${mismatch}: upgrade the far end`
+}
 // What this implementation supports in the endpoint format. It sends
 // objects but cannot receive them, so it does not declare `objects`.
 // `sync-wait`: its synchronous calls say so (`sync: true`), for the host's
@@ -108,11 +122,11 @@ export class Session {
     // incompatible far end, retry slowly on a mismatched identity.
     const fail = (category, message) => Object.assign(new Error(message), { category })
     if (!this.#endpoint) {
-      if (frame.version !== PROTOCOL || frame.endpoint !== undefined) throw fail('incompatible', `incompatible session: the far end speaks protocol ${frame.version}, this side ${PROTOCOL}`)
+      if (frame.version !== PROTOCOL || frame.endpoint !== undefined) throw fail('incompatible', `incompatible session: ${versionMismatch(frame.version, PROTOCOL, frame.implementation)}`)
       if (Array.isArray(frame.capabilities)) this.#declared = frame.capabilities
       return
     }
-    if (frame.version !== ENDPOINT_PROTOCOL) throw fail('incompatible', `incompatible session: the far end speaks protocol ${frame.version}, this side ${ENDPOINT_PROTOCOL}`)
+    if (frame.version !== ENDPOINT_PROTOCOL) throw fail('incompatible', `incompatible session: ${versionMismatch(frame.version, ENDPOINT_PROTOCOL, frame.implementation)}`)
     const endpoint = frame.endpoint
     if (typeof endpoint !== 'string' || !ENDPOINT_ID.test(endpoint)) throw fail('incompatible', 'incompatible session: the far end named no valid endpoint')
     for (const [whose, expected] of [['verified', this.#endpoint.verified], ['expected', this.#endpoint.expected]]) {

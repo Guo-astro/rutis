@@ -113,21 +113,30 @@ test('unsupported nested references fail explicitly and roll back partial grants
 
 // Risk P8: a far end that greets with a protocol version this side does
 // not speak is refused at the handshake, not after loading, and the refusal
-// names both versions, so it is clear which side is behind. The wording is
-// rutis-bridge's (`session::rpc::greet`).
+// names both versions and which end to upgrade (standard Q6.2.4): this side,
+// naming its package, when the far end is newer; the far end, naming its
+// implementation when it said, when it is older. The wording is
+// rutis-bridge's (`session::rpc::version_mismatch`).
 // guarantee: bridge/version-refusal
-test('a far end of protocol version 99 is refused, naming both versions', async () => {
+test('a far end of another protocol version is refused, saying which end to upgrade', async () => {
+  const far = { name: 'rutis', version: '0.1.0' }
   for (const [endpoint, ours] of [[{ local: 'node' }, ENDPOINT_PROTOCOL], [undefined, PROTOCOL]]) {
-    const sent = []
-    let fault
-    const session = new Session({ dispatch: () => {}, send: line => sent.push(JSON.parse(line)), pump: () => {}, abort: error => { fault = error }, endpoint })
-    session.start()
-    assert.equal(sent[0].version, ours, 'this side greets first, with its own version')
-    session.receive({ op: 'hello', version: 99, ...(endpoint ? { endpoint: 'main', capabilities: [] } : {}) })
-    const message = `incompatible session: the far end speaks protocol 99, this side ${ours}`
-    await assert.rejects(session.ready, error => error.category === 'incompatible' && error.message === message, message)
-    assert.equal(fault?.message, message, 'the channel is closed')
-    await assert.rejects(session.invokeAsync('t', 'm', []), undefined, 'and the session with it')
+    const cases = [
+      [99, undefined, `upgrade this side (npm @arcships/rutis-runtime)`],
+      [1, endpoint && far, endpoint ? 'upgrade the far end (rutis 0.1.0)' : 'upgrade the far end'],
+    ]
+    for (const [version, implementation, hint] of cases) {
+      const sent = []
+      let fault
+      const session = new Session({ dispatch: () => {}, send: line => sent.push(JSON.parse(line)), pump: () => {}, abort: error => { fault = error }, endpoint })
+      session.start()
+      assert.equal(sent[0].version, ours, 'this side greets first, with its own version')
+      session.receive({ op: 'hello', version, ...(endpoint ? { endpoint: 'main', implementation, capabilities: [] } : {}) })
+      const message = `incompatible session: the far end speaks protocol ${version}, this side ${ours}: ${hint}`
+      await assert.rejects(session.ready, error => error.category === 'incompatible' && error.message === message, message)
+      assert.equal(fault?.message, message, 'the channel is closed')
+      await assert.rejects(session.invokeAsync('t', 'm', []), undefined, 'and the session with it')
+    }
   }
 })
 

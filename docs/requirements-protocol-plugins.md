@@ -60,8 +60,8 @@ ctx.plugin(生成的挂载插件)       <- 构建时由原 TS 插件自动生成
 接入 rutis 的 Cordis 插件需要遵守以下规则。能检测的违规，在挂载时或运行时明确报错，不静默降级。
 
 1. **服务**：通过 `ctx.provide` / 属性赋值发布和换值。直接 `ctx.set` 换值不产生通知，rutis 侧在下一次调用该服务后才会切换到新对象。
-2. **跨边界事件**：`emit` 只是通知，不保证 `emit` 返回时 rutis 侧已执行；需要等待或需要结果时用 `parallel` / `serial`（同步的 `bail` 等不到 rutis 侧，见规则 4）。
-3. **事件顺序**：只在同一侧内保证原生顺序；另一侧的监听作为一组在固定位置执行，不支持依赖跨侧交错顺序的写法。这一组总是按所在一侧的 `parallel` 调度，与发起方用的调度方式无关：rutis 的 `serial` 到达 Cordis 时，Cordis 的监听按 Cordis `parallel` 执行（依次启动、异步部分可以重叠，返回值不短路），Cordis 的 `serial` 到达 rutis 时同理。
+2. **跨边界事件**：`emit` 只是通知，不保证 `emit` 返回时 rutis 侧已执行；需要等待或需要结果时用 `parallel` / `serial`（同步的 `bail` 等不到 rutis 侧，见规则 4）。已知缺口：同步 `bail` 中排在转发之前的监听器如果以相同参数再次分发同一事件，兼容层分不清两次分发，这次 `bail` 会把转发返回的 Promise 当作短路值而不报错（[#340](https://github.com/arcships/rutis/issues/340)）。
+3. **事件顺序**：只在同一侧内保证原生顺序；另一侧的监听作为一组在固定位置执行，不支持依赖跨侧交错顺序的写法。这一组总是按所在一侧的 `parallel` 调度，与发起方用的调度方式无关：rutis 的 `serial` 到达 Cordis 时，Cordis 的监听按 Cordis `parallel` 执行（依次启动、异步部分可以重叠，返回值不短路），Cordis 的 `serial` 到达 rutis 时同理。按发起方的调度方式执行需要在协议里带上调度方式，见 [#340](https://github.com/arcships/rutis/issues/340)。
 4. **中间件链**：waterfall / bail 链不跨侧交错；对方一组作为一个整体环节参与。Cordis 的同步 `bail` 无法等待 rutis 一侧，到达转发到 rutis 的事件时抛出错误，需要短路时改用 `serial`；waterfall 中 rutis 一组是一个异步环节，执行完后调用一次 `next`，所以这个 waterfall 返回 Promise（与原生链中出现异步中间件时相同），需要同步结果的 waterfall 不能转发到 rutis。
 5. **框架内部事件**：`internal/*` 不跨边界；挂载在任一方向列出 `internal/*` 事件时明确报错。
 6. **同步等待**：同步方法不能在执行中等待需要 Node 事件循环推进的结果（定时器、Promise）；这类等待返回 `SyncWaitCycle` 错误。
