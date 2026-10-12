@@ -252,3 +252,14 @@ A self-hosted machine keeps its state between jobs, and several instances run at
 5. At least 100 GB of free disk (up to 30 GB of target directory per instance, plus Node, Python, Go and Bun in `_work/_tool`).
 6. No sleep: `sudo pmset -a sleep 0 disksleep 0` (or in System Settings).
 7. No Homebrew: these jobs use only the system's `bash` (3.2), `perl`, `tar`, `shasum`, `lsof` and `jq` (`/usr/bin/jq` comes with macOS 15 and later; `ci-ok` uses it); Node, Go, Bun and uv come from their setup actions into `_work/_tool`, Python from uv into `~/.local/share/uv`.
+
+## 11. Self-hosted Linux runners
+
+Where `ci.yml`'s Linux jobs (`rust`, `e2e`, `lint`, the Linux entries of `runtimes-go`/`runtimes-bun`, `dylib-linux-*`, `sdk-repro`) run is the repository variable `LINUX_RUNNER` (the JSON value of `runs-on`): unset, GitHub's `"ubuntu-24.04"`; set to `["self-hosted","Linux"]`, the organization's self-hosted Linux runners; delete it to go back to GitHub. The other workflows (`package.yml`, which needs Docker containers, `install.yml`, `stress.yml` and the rest) are not affected.
+
+These runners are 4 Docker containers on one machine (32 cores, 60 GB of memory), one runner each, user `runner` with passwordless sudo, with Rust, Node, Go and Python installed and no `lsof`, Docker or Bun (`setup-bun` installs Bun). The jobs run `tools/ci-self-hosted.sh` at their start and their end as well (previous section), with these differences:
+
+- a container has one runner and its own `/tmp`: the scenario directory is the shortest, `/tmp/rutis-e2e`;
+- the processes' working directories come from `/proc` (there is no `lsof`);
+- a container sees the whole machine's CPUs but not the other containers: each job's parallelism is the repository variable `LINUX_CI_JOBS` (`8` with 4 containers), or every CPU when it is unset;
+- `setup-python` works on self-hosted Linux, and Python still comes from it.

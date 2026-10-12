@@ -149,7 +149,10 @@ jobs:
           BUN: ${{ steps.paths.outputs.bun }}
           GO: ${{ steps.paths.outputs.go }}
           REPRO: ${{ steps.paths.outputs.repro }}
+          # JSON, as runs-on takes it.
+          LINUX_RUNNER: ${{ vars.LINUX_RUNNER || '"ubuntu-24.04"' }}
         run: |
+          LINUX=$(jq -c . <<< "$LINUX_RUNNER")
           all=false
           if [ "$PUSH" = true ] || [ "$ALL" = true ]; then all=true; fi
           pick() { if [ "$all" = true ] || [ "$1" = true ]; then echo true; else echo false; fi; }
@@ -165,12 +168,13 @@ jobs:
             # Pull requests: the oldest supported Bun and Go, on Linux only
             # (the minimum must be verified; network-macos runs the latest).
             # Full runs: also the latest on Linux and the oldest on macOS.
+            # The Linux entries run where the other Linux jobs do (LINUX_RUNNER).
             if [ "$all" = true ]; then
-              echo 'bun-matrix=[{"os":"ubuntu-24.04","bun":"1.4.0"},{"os":"ubuntu-24.04","bun":"latest"},{"os":"macos-15","bun":"1.4.0"}]'
-              echo 'go-matrix=[{"os":"ubuntu-24.04","go":"oldstable"},{"os":"ubuntu-24.04","go":"stable"},{"os":"macos-15","go":"oldstable"}]'
+              echo "bun-matrix=[{\"os\":$LINUX,\"bun\":\"1.4.0\"},{\"os\":$LINUX,\"bun\":\"latest\"},{\"os\":\"macos-15\",\"bun\":\"1.4.0\"}]"
+              echo "go-matrix=[{\"os\":$LINUX,\"go\":\"oldstable\"},{\"os\":$LINUX,\"go\":\"stable\"},{\"os\":\"macos-15\",\"go\":\"oldstable\"}]"
             else
-              echo 'bun-matrix=[{"os":"ubuntu-24.04","bun":"1.4.0"}]'
-              echo 'go-matrix=[{"os":"ubuntu-24.04","go":"oldstable"}]'
+              echo "bun-matrix=[{\"os\":$LINUX,\"bun\":\"1.4.0\"}]"
+              echo "go-matrix=[{\"os\":$LINUX,\"go\":\"oldstable\"}]"
             fi
           } | tee -a "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY"
 
@@ -221,9 +225,14 @@ jobs:
   rust:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+        run: bash tools/ci-self-hosted.sh start
 
       # rutui 已发布 crates.io(rutis-agent 走 version 依赖,与其他外部
       # 依赖同构);hack 本地 rutui 时按惯例在工作区根加未提交的 [patch]。
@@ -231,7 +240,9 @@ jobs:
       - name: install rust toolchain
         uses: dtolnay/rust-toolchain@1.98.1
 
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           # Saved on main only: pull requests read main's caches, and their
           # own would crowd main's out of the repository's 10 GB.
@@ -241,7 +252,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: |
             node/rutis-runtime/package-lock.json
             node/baseline/package-lock.json
@@ -291,6 +302,9 @@ jobs:
         env:
           RUTIS_LOCAL_HANDOVER: loopback
         run: cargo test -p rutis-loader --features node,python,go,peer --test runtime_rows --test python_rows --test multilang --test leases --test instance_runtimes --test go_rows --test multilang_go --test instance_go --test sync_cycles
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   # The end-to-end scenarios (tests/e2e): real rutis-host processes on
   # project directories, with probe plugins of every language. In parallel
@@ -299,21 +313,28 @@ jobs:
   e2e:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     env:
       # Short, for the Unix socket paths under it (tests/e2e/src/lib.rs).
       RUTIS_E2E_DIR: /tmp/rutis-e2e
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # The oldest Node (engines.node) and the Node runtime the host starts.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: node/rutis-runtime/package-lock.json
       - run: npm --prefix node/rutis-runtime ci
       # The oldest Bun (engines.bun).
@@ -351,6 +372,9 @@ jobs:
           name: e2e-linux
           path: ${{ env.RUTIS_E2E_DIR }}
           retention-days: 14
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   js-py:
     needs: changes
@@ -412,13 +436,20 @@ jobs:
   lint:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt, clippy
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
@@ -433,7 +464,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: |
             node/rutis-runtime/package-lock.json
             crates/rutis-dsh/dsh/package-lock.json
@@ -445,6 +476,9 @@ jobs:
         run: |
           export RUTIS_SDK_ARTIFACT_SHA256="$(printf '0%.0s' {1..64})"
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   # The declared MSRV (rust-version in Cargo.toml) builds the libraries and
   # binaries, with our Cargo.lock (Q10.3). With `all`: on main, and on pull
@@ -555,8 +589,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-go@v5
@@ -595,6 +636,9 @@ jobs:
       # Only rutis-host's Go tests: the other runtimes run in their own jobs.
       - name: cargo test (rutis-host, Go)
         run: cargo test -p rutis-host go
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   # The Bun runtime: its own tests, and the Rust tests that run it, on the
   # oldest Bun it supports (package.json engines.bun); also on loopback
@@ -611,8 +655,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: oven-sh/setup-bun@v2
@@ -647,6 +698,9 @@ jobs:
         run: cargo test -p rutis-loader --features bun,node,python --test bun_rows --test bun_instances --test bun_multilang
       - name: cargo test (rutis-host, Bun)
         run: cargo test -p rutis-host bun
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   # The network stack and the runtimes on macOS: starting processes on an
   # inherited socket, Unix sockets, WebSocket links, the Node, Python, Bun and
@@ -848,11 +902,18 @@ jobs:
   dylib-linux-launcher:
     needs: changes
     if: needs.changes.outputs.dylib == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: dylib host child environment
@@ -861,36 +922,59 @@ jobs:
         run: bash tools/test-dylib.sh
       - name: launcher pre-execution verification
         run: bash tools/test-dylib-launcher.sh
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   # The single-runner reproducibility check (two source and target paths on
   # one runner); the two-runner comparison runs on main (sdk-repro).
   dylib-linux-repro:
     needs: changes
     if: needs.changes.outputs.repro == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # The script builds offline from copies of the source.
       - run: cargo fetch --locked
       - name: reproducible SDK across source and target paths
         run: bash tools/test-dylib-repro.sh
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   dylib-linux-sdk-bundle:
     needs: changes
     if: needs.changes.outputs.dylib == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: external plugin build against a prebuilt SDK
         run: bash tools/test-sdk-bundle.sh
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   # On macOS the same checks stay in one job: macOS runners are scarce, and a
   # dylib change takes this second one (Q12.6.2).
@@ -1005,7 +1089,7 @@ jobs:
   sdk-repro:
     needs: changes
     if: needs.changes.outputs.all == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     strategy:
       matrix:
         slot: [a, b]
@@ -1013,6 +1097,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: source-${{ matrix.slot }}
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+        run: bash source-${{ matrix.slot }}/tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
       - name: build SDK at independent paths
         working-directory: source-${{ matrix.slot }}
@@ -1037,6 +1126,9 @@ jobs:
         with:
           name: sdk-hash-${{ matrix.slot }}
           path: ${{ runner.temp }}/sdk.sha
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash source-${{ matrix.slot }}/tools/ci-self-hosted.sh end
 
   # Same as sdk-repro, on two macOS runners (self-hosted: two runner
   # instances, or one twice; the paths differ by slot either way). Builds in
