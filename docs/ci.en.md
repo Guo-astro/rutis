@@ -238,7 +238,7 @@ A self-hosted machine keeps its state between jobs, and several instances run at
 
 - it ends the processes an earlier job of this instance left: those whose command line or working directory is under this instance's workspace, target directory or scenario directory; the runner itself and other instances' jobs are left alone;
 - the scenario directory `RUTIS_E2E_DIR` is the instance's own `/tmp/rutis-e2e-<runner name>` (not `runner.temp`: a Unix socket path is at most 104 bytes on macOS, see `tests/e2e/src/lib.rs`), emptied at the start and the end;
-- builds use no `rust-cache` (it would upload the cache to GitHub again); `CARGO_TARGET_DIR` is the instance's kept `~/.cache/rutis-ci/<runner name>/target`, emptied above 30 GB (`RUTIS_CI_TARGET_MAX_GB`); the caches of `setup-node` and `setup-go` are used on GitHub's runners only;
+- builds use no `rust-cache` (it would upload the cache to GitHub again); `CARGO_TARGET_DIR` is the instance's kept `~/.cache/rutis-ci/<runner name>/target`, emptied above 30 GB (`RUTIS_CI_TARGET_MAX_GB`); when the machine's `cargo` is the shim of mbx (a build cache), `CARGO_TARGET_DIR` is not set and mbx keeps the target directory, and this directory is removed (used by both, one target directory came to hold a `rutis-sdk` and a `rutis-cli` built against two different `serde_json`); the caches of `setup-node` and `setup-go` are used on GitHub's runners only;
 - Python comes not from `setup-python` (its macOS builds install only under `/Users/runner`) but from uv: its latest Python, in a virtual environment with pip that each job makes in `runner.temp` and puts on `PATH`;
 - directories `tools/*.sh` leave in `/tmp/rutis-*` are removed after 12 hours;
 - several instances compiling at once overload the machine (4 instances on 10 cores each running 10 rustc reached a load of 79): each job's `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` are the CPU count divided by the machine's instances (the `~/actions-runner*/` directories with a `.runner` file), at least 2; the start prints them and the load. When instances live elsewhere, or for another value, set the repository variable `RUTIS_CI_JOBS`. `sdk-repro-macos` is limited the same way, which does not change what it builds.
@@ -252,3 +252,16 @@ A self-hosted machine keeps its state between jobs, and several instances run at
 5. At least 100 GB of free disk (up to 30 GB of target directory per instance, plus Node, Python, Go and Bun in `_work/_tool`).
 6. No sleep: `sudo pmset -a sleep 0 disksleep 0` (or in System Settings).
 7. No Homebrew: these jobs use only the system's `bash` (3.2), `perl`, `tar`, `shasum`, `lsof` and `jq` (`/usr/bin/jq` comes with macOS 15 and later; `ci-ok` uses it); Node, Go, Bun and uv come from their setup actions into `_work/_tool`, Python from uv into `~/.local/share/uv`.
+
+## 11. Self-hosted Linux runners
+
+Where `ci.yml`'s Linux jobs (`rust`, `e2e`, `lint`, the Linux entries of `runtimes-go`/`runtimes-bun`, `dylib-linux-*`, `sdk-repro`) run is the repository variable `LINUX_RUNNER` (the JSON value of `runs-on`): unset, GitHub's `"ubuntu-24.04"`; set to `["self-hosted","Linux"]`, the organization's self-hosted Linux runners; delete it to go back to GitHub. The other workflows (`package.yml`, which needs Docker containers, `install.yml`, `stress.yml` and the rest) are not affected.
+
+These runners are 4 Docker containers on one machine (32 cores, 60 GB of memory), one runner each, user `runner` with passwordless sudo, with Rust, Node, Go and Python installed and no `lsof`, Docker or Bun (`setup-bun` installs Bun). The jobs run `tools/ci-self-hosted.sh` at their start and their end as well (previous section), with these differences:
+
+- a container has one runner and its own `/tmp`: the scenario directory is the shortest, `/tmp/rutis-e2e`;
+- the processes' working directories come from `/proc` (there is no `lsof`);
+- a container sees the whole machine's CPUs but not the other containers: each job's parallelism is the repository variable `LINUX_CI_JOBS` (`8` with 4 containers), or every CPU when it is unset;
+- `setup-python` works on self-hosted Linux, and Python still comes from it.
+
+`runtimes-windows` likewise goes by the repository variable `WINDOWS_RUNNER`: unset, `"windows-2025"`; set to `["self-hosted","Windows"]`, the organization's self-hosted Windows runners (4 instances on one 16-core machine, run as `NETWORK SERVICE`; Rust in `C:\Rust`, with the VS Build Tools, Git, Node, Go and Python). Its steps use Git's bash: the machine's system `PATH` needs `C:\Program Files\Git\bin` (restart the runner services after changing it). Self-hosted, each instance keeps its target and scenario directories under `_work/_rutis-ci/` (`checkout` cleans a `target` in the checkout); Python comes not from `setup-python` (its Windows installer needs an administrator) but from the machine, in a virtual environment in `runner.temp`; and its parallelism is the CPU count divided by 4, or the repository variable `WINDOWS_CI_JOBS`. The machine needs long paths: `LongPathsEnabled` = 1 in the registry, and `git config --system core.longpaths true`.

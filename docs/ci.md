@@ -238,7 +238,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 
 - 结束这个实例之前的任务留下的进程：命令行或工作目录在这个实例的工作区、target 目录或场景目录下的进程，不碰 runner 本身和别的实例的任务；
 - 场景目录 `RUTIS_E2E_DIR` 是每个实例自己的 `/tmp/rutis-e2e-<runner 名>`（不用 `runner.temp`：Unix socket 路径在 macOS 上最长 104 字节，见 `tests/e2e/src/lib.rs`），开头和结尾清空；
-- 编译不用 `rust-cache`（它会把缓存再上传到 GitHub），`CARGO_TARGET_DIR` 是每个实例保留的 `~/.cache/rutis-ci/<runner 名>/target`，超过 30 GB（`RUTIS_CI_TARGET_MAX_GB`）时清空；`setup-node`、`setup-go` 的缓存也只在 GitHub 的 runner 上用；
+- 编译不用 `rust-cache`（它会把缓存再上传到 GitHub），`CARGO_TARGET_DIR` 是每个实例保留的 `~/.cache/rutis-ci/<runner 名>/target`，超过 30 GB（`RUTIS_CI_TARGET_MAX_GB`）时清空；机器上的 `cargo` 是 mbx（构建缓存）的 shim 时，不设 `CARGO_TARGET_DIR`，由 mbx 管理编译目录，并删掉这个目录（两者混用时，同一个编译目录里出现过依赖两个不同 `serde_json` 的 `rutis-sdk` 和 `rutis-cli`）；`setup-node`、`setup-go` 的缓存也只在 GitHub 的 runner 上用；
 - Python 不用 `setup-python`（它的 macOS 版本只能装在 `/Users/runner` 下），用 uv 装的最新 Python，每个任务在 `runner.temp` 里建一个带 pip 的虚拟环境放进 `PATH`；
 - `tools/*.sh` 留在 `/tmp/rutis-*` 的目录超过 12 小时后删除；
 - 几个实例同时编译会把机器压满（10 核上 4 个实例各开 10 个 rustc，负载到过 79）：每个任务的 `CARGO_BUILD_JOBS` 和 `RUST_TEST_THREADS` 设成 CPU 数除以机器上的实例数（`~/actions-runner*/` 里有 `.runner` 的目录数），至少 2，开头会打印选的值和当时的负载。实例不装在 `~/actions-runner*` 下，或要别的值时，设仓库变量 `RUTIS_CI_JOBS`。`sdk-repro-macos` 也照此限制，不影响构建结果。
@@ -252,3 +252,16 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 5. 磁盘至少 100 GB 空闲（每个实例的 target 目录最多 30 GB，加上 `_work/_tool` 里的 Node、Python、Go、Bun）。
 6. 不睡眠：`sudo pmset -a sleep 0 disksleep 0`（或在系统设置里关掉）。
 7. 不需要 Homebrew：这些任务只用系统自带的 `bash`（3.2）、`perl`、`tar`、`shasum`、`lsof`、`jq`（macOS 15 起系统自带 `/usr/bin/jq`，`ci-ok` 要用），Node、Go、Bun、uv 由各自的 setup action 装进 `_work/_tool`，Python 由 uv 装进 `~/.local/share/uv`。
+
+## 11. 自托管的 Linux runner
+
+`ci.yml` 的 Linux 任务（`rust`、`e2e`、`lint`、`runtimes-go`/`runtimes-bun` 的 Linux 矩阵项、`dylib-linux-*`、`sdk-repro`）由仓库变量 `LINUX_RUNNER`（`runs-on` 的 JSON 值）决定跑在哪里：没设置时是 GitHub 的 `"ubuntu-24.04"`，设成 `["self-hosted","Linux"]` 就跑在组织的自托管 Linux runner 上；删掉变量就回到 GitHub。`package.yml`（要 Docker 容器）、`install.yml`、`stress.yml` 等其他工作流不受影响。
+
+这些 runner 是同一台机器（32 核、60 GB 内存）上的 4 个 Docker 容器，每个容器一个 runner，用户 `runner`，有免密 sudo，自带 Rust、Node、Go、Python，没有 `lsof`、Docker 和 Bun（Bun 由 `setup-bun` 装）。任务开头和结尾同样运行 `tools/ci-self-hosted.sh`（见上一节），区别是：
+
+- 容器里只有一个 runner，`/tmp` 是容器自己的，场景目录用最短的 `/tmp/rutis-e2e`；
+- 进程的工作目录从 `/proc` 读（没有 `lsof`）；
+- 容器看得到整台机器的 CPU，看不到别的容器：每个任务的并行数取仓库变量 `LINUX_CI_JOBS`（4 个容器时设 `8`），没设置时是全部 CPU 数；
+- `setup-python` 在自托管的 Linux 上可以用，Python 照旧由它装。
+
+`runtimes-windows` 同样由仓库变量 `WINDOWS_RUNNER` 决定：没设置时是 `"windows-2025"`，设成 `["self-hosted","Windows"]` 就跑在组织的自托管 Windows runner 上（一台 16 核的机器上 4 个实例，以 `NETWORK SERVICE` 运行；Rust 在 `C:\Rust`，有 VS Build Tools、Git、Node、Go、Python）。步骤用 Git 的 bash：机器的系统 `PATH` 里要有 `C:\Program Files\Git\bin`（改了以后重启 runner 服务）。自托管时，每个实例的编译目录和场景目录在 `_work/_rutis-ci/` 下（`checkout` 会清掉检出目录里的 `target`）；Python 不用 `setup-python`（它的 Windows 安装程序要管理员权限），用机器上的 Python，在 `runner.temp` 里建虚拟环境；并行数是 CPU 数除以 4，仓库变量 `WINDOWS_CI_JOBS` 可以改。机器要开长路径：注册表 `LongPathsEnabled` = 1，`git config --system core.longpaths true`。

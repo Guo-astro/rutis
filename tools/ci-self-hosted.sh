@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# The self-hosted macOS runners keep their state between jobs, and several
-# runner instances share one machine (docs/ci.md §10). The jobs that run on
-# them call this at their start and, with `if: always()`, at their end.
+# The self-hosted runners keep their state between jobs, and several runner
+# instances share one machine (docs/ci.md §10): on macOS in one user's home,
+# on Linux each in its own container. The jobs that run on them call this at
+# their start and, with `if: always()`, at their end.
 #
 #   start  ends what an earlier job of this runner left running, empties the
 #          scenario directory, and points the job at this runner's own
 #          directories (GITHUB_ENV): RUTIS_E2E_DIR, short for Unix socket
-#          paths (tests/e2e/src/lib.rs), and CARGO_TARGET_DIR, kept between
-#          jobs in place of rust-cache, emptied above RUTIS_CI_TARGET_MAX_GB;
-#          and limits CARGO_BUILD_JOBS and RUST_TEST_THREADS to the
-#          machine's share of this instance (RUTIS_CI_JOBS overrides it)
+#          paths (tests/e2e/src/lib.rs; /tmp/rutis-e2e for a runner alone),
+#          and CARGO_TARGET_DIR, kept between jobs in place of rust-cache,
+#          emptied above RUTIS_CI_TARGET_MAX_GB; and limits CARGO_BUILD_JOBS
+#          and RUST_TEST_THREADS to the machine's share of this instance
+#          (RUTIS_CI_JOBS overrides it)
 #   end    ends what this job left running and empties the scenario directory
 #
 # Everything is scoped to this runner instance (RUNNER_NAME): its workspace,
@@ -23,7 +25,16 @@ phase=${1:?usage: $0 start|end}
 : "${RUNNER_NAME:?}" "${GITHUB_WORKSPACE:?}"
 cache="$HOME/.cache/rutis-ci/$RUNNER_NAME"
 target="$cache/target"
-e2e="/tmp/rutis-e2e-$RUNNER_NAME"
+# The machine's runner instances: each a ~/actions-runner*/ with a .runner
+# file. A runner alone (as in the Linux runners' containers, one each, with
+# their own /tmp and long names) takes the default, shortest directory.
+instances=$(ls -d "$HOME"/actions-runner*/.runner 2>/dev/null | wc -l | tr -d ' ')
+[ "$instances" -ge 1 ] 2>/dev/null || instances=1
+if [ "$instances" -gt 1 ]; then
+  e2e="/tmp/rutis-e2e-$RUNNER_NAME"
+else
+  e2e=/tmp/rutis-e2e
+fi
 
 # This step's shell and its ancestors (the runner's worker among them).
 keep=" $$ "
@@ -43,7 +54,18 @@ victims() {
         case "$args/" in *"$dir"/*) echo "$pid"; break ;; esac
       done
     done
-    lsof -a -u "$(id -u)" -d cwd -Fn 2>/dev/null | while read -r line; do
+    # The working directories: lsof on macOS, /proc on Linux (whose
+    # runner containers have no lsof).
+    if [ -d /proc/self/cwd ]; then
+      for link in /proc/[0-9]*/cwd; do
+        [ -O "$link" ] || continue
+        cwd=$(readlink "$link" 2>/dev/null) || continue
+        pid=${link#/proc/}; pid=${pid%/cwd}
+        echo "p$pid"; echo "n$cwd"
+      done
+    else
+      lsof -a -u "$(id -u)" -d cwd -Fn 2>/dev/null
+    fi | while read -r line; do
       case "$line" in
         p*) pid=${line#p} ;;
         n*) for dir in "$GITHUB_WORKSPACE" "$target" "$e2e" "/private$e2e"; do
@@ -103,29 +125,44 @@ if [ "$phase" = start ]; then
   # ones are no running job's.
   find /tmp/ -maxdepth 1 -name 'rutis-*' -user "$(id -un)" -mmin +720 -print 2>/dev/null |
     while IFS= read -r dir; do remove "$dir"; done
-  mkdir -p "$target"
-  used=$(du -sk "$target" | cut -f 1)
-  max=${RUTIS_CI_TARGET_MAX_GB:-30}
-  if [ "$used" -gt $((max * 1024 * 1024)) ]; then
-    echo "target directory is $((used / 1024 / 1024)) GB (over $max GB): emptying it"
+  # A machine whose cargo is mbx's shim (a build cache; its directory holds
+  # mbx-target) keeps the builds in mbx's own target directories: a target
+  # directory of ours, filled by mbx and by cargo alike, came to hold
+  # rutis-sdk and rutis-cli built against two different serde_json (E0308).
+  cargo_bin=$(command -v cargo 2>/dev/null || true)
+  if [ -n "$cargo_bin" ] && [ -f "$(dirname "$cargo_bin")/mbx-target" ]; then
+    echo "cargo is mbx ($cargo_bin): mbx keeps the target directory"
     remove "$target"
+    target=
+  else
     mkdir -p "$target"
+    used=$(du -sk "$target" | cut -f 1)
+    max=${RUTIS_CI_TARGET_MAX_GB:-30}
+    if [ "$used" -gt $((max * 1024 * 1024)) ]; then
+      echo "target directory is $((used / 1024 / 1024)) GB (over $max GB): emptying it"
+      remove "$target"
+      mkdir -p "$target"
+    fi
   fi
+  mkdir -p "$cache"
   df -h "$cache" | tail -n 1
   echo "open files limit: $(ulimit -Sn) (hard $(ulimit -Hn))"
-  # The machine's CPUs shared by its runner instances (each a
-  # ~/actions-runner*/ with a .runner file), which may all build at once:
-  # cargo's and the test binaries' parallelism, RUTIS_CI_JOBS if set.
+  # The machine's CPUs shared by its runner instances, which may all build
+  # at once: cargo's and the test binaries' parallelism, RUTIS_CI_JOBS if
+  # set (the Linux runners' containers see the machine's CPUs but not each
+  # other: the workflow passes LINUX_CI_JOBS there).
   cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)
-  instances=$(ls -d "$HOME"/actions-runner*/.runner 2>/dev/null | wc -l | tr -d ' ')
-  [ "$instances" -ge 1 ] 2>/dev/null || instances=1
   jobs=${RUTIS_CI_JOBS:-$((cpus / instances))}
   [ "$jobs" -ge 2 ] 2>/dev/null || jobs=2
   echo "load: $(uptime | sed 's/.*load averages*: //'); $cpus CPUs, $instances runner instances: $jobs jobs and test threads"
   {
     echo "RUTIS_E2E_DIR=$e2e"
-    echo "CARGO_TARGET_DIR=$target"
+    [ -z "$target" ] || echo "CARGO_TARGET_DIR=$target"
     echo "CARGO_BUILD_JOBS=$jobs"
     echo "RUST_TEST_THREADS=$jobs"
+    # A GOROOT of the machine's own Go (the Linux runners' image sets one)
+    # would pair setup-go's go command with another release's compiler.
+    # Empty, go finds its own.
+    [ -z "${GOROOT:-}" ] || echo "GOROOT="
   } >> "$GITHUB_ENV"
 fi
