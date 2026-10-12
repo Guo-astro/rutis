@@ -177,9 +177,17 @@ jobs:
   links:
     needs: changes
     if: needs.changes.outputs.docs == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh start
+      # A self-hosted runner has no Node of its own.
+      - uses: actions/setup-node@v4
+        if: runner.environment == 'self-hosted'
+        with:
+          node-version: '24'
       - name: relative Markdown links
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -190,13 +198,19 @@ jobs:
           else
             node tools/check-md-links.mjs
           fi
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   # The Linux tests of an ordinary change, in parallel jobs so that the
   # longest one sets the time (Q12.6.1): `rust` (every Rust test once, but the
   # end-to-end scenarios), `e2e` (the scenarios), `js-py` (the Node and Python
   # packages), and `checks` (compile checks of
   # feature combinations: on main and for changes that run everything, as
-  # they catch rare errors and run no tests).
+  # they catch rare errors and run no tests). `js-py`, `checks` and `msrv`
+  # do not depend on the OS and run on the self-hosted macOS runners
+  # (docs/ci.md §10); `checks` and `msrv` there skip Linux-only cfg code,
+  # which `lint` (clippy, Linux) compiles.
   #
   # Versions: the oldest each package supports, so that the minimum is
   # verified; network-macos runs the newest.
@@ -337,14 +351,17 @@ jobs:
   js-py:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh start
       # The oldest Node the packages support (engines.node).
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: |
             node/rutis-runtime/package-lock.json
             crates/rutis-dsh/dsh/package-lock.json
@@ -359,13 +376,28 @@ jobs:
       - run: npm --prefix crates/rutis-dsh/dsh test
       # The Python package on the oldest Python (requires-python) and
       # the oldest websockets.
+      # setup-python's macOS builds install only under /Users/runner: a
+      # self-hosted runner takes uv's Python 3.10, in a virtual environment
+      # with pip.
       - uses: actions/setup-python@v5
+        if: runner.environment == 'github-hosted'
         with:
           python-version: '3.10'
+      - uses: astral-sh/setup-uv@v6
+        if: runner.environment == 'self-hosted'
+      - name: Python 3.10 (self-hosted runner)
+        if: runner.environment == 'self-hosted'
+        run: |
+          uv python install 3.10
+          uv venv --seed --python-preference only-managed --python 3.10 "$RUNNER_TEMP/python"
+          echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
       # WebSocket channels of the Python runtime (rutis[network]).
       - run: python3 -m pip install "websockets==15.*"
       - run: python3 -m unittest discover -s tests
         working-directory: python/rutis
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   # fmt and clippy, in parallel with the tests (not on the critical path).
   # clippy compiles the whole workspace with all features, so `checks` does
@@ -416,38 +448,51 @@ jobs:
   msrv:
     needs: changes
     if: needs.changes.outputs.all == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.88
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # The examples' build scripts need the Node runtime (as in lint).
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: node/rutis-runtime/package-lock.json
       - run: npm --prefix node/rutis-runtime ci
       - name: cargo +1.88 check
         run: cargo +1.88 check --workspace --exclude rutis-agent --exclude rutis-cli --locked
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   checks:
     needs: changes
     if: needs.changes.outputs.all == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # rutis-dsh compiles its web host only when dsh is installed.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: |
             node/rutis-runtime/package-lock.json
             crates/rutis-dsh/dsh/package-lock.json
@@ -481,6 +526,9 @@ jobs:
 
       - name: cargo test --no-run (rutis-loader, go)
         run: cargo test -p rutis-loader --features go --no-run
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   # The Go SDK and runtime: the SDK's own tests (race detector on), then
   # the Go runtime against the conformance suites, the loader's Go rows and
@@ -711,11 +759,16 @@ jobs:
   release-dry-run:
     needs: changes
     if: needs.changes.outputs.packaging == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@v4
@@ -735,6 +788,9 @@ jobs:
           uv build python/rutis --out-dir dist
           uvx maturin build --release --manifest-path crates/rutis-host/Cargo.toml --out dist
           ls dist
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   # 列车里已发布的 crate 相对 crates.io 最新版的公开 API 变化：发现破坏性变更
   # 时给出警告，并在 job 摘要中列出，提示发布时需要提升的版本；不使 CI 失败
@@ -745,9 +801,12 @@ jobs:
   semver-rutis:
     needs: changes
     if: needs.changes.outputs.packaging == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh start
       - uses: taiki-e/install-action@cargo-semver-checks
       - name: Report API changes since the latest release
         run: |
@@ -761,9 +820,12 @@ jobs:
               exit 1
             else
               echo "::warning title=$crate semver::Breaking API changes since the latest crates.io release; the next train release must bump the minor version (0.x). See the job summary."
-              { echo "### Breaking changes in $crate since its latest release"; echo; echo '```'; sed 's/\x1b\[[0-9;]*m//g' semver.txt | grep -vE '^\s+(Building|Built|Parsing|Parsed|Checking|Checked|Compiling|Downloaded|Updating)'; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+              { echo "### Breaking changes in $crate since its latest release"; echo; echo '```'; perl -pe 's/\e\[[0-9;]*m//g' semver.txt | grep -vE '^[[:space:]]+(Building|Built|Parsing|Parsed|Checking|Checked|Compiling|Downloaded|Updating)'; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
             fi
           done
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
 
   # The dylib checks on Linux, in three parallel jobs to shorten the critical
   # path (Q12.6.1). Each script builds what it needs.
@@ -1000,24 +1062,26 @@ jobs:
           path: ${{ runner.temp }}/sdk.sha
 
   sdk-repro-macos-compare:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     needs: [changes, sdk-repro-macos]
     steps:
       - uses: actions/download-artifact@v4
         with:
           pattern: sdk-hash-macos-*
-          path: hashes
-      - run: cmp hashes/sdk-hash-macos-a/sdk.sha hashes/sdk-hash-macos-b/sdk.sha
+          path: ${{ runner.temp }}/hashes
+      - run: cmp "$RUNNER_TEMP"/hashes/sdk-hash-macos-a/sdk.sha "$RUNNER_TEMP"/hashes/sdk-hash-macos-b/sdk.sha
 
+  # The comparisons run where a runner is free (runner.temp: a self-hosted
+  # runner keeps its workspace).
   sdk-repro-compare:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     needs: [changes, sdk-repro]
     steps:
       - uses: actions/download-artifact@v4
         with:
           pattern: sdk-hash-[ab]
-          path: hashes
-      - run: cmp hashes/sdk-hash-a/sdk.sha hashes/sdk-hash-b/sdk.sha
+          path: ${{ runner.temp }}/hashes
+      - run: cmp "$RUNNER_TEMP"/hashes/sdk-hash-a/sdk.sha "$RUNNER_TEMP"/hashes/sdk-hash-b/sdk.sha
 
   # The one check a merge waits for (Q12.5): it always runs, fails when a
   # selected job failed or was cancelled, and counts jobs the change did not
