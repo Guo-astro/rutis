@@ -1,9 +1,11 @@
-#![cfg(all(unix, feature = "testing", feature = "websocket"))]
 //! The runtime conformance suite (`rutis_bridge::runtime::testing::runtime`) over
 //! every channel: the Node, the Python and (feature `go`) the Go runtime, each connected on an
-//! inherited socket (`fd:3`), on a socket path it dials back, and over a
-//! loopback WebSocket it listens on (dialed by Rust and attached); the Bun
-//! runtime (feature `bun`) on the first two.
+//! inherited socket (`fd:3`), on a socket path it dials back, on a loopback
+//! address it dials presenting a token, and over a loopback WebSocket it
+//! listens on (dialed by Rust and attached); the Bun runtime (feature `bun`,
+//! Unix only) on the first two. Risk C10: the matrix, with every skipped
+//! cell's reason, is in docs/ci.md.
+#![cfg(all(feature = "testing", feature = "websocket"))]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,21 +23,30 @@ enum Runtime {
     Python,
     #[cfg_attr(not(feature = "go"), allow(dead_code))]
     Go,
-    #[cfg(feature = "bun")]
+    /// Unix only: Bun on Windows is not a declared platform.
+    #[cfg(all(unix, feature = "bun"))]
     Bun,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Via {
+    /// `fd:3`. Not on Windows, which hands no descriptor over.
     Inherit,
+    /// A socket path the runtime dials. Not on Windows: no Unix sockets.
     DialBack,
+    /// A loopback address the runtime dials, presenting a token
+    /// (`Handover::Loopback` of the local transport, as `LocalRuntime`
+    /// starts runtimes): the only handover on Windows.
+    Loopback,
     WebSocket,
 }
 
 /// The Python interpreter: one with `websockets` for WebSocket channels
-/// (`RUTIS_PYTHON`), else `python3`.
+/// (`RUTIS_PYTHON`), else `python3` (`python` on Windows, where
+/// setup-python installs no `python3`).
 fn python() -> String {
-    std::env::var("RUTIS_PYTHON").unwrap_or_else(|_| "python3".into())
+    std::env::var("RUTIS_PYTHON")
+        .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into())
 }
 
 /// Start `runtime` on a fresh project, connected as `via` says.
@@ -45,12 +56,8 @@ async fn start(runtime: Runtime, via: Via, dir: &Path) -> (Arc<Process>, PathBuf
             let package = repo().join("node/rutis-runtime");
             let anchor = dir.join("package.json");
             std::fs::write(&anchor, "{}").unwrap();
-            let entry = dir.join("weather.mjs");
-            std::fs::copy(
-                repo().join("node/rutis-runtime/test/fixtures/conformance-weather.mjs"),
-                &entry,
-            )
-            .unwrap();
+            // Loaded where it is: it imports the SDK by path.
+            let entry = repo().join("node/rutis-runtime/test/fixtures/conformance-weather.mjs");
             let launcher = Launcher::new("node")
                 .arg("--import")
                 .arg("tsx")
@@ -64,9 +71,7 @@ async fn start(runtime: Runtime, via: Via, dir: &Path) -> (Arc<Process>, PathBuf
                 dir.join("weather_plugin.py"),
             )
             .unwrap();
-            let mut path = repo().join("python/rutis").into_os_string();
-            path.push(":");
-            path.push(dir);
+            let path = std::env::join_paths([repo().join("python/rutis"), dir.to_owned()]).unwrap();
             let launcher = Launcher::new(python())
                 .arg("-m")
                 .arg("rutis")
@@ -81,7 +86,7 @@ async fn start(runtime: Runtime, via: Via, dir: &Path) -> (Arc<Process>, PathBuf
                 PathBuf::from("weather"),
             )
         }
-        #[cfg(feature = "bun")]
+        #[cfg(all(unix, feature = "bun"))]
         Runtime::Bun => {
             let entry = dir.join("weather.ts");
             std::fs::copy(
@@ -95,8 +100,10 @@ async fn start(runtime: Runtime, via: Via, dir: &Path) -> (Arc<Process>, PathBuf
             (launcher, dir.to_owned(), entry)
         }
     };
-    if via == Via::WebSocket {
-        return (listening(launcher, &anchor).await, entry);
+    match via {
+        Via::WebSocket => return (listening(launcher, &anchor).await, entry),
+        Via::Loopback => return (handed_over(launcher, &anchor).await, entry),
+        _ => {}
     }
     let launcher = match via {
         Via::Inherit => launcher.inherit_fd(),
@@ -113,6 +120,35 @@ async fn start(runtime: Runtime, via: Via, dir: &Path) -> (Arc<Process>, PathBuf
     .await
     .unwrap_or_else(|error| panic!("{runtime:?} ({via:?}) failed to start: {error}"));
     (process, entry)
+}
+
+/// Start the runtime with `Handover::Loopback` through the local transport,
+/// on every platform, and attach.
+async fn handed_over(launcher: Launcher, anchor: &Path) -> Arc<Process> {
+    use rutis_bridge::channel::PeerId;
+    use rutis_bridge::transport::local::{Handover, LocalTransport, Spawn};
+    use rutis_bridge::{Dial, Transport};
+
+    let mut spawn = Spawn::new(launcher.program, PeerId::new("runtime").unwrap());
+    spawn.args = launcher.args;
+    spawn.env = launcher.env;
+    spawn.cwd = launcher.cwd;
+    spawn.handover = Handover::Loopback;
+    spawn.trailing = vec![anchor.into()];
+    let transport = LocalTransport::default();
+    transport.spawner("runtime", spawn);
+    let channel = transport
+        .dial(&Dial::address("spawn:runtime"))
+        .await
+        .unwrap();
+    assert_eq!(channel.info.transport, "tcp", "a loopback channel");
+    let format = rutis_bridge::session::Format::Compat;
+    let process = Process::attach(channel, Mount::default(), format)
+        .await
+        .unwrap();
+    // The transport ends its processes when dropped: keep it for the test.
+    std::mem::forget(transport);
+    process
 }
 
 /// Start the runtime listening on a loopback WebSocket, dial it, attach.
@@ -192,15 +228,26 @@ async fn listening(launcher: Launcher, anchor: &Path) -> Arc<Process> {
 async fn semantics(runtime: Runtime, via: Via) {
     let dir = tempfile::tempdir().unwrap();
     let (process, entry) = start(runtime, via, dir.path()).await;
-    rutis_bridge::runtime::testing::runtime(process, &entry, via != Via::WebSocket).await;
+    // Only the `Process` facade starts the process itself and reports its
+    // exit; the other columns attach to a channel.
+    let started_here = matches!(via, Via::Inherit | Via::DialBack);
+    rutis_bridge::runtime::testing::runtime(process, &entry, started_here).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(
+    windows,
+    ignore = "fd:3 column: Windows hands no descriptor over (loopback handover only)"
+)]
 async fn node_on_an_inherited_socket() {
     semantics(Runtime::Node, Via::Inherit).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(
+    windows,
+    ignore = "socket path column: Windows has no Unix sockets (loopback handover only)"
+)]
 async fn node_dialing_a_socket_path() {
     semantics(Runtime::Node, Via::DialBack).await;
 }
@@ -211,11 +258,24 @@ async fn node_listening_on_a_websocket() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn node_dialing_a_loopback_address() {
+    semantics(Runtime::Node, Via::Loopback).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(
+    windows,
+    ignore = "fd:3 column: Windows hands no descriptor over (loopback handover only)"
+)]
 async fn python_on_an_inherited_socket() {
     semantics(Runtime::Python, Via::Inherit).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(
+    windows,
+    ignore = "socket path column: Windows has no Unix sockets (loopback handover only)"
+)]
 async fn python_dialing_a_socket_path() {
     semantics(Runtime::Python, Via::DialBack).await;
 }
@@ -225,11 +285,16 @@ async fn python_listening_on_a_websocket() {
     semantics(Runtime::Python, Via::WebSocket).await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn python_dialing_a_loopback_address() {
+    semantics(Runtime::Python, Via::Loopback).await;
+}
+
 /// The Go package `package` (under `go/rutis`), built into a fresh
 /// directory with the `go` on PATH.
 fn go_binary(package: &str) -> PathBuf {
     let directory = tempfile::tempdir().unwrap().keep();
-    let binary = directory.join("runtime");
+    let binary = directory.join(format!("runtime{}", std::env::consts::EXE_SUFFIX));
     let status = std::process::Command::new("go")
         .args(["build", "-o"])
         .arg(&binary)
@@ -243,12 +308,20 @@ fn go_binary(package: &str) -> PathBuf {
 
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(
+    windows,
+    ignore = "fd:3 column: Windows hands no descriptor over (loopback handover only)"
+)]
 async fn go_on_an_inherited_socket() {
     semantics(Runtime::Go, Via::Inherit).await;
 }
 
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(
+    windows,
+    ignore = "socket path column: Windows has no Unix sockets (loopback handover only)"
+)]
 async fn go_dialing_a_socket_path() {
     semantics(Runtime::Go, Via::DialBack).await;
 }
@@ -259,9 +332,19 @@ async fn go_listening_on_a_websocket() {
     semantics(Runtime::Go, Via::WebSocket).await;
 }
 
+#[cfg(feature = "go")]
+#[tokio::test(flavor = "multi_thread")]
+async fn go_dialing_a_loopback_address() {
+    semantics(Runtime::Go, Via::Loopback).await;
+}
+
 /// A runtime package that does not list `fd` in `rutisChannels` is started
 /// the old way, dialing a socket path.
 #[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(
+    windows,
+    ignore = "fd:3 and socket path handovers: Windows has the loopback handover only"
+)]
 async fn a_runtime_without_fd_support_dials_back() {
     let dir = tempfile::tempdir().unwrap();
     let package = dir.path().join("runtime");
@@ -279,7 +362,11 @@ async fn a_runtime_without_fd_support_dials_back() {
         serde_json::from_slice(&std::fs::read(real.join("package.json")).unwrap()).unwrap();
     manifest.as_object_mut().unwrap().remove("rutisChannels");
     std::fs::write(package.join("package.json"), manifest.to_string()).unwrap();
+    #[cfg(unix)]
     std::os::unix::fs::symlink(real.join("node_modules"), package.join("node_modules")).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(real.join("node_modules"), package.join("node_modules"))
+        .unwrap();
     // The runner sees its channel argument: record it.
     let anchor = dir.path().join("package.json");
     std::fs::write(&anchor, "{}").unwrap();
@@ -317,13 +404,13 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-#[cfg(feature = "bun")]
+#[cfg(all(unix, feature = "bun"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_on_an_inherited_socket() {
     semantics(Runtime::Bun, Via::Inherit).await;
 }
 
-#[cfg(feature = "bun")]
+#[cfg(all(unix, feature = "bun"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_dialing_a_socket_path() {
     semantics(Runtime::Bun, Via::DialBack).await;

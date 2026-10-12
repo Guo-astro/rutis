@@ -1,6 +1,8 @@
 // The session conformance target, served by the Bun session: connects to
-// `channel` as endpoint `bun`, expecting `main`, and serves `conformance`
-// until the session ends.
+// `channel` (a `tcp:` one presenting the token in RUTIS_CHANNEL_TOKEN) as
+// endpoint `bun`, expecting `main`, and serves `conformance` until the
+// session ends.
+import { takeToken } from '../../src/channel.ts'
 import { Client } from '../../src/client.ts'
 
 const [channel] = process.argv.slice(2)
@@ -18,6 +20,10 @@ const conformance: Record<string, (...args: any[]) => unknown> = {
   started: () => started,
   aborted: () => aborted,
   reenter: fn => fn(),
+  // The value one level deeper, returned or passed to a callback: past the
+  // depth limit, this side's call or reply fails (#279).
+  wrap: value => [value],
+  applyWrapped: (fn, value) => fn([value]),
 }
 session = await Client.connect(channel, {
   dispatch: (target, method, args: any) => {
@@ -27,6 +33,7 @@ session = await Client.connect(channel, {
     return operation(...args)
   },
   endpoint: { local: 'bun', expected: 'main' },
+  token: takeToken(),
 })
 await session.closed()
 process.exit(0)

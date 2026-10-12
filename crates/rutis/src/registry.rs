@@ -78,6 +78,15 @@ fn shrink_if_sparse<K: Eq + std::hash::Hash, V>(map: &mut HashMap<K, V>) {
         map.shrink_to_fit();
     }
 }
+
+/// 同一稀疏收缩规则用于单个键的条目列表(#291):高峰后只剩少量条目的
+/// 列表不再永久保留高峰容量。阈值与 `shrink_if_sparse` 相同,收缩后
+/// 至少要再增长到 4 倍才会再次收缩,增删交替不会退化为二次方。
+fn shrink_vec_if_sparse<T>(list: &mut Vec<T>) {
+    if list.capacity() > 64 && list.len() * 4 < list.capacity() {
+        list.shrink_to_fit();
+    }
+}
 impl Registry {
     pub(crate) fn new() -> Self {
         Self {
@@ -92,6 +101,22 @@ impl Registry {
             self.bindings.lock().unwrap().len(),
             self.inject_index.lock().unwrap().len(),
         )
+    }
+
+    /// Allocated slots of the same two tables, for the capacity checks.
+    #[cfg(test)]
+    pub(crate) fn table_capacities(&self) -> (usize, usize) {
+        (
+            self.bindings.lock().unwrap().capacity(),
+            self.inject_index.lock().unwrap().capacity(),
+        )
+    }
+
+    /// The largest allocated length of one key's consumer list.
+    #[cfg(test)]
+    pub(crate) fn max_list_capacity(&self) -> usize {
+        let index = self.inject_index.lock().unwrap();
+        index.values().map(Vec::capacity).max().unwrap_or(0)
     }
 
     pub(crate) fn insert_binding(
@@ -245,7 +270,9 @@ impl Registry {
     /// 该依赖四元组的当前消费者(D21 简化:唯一事实源是各 fiber 的
     /// `last_deps`,不再维护第二份反向索引)。声明注入该键、且 `last_deps`
     /// 含此四元组(含作用域)的 fiber 即为绑定中的消费者——与装载/卸载窗口
-    /// 严格一致(last_deps 于 load 的 apply 前设置、drain_effects 清除)。
+    /// 严格一致(last_deps 于 load 的 apply 前设置、卸载时 drain_effects
+    /// 清除;装载失败时写回失败那一代的依赖)。失败的 fiber 也算消费者:
+    /// 驱逐时对它重查,依赖缺失则保持 Failed。
     /// 四元组含作用域:同一 provider fiber 在不同作用域提供的同键绑定
     /// 互不为对方的消费者(isolate 语义)。
     pub(crate) fn consumers_of(
@@ -291,6 +318,7 @@ impl Registry {
             if let Some(list) = index.get_mut(key) {
                 list.retain(|w| !Weak::ptr_eq(w, &weak));
                 empty = list.is_empty();
+                shrink_vec_if_sparse(list);
             }
             if empty {
                 index.remove(key);

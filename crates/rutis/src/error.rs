@@ -86,6 +86,26 @@ pub struct ServiceWriteError {
 
 /// 框架错误。不 `Clone`(D11);跨任务共享走 `Arc<CordisError>`。
 ///
+/// It is an `Error + Send + Sync + 'static` and is shared through `Arc`:
+///
+/// ```
+/// // guarantee: core/D11
+/// fn shared<T: std::error::Error + Send + Sync + 'static>() {}
+/// shared::<rutis::CordisError>();
+/// let first = std::sync::Arc::new(rutis::CordisError::Closed);
+/// let second = std::sync::Arc::clone(&first);
+/// assert!(std::sync::Arc::ptr_eq(&first, &second));
+/// ```
+///
+/// It does not implement `Clone`; copies would lose the identity that
+/// joiners compare (D25):
+///
+/// ```compile_fail,E0277
+/// // guarantee: core/D11
+/// fn cloneable<T: Clone>() {}
+/// cloneable::<rutis::CordisError>();
+/// ```
+///
 /// 变体分层(D25):`PluginFailed` 仅包装 apply/清理边界外来的非 Cordis 错误;
 /// apply 自身返回的 `CordisError` 直接传播,不再递归包一层。
 #[derive(Debug, thiserror::Error)]

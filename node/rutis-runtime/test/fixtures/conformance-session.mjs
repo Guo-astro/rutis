@@ -5,6 +5,7 @@ import { Process } from '../../src/client.mjs'
 
 const [channel] = process.argv.slice(2)
 let held, started = false, aborted = false
+const kept = new Map()
 let session
 const conformance = {
   echo: value => value,
@@ -18,6 +19,15 @@ const conformance = {
   started: () => started,
   aborted: () => aborted,
   reenter: fn => fn(),
+  // The release-count property test (risk P4).
+  keep: (slot, fn) => { kept.set(slot, fn) },
+  free: slot => { if (kept.has(slot)) session.release(kept.get(slot)); kept.delete(slot) },
+  make: () => value => value,
+  // The value one level deeper, returned or passed to a callback: past the
+  // depth limit, this side's call or reply fails (#279).
+  wrap: value => [value],
+  applyWrapped: (fn, value) => fn([value]),
+  tables: () => session.references(),
 }
 session = await Process.connect(channel, (target, method, args) => {
   if (target !== 'conformance') throw new Error(`no target ${target}`)

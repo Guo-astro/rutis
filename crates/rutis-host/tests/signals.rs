@@ -20,10 +20,14 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
+use rutis_test_support::HANG_GUARD;
 use serde_json::json;
 
-/// Only against a hang: nothing here waits for time to pass.
-const HANG_GUARD: Duration = Duration::from_secs(60);
+/// Only against a hang: nothing here waits for time to pass. The host
+/// starts a Python and a Node runtime cold, and on its way out may wait out
+/// a deadline and its runtimes' exits (`PROCESS_EXIT`, `KILLED_EXIT`): six
+/// times [`HANG_GUARD`], as before.
+const GUARD: Duration = Duration::from_secs(6 * HANG_GUARD.as_secs());
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -218,9 +222,9 @@ impl Host {
     }
 
     /// Read lines until one satisfies `want`; what it returns.
-    fn until<T>(&mut self, mut want: impl FnMut(&str) -> Option<T>) -> T {
+    fn wait_line<T>(&mut self, mut want: impl FnMut(&str) -> Option<T>) -> T {
         loop {
-            match self.lines.recv_timeout(HANG_GUARD) {
+            match self.lines.recv_timeout(GUARD) {
                 Ok(line) => {
                     let found = want(&line);
                     // A plugin's own process, killed too if the test fails.
@@ -242,7 +246,7 @@ impl Host {
         let mut pids = Vec::new();
         let mut running = 0;
         while pids.len() < rows.len() || running < rows.len() {
-            let (pid, ran) = self.until(|line| {
+            let (pid, ran) = self.wait_line(|line| {
                 let applied = rows.iter().find_map(|row| {
                     line.strip_prefix(&format!("plugin {row} applied in "))
                         .and_then(|pid| pid.trim().parse::<i32>().ok())
@@ -267,16 +271,16 @@ impl Host {
         std::thread::spawn(move || {
             let _ = send.send(child.wait());
         });
-        let status = match exited.recv_timeout(HANG_GUARD) {
+        let status = match exited.recv_timeout(GUARD) {
             Ok(status) => status.unwrap(),
             Err(_) => {
                 kill_all(pid, &self.runtimes);
                 panic!("rutis-host did not exit; its output: {:#?}", self.seen);
             }
         };
-        let stderr = self.stderr.recv_timeout(HANG_GUARD);
+        let stderr = self.stderr.recv_timeout(GUARD);
         loop {
-            match self.lines.recv_timeout(HANG_GUARD) {
+            match self.lines.recv_timeout(GUARD) {
                 Ok(line) => self.seen.push(line),
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(error) => {
@@ -291,7 +295,7 @@ impl Host {
     fn fail(&mut self, what: &str) -> ! {
         kill_all(self.pid(), &self.runtimes);
         let _ = self.child.wait();
-        let stderr = self.stderr.recv_timeout(HANG_GUARD).unwrap_or_default();
+        let stderr = self.stderr.recv_timeout(GUARD).unwrap_or_default();
         panic!("{what}; output: {:#?}; stderr: {stderr}", self.seen);
     }
 }
@@ -386,11 +390,13 @@ fn a_signal_while_starting_ends_the_host() {
     });
     let file = dir.path().join("rutis.json");
     std::fs::write(&file, config.to_string()).unwrap();
+    // clock: the deadline must pass, and does whatever its length: the
+    // apply never ends. 1 s only keeps the test short.
     let mut host = Host::start(
         &["run", "--shutdown-timeout", "1", file.to_str().unwrap()],
         dir.path(),
     );
-    let pid = host.until(|line| {
+    let pid = host.wait_line(|line| {
         line.strip_prefix("plugin py-row hangs in ")
             .and_then(|pid| pid.trim().parse::<i32>().ok())
     });
@@ -416,10 +422,12 @@ fn a_signal_while_starting_ends_the_host() {
 fn dev_ends_on_ctrl_c_while_a_reload_hangs() {
     let dir = tempfile::tempdir().unwrap();
     dev_project(dir.path());
+    // clock: the deadline must pass, and does whatever its length: the new
+    // code's apply never ends. 1 s only keeps the test short.
     let mut host = Host::start(&["dev", "--shutdown-timeout", "1", "."], dir.path());
     let pids = host.started(&["marker"]);
     std::fs::write(dir.path().join("marker.py"), HANGING_PLUGIN).unwrap();
-    host.until(|line| line.starts_with("plugin marker hangs in ").then_some(()));
+    host.wait_line(|line| line.starts_with("plugin marker hangs in ").then_some(()));
     signal(&host, libc::SIGINT, true);
     let (status, stderr, output) = host.exit();
     let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
@@ -458,6 +466,8 @@ fn dev_ends_on_ctrl_c_after_its_cleanup() {
 fn run_past_the_cleanup_deadline_exits_2_and_ends_the_runtimes() {
     let dir = tempfile::tempdir().unwrap();
     let file = run_project(dir.path(), true);
+    // clock: the deadline must pass, and does whatever its length: both
+    // cleanups never end (`hold`). 1 s only keeps the test short.
     let mut host = Host::start(
         &["run", "--shutdown-timeout", "1", file.to_str().unwrap()],
         dir.path(),
@@ -490,7 +500,7 @@ fn a_second_ctrl_c_exits_at_once() {
     let pids = host.started(&["py-row", "node-row"]);
     signal(&host, libc::SIGINT, true);
     // Rows unload one after another: the first cleanup holds the others.
-    host.until(|line| line.ends_with(" cleanup started").then_some(()));
+    host.wait_line(|line| line.ends_with(" cleanup started").then_some(()));
     signal(&host, libc::SIGINT, true);
     let (status, stderr, output) = host.exit();
     let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
@@ -565,7 +575,7 @@ fn run_with_a_go_row_ends_on_ctrl_c() {
     let file = dir.path().join("rutis.json");
     std::fs::write(&file, config.to_string()).unwrap();
     let mut host = Host::start(&["run", file.to_str().unwrap()], dir.path());
-    host.until(|line| (line == "ping: running").then_some(()));
+    host.wait_line(|line| (line == "ping: running").then_some(()));
     let pids = children(host.pid());
     assert!(!pids.is_empty(), "the Go runtime process");
     host.runtimes.extend(&pids);

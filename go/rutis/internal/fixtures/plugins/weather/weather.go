@@ -1,5 +1,6 @@
 // Package weather is the runtime conformance plugin (rutis_bridge::runtime::testing::runtime)
-// for the Go runtime: it injects `clock` and provides `weather`.
+// for the Go runtime: it injects `clock` and provides `weather`. What calls on
+// it return is in crates/rutis-bridge/src/runtime/testing/weather.expected.json.
 package weather
 
 import (
@@ -50,12 +51,15 @@ func (w *Weather) Each(ctx context.Context, callback func(ctx context.Context, d
 	return out, nil
 }
 
+// Echo returns the value it was given.
+func (w *Weather) Echo(ctx context.Context, value any) any { return value }
+
 func (w *Weather) Crash() { os.Exit(17) }
 
 var Plugin = rutis.Define(rutis.Plugin[Config]{
 	Name:     "weather",
 	Inject:   []string{"clock"},
-	Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Today", "Each", "Crash"))},
+	Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Today", "Each", "Echo", "Crash"))},
 	Apply: func(ctx *rutis.Ctx, config Config) error {
 		var clock Clock
 		if err := ctx.Use("clock", &clock); err != nil {

@@ -1373,3 +1373,169 @@ async fn subtree_shutdown_cancels_descendants_before_draining_instance_events() 
     assert_eq!(returned.load(Ordering::SeqCst), 1);
     root.shutdown().await.unwrap();
 }
+
+/// A child mounted again is a new fiber with a new ID; the old ID stays
+/// retired and does not reach the new child's instance services.
+///
+/// guarantee: instance/subtrees.2.2
+#[tokio::test]
+async fn a_recreated_child_gets_a_new_instance_id() {
+    let root = Ctx::root().unwrap();
+    let (old_view, old) = child(&root).await;
+    let old_id = old.instance();
+    assert_eq!(old_view.instance(), old_id);
+    old_view.shutdown().await.unwrap();
+    drop(old_view);
+
+    let mut seen = vec![old_id];
+    for _ in 0..3 {
+        let (view, ctx) = child(&root).await;
+        let id = ctx.instance();
+        assert_eq!(view.instance(), id);
+        assert!(!seen.contains(&id), "{id} handed out again ({seen:?})");
+        ctx.provide_as(TypeKey::instance::<u64>(id), Arc::new(7u64))
+            .unwrap();
+        assert!(ctx
+            .get_as::<u64>(TypeKey::instance::<u64>(old_id))
+            .is_none());
+        seen.push(id);
+        view.dispose().await.unwrap();
+    }
+    // The retired ID is still reported by contexts kept from its fiber.
+    assert_eq!(old.instance(), old_id);
+    root.shutdown().await.unwrap();
+}
+
+/// Lives through the churn next to it: provides `ResidentService`, listens
+/// to `Ping`, counts its loads.
+struct Resident {
+    loads: Arc<AtomicUsize>,
+    pings: Arc<AtomicUsize>,
+}
+
+struct ResidentService;
+
+struct CountPings(Arc<AtomicUsize>);
+impl Listener<Ping> for CountPings {
+    fn call<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        _event: &'a Ping,
+    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(None) })
+    }
+}
+
+impl Plugin for Resident {
+    fn name(&self) -> &str {
+        "resident"
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        Box::pin(async move {
+            self.loads.fetch_add(1, Ordering::SeqCst);
+            ctx.provide(ResidentService)?;
+            ctx.events()
+                .on(ctx, &rutis::EventKey::of(), CountPings(self.pings.clone()))?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// A short-lived subtree: needs the resident's service, provides an
+/// instance service, listens to and emits its instance event, and mounts a
+/// child of its own.
+struct Transient {
+    dropped: Arc<AtomicUsize>,
+    pings: Arc<AtomicUsize>,
+    injects: Vec<TypeKey>,
+}
+
+impl Drop for Transient {
+    fn drop(&mut self) {
+        self.dropped.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl Plugin for Transient {
+    fn name(&self) -> &str {
+        "transient"
+    }
+    fn injects(&self) -> &[TypeKey] {
+        &self.injects
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        Box::pin(async move {
+            ctx.require::<ResidentService>()?;
+            let id = ctx.instance();
+            ctx.provide_as(TypeKey::instance::<u64>(id), Arc::new(1u64))?;
+            let key = rutis::EventKey::of().instance(id);
+            ctx.events().on(ctx, &key, CountPings(self.pings.clone()))?;
+            ctx.events().emit(ctx, &key, Arc::new(Ping(0)))?;
+            ctx.plugin(DropProbe(self.dropped.clone()));
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// 1000 subtrees created and shut down through the public API on a
+/// long-lived root, next to a resident sibling: afterwards every subtree
+/// plugin has been dropped, the runtime has as many live tasks as before
+/// the churn, and the resident has neither reloaded nor lost its listener.
+///
+/// guarantee: instance/subtrees.5
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn thousand_subtrees_next_to_a_resident_leave_no_tasks_behind() {
+    const ROUNDS: usize = 1000;
+    let root = Ctx::root().unwrap();
+    let metrics = tokio::runtime::Handle::current().metrics();
+    let loads = Arc::new(AtomicUsize::new(0));
+    let resident_pings = Arc::new(AtomicUsize::new(0));
+    let resident = root.plugin(Resident {
+        loads: loads.clone(),
+        pings: resident_pings.clone(),
+    });
+    (&resident).await.unwrap();
+    let generation = resident.state().generation;
+    let baseline = metrics.num_alive_tasks();
+
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let instance_pings = Arc::new(AtomicUsize::new(0));
+    for _ in 0..ROUNDS {
+        let view = root.plugin(Transient {
+            dropped: dropped.clone(),
+            pings: instance_pings.clone(),
+            injects: vec![TypeKey::of::<ResidentService>()],
+        });
+        (&view).await.unwrap();
+        assert_eq!(view.state().state, FiberState::Active);
+        view.shutdown().await.unwrap();
+    }
+
+    // The transient plugin and its child, per round.
+    rutis_test_support::until(
+        || dropped.load(Ordering::SeqCst) == 2 * ROUNDS,
+        "every subtree plugin dropped",
+    )
+    .await;
+    rutis_test_support::eventually_with(
+        || (metrics.num_alive_tasks() == baseline).then_some(()),
+        "live tasks back to the baseline",
+        || format!("{} live, baseline {baseline}", metrics.num_alive_tasks()),
+    )
+    .await;
+    assert_eq!(root.diagnostics().plugins.len(), 2, "root and resident");
+
+    assert_eq!(loads.load(Ordering::SeqCst), 1, "the resident reloaded");
+    let state = resident.state();
+    assert_eq!(
+        (state.state, state.generation),
+        (FiberState::Active, generation)
+    );
+    root.events()
+        .parallel(&root, &rutis::EventKey::of(), Arc::new(Ping(1)))
+        .await
+        .unwrap();
+    assert_eq!(resident_pings.load(Ordering::SeqCst), 1);
+    root.shutdown().await.unwrap();
+}

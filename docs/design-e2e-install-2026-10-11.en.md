@@ -66,7 +66,7 @@ When npm installs from tgz files, the other platforms' packages in `rutis-host`'
 | --- | --- | --- |
 | 1 Install | As in 3 | Exit code 0 |
 | 2 Identity | `<host command> --version`; the actual path of the host binary | The train version; the path is under the scenario directory |
-| 3 Minimal project | A fixed project built into the scenario: a `greeter` row and a probe row. npm: a TS row; PyPI: a `py:` row; binary: TS and Python rows, plus a Go row on Linux | After `run` (in the project directory, no arguments, as documented) the probe gets a result from `greeter.hello("Ada")`; in the binary cell TS calls Python and gets a result |
+| 3 Minimal project | A fixed project built into the scenario: a `greeter` row and a probe row. npm: a TS row; PyPI: a `py:` row; binary: TS and Python rows, plus a Go row (on every platform; the Go plugin is built with this checkout's Go SDK, after a release with the published module) | After `run` (in the project directory, no arguments, as documented) the probe gets a result from `greeter.hello("Ada")`; in the binary cell TS calls Python and Go and gets results |
 | 4 Stop | SIGTERM to the main process only: the Node launcher for npm, the `uv` process for uv, `rutis-host` itself for the binary | Exit code 0; probe `stopped`; the npm launcher and the `uv` process have exited too; residue checks pass (`tests/e2e/src/residue.rs`) |
 
 A few steps only on some channels:
@@ -75,12 +75,12 @@ A few steps only on some channels:
 | --- | --- | --- |
 | npm | Without installing `@arcships/rutis-runtime`, run a Node row | The row runs: the runtime comes from `@arcships/rutis-host`'s dependency |
 | npm | Without this platform's tgz | Exit code 1, output `no binary for <platform>` |
-| npm (Linux) | Install the `@arcships/rutis-bun` tgz, add a `bun:` row, Bun 1.4.0 | The probe's call gets a result |
+| npm (Linux, macOS; Bun is not declared for Windows, Bun design §10) | Install the `@arcships/rutis-bun` tgz, make the greeter a `bun:` row; Bun 1.4.0 on Linux | The probe's call gets Bun's result; stopped as in step 4 |
 | PyPI | `uvx rutis-host@<version> --version` (`--find-links`); `uvx … run` in a `py:` project without `.venv` | The first prints the train version; the second: see 2-3 |
-| PyPI (Linux) | `websockets==15.0`; `python -m rutis listen:ws://127.0.0.1:<port>/rutis …`, the host connects with a node row | The probe's call gets a result |
+| PyPI (every platform) | In pip's venv, `rutis[network]` with `websockets==15.0` (`rutis` stays this build's); `python -m rutis listen:ws://127.0.0.1:<port>/rutis …`, the venv's host connects with a node row | websockets 15.0 is what is installed; the probe's call gets a result; stopped as in step 4 |
 | Binary | Run a Node row without `@arcships/rutis-runtime` in the project | Exit code 1, output `npm install @arcships/rutis-runtime` |
 
-On Windows step 4 uses kill for now, and the process item of the residue check reports skipped per #232 (the framework already does this).
+Windows has no SIGTERM: step 4 sends Ctrl-Break to the main process's console process group with `Host::ctrl_c()` (#266), with the same assertions, exit code 0 and the probe `stopped`; the residue check reads each host's Job Object (#232). The exception: on Windows `uv run` ignores Ctrl-C but not Ctrl-Break (uv's `run_to_completion` waits on `tokio::signal::ctrl_c` only), so uv ends at once with STATUS_CONTROL_C_EXIT and its exit code is not rutis-host's; there that step asserts that rutis-host printed `Ctrl-Break: stopping`, the probe `stopped` and the output ended (rutis-host exited), and uv's exit code is 0 or STATUS_CONTROL_C_EXIT.
 
 ## 5. Platforms and versions
 
@@ -160,7 +160,7 @@ First markers: one complete example each in the `rutis-host.md` quick start, `ty
 | Q2.13 | Marked documentation examples run | main |
 | I5, partly | E7 is no longer skipped | PRs touching dylib |
 
-Not covered: the macOS quarantine attribute of browser downloads; musl Linux; pnpm, yarn, global installs; upgrades and side-by-side versions (#209); corporate proxies and offline installs; Windows process residue and Ctrl-C (#232); correctness beyond the minimal project.
+Not covered: the macOS quarantine attribute of browser downloads; musl Linux; pnpm, yarn, global installs; upgrades and side-by-side versions (#209); corporate proxies and offline installs; correctness beyond the minimal project.
 
 ## 11. Files added and changed
 
@@ -186,7 +186,7 @@ The `ci.yml` changes — removing `release-windows` and `release-wheel-aarch64`,
 
 1. Every platform of `install` passes on main; the log shows the language versions, `rutis-host <train version>` and the path of the host binary.
 2. The checks catch problems: removing the `rutis` wheel fails the PyPI cell; leaving out this platform's tgz gives the expected error in the "missing platform package" step of the npm cell.
-3. Every cell's residue report is empty (on Windows the process item reports skipped per #232).
+3. Every cell's residue report is empty.
 4. In release.yml every publish job `needs` the pre-release install jobs.
 5. The post-release check runs automatically; `workflow_dispatch` with a non-existent version opens an issue.
 6. Marked documentation examples pass on main.

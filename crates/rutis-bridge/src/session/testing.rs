@@ -16,6 +16,13 @@
 //! | `started()` | whether an `abortable` call has reached it |
 //! | `aborted()` | whether such a signal aborted |
 //! | `reenter(fn)` | returns `fn()`; `fn` calls `echo` while the far end waits |
+//! | `keep(slot, fn, ...)` / `free(slot)` | keeps `fn` in `slot`, releases it |
+//! | `make()` | returns a new function |
+//! | `tables()` | `{ exports, imports }`: the far end's reference table sizes |
+//!
+//! `keep`, `free`, `make` and `tables` serve the release-count property
+//! test (`tests/value_roundtrip.rs`, risk P4); the Rust, Node and Python
+//! fixtures have them, [`session`] does not call them.
 //!
 //! [`Fixture`] is this implementation of it, for sessions between two Rust
 //! endpoints.
@@ -38,6 +45,7 @@ const GUARD: Duration = Duration::from_secs(10);
 #[derive(Default)]
 pub struct Fixture {
     held: Mutex<Option<Reference>>,
+    kept: Mutex<std::collections::HashMap<u64, Reference>>,
     started: AtomicBool,
     aborted: Arc<AtomicBool>,
 }
@@ -101,11 +109,35 @@ impl Dispatch for Fixture {
                     Ok(Value::Undefined)
                 }))
             }
+            "keep" => {
+                let slot: u64 = crate::session::decode(next().json()?)?;
+                let kept = next().reference()?;
+                self.kept.lock().unwrap().insert(slot, kept);
+                Ok(Value::Undefined)
+            }
+            "free" => {
+                let slot: u64 = crate::session::decode(next().json()?)?;
+                let freed = self.kept.lock().unwrap().remove(&slot);
+                // Dropping the import releases it.
+                drop(freed);
+                Ok(Value::Undefined)
+            }
+            "make" => Ok(Value::callback(Ok)),
+            // The value one level deeper, returned or passed to a callback:
+            // past the depth limit, this side's call or reply fails (#279).
+            "wrap" => Ok(Value::List(vec![next()])),
+            "applyWrapped" => {
+                let callback = next().reference()?;
+                callback.call(Value::List(vec![Value::List(vec![next()])]))
+            }
+            "tables" => {
+                let (exports, imports) = peer.references();
+                Ok(json!({ "exports": exports, "imports": imports }).into())
+            }
             "started" => Ok(json!(self.started.load(Ordering::SeqCst)).into()),
             "aborted" => Ok(json!(self.aborted.load(Ordering::SeqCst)).into()),
             "reenter" => {
                 let callback = next().reference()?;
-                let _ = peer;
                 callback.call(Value::List(vec![]))
             }
             _ => Err(Error::Value(format!("no method {method}"))),

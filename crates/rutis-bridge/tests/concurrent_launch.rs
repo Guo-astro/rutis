@@ -9,6 +9,9 @@
 //! process is checked for sockets (and, for the shell, pipes) it should
 //! not hold; then each ends its process and must see its channel end while
 //! the others are still running. A failure names the round and the thread.
+// Unix only (Q7.8): what leaks between processes started at once is a
+// descriptor inherited across fork/exec (fd:3, socket pairs), found with
+// /proc or lsof; Windows hands no descriptor over (loopback handover).
 #![cfg(unix)]
 
 use std::path::Path;
@@ -209,8 +212,9 @@ impl Failures {
     }
 }
 
-/// guarantee: issue #184 (risk C11, Q6.5.2): the local transport's
-/// `spawn:` processes started at once each hold their own channel only.
+/// guarantee: bridge/spawned-processes-own-channel (issue #184, risk C11,
+/// Q6.5.2): the local transport's `spawn:` processes started at once each
+/// hold their own channel only.
 #[test]
 fn spawned_processes_started_at_once_hold_only_their_own_channel() {
     if loopback() {
@@ -295,8 +299,9 @@ fn spawned_processes_started_at_once_hold_only_their_own_channel() {
     });
 }
 
-/// guarantee: issue #184 (risk C11, Q6.5.2): Node runtimes launched at once
-/// through the `Process` facade each start and hold their own channel only.
+/// guarantee: bridge/spawned-processes-own-channel (issue #184, risk C11,
+/// Q6.5.2): Node runtimes launched at once through the `Process` facade
+/// each start and hold their own channel only.
 #[cfg(feature = "node")]
 #[test]
 fn node_runtimes_launched_at_once_hold_only_their_own_channel() {

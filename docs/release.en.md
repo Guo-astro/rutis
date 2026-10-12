@@ -14,7 +14,7 @@ Except for `rutis-cli` (`cli-v*`, `release-cli.yml`), these packages share a ver
 
 ## Steps
 
-1. Update versions in the Cargo.toml of every crate listed in `crates` in `scripts/train.mjs` (including the dependency versions between them and from other workspace crates); `node/rutis`, `node/rutis-runtime`, `bun/rutis-bun`, and `node/rutis-host` package.json files (including the runtime and platform package versions used by `@arcships/rutis-host`); `python/rutis/pyproject.toml` and `IMPLEMENTATION` in `python/rutis/rutis/peer.py`; `Version` in `go/rutis/version.go`; and the `rutis` range in `crates/rutis-host/pyproject.toml`. `node scripts/train.mjs` checks that they match, and CI runs it too.
+1. Update versions in the Cargo.toml of every crate listed in `crates` in `scripts/train.mjs` (including the dependency versions between them and from other workspace crates); `node/rutis`, `node/rutis-runtime`, `bun/rutis-bun`, and `node/rutis-host` package.json files (including the runtime and platform package versions used by `@arcships/rutis-host`); `python/rutis/pyproject.toml` and `IMPLEMENTATION` in `python/rutis/rutis/peer.py`; `Version` in `go/rutis/version.go`; and the `rutis` range in `crates/rutis-host/pyproject.toml`. `node scripts/train.mjs` checks that they match, and CI runs it too. In the same PR, save this version's persisted samples (`tests/fixtures/persisted/`; see [Persisted samples](#persisted-samples) below).
 2. Merge to `main` and confirm the CI `release-dry-run` passes (all packages can be built) and main's install.yml passes (this build's packages installed and run on three platforms).
 3. Run the network smoke test on two machines before publishing (see below).
 4. Create and push a tag such as `vX.Y.Z`. `release.yml` checks versions, builds the binaries, wheels and npm packages for five platforms (package.yml, the same build steps as main) → **release gate**: installs and runs those files on all five platforms (install.yml); if one fails, nothing is published → semver-checks the crates already on crates.io, publishes the crates in dependency order (`node scripts/train.mjs --crates`), then the npm and PyPI packages (exactly the files the gate installed) → creates a GitHub Release (its notes come from `docs/releases/X.Y.Z.en.md`, which must exist before tagging) → **after publishing**: waits until the registries serve the version, then on Linux installs and runs the npm, PyPI and binary channels from them, `cargo install` and the Go module, and follows the guides' marked examples. Each step skips versions already present in its registry, so after fixing a mid-release failure you can rerun it.
@@ -23,6 +23,25 @@ Except for `rutis-cli` (`cli-v*`, `release-cli.yml`), these packages share a ver
 Required configuration: GitHub environment `release` with `CARGO_TOKEN` and `NPM_TOKEN`, and environments `pypi` and `pypi-host`. On PyPI, the trusted publisher of `rutis` points to `release.yml` with environment `pypi`, and that of `rutis-host` to environment `pypi-host`: the two must differ, or a release gets a token valid for only one of them.
 
 Increment `PLUGIN_API` (present in both the SDK and runtime) only when the interface visible to plugins becomes incompatible. Increment the session protocol version (`rutisProtocol` and `rutis_bridge::session::PROTOCOL`) when the wire format becomes incompatible.
+
+## Persisted samples
+
+`tests/fixtures/persisted/<version>/` keeps the persisted data each released version wrote. The tests read every sample with the current code, and the result must be what that version read (risk J3):
+
+| File | Content | Test |
+| --- | --- | --- |
+| `rutis.json` | A configuration using as many of that version's fields as possible | `cargo test -p rutis-host --test persisted` |
+| `rutis.expected.json` | What that version read from it (normalized; paths under the sample's directory written as `<dir>`) | Same |
+| `cordis.patch.yml` | A dsh user layer using as much of that version's format as possible | `cargo test -p rutis-dsh --test persisted` |
+| `cordis.patch.expected.json` | The patch list that version read from it | Same |
+
+When releasing:
+
+1. Copy the previous version's directory to `tests/fixtures/persisted/X.Y.Z/`. If this version added fields or forms to `rutis.json` or the user layer, use them in the samples.
+2. Regenerate this version's expectations with this version's code: `RUTIS_PERSISTED_WRITE=X.Y.Z cargo test -p rutis-host --test persisted` and `RUTIS_PERSISTED_WRITE=X.Y.Z cargo test -p rutis-dsh --test persisted` (only the expectation files under `X.Y.Z/` are written). Review the diff, then run both again without the variable.
+3. Never change earlier versions' samples or expectations. An earlier sample that no longer reads as it did is an incompatible change ([quality standard](quality-standard.md) §9.3). When a format is no longer supported, move its sample to `rejected/<name>/` and put the error in `rutis.error` next to it; the error must say how to migrate.
+
+`rutis.json` has a format version (top-level `format`, currently 1): when its meaning changes, increase `FORMAT` (`crates/rutis-host/src/config.rs`) and say so in the release notes. dsh's `cordis.patch.yml` is a Cordis configuration format and has no version; its compatibility rests on these samples alone.
 
 ## Smoke test
 

@@ -291,7 +291,7 @@ fn unknown_fields_are_refused() {
     let cases = [
         (
             "{\n  \"id\": \"a\",\n  \"runtime\": {}\n}",
-            "<dir>/rutis.json: unknown field `runtime`, expected one of `id`, `runtimes`, `listen`, `rows` at line 3 column 11",
+            "<dir>/rutis.json: unknown field `runtime`, expected one of `format`, `id`, `runtimes`, `listen`, `rows` at line 3 column 11",
         ),
         (
             r#"{ "runtimes": { "deno": {} } }"#,
@@ -423,4 +423,48 @@ fn remote_runtime_names_are_checked() {
     );
     assert!(check(r#"{ "remote": [{ "name": "go-edge", "language": "go" }] }"#).is_ok());
     assert!(check(r#"{ "py": {}, "remote": [{ "name": "gpu", "language": "python" }] }"#).is_ok());
+}
+
+/// `format`: the current one and an absent one are read; a newer one is
+/// refused, before any field it may have that this host does not know,
+/// saying what to upgrade; one that is not a format is an error saying
+/// where.
+/// risk: J3
+/// guarantee: host/rutis-json-format
+#[test]
+fn the_format_is_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let read = |text: &str| read(dir.path(), text).map_err(|error| normalize(&error, dir.path()));
+    assert_eq!(rutis_host::config::FORMAT, 1);
+    assert_eq!(read(r#"{ "format": 1 }"#).unwrap().format, 1);
+    assert_eq!(read("{}").unwrap().format, 1, "absent is 1");
+    let newer = "<dir>/rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-host";
+    assert_eq!(read(r#"{ "format": 2 }"#).unwrap_err(), newer);
+    // A newer format's fields are not this host's to judge.
+    assert_eq!(
+        read(r#"{ "id": "a", "services": {}, "format": 2 }"#).unwrap_err(),
+        newer
+    );
+    // Through serde too (a configuration not read from a file).
+    let from_value = serde_json::from_value::<HostConfig>(json!({ "format": 2 })).unwrap_err();
+    assert_eq!(
+        from_value.to_string(),
+        "this file is format 2, this rutis-host reads up to 1: upgrade rutis-host"
+    );
+    assert_eq!(
+        read(r#"{ "format": 0 }"#).unwrap_err(),
+        "<dir>/rutis.json: format 0 is not a rutis.json format: formats start at 1, and this rutis-host reads up to 1"
+    );
+    assert_eq!(
+        read(r#"{ "format": "1" }"#).unwrap_err(),
+        "<dir>/rutis.json: invalid type: string \"1\", expected u64 at line 1 column 15"
+    );
+    assert_eq!(
+        read(r#"{ "format": 1.5 }"#).unwrap_err(),
+        "<dir>/rutis.json: invalid type: floating point `1.5`, expected u64 at line 1 column 15"
+    );
+    assert_eq!(
+        read(r#"{ "format": -1 }"#).unwrap_err(),
+        "<dir>/rutis.json: invalid value: integer `-1`, expected u64 at line 1 column 14"
+    );
 }

@@ -7,20 +7,22 @@ import threading
 import unittest
 
 import background
+from support import HANG_GUARD, within
 
-from rutis.peer import Peer
+from rutis.peer import ENDPOINT_PROTOCOL, PROTOCOL, Peer
 
 
 class PeerTests(background.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.ours, self.theirs = socket.socketpair()
-        self.theirs.settimeout(5)
+        self.theirs.settimeout(HANG_GUARD)
         self.peer = Peer(self.ours, lambda target, method, args: None)
         self.peer._handshake = True
         self.lines = self.theirs.makefile("rb")
 
     async def asyncTearDown(self):
         self.peer.close()
+        self.lines.close()
         self.ours.close()
         self.theirs.close()
 
@@ -277,7 +279,7 @@ class CapabilityTests(background.IsolatedAsyncioTestCase):
 
     async def session(self, capabilities):
         ours, theirs = socket.socketpair()
-        theirs.settimeout(5)
+        theirs.settimeout(HANG_GUARD)
         self.addCleanup(ours.close)
         self.addCleanup(theirs.close)
         peer = Peer(ours, lambda target, method, args: Weather(), endpoint={"local": "py", "expected": "main"})
@@ -288,9 +290,8 @@ class CapabilityTests(background.IsolatedAsyncioTestCase):
         hello = {"op": "hello", "version": 3, "endpoint": "main", "capabilities": capabilities}
         peer._receive(hello)
         peer._receive({"op": "invoke", "id": "main:1", "path": [], "target": "svc", "method": "get", "args": {"type": "data", "value": []}})
-        # The call runs on the loop: let it.
-        await asyncio.sleep(0.05)
-        return json.loads(lines.readline())
+        # The call runs on the loop: read its reply off the loop.
+        return json.loads(await within("the reply", asyncio.to_thread(lines.readline)))
 
     async def test_an_object_is_refused_to_a_far_end_without_objects(self):
         reply = await self.session(["signals"])
@@ -302,6 +303,111 @@ class CapabilityTests(background.IsolatedAsyncioTestCase):
         self.assertEqual(reply["op"], "return", reply)
         self.assertEqual(reply["value"]["type"], "reference")
         self.assertEqual(reply["value"]["value"]["kind"], "object")
+
+
+class ReferenceCountTests(background.IsolatedAsyncioTestCase):
+    """Risk P4: grants of an exported reference are counted, a release
+    takes back exactly its count, an identifier is never reused, and an
+    encoding that fails publishes no reference; the cases of Node's
+    `session.test.mjs`. The far end is read on a worker thread, never on
+    the loop."""
+
+    def session(self, dispatch):
+        ours, theirs = socket.socketpair()
+        theirs.settimeout(10)
+        self.addCleanup(ours.close)
+        self.addCleanup(theirs.close)
+        peer = Peer(ours, dispatch)
+        self.addCleanup(peer._channel.close)
+        self.addCleanup(peer.close)
+        peer._receive({"op": "hello", "version": 2})
+        lines = theirs.makefile("rb")
+        self.addCleanup(lines.close)
+
+        async def read():
+            return json.loads(await asyncio.to_thread(lines.readline))
+
+        return peer, read
+
+    @staticmethod
+    def invoke(sequence, method):
+        return {"op": "invoke", "id": f"rust:{sequence}", "path": [], "target": "test", "method": method, "args": {"type": "data", "value": []}}
+
+    async def test_an_admitted_callback_survives_a_following_counted_release(self):
+        # guarantee: bridge/reference-release-count; risk P4.
+        calls = []
+
+        def callback():
+            calls.append(None)
+            return len(calls)
+
+        peer, read = self.session(lambda target, method, args: [callback, callback])
+        peer._receive(self.invoke(1, "get"))
+        a, b = (await read())["value"]["value"]
+        self.assertEqual(a["value"]["id"], b["value"]["id"], "one export, granted twice")
+        reference = a["value"]["id"]
+        # The call is admitted, then both grants are released before it runs.
+        peer._receive({"op": "call", "id": "rust:2", "path": [], "reference": reference, "args": {"type": "data", "value": []}})
+        peer._receive({"op": "release", "reference": reference, "count": 2})
+        self.assertEqual(calls, [])
+        reply = await read()
+        self.assertEqual(reply["op"], "return", reply)
+        self.assertEqual(reply["value"], {"type": "data", "value": 1})
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(peer.closed_error)
+
+    async def test_an_old_release_preserves_a_new_grant_and_identifiers_are_not_reused(self):
+        # guarantee: bridge/reference-release-count; risk P4.
+        def callback():
+            return 42
+
+        peer, read = self.session(lambda target, method, args: callback)
+        peer._receive(self.invoke(1, "get"))
+        reference = (await read())["value"]["value"]["id"]
+        peer._receive(self.invoke(2, "get"))
+        self.assertEqual((await read())["value"]["value"]["id"], reference)
+        # The release of the first grant leaves the second one usable.
+        peer._receive({"op": "release", "reference": reference, "count": 1})
+        peer._receive({"op": "call", "id": "rust:3", "path": [], "reference": reference, "args": {"type": "data", "value": []}})
+        self.assertEqual((await read())["value"], {"type": "data", "value": 42})
+        # Released for good: the same function is exported again under a new id.
+        peer._receive({"op": "release", "reference": reference, "count": 1})
+        peer._receive(self.invoke(4, "get"))
+        self.assertNotEqual((await read())["value"]["value"]["id"], reference)
+        self.assertIsNone(peer.closed_error)
+
+    async def test_an_explicit_release_accounts_repeated_live_imports(self):
+        # guarantee: bridge/reference-release-count; risk P4.
+        peer, read = self.session(lambda target, method, args: None)
+        reference = {"type": "reference", "value": {"id": 1, "kind": "function", "home": False, "origin": []}}
+        # The reply is already in the inbox: the synchronous call finds it
+        # without waiting on the loop thread.
+        peer._deliver({"op": "return", "id": "node:1", "value": {"type": "list", "value": [reference, reference]}})
+        a, b = peer.call("test", "get", [])
+        self.assertIs(a, b)
+        peer.release(a)
+        self.assertEqual((await read())["op"], "invoke")
+        self.assertEqual(await read(), {"op": "release", "reference": 1, "count": 2})
+        with self.assertRaisesRegex(RuntimeError, "released"):
+            b()
+
+    async def test_an_unsupported_nested_value_fails_explicitly_and_rolls_back_partial_grants(self):
+        # guarantee: bridge/grant-rollback; risk P4.
+        def callback():
+            return 42
+
+        peer, read = self.session(lambda target, method, args: None)
+        # The callback is granted before the set (which cannot cross) fails.
+        with self.assertRaisesRegex(TypeError, "cannot cross the boundary"):
+            peer.call("test", "bad", [callback, {"nested": {1, 2}}])
+        self.assertEqual(peer._exports, {}, "the partial grant is rolled back")
+        self.assertEqual(peer._identities, {})
+        # Failed encoding consumes the invocation id, but sends nothing.
+        peer._deliver({"op": "return", "id": "node:2", "value": {"type": "data", "value": 7}})
+        self.assertEqual(peer.call("test", "good", []), 7)
+        sent = await read()
+        self.assertEqual((sent["id"], sent["method"]), ("node:2", "good"))
+        self.assertIsNone(peer.closed_error)
 
 
 class ScriptedChannel:
@@ -374,5 +480,93 @@ class HandshakeOrderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(await self.ready_error(peer), ConnectionError)
 
 
+class VersionMismatchTests(unittest.IsolatedAsyncioTestCase):
+    """Risk P8: a far end that greets with a protocol version this side
+    does not speak is refused at the handshake, not after loading, and the
+    refusal names both versions and which end to upgrade (standard
+    Q6.2.4): this side, naming its package, when the far end is newer; the
+    far end, naming its implementation when it said, when it is older. The
+    wording is rutis-bridge's (`session::rpc::version_mismatch`)."""
+
+    async def refusal(self, endpoint, version, implementation=None):
+        far = {"op": "hello", "version": version}
+        if endpoint is not None:
+            far.update(endpoint="main", capabilities=[])
+            if implementation is not None:
+                far.update(implementation=implementation)
+        channel = ScriptedChannel([json.dumps(far).encode()])
+        peer = Peer(channel, lambda target, method, args: None, endpoint=endpoint)
+        self.addCleanup(peer.close)
+        peer.start()
+        with self.assertRaises(ValueError) as raised:
+            # The timeout only stops a hang.
+            await asyncio.wait_for(peer.ready, 10)
+        self.assertTrue(peer.closed.done(), "the session ends")
+        return str(raised.exception)
+
+    async def test_an_endpoint_session_refuses_a_far_end_of_version_99(self):
+        # guarantee: bridge/version-refusal; risk P8.
+        self.assertEqual(
+            await self.refusal({"local": "py"}, 99),
+            f"incompatible session: the far end speaks protocol 99, this side {ENDPOINT_PROTOCOL}: "
+            "upgrade this side (PyPI rutis)",
+        )
+
+    async def test_a_compat_session_refuses_a_far_end_of_version_99(self):
+        # guarantee: bridge/version-refusal; risk P8.
+        self.assertEqual(
+            await self.refusal(None, 99),
+            f"incompatible session: the far end speaks protocol 99, this side {PROTOCOL}: "
+            "upgrade this side (PyPI rutis)",
+        )
+
+    async def test_an_endpoint_session_refuses_an_older_far_end_naming_it(self):
+        # guarantee: bridge/version-refusal; risk P8.
+        self.assertEqual(
+            await self.refusal({"local": "py"}, 1, {"name": "rutis-bridge", "version": "0.1.0"}),
+            f"incompatible session: the far end speaks protocol 1, this side {ENDPOINT_PROTOCOL}: "
+            "upgrade the far end (rutis-bridge 0.1.0)",
+        )
+        self.assertEqual(
+            await self.refusal({"local": "py"}, 1),
+            f"incompatible session: the far end speaks protocol 1, this side {ENDPOINT_PROTOCOL}: "
+            "upgrade the far end",
+        )
+
+    async def test_a_compat_session_refuses_an_older_far_end(self):
+        # guarantee: bridge/version-refusal; risk P8.
+        self.assertEqual(
+            await self.refusal(None, 1),
+            f"incompatible session: the far end speaks protocol 1, this side {PROTOCOL}: upgrade the far end",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class DepthTests(unittest.TestCase):
+    """#279: values nest at most MAX_DEPTH levels; far deeper ones (past
+    Python's recursion limit) still fail with the depth error."""
+
+    def test_far_deeper_values_fail_with_the_depth_error(self):
+        import dataclasses
+        import functools
+
+        from rutis.peer import MAX_DEPTH, _data, _holds_reference
+
+        @dataclasses.dataclass
+        class Node:
+            inner: object
+
+        def nest(depth, wrap):
+            return functools.reduce(lambda inner, _: wrap(inner), range(depth), 1)
+
+        def listed(inner):
+            return [inner]
+
+        self.assertEqual(_data(nest(MAX_DEPTH, listed)), nest(MAX_DEPTH, listed))
+        for value in (nest(MAX_DEPTH + 1, listed), nest(5000, listed), nest(5000, Node)):
+            self.assertFalse(_holds_reference(value))
+            with self.assertRaisesRegex(ValueError, "nested deeper than 64 levels"):
+                _data(value)

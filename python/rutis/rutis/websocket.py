@@ -33,6 +33,23 @@ MAX_MESSAGE = 16 * 1024 * 1024
 GOING_AWAY, TOO_BIG, REPLACED = 1001, 1009, 4002
 # Queued after the last connection once nothing accepts any more.
 _STOPPED = object()
+# The interpreter this runs on; tests stand in another.
+_PYTHON = (sys.implementation.name, sys.version_info[:3])
+
+
+def tls_refusal(python=None) -> str | None:
+    """Why this interpreter cannot serve wss://, or None. CPython 3.13.6
+    deadlocks a TLS socket that one thread reads (blocked) while another
+    writes (python/cpython#137583), and the websockets threading server
+    always reads from a thread of its own: every handshake hangs. 3.13.5
+    and 3.13.7 or later are not affected, nor is ws://."""
+    implementation, version = python or _PYTHON
+    if implementation == "cpython" and tuple(version) == (3, 13, 6):
+        return (
+            "CPython 3.13.6 cannot serve wss:// (its TLS sockets deadlock when one thread "
+            "reads while another writes, python/cpython#137583): use 3.13.7 or later"
+        )
+    return None
 
 
 def _heartbeat() -> tuple[float, float]:
@@ -97,6 +114,30 @@ def _reason(error: ConnectionClosed) -> str:
     if frame.code == REPLACED:
         return "replaced by a new connection"
     return f"closed ({frame.code}): {frame.reason}"
+
+
+def protocol_refusal(ours: str, offered: list[str]) -> str:
+    """Why a dialer that offered none of this endpoint's session protocol
+    is refused, saying which end to upgrade (standard Q6.2.4) when the
+    versions it offered (`rutis.<n>`) are all newer (this endpoint) or all
+    older (the dialer) than this endpoint's. The wording is rutis-bridge's
+    (`transport::websocket::listen::protocol_refusal`)."""
+
+    def version(protocol: str):
+        number = protocol[len("rutis."):]
+        return int(number) if protocol.startswith("rutis.") and number.isascii() and number.isdigit() else None
+
+    theirs = [protocol for protocol in offered if version(protocol) is not None]
+    reason = f"this endpoint speaks {ours}"
+    n = version(ours)
+    if n is None or not theirs:
+        return reason
+    reason += f", the dialer offered {', '.join(theirs)}"
+    if all(version(protocol) > n for protocol in theirs):
+        return f"{reason}: upgrade this endpoint (PyPI rutis)"
+    if all(version(protocol) < n for protocol in theirs):
+        return f"{reason}: upgrade the dialer"
+    return reason
 
 
 def _print_address(address: str) -> None:
@@ -223,6 +264,9 @@ def listen(
     if secure:
         if not (cert and key):
             raise ValueError(f"{spec}: wss needs a certificate and key")
+        refusal = tls_refusal()
+        if refusal:
+            raise RuntimeError(f"{spec}: {refusal}")
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(cert, key)
     path = url.path or "/"
@@ -241,7 +285,7 @@ def listen(
             for item in value.split(",")
         ]
         if protocol not in offered:
-            return connection.respond(HTTPStatus.BAD_REQUEST, f"this endpoint speaks {protocol}\n")
+            return connection.respond(HTTPStatus.BAD_REQUEST, protocol_refusal(protocol, offered) + "\n")
         return None
 
     accepted: queue.Queue = queue.Queue()

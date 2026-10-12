@@ -31,6 +31,7 @@ import (
 	"github.com/arcships/rutis/go/rutis"
 	"github.com/arcships/rutis/go/rutis/internal/convert"
 	"github.com/arcships/rutis/go/rutis/internal/peer"
+	"github.com/arcships/rutis/go/rutis/internal/testwait"
 )
 
 const row = "test"
@@ -83,7 +84,7 @@ func Load(t testing.TB, plugin *rutis.Definition, config any, services map[strin
 	if err := session.Start(); err != nil {
 		t.Fatal(err)
 	}
-	<-session.Ready()
+	testwait.Within(t, "rutistest: the handshake", session.Ready())
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := session.Call(ctx, "", "mount", []any{map[string]any{}}, false); err != nil {
@@ -203,8 +204,11 @@ func (l *Loaded) Service(name string) *Service {
 	if !declared {
 		l.t.Fatalf("rutistest: %s is not declared in Provides, so rutis cannot use it", name)
 	}
-	// The notification may still be on its way when the load returned.
-	deadline := time.After(2 * time.Second)
+	// The notification may still be on its way when the load returned. A
+	// notification signals l.changed after it changed l.handles, and the
+	// signal is kept until taken: looking, then waiting, misses none.
+	deadline := time.NewTimer(testwait.HangGuard)
+	defer deadline.Stop()
 	var handle string
 	for {
 		l.mu.Lock()
@@ -216,8 +220,7 @@ func (l *Loaded) Service(name string) *Service {
 		}
 		select {
 		case <-l.changed:
-		case <-time.After(10 * time.Millisecond):
-		case <-deadline:
+		case <-deadline.C:
 			l.t.Fatalf("rutistest: the plugin does not provide %s (now)", name)
 		}
 	}

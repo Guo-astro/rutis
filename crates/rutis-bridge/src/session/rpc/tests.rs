@@ -224,7 +224,7 @@ async fn handshake_and_release_count_fail_closed() {
     send(&mut remote, hello(VERSION));
     peer.ready().await.unwrap();
     let reference = peer
-        .encode(&Value::callback(|_| Ok(Value::Undefined)))
+        .encode(&Value::callback(|_| Ok(Value::Undefined)), MAX_DEPTH)
         .unwrap();
     let WireValue::Reference { id, .. } = reference else {
         unreachable!()
@@ -449,7 +449,14 @@ async fn sessions_have_distinct_tags_and_forward_rebases_the_current_chain() {
     let (a, _ra) = pair();
     let (b, _rb) = pair();
     assert_ne!(a.tag(), b.tag());
-    assert!(a.tag().starts_with('s') && !a.tag().contains('/'));
+    // What runtimes accept in an origin entry: `s[0-9]+` (#325: digits
+    // only, so the random nonce changes nothing on the wire). The nonce is
+    // the process's; the counter follows it.
+    for tag in [a.tag(), b.tag()] {
+        let digits = tag.strip_prefix('s').unwrap();
+        assert!(digits.len() > 15 && digits.bytes().all(|b| b.is_ascii_digit()));
+    }
+    assert_eq!(a.tag()[..16], b.tag()[..16]);
     let _path = PathGuard::enter(ids(&["node:1"]));
     let expected = vec![format!("{}/node:1", a.tag())];
     assert_eq!(b.forward(&a, current_path), expected);
@@ -1020,5 +1027,397 @@ mod endpoint_format {
         .unwrap_or_else(|error| panic!("open: {error:?}"));
         let result = endpoint.ready().await;
         assert!(matches!(result, Err(Error::Transport(_))), "{result:?}");
+    }
+
+    /// Why a session that greets in `format` refuses a far end greeting
+    /// with `version` (and `implementation`, in the endpoint format).
+    async fn refusal(
+        format: Option<Endpoint>,
+        version: u32,
+        implementation: Option<Implementation>,
+    ) -> String {
+        let (local, mut far) = far_pair();
+        let endpoint = format.is_some();
+        send(
+            &mut far,
+            Frame::Hello {
+                version,
+                endpoint: endpoint.then(|| "far".into()),
+                implementation,
+                capabilities: endpoint.then(Vec::new),
+            },
+        );
+        let session = match format {
+            Some(format) => {
+                Connection::open_with(local, Arc::new(NoExports), Format::Endpoint(format))
+            }
+            None => Connection::open(local, Arc::new(NoExports)),
+        }
+        .unwrap_or_else(|error| panic!("open: {error:?}"));
+        match session.ready().await {
+            Err(Error::Handshake(Handshake::Incompatible(reason))) => reason,
+            other => panic!("expected an incompatible handshake: {other:?}"),
+        }
+    }
+
+    // Risk P8, standard Q6.2.4: the refusal of another protocol version
+    // says which end to upgrade: this side, naming what to upgrade here,
+    // when the far end is newer; the far end, naming its implementation
+    // when it said, when it is older.
+    // guarantee: bridge/version-refusal
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_far_end_of_another_protocol_version_is_told_which_end_to_upgrade() {
+        let ours = crate::session::ENDPOINT_PROTOCOL;
+        let rust = || Some(Endpoint::rust(id("main")));
+        assert_eq!(
+            refusal(rust(), 99, None).await,
+            format!(
+                "the far end speaks protocol 99, this side {ours}: \
+                 upgrade this side (Rust crates rutis-host / rutis-bridge)"
+            )
+        );
+        assert_eq!(
+            refusal(None, 99, None).await,
+            format!(
+                "the far end speaks protocol 99, this side {VERSION}: \
+                 upgrade this side (Rust crates rutis-host / rutis-bridge)"
+            )
+        );
+        let older = Implementation {
+            name: "rutis".into(),
+            version: "0.1.0".into(),
+        };
+        assert_eq!(
+            refusal(rust(), 1, Some(older)).await,
+            format!(
+                "the far end speaks protocol 1, this side {ours}: \
+                 upgrade the far end (rutis 0.1.0)"
+            )
+        );
+        assert_eq!(
+            refusal(rust(), 1, None).await,
+            format!("the far end speaks protocol 1, this side {ours}: upgrade the far end")
+        );
+        assert_eq!(
+            refusal(None, 1, None).await,
+            format!("the far end speaks protocol 1, this side {VERSION}: upgrade the far end")
+        );
+    }
+}
+
+// ── Value depth (#279) ───────────────────────────────────────────────
+
+/// JSON data `depth` arrays deep.
+fn arrays(depth: usize) -> Json {
+    (0..depth).fold(json!("bottom"), |inner, _| json!([inner]))
+}
+/// Lists `depth` deep around a reference, as a far end sends them, with
+/// `value` written before `type` (serde buffers such an object before it
+/// reads it: the deepest stack the reader can take for a frame).
+fn wire_lists(depth: usize) -> String {
+    let leaf = r#"{"value":{"id":1,"kind":"function","home":false,"origin":["node:1"]},"type":"reference"}"#;
+    (0..depth).fold(leaf.to_string(), |inner, _| {
+        format!(r#"{{"value":[{inner}],"type":"list"}}"#)
+    })
+}
+
+#[test]
+fn depth_is_counted_in_arrays_and_objects() {
+    assert!(fits(&json!("scalar"), 0));
+    assert!(!fits(&json!([]), 0));
+    assert!(fits(&arrays(MAX_DEPTH), MAX_DEPTH));
+    assert!(!fits(&arrays(MAX_DEPTH + 1), MAX_DEPTH));
+    assert!(fits(&json!({ "a": [1, { "b": 2 }] }), 3));
+    assert!(!fits(&json!({ "a": [1, { "b": 2 }] }), 2));
+    // Brackets in strings, escaped quotes, are not levels.
+    let text = br#"{"a":"[[[[\"[[[[","b":[[1]]}"#;
+    assert!(!deeper_than(text, 3));
+    assert!(deeper_than(text, 2));
+}
+
+/// How deep arrays and objects nest in `text`, as the reader counts.
+fn frame_depth(text: &str) -> usize {
+    (0..).find(|&n| !deeper_than(text.as_bytes(), n)).unwrap()
+}
+const REFERENCE: &str =
+    r#"{"value":{"id":1,"kind":"function","home":false,"origin":["node:1"]},"type":"reference"}"#;
+/// Records `depth` deep around a reference, `value` before `type`.
+fn wire_records(depth: usize) -> String {
+    (0..depth).fold(REFERENCE.to_string(), |inner, _| {
+        format!(r#"{{"value":{{"k":{inner}}},"type":"record"}}"#)
+    })
+}
+/// A JSON object `depth` deep.
+fn objects(depth: usize) -> String {
+    (0..depth).fold("1".to_string(), |inner, _| format!(r#"{{"k":{inner}}}"#))
+}
+fn invoke_frame(id: &str, args: &str) -> String {
+    format!(r#"{{"args":{args},"op":"invoke","id":"{id}","path":[],"target":"t","method":"m"}}"#)
+}
+/// Invocations of each kind exactly [`MAX_FRAME_DEPTH`] deep: lists and
+/// records around a reference (two levels each), a data object.
+fn deepest_invocations() -> Vec<(&'static str, String)> {
+    let levels = (MAX_FRAME_DEPTH - 4) / 2;
+    let frames = vec![
+        ("lists", invoke_frame("node:1", &wire_lists(levels))),
+        ("records", invoke_frame("node:2", &wire_records(levels))),
+        (
+            "a data object",
+            invoke_frame(
+                "node:3",
+                &format!(
+                    r#"{{"value":{},"type":"data"}}"#,
+                    objects(MAX_FRAME_DEPTH - 2)
+                ),
+            ),
+        ),
+    ];
+    for (kind, frame) in &frames {
+        assert_eq!(frame_depth(frame), MAX_FRAME_DEPTH, "{kind}");
+    }
+    frames
+}
+/// A throw whose error graph makes it exactly [`MAX_FRAME_DEPTH`] deep.
+fn deepest_throw(id: &str) -> String {
+    let frame = format!(
+        r#"{{"error":{{"graph":{},"name":"E","message":"deep"}},"op":"throw","id":"{id}"}}"#,
+        objects(MAX_FRAME_DEPTH - 2)
+    );
+    assert_eq!(frame_depth(&frame), MAX_FRAME_DEPTH);
+    frame
+}
+
+/// A frame the deepest a far end within the limit sends parses.
+#[test]
+fn a_frame_from_within_the_limit_is_within_the_frame_depth() {
+    let frame = invoke_frame("node:1", &wire_lists(MAX_DEPTH + 1));
+    assert_eq!(frame_depth(&frame), 2 * MAX_DEPTH + 6);
+    assert!(frame_depth(&frame) <= MAX_FRAME_DEPTH);
+    assert!(matches!(
+        parse_frame(frame.as_bytes()),
+        Ok(Frame::Invoke { .. })
+    ));
+}
+
+/// Frames exactly [`MAX_FRAME_DEPTH`] deep, of every kind (lists and
+/// records holding references, a data object, an error graph), go the
+/// real receive path: parsed and decoded on the reader thread (its stack
+/// set explicitly, [`READER_STACK`]), dropped after the call. In a debug
+/// build too. Parsing alone is also checked on a thread with that stack.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_deepest_frames_allowed_go_the_receive_path_on_the_readers_stack() {
+    let mut frames = deepest_invocations();
+    frames.push(("an error graph", deepest_throw("main:1")));
+    std::thread::Builder::new()
+        .stack_size(READER_STACK)
+        .spawn(move || {
+            for (kind, frame) in frames {
+                assert!(parse_frame(frame.as_bytes()).is_ok(), "{kind}");
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+
+    struct Nothing;
+    impl Dispatch for Nothing {
+        fn invoke(&self, _: &Connection, _: &str, _: &str, args: Value) -> Reply {
+            drop(args);
+            Ok(Value::Undefined)
+        }
+    }
+    let (peer, remote) = connected(Arc::new(Nothing));
+    let (answered, calls) = tokio::sync::oneshot::channel();
+    let remote = tokio::task::spawn_blocking(move || {
+        let mut remote = Remote::start(remote);
+        // Skip the releases of the references the calls carried.
+        let reply = |remote: &mut Remote| loop {
+            match remote.read() {
+                Frame::Release { .. } => continue,
+                frame => return frame,
+            }
+        };
+        for (kind, frame) in deepest_invocations() {
+            remote
+                .writer
+                .sender
+                .lock()
+                .unwrap()
+                .send(frame.as_bytes())
+                .unwrap();
+            match reply(&mut remote) {
+                Frame::Return { .. } => {}
+                Frame::Throw { error, .. } => panic!("{kind}: {}", error.message),
+                _ => panic!("{kind}: a return expected"),
+            }
+        }
+        answered.send(()).unwrap();
+        // This side calls; the reply is a throw with the deepest graph.
+        let Frame::Invoke { id, .. } = reply(&mut remote) else {
+            panic!("invoke expected")
+        };
+        let throw = deepest_throw(&id);
+        remote
+            .writer
+            .sender
+            .lock()
+            .unwrap()
+            .send(throw.as_bytes())
+            .unwrap();
+        remote
+    });
+    calls.await.unwrap();
+    let thrown = peer.invoke_async("t", "m", Value::Undefined).await;
+    assert!(
+        matches!(&thrown, Err(Error::Remote { graph: Some(_), .. })),
+        "the deep error arrives"
+    );
+    drop(thrown);
+    let _remote = remote.await.unwrap();
+    assert!(peer.close_reason().is_none());
+}
+
+struct EchoArgs;
+impl Dispatch for EchoArgs {
+    fn invoke(&self, _: &Connection, _: &str, _: &str, args: Value) -> Reply {
+        Ok(args)
+    }
+}
+fn assert_too_deep(result: Reply) {
+    match result {
+        Err(Error::Value(message)) => assert!(message.contains("64 levels"), "{message}"),
+        other => panic!("a value error naming the limit expected: {other:?}"),
+    }
+}
+
+/// guarantee: bridge/value-limits
+///
+/// A value nested deeper than the limit fails its own call on the side
+/// that sends it, as a value error naming the limit; nothing is sent, and
+/// the session goes on. A value at the limit crosses.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_value_deeper_than_the_limit_fails_its_call_before_it_is_sent() {
+    let (peer, remote) = connected(Arc::new(EchoArgs));
+    let remote = tokio::task::spawn_blocking(move || {
+        let mut remote = Remote::start(remote);
+        // The first frame the far end reads is the call at the limit.
+        let message = remote
+            .reader
+            .receiver
+            .lock()
+            .unwrap()
+            .recv()
+            .unwrap()
+            .unwrap();
+        let frame = parse_frame(&message).unwrap();
+        let Frame::Invoke { id, args, .. } = frame else {
+            panic!("invoke expected")
+        };
+        remote.ret(id, args);
+        remote
+    });
+    peer.ready().await.unwrap();
+    assert_too_deep(
+        peer.invoke_async("t", "m", Value::Data(json!([arrays(MAX_DEPTH + 1)])))
+            .await,
+    );
+    let lists = (0..MAX_DEPTH + 1).fold(Value::Data(json!(1)), |inner, _| Value::List(vec![inner]));
+    assert_too_deep(peer.invoke_async("t", "m", Value::List(vec![lists])).await);
+    let back = peer
+        .invoke_async("t", "m", Value::Data(json!([arrays(MAX_DEPTH)])))
+        .await
+        .unwrap();
+    assert_eq!(back.json().unwrap(), json!([arrays(MAX_DEPTH)]));
+    // Keep the far end until after the check: dropping it closes the
+    // channel, which the session would see as the far end leaving.
+    let remote = remote.await.unwrap();
+    assert!(peer.close_reason().is_none());
+    drop(remote);
+}
+
+/// guarantee: bridge/value-limits
+///
+/// A far end that does not keep to the limit: a call to this side in a
+/// frame too deep to read fails with a throw naming the limit, a reply
+/// too deep fails the call waiting for it; the session goes on. A frame
+/// too deep that names no call ends the session, saying why.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_frame_too_deep_fails_its_call_and_the_session_goes_on() {
+    let (peer, remote) = connected(Arc::new(EchoArgs));
+    let too_deep = arrays(MAX_FRAME_DEPTH + 10);
+    let (answered, calls) = tokio::sync::oneshot::channel();
+    let remote = tokio::task::spawn_blocking({
+        let too_deep = too_deep.clone();
+        move || {
+            let mut remote = Remote::start(remote);
+            let invoke = serde_json::to_vec(&json!({
+                "op": "invoke", "id": "node:1", "path": [], "target": "t", "method": "m",
+                "args": { "type": "data", "value": [too_deep] },
+            }))
+            .unwrap();
+            remote.writer.sender.lock().unwrap().send(&invoke).unwrap();
+            match remote.read() {
+                Frame::Throw { id, error } => {
+                    assert_eq!(id, "node:1");
+                    assert!(error.message.contains("64 levels"), "{}", error.message);
+                }
+                _ => panic!("throw of node:1 expected"),
+            }
+            let echoed = remote.call(
+                2,
+                Frame::Invoke {
+                    id: "node:2".into(),
+                    path: vec![],
+                    target: "t".into(),
+                    method: "m".into(),
+                    args: data(json!(["after"])),
+                    sync: false,
+                },
+            );
+            assert_eq!(echoed, json!(["after"]));
+            answered.send(()).unwrap();
+            // This side calls: the reply is too deep.
+            let Frame::Invoke { id, .. } = remote.read() else {
+                panic!("invoke expected")
+            };
+            let reply = serde_json::to_vec(&json!({
+                "op": "return", "id": id, "value": { "type": "data", "value": too_deep },
+            }))
+            .unwrap();
+            remote.writer.sender.lock().unwrap().send(&reply).unwrap();
+            let Frame::Invoke { id, args, .. } = remote.read() else {
+                panic!("invoke expected")
+            };
+            remote.ret(id, args);
+            remote
+        }
+    });
+    calls.await.unwrap();
+    assert_too_deep(peer.invoke_async("t", "m", Value::Data(json!([]))).await);
+    let back = peer
+        .invoke_async("t", "m", Value::Data(json!(["after"])))
+        .await
+        .unwrap();
+    assert_eq!(back.json().unwrap(), json!(["after"]));
+    let remote = remote.await.unwrap();
+    assert!(peer.close_reason().is_none());
+
+    let cancel = format!(
+        r#"{{"op":"cancel","id":"node:9","x":{}}}"#,
+        serde_json::to_string(&too_deep).unwrap()
+    );
+    remote
+        .writer
+        .sender
+        .lock()
+        .unwrap()
+        .send(cancel.as_bytes())
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), peer.closed())
+        .await
+        .expect("the session stayed open");
+    match peer.close_reason() {
+        Some(Error::Transport(message)) => assert!(message.contains("64 levels"), "{message}"),
+        other => panic!("{other:?}"),
     }
 }

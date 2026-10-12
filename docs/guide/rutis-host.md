@@ -17,11 +17,38 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 
 | 命令 | 作用 |
 | --- | --- |
-| `rutis-host run [rutis.json]` | 按配置运行，打印每一行状态的变化；Ctrl-C 结束（见 [停止与退出码](#停止与退出码)） |
+| `rutis-host run [rutis.json]` | 按配置运行，打印每一行状态的变化和节点行 link 的状态（见 [run 打印什么](#run-打印什么)）；Ctrl-C 结束（见 [停止与退出码](#停止与退出码)） |
 | `rutis-host dev [目录]` | 在插件项目里运行这个插件（加上 `rutis.dev.json`），文件变化时重新加载；Go 项目重新构建，只重启它的运行时 |
 | `rutis-host check [rutis.json]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 二进制（运行时名、SDK、插件 API、插件）；有不能运行的行或二进制时以非零状态退出。在没有 rutis.json 的插件项目里检查这个项目 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go` | 创建插件项目 |
 | `rutis-host go add <模块>@<版本> [rutis.json]` | 用本机的 Go 工具链把插件二进制 `go install` 到 `runtimes.go.dir` |
+
+## run 打印什么
+
+`run` 和 `dev` 的输出是给人看、也给脚本和测试读的，格式如下，改动按不兼容的变化处理。
+
+启动时，每个 [`listen`](#listen) 监听器打印一次它实际绑定的地址（端口写 0 时是系统挑的端口）：
+
+```
+rutis-host: listening on <监听器名> <地址:端口>
+```
+
+之后每一行状态变化时打印一行 `<行 id>: <状态>`（`running`、`waiting for its services`、`starting`、`failed: …`、`disabled`、`removed` 等；实例里的副本写成 `<行 id> in PluginId(n)`）。
+
+节点行（`rutis-bridge/peer`）的状态只说明这一行在运行；它的 link 连没连上另打一行，在 link 的状态变化时打印：
+
+| 输出 | 含义 |
+| --- | --- |
+| `<行 id>: link connected` | 会话就绪，对端可用 |
+| `<行 id>: link down (<原因>); retrying in 2.1s` | 连不上或连接断了（对端没起来、网络断开、会话结束），按退避在给出的时间后重试 |
+| `<行 id>: link refused: auth-rejected (<原因>); retrying in 30s` | 被拒绝：token 不对、证书不受信任（名字不符、过期、CA 不认）、身份对不上；30 秒后再试 |
+| `<行 id>: link stopped: incompatible (<原因>)` | 不兼容：协议、地址写法、对端缺少要求的能力（如 `runtime`）；不再重试，改配置后重新加载 |
+| `<行 id>: link down (the session ended)` | 监听方：会话结束，等对端重新连进来（监听方不重试，不带 `retrying in`） |
+
+- 类别（`auth-rejected`、`incompatible`）来自 link 对失败的分类，不靠错误文字；括号里的原因是给人看的细节，例如证书被拒时写明证书的问题，不保证措辞。
+- 输出里不会出现 token 或其他凭据。
+- 等待时间整秒写成 `30s`，否则保留一位小数。
+- 状态每 200 毫秒检查一次，只打印变化：和上一行一样的不再打印（例如每 30 秒一次的同一个拒绝只打印一次）；持续不到 200 毫秒的状态可能不打印。拨号方还没有结果（正在连接）、监听方还没有对端连进来时不打印。
 
 ## 检查配置
 
@@ -51,10 +78,22 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 
 Unix 上，`rutis-host` 启动时就被忽略的信号（比如用 `nohup` 启动时的 SIGHUP）继续被忽略。运行时进程各在自己的进程组里，终端的 Ctrl-C 只发给 `rutis-host`，由它卸载各行。Windows 上运行时进程各在自己的控制台进程组里，不响应 Ctrl-C；但 Ctrl-Break 和关闭控制台仍会发给它们，这时它们的清理可能来不及执行，所以停止时用 Ctrl-C。关闭控制台时，Windows 还会在几秒后结束 `rutis-host`，不管截止时间多长。
 
+## 输出
+
+运行时进程（Node、Bun、Python、Go）的标准输出和标准错误不直接写到 `rutis-host` 的输出上：`rutis-host` 经管道读出它们，一次一整行地写出——插件写到 stdout 的行出现在 `rutis-host` 的 stdout，写到 stderr 的出现在 stderr，内容原样，不加前缀。`rutis-host` 自己的状态行同样一次写一整行。所以插件的行和 `rutis-host` 的行、两个运行时的行不会拼到一起，即使插件把一行分几次写（Python 的 `print` 先写内容、再写换行），也即使 stdout 和 stderr 是同一个文件（`2>&1`）。
+
+- 一行在它的换行到来时写出，没有按时间的刷新：不带换行的提示、用 `\r` 重画的进度条，要到换行时才出现。运行时结束时，没有换行的最后一行作为单独的一行写出。
+- 超过 64 KiB 还没有换行的行分段写出。
+- 同一个运行时进程里的插件共用这个进程的输出：两个插件在同一个进程里各写半行，仍会拼在一起。
+- 运行时进程的 stdout、stderr 是管道而不是终端：按是否终端决定颜色等的库，按非终端输出。
+- 管道一直有人读：输出很多的插件不会因为管道满了而停住；只有 `rutis-host` 自己的输出写不出去时（终端暂停、下游不读），它们才像以前一样等。
+- `rutis-host` 退出前写完运行时剩下的输出。运行时启动的进程在运行时退出后还在运行时，它也拿着这份输出，`rutis-host` 最多再等它 2 秒，之后它写的输出不再出现。
+
 ## rutis.json
 
 ```json
 {
+  "format": 1,
   "id": "main",
   "runtimes": {
     "node": { "project": "." },
@@ -80,6 +119,16 @@ Unix 上，`rutis-host` 启动时就被忽略的信号（比如用 `nohup` 启�
 文件里的相对路径都相对于文件所在的目录。
 
 不认识的字段是错误：启动失败，指出文件、行列号和这里可用的字段。`rows` 里不认识的字段是警告：这一行照常运行（不带这个字段），启动前打印警告，指出文件、第几行和行可用的字段。拼错的字段因此不会被悄悄忽略。
+
+### format
+
+文件的格式版本，目前是 `1`。可以省略，省略按 `1` 读（0.10 之前的文件都没有这个字段，照常能读）；`rutis-host new` 生成的 `rutis.dev.json` 写上了它。比这个 `rutis-host` 支持的版本新的文件不会被读，启动前报错，例如：
+
+```text
+rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-host
+```
+
+这时升级 `rutis-host`。格式版本只在 `rutis.json` 的含义变化时增加，并写在发布说明里。
 
 ### id
 

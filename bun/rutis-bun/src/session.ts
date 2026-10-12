@@ -30,6 +30,20 @@ const PROTOCOL = MANIFEST.rutisProtocol
 // The endpoint format: endpoint ids in the handshake and the call ids,
 // capabilities, either side calling the other.
 export const ENDPOINT_PROTOCOL = 3
+
+// Why a far end's protocol version is refused, saying which end to upgrade
+// (standard Q6.2.4): this side when the far end is newer, naming the
+// package to upgrade here; the far end when it is older, naming its
+// implementation when its handshake said.
+export function versionMismatch(far, local, implementation) {
+  const mismatch = `the far end speaks protocol ${far}, this side ${local}`
+  if (typeof far !== 'number' || far === local) return mismatch
+  if (far > local) return `${mismatch}: upgrade this side (npm ${MANIFEST.name})`
+  const { name, version } = implementation ?? {}
+  return typeof name === 'string' && typeof version === 'string'
+    ? `${mismatch}: upgrade the far end (${name} ${version})`
+    : `${mismatch}: upgrade the far end`
+}
 // What this implementation supports in the endpoint format. It sends
 // objects but cannot receive them, so it does not declare `objects`.
 // `reentrant-sync`: while a synchronous call waits, every incoming call
@@ -42,13 +56,21 @@ export const CAPABILITIES = ['signals', 'reentrant-sync', 'sync-wait', 'sync-sta
 const COMPAT_CAPABILITIES = ['reentrant-sync', 'sync-wait', 'sync-stack']
 const ENDPOINT_ID = /^[a-z0-9-]+$/
 
-function checkData(value, seen = new Set()) {
+// How deep a value crossing a session may nest (#279): each array or
+// object is a level, so 64 nested arrays cross and 65 do not; a call's
+// argument list is not a level. A deeper value fails its own call here,
+// before it is sent; the session goes on.
+export const MAX_DEPTH = 64
+const tooDeep = () => new RangeError(`value nested deeper than ${MAX_DEPTH} levels, the most a value crossing a session may nest`)
+
+function checkData(value, seen = new Set(), depth = 0) {
   if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') throw new TypeError('value requires an unsupported binding')
   if (value === null || typeof value !== 'object') return
+  if (depth >= MAX_DEPTH) throw tooDeep()
   if (seen.has(value)) throw new TypeError('cyclic data requires an object binding')
   if (!Array.isArray(value) && ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new TypeError('object binding not implemented')
   seen.add(value)
-  for (const item of Object.values(value)) checkData(item, seen)
+  for (const item of Object.values(value)) checkData(item, seen, depth + 1)
   seen.delete(value)
 }
 
@@ -117,11 +139,11 @@ export class Session {
     // incompatible far end, retry slowly on a mismatched identity.
     const fail = (category, message) => Object.assign(new Error(message), { category })
     if (!this.#endpoint) {
-      if (frame.version !== PROTOCOL || frame.endpoint !== undefined) throw fail('incompatible', `incompatible session: the far end speaks protocol ${frame.version}, this side ${PROTOCOL}`)
+      if (frame.version !== PROTOCOL || frame.endpoint !== undefined) throw fail('incompatible', `incompatible session: ${versionMismatch(frame.version, PROTOCOL, frame.implementation)}`)
       if (Array.isArray(frame.capabilities)) this.#declared = frame.capabilities
       return
     }
-    if (frame.version !== ENDPOINT_PROTOCOL) throw fail('incompatible', `incompatible session: the far end speaks protocol ${frame.version}, this side ${ENDPOINT_PROTOCOL}`)
+    if (frame.version !== ENDPOINT_PROTOCOL) throw fail('incompatible', `incompatible session: ${versionMismatch(frame.version, ENDPOINT_PROTOCOL, frame.implementation)}`)
     const endpoint = frame.endpoint
     if (typeof endpoint !== 'string' || !ENDPOINT_ID.test(endpoint)) throw fail('incompatible', 'incompatible session: the far end named no valid endpoint')
     for (const [whose, expected] of [['verified', this.#endpoint.verified], ['expected', this.#endpoint.expected]]) {
@@ -157,7 +179,9 @@ export class Session {
     if (!Number.isSafeInteger(++this.#next)) throw new Error('call identifiers exhausted')
     return `${this.#local}${this.#next}`
   }
-  #encode(value, grants, business) {
+  // `depth`: the arrays and objects around `value`; an argument list
+  // starts at -1, as it is not a level.
+  #encode(value, grants, business, depth = 0) {
     if (value === undefined) return { type: 'undefined' }
     const imported = value && (typeof value === 'function' || typeof value === 'object') && this.#proxies.get(value)
     if (imported) {
@@ -183,13 +207,14 @@ export class Session {
       entry.grants++; grants.push(id)
       return { type: 'reference', value: { id, kind: entry.kind, home: false, origin: entry.origin } }
     }
-    if (Array.isArray(value)) return { type: 'list', value: value.map(value => this.#encode(value, grants, business)) }
+    if (value !== null && typeof value === 'object' && depth >= MAX_DEPTH) throw tooDeep()
+    if (Array.isArray(value)) return { type: 'list', value: value.map(value => this.#encode(value, grants, business, depth + 1)) }
     // An Error passed as a value (e.g. to a callback) crosses as data.
     if (value instanceof Error) return { type: 'data', value: { name: value.name, message: value.message, ...(typeof value.stack === 'string' ? { stack: value.stack } : {}) } }
     if (value !== null && typeof value === 'object' && holdsReference(value)) {
-      return { type: 'record', value: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.#encode(item, grants, business)])) }
+      return { type: 'record', value: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.#encode(item, grants, business, depth + 1)])) }
     }
-    checkData(value)
+    checkData(value, new Set(), depth)
     return { type: 'data', value }
   }
   #rollback(grants) {
@@ -257,7 +282,7 @@ export class Session {
   #request(op, fields, args, finish, origin = [], sync = false) {
     const id = this.#allocate(), grants = []
     try {
-      const frame: any = { op, id, path: [...new Set([...this.#path(), ...origin])], ...fields, ...(op === 'await' ? {} : { args: this.#encode(args, grants, true) }) }
+      const frame: any = { op, id, path: [...new Set([...this.#path(), ...origin])], ...fields, ...(op === 'await' ? {} : { args: this.#encode(args, grants, true, -1) }) }
       // This thread waits for the reply: a host that checks for wait
       // cycles needs to know (#228); older hosts would refuse the field.
       if (sync && this.#declared.includes('sync-wait')) frame.sync = true

@@ -4,9 +4,10 @@
 //! shared with rutis by name (multilanguage M1).
 #![cfg(feature = "node")]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use rutis::{BoxFuture, CordisError, Ctx, EventKey, FiberState, FiberView, Listener};
 use rutis_bridge::runtime::LocalRuntime;
@@ -16,6 +17,7 @@ use rutis_loader::{
     Chain, EntryStatus, Layer, Loader, LoaderChanged, LoaderError, LoaderOptions, LoaderPlugin,
     Patch, RuntimeResolver, RuntimeRows, RuntimeRowsPlugin, ServiceCatalog,
 };
+use rutis_test_support::{eventually_with, until, within};
 use serde_json::{json, Value};
 
 const PROVIDER: &str = r#"
@@ -66,13 +68,19 @@ impl Probe {
     }
 
     async fn wait_for(&self, line: &str) {
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while !self.0.lock().unwrap().iter().any(|l| l == line) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
+        eventually_with(
+            || {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|l| l == line)
+                    .then_some(())
+            },
+            &format!("{line:?} recorded"),
+            || format!("{:?}", self.0.lock().unwrap()),
+        )
         .await
-        .unwrap_or_else(|_| panic!("{line:?} not recorded: {:?}", self.0.lock().unwrap()));
     }
 }
 
@@ -142,7 +150,18 @@ async fn javascript_rows() {
     assert!(report.failures.is_empty(), "{report:?}");
     probe.wait_for("c: hello rust").await;
     probe.wait_for("c2: hello boxed").await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // A row runs in rutis once its `rows.load` returned, and the runner
+    // answers that only after the Cordis fiber settled (`loadRow` awaits
+    // `fiber.await()`): applied, or waiting for its inject. `record` is a
+    // sync call, so a start of c3 or c4 is recorded before their rows run.
+    until(
+        || {
+            row_state(&loader, "c3") == Some(FiberState::Active)
+                && row_state(&loader, "c4") == Some(FiberState::Active)
+        },
+        "c3 and c4 loaded in Cordis",
+    )
+    .await;
     let lines = probe.take();
     assert!(
         !lines
@@ -268,7 +287,14 @@ async fn volatile_changes_reach_cordis_in_place() {
     loader.reconcile(layer(5), None).await.unwrap();
     probe.wait_for(r#"t: [["level"]] 5"#).await;
     probe.wait_for(r#"g: [["level"]] 5"#).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The next change of the same rows as the marker: a row's volatile
+    // updates are one event key, dispatched in order, each listener awaited
+    // (D31), and the forward awaits `rows.update`, which the runner answers
+    // only after a restart it made settled. So once level 6 arrived in
+    // place, whatever level 5 did is recorded.
+    loader.reconcile(layer(6), None).await.unwrap();
+    probe.wait_for(r#"t: [["level"]] 6"#).await;
+    probe.wait_for(r#"g: [["level"]] 6"#).await;
     let lines = probe.take();
     assert!(
         !lines
@@ -423,16 +449,6 @@ fn row_state(loader: &Loader, id: &str) -> Option<FiberState> {
     }
 }
 
-async fn until(what: &str, mut done: impl FnMut() -> bool) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !done() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
-}
-
 fn write_plugins(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let write = |name: &str, text: &str| {
         let path = dir.join(name);
@@ -462,10 +478,13 @@ async fn rows_unload_before_the_runtime() {
     // The row's own cleanup still reaches Cordis: the process outlives it.
     runtime.dispose().await.unwrap();
     probe.wait_for("c: bye").await;
-    until("rows waiting for the runtime", || {
-        row_state(&loader, "c") == Some(FiberState::Pending)
-            && row_state(&loader, "p") == Some(FiberState::Pending)
-    })
+    until(
+        || {
+            row_state(&loader, "c") == Some(FiberState::Pending)
+                && row_state(&loader, "p") == Some(FiberState::Pending)
+        },
+        "rows waiting for the runtime",
+    )
     .await;
 
     root.shutdown().await.unwrap();
@@ -490,11 +509,14 @@ async fn a_dead_process_stops_the_rows_until_restart() {
     loader.reconcile(rows(dying), None).await.unwrap();
     // The runtime withdraws its service; rows wait instead of holding a
     // dead process, and the runtime itself stays up for a restart.
-    until("rows waiting after the crash", || {
-        ["p", "c", "x"]
-            .iter()
-            .all(|id| row_state(&loader, id) == Some(FiberState::Pending))
-    })
+    until(
+        || {
+            ["p", "c", "x"]
+                .iter()
+                .all(|id| row_state(&loader, id) == Some(FiberState::Pending))
+        },
+        "rows waiting after the crash",
+    )
     .await;
     assert_eq!(runtime.state().state, FiberState::Active);
     let runtime_key = RuntimeRows::key("node");
@@ -514,9 +536,10 @@ async fn a_dead_process_stops_the_rows_until_restart() {
     loader.reconcile(rows(base), None).await.unwrap();
     runtime.restart().await.unwrap();
     probe.wait_for("c: hello rust").await;
-    until("rows running again", || {
-        row_state(&loader, "c") == Some(FiberState::Active)
-    })
+    until(
+        || row_state(&loader, "c") == Some(FiberState::Active),
+        "rows running again",
+    )
     .await;
 
     root.shutdown().await.unwrap();
@@ -538,9 +561,10 @@ async fn rows_wait_for_their_hosts_not_the_runtime() {
     let report = loader.reconcile(rows(base), None).await.unwrap();
     assert!(report.failures.is_empty(), "{report:?}");
     // The consumer injects `probe`, which nobody provides yet: only it waits.
-    until("the provider to run", || {
-        row_state(&loader, "p") == Some(FiberState::Active)
-    })
+    until(
+        || row_state(&loader, "p") == Some(FiberState::Active),
+        "the provider to run",
+    )
     .await;
     assert_eq!(row_state(&loader, "c"), Some(FiberState::Pending));
     assert_eq!(runtime.state().state, FiberState::Active);
@@ -553,9 +577,10 @@ async fn rows_wait_for_their_hosts_not_the_runtime() {
     // The host goes: its user stops; the runtime and the provider stay.
     host.dispose().await.unwrap();
     probe.wait_for("c: bye").await;
-    until("the consumer to wait for the host", || {
-        row_state(&loader, "c") == Some(FiberState::Pending)
-    })
+    until(
+        || row_state(&loader, "c") == Some(FiberState::Pending),
+        "the consumer to wait for the host",
+    )
     .await;
     assert_eq!(row_state(&loader, "p"), Some(FiberState::Active));
     assert_eq!(runtime.state().state, FiberState::Active);
@@ -585,6 +610,7 @@ async fn rows_resolved_offline_wait_for_what_they_inject() {
     let (_, consumer, _) = write_plugins(dir.path());
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
+    let transitions = common::Transitions::on(&root);
     root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let mut catalog = ServiceCatalog::new();
@@ -605,17 +631,25 @@ async fn rows_resolved_offline_wait_for_what_they_inject() {
     let base = vec![row("c", &consumer, json!({ "tag": "c" }), json!(null))];
     loader.reconcile(rows(base), None).await.unwrap();
     assert!(loader.get("c").unwrap().meta["schema"].is_string());
+    let offline = loader.get("c").unwrap().plugin.unwrap();
 
     // The runtime starts: the row is resolved again before it may start,
     // and now also waits for the shared `greeter`, which nobody provides.
+    // Its new injects replace its fiber: the new resolution shows first,
+    // then the old fiber goes and, once it is gone, the new one comes. So
+    // wait for the new fiber, not for the injects (#316).
     root.plugin(runtime).await.unwrap();
-    until("the row to know its injects", || {
-        loader
-            .get("c")
-            .is_some_and(|entry| entry.meta["inject"].is_array())
-    })
+    until(
+        || {
+            loader.get("c").is_some_and(|entry| {
+                entry.meta["inject"].is_array()
+                    && entry.plugin.is_some_and(|plugin| plugin != offline)
+            })
+        },
+        "the row to run again with its injects",
+    )
     .await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // The state now; that it stays so until `greeter` comes, `loads` checks below.
     assert_eq!(row_state(&loader, "c"), Some(FiberState::Pending));
     assert!(probe.take().is_empty());
 
@@ -624,6 +658,18 @@ async fn rows_resolved_offline_wait_for_what_they_inject() {
         .provide_as::<dyn HostDispatch>(host_key("greeter"), Arc::new(RustGreeter))
         .unwrap();
     probe.wait_for("c: hello from rust").await;
+    // No start before that: the fiber resolved offline went without ever
+    // loading, and the one resolved again loaded once, for `greeter`. Had
+    // either started early, its Loading came before the changes waited
+    // for here (one fiber's changes arrive in order).
+    let resolved = loader.get("c").unwrap().plugin.unwrap();
+    let fibers = [offline, resolved];
+    assert_eq!(
+        transitions.loads(&fibers).await,
+        1,
+        "{:?}",
+        fibers.map(|fiber| transitions.of(fiber))
+    );
     greeter.dispose().await.unwrap();
     probe.wait_for("c: bye").await;
 
@@ -645,15 +691,14 @@ async fn a_runtime_that_cannot_start_does_not_block_resolution() {
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
 
-    let report = tokio::time::timeout(
-        Duration::from_secs(10),
+    let report = within(
+        "resolution, which does not wait for a failed runtime",
         loader.reconcile(
             rows(vec![row("p", &provider, json!({}), json!(null))]),
             None,
         ),
     )
     .await
-    .expect("resolution does not wait for a failed runtime")
     .unwrap();
     assert!(report.failures.is_empty(), "{report:?}");
     assert_eq!(row_state(&loader, "p"), Some(FiberState::Pending));
@@ -706,9 +751,10 @@ fn stopped(pid: i32) -> bool {
 
 #[cfg(unix)]
 async fn starting(runtime: &FiberView, package: &Path, count: usize) {
-    until("the runner to start", || {
-        pids(package).len() >= count && runtime.state().state == FiberState::Loading
-    })
+    until(
+        || pids(package).len() >= count && runtime.state().state == FiberState::Loading,
+        "the runner to start",
+    )
     .await;
 }
 
@@ -728,20 +774,20 @@ async fn a_starting_runtime_can_be_disposed_or_restarted() {
     let restart = tokio::spawn(runtime.restart());
     starting(&runtime, &package, 2).await;
     let first = pids(&package)[0];
-    until("the first runner to stop", || stopped(first)).await;
+    until(|| stopped(first), "the first runner to stop").await;
 
     restart.abort();
 
     // Dispose while starting.
-    tokio::time::timeout(Duration::from_secs(10), runtime.dispose())
-        .await
-        .expect("dispose does not wait for the hanging start")
-        .unwrap();
+    within(
+        "dispose, which does not wait for the hanging start",
+        runtime.dispose(),
+    )
+    .await
+    .unwrap();
     let second = pids(&package)[1];
-    until("the second runner to stop", || stopped(second)).await;
-    tokio::time::timeout(Duration::from_secs(10), handle.ready())
-        .await
-        .expect("the handle settles");
+    until(|| stopped(second), "the second runner to stop").await;
+    within("the handle to settle", handle.ready()).await;
 
     root.shutdown().await.unwrap();
 }
@@ -845,9 +891,10 @@ async fn row_services_are_shared_by_name() {
     let remaining: Vec<Value> = base.into_iter().filter(|r| r["id"] != "w").collect();
     loader.reconcile(rows(remaining), None).await.unwrap();
     probe.wait_for("rust: bye").await;
-    until("the forecaster to wait", || {
-        row_state(&loader, "f") == Some(FiberState::Pending)
-    })
+    until(
+        || row_state(&loader, "f") == Some(FiberState::Pending),
+        "the forecaster to wait",
+    )
     .await;
 
     root.shutdown().await.unwrap();
@@ -884,30 +931,35 @@ async fn a_row_restarted_while_loading_is_unloaded_in_the_runtime() {
                 .await
         })
     };
-    until("the row to start loading", || {
-        row_state(&loader, "s") == Some(FiberState::Loading)
-    })
+    until(
+        || row_state(&loader, "s") == Some(FiberState::Loading),
+        "the row to start loading",
+    )
     .await;
     // Restarted while its apply still waits for Node: that generation's
     // plugin must not stay loaded once its load returns.
     let view = loader.get("s").unwrap().view.unwrap();
     view.restart().await.unwrap();
     let _ = adding.await;
-    until("the new generation to run", || {
-        row_state(&loader, "s") == Some(FiberState::Active)
-    })
+    until(
+        || row_state(&loader, "s") == Some(FiberState::Active),
+        "the new generation to run",
+    )
     .await;
     loader.reconcile(rows(Vec::new()), None).await.unwrap();
-    until("both generations to be unloaded", || {
-        probe
-            .0
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|l| *l == "slow: bye")
-            .count()
-            == 2
-    })
+    until(
+        || {
+            probe
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|l| *l == "slow: bye")
+                .count()
+                == 2
+        },
+        "both generations to be unloaded",
+    )
     .await;
     root.shutdown().await.unwrap();
 }
@@ -959,14 +1011,16 @@ async fn a_row_that_fails_to_load_releases_its_leases() {
         )
         .await
         .unwrap();
-    until("the broken row to fail", || {
-        row_state(&loader, "b") == Some(FiberState::Failed)
-    })
+    until(
+        || row_state(&loader, "b") == Some(FiberState::Failed),
+        "the broken row to fail",
+    )
     .await;
     let key = host_key("inspector");
-    until("the inspector", || {
-        root.get_as::<dyn HostDispatch>(key.clone()).is_some()
-    })
+    until(
+        || root.get_as::<dyn HostDispatch>(key.clone()).is_some(),
+        "the inspector",
+    )
     .await;
     let inspector = root.get_as::<dyn HostDispatch>(key).unwrap();
     let has_probe = inspector
@@ -987,6 +1041,8 @@ const QUIT: &str = r#"
 export const name = 'quit'
 export const inject = ['probe']
 export function apply(ctx, config) {
+  // A marker for the test: each start of the plugin.
+  ctx.probe.record(`${config.tag}: start`)
   ctx.effect(() => () => ctx.probe.record(`${config.tag}: bye`))
   const quit = () => ctx.fiber.dispose()
   if (config.when === 'apply') quit()
@@ -1085,7 +1141,7 @@ async fn a_plugin_that_disposes_itself_ends_its_row() {
         ids.sort();
         ids
     };
-    until("the rows to end", || ended().len() == 4).await;
+    until(|| ended().len() == 4, "the rows to end").await;
     assert_eq!(ended(), ["a", "g", "l", "m"]);
     for id in ["a", "g", "l", "m"] {
         assert_ne!(row_state(&loader, id), Some(FiberState::Active), "{id}");
@@ -1093,13 +1149,32 @@ async fn a_plugin_that_disposes_itself_ends_its_row() {
     assert_eq!(row_state(&loader, "f"), Some(FiberState::Active));
 
     // `late` goes: the gate of `w` unloads its plugin, and the row stays.
+    let w = loader.get("w").unwrap().plugin;
+    let flag_row = row("f", &flag, json!({}), json!(null));
     loader
         .reconcile(rows(vec![gated.clone()]), None)
         .await
         .unwrap();
     probe.wait_for("w: bye").await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // `late` comes back: the gate starts the plugin again, in the same row.
+    // Had the unloading ended the row, the runner would have forgotten it
+    // at once (`unloadRow` deletes it before anything else) and disposed
+    // the gate, so the plugin would not start again; or rutis would have
+    // disposed the row's fiber, and it would run as a new one.
+    loader
+        .reconcile(rows(vec![gated.clone(), flag_row]), None)
+        .await
+        .unwrap();
+    until(
+        || {
+            let lines = probe.0.lock().unwrap();
+            lines.iter().filter(|line| *line == "w: start").count() == 2
+        },
+        "w to start again",
+    )
+    .await;
     assert_eq!(ended(), ["a", "g", "l", "m"]);
+    assert_eq!(loader.get("w").unwrap().plugin, w);
     assert_eq!(row_state(&loader, "w"), Some(FiberState::Active));
 
     let failing = row(
@@ -1112,11 +1187,17 @@ async fn a_plugin_that_disposes_itself_ends_its_row() {
         .reconcile(rows(vec![gated, failing]), None)
         .await
         .unwrap();
-    until("the failing row to fail", || {
-        row_state(&loader, "t") == Some(FiberState::Failed)
-    })
+    // Failed is the whole answer, nothing comes after it: the runner never
+    // ends a row still loading, and forgets the row before it answers the
+    // load. A `rows.ended` before that answer would dispose the fiber
+    // before its apply fails, and it would never be Failed; the bridge
+    // drops the row's end handler before the apply returns its error, so
+    // none after it reaches the fiber.
+    until(
+        || row_state(&loader, "t") == Some(FiberState::Failed),
+        "the failing row to fail",
+    )
     .await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(ended(), ["a", "g", "l", "m"]);
     assert_eq!(row_state(&loader, "t"), Some(FiberState::Failed));
 

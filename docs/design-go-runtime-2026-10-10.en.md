@@ -89,11 +89,12 @@ func main() { rutis.Serve(ping.Plugin, dns.Plugin) }
 | Plugin entry | identical to the `rows.schema` reply, produced by the same code |
 | `sdk` | the constant `rutis.Version` |
 | Plugin `version` | `debug.ReadBuildInfo()`: the `Deps` version for a dependency module; `Main.Version` for the main module; `vcs.revision` (`+dirty` if modified) when that is `(devel)`; else `null` |
-| Execution timeout | 5 seconds |
+| Execution timeout | 30 seconds (see §17) |
+| Start retried | while the file is busy (ETXTBSY: a file just written, still held open for writing by a process another thread is starting), at most 5 tries, 10 ms apart at first, doubling |
 | Wrong platform | "not built for <os>/<arch>" |
 | `pluginApi` too new | every plugin of the binary fails to resolve, naming what to upgrade |
 | Cache key | path, size, mtime; plus ctime on Unix |
-| Cache bypassed | starting a runtime, `GoRuntimes::restart`, `rutis-host check` |
+| Cache bypassed | starting a runtime, `GoRuntimes::restart`, `rutis-host check`; also, when a row asks for a plugin no binary has, manifests whose last read failed at least 5 seconds ago are read again (the failure may have passed; not sooner, so lookups of missing names do not rerun a binary that keeps failing or hangs) |
 | Trust | only configured sources are executed (`binaries` files, `dir` directories); a `dir` is trusted as a whole and should be dedicated |
 
 ## 4. `GoResolver`
@@ -440,7 +441,7 @@ G1 and G2 are implemented by #227. Where it differs from this document:
 | Remote npm naming | refuses `go:` and `<Go runtime name>:` | refuses any `<name>:` prefix |
 | macOS quarantine | reuse the dylib check | `rutis-host check` checks with `xattr` and says what to do |
 | Manifest timeout | 5 seconds | 30 seconds: on macOS a new binary's first run waits for the system's assessment, over 5 seconds when several start at once |
-| Starting, restarting, stopping one runtime | §5: a row resolving to it during an idle stop cancels the stop | one at a time (the runtime is marked busy, a mark always cleared); a new process starts once the old one is gone. A row resolving to it during an idle stop does not cancel the stop: the runtime starts again as soon as the stop is over |
+| Starting, restarting, stopping one runtime | §5: a row resolving to it during an idle stop cancels the stop | one at a time (the runtime is marked busy, a mark always cleared); a new process starts once the old one is gone; a restart whose caller stops waiting (a timeout around it) still goes on to the end, and the next restart waits for it. A row resolving to it during an idle stop does not cancel the stop: the runtime starts again as soon as the stop is over |
 | `rows.load`'s `inject` | in the signature | ignored, as in Python: a row's own `inject` is what a Cordis row waits for in Cordis; a leaf runtime's rows are gated in rutis on what their plugins inject |
 | `check` | prints implementation and engine | does not: they are in the `mount` reply and `check` starts no Go runtime; with Bun B1 |
 | Not done | | Python's `mount` reply `implementation` / `engine` and `check` printing them (with Bun B1); G3 |

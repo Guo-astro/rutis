@@ -10,20 +10,33 @@ use serde_json::json;
 
 use crate::session::{settle, Error, Reply, Value};
 
+/// What calls on the conformance plugin return: the one list both the real
+/// runtimes ([`runtime`]) and the SDK testing tools (`@arcships/rutis/testing`,
+/// `rutis.testing`) are checked against (issue #206, risk A1, Q6.7.2). Its
+/// `about` says how to read it.
+pub const WEATHER_EXPECTED: &str = include_str!("testing/weather.expected.json");
+
 /// **Runtime** ([`runtime`]): a runtime loads, as a row, a plugin `entry`
-/// that injects `clock` (a rutis host service with `now`, sync) and
-/// provides `weather`:
+/// that injects `clock` (a rutis host service with `now`, sync, returning
+/// 0, 1, 2, ...) and provides `weather`:
 ///
 /// | method | does |
 /// | --- | --- |
 /// | `today()` | `"Oslo at <clock.now()>"`, sync |
 /// | `later()` | `"Oslo later"`, async |
 /// | `each(fn)` | `[fn("mon"), fn("tue")]`, calling back during the call |
+/// | `echo(value)` | `value`, sync |
 /// | `crash()` | ends the runtime process with status 17 |
+/// | `samples()`, `sample(name)` | optional: values only its language makes |
 ///
-/// The repository has it for Node (`node/rutis-runtime/test/fixtures/
-/// conformance-weather.mjs`) and Python (`python/rutis/tests/
-/// conformance_weather.py`).
+/// The calls made and their results are [`WEATHER_EXPECTED`]. The repository
+/// has the plugin for Node (`node/rutis-runtime/test/fixtures/
+/// conformance-weather.mjs`), Python (`python/rutis/tests/
+/// conformance_weather.py`), Go and Bun.
+///
+/// guarantee: sdk/testing-matches-runtime (risk A1, Q6.7.2), the runtime
+/// side; the testing tools' side is `node/rutis/test/conformance.test.mjs`
+/// and `python/rutis/tests/test_conformance.py`.
 pub async fn runtime(
     process: Arc<crate::runtime::Process>,
     entry: &std::path::Path,
@@ -31,6 +44,7 @@ pub async fn runtime(
 ) {
     use crate::runtime::row_projection;
     use crate::session::{host_key, HostDispatch};
+    use serde_json::Value as Json;
     use std::sync::atomic::AtomicUsize;
 
     struct Clock(AtomicUsize);
@@ -54,16 +68,104 @@ pub async fn runtime(
         .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
     }
 
+    // An argument as the expectations write it: data, or a callback.
+    fn argument(arg: &Json) -> Value {
+        match arg.get("$callback") {
+            None => Value::Data(arg.clone()),
+            Some(Json::String(kind)) if kind == "upper" => Value::callback(|args| {
+                let [day]: [String; 1] = crate::session::decode_value(args)?;
+                Ok(json!(day.to_uppercase()).into())
+            }),
+            Some(spec) => {
+                let thrown = spec
+                    .get("throws")
+                    .unwrap_or_else(|| panic!("unknown callback {spec}"))
+                    .clone();
+                Value::callback(move |_| {
+                    Err(Error::Remote {
+                        name: thrown["name"].as_str().unwrap().to_owned(),
+                        message: thrown["message"].as_str().unwrap().to_owned(),
+                        graph: None,
+                    })
+                })
+            }
+        }
+    }
+
+    // Call `method` with `args`, as its kind says.
+    async fn call(weather: &Arc<dyn HostDispatch>, method: &str, kind: &str, args: Value) -> Reply {
+        let weather = weather.clone();
+        let method = method.to_owned();
+        if kind == "sync" {
+            tokio::task::spawn_blocking(move || weather.invoke(&method, args))
+                .await
+                .unwrap()
+        } else {
+            settle(weather.invoke(&method, args)?).await
+        }
+    }
+
+    // `reply` is what `entry` expects.
+    fn check(what: &str, entry: &Json, reply: Reply) {
+        let why = entry["why"].as_str().unwrap_or_default();
+        if let Some(returns) = entry.get("returns") {
+            let mut value = reply
+                .unwrap_or_else(|error| panic!("{what} ({why}): expected {returns}, got {error}"))
+                .json()
+                .unwrap_or_else(|error| panic!("{what} ({why}): not data: {error}"));
+            if let (Some(ignore), Some(object)) = (entry.get("ignore"), value.as_object_mut()) {
+                for key in ignore.as_array().unwrap() {
+                    object.remove(key.as_str().unwrap());
+                }
+            }
+            assert_eq!(&value, returns, "{what} ({why})");
+        } else if let Some(throws) = entry.get("throws") {
+            let error = match reply {
+                Ok(value) => panic!("{what} ({why}): expected an error, got {:?}", value.json()),
+                Err(error) => error,
+            };
+            let expected = |field: &str| throws.get(field).and_then(Json::as_str);
+            if expected("name").is_none() && expected("message").is_none() {
+                return;
+            }
+            let Error::Remote { name, message, .. } = &error else {
+                panic!("{what} ({why}): expected an error from the plugin, got {error:?}")
+            };
+            if let Some(expected) = expected("name") {
+                assert_eq!(name, expected, "{what} ({why}): the error's name");
+            }
+            if let Some(expected) = expected("message") {
+                assert_eq!(message, expected, "{what} ({why}): the error's message");
+            }
+        } else {
+            panic!("{what}: the expectations say neither returns nor throws");
+        }
+    }
+
+    let expected: Json = serde_json::from_str(WEATHER_EXPECTED).expect("weather.expected.json");
+    let service = expected["service"].as_str().unwrap();
     let described = process.describe_row(entry).await.expect("rows.schema");
     assert_eq!(
         described.inject,
         ["clock"],
         "the plugin declares what it injects"
     );
-    let provides = serde_json::Map::from_iter([(
-        "weather".to_owned(),
-        json!({ "today": "sync", "later": "async", "each": "sync", "crash": "sync" }),
-    )]);
+    let declared = described
+        .provides
+        .get(service)
+        .and_then(Json::as_object)
+        .unwrap_or_else(|| panic!("the plugin declares {service} in provides"))
+        .clone();
+    for (method, kind) in expected["methods"].as_object().unwrap() {
+        assert_eq!(
+            declared.get(method),
+            Some(kind),
+            "the plugin declares {service}.{method} as {kind}"
+        );
+    }
+    let kind = |method: &str| declared[method].as_str().unwrap().to_owned();
+    let provides =
+        serde_json::Map::from_iter([(service.to_owned(), Json::Object(declared.clone()))]);
     let lease = process
         .lease_host("clock", Arc::new(Clock(AtomicUsize::new(0))), None)
         .await
@@ -83,7 +185,7 @@ pub async fn runtime(
         )
     };
     load().await.expect("rows.load");
-    let key = host_key("weather");
+    let key = host_key(service);
     eventually(
         || ctx.get_as::<dyn HostDispatch>(key.clone()).is_some(),
         "the weather service",
@@ -91,35 +193,38 @@ pub async fn runtime(
     .await;
     let weather = ctx.get_as::<dyn HostDispatch>(key.clone()).unwrap();
 
-    let sync = weather.clone();
-    let today = tokio::task::spawn_blocking(move || sync.invoke("today", json!([]).into()))
-        .await
-        .unwrap()
-        .expect("today");
-    assert_eq!(
-        today.json().unwrap(),
-        json!("Oslo at 0"),
-        "a sync call that calls a host service"
-    );
-    let later = settle(weather.invoke("later", json!([]).into()).unwrap())
-        .await
-        .expect("later");
-    assert_eq!(later.json().unwrap(), json!("Oslo later"), "an async call");
-    let callback = Value::callback(|args| {
-        let [day]: [String; 1] = crate::session::decode_value(args)?;
-        Ok(json!(day.to_uppercase()).into())
-    });
-    let sync = weather.clone();
-    let days =
-        tokio::task::spawn_blocking(move || sync.invoke("each", Value::List(vec![callback])))
+    // Every call but the last, which ends the process.
+    let (crash, calls) = expected["calls"].as_array().unwrap().split_last().unwrap();
+    for (i, entry) in calls.iter().enumerate() {
+        let method = entry["call"].as_str().unwrap();
+        let args = entry["args"].as_array().unwrap().iter().map(argument);
+        let reply = call(&weather, method, &kind(method), Value::List(args.collect())).await;
+        check(&format!("calls[{i}] {method}"), entry, reply);
+    }
+
+    // Values only the plugin's language makes.
+    if declared.contains_key("samples") {
+        let names = call(&weather, "samples", &kind("samples"), json!([]).into())
             .await
-            .unwrap()
-            .expect("each");
-    assert_eq!(
-        days.json().unwrap(),
-        json!(["MON", "TUE"]),
-        "a callback during a sync call"
-    );
+            .expect("samples")
+            .json()
+            .unwrap();
+        let samples = expected["samples"].as_array().unwrap();
+        for name in names.as_array().unwrap() {
+            let entry = samples
+                .iter()
+                .find(|entry| &entry["sample"] == name)
+                .unwrap_or_else(|| panic!("the expectations list no sample {name}"));
+            let reply = call(&weather, "sample", &kind("sample"), json!([name]).into()).await;
+            check(&format!("sample {name}"), entry, reply);
+        }
+    } else {
+        // Q7.8: the Go and Bun plugins have no samples (#206 follow-ups).
+        eprintln!(
+            "{}: the plugin has no samples(), so no values only its language makes are checked",
+            entry.display()
+        );
+    }
     drop(weather);
 
     process.unload_row("w").await.expect("rows.unload");
@@ -130,6 +235,10 @@ pub async fn runtime(
     .await;
 
     // A crash ends the session; a process started here says how it ended.
+    let status = crash["exits"]
+        .as_u64()
+        .expect("the last call is the one that ends the process");
+    let method = crash["call"].as_str().unwrap();
     load().await.expect("rows.load again");
     eventually(
         || ctx.get_as::<dyn HostDispatch>(key.clone()).is_some(),
@@ -137,20 +246,27 @@ pub async fn runtime(
     )
     .await;
     let weather = ctx.get_as::<dyn HostDispatch>(key.clone()).unwrap();
-    let crashed = tokio::task::spawn_blocking(move || weather.invoke("crash", json!([]).into()))
-        .await
-        .unwrap();
+    let crashed = call(&weather, method, &kind(method), json!([]).into()).await;
+    // How `ExitStatus` reads: `exit status: 17` on Unix, `exit code: 17` on
+    // Windows.
+    let ended = if cfg!(windows) {
+        format!("exited with exit code: {status}")
+    } else {
+        format!("exited with exit status: {status}")
+    };
     match crashed {
         Err(Error::Transport(message)) if started_here => assert_eq!(
-            message, "Cordis process exited with exit status: 17",
+            message,
+            format!("Cordis process {ended}"),
             "the session ends with how the process ended"
         ),
         Err(Error::Transport(_)) => {}
         other => panic!("the crash should end the session, got {other:?}"),
     }
+    drop(weather);
     process.closed().await;
-    let expected = started_here.then_some("exited with exit status: 17");
-    assert_eq!(process.exit_status().as_deref(), expected);
+    let expected = started_here.then_some(ended);
+    assert_eq!(process.exit_status(), expected);
     projection.close();
     drop(lease);
     ctx.shutdown().await.unwrap();

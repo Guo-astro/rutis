@@ -141,7 +141,7 @@ impl Ctx {
 | D4 | 四模式:emit fire-and-forget(spawn 观察 JoinHandle,panic/Err 路由 ErrorSink);parallel 聚合 `Aggregate{errors}`(JoinSet);serial 顺序至短路;waterfall = CPS(`Next<'_>`),veto=不调 next;全异步 | tower Service 先证;resolution D16(删 bail:bail 与 serial 短路语义本就相同,同步性仅服务已删的 `internal/listener`) |
 | D5 | fiber 状态机:`transition: Mutex<Transition>` 单锁域内改状态+读 token;**锁内只做 FIFO 入队,绝不持锁跨 await,回调/锁外执行** | tokio shared-state 官方(短临界区 std Mutex);std RwLock 死锁示例→快照后释放;resolution D24 修正 |
 | D6 | 恰好一次 = 锁内单 `Arc<TransitionTask>`(内嵌 generation);同代 join 同一 Arc,跨代新建;watch 仅观察(晚订阅先 `borrow()` 再 `changed().await` 循环) | codex 评审:watch last-value 证明不了同代只执行一次;resolution D20 最小修法(不建三件套) |
-| D7 | 协作取消统一 `CancellationToken`:每 fiber generation 独立 child token,`ctx.cancelled().await` 暴露;卸载五步:①标 unloading → ②cancel 当前代 → ③等 apply 退出 → ④EffectRecord 清理 → ⑤发布终态;写明协作取消限制(不观察 token 则 dispose 无限等待) | tokio graceful-shutdown 官方;resolution D27 |
+| D7 | 协作取消统一 `CancellationToken`:每 fiber generation 独立 child token,`ctx.cancelled().await` 暴露;卸载五步:①标 Unloading、②cancel 当前代、③等 apply 退出,三者都先于 ④EffectRecord 按 LIFO 清理,⑤发布终态在全部清理结束之后;①②③ 之间的先后不固定——dispose/restart/update/驱逐在调用时就预取消当前代(②先于①),apply 仍在运行时 Unloading 要等 apply 退出才发布(③先于①),驱动内部发起的卸载(如依赖失效)先①后②;写明协作取消限制(不观察 token 则 dispose 无限等待) | tokio graceful-shutdown 官方;resolution D27 |
 | D8 | runtime 接入:构造注入 `Handle` 优先;自动路径 `Handle::try_current()` → 明确错误;绝不隐式建 runtime | tokio Handle 文档 |
 | D9 | yield_now 仅公平性 hint;stale/epoch 检查只靠锁内 token 比较,无调度顺序假设;listener 完成顺序不作契约 | tokio yield_now 文档;resolution D24 |
 | D10 | 插件身份 = `FiberView.id: PluginId` + `Plugin::name()` 显示名;`is_unique` 式去重可选 | Bevy Plugin trait(name/is_unique) |
@@ -205,7 +205,7 @@ TS 96 spec 降级为灵感来源;其中纯范式部分(fiber/dispose/reentrant)�
 | events | emit fire-and-forget(异步安全读载荷,panic/Err 进 ErrorSink);parallel 全错误聚合;serial 顺序至短路;waterfall veto/包裹/最外层返回;prepend 顺序;once;监听器卸载与 dispatch 竞争确定 | `emit_async_safe`、`emit_error_sink`、`parallel_aggregates`、`serial_bails`、`waterfall_veto_around`、`prepend_order`、`once_once`、`listener_unload_race` |
 | registry | TypeId 注册/取回/重复错;显式 key 多实例;isolate 按 ServiceKey 隔离,同 label 合并;父链回溯 | `typed_roundtrip`、`keyed_multi_instance`、`isolate_scoping`、`parent_chain_lookup` |
 | reload | 门控重载顺序(消费者并发、provider 最后);清理期自访问有效;重入报错;isolate A 卸载不驱逐 B;单服务卸载不连带 | `eviction_order`、`self_access_during_cleanup`、`reentrant_provide_fails`、`isolate_no_cross_evict`、`single_service_evict` |
-| cancel | CancellationToken 停止 agent;fiber 卸载级联唤醒等待者;loading 中 cancel 唤醒观察 token 的插件;多次 cancel 幂等;父 cancel 传播子 | `agent_stop`、`cancel_wakes_awaiters`、`cancel_during_loading`、`cancel_idempotent`、`cancel_cascades` |
+| cancel | fiber 卸载级联唤醒等待者;loading 中 cancel 唤醒观察 token 的插件;多次 cancel 幂等;父 cancel 传播子 | `cancel_wakes_awaiters`、`cancel_during_loading`、`cancel_idempotent`、`cancel_cascades` |
 | agent(M3) | python examples 11 项范式语义 | `agent_*` 系列 |
 
 **验收**:≥30,目标 40;每个范式支柱至少 4 个正例 + 2 个失败模式。
@@ -239,7 +239,7 @@ TS 96 spec 降级为灵感来源;其中纯范式部分(fiber/dispose/reentrant)�
   6. `parallel` 单错原样、多错聚合(crate 一致语义;TS 恒聚合为偏差,已声明)。
   7. watch 保活:`FiberInner` 持有常驻 receiver——无 receiver 时 tokio watch 通道视为关闭,`send` 静默失败(实现期实锤的坑)。
   8. settle(`FiberView` 的 `IntoFuture`)语义:已解析 + 非 Loading/Unloading + **无在途意图**(`intents_inflight` 计数)——防"resolved Pending + 未处理的再装载通知"竞态(demo 场景实锤)。
-  9. 卸载五步的落位:意图串行驱动;dispose/restart/驱逐在**入队前预取消当前代 token**(驱动串行,不预取消则运行中的 apply 等不到第②步);apply 不被中止,协作退出后驱动继续(D7 ③"等 apply 退出"忠实落法)。每代 token 为新建(非 child 派生),load 换新。
+  9. 卸载五步的落位:意图串行驱动;dispose/restart/update/驱逐在**入队前预取消当前代 token**(驱动串行,不预取消则运行中的 apply 等不到第②步;因此这些入口的②先于①,见 D7);apply 不被中止,协作退出后驱动继续(D7 ③"等 apply 退出"忠实落法)。每代 token 为新建(非 child 派生),load 换新。
   10. root 驱动常驻(root 可重启;应用生命周期资源);非 root 终态后驱动退出,句柄仍可 join 缓存终态。
   11. 实现期补充 API:`Ctx::get_as`/`provide_as_with_check`/`refresh`(check() 谓词重查触发)/`root_view`(root dispose/restart 入口);`FiberView::name`;`FiberStatusChanged{seq}` 携带序号。
   12. 提前释放单服务的驱逐:`mark_binding_removing`(严格解析立即失败)→ 驱逐 → 排干后 `finalize_binding`(清理期自访问保留,§四"卸载=注册表摘除"语义)。

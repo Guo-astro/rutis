@@ -27,6 +27,16 @@ Both sides use the same token. The dialing side presents `RUTIS_TOKEN` (or `RUTI
 - `dial` accepts `wss://…` for remote connections (TLS required) or `ws://127.0.0.1…` for the local loopback interface.
 - For a self-signed certificate, add its issuing CA to `RUTIS_CA` on the dialing side.
 - After a disconnect, retries use backoff starting at 0.5 seconds and capped at 30 seconds. Rejected credentials (403 or an untrusted certificate) are retried every 30 seconds. An incompatible protocol stops retrying and reports an error.
+- `rutis-host run` prints a line when a link's state changes, with a readable category and never the token. The node row's own `running` only says that the row runs, not that the link is connected:
+
+  ```
+  office: link connected
+  office: link down (127.0.0.1:7443: Connection refused (os error 61)); retrying in 2.1s
+  office: link refused: auth-rejected (office.example.com: upgrade refused with 403 Forbidden); retrying in 30s
+  office: link stopped: incompatible (office does not declare runtime)
+  ```
+
+  `auth-rejected` means the credentials were refused (a wrong token, a certificate for another name or expired, an untrusted CA), `incompatible` that the ends do not fit (not retried), and `link down` that the far end cannot be reached for now. The full format is in [What `run` prints](rutis-host.en.md#what-run-prints).
 - A dialing peer that arrives before the listening side's link is ready is asked to retry, so either side can start first.
 
 ## What a link can do
@@ -85,6 +95,7 @@ An existing Cordis application can become a node through `@arcships/rutis-runtim
 ## Security
 
 - Use `wss://` for remote connections. A listener without TLS may bind only to a loopback address.
+- A Python runtime cannot listen on `wss://` with CPython 3.13.6: its TLS sockets deadlock when one thread is blocked reading while another writes ([python/cpython#137583](https://github.com/python/cpython/issues/137583)), so every handshake hangs, and rutis refuses to start `listen:wss://` on that version. Use 3.13.7 or later (3.13.5 and earlier, and 3.14, are not affected); `ws://` is not affected.
 - Use one token per peer (`RUTIS_TOKEN_<NODE>`) and set it only on the nodes that need it.
 - `host: true` lets a peer run any plugin installed on this node. Enable it only for trusted peers. It can load installed plugins, not file paths.
 - Nodes share services by name, and only services listed in `export` are shared.

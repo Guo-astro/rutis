@@ -7,9 +7,9 @@
 mod common;
 
 use std::path::Path;
-use std::time::Duration;
 
 use common::{normalize, repo, write, VARIABLES};
+use rutis_test_support::{Guard, HANG_GUARD};
 
 struct Checked {
     status: i32,
@@ -35,10 +35,11 @@ async fn check(dir: &Path, args: &[&str], env: &[(&str, &Path)]) -> Checked {
     for (name, value) in env {
         command.env(name, value);
     }
-    // Only against a hang: a check takes seconds.
-    let output = tokio::time::timeout(Duration::from_secs(60), command.output())
+    // Only against a hang: a check takes seconds, but starts the runtimes
+    // (Node, Python) cold; six times HANG_GUARD, as before.
+    let output = Guard(HANG_GUARD * 6)
+        .within("check ends", command.output())
         .await
-        .expect("check ends")
         .expect("rutis-host runs");
     Checked {
         status: output.status.code().expect("an exit status"),
@@ -196,7 +197,7 @@ async fn check_refuses_a_configuration_that_is_not_valid() {
     assert_eq!(checked.stdout, "");
     assert_eq!(
         checked.stderr,
-        "rutis-host: rutis.json: unknown field `row`, expected one of `id`, `runtimes`, `listen`, `rows` at line 1 column 7\n"
+        "rutis-host: rutis.json: unknown field `row`, expected one of `format`, `id`, `runtimes`, `listen`, `rows` at line 1 column 7\n"
     );
     assert_eq!(checked.status, 1);
 

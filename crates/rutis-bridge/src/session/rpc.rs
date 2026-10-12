@@ -482,6 +482,11 @@ async fn with_path<F: Future>(path: Vec<String>, future: F) -> F::Output {
 /// calls it is synchronously waiting for; entries of third sessions pass
 /// through. A tagged entry never equals a native `node:`/`rust:` id, so no
 /// session mistakes it for one of its own calls.
+///
+/// Chains cross links to other processes unchanged, and may come back, so
+/// a tag names its session among all the processes a chain passes, not
+/// only in this one: each process tags with a random nonce of its own
+/// (#325).
 pub fn rebase(path: &[String], from: &str, to: &str) -> Vec<String> {
     let home = format!("{to}/");
     path.iter()
@@ -493,6 +498,36 @@ pub fn rebase(path: &[String], from: &str, to: &str) -> Vec<String> {
         .collect()
 }
 static NEXT_TAG: AtomicU64 = AtomicU64::new(1);
+
+/// A new session tag: `s`, this process's nonce (15 random decimal digits)
+/// and a counter. Only the process whose tag an entry carries restores it;
+/// with a counter alone, another process's `s1` was taken for this one's
+/// `s1` (#325). Two processes' tags meet only if their nonces are equal
+/// (one chance in 10^15 per pair), and never meet the shorter tags of an
+/// older rutis. Digits only: runtimes accept an origin entry as
+/// `s[0-9]+/<id>`, so nothing on the wire changes.
+fn next_tag() -> String {
+    static NONCE: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+        let mut bytes = [0u8; 8];
+        if getrandom::getrandom(&mut bytes).is_err() {
+            // No system randomness: the standard library's hash keys, the
+            // process id and the time still differ between processes.
+            use std::hash::{BuildHasher, Hasher};
+            let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+            hasher.write_u32(std::process::id());
+            if let Ok(now) = std::time::UNIX_EPOCH.elapsed() {
+                hasher.write_u128(now.as_nanos());
+            }
+            bytes = hasher.finish().to_le_bytes();
+        }
+        u64::from_le_bytes(bytes) % 1_000_000_000_000_000
+    });
+    format!(
+        "s{:015}{}",
+        *NONCE,
+        NEXT_TAG.fetch_add(1, Ordering::Relaxed)
+    )
+}
 
 /// What this side declares in a compat-format handshake: it marks its
 /// synchronous waits, and takes such marks (#228).
@@ -719,11 +754,31 @@ pub struct Greeting {
     pub capabilities: Vec<String>,
 }
 
+/// Why a far end's protocol version is refused, saying which end to upgrade
+/// (standard Q6.2.4): this side when the far end is newer, naming what to
+/// upgrade here; the far end when it is older, naming its implementation
+/// when its handshake said.
+fn version_mismatch(far: u32, local: u32, implementation: Option<&Implementation>) -> String {
+    let mismatch = format!("the far end speaks protocol {far}, this side {local}");
+    if far > local {
+        format!("{mismatch}: upgrade this side (Rust crates rutis-host / rutis-bridge)")
+    } else if far < local {
+        match implementation {
+            Some(Implementation { name, version }) => {
+                format!("{mismatch}: upgrade the far end ({name} {version})")
+            }
+            None => format!("{mismatch}: upgrade the far end"),
+        }
+    } else {
+        mismatch
+    }
+}
+
 /// One session's state. The session is reached through [`Connection`];
 /// the channel underneath is any [`Channel`].
 struct SessionState {
-    /// Process-unique; marks this session's call ids in chains forwarded
-    /// to other sessions (see [`rebase`]).
+    /// Unique among processes ([`next_tag`]); marks this session's call
+    /// ids in chains forwarded to other sessions (see [`rebase`]).
     tag: String,
     format: Format,
     /// The far end as the channel's connector verified it, if it did.
@@ -803,7 +858,7 @@ impl Connection {
             ),
         };
         let peer = Self(Arc::new(SessionState {
-            tag: format!("s{}", NEXT_TAG.fetch_add(1, Ordering::Relaxed)),
+            tag: next_tag(),
             format,
             verified: info.peer,
             local_prefix,
@@ -843,6 +898,9 @@ impl Connection {
         let weak = Arc::downgrade(&peer.0);
         std::thread::Builder::new()
             .name("rutis-reader".into())
+            // Set, not left to RUST_MIN_STACK: a frame within
+            // MAX_FRAME_DEPTH takes about 450 KiB to parse in a debug build.
+            .stack_size(READER_STACK)
             .spawn(move || {
                 let result: Result<(), Error> = (|| loop {
                     let message = match receiver.recv() {
@@ -853,7 +911,11 @@ impl Connection {
                     let Some(peer) = weak.upgrade().map(Self) else {
                         return Ok(());
                     };
-                    peer.receive(serde_json::from_slice(&message).map_err(transport)?)?;
+                    if deeper_than(&message, MAX_FRAME_DEPTH) {
+                        peer.too_deep(&message)?;
+                        continue;
+                    }
+                    peer.receive(parse_frame(&message)?)?;
                 })();
                 if let (Err(error), Some(peer)) = (result, weak.upgrade()) {
                     Self(peer).close(error);
@@ -983,7 +1045,9 @@ impl Connection {
         }
         Ok(background.as_ref().unwrap().executor.clone())
     }
-    /// This session's tag, unique in the process (`"s3"`).
+    /// This session's tag, unique among the processes a call chain crosses
+    /// (`s`, a 15-digit random nonce of the process and a counter; see
+    /// [`rebase`]).
     pub fn tag(&self) -> &str {
         &self.0.tag
     }
@@ -1082,7 +1146,7 @@ impl Connection {
                 path,
                 target: target.clone(),
                 method: method.clone(),
-                args: self.encode(args)?,
+                args: self.encode(args, MAX_DEPTH + 1)?,
                 sync,
             },
             Operation::Call(reference, method, args) => Frame::Call {
@@ -1090,7 +1154,7 @@ impl Connection {
                 path,
                 reference: *reference,
                 method: method.clone(),
-                args: self.encode(args)?,
+                args: self.encode(args, MAX_DEPTH + 1)?,
                 sync,
             },
             Operation::Get(reference, property) => Frame::Get {
@@ -1206,9 +1270,20 @@ impl Connection {
     pub fn orphans(&self) -> u64 {
         self.0.calls.lock().unwrap().orphans
     }
-    fn encode(&self, value: &Value) -> Result<WireValue, Error> {
+    /// How many references this side exports (granted and not yet released
+    /// by the far end) and imports (received and not yet released), for the
+    /// release-count invariant (risk P4).
+    #[cfg(feature = "testing")]
+    pub fn references(&self) -> (usize, usize) {
+        let exports = self.0.exports.lock().unwrap().entries.len();
+        let imports = self.0.imports.lock().unwrap().len();
+        (exports, imports)
+    }
+    /// Encode `value`, nested at most `levels` deep: [`MAX_DEPTH`] for a
+    /// result, one more for an argument list (the list is not a level).
+    fn encode(&self, value: &Value, levels: usize) -> Result<WireValue, Error> {
         let mut grants = Vec::new();
-        let result = self.encode_inner(value, &mut grants);
+        let result = self.encode_inner(value, levels, &mut grants);
         if result.is_err() {
             let mut exports = self.0.exports.lock().unwrap();
             for id in grants {
@@ -1225,20 +1300,35 @@ impl Connection {
         }
         result
     }
-    fn encode_inner(&self, value: &Value, grants: &mut Vec<u64>) -> Result<WireValue, Error> {
+    fn encode_inner(
+        &self,
+        value: &Value,
+        levels: usize,
+        grants: &mut Vec<u64>,
+    ) -> Result<WireValue, Error> {
+        if matches!(value, Value::List(_) | Value::Record(_)) && levels == 0 {
+            return Err(too_deep());
+        }
         Ok(match value {
             Value::Undefined => WireValue::Undefined,
-            Value::Data(value) => WireValue::Data(value.clone()),
+            Value::Data(value) => {
+                if !fits(value, levels) {
+                    return Err(too_deep());
+                }
+                WireValue::Data(value.clone())
+            }
             Value::List(values) => WireValue::List(
                 values
                     .iter()
-                    .map(|value| self.encode_inner(value, grants))
+                    .map(|value| self.encode_inner(value, levels - 1, grants))
                     .collect::<Result<_, _>>()?,
             ),
             Value::Record(fields) => WireValue::Record(
                 fields
                     .iter()
-                    .map(|(key, value)| Ok((key.clone(), self.encode_inner(value, grants)?)))
+                    .map(|(key, value)| {
+                        Ok((key.clone(), self.encode_inner(value, levels - 1, grants)?))
+                    })
                     .collect::<Result<_, Error>>()?,
             ),
             Value::Signal => WireValue::Signal,
@@ -1370,8 +1460,10 @@ impl Connection {
         let incompatible = |reason: String| Error::Handshake(Handshake::Incompatible(reason));
         let Format::Endpoint(local) = &self.0.format else {
             if version != VERSION || endpoint.is_some() {
-                return Err(incompatible(format!(
-                    "the far end speaks protocol {version}, this side {VERSION}"
+                return Err(incompatible(version_mismatch(
+                    version,
+                    VERSION,
+                    implementation.as_ref(),
                 )));
             }
             if let Some(capabilities) = capabilities {
@@ -1386,9 +1478,10 @@ impl Connection {
             return Ok(());
         };
         if version != crate::session::ENDPOINT_PROTOCOL {
-            return Err(incompatible(format!(
-                "the far end speaks protocol {version}, this side {}",
-                crate::session::ENDPOINT_PROTOCOL
+            return Err(incompatible(version_mismatch(
+                version,
+                crate::session::ENDPOINT_PROTOCOL,
+                implementation.as_ref(),
             )));
         }
         let endpoint = endpoint
@@ -1445,6 +1538,49 @@ impl Connection {
             .get(&id)
             .map(|e| e.object.clone())
             .ok_or_else(|| transport("unknown or released reference"))
+    }
+    /// A frame nested deeper than [`MAX_FRAME_DEPTH`], from a far end that
+    /// does not keep values within [`MAX_DEPTH`]: its call fails, a call to
+    /// this side with a throw and a reply by failing the call waiting for it;
+    /// the session goes on. References it carries are not read, so they stay
+    /// granted until the session ends. A frame that names no call ends the
+    /// session.
+    fn too_deep(&self, text: &[u8]) -> Result<(), Error> {
+        #[derive(serde::Deserialize)]
+        struct Head {
+            op: String,
+            #[serde(default)]
+            id: Option<String>,
+        }
+        let message = format!(
+            "frame nested deeper than {MAX_FRAME_DEPTH} levels: a value crossing a session \
+             may nest at most {MAX_DEPTH} levels"
+        );
+        // serde_json skips the fields not named here without recursing.
+        let head = serde_json::from_slice::<Head>(text).ok();
+        match head {
+            Some(Head { op, id: Some(id) }) if op == "return" || op == "throw" => {
+                if !matches!(*self.0.ready.borrow(), Some(Ok(()))) {
+                    return Err(transport("request before protocol handshake"));
+                }
+                if let Some(waiting) = self.reply_target(&id)? {
+                    finish(waiting, Err(Error::Value(message)));
+                }
+                Ok(())
+            }
+            Some(Head { op, id: Some(id) })
+                if matches!(op.as_str(), "invoke" | "call" | "get" | "await")
+                    && matches!(*self.0.ready.borrow(), Some(Ok(())))
+                    && id.starts_with(self.remote_prefix()) =>
+            {
+                let _ = self.write(Frame::Throw {
+                    id,
+                    error: Error::Value(message).into(),
+                });
+                Ok(())
+            }
+            _ => Err(Error::Transport(message)),
+        }
     }
     fn receive(&self, frame: Frame) -> Result<(), Error> {
         if let Some(error) = &self.0.calls.lock().unwrap().closed {
@@ -1766,7 +1902,7 @@ impl Connection {
         let result = {
             let mut writer = self.0.writer.lock().unwrap();
             let frame = match &result {
-                Ok(value) => match self.encode(value) {
+                Ok(value) => match self.encode(value, MAX_DEPTH) {
                     Ok(value) => Frame::Return { id, value },
                     Err(error) => Frame::Throw {
                         id,
@@ -1819,6 +1955,82 @@ fn finish(waiting: Waiting, result: Reply) {
         }
     }
 }
+/// How deep a value crossing a session may nest: an array or object (of
+/// data, or a list or record holding references) is one level, so a value
+/// of 64 nested arrays crosses and one of 65 does not. A call's argument
+/// list is not a level: each argument may nest this deep. A value nested
+/// deeper fails its own call on the side that sends it (#279).
+pub const MAX_DEPTH: usize = 64;
+
+/// How deep a frame this side reads may nest, counting every JSON array
+/// and object. Each level of a value takes at most two on the wire (the
+/// `{"type":"list","value":[...]}` wrapper and its array), the frame and
+/// argument list three more, and a reference at the bottom three: a
+/// value within [`MAX_DEPTH`] stays within `2 * MAX_DEPTH + 6`; the rest
+/// is margin. A deeper frame fails its call, or, if no call can be told
+/// from it, ends the session.
+pub(crate) const MAX_FRAME_DEPTH: usize = 2 * MAX_DEPTH + 16;
+
+/// The reader thread's stack: room for parsing, decoding and dropping a
+/// frame [`MAX_FRAME_DEPTH`] deep, whatever `RUST_MIN_STACK` says.
+pub(crate) const READER_STACK: usize = 2 << 20;
+
+fn too_deep() -> Error {
+    Error::Value(format!(
+        "value nested deeper than {MAX_DEPTH} levels, the most a value crossing a session may nest"
+    ))
+}
+
+/// Whether `value` nests at most `levels` arrays and objects deep.
+fn fits(value: &Json, levels: usize) -> bool {
+    match value {
+        Json::Array(items) => levels > 0 && items.iter().all(|item| fits(item, levels - 1)),
+        Json::Object(fields) => levels > 0 && fields.values().all(|item| fits(item, levels - 1)),
+        _ => true,
+    }
+}
+
+/// Whether a JSON text nests arrays and objects deeper than `limit`,
+/// found without parsing it (so without recursing).
+fn deeper_than(text: &[u8], limit: usize) -> bool {
+    let (mut depth, mut string, mut escaped) = (0usize, false, false);
+    for &byte in text {
+        if string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => string = true,
+            b'[' | b'{' => {
+                depth += 1;
+                if depth > limit {
+                    return true;
+                }
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Parse a frame, nested at most [`MAX_FRAME_DEPTH`] deep (checked before),
+/// past serde_json's own limit of 128.
+fn parse_frame(text: &[u8]) -> Result<Frame, Error> {
+    use serde::Deserialize;
+    let mut deserializer = serde_json::Deserializer::from_slice(text);
+    deserializer.disable_recursion_limit();
+    let frame = Frame::deserialize(&mut deserializer).map_err(transport)?;
+    deserializer.end().map_err(transport)?;
+    Ok(frame)
+}
+
 fn transport(error: impl std::fmt::Display) -> Error {
     Error::Transport(error.to_string())
 }

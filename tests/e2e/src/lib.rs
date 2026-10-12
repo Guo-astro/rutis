@@ -30,25 +30,40 @@
 //! for an event. A failed scenario keeps its directory, with every host's
 //! output in `logs/`, under [`root`].
 //!
-//! Running: `npm --prefix node/rutis-runtime ci`, a `python3` (3.12 or
+//! Running: `npm --prefix node/rutis-runtime ci`, a `python3` (3.10 or
 //! newer; the checkout's `python/rutis` is used), then
-//! `cargo test -p rutis-e2e`, which builds `rutis-host` first. Settings:
-//! `RUTIS_E2E_HOST` (the program to test instead), `RUTIS_E2E_DIR` (where
-//! scenario directories go), `RUTIS_E2E_TIMEOUT` (the hang guard, seconds).
+//! `cargo test -p rutis-e2e`, which builds `rutis-host` first (and the
+//! fixture Rust host, `tests/e2e/fixture-host`, for the scenarios that run
+//! it). Settings: `RUTIS_E2E_HOST` (the program to test instead),
+//! `RUTIS_E2E_FIXTURE_HOST` (likewise, the fixture host), `RUTIS_E2E_DIR`
+//! (where scenario directories go), `RUTIS_E2E_TIMEOUT` (the hang guard,
+//! seconds).
 
 mod host;
+#[cfg(windows)]
+mod job;
+mod proxy;
 mod residue;
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
 
 pub use host::{Host, Line, Stream};
+pub use proxy::Proxy;
 pub use residue::Residue;
+
+/// The environment variable that marks every process a scenario starts,
+/// and everything those start: `<scenario>/<host>`, the scenario's
+/// directory name and the host's name (`host-1`, …). The residue checks
+/// find a scenario's processes by it wherever they went: rutis-host puts
+/// each runtime in a process group of its own, and once the host has died
+/// a runtime's parent is init (launchd), not the host.
+pub const MARKER: &str = "RUTIS_E2E_SCENARIO";
 
 /// How long any wait lasts before the scenario fails as hung: 30 s, or
 /// `RUTIS_E2E_TIMEOUT` seconds. It only guards against hangs (Q7.1).
@@ -86,30 +101,49 @@ pub fn host_program() -> PathBuf {
     PROGRAM
         .get_or_init(|| match std::env::var_os("RUTIS_E2E_HOST") {
             Some(program) => PathBuf::from(program),
-            None => build_host(),
+            None => build("rutis-host"),
         })
         .clone()
 }
 
-fn build_host() -> PathBuf {
+/// The fixture Rust host (`tests/e2e/fixture-host`, S4): rutis embedded in
+/// a Rust program, with a row in Rust and configuration reloads on stdin.
+/// `RUTIS_E2E_FIXTURE_HOST`, else the one `cargo build -p
+/// rutis-e2e-fixture-host` builds from this checkout (once per run). It is
+/// on the side under test: the harness only runs it.
+pub fn fixture_host_program() -> PathBuf {
+    static PROGRAM: OnceLock<PathBuf> = OnceLock::new();
+    PROGRAM
+        .get_or_init(|| match std::env::var_os("RUTIS_E2E_FIXTURE_HOST") {
+            Some(program) => PathBuf::from(program),
+            None => build("rutis-e2e-fixture-host"),
+        })
+        .clone()
+}
+
+/// `cargo build -p <package>` in this checkout: its executable of the same
+/// name.
+fn build(package: &str) -> PathBuf {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let cargo = std::process::Command::new(cargo)
-        .args(["build", "-p", "rutis-host", "--message-format=json"])
+        .args(["build", "-p", package, "--message-format=json"])
         .current_dir(repo())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
         .spawn()
-        .expect("cargo build -p rutis-host");
+        .unwrap_or_else(|error| panic!("cargo build -p {package}: {error}"));
     // A child of this process, but no scenario's residue.
     residue::started(cargo.id());
-    let output = cargo.wait_with_output().expect("cargo build -p rutis-host");
-    assert!(output.status.success(), "cargo build -p rutis-host failed");
+    let output = cargo
+        .wait_with_output()
+        .unwrap_or_else(|error| panic!("cargo build -p {package}: {error}"));
+    assert!(output.status.success(), "cargo build -p {package} failed");
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|message| message["target"]["name"] == "rutis-host")
+        .filter(|message| message["target"]["name"] == package)
         .find_map(|message| message["executable"].as_str().map(PathBuf::from))
-        .expect("cargo build reported no rutis-host executable")
+        .unwrap_or_else(|| panic!("cargo build reported no {package} executable"))
 }
 
 /// The language of a probe plugin.
@@ -132,11 +166,15 @@ pub enum Lang {
 /// ```
 pub struct Scenario {
     name: String,
+    /// Unique among the scenarios running on the machine: the directory's
+    /// name. Its hosts' [`MARKER`] starts with it.
+    id: String,
     dir: PathBuf,
     /// Installed mode ([`Scenario::installed`]).
     installed: bool,
     hosts: RefCell<Vec<host::Started>>,
     ports: RefCell<Vec<u16>>,
+    proxies: RefCell<Vec<Arc<proxy::Shared>>>,
     secrets: RefCell<Vec<String>>,
     finished: Cell<bool>,
 }
@@ -146,17 +184,20 @@ impl Scenario {
         static COUNT: AtomicU64 = AtomicU64::new(0);
         residue::watch_orphans();
         let n = COUNT.fetch_add(1, Ordering::Relaxed);
-        let dir = root().join(format!("{name}-{}-{n}", std::process::id()));
+        let id = format!("{name}-{}-{n}", std::process::id());
+        let dir = root().join(&id);
         let _ = std::fs::remove_dir_all(&dir);
         for sub in ["project", "tmp", "probes"] {
             std::fs::create_dir_all(dir.join(sub)).expect("the scenario directory");
         }
         Self {
             name: name.to_owned(),
+            id,
             dir,
             installed: false,
             hosts: RefCell::new(Vec::new()),
             ports: RefCell::new(Vec::new()),
+            proxies: RefCell::new(Vec::new()),
             secrets: RefCell::new(Vec::new()),
             finished: Cell::new(false),
         }
@@ -247,17 +288,32 @@ impl Scenario {
         #[cfg(unix)]
         std::os::unix::fs::symlink(target, &link)
             .unwrap_or_else(|error| panic!("link {}: {error}", link.display()));
-        // A junction needs no privilege, unlike a symbolic link.
+        // A junction needs no privilege, unlike a symbolic link. Its paths
+        // rebuilt with `\` (cmd reads `/@arcships` as a switch of mklink),
+        // without the `\\?\` of a canonical path.
         #[cfg(windows)]
-        assert!(std::process::Command::new("cmd")
-            .arg("/C")
-            .arg("mklink")
-            .arg("/J")
-            .arg(&link)
-            .arg(target)
-            .status()
-            .expect("mklink")
-            .success());
+        {
+            let plain = |path: &Path| {
+                let path: PathBuf = path.components().collect();
+                let path = path.display().to_string();
+                PathBuf::from(path.strip_prefix(r"\\?\").unwrap_or(&path))
+            };
+            let (link, target) = (plain(&link), plain(target));
+            assert!(
+                std::process::Command::new("cmd")
+                    .arg("/C")
+                    .arg("mklink")
+                    .arg("/J")
+                    .arg(&link)
+                    .arg(&target)
+                    .status()
+                    .expect("mklink")
+                    .success(),
+                "mklink /J {} {}",
+                link.display(),
+                target.display()
+            );
+        }
     }
 
     /// Make the project a Node project whose `@arcships/rutis` is this
@@ -338,6 +394,68 @@ impl Scenario {
         port
     }
 
+    /// A TCP proxy on a free loopback port to `target`, for a network
+    /// that breaks ([`Proxy::cut`]) and comes back ([`Proxy::restore`]).
+    /// The scenario's end closes it, with its connections and threads, and
+    /// checks that its port is free again.
+    pub fn proxy(&self, target: std::net::SocketAddr) -> Proxy {
+        let proxy = Proxy::start(target);
+        self.ports.borrow_mut().push(proxy.addr().port());
+        self.proxies.borrow_mut().push(proxy.shared());
+        proxy
+    }
+
+    /// The processes `host` started, directly or not, that still run, and
+    /// what they run; not the host itself. Unix: those carrying its
+    /// [`MARKER`] (and their children, and its process group, for what
+    /// does not show its environment), with their command lines. Windows:
+    /// those in its job, with their programs' paths (another process's
+    /// command line is not readable there).
+    pub fn descendants(&self, host: &Host) -> Vec<(u32, String)> {
+        residue::descendants(host)
+    }
+
+    /// Kill one of `host`'s processes ([`Scenario::descendants`]) as
+    /// `kill -9` does (TerminateProcess on Windows), as when it crashes:
+    /// no cleanup of its own runs.
+    pub fn kill(&self, host: &Host, pid: u32) {
+        assert!(
+            self.descendants(host)
+                .iter()
+                .any(|(found, _)| *found == pid),
+            "process {pid} is not one of {}'s",
+            host.pid()
+        );
+        #[cfg(unix)]
+        {
+            // SAFETY: kill(2) on a process of the host's, just listed.
+            if unsafe { libc::kill(pid as i32, libc::SIGKILL) } != 0 {
+                panic!("kill -9 {pid}: {}", std::io::Error::last_os_error());
+            }
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+            };
+            // SAFETY: plain Win32 calls on a process in the host's job,
+            // just listed; the handle is closed once used.
+            unsafe {
+                let process = OpenProcess(PROCESS_TERMINATE, 0, pid);
+                if process.is_null() {
+                    panic!("open process {pid}: {}", std::io::Error::last_os_error());
+                }
+                let killed = TerminateProcess(process, 1);
+                let error = std::io::Error::last_os_error();
+                CloseHandle(process);
+                if killed == 0 {
+                    panic!("terminate process {pid}: {error}");
+                }
+            }
+        }
+    }
+
     /// A fresh credential (a token for `RUTIS_TOKEN`, say); after the
     /// scenario no captured output may contain it.
     pub fn secret(&self) -> String {
@@ -372,6 +490,17 @@ impl Scenario {
         S: AsRef<std::ffi::OsStr>,
     {
         self.start(host_program(), "", args, env)
+    }
+
+    /// Start the fixture Rust host ([`fixture_host_program`]) with `args`
+    /// in the project, with a host's environment and more (`env`), its
+    /// stdin open for [`Host::send_line`].
+    pub fn fixture_host<I, S>(&self, args: I, env: &[(&str, &str)]) -> Host
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.start_with_input(fixture_host_program(), "", args, env, true)
     }
 
     /// Start `rutis-host <args>` in the project's subdirectory `dir` (as a
@@ -416,6 +545,23 @@ impl Scenario {
         I: IntoIterator<Item = S>,
         S: AsRef<std::ffi::OsStr>,
     {
+        self.start_with_input(program, dir, args, env, false)
+    }
+
+    /// [`Scenario::start`]; with `input`, stdin is a pipe for
+    /// [`Host::send_line`], else empty.
+    fn start_with_input<I, S>(
+        &self,
+        program: PathBuf,
+        dir: &str,
+        args: I,
+        env: &[(&str, &str)],
+        input: bool,
+    ) -> Host
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
         let mut command = std::process::Command::new(program);
         command.args(args).current_dir(self.path(dir));
         for (name, _) in std::env::vars_os() {
@@ -439,7 +585,8 @@ impl Scenario {
         }
         command.envs(env.iter().copied());
         let name = format!("host-{}", self.hosts.borrow().len() + 1);
-        let (host, started) = Host::spawn(&name, command);
+        let marker = format!("{}/{name}", self.id);
+        let (host, started) = Host::spawn(&name, &marker, command, input);
         self.hosts.borrow_mut().push(started);
         host
     }
@@ -484,18 +631,41 @@ impl Scenario {
     }
 
     /// Run the residue checks and return what they found, without failing.
+    /// Like [`Scenario::finish`], it closes the proxies for good (their
+    /// ports are checked) and kills what it finds left running, so the
+    /// scenario cannot go on after it; end it with `finish`, which checks
+    /// again.
     pub fn residue(&self) -> Residue {
-        residue::check(
+        self.residue_within(hang_guard())
+    }
+
+    /// [`Scenario::residue`], waiting at most `wait` (instead of the hang
+    /// guard) for the processes to exit: for a scenario that expects
+    /// residue, and should not wait the hang guard out for it.
+    pub fn residue_within(&self, wait: Duration) -> Residue {
+        // Closed first: their ports are checked.
+        let failed: Vec<String> = self
+            .proxies
+            .borrow()
+            .iter()
+            .flat_map(|proxy| proxy.close())
+            .collect();
+        let mut residue = residue::check(
+            &self.id,
             &self.dir,
             &self.hosts.borrow(),
             &self.ports.borrow(),
             &self.secrets.borrow(),
-        )
+            wait,
+        );
+        residue.found.extend(failed);
+        residue
     }
 
     /// End the scenario: the residue checks (Q5.4.2) must find nothing.
     /// Stop the hosts first: a host still running is residue, and is killed
-    /// with its process group (Unix) before the other checks. On success the
+    /// with its process group (Unix) or job (Windows) before the other
+    /// checks; the proxies are closed. On success the
     /// directory is removed; otherwise it stays, with the hosts' output and
     /// the residue in `logs/`.
     pub fn finish(self) {
@@ -586,6 +756,15 @@ impl Probe {
         method: &str,
         args: Value,
     ) -> Result<Value, String> {
+        let call = self.send(service, method, args);
+        self.answer(host, call)
+    }
+
+    /// Start `service.method(...args)` from the probe without waiting for
+    /// it: a call to have in progress while something else happens. Its
+    /// outcome from [`Probe::answer`]. The probe makes its calls one after
+    /// another: one sent later starts once this one has ended.
+    pub fn send(&self, service: &str, method: &str, args: Value) -> Call {
         assert!(args.is_array(), "the arguments are a JSON array");
         let seq = self.seq.get() + 1;
         self.seq.set(seq);
@@ -594,7 +773,16 @@ impl Probe {
         let part = self.dir.join(format!("{seq}.json.part"));
         std::fs::write(&part, request.to_string()).expect("the probe request");
         std::fs::rename(&part, self.dir.join(format!("{seq}.json"))).expect("the probe request");
-        let what = format!("probe {} answering {service}.{method} (#{seq})", self.id);
+        Call {
+            seq,
+            what: format!("probe {} answering {service}.{method} (#{seq})", self.id),
+        }
+    }
+
+    /// Wait for the outcome of a call [`Probe::send`] started: the result,
+    /// or the error it ended with.
+    pub fn answer(&self, host: &mut Host, call: Call) -> Result<Value, String> {
+        let Call { seq, what } = call;
         let line = host.wait_for(&what, |line| {
             let record = parse(line);
             record["probe"] == self.id.as_str()
@@ -609,6 +797,14 @@ impl Probe {
             None => Ok(record["ok"].take()),
         }
     }
+}
+
+/// A call a probe has started ([`Probe::send`]); its outcome from
+/// [`Probe::answer`].
+#[must_use = "wait for its outcome with Probe::answer"]
+pub struct Call {
+    seq: u64,
+    what: String,
 }
 
 fn parse(line: &str) -> Value {

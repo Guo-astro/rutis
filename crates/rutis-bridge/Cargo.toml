@@ -16,7 +16,8 @@ categories = ["development-tools::ffi", "network-programming"]
 rutis = { path = "../rutis", version = "0.9.1" }
 getrandom = "0.2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip: a float in a frame reads back as the double sent (#290).
+serde_json = { version = "1", features = ["float_roundtrip", "unbounded_depth"] }
 sha2 = "0.10"
 tempfile = "3"
 thiserror.workspace = true
@@ -76,6 +77,7 @@ rutis-test-support = { path = "../rutis-test-support" }
 rcgen = "0.14"
 tempfile = "3"
 tokio = { workspace = true }
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 
 [[example]]
 name = "smoke"

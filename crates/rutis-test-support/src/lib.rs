@@ -25,38 +25,73 @@ const POLL: Duration = Duration::from_millis(10);
 /// `f`, unless it takes longer than [`HANG_GUARD`]: then the test fails,
 /// naming `what`.
 pub async fn within<F: Future>(what: &str, f: F) -> F::Output {
-    match tokio::time::timeout(HANG_GUARD, f).await {
-        Ok(output) => output,
-        Err(_) => panic!("timed out ({HANG_GUARD:?}): {what}"),
-    }
+    Guard(HANG_GUARD).within(what, f).await
 }
 
 /// The first `Some` of `check`, looked at every 10 ms, within
 /// [`HANG_GUARD`]; else the test fails, naming `what`.
 pub async fn eventually<T>(check: impl FnMut() -> Option<T>, what: &str) -> T {
-    eventually_with(check, what, String::new).await
+    Guard(HANG_GUARD).eventually(check, what).await
 }
 
 /// [`eventually`] for a condition: until `check()` is true.
-pub async fn until(mut check: impl FnMut() -> bool, what: &str) {
-    eventually(|| check().then_some(()), what).await
+pub async fn until(check: impl FnMut() -> bool, what: &str) {
+    Guard(HANG_GUARD).until(check, what).await
 }
 
 /// [`eventually`], with `describe()` (the state at the time) in the failure.
 pub async fn eventually_with<T>(
-    mut check: impl FnMut() -> Option<T>,
+    check: impl FnMut() -> Option<T>,
     what: &str,
     describe: impl FnOnce() -> String,
 ) -> T {
-    let deadline = tokio::time::Instant::now() + HANG_GUARD;
-    loop {
-        if let Some(value) = check() {
-            return value;
+    Guard(HANG_GUARD)
+        .eventually_with(check, what, describe)
+        .await
+}
+
+/// A longer hang guard, for the waits that need one: `Guard(HANG_GUARD *
+/// 2)`, with the reason next to it (several runtimes starting cold, #238).
+/// It only guards against hangs too.
+#[derive(Clone, Copy, Debug)]
+pub struct Guard(pub Duration);
+
+impl Guard {
+    /// [`within`] this guard.
+    pub async fn within<F: Future>(self, what: &str, f: F) -> F::Output {
+        match tokio::time::timeout(self.0, f).await {
+            Ok(output) => output,
+            Err(_) => panic!("timed out ({:?}): {what}", self.0),
         }
-        if tokio::time::Instant::now() >= deadline {
-            fail(what, describe());
+    }
+
+    /// [`eventually`] within this guard.
+    pub async fn eventually<T>(self, check: impl FnMut() -> Option<T>, what: &str) -> T {
+        self.eventually_with(check, what, String::new).await
+    }
+
+    /// [`until`] within this guard.
+    pub async fn until(self, mut check: impl FnMut() -> bool, what: &str) {
+        self.eventually(|| check().then_some(()), what).await
+    }
+
+    /// [`eventually_with`] within this guard.
+    pub async fn eventually_with<T>(
+        self,
+        mut check: impl FnMut() -> Option<T>,
+        what: &str,
+        describe: impl FnOnce() -> String,
+    ) -> T {
+        let deadline = tokio::time::Instant::now() + self.0;
+        loop {
+            if let Some(value) = check() {
+                return value;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                fail(self.0, what, describe());
+            }
+            tokio::time::sleep(POLL).await;
         }
-        tokio::time::sleep(POLL).await;
     }
 }
 
@@ -68,7 +103,7 @@ pub fn eventually_blocking<T>(mut check: impl FnMut() -> Option<T>, what: &str) 
             return value;
         }
         if Instant::now() >= deadline {
-            fail(what, String::new());
+            fail(HANG_GUARD, what, String::new());
         }
         std::thread::sleep(POLL);
     }
@@ -82,10 +117,10 @@ pub fn recv_within<T>(what: &str, rx: &std::sync::mpsc::Receiver<T>) -> T {
     }
 }
 
-fn fail(what: &str, state: String) -> ! {
+fn fail(guard: Duration, what: &str, state: String) -> ! {
     match state.is_empty() {
-        true => panic!("timed out ({HANG_GUARD:?}): {what}"),
-        false => panic!("timed out ({HANG_GUARD:?}): {what}\nstate: {state}"),
+        true => panic!("timed out ({guard:?}): {what}"),
+        false => panic!("timed out ({guard:?}): {what}\nstate: {state}"),
     }
 }
 

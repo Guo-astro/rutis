@@ -14,22 +14,28 @@ use std::path::Path;
 use common::{environment, normalize, repo, write};
 use rutis_host::config::HostConfig;
 use rutis_host::host::Host;
+use rutis_test_support::{Guard, HANG_GUARD};
 
 /// Read `text` as `<dir>/rutis.json` and start what it names, up to the
 /// runtimes running: the first error, as on any machine.
 async fn first_error(dir: &Path, text: &str) -> String {
     write(dir, &[("rutis.json", text)]);
-    let error = async {
+    let started = async {
         let config = HostConfig::read(&dir.join("rutis.json"))?;
         let host = Host::start(&config).await?;
         host.runtimes_ready().await
-    }
-    .await
-    .expect_err("an error");
+    };
+    // Some start a runtime (Node, Python, Bun) cold; twice HANG_GUARD, only
+    // against a hang.
+    let error = Guard(HANG_GUARD * 2)
+        .within(&format!("starting {text}"), started)
+        .await
+        .expect_err("an error");
     normalize(&error, dir)
 }
 
-/// risk: B6, A7
+/// risk: B6, A7, J3
+/// guarantee: host/rutis-json-format (a newer format)
 #[tokio::test(flavor = "multi_thread")]
 async fn a_configuration_that_is_not_there_or_not_valid() {
     let _environment = environment();
@@ -55,6 +61,10 @@ async fn a_configuration_that_is_not_there_or_not_valid() {
         (
             r#"{ "runtimes": { "go": { "dir": "g", "start": "lazy" } } }"#,
             "<dir>/rutis.json: unknown variant `lazy`, expected `on-demand` or `eager` at line 1 column 51",
+        ),
+        (
+            r#"{ "format": 2, "services": {} }"#,
+            "<dir>/rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-host",
         ),
         (
             r#"{ "id": "Main Host" }"#,
