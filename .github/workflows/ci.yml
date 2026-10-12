@@ -1031,9 +1031,8 @@ jobs:
     runs-on: ${{ fromJSON(vars.WINDOWS_RUNNER || '"windows-2025"') }}
     defaults:
       run:
-        # Git's bash by its path: the hosted image has it there too, and a
-        # self-hosted machine need not have it on PATH.
-        shell: '"C:\Program Files\Git\bin\bash.exe" --noprofile --norc -e -o pipefail {0}'
+        # Git's bash (on PATH, self-hosted too: docs/ci.md §11).
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       # Several runner instances share the machine: each keeps its own

@@ -264,4 +264,4 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 - 容器看得到整台机器的 CPU，看不到别的容器：每个任务的并行数取仓库变量 `LINUX_CI_JOBS`（4 个容器时设 `8`），没设置时是全部 CPU 数；
 - `setup-python` 在自托管的 Linux 上可以用，Python 照旧由它装。
 
-`runtimes-windows` 同样由仓库变量 `WINDOWS_RUNNER` 决定：没设置时是 `"windows-2025"`，设成 `["self-hosted","Windows"]` 就跑在组织的自托管 Windows runner 上（一台 16 核的机器上 4 个实例，以 `NETWORK SERVICE` 运行；Rust 在 `C:\Rust`，有 VS Build Tools、Git、Node、Go、Python）。步骤用 Git 的 bash，按完整路径 `C:\Program Files\Git\bin\bash.exe` 调用，不要求它在 `PATH` 里。自托管时，每个实例的编译目录和场景目录在 `_work/_rutis-ci/` 下（`checkout` 会清掉检出目录里的 `target`），并行数是 CPU 数除以 4，仓库变量 `WINDOWS_CI_JOBS` 可以改。机器要开长路径：注册表 `LongPathsEnabled` = 1，`git config --system core.longpaths true`。
+`runtimes-windows` 同样由仓库变量 `WINDOWS_RUNNER` 决定：没设置时是 `"windows-2025"`，设成 `["self-hosted","Windows"]` 就跑在组织的自托管 Windows runner 上（一台 16 核的机器上 4 个实例，以 `NETWORK SERVICE` 运行；Rust 在 `C:\Rust`，有 VS Build Tools、Git、Node、Go、Python）。步骤用 Git 的 bash：机器的系统 `PATH` 里要有 `C:\Program Files\Git\bin`（改了以后重启 runner 服务）。自托管时，每个实例的编译目录和场景目录在 `_work/_rutis-ci/` 下（`checkout` 会清掉检出目录里的 `target`），并行数是 CPU 数除以 4，仓库变量 `WINDOWS_CI_JOBS` 可以改。机器要开长路径：注册表 `LongPathsEnabled` = 1，`git config --system core.longpaths true`。
