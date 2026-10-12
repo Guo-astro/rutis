@@ -270,7 +270,7 @@ Not done:
 | `tests/bun_multilang.rs:313-320` | `loop { sleep(10ms) }` with no bound | U | out | `eventually` |
 | `tests/instances.rs:390`, `tests/lifecycle.rs:154` | `eventually` 5 s | C | — | Shared helper |
 | `tests/loader.rs:568`, `:592` | 5 s | C | — | `within` |
-| `tests/leases.rs:138`, `:377`, `:400` | 600 / 400 ms stop delays (fixture) | E | out | The fixture is released by the test; the jitter noted at `:374`: `quick()` sets `jitter: 0.0` |
+| `tests/leases.rs:138`, `:377`, `:400` | 600 / 400 ms stop delays (fixture) | E | out | The fixture is released by the test; the jitter noted at `:374`: `quick()` sets `jitter: 0.0`. **The implementation (PR 2, #278) differs**: only `jitter: 0.0`; the delays stay as W, marked `// clock: widen` — what `takeover` asserts holds whatever the delay, which only opens the window the regression needs (too short a delay can only miss). Releasing the fixture from the test means changing both the Node and the Go fixture; left for later |
 | `tests/fixtures/go/cmd/logger/main.go:34` | fixture timing | E | out | Same: released by the test |
 | The other 4 fixture sleeps | slow operations | H | — | Unchanged |
 | Wait helpers: 7 `eventually`, 4 `until`, ~9 `Probe::wait_for`, `multilang_go`'s `Fixture::until` (dumps state on timeout; the model for `eventually_with`) | 10–30 s | D | — | Replaced by the shared ones in the second PR |
@@ -295,7 +295,7 @@ Not done:
 | `crates/rutis-dsh/tests/profile_loader.rs:257`, `:267`, `:283` | 5 s polling | C | `eventually` |
 | `crates/rutis-dsh/tests/stream.rs:86`, `tests/web.rs:127` | 5 s | C | `within` |
 | `crates/rutis-dsh/src/profile/lock.rs:149`, `:154` | lock wait, watch interval (already configurable) | E | The test sets the durations, per §3.3 point 3 |
-| `crates/rutis-host/tests/signals.rs:384`, `:413`, `:456` | `--shutdown-timeout 1` | E | Cases that must time out use fixtures that never finish their cleanup; cases that must finish in time use the default 10 s |
+| `crates/rutis-host/tests/signals.rs:384`, `:413`, `:456` | `--shutdown-timeout 1` | E | Cases that must time out use fixtures that never finish their cleanup; cases that must finish in time use the default 10 s. **Checked in the third PR**: all three are the side that must time out, and their fixtures already never finish (an apply that never returns, `hold` cleanups that never end); 1 s only keeps the tests short, and no case that must finish in time uses 1 s. Comments added, fixtures unchanged |
 | `crates/rutis-host/src/main.rs:273` (400 ms), `src/status.rs:53` (200 ms) | product poll intervals | — | Unchanged (tests wait for results, not intervals) |
 | `crates/rutis-dev/tests/channel.rs:97` | 5 s per line (real unix socket) | C | `HANG_GUARD` |
 | `tests/e2e/src/residue.rs:356`, `:359` | a loose elapsed check | F | Only a hang guard |
@@ -313,7 +313,7 @@ Not done:
 | `node/rutis-runtime/test/serve.test.mjs:26` | asserts after `setTimeout(100)` | B | Wait for the server socket's close event |
 | `serve.test.mjs:56-62`, `handshake.test.mjs:20` | unbounded | U | `within` |
 | `serve.test.mjs:66` | a 10 s race | D | Unchanged |
-| `node/rutis-runtime/test/fixtures/rust-mount.test.mjs:21`, `:26` | 1 ms polling, 2 s bound; no user found in the repository | A, C | Delete once confirmed unused, otherwise `eventually` |
+| `node/rutis-runtime/test/fixtures/rust-mount.test.mjs:21`, `:26` | 1 ms polling, 2 s bound; ~~no user found in the repository~~ used by `examples/native-mount/tests/cordis_mount.rs` (found in the third PR) | A, C | ~~Delete once confirmed unused, otherwise~~ `eventually` |
 | `node/baseline/native.mjs:24` | `Promise.race(fibers, 500ms)` reports "unavailable" | B | Wait for the fiber's state event; or mark it as a benchmark script (not a test) and leave it out of scope |
 | `fixtures/sync-heartbeat.mjs:7` (for `websocket_multihop.rs`), `rpc-client.mjs:12`, `cordis-node.mjs:14` (retry 50 / 500) | fixture timing | E | Adjusted with the matching Rust tests per §3.3 |
 | The other 11 fixture sleeps | slow operations | H | Unchanged |
@@ -360,3 +360,5 @@ Not done:
 ### A.9 H items whose duration decides the outcome (treated as A)
 
 `crates/rutis-loader/tests/runtime_rows.rs:994`, `bun/rutis-bun/test/fixtures/crashing-worker.ts:12`, `bun/rutis-bun/test/fixtures/channel-relay.ts:15`, `crates/rutis-loader/tests/leases.rs:138`.
+
+In PR 2 (#278): the fixture at `runtime_rows.rs:994` is unchanged — `:1101` and `:1119` no longer use time, and the length of `later` does not affect the result; `leases.rs:138` stays as W (see A.2).

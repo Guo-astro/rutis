@@ -348,6 +348,17 @@ impl EventBus {
         )
     }
 
+    /// Allocated slots of the same three tables, for the capacity checks.
+    #[cfg(test)]
+    pub(crate) fn table_capacities(&self) -> (usize, usize, usize) {
+        let inner = self.inner.lock().unwrap();
+        (
+            inner.hooks.capacity(),
+            inner.wf_hooks.capacity(),
+            inner.dispatch_tail.capacity(),
+        )
+    }
+
     /// Accepted `emit` dispatches not yet finished, per event key.
     pub(crate) fn backlogs(&self) -> Vec<crate::EventBacklog> {
         let now = std::time::Instant::now();

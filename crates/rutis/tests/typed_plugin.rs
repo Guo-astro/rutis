@@ -1,14 +1,16 @@
 //! Typed dependencies (#50): one description gives the gate and the reads.
 
+use std::future::IntoFuture;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rutis::{
-    BoxFuture, CordisError, Ctx, DepKey, Deps, Effect, FiberState, FiberStatusChanged, FiberView,
-    Gate, Keyed, KeyedGate, Listener, Plugin, TypeKey, Typed, TypedFactory, TypedPlugin,
+    BoxFuture, CordisError, Ctx, DepKey, Deps, Effect, ErrorSink, FiberState, FiberStatusChanged,
+    FiberView, Gate, Keyed, KeyedGate, Listener, Plugin, TypeKey, Typed, TypedFactory, TypedPlugin,
     TypedPluginFactory,
 };
+use rutis_test_support::within;
 use tokio::sync::Notify;
 
 #[derive(Debug)]
@@ -436,7 +438,10 @@ impl Plugin for LosesItsDependency {
 }
 
 async fn lose_and_restore(hold: bool) -> (Vec<u32>, Vec<FiberState>) {
-    let ctx = Ctx::root().unwrap();
+    lose_and_restore_in(Ctx::root().unwrap(), hold).await
+}
+
+async fn lose_and_restore_in(ctx: Ctx, hold: bool) -> (Vec<u32>, Vec<FiberState>) {
     let states = Arc::new(Mutex::new(Vec::new()));
     let first = ctx.provide(Llm(1)).unwrap();
     let seen = Seen::default();
@@ -483,6 +488,202 @@ async fn a_dependency_back_before_the_failure_is_handled_still_reloads() {
     let (seen, states) = lose_and_restore(true).await;
     assert_eq!(seen, [2]);
     assert!(!states.contains(&FiberState::Failed), "{states:?}");
+}
+
+/// A root whose ErrorSink records everything sent to it.
+fn root_with_recording_sink() -> (Ctx, Arc<Mutex<Vec<Arc<CordisError>>>>) {
+    let sunk = Arc::new(Mutex::new(Vec::new()));
+    let sink: ErrorSink = {
+        let sunk = sunk.clone();
+        Arc::new(move |error| sunk.lock().unwrap().push(error))
+    };
+    let ctx = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
+    (ctx, sunk)
+}
+
+/// The `InjectUnsatisfied` that returns a generation to Pending is not a
+/// failure anyone has to see: like an eviction, it stays out of the
+/// ErrorSink, whether or not the dependency is back before it is handled.
+///
+/// guarantee: core/typed.lost-dependency-silent
+#[tokio::test]
+async fn a_lost_dependency_error_does_not_reach_the_error_sink() {
+    for hold in [false, true] {
+        let (ctx, sunk) = root_with_recording_sink();
+        let (seen, states) = lose_and_restore_in(ctx.clone(), hold).await;
+        assert_eq!(seen, [2]);
+        assert!(!states.contains(&FiberState::Failed), "{states:?}");
+        let sunk = sunk.lock().unwrap();
+        assert!(
+            sunk.is_empty(),
+            "hold = {hold}: nothing may reach the sink, got {sunk:?}"
+        );
+    }
+}
+
+/// A `restart()` that lands between the failed read and its handling is
+/// answered with `Ok`: the generation goes back to Pending, not to Failed,
+/// and the restart has no failure to report. The plugin loads once the
+/// dependency is back.
+///
+/// guarantee: core/typed.lost-dependency-restart
+#[tokio::test]
+async fn a_restart_in_the_lost_dependency_window_returns_ok() {
+    let (ctx, sunk) = root_with_recording_sink();
+    let first = ctx.provide(Llm(1)).unwrap();
+    let seen = Seen::default();
+    let hold = Arc::new(Notify::new());
+    let plugin = LosesItsDependency::new(Some(hold.clone()), seen.clone());
+    let read = plugin.read.clone();
+    let view = ctx.plugin(plugin);
+    reach(&view, FiberState::Loading).await;
+
+    let withdrawn = tokio::spawn(first.dispose());
+    within("the failed read", read.notified()).await;
+    // Registered now, while apply still holds the failed read.
+    let mut restart = view.restart();
+    tokio::select! {
+        biased;
+        result = &mut restart => panic!("restart finished inside the window: {result:?}"),
+        () = std::future::ready(()) => {}
+    }
+    hold.notify_one();
+
+    within("the restart", restart)
+        .await
+        .expect("a restart in the window returns Ok");
+    within("the withdrawal", withdrawn).await.unwrap().unwrap();
+    let state = view.state();
+    assert_eq!(state.state, FiberState::Pending);
+    assert!(state.error.is_none(), "{:?}", state.error);
+    assert!(seen.lock().unwrap().is_empty());
+
+    ctx.provide(Llm(2)).unwrap();
+    reach(&view, FiberState::Active).await;
+    assert_eq!(*seen.lock().unwrap(), [2]);
+    assert!(
+        sunk.lock().unwrap().is_empty(),
+        "{:?}",
+        sunk.lock().unwrap()
+    );
+}
+
+/// An untyped plugin: its first generation waits until its `Llm` is
+/// withdrawn, then reads it with `require` (strict) or `get` (optional)
+/// and returns `InjectUnsatisfied` when it is not there.
+struct UntypedLoss {
+    strict: bool,
+    generations: AtomicUsize,
+    seen: Seen,
+    injects: Vec<TypeKey>,
+}
+
+impl UntypedLoss {
+    fn new(strict: bool, seen: Seen) -> Self {
+        Self {
+            strict,
+            generations: AtomicUsize::new(0),
+            seen,
+            injects: vec![TypeKey::of::<Llm>()],
+        }
+    }
+}
+
+impl Plugin for UntypedLoss {
+    fn name(&self) -> &str {
+        "untyped-loss"
+    }
+
+    fn injects(&self) -> &[TypeKey] {
+        &self.injects
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        Box::pin(async move {
+            if self.generations.fetch_add(1, Ordering::SeqCst) == 0 {
+                // Withdrawing the provider cancels this generation.
+                ctx.cancelled().await;
+            }
+            let lost = || CordisError::InjectUnsatisfied(vec!["Llm".into()]);
+            let llm = if self.strict {
+                ctx.require::<Llm>().map_err(|_| lost())?
+            } else {
+                ctx.get::<Llm>().ok_or_else(lost)?
+            };
+            self.seen.lock().unwrap().push(llm.0);
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// Provides `Llm(n)` from a sibling plugin. (A service the root provides
+/// stays readable to its descendants while it is withdrawn: they are in
+/// its subtree.)
+struct ProvidesLlm(u32);
+
+impl Plugin for ProvidesLlm {
+    fn name(&self) -> &str {
+        "provides-llm"
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        Box::pin(async move {
+            ctx.provide(Llm(self.0))?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// Mounts an [`UntypedLoss`], withdraws its `Llm` while the first
+/// generation loads, and returns the settled outcome of that load.
+async fn untyped_loss(strict: bool) -> (Ctx, FiberView, Seen, Result<(), Arc<CordisError>>) {
+    let ctx = Ctx::root().unwrap();
+    let provider = ctx.plugin(ProvidesLlm(1));
+    within("the provider", (&provider).into_future())
+        .await
+        .unwrap();
+    let seen = Seen::default();
+    let view = ctx.plugin(UntypedLoss::new(strict, seen.clone()));
+    reach(&view, FiberState::Loading).await;
+    // Waits for the consumer, which is still loading.
+    within("the withdrawal", provider.dispose()).await.unwrap();
+    let settled = within("the first load", (&view).into_future()).await;
+    (ctx, view, seen, settled)
+}
+
+/// An untyped plugin gets the lost-dependency rule by reading with
+/// `require`: the failed strict read is the evidence, the generation goes
+/// back to Pending without an error and loads when the dependency is back.
+///
+/// guarantee: core/typed.untyped-require
+#[tokio::test]
+async fn an_untyped_plugin_whose_require_fails_returns_to_pending() {
+    let (ctx, view, seen, settled) = untyped_loss(true).await;
+    settled.expect("Pending is not a failure");
+    let state = view.state();
+    assert_eq!(state.state, FiberState::Pending);
+    assert!(state.error.is_none(), "{:?}", state.error);
+    assert!(seen.lock().unwrap().is_empty());
+
+    ctx.plugin(ProvidesLlm(2));
+    reach(&view, FiberState::Active).await;
+    assert_eq!(*seen.lock().unwrap(), [2]);
+}
+
+/// A `get` that finds nothing is not evidence of a lost dependency: the
+/// same claim after a `get` is an ordinary, sticky failure.
+///
+/// guarantee: core/typed.get-not-evidence
+#[tokio::test]
+async fn a_get_read_is_not_evidence_of_a_lost_dependency() {
+    let (_ctx, view, seen, settled) = untyped_loss(false).await;
+    let error = settled.expect_err("a get read does not count");
+    assert!(
+        matches!(*error, CordisError::InjectUnsatisfied(_)),
+        "{error:?}"
+    );
+    assert_eq!(view.state().state, FiberState::Failed);
+    assert!(seen.lock().unwrap().is_empty());
 }
 
 type Withdrawal = Arc<Mutex<Option<std::thread::JoinHandle<Result<(), Arc<CordisError>>>>>>;

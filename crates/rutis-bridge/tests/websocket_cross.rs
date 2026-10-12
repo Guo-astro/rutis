@@ -1,6 +1,8 @@
 //! WebSocket failures across implementations: Rust and Node, each dialing
-//! the other, classify refusals the same way (credentials and certificates
-//! are authentication failures, a subprotocol mismatch is incompatible).
+//! the other, and Rust dialing Python, classify refusals the same way
+//! (credentials and certificates are authentication failures, a subprotocol
+//! mismatch is incompatible). The Python runtime only listens: it has no
+//! dialer, so there is no Python-dialing-Rust column.
 #![cfg(feature = "websocket")]
 
 use std::path::{Path, PathBuf};
@@ -13,6 +15,7 @@ use rutis_bridge::transport::websocket::{
 use rutis_bridge::{
     Credential, Dial, Identity, Registered, Registration, StaticIdentity, Transport,
 };
+use rutis_test_support::within;
 use tokio::io::AsyncBufReadExt;
 
 fn id(s: &str) -> PeerId {
@@ -82,6 +85,56 @@ async fn node_listen(url: &str, env: &[(&str, &str)]) -> (tokio::process::Child,
         }
     };
     tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+    (child, address)
+}
+
+/// The Python interpreter: `RUTIS_PYTHON`, else `python3` (`python` on
+/// Windows). It needs the `websockets` package (rutis[network]).
+fn python() -> String {
+    std::env::var("RUTIS_PYTHON")
+        .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into())
+}
+
+/// A Python runtime listening on `url` (`python -m rutis listen:<url>`),
+/// with credentials, certificate and key in RUTIS_* variables; the address
+/// it announces.
+async fn python_listen(url: &str, env: &[(&str, &str)]) -> (tokio::process::Child, String) {
+    let project = tempfile::tempdir().unwrap();
+    let mut child = tokio::process::Command::new(python())
+        .args(["-m", "rutis"])
+        .arg(format!("listen:{url}"))
+        .args(["--id", "python"])
+        .arg(project.path())
+        .env(
+            "PYTHONPATH",
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python/rutis"),
+        )
+        .envs(env.iter().copied())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
+    let address = within("the Python listener's address", async {
+        loop {
+            let line = lines
+                .next_line()
+                .await
+                .unwrap()
+                .expect("the listener's address");
+            if let Some(address) = line.strip_prefix("rutis: listening on ") {
+                break address.to_owned();
+            }
+            eprintln!("python: {line}");
+        }
+    })
+    .await;
+    tokio::spawn(async move {
+        let _project = project;
+        while let Ok(Some(line)) = lines.next_line().await {
+            eprintln!("python: {line}");
+        }
+    });
     (child, address)
 }
 
@@ -197,6 +250,74 @@ async fn rust_dialing_node_is_refused_by_category() {
     assert!(trusting.dial(&dial(&url, "good", "rutis.3")).await.is_ok());
     assert!(matches!(
         client.dial(&dial(&url, "good", "rutis.3")).await,
+        Err(ConnectError::AuthRejected { .. })
+    ));
+}
+
+/// Risk E8: a Python listener refuses as the Node one does, by category.
+/// guarantee: bridge/websocket-refusal-categories (proposed)
+#[tokio::test(flavor = "multi_thread")]
+async fn rust_dialing_python_is_refused_by_category() {
+    let (ca, certificate, key) = pki();
+    let client = WebSocketTransport::start(Config::new()).unwrap();
+    let dial = |url: &str, token: Option<&str>, protocol: &str| {
+        let identity = StaticIdentity::new(id("main"));
+        let identity: Arc<dyn Identity> = Arc::new(match token {
+            Some(token) => identity.present(id("python"), Credential::Bearer(token.into())),
+            None => identity,
+        });
+        Dial::address(url)
+            .peer(id("python"))
+            .identity(identity)
+            .protocol(protocol)
+    };
+    let (_plain, url) = python_listen("ws://127.0.0.1:0/rutis", &[("RUTIS_TOKEN", "good")]).await;
+    assert!(client
+        .dial(&dial(&url, Some("good"), "rutis.3"))
+        .await
+        .is_ok());
+    assert!(matches!(
+        client.dial(&dial(&url, Some("bad"), "rutis.3")).await,
+        Err(ConnectError::AuthRejected { .. })
+    ));
+    assert!(matches!(
+        client.dial(&dial(&url, None, "rutis.3")).await,
+        Err(ConnectError::AuthRejected { .. })
+    ));
+    assert!(matches!(
+        client.dial(&dial(&url, Some("good"), "rutis.9")).await,
+        Err(ConnectError::Incompatible { .. })
+    ));
+
+    // wss: verified against the CA, refused without it.
+    let dir = tempfile::tempdir().unwrap();
+    let (cert_file, key_file) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
+    std::fs::write(&cert_file, certificate).unwrap();
+    std::fs::write(&key_file, key).unwrap();
+    let (_secure, announced) = python_listen(
+        "wss://localhost:0/rutis",
+        &[
+            ("RUTIS_TOKEN", "good"),
+            ("RUTIS_CERT", cert_file.to_str().unwrap()),
+            ("RUTIS_KEY", key_file.to_str().unwrap()),
+        ],
+    )
+    .await;
+    // The listener announces the address it bound; the certificate names
+    // localhost.
+    let port = announced
+        .rsplit_once(':')
+        .and_then(|(_, rest)| rest.split('/').next())
+        .unwrap();
+    let url = format!("wss://localhost:{port}/rutis");
+    let trusting =
+        WebSocketTransport::start(Config::new().trust(Trust::only(ca.into_bytes()))).unwrap();
+    assert!(trusting
+        .dial(&dial(&url, Some("good"), "rutis.3"))
+        .await
+        .is_ok());
+    assert!(matches!(
+        client.dial(&dial(&url, Some("good"), "rutis.3")).await,
         Err(ConnectError::AuthRejected { .. })
     ));
 }

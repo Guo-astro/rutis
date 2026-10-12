@@ -4,7 +4,6 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use common::{patches, MemStore};
 use rutis::{
@@ -15,6 +14,7 @@ use rutis_loader::{
     Builtins, Editable, EntryInfo, EntryStatus, Instance, InstanceResult, Isolate, Layer, Loader,
     LoaderChanged, LoaderError, LoaderOptions, LoaderPlugin, NewEntry, ServiceCatalog,
 };
+use rutis_test_support::until;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -386,16 +386,6 @@ async fn setup_report(
     )
 }
 
-async fn eventually(mut check: impl FnMut() -> bool) {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !check() {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("condition");
-}
-
 fn running(entry: &EntryInfo) -> Option<FiberState> {
     match &entry.status {
         EntryStatus::Running(snapshot) => Some(snapshot.state),
@@ -463,16 +453,19 @@ async fn each_instance_runs_its_own_copies() {
 
     // Closing the fiber directly removes the instance too.
     b.view.shutdown().await.unwrap();
-    eventually(|| s.copies("reader").is_empty()).await;
-    eventually(|| {
-        s.changes
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|c| matches!(c, LoaderChanged::InstanceRemoved { .. }))
-            .count()
-            == 2
-    })
+    until(|| s.copies("reader").is_empty(), "the copies gone").await;
+    until(
+        || {
+            s.changes
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| matches!(c, LoaderChanged::InstanceRemoved { .. }))
+                .count()
+                == 2
+        },
+        "both instances removed",
+    )
     .await;
     assert!(matches!(
         s.loader.remove_instance(b.plugin).await,
@@ -603,11 +596,14 @@ async fn a_copy_that_disposes_itself_stops_alone() {
     .await;
     s.create("A").await;
     s.create("B").await;
-    eventually(|| {
-        s.copies("quitter")
-            .iter()
-            .all(|e| matches!(e.status, EntryStatus::Stopped))
-    })
+    until(
+        || {
+            s.copies("quitter")
+                .iter()
+                .all(|e| matches!(e.status, EntryStatus::Stopped))
+        },
+        "the copies stopped",
+    )
     .await;
     // The row was not disabled, and the other copies run.
     assert!(s.store.patches().is_empty());
@@ -655,11 +651,14 @@ async fn a_stopped_copy_restarts_by_its_last_plugin() {
     )
     .await;
     let a = s.create("A").await;
-    eventually(|| {
-        s.copies("quitter")
-            .iter()
-            .all(|e| matches!(e.status, EntryStatus::Stopped))
-    })
+    until(
+        || {
+            s.copies("quitter")
+                .iter()
+                .all(|e| matches!(e.status, EntryStatus::Stopped))
+        },
+        "the copies stopped",
+    )
     .await;
     let entry = s.copies("quitter").remove(0);
     let plugin = entry.plugin.expect("the stopped copy's last fiber");
@@ -674,13 +673,20 @@ async fn a_stopped_copy_restarts_by_its_last_plugin() {
     assert_eq!(event, Some(("quitter".to_owned(), a.plugin, plugin)));
     s.take_log();
     s.loader.restart_instance(plugin).await.unwrap();
-    eventually(|| s.log.lock().unwrap().iter().any(|l| l == "apply q")).await;
+    until(
+        || s.log.lock().unwrap().iter().any(|l| l == "apply q"),
+        "the copy applied again",
+    )
+    .await;
     // It quits again: stopped under a new fiber.
-    eventually(|| {
-        s.copies("quitter")
-            .iter()
-            .all(|e| matches!(e.status, EntryStatus::Stopped) && e.plugin != Some(plugin))
-    })
+    until(
+        || {
+            s.copies("quitter")
+                .iter()
+                .all(|e| matches!(e.status, EntryStatus::Stopped) && e.plugin != Some(plugin))
+        },
+        "the copy stopped under a new fiber",
+    )
     .await;
     assert!(s.loader.restart_instance(plugin).await.is_err());
 }

@@ -766,7 +766,6 @@ mod tests {
         host.expect("started");
         let dir = crate::root().join(&scenario);
         std::fs::create_dir_all(&dir).unwrap();
-        let begun = Instant::now();
         let residue = check(
             &scenario,
             &dir,
@@ -775,8 +774,8 @@ mod tests {
             &[],
             crate::hang_guard(),
         );
-        // Killed, not waited out: well within the hang guard.
-        assert!(begun.elapsed() < crate::hang_guard(), "{residue:?}");
+        // Killed, not waited out: waited out, the helper and its child
+        // (which never exit) would be found as two more processes.
         assert_eq!(residue.found.len(), 1, "{residue:?}");
         assert!(residue.found[0].contains("still ran"), "{residue:?}");
         std::fs::remove_dir_all(&dir).unwrap();

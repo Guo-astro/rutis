@@ -227,3 +227,122 @@ async fn thousand_shutdowns_reclaim_all_root_side_records() {
     service.dispose().await.unwrap();
     ctx.shutdown().await.unwrap();
 }
+
+/// [`ChurnPlugin`] that also emits on its instance key, so the bus keeps
+/// a dispatch chain for it while the callback runs.
+struct EmittingChurnPlugin(Vec<TypeKey>);
+impl Plugin for EmittingChurnPlugin {
+    fn name(&self) -> &str {
+        "emitting-churn-plugin"
+    }
+    fn injects(&self) -> &[TypeKey] {
+        &self.0
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        Box::pin(async move {
+            ctx.provide_as(TypeKey::instance::<u64>(ctx.instance()), Arc::new(1u64))?;
+            let key = crate::EventKey::of().instance(ctx.instance());
+            ctx.events().on(ctx, &key, IdleListener)?;
+            ctx.events().emit(ctx, &key, Arc::new(ProbeEvent))?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// Above this many slots a table shrinks once it is less than a quarter
+/// full (the sparse-shrink rule of `fiber.rs`, `effect.rs`,
+/// `registry.rs` and `bus.rs`).
+const SPARSE_LIMIT: usize = 64;
+
+/// Allocated slots of the tables a parent keeps per child, by name.
+fn root_side_capacities(ctx: &Ctx, root: &Arc<FiberInner>) -> Vec<(&'static str, usize)> {
+    let (bindings, injects) = ctx.shared().registry.table_capacities();
+    let (hooks, wf_hooks, tails) = ctx.events().table_capacities();
+    vec![
+        ("children", root.children.lock().unwrap().capacity()),
+        ("effects", root.effects.lock().unwrap().capacity()),
+        ("effect_index", root.effect_index.lock().unwrap().capacity()),
+        ("bindings", bindings),
+        ("inject_index", injects),
+        ("hooks", hooks),
+        ("wf_hooks", wf_hooks),
+        ("dispatch_tail", tails),
+    ]
+}
+
+/// The entries a parent keeps per child: children, mount records,
+/// registry bindings and declarations, exact listener keys.
+fn root_side_counts(ctx: &Ctx, root: &Arc<FiberInner>) -> (usize, usize, (usize, usize), usize) {
+    (
+        root.children.lock().unwrap().len(),
+        root.effects.lock().unwrap().len(),
+        ctx.shared().registry.table_counts(),
+        ctx.events().table_counts().0,
+    )
+}
+
+/// Batches of subtrees, each batch alive at once and then shut down, next
+/// to a resident sibling: in every round the parent's tables grow past the
+/// batch size, and after the batch is gone they are back to the resident's
+/// entries and shrink below the sparse limit. Capacity does not keep what
+/// earlier rounds needed.
+///
+/// guarantee: instance/subtrees.5
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parent_tables_shrink_back_after_every_batch_of_subtrees() {
+    const BATCH: usize = 4 * SPARSE_LIMIT;
+    const ROUNDS: usize = 8;
+    let ctx = Ctx::root().unwrap();
+    let root = ctx.weak_fiber().upgrade().unwrap();
+    let service = ctx.provide(1u32).unwrap();
+    let resident = ctx.plugin(EmittingChurnPlugin(vec![TypeKey::of::<u32>()]));
+    (&resident).await.unwrap();
+    let resident_generation = resident.state().generation;
+    let baseline = root_side_counts(&ctx, &root);
+
+    for round in 0..ROUNDS {
+        let views: Vec<_> = (0..BATCH)
+            .map(|_| ctx.plugin(EmittingChurnPlugin(vec![TypeKey::of::<u32>()])))
+            .collect();
+        for view in &views {
+            view.await.unwrap();
+        }
+        let peak = root_side_capacities(&ctx, &root);
+        for (table, capacity) in &peak {
+            if matches!(*table, "children" | "effects" | "bindings" | "hooks") {
+                assert!(
+                    *capacity >= BATCH,
+                    "round {round}: {table} holds {capacity} < {BATCH}"
+                );
+            }
+        }
+        for view in views {
+            view.shutdown().await.unwrap();
+        }
+        // Mount records leave the parent once each drain has finished.
+        rutis_test_support::eventually_with(
+            || (root_side_counts(&ctx, &root) == baseline).then_some(()),
+            "entries back to the resident's",
+            || format!("{:?}, baseline {baseline:?}", root_side_counts(&ctx, &root)),
+        )
+        .await;
+        rutis_test_support::until(
+            || ctx.events().table_counts().2 == 0,
+            "dispatch chains finished",
+        )
+        .await;
+        for (table, capacity) in root_side_capacities(&ctx, &root) {
+            assert!(
+                capacity <= SPARSE_LIMIT,
+                "round {round}: {table} keeps {capacity} slots (peak {peak:?})"
+            );
+        }
+    }
+    let state = resident.state();
+    assert_eq!(
+        (state.state, state.generation),
+        (FiberState::Active, resident_generation)
+    );
+    service.dispose().await.unwrap();
+    ctx.shutdown().await.unwrap();
+}

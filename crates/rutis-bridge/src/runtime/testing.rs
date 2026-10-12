@@ -140,17 +140,25 @@ pub async fn runtime(
     let crashed = tokio::task::spawn_blocking(move || weather.invoke("crash", json!([]).into()))
         .await
         .unwrap();
+    // How `ExitStatus` reads: `exit status: 17` on Unix, `exit code: 17` on
+    // Windows.
+    let status = if cfg!(windows) {
+        "exit code: 17"
+    } else {
+        "exit status: 17"
+    };
     match crashed {
         Err(Error::Transport(message)) if started_here => assert_eq!(
-            message, "Cordis process exited with exit status: 17",
+            message,
+            format!("Cordis process exited with {status}"),
             "the session ends with how the process ended"
         ),
         Err(Error::Transport(_)) => {}
         other => panic!("the crash should end the session, got {other:?}"),
     }
     process.closed().await;
-    let expected = started_here.then_some("exited with exit status: 17");
-    assert_eq!(process.exit_status().as_deref(), expected);
+    let expected = started_here.then(|| format!("exited with {status}"));
+    assert_eq!(process.exit_status(), expected);
     projection.close();
     drop(lease);
     ctx.shutdown().await.unwrap();

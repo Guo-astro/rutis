@@ -9,6 +9,9 @@
 //! process is checked for sockets (and, for the shell, pipes) it should
 //! not hold; then each ends its process and must see its channel end while
 //! the others are still running. A failure names the round and the thread.
+// Unix only (Q7.8): what leaks between processes started at once is a
+// descriptor inherited across fork/exec (fd:3, socket pairs), found with
+// /proc or lsof; Windows hands no descriptor over (loopback handover).
 #![cfg(unix)]
 
 use std::path::Path;

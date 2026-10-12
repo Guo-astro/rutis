@@ -4,7 +4,6 @@
 #![cfg(feature = "peer")]
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory, TypeKey};
 use rutis_bridge::channel::PeerId;
@@ -15,25 +14,13 @@ use rutis_loader::{
     register_peer_node, Build, Builtins, Chain, EntryStatus, Layer, Loader, LoaderError,
     LoaderOptions, LoaderPlugin, Patch, PeerResolver, ServiceCatalog,
 };
+use rutis_test_support::eventually;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
-}
-
-async fn eventually<T>(mut check: impl FnMut() -> Option<T>, what: &str) -> T {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if let Some(found) = check() {
-                return found;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
 /// A service answering `get` with a fixed value.
