@@ -449,18 +449,22 @@ async fn python_ends_the_session_on_malformed_frames_on_a_websocket() {
     ends_on_malformed(python, Via::WebSocket("python")).await;
 }
 
-/// Go keeps the session open on invalid UTF-8 inside a string (#294); the
-/// rest of [`malformed`] passes. Both channels wait for that fix.
+/// Q6.2.2, Q6.2.3, risk P3: Go ends the session on the same malformed and
+/// dangling frames as every other implementation (#294); Go's
+/// `encoding/json` replaces invalid UTF-8 instead of failing, so its
+/// channel checks each frame.
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "defect #294: the Go session accepts invalid UTF-8 inside a string"]
+#[cfg_attr(
+    windows,
+    ignore = "Unix socket column: Windows runtimes connect on loopback TCP"
+)]
 async fn go_ends_the_session_on_malformed_frames_on_a_unix_socket() {
     ends_on_malformed(go, Via::UnixSocket).await;
 }
 
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "defect #294: the Go session accepts invalid UTF-8 inside a string"]
 async fn go_ends_the_session_on_malformed_frames_on_loopback() {
     ends_on_malformed(go, Via::Loopback).await;
 }

@@ -9,6 +9,7 @@ import (
 	"net"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // writeTimeout bounds a write: a far end that stops reading ends the
@@ -64,7 +65,11 @@ func (l *Lines) Recv() ([]byte, error) {
 			return nil, fmt.Errorf("a message exceeds the limit of %d bytes", MaxMessage)
 		}
 		if err == nil {
-			return line[:len(line)-1], nil
+			line = line[:len(line)-1]
+			if !utf8.Valid(line) {
+				return nil, errors.New("a message is not UTF-8")
+			}
+			return line, nil
 		}
 		if errors.Is(err, bufio.ErrBufferFull) {
 			continue
