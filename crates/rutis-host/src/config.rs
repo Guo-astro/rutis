@@ -540,6 +540,7 @@ mod tests {
         );
     }
 
+    /// guarantee: host/config-paths-and-defaults
     #[test]
     #[cfg(unix)]
     fn paths_are_relative_to_the_file() {

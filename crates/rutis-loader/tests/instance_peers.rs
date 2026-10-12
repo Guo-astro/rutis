@@ -193,6 +193,7 @@ fn bound(ctx: &Ctx, key: &TypeKey) -> bool {
 
 /// The instance's link exports the instance's `tools`, and imports `clock`
 /// as the instance's; removing the instance closes its link.
+/// guarantee: loader/instance-links
 #[tokio::test(flavor = "multi_thread")]
 async fn a_link_inside_an_instance_exchanges_that_instance_s_services() {
     let nodes = nodes().await;
@@ -245,6 +246,7 @@ fn failure(loader: &Loader, id: &str) -> String {
 /// What a link cannot do where it is, it refuses, saying why: an instance
 /// name on a link outside instances, and rows or a runtime on a link
 /// inside them.
+/// guarantee: loader/instance-links
 #[tokio::test(flavor = "multi_thread")]
 async fn links_refuse_what_their_place_cannot_do() {
     let transport = Arc::new(MemoryTransport::default());

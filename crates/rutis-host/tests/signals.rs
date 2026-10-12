@@ -2,10 +2,11 @@
 //! released binary, started as a user or a service manager starts it, with a
 //! Python and a Node row that record their cleanup and their process.
 //!
-//! guarantee: every cleanup runs exactly once on unload, also when a signal
-//! ends the host; the runtime processes it started have exited when it has
-//! (Q5.4.4, Q6.6.3; risks B2, B3); the exit code follows
-//! docs/guide/rutis-host.md.
+//! guarantee: host/stop-on-signal, host/stop-deadline, host/exit-codes,
+//! host/ignored-signals-stay-ignored — every cleanup runs exactly once on
+//! unload, also when a signal ends the host; the runtime processes it
+//! started have exited when it has (Q5.4.4, Q6.6.3; risks B2, B3); the exit
+//! code follows docs/guide/rutis-host.md.
 //!
 //! Unix only: the test sends SIGINT and SIGTERM with kill(2), to the process
 //! group as a terminal does on Ctrl-C and to the host alone as a service
@@ -357,18 +358,21 @@ fn run_ends_cleanly(sig: i32, group: bool) {
 
 /// Ctrl-C in a terminal: SIGINT reaches the host and every process of its
 /// group.
+/// guarantee: host/stop-on-signal
 #[test]
 fn run_ends_on_ctrl_c_after_every_cleanup() {
     run_ends_cleanly(libc::SIGINT, true);
 }
 
 /// A service manager stopping the host: SIGTERM to the host.
+/// guarantee: host/stop-on-signal, host/exit-codes
 #[test]
 fn run_ends_on_sigterm_after_every_cleanup() {
     run_ends_cleanly(libc::SIGTERM, false);
 }
 
 /// The terminal closing: SIGHUP to the host.
+/// guarantee: host/stop-on-signal
 #[test]
 fn run_ends_on_sighup_after_every_cleanup() {
     run_ends_cleanly(libc::SIGHUP, false);
@@ -376,6 +380,7 @@ fn run_ends_on_sighup_after_every_cleanup() {
 
 /// A signal while the rows still start (one hangs in apply) ends the host
 /// too: the deadline passes, so 2, and the runtime process is gone.
+/// guarantee: host/stop-deadline
 #[test]
 fn a_signal_while_starting_ends_the_host() {
     let dir = tempfile::tempdir().unwrap();
@@ -418,6 +423,7 @@ fn a_signal_while_starting_ends_the_host() {
 
 /// `dev` reloading a plugin whose new code hangs in apply still ends on
 /// Ctrl-C (past the deadline, so 2), and the runtime process with it.
+/// guarantee: host/stop-deadline
 #[test]
 fn dev_ends_on_ctrl_c_while_a_reload_hangs() {
     let dir = tempfile::tempdir().unwrap();
@@ -440,6 +446,7 @@ fn dev_ends_on_ctrl_c_while_a_reload_hangs() {
     }
 }
 
+/// guarantee: host/stop-on-signal
 #[test]
 fn dev_ends_on_ctrl_c_after_its_cleanup() {
     let dir = tempfile::tempdir().unwrap();
@@ -462,6 +469,7 @@ fn dev_ends_on_ctrl_c_after_its_cleanup() {
 /// A cleanup that never ends: past the deadline the host exits 2, names
 /// what was still stopping, and ends the runtime processes anyway, with
 /// the processes they started (the output ends).
+/// guarantee: host/stop-deadline, host/exit-codes
 #[test]
 fn run_past_the_cleanup_deadline_exits_2_and_ends_the_runtimes() {
     let dir = tempfile::tempdir().unwrap();
@@ -488,6 +496,7 @@ fn run_past_the_cleanup_deadline_exits_2_and_ends_the_runtimes() {
 
 /// A second Ctrl-C while cleanups run ends the host at once, with 2, and
 /// the runtime processes with it.
+/// guarantee: host/stop-deadline
 #[test]
 fn a_second_ctrl_c_exits_at_once() {
     let dir = tempfile::tempdir().unwrap();
@@ -515,6 +524,7 @@ fn a_second_ctrl_c_exits_at_once() {
 
 /// Started ignoring SIGHUP (`nohup`), the host keeps ignoring it: the
 /// SIGTERM after it is what stops the host, which then ends normally.
+/// guarantee: host/ignored-signals-stay-ignored
 #[test]
 fn a_signal_ignored_when_the_host_started_stays_ignored() {
     let dir = tempfile::tempdir().unwrap();
@@ -555,6 +565,7 @@ fn children(parent: i32) -> Vec<i32> {
 /// A Go row's runtime ends with the host on Ctrl-C too: out of the
 /// terminal's process group, it is unloaded over its channel, and the host
 /// waits for it to exit (run in the Go CI job: the name has `go`).
+/// guarantee: host/stop-on-signal, host/row-state-lines
 #[test]
 fn run_with_a_go_row_ends_on_ctrl_c() {
     let dir = tempfile::tempdir().unwrap();

@@ -35,7 +35,7 @@ async fn first_error(dir: &Path, text: &str) -> String {
 }
 
 /// risk: B6, A7, J3
-/// guarantee: host/rutis-json-format (a newer format)
+/// guarantee: host/rutis-json-format (a newer format), host/error-messages
 #[tokio::test(flavor = "multi_thread")]
 async fn a_configuration_that_is_not_there_or_not_valid() {
     let _environment = environment();
@@ -89,6 +89,7 @@ async fn a_configuration_that_is_not_there_or_not_valid() {
 }
 
 /// risk: B6
+/// guarantee: host/error-messages
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_package_that_is_not_installed() {
     let _environment = environment();
@@ -116,6 +117,7 @@ async fn a_runtime_package_that_is_not_installed() {
 /// An interpreter or program that is not there, and an interpreter
 /// without the rutis package.
 /// risk: B6
+/// guarantee: host/error-messages
 #[tokio::test(flavor = "multi_thread")]
 async fn an_interpreter_that_is_not_there() {
     let _environment = environment();
@@ -145,6 +147,7 @@ async fn an_interpreter_that_is_not_there() {
 /// An interpreter that runs but cannot import rutis: here a script that
 /// fails whatever it is asked (a shell script, so not on Windows).
 /// risk: B6
+/// guarantee: host/error-messages
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn an_interpreter_without_the_rutis_package() {
@@ -161,6 +164,7 @@ async fn an_interpreter_without_the_rutis_package() {
 }
 
 /// risk: B6
+/// guarantee: host/error-messages
 #[tokio::test(flavor = "multi_thread")]
 async fn a_port_another_program_holds() {
     let _environment = environment();
@@ -181,6 +185,7 @@ async fn a_port_another_program_holds() {
 /// Certificates and keys, from the file or from the environment: missing,
 /// not PEM, or one without the other.
 /// risk: B6
+/// guarantee: host/error-messages, host/listen-tls, host/credentials-from-env
 #[tokio::test(flavor = "multi_thread")]
 async fn a_certificate_that_is_wrong() {
     let _environment = environment();

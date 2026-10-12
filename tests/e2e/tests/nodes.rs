@@ -191,6 +191,7 @@ fn stop(mut a: Host, mut b: Host) -> Host {
 /// guarantee: bridge/in-flight-call-fails-once (proposed),
 /// bridge/no-call-on-a-dead-session (proposed); Q3.1 core promise
 /// "interrupted calls fail explicitly and are not retried"
+/// guarantee: host/row-state-lines
 #[test]
 fn a_cut_fails_the_call_in_progress_once_and_the_link_comes_back() {
     let s = Scenario::new("node-cut");
@@ -247,6 +248,7 @@ fn a_cut_fails_the_call_in_progress_once_and_the_link_comes_back() {
 /// lease on the new process, and its row runs there.
 ///
 /// risk: E11
+/// guarantee: loader/remote-runtime-lease
 #[test]
 fn a_node_killed_and_started_again_gives_a_new_lease() {
     let s = Scenario::new("node-restart");

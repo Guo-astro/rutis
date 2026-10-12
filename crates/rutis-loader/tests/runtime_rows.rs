@@ -231,6 +231,7 @@ export function apply(ctx, config) {
 }
 "#;
 
+/// guarantee: loader/volatile-in-place
 #[tokio::test(flavor = "multi_thread")]
 async fn volatile_changes_reach_cordis_in_place() {
     let dir = tempfile::tempdir().unwrap();
@@ -364,6 +365,7 @@ async fn mount(root: &Ctx, package: PathBuf, shared: &[&str]) -> (Loader, FiberV
     (loader, runtime)
 }
 
+/// guarantee: loader/volatile-in-place
 #[tokio::test(flavor = "multi_thread")]
 async fn volatile_changes_are_never_dropped() {
     let dir = tempfile::tempdir().unwrap();
@@ -462,6 +464,7 @@ fn write_plugins(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
     )
 }
 
+/// guarantee: loader/row-unload-leaves-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_unload_before_the_runtime() {
     let dir = tempfile::tempdir().unwrap();
@@ -490,6 +493,7 @@ async fn rows_unload_before_the_runtime() {
     root.shutdown().await.unwrap();
 }
 
+/// guarantee: loader/runtime-down-stops-its-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dead_process_stops_the_rows_until_restart() {
     let dir = tempfile::tempdir().unwrap();
@@ -545,6 +549,7 @@ async fn a_dead_process_stops_the_rows_until_restart() {
     root.shutdown().await.unwrap();
 }
 
+/// guarantee: loader/runtimes-do-not-wait-for-each-other
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_wait_for_their_hosts_not_the_runtime() {
     let dir = tempfile::tempdir().unwrap();
@@ -604,6 +609,7 @@ impl HostDispatch for RustGreeter {
 
 /// Resolved before the runtime runs, a row learns what its plugin injects
 /// only once the runtime is up; it must not start before that service.
+/// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_resolved_offline_wait_for_what_they_inject() {
     let dir = tempfile::tempdir().unwrap();
@@ -676,6 +682,7 @@ async fn rows_resolved_offline_wait_for_what_they_inject() {
     root.shutdown().await.unwrap();
 }
 
+/// guarantee: loader/runtime-start-failure-isolated
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_that_cannot_start_does_not_block_resolution() {
     let dir = tempfile::tempdir().unwrap();
@@ -759,6 +766,7 @@ async fn starting(runtime: &FiberView, package: &Path, count: usize) {
 }
 
 /// Watches the runner processes with `ps`.
+/// guarantee: loader/runtime-start-failure-isolated
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_starting_runtime_can_be_disposed_or_restarted() {
@@ -858,6 +866,7 @@ impl rutis::Plugin for RustUser {
     }
 }
 
+/// guarantee: loader/services-by-name
 #[tokio::test(flavor = "multi_thread")]
 async fn row_services_are_shared_by_name() {
     let dir = tempfile::tempdir().unwrap();
@@ -915,6 +924,7 @@ export async function apply(ctx) {
 /// The row restarts while its plugin is still starting in Node: once the
 /// old generation's load returns, that plugin is unloaded there too, not
 /// left running next to the new one.
+/// guarantee: loader/row-unload-leaves-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn a_row_restarted_while_loading_is_unloaded_in_the_runtime() {
     let dir = tempfile::tempdir().unwrap();
@@ -982,6 +992,7 @@ export function apply(ctx) {
 
 /// A row whose plugin fails to load gives back the host services it leased:
 /// nothing of it stays registered in the runtime.
+/// guarantee: loader/row-unload-leaves-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn a_row_that_fails_to_load_releases_its_leases() {
     let dir = tempfile::tempdir().unwrap();
@@ -1070,6 +1081,7 @@ impl Listener<LoaderChanged> for Changes {
 /// the gate of the row's `inject`. A gate unloading because its inject
 /// went is no end of the row, and a plugin that disposes itself and then
 /// fails to load only fails.
+/// guarantee: loader/self-dispose
 #[tokio::test(flavor = "multi_thread")]
 async fn a_plugin_that_disposes_itself_ends_its_row() {
     let dir = tempfile::tempdir().unwrap();

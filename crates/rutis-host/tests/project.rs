@@ -175,6 +175,7 @@ fn a_python_projects_entry_point() {
 /// A project that is both is a package.json project; one that is neither
 /// is refused, saying what is looked for.
 /// risk: A7
+/// guarantee: host/dev-reload
 #[test]
 fn which_kind_of_project() {
     let dir = tempfile::tempdir().unwrap();
@@ -235,6 +236,7 @@ fn a_go_projects_main_package() {
 /// rows, listeners and runtimes the project has not, and its relative
 /// paths are the project's.
 /// risk: B5
+/// guarantee: host/dev-reload
 #[test]
 fn the_dev_file_is_merged_into_the_project() {
     let dir = tempfile::tempdir().unwrap();

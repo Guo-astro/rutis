@@ -296,6 +296,7 @@ fn active(entry: &EntryInfo) -> bool {
 /// Two instances, the same names: each instance's Bun row sees that
 /// instance's Rust `tools`, and its Rust reader reads that instance's row's
 /// timeline, through one Bun process.
+/// guarantee: loader/instance-services
 #[tokio::test(flavor = "multi_thread")]
 async fn each_instance_sees_its_own_services() {
     let fixture = fixture().await;
@@ -321,6 +322,7 @@ async fn each_instance_sees_its_own_services() {
 /// Removing an instance withdraws its services everywhere, the other
 /// instance keeps running, and a new instance registers the same names in
 /// the Bun process again.
+/// guarantee: loader/instance-close-leaves-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn a_removed_instance_leaves_nothing_behind() {
     let fixture = fixture().await;

@@ -85,6 +85,7 @@ fn configuration(rows: serde_json::Value) -> String {
 /// What can run passes: each row and what it declares, status 0. The file
 /// is named relative to the working directory, as usually.
 /// risk: A6, B5
+/// guarantee: host/check
 #[tokio::test(flavor = "multi_thread")]
 async fn check_passes_what_can_run() {
     let dir = tempfile::tempdir().unwrap();
@@ -132,6 +133,7 @@ async fn check_passes_what_can_run() {
 
 /// What cannot run fails, each row saying why; what can still passes.
 /// risk: A6, A7
+/// guarantee: host/exit-codes, host/check
 #[tokio::test(flavor = "multi_thread")]
 async fn check_fails_what_cannot_run() {
     let dir = tempfile::tempdir().unwrap();
@@ -189,6 +191,7 @@ async fn check_fails_what_cannot_run() {
 /// A configuration that is not valid is refused before anything starts;
 /// a row's unknown field is a warning, and the check goes on.
 /// risk: A6, B5
+/// guarantee: host/exit-codes, host/check, host/unknown-fields
 #[tokio::test(flavor = "multi_thread")]
 async fn check_refuses_a_configuration_that_is_not_valid() {
     let dir = tempfile::tempdir().unwrap();
@@ -232,6 +235,7 @@ async fn check_refuses_a_configuration_that_is_not_valid() {
 
 /// In a plugin project without a rutis.json, check checks the project.
 /// risk: A6
+/// guarantee: host/check
 #[tokio::test(flavor = "multi_thread")]
 async fn check_without_a_configuration_checks_the_project() {
     let dir = tempfile::tempdir().unwrap();
@@ -275,6 +279,7 @@ fn injecting(inject: &str, provides: &str) -> String {
 /// which and what to do, and fails. One provided only by a disabled row
 /// says so; one a link imports is provided. It passed before (#258).
 /// risk: A6
+/// guarantee: host/check
 #[tokio::test(flavor = "multi_thread")]
 async fn check_fails_on_a_service_nothing_provides() {
     let dir = tempfile::tempdir().unwrap();
@@ -343,6 +348,7 @@ async fn check_fails_on_a_service_nothing_provides() {
 /// remote runtime's, not connected during the check) is not known to be
 /// missing: check says so and passes.
 /// risk: A6
+/// guarantee: host/check
 #[tokio::test(flavor = "multi_thread")]
 async fn check_passes_a_service_that_may_come_from_a_remote_runtime() {
     let dir = tempfile::tempdir().unwrap();

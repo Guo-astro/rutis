@@ -136,6 +136,7 @@ fn supplies(report: &rutis_loader::CheckReport, id: &str) -> Vec<(String, Supply
 /// or by nothing; a disabled provider is named; the row's own `inject`
 /// counts (`clock`), and a row does not provide for itself.
 /// risk: A6 (#258)
+/// guarantee: loader/check
 #[tokio::test(flavor = "multi_thread")]
 async fn each_service_a_row_waits_for_has_a_provider() {
     let applied = Arc::new(AtomicUsize::new(0));
@@ -188,6 +189,7 @@ async fn each_service_a_row_waits_for_has_a_provider() {
 /// A row whose declarations are not known may provide anything: a
 /// service nothing known provides is then not known to be missing.
 /// risk: A6 (#258)
+/// guarantee: loader/check
 #[tokio::test(flavor = "multi_thread")]
 async fn a_row_that_may_provide_it_makes_it_unknown_not_missing() {
     let applied = Arc::new(AtomicUsize::new(0));
@@ -221,6 +223,7 @@ async fn a_row_that_may_provide_it_makes_it_unknown_not_missing() {
 /// A row that cannot start fails, and provides nothing to the others: its
 /// module does not resolve, or its config fails the dry run.
 /// risk: A6
+/// guarantee: loader/check
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_that_cannot_start_fail_and_provide_nothing() {
     let applied = Arc::new(AtomicUsize::new(0));
@@ -259,6 +262,7 @@ async fn rows_that_cannot_start_fail_and_provide_nothing() {
 /// the names rutis shares; its runtime resolves the others natively, so
 /// they are not checked here.
 /// risk: A6 (#258)
+/// guarantee: loader/check
 #[tokio::test(flavor = "multi_thread")]
 async fn a_foreign_rows_own_inject_counts_only_names_rutis_shares() {
     let applied = Arc::new(AtomicUsize::new(0));

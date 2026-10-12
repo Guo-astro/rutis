@@ -525,6 +525,7 @@ mod tests {
     use super::runtime_line;
     use serde_json::json;
 
+    /// guarantee: host/check
     #[test]
     fn check_says_what_runs_each_runtime() {
         let about = json!({

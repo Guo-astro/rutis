@@ -12,6 +12,7 @@ use rutis_loader::{
 };
 use serde_json::json;
 
+/// guarantee: loader/overlay
 #[tokio::test]
 async fn overlays_survive_reconcile_and_stay_out_of_storage() {
     let h = Harness::new();
@@ -88,6 +89,7 @@ async fn module(h: &Harness, kind: &str) -> Arc<Resolved> {
     h.resolver().resolve(kind).await.unwrap()
 }
 
+/// guarantee: loader/reload-all-or-nothing
 #[tokio::test]
 async fn reload_is_all_or_nothing() {
     let h = Harness::new();

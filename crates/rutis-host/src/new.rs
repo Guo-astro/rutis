@@ -187,7 +187,7 @@ fn next_minor(version: &str) -> String {
 mod tests {
     use super::*;
 
-    /// guarantee: host/rutis-json-format (generated files name their format)
+    /// guarantee: host/rutis-json-format (generated files name their format), host/new
     #[test]
     fn projects_are_created_with_their_names_filled_in() {
         let dir = tempfile::tempdir().unwrap();

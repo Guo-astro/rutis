@@ -16,6 +16,7 @@ fn read(dir: &Path, text: &str) -> Result<HostConfig, String> {
 
 /// Every field of the file, each as the host takes it.
 /// risk: B5
+/// guarantee: host/config-paths-and-defaults
 #[test]
 fn every_field_is_read() {
     let dir = tempfile::tempdir().unwrap();
@@ -82,6 +83,7 @@ fn every_field_is_read() {
 
 /// What an absent field means.
 /// risk: B5
+/// guarantee: host/config-paths-and-defaults
 #[test]
 fn absent_fields_take_their_defaults() {
     let dir = tempfile::tempdir().unwrap();
@@ -118,6 +120,7 @@ fn absent_fields_take_their_defaults() {
 /// Relative paths are relative to the file's directory; bare program names
 /// are looked up on PATH, and absolute paths stay as they are.
 /// risk: B5
+/// guarantee: host/config-paths-and-defaults
 #[test]
 fn relative_paths_are_relative_to_the_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -174,6 +177,7 @@ fn relative_paths_are_relative_to_the_file() {
 /// rutis.json`, the usual way) gives its plugin files' rows `file:` URLs
 /// that resolve: they were `file://./<path>`, which names no file.
 /// risk: B5
+/// guarantee: host/config-paths-and-defaults
 #[test]
 fn a_file_named_relative_to_the_working_directory() {
     let dir = tempfile::Builder::new()
@@ -209,6 +213,7 @@ fn a_file_named_relative_to_the_working_directory() {
 /// rebased onto a relative directory, resolves `./`, `../` and subdirectory
 /// rows to the same files.
 /// risk: B5 (#226)
+/// guarantee: host/config-paths-and-defaults
 #[test]
 fn relative_and_absolute_configurations_name_the_same_files() {
     let dir = tempfile::Builder::new()
@@ -285,6 +290,7 @@ fn relative_to(path: &Path, base: &Path) -> PathBuf {
 /// A field the host does not know is an error that names it, where it is,
 /// and what is known there; in a row, a warning.
 /// risk: B5, A7
+/// guarantee: host/unknown-fields
 #[test]
 fn unknown_fields_are_refused() {
     let dir = tempfile::tempdir().unwrap();
@@ -373,6 +379,7 @@ fn unknown_fields_are_refused() {
 /// A link's token is `RUTIS_TOKEN_<PEER>` (upper case, `-` as `_`), else
 /// `RUTIS_TOKEN`; none without either.
 /// risk: B5
+/// guarantee: host/credentials-from-env
 #[test]
 fn a_peers_token_comes_before_the_shared_one() {
     let _environment = environment();

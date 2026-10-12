@@ -342,31 +342,37 @@ async fn a_reconnecting_controller_gets_a_new_lease(language: Language) {
     .await;
 }
 
+/// guarantee: loader/remote-runtime-lease
 #[tokio::test(flavor = "multi_thread")]
 async fn python_successive_controllers_get_clean_leases() {
     successive_controllers_get_clean_leases(Language::Python).await;
 }
 
+/// guarantee: loader/remote-runtime-lease
 #[tokio::test(flavor = "multi_thread")]
 async fn python_takeover_after_the_old_lease_is_gone() {
     a_newer_controller_takes_over_after_the_old_lease_is_gone(Language::Python).await;
 }
 
+/// guarantee: loader/remote-runtime-lease
 #[tokio::test(flavor = "multi_thread")]
 async fn python_reconnecting_controller_gets_a_new_lease() {
     a_reconnecting_controller_gets_a_new_lease(Language::Python).await;
 }
 
+/// guarantee: loader/remote-runtime-lease
 #[tokio::test(flavor = "multi_thread")]
 async fn node_successive_controllers_get_clean_leases() {
     successive_controllers_get_clean_leases(Language::Node).await;
 }
 
+/// guarantee: loader/remote-runtime-lease
 #[tokio::test(flavor = "multi_thread")]
 async fn node_takeover_after_the_old_lease_is_gone() {
     a_newer_controller_takes_over_after_the_old_lease_is_gone(Language::Node).await;
 }
 
+/// guarantee: loader/remote-runtime-lease
 #[tokio::test(flavor = "multi_thread")]
 async fn node_takeover_with_slow_start_and_cleanup() {
     // Stretch both cleanup and module loading beyond the maximum retry delay
@@ -377,23 +383,27 @@ async fn node_takeover_with_slow_start_and_cleanup() {
     takeover(Language::Node, 600).await;
 }
 
+/// guarantee: loader/remote-runtime-lease
 #[tokio::test(flavor = "multi_thread")]
 async fn node_reconnecting_controller_gets_a_new_lease() {
     a_reconnecting_controller_gets_a_new_lease(Language::Node).await;
 }
 
+/// guarantee: loader/remote-runtime-lease
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_successive_controllers_get_clean_leases() {
     successive_controllers_get_clean_leases(Language::Go).await;
 }
 
+/// guarantee: loader/remote-runtime-lease
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_takeover_after_the_old_lease_is_gone() {
     a_newer_controller_takes_over_after_the_old_lease_is_gone(Language::Go).await;
 }
 
+/// guarantee: loader/remote-runtime-lease
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_takeover_with_a_slow_cleanup() {
@@ -402,6 +412,7 @@ async fn go_takeover_with_a_slow_cleanup() {
     takeover(Language::Go, 400).await;
 }
 
+/// guarantee: loader/remote-runtime-lease
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_reconnecting_controller_gets_a_new_lease() {

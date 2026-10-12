@@ -393,6 +393,7 @@ fn running(entry: &EntryInfo) -> Option<FiberState> {
     }
 }
 
+/// guarantee: loader/instances, loader/instance-close-leaves-nothing
 #[tokio::test]
 async fn each_instance_runs_its_own_copies() {
     let s = setup(DOC).await;
@@ -484,6 +485,7 @@ const NESTED: &str = r#"[{ "insert": [
     ] }
 ] }]"#;
 
+/// guarantee: loader/edits-serialized, loader/instances, loader/instance-close-leaves-nothing
 #[tokio::test]
 async fn nested_instances_are_created_from_inside_and_read_outer_services() {
     let s = setup(NESTED).await;
@@ -521,6 +523,7 @@ async fn nested_instances_are_created_from_inside_and_read_outer_services() {
     assert_eq!(s.copies("creator").len(), 1);
 }
 
+/// guarantee: loader/instance-edits-all-or-none
 #[tokio::test]
 async fn edits_reach_every_instance_or_none() {
     let s = setup(DOC).await;
@@ -583,6 +586,7 @@ async fn edits_reach_every_instance_or_none() {
     );
 }
 
+/// guarantee: loader/instance-copy-dispose-self
 #[tokio::test]
 async fn a_copy_that_disposes_itself_stops_alone() {
     let s = setup(
@@ -640,6 +644,7 @@ async fn a_copy_that_disposes_itself_stops_alone() {
         .all(|e| running(e) == Some(FiberState::Active)));
 }
 
+/// guarantee: loader/instance-copy-dispose-self
 #[tokio::test]
 async fn a_stopped_copy_restarts_by_its_last_plugin() {
     let s = setup(
@@ -691,6 +696,7 @@ async fn a_stopped_copy_restarts_by_its_last_plugin() {
     assert!(s.loader.restart_instance(plugin).await.is_err());
 }
 
+/// guarantee: loader/instances
 #[tokio::test]
 async fn invalid_uses_are_refused() {
     let (s, report) = setup_report(
@@ -730,6 +736,7 @@ async fn invalid_uses_are_refused() {
     assert!(s.loader.create_instance(&other, "doc").await.is_err());
 }
 
+/// guarantee: loader/instances
 #[tokio::test]
 async fn disabling_an_instanced_group_closes_its_instances() {
     let s = setup(DOC).await;
@@ -746,6 +753,7 @@ async fn disabling_an_instanced_group_closes_its_instances() {
     assert_eq!(s.copies("reader").len(), 1);
 }
 
+/// guarantee: loader/instance-edits-all-or-none
 #[tokio::test]
 async fn rebuilding_an_instance_keeps_its_values() {
     let mut catalog = ServiceCatalog::new();
@@ -766,6 +774,7 @@ async fn rebuilding_an_instance_keeps_its_values() {
     assert_eq!(running(&copies[0]), Some(FiberState::Active));
 }
 
+/// guarantee: loader/saved-layers-restore
 #[tokio::test]
 async fn stored_layers_and_new_instances_give_the_same_state() {
     let store = MemStore::default();
@@ -783,6 +792,7 @@ async fn stored_layers_and_new_instances_give_the_same_state() {
     assert_eq!(t.take_log(), ["doc A", "read saved A"]);
 }
 
+/// guarantee: loader/instance-edits-all-or-none
 #[tokio::test]
 async fn rebuilding_an_outer_instance_recreates_the_inner_ones_once() {
     let mut catalog = ServiceCatalog::new();
@@ -807,6 +817,7 @@ async fn rebuilding_an_outer_instance_recreates_the_inner_ones_once() {
     assert_eq!(removed, 1);
 }
 
+/// guarantee: loader/instance-edits-all-or-none
 #[tokio::test]
 async fn a_group_edit_is_checked_on_the_plugins_below_it() {
     let s = setup(DOC).await;
@@ -833,6 +844,7 @@ async fn a_group_edit_is_checked_on_the_plugins_below_it() {
     assert_eq!(running(&copies[0]), Some(FiberState::Active));
 }
 
+/// guarantee: loader/instances
 #[tokio::test]
 async fn rows_under_a_waiting_group_are_waiting() {
     let mut catalog = ServiceCatalog::new();
@@ -877,6 +889,7 @@ impl Plugin for Hold {
     }
 }
 
+/// guarantee: loader/instances
 #[tokio::test]
 async fn a_top_level_instance_needs_the_loader_context_or_above() {
     let s = setup(DOC).await;
@@ -896,6 +909,7 @@ async fn a_top_level_instance_needs_the_loader_context_or_above() {
     s.create("B").await;
 }
 
+/// guarantee: loader/instance-edits-all-or-none
 #[tokio::test]
 async fn a_failing_copy_does_not_exempt_the_others_from_a_group_check() {
     let s = setup(DOC).await;
@@ -935,6 +949,7 @@ async fn a_failing_copy_does_not_exempt_the_others_from_a_group_check() {
     assert!(s.take_log().is_empty());
 }
 
+/// guarantee: loader/instance-edits-all-or-none
 #[tokio::test]
 async fn a_failure_already_there_does_not_block_a_group_edit() {
     let mut catalog = ServiceCatalog::new();
@@ -961,6 +976,7 @@ async fn a_failure_already_there_does_not_block_a_group_edit() {
     assert_eq!(running(&s.copies("good")[0]), Some(FiberState::Active));
 }
 
+/// guarantee: loader/instance-edits-all-or-none
 #[tokio::test]
 async fn the_same_error_in_another_copy_does_not_excuse_a_new_one() {
     let s = setup(DOC).await;
@@ -995,6 +1011,7 @@ async fn the_same_error_in_another_copy_does_not_excuse_a_new_one() {
     assert_eq!(s.store.patches(), before);
 }
 
+/// guarantee: loader/instances
 #[tokio::test]
 async fn isolate_scopes_are_per_copy_and_per_instance() {
     let mut catalog = ServiceCatalog::new();

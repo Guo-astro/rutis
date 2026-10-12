@@ -348,6 +348,7 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
 
 /// A Cordis node that listens: rutis dials it; a second rutis controller
 /// with the same identity takes the session over.
+/// guarantee: loader/remote-runtime-lease
 #[tokio::test(flavor = "multi_thread")]
 async fn a_listening_cordis_node_lets_a_newer_connection_take_over() {
     let anchor = tempfile::tempdir().unwrap();

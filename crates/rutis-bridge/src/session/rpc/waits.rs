@@ -304,6 +304,7 @@ mod tests {
     }
 
     /// Counterexample 1: two non-reentrant runtimes call each other.
+    /// guarantee: bridge/sync-wait-cycle-refused
     #[test]
     fn two_node_runtimes_calling_each_other() {
         let p = profiles(&[("n1", true, false), ("n2", true, false)]);
@@ -316,6 +317,7 @@ mod tests {
     }
 
     /// Counterexample 2: stack order on a reentrant runtime.
+    /// guarantee: bridge/sync-wait-cycle-refused
     #[test]
     fn stack_order_on_a_reentrant_runtime() {
         let p = profiles(&[("n", true, false), ("p1", true, true), ("p2", true, true)]);
@@ -350,6 +352,7 @@ mod tests {
     }
 
     /// Counterexample 4: a call into an idle non-reentrant runtime is fine.
+    /// guarantee: bridge/sync-wait-cycle-refused
     #[test]
     fn no_cycle_into_an_idle_runtime() {
         let p = profiles(&[("n1", true, false), ("n2", true, false)]);

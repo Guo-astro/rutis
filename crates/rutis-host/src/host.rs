@@ -729,6 +729,7 @@ mod tests {
     }
 
     /// Reloading a row runs the plugin's edited code, in Node and Python.
+    /// guarantee: host/dev-reload
     #[tokio::test(flavor = "multi_thread")]
     async fn a_reloaded_row_runs_the_edited_plugin() {
         let dir = tempfile::tempdir().unwrap();
@@ -776,6 +777,7 @@ mod tests {
         assert_eq!(greeting(&host).await, "Welcome, Ada");
     }
 
+    /// guarantee: host/dev-reload
     #[tokio::test(flavor = "multi_thread")]
     async fn a_reloaded_python_row_runs_the_edited_plugin() {
         let dir = tempfile::tempdir().unwrap();
@@ -862,6 +864,7 @@ mod tests {
     }
 
     /// Bun on Windows is not tested yet.
+    /// guarantee: host/dev-reload
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn a_reloaded_bun_row_runs_the_edited_plugin() {
@@ -929,6 +932,7 @@ mod tests {
 
     /// A runtime on another machine (here, a process listening on loopback):
     /// a peer row links to it, and its rows are `<runtime>:<module>`.
+    /// guarantee: loader/remote-runtime-rows
     #[tokio::test(flavor = "multi_thread")]
     async fn a_remote_runtime_runs_rows_named_after_it() {
         use tokio::io::AsyncBufReadExt;
@@ -1035,6 +1039,7 @@ mod tests {
 
     /// A Go binary on another machine (here, listening on loopback): a peer
     /// row links to it, and its rows are `<runtime>:<plugin>`.
+    /// guarantee: loader/remote-runtime-rows
     #[tokio::test(flavor = "multi_thread")]
     async fn a_remote_go_runtime_runs_rows_named_after_it() {
         use tokio::io::AsyncBufReadExt;

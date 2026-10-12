@@ -36,6 +36,7 @@ fn new_entry(id: &str, name: &str, config: Value) -> NewEntry {
     }
 }
 
+/// guarantee: loader/update-in-place-or-respawn
 #[tokio::test]
 async fn create_runs_and_update_keeps_the_plugin_id() {
     let (harness, store, _root, loader) = setup().await;
@@ -68,6 +69,7 @@ async fn create_runs_and_update_keeps_the_plugin_id() {
     assert_eq!(n.value["config"], json!({ "label": "n2" }));
 }
 
+/// guarantee: loader/edit-dry-run-first
 #[tokio::test]
 async fn invalid_update_changes_nothing() {
     let (harness, store, _root, loader) = setup().await;
@@ -84,6 +86,7 @@ async fn invalid_update_changes_nothing() {
     assert!(loader.layers()[1].patches.is_empty());
 }
 
+/// guarantee: loader/reconcile
 #[tokio::test]
 async fn disable_and_enable() {
     let (harness, store, _root, loader) = setup().await;
@@ -104,6 +107,7 @@ async fn disable_and_enable() {
     assert_eq!(harness.take_log(), vec!["apply:a1"]);
 }
 
+/// guarantee: loader/ownership-and-overrides
 #[tokio::test]
 async fn ownership_and_upper_overrides() {
     let harness = Harness::new();
@@ -158,6 +162,7 @@ async fn ownership_and_upper_overrides() {
     );
 }
 
+/// guarantee: loader/ownership-and-overrides
 #[tokio::test]
 async fn create_inside_a_lower_group_only_appends() {
     let (_h, store, _root, loader) = setup().await;
@@ -199,6 +204,7 @@ async fn create_inside_a_lower_group_only_appends() {
     assert_eq!(order, ["c", "y", "x"]);
 }
 
+/// guarantee: loader/apply-failure-rolls-back
 #[tokio::test]
 async fn apply_failure_rolls_back() {
     let (harness, store, _root, loader) = setup().await;
@@ -231,6 +237,7 @@ async fn apply_failure_rolls_back() {
     assert!(loader.get("z").is_none());
 }
 
+/// guarantee: loader/apply-failure-rolls-back
 #[tokio::test]
 async fn rollback_failure_reports_both() {
     let (harness, store, _root, loader) = setup().await;
@@ -262,6 +269,7 @@ async fn rollback_failure_reports_both() {
     );
 }
 
+/// guarantee: loader/reconcile, loader/rows-gate-on-services
 #[tokio::test]
 async fn pending_dependency_counts_as_settled() {
     let (_h, store, _root, loader) = setup().await;
@@ -284,6 +292,7 @@ async fn pending_dependency_counts_as_settled() {
     assert_eq!(state(&loader, "k"), Some(FiberState::Active));
 }
 
+/// guarantee: loader/rows-gate-on-services
 #[tokio::test]
 async fn provider_update_reloads_consumers() {
     let (harness, _store, _root, loader) = setup().await;
@@ -310,6 +319,7 @@ async fn provider_update_reloads_consumers() {
     assert_eq!(state(&loader, "k"), Some(FiberState::Active));
 }
 
+/// guarantee: loader/update-in-place-or-respawn
 #[tokio::test]
 async fn rename_updates_in_place_or_respawns() {
     let (_h, _store, _root, loader) = setup().await;
@@ -335,6 +345,7 @@ async fn rename_updates_in_place_or_respawns() {
     assert_eq!(state(&loader, "n"), Some(FiberState::Pending));
 }
 
+/// guarantee: loader/reconcile, loader/ownership-and-overrides, loader/unresolved-rows
 #[tokio::test]
 async fn reconcile_paths_and_failure_accounting() {
     let (_h, _store, _root, loader) = setup().await;
@@ -397,6 +408,7 @@ async fn reconcile_paths_and_failure_accounting() {
     assert_eq!(state(&loader, "c"), Some(FiberState::Active));
 }
 
+/// guarantee: loader/unresolved-rows
 #[tokio::test]
 async fn unresolved_then_reload() {
     let (harness, _store, _root, loader) = setup().await;
@@ -420,6 +432,7 @@ async fn unresolved_then_reload() {
     assert_eq!(state(&loader, "l"), Some(FiberState::Active));
 }
 
+/// guarantee: loader/groups
 #[tokio::test]
 async fn groups_cascade() {
     let (harness, _store, _root, loader) = setup().await;
@@ -435,6 +448,7 @@ async fn groups_cascade() {
     assert_eq!(state(&loader, "c"), Some(FiberState::Active));
 }
 
+/// guarantee: loader/schema
 #[tokio::test]
 async fn schema_comes_from_the_config_type() {
     let (_h, _store, _root, loader) = setup().await;
@@ -444,6 +458,7 @@ async fn schema_comes_from_the_config_type() {
     assert!(loader.get("a").unwrap().schema.is_some());
 }
 
+/// guarantee: loader/persist-queue
 #[tokio::test]
 async fn persist_failure_keeps_the_queue_until_flush() {
     let (_h, store, _root, loader) = setup().await;
@@ -465,6 +480,7 @@ async fn persist_failure_keeps_the_queue_until_flush() {
     );
 }
 
+/// guarantee: loader/saved-layers-restore
 #[tokio::test]
 async fn saved_layer_restores_the_same_tree() {
     let (_h, store, _root, loader) = setup().await;
@@ -494,6 +510,7 @@ async fn saved_layer_restores_the_same_tree() {
     assert_eq!(restored, live);
 }
 
+/// guarantee: loader/persist-queue
 #[tokio::test]
 async fn concurrent_writers_keep_every_edit() {
     let store = MemStore::default();
@@ -536,6 +553,7 @@ async fn concurrent_writers_keep_every_edit() {
     ));
 }
 
+/// guarantee: loader/persist-queue
 #[tokio::test]
 async fn replay_drops_edits_that_no_longer_apply() {
     let store = MemStore::default();
@@ -580,6 +598,7 @@ async fn replay_drops_edits_that_no_longer_apply() {
     );
 }
 
+/// guarantee: loader/edits-serialized
 #[tokio::test]
 async fn concurrent_edits_do_not_deadlock() {
     let (_h, _store, _root, loader) = setup().await;
@@ -601,6 +620,7 @@ async fn concurrent_edits_do_not_deadlock() {
     assert!(loader.get("n").is_none());
 }
 
+/// guarantee: loader/closed-after-shutdown
 #[tokio::test]
 async fn edits_after_shutdown_are_closed() {
     let (_h, _store, root, loader) = setup().await;

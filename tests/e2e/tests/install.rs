@@ -466,6 +466,7 @@ fn venv_program(venv: &Path, name: &str) -> PathBuf {
 }
 
 /// risk: B1, B6 (PyPI, with uv as the guides do, and with pip)
+/// guarantee: host/exit-codes
 #[test]
 #[ignore = "needs built packages: install.yml runs it with RUTIS_E2E_ARTIFACTS"]
 fn pypi_installs_and_runs_this_build() {

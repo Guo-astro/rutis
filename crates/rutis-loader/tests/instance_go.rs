@@ -263,6 +263,7 @@ async fn fixture() -> Fixture {
 /// Two instances, the same names: each instance's Go row sees that
 /// instance's Rust `tools`, and each instance's Rust reader reads that
 /// instance's Go timeline, through one Go process.
+/// guarantee: loader/instance-services
 #[tokio::test(flavor = "multi_thread")]
 async fn each_instance_sees_its_own_services_in_go() {
     let fixture = fixture().await;

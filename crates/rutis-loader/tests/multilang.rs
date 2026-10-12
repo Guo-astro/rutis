@@ -342,6 +342,7 @@ fn all_rows(fixture: &Fixture) -> Vec<Value> {
 
 /// Both runtimes start cold with rows that use each other's services: no
 /// runtime waits for the other, and every row starts.
+/// guarantee: loader/services-by-name, loader/runtimes-do-not-wait-for-each-other
 #[tokio::test(flavor = "multi_thread")]
 async fn both_runtimes_start_cold_and_use_each_other() {
     let fixture = fixture().await;
@@ -393,6 +394,7 @@ async fn python_awaits_node_that_awaits_python() {
 
 /// A provider that goes stops exactly its users, in either language, before
 /// it stops itself; everything else keeps running.
+/// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_provider_that_goes_stops_only_its_users() {
     for (provider, users, others) in [
@@ -461,6 +463,7 @@ async fn a_provider_that_goes_stops_only_its_users() {
 
 /// What a plugin injects gates it in rutis: it waits for the service, and
 /// stops when it goes. The same for both languages.
+/// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn injected_services_gate_the_plugin() {
     let fixture = fixture().await;
@@ -539,6 +542,7 @@ async fn injected_services_gate_the_plugin() {
 
 /// The Python process ends on its own: its rows wait, the Node runtime and
 /// its rows that do not use Python services keep running.
+/// guarantee: loader/runtime-down-stops-its-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dead_python_process_stops_only_its_rows() {
     let fixture = fixture().await;

@@ -201,6 +201,7 @@ async fn call(root: &Ctx, name: &str, method: &str, args: Value) -> Result<Value
         .and_then(|value| value.json().map_err(|error| error.to_string()))
 }
 
+/// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_find_their_binary_and_call_across_binaries() {
     let fixture = fixture(
@@ -294,6 +295,7 @@ async fn rows_find_their_binary_and_call_across_binaries() {
     fixture.root.shutdown().await.unwrap();
 }
 
+/// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_plugin_in_two_binaries_is_named_with_its_runtime() {
     let fixture = fixture(None, &[("netkit", "netkit"), ("dup", "dup")]).await;
@@ -329,6 +331,7 @@ async fn a_plugin_in_two_binaries_is_named_with_its_runtime() {
     fixture.root.shutdown().await.unwrap();
 }
 
+/// guarantee: loader/runtime-down-stops-its-rows, loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
     // The idle stop of spare, once unused, is the marker that sweeps ran.
@@ -449,6 +452,7 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
     fixture.root.shutdown().await.unwrap();
 }
 
+/// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn an_idle_runtime_stops_and_starts_again_when_used() {
     let fixture = fixture(
@@ -538,6 +542,7 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
 
 /// A binary replaced in place (renamed over: Windows refuses to replace a
 /// running executable, so there a new build goes to a new file, below).
+/// guarantee: loader/go-runtimes
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_replaced_binary_takes_effect_when_its_runtime_restarts() {
@@ -609,6 +614,7 @@ async fn a_replaced_binary_takes_effect_when_its_runtime_restarts() {
 
 /// A new build in a new file, as `rutis-host dev` makes on every platform:
 /// the runtime keeps its name, and the build takes effect on restart.
+/// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_new_build_takes_effect_when_its_runtime_restarts() {
     let fixture = fixture(None, &[("netkit", "netkit")]).await;
@@ -648,6 +654,7 @@ async fn a_new_build_takes_effect_when_its_runtime_restarts() {
 
 /// A restart whose caller gives up half way (a timeout around it) leaves
 /// the runtime usable: the rows run again, and the next restart goes on.
+/// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restart_given_up_half_way_leaves_the_runtime_usable() {
     let fixture = fixture(None, &[("netkit", "netkit")]).await;
@@ -749,6 +756,7 @@ async fn poll_once<F: Future + Unpin>(future: &mut F) -> Option<F::Output> {
 /// half way and freed the name while the old runtime was still stopping:
 /// the next restart started a new runtime at once, and returned while the
 /// old one still ran.
+/// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restart_given_up_half_way_still_finishes_before_the_next() {
     let fixture = fixture(None, &[("netkit", "netkit")]).await;
@@ -894,6 +902,7 @@ async fn a_failed_manifest_read_of_a_listed_binary_is_read_again_once_it_stood()
     assert_eq!(runs(&count), 2);
 }
 
+/// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn names_of_other_resolvers_are_not_claimed() {
     let fixture = fixture(None, &[("netkit", "netkit")]).await;

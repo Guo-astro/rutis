@@ -352,6 +352,7 @@ fn active(entry: &EntryInfo) -> bool {
 /// Two instances, the same names: each instance's TS and Python rows see
 /// that instance's Rust `tools`, and its Rust reader reads that instance's
 /// rows' timelines, through one process per language.
+/// guarantee: loader/instance-services
 #[tokio::test(flavor = "multi_thread")]
 async fn each_instance_sees_its_own_services_across_languages() {
     let fixture = fixture().await;
@@ -377,6 +378,7 @@ async fn each_instance_sees_its_own_services_across_languages() {
 /// Removing an instance withdraws its services everywhere: nothing of it is
 /// left in rutis or in the runtimes, the other instance keeps running, and
 /// a new instance registers the same names again.
+/// guarantee: loader/instance-close-leaves-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn a_removed_instance_leaves_nothing_behind() {
     let fixture = fixture().await;
@@ -407,6 +409,7 @@ async fn a_removed_instance_leaves_nothing_behind() {
 /// A language row outside the group of an instance name it uses is
 /// unresolved, saying where it belongs, though the loader leaves its scope
 /// to the runtime.
+/// guarantee: loader/instance-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_language_row_outside_its_instances_is_unresolved() {
     let fixture = fixture().await;
