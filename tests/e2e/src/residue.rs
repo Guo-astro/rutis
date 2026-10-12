@@ -365,10 +365,10 @@ mod tests {
         host.expect("started");
         let dir = crate::root().join(format!("residue-running-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let begun = Instant::now();
         let residue = check(&dir, std::slice::from_ref(&started), &[], &[]);
-        // Killed, not waited out: well within the hang guard.
-        assert!(begun.elapsed() < crate::hang_guard(), "{residue:?}");
+        // Killed, not waited out: waited out, the shell and its sleep (60 s)
+        // would still run past the hang guard and be found as two processes
+        // instead.
         assert_eq!(residue.found.len(), 1, "{residue:?}");
         assert!(residue.found[0].contains("still ran"), "{residue:?}");
         std::fs::remove_dir_all(&dir).unwrap();

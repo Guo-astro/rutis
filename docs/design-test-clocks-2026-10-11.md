@@ -295,7 +295,7 @@ Node 22+ 有 `mock.timers`，Bun 有假定时器，但被测的心跳都跨 sock
 | `crates/rutis-dsh/tests/profile_loader.rs:257`、`:267`、`:283` | 5 s 轮询 | C | `eventually` |
 | `crates/rutis-dsh/tests/stream.rs:86`、`tests/web.rs:127` | 5 s | C | `within` |
 | `crates/rutis-dsh/src/profile/lock.rs:149`、`:154` | 锁等待、监视间隔（已可配置） | E | 测试设置时长，按 §3.3 第 3 条 |
-| `crates/rutis-host/tests/signals.rs:384`、`:413`、`:456` | `--shutdown-timeout 1` | E | 必须超时的用例夹具永不完成清理；必须按时完成的用例用默认 10 s |
+| `crates/rutis-host/tests/signals.rs:384`、`:413`、`:456` | `--shutdown-timeout 1` | E | 必须超时的用例夹具永不完成清理；必须按时完成的用例用默认 10 s。**第 3 个 PR 核对的结果**：三处都是必须超时的一方，夹具本来就永不结束（apply 永不返回、`hold` 的清理永不结束），1 s 只让测试更短；没有必须按时完成却用 1 s 的用例。只加了注释，没改夹具 |
 | `crates/rutis-host/src/main.rs:273`（400 ms）、`src/status.rs:53`（200 ms） | 产品的轮询间隔 | — | 不改（测试只等结果，不依赖间隔） |
 | `crates/rutis-dev/tests/channel.rs:97` | 每行 5 s（真实 unix socket） | C | `HANG_GUARD` |
 | `tests/e2e/src/residue.rs:356`、`:359` | 宽松的耗时检查 | F | 改为只防挂死 |
@@ -313,7 +313,7 @@ Node 22+ 有 `mock.timers`，Bun 有假定时器，但被测的心跳都跨 sock
 | `node/rutis-runtime/test/serve.test.mjs:26` | `setTimeout(100)` 后断言 | B | 等服务端 socket 关闭事件 |
 | `serve.test.mjs:56-62`、`handshake.test.mjs:20` | 无上限 | U | `within` |
 | `serve.test.mjs:66` | 10 s 竞赛 | D | 不改 |
-| `node/rutis-runtime/test/fixtures/rust-mount.test.mjs:21`、`:26` | 1 ms 轮询、2 s 上限；仓库里没有使用者 | A、C | 确认无人使用后删除，否则改 `eventually` |
+| `node/rutis-runtime/test/fixtures/rust-mount.test.mjs:21`、`:26` | 1 ms 轮询、2 s 上限；~~仓库里没有使用者~~ `examples/native-mount/tests/cordis_mount.rs` 在用（第 3 个 PR 核对时发现） | A、C | ~~确认无人使用后删除，否则~~改 `eventually` |
 | `node/baseline/native.mjs:24` | `Promise.race(fibers, 500ms)` 报告 "unavailable" | B | 等 fiber 的状态事件；或标注为基准脚本（不是测试）后移出范围 |
 | `fixtures/sync-heartbeat.mjs:7`（对应 `websocket_multihop.rs`）、`rpc-client.mjs:12`、`cordis-node.mjs:14`（重试 50 / 500） | 夹具计时 | E | 随对应 Rust 测试一起按 §3.3 调整 |
 | 其余夹具 sleep 11 处 | 模拟慢操作 | H | 不改 |

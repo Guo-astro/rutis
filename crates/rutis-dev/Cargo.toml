@@ -15,5 +15,6 @@ serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { workspace = true, features = ["io-util", "net", "macros", "rt"] }
 
 [dev-dependencies]
+rutis-test-support = { path = "../rutis-test-support" }
 tokio = { workspace = true, features = ["full"] }
 tempfile = "3"
