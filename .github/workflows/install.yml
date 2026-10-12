@@ -30,6 +30,12 @@ on:
       - bun/rutis-bun/package.json
       - python/rutis/pyproject.toml
       - crates/rutis-host/pyproject.toml
+      # What package.yml builds the binaries and platform packages from
+      # (as ci.yml's `packaging` switch, and the workspace manifests).
+      - node/rutis-host/scripts/**
+      - crates/*/Cargo.toml
+      - Cargo.toml
+      - Cargo.lock
   workflow_dispatch:
     inputs:
       source:
