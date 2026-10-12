@@ -73,7 +73,22 @@ if (client.reason && client.reason !== 'the rutis host disconnected') {
   process.stderr.write(`rutis-bun: the session ended: ${client.reason}\n`)
 }
 runtime.closing = true
+// The rows go now, unless the host disposed them first: it went away (it
+// was killed, say) and nothing else ends this process. Cleanups that do not
+// finish within the deadline are given up (exit status 1).
+const deadline = shutdownDeadline()
+setTimeout(() => {
+  process.stderr.write(`rutis-bun: cleanups did not finish within ${deadline / 1000} s after the session ended; exiting\n`)
+  process.exit(1)
+}, deadline)
 await runtime.dispose()
 // Stray plugin timers and sockets must not keep the process alive: the host
 // waits for it to exit.
 process.exit(0)
+
+// How long cleanups may take once the session ended: RUTIS_SHUTDOWN_TIMEOUT
+// seconds (rutis-host passes its own deadline on), 10 by default; in ms.
+function shutdownDeadline(): number {
+  const seconds = Number(process.env.RUTIS_SHUTDOWN_TIMEOUT)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 10_000
+}

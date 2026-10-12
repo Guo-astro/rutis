@@ -619,7 +619,7 @@ jobs:
           (cd go/rutis && go vet ./... && go test -race ./...)
           (cd crates/rutis-loader/tests/fixtures/go && go vet ./...)
       - name: cargo test (the Go runtime in the bridge)
-        run: cargo test -p rutis-bridge --features testing,go --test go_runtime
+        run: cargo test -p rutis-bridge --features testing,go --test go_runtime --test host_gone
       # Only the Go tests of the contract suites: the other runtimes run in
       # their own jobs.
       - name: cargo test (the contract suites with Go)
@@ -681,7 +681,7 @@ jobs:
       - run: bun test
         working-directory: bun/rutis-bun
       - name: cargo test (rutis-bridge, the Bun runtime and its channel)
-        run: cargo test -p rutis-bridge --features bun,testing --test bun_runtime --test bun_channel
+        run: cargo test -p rutis-bridge --features bun,testing --test bun_runtime --test bun_channel --test host_gone
       # Only the Bun tests of the contract suites: the other runtimes run
       # in their own jobs.
       - name: cargo test (rutis-bridge, the contract suites with Bun)

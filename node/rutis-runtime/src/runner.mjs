@@ -571,4 +571,24 @@ if (peer.fault) {
   console.error(`rutis runtime: the session ended: ${peer.fault.message}`)
   process.exitCode = 1
 }
+// The rows go now, unless the host disposed them first: it went away (it
+// was killed, say) and nothing else ends this process. Cleanups that do not
+// finish within the deadline are given up (exit status 1). Then the process
+// exits, also when a plugin left a timer or a socket that would keep it.
+const deadline = shutdownDeadline()
+const late = setTimeout(() => {
+  console.error(`rutis runtime: cleanups did not finish within ${deadline / 1000} s after the session ended; exiting`)
+  process.exit(1)
+}, deadline)
 await dispose()
+// What is still being written goes out first.
+await Promise.all([process.stdout, process.stderr].map(stream => new Promise(resolve => stream.write('', resolve))))
+clearTimeout(late)
+process.exit()
+
+// How long cleanups may take once the session ended: RUTIS_SHUTDOWN_TIMEOUT
+// seconds (rutis-host passes its own deadline on), 10 by default; in ms.
+function shutdownDeadline() {
+  const seconds = Number(process.env.RUTIS_SHUTDOWN_TIMEOUT)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 10_000
+}
