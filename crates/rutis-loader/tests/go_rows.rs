@@ -4,18 +4,22 @@
 //! services through rutis.
 #![cfg(feature = "go")]
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::task::Poll;
 use std::time::Duration;
 
-use rutis::{Ctx, FiberState};
+use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, TypeKey};
 use rutis_bridge::session::{host_key, settle, HostDispatch};
 use rutis_loader::{
     Chain, EntryStatus, GoBinaries, GoResolver, GoRuntimeState, GoRuntimes, GoRuntimesHandle,
-    Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
+    Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch, RuntimeRows, ServiceCatalog,
 };
 use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
+use tokio::sync::oneshot;
 
 /// Twice HANG_GUARD: Go runtimes start cold, one per binary (#238).
 const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
@@ -112,6 +116,17 @@ fn row(id: &str, name: &str) -> Value {
 fn state(loader: &Loader, id: &str) -> Option<FiberState> {
     match loader.get(id)?.status {
         EntryStatus::Running(snapshot) => Some(snapshot.state),
+        _ => None,
+    }
+}
+
+/// The generation of the row's fiber while it is active: a later one has
+/// loaded again since (each load is a new generation).
+fn active_generation(loader: &Loader, id: &str) -> Option<u64> {
+    match loader.get(id)?.status {
+        EntryStatus::Running(snapshot) if snapshot.state == FiberState::Active => {
+            Some(snapshot.generation)
+        }
         _ => None,
     }
 }
@@ -642,11 +657,9 @@ async fn a_restart_given_up_half_way_leaves_the_runtime_usable() {
         .await
         .unwrap();
     let loader = fixture.loader.clone();
-    COLD.until(
-        || state(&loader, "ping") == Some(FiberState::Active),
-        "the row",
-    )
-    .await;
+    let first = COLD
+        .eventually(|| active_generation(&loader, "ping"), "the row")
+        .await;
     // clock: the short timeout is the scenario, not a wait: the caller gives
     // up half way through the restart, whatever the restart does meanwhile.
     let _ = tokio::time::timeout(
@@ -654,11 +667,15 @@ async fn a_restart_given_up_half_way_leaves_the_runtime_usable() {
         fixture.runtimes.restart("go-netkit"),
     )
     .await;
-    COLD.until(
-        || state(&loader, "ping") == Some(FiberState::Active),
-        "the row again",
-    )
-    .await;
+    // Active is not enough here, nor below: the row stays active on the
+    // runtime that is stopping until the stop reaches it (#307). A later
+    // generation is the row loaded again, on the new runtime.
+    let again = COLD
+        .eventually(
+            || active_generation(&loader, "ping").filter(|generation| *generation > first),
+            "the row again",
+        )
+        .await;
     COLD.within(
         "a restart after one given up",
         fixture.runtimes.restart("go-netkit"),
@@ -666,7 +683,7 @@ async fn a_restart_given_up_half_way_leaves_the_runtime_usable() {
     .await
     .unwrap();
     COLD.until(
-        || state(&loader, "ping") == Some(FiberState::Active),
+        || active_generation(&loader, "ping").is_some_and(|generation| generation > again),
         "the row after the restart",
     )
     .await;
@@ -677,6 +694,204 @@ async fn a_restart_given_up_half_way_leaves_the_runtime_usable() {
         json!("netkit pong still")
     );
     fixture.root.shutdown().await.unwrap();
+}
+
+/// What the first cleanup of a [`Gate`] takes: it says it began, then waits
+/// for the release.
+type Hold = Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>;
+
+/// A user of a runtime's rows whose cleanup waits until released: the
+/// runtime stops only after its users did (D14), so it stays stopping
+/// until then.
+struct Gate {
+    injects: [TypeKey; 1],
+    hold: Arc<Mutex<Hold>>,
+}
+
+impl Plugin for Gate {
+    fn name(&self) -> &str {
+        "gate"
+    }
+
+    fn injects(&self) -> &[TypeKey] {
+        &self.injects
+    }
+
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        let hold = self.hold.clone();
+        Box::pin(async move {
+            Ok(Effect::AsyncDisposer(Box::new(move || {
+                Box::pin(async move {
+                    let held = hold.lock().unwrap().take();
+                    if let Some((began, release)) = held {
+                        let _ = began.send(());
+                        let _ = release.await;
+                    }
+                    Ok(())
+                })
+            })))
+        })
+    }
+}
+
+/// Poll `future` once: its output if that finishes it.
+async fn poll_once<F: Future + Unpin>(future: &mut F) -> Option<F::Output> {
+    std::future::poll_fn(|cx| match Pin::new(&mut *future).poll(cx) {
+        Poll::Ready(output) => Poll::Ready(Some(output)),
+        Poll::Pending => Poll::Ready(None),
+    })
+    .await
+}
+
+/// A restart its caller gave up goes on to the end, as one waited for: the
+/// next restart waits for it, and no second process runs under the name
+/// while the first is stopping. Before #307 the given-up restart stopped
+/// half way and freed the name while the old runtime was still stopping:
+/// the next restart started a new runtime at once, and returned while the
+/// old one still ran.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_given_up_half_way_still_finishes_before_the_next() {
+    let fixture = fixture(None, &[("netkit", "netkit")]).await;
+    fixture
+        .loader
+        .reconcile(layer(vec![row("ping", "go:ping")]), None)
+        .await
+        .unwrap();
+    let loader = fixture.loader.clone();
+    let first = COLD
+        .eventually(|| active_generation(&loader, "ping"), "the row")
+        .await;
+    let (began, began_rx) = oneshot::channel();
+    let (release, release_rx) = oneshot::channel();
+    let gate = fixture.root.plugin(Gate {
+        injects: [RuntimeRows::key("go-netkit")],
+        hold: Arc::new(Mutex::new(Some((began, release_rx)))),
+    });
+    COLD.until(|| gate.state().state == FiberState::Active, "the gate")
+        .await;
+
+    // The restart begins, and its caller gives up while the old runtime
+    // stops: it stays stopping until the gate is released.
+    let mut given_up = Box::pin(fixture.runtimes.restart("go-netkit"));
+    assert!(poll_once(&mut given_up).await.is_none());
+    COLD.within("the old runtime to stop its users", began_rx)
+        .await
+        .unwrap();
+    drop(given_up);
+
+    let mut next = Box::pin(fixture.runtimes.restart("go-netkit"));
+    let early = poll_once(&mut next).await;
+    assert!(
+        early.is_none(),
+        "a restart returned while the runtime before it was still stopping: {early:?}"
+    );
+    release.send(()).unwrap();
+    COLD.within("the restart after the given-up one", next)
+        .await
+        .unwrap();
+    COLD.until(
+        || active_generation(&loader, "ping").is_some_and(|generation| generation > first),
+        "the row after the restarts",
+    )
+    .await;
+    assert_eq!(
+        call(&fixture.root, "ping", "echo", json!(["again"]))
+            .await
+            .unwrap(),
+        json!("netkit pong again")
+    );
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// A Go binary (a script with the SDK's marker) at `path` whose manifest
+/// read fails the first time and prints the plugin `late` from then on;
+/// each read adds a line to the file `runs`.
+#[cfg(unix)]
+fn failing_once(path: &Path, runs: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(
+        path,
+        format!(
+            "#!/bin/sh\n# rutis-go-runtime:1\n\
+             [ \"$1\" = --rutis-manifest ] || exit 1\n\
+             echo run >> '{runs}'\n\
+             [ \"$(wc -l < '{runs}')\" -gt 1 ] || exit 3\n\
+             echo '{{\"pluginApi\":1,\"plugins\":{{\"late\":{{\"inject\":[],\"provides\":{{}}}}}}}}'\n",
+            runs = runs.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+fn runs(runs: &Path) -> usize {
+    std::fs::read_to_string(runs)
+        .map(|text| text.lines().count())
+        .unwrap_or(0)
+}
+
+/// A manifest read that failed is read again, with its file unchanged, when
+/// a row asks for a plugin no binary has, once the failure has stood for
+/// 5 s: it may have passed. Before #306 a failure stayed cached until the
+/// file changed (a binary just replaced on disk then had no plugins). Not
+/// sooner: lookups of missing names do not run a failing binary each time.
+#[cfg(unix)]
+#[tokio::test(start_paused = true)]
+async fn a_failed_manifest_read_is_read_again_for_a_missing_plugin_once_it_stood() {
+    use rutis_loader::Resolver;
+    let dir = tempfile::tempdir().unwrap();
+    let plugins = dir.path().join("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    let count = dir.path().join("runs");
+    failing_once(&plugins.join("later"), &count);
+    let resolver = GoResolver::new(GoBinaries::new().dir(&plugins));
+
+    for name in ["go:late", "go:late", "go:typo"] {
+        match resolver.resolve(name).await {
+            Err(LoaderError::NotFound { .. }) => {}
+            other => panic!("{name}: {:?}", other.map(|resolved| resolved.meta.clone())),
+        }
+    }
+    assert_eq!(runs(&count), 1, "a failed read is not read again at once");
+    tokio::time::advance(Duration::from_secs(4)).await;
+    assert!(resolver.resolve("go:typo").await.is_err());
+    assert_eq!(runs(&count), 1, "nor within 5 s");
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let resolved = resolver.resolve("go:late").await.expect("read again");
+    assert_eq!(resolved.meta["runtime"], json!("go-later"));
+    assert_eq!(runs(&count), 2);
+}
+
+/// The same for a listed binary named with its runtime (`go-lister:late`).
+#[cfg(unix)]
+#[tokio::test(start_paused = true)]
+async fn a_failed_manifest_read_of_a_listed_binary_is_read_again_once_it_stood() {
+    use rutis_loader::Resolver;
+    let dir = tempfile::tempdir().unwrap();
+    let count = dir.path().join("runs");
+    let binary = dir.path().join("lister");
+    failing_once(&binary, &count);
+    let resolver = GoResolver::new(GoBinaries::new().file(&binary));
+
+    for _ in 0..2 {
+        match resolver.resolve("go-lister:late").await {
+            Err(LoaderError::Resolve { message, .. }) => {
+                assert!(message.contains("exited"), "{message}")
+            }
+            other => panic!("{:?}", other.map(|resolved| resolved.meta.clone())),
+        }
+    }
+    assert_eq!(runs(&count), 1, "a failed read is not read again at once");
+
+    tokio::time::advance(Duration::from_secs(5)).await;
+    let resolved = resolver
+        .resolve("go-lister:late")
+        .await
+        .expect("read again");
+    assert_eq!(resolved.meta["runtime"], json!("go-lister"));
+    assert_eq!(runs(&count), 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]

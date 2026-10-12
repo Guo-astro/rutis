@@ -16,7 +16,7 @@
 | C3 | 第 2 步用仓库里的包（链接 `node/rutis`、`bun/rutis-bun`、tsx；`RUTIS_PYTHON_PATH`；Go 的 `replace`），不连注册表；从注册表安装由 #193 负责 | 3.3 |
 | C4 | 只断言退出码和 rutis 自己写的几行输出，期望写在测试代码里（与 `check.rs` 相同）；第三方工具的错误文字只断言"含文件名和行号" | 五 |
 | C5 | 同步点全部是输出行或进程退出；改文件用"同目录点文件 + rename"并保证 mtime 变化；不用 sleep | 六 |
-| C6 | 本 PR 做 Linux、macOS；Windows 在 #232 之后另开 PR | 七 |
+| C6 | 本 PR 做 Linux、macOS；Windows 在 #232 之后另开 PR（已做，见第七节） | 七 |
 | C7 | CI：新开一个并行的 Linux `e2e` 任务，macOS 放进 `network-macos`，由 #204（#256）加 | 八 |
 
 ## 二、现状（核对过的代码）
@@ -128,7 +128,9 @@ Bun 运行时自己也比较入口文件的 mtime 和大小，所以 `replace` �
 
 ## 七、平台
 
-Linux、macOS：四种语言都跑，Ctrl-C 用 `killpg(SIGINT)`。Windows 在 #232（Job Object 残余检查）之后另开 PR：没有进程检查，B2 在 Windows 上验证不到；那时再决定怎样发 Ctrl-C。Bun 在 Windows 上尚未声明支持（Bun 设计 §10），届时也跳过并写明原因（Q7.8）。
+Linux、macOS：四种语言都跑，Ctrl-C 用 `killpg(SIGINT)`。
+
+Windows（#232 之后，在 CI 的 `runtimes-windows` 里跑）：node、python、go 三种语言，步骤和断言与上面相同。每个宿主在一个 Job Object 里，残余检查读 Job 的进程列表；第 8 步的 Ctrl-C 是 `Host::ctrl_c()` 对宿主的控制台进程组发 Ctrl-Break（宿主用新的进程组启动，Ctrl-C 被关掉，Ctrl-Break 仍能收到；rutis-host 的 `stop.rs` 两者都处理；运行时在 rutis-host 给的各自的组里，收不到）。与 Unix 不同的地方只在场景的准备：Python 用 `python`，venv 的解释器是 `.venv\Scripts\python.exe`（第 5 步断言解释器在 `demo\.venv\Scripts` 下），`PYTHONPATH` 用 `;` 分隔；npm 用 `npm.cmd`；go.mod 的 `replace` 写不带 `\\?\` 前缀、用 `/` 分隔的绝对路径；Go 的构建带 `.exe`，第 7 步仍只数 `.rutis/go/` 里的文件。Bun 在 Windows 上尚未声明支持（Bun 设计 §10），它的测试在 Windows 上 `ignore` 并写明原因（Q7.8）。
 
 ## 八、CI 与时间
 
@@ -151,7 +153,7 @@ Linux、macOS：四种语言都跑，Ctrl-C 用 `killpg(SIGINT)`。Windows 在 #
 | A4 改坏后 `dev` 崩溃或旧版本停止服务 | P1 | 第 6 步：旧版本继续服务且未被卸载，`dev` 继续运行 |
 | A6 `check` 误判 | P1 | 第 3 步（模板项目能通过）；缺包由 `check.rs` 覆盖；`inject` 无人提供见 #258 |
 | A7 错误信息看不出文件、行 | P1 | 第 6 步 |
-| A8 Python venv 路径 | P1 | 第 5 步的解释器断言；Windows 部分在 #232 之后 |
+| A8 Python venv 路径 | P1 | 第 5 步的解释器断言（Windows 上是 `Scripts\python.exe`） |
 | B2 Ctrl-C 后不清理、退出码不符 | P0 | 第 8 步（`dev` 下）；`run` 下由 `signals.rs` 覆盖 |
 
 明确不覆盖：A1（#206）；A5 反复重新加载（#192）；B3、B10（`cross_language.rs`、#192）；B1、注册表安装（#193）；B4（`run` 不监视配置文件）。
@@ -162,7 +164,7 @@ Linux、macOS：四种语言都跑，Ctrl-C 用 `killpg(SIGINT)`。Windows 在 #
 | --- | --- |
 | E1 | harness 补充；`dev_loop.rs` 的 node、python 两个测试 |
 | E2 | bun、go 两个测试 |
-| 后续 PR | Windows（#232 之后） |
+| 后续 PR | Windows（#232 之后）：node、python、go |
 
 验收（都能自动检查）：
 

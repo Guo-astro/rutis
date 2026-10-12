@@ -7,11 +7,12 @@
 //! the scenario and print a line when applied and when cleaned up, which is
 //! how "the old instance was unloaded, exactly once" is seen. The template
 //! tests run against this checkout's packages (linked, never installed
-//! from a registry: that is S9, #193). Unix only for now: the residue
-//! checks need a Job Object on Windows (#232), and Ctrl-C there is sent
-//! differently.
+//! from a registry: that is S9, #193). On Windows (#232) each host is in a
+//! Job Object, which the residue checks read, and Ctrl-C is Ctrl-Break to
+//! the host's console process group ([`Host::ctrl_c`]); Bun is not declared
+//! for Windows (Bun design §10), so its test is ignored there.
 
-#![cfg(unix)]
+use std::path::{Path, PathBuf};
 
 use rutis_e2e::{repo, Host, Lang, Probe, Scenario};
 use serde_json::{json, Value};
@@ -196,6 +197,46 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{{
     )
 }
 
+/// The Python on PATH: `python3`, `python` on Windows.
+fn python() -> &'static str {
+    if cfg!(windows) {
+        "python"
+    } else {
+        "python3"
+    }
+}
+
+/// npm: on Windows its `npm.cmd`, which a program has to name.
+fn npm() -> &'static str {
+    if cfg!(windows) {
+        "npm.cmd"
+    } else {
+        "npm"
+    }
+}
+
+/// The interpreter of the virtual environment `venv`.
+fn venv_python(venv: &Path) -> PathBuf {
+    if cfg!(windows) {
+        venv.join("Scripts").join("python.exe")
+    } else {
+        venv.join("bin").join("python")
+    }
+}
+
+/// `path` as go.mod takes it: on Windows without the `\\?\` a canonical
+/// path has, with `/` (an absolute `C:/…` is a directory for go).
+fn go_mod_path(path: &Path) -> String {
+    let path = path.display().to_string();
+    match cfg!(windows) {
+        true => path
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&path)
+            .replace('\\', "/"),
+        false => path,
+    }
+}
+
 /// Make the template project's dependencies this checkout's packages.
 fn prepare(s: &Scenario, kind: Kind) {
     match kind {
@@ -222,18 +263,18 @@ fn prepare(s: &Scenario, kind: Kind) {
         Kind::Python => {
             let mut venv = s.program(
                 "demo",
-                "python3",
+                python(),
                 ["-m", "venv", "--without-pip", ".venv"],
                 &[],
             );
-            assert!(venv.wait_exit().success(), "python3 -m venv");
+            assert!(venv.wait_exit().success(), "{} -m venv", python());
         }
         Kind::Go => {
             let sdk = repo().join("go/rutis");
             s.edit("demo/go.mod", |module| {
                 format!(
                     "{module}\nreplace github.com/arcships/rutis/go/rutis => {}\n",
-                    sdk.display()
+                    go_mod_path(&sdk)
                 )
             });
         }
@@ -250,13 +291,17 @@ const GO_ENV: &[(&str, &str)] = &[
 /// The template's own tests.
 fn template_tests(s: &Scenario, kind: Kind) -> Host {
     match kind {
-        Kind::Node => s.program("demo", "npm", ["test"], &[]),
+        Kind::Node => s.program("demo", npm(), ["test"], &[]),
         Kind::Bun => s.program("demo", "bun", ["test"], &[]),
         Kind::Python => {
-            let path = format!("src:{}", repo().join("python/rutis").display());
+            let path = std::env::join_paths([PathBuf::from("src"), repo().join("python/rutis")])
+                .expect("PYTHONPATH");
+            let path = path.to_string_lossy();
+            // By absolute path: a relative program is not looked up in the
+            // child's directory on Windows.
             s.program(
                 "demo",
-                ".venv/bin/python",
+                venv_python(&s.path("demo/.venv")),
                 ["-m", "unittest", "discover", "-s", "tests"],
                 &[("PYTHONPATH", &path)],
             )
@@ -308,7 +353,7 @@ fn failed(kind: Kind, host: &mut Host) -> String {
 fn dev_loop(kind: Kind) {
     let s = Scenario::new(&format!("dev-loop-{}", kind.lang()));
     let source = format!("demo/{}", kind.source());
-    let file = std::path::Path::new(kind.source())
+    let file = Path::new(kind.source())
         .file_name()
         .unwrap()
         .to_string_lossy()
@@ -353,8 +398,14 @@ fn dev_loop(kind: Kind) {
     let applied = dev.expect("demo v2 applied ");
     assert_eq!(greet(&probe, &mut dev), json!("Hello, Ada! (v2)"));
     if kind == Kind::Python {
-        // A8: the project's own interpreter.
-        assert!(applied.contains("/demo/.venv/"), "{applied}");
+        // A8: the project's own interpreter (`Scripts\python.exe` on
+        // Windows).
+        let venv = venv_python(&Path::new("demo").join(".venv"));
+        let venv = venv.parent().unwrap().display().to_string();
+        assert!(
+            applied.contains(&format!("{}{venv}", std::path::MAIN_SEPARATOR)),
+            "{applied}"
+        );
     }
 
     // 6. A broken edit: it does not load, v2 keeps serving and is not
@@ -420,6 +471,7 @@ fn the_python_plugin_development_loop() {
 
 /// risk: A2, A3, A4, A7, B2 (Bun)
 #[test]
+#[cfg_attr(windows, ignore = "Bun is not declared for Windows (Bun design §10)")]
 fn the_bun_plugin_development_loop() {
     dev_loop(Kind::Bun);
 }

@@ -724,6 +724,7 @@ mod tests {
             "helper",
             &format!("{scenario}/helper"),
             helper_command(what),
+            false,
         )
     }
 
@@ -840,7 +841,7 @@ mod tests {
         let port = held.local_addr().unwrap().port();
         let mut command = Command::new("sh");
         command.args(["-c", "echo token=e2e-secret"]);
-        let (mut host, started) = Host::spawn("sh", &format!("{scenario}/sh"), command);
+        let (mut host, started) = Host::spawn("sh", &format!("{scenario}/sh"), command, false);
         host.expect("token=");
         host.wait_exit();
 

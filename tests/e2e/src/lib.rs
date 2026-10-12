@@ -32,9 +32,12 @@
 //!
 //! Running: `npm --prefix node/rutis-runtime ci`, a `python3` (3.10 or
 //! newer; the checkout's `python/rutis` is used), then
-//! `cargo test -p rutis-e2e`, which builds `rutis-host` first. Settings:
-//! `RUTIS_E2E_HOST` (the program to test instead), `RUTIS_E2E_DIR` (where
-//! scenario directories go), `RUTIS_E2E_TIMEOUT` (the hang guard, seconds).
+//! `cargo test -p rutis-e2e`, which builds `rutis-host` first (and the
+//! fixture Rust host, `tests/e2e/fixture-host`, for the scenarios that run
+//! it). Settings: `RUTIS_E2E_HOST` (the program to test instead),
+//! `RUTIS_E2E_FIXTURE_HOST` (likewise, the fixture host), `RUTIS_E2E_DIR`
+//! (where scenario directories go), `RUTIS_E2E_TIMEOUT` (the hang guard,
+//! seconds).
 
 mod host;
 #[cfg(windows)]
@@ -98,30 +101,49 @@ pub fn host_program() -> PathBuf {
     PROGRAM
         .get_or_init(|| match std::env::var_os("RUTIS_E2E_HOST") {
             Some(program) => PathBuf::from(program),
-            None => build_host(),
+            None => build("rutis-host"),
         })
         .clone()
 }
 
-fn build_host() -> PathBuf {
+/// The fixture Rust host (`tests/e2e/fixture-host`, S4): rutis embedded in
+/// a Rust program, with a row in Rust and configuration reloads on stdin.
+/// `RUTIS_E2E_FIXTURE_HOST`, else the one `cargo build -p
+/// rutis-e2e-fixture-host` builds from this checkout (once per run). It is
+/// on the side under test: the harness only runs it.
+pub fn fixture_host_program() -> PathBuf {
+    static PROGRAM: OnceLock<PathBuf> = OnceLock::new();
+    PROGRAM
+        .get_or_init(|| match std::env::var_os("RUTIS_E2E_FIXTURE_HOST") {
+            Some(program) => PathBuf::from(program),
+            None => build("rutis-e2e-fixture-host"),
+        })
+        .clone()
+}
+
+/// `cargo build -p <package>` in this checkout: its executable of the same
+/// name.
+fn build(package: &str) -> PathBuf {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let cargo = std::process::Command::new(cargo)
-        .args(["build", "-p", "rutis-host", "--message-format=json"])
+        .args(["build", "-p", package, "--message-format=json"])
         .current_dir(repo())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
         .spawn()
-        .expect("cargo build -p rutis-host");
+        .unwrap_or_else(|error| panic!("cargo build -p {package}: {error}"));
     // A child of this process, but no scenario's residue.
     residue::started(cargo.id());
-    let output = cargo.wait_with_output().expect("cargo build -p rutis-host");
-    assert!(output.status.success(), "cargo build -p rutis-host failed");
+    let output = cargo
+        .wait_with_output()
+        .unwrap_or_else(|error| panic!("cargo build -p {package}: {error}"));
+    assert!(output.status.success(), "cargo build -p {package} failed");
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|message| message["target"]["name"] == "rutis-host")
+        .filter(|message| message["target"]["name"] == package)
         .find_map(|message| message["executable"].as_str().map(PathBuf::from))
-        .expect("cargo build reported no rutis-host executable")
+        .unwrap_or_else(|| panic!("cargo build reported no {package} executable"))
 }
 
 /// The language of a probe plugin.
@@ -470,6 +492,17 @@ impl Scenario {
         self.start(host_program(), "", args, env)
     }
 
+    /// Start the fixture Rust host ([`fixture_host_program`]) with `args`
+    /// in the project, with a host's environment and more (`env`), its
+    /// stdin open for [`Host::send_line`].
+    pub fn fixture_host<I, S>(&self, args: I, env: &[(&str, &str)]) -> Host
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.start_with_input(fixture_host_program(), "", args, env, true)
+    }
+
     /// Start `rutis-host <args>` in the project's subdirectory `dir` (as a
     /// user who has `cd`'d there).
     pub fn host_in<I, S>(&self, dir: &str, args: I) -> Host
@@ -512,6 +545,23 @@ impl Scenario {
         I: IntoIterator<Item = S>,
         S: AsRef<std::ffi::OsStr>,
     {
+        self.start_with_input(program, dir, args, env, false)
+    }
+
+    /// [`Scenario::start`]; with `input`, stdin is a pipe for
+    /// [`Host::send_line`], else empty.
+    fn start_with_input<I, S>(
+        &self,
+        program: PathBuf,
+        dir: &str,
+        args: I,
+        env: &[(&str, &str)],
+        input: bool,
+    ) -> Host
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
         let mut command = std::process::Command::new(program);
         command.args(args).current_dir(self.path(dir));
         for (name, _) in std::env::vars_os() {
@@ -536,7 +586,7 @@ impl Scenario {
         command.envs(env.iter().copied());
         let name = format!("host-{}", self.hosts.borrow().len() + 1);
         let marker = format!("{}/{name}", self.id);
-        let (host, started) = Host::spawn(&name, &marker, command);
+        let (host, started) = Host::spawn(&name, &marker, command, input);
         self.hosts.borrow_mut().push(started);
         host
     }
