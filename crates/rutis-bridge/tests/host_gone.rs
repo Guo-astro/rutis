@@ -7,6 +7,8 @@
 //!
 //! Each plugin starts such work, and its cleanup writes a marker file and,
 //! with `hang`, never returns.
+// The Node rows run in every case; the other runtimes add theirs.
+#![cfg(feature = "node")]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
