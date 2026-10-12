@@ -34,8 +34,9 @@ enum Via {
     Inherit,
     /// A socket path the runtime dials. Not on Windows: no Unix sockets.
     DialBack,
-    /// A loopback address the runtime dials, presenting a token: the only
-    /// handover on Windows.
+    /// A loopback address the runtime dials, presenting a token
+    /// (`Handover::Loopback` of the local transport, as `LocalRuntime`
+    /// starts runtimes): the only handover on Windows.
     Loopback,
     WebSocket,
 }
@@ -103,11 +104,11 @@ async fn start(runtime: Runtime, via: Via, dir: &Path) -> (Arc<Process>, PathBuf
             (launcher, dir.to_owned(), entry)
         }
     };
-    if via == Via::WebSocket {
-        return (listening(launcher, &anchor).await, entry);
+    match via {
+        Via::WebSocket => return (listening(launcher, &anchor).await, entry),
+        Via::Loopback => return (handed_over(launcher, &anchor).await, entry),
+        _ => {}
     }
-    // On Windows every handover is Loopback (runtime::spawn), so only that
-    // column runs there.
     let launcher = match via {
         Via::Inherit => launcher.inherit_fd(),
         _ => launcher,
@@ -123,6 +124,35 @@ async fn start(runtime: Runtime, via: Via, dir: &Path) -> (Arc<Process>, PathBuf
     .await
     .unwrap_or_else(|error| panic!("{runtime:?} ({via:?}) failed to start: {error}"));
     (process, entry)
+}
+
+/// Start the runtime with `Handover::Loopback` through the local transport,
+/// on every platform, and attach.
+async fn handed_over(launcher: Launcher, anchor: &Path) -> Arc<Process> {
+    use rutis_bridge::channel::PeerId;
+    use rutis_bridge::transport::local::{Handover, LocalTransport, Spawn};
+    use rutis_bridge::{Dial, Transport};
+
+    let mut spawn = Spawn::new(launcher.program, PeerId::new("runtime").unwrap());
+    spawn.args = launcher.args;
+    spawn.env = launcher.env;
+    spawn.cwd = launcher.cwd;
+    spawn.handover = Handover::Loopback;
+    spawn.trailing = vec![anchor.into()];
+    let transport = LocalTransport::default();
+    transport.spawner("runtime", spawn);
+    let channel = transport
+        .dial(&Dial::address("spawn:runtime"))
+        .await
+        .unwrap();
+    assert_eq!(channel.info.transport, "tcp", "a loopback channel");
+    let format = rutis_bridge::session::Format::Compat;
+    let process = Process::attach(channel, Mount::default(), format)
+        .await
+        .unwrap();
+    // The transport ends its processes when dropped: keep it for the test.
+    std::mem::forget(transport);
+    process
 }
 
 /// Start the runtime listening on a loopback WebSocket, dial it, attach.
@@ -202,7 +232,10 @@ async fn listening(launcher: Launcher, anchor: &Path) -> Arc<Process> {
 async fn semantics(runtime: Runtime, via: Via) {
     let dir = tempfile::tempdir().unwrap();
     let (process, entry) = start(runtime, via, dir.path()).await;
-    rutis_bridge::runtime::testing::runtime(process, &entry, via != Via::WebSocket).await;
+    // Only the `Process` facade starts the process itself and reports its
+    // exit; the other columns attach to a channel.
+    let started_here = matches!(via, Via::Inherit | Via::DialBack);
+    rutis_bridge::runtime::testing::runtime(process, &entry, started_here).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -229,10 +262,6 @@ async fn node_listening_on_a_websocket() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[cfg_attr(
-    unix,
-    ignore = "loopback column on Unix: the facade takes loopback only from RUTIS_LOCAL_HANDOVER, process-wide (#176 step 2)"
-)]
 async fn node_dialing_a_loopback_address() {
     semantics(Runtime::Node, Via::Loopback).await;
 }
@@ -261,10 +290,6 @@ async fn python_listening_on_a_websocket() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[cfg_attr(
-    unix,
-    ignore = "loopback column on Unix: the facade takes loopback only from RUTIS_LOCAL_HANDOVER, process-wide (#176 step 2)"
-)]
 async fn python_dialing_a_loopback_address() {
     semantics(Runtime::Python, Via::Loopback).await;
 }
@@ -313,10 +338,6 @@ async fn go_listening_on_a_websocket() {
 
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
-#[cfg_attr(
-    unix,
-    ignore = "loopback column on Unix: the facade takes loopback only from RUTIS_LOCAL_HANDOVER, process-wide (#176 step 2)"
-)]
 async fn go_dialing_a_loopback_address() {
     semantics(Runtime::Go, Via::Loopback).await;
 }

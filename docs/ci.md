@@ -104,7 +104,10 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 | Node、Python | loopback TCP（带一次性令牌） | 运行 | 运行 | 运行 |
 | Go | Unix socket | 运行（畸形帧检查跳过：缺陷 #294） | 同 Linux | 跳过：同上 |
 | Go | loopback TCP | 运行（畸形帧检查跳过：缺陷 #294） | 同 Linux | 运行（畸形帧检查跳过：缺陷 #294） |
+| Node、Python | WebSocket（夹具监听，Rust 拨入） | 运行 | 运行 | 运行 |
+| Go | WebSocket | 不跑：Go SDK 的 WebSocket 监听在运行时内部（`package rutis`），会话夹具是单独的程序用不到；Go 运行时的 WebSocket 列在运行时契约里 | 同 Linux | 同 Linux |
 | Bun | Unix socket、loopback TCP | 运行（畸形帧检查只在 Unix socket 上） | 运行 | 不编译：Bun 在 Windows 上不是声明支持的平台 |
+| Bun | WebSocket | 不跑：Bun 运行时没有 WebSocket 通道 | 同 Linux | 同 Linux |
 
 运行时契约（`runtime::testing::runtime`，`tests/session_matrix.rs`）：
 
@@ -112,16 +115,20 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 | --- | --- | --- | --- | --- |
 | Node、Python、Go | 继承的 socket（`fd:3`） | 运行 | 运行 | 跳过：Windows 不交接描述符，只有 loopback |
 | Node、Python、Go | 回拨 socket 路径 | 运行 | 运行 | 跳过：同上 |
-| Node、Python、Go | loopback TCP | 跳过：`Process` 只从进程级的 `RUTIS_LOCAL_HANDOVER` 选 loopback，第二步加单独的列 | 跳过：同 Linux | 运行 |
+| Node、Python、Go | loopback TCP（本地传输的 `Handover::Loopback`，与 `LocalRuntime` 启动运行时的方式相同，再 `Process::attach`） | 运行 | 运行 | 运行 |
 | Node、Python、Go | WebSocket（运行时监听，Rust 拨入） | 运行 | 运行 | 运行 |
 | Bun | `fd:3`、回拨 socket 路径 | 运行；`runtimes-bun` 用 `RUTIS_LOCAL_HANDOVER=loopback` 重跑 | 运行 | 不编译：同上 |
+| Bun | loopback TCP、WebSocket | 不跑单独的列：loopback 由上一行的重跑覆盖；Bun 运行时没有 WebSocket 通道 | 同 Linux | 不编译：同上 |
 | 不声明 `fd` 的 Node 包回退到回拨 | — | 运行 | 运行 | 跳过：Windows 只有 loopback |
+
+前两列和最后一行经 `Process` 门面启动进程，契约还检查崩溃后的退出状态；loopback、WebSocket 两列接到通道上，只检查崩溃结束会话。Windows 上 `Process` 门面的 loopback 启动由 `python_runtime.rs`、`go_runtime.rs` 等覆盖。
 
 节点契约（`rutis_bridge::testing::node`）：
 
 | 实现 | 通道 | Linux | macOS | Windows |
 | --- | --- | --- | --- | --- |
 | Rust 节点 | memory（`tests/node_conformance.rs`） | 运行 | main 上运行 | main 上运行 |
+| Rust 节点 | WebSocket（`tests/websocket_conformance.rs`，两个 rutis 根经 loopback WebSocket 链接） | 运行 | 运行 | 运行 |
 | Cordis 节点 | WebSocket（`tests/websocket_conformance.rs`） | 运行 | 运行 | 运行 |
 
 只在 Unix 上编译的其他 bridge 测试文件（原因写在各文件的 `cfg` 旁）：`bun_runtime.rs`、`bun_channel.rs`（Bun）；`local_spawn.rs`（`fd:3`、回拨两种交接，Windows 的 loopback 交接由 `local_loopback.rs` 覆盖）；`local_plugin.rs`（Unix socket）；`local_stdio.rs`（`dup2`）；`concurrent_launch.rs`（跨 fork/exec 继承的描述符）；两个浸泡测试只在 Linux（读 `/proc`）。

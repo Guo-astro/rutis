@@ -1,6 +1,7 @@
-//! The node conformance suite against a Cordis node
-//! (node/rutis-runtime/test/fixtures/cordis-conformance.mjs) over a loopback
-//! WebSocket.
+//! The node conformance suite over a loopback WebSocket: against a Cordis
+//! node (node/rutis-runtime/test/fixtures/cordis-conformance.mjs), and
+//! against a rutis node (the in-process one of node_conformance.rs, here on
+//! a real transport). Risk C10: the matrix is in docs/ci.md.
 #![cfg(all(feature = "websocket", feature = "testing"))]
 
 use std::path::Path;
@@ -8,7 +9,7 @@ use std::path::Path;
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
-use rutis_bridge::{IdentityPlugin, LinkConfig, LinkPlugin, StaticIdentity};
+use rutis_bridge::{Credential, IdentityPlugin, LinkConfig, LinkPlugin, StaticIdentity};
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
@@ -62,4 +63,49 @@ async fn a_cordis_node_meets_the_node_contract() {
         .unwrap();
     rutis_bridge::testing::node(&main, id("cordis")).await;
     child.start_kill().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rutis_node_meets_the_node_contract() {
+    // main: listens for the node, and requires its `node` contract.
+    let main = Ctx::root().unwrap();
+    let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
+        "public",
+        "127.0.0.1:0".parse().unwrap(),
+        id("main"),
+    )))
+    .unwrap();
+    let handle = websocket.clone();
+    (&main.plugin(websocket)).await.unwrap();
+    let address = format!(
+        "ws://{}/rutis",
+        handle.transport().unwrap().local_addr("public").unwrap()
+    );
+    main.plugin(IdentityPlugin::new(
+        "main",
+        StaticIdentity::new(id("main")).accept_token("node-token", id("node")),
+    ));
+    main.plugin(LinkPlugin::new(
+        LinkConfig::listen(id("node"), "websocket", "main", "public").require("node"),
+    ));
+
+    // node: a rutis node in its own root, dialing main.
+    let node = Ctx::root().unwrap();
+    (&node.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
+        .await
+        .unwrap();
+    node.plugin(IdentityPlugin::new(
+        "node",
+        StaticIdentity::new(id("node"))
+            .present(id("main"), Credential::Bearer("node-token".into())),
+    ));
+    node.plugin(LinkPlugin::new(LinkConfig::dial(
+        id("main"),
+        "websocket",
+        "node",
+        &address,
+    )));
+    rutis_bridge::testing::fixture(&node, id("main"));
+
+    rutis_bridge::testing::node(&main, id("node")).await;
 }

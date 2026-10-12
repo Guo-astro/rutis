@@ -104,7 +104,10 @@ The session contract (`session::testing::session` and the malformed-frame checks
 | Node, Python | loopback TCP (with a one-time token) | Runs | Runs | Runs |
 | Go | Unix socket | Runs (malformed frames skipped: defect #294) | As Linux | Skipped: as above |
 | Go | loopback TCP | Runs (malformed frames skipped: defect #294) | As Linux | Runs (malformed frames skipped: defect #294) |
+| Node, Python | WebSocket (the fixture listens, Rust dials) | Runs | Runs | Runs |
+| Go | WebSocket | Not run: the Go SDK's WebSocket listener is internal to the runtime (`package rutis`), out of reach of the session fixture, a separate program; the Go runtime's WebSocket column is in the runtime contract | As Linux | As Linux |
 | Bun | Unix socket, loopback TCP | Runs (malformed frames on the Unix socket only) | Runs | Not compiled: Bun on Windows is not a declared platform |
+| Bun | WebSocket | Not run: the Bun runtime has no WebSocket channel | As Linux | As Linux |
 
 The runtime contract (`runtime::testing::runtime`, `tests/session_matrix.rs`):
 
@@ -112,16 +115,20 @@ The runtime contract (`runtime::testing::runtime`, `tests/session_matrix.rs`):
 | --- | --- | --- | --- | --- |
 | Node, Python, Go | inherited socket (`fd:3`) | Runs | Runs | Skipped: Windows hands no descriptor over, only loopback |
 | Node, Python, Go | socket path dialed back | Runs | Runs | Skipped: as above |
-| Node, Python, Go | loopback TCP | Skipped: `Process` picks loopback only from the process-wide `RUTIS_LOCAL_HANDOVER`; a column of its own comes in step 2 | Skipped: as Linux | Runs |
+| Node, Python, Go | loopback TCP (the local transport's `Handover::Loopback`, as `LocalRuntime` starts runtimes, then `Process::attach`) | Runs | Runs | Runs |
 | Node, Python, Go | WebSocket (the runtime listens, Rust dials) | Runs | Runs | Runs |
 | Bun | `fd:3`, socket path dialed back | Runs; `runtimes-bun` reruns with `RUTIS_LOCAL_HANDOVER=loopback` | Runs | Not compiled: as above |
+| Bun | loopback TCP, WebSocket | No column of their own: the rerun of the row above covers loopback; the Bun runtime has no WebSocket channel | As Linux | Not compiled: as above |
 | A Node package without `fd` falls back to dialing back | — | Runs | Runs | Skipped: Windows has loopback only |
+
+The first two columns and the last row start the process through the `Process` facade, and the contract also checks the exit status after the crash; the loopback and WebSocket columns attach to a channel and check only that the crash ends the session. On Windows, `python_runtime.rs`, `go_runtime.rs` and others cover the facade's loopback start.
 
 The node contract (`rutis_bridge::testing::node`):
 
 | Implementation | Channel | Linux | macOS | Windows |
 | --- | --- | --- | --- | --- |
 | Rust node | memory (`tests/node_conformance.rs`) | Runs | Runs on main | Runs on main |
+| Rust node | WebSocket (`tests/websocket_conformance.rs`, two rutis roots linked over a loopback WebSocket) | Runs | Runs | Runs |
 | Cordis node | WebSocket (`tests/websocket_conformance.rs`) | Runs | Runs | Runs |
 
 Other bridge test files compiled on Unix only (each says why next to its `cfg`): `bun_runtime.rs`, `bun_channel.rs` (Bun); `local_spawn.rs` (the `fd:3` and dial-back handovers; `local_loopback.rs` covers Windows' loopback handover); `local_plugin.rs` (Unix sockets); `local_stdio.rs` (`dup2`); `concurrent_launch.rs` (descriptors inherited across fork/exec); the two soaks on Linux only (they read `/proc`).
