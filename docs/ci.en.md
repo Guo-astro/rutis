@@ -197,6 +197,7 @@ Write the answers in the pull request description.
 
 - Fix failures on main first. Find which merge caused them; until they are fixed, do not merge changes they may affect.
 - If a run on main is cancelled by hand, run it again. Every merge needs a complete result.
+- On main, `ci.yml`, `install.yml` and `dylib-windows.yml` each have at most one run in progress and one waiting (the concurrency group is per ref, not per commit): the run in progress is never cancelled; another merge replaces the waiting run. So during a burst of merges not every merge commit gets a run of its own; the next run checks every merge before it, and when main fails, the merges a failed run covers are those between its commit and the previous run's. On a pull request, a new push cancels the run in progress. A release (a tag) has its own ref: the `install.yml` that `release.yml` calls never replaces main's runs or is replaced by them.
 - For tests that fail now and then, first find a way to reproduce the failure, then fix it. Do not hide it with automatic retries.
 
 ## 8. Build caches

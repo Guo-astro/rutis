@@ -34,10 +34,12 @@ env:
     check instance_peers instance_services instances lifecycle loader
     migration_example overlay patch_parity peer_rows regressions scope
 
-# A new push to a pull request cancels its run still in progress; on main
-# every merge runs to the end (Q12.4).
+# A new push to a pull request cancels its run still in progress. On main
+# (one group per ref) the run in progress always runs to the end, and at most
+# one waits: a newer merge replaces the waiting run, so the next run checks
+# every merge since (Q12.4; docs/ci.md §3).
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

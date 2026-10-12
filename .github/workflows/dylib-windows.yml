@@ -37,9 +37,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-# A new push to a pull request cancels its run still in progress.
+# A new push to a pull request cancels its run still in progress; on main
+# a newer merge replaces a waiting run, never the one in progress (as ci.yml).
 concurrency:
-  group: dylib-windows-${{ github.event.pull_request.number || github.sha }}
+  group: dylib-windows-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

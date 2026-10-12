@@ -70,8 +70,10 @@ on:
 permissions:
   contents: read
 
+# As ci.yml: one group per pull request or ref. release.yml's calls run on
+# its tag's ref (and with their own source), apart from main's runs.
 concurrency:
-  group: install-${{ github.event.pull_request.number || github.sha }}-${{ inputs.source || 'local' }}
+  group: install-${{ github.event.pull_request.number || github.ref }}-${{ inputs.source || 'local' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
