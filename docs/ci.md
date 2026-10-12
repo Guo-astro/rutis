@@ -91,6 +91,41 @@
 
 新加的测试文件如果会启动进程或打开通道，要加进这两个列表。每晚 `stress.yml` 的 `multiprocess` 任务也按这两个列表重复运行（§2）。
 
+### 一致性矩阵
+
+bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行（风险 C10，#176）。手写维护：增删格子、改跳过原因时同步改这张表。“跳过”的格子在测试里用 `ignore = "原因"` 标注，`cargo test` 的输出里能看到；整平台不编译的，原因写在 `cfg` 旁的注释里。
+
+会话契约（`session::testing::session` 与畸形帧检查 `malformed`，`tests/runtime_conformance.rs`）：
+
+| 实现 | 通道 | Linux | macOS | Windows |
+| --- | --- | --- | --- | --- |
+| Rust | memory | 运行 | 运行 | 运行 |
+| Node、Python | Unix socket | 运行 | 运行 | 跳过：Windows 没有 Unix socket，运行时用 loopback 连接 |
+| Node、Python | loopback TCP（带一次性令牌） | 运行 | 运行 | 运行 |
+| Go | Unix socket | 运行（畸形帧检查跳过：缺陷 #294） | 同 Linux | 跳过：同上 |
+| Go | loopback TCP | 运行（畸形帧检查跳过：缺陷 #294） | 同 Linux | 运行（畸形帧检查跳过：缺陷 #294） |
+| Bun | Unix socket、loopback TCP | 运行（畸形帧检查只在 Unix socket 上） | 运行 | 不编译：Bun 在 Windows 上不是声明支持的平台 |
+
+运行时契约（`runtime::testing::runtime`，`tests/session_matrix.rs`）：
+
+| 实现 | 通道 | Linux | macOS | Windows |
+| --- | --- | --- | --- | --- |
+| Node、Python、Go | 继承的 socket（`fd:3`） | 运行 | 运行 | 跳过：Windows 不交接描述符，只有 loopback |
+| Node、Python、Go | 回拨 socket 路径 | 运行 | 运行 | 跳过：同上 |
+| Node、Python、Go | loopback TCP | 跳过：`Process` 只从进程级的 `RUTIS_LOCAL_HANDOVER` 选 loopback，第二步加单独的列 | 跳过：同 Linux | 运行 |
+| Node、Python、Go | WebSocket（运行时监听，Rust 拨入） | 运行 | 运行 | 运行 |
+| Bun | `fd:3`、回拨 socket 路径 | 运行；`runtimes-bun` 用 `RUTIS_LOCAL_HANDOVER=loopback` 重跑 | 运行 | 不编译：同上 |
+| 不声明 `fd` 的 Node 包回退到回拨 | — | 运行 | 运行 | 跳过：Windows 只有 loopback |
+
+节点契约（`rutis_bridge::testing::node`）：
+
+| 实现 | 通道 | Linux | macOS | Windows |
+| --- | --- | --- | --- | --- |
+| Rust 节点 | memory（`tests/node_conformance.rs`） | 运行 | main 上运行 | main 上运行 |
+| Cordis 节点 | WebSocket（`tests/websocket_conformance.rs`） | 运行 | 运行 | 运行 |
+
+只在 Unix 上编译的其他 bridge 测试文件（原因写在各文件的 `cfg` 旁）：`bun_runtime.rs`、`bun_channel.rs`（Bun）；`local_spawn.rs`（`fd:3`、回拨两种交接，Windows 的 loopback 交接由 `local_loopback.rs` 覆盖）；`local_plugin.rs`（Unix socket）；`local_stdio.rs`（`dup2`）；`concurrent_launch.rs`（跨 fork/exec 继承的描述符）；两个浸泡测试只在 Linux（读 `/proc`）。
+
 ### 每种改动在 PR 上跑什么
 
 | 改动 | 运行的任务 | 预计时间（推送到结果） |

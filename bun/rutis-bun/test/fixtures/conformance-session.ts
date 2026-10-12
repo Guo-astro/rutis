@@ -1,6 +1,8 @@
 // The session conformance target, served by the Bun session: connects to
-// `channel` as endpoint `bun`, expecting `main`, and serves `conformance`
-// until the session ends.
+// `channel` (a `tcp:` one presenting the token in RUTIS_CHANNEL_TOKEN) as
+// endpoint `bun`, expecting `main`, and serves `conformance` until the
+// session ends.
+import { takeToken } from '../../src/channel.ts'
 import { Client } from '../../src/client.ts'
 
 const [channel] = process.argv.slice(2)
@@ -27,6 +29,7 @@ session = await Client.connect(channel, {
     return operation(...args)
   },
   endpoint: { local: 'bun', expected: 'main' },
+  token: takeToken(),
 })
 await session.closed()
 process.exit(0)
