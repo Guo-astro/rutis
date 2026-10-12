@@ -661,7 +661,11 @@ impl FiberInner {
 
         this.wait_events().await;
 
+        // 失败的这一代保留装载时的依赖：只有依赖变化才重试，同一组依赖的
+        // 重复通知不再重新装载（#327）
+        let loaded_with = this.last_deps.lock().unwrap().clone();
         let cleanup_errors = Self::drain_effects(this).await;
+        *this.last_deps.lock().unwrap() = loaded_with;
         let sink = this.ctx.error_sink();
         for e in &cleanup_errors {
             sink(e.clone());
