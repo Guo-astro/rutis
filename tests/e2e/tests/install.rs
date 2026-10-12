@@ -256,8 +256,9 @@ fn run_project_until(
 /// code 0. Unix: SIGTERM to the main process alone (npm's launcher, uv,
 /// rutis-host), which passes it on. Windows has no SIGTERM: Ctrl-Break to
 /// the main process's console process group ([`Host::ctrl_c`]), as a
-/// console's stop reaches every process on it; the launchers (npm's .cmd
-/// and its Node launcher, uv) wait for rutis-host, which stops on it.
+/// console's stop reaches every process on it; npm's launchers (its .cmd
+/// and the Node launcher) wait for rutis-host, which stops on it. For
+/// `uv run`, see [`stop_uv`].
 fn stop(host: &mut Host) {
     #[cfg(unix)]
     host.signal(libc_sigterm());
@@ -266,6 +267,31 @@ fn stop(host: &mut Host) {
     let status = host.wait_exit();
     host.wait_output_end();
     assert_eq!(status.code(), Some(0), "after stopping: {status}");
+}
+
+/// [`stop`] with `uv run` as the main process. On Windows uv ignores Ctrl-C
+/// while its command runs, but not Ctrl-Break (uv-command-support's
+/// `run_to_completion` waits on `tokio::signal::ctrl_c` only): uv ends at
+/// once with STATUS_CONTROL_C_EXIT, and its exit code is not rutis-host's.
+/// That one step is checked differently there: rutis-host stopped on the
+/// Ctrl-Break (its line; the caller checks the probe's stop) and has exited
+/// (the output ended: nothing holds it any more).
+fn stop_uv(host: &mut Host) {
+    #[cfg(unix)]
+    stop(host);
+    #[cfg(windows)]
+    {
+        /// STATUS_CONTROL_C_EXIT: ended by the console's default handler.
+        const CONTROL_C_EXIT: i32 = 0xC000_013Au32 as i32;
+        host.ctrl_c();
+        let status = host.wait_exit();
+        host.wait_output_end();
+        assert!(
+            matches!(status.code(), Some(0 | CONTROL_C_EXIT)),
+            "uv after stopping: {status}"
+        );
+        host.expect("rutis-host: Ctrl-Break: stopping");
+    }
 }
 
 #[cfg(unix)]
@@ -498,7 +524,7 @@ fn pypi_installs_and_runs_this_build() {
         probe.call(&mut running, "greeter", "hello", json!(["Ada"])),
         Ok(json!("Hello, Ada"))
     );
-    stop(&mut running);
+    stop_uv(&mut running);
     probe.event(&mut running, "stopped");
 
     // pip in a plain venv.

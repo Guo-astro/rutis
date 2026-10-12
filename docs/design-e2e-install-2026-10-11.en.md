@@ -80,7 +80,7 @@ A few steps only on some channels:
 | PyPI (every platform) | In pip's venv, `rutis[network]` with `websockets==15.0` (`rutis` stays this build's); `python -m rutis listen:ws://127.0.0.1:<port>/rutis …`, the venv's host connects with a node row | websockets 15.0 is what is installed; the probe's call gets a result; stopped as in step 4 |
 | Binary | Run a Node row without `@arcships/rutis-runtime` in the project | Exit code 1, output `npm install @arcships/rutis-runtime` |
 
-Windows has no SIGTERM: step 4 sends Ctrl-Break to the main process's console process group with `Host::ctrl_c()` (#266), with the same assertions, exit code 0 and the probe `stopped`; the residue check reads each host's Job Object (#232).
+Windows has no SIGTERM: step 4 sends Ctrl-Break to the main process's console process group with `Host::ctrl_c()` (#266), with the same assertions, exit code 0 and the probe `stopped`; the residue check reads each host's Job Object (#232). The exception: on Windows `uv run` ignores Ctrl-C but not Ctrl-Break (uv's `run_to_completion` waits on `tokio::signal::ctrl_c` only), so uv ends at once with STATUS_CONTROL_C_EXIT and its exit code is not rutis-host's; there that step asserts that rutis-host printed `Ctrl-Break: stopping`, the probe `stopped` and the output ended (rutis-host exited), and uv's exit code is 0 or STATUS_CONTROL_C_EXIT.
 
 ## 5. Platforms and versions
 

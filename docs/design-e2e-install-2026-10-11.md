@@ -80,7 +80,7 @@ npm 从 tgz 安装时，`rutis-host` 的 `optionalDependencies` 里其他平台�
 | PyPI（每个平台） | pip 的 venv 里装 `rutis[network]` 与 `websockets==15.0`（`rutis` 仍是本次构建的）；`python -m rutis listen:ws://127.0.0.1:<端口>/rutis …`，venv 里的宿主用节点行连上 | 装的是 websockets 15.0；probe 调用得到结果；停止同第 4 步 |
 | 二进制 | 项目里没有 `@arcships/rutis-runtime`，运行 Node 行 | 退出码 1，输出 `npm install @arcships/rutis-runtime` |
 
-Windows 没有 SIGTERM：第 4 步用 `Host::ctrl_c()` 对主进程的控制台进程组发 Ctrl-Break（#266），断言同样是退出码 0、probe `stopped`；残余检查读每个宿主的 Job Object（#232）。
+Windows 没有 SIGTERM：第 4 步用 `Host::ctrl_c()` 对主进程的控制台进程组发 Ctrl-Break（#266），断言同样是退出码 0、probe `stopped`；残余检查读每个宿主的 Job Object（#232）。例外：`uv run` 在 Windows 上只忽略 Ctrl-C、不忽略 Ctrl-Break（uv 的 `run_to_completion` 只等 `tokio::signal::ctrl_c`），uv 立即以 STATUS_CONTROL_C_EXIT 结束，它的退出码不是 rutis-host 的；这一步在 Windows 上改为断言 rutis-host 打印了 `Ctrl-Break: stopping`、probe `stopped`、输出结束（rutis-host 已退出），uv 的退出码为 0 或 STATUS_CONTROL_C_EXIT。
 
 ## 五、平台与版本
 
