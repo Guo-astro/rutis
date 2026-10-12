@@ -64,6 +64,7 @@ export class Process {
   call(target, method, args) { return this.#session.invoke(target, method, args) }
   callAsync(target, method, args) { return this.#session.invokeAsync(target, method, args) }
   release(value) { this.#session.release(value) }
+  references() { return this.#session.references() }
   drain() { return this.#session.drain() }
   closed() { return this.#exited }
   async dispose() {

@@ -1206,6 +1206,15 @@ impl Connection {
     pub fn orphans(&self) -> u64 {
         self.0.calls.lock().unwrap().orphans
     }
+    /// How many references this side exports (granted and not yet released
+    /// by the far end) and imports (received and not yet released), for the
+    /// release-count invariant (risk P4).
+    #[cfg(feature = "testing")]
+    pub fn references(&self) -> (usize, usize) {
+        let exports = self.0.exports.lock().unwrap().entries.len();
+        let imports = self.0.imports.lock().unwrap().len();
+        (exports, imports)
+    }
     fn encode(&self, value: &Value) -> Result<WireValue, Error> {
         let mut grants = Vec::new();
         let result = self.encode_inner(value, &mut grants);
