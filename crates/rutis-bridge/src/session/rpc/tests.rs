@@ -1328,8 +1328,11 @@ async fn a_value_deeper_than_the_limit_fails_its_call_before_it_is_sent() {
         .await
         .unwrap();
     assert_eq!(back.json().unwrap(), json!([arrays(MAX_DEPTH)]));
-    remote.await.unwrap();
+    // Keep the far end until after the check: dropping it closes the
+    // channel, which the session would see as the far end leaving.
+    let remote = remote.await.unwrap();
     assert!(peer.close_reason().is_none());
+    drop(remote);
 }
 
 /// guarantee: bridge/value-limits
