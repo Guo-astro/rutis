@@ -34,7 +34,7 @@
 | 任务 | 做什么 |
 | --- | --- |
 | `rutis` | 内核测试重复 `rounds` 轮（默认 20）。每轮换测试线程数（1、2、全部核数）、打乱顺序、换种子，每五轮用一次 release 构建。第一次失败就停 |
-| `multiprocess` | bridge、loader 中会启动进程、打开本地通道、启动运行时进程的测试，也就是 `ci.yml` 的 `PLATFORM_TESTS_BRIDGE`、`PLATFORM_TESTS_LOADER` 两个列表（加进列表的新测试文件，这里自动跟着跑）。运行时和 `rust` 任务相同（§9）。测试只构建一次，然后重复 `rounds` 轮，每轮换测试线程数、打乱顺序、换种子。某一轮失败也跑完所有轮，最后才让任务失败 |
+| `multiprocess` | bridge、loader 中会启动进程、打开本地通道、启动运行时进程的测试，也就是 PR 上 macOS、Windows 跑的那些测试文件：除 `ci.yml` 的 `PURE_TESTS_BRIDGE`、`PURE_TESTS_LOADER` 两个列表以外的全部测试文件（§4；新测试文件这里自动跟着跑）。运行时和 `rust` 任务相同（§9）。测试只构建一次，然后重复 `rounds` 轮，每轮换测试线程数、打乱顺序、换种子。某一轮失败也跑完所有轮，最后才让任务失败 |
 | `soak` | bridge 的 WebSocket 和本地通道长时间测试，各 `soak_secs` 秒（默认 600） |
 
 整个 workflow 的时间由最慢的任务决定：`soak` 约 21 分钟；`multiprocess` 估计 30–45 分钟（构建约 10 分钟，每轮约 1–1.5 分钟）。
@@ -70,7 +70,7 @@
 | `rust` | Linux | `code` | Linux 上 loopback 方式启动运行时的重跑 | 全部 Rust 测试，每项只跑一次：工作区（除 bridge、loader、`rutis-e2e`）、loader 全部行类型、bridge 全部 feature。用最低支持版本（§9） |
 | `e2e` | Linux | `code` | — | 端到端场景 `cargo test -p rutis-e2e`（`tests/e2e`：真实的 rutis-host 进程、项目目录、各语言的探针插件），与 `rust` 并行，用最低支持版本（§9）。失败时上传 `RUTIS_E2E_DIR`（失败场景的目录和日志）为 artifact `e2e-linux`。安装场景不在这里跑，由 `install.yml` 跑。同样的场景在 macOS 上由 `network-macos` 跑，在 Windows 上由 `runtimes-windows` 跑（只跑不限于 Unix 的场景） |
 | `js-py` | Linux | `code` | — | `scripts/train.mjs`；Node 包（`node/rutis`、`rutis-runtime`、`rutis-host`）和 rutis-dsh 的 dsh 测试；Python 单元测试 |
-| `lint` | Linux | `code` | — | `cargo fmt --check`；`cargo clippy --workspace --all-targets --all-features -- -D warnings`。与测试并行。没有基线：警告在引入它的 PR 里改掉，升级工具链带来的新 lint 在升级的 PR 里改掉 |
+| `lint` | Linux | `code` | — | `cargo fmt --check`；`PURE_TESTS_*` 里的每个名字都有对应的测试文件（§4）；`cargo clippy --workspace --all-targets --all-features -- -D warnings`。与测试并行。没有基线：警告在引入它的 PR 里改掉，升级工具链带来的新 lint 在升级的 PR 里改掉 |
 | `msrv` | Linux | 只在 `all` 时（改了 `Cargo.lock`、`Cargo.toml` 等） | 整个任务 | 用声明的 MSRV（`Cargo.toml` 的 `rust-version`）和仓库的 `Cargo.lock` 编译库和二进制（`cargo +<版本> check --workspace`，不含示例项目 `rutis-agent`、`rutis-cli`） |
 | `checks` | Linux | 只在 `all` 时 | 整个任务 | bridge、loader 各个 feature 组合的编译检查和 `--no-run`（整个工作区的编译由 `lint` 的 clippy 覆盖）。这些检查发现的是少见的 feature 组合编译错误，不跑测试 |
 | `network-macos` | macOS | `code`：只跑和平台有关的测试 | bridge、loader 全部测试；`node/rutis` 测试 | 最新版本（§9）下的进程启动、本地通道、运行时进程、WebSocket、rutis-host 测试；端到端场景（失败时上传 artifact `e2e-macos`）；Node 运行时和 Python 包的测试；整个工作区的编译检查 |
@@ -87,9 +87,9 @@
 
 ### 和平台有关的测试
 
-`ci.yml` 顶部的 `PLATFORM_TESTS_BRIDGE`、`PLATFORM_TESTS_LOADER` 列出 PR 上 macOS、Windows 跑哪些测试文件：会启动进程、打开本地通道（Unix socket、继承的 socket、loopback 交接）、启动运行时进程、使用 WebSocket 的测试，加上两个 crate 的单元测试（`--lib`）；rutis-host 的测试全跑。其余测试（内存通道上的协议、行的配置和生命周期等）只依赖 Rust 代码本身，PR 上在 Linux 的 `rust` 任务里跑，main 上三个平台都跑。
+PR 上 macOS、Windows 默认跑 bridge、loader 的全部测试文件和两个 crate 的单元测试（`--lib`），只跳过 `ci.yml` 顶部 `PURE_TESTS_BRIDGE`、`PURE_TESTS_LOADER` 列出的测试文件；rutis-host 的测试全跑。列表里的测试只依赖 Rust 代码本身：内存通道上的协议、行的配置和生命周期等，不启动进程、不开 socket、除了读 fixture 不碰文件、不依赖操作系统的行为。它们在各平台上结果相同，PR 上只在 Linux 的 `rust` 任务里跑，main 上三个平台都跑。跳过它们是为了让 macOS、Windows 的时间有上限。
 
-新加的测试文件如果会启动进程或打开通道，要加进这两个列表。每晚 `stress.yml` 的 `multiprocess` 任务也按这两个列表重复运行（§2）。
+传给 `cargo test` 的 `--lib --test <名字> ...` 由 `tools/platform-tests.sh` 在任务运行时生成：`crates/<crate>/tests/` 下的每个测试文件，去掉列表里的名字。所以新加的测试文件默认在三个平台上都跑，不需要记得登记；只有确定不启动进程、不打开通道或文件的测试才加进 `PURE_TESTS_*`。列表里的名字找不到对应文件时，脚本报错，`lint` 任务失败，重命名或删除测试文件不会让列表悄悄失效。每晚 `stress.yml` 的 `multiprocess` 任务用同一个脚本重复运行同一组测试（§2）。
 
 ### 一致性矩阵
 
@@ -177,7 +177,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 ### 加一种语言运行时
 
 1. `changes` 加一个这种语言的开关，包括它的运行时目录，以及 `crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host`。
-2. 在 `rust`、`e2e`（最低支持版本）和 `network-macos`（最新版本）里安装这种语言（§9），在已有的 bridge、loader、host 测试步骤里加上它的 feature；它的测试文件按 §4 加进 `PLATFORM_TESTS_*`。
+2. 在 `rust`、`e2e`（最低支持版本）和 `network-macos`（最新版本）里安装这种语言（§9），在已有的 bridge、loader、host 测试步骤里加上它的 feature；它的测试文件默认在 macOS、Windows 上跑（§4），不需要登记。
 3. 如果要测多个版本，加一个 `runtimes-<语言>` 任务：按第 1 步的开关运行，加进 `ci-ok`，PR 上只在 Linux 跑最低支持版本；其他版本和 macOS 只在 main 上跑（做法见 `runtimes-bun` 和 `changes` 的 `bun-matrix`）。
 4. 发布相关：`release-dry-run`、`scripts/train.mjs`、`release.yml` 都加上它的包。
 5. 更新 §3、§4。

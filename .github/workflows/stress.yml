@@ -101,9 +101,10 @@ jobs:
 
   # The rutis-bridge and rutis-loader tests that start processes, open local
   # channels or start runtime processes, many times over, with the runtimes
-  # of the `rust` job of ci.yml. Which test files: the PLATFORM_TESTS_BRIDGE
-  # and PLATFORM_TESTS_LOADER lists of ci.yml, so a test file added there is
-  # repeated here too.
+  # of the `rust` job of ci.yml. Which test files: those pull requests run on
+  # macOS and Windows, every test file but the PURE_TESTS_BRIDGE and
+  # PURE_TESTS_LOADER lists of ci.yml (tools/platform-tests.sh), so a new
+  # test file is repeated here too.
   #
   # Each round varies the number of test threads (1, 2, all cores), the test
   # order (shuffled) and the seed. A round runs every test binary even after
@@ -156,8 +157,10 @@ jobs:
                       (.manifest_path | rtrimstr("/Cargo.toml")), .executable]
                    | @tsv' >> "$list"
           }
-          build rutis-bridge --all-features "$(yq -r '.env.PLATFORM_TESTS_BRIDGE' .github/workflows/ci.yml)"
-          build rutis-loader "--features node,python,go,bun,peer" "$(yq -r '.env.PLATFORM_TESTS_LOADER' .github/workflows/ci.yml)"
+          # shellcheck disable=SC2046 # the list splits into test names
+          build rutis-bridge --all-features "$(bash tools/platform-tests.sh crates/rutis-bridge $(yq -r '.env.PURE_TESTS_BRIDGE' .github/workflows/ci.yml))"
+          # shellcheck disable=SC2046 # the list splits into test names
+          build rutis-loader "--features node,python,go,bun,peer" "$(bash tools/platform-tests.sh crates/rutis-loader $(yq -r '.env.PURE_TESTS_LOADER' .github/workflows/ci.yml))"
           cut -f1,3 "$list"
           # No binaries would make every round pass without running anything.
           [ -s "$list" ] || { echo "::error::no test binaries"; exit 1; }
