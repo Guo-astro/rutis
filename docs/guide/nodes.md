@@ -95,6 +95,7 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 ## 安全
 
 - 跨机器只用 `wss://`。不带 TLS 的监听器只能绑定回环地址。
+- Python 运行时监听 `wss://` 不能用 CPython 3.13.6：它的 TLS socket 在一个线程阻塞读、另一个线程写时死锁（[python/cpython#137583](https://github.com/python/cpython/issues/137583)），每个握手都会卡住，所以 rutis 在这个版本上拒绝启动 `listen:wss://`。用 3.13.7 或更新的版本（3.13.5 及更早、3.14 不受影响）；`ws://` 不受影响。
 - 每个对端一个 token（`RUTIS_TOKEN_<节点>`），只在需要的节点上设置。
 - `host: true` 让对端能在本节点运行这里装着的任何插件，只对可信的对端打开；它只能加载已安装的插件，不能加载文件路径。
 - 节点只按名字共享 `export` 里列出的服务。

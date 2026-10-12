@@ -9,6 +9,7 @@ import socket
 import ssl
 import threading
 import unittest
+import unittest.mock
 from urllib.parse import urlsplit
 
 import background
@@ -406,6 +407,64 @@ def read_text_frame(connection):
 
 
 @unittest.skipIf(websocket is None, "needs the websockets package (rutis[network])")
+class TlsRefusalTest(background.TestCase):
+    """CPython 3.13.6 deadlocks every wss:// handshake of the websockets
+    threading server (#304, python/cpython#137583): the listener refuses to
+    start on it with the reason instead of hanging each connection."""
+
+    def test_only_cpython_3_13_6_is_refused(self):
+        refusal = websocket.tls_refusal(("cpython", (3, 13, 6)))
+        self.assertIn("python/cpython#137583", refusal)
+        self.assertIn("3.13.7 or later", refusal)
+        for python in (
+            ("cpython", (3, 10, 0)),
+            ("cpython", (3, 13, 5)),
+            ("cpython", (3, 13, 7)),
+            ("cpython", (3, 14, 0)),
+            ("pypy", (3, 13, 6)),
+        ):
+            with self.subTest(python=python):
+                self.assertIsNone(websocket.tls_refusal(python))
+
+    def test_a_wss_listener_on_the_affected_python_refuses_to_start(self):
+        with unittest.mock.patch.object(websocket, "_PYTHON", ("cpython", (3, 13, 6))):
+            with self.assertRaises(RuntimeError) as refused:
+                websocket.listen(
+                    "wss://127.0.0.1:0/rutis",
+                    PROTOCOL,
+                    SECRET,
+                    cert=os.path.join(TLS, "localhost.pem"),
+                    key=os.path.join(TLS, "localhost.key"),
+                    announce=lambda _: self.fail("announced a listener that cannot serve"),
+                )
+            self.assertIn("python/cpython#137583", str(refused.exception))
+            # ws:// does not use TLS and is not affected.
+            listener = websocket.listen("ws://127.0.0.1:0/rutis", PROTOCOL, SECRET, announce=lambda _: None)
+            listener.close()
+
+    def test_this_python_serves_wss_or_refuses(self):
+        # On CPython 3.13.6 itself, the real interpreter is refused; on any
+        # other, WssTest below runs and every handshake has to complete.
+        listen = functools.partial(
+            websocket.listen,
+            "wss://127.0.0.1:0/rutis",
+            PROTOCOL,
+            SECRET,
+            cert=os.path.join(TLS, "localhost.pem"),
+            key=os.path.join(TLS, "localhost.key"),
+            announce=lambda _: None,
+        )
+        if websocket.tls_refusal() is not None:
+            self.assertRaises(RuntimeError, listen)
+        else:
+            listen().close()
+
+
+@unittest.skipIf(websocket is None, "needs the websockets package (rutis[network])")
+@unittest.skipIf(
+    websocket is not None and websocket.tls_refusal() is not None,
+    "this Python cannot serve wss:// (TlsRefusalTest)",
+)
 class WssTest(background.TestCase):
     """Negative TLS (risk E6). The Python runtime only listens; the dialing
     side verifies the certificate the listener serves. These tests pin that
