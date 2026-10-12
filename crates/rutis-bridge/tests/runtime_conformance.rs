@@ -1,8 +1,8 @@
 //! The session conformance suite against every implementation of the
 //! session: Rust, Node, Python, Go and Bun, each serving `conformance` as
-//! endpoint of an endpoint-format session, on each local channel it can
-//! take: a Unix socket path, and a loopback TCP address it presents a token
-//! on (how runtimes are started on Windows). Risk C10: the matrix, with
+//! endpoint of an endpoint-format session, on each channel it can take: a
+//! Unix socket path, a loopback TCP address it presents a token on (how
+//! runtimes are started on Windows), and a loopback WebSocket it listens on. Risk C10: the matrix, with
 //! every skipped cell's reason, is in docs/ci.md.
 #![cfg(feature = "testing")]
 
@@ -60,7 +60,8 @@ async fn rust_meets_the_session_contract() {
     run(Connection::open_with(a, Arc::new(Nothing), main_endpoint("rust")).unwrap()).await;
 }
 
-/// The channel the far end dials, framed by the local transport.
+/// The channel to the far end: one it dials, framed by the local transport,
+/// or a WebSocket it listens on.
 #[derive(Clone, Copy, Debug)]
 enum Via {
     /// A Unix socket path. Not on Windows: see [`NO_UNIX_SOCKET`].
@@ -68,6 +69,11 @@ enum Via {
     /// A loopback TCP address (`tcp:127.0.0.1:<port>`); the far end sends
     /// the token in `RUTIS_CHANNEL_TOKEN` and a newline first.
     Loopback,
+    /// `listen:ws://127.0.0.1:0/rutis`: the far end listens, announces its
+    /// address on stderr, and takes a dial presenting `RUTIS_TOKEN`; it
+    /// greets as the endpoint named here.
+    #[cfg(feature = "websocket")]
+    WebSocket(&'static str),
 }
 
 /// Why the Unix socket column does not run on Windows (Q7.8). Kept in step
@@ -78,8 +84,10 @@ const NO_UNIX_SOCKET: &str = "Unix socket column: Windows runtimes connect on lo
 /// The token the far end presents on a loopback channel.
 const TOKEN: &str = "conformance-token";
 
-/// A started far end: killed when dropped.
-struct Child(#[allow(dead_code)] tokio::process::Child);
+/// A started far end: killed when dropped, with what its channel needs kept
+/// alive as long (the WebSocket transport's threads).
+#[allow(dead_code)]
+struct Child(tokio::process::Child, Option<Box<dyn std::any::Any + Send>>);
 
 /// Shuts the stream down: wakes the channel's reader and writer.
 struct Shut(Box<dyn Fn() + Send + Sync>);
@@ -89,9 +97,8 @@ impl rutis_bridge::channel::Closer for Shut {
     }
 }
 
-/// Listen as `via` says, start `command` with the address as its last
-/// argument, and take the framed channel it connects. Fails if the process
-/// ends before it connects.
+/// Start `command` on `via`, the address as its last argument, and take
+/// the channel. Fails if the process ends before it connects.
 async fn connect(mut command: tokio::process::Command, via: Via) -> (Channel, Child) {
     command.kill_on_drop(true);
     match via {
@@ -114,7 +121,7 @@ async fn connect(mut command: tokio::process::Command, via: Via) -> (Channel, Ch
             })));
             (
                 rutis_bridge::transport::local::framed(reader, stream, closer),
-                Child(child),
+                Child(child, None),
             )
         }
         #[cfg(not(unix))]
@@ -151,10 +158,64 @@ async fn connect(mut command: tokio::process::Command, via: Via) -> (Channel, Ch
             })));
             (
                 rutis_bridge::transport::local::framed(reader, stream, closer),
-                Child(child),
+                Child(child, None),
             )
         }
+        #[cfg(feature = "websocket")]
+        Via::WebSocket(far) => listening(command, far).await,
     }
+}
+
+/// Start `command` listening on a loopback WebSocket, and dial it.
+#[cfg(feature = "websocket")]
+async fn listening(mut command: tokio::process::Command, far: &str) -> (Channel, Child) {
+    use rutis_bridge::transport::websocket::{Config, WebSocketTransport};
+    use rutis_bridge::{Credential, Dial, Identity, StaticIdentity, Transport};
+    use tokio::io::AsyncBufReadExt;
+
+    let mut child = command
+        .arg("listen:ws://127.0.0.1:0/rutis")
+        .env("RUTIS_TOKEN", TOKEN)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
+    let address = loop {
+        let line = tokio::select! {
+            line = lines.next_line() => line.unwrap(),
+            status = child.wait() => panic!("the far end ended before listening: {status:?}"),
+        };
+        let line = line.expect("the far end's address");
+        match line.strip_prefix("rutis: listening on ") {
+            Some(address) => break address.to_owned(),
+            None => eprintln!("{line}"),
+        }
+    };
+    // Pass the rest of its stderr on, for a failure's record.
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = lines.next_line().await {
+            eprintln!("{line}");
+        }
+    });
+    let transport = WebSocketTransport::start(Config::new()).unwrap();
+
+    let far = id(far);
+    let identity: Arc<dyn Identity> = Arc::new(
+        StaticIdentity::new(id("main")).present(far.clone(), Credential::Bearer(TOKEN.into())),
+    );
+    let channel = transport
+        .dial(
+            &Dial::address(address)
+                .peer(far)
+                .identity(identity)
+                .protocol(format!(
+                    "rutis.{}",
+                    rutis_bridge::session::ENDPOINT_PROTOCOL
+                )),
+        )
+        .await
+        .unwrap();
+    (channel, Child(child, Some(Box::new(transport))))
 }
 
 fn node() -> tokio::process::Command {
@@ -166,10 +227,13 @@ fn node() -> tokio::process::Command {
     command
 }
 
-/// `python3` (`python` on Windows, where setup-python installs no `python3`).
+/// The Python interpreter: one with `websockets` for the WebSocket column
+/// (`RUTIS_PYTHON`), else `python3` (`python` on Windows, where
+/// setup-python installs no `python3`).
 fn python() -> tokio::process::Command {
-    let mut command =
-        tokio::process::Command::new(if cfg!(windows) { "python" } else { "python3" });
+    let program = std::env::var("RUTIS_PYTHON")
+        .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
+    let mut command = tokio::process::Command::new(program);
     command
         .arg(repo().join("python/rutis/tests/conformance_session.py"))
         .env("PYTHONPATH", repo().join("python/rutis"));
@@ -242,6 +306,23 @@ async fn python_meets_the_session_contract_on_a_unix_socket() {
 async fn python_meets_the_session_contract_on_loopback() {
     contract(python(), Via::Loopback, "python").await;
 }
+
+#[cfg(feature = "websocket")]
+#[tokio::test(flavor = "multi_thread")]
+async fn node_meets_the_session_contract_on_a_websocket() {
+    contract(node(), Via::WebSocket("node"), "node").await;
+}
+
+#[cfg(feature = "websocket")]
+#[tokio::test(flavor = "multi_thread")]
+async fn python_meets_the_session_contract_on_a_websocket() {
+    contract(python(), Via::WebSocket("python"), "python").await;
+}
+
+// No Go cell on a WebSocket: the Go SDK's WebSocket listener is internal to
+// the runtime (package rutis, `listen.go`), and the session fixture is a
+// separate program; the Go runtime's WebSocket column is in
+// session_matrix.rs. No Bun cell: the Bun runtime has no WebSocket channel.
 
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
@@ -354,6 +435,18 @@ async fn python_ends_the_session_on_malformed_frames_on_a_unix_socket() {
 #[tokio::test(flavor = "multi_thread")]
 async fn python_ends_the_session_on_malformed_frames_on_loopback() {
     ends_on_malformed(python, Via::Loopback).await;
+}
+
+#[cfg(feature = "websocket")]
+#[tokio::test(flavor = "multi_thread")]
+async fn node_ends_the_session_on_malformed_frames_on_a_websocket() {
+    ends_on_malformed(node, Via::WebSocket("node")).await;
+}
+
+#[cfg(feature = "websocket")]
+#[tokio::test(flavor = "multi_thread")]
+async fn python_ends_the_session_on_malformed_frames_on_a_websocket() {
+    ends_on_malformed(python, Via::WebSocket("python")).await;
 }
 
 /// Go keeps the session open on invalid UTF-8 inside a string (#294); the

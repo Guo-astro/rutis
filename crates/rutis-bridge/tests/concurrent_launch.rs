@@ -212,8 +212,9 @@ impl Failures {
     }
 }
 
-/// guarantee: issue #184 (risk C11, Q6.5.2): the local transport's
-/// `spawn:` processes started at once each hold their own channel only.
+/// guarantee: bridge/spawned-processes-own-channel (issue #184, risk C11,
+/// Q6.5.2): the local transport's `spawn:` processes started at once each
+/// hold their own channel only.
 #[test]
 fn spawned_processes_started_at_once_hold_only_their_own_channel() {
     if loopback() {
@@ -298,8 +299,9 @@ fn spawned_processes_started_at_once_hold_only_their_own_channel() {
     });
 }
 
-/// guarantee: issue #184 (risk C11, Q6.5.2): Node runtimes launched at once
-/// through the `Process` facade each start and hold their own channel only.
+/// guarantee: bridge/spawned-processes-own-channel (issue #184, risk C11,
+/// Q6.5.2): Node runtimes launched at once through the `Process` facade
+/// each start and hold their own channel only.
 #[cfg(feature = "node")]
 #[test]
 fn node_runtimes_launched_at_once_hold_only_their_own_channel() {

@@ -9,8 +9,8 @@
 //! while a link reconnects, cancellation and release across two links,
 //! interleaved replies, and large and deep values.
 //!
-//! The `guarantee:` names are proposed rows of the `bridge/` family of
-//! the guarantee registry (docs PR #276), not registered yet.
+//! The `guarantee:` names are rows of the `bridge/` family in
+//! docs/guarantees.md.
 #![cfg(feature = "testing")]
 
 use std::collections::HashMap;
@@ -248,7 +248,7 @@ impl Lcg {
 
 /// risk E1; requirements-protocol-plugins §6 ("communication broken ...
 /// fail explicitly, no false success, no automatic retry of side effects").
-/// guarantee: bridge/in-flight-call-fails-once (proposed)
+/// guarantee: bridge/in-flight-call-fails-once
 ///
 /// mac calls main over a link; while main runs the call, mac's connection
 /// drops. The call fails at mac (not success, not a hang), main ran it
@@ -336,7 +336,7 @@ async fn a_call_in_flight_when_the_link_drops_fails_and_ran_once() {
 // ── 2. A slow connection, and cancellation ───────────────────────────
 
 /// risk P6 (single hop, under delay).
-/// guarantee: bridge/cancel-reaches-callee (proposed)
+/// guarantee: bridge/cancel-reaches-callee
 ///
 /// Every message waits 20 ms each way. The caller gives up awaiting an
 /// async call: the cancellation reaches the callee, which stops awaiting
@@ -395,7 +395,7 @@ async fn under_delay_a_cancellation_and_a_release_reach_the_callee() {
 
 /// risk E1, and the generation rule of links (a resource of an older
 /// session never applies to a newer one).
-/// guarantee: bridge/no-call-on-a-dead-session (proposed)
+/// guarantee: bridge/no-call-on-a-dead-session
 ///
 /// mac's connection drops and redialing fails for a while. Calls made
 /// meanwhile, through the old peer or whatever peer mac has, fail
@@ -538,7 +538,7 @@ async fn node(transport: &Arc<MemoryTransport>, identity: StaticIdentity) -> Ctx
 }
 
 /// risks P6, E9.
-/// guarantee: bridge/multihop-cancel-and-release (proposed)
+/// guarantee: bridge/multihop-cancel-and-release
 ///
 /// b exports `clock` to a, a re-exports it to c (as in `multihop.rs`). c
 /// calls the async `later` and gives it up, dropping its result. Each hop
@@ -628,7 +628,7 @@ async fn cancellation_and_release_pass_hop_by_hop() {
 
 // ── 5. Concurrent calls, replies interleaved ─────────────────────────
 
-/// guarantee: bridge/replies-match-calls (proposed)
+/// guarantee: bridge/replies-match-calls
 ///
 /// 32 calls in flight at once; the callee finishes them in an order drawn
 /// from the printed seed. Each reply reaches its own call, at the moment
@@ -703,7 +703,7 @@ fn nested(depth: usize) -> Json {
     )
 }
 
-/// guarantee: bridge/large-and-deep-values (proposed)
+/// guarantee: bridge/large-and-deep-values
 ///
 /// A call whose argument and result are each close to 16 MiB (the local
 /// transport's and WebSocket's default message limit) arrives whole both
@@ -738,7 +738,7 @@ async fn large_and_deep_values_cross_a_session_whole() {
     assert_eq!(back, json!([deep]));
 }
 
-/// guarantee: bridge/large-and-deep-values (proposed); risk E1, P7.
+/// guarantee: bridge/large-and-deep-values; risk E1, P7.
 ///
 /// A value too deep for the far end fails its own call, explicitly, and
 /// the session goes on. Today the receiver's JSON parser (128 levels) ends
@@ -769,7 +769,7 @@ async fn a_value_too_deep_fails_its_call_and_the_session_goes_on() {
     assert_eq!(back.unwrap().json().unwrap(), json!(["after"]));
 }
 
-/// guarantee: bridge/large-and-deep-values (proposed); risk E1.
+/// guarantee: bridge/large-and-deep-values; risk E1.
 ///
 /// Over a real WebSocket connection whose limit is 64 KiB: a call whose
 /// argument and result come within 512 bytes of the limit succeeds; one

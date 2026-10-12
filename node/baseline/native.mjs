@@ -20,8 +20,16 @@ for (const target of targets) {
     // by the provider's state and Service.check(), like the interop exporter.
     let service
     fibers.push(ctx.plugin({ name: 'baseline-consumer', inject: [scenario.service], apply(scope) { service = scope[scenario.service] } }))
-    // A plugin with unresolved dependencies stays pending; do not wait for it.
-    await Promise.race([Promise.all(fibers.map(fiber => fiber.await())), new Promise(resolve => setTimeout(resolve, 500))])
+    // Wait for every fiber to settle. A fiber that stays pending (unresolved
+    // dependencies) settles `await()` at once; one whose load never settles
+    // is an error after a hang guard (10 s), never a silent "unavailable".
+    let guard
+    try {
+      await Promise.race([
+        Promise.all(fibers.map(fiber => fiber.await())),
+        new Promise((_, reject) => { guard = setTimeout(() => reject(new Error('plugins did not settle within 10 s')), 10_000) }),
+      ])
+    } finally { clearTimeout(guard) }
     entry.available = service !== undefined
     const captured = {}
     for (const { method, args, capture } of scenario.calls) {

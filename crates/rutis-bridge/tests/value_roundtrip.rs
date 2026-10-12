@@ -329,7 +329,7 @@ fn same(sent: &Json, got: &Json, numbers: Numbers, at: &str) -> Result<(), Strin
     }
 }
 
-/// guarantee: bridge/value-roundtrip (proposed). Risk P7, C5.
+/// guarantee: bridge/value-roundtrip. Risk P7, C5.
 fn round_trip(far: &Connection, name: &str, numbers: Numbers) {
     check(&format!("{name} round trip"), value(), |sent| {
         let got = far
@@ -399,7 +399,7 @@ fn tables(near: &Connection) -> Result<Tables, String> {
     })
 }
 
-/// guarantee: bridge/release-count (proposed). Risk P4: after any sequence
+/// guarantee: bridge/release-count. Risk P4: after any sequence
 /// of grants and releases, each side's reference tables hold exactly the
 /// references not yet released.
 fn releases_balance(near: &Connection, name: &str) {

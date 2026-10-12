@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import math
 from contextlib import asynccontextmanager
 from types import ModuleType
 from typing import Any, AsyncIterator, Callable
 
 from . import plugin as sdk
-from .peer import _is_live
+from .peer import RemoteError, _holds_reference, _is_live
 
 
 class PluginTestError(AssertionError):
@@ -33,18 +34,28 @@ class PluginTestError(AssertionError):
     across processes."""
 
 
-def _cross(value: Any, where: str) -> Any:
-    """`value` as the other process sees it."""
-    if value is None or isinstance(value, (bool, int, float, str)):
+def _cross(value: Any, where: str, data: bool = False) -> Any:
+    """`value` as the other process sees it, by the rules of the runtime
+    (`rutis.peer`); `data`: inside plain data, which crosses as JSON."""
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise PluginTestError(f"{where}: {value} cannot cross between processes (only finite numbers do)")
         return value
     if isinstance(value, (list, tuple)):
-        return [_cross(item, f"{where}[{i}]") for i, item in enumerate(value)]
+        data = data or not _holds_reference(value)
+        return [_cross(item, f"{where}[{i}]", data) for i, item in enumerate(value)]
     if isinstance(value, dict):
         if not all(isinstance(key, str) for key in value):
             raise PluginTestError(f"{where}: only string keys cross between processes")
-        return {key: _cross(item, f"{where}.{key}") for key, item in value.items()}
+        data = data or not _holds_reference(value)
+        return {key: _cross(item, f"{where}.{key}", data) for key, item in value.items()}
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return _cross(dataclasses.asdict(value), where)
+        return _cross(dataclasses.asdict(value), where, True)
+    # An exception passed as a value crosses as data: its name and message.
+    if isinstance(value, BaseException) and not data:
+        return {"name": type(value).__name__, "message": str(value)}
     if inspect.isawaitable(value):
         return _awaited(value, where)
     if callable(value) and not isinstance(value, type):
@@ -54,13 +65,33 @@ def _cross(value: Any, where: str) -> Any:
     raise PluginTestError(f"{where}: {type(value).__name__} cannot cross between processes")
 
 
+def _crossed_error(error: Exception) -> Exception:
+    """An exception as the other process receives it: a `RemoteError` with
+    its name and message; its class and other attributes stay behind. The
+    testing tool's own errors are not crossed."""
+    if isinstance(error, PluginTestError):
+        return error
+    if isinstance(error, RemoteError):
+        return RemoteError(error.name, error.message)
+    return RemoteError(type(error).__name__, str(error))
+
+
 async def _awaited(value: Any, where: str) -> Any:
-    return _cross(await value, where)
+    try:
+        result = await value
+    except Exception as error:
+        raise _crossed_error(error) from error
+    return _cross(result, where)
 
 
 def _function(function: Callable, where: str) -> Callable:
     def call(*args: Any) -> Any:
-        return _cross(function(*(_cross(arg, f"{where} argument {i}") for i, arg in enumerate(args))), where)
+        crossed = [_cross(arg, f"{where} argument {i}") for i, arg in enumerate(args)]
+        try:
+            result = function(*crossed)
+        except Exception as error:
+            raise _crossed_error(error) from error
+        return _cross(result, where)
 
     return call
 
@@ -88,7 +119,12 @@ def _shaped(name: str, service: Any, shape: dict, strict: bool) -> Any:
         def call(*args: Any, _method: str = method, _kind: str = kind) -> Any:
             where = f"{name}.{_method}"
             crossed = [_cross(arg, f"{where} argument {i}") for i, arg in enumerate(args)] if strict else list(args)
-            result = getattr(service, _method)(*crossed)
+            try:
+                result = getattr(service, _method)(*crossed)
+            except Exception as error:
+                if not strict:
+                    raise
+                raise _crossed_error(error) from error
             if _kind == "sync":
                 if inspect.isawaitable(result):
                     if inspect.iscoroutine(result):
@@ -97,7 +133,12 @@ def _shaped(name: str, service: Any, shape: dict, strict: bool) -> Any:
                 return _cross(result, where) if strict else result
 
             async def settle() -> Any:
-                value = await result if inspect.isawaitable(result) else result
+                try:
+                    value = await result if inspect.isawaitable(result) else result
+                except Exception as error:
+                    if not strict:
+                        raise
+                    raise _crossed_error(error) from error
                 return _cross(value, where) if strict else value
 
             return settle()

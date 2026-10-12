@@ -1,6 +1,7 @@
 """The session conformance target, served by the Python session: connects
 to the channel given as the first argument (a Unix socket path, or
-`tcp:<host>:<port>`, presenting the token in RUTIS_CHANNEL_TOKEN first) as
+`tcp:<host>:<port>`, presenting the token in RUTIS_CHANNEL_TOKEN first, or
+`listen:ws://…`, taking the first connection that presents RUTIS_TOKEN) as
 endpoint `python`, expecting `main`, and serves `conformance` until the
 session ends."""
 
@@ -80,7 +81,13 @@ class Conformance:
         return self.peer.references()
 
 
-def dial(spec: str) -> socket.socket:
+def dial(spec: str):
+    if spec.startswith("listen:"):
+        from rutis.peer import ENDPOINT_PROTOCOL
+        from rutis.websocket import listen_once
+
+        protocol = f"rutis.{ENDPOINT_PROTOCOL}"
+        return listen_once(spec[len("listen:"):], protocol, os.environ["RUTIS_TOKEN"])
     if spec.startswith("tcp:"):
         host, _, port = spec[len("tcp:"):].rpartition(":")
         connection = socket.create_connection((host.strip("[]"), int(port)))
@@ -93,7 +100,7 @@ def dial(spec: str) -> socket.socket:
 
 
 async def main(spec: str) -> None:
-    connection = dial(spec)
+    connection = await asyncio.to_thread(dial, spec)
     service = Conformance()
 
     def dispatch(target, method, args):

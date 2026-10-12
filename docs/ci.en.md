@@ -68,13 +68,13 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 | --- | --- | --- | --- | --- |
 | `links` | Linux | `docs` | — | Checks relative links in Markdown |
 | `rust` | Linux | `code` | The rerun with runtimes started over loopback, on Linux | Every Rust test, once: the workspace (but bridge, loader and `rutis-e2e`), the loader with every row kind, the bridge with every feature. With the oldest supported versions (§9) |
-| `e2e` | Linux | `code` | — | The end-to-end scenarios, `cargo test -p rutis-e2e` (`tests/e2e`: real rutis-host processes, project directories, probe plugins of every language), beside `rust`, with the oldest supported versions (§9). On failure it uploads `RUTIS_E2E_DIR` (the failed scenarios' directories and logs) as the `e2e-linux` artifact. The install scenarios run in `install.yml`, not here |
+| `e2e` | Linux | `code` | — | The end-to-end scenarios, `cargo test -p rutis-e2e` (`tests/e2e`: real rutis-host processes, project directories, probe plugins of every language), beside `rust`, with the oldest supported versions (§9). On failure it uploads `RUTIS_E2E_DIR` (the failed scenarios' directories and logs) as the `e2e-linux` artifact. The install scenarios run in `install.yml`, not here. The same scenarios run on macOS in `network-macos` and on Windows in `runtimes-windows` (only those not limited to Unix) |
 | `js-py` | Linux | `code` | — | `scripts/train.mjs`; the Node packages' tests (`node/rutis`, `rutis-runtime`, `rutis-host`) and rutis-dsh's dsh tests; the Python unit tests |
 | `lint` | Linux | `code` | — | `cargo fmt --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`. In parallel with the tests. No baseline: a warning is fixed in the PR that introduces it, and new lints from a toolchain upgrade in the upgrade PR |
 | `msrv` | Linux | Only with `all` (`Cargo.lock`, `Cargo.toml` and the like changed) | The whole job | Builds the libraries and binaries with the declared MSRV (`rust-version` in `Cargo.toml`) and the repository's `Cargo.lock` (`cargo +<version> check --workspace`, without the example projects `rutis-agent` and `rutis-cli`) |
 | `checks` | Linux | Only with `all` | The whole job | Build checks and `--no-run` of the bridge and loader feature combinations (the whole workspace's build is covered by `lint`'s clippy). They find rare feature-combination build errors and run no tests |
 | `network-macos` | macOS | `code`: only the tests that depend on the platform | All bridge and loader tests; the `node/rutis` tests | Process start, local channels, runtime processes, WebSocket and rutis-host tests with the latest versions (§9); the end-to-end scenarios (on failure, the `e2e-macos` artifact); the Node runtime's and the Python package's tests; a build check of the whole workspace |
-| `runtimes-windows` | Windows | `code`: only the tests that depend on the platform | All bridge and loader tests | The same on Windows (processes start over loopback); the Go SDK tests; a build check of the whole workspace |
+| `runtimes-windows` | Windows | `code`: only the tests that depend on the platform | All bridge and loader tests | The same on Windows (processes start over loopback); the Go SDK tests; the E2E harness and the E2E scenarios not limited to Unix (`rutis-e2e`: Job Objects, Ctrl-Break, residue checks); a build check of the whole workspace |
 | `runtimes-bun` | Linux | `bun`: Bun 1.4.0 | Linux latest; macOS 1.4.0 | Every Bun runtime test, with the reruns over loopback |
 | `runtimes-go` | Linux | `go`: Go oldstable | Linux stable; macOS oldstable; the reruns over loopback on Linux | Every Go SDK and Go runtime test |
 | `semver-rutis` | Linux | `packaging` | The whole job | Whether the public API changed incompatibly since the last release (warning only) |
@@ -104,7 +104,10 @@ The session contract (`session::testing::session` and the malformed-frame checks
 | Node, Python | loopback TCP (with a one-time token) | Runs | Runs | Runs |
 | Go | Unix socket | Runs (malformed frames skipped: defect #294) | As Linux | Skipped: as above |
 | Go | loopback TCP | Runs (malformed frames skipped: defect #294) | As Linux | Runs (malformed frames skipped: defect #294) |
+| Node, Python | WebSocket (the fixture listens, Rust dials) | Runs | Runs | Runs |
+| Go | WebSocket | Not run: the Go SDK's WebSocket listener is internal to the runtime (`package rutis`), out of reach of the session fixture, a separate program; the Go runtime's WebSocket column is in the runtime contract | As Linux | As Linux |
 | Bun | Unix socket, loopback TCP | Runs (malformed frames on the Unix socket only) | Runs | Not compiled: Bun on Windows is not a declared platform |
+| Bun | WebSocket | Not run: the Bun runtime has no WebSocket channel | As Linux | As Linux |
 
 The runtime contract (`runtime::testing::runtime`, `tests/session_matrix.rs`):
 
@@ -112,16 +115,20 @@ The runtime contract (`runtime::testing::runtime`, `tests/session_matrix.rs`):
 | --- | --- | --- | --- | --- |
 | Node, Python, Go | inherited socket (`fd:3`) | Runs | Runs | Skipped: Windows hands no descriptor over, only loopback |
 | Node, Python, Go | socket path dialed back | Runs | Runs | Skipped: as above |
-| Node, Python, Go | loopback TCP | Skipped: `Process` picks loopback only from the process-wide `RUTIS_LOCAL_HANDOVER`; a column of its own comes in step 2 | Skipped: as Linux | Runs |
+| Node, Python, Go | loopback TCP (the local transport's `Handover::Loopback`, as `LocalRuntime` starts runtimes, then `Process::attach`) | Runs | Runs | Runs |
 | Node, Python, Go | WebSocket (the runtime listens, Rust dials) | Runs | Runs | Runs |
 | Bun | `fd:3`, socket path dialed back | Runs; `runtimes-bun` reruns with `RUTIS_LOCAL_HANDOVER=loopback` | Runs | Not compiled: as above |
+| Bun | loopback TCP, WebSocket | No column of their own: the rerun of the row above covers loopback; the Bun runtime has no WebSocket channel | As Linux | Not compiled: as above |
 | A Node package without `fd` falls back to dialing back | — | Runs | Runs | Skipped: Windows has loopback only |
+
+The first two columns and the last row start the process through the `Process` facade, and the contract also checks the exit status after the crash; the loopback and WebSocket columns attach to a channel and check only that the crash ends the session. On Windows, `python_runtime.rs`, `go_runtime.rs` and others cover the facade's loopback start.
 
 The node contract (`rutis_bridge::testing::node`):
 
 | Implementation | Channel | Linux | macOS | Windows |
 | --- | --- | --- | --- | --- |
 | Rust node | memory (`tests/node_conformance.rs`) | Runs | Runs on main | Runs on main |
+| Rust node | WebSocket (`tests/websocket_conformance.rs`, two rutis roots linked over a loopback WebSocket) | Runs | Runs | Runs |
 | Cordis node | WebSocket (`tests/websocket_conformance.rs`) | Runs | Runs | Runs |
 
 Other bridge test files compiled on Unix only (each says why next to its `cfg`): `bun_runtime.rs`, `bun_channel.rs` (Bun); `local_spawn.rs` (the `fd:3` and dial-back handovers; `local_loopback.rs` covers Windows' loopback handover); `local_plugin.rs` (Unix sockets); `local_stdio.rs` (`dup2`); `concurrent_launch.rs` (descriptors inherited across fork/exec); the two soaks on Linux only (they read `/proc`).
@@ -212,6 +219,8 @@ Rule: for each language, Linux jobs use the oldest supported version, macOS and 
 | Go | `go/rutis/go.mod` | `oldstable` | `stable` |
 | Rust toolchain | `rust-toolchain.toml` | Every workflow's `dtolnay/rust-toolchain@<version>` equals it | Same |
 | MSRV | `rust-version` in the root `Cargo.toml` | The `msrv` job (main) | — |
+
+The end-to-end scenarios (`rutis-e2e`) run on all three platforms: on Linux in `e2e` (oldest versions), on macOS in `network-macos` and on Windows in `runtimes-windows` (latest versions; on Windows only the scenarios not limited to Unix).
 
 In the macOS entries of `runtimes-go` and `runtimes-bun` on main, Node and Python are only the far end of cross-language rows and use the oldest versions, as on Linux. The Node used for releases (`release.yml`, `package.yml` and `ci.yml`'s `release-dry-run`) is the release tooling's version and not part of the support matrix.
 
