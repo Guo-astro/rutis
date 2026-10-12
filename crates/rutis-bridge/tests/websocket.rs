@@ -532,15 +532,8 @@ async fn wss_refuses_an_expired_client_certificate() {
                 .protocol(PROTOCOL),
         )
         .await;
-    // Windows: refused, but as Retryable (the listener's close resets the
-    // connection before the alert is read): #300. Only the refusal is
-    // checked there until it is fixed.
-    if cfg!(windows) {
-        assert!(refused.is_err(), "an expired client certificate connected");
-    } else {
-        let reason = auth_rejected(refused);
-        assert!(reason.contains("CertificateExpired"), "{reason}");
-    }
+    let reason = auth_rejected(refused);
+    assert!(reason.contains("CertificateExpired"), "{reason}");
 
     let _dialed = client.dial(&dial_as(address, "mac", SECRET)).await.unwrap();
     let first = recv_within("the accepted connection", &delivered);
