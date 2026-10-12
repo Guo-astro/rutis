@@ -423,9 +423,9 @@ const sameValues = (a, b) => a.length === b.length && a.every((value, index) => 
 // group (boundary rule 4). `emit` ignores the returned Promise (fire and
 // forget); parallel / serial wait for the rutis listeners. A synchronous
 // bail cannot wait for them, so it fails; in a waterfall the rutis group is
-// one asynchronous link that calls `next` once when it is done. With no
-// matching record (a listener before this one dispatched the same event
-// again with the same arguments) it returns the Promise as before (#340).
+// one asynchronous link that calls `next` once when it is done. A listener
+// before this one dispatching the same event again with the same arguments
+// leaves that dispatch's record, so a bail then gets the Promise (#340).
 function forward(name, values) {
   const record = dispatches.getStore()?.get(name)
   const type = record && sameValues(record.values, values) ? record.type : 'emit'
