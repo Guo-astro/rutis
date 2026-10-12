@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	goruntime "runtime"
@@ -19,9 +20,22 @@ import (
 // presents first on a `tcp:` channel.
 const channelToken = "RUTIS_CHANNEL_TOKEN"
 
-// endedBudget is how long cleanups may take, in total, once the session
-// ended and nobody waits for them.
-const endedBudget = 5 * time.Second
+// deadlineVariable sets how long cleanups may take, in total, once the
+// session ended and nobody waits for them (the host went away), in
+// seconds; rutis-host passes its own shutdown deadline on.
+const deadlineVariable = "RUTIS_SHUTDOWN_TIMEOUT"
+
+// defaultDeadline is that time when deadlineVariable does not say.
+const defaultDeadline = 10 * time.Second
+
+// endedBudget is how long cleanups may take once the session ended.
+func endedBudget() time.Duration {
+	seconds, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv(deadlineVariable)), 64)
+	if err != nil || !(seconds > 0) || math.IsInf(seconds, 1) {
+		return defaultDeadline
+	}
+	return time.Duration(seconds * float64(time.Second))
+}
 
 const usage = "usage: <binary> --rutis-manifest | <channel> [--id <endpoint>] [--peer <endpoint>] <project>"
 
@@ -210,23 +224,28 @@ func startSession(channel peer.Channel, endpoint *peer.Endpoint, defs []*Definit
 }
 
 // end ends the lease: nothing more is read, then every row goes, within
-// endedBudget.
-func (s *session) end(reason error) {
+// endedBudget. It fails when cleanups were given up.
+func (s *session) end(reason error) error {
 	s.peer.Close(reason)
 	s.runtime.mu.Lock()
 	s.runtime.closing = true
 	s.runtime.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), endedBudget)
+	budget := endedBudget()
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
-	s.runtime.dispose(ctx)
+	if s.runtime.dispose(ctx) != nil {
+		return fmt.Errorf("cleanups did not finish within %v after the session ended", budget)
+	}
+	return nil
 }
 
+// serveChannel serves one session, then unloads its rows; Serve exits the
+// process after, whatever its plugins left running.
 func serveChannel(channel peer.Channel, endpoint *peer.Endpoint, defs []*Definition) error {
 	s, err := startSession(channel, endpoint, defs)
 	if err != nil {
 		return err
 	}
 	<-s.peer.Closed()
-	s.end(nil)
-	return nil
+	return s.end(nil)
 }
