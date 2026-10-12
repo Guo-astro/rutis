@@ -210,10 +210,12 @@ impl Host {
             // before then wait for it, and the host would say it runs while
             // they do (#314). A plugin injecting it applies once it is there.
             let (released, rows) = tokio::sync::oneshot::channel();
-            let waiter = self.root.plugin(Released {
+            // Disposed however the wait ends, a signal dropping it included:
+            // left mounted, it would count among what still runs.
+            let mut waiter = Unmount(Some(self.root.plugin(Released {
                 injects: [RuntimeRows::key(name)],
                 released: std::sync::Mutex::new(Some(released)),
-            });
+            })));
             let down = async {
                 loop {
                     if let RuntimeState::Down(reason) = handle.state() {
@@ -223,10 +225,15 @@ impl Host {
                 }
             };
             let result = tokio::select! {
-                _ = rows => Ok(()),
+                released = rows => released.map_err(|_| {
+                    // Only a plugin that never applied drops its sender.
+                    format!("the {name} runtime did not start: its rows were never released")
+                }),
                 reason = down => Err(format!("the {name} runtime did not start: {reason}")),
             };
-            let _ = waiter.dispose().await;
+            if let Some(waiter) = waiter.0.take() {
+                let _ = waiter.dispose().await;
+            }
             result?;
         }
         Ok(())
@@ -561,9 +568,23 @@ fn python(py: &PythonRuntime) -> Result<LocalRuntime, Error> {
 }
 
 /// Says once a runtime's rows may start: it injects what they wait for.
+/// Temporary: [`Host::runtimes_ready`] mounts it while it waits, and
+/// disposes it once the wait ends.
 struct Released {
     injects: [TypeKey; 1],
     released: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+/// Disposes the plugin it holds when dropped: the dispose starts at once,
+/// nothing waits for it.
+struct Unmount(Option<rutis::FiberView>);
+
+impl Drop for Unmount {
+    fn drop(&mut self) {
+        if let Some(view) = self.0.take() {
+            drop(view.dispose());
+        }
+    }
 }
 
 impl Plugin for Released {
