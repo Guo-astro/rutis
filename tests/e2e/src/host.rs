@@ -193,6 +193,15 @@ impl Host {
         self.output.lines()
     }
 
+    /// Count every line written so far as matched: later waits see only
+    /// what comes after. For a wait on a line the host printed before too
+    /// (a row's state it returns to, say), once what came before is
+    /// settled.
+    pub fn skip_written(&mut self) {
+        let mut state = self.output.state.lock().unwrap();
+        state.taken.iter_mut().for_each(|taken| *taken = true);
+    }
+
     /// Wait for a line containing `text` that no earlier wait matched.
     pub fn expect(&mut self, text: &str) -> String {
         self.wait_for(&format!("a line containing {text:?}"), |line| {
