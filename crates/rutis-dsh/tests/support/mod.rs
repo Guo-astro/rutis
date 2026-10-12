@@ -1,8 +1,10 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
 
+use rutis_test_support::HANG_GUARD;
 use serde_json::Value;
 
 /// The npm project with dsh, when installed.
@@ -49,12 +51,35 @@ pub fn node_with<'a>(
             command.env(key, value);
         }
     }
-    let output = command
+    let child = command
         .arg(script)
         .args(args)
         .args(rest)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("node");
+    let pid = child.id();
+    let (send, done) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = send.send(child.wait_with_output());
+    });
+    // Node loading dsh's packages cold: three times HANG_GUARD; only
+    // against a hang.
+    let output = match done.recv_timeout(HANG_GUARD * 3) {
+        Ok(output) => output.expect("node"),
+        Err(error) => {
+            #[cfg(unix)]
+            // SAFETY: plain kill(2) on the child this call started.
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+            #[cfg(not(unix))]
+            let _ = pid;
+            panic!("dsh.mjs {args:?}: {error} ({:?})", HANG_GUARD * 3);
+        }
+    };
     assert!(
         output.status.success(),
         "dsh.mjs failed: {}",

@@ -247,7 +247,13 @@ pub async fn runtime(
     .await;
     let weather = ctx.get_as::<dyn HostDispatch>(key.clone()).unwrap();
     let crashed = call(&weather, method, &kind(method), json!([]).into()).await;
-    let ended = format!("exited with exit status: {status}");
+    // How `ExitStatus` reads: `exit status: 17` on Unix, `exit code: 17` on
+    // Windows.
+    let ended = if cfg!(windows) {
+        format!("exited with exit code: {status}")
+    } else {
+        format!("exited with exit status: {status}")
+    };
     match crashed {
         Err(Error::Transport(message)) if started_here => assert_eq!(
             message,
@@ -259,8 +265,8 @@ pub async fn runtime(
     }
     drop(weather);
     process.closed().await;
-    let expected = started_here.then_some(ended.as_str());
-    assert_eq!(process.exit_status().as_deref(), expected);
+    let expected = started_here.then_some(ended);
+    assert_eq!(process.exit_status(), expected);
     projection.close();
     drop(lease);
     ctx.shutdown().await.unwrap();

@@ -2,6 +2,8 @@
 //! the Bun runtime's channel: a Bun process dials two Unix sockets with it and
 //! relays between them, so the two Rust ends see each other through Bun's
 //! framing, its message limit, backpressure and how it ends.
+// Unix only (Q7.8): Bun on Windows is not a declared platform, and the
+// relay dials Unix sockets.
 #![cfg(all(unix, feature = "bun", feature = "testing"))]
 
 use std::os::unix::net::{UnixListener, UnixStream};

@@ -4,7 +4,6 @@
 mod common;
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use common::*;
 use rutis::{
@@ -14,6 +13,7 @@ use rutis_loader::{
     volatile_key, Builtins, Editable, EntryStatus, Layer, LoaderChanged, LoaderOptions,
     LoaderPlugin, NewEntry, Resolved, Resolver, VolatileUpdate,
 };
+use rutis_test_support::{still_pending, until};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -150,16 +150,6 @@ impl Listener<LoaderChanged> for Changes {
     }
 }
 
-async fn eventually(mut check: impl FnMut() -> bool) {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !check() {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("condition");
-}
-
 fn self_disposed(changes: &Arc<Mutex<Vec<LoaderChanged>>>) -> Option<(String, Option<String>)> {
     changes.lock().unwrap().iter().find_map(|c| match c {
         LoaderChanged::SelfDisposed { id, error } => Some((id.clone(), error.clone())),
@@ -181,9 +171,13 @@ async fn a_plugin_that_disposes_itself_disables_its_row() {
         )
         .await
         .unwrap();
-    eventually(|| self_disposed(&changes).is_some()).await;
+    until(|| self_disposed(&changes).is_some(), "SelfDisposed").await;
     assert_eq!(self_disposed(&changes), Some(("lower".into(), None)));
-    eventually(|| matches!(loader.get("lower").unwrap().status, EntryStatus::Disabled)).await;
+    until(
+        || matches!(loader.get("lower").unwrap().status, EntryStatus::Disabled),
+        "the row disabled",
+    )
+    .await;
     assert_eq!(
         store.patches(),
         patches(json!([{ "id": "lower", "disabled": true }]))
@@ -201,15 +195,41 @@ async fn without_an_editable_layer_the_failure_is_reported() {
         )
         .await
         .unwrap();
-    eventually(|| self_disposed(&changes).is_some()).await;
+    until(|| self_disposed(&changes).is_some(), "SelfDisposed").await;
     let (_, error) = self_disposed(&changes).unwrap();
     assert!(error.unwrap().contains("no editable layer"));
 }
 
-#[tokio::test]
+/// Sends each row reported as disposing itself.
+struct SelfDisposals(tokio::sync::mpsc::UnboundedSender<String>);
+
+impl Listener<LoaderChanged> for SelfDisposals {
+    fn call<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        e: &'a LoaderChanged,
+    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
+        if let LoaderChanged::SelfDisposed { id, .. } = e {
+            let _ = self.0.send(id.clone());
+        }
+        Box::pin(async { Ok(None) })
+    }
+}
+
+// In-process only (the kernel, the loader and its monitors are tasks of
+// this runtime), so the paused clock applies.
+#[tokio::test(start_paused = true)]
 async fn loader_disposals_are_not_self_disposals() {
     let store = MemStore::default();
-    let (_root, loader, _log, changes) = setup(&store).await;
+    let (root, loader, _log, changes) = setup(&store).await;
+    let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
+    root.events()
+        .on(
+            &root,
+            &EventKey::<LoaderChanged>::of(),
+            SelfDisposals(sender),
+        )
+        .unwrap();
     reconcile(
         &loader,
         patches(json!([{ "insert": [{ "id": "t", "name": "tunable" }] }])),
@@ -223,8 +243,15 @@ async fn loader_disposals_are_not_self_disposals() {
         .await
         .unwrap();
     // Monitors decide after the fibers are gone and report only a positive
-    // finding; give them time to (wrongly) report one.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // finding. On the paused clock, still_pending's hour passes only once
+    // every task waits: the monitors have run as far as they can, and had
+    // every chance to (wrongly) report one.
+    let mut report = Box::pin(reports.recv());
+    assert!(
+        still_pending(&mut report).await,
+        "{:?}",
+        changes.lock().unwrap()
+    );
     assert!(self_disposed(&changes).is_none());
 }
 
@@ -254,7 +281,7 @@ async fn volatile_fields_change_in_place() {
         .update("t", json!({ "name": "a", "level": 2 }))
         .await
         .unwrap();
-    eventually(|| !log.lock().unwrap().is_empty()).await;
+    until(|| !log.lock().unwrap().is_empty(), "the volatile update").await;
     assert_eq!(*log.lock().unwrap(), ["volatile [[\"level\"]] 2"]);
     assert_eq!(view.state().generation, generation, "not restarted");
     assert_eq!(

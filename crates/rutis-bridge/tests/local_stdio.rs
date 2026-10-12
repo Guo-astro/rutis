@@ -8,6 +8,8 @@
 //! standard input at a pipe holding a line, and its output and error at a
 //! file. The probe copies what it reads, writes a line to each stream, and
 //! exits (so the start fails: it never greets).
+// Unix only (Q7.8): the test points this process's standard streams at a
+// pipe and a file with dup2 on raw descriptors.
 #![cfg(unix)]
 use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd};

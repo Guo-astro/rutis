@@ -9,8 +9,13 @@ use std::time::Duration;
 use common::Scripted;
 use rutis::{BoxFuture, CordisError, Ctx, Event, EventKey, Listener};
 use rutis_dsh::web;
+use rutis_test_support::{within, Guard, HANG_GUARD};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
+
+/// Starting dsh: a Node process loading the whole dsh profile cold, on a
+/// busy CI machine. Six times [`HANG_GUARD`], as before; only against a hang.
+const DSH_START: Guard = Guard(Duration::from_secs(6 * HANG_GUARD.as_secs()));
 
 /// Hands the first event of its kind to the test.
 struct First<E>(Mutex<Option<oneshot::Sender<E>>>);
@@ -83,10 +88,7 @@ async fn the_web_ui_starts_reports_failures_and_stops_with_its_mount() {
     let ctx = Ctx::root().unwrap();
     let ready = first::<web::RutisDshReady>(&ctx);
     start(&ctx, "rutis-web", port, workspace.path()).await;
-    let ready = tokio::time::timeout(Duration::from_secs(60), ready)
-        .await
-        .expect("dsh started")
-        .unwrap();
+    let ready = DSH_START.within("dsh started", ready).await.unwrap();
     assert!(
         ready.providers.iter().any(|provider| provider == "aimux"),
         "{:?}",
@@ -100,10 +102,7 @@ async fn the_web_ui_starts_reports_failures_and_stops_with_its_mount() {
     let busy = Ctx::root().unwrap();
     let failed = first::<web::RutisDshStartupFailed>(&busy);
     start(&busy, "rutis-web-busy", port, workspace.path()).await;
-    let failed = tokio::time::timeout(Duration::from_secs(60), failed)
-        .await
-        .expect("failure reported")
-        .unwrap();
+    let failed = DSH_START.within("failure reported", failed).await.unwrap();
     assert!(failed.message.contains("EADDRINUSE"), "{}", failed.message);
     busy.shutdown().await.unwrap();
 
@@ -119,14 +118,13 @@ async fn the_web_ui_starts_reports_failures_and_stops_with_its_mount() {
             cwd: Some(workspace.path().to_string_lossy().into_owned()),
         }));
         (&view).await.unwrap();
-        let exit = tokio::time::timeout(Duration::from_secs(60), exit)
-            .await
-            .expect("exit requested")
-            .unwrap();
+        let exit = DSH_START.within("exit requested", exit).await.unwrap();
         assert_eq!(exit.code, code, "{arg}");
-        tokio::time::timeout(Duration::from_secs(5), quitting.shutdown())
+        // Without the launcher disposing the tree at once, the startup it
+        // waits for never comes and the mount never stops: a hang, not a
+        // slow stop.
+        within(&format!("{arg}: the mount stops"), quitting.shutdown())
             .await
-            .unwrap_or_else(|_| panic!("{arg}: the mount stops promptly"))
             .unwrap();
     }
 

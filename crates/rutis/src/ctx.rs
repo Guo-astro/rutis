@@ -1379,6 +1379,33 @@ mod tests {
         }
     }
 
+    /// Outside a runtime, `Ctx::root()` reports that there is none and does
+    /// not make one up: afterwards this thread still has no runtime.
+    ///
+    /// guarantee: core/D8
+    #[test]
+    fn root_without_a_runtime_is_an_explicit_error() {
+        assert!(
+            Handle::try_current().is_err(),
+            "test runs outside a runtime"
+        );
+        let error = match Ctx::root() {
+            Ok(_) => panic!("Ctx::root() outside a runtime must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, CordisError::PluginFailed(_)),
+            "unexpected error: {error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("no tokio runtime"), "{message}");
+        assert!(message.contains("Ctx::root_with"), "{message}");
+        assert!(
+            Handle::try_current().is_err(),
+            "Ctx::root() must not enter or create a runtime"
+        );
+    }
+
     #[tokio::test]
     async fn child_created_before_root_closes_but_mounted_afterward_never_applies() {
         let ctx = Ctx::root().unwrap();

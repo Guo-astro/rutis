@@ -9,3 +9,4 @@
 - [ ] Tests cover the change · 改动有测试覆盖
 - [ ] Docs updated, both `.md` and `.en.md` where possible · 文档已同步（尽量包括 `.md` 与 `.en.md`）
 - [ ] Breaking changes and their migration are described · 不兼容变化及迁移方式已说明
+- [ ] A guarantee or the tests that verify it changed: `docs/guarantees.md` (and `.en.md`) updated · 保证或验证它的测试有变化时，已更新 `docs/guarantees.md`（及 `.en.md`）

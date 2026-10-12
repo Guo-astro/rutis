@@ -94,6 +94,15 @@ impl Registry {
         )
     }
 
+    /// Allocated slots of the same two tables, for the capacity checks.
+    #[cfg(test)]
+    pub(crate) fn table_capacities(&self) -> (usize, usize) {
+        (
+            self.bindings.lock().unwrap().capacity(),
+            self.inject_index.lock().unwrap().capacity(),
+        )
+    }
+
     pub(crate) fn insert_binding(
         &self,
         key: TypeKey,

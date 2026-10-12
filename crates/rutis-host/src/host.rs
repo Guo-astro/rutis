@@ -541,24 +541,24 @@ mod tests {
     use super::*;
     use crate::config::{BunRuntime, NodeRuntime, PythonRuntime, RemoteRuntime, Runtimes};
     use rutis_bridge::session::{settle, Value};
+    use rutis_test_support::{within, Guard, HANG_GUARD};
     use serde_json::json;
     use std::time::Duration;
+
+    /// A row's service appears once its runtime (Node, Python, Bun, a Go
+    /// binary) has started cold and loaded it: on a busy CI machine that took
+    /// longer than HANG_GUARD (#238). Twice it, as before; only against a
+    /// hang.
+    const RUNTIME_START: Guard = Guard(Duration::from_secs(2 * HANG_GUARD.as_secs()));
 
     fn repo() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
     }
 
     async fn greeting(host: &Host) -> String {
-        let service = tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                if let Some(service) = host.service("greeter") {
-                    return service;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("the greeter");
+        let service = RUNTIME_START
+            .eventually(|| host.service("greeter"), "the greeter")
+            .await;
         let reply = service
             .invoke("hello", Value::List(vec![json!("Ada").into()]))
             .unwrap();
@@ -751,16 +751,19 @@ mod tests {
             .spawn()
             .unwrap();
         let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
-        let address = loop {
-            let line = lines
-                .next_line()
-                .await
-                .unwrap()
-                .expect("the runtime's address");
-            if let Some(address) = line.strip_prefix("rutis: listening on ") {
-                break address.to_owned();
+        let address = within("the runtime's address", async {
+            loop {
+                let line = lines
+                    .next_line()
+                    .await
+                    .unwrap()
+                    .expect("the runtime's address");
+                if let Some(address) = line.strip_prefix("rutis: listening on ") {
+                    break address.to_owned();
+                }
             }
-        };
+        })
+        .await;
         tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
 
         std::env::set_var("RUTIS_TOKEN_GPU", "remote-token");
@@ -807,16 +810,9 @@ mod tests {
         config.rebase(dir.path());
         let host = Host::start(&config).await.unwrap();
         host.load(config.rows()).await.unwrap();
-        let service = tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                if let Some(service) = host.service("ping") {
-                    return service;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("the ping service");
+        let service = RUNTIME_START
+            .eventually(|| host.service("ping"), "the ping service")
+            .await;
         let reply = tokio::task::spawn_blocking(move || {
             service.invoke("echo", Value::List(vec![json!("go").into()]))
         })
@@ -862,16 +858,19 @@ mod tests {
             .spawn()
             .unwrap();
         let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
-        let address = loop {
-            let line = lines
-                .next_line()
-                .await
-                .unwrap()
-                .expect("the runtime's address");
-            if let Some(address) = line.strip_prefix("rutis: listening on ") {
-                break address.to_owned();
+        let address = within("the runtime's address", async {
+            loop {
+                let line = lines
+                    .next_line()
+                    .await
+                    .unwrap()
+                    .expect("the runtime's address");
+                if let Some(address) = line.strip_prefix("rutis: listening on ") {
+                    break address.to_owned();
+                }
             }
-        };
+        })
+        .await;
         tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
         std::env::set_var("RUTIS_TOKEN_EDGE", "edge-token");
         let config: HostConfig = serde_json::from_value(json!({
@@ -885,16 +884,9 @@ mod tests {
         .unwrap();
         let host = Host::start(&config).await.unwrap();
         host.load(config.rows()).await.unwrap();
-        let service = tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                if let Some(service) = host.service("ping") {
-                    return service;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("the ping service");
+        let service = RUNTIME_START
+            .eventually(|| host.service("ping"), "the ping service")
+            .await;
         let reply = tokio::task::spawn_blocking(move || {
             service.invoke("echo", Value::List(vec![json!("far").into()]))
         })
