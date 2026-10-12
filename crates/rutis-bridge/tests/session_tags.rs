@@ -67,6 +67,13 @@ fn a_call_chain_crossing_processes_keeps_each_process_s_calls_apart() {
 }
 
 struct Process(Child);
+/// b serves until it is ended: never left running, even if the test panics.
+impl Drop for Process {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 impl Process {
     fn start(role: &str, dir: PathBuf) -> Self {
         let child = Command::new(std::env::current_exe().unwrap())
