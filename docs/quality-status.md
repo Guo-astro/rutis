@@ -27,7 +27,7 @@
 | Q5.3.6 | 不安全代码集中、加载前校验 | 部分 | `unsafe` 集中在 dylib 加载与进程启动；dylib 校验由脚本验证，`design-dylib-sdk` §十三 5 项未勾选，需要对账 |
 | Q5.3.7 | 依赖漏洞与许可证检查 | 部分 | 每周 `deps.yml`：`cargo deny check advisories`、`npm audit`、`pip-audit`（#256），不阻止合并。许可证没有检查；新增依赖的理由没有固定的检查项 |
 | Q5.4.2 | 每个场景结束核对残余 | 部分 | E2E harness 每个场景结束时核对：宿主拉起的进程（Linux、macOS 按场景标记找，Windows 按 Job Object）、socket 文件、端口、临时目录、凭据（#221、#277）。测试进程的 fd、线程只在两个浸泡测试里查；tokio 任务数只在 `instance_subtrees.rs` 查（#286）；运行时内部的注册没有查询接口（§5） |
-| Q5.4.4 | 宿主被强制终止时不留孤儿进程 | 部分 | `cross_language.rs` 在三个平台上 `kill -9` 宿主，残余检查确认运行时退出（Unix 靠通道关闭，Windows 靠 rutis-host 的 Job Object）。Unix 上插件让事件循环不空时（例如没清除的定时器），运行时在宿主死后继续运行：`stray_runtime.rs` 只验证残余检查能发现它，行为本身没有修，也还没有 issue |
+| Q5.4.4 | 宿主被强制终止时不留孤儿进程 | 满足 | `cross_language.rs` 在三个平台上 `kill -9` 宿主，残余检查确认运行时退出（Unix 靠通道关闭，Windows 靠 rutis-host 的 Job Object）。Unix 上插件留着定时器、或清理一直不返回时，运行时也在截止时间内卸载各行后退出（#353，由 #354 修复；`stray_runtime.rs`、`rutis-bridge/tests/host_gone.rs`，Node、Python、Go、Bun） |
 | Q5.5.2 | 多写者冲突检测 | 部分 | loader 实现了 CAS 与重放；设计 §十七 列出的多写者测试需逐条核对 |
 | Q5.5.3 | 持久化格式向前兼容 | 部分 | `rutis.json` 有顶层 `format`（省略按 1 读，比当前新时拒绝并提示升级）；`tests/fixtures/persisted/` 存 0.8.0、0.9.0、0.9.1 的样本，`rejected/` 断言错误信息；`docs/release.md` 每次发布加样本（#207 → #284）。dsh 的 `cordis.patch.yml` 按决定不加版本字段（跟随 Cordis，方案 Q4），只靠样本测试，与本条"每种格式都有版本"不完全一致 |
 | Q5.5.4 | 跨语言值往返验证 | 满足 | 转换规则在 `guide/plugin-api.md`；`value_roundtrip.rs` 用 proptest 在 Rust 侧生成值，经 Node、Python、Go、Bun 往返比较，每个 256 例，失败打印种子，另有 release 计数不变式（#296）；发现的问题已修（#290 → #312、#302 → #311、#279 → #338）。表外的值（Date、Map、Set、二进制、大整数）显式拒绝，登记为明确不保证（方案 Q5；是否支持见 #308）。只在 Unix 上运行 |
@@ -274,7 +274,7 @@ CI：`ci.yml`（PR 按改动选择任务，main 全部运行；Linux 全量与�
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | B1 | 某个安装渠道的包坏了：平台包没被选中、wheel 缺文件、二进制在干净机器上跑不起来 | 兼容 | 高 | 中 | P0 | IN（三个平台 × npm / PyPI / 二进制，本次构建的包）；发布后用注册表上的包再跑一次 | 合并、发布后 | 有（S9，#254、#324）；Python 指南示例的标记等 #259（#266） |
 | B2 | 收到 SIGINT / SIGTERM（Windows：Ctrl-C、Ctrl-Break、关闭控制台）时不执行清理；退出码不符合文档 | 残留 | 高 | 高（#174 已发生） | P0 | E + R（每种信号轮换） | PR | 部分：Unix 的 SIGINT、SIGTERM 有（#216）；Windows 的 Ctrl-Break 有（#277、#324）；Windows 的 Ctrl-C、关闭控制台没有 |
-| B3 | 宿主被 SIGKILL 后，运行时子进程成为孤儿 | 残留 | 高 | 中 | P0 | E + R（Unix 靠通道断开，Windows 靠 Job Object） | PR | 部分：三个平台有（`cross_language.rs`）；Unix 上事件循环不空的运行时不退出，`stray_runtime.rs` 只锁定检测（Q5.4.4） |
+| B3 | 宿主被 SIGKILL 后，运行时子进程成为孤儿 | 残留 | 高 | 中 | P0 | E + R（Unix 靠通道断开，Windows 靠 Job Object） | PR | 有：三个平台（`cross_language.rs`）；Unix 上事件循环不空、清理不返回的运行时也在截止时间内退出（#353、#354，`stray_runtime.rs`、`host_gone.rs`） |
 | B4 | 配置改坏后，旧的行被卸载、新的起不来 | 故障 | 高 | 中 | P0 | E（写入错误配置，断言旧版本继续服务）；loader 库级 K 已有 | PR | loader 有；`run` 不监视配置（2026-10-11 核对），是否支持见 #274 |
 | B5 | `rutis.json` 解析问题：未知字段被静默忽略、相对路径基准错误、凭据环境变量优先级错误 | 语义、诊断 | 中 | 中 | P1 | U（每个字段）；FZ（配置文件，低优先级） | PR | 有（U，`rutis-host/tests/config.rs`，#217；#226）；FZ 没有 |
 | B6 | 运行时包缺失、解释器找不到、端口被占、证书文件错误时，错误信息不足 | 诊断 | 中 | 高 | P1 | G（每种错误一个快照） | PR | 有（`errors.rs`，#217） |
@@ -586,7 +586,7 @@ CI：`ci.yml`（PR 按改动选择任务，main 全部运行；Linux 全量与�
 | 每晚 `stress.yml` 增加 `multiprocess` 任务：bridge、loader 的多进程测试重复多轮 | Q7.3 | #245 |
 | 自托管 runner：`dylib-macos`、`sdk-repro-macos` 等 macOS 任务，以及与操作系统无关的任务（`links`、`js-py`、`msrv`、`checks`、`release-dry-run`、`semver-rutis`、`changes`、`ci-ok`）默认跑在自托管 macOS 上（仓库变量 `MACOS_RUNNER`、`GATE_RUNNER` 可切回）；Linux 任务、`runtimes-windows` 可由 `LINUX_RUNNER`、`WINDOWS_RUNNER` 切到自托管（默认仍是 GitHub 的 runner） | Q12.6.2 | #333、#348、#350 |
 
-`network-macos` 仍用 GitHub 的 `macos-15`：ci.md §10 写的原因是自托管机器上的 #287。#287 已由 #344 修复，是否切过去（仓库变量 `NETWORK_MACOS_RUNNER`）还没有决定。
+`network-macos` 也在自托管的 macOS 机器上跑（仓库变量 `NETWORK_MACOS_RUNNER`；#287 由 #344 修复后切过来，ci.md §10）。
 
 ### 8.3 测量（2026-10-12，`ci.yml` 2026-10-12 的最近 40 次完成的运行）
 
@@ -695,8 +695,8 @@ E2E 发现并修复：#225、#226（#261、#217）。Node 最低版本降到 22�
 9. ~~值往返超出转换表的情况怎么处理~~：已决定（方案 Q5）：先在表里写明当前行为，登记为明确不保证；改实现另开 issue（#308）。
 10. ~~第二步的实现方式~~：已决定（方案 Q6）：逐个开 PR，方案 PR 只保留方案。
 11. **main 上的并发组与 Q12.4**：main 上按 ref 分组，等待中的运行被下一次合并替换（ci.md §7），不是每次合并都有完整结果。是修改规范（允许由之后的运行一起检查），还是改 CI（main 按提交分组）？
-12. **Unix 上宿主被强制终止后不退出的运行时（Q5.4.4、B3）**：插件让事件循环不空时，运行时在宿主死后继续运行（`stray_runtime.rs`）。要不要让运行时在通道关闭时主动退出，需要决定并登记 issue。
-13. **`network-macos` 是否切到自托管 runner**：#287 已修复（#344），ci.md §10 写的暂缓原因已不成立。
+12. ~~Unix 上宿主被强制终止后不退出的运行时（Q5.4.4、B3）~~：已修复（#353、#354）：会话断开后，运行时在 `RUTIS_SHUTDOWN_TIMEOUT`（由 rutis-host 的 `--shutdown-timeout` 传入，默认 10 秒）内卸载各行后退出。
+13. ~~`network-macos` 是否切到自托管 runner~~：已切换（仓库变量 `NETWORK_MACOS_RUNNER`，ci.md §10）。
 
 ---
 
