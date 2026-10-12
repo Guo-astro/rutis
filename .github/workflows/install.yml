@@ -108,7 +108,7 @@ jobs:
           const all = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64']
           const main = ['linux-x64', 'darwin-arm64', 'win32-x64']
           const platforms = process.env.PLATFORMS ? JSON.parse(process.env.PLATFORMS)
-            : process.env.EVENT === 'pull_request' ? ['linux-x64', 'darwin-arm64'] : main
+            : process.env.EVENT === 'pull_request' ? ['linux-x64'] : main
           // Main and pull requests: the self-hosted runners; a release and a
           // run by hand: GitHub's.
           const selfHosted = !process.env.PLATFORMS && (process.env.EVENT === 'pull_request'
