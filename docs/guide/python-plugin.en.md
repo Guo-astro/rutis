@@ -4,6 +4,7 @@ This guide covers creating a project, publishing it, and using it from a host. P
 
 ## 1. Create a project
 
+<!-- example: python-en run -->
 ```bash
 uvx rutis-host new weather --lang python
 cd weather
@@ -22,6 +23,7 @@ The generated project contains:
 
 ## 2. Write the plugin
 
+<!-- example: python-en file=weather/src/weather/__init__.py -->
 ```python
 from rutis import define_plugin
 
@@ -55,6 +57,7 @@ You can also omit `define_plugin` and declare `apply`, `inject`, `provides`, and
 
 `rutis.testing` does not require a host:
 
+<!-- example: python-en file=weather/tests/test_plugin.py -->
 ```python
 import asyncio
 import unittest
@@ -77,6 +80,7 @@ class Weather(unittest.TestCase):
         asyncio.run(go())
 ```
 
+<!-- example: python-en run -->
 ```bash
 uv run python -m unittest discover -s tests
 ```
@@ -85,12 +89,14 @@ uv run python -m unittest discover -s tests
 
 ## 4. Run in a local host
 
+<!-- example: python-en run until="weather: running" order=99 -->
 ```bash
 uv run rutis-host dev
 ```
 
-`dev` runs the plugin with the project's `.venv` and reimports it when files change. Add other required services to `rutis.dev.json`, such as a fake `llm` plugin module in `src/fake_llm.py`:
+`dev` runs the plugin with the project's `.venv` and reimports it when files change. Add other required services to `rutis.dev.json`, such as a fake `llm` (the row name `py:fake_llm` names the module `fake_llm` in the project's `src/`, shown after it):
 
+<!-- example: python-en file=weather/rutis.dev.json -->
 ```json
 {
   "rows": [
@@ -99,6 +105,26 @@ uv run rutis-host dev
   ]
 }
 ```
+
+<!-- example: python-en file=weather/src/fake_llm.py -->
+```python
+# src/fake_llm.py
+from rutis import define_plugin
+
+
+class FakeLlm:
+    async def ask(self, question):
+        return "sunny"
+
+
+def apply(ctx, config):
+    ctx.provide("llm", FakeLlm())
+
+
+plugin = define_plugin(apply, provides={"llm": FakeLlm})
+```
+
+`dev` finds plugin modules in the project's `src/`, so `fake_llm` needs no entry point, and it is not in the built wheel (`pyproject.toml` packages only `src/weather`).
 
 The row with the same ID as the plugin supplies its configuration; the other rows are additional plugins. They may also be TypeScript plugins (in that case, add `"runtimes": { "node": { "project": "." } }` to `rutis.dev.json`). `uv run rutis-host check` lists each row's dependencies, provided services, and configuration schema, and exits with a nonzero status if there is a problem.
 
