@@ -12,9 +12,9 @@
 //! are IEEE 754 doubles. There an integer beyond ±(2^53−1) comes back as the
 //! nearest double, -0 as 0 and an integral float (`2.0`) as an integer;
 //! from Node 24 an object key of one escaped character may come back as
-//! `"\\"` (#302). The table lists these as not guaranteed. A float read on
-//! the Rust side may be up to two units in the last place off (#290, not
-//! guaranteed). NaN and ±Infinity are not JSON and are not generated.
+//! `"\\"` (#302). The table lists these as not guaranteed. Every other float
+//! comes back bit for bit (#290). NaN and ±Infinity are not JSON and are not
+//! generated.
 //!
 //! Values nest at most 64 deep, below the receiving parser's limit (about
 //! 125 levels of data): a deeper value ends the whole session (#279, not
@@ -282,22 +282,11 @@ fn value() -> impl Strategy<Value = Json> {
 /// How a runtime carries numbers.
 #[derive(Clone, Copy)]
 enum Numbers {
-    /// As sent: integer or float, the same value, -0 kept. The number is
-    /// how many times a Rust side parses the value on its way (two between
-    /// Rust endpoints, one otherwise; see [`near`]).
-    Exact(u64),
+    /// As sent: integer or float, the same value, a float bit for bit
+    /// (-0 kept).
+    Exact,
     /// As IEEE 754 doubles (JavaScript).
     Doubles,
-}
-
-/// The same double, or one of the same sign at most two units in the last
-/// place away per parse: a Rust side parses JSON floats with serde_json's
-/// default (not `float_roundtrip`) precision. Measured over 2·10^7 random
-/// doubles, about 30% come back off, never by more than 2 units (#290,
-/// listed as not guaranteed in `guide/plugin-api.md`). -0 and 0 differ.
-fn near(x: f64, y: f64, parses: u64) -> bool {
-    let (a, b) = (x.to_bits(), y.to_bits());
-    (a >> 63) == (b >> 63) && a.abs_diff(b) <= 2 * parses
 }
 
 /// How a runtime carries a value: its numbers, and whether an object key of
@@ -328,13 +317,13 @@ fn same(sent: &Json, got: &Json, rules: Rules, at: &str) -> Result<(), String> {
         (Json::Number(a), Json::Number(b)) => {
             let (x, y) = (a.as_f64().unwrap(), b.as_f64().unwrap());
             let equal = match numbers {
-                Numbers::Exact(parses) => match (a.is_f64(), b.is_f64()) {
-                    (true, true) => near(x, y, parses),
+                Numbers::Exact => match (a.is_f64(), b.is_f64()) {
+                    (true, true) => x.to_bits() == y.to_bits(),
                     (false, false) => a == b,
                     _ => false,
                 },
                 // The double nearest the sent number; -0 and 0 alike.
-                Numbers::Doubles => x == y || near(x, y, 1),
+                Numbers::Doubles => x == y,
             };
             if equal {
                 Ok(())
@@ -535,7 +524,7 @@ async fn rust_values_round_trip() {
             &near,
             "rust",
             Rules {
-                numbers: Numbers::Exact(2),
+                numbers: Numbers::Exact,
                 escaped_keys: false,
             },
         )
@@ -590,7 +579,7 @@ async fn python_values_round_trip() {
             &near,
             "python",
             Rules {
-                numbers: Numbers::Exact(1),
+                numbers: Numbers::Exact,
                 escaped_keys: false,
             },
         )
@@ -631,7 +620,7 @@ async fn go_values_round_trip() {
             &near,
             "go",
             Rules {
-                numbers: Numbers::Exact(1),
+                numbers: Numbers::Exact,
                 escaped_keys: false,
             },
         )
