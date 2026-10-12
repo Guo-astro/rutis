@@ -216,7 +216,9 @@ impl Launcher {
 
     /// The process's standard output: this process's by default
     /// ([`Stdio::Inherit`]); [`Stdio::Null`] discards it, for example so
-    /// that other runtimes do not draw over a terminal UI. For the whole
+    /// that other runtimes do not draw over a terminal UI; [`Stdio::Lines`]
+    /// passes it on a whole line at a time, so that it does not run into
+    /// this process's own lines (or other runtimes'). For the whole
     /// runtime process, as [`Launcher::stdin`].
     pub fn stdout(mut self, stdio: Stdio) -> Self {
         self.stdout = stdio;
@@ -224,8 +226,9 @@ impl Launcher {
     }
 
     /// The process's standard error: this process's by default
-    /// ([`Stdio::Inherit`]); [`Stdio::Null`] discards it. For the whole
-    /// runtime process, as [`Launcher::stdin`].
+    /// ([`Stdio::Inherit`]); [`Stdio::Null`] discards it, [`Stdio::Lines`]
+    /// passes it on a whole line at a time. For the whole runtime process,
+    /// as [`Launcher::stdin`].
     pub fn stderr(mut self, stdio: Stdio) -> Self {
         self.stderr = stdio;
         self

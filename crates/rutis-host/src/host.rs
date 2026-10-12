@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
-use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle, RuntimePlugin, RuntimeState};
+use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle, RuntimePlugin, RuntimeState, Stdio};
 use rutis_bridge::transport::local::LocalPlugin;
 use rutis_bridge::transport::websocket::{
     Config, ListenerConfig, ServerTls, Trust, WebSocketPlugin,
@@ -23,6 +23,7 @@ use crate::config::{
     token, venv_python, BunRuntime, GoRuntime, GoStart, HostConfig, NodeRuntime, PythonRuntime,
     DEFAULT_PYTHON,
 };
+use crate::errln;
 
 pub struct Host {
     /// The host runs while this lives.
@@ -64,6 +65,19 @@ pub type Error = String;
 /// finished, however little of the deadline is left: longer than the
 /// local transport gives a process whose channel closed before killing it.
 pub const PROCESS_EXIT: Duration = Duration::from_secs(3);
+
+/// How long, once the runtime processes ended, a host waits for the rest
+/// of their output before it exits ([`output_written`]). Their output ends
+/// with them; only a process one of them started and left running keeps
+/// it open, and the host does not wait for that.
+pub const OUTPUT_GUARD: Duration = Duration::from_secs(2);
+
+/// Wait (up to [`OUTPUT_GUARD`]) until what the runtime processes wrote
+/// has all been passed on: what a program running a [`Host`] does last,
+/// so that their last lines are not lost when it exits (#332).
+pub fn output_written() {
+    rutis_bridge::transport::local::output_ended(OUTPUT_GUARD);
+}
 
 /// How long killed runtime processes may take to be gone.
 pub const KILLED_EXIT: Duration = Duration::from_secs(5);
@@ -134,7 +148,7 @@ impl Host {
             None => None,
         };
         if let Some(py) = &config.runtimes.py {
-            let runtime = python(py)?;
+            let runtime = whole_lines(python(py)?);
             let handle = runtime.handle();
             let rows = Arc::new(RuntimeResolver::modules(handle.clone()).with_catalog(&catalog));
             fibers.push(("py".to_owned(), root.plugin(runtime)));
@@ -143,7 +157,7 @@ impl Host {
             resolvers.push(rows);
         }
         if let Some(bun) = &config.runtimes.bun {
-            let runtime = bun_runtime(bun)?;
+            let runtime = whole_lines(bun_runtime(bun)?);
             let handle = runtime.handle();
             let rows = Arc::new(RuntimeResolver::modules(handle.clone()).with_catalog(&catalog));
             fibers.push(("bun".to_owned(), root.plugin(runtime)));
@@ -152,7 +166,7 @@ impl Host {
             resolvers.push(rows);
         }
         if let Some(node) = &config.runtimes.node {
-            let runtime = node_runtime(node)?;
+            let runtime = whole_lines(node_runtime(node)?);
             let handle = runtime.handle();
             let rows = Arc::new(RuntimeResolver::node(handle.clone()).with_catalog(&catalog));
             fibers.push(("node".to_owned(), root.plugin(runtime)));
@@ -197,7 +211,8 @@ impl Host {
         }
         let go = match go {
             Some((resolver, settings)) => {
-                let mut plugin = GoRuntimes::new(resolver.clone(), &settings.project);
+                let mut plugin = GoRuntimes::new(resolver.clone(), &settings.project)
+                    .output(Stdio::Lines, Stdio::Lines);
                 plugin = match settings.start {
                     GoStart::Eager => plugin.eager(),
                     GoStart::OnDemand => plugin.idle(Some(std::time::Duration::from_secs(
@@ -346,7 +361,7 @@ impl Host {
         let gone = rutis_bridge::transport::local::processes_ended();
         if tokio::time::timeout(KILLED_EXIT, gone).await.is_err() {
             let left = rutis_bridge::transport::local::running_processes();
-            eprintln!("rutis-host: processes {left:?} did not end when killed");
+            errln!("rutis-host: processes {left:?} did not end when killed");
         }
     }
 
@@ -516,6 +531,13 @@ fn identity(config: &HostConfig) -> Result<StaticIdentity, Error> {
         };
     }
     Ok(identity)
+}
+
+/// `runtime`, its output passed on a whole line at a time: a line a plugin
+/// writes in pieces (a Python `print` writes its newline separately) never
+/// has one of this host's lines, or another runtime's, inside it (#332).
+fn whole_lines(runtime: LocalRuntime) -> LocalRuntime {
+    runtime.stdout(Stdio::Lines).stderr(Stdio::Lines)
 }
 
 /// The Node runtime of `node.project`, with the `@arcships/rutis-runtime`

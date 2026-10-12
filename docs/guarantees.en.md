@@ -36,7 +36,7 @@ Numbers have the form `<family>/<name>` and are never reused; when a guarantee i
 | `instance/` | `instance/<design>.<section>` | instance designs: `subtrees` = [design-instance-subtrees](design-instance-subtrees.en.md), `services` = [design-instance-services-2026-10-08](design-instance-services-2026-10-08.en.md) | partly registered |
 | `bridge/` | `bridge/<name>` | sessions, links, carriers, cross-language values: [design-remote-plugins-2026-10-03](design-remote-plugins-2026-10-03.en.md), [requirements-protocol-plugins](requirements-protocol-plugins.en.md) §6, [plugin API](guide/plugin-api.en.md), quality standard Q6.2, Q6.5 | partly registered |
 | `loader/` | `loader/<name>` | rutis-loader designs | reserved |
-| `host/` | `host/<name>` | rutis-host designs and user documentation | reserved; `host/rutis-json-format` registered (#207) |
+| `host/` | `host/<name>` | rutis-host designs and user documentation | reserved; `host/rutis-json-format` registered (#207), `host/output-lines-whole` registered (#332) |
 | `dsh/` | `dsh/<name>` | rutis-dsh designs and documentation | reserved; `dsh/user-layer-format` registered (#207) |
 | `sdk/` | `sdk/<name>` | plugin SDKs and test tools: [plugin API](guide/plugin-api.en.md), quality standard Q6.7 | `sdk/testing-matches-runtime` registered (#206) |
 
@@ -244,7 +244,17 @@ Source: [plugin API](guide/plugin-api.en.md), quality standard Q6.7.
 
 ---
 
-## 13. Counts (baseline: `main` after `121eded` with #284 and #298 merged)
+## 13. rutis-host behaviour: `host/*`
+
+Source: the "Output" section of the user documentation [rutis-host](guide/rutis-host.en.md) (#332).
+
+| Number | Content | Level | Status | Verification | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `host/output-lines-whole` | Every line a runtime process `rutis-host` runs (Node, Bun, Python, Go) writes to stdout or stderr comes out on the same stream of `rutis-host`, unchanged and whole: no line of `rutis-host`'s own or of another runtime's lands inside it, also when the plugin writes the line in pieces; a last line without a newline comes out as a line of its own when the runtime ends, before `rutis-host` exits | contract behaviour | verified | `rutis-host/tests/output.rs::plugin_lines_written_in_pieces_come_out_whole`, `rutis-bridge/src/transport/local/output.rs::tests::a_line_written_in_pieces_is_passed_on_whole`; every scenario in `tests/e2e` (the harness fails on a probe line that came out broken) | Two plugins in the same runtime process that each write half a line still run together (a process has one output). A line longer than 64 KiB without a newline comes out in pieces. The black-box test runs on Unix only (it ends the host with SIGTERM) |
+
+---
+
+## 14. Counts (baseline: `main` after `121eded` with #284 and #298 merged)
 
 | Scope | Verified | Partly verified | Not verified | Explicitly not guaranteed | Total |
 | --- | --- | --- | --- | --- | --- |
@@ -255,8 +265,9 @@ Source: [plugin API](guide/plugin-api.en.md), quality standard Q6.7.
 | `bridge/*` | 13 | 3 | 0 | 1 | 17 |
 | `host/*`, `dsh/*` (§11) | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*` (§12) | 0 | 1 | 0 | 0 | 1 |
-| Total | 52 | 12 | 0 | 2 | 66 |
+| `host/*` (§13) | 1 | 0 | 0 | 0 | 1 |
+| Total | 53 | 12 | 0 | 2 | 67 |
 
-17 core promises: 14 verified, 3 partly verified (D22, D28, 5.8), 0 not verified. 47 contract behaviours: 38 verified, 9 partly verified (D5, 5.2, 5.3, 5.4, 5.5, `bridge/large-and-deep-values`, `bridge/version-refusal`, `bridge/tls-client-certificate-verified`, `sdk/testing-matches-runtime`), 0 not verified.
+17 core promises: 14 verified, 3 partly verified (D22, D28, 5.8), 0 not verified. 48 contract behaviours: 39 verified, 9 partly verified (D5, 5.2, 5.3, 5.4, 5.5, `bridge/large-and-deep-values`, `bridge/version-refusal`, `bridge/tls-client-certificate-verified`, `sdk/testing-matches-runtime`), 0 not verified.
 
 **0.10 baseline**: 0 unverified core promises, 0 unverified contract behaviours. From 0.11 on, a newly registered row (`loader/`, `host/`, …) that is "not verified" would push the contract number above the baseline (Q9.4.4), so new rows should be registered together with their tests. The maintainer confirms which rows are core promises and may change them.

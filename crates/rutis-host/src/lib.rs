@@ -9,3 +9,26 @@ pub mod host;
 pub mod new;
 pub mod project;
 pub mod status;
+
+/// Print a line on stdout in one write, under the locks the runtimes'
+/// output is passed on under: no runtime's line lands inside it (#332).
+#[macro_export]
+macro_rules! outln {
+    ($($arg:tt)*) => {
+        ::rutis_bridge::transport::local::write_line(
+            ::rutis_bridge::transport::local::OutputStream::Stdout,
+            &::std::format!($($arg)*),
+        )
+    };
+}
+
+/// [`outln!`] on stderr.
+#[macro_export]
+macro_rules! errln {
+    ($($arg:tt)*) => {
+        ::rutis_bridge::transport::local::write_line(
+            ::rutis_bridge::transport::local::OutputStream::Stderr,
+            &::std::format!($($arg)*),
+        )
+    };
+}

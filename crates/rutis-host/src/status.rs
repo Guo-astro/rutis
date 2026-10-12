@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use rutis::FiberState;
+
+use crate::outln;
 use rutis_loader::{EntryStatus, Loader};
 
 /// One line for a row's state.
@@ -43,11 +45,11 @@ pub fn follow(loader: Loader) {
             }
             for (id, line) in &now {
                 if shown.get(id) != Some(line) {
-                    println!("{id}: {line}");
+                    outln!("{id}: {line}");
                 }
             }
             for id in shown.keys().filter(|id| !now.contains_key(*id)) {
-                println!("{id}: removed");
+                outln!("{id}: removed");
             }
             shown = now;
             tokio::time::sleep(Duration::from_millis(200)).await;

@@ -32,8 +32,8 @@ pub const CHANNEL_FD: i32 = 3;
 pub const CHANNEL_TOKEN: &str = "RUTIS_CHANNEL_TOKEN";
 
 /// Where a process's standard input, output or error goes. The process
-/// that starts a runtime owns it, so there is no pipe to read: a stream is
-/// either this process's own or nothing.
+/// that starts a runtime owns it: a stream is this process's own, nothing,
+/// or (output only) this process's own a whole line at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Stdio {
@@ -44,14 +44,31 @@ pub enum Stdio {
     /// group, so a Ctrl-C in the terminal reaches it as well (otherwise it
     /// gets a group of its own, out of the terminal's reach).
     Inherit,
+    /// Output only: this process's own stream, a whole line at a time. The
+    /// process writes into a pipe; this process reads it as it comes and
+    /// writes each complete line to its own stream (standard output for
+    /// standard output, standard error for standard error) in one write,
+    /// as [`write_line`](super::write_line) does, so lines of processes
+    /// and of this process never run into each other. A last line without
+    /// a newline gets one when the output ends; a line longer than
+    /// [`MAX_LINE`](super::MAX_LINE) is passed on in pieces. The process
+    /// does not see a terminal. A host waits for what is left with
+    /// [`output_ended`](super::output_ended) before it exits. As standard
+    /// input, it is [`Stdio::Null`].
+    Lines,
 }
 
 impl Stdio {
-    pub(crate) fn process(self) -> std::process::Stdio {
-        match self {
-            Stdio::Null => std::process::Stdio::null(),
-            Stdio::Inherit => std::process::Stdio::inherit(),
-        }
+    /// The stream to give the process as its `stream` (`None`: its input).
+    pub(crate) fn process(
+        self,
+        stream: Option<super::OutputStream>,
+    ) -> std::io::Result<std::process::Stdio> {
+        Ok(match (self, stream) {
+            (Stdio::Null, _) | (Stdio::Lines, None) => std::process::Stdio::null(),
+            (Stdio::Inherit, _) => std::process::Stdio::inherit(),
+            (Stdio::Lines, Some(stream)) => super::output::pipe(stream)?,
+        })
     }
 }
 
@@ -112,14 +129,24 @@ impl Spawn {
         }
     }
 
-    fn command(&self) -> tokio::process::Command {
+    fn command(&self) -> Result<tokio::process::Command, ConnectError> {
+        use super::OutputStream;
+        let cannot = |error| cannot_start(self, error);
         let mut command = tokio::process::Command::new(&self.program);
         command
             .args(&self.args)
             .envs(self.env.iter().map(|(name, value)| (name, value)))
-            .stdin(self.stdin.process())
-            .stdout(self.stdout.process())
-            .stderr(self.stderr.process())
+            .stdin(self.stdin.process(None).map_err(cannot)?)
+            .stdout(
+                self.stdout
+                    .process(Some(OutputStream::Stdout))
+                    .map_err(cannot)?,
+            )
+            .stderr(
+                self.stderr
+                    .process(Some(OutputStream::Stderr))
+                    .map_err(cannot)?,
+            )
             .kill_on_drop(true);
         // Out of the terminal's reach: Ctrl-C there signals this process,
         // which unloads the process's plugins over the channel, and not the
@@ -135,7 +162,7 @@ impl Spawn {
         if let Some(cwd) = &self.cwd {
             command.current_dir(cwd);
         }
-        command
+        Ok(command)
     }
 }
 
@@ -292,7 +319,7 @@ fn close_on_exec_from(first: i32, limit: i32) -> std::io::Result<()> {
 #[cfg(unix)]
 fn inherit(spawn: &Spawn) -> Result<Started, ConnectError> {
     let (ours, theirs) = UnixStream::pair().map_err(retryable)?;
-    let mut command = spawn.command();
+    let mut command = spawn.command()?;
     hand_over(&mut command, Some(theirs.as_raw_fd()));
     let child = command
         .arg(format!("fd:{CHANNEL_FD}"))
@@ -312,7 +339,7 @@ async fn dial_back(spawn: &Spawn) -> Result<Started, ConnectError> {
         .map_err(retryable)?;
     let path = directory.path().join("peer.sock");
     let listener = tokio::net::UnixListener::bind(&path).map_err(retryable)?;
-    let mut command = spawn.command();
+    let mut command = spawn.command()?;
     hand_over(&mut command, None);
     let mut child = command
         .arg(&path)
@@ -342,7 +369,7 @@ pub(crate) const TOKEN_WAIT: Duration = Duration::from_secs(10);
 async fn loopback(spawn: &Spawn, token_wait: Duration) -> Result<Started, ConnectError> {
     let mut listener = Loopback::bind().await.map_err(retryable)?;
     listener.wait = token_wait;
-    let mut command = spawn.command();
+    let mut command = spawn.command()?;
     #[cfg(unix)]
     hand_over(&mut command, None);
     let mut child = command

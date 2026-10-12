@@ -36,7 +36,7 @@
 | `instance/` | `instance/<设计>.<节号>` | 实例相关设计：`subtrees` = [design-instance-subtrees](design-instance-subtrees.md)，`services` = [design-instance-services-2026-10-08](design-instance-services-2026-10-08.md) | 部分登记 |
 | `bridge/` | `bridge/<名字>` | 会话、链路、承载、跨语言值：[design-remote-plugins-2026-10-03](design-remote-plugins-2026-10-03.md)、[requirements-protocol-plugins](requirements-protocol-plugins.md) §6、[插件 API](guide/plugin-api.md)、质量规范 Q6.2、Q6.5 | 部分登记 |
 | `loader/` | `loader/<名字>` | rutis-loader 设计 | 预留 |
-| `host/` | `host/<名字>` | rutis-host 设计与用户文档 | 预留；`host/rutis-json-format` 已登记（#207） |
+| `host/` | `host/<名字>` | rutis-host 设计与用户文档 | 预留；`host/rutis-json-format` 已登记（#207），`host/output-lines-whole` 已登记（#332） |
 | `dsh/` | `dsh/<名字>` | rutis-dsh 设计与文档 | 预留；`dsh/user-layer-format` 已登记（#207） |
 | `sdk/` | `sdk/<名字>` | 插件 SDK 与测试工具：[插件 API](guide/plugin-api.md)、质量规范 Q6.7 | `sdk/testing-matches-runtime` 已登记（#206） |
 
@@ -244,7 +244,17 @@ PR 模板中有对应的检查项。
 
 ---
 
-## 13. 统计（基准：`121eded` 之后合入 #284、#298 的 `main`）
+## 13. rutis-host 的行为：`host/*`
+
+出处：用户文档 [rutis-host](guide/rutis-host.md) 的“输出”一节（#332）。
+
+| 编号 | 内容 | 级别 | 状态 | 验证 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `host/output-lines-whole` | `rutis-host` 运行的运行时进程（Node、Bun、Python、Go）写到 stdout、stderr 的每一行，原样、整行地出现在 `rutis-host` 的同一个流上：`rutis-host` 自己的行和其他运行时的行不会落进它中间，插件把一行分几次写也一样；运行时结束时没有换行的最后一行作为单独一行写出，在 `rutis-host` 退出之前 | 契约行为 | 已验证 | `rutis-host/tests/output.rs::plugin_lines_written_in_pieces_come_out_whole`、`rutis-bridge/src/transport/local/output.rs::tests::a_line_written_in_pieces_is_passed_on_whole`；`tests/e2e` 的每个场景（harness 遇到被拆开的探针行即失败） | 同一个运行时进程里的两个插件各写半行，仍会拼在一起（一个进程只有一份输出）。超过 64 KiB 没有换行的行分段写出。黑盒测试只在 Unix 上跑（用 SIGTERM 结束宿主） |
+
+---
+
+## 14. 统计（基准：`121eded` 之后合入 #284、#298 的 `main`）
 
 | 范围 | 已验证 | 部分验证 | 未验证 | 明确不保证 | 合计 |
 | --- | --- | --- | --- | --- | --- |
@@ -255,8 +265,9 @@ PR 模板中有对应的检查项。
 | `bridge/*` | 13 | 3 | 0 | 1 | 17 |
 | `host/*`、`dsh/*`（§11） | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*`（§12） | 0 | 1 | 0 | 0 | 1 |
-| 合计 | 52 | 12 | 0 | 2 | 66 |
+| `host/*`（§13） | 1 | 0 | 0 | 0 | 1 |
+| 合计 | 53 | 12 | 0 | 2 | 67 |
 
-核心承诺 17 条：已验证 14，部分验证 3（D22、D28、5.8），未验证 0。契约行为 47 条：已验证 38，部分验证 9（D5、5.2、5.3、5.4、5.5、`bridge/large-and-deep-values`、`bridge/version-refusal`、`bridge/tls-client-certificate-verified`、`sdk/testing-matches-runtime`），未验证 0。
+核心承诺 17 条：已验证 14，部分验证 3（D22、D28、5.8），未验证 0。契约行为 48 条：已验证 39，部分验证 9（D5、5.2、5.3、5.4、5.5、`bridge/large-and-deep-values`、`bridge/version-refusal`、`bridge/tls-client-certificate-verified`、`sdk/testing-matches-runtime`），未验证 0。
 
 **0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 0 条。从 0.11 起，新登记的条目（`loader/`、`host/` 等）如果是"未验证"，会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。
