@@ -36,7 +36,7 @@ Numbers have the form `<family>/<name>` and are never reused; when a guarantee i
 | `instance/` | `instance/<design>.<section>` | instance designs: `subtrees` = [design-instance-subtrees](design-instance-subtrees.en.md), `services` = [design-instance-services-2026-10-08](design-instance-services-2026-10-08.en.md) | partly registered |
 | `bridge/` | `bridge/<name>` | sessions, links, carriers, cross-language values: [design-remote-plugins-2026-10-03](design-remote-plugins-2026-10-03.en.md), [requirements-protocol-plugins](requirements-protocol-plugins.en.md) §6, [plugin API](guide/plugin-api.en.md), quality standard Q6.2, Q6.5 | partly registered |
 | `loader/` | `loader/<name>` | rutis-loader designs | reserved |
-| `host/` | `host/<name>` | rutis-host designs and user documentation | reserved; `host/rutis-json-format` registered (#207), `host/link-state-output` registered (#321) |
+| `host/` | `host/<name>` | rutis-host designs and user documentation | reserved; `host/rutis-json-format` registered (#207), `host/link-state-output` registered (#321), `host/output-lines-whole` registered (#332) |
 | `dsh/` | `dsh/<name>` | rutis-dsh designs and documentation | reserved; `dsh/user-layer-format` registered (#207) |
 | `sdk/` | `sdk/<name>` | plugin SDKs and test tools: [plugin API](guide/plugin-api.en.md), quality standard Q6.7 | `sdk/testing-matches-runtime` registered (#206) |
 
@@ -246,11 +246,12 @@ Source: [plugin API](guide/plugin-api.en.md), quality standard Q6.7.
 
 ## 13. Host output: `host/link-state-output`
 
-Source: "What `run` prints" in the user documentation [rutis-host](guide/rutis-host.en.md), and the reconnecting part of [Connect Nodes](guide/nodes.en.md) (#321).
+Source: "What `run` prints" in the user documentation [rutis-host](guide/rutis-host.en.md), and the reconnecting part of [Connect Nodes](guide/nodes.en.md) (#321); the "Output" section of [rutis-host](guide/rutis-host.en.md) (#332).
 
 | Number | Content | Level | Status | Verification | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `host/link-state-output` | `rutis-host run` prints at start, once per listener, the address it is bound to (`rutis-host: listening on <name> <address>`); each change of a node row's link state prints one line, apart from the row's state lines: `<row id>: link connected`, `link down (<reason>); retrying in <time>`, `link refused: auth-rejected (<reason>); retrying in 30s`, `link stopped: incompatible (<reason>)`; the category comes from the link's classification of the failure (`Failure`), never from the error's text; a refused token and a server certificate for another name or expired are all reported as `auth-rejected`; no token appears in the output | Contract behaviour | Verified | `rutis-host/src/status.rs::tests::each_link_state_has_its_line`, `rutis-host/tests/links.rs::a_link_reports_connected_and_down`, `::an_unreachable_far_end_is_reported_as_down`, `::a_refused_token_is_reported_by_its_category_without_it`, `::an_incompatible_far_end_is_reported_as_stopped`; `tests/e2e/tests/nodes.rs::a_refused_reconnect_is_reported_by_its_category`, `::a_refused_certificate_is_reported_by_its_category` | The reason in parentheses is for people; its wording is not guaranteed. States are checked every 200 ms and only changes are printed; a shorter state may not be printed |
+| `host/output-lines-whole` | Every line a runtime process `rutis-host` runs (Node, Bun, Python, Go) writes to stdout or stderr comes out on the same stream of `rutis-host`, unchanged and whole: no line of `rutis-host`'s own or of another runtime's lands inside it, also when the plugin writes the line in pieces; a last line without a newline comes out as a line of its own when the runtime ends, before `rutis-host` exits | contract behaviour | verified | `rutis-host/tests/output.rs::plugin_lines_written_in_pieces_come_out_whole`, `rutis-bridge/src/transport/local/output.rs::tests::a_line_written_in_pieces_is_passed_on_whole`; every scenario in `tests/e2e` (the harness fails on a probe line that came out broken) | Two plugins in the same runtime process that each write half a line still run together (a process has one output). A line longer than 64 KiB without a newline comes out in pieces. The black-box test runs on Unix only (it ends the host with SIGTERM) |
 
 ---
 
@@ -262,12 +263,12 @@ Source: "What `run` prints" in the user documentation [rutis-host](guide/rutis-h
 | `core/features.*`, `core/typed.*` | 6 | 0 | 0 | 0 | 6 |
 | `boundary/5.*` | 7 | 1 | 0 | 0 | 8 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
-| `bridge/*` | 15 | 1 | 0 | 1 | 17 |
+| `bridge/*` | 16 | 0 | 0 | 1 | 17 |
 | `host/*`, `dsh/*` (§11) | 2 | 0 | 0 | 0 | 2 |
-| `host/*` (§13) | 1 | 0 | 0 | 0 | 1 |
+| `host/*` (§13) | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*` (§12) | 0 | 1 | 0 | 0 | 1 |
-| Total | 59 | 6 | 0 | 2 | 67 |
+| Total | 61 | 5 | 0 | 2 | 68 |
 
-17 core promises: 14 verified, 3 partly verified (D22, D28, 5.8), 0 not verified. 48 contract behaviours: 45 verified, 3 partly verified (D5, `bridge/large-and-deep-values`, `sdk/testing-matches-runtime`), 0 not verified.
+17 core promises: 14 verified, 3 partly verified (D22, D28, 5.8), 0 not verified. 49 contract behaviours: 47 verified, 2 partly verified (D5, `sdk/testing-matches-runtime`), 0 not verified.
 
 **0.10 baseline**: 0 unverified core promises, 0 unverified contract behaviours. From 0.11 on, a newly registered row (`loader/`, `host/`, …) that is "not verified" would push the contract number above the baseline (Q9.4.4), so new rows should be registered together with their tests. The maintainer confirms which rows are core promises and may change them.

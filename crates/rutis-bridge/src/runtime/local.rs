@@ -175,14 +175,16 @@ impl LocalRuntime {
     }
 
     /// The runtime process's standard output: this process's by default;
-    /// [`Stdio::Null`] discards it ([`Launcher::stdout`]).
+    /// [`Stdio::Null`] discards it, [`Stdio::Lines`] passes it on a whole
+    /// line at a time ([`Launcher::stdout`]).
     pub fn stdout(mut self, stdio: Stdio) -> Self {
         self.launcher.stdout = stdio;
         self
     }
 
     /// The runtime process's standard error: this process's by default;
-    /// [`Stdio::Null`] discards it ([`Launcher::stderr`]).
+    /// [`Stdio::Null`] discards it, [`Stdio::Lines`] passes it on a whole
+    /// line at a time ([`Launcher::stderr`]).
     pub fn stderr(mut self, stdio: Stdio) -> Self {
         self.launcher.stderr = stdio;
         self

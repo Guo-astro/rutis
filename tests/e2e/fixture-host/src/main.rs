@@ -56,6 +56,8 @@ fn main() {
         .build()
         .expect("the async runtime");
     let code = runtime.block_on(run(&path));
+    drop(runtime);
+    rutis_host::host::output_written();
     std::process::exit(code);
 }
 

@@ -315,13 +315,30 @@ pub(crate) fn command(
             ));
         }
     };
+    use crate::transport::local::OutputStream;
+    let cannot = |error: std::io::Error| {
+        Error::Transport(format!(
+            "cannot start {}: {error}",
+            launcher.program.to_string_lossy()
+        ))
+    };
     let mut command = tokio::process::Command::new(&launcher.program);
     command
         .args(&launcher.args)
         .envs(launcher.env.iter().map(|(name, value)| (name, value)))
-        .stdin(launcher.stdin.process())
-        .stdout(launcher.stdout.process())
-        .stderr(launcher.stderr.process());
+        .stdin(launcher.stdin.process(None).map_err(cannot)?)
+        .stdout(
+            launcher
+                .stdout
+                .process(Some(OutputStream::Stdout))
+                .map_err(cannot)?,
+        )
+        .stderr(
+            launcher
+                .stderr
+                .process(Some(OutputStream::Stderr))
+                .map_err(cannot)?,
+        );
     // Without a directory of its own, it runs where the application does.
     if let Some(cwd) = &launcher.cwd {
         command.current_dir(cwd);

@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rutis::FiberState;
+
+use crate::outln;
 use rutis_bridge::{Failure, LinkState};
 use rutis_loader::{EntryStatus, Loader, PeerResolver};
 
@@ -158,7 +160,7 @@ pub fn follow(loader: Loader, peers: Arc<PeerResolver>) {
         let mut shown = Shown::default();
         loop {
             for line in shown.changes(&loader, &peers) {
-                println!("{line}");
+                outln!("{line}");
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }

@@ -229,6 +229,16 @@ impl Host {
         let deadline = Instant::now() + hang_guard();
         let mut state = self.output.state.lock().unwrap();
         loop {
+            // A probe's line with something else inside it, or inside
+            // something else, is a fault of the host's, not a line to skip
+            // until the hang guard (#332).
+            if let Some(line) = state.lines.iter().find(|line| broken(&line.text)) {
+                let text = line.text.clone();
+                drop(state);
+                self.fail(&format!(
+                    "a probe's line came out broken (#332), waiting for {what}: {text:?}"
+                ));
+            }
             let found = (0..state.lines.len())
                 .find(|&index| !state.taken[index] && matches(&state.lines[index].text));
             if let Some(index) = found {
@@ -416,5 +426,29 @@ impl Drop for Host {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
+    }
+}
+
+/// Whether `text` has a probe's line (`{"probe": …}`, one JSON object per
+/// line) in it without being one whole: lines ran into each other.
+fn broken(text: &str) -> bool {
+    text.contains("{\"probe\"")
+        && !(text.starts_with("{\"probe\"")
+            && serde_json::from_str::<serde_json::Value>(text).is_ok())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_probe_line_run_into_another_is_broken() {
+        assert!(!super::broken(r#"{"probe": "p", "event": "started"}"#));
+        assert!(!super::broken("demo: running"));
+        assert!(super::broken(
+            r#"{"probe": "p", "event": "started"}demo: running"#
+        ));
+        assert!(super::broken(r#"demo: {"probe": "p", "event": "started"}"#));
+        assert!(super::broken(
+            r#"{"probe":"a","event":"started"}{"probe":"b","event":"started"}"#
+        ));
     }
 }

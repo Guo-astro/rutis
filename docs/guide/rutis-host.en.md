@@ -78,6 +78,17 @@ Status 2 is separate from 1 so that process managers and scripts can tell a conf
 
 On Unix, a signal `rutis-host` was started ignoring (SIGHUP under `nohup`, for example) stays ignored. The runtime processes are in process groups of their own, so Ctrl-C in a terminal reaches only `rutis-host`, which unloads the rows. On Windows, they are started in console process groups of their own, which ignore Ctrl-C; Ctrl-Break and closing the console still reach them, and their cleanups may then not run, so use Ctrl-C to stop. When the console closes, Windows also ends `rutis-host` after a few seconds, whatever the deadline.
 
+## Output
+
+The standard output and standard error of the runtime processes (Node, Bun, Python, Go) are not written straight onto `rutis-host`'s: `rutis-host` reads them through pipes and writes them a whole line at a time — a line a plugin writes to stdout comes out on `rutis-host`'s stdout, one written to stderr on its stderr, unchanged, with no prefix. `rutis-host` writes its own status lines a whole line at a time too. So a plugin's line and a line of `rutis-host`'s, or lines of two runtimes, never run into each other, also when the plugin writes a line in pieces (Python's `print` writes the text, then the newline) and when stdout and stderr are the same file (`2>&1`).
+
+- A line comes out when its newline comes; nothing is flushed after a time: a prompt without a newline, or a progress bar redrawn with `\r`, shows when the line ends. When a runtime ends, a last line without a newline comes out as a line of its own.
+- A line longer than 64 KiB without a newline comes out in pieces.
+- The plugins in one runtime process share that process's output: two plugins in the same process that each write half a line still run together.
+- A runtime process's stdout and stderr are pipes, not a terminal: libraries that decide on colours and the like by whether they write to a terminal write as for no terminal.
+- The pipes are always read: a plugin that writes a lot is not held up by a full pipe; it waits, as before, only while `rutis-host`'s own output cannot be written (a paused terminal, a reader that does not read).
+- `rutis-host` writes the rest of the runtimes' output before it exits. A process a runtime started that is still running after the runtime exited holds that output too; `rutis-host` waits for it at most 2 more seconds, and what it writes after that does not come out.
+
 ## `rutis.json`
 
 ```json

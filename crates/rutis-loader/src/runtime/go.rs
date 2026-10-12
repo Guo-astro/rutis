@@ -24,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
 use rutis_bridge::runtime::{
-    go_runtime_name, LocalRuntime, RowSchema, RuntimeHandle, RuntimeState,
+    go_runtime_name, LocalRuntime, RowSchema, RuntimeHandle, RuntimeState, Stdio as RuntimeStdio,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -886,6 +886,8 @@ struct Inner {
 struct Settings {
     idle: Option<Duration>,
     eager: bool,
+    /// Each runtime process's standard output and error.
+    output: (RuntimeStdio, RuntimeStdio),
 }
 
 #[derive(Default)]
@@ -971,6 +973,7 @@ impl GoRuntimes {
                 settings: Mutex::new(Settings {
                     idle: Some(Duration::from_secs(60)),
                     eager: false,
+                    output: (RuntimeStdio::Inherit, RuntimeStdio::Inherit),
                 }),
                 ctx: Mutex::new(None),
                 slots: Mutex::default(),
@@ -989,10 +992,18 @@ impl GoRuntimes {
 
     /// Start every binary's runtime when mounted, and keep them running.
     pub fn eager(self) -> Self {
-        *self.inner.settings.lock().unwrap() = Settings {
-            idle: None,
-            eager: true,
-        };
+        let mut settings = self.inner.settings.lock().unwrap();
+        settings.idle = None;
+        settings.eager = true;
+        drop(settings);
+        self
+    }
+
+    /// Where each runtime process's standard output and error go: this
+    /// process's by default ([`RuntimeStdio::Inherit`]), as
+    /// [`LocalRuntime::stdout`] and [`LocalRuntime::stderr`].
+    pub fn output(self, stdout: RuntimeStdio, stderr: RuntimeStdio) -> Self {
+        self.inner.settings.lock().unwrap().output = (stdout, stderr);
         self
     }
 
@@ -1160,6 +1171,7 @@ impl Inner {
             runtime: runtime.to_owned(),
             binary: binary.clone(),
             project: self.project.clone(),
+            output: self.settings.lock().unwrap().output,
             resolver: self.resolver.clone(),
             first: Mutex::new(None),
         };
@@ -1330,6 +1342,8 @@ struct GoRuntime {
     runtime: String,
     binary: PathBuf,
     project: PathBuf,
+    /// Its process's standard output and error.
+    output: (RuntimeStdio, RuntimeStdio),
     resolver: Arc<GoResolver>,
     /// The runtime whose handle the slot watches, for the first start.
     first: Mutex<Option<LocalRuntime>>,
@@ -1337,7 +1351,10 @@ struct GoRuntime {
 
 impl GoRuntime {
     fn local(&self) -> LocalRuntime {
-        LocalRuntime::go(&self.binary, &self.project).named(self.runtime.clone())
+        LocalRuntime::go(&self.binary, &self.project)
+            .named(self.runtime.clone())
+            .stdout(self.output.0)
+            .stderr(self.output.1)
     }
 }
 
