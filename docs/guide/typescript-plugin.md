@@ -86,7 +86,7 @@ npm test
 
 ## 4. 在本地宿主里运行
 
-<!-- example: typescript run until="rutis-host dev: running greeter" order=99 -->
+<!-- example: typescript run until="greeter: running" order=99 -->
 ```bash
 npx rutis-host dev
 ```
