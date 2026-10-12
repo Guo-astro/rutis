@@ -12,7 +12,8 @@
 #                 after publishing, from the registries (source: registry)
 #   by hand       any version and source
 #
-# The minimum versions go on Linux (Node 22, Python 3.10);
+# The minimum versions go on Linux (Node 22, Python 3.10, Bun 1.4.0, Go
+# oldstable; websockets 15.0 is the PyPI cell's own);
 # macOS and Windows take the latest (docs/ci.md §9).
 name: install
 
@@ -150,6 +151,17 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - uses: astral-sh/setup-uv@v6
+      # The npm cell's Bun row (not on Windows, Bun design §10) and the
+      # binary cell's Go row; oldest on Linux, latest elsewhere (§9 of
+      # docs/ci.md). Go's build cache comes with it (same key as ci.yml).
+      - if: runner.os != 'Windows'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ runner.os == 'Linux' && '1.4.0' || 'latest' }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ runner.os == 'Linux' && 'oldstable' || 'stable' }}
+          cache-dependency-path: go/rutis/go.mod
       # This run's packages: the ones package.yml built.
       - if: env.RUTIS_E2E_SOURCE == 'local'
         uses: actions/download-artifact@v4

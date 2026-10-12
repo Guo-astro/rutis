@@ -66,7 +66,7 @@ npm 从 tgz 安装时，`rutis-host` 的 `optionalDependencies` 里其他平台�
 | --- | --- | --- |
 | 1 安装 | 按三 | 退出码 0 |
 | 2 身份 | `宿主命令 --version`；宿主二进制的实际路径 | 列车版本；路径在场景目录下 |
-| 3 最小项目 | 场景里内置的固定项目：一个 `greeter` 行加一个 probe 行。npm：TS 行；PyPI：`py:` 行；二进制：TS 和 Python 两行，Linux 上另加一个 Go 行 | `run`（在项目目录里，不带参数，即文档的写法）后 probe 调 `greeter.hello("Ada")` 得到结果；二进制格子里 TS 调 Python 得到结果 |
+| 3 最小项目 | 场景里内置的固定项目：一个 `greeter` 行加一个 probe 行。npm：TS 行；PyPI：`py:` 行；二进制：TS 和 Python 两行，另加一个 Go 行（每个平台；Go 插件用仓库里的 Go SDK 构建，发布后用发布的模块） | `run`（在项目目录里，不带参数，即文档的写法）后 probe 调 `greeter.hello("Ada")` 得到结果；二进制格子里 TS 调 Python、调 Go 得到结果 |
 | 4 停止 | 只给主进程发 SIGTERM：npm 是 Node 启动器，uv 是 `uv` 进程，二进制是 `rutis-host` | 退出码 0；probe `stopped`；npm 启动器、`uv` 进程也已退出；残余检查通过（`tests/e2e/src/residue.rs`） |
 
 另加几个只在某个渠道上的步骤：
@@ -75,12 +75,12 @@ npm 从 tgz 安装时，`rutis-host` 的 `optionalDependencies` 里其他平台�
 | --- | --- | --- |
 | npm | 不装 `@arcships/rutis-runtime`，运行 Node 行 | 行照常运行：运行时来自 `@arcships/rutis-host` 的依赖 |
 | npm | 不装本平台的 tgz | 退出码 1，输出 `no binary for <平台>` |
-| npm（Linux） | 装 `@arcships/rutis-bun` 的 tgz，加一个 `bun:` 行，Bun 1.4.0 | probe 调用得到结果 |
+| npm（Linux、macOS；Bun 在 Windows 上未声明支持，Bun 设计 §10） | 装 `@arcships/rutis-bun` 的 tgz，把 greeter 换成 `bun:` 行；Linux 上 Bun 1.4.0 | probe 调用得到 Bun 里的结果；停止同第 4 步 |
 | PyPI | `uvx rutis-host@<版本> --version`（`--find-links`）；一个没有 `.venv` 的 `py:` 项目里 `uvx … run` | 第一条输出列车版本；第二条见二-3 |
-| PyPI（Linux） | `websockets==15.0`；`python -m rutis listen:ws://127.0.0.1:<端口>/rutis …`，宿主用节点行连上 | probe 调用得到结果 |
+| PyPI（每个平台） | pip 的 venv 里装 `rutis[network]` 与 `websockets==15.0`（`rutis` 仍是本次构建的）；`python -m rutis listen:ws://127.0.0.1:<端口>/rutis …`，venv 里的宿主用节点行连上 | 装的是 websockets 15.0；probe 调用得到结果；停止同第 4 步 |
 | 二进制 | 项目里没有 `@arcships/rutis-runtime`，运行 Node 行 | 退出码 1，输出 `npm install @arcships/rutis-runtime` |
 
-Windows 上第 4 步暂用 kill，残余检查的进程一项按 #232 报告为跳过（框架已有此行为）。
+Windows 没有 SIGTERM：第 4 步用 `Host::ctrl_c()` 对主进程的控制台进程组发 Ctrl-Break（#266），断言同样是退出码 0、probe `stopped`；残余检查读每个宿主的 Job Object（#232）。例外：`uv run` 在 Windows 上只忽略 Ctrl-C、不忽略 Ctrl-Break（uv 的 `run_to_completion` 只等 `tokio::signal::ctrl_c`），uv 立即以 STATUS_CONTROL_C_EXIT 结束，它的退出码不是 rutis-host 的；这一步在 Windows 上改为断言 rutis-host 打印了 `Ctrl-Break: stopping`、probe `stopped`、输出结束（rutis-host 已退出），uv 的退出码为 0 或 STATUS_CONTROL_C_EXIT。
 
 ## 五、平台与版本
 
@@ -160,7 +160,7 @@ install.yml（可复用；输入：来源 local | registry，版本）
 | Q2.13 | 标记过的文档示例运行 | main |
 | I5，部分 | E7 不再跳过 | 改 dylib 的 PR |
 
-不覆盖：macOS 浏览器下载的隔离属性；musl Linux；pnpm、yarn、全局安装；升级与多版本并存（#209）；公司代理、离线安装；Windows 的进程残余与 Ctrl-C（#232）；最小项目之外的功能正确性。
+不覆盖：macOS 浏览器下载的隔离属性；musl Linux；pnpm、yarn、全局安装；升级与多版本并存（#209）；公司代理、离线安装；最小项目之外的功能正确性。
 
 ## 十一、新增与修改的文件
 
@@ -186,7 +186,7 @@ install.yml（可复用；输入：来源 local | registry，版本）
 
 1. main 上 `install` 的每个平台通过；日志里有语言环境版本、`rutis-host <列车版本>` 和宿主二进制的路径。
 2. 检查能发现问题：去掉 `rutis` 包的 wheel → PyPI 格子失败；不装本平台 tgz → npm 格子在"缺平台包"一步得到预期错误。
-3. 每个格子的残余报告为空（Windows 的进程一项按 #232 报告为跳过）。
+3. 每个格子的残余报告为空。
 4. release.yml 中每个 publish 任务都 `needs` 发布前的 install 任务。
 5. 发布后验证自动运行；用 `workflow_dispatch` 指定不存在的版本时，自动开出 issue。
 6. 标记过的文档示例在 main 上运行通过。
