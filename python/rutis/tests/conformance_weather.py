@@ -24,6 +24,9 @@ SAMPLES = {
     "python/nan": lambda: float("nan"),
     "python/int-keys": lambda: {1: "a"},
     "python/exception-value": lambda: ValueError("bad"),
+    "python/safe-int": lambda: [2**53 - 1, -(2**53 - 1), True],
+    "python/big-int": lambda: 2**64 + 1,
+    "python/big-int-nested": lambda: {"n": [1, -(2**53)]},
 }
 
 

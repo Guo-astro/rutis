@@ -26,7 +26,7 @@ from types import ModuleType
 from typing import Any, AsyncIterator, Callable
 
 from . import plugin as sdk
-from .peer import MAX_DEPTH, RemoteError, _holds_reference, _is_live
+from .peer import MAX_DEPTH, MAX_SAFE_INTEGER, RemoteError, _holds_reference, _is_live
 
 
 class PluginTestError(AssertionError):
@@ -38,7 +38,11 @@ def _cross(value: Any, where: str, data: bool = False, depth: int = 0) -> Any:
     """`value` as the other process sees it, by the rules of the runtime
     (`rutis.peer`); `data`: inside plain data, which crosses as JSON;
     `depth`: the lists and dicts around it (at most MAX_DEPTH, #279)."""
-    if value is None or isinstance(value, (bool, int, str)):
+    if value is None or isinstance(value, (bool, str)):
+        return value
+    if isinstance(value, int):
+        if not -MAX_SAFE_INTEGER <= value <= MAX_SAFE_INTEGER:
+            raise PluginTestError(f"{where}: an integer beyond ±(2^53-1) cannot cross between processes (#356)")
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
