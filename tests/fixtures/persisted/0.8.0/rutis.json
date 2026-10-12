@@ -1,0 +1,31 @@
+{
+  "id": "main",
+  "runtimes": {
+    "node": { "project": ".", "runtime": "vendor/rutis-runtime" },
+    "py": { "project": "plugins", "python": ".venv/bin/python" },
+    "remote": [
+      { "name": "gpu", "language": "python" },
+      { "name": "edge", "language": "node" }
+    ]
+  },
+  "listen": [
+    { "name": "public", "address": "0.0.0.0:7443", "cert": "tls/server.pem", "key": "tls/server.key" },
+    { "name": "local", "address": "127.0.0.1:7444" }
+  ],
+  "rows": [
+    { "id": "weather", "name": "weather-plugin", "config": { "city": "Oslo" }, "inject": ["llm"], "isolate": { "cache": true } },
+    { "id": "llm", "name": "py:llm_gateway", "isolate": { "http": "shared" } },
+    { "id": "local-tool", "name": "./tools/tool.ts" },
+    { "id": "old-tool", "name": "../shared/old-tool.mjs", "disabled": true },
+    { "id": "tools", "group": true, "config": [
+      { "id": "tool-a", "name": "./tools/a.ts", "config": { "level": 2 } },
+      { "id": "tool-b", "name": "tool-b-plugin", "disabled": false }
+    ] },
+    { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["weather"] } },
+    { "id": "branch", "name": "rutis-bridge/peer", "config": { "peer": "branch", "listen": "public", "import": ["clock"] } },
+    { "id": "sidecar", "name": "rutis-bridge/peer", "config": { "peer": "sidecar", "dial": "/run/rutis/sidecar.sock" } },
+    { "id": "gpu", "name": "rutis-bridge/peer", "config": { "peer": "gpu", "dial": "wss://gpu.example.com/rutis", "runtime": "gpu" } },
+    { "id": "embedder", "name": "gpu:embedder" },
+    { "id": "clock", "name": "peer:office/clock" }
+  ]
+}

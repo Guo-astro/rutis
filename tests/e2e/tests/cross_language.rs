@@ -104,8 +104,9 @@ fn a_ts_row_uses_a_python_service() {
         Ok(json!(1))
     );
 
-    // Killed: `run` has no signal handling yet (#174); its runtimes must
-    // end with their channels.
+    // Killed, the host cleans nothing up: its runtimes must end by
+    // themselves when their channels close (on Windows, rutis-host's job
+    // ends them).
     host.kill();
     host.wait_exit();
     s.finish();
@@ -124,7 +125,10 @@ fn a_python_call_through_ts_back_to_python() {
         py.call(&mut host, "report", "summary", json!(["greeting"])),
         Ok(json!("report: hello from python"))
     );
-    host.kill();
-    host.wait_exit();
+    // Stopped as from a terminal (Ctrl-Break on Windows): every row's
+    // cleanup runs, exit code 0.
+    host.ctrl_c();
+    let status = host.wait_exit();
+    assert_eq!(status.code(), Some(0), "after Ctrl-C: {status}");
     s.finish();
 }

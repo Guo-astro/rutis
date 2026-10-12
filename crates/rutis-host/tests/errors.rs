@@ -34,7 +34,8 @@ async fn first_error(dir: &Path, text: &str) -> String {
     normalize(&error, dir)
 }
 
-/// risk: B6, A7
+/// risk: B6, A7, J3
+/// guarantee: host/rutis-json-format (a newer format)
 #[tokio::test(flavor = "multi_thread")]
 async fn a_configuration_that_is_not_there_or_not_valid() {
     let _environment = environment();
@@ -60,6 +61,10 @@ async fn a_configuration_that_is_not_there_or_not_valid() {
         (
             r#"{ "runtimes": { "go": { "dir": "g", "start": "lazy" } } }"#,
             "<dir>/rutis.json: unknown variant `lazy`, expected `on-demand` or `eager` at line 1 column 51",
+        ),
+        (
+            r#"{ "format": 2, "services": {} }"#,
+            "<dir>/rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-host",
         ),
         (
             r#"{ "id": "Main Host" }"#,

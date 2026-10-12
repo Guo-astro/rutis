@@ -43,10 +43,11 @@ Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（�
 | `null` / `None`、布尔、数字、字符串 | 复制 |
 | 数组 / list、普通对象 / 字符串键的 dict | 递归复制 |
 | Python dataclass | 复制为 dict |
-| `Error` / 异常 | 复制名字和消息；抛出时另一端得到同名的错误 |
+| `Error` / 异常 | 作为值传递时复制为数据 `{ name, message }`（TypeScript 另带 `stack`）；抛出时另一端得到同名、同消息的错误（TypeScript 中内置错误类保留类，其余是 `Error`；Python 中是 `rutis.peer.RemoteError`，`name` 是原来的类名），其他属性不传 |
 | 函数、Promise / 协程 | 按引用：另一端调用或 await 的是原来那个 |
 | 带方法的对象、类的实例 | 按引用：另一端拿到代理，调用的是原对象 |
-| symbol、bigint、Map、Set、二进制、循环引用 | 不能跨进程（TypeScript 中 Map、Set、Date 按 JSON 规则复制，内容会丢失） |
+| symbol、bigint、Map、Set、TypeScript 的 Date、二进制、循环引用、`NaN` / `Infinity` | 不能跨进程（调用失败）。Map、Set、Date、二进制、bigint 是否改为可传递由 [#308](https://github.com/arcships/rutis/issues/308) 决定，在此之前真实运行时和测试工具都拒绝它们 |
+| TypeScript 数据（不含函数、带方法的对象）里的 `undefined` | 变成 `null` |
 | Go 的结构体、切片、`map[string]T` | 按 JSON 复制（遵循 `json` 标签）；结构体一律是数据，要按引用传对象写 `rutis.Ref(v)`。超出 ±2^53−1 的整数、`[]byte`、channel、非字符串键的 map 不能跨进程 |
 
 数字和嵌套深度有下面这些边界。它们是现在的行为，**不保证**以后不变（明确不保证），依赖它们的插件需要自己处理：
@@ -59,6 +60,20 @@ Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（�
 - 嵌套深度：值嵌套到约 125 层（数组、对象各算一层；含引用的数组、对象在线上每层算两层，约 62 层）时，接收的 Rust 一侧结束**整个会话**，而不只是让这次调用失败（[#279](https://github.com/arcships/rutis/issues/279)）。嵌套保持在 64 层以内。
 
 同一个进程里没有复制，所以"传过去之后改原对象，另一端也看到"这类写法在单元测试里可能成立、跨进程就不成立。测试工具的严格模式（默认）按上表传值，提前暴露这种问题。
+
+### 测试工具与真实运行时的差异
+
+测试工具（`@arcships/rutis/testing`、`rutis.testing`）和真实运行时对同一份期望文件比对：对同一个插件做同一组调用（同步、异步、回调、错误、上表的值），结果必须相同（[`weather.expected.json`](../../crates/rutis-bridge/src/runtime/testing/weather.expected.json)）。严格模式下已知的差异只有下面这些：
+
+| 差异 | 原因 |
+| --- | --- |
+| 结束进程的插件（`process.exit`、`os._exit`）结束的是测试本身 | 测试工具在测试的进程里运行插件；期望文件里这一条标为 `allowed`，测试工具不做这个调用 |
+| 不重启：配置变化、注入的服务撤销都不会让插件停下再启动 | `load` 只启动一次，生命周期由宿主决定（见上） |
+| 同步调用不阻塞，不会出现 `SyncWaitCycle`；没有取消（`AbortSignal`、协程取消） | 插件与测试在同一个事件循环里 |
+| Python：跨过边界的异常是 `RemoteError`，它的 `__cause__` 是原来的异常 | 方便调试；真实运行时的 `RemoteError` 没有 `__cause__` |
+| TypeScript：只能加载 `definePlugin` 写的插件，不能加载 Cordis 插件 | 测试工具不包含 Cordis |
+
+Map、Set、Date、二进制、bigint 两边都拒绝，这不是差异；它们以后是否可以传递见 [#308](https://github.com/arcships/rutis/issues/308)。关闭严格模式（`strict: false`）时值不经过上表，以上之外的差异都可能出现。Go 的 `rutistest` 和 Bun 尚未对这份期望文件比对。
 
 ## 同步调用与可重入
 

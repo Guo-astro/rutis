@@ -14,7 +14,7 @@
 
 ## 步骤
 
-1. 改版本号：`scripts/train.mjs` 里 `crates` 列出的每个 crate 的 Cargo.toml（以及它们之间、和工作区其他 crate 对它们的依赖版本），`node/rutis`、`node/rutis-runtime`、`bun/rutis-bun`、`node/rutis-host` 的 package.json（`@arcships/rutis-host` 依赖的运行时和平台包版本），`python/rutis/pyproject.toml` 和 `python/rutis/rutis/peer.py` 的 `IMPLEMENTATION`，`go/rutis/version.go` 的 `Version`，`crates/rutis-host/pyproject.toml` 里 `rutis` 的范围。`node scripts/train.mjs` 检查它们一致，CI 也会跑。
+1. 改版本号：`scripts/train.mjs` 里 `crates` 列出的每个 crate 的 Cargo.toml（以及它们之间、和工作区其他 crate 对它们的依赖版本），`node/rutis`、`node/rutis-runtime`、`bun/rutis-bun`、`node/rutis-host` 的 package.json（`@arcships/rutis-host` 依赖的运行时和平台包版本），`python/rutis/pyproject.toml` 和 `python/rutis/rutis/peer.py` 的 `IMPLEMENTATION`，`go/rutis/version.go` 的 `Version`，`crates/rutis-host/pyproject.toml` 里 `rutis` 的范围。`node scripts/train.mjs` 检查它们一致，CI 也会跑。同一个 PR 里保存本版本的持久化样本（`tests/fixtures/persisted/`，见下文[持久化样本](#持久化样本)）。
 2. 合并到 main，CI 的 `release-dry-run` 通过（各包都能打包），main 上的 install.yml 通过（三个平台上从本次构建的包安装并运行）。
 3. 发布前在两台机器上跑一次网络冒烟（下文）。
 4. 打 tag `vX.Y.Z` 并推送。release.yml：核对版本 → 构建五个平台的二进制、wheel 和 npm 包（package.yml，与 main 同一份构建步骤）→ **发布门**：五个平台上从这些文件安装并运行（install.yml），有一个不通过就什么都不发布 → 对已发布过的 crate 做 semver 检查，按依赖顺序（`node scripts/train.mjs --crates`）发布 crate，再发布 npm 包、PyPI 包（发布的就是发布门装过的文件）→ 创建 GitHub Release（说明取自 `docs/releases/X.Y.Z.en.md`，打 tag 前要写好）→ **发布后验证**：等注册表能取到这个版本，在 Linux 上从注册表安装 npm、PyPI、二进制三种渠道并运行，`cargo install` 和 Go 模块，再照着指南里标记过的示例走一遍。各步只发布注册表里还没有的版本，中途失败时修好后重新运行即可。
@@ -23,6 +23,25 @@
 需要的配置：GitHub environment `release`（`CARGO_TOKEN`、`NPM_TOKEN`）、`pypi` 和 `pypi-host`。PyPI 上 `rutis` 的 trusted publisher 指向 release.yml 与 environment `pypi`，`rutis-host` 的指向 environment `pypi-host`：两个项目的 publisher 不能完全相同，否则一次发布拿到的令牌只对其中一个有效。
 
 插件 API（`PLUGIN_API`，SDK 与运行时各有一份）只在插件看到的接口不兼容时增加；会话协议版本（`rutisProtocol` 与 `rutis_bridge::session::PROTOCOL`）在线格式不兼容时增加。
+
+## 持久化样本
+
+`tests/fixtures/persisted/<版本>/` 存每个发布版本写下的持久化数据，测试用当前代码读每一份，结果必须与当时读出的一样（风险 J3）：
+
+| 文件 | 内容 | 测试 |
+| --- | --- | --- |
+| `rutis.json` | 一份尽量用到该版本所有字段的配置 | `cargo test -p rutis-host --test persisted` |
+| `rutis.expected.json` | 该版本读出的结果（规范化，路径相对样本目录写成 `<dir>`） | 同上 |
+| `cordis.patch.yml` | dsh 的用户层，尽量用到该版本支持的写法 | `cargo test -p rutis-dsh --test persisted` |
+| `cordis.patch.expected.json` | 该版本读出的 patch 列表 | 同上 |
+
+发布时：
+
+1. 把上一个版本的目录复制成 `tests/fixtures/persisted/X.Y.Z/`；这一版给 `rutis.json` 或用户层加了字段、写法的，在样本里用上。
+2. 用本版本的代码重新生成本版本的期望：`RUTIS_PERSISTED_WRITE=X.Y.Z cargo test -p rutis-host --test persisted` 和 `RUTIS_PERSISTED_WRITE=X.Y.Z cargo test -p rutis-dsh --test persisted`（只写 `X.Y.Z/` 下的期望文件）；检查差异，再不带变量跑一遍。
+3. 旧版本的样本和期望不改。旧样本读不出原来的结果，就是不兼容变化（[质量规范](quality-standard.md) §9.3）；决定不再支持某个格式时，把样本移到 `rejected/<名字>/`，旁边的 `rutis.error` 写明错误信息，信息里要说明怎么迁移。
+
+`rutis.json` 有格式版本（顶层 `format`，当前是 1）：改了它的含义就把 `FORMAT`（`crates/rutis-host/src/config.rs`）加一，写进发布说明。dsh 的 `cordis.patch.yml` 是 Cordis 的配置格式，没有版本，兼容只靠这些样本。
 
 ## 冒烟
 

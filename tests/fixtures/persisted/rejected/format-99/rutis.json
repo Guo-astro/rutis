@@ -1,0 +1,6 @@
+{
+  "format": 99,
+  "id": "main",
+  "services": { "weather": { "from": "weather-plugin" } },
+  "rows": []
+}

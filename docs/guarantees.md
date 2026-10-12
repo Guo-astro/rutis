@@ -6,7 +6,7 @@
 
 本表**人工维护**：不从设计文档自动抽取，CI 也不核对表与测试是否一致（误报多，维护成本高于收益；条目超过 300 条时再考虑）。表的正确性靠 PR 作者和评审在改动时同步更新（§5）。
 
-已登记：`core/`（D 编号、`core/features.*`、`core/typed.*` 中已有测试的条目）、`boundary/`、`instance/`、`bridge/` 中已有测试的条目。`loader/`、`host/` 两族已预留，由后续 PR 补齐；全部补齐后关闭 #181。
+已登记：`core/`（D 编号、`core/features.*`、`core/typed.*` 中已有测试的条目）、`boundary/`，以及 `instance/`、`bridge/`、`host/`、`dsh/`、`sdk/` 中已有测试的条目。`loader/` 族与 `host/` 的其余条目由后续 PR 补齐；全部补齐后关闭 #181。
 
 ---
 
@@ -36,13 +36,15 @@
 | `instance/` | `instance/<设计>.<节号>` | 实例相关设计：`subtrees` = [design-instance-subtrees](design-instance-subtrees.md)，`services` = [design-instance-services-2026-10-08](design-instance-services-2026-10-08.md) | 部分登记 |
 | `bridge/` | `bridge/<名字>` | 会话、链路、承载、跨语言值：[design-remote-plugins-2026-10-03](design-remote-plugins-2026-10-03.md)、[requirements-protocol-plugins](requirements-protocol-plugins.md) §6、[插件 API](guide/plugin-api.md)、质量规范 Q6.2、Q6.5 | 部分登记 |
 | `loader/` | `loader/<名字>` | rutis-loader 设计 | 预留 |
-| `host/` | `host/<名字>` | rutis-host 设计与用户文档 | 预留 |
+| `host/` | `host/<名字>` | rutis-host 设计与用户文档 | 预留；`host/rutis-json-format` 已登记（#207） |
+| `dsh/` | `dsh/<名字>` | rutis-dsh 设计与文档 | 预留；`dsh/user-layer-format` 已登记（#207） |
+| `sdk/` | `sdk/<名字>` | 插件 SDK 与测试工具：[插件 API](guide/plugin-api.md)、质量规范 Q6.7 | `sdk/testing-matches-runtime` 已登记（#206） |
 
 各族的 `<名字>` 规则：
 
 - `core/D<n>`：沿用设计文档里的决策编号（包括复述其他编号的 D20、D27 和已并入 D27 的 D26），方便与设计文档、测试注释对照。
 - `core/features.<节>`：core-features 一节一个英文小写短名，如 `errors` =「错误与 panic」。一节里有多条保证时，在短名后加 `.<名字>`。
-- `core/typed.<名字>`、`bridge/<名字>`、`loader/<名字>`、`host/<名字>`：短横线连接的英文小写短语，说出保证本身（如 `bridge/in-flight-call-fails-once`）。
+- `core/typed.<名字>`、`bridge/<名字>`、`loader/<名字>`、`host/<名字>`、`dsh/<名字>`、`sdk/<名字>`：短横线连接的英文小写短语，说出保证本身（如 `bridge/in-flight-call-fails-once`）。
 - `instance/<设计>.<节号>`：设计文档的短名加节号，如 `instance/subtrees.2.2` 是 design-instance-subtrees §2.2。一节里有多条保证时，在节号后加 `.<名字>`。
 
 ---
@@ -220,7 +222,28 @@ PR 模板中有对应的检查项。
 
 ---
 
-## 11. 统计（基准 `121eded`）
+## 11. 持久化格式：`host/rutis-json-format`、`dsh/user-layer-format`
+
+出处：[design-quality-step2-2026-10-11](design-quality-step2-2026-10-11.md) §七；用户文档 [rutis-host](guide/rutis-host.md) 的 `format` 一节；发布流程见 [release](release.md) 的"持久化样本"（#207，风险 J3）。
+
+| 编号 | 内容 | 级别 | 状态 | 验证 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `host/rutis-json-format` | `rutis.json` 顶层 `format` 是格式版本，可省略、省略按 1 读；比本 rutis-host 支持的新时，在读其他字段之前拒绝并说明升级 rutis-host；`rutis-host new` 生成的文件写上它；每个已发布版本的 `rutis.json`（0.8.0 起）仍按当时的含义读出 | 契约行为 | 已验证 | `rutis-host/tests/config.rs::the_format_is_checked`、`rutis-host/tests/errors.rs::a_configuration_that_is_not_there_or_not_valid`、`rutis-host/tests/persisted.rs::every_release_s_rutis_json_reads_as_it_did`、`::formats_no_longer_read_are_refused`、`rutis-host/src/new.rs::projects_are_created_with_their_names_filled_in` | 样本与期望在 `tests/fixtures/persisted/<版本>/`，0.8.0、0.9.0、0.9.1 的期望由各自 tag 的解析器生成 |
+| `dsh/user-layer-format` | dsh 用户层 `<profile>/cordis.patch.yml`（Cordis 的配置格式）没有格式版本；每个已发布版本写下的用户层（0.8.0 起）仍读出同样的 patch | 契约行为 | 已验证 | `rutis-dsh/tests/persisted.rs::every_release_s_user_layer_reads_as_it_did` | 不加版本字段（Cordis 的配置没有版本管理），兼容只靠样本；读不出的旧格式没有显式拒绝 |
+
+---
+
+## 12. 插件 SDK：`sdk/*`
+
+出处：[插件 API](guide/plugin-api.md)、质量规范 Q6.7。
+
+| 编号 | 内容 | 级别 | 状态 | 验证 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `sdk/testing-matches-runtime` | 测试工具（`@arcships/rutis/testing`、`rutis.testing`，严格模式）对插件的调用结果与真实运行时相同：同步、异步、回调、错误跨边界（只带名字和消息）、值的复制与拒绝；已知差异有界并写明（[插件 API](guide/plugin-api.md)「测试工具与真实运行时的差异」，期望文件中标为 `allowed`） | 契约行为 | 部分验证 | `rutis-bridge/src/runtime/testing.rs::runtime`（经 `rutis-bridge/tests/session_matrix.rs` 在 Node、Python、Go、Bun 各通道上运行）、`node/rutis/test/conformance.test.mjs`、`python/rutis/tests/test_conformance.py::Conformance::test_the_testing_tool_returns_what_the_real_runtime_does` | 两侧对同一份期望文件 `rutis-bridge/src/runtime/testing/weather.expected.json` 比对（Q6.7.2）。Go 的 `rutistest` 与 Bun 的测试工具尚未比对；Map、Set、Date、二进制、bigint 按现行规则拒绝，待 #308 |
+
+---
+
+## 13. 统计（基准：`121eded` 之后合入 #284、#298 的 `main`）
 
 | 范围 | 已验证 | 部分验证 | 未验证 | 明确不保证 | 合计 |
 | --- | --- | --- | --- | --- | --- |
@@ -229,8 +252,10 @@ PR 模板中有对应的检查项。
 | `boundary/5.*` | 3 | 5 | 0 | 0 | 8 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
 | `bridge/*` | 12 | 3 | 0 | 1 | 16 |
-| 合计 | 49 | 11 | 0 | 2 | 62 |
+| `host/*`、`dsh/*`（§11） | 2 | 0 | 0 | 0 | 2 |
+| `sdk/*`（§12） | 0 | 1 | 0 | 0 | 1 |
+| 合计 | 51 | 12 | 0 | 2 | 65 |
 
-核心承诺 17 条：已验证 14，部分验证 3（D22、D28、5.8），未验证 0。契约行为 43 条：已验证 35，部分验证 8（D5、5.2、5.3、5.4、5.5、`bridge/large-and-deep-values`、`bridge/version-refusal`、`bridge/tls-client-certificate-verified`），未验证 0。
+核心承诺 17 条：已验证 14，部分验证 3（D22、D28、5.8），未验证 0。契约行为 46 条：已验证 37，部分验证 9（D5、5.2、5.3、5.4、5.5、`bridge/large-and-deep-values`、`bridge/version-refusal`、`bridge/tls-client-certificate-verified`、`sdk/testing-matches-runtime`），未验证 0。
 
 **0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 0 条。从 0.11 起，新登记的条目（`loader/`、`host/` 等）如果是"未验证"，会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。

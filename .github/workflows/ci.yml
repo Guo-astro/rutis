@@ -847,6 +847,11 @@ jobs:
       - name: cargo test (rutis-host)
         if: '!cancelled()'
         run: cargo test -p rutis-host --no-fail-fast
+      # The E2E harness on Windows (#232): each host in a Job Object,
+      # Ctrl-Break, the residue checks; the scenarios not limited to Unix.
+      - name: cargo test (rutis-e2e)
+        if: '!cancelled()'
+        run: cargo test -p rutis-e2e --no-fail-fast
       - name: keep workspace static builds available
         if: '!cancelled()'
         run: cargo check --workspace --all-targets

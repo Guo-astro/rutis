@@ -6,7 +6,7 @@ Status: being filled in (#181). This registry lists rutis's core promises and co
 
 The registry is **maintained by hand**: it is not extracted from the design documents, and CI does not check that it matches the tests (too many false alarms, and more upkeep than it is worth; to be reconsidered past 300 rows). It stays correct because PR authors and reviewers update it with each change (§5).
 
-Registered: `core/` (the D numbers, and the `core/features.*` and `core/typed.*` rows that have tests), `boundary/`, and the `instance/` and `bridge/` rows that have tests. The `loader/` and `host/` families are reserved and will be filled in by later PRs; #181 closes once all of them are in.
+Registered: `core/` (the D numbers, and the `core/features.*` and `core/typed.*` rows that have tests), `boundary/`, and the `instance/`, `bridge/`, `host/`, `dsh/` and `sdk/` rows that have tests. The `loader/` family and the rest of `host/` will be filled in by later PRs; #181 closes once all of them are in.
 
 ---
 
@@ -36,13 +36,15 @@ Numbers have the form `<family>/<name>` and are never reused; when a guarantee i
 | `instance/` | `instance/<design>.<section>` | instance designs: `subtrees` = [design-instance-subtrees](design-instance-subtrees.en.md), `services` = [design-instance-services-2026-10-08](design-instance-services-2026-10-08.en.md) | partly registered |
 | `bridge/` | `bridge/<name>` | sessions, links, carriers, cross-language values: [design-remote-plugins-2026-10-03](design-remote-plugins-2026-10-03.en.md), [requirements-protocol-plugins](requirements-protocol-plugins.en.md) §6, [plugin API](guide/plugin-api.en.md), quality standard Q6.2, Q6.5 | partly registered |
 | `loader/` | `loader/<name>` | rutis-loader designs | reserved |
-| `host/` | `host/<name>` | rutis-host designs and user documentation | reserved |
+| `host/` | `host/<name>` | rutis-host designs and user documentation | reserved; `host/rutis-json-format` registered (#207) |
+| `dsh/` | `dsh/<name>` | rutis-dsh designs and documentation | reserved; `dsh/user-layer-format` registered (#207) |
+| `sdk/` | `sdk/<name>` | plugin SDKs and test tools: [plugin API](guide/plugin-api.en.md), quality standard Q6.7 | `sdk/testing-matches-runtime` registered (#206) |
 
 How `<name>` is formed in each family:
 
 - `core/D<n>`: the decision numbers of the design documents (including D20 and D27, which restate other numbers, and D26, merged into D27), so they line up with the designs and the test comments.
 - `core/features.<section>`: one short lower-case English name per core-features section, e.g. `errors` = "Errors and panics". A section with several guarantees adds `.<name>`.
-- `core/typed.<name>`, `bridge/<name>`, `loader/<name>`, `host/<name>`: a lower-case English phrase joined by hyphens that states the guarantee (e.g. `bridge/in-flight-call-fails-once`).
+- `core/typed.<name>`, `bridge/<name>`, `loader/<name>`, `host/<name>`, `dsh/<name>`, `sdk/<name>`: a lower-case English phrase joined by hyphens that states the guarantee (e.g. `bridge/in-flight-call-fails-once`).
 - `instance/<design>.<section>`: the design's short name and section number, e.g. `instance/subtrees.2.2` is design-instance-subtrees §2.2. A section with several guarantees adds `.<name>`.
 
 ---
@@ -220,7 +222,28 @@ Sources are given per row. "Runtimes" are the session implementations of each la
 
 ---
 
-## 11. Counts (baseline `121eded`)
+## 11. Persisted formats: `host/rutis-json-format`, `dsh/user-layer-format`
+
+Source: [design-quality-step2-2026-10-11](design-quality-step2-2026-10-11.md) §7; the `format` section of the user documentation [rutis-host](guide/rutis-host.en.md); the release process in "Persisted samples" of [release](release.en.md) (#207, risk J3).
+
+| Number | Content | Level | Status | Verification | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `host/rutis-json-format` | The top-level `format` of `rutis.json` is its format version, optional and read as 1 when absent; a newer one than this rutis-host supports is refused before any other field is read, saying to upgrade rutis-host; `rutis-host new` writes it in the files it generates; every released version's `rutis.json` (from 0.8.0) still reads with the meaning it had then | contract behaviour | verified | `rutis-host/tests/config.rs::the_format_is_checked`, `rutis-host/tests/errors.rs::a_configuration_that_is_not_there_or_not_valid`, `rutis-host/tests/persisted.rs::every_release_s_rutis_json_reads_as_it_did`, `::formats_no_longer_read_are_refused`, `rutis-host/src/new.rs::projects_are_created_with_their_names_filled_in` | samples and expectations in `tests/fixtures/persisted/<version>/`; the expectations of 0.8.0, 0.9.0 and 0.9.1 were produced by each tag's own parser |
+| `dsh/user-layer-format` | The dsh user layer `<profile>/cordis.patch.yml` (a Cordis configuration format) has no format version; the user layer each released version wrote (from 0.8.0) still reads as the same patches | contract behaviour | verified | `rutis-dsh/tests/persisted.rs::every_release_s_user_layer_reads_as_it_did` | no version field (Cordis configuration is not versioned), so compatibility rests on the samples alone; an old format that no longer reads is not refused explicitly |
+
+---
+
+## 12. Plugin SDKs: `sdk/*`
+
+Source: [plugin API](guide/plugin-api.en.md), quality standard Q6.7.
+
+| Number | Content | Level | Status | Verification | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `sdk/testing-matches-runtime` | The test tools (`@arcships/rutis/testing`, `rutis.testing`, strict mode) give the same results for calls on a plugin as a real runtime: sync, async, callbacks, errors crossing the boundary (name and message only), values copied or refused; known differences are bounded and written down ([plugin API](guide/plugin-api.en.md), "Where the test tool differs from a real runtime"; marked `allowed` in the expectations file) | contract behaviour | partly verified | `rutis-bridge/src/runtime/testing.rs::runtime` (run by `rutis-bridge/tests/session_matrix.rs` on every channel of Node, Python, Go and Bun), `node/rutis/test/conformance.test.mjs`, `python/rutis/tests/test_conformance.py::Conformance::test_the_testing_tool_returns_what_the_real_runtime_does` | Both sides are checked against one expectations file, `rutis-bridge/src/runtime/testing/weather.expected.json` (Q6.7.2). Go's `rutistest` and the Bun test tool are not yet compared; Maps, Sets, Dates, binary data and bigints are refused under the current rules, pending #308 |
+
+---
+
+## 13. Counts (baseline: `main` after `121eded` with #284 and #298 merged)
 
 | Scope | Verified | Partly verified | Not verified | Explicitly not guaranteed | Total |
 | --- | --- | --- | --- | --- | --- |
@@ -229,8 +252,10 @@ Sources are given per row. "Runtimes" are the session implementations of each la
 | `boundary/5.*` | 3 | 5 | 0 | 0 | 8 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
 | `bridge/*` | 12 | 3 | 0 | 1 | 16 |
-| Total | 49 | 11 | 0 | 2 | 62 |
+| `host/*`, `dsh/*` (§11) | 2 | 0 | 0 | 0 | 2 |
+| `sdk/*` (§12) | 0 | 1 | 0 | 0 | 1 |
+| Total | 51 | 12 | 0 | 2 | 65 |
 
-17 core promises: 14 verified, 3 partly verified (D22, D28, 5.8), 0 not verified. 43 contract behaviours: 35 verified, 8 partly verified (D5, 5.2, 5.3, 5.4, 5.5, `bridge/large-and-deep-values`, `bridge/version-refusal`, `bridge/tls-client-certificate-verified`), 0 not verified.
+17 core promises: 14 verified, 3 partly verified (D22, D28, 5.8), 0 not verified. 46 contract behaviours: 37 verified, 9 partly verified (D5, 5.2, 5.3, 5.4, 5.5, `bridge/large-and-deep-values`, `bridge/version-refusal`, `bridge/tls-client-certificate-verified`, `sdk/testing-matches-runtime`), 0 not verified.
 
 **0.10 baseline**: 0 unverified core promises, 0 unverified contract behaviours. From 0.11 on, a newly registered row (`loader/`, `host/`, …) that is "not verified" would push the contract number above the baseline (Q9.4.4), so new rows should be registered together with their tests. The maintainer confirms which rows are core promises and may change them.
