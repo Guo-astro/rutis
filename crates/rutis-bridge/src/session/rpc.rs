@@ -754,6 +754,26 @@ pub struct Greeting {
     pub capabilities: Vec<String>,
 }
 
+/// Why a far end's protocol version is refused, saying which end to upgrade
+/// (standard Q6.2.4): this side when the far end is newer, naming what to
+/// upgrade here; the far end when it is older, naming its implementation
+/// when its handshake said.
+fn version_mismatch(far: u32, local: u32, implementation: Option<&Implementation>) -> String {
+    let mismatch = format!("the far end speaks protocol {far}, this side {local}");
+    if far > local {
+        format!("{mismatch}: upgrade this side (Rust crates rutis-host / rutis-bridge)")
+    } else if far < local {
+        match implementation {
+            Some(Implementation { name, version }) => {
+                format!("{mismatch}: upgrade the far end ({name} {version})")
+            }
+            None => format!("{mismatch}: upgrade the far end"),
+        }
+    } else {
+        mismatch
+    }
+}
+
 /// One session's state. The session is reached through [`Connection`];
 /// the channel underneath is any [`Channel`].
 struct SessionState {
@@ -1416,8 +1436,10 @@ impl Connection {
         let incompatible = |reason: String| Error::Handshake(Handshake::Incompatible(reason));
         let Format::Endpoint(local) = &self.0.format else {
             if version != VERSION || endpoint.is_some() {
-                return Err(incompatible(format!(
-                    "the far end speaks protocol {version}, this side {VERSION}"
+                return Err(incompatible(version_mismatch(
+                    version,
+                    VERSION,
+                    implementation.as_ref(),
                 )));
             }
             if let Some(capabilities) = capabilities {
@@ -1432,9 +1454,10 @@ impl Connection {
             return Ok(());
         };
         if version != crate::session::ENDPOINT_PROTOCOL {
-            return Err(incompatible(format!(
-                "the far end speaks protocol {version}, this side {}",
-                crate::session::ENDPOINT_PROTOCOL
+            return Err(incompatible(version_mismatch(
+                version,
+                crate::session::ENDPOINT_PROTOCOL,
+                implementation.as_ref(),
             )));
         }
         let endpoint = endpoint

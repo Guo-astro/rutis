@@ -68,6 +68,31 @@ func TestARefusedConnectionSaysWhy(t *testing.T) {
 	}
 }
 
+// The refusal of another session protocol says which end to upgrade
+// (standard Q6.2.4).
+// guarantee: bridge/version-refusal
+func TestAProtocolRefusalSaysWhichEndToUpgrade(t *testing.T) {
+	_, address := startListener(t)
+	base := "http" + strings.TrimPrefix(address, "ws")
+	for protocol, want := range map[string]string{
+		"rutis.99": "this endpoint speaks " + testProtocol + ", the dialer offered rutis.99: upgrade this endpoint (Go module github.com/arcships/rutis/go/rutis)",
+		"rutis.1":  "this endpoint speaks " + testProtocol + ", the dialer offered rutis.1: upgrade the dialer",
+	} {
+		request, _ := http.NewRequest("GET", base, nil)
+		request.Header.Set("Authorization", "Bearer secret")
+		request.Header.Set("Sec-WebSocket-Protocol", protocol)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest || strings.TrimSpace(string(body)) != want {
+			t.Errorf("%s: got %d %q, want %q", protocol, response.StatusCode, body, want)
+		}
+	}
+}
+
 func TestOnlyALoopbackListenerGoesWithoutTLS(t *testing.T) {
 	if _, _, err := listenWebSocket("ws://0.0.0.0:0/rutis", testProtocol, "t", "", ""); err == nil || !strings.Contains(err.Error(), "only a loopback listener") {
 		t.Fatalf("%v", err)

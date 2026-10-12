@@ -37,3 +37,38 @@ test('a reference whose origin holds another session\'s tagged ids is taken', ()
   expect(run(['s1/rust:7', 's1/node:2', 'rust:12', 'node:1'])).toBeUndefined()
   for (const bad of ['py:1', 's1/s2/node:1', 's1/node:0']) expect(run([bad])).toBe('invalid reference')
 })
+
+// Risk P8: a far end that greets with a protocol version this side does
+// not speak is refused at the handshake, and the refusal says which end to
+// upgrade (standard Q6.2.4): this side, naming its package, when the far
+// end is newer; the far end, naming its implementation when it said, when
+// it is older. The wording is rutis-bridge's
+// (`session::rpc::version_mismatch`).
+// guarantee: bridge/version-refusal
+test('a far end of another protocol version is refused, saying which end to upgrade', async () => {
+  const { Session, ENDPOINT_PROTOCOL } = require('../src/session.ts')
+  const PROTOCOL = require('../package.json').rutisProtocol
+  const far = { name: 'rutis', version: '0.1.0' }
+  for (const [endpoint, ours] of [[{ local: 'bun' }, ENDPOINT_PROTOCOL], [undefined, PROTOCOL]] as const) {
+    const cases = [
+      [99, undefined, 'upgrade this side (npm @arcships/rutis-bun)'],
+      [1, endpoint && far, endpoint ? 'upgrade the far end (rutis 0.1.0)' : 'upgrade the far end'],
+    ] as const
+    for (const [version, implementation, hint] of cases) {
+      const sent: any[] = []
+      let fault: Error | undefined
+      const session = new Session({
+        dispatch: () => {}, send: (line: string) => sent.push(JSON.parse(line)), pump: () => {},
+        abort: (error: Error) => { fault = error }, endpoint,
+      })
+      session.start()
+      expect(sent[0].version).toBe(ours)
+      session.receive({ op: 'hello', version, ...(endpoint ? { endpoint: 'main', implementation, capabilities: [] } : {}) })
+      const message = `incompatible session: the far end speaks protocol ${version}, this side ${ours}: ${hint}`
+      const error = await session.ready.then(() => undefined, (error: any) => error)
+      expect(error?.category).toBe('incompatible')
+      expect(error?.message).toBe(message)
+      expect(fault?.message).toBe(message)
+    }
+  }
+})
