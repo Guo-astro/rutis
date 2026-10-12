@@ -393,6 +393,47 @@ impl Scenario {
         residue::descendants(host)
     }
 
+    /// Kill one of `host`'s processes ([`Scenario::descendants`]) as
+    /// `kill -9` does (TerminateProcess on Windows), as when it crashes:
+    /// no cleanup of its own runs.
+    pub fn kill(&self, host: &Host, pid: u32) {
+        assert!(
+            self.descendants(host)
+                .iter()
+                .any(|(found, _)| *found == pid),
+            "process {pid} is not one of {}'s",
+            host.pid()
+        );
+        #[cfg(unix)]
+        {
+            // SAFETY: kill(2) on a process of the host's, just listed.
+            if unsafe { libc::kill(pid as i32, libc::SIGKILL) } != 0 {
+                panic!("kill -9 {pid}: {}", std::io::Error::last_os_error());
+            }
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+            };
+            // SAFETY: plain Win32 calls on a process in the host's job,
+            // just listed; the handle is closed once used.
+            unsafe {
+                let process = OpenProcess(PROCESS_TERMINATE, 0, pid);
+                if process.is_null() {
+                    panic!("open process {pid}: {}", std::io::Error::last_os_error());
+                }
+                let killed = TerminateProcess(process, 1);
+                let error = std::io::Error::last_os_error();
+                CloseHandle(process);
+                if killed == 0 {
+                    panic!("terminate process {pid}: {error}");
+                }
+            }
+        }
+    }
+
     /// A fresh credential (a token for `RUTIS_TOKEN`, say); after the
     /// scenario no captured output may contain it.
     pub fn secret(&self) -> String {
