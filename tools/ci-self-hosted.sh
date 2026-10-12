@@ -125,14 +125,26 @@ if [ "$phase" = start ]; then
   # ones are no running job's.
   find /tmp/ -maxdepth 1 -name 'rutis-*' -user "$(id -un)" -mmin +720 -print 2>/dev/null |
     while IFS= read -r dir; do remove "$dir"; done
-  mkdir -p "$target"
-  used=$(du -sk "$target" | cut -f 1)
-  max=${RUTIS_CI_TARGET_MAX_GB:-30}
-  if [ "$used" -gt $((max * 1024 * 1024)) ]; then
-    echo "target directory is $((used / 1024 / 1024)) GB (over $max GB): emptying it"
+  # A machine whose cargo is mbx's shim (a build cache; its directory holds
+  # mbx-target) keeps the builds in mbx's own target directories: a target
+  # directory of ours, filled by mbx and by cargo alike, came to hold
+  # rutis-sdk and rutis-cli built against two different serde_json (E0308).
+  cargo_bin=$(command -v cargo 2>/dev/null || true)
+  if [ -n "$cargo_bin" ] && [ -f "$(dirname "$cargo_bin")/mbx-target" ]; then
+    echo "cargo is mbx ($cargo_bin): mbx keeps the target directory"
     remove "$target"
+    target=
+  else
     mkdir -p "$target"
+    used=$(du -sk "$target" | cut -f 1)
+    max=${RUTIS_CI_TARGET_MAX_GB:-30}
+    if [ "$used" -gt $((max * 1024 * 1024)) ]; then
+      echo "target directory is $((used / 1024 / 1024)) GB (over $max GB): emptying it"
+      remove "$target"
+      mkdir -p "$target"
+    fi
   fi
+  mkdir -p "$cache"
   df -h "$cache" | tail -n 1
   echo "open files limit: $(ulimit -Sn) (hard $(ulimit -Hn))"
   # The machine's CPUs shared by its runner instances, which may all build
@@ -145,7 +157,7 @@ if [ "$phase" = start ]; then
   echo "load: $(uptime | sed 's/.*load averages*: //'); $cpus CPUs, $instances runner instances: $jobs jobs and test threads"
   {
     echo "RUTIS_E2E_DIR=$e2e"
-    echo "CARGO_TARGET_DIR=$target"
+    [ -z "$target" ] || echo "CARGO_TARGET_DIR=$target"
     echo "CARGO_BUILD_JOBS=$jobs"
     echo "RUST_TEST_THREADS=$jobs"
     # A GOROOT of the machine's own Go (the Linux runners' image sets one)
