@@ -23,6 +23,7 @@ const before = {
   },
   bail: () => on('boundary/chain', () => { mark('R') }),
   waterfall: () => on('boundary/wf', (value, next) => { mark('R'); return next() }),
+  'waterfall-async': () => on('boundary/wf-async', (value, next) => { mark('R'); return next() }),
   internal: () => on('internal/service', name => { mark(`R:${String(name)}`) }),
   host: () => {},
 }
@@ -50,7 +51,8 @@ switch (scenario) {
   case 'serial': result = await probe.serial(); break
   case 'link': result = await ctx.serial('boundary/link') ?? null; break
   case 'bail': result = probe.bail(); break
-  case 'waterfall': result = probe.waterfall(); break
+  case 'waterfall': result = await probe.waterfall(); break
+  case 'waterfall-async': result = await probe.waterfallAsync(); break
   case 'internal': probe.announce(); result = probe.internal(); break
   case 'host': result = probe.host(); break
   default: throw new Error(`unknown scenario ${scenario}`)
