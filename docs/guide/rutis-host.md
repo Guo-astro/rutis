@@ -55,6 +55,7 @@ Unix 上，`rutis-host` 启动时就被忽略的信号（比如用 `nohup` 启�
 
 ```json
 {
+  "format": 1,
   "id": "main",
   "runtimes": {
     "node": { "project": "." },
@@ -80,6 +81,16 @@ Unix 上，`rutis-host` 启动时就被忽略的信号（比如用 `nohup` 启�
 文件里的相对路径都相对于文件所在的目录。
 
 不认识的字段是错误：启动失败，指出文件、行列号和这里可用的字段。`rows` 里不认识的字段是警告：这一行照常运行（不带这个字段），启动前打印警告，指出文件、第几行和行可用的字段。拼错的字段因此不会被悄悄忽略。
+
+### format
+
+文件的格式版本，目前是 `1`。可以省略，省略按 `1` 读（0.10 之前的文件都没有这个字段，照常能读）；`rutis-host new` 生成的 `rutis.dev.json` 写上了它。比这个 `rutis-host` 支持的版本新的文件不会被读，启动前报错，例如：
+
+```text
+rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-host
+```
+
+这时升级 `rutis-host`。格式版本只在 `rutis.json` 的含义变化时增加，并写在发布说明里。
 
 ### id
 
