@@ -202,10 +202,10 @@ fn stop(host: &mut Host) {
 /// B10 (a restarted host cannot start: the last one's sockets or ports are
 /// not released).
 ///
-/// guarantee: boundary/5.8 (a runtime process that ends takes its services
-/// with it; here a Python one, killed), core/D30 (waiters get an explicit
-/// error, not a hang), and Q3.1's "a call interrupted fails explicitly",
-/// which has no `bridge/` entry yet.
+/// guarantee: bridge/in-flight-call-fails-once, core/D30, boundary/5.8 (a
+/// call in progress when its runtime's session ends fails explicitly, not
+/// a hang; here the session ends with the killed Python runtime; a runtime
+/// process that ends takes its services with it).
 #[test]
 fn a_killed_runtime_fails_its_calls_and_a_restart_recovers() {
     let s = Scenario::new("runtime-crash");

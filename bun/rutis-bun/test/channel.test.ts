@@ -4,6 +4,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { frame, open, ConnectError, takeToken, TOKEN } from '../src/channel.ts'
+import { eventually, within } from './support.ts'
 
 // A connected pair of sockets over a Unix socket.
 async function pair(): Promise<[Socket, Socket]> {
@@ -23,16 +24,24 @@ function collect() {
   const messages: string[] = []
   let closed!: (reason?: string) => void
   const ended = new Promise<string | undefined>(resolve => { closed = resolve })
-  return { messages, ended, handlers: { message: (text: string) => messages.push(text), closed } }
+  return { messages, get ended() { return within('the channel to end', ended) }, handlers: { message: (text: string) => messages.push(text), closed } }
+}
+
+// Writes `parts` to `from`, each in a read of its own on `to`: the next part
+// is written only once `to` has read everything before it.
+async function inReads(from: Socket, to: Socket, parts: (string | Buffer)[]) {
+  for (const part of parts) {
+    const sent = from.bytesWritten + Buffer.byteLength(part)
+    from.write(part)
+    await eventually('the far end to read what was written', () => to.bytesRead >= sent)
+  }
 }
 
 test('each line is one message, across reads and within one', async () => {
   const [a, b] = await pair()
   const got = collect()
   frame(b, got.handlers)
-  a.write('one\ntw')
-  await Bun.sleep(10)
-  a.write('o\nthree\nfour\n')
+  await inReads(a, b, ['one\ntw', 'o\nthree\nfour\n'])
   a.end()
   expect(await got.ended).toBeUndefined()
   expect(got.messages).toEqual(['one', 'two', 'three', 'four'])
@@ -49,14 +58,16 @@ test('a message longer than the limit ends the channel', async () => {
   a.destroy()
 })
 
+// The far end closes once it reads the invalid line: nothing is written after
+// the write that completes it (#289: a later write failed with EPIPE).
 test('invalid UTF-8 ends the channel, even split across two reads', async () => {
   for (const parts of [[Buffer.from('{"a":"\xff"}\n', 'latin1')], [Buffer.from([0x22, 0xe2, 0x82]), Buffer.from([0x22, 0x0a])]]) {
     const [a, b] = await pair()
     const got = collect()
     frame(b, got.handlers)
-    a.write('ok\n')
-    for (const part of parts) { a.write(part); await Bun.sleep(10) }
-    a.write('never\n')
+    const last = Buffer.concat([parts.at(-1)!, Buffer.from('never\n')])
+    await inReads(a, b, ['ok\n', ...parts.slice(0, -1)])
+    a.write(last)
     expect(await got.ended).toBe('received a message that is not valid UTF-8')
     expect(got.messages).toEqual(['ok'])
     a.destroy()
@@ -67,9 +78,7 @@ test('a leading BOM is kept, not stripped, and a valid split character is one', 
   const [a, b] = await pair()
   const got = collect()
   frame(b, got.handlers)
-  a.write(Buffer.from([0xef, 0xbb, 0xbf, 0x7b, 0x7d, 0x0a, 0xe2, 0x82]))
-  await Bun.sleep(10)
-  a.write(Buffer.from([0xac, 0x0a]))
+  await inReads(a, b, [Buffer.from([0xef, 0xbb, 0xbf, 0x7b, 0x7d, 0x0a, 0xe2, 0x82]), Buffer.from([0xac, 0x0a])])
   a.end()
   expect(await got.ended).toBeUndefined()
   expect(got.messages).toEqual(['\ufeff{}', '\u20ac'])

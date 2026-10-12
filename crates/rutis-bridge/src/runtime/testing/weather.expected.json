@@ -1,0 +1,53 @@
+{
+  "about": [
+    "What calls on the runtime conformance plugin (conformance-weather) return: one list that both the real runtimes and the SDK testing tools are checked against (issue #206, risk A1, Q6.7.2).",
+    "Real runtimes: rutis_bridge::runtime::testing::runtime (crates/rutis-bridge/tests/session_matrix.rs). Testing tools: node/rutis/test/conformance.test.mjs (@arcships/rutis/testing) and python/rutis/tests/test_conformance.py (rutis.testing), in strict mode.",
+    "The plugin injects `clock`, whose `now()` returns 0, 1, 2, ... one per call, and provides `service` with `methods`.",
+    "A call: `call` (method), `args` (JSON; {\"$callback\": ...} is a function the caller passes: \"upper\" returns its argument upper-cased; {\"throws\": {name, message, fields}} throws an error with that name and message and extra `fields`), and what it does: `returns` (a JSON value; keys in `ignore` are not compared; `copied`: it is not the object passed in), `throws` ({} for any error, or the `name` and `message` the caller receives; the thrown error's extra `fields` do not cross) or `exits` (the plugin's process exits with this status).",
+    "`samples` are values one language makes: the plugin's `samples()` names the ones it has, `sample(name)` returns one; a runtime whose plugin has no `samples` method has none.",
+    "`allowed`: the testing tool does not do what this entry says, and why (a bounded, written-down difference, also in docs/guide/plugin-api.md). Every other entry holds for both."
+  ],
+  "service": "weather",
+  "methods": { "today": "sync", "later": "async", "each": "sync", "echo": "sync", "crash": "sync" },
+  "calls": [
+    { "call": "today", "args": [], "returns": "Oslo at 0", "why": "a sync call that calls a host service" },
+    { "call": "today", "args": [], "returns": "Oslo at 1", "why": "the host service is called on every call" },
+    { "call": "later", "args": [], "returns": "Oslo later", "why": "an async call" },
+    { "call": "each", "args": [{ "$callback": "upper" }], "returns": ["MON", "TUE"], "why": "a callback during a sync call" },
+    {
+      "call": "each",
+      "args": [{ "$callback": { "throws": { "name": "NoForecast", "message": "no forecast for mon", "fields": { "code": 7 } } } }],
+      "throws": { "name": "NoForecast", "message": "no forecast for mon" },
+      "why": "an error crosses twice (callback to plugin, plugin to caller) with its name and message, not as the object thrown"
+    },
+    {
+      "call": "echo",
+      "args": [{ "city": "Oslo", "days": [1, -2, 1.5], "none": null, "ok": true, "text": "Ø ☀ \"q\"\n", "nested": { "empty": {}, "list": [] } }],
+      "returns": { "city": "Oslo", "days": [1, -2, 1.5], "none": null, "ok": true, "text": "Ø ☀ \"q\"\n", "nested": { "empty": {}, "list": [] } },
+      "copied": true,
+      "why": "data crosses both ways as a copy"
+    },
+    { "call": "echo", "args": [null], "returns": null, "why": "null crosses" },
+    {
+      "call": "crash",
+      "args": [],
+      "exits": 17,
+      "allowed": "the testing tool runs the plugin in the test's own process, so a plugin that ends its process ends the test: the tool cannot show this, and tests do not call it"
+    }
+  ],
+  "samples": [
+    { "sample": "node/date", "throws": {}, "why": "a Date does not cross" },
+    { "sample": "node/map", "throws": {}, "why": "a Map does not cross" },
+    { "sample": "node/bytes", "throws": {}, "why": "binary data (a Uint8Array) does not cross" },
+    { "sample": "node/nan", "throws": {}, "why": "a number that is not finite does not cross" },
+    { "sample": "node/undefined-in-data", "returns": { "a": null, "b": [null] }, "why": "undefined inside data arrives as null" },
+    { "sample": "node/error-value", "returns": { "name": "RangeError", "message": "out of range" }, "ignore": ["stack"], "why": "an Error returned as a value arrives as data: its name, message and stack" },
+    { "sample": "python/tuple", "returns": [1, "a"], "why": "a tuple arrives as a list" },
+    { "sample": "python/dataclass", "returns": { "city": "Oslo", "degrees": 21 }, "why": "a dataclass arrives as a dict" },
+    { "sample": "python/set", "throws": {}, "why": "a set does not cross" },
+    { "sample": "python/bytes", "throws": {}, "why": "bytes do not cross" },
+    { "sample": "python/nan", "throws": {}, "why": "a float that is not finite does not cross" },
+    { "sample": "python/int-keys", "throws": {}, "why": "a dict with keys that are not strings does not cross" },
+    { "sample": "python/exception-value", "returns": { "name": "ValueError", "message": "bad" }, "why": "an exception returned as a value arrives as data: its name and message" }
+  ]
+}

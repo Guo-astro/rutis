@@ -1,0 +1,4 @@
+# Every test's hang guard: test/support.ts sets Bun's default timeout (Bun
+# 1.4 does not read `timeout` here).
+[test]
+preload = ["./test/support.ts"]

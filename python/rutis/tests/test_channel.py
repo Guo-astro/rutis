@@ -8,9 +8,7 @@ import threading
 import unittest
 
 from rutis.channel import MAX_MESSAGE, SocketChannel
-
-# A hang guard, not a timing assertion.
-PATIENCE = 10
+from support import HANG_GUARD as PATIENCE
 
 
 class Writer(threading.Thread):

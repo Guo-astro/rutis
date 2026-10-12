@@ -43,10 +43,11 @@ A plugin and the services it uses may run in different processes. Across process
 | `null` / `None`, booleans, numbers, strings | Copied |
 | Arrays / lists, plain objects / dictionaries with string keys | Recursively copied |
 | Python dataclasses | Copied as dictionaries |
-| `Error` / exceptions | Name and message are copied; the other side receives an error with the same name when thrown |
+| `Error` / exceptions | Passed as a value: copied as data `{ name, message }` (in TypeScript also `stack`). Thrown: the other side receives an error with the same name and message (in TypeScript a built-in error class keeps its class, any other is an `Error`; in Python a `rutis.peer.RemoteError` whose `name` is the original class name); other attributes are not passed |
 | Functions, Promises / coroutines | Passed by reference: the other side calls or awaits the original |
 | Objects with methods, class instances | Passed by reference: the other side receives a proxy that calls the original object |
-| Symbols, bigints, Maps, Sets, binary data, cyclic references | Cannot cross processes. In TypeScript, Maps, Sets, and Dates are copied using JSON rules, so their contents are lost. |
+| Symbols, bigints, Maps, Sets, TypeScript Dates, binary data, cyclic references, `NaN` / `Infinity` | Cannot cross processes (the call fails). Whether Maps, Sets, Dates, binary data and bigints should cross is decided in [#308](https://github.com/arcships/rutis/issues/308); until then both the real runtimes and the test tools refuse them |
+| `undefined` inside TypeScript data (holding no functions or objects with methods) | Becomes `null` |
 | Go structs, slices, `map[string]T` | Copied as JSON (by their `json` tags); a struct is always data, `rutis.Ref(v)` passes an object by reference. Integers beyond ±2^53−1, `[]byte`, channels and non-string map keys cannot cross |
 
 Numbers and nesting depth have the limits below. They describe current behaviour and are **not guaranteed** to stay this way (explicitly not guaranteed); a plugin that depends on them must handle them itself:
@@ -59,6 +60,20 @@ Numbers and nesting depth have the limits below. They describe current behaviour
 - Nesting depth: a value nested about 125 levels deep (each array or object is a level; an array or object holding references counts two levels on the wire, so about 62) makes the receiving Rust side end the **whole session**, not just fail the call ([#279](https://github.com/arcships/rutis/issues/279)). Keep nesting within 64 levels.
 
 Values are not copied within one process. Code that mutates an object after passing it may work in a unit test but fail across processes. The test tool's strict mode (enabled by default) applies the rules above to expose this early.
+
+### Where the test tool differs from a real runtime
+
+The test tools (`@arcships/rutis/testing`, `rutis.testing`) and the real runtimes are checked against the same expectations file: the same calls on the same plugin (sync, async, callbacks, errors, the values in the table above) must give the same results ([`weather.expected.json`](../../crates/rutis-bridge/src/runtime/testing/weather.expected.json)). In strict mode, these are the only known differences:
+
+| Difference | Why |
+| --- | --- |
+| A plugin that ends its process (`process.exit`, `os._exit`) ends the test | The test tool runs the plugin in the test's process; the expectations file marks this entry `allowed`, and the test tool does not make that call |
+| No restarts: a config change or a withdrawn injected service does not stop and start the plugin | `load` starts it once; the host decides the lifecycle (see above) |
+| Sync calls do not block, so there is no `SyncWaitCycle`; no cancellation (`AbortSignal`, coroutine cancellation) | The plugin and the test share one event loop |
+| Python: an exception that crosses is a `RemoteError` whose `__cause__` is the original exception | For debugging; a real runtime's `RemoteError` has no `__cause__` |
+| TypeScript: only plugins written with `definePlugin` load, not Cordis plugins | The test tool does not include Cordis |
+
+Maps, Sets, Dates, binary data and bigints are refused on both sides, so they are not a difference; whether they will cross later is [#308](https://github.com/arcships/rutis/issues/308). With strict mode off (`strict: false`), values skip the table above and other differences can appear. Go's `rutistest` and Bun are not yet checked against this file.
 
 ## Synchronous calls and reentrancy
 
