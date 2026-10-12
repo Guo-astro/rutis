@@ -161,6 +161,7 @@ PR 模板中有对应的检查项。
 | 编号 | 内容 | 级别 | 状态 | 验证 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `core/features.errors` | 丢弃等待 `restart` / `update` 的 future 不会停止已开始的清理：清理照常结束，插件进入下一代 | 核心承诺 | 已验证 | `rutis/tests/lifecycle_order.rs::a_restart_dropped_after_its_cleanup_started_still_completes`、`::an_update_dropped_after_its_cleanup_started_still_completes`、`::a_restart_dropped_before_its_first_poll_starts_nothing`、`::an_update_dropped_before_its_first_poll_changes_nothing` | 后两个测试还锁定了"第一次 poll 之前丢弃什么都不做"（`restart` / `update` 的 future 是惰性的）。这一点没有写进文档，属于实现细节（Q3.3）；以后改成调用时登记的话，这两个测试随之改 |
+| `core/features.errors.failed-retry` | 装载失败（构造、`validate` 或 `apply` 出错）的插件停在 Failed，只在依赖变化时重新装载；同一组依赖的重复通知（如提供者激活时逐键发出的通知）不让它重试 | 契约行为 | 已验证 | `rutis/tests/failed_retry.rs::a_failed_apply_is_retried_only_when_its_dependencies_change`、`::a_failed_validate_is_retried_only_when_its_dependencies_change`、`::a_failed_build_is_retried_only_when_its_dependencies_change` | #327 |
 | `core/typed.lost-dependency-pending` | 门控通过后、读取前必需依赖失效（被摘除、提供者失活或 `check` 拒绝）时，插件回到 Pending 而不是 Failed，依赖恢复后重新装载；这一代没有失败的严格读取时按普通失败处理（防循环） | 核心承诺 | 已验证 | `rutis/tests/typed_plugin.rs::a_dependency_lost_before_it_is_read_returns_the_plugin_to_pending`、`::a_dependency_back_before_the_failure_is_handled_still_reloads`、`::a_dependency_withdrawn_before_apply_starts_returns_the_plugin_to_pending`、`::a_check_rejected_after_the_gate_returns_the_plugin_to_pending_even_if_it_recovers`、`::the_claim_without_a_failed_read_is_a_plain_failure` | 依赖门控（Q3.1） |
 | `core/typed.lost-dependency-silent` | 这种情况下这一代的 `InjectUnsatisfied` 不进 ErrorSink | 契约行为 | 已验证 | `rutis/tests/typed_plugin.rs::a_lost_dependency_error_does_not_reach_the_error_sink` | |
 | `core/typed.lost-dependency-restart` | 落在这个窗口里的 `restart()` 返回 Ok，插件回到 Pending 或重新装载 | 契约行为 | 已验证 | `rutis/tests/typed_plugin.rs::a_restart_in_the_lost_dependency_window_returns_ok` | |
@@ -260,15 +261,15 @@ PR 模板中有对应的检查项。
 | 范围 | 已验证 | 部分验证 | 未验证 | 明确不保证 | 合计 |
 | --- | --- | --- | --- | --- | --- |
 | `core/D*`（不含 D20、D26、D27） | 26 | 3 | 0 | 1 | 30 |
-| `core/features.*`、`core/typed.*` | 6 | 0 | 0 | 0 | 6 |
+| `core/features.*`、`core/typed.*` | 7 | 0 | 0 | 0 | 7 |
 | `boundary/5.*` | 7 | 1 | 0 | 0 | 8 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
 | `bridge/*` | 16 | 0 | 0 | 1 | 17 |
 | `host/*`、`dsh/*`（§11） | 2 | 0 | 0 | 0 | 2 |
 | `host/*`（§13） | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*`（§12） | 0 | 1 | 0 | 0 | 1 |
-| 合计 | 61 | 5 | 0 | 2 | 68 |
+| 合计 | 62 | 5 | 0 | 2 | 69 |
 
-核心承诺 17 条：已验证 14，部分验证 3（D22、D28、5.8），未验证 0。契约行为 49 条：已验证 47，部分验证 2（D5、`sdk/testing-matches-runtime`），未验证 0。
+核心承诺 17 条：已验证 14，部分验证 3（D22、D28、5.8），未验证 0。契约行为 50 条：已验证 48，部分验证 2（D5、`sdk/testing-matches-runtime`），未验证 0。
 
 **0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 0 条。从 0.11 起，新登记的条目（`loader/`、`host/` 等）如果是"未验证"，会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。

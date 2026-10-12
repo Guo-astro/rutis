@@ -270,7 +270,9 @@ impl Registry {
     /// 该依赖四元组的当前消费者(D21 简化:唯一事实源是各 fiber 的
     /// `last_deps`,不再维护第二份反向索引)。声明注入该键、且 `last_deps`
     /// 含此四元组(含作用域)的 fiber 即为绑定中的消费者——与装载/卸载窗口
-    /// 严格一致(last_deps 于 load 的 apply 前设置、drain_effects 清除)。
+    /// 严格一致(last_deps 于 load 的 apply 前设置、卸载时 drain_effects
+    /// 清除;装载失败时写回失败那一代的依赖)。失败的 fiber 也算消费者:
+    /// 驱逐时对它重查,依赖缺失则保持 Failed。
     /// 四元组含作用域:同一 provider fiber 在不同作用域提供的同键绑定
     /// 互不为对方的消费者(isolate 语义)。
     pub(crate) fn consumers_of(
