@@ -26,7 +26,7 @@ from types import ModuleType
 from typing import Any, AsyncIterator, Callable
 
 from . import plugin as sdk
-from .peer import RemoteError, _holds_reference, _is_live
+from .peer import MAX_DEPTH, RemoteError, _holds_reference, _is_live
 
 
 class PluginTestError(AssertionError):
@@ -34,25 +34,30 @@ class PluginTestError(AssertionError):
     across processes."""
 
 
-def _cross(value: Any, where: str, data: bool = False) -> Any:
+def _cross(value: Any, where: str, data: bool = False, depth: int = 0) -> Any:
     """`value` as the other process sees it, by the rules of the runtime
-    (`rutis.peer`); `data`: inside plain data, which crosses as JSON."""
+    (`rutis.peer`); `data`: inside plain data, which crosses as JSON;
+    `depth`: the lists and dicts around it (at most MAX_DEPTH, #279)."""
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
             raise PluginTestError(f"{where}: {value} cannot cross between processes (only finite numbers do)")
         return value
+    if isinstance(value, (list, tuple, dict, BaseException)) and depth >= MAX_DEPTH:
+        raise PluginTestError(
+            f"{where}: a value nested deeper than {MAX_DEPTH} levels cannot cross between processes"
+        )
     if isinstance(value, (list, tuple)):
         data = data or not _holds_reference(value)
-        return [_cross(item, f"{where}[{i}]", data) for i, item in enumerate(value)]
+        return [_cross(item, f"{where}[{i}]", data, depth + 1) for i, item in enumerate(value)]
     if isinstance(value, dict):
         if not all(isinstance(key, str) for key in value):
             raise PluginTestError(f"{where}: only string keys cross between processes")
         data = data or not _holds_reference(value)
-        return {key: _cross(item, f"{where}.{key}", data) for key, item in value.items()}
+        return {key: _cross(item, f"{where}.{key}", data, depth + 1) for key, item in value.items()}
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return _cross(dataclasses.asdict(value), where, True)
+        return _cross(dataclasses.asdict(value), where, True, depth)
     # An exception passed as a value crosses as data: its name and message.
     if isinstance(value, BaseException) and not data:
         return {"name": type(value).__name__, "message": str(value)}

@@ -224,7 +224,7 @@ async fn handshake_and_release_count_fail_closed() {
     send(&mut remote, hello(VERSION));
     peer.ready().await.unwrap();
     let reference = peer
-        .encode(&Value::callback(|_| Ok(Value::Undefined)))
+        .encode(&Value::callback(|_| Ok(Value::Undefined)), MAX_DEPTH)
         .unwrap();
     let WireValue::Reference { id, .. } = reference else {
         unreachable!()
@@ -1027,5 +1027,212 @@ mod endpoint_format {
         .unwrap_or_else(|error| panic!("open: {error:?}"));
         let result = endpoint.ready().await;
         assert!(matches!(result, Err(Error::Transport(_))), "{result:?}");
+    }
+}
+
+// ── Value depth (#279) ───────────────────────────────────────────────
+
+/// JSON data `depth` arrays deep.
+fn arrays(depth: usize) -> Json {
+    (0..depth).fold(json!("bottom"), |inner, _| json!([inner]))
+}
+/// Lists `depth` deep around a reference, as a far end sends them, with
+/// `value` written before `type` (serde buffers such an object before it
+/// reads it: the deepest stack the reader can take for a frame).
+fn wire_lists(depth: usize) -> String {
+    let leaf = r#"{"value":{"id":1,"kind":"function","home":false,"origin":["node:1"]},"type":"reference"}"#;
+    (0..depth).fold(leaf.to_string(), |inner, _| {
+        format!(r#"{{"value":[{inner}],"type":"list"}}"#)
+    })
+}
+
+#[test]
+fn depth_is_counted_in_arrays_and_objects() {
+    assert!(fits(&json!("scalar"), 0));
+    assert!(!fits(&json!([]), 0));
+    assert!(fits(&arrays(MAX_DEPTH), MAX_DEPTH));
+    assert!(!fits(&arrays(MAX_DEPTH + 1), MAX_DEPTH));
+    assert!(fits(&json!({ "a": [1, { "b": 2 }] }), 3));
+    assert!(!fits(&json!({ "a": [1, { "b": 2 }] }), 2));
+    // Brackets in strings, escaped quotes, are not levels.
+    let text = br#"{"a":"[[[[\"[[[[","b":[[1]]}"#;
+    assert!(!deeper_than(text, 3));
+    assert!(deeper_than(text, 2));
+}
+
+/// The deepest frame a far end within the limit sends (and the margin
+/// past it) parses on a thread with the reader's stack, in a debug build
+/// too.
+#[test]
+fn the_deepest_frame_allowed_parses_on_the_readers_stack() {
+    // frame + argument list + MAX_DEPTH lists + reference.
+    let args = wire_lists(MAX_DEPTH + 1);
+    let frame = format!(
+        r#"{{"args":{args},"op":"invoke","id":"node:1","path":[],"target":"t","method":"m"}}"#
+    );
+    assert!(!deeper_than(frame.as_bytes(), MAX_FRAME_DEPTH));
+    let deepest = (MAX_FRAME_DEPTH - 4) / 2;
+    let margin = format!(
+        r#"{{"args":{},"op":"invoke","id":"node:1","path":[],"target":"t","method":"m"}}"#,
+        wire_lists(deepest)
+    );
+    assert!(!deeper_than(margin.as_bytes(), MAX_FRAME_DEPTH));
+    assert!(deeper_than(margin.as_bytes(), MAX_FRAME_DEPTH - 2));
+    std::thread::Builder::new()
+        .name("rutis-reader".into())
+        .spawn(move || {
+            assert!(matches!(
+                parse_frame(frame.as_bytes()),
+                Ok(Frame::Invoke { .. })
+            ));
+            assert!(matches!(
+                parse_frame(margin.as_bytes()),
+                Ok(Frame::Invoke { .. })
+            ));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+struct EchoArgs;
+impl Dispatch for EchoArgs {
+    fn invoke(&self, _: &Connection, _: &str, _: &str, args: Value) -> Reply {
+        Ok(args)
+    }
+}
+fn assert_too_deep(result: Reply) {
+    match result {
+        Err(Error::Value(message)) => assert!(message.contains("64 levels"), "{message}"),
+        other => panic!("a value error naming the limit expected: {other:?}"),
+    }
+}
+
+/// guarantee: bridge/value-limits
+///
+/// A value nested deeper than the limit fails its own call on the side
+/// that sends it, as a value error naming the limit; nothing is sent, and
+/// the session goes on. A value at the limit crosses.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_value_deeper_than_the_limit_fails_its_call_before_it_is_sent() {
+    let (peer, remote) = connected(Arc::new(EchoArgs));
+    let remote = tokio::task::spawn_blocking(move || {
+        let mut remote = Remote::start(remote);
+        // The first frame the far end reads is the call at the limit.
+        let message = remote
+            .reader
+            .receiver
+            .lock()
+            .unwrap()
+            .recv()
+            .unwrap()
+            .unwrap();
+        let frame = parse_frame(&message).unwrap();
+        let Frame::Invoke { id, args, .. } = frame else {
+            panic!("invoke expected")
+        };
+        remote.ret(id, args);
+        remote
+    });
+    peer.ready().await.unwrap();
+    assert_too_deep(
+        peer.invoke_async("t", "m", Value::Data(json!([arrays(MAX_DEPTH + 1)])))
+            .await,
+    );
+    let lists = (0..MAX_DEPTH + 1).fold(Value::Data(json!(1)), |inner, _| Value::List(vec![inner]));
+    assert_too_deep(peer.invoke_async("t", "m", Value::List(vec![lists])).await);
+    let back = peer
+        .invoke_async("t", "m", Value::Data(json!([arrays(MAX_DEPTH)])))
+        .await
+        .unwrap();
+    assert_eq!(back.json().unwrap(), json!([arrays(MAX_DEPTH)]));
+    remote.await.unwrap();
+    assert!(peer.close_reason().is_none());
+}
+
+/// guarantee: bridge/value-limits
+///
+/// A far end that does not keep to the limit: a call to this side in a
+/// frame too deep to read fails with a throw naming the limit, a reply
+/// too deep fails the call waiting for it; the session goes on. A frame
+/// too deep that names no call ends the session, saying why.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_frame_too_deep_fails_its_call_and_the_session_goes_on() {
+    let (peer, remote) = connected(Arc::new(EchoArgs));
+    let too_deep = arrays(MAX_FRAME_DEPTH + 10);
+    let (answered, calls) = tokio::sync::oneshot::channel();
+    let remote = tokio::task::spawn_blocking({
+        let too_deep = too_deep.clone();
+        move || {
+            let mut remote = Remote::start(remote);
+            let invoke = serde_json::to_vec(&json!({
+                "op": "invoke", "id": "node:1", "path": [], "target": "t", "method": "m",
+                "args": { "type": "data", "value": [too_deep] },
+            }))
+            .unwrap();
+            remote.writer.sender.lock().unwrap().send(&invoke).unwrap();
+            match remote.read() {
+                Frame::Throw { id, error } => {
+                    assert_eq!(id, "node:1");
+                    assert!(error.message.contains("64 levels"), "{}", error.message);
+                }
+                _ => panic!("throw of node:1 expected"),
+            }
+            let echoed = remote.call(
+                2,
+                Frame::Invoke {
+                    id: "node:2".into(),
+                    path: vec![],
+                    target: "t".into(),
+                    method: "m".into(),
+                    args: data(json!(["after"])),
+                    sync: false,
+                },
+            );
+            assert_eq!(echoed, json!(["after"]));
+            answered.send(()).unwrap();
+            // This side calls: the reply is too deep.
+            let Frame::Invoke { id, .. } = remote.read() else {
+                panic!("invoke expected")
+            };
+            let reply = serde_json::to_vec(&json!({
+                "op": "return", "id": id, "value": { "type": "data", "value": too_deep },
+            }))
+            .unwrap();
+            remote.writer.sender.lock().unwrap().send(&reply).unwrap();
+            let Frame::Invoke { id, args, .. } = remote.read() else {
+                panic!("invoke expected")
+            };
+            remote.ret(id, args);
+            remote
+        }
+    });
+    calls.await.unwrap();
+    assert_too_deep(peer.invoke_async("t", "m", Value::Data(json!([]))).await);
+    let back = peer
+        .invoke_async("t", "m", Value::Data(json!(["after"])))
+        .await
+        .unwrap();
+    assert_eq!(back.json().unwrap(), json!(["after"]));
+    let remote = remote.await.unwrap();
+    assert!(peer.close_reason().is_none());
+
+    let cancel = format!(
+        r#"{{"op":"cancel","id":"node:9","x":{}}}"#,
+        serde_json::to_string(&too_deep).unwrap()
+    );
+    remote
+        .writer
+        .sender
+        .lock()
+        .unwrap()
+        .send(cancel.as_bytes())
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), peer.closed())
+        .await
+        .expect("the session stayed open");
+    match peer.close_reason() {
+        Some(Error::Transport(message)) => assert!(message.contains("64 levels"), "{message}"),
+        other => panic!("{other:?}"),
     }
 }

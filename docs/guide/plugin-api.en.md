@@ -49,13 +49,21 @@ A plugin and the services it uses may run in different processes. Across process
 | Symbols, bigints, Maps, Sets, TypeScript Dates, binary data, cyclic references, `NaN` / `Infinity` | Cannot cross processes (the call fails). Whether Maps, Sets, Dates, binary data and bigints should cross is decided in [#308](https://github.com/arcships/rutis/issues/308); until then both the real runtimes and the test tools refuse them |
 | `undefined` inside TypeScript data (holding no functions or objects with methods) | Becomes `null` |
 | Go structs, slices, `map[string]T` | Copied as JSON (by their `json` tags); a struct is always data, `rutis.Ref(v)` passes an object by reference. Integers beyond ±2^53−1, `[]byte`, channels and non-string map keys cannot cross |
+| Values nested more than 64 levels deep | Cannot cross processes (the call fails, see below) |
 
-Numbers and nesting depth have the limits below. They describe current behaviour and are **not guaranteed** to stay this way (explicitly not guaranteed); a plugin that depends on them must handle them itself:
+Nesting depth: a value nests at most **64 levels**. Each array / list / tuple, object / dictionary (dataclasses included), and Go slice, map or struct is a level, whether or not it holds references; an `Error` / exception passed as a value is a level too. A call's argument list is not a level: each argument may nest 64 levels; a result may nest 64 levels. The side that **would send** a deeper value refuses it before sending, failing only that call, with an error naming the limit (`value nested deeper than 64 levels`):
+
+- as an argument: the caller's call fails (in Rust with `Error::Value`) and the far end does not run it;
+- as a result: the caller receives the error the callee throws;
+- the session goes on, and other calls on it (those running at the same time included) are not affected.
+
+All five runtimes (Rust, Node, Bun, Python, Go) and the test tool's strict mode check this limit. When a far end that does not keep to it (an older version, say) sends a frame nested too deep for the Rust side to read: if the frame shows which call it belongs to, only that call fails (the far end's call receives an error; a reply to this side's call fails that call), and the references in it are released only when the session ends; if it does not, the session ends, saying why. See [#279](https://github.com/arcships/rutis/issues/279).
+
+Numbers have the limits below. They describe current behaviour and are **not guaranteed** to stay this way (explicitly not guaranteed); a plugin that depends on them must handle them itself:
 
 - In JavaScript (Node, Bun) numbers are IEEE 754 doubles: an integer beyond ±(2^53−1) becomes the nearest double (2^53+1 arrives in JS as 2^53); `-0` becomes `0`; an integral float (Python's `2.0`) arrives in JS as `2` and leaves again as an integer. Pass large integers that must stay exact as strings.
 - Python keeps integers within 64 bits, and `-0.0`.
 - NaN and ±Infinity cannot cross.
-- Nesting depth: a value nested about 125 levels deep (each array or object is a level; an array or object holding references counts two levels on the wire, so about 62) makes the receiving Rust side end the **whole session**, not just fail the call ([#279](https://github.com/arcships/rutis/issues/279)). Keep nesting within 64 levels.
 
 Values are not copied within one process. Code that mutates an object after passing it may work in a unit test but fail across processes. The test tool's strict mode (enabled by default) applies the rules above to expose this early.
 

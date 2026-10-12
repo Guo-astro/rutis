@@ -488,9 +488,49 @@ func holdsReference(value any) bool {
 	return false
 }
 
+// MaxDepth is how deep a value crossing a session may nest (#279): each
+// array or object (slice, map, struct) is a level, so 64 nested arrays
+// cross and 65 do not; a call's argument list is not a level. A deeper
+// value fails its own call here, before it is sent; the session goes on.
+const MaxDepth = 64
+
+// ErrTooDeep is the error of a call whose value nests deeper than MaxDepth.
+var ErrTooDeep = fmt.Errorf("value nested deeper than %d levels, the most a value crossing a session may nest", MaxDepth)
+
+// jsonDepth is how deep arrays and objects nest in a JSON text.
+func jsonDepth(text []byte) int {
+	depth, deepest, inString, escaped := 0, 0, false, false
+	for _, b := range text {
+		switch {
+		case inString && escaped:
+			escaped = false
+		case inString && b == '\\':
+			escaped = true
+		case inString:
+			inString = b != '"'
+		case b == '"':
+			inString = true
+		case b == '[' || b == '{':
+			depth++
+			deepest = max(deepest, depth)
+		case b == ']' || b == '}':
+			depth--
+		}
+	}
+	return deepest
+}
+
 // encode turns a value into its wire form; p.mu is held. `grants` collects
-// the exports it granted, for a rollback.
-func (p *Peer) encode(value any, grants *[]int64, origin []string) (map[string]any, error) {
+// the exports it granted, for a rollback; `depth` counts the arrays and
+// objects around the value (an argument list starts at -1: it is not a
+// level).
+func (p *Peer) encode(value any, grants *[]int64, origin []string, depth int) (map[string]any, error) {
+	switch value.(type) {
+	case []any, map[string]any, error:
+		if depth >= MaxDepth {
+			return nil, ErrTooDeep
+		}
+	}
 	switch v := value.(type) {
 	case UndefinedType:
 		return map[string]any{"type": "undefined"}, nil
@@ -519,7 +559,7 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string) (map[string]a
 		if holdsReference(v) {
 			items := make([]any, len(v))
 			for i, item := range v {
-				encoded, err := p.encode(item, grants, origin)
+				encoded, err := p.encode(item, grants, origin, depth+1)
 				if err != nil {
 					return nil, err
 				}
@@ -531,7 +571,7 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string) (map[string]a
 		if holdsReference(v) {
 			items := make(map[string]any, len(v))
 			for key, item := range v {
-				encoded, err := p.encode(item, grants, origin)
+				encoded, err := p.encode(item, grants, origin, depth+1)
 				if err != nil {
 					return nil, err
 				}
@@ -545,6 +585,9 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string) (map[string]a
 	data, err := marshal(plain(value))
 	if err != nil {
 		return nil, fmt.Errorf("%T cannot cross the boundary: %w", value, err)
+	}
+	if depth+jsonDepth(data) > MaxDepth {
+		return nil, ErrTooDeep
 	}
 	return map[string]any{"type": "data", "value": json.RawMessage(data)}, nil
 }
@@ -867,7 +910,7 @@ func (p *Peer) request(ctx context.Context, op string, fields map[string]any, ar
 		if args == nil {
 			args = []any{}
 		}
-		encoded, err := p.encode(args, &grants, chain)
+		encoded, err := p.encode(args, &grants, chain, -1)
 		if err != nil {
 			p.rollback(grants)
 			p.mu.Unlock()
@@ -1262,7 +1305,7 @@ func (p *Peer) respond(id string, value any, failure error, chain []string) {
 	var err error
 	if failure == nil {
 		var encoded map[string]any
-		encoded, err = p.encode(value, &grants, chain)
+		encoded, err = p.encode(value, &grants, chain, 0)
 		if err == nil {
 			data, err = marshal(map[string]any{"op": "return", "id": id, "value": encoded})
 		}
