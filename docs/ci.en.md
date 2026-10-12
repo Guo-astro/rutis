@@ -73,16 +73,16 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 | `lint` | Linux | `code` | — | `cargo fmt --check`; every name in `PURE_TESTS_*` has its test file (§4); `cargo clippy --workspace --all-targets --all-features -- -D warnings`. In parallel with the tests. No baseline: a warning is fixed in the PR that introduces it, and new lints from a toolchain upgrade in the upgrade PR |
 | `msrv` | Linux | Only with `all` (`Cargo.lock`, `Cargo.toml` and the like changed) | The whole job | Builds the libraries and binaries with the declared MSRV (`rust-version` in `Cargo.toml`) and the repository's `Cargo.lock` (`cargo +<version> check --workspace`, without the example projects `rutis-agent` and `rutis-cli`) |
 | `checks` | Linux | Only with `all` | The whole job | Build checks and `--no-run` of the bridge and loader feature combinations (the whole workspace's build is covered by `lint`'s clippy). They find rare feature-combination build errors and run no tests |
-| `network-macos` | macOS | `code`: only the tests that depend on the platform | All bridge and loader tests; the `node/rutis` tests | Process start, local channels, runtime processes, WebSocket and rutis-host tests with the latest versions (§9); the end-to-end scenarios (on failure, the `e2e-macos` artifact); the Node runtime's and the Python package's tests; a build check of the whole workspace |
+| `network-macos` | macOS (self-hosted, §10) | `code`: only the tests that depend on the platform | All bridge and loader tests; the `node/rutis` tests | Process start, local channels, runtime processes, WebSocket and rutis-host tests with the latest versions (§9); the end-to-end scenarios (on failure, the `e2e-macos` artifact); the Node runtime's and the Python package's tests; a build check of the whole workspace |
 | `runtimes-windows` | Windows | `code`: only the tests that depend on the platform | All bridge and loader tests | The same on Windows (processes start over loopback); the Go SDK tests; the E2E harness and the E2E scenarios not limited to Unix (`rutis-e2e`: Job Objects, Ctrl-Break, residue checks); a build check of the whole workspace |
 | `runtimes-bun` | Linux | `bun`: Bun 1.4.0 | Linux latest; macOS 1.4.0 | Every Bun runtime test, with the reruns over loopback |
 | `runtimes-go` | Linux | `go`: Go oldstable | Linux stable; macOS oldstable; the reruns over loopback on Linux | Every Go SDK and Go runtime test |
 | `semver-rutis` | Linux | `packaging` | The whole job | Whether the public API changed incompatibly since the last release (warning only) |
 | `dylib-linux-launcher`, `dylib-linux-sdk-bundle` | Linux | `dylib` | — | Dylib tests, split into two jobs that run at the same time |
 | `dylib-linux-repro` | Linux | `repro` | The whole job | Reproducible SDK builds (built twice on one machine, in two directories) |
-| `dylib-macos` | macOS | `dylib` | The reproducible-build step | The same dylib tests, one after another in one job, sharing one bundle build; the reproducible-build step runs only when `repro` is on |
+| `dylib-macos` | macOS (self-hosted, §10) | `dylib` | The reproducible-build step | The same dylib tests, one after another in one job, sharing one bundle build; the reproducible-build step runs only when `repro` is on |
 | `release-dry-run` | Linux | `packaging` | The whole job | The release packages build (crates, npm packages, Python packages). `install.yml` builds and installs the binaries and wheels of each platform (§2): only Linux x64 on pull requests; Windows and macOS packaging is checked on main after the merge, aarch64 before a release |
-| `sdk-repro`, `sdk-repro-macos`, and their comparisons | Linux, macOS | Only with `all` | The whole jobs | Builds the SDK on two machines and checks the results are identical |
+| `sdk-repro`, `sdk-repro-macos`, and their comparisons | Linux, macOS (self-hosted, §10) | Only with `all` | The whole jobs | Builds the SDK on two machines and checks the results are identical |
 | `ci-ok` | Linux | Always | — | The summary (§5) |
 
 ### Tests that depend on the platform
@@ -203,6 +203,7 @@ Write the answers in the pull request description.
 
 - Every job uses `Swatinem/rust-cache` with `save-if: github.ref == 'refs/heads/main'`: only runs on main save caches.
 - A pull request can read only main's caches and its own. Pull requests save none, so that they do not fill the repository's 10 GB and push main's caches out.
+- The self-hosted macOS runners use no `rust-cache` and keep their own target directory (§10).
 - New jobs do the same (see the note at the `rust-cache` of the `rust` job in `ci.yml`).
 - Checks that cannot use caches (reproducible SDK builds) run on main, and on pull requests only when `repro` is on.
 
@@ -225,3 +226,26 @@ The end-to-end scenarios (`rutis-e2e`) run on all three platforms: on Linux in `
 In the macOS entries of `runtimes-go` and `runtimes-bun` on main, Node and Python are only the far end of cross-language rows and use the oldest versions, as on Linux. The Node used for releases (`release.yml`, `package.yml` and `ci.yml`'s `release-dry-run`) is the release tooling's version and not part of the support matrix.
 
 **Change CI versions in the same PR as a declaration**: a PR that changes `engines`, `requires-python`, the websockets lower bound or `rust-version` also changes the versions of the matching jobs in the table above; otherwise the declared minimum is unverified (Q10.3).
+
+## 10. Self-hosted macOS runners
+
+`ci.yml`'s `network-macos`, `dylib-macos` and `sdk-repro-macos`, and `install.yml`'s `darwin-arm64` on main and pull requests, run on self-hosted macOS runners: one dedicated, isolated Mac with one or more runner instances, all labelled `self-hosted, macOS, ARM64` (the first is `macos-1`). The other jobs stay on GitHub's runners: `darwin-x64` (it needs the Intel `macos-15-intel`), `package.yml`'s macOS builds (release files), `darwin-arm64` when `release.yml` calls `install.yml` (the pre-release gate uses `macos-15`), the macOS entries of `runtimes-go`/`runtimes-bun` on main, and the Linux and Windows jobs.
+
+**Back to GitHub's runners without a code change**: the repository variable `MACOS_RUNNER` (Settings → Secrets and variables → Actions → Variables) is the JSON value of `runs-on`; unset, it is `["self-hosted","macOS","ARM64"]`. Set it to `"macos-15"` (with the quotes) and every one of these jobs goes back to GitHub's macOS; delete it to come back. `gh variable set MACOS_RUNNER --body '"macos-15"'`.
+
+A self-hosted machine keeps its state between jobs, and several instances run at once. These jobs run `tools/ci-self-hosted.sh` at their start and their end (`if: always()`):
+
+- it ends the processes an earlier job of this instance left: those whose command line or working directory is under this instance's workspace, target directory or scenario directory; the runner itself and other instances' jobs are left alone;
+- the scenario directory `RUTIS_E2E_DIR` is the instance's own `/tmp/rutis-e2e-<runner name>` (not `runner.temp`: a Unix socket path is at most 104 bytes on macOS, see `tests/e2e/src/lib.rs`), emptied at the start and the end;
+- builds use no `rust-cache` (it would upload the cache to GitHub again); `CARGO_TARGET_DIR` is the instance's kept `~/.cache/rutis-ci/<runner name>/target`, emptied above 30 GB (`RUTIS_CI_TARGET_MAX_GB`); the caches of `setup-node` and `setup-go` are used on GitHub's runners only;
+- directories `tools/*.sh` leave in `/tmp/rutis-*` are removed after 12 hours.
+
+**Before adding an instance, the machine needs**:
+
+1. The runner registered with `./config.sh --labels self-hosted,macOS,ARM64 --name macos-<n>` (a name unique on the machine: directories and caches go by it) and run as a service: `./svc.sh install && ./svc.sh start`.
+2. A file descriptor limit of 10240: `SoftResourceLimits` and `HardResourceLimits`, each with `NumberOfFiles` = `10240`, in `~/Library/LaunchAgents/actions.runner.*.plist`, then `./svc.sh stop && ./svc.sh start`.
+3. rustup (`dtolnay/rust-toolchain` installs the `rust-toolchain.toml` version with it): `curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain none`.
+4. The Xcode command line tools (`xcode-select --install`): `cc`, `codesign`, `otool`, `lipo`. `sdk-repro-macos` prints the Xcode version, or the command line tools' when there is no Xcode.
+5. At least 100 GB of free disk (up to 30 GB of target directory per instance, plus Node, Python, Go and Bun in `_work/_tool`).
+6. No sleep: `sudo pmset -a sleep 0 disksleep 0` (or in System Settings).
+7. No Homebrew: these jobs use only the system's `bash` (3.2), `perl`, `tar`, `shasum` and `lsof`; Node, Python, Go, Bun and uv come from their setup actions into `_work/_tool`.

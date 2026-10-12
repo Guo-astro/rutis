@@ -15,6 +15,11 @@
 # The minimum versions go on Linux (Node 22, Python 3.10, Bun 1.4.0, Go
 # oldstable; websockets 15.0 is the PyPI cell's own);
 # macOS and Windows take the latest (docs/ci.md §9).
+#
+# darwin-arm64 runs on the self-hosted macOS runners for main and pull
+# requests (the repository variable MACOS_RUNNER switches it, docs/ci.md
+# §10); a release (release.yml, which names its platforms) keeps the
+# GitHub-hosted macos-15.
 name: install
 
 on:
@@ -88,6 +93,8 @@ jobs:
           VERSION: ${{ inputs.version }}
           PLATFORMS: ${{ inputs.platforms }}
           BUILD: ${{ inputs.build }}
+          REF: ${{ github.ref }}
+          MACOS_RUNNER: ${{ vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]' }}
         run: |
           node - <<'EOF' >> "$GITHUB_OUTPUT"
           const version = process.env.VERSION || require('./node/rutis-host/package.json').version
@@ -95,12 +102,16 @@ jobs:
           const main = ['linux-x64', 'darwin-arm64', 'win32-x64']
           const platforms = process.env.PLATFORMS ? JSON.parse(process.env.PLATFORMS)
             : process.env.EVENT === 'pull_request' ? ['linux-x64'] : main
+          // Main and pull requests: the self-hosted runners; a release and a
+          // run by hand: GitHub's.
+          const selfHosted = !process.env.PLATFORMS && (process.env.EVENT === 'pull_request'
+            || (process.env.EVENT === 'push' && process.env.REF === 'refs/heads/main'))
           const runners = {
             'linux-x64': { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-musl', wheel: 'x86_64', node: '22', python: '3.10' },
             'linux-arm64': { os: 'ubuntu-24.04-arm', target: 'aarch64-unknown-linux-musl', wheel: 'aarch64', node: '22', python: '3.10' },
             // The Intel macOS runner (macos-13 is retired).
             'darwin-x64': { os: 'macos-15-intel', target: 'x86_64-apple-darwin', wheel: 'x86_64-apple-darwin', node: '26', python: '3.x' },
-            'darwin-arm64': { os: 'macos-15', target: 'aarch64-apple-darwin', wheel: 'aarch64-apple-darwin', node: '26', python: '3.x' },
+            'darwin-arm64': { os: selfHosted ? JSON.parse(process.env.MACOS_RUNNER) : 'macos-15', target: 'aarch64-apple-darwin', wheel: 'aarch64-apple-darwin', node: '26', python: '3.x' },
             'win32-x64': { os: 'windows-2025', target: 'x86_64-pc-windows-msvc', wheel: 'x86_64-pc-windows-msvc', node: '26', python: '3.x' },
           }
           const matrix = platforms.map(platform => {
@@ -139,9 +150,14 @@ jobs:
       RUTIS_E2E_SOURCE: ${{ inputs.source || 'local' }}
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh start
       # Only to compile the scenarios: what they run is what they install.
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@v4
@@ -161,6 +177,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ runner.os == 'Linux' && 'oldstable' || 'stable' }}
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: go/rutis/go.mod
       # This run's packages: the ones package.yml built.
       - if: env.RUTIS_E2E_SOURCE == 'local'
@@ -199,7 +216,7 @@ jobs:
       - name: the install scenarios
         env:
           RUTIS_E2E_ARTIFACTS: ${{ runner.temp }}/artifacts
-          RUTIS_E2E_DIR: ${{ runner.temp }}/e2e
+          RUTIS_E2E_DIR: ${{ env.RUTIS_E2E_DIR || format('{0}/e2e', runner.temp) }}
         run: |
           node --version; python3 --version 2>/dev/null || python --version; uv --version
           cargo test --locked -p rutis-e2e --test install -- --ignored --test-threads=1
@@ -208,11 +225,14 @@ jobs:
       - name: the guides' examples
         if: env.RUTIS_E2E_SOURCE == 'registry' && runner.os == 'Linux'
         env:
-          RUTIS_E2E_DIR: ${{ runner.temp }}/e2e
+          RUTIS_E2E_DIR: ${{ env.RUTIS_E2E_DIR || format('{0}/e2e', runner.temp) }}
         run: cargo test --locked -p rutis-e2e --test doc_examples -- --ignored
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: install-${{ matrix.platform }}-${{ env.RUTIS_E2E_SOURCE }}
-          path: ${{ runner.temp }}/e2e
+          path: ${{ env.RUTIS_E2E_DIR || format('{0}/e2e', runner.temp) }}
           retention-days: 14
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: bash tools/ci-self-hosted.sh end
