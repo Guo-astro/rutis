@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{BoxFuture, CordisError, Ctx, Listener};
+use rutis::{BoxFuture, CordisError, Ctx, FiberState, Listener};
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value as RpcValue};
@@ -18,8 +18,10 @@ use rutis_bridge::{
     NodeEvent, StaticIdentity,
 };
 use rutis_loader::{
-    Chain, Layer, LoaderOptions, LoaderPlugin, Patch, PeerResolver, PeerRowsPlugin,
+    Chain, EntryStatus, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, PeerResolver,
+    PeerRowsPlugin,
 };
+use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
 use tokio::io::AsyncBufReadExt;
 
@@ -31,20 +33,10 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-async fn eventually<T>(mut check: impl FnMut() -> Option<T>, what: &str) -> T {
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            if let Some(found) = check() {
-                return found;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
-}
-
 struct Clock;
+
+/// Twice HANG_GUARD: a Node process starts cold, as a full node (#238).
+const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 impl HostDispatch for Clock {
     fn invoke(&self, _: &str, _: RpcValue) -> Reply {
         Ok(json!(42).into())
@@ -52,6 +44,27 @@ impl HostDispatch for Clock {
     fn methods(&self) -> Option<Value> {
         Some(json!({ "now": "sync" }))
     }
+}
+
+fn row_state(loader: &Loader, id: &str) -> Option<FiberState> {
+    match loader.get(id)?.status {
+        EntryStatus::Running(snapshot) => Some(snapshot.state),
+        _ => None,
+    }
+}
+
+/// Forward `tick` to Cordis, with `what`, and wait for its `tock`.
+async fn tick(main: &Ctx, what: &str) {
+    main.events()
+        .parallel(
+            main,
+            &node_event("tick"),
+            Arc::new(NodeEvent {
+                args: json!([what]),
+            }),
+        )
+        .await
+        .unwrap();
 }
 
 struct Record(Arc<Mutex<Vec<Value>>>);
@@ -165,11 +178,12 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
     };
 
     // Cordis's calendar, imported here; sync and async.
-    let calendar = eventually(
-        || main.get_as::<dyn HostDispatch>(host_key("calendar")),
-        "calendar imported",
-    )
-    .await;
+    let calendar = COLD
+        .eventually(
+            || main.get_as::<dyn HostDispatch>(host_key("calendar")),
+            "calendar imported",
+        )
+        .await;
     let today = tokio::task::spawn_blocking({
         let calendar = calendar.clone();
         move || calendar.invoke("today", RpcValue::List(vec![]))
@@ -185,38 +199,43 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
     drop(calendar);
 
     // rutis's clock, imported there and called synchronously.
-    eventually(saw("clock: 42"), "Cordis calling the clock").await;
+    COLD.eventually(saw("clock: 42"), "Cordis calling the clock")
+        .await;
 
     // A rutis row hosted in Cordis.
-    eventually(saw("greeter: from rutis"), "the hosted row").await;
-    eventually(saw("greeter: isolated"), "the isolated row").await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(
-        saw("greeter: gated")().is_none(),
-        "a hosted row waits for what it injects"
-    );
+    COLD.eventually(saw("greeter: from rutis"), "the hosted row")
+        .await;
+    COLD.eventually(saw("greeter: isolated"), "the isolated row")
+        .await;
+    // The gated row runs here once `plugins.load` returned, which the host
+    // answers only after the Cordis fiber settled (`entry.fiber.await()`):
+    // applied, or waiting for its inject.
+    COLD.eventually(
+        || (row_state(&loader, "gated") == Some(FiberState::Active)).then_some(()),
+        "the gated row loaded in Cordis",
+    )
+    .await;
 
     // tick goes there, tock comes back.
-    main.events()
-        .parallel(
-            &main,
-            &node_event("tick"),
-            Arc::new(NodeEvent {
-                args: json!(["ping"]),
-            }),
-        )
-        .await
-        .unwrap();
-    eventually(saw("tick: [\"ping\"]"), "tick in Cordis").await;
+    tick(&main, "ping").await;
+    COLD.eventually(saw("tick: [\"ping\"]"), "tick in Cordis")
+        .await;
     assert_eq!(
         *tocks.lock().unwrap(),
         vec![json!(["pong", 1])],
         "tock back before tick's parallel ended"
     );
+    // The tick went after the load returned, and Cordis writes its lines
+    // to stdout in order: a start of the gated row would be there by now.
+    assert!(
+        saw("greeter: gated")().is_none(),
+        "a hosted row waits for what it injects"
+    );
 
     // Removing the row unloads it there.
     loader.reconcile(vec![], None).await.unwrap();
-    eventually(saw("greeter gone: from rutis"), "the hosted row unloaded").await;
+    COLD.eventually(saw("greeter gone: from rutis"), "the hosted row unloaded")
+        .await;
 
     // Cordis remembers a withdrawal of the clock: an older announcement
     // arriving after it is stale, a newer one provides it again (its user
@@ -270,14 +289,21 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
     )
     .await;
     send("services.announce", announcement(999)).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // A tick after the announcement was answered, as the marker. Had Cordis
+    // provided the clock, its user would have started in the microtasks of
+    // that same handling (a Cordis fiber loads after `await
+    // Promise.resolve()` only), before Cordis reads the tick, a later
+    // message; its lines go to stdout in order.
+    tick(&main, "after 999").await;
+    COLD.eventually(saw("tick: [\"after 999\"]"), "the second tick in Cordis")
+        .await;
     assert_eq!(
         clock_uses(),
         used,
         "a stale announcement brings nothing back"
     );
     send("services.announce", announcement(1001)).await;
-    eventually(
+    COLD.eventually(
         || (clock_uses() == used + 1).then_some(()),
         "the clock again",
     )
@@ -286,21 +312,37 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
     // Cordis's export restarted with another list: what it still exports is
     // back here (its versions go on from the last export's).
     use tokio::io::AsyncWriteExt;
+    let before = main
+        .get_as::<dyn HostDispatch>(host_key("calendar"))
+        .unwrap();
     let mut stdin = child.stdin.take().unwrap();
     stdin.write_all(b"export agenda\n").await.unwrap();
     stdin.flush().await.unwrap();
-    eventually(saw("export: calendar,agenda"), "the export restarted").await;
-    eventually(
-        || main.get_as::<dyn HostDispatch>(host_key("calendar")),
-        "calendar imported again",
-    )
-    .await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(
-        main.get_as::<dyn HostDispatch>(host_key("calendar"))
-            .is_some(),
-        "calendar stays"
-    );
+    COLD.eventually(saw("export: calendar,agenda"), "the export restarted")
+        .await;
+    // The new export's calendar, not the old one still here.
+    let again = COLD
+        .eventually(
+            || {
+                let now = main.get_as::<dyn HostDispatch>(host_key("calendar"))?;
+                (!std::ptr::addr_eq(Arc::as_ptr(&now), Arc::as_ptr(&before))).then_some(now)
+            },
+            "calendar imported again",
+        )
+        .await;
+    drop(before);
+    // And it stays. The marker: a tick, whose tock Cordis sends after
+    // whatever it sent before handling the tick, on the same session, and
+    // this side handles a session's messages in order; `parallel` returns
+    // once the tock was handled. A withdrawal of the old export still on
+    // its way would have removed the calendar by then.
+    tick(&main, "after export").await;
+    COLD.eventually(saw("tick: [\"after export\"]"), "the third tick in Cordis")
+        .await;
+    let now = main
+        .get_as::<dyn HostDispatch>(host_key("calendar"))
+        .expect("calendar stays");
+    assert!(std::ptr::addr_eq(Arc::as_ptr(&now), Arc::as_ptr(&again)));
     child.start_kill().unwrap();
 }
 
@@ -322,16 +364,20 @@ async fn a_listening_cordis_node_lets_a_newer_connection_take_over() {
         .spawn()
         .unwrap();
     let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
-    let address = loop {
-        let line = lines
-            .next_line()
-            .await
-            .unwrap()
-            .expect("the node's address");
-        if let Some(address) = line.strip_prefix("rutis: listening on ") {
-            break address.to_owned();
-        }
-    };
+    let address = COLD
+        .within("the node's address", async {
+            loop {
+                let line = lines
+                    .next_line()
+                    .await
+                    .unwrap()
+                    .expect("the node's address");
+                if let Some(address) = line.strip_prefix("rutis: listening on ") {
+                    break address.to_owned();
+                }
+            }
+        })
+        .await;
     tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
 
     async fn controller(address: &str) -> (Ctx, rutis::FiberView) {
@@ -356,19 +402,19 @@ async fn a_listening_cordis_node_lets_a_newer_connection_take_over() {
     }
 
     let (first, first_link) = controller(&address).await;
-    eventually(
+    COLD.eventually(
         || first.get_as::<dyn HostDispatch>(host_key("calendar")),
         "the first controller's import",
     )
     .await;
     let (second, _second_link) = controller(&address).await;
-    eventually(
+    COLD.eventually(
         || second.get_as::<dyn HostDispatch>(host_key("calendar")),
         "the second controller's import",
     )
     .await;
     // The first was replaced: its session and what it imported went.
-    eventually(
+    COLD.eventually(
         || {
             first
                 .get_as::<dyn HostDispatch>(host_key("calendar"))

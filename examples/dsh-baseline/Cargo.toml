@@ -12,6 +12,7 @@ rutis-bridge = { path = "../../crates/rutis-bridge", features = ["cordis"] }
 tokio.workspace = true
 
 [dev-dependencies]
+rutis-test-support = { path = "../../crates/rutis-test-support" }
 tempfile = "3"
 
 [build-dependencies]

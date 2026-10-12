@@ -2,13 +2,13 @@
 #![cfg(all(unix, dsh_baseline))]
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use dsh_baseline::credentials::{
     self, CredentialKey, CredentialRef, CredentialsRecordUpdated, CredentialsReferenceUpdated,
 };
 use rutis::{BoxFuture, CordisError, Ctx, EventKey, Listener};
 use rutis_bridge::cordis::serde_json::json;
+use rutis_test_support::eventually_with;
 
 #[derive(Default, Clone)]
 struct Seen(Arc<Mutex<Vec<String>>>);
@@ -42,14 +42,21 @@ impl Listener<CredentialsRecordUpdated> for Seen {
     }
 }
 
-async fn eventually(seen: &Seen, expected: &str) {
-    for _ in 0..100 {
-        if seen.0.lock().unwrap().iter().any(|entry| entry == expected) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("never saw {expected}: {:?}", seen.0.lock().unwrap());
+/// Until `seen` has `expected`, with what it has in the failure.
+async fn saw(seen: &Seen, expected: &str) {
+    eventually_with(
+        || {
+            seen.0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|entry| entry == expected)
+                .then_some(())
+        },
+        expected,
+        || format!("seen: {:?}", seen.0.lock().unwrap()),
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -83,7 +90,7 @@ async fn credential_changes_reach_rutis_listeners() {
         .set(&CredentialRef::from("test/api-key"), "s3cret")
         .await
         .unwrap();
-    eventually(&seen, "reference test/api-key").await;
+    saw(&seen, "reference test/api-key").await;
 
     store
         .modify_record(&CredentialKey::from("example/token"), |_| {
@@ -91,7 +98,7 @@ async fn credential_changes_reach_rutis_listeners() {
         })
         .await
         .unwrap();
-    eventually(&seen, "record example/token").await;
+    saw(&seen, "record example/token").await;
 
     drop(store);
     view.dispose().await.unwrap();

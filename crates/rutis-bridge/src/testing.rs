@@ -1,4 +1,4 @@
-//! The node conformance suite (feature `conformance`): what a full framework
+//! The node conformance suite (feature `testing`): what a full framework
 //! node must do on a link, as checks run from a rutis node against it.
 //!
 //! The far node, linked to `main` as `peer`, must:

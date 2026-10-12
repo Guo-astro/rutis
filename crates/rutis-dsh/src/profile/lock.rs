@@ -145,13 +145,16 @@ mod tests {
         let lock = dir.path().join("package.json.lock");
 
         // A live holder (ourselves, recorded as another pid that exists: 1).
+        // clock: the timeout is what is tested; pid 1 never exits, so the
+        // wait cannot end any other way, however short or long it is.
         std::fs::write(&lock, "1\n").unwrap();
         let err = with_file_lock(&file, Duration::from_millis(100), || ()).unwrap_err();
         assert!(matches!(err, LockError::Timeout(_)), "{err:?}");
 
-        // A dead holder is taken over.
+        // A dead holder is taken over (at once: the wait only guards
+        // against a hang).
         std::fs::write(&lock, "2147483000\n").unwrap();
-        let ran = with_file_lock(&file, Duration::from_millis(500), || true).unwrap();
+        let ran = with_file_lock(&file, rutis_test_support::HANG_GUARD, || true).unwrap();
         assert!(ran);
         assert!(!lock.exists(), "released after the operation");
 

@@ -299,6 +299,10 @@ async fn auto_ownership() {
 
 // ── lifecycle ────────────────────────────────────────────────────
 
+/// 状态事件按提交顺序到达(D24):断言到达顺序本身,不先排序。第一条
+/// 事件的监听器最慢,派发若不按提交顺序串行,后面的事件会超车。
+///
+/// guarantee: core/D24
 #[tokio::test]
 async fn state_transitions() {
     let ctx = Ctx::root().unwrap();
@@ -314,6 +318,9 @@ async fn state_transitions() {
             let seen = self.0.clone();
             let ev = e.clone();
             Box::pin(async move {
+                if ev.seq == 1 {
+                    turns(16).await;
+                }
                 seen.lock().unwrap().push(ev);
                 Ok(None)
             })
@@ -330,8 +337,9 @@ async fn state_transitions() {
     view.dispose().await.unwrap();
     drained(&ctx).await;
 
-    let mut events: Vec<FiberStatusChanged> = seen.lock().unwrap().clone();
-    events.sort_by_key(|e| e.seq);
+    let events: Vec<FiberStatusChanged> = seen.lock().unwrap().clone();
+    let seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
+    assert_eq!(seqs, vec![1, 2, 3, 4], "到达顺序不是提交顺序");
     let path: Vec<(FiberState, FiberState)> = events.into_iter().map(|e| (e.from, e.to)).collect();
     assert_eq!(
         path,

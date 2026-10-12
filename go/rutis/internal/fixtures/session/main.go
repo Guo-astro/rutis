@@ -1,6 +1,7 @@
 // The session conformance target (rutis_bridge::session::testing::session),
-// served by the Go session: connects to the Unix socket given as the first
-// argument as endpoint `go`, expecting `main`, and serves `conformance`
+// served by the Go session: connects to the channel given as the first
+// argument (a Unix socket path, or `tcp:<host>:<port>`, presenting the token
+// in RUTIS_CHANNEL_TOKEN first) as endpoint `go`, expecting `main`, and serves `conformance`
 // until the session ends.
 package main
 
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -119,8 +121,24 @@ func (c *conformance) dispatch(ctx context.Context, target, method string, args 
 	return nil, fmt.Errorf("no method %s", method)
 }
 
+func dial(spec string) (net.Conn, error) {
+	address, ok := strings.CutPrefix(spec, "tcp:")
+	if !ok {
+		return net.Dial("unix", spec)
+	}
+	conn, err := net.Dial("tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.Write([]byte(os.Getenv("RUTIS_CHANNEL_TOKEN") + "\n")); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
 func main() {
-	connection, err := net.Dial("unix", os.Args[1])
+	connection, err := dial(os.Args[1])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

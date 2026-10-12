@@ -76,6 +76,7 @@ rutis-test-support = { path = "../rutis-test-support" }
 rcgen = "0.14"
 tempfile = "3"
 tokio = { workspace = true }
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 
 [[example]]
 name = "smoke"

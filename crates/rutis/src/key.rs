@@ -11,7 +11,15 @@ pub struct InstanceId(NonZeroU64);
 impl InstanceId {
     pub(crate) fn allocate() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        let value = NEXT
+        Self::allocate_from(&NEXT)
+    }
+
+    /// The next ID of `next`. Checked: once the counter has no successor it
+    /// panics instead of wrapping around to an ID handed out before. Split
+    /// from [`InstanceId::allocate`] so a test can start a counter near the
+    /// limit without touching the process-wide one.
+    fn allocate_from(next: &AtomicU64) -> Self {
+        let value = next
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .expect("rutis InstanceId exhausted");
         Self(NonZeroU64::new(value).expect("InstanceId starts at one"))
@@ -429,5 +437,27 @@ mod describe_tests {
         keys.insert(a);
         assert!(keys.contains(&same));
         assert!(!keys.contains(&other));
+    }
+
+    /// An exhausted counter panics with the stated reason and stays
+    /// exhausted: no ID is handed out twice, none wraps around to 1.
+    ///
+    /// guarantee: instance/subtrees.2.2
+    #[test]
+    fn instance_id_exhaustion_panics_instead_of_wrapping() {
+        let next = AtomicU64::new(u64::MAX - 1);
+        let last = InstanceId::allocate_from(&next);
+        assert_eq!(last.0.get(), u64::MAX - 1);
+        for _ in 0..2 {
+            let panic = std::panic::catch_unwind(|| InstanceId::allocate_from(&next))
+                .expect_err("an exhausted counter must not hand out an ID");
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or_default();
+            assert!(message.contains("InstanceId exhausted"), "{message}");
+            assert_eq!(next.load(Ordering::Relaxed), u64::MAX, "counter wrapped");
+        }
     }
 }

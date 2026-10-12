@@ -33,4 +33,6 @@ url = "2"
 libc = "0.2"
 
 [dev-dependencies]
+# Path only: cargo publish drops it.
+rutis-test-support = { path = "../rutis-test-support" }
 tempfile = "3"
