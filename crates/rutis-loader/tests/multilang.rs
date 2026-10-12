@@ -477,16 +477,28 @@ async fn injected_services_gate_the_plugin() {
         .await
         .unwrap();
     let fiber = |id: &str| loader.get(id).unwrap().plugin.unwrap();
-    let first = [fiber("pg"), fiber("jg")];
+    // A row resolved before its runtime ran (the runtimes start alongside
+    // the loader here) is resolved again once it runs, and its new injects
+    // replace its fiber: the new resolution shows first, then the old fiber
+    // goes and, once it is gone, the new one comes. So wait for the new
+    // fiber, not for the injects (#342, as #316). A row resolved with its
+    // runtime keeps its first fiber.
+    let resolved_first = ["pg", "jg"].map(|id| {
+        let entry = loader.get(id).unwrap();
+        (entry.plugin.unwrap(), entry.meta["inject"].is_array())
+    });
+    let first = resolved_first.map(|(plugin, _)| plugin);
+    let offline = resolved_first.map(|(plugin, online)| (!online).then_some(plugin));
     COLD.until(
         || {
-            ["pg", "jg"].iter().all(|id| {
-                loader
-                    .get(id)
-                    .is_some_and(|entry| entry.meta["inject"].is_array())
+            ["pg", "jg"].iter().zip(offline).all(|(id, offline)| {
+                loader.get(id).is_some_and(|entry| {
+                    entry.meta["inject"].is_array()
+                        && entry.plugin.is_some_and(|plugin| Some(plugin) != offline)
+                })
             })
         },
-        "both rows to know their injects",
+        "both rows to run with their injects",
     )
     .await;
     // The states now; that they stay so until `llm` comes, `loads` checks below.
