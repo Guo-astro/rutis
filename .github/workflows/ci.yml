@@ -31,6 +31,7 @@ env:
     --test bun_runtime --test bun_channel --test runtime_conformance
     --test session_matrix --test websocket --test websocket_link
     --test websocket_cross --test websocket_conformance
+    --test value_roundtrip --test fault_links
   PLATFORM_TESTS_LOADER: >-
     --lib
     --test runtime_rows --test python_rows --test multilang --test leases
