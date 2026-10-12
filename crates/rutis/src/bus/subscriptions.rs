@@ -4,7 +4,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use super::{shrink_if_sparse, Hook};
+use super::{shrink_if_sparse, shrink_vec_if_sparse, Hook};
 use crate::{FiberState, PluginId, TypeKey};
 
 /// The callback family of a registered listener.
@@ -98,6 +98,13 @@ impl<C> Hook<C> {
 }
 
 impl<C> HookTable<C> {
+    #[cfg(test)]
+    pub(super) fn max_list_capacity(&self) -> usize {
+        let exact = self.exact.values().map(Vec::capacity);
+        let patterns = self.patterns.values().map(Vec::capacity);
+        exact.chain(patterns).max().unwrap_or(0)
+    }
+
     pub(super) fn has_patterns(&self, key: &TypeKey) -> bool {
         key.instance_id().is_none()
             && key.name().is_some()
@@ -129,6 +136,7 @@ impl<C> HookTable<C> {
         if hook.pattern {
             if let Some(list) = self.patterns.get_mut(&key.type_id()) {
                 list.retain(|entry| !Arc::ptr_eq(&entry.hook, hook));
+                shrink_vec_if_sparse(list);
                 if list.is_empty() {
                     self.patterns.remove(&key.type_id());
                 }
@@ -157,6 +165,7 @@ impl<C> HookTable<C> {
                 snapshot = list.clone();
             }
             list.retain(|hook| !hook.once || (live_exact && !hook.live()));
+            shrink_vec_if_sparse(list);
             if list.is_empty() {
                 self.exact.remove(key);
                 shrink_if_sparse(&mut self.exact);
@@ -179,6 +188,7 @@ impl<C> HookTable<C> {
                         true
                     }
                 });
+                shrink_vec_if_sparse(list);
                 if list.is_empty() {
                     self.patterns.remove(&key.type_id());
                     shrink_if_sparse(&mut self.patterns);
