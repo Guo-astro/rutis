@@ -111,6 +111,16 @@ func (c *conformance) dispatch(ctx context.Context, target, method string, args 
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		return c.aborted, nil
+	// The value one level deeper, returned or passed to a callback: past the
+	// depth limit, this side's call or reply fails (#279).
+	case "wrap":
+		return []any{arg(args, 0)}, nil
+	case "applyWrapped":
+		fn, ok := arg(args, 0).(*peer.RemoteFunction)
+		if !ok {
+			return nil, fmt.Errorf("applyWrapped needs a function")
+		}
+		return fn.Call(ctx, []any{[]any{arg(args, 1)}}, true)
 	case "reenter":
 		fn, _ := arg(args, 0).(*peer.RemoteFunction)
 		if fn == nil {

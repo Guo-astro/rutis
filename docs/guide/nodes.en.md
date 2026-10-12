@@ -27,6 +27,16 @@ Both sides use the same token. The dialing side presents `RUTIS_TOKEN` (or `RUTI
 - `dial` accepts `wss://…` for remote connections (TLS required) or `ws://127.0.0.1…` for the local loopback interface.
 - For a self-signed certificate, add its issuing CA to `RUTIS_CA` on the dialing side.
 - After a disconnect, retries use backoff starting at 0.5 seconds and capped at 30 seconds. Rejected credentials (403 or an untrusted certificate) are retried every 30 seconds. An incompatible protocol stops retrying and reports an error.
+- `rutis-host run` prints a line when a link's state changes, with a readable category and never the token. The node row's own `running` only says that the row runs, not that the link is connected:
+
+  ```
+  office: link connected
+  office: link down (127.0.0.1:7443: Connection refused (os error 61)); retrying in 2.1s
+  office: link refused: auth-rejected (office.example.com: upgrade refused with 403 Forbidden); retrying in 30s
+  office: link stopped: incompatible (office does not declare runtime)
+  ```
+
+  `auth-rejected` means the credentials were refused (a wrong token, a certificate for another name or expired, an untrusted CA), `incompatible` that the ends do not fit (not retried), and `link down` that the far end cannot be reached for now. The full format is in [What `run` prints](rutis-host.en.md#what-run-prints).
 - A dialing peer that arrives before the listening side's link is ready is asked to retry, so either side can start first.
 
 ## What a link can do

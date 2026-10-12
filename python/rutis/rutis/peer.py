@@ -175,33 +175,56 @@ def _is_live(value: Any) -> bool:
     return True
 
 
-def _holds_reference(value: Any, seen: set | None = None) -> bool:
+def _holds_reference(value: Any, seen: set | None = None, depth: int = 0) -> bool:
+    """Whether `value` holds a reference. Not looked for past MAX_DEPTH
+    levels: a value that deep fails as data, too deep (#279)."""
     if isinstance(value, (RemoteFunction, RemoteFuture)):
         return True
     if callable(value) or _is_future(value) or _is_live(value):
         return True
     if isinstance(value, (list, tuple, dict)):
         seen = seen if seen is not None else set()
-        if id(value) in seen:
+        if id(value) in seen or depth > MAX_DEPTH:
             return False
         seen.add(id(value))
         items = value.values() if isinstance(value, dict) else value
-        return any(_holds_reference(item, seen) for item in items)
+        return any(_holds_reference(item, seen, depth + 1) for item in items)
     return False
 
 
-def _data(value: Any) -> Any:
-    """Plain data for the wire, or TypeError."""
+# How deep a value crossing a session may nest (#279): each list, tuple,
+# dict (or dataclass) is a level, so 64 nested lists cross and 65 do not;
+# a call's argument list is not a level. A deeper value fails its own call
+# here, before it is sent; the session goes on.
+MAX_DEPTH = 64
+
+
+def _too_deep() -> ValueError:
+    return ValueError(
+        f"value nested deeper than {MAX_DEPTH} levels, the most a value crossing a session may nest"
+    )
+
+
+def _data(value: Any, depth: int = 0) -> Any:
+    """Plain data for the wire, or TypeError (ValueError if nested deeper
+    than MAX_DEPTH; `depth` counts the levels around it)."""
     if isinstance(value, _DATA):
         return value
+    if isinstance(value, (list, tuple, dict)) and depth >= MAX_DEPTH:
+        raise _too_deep()
     if isinstance(value, (list, tuple)):
-        return [_data(item) for item in value]
+        return [_data(item, depth + 1) for item in value]
     if isinstance(value, dict):
         if not all(isinstance(key, str) for key in value):
             raise TypeError("only string keys cross the boundary")
-        return {key: _data(item) for key, item in value.items() if item is not UNDEFINED}
+        return {key: _data(item, depth + 1) for key, item in value.items() if item is not UNDEFINED}
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return _data(dataclasses.asdict(value))
+        try:
+            fields = dataclasses.asdict(value)
+        except RecursionError:
+            # asdict recurses with no limit of its own.
+            raise _too_deep() from None
+        return _data(fields, depth)
     if value is UNDEFINED:
         return None
     raise TypeError(f"{type(value).__name__} cannot cross the boundary")
@@ -504,7 +527,9 @@ class Peer:
 
     # ── Values ───────────────────────────────────────────────────
 
-    def _encode(self, value: Any, grants: list, business: bool) -> dict:
+    def _encode(self, value: Any, grants: list, business: bool, depth: int = 0) -> dict:
+        """The wire form of `value`; `depth` counts the levels around it (an
+        argument list starts at -1: it is not a level)."""
         if value is UNDEFINED:
             return {"type": "undefined"}
         if isinstance(value, (RemoteFunction, RemoteFuture)):
@@ -542,10 +567,15 @@ class Peer:
                 "type": "reference",
                 "value": {"id": ref, "kind": entry.kind, "home": False, "origin": entry.origin},
             }
+        if isinstance(value, (list, tuple, dict, BaseException)) and depth >= MAX_DEPTH:
+            raise _too_deep()
         if isinstance(value, (list, tuple)):
             if _holds_reference(value):
-                return {"type": "list", "value": [self._encode(item, grants, business) for item in value]}
-            return {"type": "data", "value": _data(value)}
+                return {
+                    "type": "list",
+                    "value": [self._encode(item, grants, business, depth + 1) for item in value],
+                }
+            return {"type": "data", "value": _data(value, depth)}
         if isinstance(value, BaseException):
             return {"type": "data", "value": {"name": type(value).__name__, "message": str(value)}}
         if isinstance(value, dict) and _holds_reference(value):
@@ -553,9 +583,9 @@ class Peer:
                 raise TypeError("only string keys cross the boundary")
             return {
                 "type": "record",
-                "value": {key: self._encode(item, grants, business) for key, item in value.items()},
+                "value": {key: self._encode(item, grants, business, depth + 1) for key, item in value.items()},
             }
-        return {"type": "data", "value": _data(value)}
+        return {"type": "data", "value": _data(value, depth)}
 
     def _future_done(self, entry: _Export, done: asyncio.Future) -> None:
         # Recorded early when an await needed it first (see _execute).
@@ -677,7 +707,7 @@ class Peer:
             if sync and "sync-wait" in self._declared:
                 frame["sync"] = True
             if op != "await":
-                frame["args"] = self._encode(args, grants, True)
+                frame["args"] = self._encode(args, grants, True, -1)
             data = dumps(frame)
             self._pending[call] = finish
             if self.closed_error is not None:

@@ -36,7 +36,7 @@
 | `instance/` | `instance/<设计>.<节号>` | 实例相关设计：`subtrees` = [design-instance-subtrees](design-instance-subtrees.md)，`services` = [design-instance-services-2026-10-08](design-instance-services-2026-10-08.md) | 部分登记 |
 | `bridge/` | `bridge/<名字>` | 会话、链路、承载、跨语言值：[design-remote-plugins-2026-10-03](design-remote-plugins-2026-10-03.md)、[requirements-protocol-plugins](requirements-protocol-plugins.md) §6、[插件 API](guide/plugin-api.md)、质量规范 Q6.2、Q6.5 | 部分登记 |
 | `loader/` | `loader/<名字>` | rutis-loader 设计 | 预留 |
-| `host/` | `host/<名字>` | rutis-host 设计与用户文档 | 预留；`host/rutis-json-format` 已登记（#207），`host/output-lines-whole` 已登记（#332） |
+| `host/` | `host/<名字>` | rutis-host 设计与用户文档 | 预留；`host/rutis-json-format` 已登记（#207），`host/link-state-output` 已登记（#321），`host/output-lines-whole` 已登记（#332） |
 | `dsh/` | `dsh/<名字>` | rutis-dsh 设计与文档 | 预留；`dsh/user-layer-format` 已登记（#207） |
 | `sdk/` | `sdk/<名字>` | 插件 SDK 与测试工具：[插件 API](guide/plugin-api.md)、质量规范 Q6.7 | `sdk/testing-matches-runtime` 已登记（#206） |
 
@@ -209,9 +209,9 @@ PR 模板中有对应的检查项。
 | `bridge/multihop-cancel-and-release` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §6.2；质量规范 Q6.2.7 | 多跳转发（b → a → c）时取消和释放逐跳传递 | 契约行为 | 已验证 | `rutis-bridge/tests/fault_links.rs::cancellation_and_release_pass_hop_by_hop` | |
 | `bridge/call-chains-across-processes` | [会话标签设计](design-session-tags-2026-10-12.md) §五；[多语言 M1 设计](design-multilang-m1-2026-10-04.md) §7.2；质量规范 Q6.13.2 | 调用链经 link 跨任意多个进程、往返任意次时，每个进程只把自己会话的条目还原为原生调用号；另一个进程的调用不会被当成本进程的调用（不因此结束会话，不投错等待线程，不进入本进程的等待图） | 契约行为 | 已验证 | `rutis-bridge/tests/session_tags.rs::a_call_chain_crossing_processes_keeps_each_process_s_calls_apart`、`tests/e2e/tests/migration.rs::an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs` | #325。前者是两个子进程、确定性；后者经 rutis-host 与 fixture 宿主（S4）。标签唯一性是概率性的（进程随机数相等的概率约 10⁻¹⁵）；两个 0.9 及更早的进程之间仍有 #325 |
 | `bridge/replies-match-calls` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §6.2 | 多个调用同时进行、以任意顺序返回时，每个回复交给它自己的调用 | 契约行为 | 已验证 | `rutis-bridge/tests/fault_links.rs::interleaved_replies_reach_their_own_calls` | 放行顺序按种子打乱（`RUTIS_SEED`） |
-| `bridge/large-and-deep-values` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §7（消息大小上限）；[插件 API](guide/plugin-api.md)「值怎样传递」 | 接近消息上限的值和 100 层嵌套的值完整往返；超过上限的调用显式失败，对端不执行它；值嵌套过深时只让这次调用失败，会话继续 | 契约行为 | 部分验证 | `rutis-bridge/tests/fault_links.rs::large_and_deep_values_cross_a_session_whole`、`::over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails` | 嵌套过深的值结束整个会话（#279，`::a_value_too_deep_fails_its_call_and_the_session_goes_on` 为 `#[ignore]`）；插件 API 文档目前把它列为明确不保证（见 `bridge/value-limits`） |
+| `bridge/large-and-deep-values` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §7（消息大小上限）；[插件 API](guide/plugin-api.md)「值怎样传递」 | 接近消息上限的值和嵌套到上限（64 层）的值完整往返；超过消息上限的调用显式失败，对端不执行它；嵌套超过 64 层的值由要发送它的一方在发出前拒绝，只让这次调用失败（错误说明上限），会话和同一会话上的其他调用继续；不遵守上限的对端发来过深（线上超过 144 层）的帧时，只让它所属的调用失败，看不出所属调用时结束会话并说明原因。上限约束的是发送：从不遵守上限的对端收到的值可能超过 64 层（Rust 一侧读到线上 144 层，为余量，不保证），不承诺收到的值都在 64 层以内 | 契约行为 | 已验证 | `rutis-bridge/tests/fault_links.rs::large_and_deep_values_cross_a_session_whole`、`::over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails`、`::a_value_too_deep_fails_its_call_and_the_session_goes_on`；`rutis-bridge/tests/value_roundtrip.rs::rust_depth_limit`、`::node_depth_limit`、`::python_depth_limit`、`::go_depth_limit`、`::bun_depth_limit`；`rutis-bridge/src/session/rpc/tests.rs::a_value_deeper_than_the_limit_fails_its_call_before_it_is_sent`、`::a_frame_too_deep_fails_its_call_and_the_session_goes_on`、`::the_deepest_frames_allowed_go_the_receive_path_on_the_readers_stack` | #279。5 个运行时都作为过深值的发送方验证过（参数和返回值；Node、Bun、Python、Go 经各自的 conformance 夹具 `wrap`、`applyWrapped`）；接收过深的帧只有 Rust 一侧实现（各语言运行时只与 Rust 宿主建立会话） |
 | `bridge/value-roundtrip` | [插件 API](guide/plugin-api.md)「值怎样传递」 | null、布尔、数字、字符串、数组、对象跨会话按值转换表往返，`bridge/value-limits` 列出的除外 | 契约行为 | 已验证 | `rutis-bridge/tests/value_roundtrip.rs::rust_values_round_trip`、`::node_values_round_trip`、`::python_values_round_trip`、`::go_values_round_trip`、`::bun_values_round_trip` | 属性测试，失败时打印 `RUTIS_PROPTEST_SEED`。5 个运行时都覆盖；Go 列测的是会话层（回显 `json.RawMessage`） |
-| `bridge/value-limits` | [插件 API](guide/plugin-api.md)「值怎样传递」 | **明确不保证**：JS 一侧超出 ±(2^53−1) 的整数、`-0`、整数值浮点数；NaN、±Infinity；嵌套约 125 层（含引用约 62 层）以上结束整个会话（#279） | 明确不保证 | 明确不保证 | `rutis-bridge/tests/value_roundtrip.rs` 的比较规则按这些边界放宽 | 测试只放宽、不锁定"确实不提供"。#279 是否修复待定；修复后对应部分从本行移到 `bridge/large-and-deep-values` |
+| `bridge/value-limits` | [插件 API](guide/plugin-api.md)「值怎样传递」 | **明确不保证**：JS 一侧超出 ±(2^53−1) 的整数、`-0`、整数值浮点数；NaN、±Infinity | 明确不保证 | 明确不保证 | `rutis-bridge/tests/value_roundtrip.rs` 的比较规则按这些边界放宽 | 测试只放宽、不锁定"确实不提供"。嵌套深度原先在本行（#279），已修复并移到 `bridge/large-and-deep-values`：上限 64 层，过深只让这次调用失败 |
 | `bridge/release-count` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §6.2；质量规范 Q6.2.6 | 任意授予、释放、转回序列之后，两端引用表只含未释放的引用，全部释放后回到起点 | 契约行为 | 已验证 | `rutis-bridge/tests/value_roundtrip.rs::rust_releases_balance`、`::node_releases_balance`、`::python_releases_balance` | Rust、Node、Python；Go、Bun 的夹具没有观察引用表的入口，未覆盖 |
 | `bridge/reference-release-count` | 质量规范 Q6.2.6 | 引用的释放按计数：已收下的调用不受之后的释放影响；旧的释放不扣新授予；全部释放后再导出得到新 id；重复导入的引用显式释放时按次数计 | 契约行为 | 已验证 | `python/rutis/tests/test_peer.py::ReferenceCountTests`（`test_an_admitted_callback_survives_a_following_counted_release`、`test_an_old_release_preserves_a_new_grant_and_identifiers_are_not_reused`、`test_an_explicit_release_accounts_repeated_live_imports`）；`node/rutis-runtime/test/session.test.mjs`（`admitted callback survives a following counted release before dispatch`、`old release preserves a new grant and identifiers are not reused`、`explicit release accounts repeated live imports without relying on GC`） | Node、Python；Rust 侧由 `bridge/release-count` 覆盖；Go、Bun 没有对应测试 |
 | `bridge/grant-rollback` | [插件 API](guide/plugin-api.md)「值怎样传递」（不能跨进程的值） | 参数里有不能跨进程的值时，调用显式失败，已做的引用授予回滚，什么都不发出 | 核心承诺 | 已验证 | `python/rutis/tests/test_peer.py::ReferenceCountTests::test_an_unsupported_nested_value_fails_explicitly_and_rolls_back_partial_grants`；`node/rutis-runtime/test/session.test.mjs`（`unsupported nested references fail explicitly and roll back partial grants`） | 跨边界做不到的事显式报错、不静默降级（Q3.1）。Node、Python；Rust、Go、Bun 没有对应测试 |
@@ -244,17 +244,18 @@ PR 模板中有对应的检查项。
 
 ---
 
-## 13. rutis-host 的行为：`host/*`
+## 13. 宿主的输出：`host/link-state-output`
 
-出处：用户文档 [rutis-host](guide/rutis-host.md) 的“输出”一节（#332）。
+出处：用户文档 [rutis-host](guide/rutis-host.md) 的「run 打印什么」、[连接节点](guide/nodes.md) 的重连一段（#321）；[rutis-host](guide/rutis-host.md) 的“输出”一节（#332）。
 
 | 编号 | 内容 | 级别 | 状态 | 验证 | 说明 |
 | --- | --- | --- | --- | --- | --- |
+| `host/link-state-output` | `rutis-host run` 启动时为每个监听器打印一次实际绑定的地址（`rutis-host: listening on <名字> <地址>`）；节点行的 link 状态变化时各打印一行，与行状态行分开：`<行 id>: link connected`、`link down (<原因>); retrying in <时间>`、`link refused: auth-rejected (<原因>); retrying in 30s`、`link stopped: incompatible (<原因>)`；类别来自 link 对失败的分类（`Failure`），不靠错误文字；token 被拒、服务端证书名字不符或过期都报为 `auth-rejected`；输出里不出现 token | 契约行为 | 已验证 | `rutis-host/src/status.rs::tests::each_link_state_has_its_line`、`rutis-host/tests/links.rs::a_link_reports_connected_and_down`、`::an_unreachable_far_end_is_reported_as_down`、`::a_refused_token_is_reported_by_its_category_without_it`、`::an_incompatible_far_end_is_reported_as_stopped`；`tests/e2e/tests/nodes.rs::a_refused_reconnect_is_reported_by_its_category`、`::a_refused_certificate_is_reported_by_its_category` | 括号里的原因只给人看，措辞不保证；状态每 200 毫秒检查一次，只打印变化，持续更短的状态可能不打印 |
 | `host/output-lines-whole` | `rutis-host` 运行的运行时进程（Node、Bun、Python、Go）写到 stdout、stderr 的每一行，原样、整行地出现在 `rutis-host` 的同一个流上：`rutis-host` 自己的行和其他运行时的行不会落进它中间，插件把一行分几次写也一样；运行时结束时没有换行的最后一行作为单独一行写出，在 `rutis-host` 退出之前 | 契约行为 | 已验证 | `rutis-host/tests/output.rs::plugin_lines_written_in_pieces_come_out_whole`、`rutis-bridge/src/transport/local/output.rs::tests::a_line_written_in_pieces_is_passed_on_whole`；`tests/e2e` 的每个场景（harness 遇到被拆开的探针行即失败） | 同一个运行时进程里的两个插件各写半行，仍会拼在一起（一个进程只有一份输出）。超过 64 KiB 没有换行的行分段写出。黑盒测试只在 Unix 上跑（用 SIGTERM 结束宿主） |
 
 ---
 
-## 14. 统计（基准：`121eded` 之后合入 #284、#298、#334、#335 的 `main`，加上 #281、#282 的修复）
+## 14. 统计（基准：`121eded` 之后合入 #284、#298、#334、#335 的 `main`，加上 #281、#282 的修复和 #321）
 
 | 范围 | 已验证 | 部分验证 | 未验证 | 明确不保证 | 合计 |
 | --- | --- | --- | --- | --- | --- |
@@ -262,12 +263,12 @@ PR 模板中有对应的检查项。
 | `core/features.*`、`core/typed.*` | 6 | 0 | 0 | 0 | 6 |
 | `boundary/5.*` | 7 | 1 | 0 | 0 | 8 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
-| `bridge/*` | 15 | 1 | 0 | 1 | 17 |
+| `bridge/*` | 16 | 0 | 0 | 1 | 17 |
 | `host/*`、`dsh/*`（§11） | 2 | 0 | 0 | 0 | 2 |
+| `host/*`（§13） | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*`（§12） | 0 | 1 | 0 | 0 | 1 |
-| `host/*`（§13） | 1 | 0 | 0 | 0 | 1 |
-| 合计 | 59 | 6 | 0 | 2 | 67 |
+| 合计 | 61 | 5 | 0 | 2 | 68 |
 
-核心承诺 17 条：已验证 14，部分验证 3（D22、D28、5.8），未验证 0。契约行为 48 条：已验证 45，部分验证 3（D5、`bridge/large-and-deep-values`、`sdk/testing-matches-runtime`），未验证 0。
+核心承诺 17 条：已验证 14，部分验证 3（D22、D28、5.8），未验证 0。契约行为 49 条：已验证 47，部分验证 2（D5、`sdk/testing-matches-runtime`），未验证 0。
 
 **0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 0 条。从 0.11 起，新登记的条目（`loader/`、`host/` 等）如果是"未验证"，会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。

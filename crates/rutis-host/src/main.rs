@@ -156,13 +156,16 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     let config = config::HostConfig::read(&config_file(&args))?;
     warn(&config);
     let host = host::Host::start(&config).await?;
+    for line in status::listening(&host.listening) {
+        outln!("{line}");
+    }
     let started = async {
         host.runtimes_ready().await?;
         host.load(config.rows()).await
     };
     let signal = match start(&host, started, deadline, &mut signals).await {
         Started::Running => {
-            status::follow(host.loader.clone());
+            status::follow(host.loader.clone(), host.peers.clone());
             signals.next().await
         }
         Started::Signal(signal) => signal,
@@ -256,6 +259,9 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
     };
     let mut build = 1;
     let host = host::Host::start(&config).await?;
+    for line in status::listening(&host.listening) {
+        outln!("{line}");
+    }
     let started = async {
         host.runtimes_ready().await?;
         host.load(config.rows()).await
@@ -270,7 +276,7 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
     // Before saying it runs: a change made once it says so is a change.
     let mut seen = project::sources(&dir);
     outln!("rutis-host dev: running {id}; changes reload it (Ctrl-C ends)");
-    status::follow(host.loader.clone());
+    status::follow(host.loader.clone(), host.peers.clone());
     loop {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(400)) => {}

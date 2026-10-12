@@ -543,3 +543,30 @@ class VersionMismatchTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DepthTests(unittest.TestCase):
+    """#279: values nest at most MAX_DEPTH levels; far deeper ones (past
+    Python's recursion limit) still fail with the depth error."""
+
+    def test_far_deeper_values_fail_with_the_depth_error(self):
+        import dataclasses
+        import functools
+
+        from rutis.peer import MAX_DEPTH, _data, _holds_reference
+
+        @dataclasses.dataclass
+        class Node:
+            inner: object
+
+        def nest(depth, wrap):
+            return functools.reduce(lambda inner, _: wrap(inner), range(depth), 1)
+
+        def listed(inner):
+            return [inner]
+
+        self.assertEqual(_data(nest(MAX_DEPTH, listed)), nest(MAX_DEPTH, listed))
+        for value in (nest(MAX_DEPTH + 1, listed), nest(5000, listed), nest(5000, Node)):
+            self.assertFalse(_holds_reference(value))
+            with self.assertRaisesRegex(ValueError, "nested deeper than 64 levels"):
+                _data(value)

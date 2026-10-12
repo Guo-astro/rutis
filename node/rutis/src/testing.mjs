@@ -44,9 +44,14 @@ function holdsReference(value, seen = new Set()) {
   return Object.values(value).some(item => holdsReference(item, seen))
 }
 
+// How deep a value crossing between processes may nest, as in the
+// runtimes (#279): each array or object is a level.
+const MAX_DEPTH = 64
+
 // `value` as the other process sees it, by the rules of the runtimes
-// (node/rutis-runtime/src/session.mjs); `data`: inside plain data.
-function cross(value, where, seen = new Set(), data = false) {
+// (node/rutis-runtime/src/session.mjs); `data`: inside plain data; `depth`:
+// the arrays and objects around it.
+function cross(value, where, seen = new Set(), data = false, depth = 0) {
   if (value === undefined) return data ? null : undefined
   if (value === null) return value
   if (typeof value === 'symbol' || typeof value === 'bigint') {
@@ -62,6 +67,7 @@ function cross(value, where, seen = new Set(), data = false) {
   if (typeof value !== 'object') return value
   if (hasBehaviour(value)) return reference(value, where)
   if (seen.has(value)) throw new PluginTestError(`${where}: cyclic data cannot cross between processes`)
+  if (depth >= MAX_DEPTH) throw new PluginTestError(`${where}: a value nested deeper than ${MAX_DEPTH} levels cannot cross between processes`)
   // An Error passed as a value crosses as data: its name, message and stack.
   if (value instanceof Error && !data) {
     return { name: value.name, message: value.message, ...(typeof value.stack === 'string' ? { stack: value.stack } : {}) }
@@ -72,9 +78,9 @@ function cross(value, where, seen = new Set(), data = false) {
   }
   seen.add(value)
   try {
-    if (Array.isArray(value)) return value.map((item, i) => cross(item, `${where}[${i}]`, seen, data))
+    if (Array.isArray(value)) return value.map((item, i) => cross(item, `${where}[${i}]`, seen, data, depth + 1))
     const inData = data || !holdsReference(value)
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cross(item, `${where}.${key}`, seen, inData)]))
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cross(item, `${where}.${key}`, seen, inData, depth + 1)]))
   } finally {
     seen.delete(value)
   }

@@ -472,7 +472,9 @@ async fn a_far_end_without_the_required_contract_stops_the_link() {
         "the stop",
     )
     .await;
-    assert!(matches!(stopped, LinkState::Stopped { error } if error.contains("runtime")));
+    assert!(
+        matches!(stopped, LinkState::Stopped { failure: Failure::Incompatible, error } if error.contains("runtime"))
+    );
     assert!(peer(&mac.root, "main").is_none());
 
     // Requiring what it declares works.

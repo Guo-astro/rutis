@@ -12,9 +12,10 @@
 //! breaks), E6 (TLS refusals between processes), B7 (credentials in
 //! output) of `docs/quality-status.md` §4.
 //!
-//! rutis-host prints neither its link's state nor why a dial failed
-//! (#321), so what A's link did is read from its rows' states, the calls'
-//! outcomes, B's output and the proxy's connections.
+//! What A's link did is read from its rows' states, the calls' outcomes,
+//! B's output and the proxy's connections; why a dial was refused, from
+//! the link's lines in A's output (`gpu: link refused: <category> (…)`,
+//! #321).
 //!
 //! Waits: the link redials after 0.5 s, doubling each failure up to 30 s,
 //! ±20 % (`docs/guide/nodes.md`), and a session only resets that after
@@ -328,16 +329,18 @@ fn a_node_restarted_with_another_token_refuses_the_reconnect() {
 }
 
 /// Step 5, the rest: A's output says why it cannot reconnect, by a
-/// readable category (credentials refused), without the token.
+/// readable category (credentials refused), without the token (checked by
+/// `finish`).
 ///
 /// risk: E11, B7
+/// guarantee: host/link-state-output
 #[test]
-#[ignore = "bug #321: rutis-host prints no link state, nor why a dial is refused"]
 fn a_refused_reconnect_is_reported_by_its_category() {
     let s = Scenario::new("node-token-category");
     let (mut a, b) = refused_by_another_token(&s);
     a.wait_for("A reporting the refusal of gpu's credentials", |line| {
-        line.contains("gpu") && line.to_lowercase().contains("rejected")
+        line.starts_with("gpu: link refused: auth-rejected (")
+            && line.ends_with("; retrying in 30s")
     });
     stop(a, b);
     s.finish();
@@ -393,18 +396,21 @@ fn a_certificate_for_another_name_or_expired_is_refused() {
     s.finish();
 }
 
-/// Step 6, the rest: A's output says why, by a readable category (the
-/// certificate), for each refused certificate.
+/// Step 6, the rest: A's output says why, by a readable category
+/// (`auth-rejected`, a certificate's category) with a detail naming the
+/// certificate, for each refused certificate.
 ///
 /// risk: E6
+/// guarantee: host/link-state-output
 #[test]
-#[ignore = "bug #321: rutis-host prints no link state, nor why a dial is refused"]
 fn a_refused_certificate_is_reported_by_its_category() {
     let s = Scenario::new("node-tls-category");
     for cert in ["other-name", "expired"] {
         let (mut a, b) = over_tls(&s, cert, true);
         a.wait_for("A reporting the refusal of gpu's certificate", |line| {
-            line.contains("gpu") && line.to_lowercase().contains("certificate")
+            line.starts_with("gpu: link refused: auth-rejected (")
+                && line.to_lowercase().contains("certificate")
+                && line.ends_with("; retrying in 30s")
         });
         stop(a, b);
     }

@@ -77,6 +77,14 @@ class Conformance:
     def make(self):
         return lambda value: value
 
+    # The value one level deeper, returned or passed to a callback: past the
+    # depth limit, this side's call or reply fails (#279).
+    def wrap(self, value):
+        return [value]
+
+    def apply_wrapped(self, fn, value):
+        return fn([value])
+
     def tables(self):
         return self.peer.references()
 
@@ -106,7 +114,7 @@ async def main(spec: str) -> None:
     def dispatch(target, method, args):
         if target != "conformance":
             raise LookupError(f"no target {target}")
-        name = {"aborted": "is_aborted", "started": "is_started"}.get(method, method)
+        name = {"aborted": "is_aborted", "started": "is_started", "applyWrapped": "apply_wrapped"}.get(method, method)
         operation = getattr(service, name, None)
         if operation is None or name.startswith("_"):
             raise LookupError(f"no method {method}")
