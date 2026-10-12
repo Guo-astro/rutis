@@ -115,7 +115,7 @@ test('unsupported nested references fail explicitly and roll back partial grants
 // not speak is refused at the handshake, not after loading, and the refusal
 // names both versions, so it is clear which side is behind. The wording is
 // rutis-bridge's (`session::rpc::greet`).
-// guarantee: bridge/version-refusal (proposed)
+// guarantee: bridge/version-refusal
 test('a far end of protocol version 99 is refused, naming both versions', async () => {
   for (const [endpoint, ours] of [[{ local: 'node' }, ENDPOINT_PROTOCOL], [undefined, PROTOCOL]]) {
     const sent = []

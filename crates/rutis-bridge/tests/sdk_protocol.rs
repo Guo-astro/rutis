@@ -34,7 +34,7 @@ fn constant(source: &str, path: &str, prefix: &str) -> u32 {
     value
 }
 
-// guarantee: bridge/version-refusal (proposed); risk P8.
+// guarantee: bridge/version-refusal; risk P8.
 #[test]
 fn the_python_runtime_greets_with_this_crates_protocol_versions() {
     let path = "python/rutis/rutis/peer.py";
@@ -47,7 +47,7 @@ fn the_python_runtime_greets_with_this_crates_protocol_versions() {
     );
 }
 
-// guarantee: bridge/version-refusal (proposed); risk P8.
+// guarantee: bridge/version-refusal; risk P8.
 #[test]
 fn the_node_runtime_greets_with_this_crates_protocol_versions() {
     // The compat version is the package's `rutisProtocol`, which builds of
@@ -67,7 +67,7 @@ fn the_node_runtime_greets_with_this_crates_protocol_versions() {
     );
 }
 
-// guarantee: bridge/version-refusal (proposed); risk P8.
+// guarantee: bridge/version-refusal; risk P8.
 #[test]
 fn the_bun_runtime_greets_with_this_crates_protocol_versions() {
     let path = "bun/rutis-bun/package.json";
@@ -103,7 +103,7 @@ fn go_constant(source: &str, path: &str, name: &str) -> u32 {
     value
 }
 
-// guarantee: bridge/version-refusal (proposed); risk P8.
+// guarantee: bridge/version-refusal; risk P8.
 #[test]
 fn the_go_runtime_greets_with_this_crates_protocol_versions() {
     let path = "go/rutis/internal/peer/peer.go";

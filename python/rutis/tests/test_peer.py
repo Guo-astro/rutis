@@ -334,7 +334,7 @@ class ReferenceCountTests(background.IsolatedAsyncioTestCase):
         return {"op": "invoke", "id": f"rust:{sequence}", "path": [], "target": "test", "method": method, "args": {"type": "data", "value": []}}
 
     async def test_an_admitted_callback_survives_a_following_counted_release(self):
-        # guarantee: bridge/reference-release-count (proposed); risk P4.
+        # guarantee: bridge/reference-release-count; risk P4.
         calls = []
 
         def callback():
@@ -357,7 +357,7 @@ class ReferenceCountTests(background.IsolatedAsyncioTestCase):
         self.assertIsNone(peer.closed_error)
 
     async def test_an_old_release_preserves_a_new_grant_and_identifiers_are_not_reused(self):
-        # guarantee: bridge/reference-release-count (proposed); risk P4.
+        # guarantee: bridge/reference-release-count; risk P4.
         def callback():
             return 42
 
@@ -377,7 +377,7 @@ class ReferenceCountTests(background.IsolatedAsyncioTestCase):
         self.assertIsNone(peer.closed_error)
 
     async def test_an_explicit_release_accounts_repeated_live_imports(self):
-        # guarantee: bridge/reference-release-count (proposed); risk P4.
+        # guarantee: bridge/reference-release-count; risk P4.
         peer, read = self.session(lambda target, method, args: None)
         reference = {"type": "reference", "value": {"id": 1, "kind": "function", "home": False, "origin": []}}
         # The reply is already in the inbox: the synchronous call finds it
@@ -392,7 +392,7 @@ class ReferenceCountTests(background.IsolatedAsyncioTestCase):
             b()
 
     async def test_an_unsupported_nested_value_fails_explicitly_and_rolls_back_partial_grants(self):
-        # guarantee: bridge/grant-rollback (proposed); risk P4.
+        # guarantee: bridge/grant-rollback; risk P4.
         def callback():
             return 42
 
@@ -501,14 +501,14 @@ class VersionMismatchTests(unittest.IsolatedAsyncioTestCase):
         return str(raised.exception)
 
     async def test_an_endpoint_session_refuses_a_far_end_of_version_99(self):
-        # guarantee: bridge/version-refusal (proposed); risk P8.
+        # guarantee: bridge/version-refusal; risk P8.
         self.assertEqual(
             await self.refusal({"local": "py"}),
             f"incompatible session: the far end speaks protocol 99, this side {ENDPOINT_PROTOCOL}",
         )
 
     async def test_a_compat_session_refuses_a_far_end_of_version_99(self):
-        # guarantee: bridge/version-refusal (proposed); risk P8.
+        # guarantee: bridge/version-refusal; risk P8.
         self.assertEqual(
             await self.refusal(None),
             f"incompatible session: the far end speaks protocol 99, this side {PROTOCOL}",
