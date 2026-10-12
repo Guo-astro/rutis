@@ -230,8 +230,15 @@ fn shrink_if_sparse<K: Eq + std::hash::Hash, V>(map: &mut HashMap<K, V>) {
         map.shrink_to_fit();
     }
 }
+/// 同一规则用于单个键的监听列表(#291):同 registry `shrink_vec_if_sparse`。
+fn shrink_vec_if_sparse<T>(list: &mut Vec<T>) {
+    if list.capacity() > 64 && list.len() * 4 < list.capacity() {
+        list.shrink_to_fit();
+    }
+}
 fn retain_hook<C>(list: &mut Vec<Arc<Hook<C>>>, hook: &Arc<Hook<C>>) {
     list.retain(|h| !Arc::ptr_eq(h, hook));
+    shrink_vec_if_sparse(list);
 }
 
 #[derive(Default)]
@@ -357,6 +364,22 @@ impl EventBus {
             inner.wf_hooks.capacity(),
             inner.dispatch_tail.capacity(),
         )
+    }
+
+    /// The largest allocated length of one key's listener list, over the
+    /// exact and pattern lists of every hook table.
+    #[cfg(test)]
+    pub(crate) fn max_list_capacity(&self) -> usize {
+        let inner = self.inner.lock().unwrap();
+        [
+            inner.hooks.max_list_capacity(),
+            inner.wf_hooks.max_list_capacity(),
+            inner.sync_hooks.max_list_capacity(),
+            inner.sync_wf_hooks.max_list_capacity(),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0)
     }
 
     /// Accepted `emit` dispatches not yet finished, per event key.

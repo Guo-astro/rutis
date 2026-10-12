@@ -229,7 +229,8 @@ async fn thousand_shutdowns_reclaim_all_root_side_records() {
 }
 
 /// [`ChurnPlugin`] that also emits on its instance key, so the bus keeps
-/// a dispatch chain for it while the callback runs.
+/// a dispatch chain for it while the callback runs, and listens on a key
+/// every instance shares, so one listener list holds all of them.
 struct EmittingChurnPlugin(Vec<TypeKey>);
 impl Plugin for EmittingChurnPlugin {
     fn name(&self) -> &str {
@@ -243,6 +244,7 @@ impl Plugin for EmittingChurnPlugin {
             ctx.provide_as(TypeKey::instance::<u64>(ctx.instance()), Arc::new(1u64))?;
             let key = crate::EventKey::of().instance(ctx.instance());
             ctx.events().on(ctx, &key, IdleListener)?;
+            ctx.events().on(ctx, &crate::EventKey::of(), IdleListener)?;
             ctx.events().emit(ctx, &key, Arc::new(ProbeEvent))?;
             Ok(Effect::Done)
         })
@@ -267,6 +269,10 @@ fn root_side_capacities(ctx: &Ctx, root: &Arc<FiberInner>) -> Vec<(&'static str,
         ("hooks", hooks),
         ("wf_hooks", wf_hooks),
         ("dispatch_tail", tails),
+        // One key's list: the consumers of the shared service, the
+        // listeners of the shared event key (#291).
+        ("inject_list", ctx.shared().registry.max_list_capacity()),
+        ("listener_list", ctx.events().max_list_capacity()),
     ]
 }
 
@@ -285,7 +291,8 @@ fn root_side_counts(ctx: &Ctx, root: &Arc<FiberInner>) -> (usize, usize, (usize,
 /// to a resident sibling: in every round the parent's tables grow past the
 /// batch size, and after the batch is gone they are back to the resident's
 /// entries and shrink below the sparse limit. Capacity does not keep what
-/// earlier rounds needed.
+/// earlier rounds needed. This holds for the tables and for the one list a
+/// key keeps when every subtree uses that key next to the resident (#291).
 ///
 /// guarantee: instance/subtrees.5
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -309,7 +316,10 @@ async fn parent_tables_shrink_back_after_every_batch_of_subtrees() {
         }
         let peak = root_side_capacities(&ctx, &root);
         for (table, capacity) in &peak {
-            if matches!(*table, "children" | "effects" | "bindings" | "hooks") {
+            if matches!(
+                *table,
+                "children" | "effects" | "bindings" | "hooks" | "inject_list" | "listener_list"
+            ) {
                 assert!(
                     *capacity >= BATCH,
                     "round {round}: {table} holds {capacity} < {BATCH}"

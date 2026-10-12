@@ -78,6 +78,15 @@ fn shrink_if_sparse<K: Eq + std::hash::Hash, V>(map: &mut HashMap<K, V>) {
         map.shrink_to_fit();
     }
 }
+
+/// 同一稀疏收缩规则用于单个键的条目列表(#291):高峰后只剩少量条目的
+/// 列表不再永久保留高峰容量。阈值与 `shrink_if_sparse` 相同,收缩后
+/// 至少要再增长到 4 倍才会再次收缩,增删交替不会退化为二次方。
+fn shrink_vec_if_sparse<T>(list: &mut Vec<T>) {
+    if list.capacity() > 64 && list.len() * 4 < list.capacity() {
+        list.shrink_to_fit();
+    }
+}
 impl Registry {
     pub(crate) fn new() -> Self {
         Self {
@@ -101,6 +110,13 @@ impl Registry {
             self.bindings.lock().unwrap().capacity(),
             self.inject_index.lock().unwrap().capacity(),
         )
+    }
+
+    /// The largest allocated length of one key's consumer list.
+    #[cfg(test)]
+    pub(crate) fn max_list_capacity(&self) -> usize {
+        let index = self.inject_index.lock().unwrap();
+        index.values().map(Vec::capacity).max().unwrap_or(0)
     }
 
     pub(crate) fn insert_binding(
@@ -300,6 +316,7 @@ impl Registry {
             if let Some(list) = index.get_mut(key) {
                 list.retain(|w| !Weak::ptr_eq(w, &weak));
                 empty = list.is_empty();
+                shrink_vec_if_sparse(list);
             }
             if empty {
                 index.remove(key);
