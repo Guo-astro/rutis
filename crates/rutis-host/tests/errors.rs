@@ -34,7 +34,8 @@ async fn first_error(dir: &Path, text: &str) -> String {
     normalize(&error, dir)
 }
 
-/// risk: B6, A7
+/// risk: B6, A7, J3
+/// guarantee: host/rutis-json-format (a newer format)
 #[tokio::test(flavor = "multi_thread")]
 async fn a_configuration_that_is_not_there_or_not_valid() {
     let _environment = environment();

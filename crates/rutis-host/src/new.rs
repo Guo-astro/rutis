@@ -187,6 +187,7 @@ fn next_minor(version: &str) -> String {
 mod tests {
     use super::*;
 
+    /// guarantee: host/rutis-json-format (generated files name their format)
     #[test]
     fn projects_are_created_with_their_names_filled_in() {
         let dir = tempfile::tempdir().unwrap();
@@ -226,8 +227,7 @@ mod tests {
         assert!(
             plugin.starts_with("// Package netprobe") && plugin.contains("Name: \"net-probe\"")
         );
-        // Each project's dev configuration names its format (risk J3,
-        // guarantee: host/rutis-json-format).
+        // Each project's dev configuration names its format (risk J3).
         for project in ["weather-plugin", "greeter", "bun-greeter", "net-probe"] {
             let path = dir.path().join(project).join("rutis.dev.json");
             let text = std::fs::read_to_string(&path).unwrap();
