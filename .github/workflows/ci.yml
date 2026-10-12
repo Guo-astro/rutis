@@ -18,27 +18,21 @@ permissions:
   contents: read
 
 env:
-  # The tests that depend on the platform: starting processes, local
-  # channels (Unix sockets, an inherited socket, loopback handover), the
-  # runtime processes, WebSocket links. Pull requests run these on macOS and
-  # Windows (and every test on Linux); full runs run every test everywhere.
-  # A new test file that starts processes or opens channels goes here.
-  PLATFORM_TESTS_BRIDGE: >-
-    --lib
-    --test local_loopback --test local_plugin --test local_runtime
-    --test local_spawn --test local_stdio --test process_exit
-    --test rpc_callbacks --test python_runtime --test go_runtime
-    --test bun_runtime --test bun_channel --test runtime_conformance
-    --test session_matrix --test websocket --test websocket_link
-    --test websocket_cross --test websocket_conformance
-    --test value_roundtrip --test fault_links
-  PLATFORM_TESTS_LOADER: >-
-    --lib
-    --test runtime_rows --test python_rows --test multilang --test leases
-    --test instance_runtimes --test go_rows --test multilang_go
-    --test instance_go --test remote_rows --test cordis_node
-    --test bun_rows --test bun_instances --test bun_multilang
-    --test sync_cycles
+  # The test files that do not depend on the platform: in-memory channels,
+  # nothing started, no socket, no file but fixtures read, nothing of the OS
+  # (Rust code only, the same everywhere). Pull requests skip these on macOS
+  # and Windows and run every other test file of the crate there, with its
+  # unit tests (tools/platform-tests.sh builds the cargo test flags); Linux
+  # runs every test, and full runs run every test everywhere. A new test file
+  # therefore runs on every platform unless it is added here, and only a test
+  # that starts nothing and opens nothing belongs here. A name here without
+  # its file fails the `lint` job.
+  PURE_TESTS_BRIDGE: >-
+    link memory_mux memory_plugin memory_session multihop node
+    node_conformance
+  PURE_TESTS_LOADER: >-
+    check instance_peers instance_services instances lifecycle loader
+    migration_example overlay patch_parity peer_rows regressions scope
 
 # A new push to a pull request cancels its run still in progress; on main
 # every merge runs to the end (Q12.4).
@@ -386,6 +380,12 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
+      # Every name in PURE_TESTS_* (top of this file) is a test file: a
+      # rename must not leave a stale name behind.
+      - name: the platform-independent test lists
+        run: |
+          bash tools/platform-tests.sh crates/rutis-bridge $PURE_TESTS_BRIDGE
+          bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER
       # The examples' build scripts need the Node runtime, and rutis-dsh
       # compiles its web host only when dsh is installed.
       - uses: actions/setup-node@v4
@@ -590,8 +590,8 @@ jobs:
   # inherited socket, Unix sockets, WebSocket links, the Node, Python, Bun and
   # Go runtimes (latest versions), rutis-host; and the static build of the
   # whole workspace. The one macOS job of an ordinary change (Q12.6.2).
-  # Pull requests run only the tests that depend on the platform
-  # (PLATFORM_TESTS_*, top of this file); full runs run the whole suites.
+  # Pull requests skip the tests that do not depend on the platform
+  # (PURE_TESTS_*, top of this file); full runs run the whole suites.
   network-macos:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -631,9 +631,13 @@ jobs:
           cache-dependency-path: go/rutis/go.mod
       - name: cargo test (network stack, runtimes, host)
         env:
-          BRIDGE_TESTS: ${{ needs.changes.outputs.all != 'true' && env.PLATFORM_TESTS_BRIDGE || '' }}
-          LOADER_TESTS: ${{ needs.changes.outputs.all != 'true' && env.PLATFORM_TESTS_LOADER || '' }}
+          ALL: ${{ needs.changes.outputs.all }}
         run: |
+          BRIDGE_TESTS= LOADER_TESTS=
+          if [ "$ALL" != true ]; then
+            BRIDGE_TESTS=$(bash tools/platform-tests.sh crates/rutis-bridge $PURE_TESTS_BRIDGE)
+            LOADER_TESTS=$(bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER)
+          fi
           cargo test -p rutis-bridge --all-features $BRIDGE_TESTS
           cargo test -p rutis-loader --features node,python,go,peer,bun $LOADER_TESTS
           cargo test -p rutis-host
@@ -804,10 +808,10 @@ jobs:
 
   # The runtimes on Windows: Node, Python and Go processes on loopback
   # channels, rows of every language, peers and WebSocket links; and the
-  # static build of the whole workspace. Pull requests run only the tests
-  # that depend on the platform (PLATFORM_TESTS_*, top of this file),
-  # among them the runtime rows on loopback channels, which full runs also
-  # rerun on Linux; full runs run the whole suites.
+  # static build of the whole workspace. Pull requests skip the tests
+  # that do not depend on the platform (PURE_TESTS_*, top of this file);
+  # they run, among others, the runtime rows on loopback channels, which
+  # full runs also rerun on Linux; full runs run the whole suites.
   runtimes-windows:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -838,13 +842,23 @@ jobs:
         working-directory: go/rutis
       - name: cargo test (rutis-loader, every row kind)
         env:
-          LOADER_TESTS: ${{ needs.changes.outputs.all != 'true' && env.PLATFORM_TESTS_LOADER || '' }}
-        run: cargo test -p rutis-loader --features node,python,go,peer --no-fail-fast $LOADER_TESTS
+          ALL: ${{ needs.changes.outputs.all }}
+        run: |
+          LOADER_TESTS=
+          if [ "$ALL" != true ]; then
+            LOADER_TESTS=$(bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER)
+          fi
+          cargo test -p rutis-loader --features node,python,go,peer --no-fail-fast $LOADER_TESTS
       - name: cargo test (rutis-bridge, all features)
         if: '!cancelled()'
         env:
-          BRIDGE_TESTS: ${{ needs.changes.outputs.all != 'true' && env.PLATFORM_TESTS_BRIDGE || '' }}
-        run: cargo test -p rutis-bridge --all-features --no-fail-fast $BRIDGE_TESTS
+          ALL: ${{ needs.changes.outputs.all }}
+        run: |
+          BRIDGE_TESTS=
+          if [ "$ALL" != true ]; then
+            BRIDGE_TESTS=$(bash tools/platform-tests.sh crates/rutis-bridge $PURE_TESTS_BRIDGE)
+          fi
+          cargo test -p rutis-bridge --all-features --no-fail-fast $BRIDGE_TESTS
       - name: cargo test (rutis-host)
         if: '!cancelled()'
         run: cargo test -p rutis-host --no-fail-fast
