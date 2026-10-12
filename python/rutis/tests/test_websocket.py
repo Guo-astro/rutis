@@ -280,6 +280,19 @@ runpy.run_module("rutis", run_name="__main__")
                     dial(address, token=token, protocol=protocol)
                 self.assertEqual(refused.exception.response.status_code, status)
 
+    def test_a_protocol_refusal_says_which_end_to_upgrade(self):
+        # Standard Q6.2.4. guarantee: bridge/version-refusal
+        address, _ = listen()
+        cases = [
+            ("rutis.99", f"this endpoint speaks {PROTOCOL}, the dialer offered rutis.99: upgrade this endpoint (PyPI rutis)"),
+            ("rutis.1", f"this endpoint speaks {PROTOCOL}, the dialer offered rutis.1: upgrade the dialer"),
+        ]
+        for protocol, reason in cases:
+            with self.subTest(protocol=protocol):
+                with self.assertRaises(InvalidStatus) as refused:
+                    dial(address, protocol=protocol)
+                self.assertEqual(refused.exception.response.body.decode().strip(), reason)
+
     def test_a_takeover_closes_with_4002(self):
         address, channels = listen()
         client = dial(address)

@@ -483,13 +483,17 @@ class HandshakeOrderTests(unittest.IsolatedAsyncioTestCase):
 class VersionMismatchTests(unittest.IsolatedAsyncioTestCase):
     """Risk P8: a far end that greets with a protocol version this side
     does not speak is refused at the handshake, not after loading, and the
-    refusal names both versions, so it is clear which side is behind. The
-    wording is rutis-bridge's (`session::rpc::greet`)."""
+    refusal names both versions and which end to upgrade (standard
+    Q6.2.4): this side, naming its package, when the far end is newer; the
+    far end, naming its implementation when it said, when it is older. The
+    wording is rutis-bridge's (`session::rpc::version_mismatch`)."""
 
-    async def refusal(self, endpoint):
-        far = {"op": "hello", "version": 99}
+    async def refusal(self, endpoint, version, implementation=None):
+        far = {"op": "hello", "version": version}
         if endpoint is not None:
             far.update(endpoint="main", capabilities=[])
+            if implementation is not None:
+                far.update(implementation=implementation)
         channel = ScriptedChannel([json.dumps(far).encode()])
         peer = Peer(channel, lambda target, method, args: None, endpoint=endpoint)
         self.addCleanup(peer.close)
@@ -503,15 +507,37 @@ class VersionMismatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_an_endpoint_session_refuses_a_far_end_of_version_99(self):
         # guarantee: bridge/version-refusal; risk P8.
         self.assertEqual(
-            await self.refusal({"local": "py"}),
-            f"incompatible session: the far end speaks protocol 99, this side {ENDPOINT_PROTOCOL}",
+            await self.refusal({"local": "py"}, 99),
+            f"incompatible session: the far end speaks protocol 99, this side {ENDPOINT_PROTOCOL}: "
+            "upgrade this side (PyPI rutis)",
         )
 
     async def test_a_compat_session_refuses_a_far_end_of_version_99(self):
         # guarantee: bridge/version-refusal; risk P8.
         self.assertEqual(
-            await self.refusal(None),
-            f"incompatible session: the far end speaks protocol 99, this side {PROTOCOL}",
+            await self.refusal(None, 99),
+            f"incompatible session: the far end speaks protocol 99, this side {PROTOCOL}: "
+            "upgrade this side (PyPI rutis)",
+        )
+
+    async def test_an_endpoint_session_refuses_an_older_far_end_naming_it(self):
+        # guarantee: bridge/version-refusal; risk P8.
+        self.assertEqual(
+            await self.refusal({"local": "py"}, 1, {"name": "rutis-bridge", "version": "0.1.0"}),
+            f"incompatible session: the far end speaks protocol 1, this side {ENDPOINT_PROTOCOL}: "
+            "upgrade the far end (rutis-bridge 0.1.0)",
+        )
+        self.assertEqual(
+            await self.refusal({"local": "py"}, 1),
+            f"incompatible session: the far end speaks protocol 1, this side {ENDPOINT_PROTOCOL}: "
+            "upgrade the far end",
+        )
+
+    async def test_a_compat_session_refuses_an_older_far_end(self):
+        # guarantee: bridge/version-refusal; risk P8.
+        self.assertEqual(
+            await self.refusal(None, 1),
+            f"incompatible session: the far end speaks protocol 1, this side {PROTOCOL}: upgrade the far end",
         )
 
 
