@@ -255,7 +255,7 @@ async fn rust_dialing_node_is_refused_by_category() {
 }
 
 /// Risk E8: a Python listener refuses as the Node one does, by category.
-/// guarantee: bridge/websocket-refusal-categories (proposed)
+/// guarantee: bridge/websocket-refusal-categories
 #[tokio::test(flavor = "multi_thread")]
 async fn rust_dialing_python_is_refused_by_category() {
     let (ca, certificate, key) = pki();

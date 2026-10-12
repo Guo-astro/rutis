@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, TypeKey};
+use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
 use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle, RuntimePlugin, RuntimeState};
 use rutis_bridge::transport::local::LocalPlugin;
 use rutis_bridge::transport::websocket::{
@@ -33,6 +33,23 @@ pub struct Host {
     pub resolvers: Vec<Arc<RuntimeResolver>>,
     /// The Go binaries and their runtimes, when the configuration has them.
     pub go: Option<GoHost>,
+    /// The local runtimes' plugins, by name, to stop one
+    /// ([`Host::stop_runtime`]).
+    fibers: Vec<(String, FiberView)>,
+}
+
+/// Registers rows compiled into a program ([`Embedding::builtins`]).
+pub type RegisterBuiltins = Box<dyn FnOnce(&mut Builtins) + Send>;
+
+/// What a Rust program embedding this host adds to what the configuration
+/// names (the E2E fixture host, `tests/e2e/fixture-host`).
+#[derive(Default)]
+pub struct Embedding {
+    /// Rows compiled into the program, next to `rutis-bridge/peer`.
+    pub builtins: Option<RegisterBuiltins>,
+    /// The identity links use instead of the one built from the
+    /// configuration's peer rows: for a program that adds links later.
+    pub identity: Option<IdentityPlugin>,
 }
 
 /// The Go side of a host.
@@ -75,6 +92,11 @@ impl std::fmt::Display for Unfinished {
 impl Host {
     /// Start everything `config` names; the rows are not loaded yet.
     pub async fn start(config: &HostConfig) -> Result<Self, Error> {
+        Self::start_with(config, Embedding::default()).await
+    }
+
+    /// [`Host::start`], with what an embedding program adds.
+    pub async fn start_with(config: &HostConfig, embedding: Embedding) -> Result<Self, Error> {
         config.check_runtime_names()?;
         let root = Ctx::root().map_err(|error| error.to_string())?;
         let mut catalog = ServiceCatalog::new();
@@ -88,13 +110,20 @@ impl Host {
         (&root.plugin(websocket))
             .await
             .map_err(|error| format!("the WebSocket transport: {error}"))?;
-        root.plugin(IdentityPlugin::new("host", identity(config)?));
+        match embedding.identity {
+            Some(identity) => root.plugin(identity),
+            None => root.plugin(IdentityPlugin::new("host", identity(config)?)),
+        };
 
         let mut runtimes = Vec::new();
         let mut resolvers = Vec::new();
+        let mut fibers = Vec::new();
         let peers = Arc::new(PeerResolver::new());
         let mut builtins = Builtins::new();
         register_peer_node(&mut builtins, peers.clone());
+        if let Some(register) = embedding.builtins {
+            register(&mut builtins);
+        }
         let mut chain = Chain::new().with(builtins).with_shared(peers);
         let go = match &config.runtimes.go {
             Some(go) => {
@@ -108,7 +137,7 @@ impl Host {
             let runtime = python(py)?;
             let handle = runtime.handle();
             let rows = Arc::new(RuntimeResolver::modules(handle.clone()).with_catalog(&catalog));
-            root.plugin(runtime);
+            fibers.push(("py".to_owned(), root.plugin(runtime)));
             chain = chain.with_shared(rows.clone());
             runtimes.push(("py".to_owned(), handle));
             resolvers.push(rows);
@@ -117,7 +146,7 @@ impl Host {
             let runtime = bun_runtime(bun)?;
             let handle = runtime.handle();
             let rows = Arc::new(RuntimeResolver::modules(handle.clone()).with_catalog(&catalog));
-            root.plugin(runtime);
+            fibers.push(("bun".to_owned(), root.plugin(runtime)));
             chain = chain.with_shared(rows.clone());
             runtimes.push(("bun".to_owned(), handle));
             resolvers.push(rows);
@@ -126,7 +155,7 @@ impl Host {
             let runtime = node_runtime(node)?;
             let handle = runtime.handle();
             let rows = Arc::new(RuntimeResolver::node(handle.clone()).with_catalog(&catalog));
-            root.plugin(runtime);
+            fibers.push(("node".to_owned(), root.plugin(runtime)));
             chain = chain.with_shared(rows.clone());
             runtimes.push(("node".to_owned(), handle));
             resolvers.push(rows);
@@ -189,7 +218,25 @@ impl Host {
             runtimes,
             resolvers,
             go,
+            fibers,
         })
+    }
+
+    /// Stop the local runtime `name` (`node`, `py`, `bun`): its plugin
+    /// unloads, which closes its channel, and its process ends. Rows it
+    /// runs then wait; unload them first.
+    pub async fn stop_runtime(&mut self, name: &str) -> Result<(), Error> {
+        let index = self
+            .fibers
+            .iter()
+            .position(|(runtime, _)| runtime == name)
+            .ok_or_else(|| format!("no {name} runtime runs"))?;
+        let (_, fiber) = self.fibers.remove(index);
+        self.runtimes.retain(|(runtime, _)| runtime != name);
+        fiber
+            .dispose()
+            .await
+            .map_err(|error| format!("stopping the {name} runtime: {error}"))
     }
 
     /// Wait until every runtime runs and its rows may start, or say which
@@ -577,7 +624,7 @@ struct Released {
 
 /// Disposes the plugin it holds when dropped: the dispose starts at once,
 /// nothing waits for it.
-struct Unmount(Option<rutis::FiberView>);
+struct Unmount(Option<FiberView>);
 
 impl Drop for Unmount {
     fn drop(&mut self) {

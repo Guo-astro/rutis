@@ -11,10 +11,9 @@
 //! data crosses unchanged, except that numbers in JavaScript (Node, Bun)
 //! are IEEE 754 doubles. There an integer beyond ±(2^53−1) comes back as the
 //! nearest double, -0 as 0 and an integral float (`2.0`) as an integer;
-//! from Node 24 an object key of one escaped character may come back as
-//! `"\\"` (#302). The table lists these as not guaranteed. A float read on
-//! the Rust side may be up to two units in the last place off (#290, not
-//! guaranteed). NaN and ±Infinity are not JSON and are not generated.
+//! the table lists these as not guaranteed. Every other float comes back
+//! bit for bit (#290), and every object key as sent (#302). NaN and
+//! ±Infinity are not JSON and are not generated.
 //!
 //! Values nest at most 64 deep, below the receiving parser's limit (about
 //! 125 levels of data): a deeper value ends the whole session (#279, not
@@ -105,23 +104,6 @@ fn node() -> tokio::process::Command {
         .arg(repo().join("node/rutis-runtime/test/fixtures/conformance-session.mjs"))
         .current_dir(repo().join("node/rutis-runtime"));
     command
-}
-
-/// Whether the `node` on PATH is 24 or later (#302).
-fn node_24() -> bool {
-    let version = std::process::Command::new("node")
-        .arg("--version")
-        .output()
-        .expect("node is on PATH");
-    let version = String::from_utf8_lossy(&version.stdout);
-    let major: u32 = version
-        .trim()
-        .trim_start_matches('v')
-        .split('.')
-        .next()
-        .and_then(|major| major.parse().ok())
-        .expect("node --version prints vMAJOR.MINOR.PATCH");
-    major >= 24
 }
 
 fn python() -> tokio::process::Command {
@@ -282,59 +264,27 @@ fn value() -> impl Strategy<Value = Json> {
 /// How a runtime carries numbers.
 #[derive(Clone, Copy)]
 enum Numbers {
-    /// As sent: integer or float, the same value, -0 kept. The number is
-    /// how many times a Rust side parses the value on its way (two between
-    /// Rust endpoints, one otherwise; see [`near`]).
-    Exact(u64),
+    /// As sent: integer or float, the same value, a float bit for bit
+    /// (-0 kept).
+    Exact,
     /// As IEEE 754 doubles (JavaScript).
     Doubles,
 }
 
-/// The same double, or one of the same sign at most two units in the last
-/// place away per parse: a Rust side parses JSON floats with serde_json's
-/// default (not `float_roundtrip`) precision. Measured over 2·10^7 random
-/// doubles, about 30% come back off, never by more than 2 units (#290,
-/// listed as not guaranteed in `guide/plugin-api.md`). -0 and 0 differ.
-fn near(x: f64, y: f64, parses: u64) -> bool {
-    let (a, b) = (x.to_bits(), y.to_bits());
-    (a >> 63) == (b >> 63) && a.abs_diff(b) <= 2 * parses
-}
-
-/// How a runtime carries a value: its numbers, and whether an object key of
-/// one character that JSON escapes may come back as `\\`.
-#[derive(Clone, Copy)]
-struct Rules {
-    numbers: Numbers,
-    /// Node 24 and later: `JSON.parse`, once warmed up, reads such a key
-    /// (`"\n"`, `"\t"`, `"\u0000"`, `"\""`) as `"\\"` (#302, listed as not
-    /// guaranteed in `guide/plugin-api.md`).
-    escaped_keys: bool,
-}
-
-/// The key `key` may come back as under `rules`.
-fn key_as(key: &str, rules: Rules) -> &str {
-    let mut chars = key.chars();
-    match (chars.next(), chars.next()) {
-        (Some(c), None) if rules.escaped_keys && (c < ' ' || c == '"') => "\\",
-        _ => key,
-    }
-}
-
 /// Whether `got` is what `sent` must come back as, or where it differs.
-fn same(sent: &Json, got: &Json, rules: Rules, at: &str) -> Result<(), String> {
-    let numbers = rules.numbers;
+fn same(sent: &Json, got: &Json, numbers: Numbers, at: &str) -> Result<(), String> {
     let differ = || Err(format!("at {at}: sent {sent}, got {got}"));
     match (sent, got) {
         (Json::Number(a), Json::Number(b)) => {
             let (x, y) = (a.as_f64().unwrap(), b.as_f64().unwrap());
             let equal = match numbers {
-                Numbers::Exact(parses) => match (a.is_f64(), b.is_f64()) {
-                    (true, true) => near(x, y, parses),
+                Numbers::Exact => match (a.is_f64(), b.is_f64()) {
+                    (true, true) => x.to_bits() == y.to_bits(),
                     (false, false) => a == b,
                     _ => false,
                 },
                 // The double nearest the sent number; -0 and 0 alike.
-                Numbers::Doubles => x == y || near(x, y, 1),
+                Numbers::Doubles => x == y,
             };
             if equal {
                 Ok(())
@@ -347,34 +297,19 @@ fn same(sent: &Json, got: &Json, rules: Rules, at: &str) -> Result<(), String> {
                 return differ();
             }
             for (index, (a, b)) in a.iter().zip(b).enumerate() {
-                same(a, b, rules, &format!("{at}[{index}]"))?;
+                same(a, b, numbers, &format!("{at}[{index}]"))?;
             }
             Ok(())
         }
         (Json::Object(a), Json::Object(b)) => {
-            // Each key sent comes back as itself or, if it was not read as
-            // itself, as `key_as`; the values sent under each key that came
-            // back.
-            let mut expected = BTreeMap::<&str, Vec<&Json>>::new();
-            for (key, value) in a {
-                let back = match b.contains_key(key) {
-                    true => key.as_str(),
-                    false => key_as(key, rules),
-                };
-                expected.entry(back).or_default().push(value);
-            }
-            if !expected
-                .keys()
-                .copied()
-                .eq(b.keys().map(String::as_str).collect::<BTreeSet<_>>())
-            {
+            let keys = |map: &serde_json::Map<String, Json>| {
+                map.keys().cloned().collect::<BTreeSet<String>>()
+            };
+            if keys(a) != keys(b) {
                 return differ();
             }
-            for (key, values) in expected {
-                // Keys that came back as one: which value won is not checked.
-                if let [value] = values[..] {
-                    same(value, &b[key], rules, &format!("{at}.{key:?}"))?;
-                }
+            for (key, a) in a {
+                same(a, &b[key], numbers, &format!("{at}.{key:?}"))?;
             }
             Ok(())
         }
@@ -383,8 +318,8 @@ fn same(sent: &Json, got: &Json, rules: Rules, at: &str) -> Result<(), String> {
     }
 }
 
-/// guarantee: bridge/value-roundtrip (proposed). Risk P7, C5.
-fn round_trip(far: &Connection, name: &str, rules: Rules) {
+/// guarantee: bridge/value-roundtrip. Risk P7, C5.
+fn round_trip(far: &Connection, name: &str, numbers: Numbers) {
     check(&format!("{name} round trip"), value(), |sent| {
         let got = far
             .invoke(
@@ -394,7 +329,7 @@ fn round_trip(far: &Connection, name: &str, rules: Rules) {
             )
             .and_then(Value::json)
             .map_err(|error| TestCaseError::fail(format!("echo failed: {error}")))?;
-        same(&sent, &got, rules, "$").map_err(TestCaseError::fail)
+        same(&sent, &got, numbers, "$").map_err(TestCaseError::fail)
     });
 }
 
@@ -453,7 +388,7 @@ fn tables(near: &Connection) -> Result<Tables, String> {
     })
 }
 
-/// guarantee: bridge/release-count (proposed). Risk P4: after any sequence
+/// guarantee: bridge/release-count. Risk P4: after any sequence
 /// of grants and releases, each side's reference tables hold exactly the
 /// references not yet released.
 fn releases_balance(near: &Connection, name: &str) {
@@ -530,18 +465,9 @@ fn releases_balance(near: &Connection, name: &str) {
 async fn rust_values_round_trip() {
     let (near, _far) = rust_far_end();
     near.ready().await.unwrap();
-    tokio::task::spawn_blocking(move || {
-        round_trip(
-            &near,
-            "rust",
-            Rules {
-                numbers: Numbers::Exact(2),
-                escaped_keys: false,
-            },
-        )
-    })
-    .await
-    .unwrap();
+    tokio::task::spawn_blocking(move || round_trip(&near, "rust", Numbers::Exact))
+        .await
+        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -558,18 +484,9 @@ async fn rust_releases_balance() {
 #[tokio::test(flavor = "multi_thread")]
 async fn node_values_round_trip() {
     let (near, _child) = far_end(node(), "node").await;
-    tokio::task::spawn_blocking(move || {
-        round_trip(
-            &near,
-            "node",
-            Rules {
-                numbers: Numbers::Doubles,
-                escaped_keys: node_24(),
-            },
-        )
-    })
-    .await
-    .unwrap();
+    tokio::task::spawn_blocking(move || round_trip(&near, "node", Numbers::Doubles))
+        .await
+        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -585,18 +502,9 @@ async fn node_releases_balance() {
 #[tokio::test(flavor = "multi_thread")]
 async fn python_values_round_trip() {
     let (near, _child) = far_end(python(), "python").await;
-    tokio::task::spawn_blocking(move || {
-        round_trip(
-            &near,
-            "python",
-            Rules {
-                numbers: Numbers::Exact(1),
-                escaped_keys: false,
-            },
-        )
-    })
-    .await
-    .unwrap();
+    tokio::task::spawn_blocking(move || round_trip(&near, "python", Numbers::Exact))
+        .await
+        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -626,18 +534,9 @@ async fn go_values_round_trip() {
         .expect("go is on PATH");
     assert!(status.success(), "go build ./internal/fixtures/session");
     let (near, _child) = far_end(tokio::process::Command::new(binary), "go").await;
-    tokio::task::spawn_blocking(move || {
-        round_trip(
-            &near,
-            "go",
-            Rules {
-                numbers: Numbers::Exact(1),
-                escaped_keys: false,
-            },
-        )
-    })
-    .await
-    .unwrap();
+    tokio::task::spawn_blocking(move || round_trip(&near, "go", Numbers::Exact))
+        .await
+        .unwrap();
 }
 
 #[cfg(feature = "bun")]
@@ -649,16 +548,7 @@ async fn bun_values_round_trip() {
         .arg(repo().join("bun/rutis-bun/test/fixtures/conformance-session.ts"))
         .current_dir(repo().join("bun/rutis-bun"));
     let (near, _child) = far_end(command, "bun").await;
-    tokio::task::spawn_blocking(move || {
-        round_trip(
-            &near,
-            "bun",
-            Rules {
-                numbers: Numbers::Doubles,
-                escaped_keys: false,
-            },
-        )
-    })
-    .await
-    .unwrap();
+    tokio::task::spawn_blocking(move || round_trip(&near, "bun", Numbers::Doubles))
+        .await
+        .unwrap();
 }

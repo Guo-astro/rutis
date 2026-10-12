@@ -4,9 +4,11 @@
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use crate::hang_guard;
 
 /// A TCP proxy on a loopback port to a target address: each connection to
 /// [`Proxy::addr`] is relayed to a new connection to the target, both
@@ -26,6 +28,8 @@ pub(crate) struct Shared {
     addr: SocketAddr,
     target: SocketAddr,
     state: Mutex<State>,
+    /// Notified when a relayed connection closes.
+    changed: Condvar,
 }
 
 #[derive(Default)]
@@ -45,6 +49,9 @@ struct State {
     /// What went wrong in the proxy's own threads; the scenario's end
     /// reports it as residue.
     errors: Vec<String>,
+    /// Connections relayed to the target (it accepted them) that have
+    /// closed since the proxy started, whichever end closed them.
+    finished: usize,
 }
 
 /// Both ends of one relayed connection.
@@ -130,6 +137,7 @@ impl Proxy {
             addr,
             target,
             state: Mutex::new(State::default()),
+            changed: Condvar::new(),
         });
         shared.accept(listener);
         Proxy { shared }
@@ -177,6 +185,40 @@ impl Proxy {
             )
         });
         self.shared.accept(listener);
+    }
+
+    /// Wait until `n` connections the target accepted through the proxy
+    /// have closed, counted from the proxy's start, whichever end closed
+    /// them (a cut closes them too). A connection the target never accepted
+    /// (it was not listening) does not count. Fails the scenario if that
+    /// does not happen within the hang guard.
+    ///
+    /// For what one end does with a connection the other cannot see: the
+    /// far end refusing a client (an HTTP 403, a TLS alert) closes it,
+    /// where an accepted session stays open.
+    pub fn wait_closed(&self, n: usize) {
+        let deadline = Instant::now() + hang_guard();
+        let mut state = self.shared.state.lock().unwrap();
+        while state.finished < n {
+            let now = Instant::now();
+            if now >= deadline {
+                let finished = state.finished;
+                // Not while holding the lock: the scenario's end still
+                // closes the proxy.
+                drop(state);
+                panic!(
+                    "proxy {}: {finished} of {n} relayed connections closed within {:?} (hang guard)",
+                    self.shared.addr,
+                    hang_guard()
+                );
+            }
+            state = self
+                .shared
+                .changed
+                .wait_timeout(state, deadline - now)
+                .unwrap()
+                .0;
+        }
     }
 }
 
@@ -276,7 +318,9 @@ impl Shared {
         let mut state = self.state.lock().unwrap();
         if state.generation != generation {
             // Cut while it was being set up.
+            state.finished += 1;
             drop(state);
+            self.changed.notify_all();
             connection.close();
             return;
         }
@@ -289,6 +333,8 @@ impl Shared {
         };
         connection.relay(client_reader, true);
         self.join(back, "a relaying thread");
+        self.state.lock().unwrap().finished += 1;
+        self.changed.notify_all();
     }
 
     /// Stop accepting and close the connections, waiting for the threads;

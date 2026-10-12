@@ -3,7 +3,11 @@
 //! and none of this checkout's runtimes ([`Scenario::installed`]). Each
 //! channel installs, checks that this build is what runs (its version, and
 //! where the binary is), runs a minimal project, stops it as a process
-//! manager does, and ends with the residue checks. Risk B1 (P0).
+//! manager does, and ends with the residue checks. Risk B1 (P0). Besides:
+//! npm with a Bun row (`@arcships/rutis-bun`; not on Windows, which Bun is
+//! not declared for, Bun design §10), PyPI with `rutis[network]` at its
+//! lowest websockets (15.0) serving a host as a remote runtime
+//! (`python -m rutis listen:`), the release binary with a Go row.
 //!
 //! The packages come from `RUTIS_E2E_ARTIFACTS` (what package.yml builds,
 //! or tools/install/local-artifacts.sh on a development machine), or with
@@ -14,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rutis_e2e::{Host, Lang, Scenario};
+use rutis_e2e::{repo, Host, Lang, Scenario};
 use serde_json::{json, Value};
 
 const IGNORED: &str = "needs built packages: install.yml runs it with RUTIS_E2E_ARTIFACTS";
@@ -129,6 +133,42 @@ export default definePlugin({
 })
 "#;
 
+/// The greeter in Bun: it says which runtime runs it.
+#[cfg(unix)]
+const GREETER_BUN_TS: &str = r#"import { definePlugin } from '@arcships/rutis'
+
+const runtime = (globalThis as { Bun?: unknown }).Bun === undefined ? 'not bun' : 'bun'
+
+export default definePlugin({
+  provides: { greeter: { hello: 'sync' } },
+  apply(ctx) {
+    ctx.provide('greeter', { hello: (name: string) => `Hello, ${name} (${runtime})` })
+  },
+})
+"#;
+
+/// A Go binary with the plugin `gogreeter`.
+const GREETER_GO: &str = r#"package main
+
+import "github.com/arcships/rutis/go/rutis"
+
+type Greeter struct{}
+
+func (*Greeter) Hello(name string) string { return "Hello, " + name + " (go)" }
+
+var plugin = rutis.Define(rutis.Plugin[struct{}]{
+	Name:     "gogreeter",
+	Inject:   []string{},
+	Provides: rutis.Provides{"gogreeter": rutis.MethodsOf[*Greeter](rutis.Sync("Hello"))},
+	Apply: func(ctx *rutis.Ctx, _ struct{}) error {
+		ctx.Provide("gogreeter", &Greeter{})
+		return nil
+	},
+})
+
+func main() { rutis.Serve(plugin) }
+"#;
+
 const GREETER_PY: &str = r#"from rutis import define_plugin
 
 
@@ -150,11 +190,22 @@ fn identity(s: &Scenario, dir: &str, host: &Path) {
     version.expect(&format!("rutis-host {}", self::version()));
 }
 
+/// What the probe calls in a minimal project, and the answer: the greeter.
+const GREET: &[(&str, &str)] = &[("greeter", "Hello, Ada")];
+
 /// Run the project in `dir` with `rutis-host run` (no arguments, as the
-/// guides do), call the greeter through the probe, stop with SIGTERM to the
-/// main process as a process manager does: exit code 0, the probe stopped.
-fn run_project(s: &Scenario, dir: &str, host: &Path, probe: &rutis_e2e::Probe, rows: &[&str]) {
-    run_project_until(s, dir, host, probe, rows, stop);
+/// guides do), make the probe's `calls` (`<service>.hello("Ada")` and the
+/// answer), stop as a process manager does ([`stop`]): exit code 0, the
+/// probe stopped.
+fn run_project(
+    s: &Scenario,
+    dir: &str,
+    host: &Path,
+    probe: &rutis_e2e::Probe,
+    rows: &[&str],
+    calls: &[(&str, &str)],
+) {
+    run_project_until(s, dir, host, probe, rows, calls, stop);
 }
 
 /// [`run_project`], stopped with Ctrl-C as a terminal sends it: SIGINT to
@@ -168,7 +219,7 @@ fn run_project_to_ctrl_c(
     probe: &rutis_e2e::Probe,
     rows: &[&str],
 ) {
-    run_project_until(s, dir, host, probe, rows, |host| {
+    run_project_until(s, dir, host, probe, rows, GREET, |host| {
         host.ctrl_c();
         let status = host.wait_exit();
         host.wait_output_end();
@@ -182,6 +233,7 @@ fn run_project_until(
     host: &Path,
     probe: &rutis_e2e::Probe,
     rows: &[&str],
+    calls: &[(&str, &str)],
     stop: impl FnOnce(&mut Host),
 ) {
     let mut running = s.program(dir, host, ["run"], &[]);
@@ -189,37 +241,57 @@ fn run_project_until(
         running.expect(&format!("{row}: running"));
     }
     probe.started(&mut running);
-    assert_eq!(
-        probe.call(&mut running, "greeter", "hello", json!(["Ada"])),
-        Ok(json!("Hello, Ada"))
-    );
+    for (service, answer) in calls {
+        assert_eq!(
+            probe.call(&mut running, service, "hello", json!(["Ada"])),
+            Ok(json!(answer)),
+            "{service}.hello"
+        );
+    }
     stop(&mut running);
-    #[cfg(unix)]
     probe.event(&mut running, "stopped");
 }
 
+/// Stop as a process manager does, and wait for the output to end: exit
+/// code 0. Unix: SIGTERM to the main process alone (npm's launcher, uv,
+/// rutis-host), which passes it on. Windows has no SIGTERM: Ctrl-Break to
+/// the main process's console process group ([`Host::ctrl_c`]), as a
+/// console's stop reaches every process on it; npm's launchers (its .cmd
+/// and the Node launcher) wait for rutis-host, which stops on it. For
+/// `uv run`, see [`stop_uv`].
 fn stop(host: &mut Host) {
     #[cfg(unix)]
     host.signal(libc_sigterm());
-    // Windows: no SIGTERM, and stopping with Ctrl-Break (`Host::ctrl_c`)
-    // is #266. A service manager ends the whole tree: the main process is
-    // a launcher (npm's .cmd, uv) whose rutis-host and runtimes outlive it
-    // alone. Killed, the host cleans nothing up, so the callers check its
-    // probe's stop on Unix only.
     #[cfg(windows)]
-    {
-        let status = std::process::Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &host.pid().to_string()])
-            .status()
-            .expect("taskkill");
-        assert!(status.success(), "taskkill /T: {status}");
-    }
+    host.ctrl_c();
     let status = host.wait_exit();
     host.wait_output_end();
+    assert_eq!(status.code(), Some(0), "after stopping: {status}");
+}
+
+/// [`stop`] with `uv run` as the main process. On Windows uv ignores Ctrl-C
+/// while its command runs, but not Ctrl-Break (uv-command-support's
+/// `run_to_completion` waits on `tokio::signal::ctrl_c` only): uv ends at
+/// once with STATUS_CONTROL_C_EXIT, and its exit code is not rutis-host's.
+/// That one step is checked differently there: rutis-host stopped on the
+/// Ctrl-Break (its line; the caller checks the probe's stop) and has exited
+/// (the output ended: nothing holds it any more).
+fn stop_uv(host: &mut Host) {
     #[cfg(unix)]
-    assert_eq!(status.code(), Some(0), "after SIGTERM: {status}");
+    stop(host);
     #[cfg(windows)]
-    let _ = status;
+    {
+        /// STATUS_CONTROL_C_EXIT: ended by the console's default handler.
+        const CONTROL_C_EXIT: i32 = 0xC000_013Au32 as i32;
+        host.ctrl_c();
+        let status = host.wait_exit();
+        host.wait_output_end();
+        assert!(
+            matches!(status.code(), Some(0 | CONTROL_C_EXIT)),
+            "uv after stopping: {status}"
+        );
+        host.expect("rutis-host: Ctrl-Break: stopping");
+    }
 }
 
 #[cfg(unix)]
@@ -315,10 +387,40 @@ fn npm_installs_and_runs_this_build() {
             "rows": [{ "id": "greeter", "name": "./greeter.ts" }, probe.row()],
         }),
     );
-    run_project(&s, "npm", &launcher, &probe, &["greeter"]);
+    run_project(&s, "npm", &launcher, &probe, &["greeter"], GREET);
     // The launcher in a terminal (#267).
     #[cfg(unix)]
     run_project_to_ctrl_c(&s, "npm", &launcher, &probe, &["greeter"]);
+
+    // The greeter in Bun, its runtime this build's @arcships/rutis-bun and
+    // the `bun` on PATH.
+    #[cfg(unix)]
+    {
+        let bun = match from_registry() {
+            true => format!("@arcships/rutis-bun@{version}"),
+            false => npm_tarball("rutis-bun").display().to_string(),
+        };
+        run(&s, "npm", npm(), &["install", "--omit=optional", &bun]);
+        run(&s, "npm", "bun", &["--version"]);
+        s.write("npm/greeter-bun.ts", GREETER_BUN_TS);
+        s.write_json(
+            "npm/rutis.json",
+            &json!({
+                "runtimes": { "node": {}, "bun": {} },
+                "rows": [{ "id": "greeter", "name": "bun:./greeter-bun.ts" }, probe.row()],
+            }),
+        );
+        run_project(
+            &s,
+            "npm",
+            &launcher,
+            &probe,
+            &["greeter"],
+            &[("greeter", "Hello, Ada (bun)")],
+        );
+    }
+    #[cfg(windows)]
+    eprintln!("install-npm: no Bun row: Bun is not declared for Windows (Bun design §10)");
 
     // B6: without this platform's package, the launcher says so.
     if !from_registry() {
@@ -422,8 +524,7 @@ fn pypi_installs_and_runs_this_build() {
         probe.call(&mut running, "greeter", "hello", json!(["Ada"])),
         Ok(json!("Hello, Ada"))
     );
-    stop(&mut running);
-    #[cfg(unix)]
+    stop_uv(&mut running);
     probe.event(&mut running, "stopped");
 
     // pip in a plain venv.
@@ -442,6 +543,27 @@ fn pypi_installs_and_runs_this_build() {
         venv_python(&venv),
         &["-c", "import rutis.peer, rutis.runner, rutis.channel"],
     );
+
+    // rutis[network] at its lowest websockets (15.0, from PyPI); rutis
+    // stays this build's.
+    let network = format!("rutis[network]=={version}");
+    let mut install = vec!["-m", "pip", "install"];
+    if !from_registry() {
+        install.extend(["--find-links", &wheels]);
+    }
+    install.extend([network.as_str(), "websockets==15.0"]);
+    run(&s, "pip", venv_python(&venv), &install);
+    let mut versions = run(
+        &s,
+        "pip",
+        venv_python(&venv),
+        &[
+            "-c",
+            "import importlib.metadata as m; print('versions:', m.version('websockets'), m.version('rutis'))",
+        ],
+    );
+    versions.expect(&format!("versions: 15.0 {version}"));
+    listen(&s, &venv);
 
     // B6: an interpreter without the rutis package: the host says how to
     // install it.
@@ -576,14 +698,138 @@ fn the_release_binary_runs_this_build() {
     pip.push(&rutis);
     run(&s, "app", venv_python(&s.path("app/.venv")), &pip);
     s.write("app/greeter.py", GREETER_PY);
-    let probe = s.probe_in("app", "probe", Lang::Node, &["greeter"]);
+    go_build(&s, "app/go-src", "app/plugins/go");
+    let probe = s.probe_in("app", "probe", Lang::Node, &["greeter", "gogreeter"]);
     s.write_json(
         "app/rutis.json",
         &json!({
-            "runtimes": { "node": {}, "py": {} },
-            "rows": [{ "id": "greeter", "name": "py:greeter" }, probe.row()],
+            "runtimes": { "node": {}, "py": {}, "go": { "dir": "plugins/go" } },
+            "rows": [
+                { "id": "greeter", "name": "py:greeter" },
+                { "id": "gogreeter", "name": "go:gogreeter" },
+                probe.row(),
+            ],
         }),
     );
-    run_project(&s, "app", &host, &probe, &["greeter"]);
+    run_project(
+        &s,
+        "app",
+        &host,
+        &probe,
+        &["greeter", "gogreeter"],
+        &[("greeter", "Hello, Ada"), ("gogreeter", "Hello, Ada (go)")],
+    );
     s.finish();
+}
+
+/// Build [`GREETER_GO`] in `src` into the directory `out`, as a plugin
+/// author does, with the Go on PATH: against this checkout's Go SDK (a
+/// `replace`: an unreleased version's module is on no proxy), or with
+/// `RUTIS_E2E_SOURCE=registry` the published module at this version. The
+/// build cache is the caller's (`go env GOCACHE`): a cache, no package,
+/// and a cold one builds the standard library again.
+fn go_build(s: &Scenario, src: &str, out: &str) {
+    let mut module = format!(
+        "module example.com/gogreeter\n\ngo 1.24\n\nrequire github.com/arcships/rutis/go/rutis v{}\n",
+        version()
+    );
+    if !from_registry() {
+        // Without the `\\?\` of a canonical Windows path, with `/`.
+        let sdk = repo().join("go/rutis").display().to_string();
+        let sdk = sdk.strip_prefix(r"\\?\").unwrap_or(&sdk).replace('\\', "/");
+        module.push_str(&format!(
+            "\nreplace github.com/arcships/rutis/go/rutis => {sdk}\n"
+        ));
+    }
+    s.write(format!("{src}/go.mod"), module);
+    s.write(format!("{src}/main.go"), GREETER_GO);
+    let cache = std::process::Command::new("go")
+        .args(["env", "GOCACHE"])
+        .output()
+        .expect("go env GOCACHE");
+    let cache = String::from_utf8_lossy(&cache.stdout).trim().to_owned();
+    let binary = s.path(out).join(if cfg!(windows) {
+        "gogreeter.exe"
+    } else {
+        "gogreeter"
+    });
+    let binary = binary.display().to_string();
+    let mut env = vec![
+        ("GOFLAGS", "-mod=mod"),
+        ("GOTOOLCHAIN", "local"),
+        ("GOCACHE", cache.as_str()),
+    ];
+    if !from_registry() {
+        env.push(("GOPROXY", "off"));
+    }
+    let mut build = s.program(src, "go", ["build", "-o", &binary, "."], &env);
+    let status = build.wait_exit();
+    if !status.success() {
+        let output: Vec<String> = build.lines().into_iter().map(|line| line.text).collect();
+        panic!("go build: {status}\n  {}", output.join("\n  "));
+    }
+}
+
+/// Node B of `docs/guide/nodes.md` from what PyPI installed in `venv`
+/// (`rutis[network]`): `python -m rutis listen:ws://…` serving the plugin
+/// `greeter`, which this venv's rutis-host runs as a remote runtime's row;
+/// the probe calls it through the link.
+fn listen(s: &Scenario, venv: &Path) {
+    let token = s.secret();
+    let port = s.port();
+    let url = format!("ws://127.0.0.1:{port}/rutis");
+    s.write("node/greeter.py", GREETER_PY);
+    let mut node = s.program(
+        "pip",
+        venv_python(venv),
+        [
+            "-m".to_owned(),
+            "rutis".into(),
+            format!("listen:{url}"),
+            "--id".into(),
+            "gpu".into(),
+            "--peer".into(),
+            "main".into(),
+            s.path("node").display().to_string(),
+        ],
+        &[("RUTIS_TOKEN", token.as_str())],
+    );
+    node.expect("rutis: listening on");
+    let probe = s.probe_in("pip", "probe-ws", Lang::Python, &["greeter"]);
+    s.write_json(
+        "pip/rutis.json",
+        &json!({
+            "id": "main",
+            "runtimes": {
+                "py": { "python": venv_python(venv) },
+                "remote": [{ "name": "gpu", "language": "python" }],
+            },
+            "rows": [
+                {
+                    "id": "gpu",
+                    "name": "rutis-bridge/peer",
+                    "config": { "peer": "gpu", "dial": url, "runtime": "gpu" },
+                },
+                { "id": "greeter", "name": "gpu:greeter" },
+                probe.row(),
+            ],
+        }),
+    );
+    let mut running = s.program(
+        "pip",
+        venv_program(venv, "rutis-host"),
+        ["run"],
+        &[("RUTIS_TOKEN_GPU", token.as_str())],
+    );
+    running.expect("greeter: running");
+    probe.started(&mut running);
+    assert_eq!(
+        probe.call(&mut running, "greeter", "hello", json!(["Ada"])),
+        Ok(json!("Hello, Ada"))
+    );
+    stop(&mut running);
+    probe.event(&mut running, "stopped");
+    node.kill();
+    node.wait_exit();
+    node.wait_output_end();
 }

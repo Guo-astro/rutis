@@ -449,7 +449,14 @@ async fn sessions_have_distinct_tags_and_forward_rebases_the_current_chain() {
     let (a, _ra) = pair();
     let (b, _rb) = pair();
     assert_ne!(a.tag(), b.tag());
-    assert!(a.tag().starts_with('s') && !a.tag().contains('/'));
+    // What runtimes accept in an origin entry: `s[0-9]+` (#325: digits
+    // only, so the random nonce changes nothing on the wire). The nonce is
+    // the process's; the counter follows it.
+    for tag in [a.tag(), b.tag()] {
+        let digits = tag.strip_prefix('s').unwrap();
+        assert!(digits.len() > 15 && digits.bytes().all(|b| b.is_ascii_digit()));
+    }
+    assert_eq!(a.tag()[..16], b.tag()[..16]);
     let _path = PathGuard::enter(ids(&["node:1"]));
     let expected = vec![format!("{}/node:1", a.tag())];
     assert_eq!(b.forward(&a, current_path), expected);

@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { WebSocketServer } from 'ws'
 import { Process } from '../src/client.mjs'
+import { within } from './support.mjs'
 
 // The far end greets the moment it accepts, so its hello can arrive in the
 // same read as the upgrade: this side still says hello before anything else.
@@ -17,7 +18,7 @@ test('a dialer greets first even when the far end greets at once', async () => {
       }))
       peer = await Process.connect(`ws://127.0.0.1:${server.address().port}/rutis`, () => undefined, undefined, { local: 'near' })
       peer.callAsync('x', 'y', []).catch(() => {})
-      assert.equal((await first).op, 'hello', `round ${round}`)
+      assert.equal((await within('the first message', first)).op, 'hello', `round ${round}`)
     } finally {
       // The far end goes; the session ends with it.
       for (const client of server.clients) client.terminate()

@@ -89,11 +89,12 @@ func main() { rutis.Serve(ping.Plugin, dns.Plugin) }
 | 插件条目 | 与 `rows.schema` 回复相同，同一段代码生成 |
 | `sdk` | 常量 `rutis.Version` |
 | 插件 `version` | `debug.ReadBuildInfo()`：依赖模块取 `Deps` 版本；主模块取 `Main.Version`；`(devel)` 时取 `vcs.revision`（脏工作区加 `+dirty`）；都无则 `null` |
-| 执行超时 | 5 秒 |
+| 执行超时 | 30 秒（见 §十七） |
+| 启动失败重试 | 文件正忙（ETXTBSY：刚写好的文件被别的线程正在启动的子进程继承了写句柄）时重试启动，至多 5 次，间隔 10 ms 起倍增 |
 | 平台不符 | 报"不是为 <os>/<arch> 构建的" |
 | `pluginApi` 过高 | 该二进制全部插件解析失败，提示升级对象 |
 | 缓存键 | 路径、大小、mtime；Unix 加 ctime |
-| 绕过缓存 | 启动运行时、`GoRuntimes::restart`、`rutis-host check` |
+| 绕过缓存 | 启动运行时、`GoRuntimes::restart`、`rutis-host check`；另：行要的插件没有任何二进制有时，重读上次读取失败、且失败已记录满 5 秒的清单（失败可能已过去；不满 5 秒不重读，找不到的名字不会让持续失败或挂起的二进制每次都重跑） |
 | 信任 | 只执行配置给出的来源（`binaries` 文件、`dir` 目录）；`dir` 整体视为受信任，应为专用目录 |
 
 ## 四、`GoResolver`
@@ -440,7 +441,7 @@ G1、G2 由 #227 实现。与本文的出入：
 | 远程 npm 命名 | 拒绝 `go:` 与 `<Go 运行时名>:` | 拒绝任何 `<名字>:` 前缀 |
 | macOS 隔离属性 | 复用 dylib 的检查 | `rutis-host check` 用 `xattr` 检查并提示 |
 | 清单执行超时 | 5 秒 | 30 秒：macOS 上新二进制第一次运行要等系统评估，几个同时启动时超过 5 秒 |
-| 同一运行时的启动、重启、停止 | §五：空闲停止期间又有行解析到它，就取消这次停止 | 同一时刻只有一个在进行（运行时标记为忙，离开时一定清除）；新进程在旧进程释放后才启动。空闲停止期间又有行解析到它：不取消这次停止，停止完成后立即重新启动 |
+| 同一运行时的启动、重启、停止 | §五：空闲停止期间又有行解析到它，就取消这次停止 | 同一时刻只有一个在进行（运行时标记为忙，离开时一定清除）；新进程在旧进程释放后才启动；`restart` 的调用方放弃等待（如外面套了超时）时，重启照样走完，下一次重启等它结束。空闲停止期间又有行解析到它：不取消这次停止，停止完成后立即重新启动 |
 | `rows.load` 的 `inject` | 签名里有 | 忽略，与 Python 相同：行配置的 `inject` 是 Cordis 行在 Cordis 里等待用的，叶子运行时的门控由 rutis 按插件声明的 inject 做 |
 | `check` | 打印实现与引擎 | 不打印：`implementation` / `engine` 在 mount 回复里，`check` 不启动 Go 运行时；随 Bun B1 统一 |
 | 未做 | | Python `mount` 回复的 `implementation` / `engine` 与 `check` 打印它们（随 Bun B1）；G3 |
