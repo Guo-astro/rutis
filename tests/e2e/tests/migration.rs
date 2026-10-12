@@ -287,9 +287,9 @@ fn end_a(a: &mut Host, watch: &Probe, on: &str, pid: u32) {
 /// guarantee: core/D14 (a provider withdrawn stops its consumers, which
 /// start again once it is back: `planner` follows each switch, its row
 /// untouched), core/D22 (`planner` waits, without failing, while no
-/// `calendar` runs)
+/// `calendar` runs), bridge/call-chains-across-processes (`planner`'s
+/// chain crosses the link to B's runtime, #325)
 #[test]
-#[ignore = "bug #325: a call path crossing the link reuses process-local session tags, and B's runtime ends its session (invalid invocation)"]
 fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
     let s = Scenario::new("migration");
     let watch = s.probe("watch", Lang::Node, &[]);
@@ -336,7 +336,7 @@ fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
     s.finish();
 }
 
-/// Stages 1 and 3 without the node in between (it is blocked by #325):
+/// Stages 1 and 3 without the node in between (the direct switch):
 /// one edit moves `calendar` from the Python row to the Rust row.
 ///
 /// risk: G2 (a call in the switch's window hangs), G3 (the Python runtime
