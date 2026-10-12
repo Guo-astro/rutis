@@ -37,6 +37,7 @@
 | `bridge/` | `bridge/<名字>` | 会话协议、运行时、链路相关设计 | 预留 |
 | `host/` | `host/<名字>` | rutis-host 设计与用户文档 | 预留；`host/rutis-json-format` 已登记（#207） |
 | `dsh/` | `dsh/<名字>` | rutis-dsh 设计与文档 | 预留；`dsh/user-layer-format` 已登记（#207） |
+| `sdk/` | `sdk/<名字>` | 插件 SDK 与测试工具：[插件 API](guide/plugin-api.md)、质量规范 Q6.7 | `sdk/testing-matches-runtime` 已登记（#206） |
 
 `D` 编号沿用设计文档里的决策编号（包括复述其他编号的 D20、D27 和已并入 D27 的 D26），方便与设计文档、测试注释对照。新族的 `<名字>` 用短横线连接的英文小写短语（如 `loader/rollback`）。
 
@@ -178,13 +179,24 @@ PR 模板中有对应的检查项。
 
 ---
 
-## 9. 统计（基准 `2e77fdc`）
+## 9. 插件 SDK：`sdk/*`
+
+出处：[插件 API](guide/plugin-api.md)、质量规范 Q6.7。
+
+| 编号 | 内容 | 级别 | 状态 | 验证 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `sdk/testing-matches-runtime` | 测试工具（`@arcships/rutis/testing`、`rutis.testing`，严格模式）对插件的调用结果与真实运行时相同：同步、异步、回调、错误跨边界（只带名字和消息）、值的复制与拒绝；已知差异有界并写明（[插件 API](guide/plugin-api.md)「测试工具与真实运行时的差异」，期望文件中标为 `allowed`） | 契约行为 | 部分验证 | `rutis-bridge/src/runtime/testing.rs::runtime`（经 `rutis-bridge/tests/session_matrix.rs` 在 Node、Python、Go、Bun 各通道上运行）、`node/rutis/test/conformance.test.mjs`、`python/rutis/tests/test_conformance.py::Conformance::test_the_testing_tool_returns_what_the_real_runtime_does` | 两侧对同一份期望文件 `rutis-bridge/src/runtime/testing/weather.expected.json` 比对（Q6.7.2）。Go 的 `rutistest` 与 Bun 的测试工具尚未比对；Map、Set、Date、二进制、bigint 按现行规则拒绝，待 #308 |
+
+---
+
+## 10. 统计（基准 `2e77fdc`，另加 §8、§9）
 
 | 范围 | 已验证 | 部分验证 | 未验证 | 明确不保证 | 合计 |
 | --- | --- | --- | --- | --- | --- |
 | `core/D*`（不含 D20、D26、D27） | 19 | 8 | 2 | 1 | 30 |
 | `boundary/5.*` | 2 | 2 | 4 | 0 | 8 |
 | `host/`、`dsh/`（§8） | 2 | 0 | 0 | 0 | 2 |
-| 合计 | 23 | 10 | 6 | 1 | 40 |
+| `sdk/*`（§9，#206） | 0 | 1 | 0 | 0 | 1 |
+| 合计 | 23 | 11 | 6 | 1 | 41 |
 
 其中核心承诺 10 条：已验证 5（D6、D14、D21、D32、5.6），部分验证 5（D7、D22、D28、D30、5.8），未验证 0。未验证的契约行为 6 条（D8、D29、5.3、5.4、5.5、5.7），作为 0.10 的基线。核心承诺的划分由维护者确认，可以调整。
