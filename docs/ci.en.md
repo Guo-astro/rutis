@@ -68,13 +68,13 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 | --- | --- | --- | --- | --- |
 | `links` | Linux | `docs` | — | Checks relative links in Markdown |
 | `rust` | Linux | `code` | The rerun with runtimes started over loopback, on Linux | Every Rust test, once: the workspace (but bridge, loader and `rutis-e2e`), the loader with every row kind, the bridge with every feature. With the oldest supported versions (§9) |
-| `e2e` | Linux | `code` | — | The end-to-end scenarios, `cargo test -p rutis-e2e` (`tests/e2e`: real rutis-host processes, project directories, probe plugins of every language), beside `rust`, with the oldest supported versions (§9). On failure it uploads `RUTIS_E2E_DIR` (the failed scenarios' directories and logs) as the `e2e-linux` artifact. The install scenarios run in `install.yml`, not here |
+| `e2e` | Linux | `code` | — | The end-to-end scenarios, `cargo test -p rutis-e2e` (`tests/e2e`: real rutis-host processes, project directories, probe plugins of every language), beside `rust`, with the oldest supported versions (§9). On failure it uploads `RUTIS_E2E_DIR` (the failed scenarios' directories and logs) as the `e2e-linux` artifact. The install scenarios run in `install.yml`, not here. The same scenarios run on macOS in `network-macos` and on Windows in `runtimes-windows` (only those not limited to Unix) |
 | `js-py` | Linux | `code` | — | `scripts/train.mjs`; the Node packages' tests (`node/rutis`, `rutis-runtime`, `rutis-host`) and rutis-dsh's dsh tests; the Python unit tests |
 | `lint` | Linux | `code` | — | `cargo fmt --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`. In parallel with the tests. No baseline: a warning is fixed in the PR that introduces it, and new lints from a toolchain upgrade in the upgrade PR |
 | `msrv` | Linux | Only with `all` (`Cargo.lock`, `Cargo.toml` and the like changed) | The whole job | Builds the libraries and binaries with the declared MSRV (`rust-version` in `Cargo.toml`) and the repository's `Cargo.lock` (`cargo +<version> check --workspace`, without the example projects `rutis-agent` and `rutis-cli`) |
 | `checks` | Linux | Only with `all` | The whole job | Build checks and `--no-run` of the bridge and loader feature combinations (the whole workspace's build is covered by `lint`'s clippy). They find rare feature-combination build errors and run no tests |
 | `network-macos` | macOS | `code`: only the tests that depend on the platform | All bridge and loader tests; the `node/rutis` tests | Process start, local channels, runtime processes, WebSocket and rutis-host tests with the latest versions (§9); the end-to-end scenarios (on failure, the `e2e-macos` artifact); the Node runtime's and the Python package's tests; a build check of the whole workspace |
-| `runtimes-windows` | Windows | `code`: only the tests that depend on the platform | All bridge and loader tests | The same on Windows (processes start over loopback); the Go SDK tests; a build check of the whole workspace |
+| `runtimes-windows` | Windows | `code`: only the tests that depend on the platform | All bridge and loader tests | The same on Windows (processes start over loopback); the Go SDK tests; the E2E harness and the E2E scenarios not limited to Unix (`rutis-e2e`: Job Objects, Ctrl-Break, residue checks); a build check of the whole workspace |
 | `runtimes-bun` | Linux | `bun`: Bun 1.4.0 | Linux latest; macOS 1.4.0 | Every Bun runtime test, with the reruns over loopback |
 | `runtimes-go` | Linux | `go`: Go oldstable | Linux stable; macOS oldstable; the reruns over loopback on Linux | Every Go SDK and Go runtime test |
 | `semver-rutis` | Linux | `packaging` | The whole job | Whether the public API changed incompatibly since the last release (warning only) |
@@ -219,6 +219,8 @@ Rule: for each language, Linux jobs use the oldest supported version, macOS and 
 | Go | `go/rutis/go.mod` | `oldstable` | `stable` |
 | Rust toolchain | `rust-toolchain.toml` | Every workflow's `dtolnay/rust-toolchain@<version>` equals it | Same |
 | MSRV | `rust-version` in the root `Cargo.toml` | The `msrv` job (main) | — |
+
+The end-to-end scenarios (`rutis-e2e`) run on all three platforms: on Linux in `e2e` (oldest versions), on macOS in `network-macos` and on Windows in `runtimes-windows` (latest versions; on Windows only the scenarios not limited to Unix).
 
 In the macOS entries of `runtimes-go` and `runtimes-bun` on main, Node and Python are only the far end of cross-language rows and use the oldest versions, as on Linux. The Node used for releases (`release.yml`, `package.yml` and `ci.yml`'s `release-dry-run`) is the release tooling's version and not part of the support matrix.
 
