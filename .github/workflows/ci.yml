@@ -1026,14 +1026,41 @@ jobs:
   runtimes-windows:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: windows-2025
+    # The repository variable WINDOWS_RUNNER (JSON) switches it to the
+    # organization's self-hosted Windows runners (docs/ci.md §11).
+    runs-on: ${{ fromJSON(vars.WINDOWS_RUNNER || '"windows-2025"') }}
     defaults:
       run:
-        shell: bash
+        # Git's bash by its path: the hosted image has it there too, and a
+        # self-hosted machine need not have it on PATH.
+        shell: '"C:\Program Files\Git\bin\bash.exe" --noprofile --norc -e -o pipefail {0}'
     steps:
       - uses: actions/checkout@v4
+      # Several runner instances share the machine: each keeps its own
+      # target and scenario directories (outside the checkout, which
+      # `checkout` cleans), and takes its share of the CPUs
+      # (WINDOWS_CI_JOBS overrides it).
+      - name: self-hosted runner, start
+        if: runner.environment == 'self-hosted'
+        env:
+          JOBS: ${{ vars.WINDOWS_CI_JOBS }}
+        run: |
+          dir="$(cygpath -m "$RUNNER_WORKSPACE/..")/_rutis-ci"
+          rm -rf "$dir/e2e"
+          mkdir -p "$dir/target" "$dir/e2e"
+          jobs=${JOBS:-$((NUMBER_OF_PROCESSORS / 4))}
+          [ "$jobs" -ge 2 ] || jobs=2
+          echo "$NUMBER_OF_PROCESSORS CPUs: $jobs jobs and test threads; $dir"
+          {
+            echo "CARGO_TARGET_DIR=$dir/target"
+            echo "RUTIS_E2E_DIR=$dir/e2e"
+            echo "CARGO_BUILD_JOBS=$jobs"
+            echo "RUST_TEST_THREADS=$jobs"
+          } >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@v4
@@ -1047,6 +1074,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: go/rutis/go.mod
       - name: go test (the Go SDK)
         run: go test ./...
