@@ -92,12 +92,18 @@ class Testing(background.TestCase):
             def first(self):
                 return self.kept[0]
 
+            def last(self):
+                return self.kept[-1]
+
+            def big(self):
+                return {"n": [2**53]}
+
             def wrong(self):
                 return asyncio.sleep(0)
 
         plugin = define_plugin(
             lambda ctx, config: ctx.provide("store", Store()),
-            provides={"store": {"put": "sync", "first": "sync", "wrong": "sync"}},
+            provides={"store": {"put": "sync", "first": "sync", "last": "sync", "big": "sync", "wrong": "sync"}},
         )
 
         async def go():
@@ -113,6 +119,15 @@ class Testing(background.TestCase):
                 t.service("store").put(nest(64))
                 with self.assertRaisesRegex(PluginTestError, "nested deeper than 64 levels cannot cross"):
                     t.service("store").put(nest(65))
+                # Integers: within ±(2^53−1) cross, beyond it do not (#356).
+                for big in (2**53, -(2**53), [1, {"n": 2**64 + 1}]):
+                    with self.assertRaisesRegex(PluginTestError, r"beyond ±\(2\^53-1\) cannot cross"):
+                        t.service("store").put(big)
+                safe = [2**53 - 1, -(2**53 - 1), True]
+                t.service("store").put(safe)
+                self.assertEqual(t.service("store").last(), safe)
+                with self.assertRaisesRegex(PluginTestError, r"store.big.*beyond ±\(2\^53-1\) cannot cross"):
+                    t.service("store").big()
                 with self.assertRaisesRegex(PluginTestError, "declared sync but returned an awaitable"):
                     t.service("store").wrong()
 

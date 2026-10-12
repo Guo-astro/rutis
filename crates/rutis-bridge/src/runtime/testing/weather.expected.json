@@ -48,6 +48,9 @@
     { "sample": "python/bytes", "throws": {}, "why": "bytes do not cross" },
     { "sample": "python/nan", "throws": {}, "why": "a float that is not finite does not cross" },
     { "sample": "python/int-keys", "throws": {}, "why": "a dict with keys that are not strings does not cross" },
-    { "sample": "python/exception-value", "returns": { "name": "ValueError", "message": "bad" }, "why": "an exception returned as a value arrives as data: its name and message" }
+    { "sample": "python/exception-value", "returns": { "name": "ValueError", "message": "bad" }, "why": "an exception returned as a value arrives as data: its name and message" },
+    { "sample": "python/safe-int", "returns": [9007199254740991, -9007199254740991, true], "why": "integers within ±(2^53−1) cross, and a bool stays a bool" },
+    { "sample": "python/big-int", "throws": {}, "why": "an integer beyond ±(2^53−1) does not cross (#356): past 2^64 Rust would read it as a float, past 2^53 JavaScript cannot hold it exactly" },
+    { "sample": "python/big-int-nested", "throws": {}, "why": "nor does one inside data" }
   ]
 }

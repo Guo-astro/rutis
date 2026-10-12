@@ -570,3 +570,75 @@ class DepthTests(unittest.TestCase):
             self.assertFalse(_holds_reference(value))
             with self.assertRaisesRegex(ValueError, "nested deeper than 64 levels"):
                 _data(value)
+
+
+class IntegerLimitTests(background.IsolatedAsyncioTestCase):
+    """#356: an integer crosses only within ±(2^53−1), as in JavaScript
+    and Go; a larger one fails its own call, at any depth, and the
+    session goes on. `bool` is an int and crosses as before."""
+
+    SAFE = 2**53 - 1
+
+    def test_data_within_the_limit_crosses_and_beyond_it_fails(self):
+        from rutis.peer import MAX_SAFE_INTEGER, _data
+
+        self.assertEqual(MAX_SAFE_INTEGER, self.SAFE)
+        for value in (self.SAFE, -self.SAFE, 0, True, False, [self.SAFE, {"n": -self.SAFE}]):
+            self.assertEqual(_data(value), value)
+        for value in (2**53, -(2**53), 2**64 + 1, [1, 2**53], {"a": {"b": [2**64]}}, (2**60,)):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, r"beyond ±\(2\^53-1\)"):
+                    _data(value)
+
+    def session(self, dispatch):
+        ours, theirs = socket.socketpair()
+        theirs.settimeout(10)
+        self.addCleanup(ours.close)
+        self.addCleanup(theirs.close)
+        peer = Peer(ours, dispatch)
+        self.addCleanup(peer._channel.close)
+        self.addCleanup(peer.close)
+        peer._receive({"op": "hello", "version": 2})
+        lines = theirs.makefile("rb")
+        self.addCleanup(lines.close)
+
+        async def read():
+            return json.loads(await asyncio.to_thread(lines.readline))
+
+        return peer, read
+
+    async def test_an_argument_beyond_the_limit_fails_that_call_and_the_session_goes_on(self):
+        def callback():
+            return 1
+
+        peer, read = self.session(lambda target, method, args: None)
+        # Beside a reference too: a list holding one crosses as a list.
+        for args in ([2**53], [[1, {"n": 2**64 + 1}]], [callback, {"n": -(2**53)}]):
+            with self.subTest(args=args):
+                with self.assertRaisesRegex(ValueError, r"beyond ±\(2\^53-1\)"):
+                    peer.call("test", "big", args)
+        self.assertEqual(peer._exports, {}, "the partial grant is rolled back")
+        # Failed encodings consume their invocation ids, but send nothing.
+        peer._deliver({"op": "return", "id": "node:4", "value": {"type": "data", "value": 7}})
+        self.assertEqual(peer.call("test", "good", [self.SAFE, -self.SAFE, True]), 7)
+        sent = await read()
+        self.assertEqual((sent["id"], sent["method"]), ("node:4", "good"))
+        self.assertEqual(sent["args"], {"type": "data", "value": [self.SAFE, -self.SAFE, True]})
+        self.assertIsNone(peer.closed_error)
+
+    async def test_a_result_beyond_the_limit_fails_that_call_and_the_session_goes_on(self):
+        def callback():
+            return 1
+
+        results = {"big": 2**64 + 1, "nested": {"list": [callback, 2**53]}, "safe": [self.SAFE, -self.SAFE, True]}
+        peer, read = self.session(lambda target, method, args: results[method])
+        for sequence, method in enumerate(("big", "nested"), 1):
+            peer._receive(ReferenceCountTests.invoke(sequence, method))
+            reply = await read()
+            self.assertEqual(reply["op"], "throw", reply)
+            self.assertRegex(reply["error"]["message"], r"beyond ±\(2\^53-1\)")
+        peer._receive(ReferenceCountTests.invoke(3, "safe"))
+        reply = await read()
+        self.assertEqual(reply["op"], "return", reply)
+        self.assertEqual(reply["value"], {"type": "data", "value": [self.SAFE, -self.SAFE, True]})
+        self.assertIsNone(peer.closed_error)
