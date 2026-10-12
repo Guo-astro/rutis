@@ -330,6 +330,10 @@ enum Force<'a> {
     None,
     All,
     Runtime(&'a str),
+    /// Those whose last read failed: the failure may have passed (a file
+    /// just written cannot run while a process starting elsewhere still
+    /// holds it open for writing, ETXTBSY on Linux).
+    Failed,
 }
 
 #[derive(Clone)]
@@ -473,6 +477,9 @@ impl GoResolver {
                     Force::None => false,
                     Force::All => true,
                     Force::Runtime(name) => name == runtime,
+                    Force::Failed => previous
+                        .as_ref()
+                        .is_some_and(|previous| previous.manifest.is_err()),
                 };
                 let mut binary = match previous {
                     Some(previous) if !forced && previous.stamp == current => previous,
@@ -674,9 +681,10 @@ impl GoResolver {
             if rescanned {
                 break;
             }
-            // Not found: a binary may have been dropped into a directory.
+            // Not found: a binary may have been dropped into a directory,
+            // or a read that failed may succeed now (#306).
             rescanned = true;
-            binaries = self.scan(Force::None);
+            binaries = self.scan(Force::Failed);
         }
         if let Some(runtime) = named {
             // A listed binary whose manifest failed says why.
@@ -946,6 +954,8 @@ impl GoRuntimes {
 impl GoRuntimesHandle {
     /// Stop the runtime `name` and start it again from its binary as it is
     /// now: its rows stop, resolve from the new manifest, and start again.
+    /// A caller that stops waiting (a timeout around it) does not stop the
+    /// restart half way: once it began, it goes on to the end.
     pub async fn restart(&self, name: &str) -> Result<(), String> {
         // Wait for a start, restart or stop in progress to finish.
         let busy = loop {
@@ -954,7 +964,14 @@ impl GoRuntimesHandle {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        self.inner.clone().restart_now(name, busy).await
+        // In a task: dropped half way, the restart would free the name while
+        // the old runtime is still stopping, and the next start would run a
+        // second process under it meanwhile (#307).
+        let inner = self.inner.clone();
+        let runtime = name.to_owned();
+        tokio::spawn(async move { inner.restart_now(&runtime, busy).await })
+            .await
+            .map_err(|error| format!("the restart of {name} did not finish: {error}"))?
     }
 
     /// Every Go runtime: those that run, and the binaries not started.

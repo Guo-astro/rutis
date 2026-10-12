@@ -116,6 +116,17 @@ fn state(loader: &Loader, id: &str) -> Option<FiberState> {
     }
 }
 
+/// The generation of the row's fiber while it is active: a later one has
+/// loaded again since (each load is a new generation).
+fn active_generation(loader: &Loader, id: &str) -> Option<u64> {
+    match loader.get(id)?.status {
+        EntryStatus::Running(snapshot) if snapshot.state == FiberState::Active => {
+            Some(snapshot.generation)
+        }
+        _ => None,
+    }
+}
+
 fn unresolved(loader: &Loader, id: &str) -> Option<String> {
     match loader.get(id)?.status {
         EntryStatus::Unresolved(error) => Some(error.to_string()),
@@ -642,11 +653,9 @@ async fn a_restart_given_up_half_way_leaves_the_runtime_usable() {
         .await
         .unwrap();
     let loader = fixture.loader.clone();
-    COLD.until(
-        || state(&loader, "ping") == Some(FiberState::Active),
-        "the row",
-    )
-    .await;
+    let first = COLD
+        .eventually(|| active_generation(&loader, "ping"), "the row")
+        .await;
     // clock: the short timeout is the scenario, not a wait: the caller gives
     // up half way through the restart, whatever the restart does meanwhile.
     let _ = tokio::time::timeout(
@@ -654,11 +663,15 @@ async fn a_restart_given_up_half_way_leaves_the_runtime_usable() {
         fixture.runtimes.restart("go-netkit"),
     )
     .await;
-    COLD.until(
-        || state(&loader, "ping") == Some(FiberState::Active),
-        "the row again",
-    )
-    .await;
+    // Active is not enough here, nor below: the row stays active on the
+    // runtime that is stopping until the stop reaches it (#307). A later
+    // generation is the row loaded again, on the new runtime.
+    let again = COLD
+        .eventually(
+            || active_generation(&loader, "ping").filter(|generation| *generation > first),
+            "the row again",
+        )
+        .await;
     COLD.within(
         "a restart after one given up",
         fixture.runtimes.restart("go-netkit"),
@@ -666,7 +679,7 @@ async fn a_restart_given_up_half_way_leaves_the_runtime_usable() {
     .await
     .unwrap();
     COLD.until(
-        || state(&loader, "ping") == Some(FiberState::Active),
+        || active_generation(&loader, "ping").is_some_and(|generation| generation > again),
         "the row after the restart",
     )
     .await;
@@ -676,6 +689,84 @@ async fn a_restart_given_up_half_way_leaves_the_runtime_usable() {
             .unwrap(),
         json!("netkit pong still")
     );
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// A restart its caller gave up goes on to the end, as one waited for: the
+/// next restart waits for it, so once that returns, the runtime running
+/// before both has stopped, and its rows with it. Before #307 the given-up
+/// restart stopped half way and freed the runtime's name while the old
+/// runtime was still stopping: the next restart started a second process
+/// under that name meanwhile, and returned with the old rows still active.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_given_up_half_way_still_finishes_before_the_next() {
+    let fixture = fixture(None, &[("netkit", "netkit")]).await;
+    fixture
+        .loader
+        .reconcile(layer(vec![row("ping", "go:ping")]), None)
+        .await
+        .unwrap();
+    let loader = fixture.loader.clone();
+    let first = COLD
+        .eventually(|| active_generation(&loader, "ping"), "the row")
+        .await;
+    // clock: the short timeout is the scenario, not a wait (as above).
+    let _ = tokio::time::timeout(
+        Duration::from_millis(1),
+        fixture.runtimes.restart("go-netkit"),
+    )
+    .await;
+    COLD.within(
+        "a restart after one given up",
+        fixture.runtimes.restart("go-netkit"),
+    )
+    .await
+    .unwrap();
+    // A runtime stops only after the rows using it are unloaded.
+    assert_ne!(
+        active_generation(&loader, "ping"),
+        Some(first),
+        "the row on the runtime from before both restarts is still active"
+    );
+    COLD.until(
+        || active_generation(&loader, "ping").is_some_and(|generation| generation > first),
+        "the row after the restarts",
+    )
+    .await;
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// A manifest read that failed once, with the file unchanged since, is read
+/// again when a row asks for a plugin no binary has: the failure may have
+/// passed. On Linux, running a file just written fails (ETXTBSY) while a
+/// process another thread is starting still holds it open for writing;
+/// that failure stayed cached until the file changed, and a binary
+/// replaced on disk then had no plugins at all (#306).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_manifest_read_that_failed_is_read_again_for_a_missing_plugin() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = fixture(None, &[("netkit", "netkit")]).await;
+    // Its first manifest read fails; later ones print the manifest.
+    let once = fixture.dir.path().join("once");
+    let script = fixture.dir.path().join("plugins").join("later");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n# rutis-go-runtime:1\n\
+             [ \"$1\" = --rutis-manifest ] || exit 1\n\
+             [ -e '{once}' ] || {{ touch '{once}'; exit 3; }}\n\
+             echo '{{\"pluginApi\":1,\"plugins\":{{\"late\":{{\"inject\":[],\"provides\":{{}}}}}}}}'\n",
+            once = once.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    use rutis_loader::Resolver;
+    let resolved = fixture.resolver.resolve("go:late").await;
+    assert!(once.exists(), "the first read ran the script");
+    let resolved = resolved.expect("go:late, from the second read");
+    assert_eq!(resolved.meta["runtime"], json!("go-later"));
     fixture.root.shutdown().await.unwrap();
 }
 
