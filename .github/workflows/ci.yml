@@ -44,8 +44,12 @@ jobs:
   # What the change touches. The mapping from paths to jobs is reviewed like
   # code; a job skipped on a pull request that then fails on main means a
   # path is missing here (Q12.3.3).
+  #
+  # This job and ci-ok only orchestrate: they run on the self-hosted macOS
+  # runners (docs/ci.md §10); the repository variable GATE_RUNNER (JSON)
+  # switches them, e.g. to "ubuntu-24.04".
   changes:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.GATE_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     permissions:
       contents: read
       pull-requests: read
@@ -1034,7 +1038,7 @@ jobs:
       - sdk-repro-macos
       - sdk-repro-compare
       - sdk-repro-macos-compare
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.GATE_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     steps:
       - name: every selected job passed
         env:

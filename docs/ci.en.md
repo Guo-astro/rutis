@@ -229,15 +229,16 @@ In the macOS entries of `runtimes-go` and `runtimes-bun` on main, Node and Pytho
 
 ## 10. Self-hosted macOS runners
 
-`ci.yml`'s `network-macos`, `dylib-macos` and `sdk-repro-macos`, and `install.yml`'s `darwin-arm64` on main and pull requests, run on self-hosted macOS runners: one dedicated, isolated Mac with one or more runner instances, all labelled `self-hosted, macOS, ARM64` (the first is `macos-1`). The other jobs stay on GitHub's runners: `darwin-x64` (it needs the Intel `macos-15-intel`), `package.yml`'s macOS builds (release files), `darwin-arm64` when `release.yml` calls `install.yml` (the pre-release gate uses `macos-15`), the macOS entries of `runtimes-go`/`runtimes-bun` on main, and the Linux and Windows jobs.
+`ci.yml`'s `network-macos`, `dylib-macos` and `sdk-repro-macos`, and `install.yml`'s `darwin-arm64` on main and pull requests, run on self-hosted macOS runners: one dedicated, isolated Mac with one or more runner instances, all labelled `self-hosted, macOS, ARM64` (the first is `macos-1`). The small jobs that only orchestrate run there too, so that they do not queue for GitHub's Linux runners: `ci.yml`'s `changes` and `ci-ok`, and the `plan` of `install.yml` and `package.yml` (for a release, on a tag, `plan` stays on `ubuntu-24.04`). With a single instance they wait behind a running macOS job, hence more instances. The other jobs stay on GitHub's runners: `darwin-x64` (it needs the Intel `macos-15-intel`), `package.yml`'s macOS builds (release files), `darwin-arm64` when `release.yml` calls `install.yml` (the pre-release gate uses `macos-15`), the macOS entries of `runtimes-go`/`runtimes-bun` on main, and the Linux and Windows jobs.
 
-**Back to GitHub's runners without a code change**: the repository variable `MACOS_RUNNER` (Settings → Secrets and variables → Actions → Variables) is the JSON value of `runs-on`; unset, it is `["self-hosted","macOS","ARM64"]`. Set it to `"macos-15"` (with the quotes) and every one of these jobs goes back to GitHub's macOS; delete it to come back. `gh variable set MACOS_RUNNER --body '"macos-15"'`.
+**Back to GitHub's runners without a code change**: the repository variable `MACOS_RUNNER` (Settings → Secrets and variables → Actions → Variables) is the JSON value of `runs-on`; unset, it is `["self-hosted","macOS","ARM64"]`. Set it to `"macos-15"` (with the quotes) and every one of these jobs goes back to GitHub's macOS; delete it to come back. `gh variable set MACOS_RUNNER --body '"macos-15"'`. The orchestration jobs follow another variable, `GATE_RUNNER`: set it to `"ubuntu-24.04"` to move them back.
 
 A self-hosted machine keeps its state between jobs, and several instances run at once. These jobs run `tools/ci-self-hosted.sh` at their start and their end (`if: always()`):
 
 - it ends the processes an earlier job of this instance left: those whose command line or working directory is under this instance's workspace, target directory or scenario directory; the runner itself and other instances' jobs are left alone;
 - the scenario directory `RUTIS_E2E_DIR` is the instance's own `/tmp/rutis-e2e-<runner name>` (not `runner.temp`: a Unix socket path is at most 104 bytes on macOS, see `tests/e2e/src/lib.rs`), emptied at the start and the end;
 - builds use no `rust-cache` (it would upload the cache to GitHub again); `CARGO_TARGET_DIR` is the instance's kept `~/.cache/rutis-ci/<runner name>/target`, emptied above 30 GB (`RUTIS_CI_TARGET_MAX_GB`); the caches of `setup-node` and `setup-go` are used on GitHub's runners only;
+- Python comes not from `setup-python` (its macOS builds install only under `/Users/runner`) but from uv: its latest Python, in a virtual environment with pip that each job makes in `runner.temp` and puts on `PATH`;
 - directories `tools/*.sh` leave in `/tmp/rutis-*` are removed after 12 hours.
 
 **Before adding an instance, the machine needs**:
@@ -248,4 +249,4 @@ A self-hosted machine keeps its state between jobs, and several instances run at
 4. The Xcode command line tools (`xcode-select --install`): `cc`, `codesign`, `otool`, `lipo`. `sdk-repro-macos` prints the Xcode version, or the command line tools' when there is no Xcode.
 5. At least 100 GB of free disk (up to 30 GB of target directory per instance, plus Node, Python, Go and Bun in `_work/_tool`).
 6. No sleep: `sudo pmset -a sleep 0 disksleep 0` (or in System Settings).
-7. No Homebrew: these jobs use only the system's `bash` (3.2), `perl`, `tar`, `shasum` and `lsof`; Node, Python, Go, Bun and uv come from their setup actions into `_work/_tool`.
+7. No Homebrew: these jobs use only the system's `bash` (3.2), `perl`, `tar`, `shasum`, `lsof` and `jq` (`/usr/bin/jq` comes with macOS 15 and later; `ci-ok` uses it); Node, Go, Bun and uv come from their setup actions into `_work/_tool`, Python from uv into `~/.local/share/uv`.

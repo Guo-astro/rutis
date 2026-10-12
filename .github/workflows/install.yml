@@ -75,8 +75,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Orchestration only: on the self-hosted macOS runners but for a release
+  # (the repository variable GATE_RUNNER switches it, docs/ci.md §10).
   plan:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ startsWith(github.ref, 'refs/tags/') && 'ubuntu-24.04' || fromJSON(vars.GATE_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     outputs:
       version: ${{ steps.plan.outputs.version }}
       platforms: ${{ steps.plan.outputs.platforms }}
@@ -84,6 +86,11 @@ jobs:
       build: ${{ steps.plan.outputs.build }}
     steps:
       - uses: actions/checkout@v4
+      # A self-hosted runner has no Node of its own.
+      - uses: actions/setup-node@v4
+        if: runner.environment == 'self-hosted'
+        with:
+          node-version: '24'
       # The guides' example markers parse (the examples run after a release).
       - run: node tools/doc-examples.mjs --check
       - id: plan

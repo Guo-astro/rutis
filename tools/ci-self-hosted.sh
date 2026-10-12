@@ -110,6 +110,7 @@ if [ "$phase" = start ]; then
     mkdir -p "$target"
   fi
   df -h "$cache" | tail -n 1
+  echo "open files limit: $(ulimit -Sn) (hard $(ulimit -Hn))"
   {
     echo "RUTIS_E2E_DIR=$e2e"
     echo "CARGO_TARGET_DIR=$target"
