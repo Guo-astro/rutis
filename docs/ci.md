@@ -239,7 +239,8 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 - 场景目录 `RUTIS_E2E_DIR` 是每个实例自己的 `/tmp/rutis-e2e-<runner 名>`（不用 `runner.temp`：Unix socket 路径在 macOS 上最长 104 字节，见 `tests/e2e/src/lib.rs`），开头和结尾清空；
 - 编译不用 `rust-cache`（它会把缓存再上传到 GitHub），`CARGO_TARGET_DIR` 是每个实例保留的 `~/.cache/rutis-ci/<runner 名>/target`，超过 30 GB（`RUTIS_CI_TARGET_MAX_GB`）时清空；`setup-node`、`setup-go` 的缓存也只在 GitHub 的 runner 上用；
 - Python 不用 `setup-python`（它的 macOS 版本只能装在 `/Users/runner` 下），用 uv 装的最新 Python，每个任务在 `runner.temp` 里建一个带 pip 的虚拟环境放进 `PATH`；
-- `tools/*.sh` 留在 `/tmp/rutis-*` 的目录超过 12 小时后删除。
+- `tools/*.sh` 留在 `/tmp/rutis-*` 的目录超过 12 小时后删除；
+- 几个实例同时编译会把机器压满（10 核上 4 个实例各开 10 个 rustc，负载到过 79）：每个任务的 `CARGO_BUILD_JOBS` 和 `RUST_TEST_THREADS` 设成 CPU 数除以机器上的实例数（`~/actions-runner*/` 里有 `.runner` 的目录数），至少 2，开头会打印选的值和当时的负载。实例不装在 `~/actions-runner*` 下，或要别的值时，设仓库变量 `RUTIS_CI_JOBS`。`sdk-repro-macos` 也照此限制，不影响构建结果。
 
 **加一个实例前，机器上要有**：
 

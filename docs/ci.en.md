@@ -239,7 +239,8 @@ A self-hosted machine keeps its state between jobs, and several instances run at
 - the scenario directory `RUTIS_E2E_DIR` is the instance's own `/tmp/rutis-e2e-<runner name>` (not `runner.temp`: a Unix socket path is at most 104 bytes on macOS, see `tests/e2e/src/lib.rs`), emptied at the start and the end;
 - builds use no `rust-cache` (it would upload the cache to GitHub again); `CARGO_TARGET_DIR` is the instance's kept `~/.cache/rutis-ci/<runner name>/target`, emptied above 30 GB (`RUTIS_CI_TARGET_MAX_GB`); the caches of `setup-node` and `setup-go` are used on GitHub's runners only;
 - Python comes not from `setup-python` (its macOS builds install only under `/Users/runner`) but from uv: its latest Python, in a virtual environment with pip that each job makes in `runner.temp` and puts on `PATH`;
-- directories `tools/*.sh` leave in `/tmp/rutis-*` are removed after 12 hours.
+- directories `tools/*.sh` leave in `/tmp/rutis-*` are removed after 12 hours;
+- several instances compiling at once overload the machine (4 instances on 10 cores each running 10 rustc reached a load of 79): each job's `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` are the CPU count divided by the machine's instances (the `~/actions-runner*/` directories with a `.runner` file), at least 2; the start prints them and the load. When instances live elsewhere, or for another value, set the repository variable `RUTIS_CI_JOBS`. `sdk-repro-macos` is limited the same way, which does not change what it builds.
 
 **Before adding an instance, the machine needs**:
 

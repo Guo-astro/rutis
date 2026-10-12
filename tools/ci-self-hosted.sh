@@ -7,7 +7,9 @@
 #          scenario directory, and points the job at this runner's own
 #          directories (GITHUB_ENV): RUTIS_E2E_DIR, short for Unix socket
 #          paths (tests/e2e/src/lib.rs), and CARGO_TARGET_DIR, kept between
-#          jobs in place of rust-cache, emptied above RUTIS_CI_TARGET_MAX_GB
+#          jobs in place of rust-cache, emptied above RUTIS_CI_TARGET_MAX_GB;
+#          and limits CARGO_BUILD_JOBS and RUST_TEST_THREADS to the
+#          machine's share of this instance (RUTIS_CI_JOBS overrides it)
 #   end    ends what this job left running and empties the scenario directory
 #
 # Everything is scoped to this runner instance (RUNNER_NAME): its workspace,
@@ -111,8 +113,19 @@ if [ "$phase" = start ]; then
   fi
   df -h "$cache" | tail -n 1
   echo "open files limit: $(ulimit -Sn) (hard $(ulimit -Hn))"
+  # The machine's CPUs shared by its runner instances (each a
+  # ~/actions-runner*/ with a .runner file), which may all build at once:
+  # cargo's and the test binaries' parallelism, RUTIS_CI_JOBS if set.
+  cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)
+  instances=$(ls -d "$HOME"/actions-runner*/.runner 2>/dev/null | wc -l | tr -d ' ')
+  [ "$instances" -ge 1 ] 2>/dev/null || instances=1
+  jobs=${RUTIS_CI_JOBS:-$((cpus / instances))}
+  [ "$jobs" -ge 2 ] 2>/dev/null || jobs=2
+  echo "load: $(uptime | sed 's/.*load averages*: //'); $cpus CPUs, $instances runner instances: $jobs jobs and test threads"
   {
     echo "RUTIS_E2E_DIR=$e2e"
     echo "CARGO_TARGET_DIR=$target"
+    echo "CARGO_BUILD_JOBS=$jobs"
+    echo "RUST_TEST_THREADS=$jobs"
   } >> "$GITHUB_ENV"
 fi
