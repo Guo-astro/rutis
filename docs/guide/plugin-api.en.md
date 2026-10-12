@@ -53,7 +53,6 @@ A plugin and the services it uses may run in different processes. Across process
 Numbers and nesting depth have the limits below. They describe current behaviour and are **not guaranteed** to stay this way (explicitly not guaranteed); a plugin that depends on them must handle them itself:
 
 - In JavaScript (Node, Bun) numbers are IEEE 754 doubles: an integer beyond ±(2^53−1) becomes the nearest double (2^53+1 arrives in JS as 2^53); `-0` becomes `0`; an integral float (Python's `2.0`) arrives in JS as `2` and leaves again as an integer. Pass large integers that must stay exact as strings.
-- From Node 24, an object key that is a single character JSON escapes (`"\n"`, `"\t"`, `"\u0000"`, `"\""`) may arrive in Node as `"\\"` (a V8 `JSON.parse` defect; two such keys merge into one; [#302](https://github.com/arcships/rutis/issues/302)). Node 22 and Bun are not affected.
 - Python keeps integers within 64 bits, and `-0.0`.
 - NaN and ±Infinity cannot cross.
 - Nesting depth: a value nested about 125 levels deep (each array or object is a level; an array or object holding references counts two levels on the wire, so about 62) makes the receiving Rust side end the **whole session**, not just fail the call ([#279](https://github.com/arcships/rutis/issues/279)). Keep nesting within 64 levels.

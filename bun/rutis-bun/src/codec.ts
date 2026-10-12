@@ -8,6 +8,8 @@ export function encode(value) {
   })
 }
 
+// The Node runtime's codec works around a V8 `JSON.parse` defect that
+// misreads escaped object keys (#302); JavaScriptCore reads them correctly.
 export function decode(text) {
   return JSON.parse(text)
 }
