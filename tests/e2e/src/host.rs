@@ -3,8 +3,8 @@
 //! its stdout and stderr captured line by line, waited on with a hang
 //! guard.
 
-use std::io::{BufRead, BufReader, Read};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -99,6 +99,8 @@ pub struct Host {
     #[cfg_attr(not(unix), allow(dead_code))]
     marker: String,
     child: Child,
+    /// Its stdin, when the scenario writes to it ([`Host::send_line`]).
+    stdin: Option<ChildStdin>,
     output: Arc<Output>,
     status: Option<ExitStatus>,
     #[cfg(windows)]
@@ -108,10 +110,17 @@ pub struct Host {
 impl Host {
     /// Start `command` with [`MARKER`](crate::MARKER) `marker`, which every
     /// process it starts inherits: the residue checks find them by it.
-    pub(crate) fn spawn(name: &str, marker: &str, mut command: Command) -> (Host, Started) {
+    /// With `input`, its stdin is a pipe for [`Host::send_line`], else
+    /// empty.
+    pub(crate) fn spawn(
+        name: &str,
+        marker: &str,
+        mut command: Command,
+        input: bool,
+    ) -> (Host, Started) {
         command
             .env(crate::MARKER, marker)
-            .stdin(Stdio::null())
+            .stdin(if input { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         // Its own group, which a terminal's Ctrl-C would signal
@@ -161,10 +170,12 @@ impl Host {
             #[cfg(windows)]
             job: job.clone(),
         };
+        let stdin = child.stdin.take();
         let host = Host {
             name: name.to_owned(),
             marker: marker.to_owned(),
             child,
+            stdin,
             output,
             status: None,
             #[cfg(windows)]
@@ -296,6 +307,21 @@ impl Host {
                 let error = std::io::Error::last_os_error();
                 self.fail(&format!("Ctrl-Break failed: {error}"));
             }
+        }
+    }
+
+    /// Write `line` and a newline to its stdin: a command to a host that
+    /// reads them (the fixture host,
+    /// [`Scenario::fixture_host`](crate::Scenario::fixture_host)).
+    pub fn send_line(&mut self, line: &str) {
+        let Some(stdin) = self.stdin.as_mut() else {
+            self.fail("its stdin is not open for commands");
+        };
+        let written = stdin
+            .write_all(format!("{line}\n").as_bytes())
+            .and_then(|()| stdin.flush());
+        if let Err(error) = written {
+            self.fail(&format!("cannot write {line:?} to its stdin: {error}"));
         }
     }
 
