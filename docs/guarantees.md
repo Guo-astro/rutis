@@ -207,6 +207,7 @@ PR 模板中有对应的检查项。
 | `bridge/no-call-on-a-dead-session` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §3.2、§7 | 链路断开和重连期间发起的调用要么显式失败，要么落在新会话上，不会落在旧会话；断开期间不提供 `Peer` 服务，旧会话的引用一直失败 | 核心承诺 | 已验证 | `rutis-bridge/tests/fault_links.rs::calls_while_a_link_reconnects_fail_or_reach_the_new_session` | |
 | `bridge/cancel-reaches-callee` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §6.2；[插件 API](guide/plugin-api.md)「取消」 | 调用方放弃等待时，取消到达被调方；结果被释放时释放也到达，被调方丢弃 future | 契约行为 | 已验证 | `rutis-bridge/tests/fault_links.rs::under_delay_a_cancellation_and_a_release_reach_the_callee`、`rutis-bridge/tests/cancellation.rs` | Node 被调方收到 `AbortSignal` 由 `cancellation.rs` 覆盖 |
 | `bridge/multihop-cancel-and-release` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §6.2；质量规范 Q6.2.7 | 多跳转发（b → a → c）时取消和释放逐跳传递 | 契约行为 | 已验证 | `rutis-bridge/tests/fault_links.rs::cancellation_and_release_pass_hop_by_hop` | |
+| `bridge/call-chains-across-processes` | [会话标签设计](design-session-tags-2026-10-12.md) §五；[多语言 M1 设计](design-multilang-m1-2026-10-04.md) §7.2；质量规范 Q6.13.2 | 调用链经 link 跨任意多个进程、往返任意次时，每个进程只把自己会话的条目还原为原生调用号；另一个进程的调用不会被当成本进程的调用（不因此结束会话，不投错等待线程，不进入本进程的等待图） | 契约行为 | 已验证 | `rutis-bridge/tests/session_tags.rs::a_call_chain_crossing_processes_keeps_each_process_s_calls_apart`、`tests/e2e/tests/migration.rs::an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs` | #325。前者是两个子进程、确定性；后者经 rutis-host 与 fixture 宿主（S4）。标签唯一性是概率性的（进程随机数相等的概率约 10⁻¹⁵）；两个 0.9 及更早的进程之间仍有 #325 |
 | `bridge/replies-match-calls` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §6.2 | 多个调用同时进行、以任意顺序返回时，每个回复交给它自己的调用 | 契约行为 | 已验证 | `rutis-bridge/tests/fault_links.rs::interleaved_replies_reach_their_own_calls` | 放行顺序按种子打乱（`RUTIS_SEED`） |
 | `bridge/large-and-deep-values` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §7（消息大小上限）；[插件 API](guide/plugin-api.md)「值怎样传递」 | 接近消息上限的值和 100 层嵌套的值完整往返；超过上限的调用显式失败，对端不执行它；值嵌套过深时只让这次调用失败，会话继续 | 契约行为 | 部分验证 | `rutis-bridge/tests/fault_links.rs::large_and_deep_values_cross_a_session_whole`、`::over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails` | 嵌套过深的值结束整个会话（#279，`::a_value_too_deep_fails_its_call_and_the_session_goes_on` 为 `#[ignore]`）；插件 API 文档目前把它列为明确不保证（见 `bridge/value-limits`） |
 | `bridge/value-roundtrip` | [插件 API](guide/plugin-api.md)「值怎样传递」 | null、布尔、数字、字符串、数组、对象跨会话按值转换表往返，`bridge/value-limits` 列出的除外 | 契约行为 | 已验证 | `rutis-bridge/tests/value_roundtrip.rs::rust_values_round_trip`、`::node_values_round_trip`、`::python_values_round_trip`、`::go_values_round_trip`、`::bun_values_round_trip` | 属性测试，失败时打印 `RUTIS_PROPTEST_SEED`。5 个运行时都覆盖；Go 列测的是会话层（回显 `json.RawMessage`） |
@@ -251,11 +252,11 @@ PR 模板中有对应的检查项。
 | `core/features.*`、`core/typed.*` | 6 | 0 | 0 | 0 | 6 |
 | `boundary/5.*` | 3 | 5 | 0 | 0 | 8 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
-| `bridge/*` | 12 | 3 | 0 | 1 | 16 |
+| `bridge/*` | 13 | 3 | 0 | 1 | 17 |
 | `host/*`、`dsh/*`（§11） | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*`（§12） | 0 | 1 | 0 | 0 | 1 |
-| 合计 | 51 | 12 | 0 | 2 | 65 |
+| 合计 | 52 | 12 | 0 | 2 | 66 |
 
-核心承诺 17 条：已验证 14，部分验证 3（D22、D28、5.8），未验证 0。契约行为 46 条：已验证 37，部分验证 9（D5、5.2、5.3、5.4、5.5、`bridge/large-and-deep-values`、`bridge/version-refusal`、`bridge/tls-client-certificate-verified`、`sdk/testing-matches-runtime`），未验证 0。
+核心承诺 17 条：已验证 14，部分验证 3（D22、D28、5.8），未验证 0。契约行为 47 条：已验证 38，部分验证 9（D5、5.2、5.3、5.4、5.5、`bridge/large-and-deep-values`、`bridge/version-refusal`、`bridge/tls-client-certificate-verified`、`sdk/testing-matches-runtime`），未验证 0。
 
 **0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 0 条。从 0.11 起，新登记的条目（`loader/`、`host/` 等）如果是"未验证"，会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。

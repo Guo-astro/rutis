@@ -36,6 +36,8 @@ fn id(s: &str) -> PeerId {
 
 /// #325: run as the test, it starts b, then a, and expects a's call to
 /// complete; run with `RUTIS_325_ROLE`, it is that process.
+///
+/// guarantee: bridge/call-chains-across-processes (docs/guarantees.md)
 #[test]
 fn a_call_chain_crossing_processes_keeps_each_process_s_calls_apart() {
     match std::env::var(ROLE).as_deref() {
@@ -48,7 +50,11 @@ fn a_call_chain_crossing_processes_keeps_each_process_s_calls_apart() {
     let port = dir.path().join("port");
     let deadline = Instant::now() + HANG_GUARD;
     while !port.exists() {
-        assert!(Instant::now() < deadline, "b did not listen: {}", b.finish());
+        assert!(
+            Instant::now() < deadline,
+            "b did not listen: {}",
+            b.finish()
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
     let mut a = Process::start("a", dir.path().into());
@@ -92,8 +98,14 @@ impl Process {
         let _ = self.0.wait();
         let mut text = String::new();
         for stream in [
-            self.0.stdout.take().map(|s| Box::new(s) as Box<dyn std::io::Read>),
-            self.0.stderr.take().map(|s| Box::new(s) as Box<dyn std::io::Read>),
+            self.0
+                .stdout
+                .take()
+                .map(|s| Box::new(s) as Box<dyn std::io::Read>),
+            self.0
+                .stderr
+                .take()
+                .map(|s| Box::new(s) as Box<dyn std::io::Read>),
         ]
         .into_iter()
         .flatten()
@@ -143,9 +155,7 @@ fn role(role: Role) {
     let (host_end, rt_end) = rutis_bridge::transport::memory::pair();
     let host = Connection::open_with(
         host_end,
-        Arc::new(Host {
-            link: link.clone(),
-        }),
+        Arc::new(Host { link: link.clone() }),
         endpoint("host"),
     )
     .unwrap();
@@ -190,7 +200,10 @@ fn role(role: Role) {
         let connection = connection.clone();
         runtime.spawn(async move {
             connection.closed().await;
-            eprintln!("{local}: {name} session ended: {:?}", connection.close_reason());
+            eprintln!(
+                "{local}: {name} session ended: {:?}",
+                connection.close_reason()
+            );
         });
     }
     match role {

@@ -482,6 +482,11 @@ async fn with_path<F: Future>(path: Vec<String>, future: F) -> F::Output {
 /// calls it is synchronously waiting for; entries of third sessions pass
 /// through. A tagged entry never equals a native `node:`/`rust:` id, so no
 /// session mistakes it for one of its own calls.
+///
+/// Chains cross links to other processes unchanged, and may come back, so
+/// a tag names its session among all the processes a chain passes, not
+/// only in this one: each process tags with a random nonce of its own
+/// (#325).
 pub fn rebase(path: &[String], from: &str, to: &str) -> Vec<String> {
     let home = format!("{to}/");
     path.iter()
@@ -493,6 +498,36 @@ pub fn rebase(path: &[String], from: &str, to: &str) -> Vec<String> {
         .collect()
 }
 static NEXT_TAG: AtomicU64 = AtomicU64::new(1);
+
+/// A new session tag: `s`, this process's nonce (15 random decimal digits)
+/// and a counter. Only the process whose tag an entry carries restores it;
+/// with a counter alone, another process's `s1` was taken for this one's
+/// `s1` (#325). Two processes' tags meet only if their nonces are equal
+/// (one chance in 10^15 per pair), and never meet the shorter tags of an
+/// older rutis. Digits only: runtimes accept an origin entry as
+/// `s[0-9]+/<id>`, so nothing on the wire changes.
+fn next_tag() -> String {
+    static NONCE: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+        let mut bytes = [0u8; 8];
+        if getrandom::getrandom(&mut bytes).is_err() {
+            // No system randomness: the standard library's hash keys, the
+            // process id and the time still differ between processes.
+            use std::hash::{BuildHasher, Hasher};
+            let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+            hasher.write_u32(std::process::id());
+            if let Ok(now) = std::time::UNIX_EPOCH.elapsed() {
+                hasher.write_u128(now.as_nanos());
+            }
+            bytes = hasher.finish().to_le_bytes();
+        }
+        u64::from_le_bytes(bytes) % 1_000_000_000_000_000
+    });
+    format!(
+        "s{:015}{}",
+        *NONCE,
+        NEXT_TAG.fetch_add(1, Ordering::Relaxed)
+    )
+}
 
 /// What this side declares in a compat-format handshake: it marks its
 /// synchronous waits, and takes such marks (#228).
@@ -722,8 +757,8 @@ pub struct Greeting {
 /// One session's state. The session is reached through [`Connection`];
 /// the channel underneath is any [`Channel`].
 struct SessionState {
-    /// Process-unique; marks this session's call ids in chains forwarded
-    /// to other sessions (see [`rebase`]).
+    /// Unique among processes ([`next_tag`]); marks this session's call
+    /// ids in chains forwarded to other sessions (see [`rebase`]).
     tag: String,
     format: Format,
     /// The far end as the channel's connector verified it, if it did.
@@ -803,7 +838,7 @@ impl Connection {
             ),
         };
         let peer = Self(Arc::new(SessionState {
-            tag: format!("s{}", NEXT_TAG.fetch_add(1, Ordering::Relaxed)),
+            tag: next_tag(),
             format,
             verified: info.peer,
             local_prefix,
@@ -983,7 +1018,9 @@ impl Connection {
         }
         Ok(background.as_ref().unwrap().executor.clone())
     }
-    /// This session's tag, unique in the process (`"s3"`).
+    /// This session's tag, unique among the processes a call chain crosses
+    /// (`s`, a 15-digit random nonce of the process and a counter; see
+    /// [`rebase`]).
     pub fn tag(&self) -> &str {
         &self.0.tag
     }
