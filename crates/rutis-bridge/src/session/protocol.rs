@@ -163,3 +163,38 @@ pub(crate) enum Frame {
         id: String,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A float in a frame reads back as the same double (#290). Written in
+    /// their shortest form, these doubles read one or two units in the last
+    /// place off under serde_json's default float parsing; its
+    /// `float_roundtrip` feature reads them exactly.
+    #[test]
+    fn floats_in_a_frame_read_back_bit_exact() {
+        for x in [
+            1.0934904699147477e61_f64,
+            5.763334961677081e-103,
+            2.3852144308262914e-48,
+            1.3677769034820771e302,
+            3.278540359048182e-167,
+            2.917874861685172e-272,
+        ] {
+            let frame = format!(
+                r#"{{"op":"return","id":"1","value":{{"type":"data","value":[{}]}}}}"#,
+                serde_json::to_string(&x).unwrap()
+            );
+            let Ok(Frame::Return {
+                value: WireValue::Data(value),
+                ..
+            }) = serde_json::from_str::<Frame>(&frame)
+            else {
+                panic!("{frame} is not a return frame");
+            };
+            let got = value[0].as_f64().unwrap();
+            assert_eq!(got.to_bits(), x.to_bits(), "{x:e} read back as {got:e}");
+        }
+    }
+}
