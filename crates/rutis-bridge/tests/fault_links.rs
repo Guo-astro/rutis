@@ -707,7 +707,9 @@ fn nested(depth: usize) -> Json {
 ///
 /// A call whose argument and result are each close to 16 MiB (the local
 /// transport's and WebSocket's default message limit) arrives whole both
-/// ways, and so does a value nested 100 deep; the session goes on.
+/// ways, and so does a value nested 64 deep (the limit: see
+/// `a_value_too_deep_fails_its_call_and_the_session_goes_on`); the
+/// session goes on.
 #[tokio::test(flavor = "multi_thread")]
 async fn large_and_deep_values_cross_a_session_whole() {
     let callee = Arc::new(Serve(|_: &Connection, _: &str, _: &str, args: Value| {
@@ -726,7 +728,8 @@ async fn large_and_deep_values_cross_a_session_whole() {
     .unwrap();
     assert!(back == json!([large]), "the large value arrived changed");
 
-    let deep = nested(100);
+    // The callee returns the whole argument list: 64 levels with it.
+    let deep = nested(63);
     let back = within(
         "a deep value both ways",
         caller.invoke_async("", "echo", Value::Data(json!([deep]))),
@@ -738,35 +741,96 @@ async fn large_and_deep_values_cross_a_session_whole() {
     assert_eq!(back, json!([deep]));
 }
 
-/// guarantee: bridge/large-and-deep-values; risk E1, P7.
+/// guarantee: bridge/value-limits; risk E1, P7.
 ///
-/// A value too deep for the far end fails its own call, explicitly, and
-/// the session goes on. Today the receiver's JSON parser (128 levels) ends
-/// the whole session and the caller reads only "peer disconnected": data
-/// 125 deep, or lists 62 deep (two wire levels each), are enough (#279).
+/// A value nested deeper than the limit (64 levels, `MAX_DEPTH`) fails
+/// its own call, explicitly, as a value error naming the limit; a call in
+/// flight on the same session at the time, and calls after it, go on
+/// (#279: the receiver's JSON parser used to end the whole session, at
+/// 125 levels of data or 62 of lists). Each argument may nest 64 levels:
+/// the argument list is not a level.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "bug #279"]
 async fn a_value_too_deep_fails_its_call_and_the_session_goes_on() {
-    let callee = Arc::new(Serve(|_: &Connection, _: &str, _: &str, args: Value| {
-        Ok(Value::Data(args.json()?))
-    }));
+    use rutis_bridge::session::MAX_DEPTH;
+    assert_eq!(MAX_DEPTH, 64);
+    let (open, gate) = oneshot::channel::<()>();
+    let gate = Arc::new(Mutex::new(Some(gate)));
+    // Both methods return their first argument.
+    let callee = Arc::new(Serve(
+        move |_: &Connection, _: &str, method: &str, args: Value| {
+            let first = args.list()?.into_iter().next().unwrap_or(Value::Undefined);
+            if method != "slow" {
+                return Ok(first);
+            }
+            let gate = gate.lock().unwrap().take().unwrap();
+            Ok(Value::future(async move {
+                gate.await.unwrap();
+                Ok(first)
+            }))
+        },
+    ));
     let (caller, _served, _faults) = sessions(callee).await;
 
-    let failed = within(
-        "a call with a value too deep",
-        caller.invoke_async("", "echo", Value::Data(json!([nested(200)]))),
+    let slow = tokio::spawn({
+        let caller = caller.clone();
+        async move {
+            settle(
+                caller
+                    .invoke_async("", "slow", Value::Data(json!(["slow"])))
+                    .await?,
+            )
+            .await
+        }
+    });
+    // Lists holding references: each level was two on the wire.
+    let lists = |depth: usize| {
+        (0..depth).fold(Value::Data(json!("bottom")), |inner, _| {
+            Value::List(vec![inner, Value::callback(|_| Ok(Value::Undefined))])
+        })
+    };
+    fn depth(value: &Value) -> usize {
+        match value {
+            Value::List(items) => 1 + items.iter().map(depth).max().unwrap_or(0),
+            _ => 0,
+        }
+    }
+    for (case, args) in [
+        ("data 200 deep", Value::Data(json!([nested(200)]))),
+        ("data 65 deep", Value::Data(json!([nested(65)]))),
+        ("lists 65 deep", Value::List(vec![lists(65)])),
+    ] {
+        let failed = within(case, caller.invoke_async("", "echo", args)).await;
+        match &failed {
+            Err(Error::Value(message)) => {
+                assert!(message.contains("64 levels"), "{case}: {message}")
+            }
+            other => panic!("{case}: a value too deep fails its call as a value error: {other:?}"),
+        }
+    }
+    // At the limit, both cross, both ways.
+    let back = within(
+        "data 64 deep",
+        caller.invoke_async("", "echo", Value::Data(json!([nested(64)]))),
     )
     .await;
-    match &failed {
-        Err(Error::Value(_)) => {}
-        other => panic!("a value too deep fails its call as a value error: {other:?}"),
-    }
+    assert_eq!(back.unwrap().json().unwrap(), nested(64));
+    let back = within(
+        "lists 64 deep",
+        caller.invoke_async("", "echo", Value::List(vec![lists(64)])),
+    )
+    .await;
+    assert_eq!(depth(&back.unwrap()), 64);
+
+    open.send(()).unwrap();
+    let slow = within("the call in flight", slow).await.unwrap();
+    assert_eq!(slow.unwrap().json().unwrap(), json!("slow"));
     let back = within(
         "a call after it",
         caller.invoke_async("", "echo", Value::Data(json!(["after"]))),
     )
     .await;
-    assert_eq!(back.unwrap().json().unwrap(), json!(["after"]));
+    assert_eq!(back.unwrap().json().unwrap(), json!("after"));
+    assert!(caller.close_reason().is_none());
 }
 
 /// guarantee: bridge/large-and-deep-values; risk E1.

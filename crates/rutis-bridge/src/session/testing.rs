@@ -123,6 +123,13 @@ impl Dispatch for Fixture {
                 Ok(Value::Undefined)
             }
             "make" => Ok(Value::callback(Ok)),
+            // The value one level deeper, returned or passed to a callback:
+            // past the depth limit, this side's call or reply fails (#279).
+            "wrap" => Ok(Value::List(vec![next()])),
+            "applyWrapped" => {
+                let callback = next().reference()?;
+                callback.call(Value::List(vec![Value::List(vec![next()])]))
+            }
             "tables" => {
                 let (exports, imports) = peer.references();
                 Ok(json!({ "exports": exports, "imports": imports }).into())

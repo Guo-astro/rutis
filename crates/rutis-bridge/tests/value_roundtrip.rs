@@ -15,9 +15,11 @@
 //! bit for bit (#290), and every object key as sent (#302). NaN and
 //! ±Infinity are not JSON and are not generated.
 //!
-//! Values nest at most 64 deep, below the receiving parser's limit (about
-//! 125 levels of data): a deeper value ends the whole session (#279, not
-//! guaranteed).
+//! Values nest up to the limit, 64 levels (`MAX_DEPTH`). Past it, the
+//! side that would send the value fails that call, whichever side it is,
+//! with an error naming the limit, and the session goes on (#279): each
+//! runtime is checked as the sender of a value too deep, in an argument
+//! and in a result.
 #![cfg(all(unix, feature = "testing"))]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,7 +31,7 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::testing::Fixture;
-use rutis_bridge::session::{Connection, Endpoint, Format, Value};
+use rutis_bridge::session::{Connection, Endpoint, Error, Format, Value, MAX_DEPTH};
 use serde_json::{json, Number, Value as Json};
 
 fn id(s: &str) -> PeerId {
@@ -239,8 +241,8 @@ fn leaf() -> impl Strategy<Value = Json> {
     ]
 }
 
-/// Values nested up to 8 levels, plus single chains up to 64 deep: below
-/// the depth that ends the session (#279).
+/// Values nested up to 8 levels, plus single chains up to the limit
+/// (`MAX_DEPTH`, 64 levels).
 fn value() -> impl Strategy<Value = Json> {
     let nested = leaf().prop_recursive(8, 64, 4, |inner| {
         prop_oneof![
@@ -249,15 +251,16 @@ fn value() -> impl Strategy<Value = Json> {
                 .prop_map(|fields| Json::Object(fields.into_iter().collect())),
         ]
     });
-    let deep = (leaf(), prop::collection::vec(any::<bool>(), 0..64)).prop_map(|(leaf, levels)| {
-        levels.into_iter().fold(leaf, |inner, array| {
-            if array {
-                json!([inner])
-            } else {
-                json!({ "k": inner })
-            }
-        })
-    });
+    let deep =
+        (leaf(), prop::collection::vec(any::<bool>(), 0..=MAX_DEPTH)).prop_map(|(leaf, levels)| {
+            levels.into_iter().fold(leaf, |inner, array| {
+                if array {
+                    json!([inner])
+                } else {
+                    json!({ "k": inner })
+                }
+            })
+        });
     prop_oneof![8 => nested, 1 => deep]
 }
 
@@ -331,6 +334,124 @@ fn round_trip(far: &Connection, name: &str, numbers: Numbers) {
             .map_err(|error| TestCaseError::fail(format!("echo failed: {error}")))?;
         same(&sent, &got, numbers, "$").map_err(TestCaseError::fail)
     });
+}
+
+// ── The depth limit ──────────────────────────────────────────────────
+
+/// Data `depth` arrays deep.
+fn chain(depth: usize) -> Json {
+    (0..depth).fold(json!("bottom"), |inner, _| json!([inner]))
+}
+
+/// Lists `depth` deep around a callback: each level is a list holding a
+/// reference, which takes two levels on the wire.
+fn lists(depth: usize) -> Value {
+    (0..depth).fold(Value::callback(|_| Ok(Value::Undefined)), |inner, _| {
+        Value::List(vec![inner])
+    })
+}
+
+fn list_depth(value: &Value) -> usize {
+    match value {
+        Value::List(items) => 1 + items.iter().map(list_depth).max().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// The call failed, explicitly, saying the limit; `remote`: the far end
+/// was the side sending the value.
+fn too_deep(result: Result<Value, Error>, remote: bool, what: &str) {
+    match (&result, remote) {
+        (Err(Error::Value(message)), false) | (Err(Error::Remote { message, .. }), true)
+            if message.contains("64 levels") => {}
+        _ => panic!("{what}: an error naming the limit expected, got {result:?}"),
+    }
+}
+
+/// guarantee: bridge/value-limits. Risk E1, P7.
+///
+/// Up to the limit (`MAX_DEPTH`, 64 levels), data and lists holding
+/// references cross both ways, also as the argument the far end passes to
+/// a callback. One level more fails only that call, on the side that would
+/// send it (this side, or the far end, in a result and in an argument),
+/// with an error naming the limit; the session goes on (#279).
+fn depth_limit(far: &Connection, name: &str) {
+    assert_eq!(MAX_DEPTH, 64);
+    let call =
+        |method: &str, args: Vec<Value>| far.invoke("conformance", method, Value::List(args));
+    let called = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let first = {
+        let called = called.clone();
+        Value::callback(move |args| {
+            called.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(args.list()?.into_iter().next().unwrap_or(Value::Undefined))
+        })
+    };
+    let calls = || called.load(std::sync::atomic::Ordering::SeqCst);
+
+    // At the limit: both ways, as data and as lists.
+    let back = call("echo", vec![Value::Data(chain(MAX_DEPTH))]).and_then(Value::json);
+    assert_eq!(back.unwrap(), chain(MAX_DEPTH), "{name}: data at the limit");
+    let back = call("wrap", vec![Value::Data(chain(MAX_DEPTH - 1))]).and_then(Value::json);
+    assert_eq!(
+        back.unwrap(),
+        chain(MAX_DEPTH),
+        "{name}: data wrapped to the limit"
+    );
+    let back = call("echo", vec![lists(MAX_DEPTH)]).unwrap();
+    assert_eq!(list_depth(&back), MAX_DEPTH, "{name}: lists at the limit");
+    let back = call("wrap", vec![lists(MAX_DEPTH - 1)]).unwrap();
+    assert_eq!(
+        list_depth(&back),
+        MAX_DEPTH,
+        "{name}: lists wrapped to the limit"
+    );
+    let back = call(
+        "applyWrapped",
+        vec![first.clone(), Value::Data(chain(MAX_DEPTH - 1))],
+    )
+    .and_then(Value::json);
+    assert_eq!(
+        back.unwrap(),
+        chain(MAX_DEPTH),
+        "{name}: a callback's argument at the limit"
+    );
+    assert_eq!(calls(), 1);
+
+    // One level more: this side sends it.
+    too_deep(
+        call("echo", vec![Value::Data(chain(MAX_DEPTH + 1))]),
+        false,
+        &format!("{name}: data sent past the limit"),
+    );
+    too_deep(
+        call("echo", vec![lists(MAX_DEPTH + 1)]),
+        false,
+        &format!("{name}: lists sent past the limit"),
+    );
+    // The far end sends it: in its result, and as a callback's argument
+    // (the callback never runs).
+    too_deep(
+        call("wrap", vec![Value::Data(chain(MAX_DEPTH))]),
+        true,
+        &format!("{name}: data returned past the limit"),
+    );
+    too_deep(
+        call("wrap", vec![lists(MAX_DEPTH)]),
+        true,
+        &format!("{name}: lists returned past the limit"),
+    );
+    too_deep(
+        call("applyWrapped", vec![first, Value::Data(chain(MAX_DEPTH))]),
+        true,
+        &format!("{name}: a callback's argument past the limit"),
+    );
+    assert_eq!(calls(), 1, "{name}: the callback ran with a value too deep");
+
+    // The session goes on.
+    let back = call("echo", vec![Value::Data(json!("after"))]).and_then(Value::json);
+    assert_eq!(back.unwrap(), json!("after"), "{name}: a call after them");
+    assert!(far.close_reason().is_none(), "{name}: the session ended");
 }
 
 // ── Release counts ───────────────────────────────────────────────────
@@ -471,6 +592,15 @@ async fn rust_values_round_trip() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn rust_depth_limit() {
+    let (near, _far) = rust_far_end();
+    near.ready().await.unwrap();
+    tokio::task::spawn_blocking(move || depth_limit(&near, "rust"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn rust_releases_balance() {
     let (near, _far) = rust_far_end();
     near.ready().await.unwrap();
@@ -485,6 +615,14 @@ async fn rust_releases_balance() {
 async fn node_values_round_trip() {
     let (near, _child) = far_end(node(), "node").await;
     tokio::task::spawn_blocking(move || round_trip(&near, "node", Numbers::Doubles))
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn node_depth_limit() {
+    let (near, _child) = far_end(node(), "node").await;
+    tokio::task::spawn_blocking(move || depth_limit(&near, "node"))
         .await
         .unwrap();
 }
@@ -508,6 +646,14 @@ async fn python_values_round_trip() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn python_depth_limit() {
+    let (near, _child) = far_end(python(), "python").await;
+    tokio::task::spawn_blocking(move || depth_limit(&near, "python"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn python_releases_balance() {
     let (near, _child) = far_end(python(), "python").await;
     tokio::task::spawn_blocking(move || releases_balance(&near, "python"))
@@ -521,8 +667,7 @@ async fn python_releases_balance() {
 /// Go session, not how `encoding/json` decodes into Go types (the table's
 /// Go row).
 #[cfg(feature = "go")]
-#[tokio::test(flavor = "multi_thread")]
-async fn go_values_round_trip() {
+async fn go_far_end() -> (Connection, tokio::process::Child) {
     let directory = tempfile::tempdir().unwrap().keep();
     let binary = directory.join("conformance");
     let status = std::process::Command::new("go")
@@ -533,22 +678,51 @@ async fn go_values_round_trip() {
         .status()
         .expect("go is on PATH");
     assert!(status.success(), "go build ./internal/fixtures/session");
-    let (near, _child) = far_end(tokio::process::Command::new(binary), "go").await;
+    far_end(tokio::process::Command::new(binary), "go").await
+}
+
+#[cfg(feature = "go")]
+#[tokio::test(flavor = "multi_thread")]
+async fn go_values_round_trip() {
+    let (near, _child) = go_far_end().await;
     tokio::task::spawn_blocking(move || round_trip(&near, "go", Numbers::Exact))
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "go")]
+#[tokio::test(flavor = "multi_thread")]
+async fn go_depth_limit() {
+    let (near, _child) = go_far_end().await;
+    tokio::task::spawn_blocking(move || depth_limit(&near, "go"))
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "bun")]
+async fn bun_far_end() -> (Connection, tokio::process::Child) {
+    let mut command = tokio::process::Command::new("bun");
+    command
+        .args(["--no-install", "--no-env-file"])
+        .arg(repo().join("bun/rutis-bun/test/fixtures/conformance-session.ts"))
+        .current_dir(repo().join("bun/rutis-bun"));
+    far_end(command, "bun").await
+}
+
+#[cfg(feature = "bun")]
+#[tokio::test(flavor = "multi_thread")]
+async fn bun_values_round_trip() {
+    let (near, _child) = bun_far_end().await;
+    tokio::task::spawn_blocking(move || round_trip(&near, "bun", Numbers::Doubles))
         .await
         .unwrap();
 }
 
 #[cfg(feature = "bun")]
 #[tokio::test(flavor = "multi_thread")]
-async fn bun_values_round_trip() {
-    let mut command = tokio::process::Command::new("bun");
-    command
-        .args(["--no-install", "--no-env-file"])
-        .arg(repo().join("bun/rutis-bun/test/fixtures/conformance-session.ts"))
-        .current_dir(repo().join("bun/rutis-bun"));
-    let (near, _child) = far_end(command, "bun").await;
-    tokio::task::spawn_blocking(move || round_trip(&near, "bun", Numbers::Doubles))
+async fn bun_depth_limit() {
+    let (near, _child) = bun_far_end().await;
+    tokio::task::spawn_blocking(move || depth_limit(&near, "bun"))
         .await
         .unwrap();
 }
