@@ -635,14 +635,18 @@ async fn rows_resolved_offline_wait_for_what_they_inject() {
 
     // The runtime starts: the row is resolved again before it may start,
     // and now also waits for the shared `greeter`, which nobody provides.
+    // Its new injects replace its fiber: the new resolution shows first,
+    // then the old fiber goes and, once it is gone, the new one comes. So
+    // wait for the new fiber, not for the injects (#316).
     root.plugin(runtime).await.unwrap();
     until(
         || {
-            loader
-                .get("c")
-                .is_some_and(|entry| entry.meta["inject"].is_array())
+            loader.get("c").is_some_and(|entry| {
+                entry.meta["inject"].is_array()
+                    && entry.plugin.is_some_and(|plugin| plugin != offline)
+            })
         },
-        "the row to know its injects",
+        "the row to run again with its injects",
     )
     .await;
     // The state now; that it stays so until `greeter` comes, `loads` checks below.
