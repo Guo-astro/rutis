@@ -2,18 +2,22 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { open, listen } from '../src/channel/websocket.mjs'
 import { ConnectError } from '../src/channel/errors.mjs'
+import { HANG_GUARD_MS, within, eventually } from './support.mjs'
 
 const PROTOCOL = 'rutis.2'
-const quick = { maxMessage: 1024, ping: 50, timeout: 200, handshake: 2000 }
+// Ping and timeout ten times apart, so that a stalled machine does not end a
+// connection the test expects to live (docs/design-test-clocks-2026-10-11.md
+// §3.3); the handshake bound only guards against a hang.
+const quick = { maxMessage: 1024, ping: 100, timeout: 1000, handshake: HANG_GUARD_MS }
 
 function inbox() {
   const messages = []
   let wake, ended
-  const closedWith = new Promise(resolve => { ended = resolve })
+  const closed = new Promise(resolve => { ended = resolve })
   return {
     handlers: { message: text => { messages.push(text); wake?.() }, closed: reason => ended(reason) },
-    next: () => messages.length ? Promise.resolve(messages.shift()) : new Promise(resolve => { wake = () => { wake = undefined; resolve(messages.shift()) } }),
-    closedWith,
+    next: () => within('the next message', messages.length ? Promise.resolve(messages.shift()) : new Promise(resolve => { wake = () => { wake = undefined; resolve(messages.shift()) } })),
+    get closedWith() { return within('the channel to close', closed) },
   }
 }
 
@@ -23,7 +27,7 @@ async function pair(limits) {
   const accepted = new Promise(resolve => { accept = resolve })
   const listener = await listen('ws://127.0.0.1:0/rutis', { handlers: () => server.handlers, accepted: channel => accept(channel) }, { protocol: PROTOCOL, token: 'secret', limits })
   const dialed = await open(listener.url, client.handlers, { protocol: PROTOCOL, token: 'secret', limits })
-  return { listener, dialed, accepted: await accepted, server, client }
+  return { listener, dialed, accepted: await within('the accepted connection', accepted), server, client }
 }
 
 test('messages cross both ways and an orderly close is a normal end', async () => {
@@ -68,38 +72,49 @@ test('a message over the limit closes the channel', async () => {
 })
 
 // A TCP relay that can stop carrying bytes without closing: a half-open
-// connection, as a vanished network leaves it.
+// connection, as a vanished network leaves it. It counts what it carried
+// (each read it passed on).
 async function freezableRelay(target) {
   const { createServer, connect } = await import('node:net')
-  const state = { frozen: false }
+  const state = { frozen: false, carried: 0 }
+  const sockets = []
   const relay = createServer(client => {
     const upstream = connect(Number(target.port), target.hostname)
+    sockets.push(client, upstream)
     for (const [from, to] of [[client, upstream], [upstream, client]]) {
-      from.on('data', data => { if (!state.frozen) to.write(data) })
+      from.on('data', data => { if (!state.frozen) { to.write(data); state.carried++ } })
       from.on('error', () => {})
     }
   })
   await new Promise(resolve => relay.listen(0, '127.0.0.1', resolve))
-  return { port: relay.address().port, state, close: () => relay.close() }
+  // Closing drops the connections too: a failed test does not stay alive.
+  return { port: relay.address().port, state, close: () => { relay.close(); for (const socket of sockets) socket.destroy() } }
 }
 
+// Timing is what this tests, across a socket: by tolerance
+// (docs/design-test-clocks-2026-10-11.md §3.3), ping and timeout ten times
+// apart, "still connected" after a count of pings rather than a time, no
+// bound on how fast the timeout is found (only a hang guard).
 test('heartbeats find a half-open connection on both sides', async () => {
   const server = inbox(), client = inbox()
   let accept
   const accepted = new Promise(resolve => { accept = resolve })
   const listener = await listen('ws://127.0.0.1:0/rutis', { handlers: () => server.handlers, accepted: channel => accept(channel) }, { protocol: PROTOCOL, token: 'secret', limits: quick })
   const relay = await freezableRelay(new URL(listener.url))
-  const dialed = await open(`ws://127.0.0.1:${relay.port}/rutis`, client.handlers, { protocol: PROTOCOL, token: 'secret', limits: quick })
-  await accepted
-  // Alive while pings flow, for longer than the timeout.
-  await new Promise(resolve => setTimeout(resolve, 500))
-  dialed.send('{"still":"here"}')
-  assert.equal(await server.next(), '{"still":"here"}')
-  relay.state.frozen = true
-  const started = Date.now()
-  assert.match(await client.closedWith, /heartbeat timeout/)
-  assert.match(await server.closedWith, /heartbeat timeout/)
-  assert.ok(Date.now() - started < 2000)
-  relay.close()
-  listener.close()
+  try {
+    const dialed = await open(`ws://127.0.0.1:${relay.port}/rutis`, client.handlers, { protocol: PROTOCOL, token: 'secret', limits: quick })
+    await within('the accepted connection', accepted)
+    // Alive while pings flow: through more pings and pongs than fit in one
+    // timeout (at most 40: each side pings, and is answered, every 100 ms).
+    const before = relay.state.carried
+    await eventually('pings through the relay', () => relay.state.carried >= before + 60, () => `${relay.state.carried - before} carried`)
+    dialed.send('{"still":"here"}')
+    assert.equal(await server.next(), '{"still":"here"}')
+    relay.state.frozen = true
+    assert.match(await client.closedWith, /heartbeat timeout/)
+    assert.match(await server.closedWith, /heartbeat timeout/)
+  } finally {
+    relay.close()
+    listener.close()
+  }
 })

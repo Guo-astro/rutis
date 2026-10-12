@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	goruntime "runtime"
@@ -12,13 +13,51 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/arcships/rutis/go/rutis/internal/testwait"
 )
 
 // pair is a host session and a runtime session over a pipe.
 func pair(t *testing.T, host, runtime func(ctx context.Context, target, method string, args []any) (any, error)) (*Peer, *Peer) {
 	t.Helper()
+	h, r, _ := recordedPair(t, host, runtime)
+	return h, r
+}
+
+// recorder is a channel that keeps what it received, in order.
+type recorder struct {
+	Channel
+	mu       sync.Mutex
+	received []frame
+}
+
+func (r *recorder) Recv() ([]byte, error) {
+	message, err := r.Channel.Recv()
+	if err == nil {
+		var f frame
+		_ = json.Unmarshal(message, &f)
+		r.mu.Lock()
+		r.received = append(r.received, f)
+		r.mu.Unlock()
+	}
+	return message, err
+}
+
+// frames is what the channel received so far.
+func (r *recorder) frames() []frame {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]frame(nil), r.received...)
+}
+
+// recordedPair is pair, with what the host session receives recorded.
+// The session handles what it receives one frame at a time, in order: a
+// frame recorded before another is handled before it.
+func recordedPair(t *testing.T, host, runtime func(ctx context.Context, target, method string, args []any) (any, error)) (*Peer, *Peer, *recorder) {
+	t.Helper()
 	a, b := net.Pipe()
-	h, err := New(NewLines(a), Options{Host: true, Dispatch: host})
+	hostChannel := &recorder{Channel: NewLines(a)}
+	h, err := New(hostChannel, Options{Host: true, Dispatch: host})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,16 +71,12 @@ func pair(t *testing.T, host, runtime func(ctx context.Context, target, method s
 		go func(p *Peer) { started <- p.Start() }(p)
 	}
 	for range 2 {
-		if err := <-started; err != nil {
+		if err := testwait.Within(t, "the session to start", started); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, p := range []*Peer{h, r} {
-		select {
-		case <-p.Ready():
-		case <-time.After(5 * time.Second):
-			t.Fatal("no handshake")
-		}
+		testwait.Within(t, "the handshake", p.Ready())
 	}
 	t.Cleanup(func() {
 		h.Close(nil)
@@ -49,7 +84,7 @@ func pair(t *testing.T, host, runtime func(ctx context.Context, target, method s
 		a.Close()
 		b.Close()
 	})
-	return h, r
+	return h, r, hostChannel
 }
 
 func text(v any) string {
@@ -97,23 +132,37 @@ func host2(ctx context.Context) any {
 
 func TestCancellingAnAsyncCallCancelsTheMethod(t *testing.T) {
 	cancelled := make(chan struct{})
-	host, _ := pair(t, nil, func(ctx context.Context, target, method string, args []any) (any, error) {
+	host, _, received := recordedPair(t, nil, func(ctx context.Context, target, method string, args []any) (any, error) {
+		if method != "wait" {
+			return "ok", nil
+		}
 		<-ctx.Done()
 		close(cancelled)
 		return nil, ctx.Err()
 	})
+	// The deadline is what cancels the call: the method only ends when
+	// cancelled, so any duration tests the same thing.
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	if _, err := host.Call(ctx, "x", "wait", nil, false); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("%v", err)
 	}
-	select {
-	case <-cancelled:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the method was not cancelled")
+	testwait.Within(t, "the method to be cancelled", cancelled)
+	// The method still replies, late: the host receives the reply and drops
+	// it. A call after that reply is handled after it (the session handles
+	// what it receives in order): the session went on.
+	replied := func() bool {
+		for _, f := range received.frames() {
+			if f.Op == "return" || f.Op == "throw" {
+				return true
+			}
+		}
+		return false
 	}
-	// The late reply is dropped; the session goes on.
-	time.Sleep(50 * time.Millisecond)
+	testwait.Eventually(t, "the late reply", replied, nil)
+	if _, err := host.Call(context.Background(), "x", "after", nil, true); err != nil {
+		t.Fatal(err)
+	}
 	if host.Err() != nil {
 		t.Fatal(host.Err())
 	}
@@ -152,27 +201,22 @@ func TestReferencesAreReleasedWithTheirCount(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The first proxy was dropped unreleased: collecting it releases it.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		goruntime.GC()
+	left := func() int {
 		host.mu.Lock()
-		left := len(host.exports)
-		host.mu.Unlock()
-		if left == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d exports left after the release", left)
-		}
-		time.Sleep(10 * time.Millisecond)
+		defer host.mu.Unlock()
+		return len(host.exports)
 	}
+	testwait.Eventually(t, "the exports to be released", func() bool {
+		goruntime.GC()
+		return left() == 0
+	}, func() string { return fmt.Sprintf("%d exports left", left()) })
 }
 
 func TestANotificationGoesOutBeforeTheReply(t *testing.T) {
 	var order []string
 	var mu sync.Mutex
 	var runtimePeer *Peer
-	host, runtime := pair(t,
+	host, runtime, received := recordedPair(t,
 		func(ctx context.Context, target, method string, args []any) (any, error) {
 			mu.Lock()
 			order = append(order, method)
@@ -187,11 +231,23 @@ func TestANotificationGoesOutBeforeTheReply(t *testing.T) {
 	if _, err := host.Call(context.Background(), "x", "load", nil, true); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	mu.Lock()
-	defer mu.Unlock()
-	if len(order) != 1 || order[0] != "service" {
-		t.Fatalf("%v", order)
+	// The order on the wire: the greeting, the notification, the reply.
+	var ops []string
+	for _, f := range received.frames() {
+		ops = append(ops, f.Op)
+	}
+	if strings.Join(ops, " ") != "hello invoke return" {
+		t.Fatalf("received %v", ops)
+	}
+	// The notification runs on its own goroutine: wait for it.
+	served := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), order...)
+	}
+	testwait.Eventually(t, "the notification to be served", func() bool { return len(served()) > 0 }, nil)
+	if got := served(); len(got) != 1 || got[0] != "service" {
+		t.Fatalf("%v", got)
 	}
 }
 
@@ -263,13 +319,9 @@ func TestACallBeforeTheHandshakeEndsTheSession(t *testing.T) {
 		_ = reader.Send([]byte(`{"op":"invoke","id":"rust:1","path":[],"target":"x","method":"m","args":{"type":"list","value":[]}}`))
 	}()
 	_ = runtime.Start()
-	select {
-	case <-runtime.Closed():
-		if !strings.Contains(runtime.Err().Error(), "before protocol handshake") {
-			t.Fatal(runtime.Err())
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the session should end")
+	testwait.Within(t, "the session to end", runtime.Closed())
+	if !strings.Contains(runtime.Err().Error(), "before protocol handshake") {
+		t.Fatal(runtime.Err())
 	}
 }
 
