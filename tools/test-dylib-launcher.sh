@@ -130,12 +130,15 @@ if test "$dylib_os" = windows; then
   # a second launcher to a copy of PING.EXE as the host, next to the same
   # SDK and libstd files.
   hold="$base/hold"
+  # A name of this run's own: tasklist sees the whole machine, where other
+  # runs of this script (other runner instances) may hold their copies.
+  hold_host="rutis-hold-$$-$RANDOM.exe"
   mkdir -p "$hold"
-  cp "$(cygpath -u "$SYSTEMROOT")/System32/PING.EXE" "$hold/$host_name"
+  cp "$(cygpath -u "$SYSTEMROOT")/System32/PING.EXE" "$hold/$hold_host"
   cp "$bundle/$sdk_name" "$bundle/$std_name" "$hold/"
   (
-    export RUTIS_BUNDLE_HOST_FILE="$host_name"
-    export RUTIS_BUNDLE_HOST_SHA256="$(sha256_of "$hold/$host_name")"
+    export RUTIS_BUNDLE_HOST_FILE="$hold_host"
+    export RUTIS_BUNDLE_HOST_SHA256="$(sha256_of "$hold/$hold_host")"
     export RUTIS_BUNDLE_SDK_FILE="$sdk_name"
     export RUTIS_BUNDLE_SDK_SHA256="$(sha256_of "$hold/$sdk_name")"
     export RUTIS_BUNDLE_STD_FILE="$std_name"
@@ -144,10 +147,10 @@ if test "$dylib_os" = windows; then
   )
   cp "$base/hold-target/release/rutis-dylib-launcher.exe" "$hold/rutis-cli.exe"
   host_running() {
-    tasklist //FI "IMAGENAME eq $host_name" //NH | grep -Fqi "$host_name"
+    tasklist //FI "IMAGENAME eq $hold_host" //NH | grep -Fqi "$hold_host"
   }
   if host_running; then
-    echo "a $host_name process is already running; cannot test the job object" >&2
+    echo "a $hold_host process is already running; cannot test the job object" >&2
     exit 1
   fi
   "$hold/rutis-cli.exe" -n 60 127.0.0.1 > /dev/null &
@@ -157,7 +160,7 @@ if test "$dylib_os" = windows; then
     sleep 0.2
   done
   host_running
-  for name in "$host_name" "$sdk_name" "$std_name"; do
+  for name in "$hold_host" "$sdk_name" "$std_name"; do
     before="$(sha256_of "$hold/$name")"
     (printf x >> "$hold/$name") 2> /dev/null || true
     rm -f "$hold/$name" 2> /dev/null || true

@@ -48,14 +48,48 @@ permissions:
 
 jobs:
   dylib-windows:
-    runs-on: windows-2025
+    # The repository variable WINDOWS_RUNNER (JSON) switches it to the
+    # organization's self-hosted Windows runners, as ci.yml's
+    # runtimes-windows (docs/ci.md §11).
+    runs-on: ${{ fromJSON(vars.WINDOWS_RUNNER || '"windows-2025"') }}
     defaults:
       run:
+        # Git's bash (on PATH, self-hosted too: docs/ci.md §11).
         shell: bash
     steps:
       - uses: actions/checkout@v4
+      # Several runner instances share the machine: each keeps its own
+      # target directory (the one runtimes-windows uses, outside the
+      # checkout, which `checkout` cleans) and its own temporary directory
+      # (the scripts' mktemp /tmp/rutis-*: the reproducible-SDK check leaves
+      # two source copies and two release builds there), emptied at the start
+      # and end of the job; and takes its share of the CPUs (WINDOWS_CI_JOBS
+      # overrides it).
+      - name: self-hosted runner, start
+        if: runner.environment == 'self-hosted'
+        env:
+          JOBS: ${{ vars.WINDOWS_CI_JOBS }}
+        run: |
+          dir="$(cygpath -m "$RUNNER_WORKSPACE/..")/_rutis-ci"
+          rm -rf "$dir/tmp" || true
+          mkdir -p "$dir/target" "$dir/tmp"
+          jobs=${JOBS:-$((NUMBER_OF_PROCESSORS / 4))}
+          [ "$jobs" -ge 2 ] || jobs=2
+          echo "$NUMBER_OF_PROCESSORS CPUs: $jobs jobs and test threads; $dir"
+          {
+            echo "CARGO_TARGET_DIR=$dir/target"
+            echo "TMP=$(cygpath -w "$dir/tmp")"
+            echo "TEMP=$(cygpath -w "$dir/tmp")"
+            echo "CARGO_BUILD_JOBS=$jobs"
+            echo "RUST_TEST_THREADS=$jobs"
+          } >> "$GITHUB_ENV"
+      - name: temporary directory
+        if: runner.environment == 'self-hosted'
+        run: echo "/tmp is $(cygpath -w /tmp)"
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: plugin file checks
@@ -78,3 +112,6 @@ jobs:
         run: bash tools/test-dylib-repro.sh
       - name: external plugin build against a prebuilt SDK
         run: bash tools/test-sdk-bundle.sh "${{ steps.bundle.outputs.dir }}"
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        run: rm -rf "$(cygpath -m "$RUNNER_WORKSPACE/..")/_rutis-ci/tmp" || true
