@@ -168,9 +168,13 @@ function shaped(name, object, shape, strict) {
   return service
 }
 
-// As on the real runtimes, internal/* events belong to the runtime.
+// As on the real runtimes, internal/* events belong to the runtime. The SDK
+// is a package of its own, so it keeps its own copy of the wording the
+// runtime uses (`node/rutis-runtime/src/leaf.mjs`).
+const internalMessage = name => `event ${name} is internal to the runtime`
+
 function internal(name) {
-  if (typeof name === 'string' && name.startsWith('internal/')) throw new PluginTestError(`event ${name} is internal to the runtime`)
+  if (typeof name === 'string' && name.startsWith('internal/')) throw new PluginTestError(internalMessage(name))
 }
 
 /**
@@ -187,7 +191,7 @@ export async function load(plugin, { config = {}, services = {}, strict = true, 
   if (!Array.isArray(emits) || emits.some(name => typeof name !== 'string')) throw new PluginTestError('emits must be a list of event names')
   // As the runners' mount: internal/* cannot be declared for emission.
   for (const name of emits) {
-    if (name.startsWith('internal/')) throw new PluginTestError(`event ${name} is internal to the runtime and cannot be emitted from rutis`)
+    if (name.startsWith('internal/')) throw new PluginTestError(`${internalMessage(name)} and cannot be emitted from rutis`)
   }
   const declared = new Set(emits)
   for (const name of plugin.inject) {

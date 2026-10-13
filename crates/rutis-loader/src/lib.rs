@@ -36,6 +36,8 @@ pub use persist::{NoPersist, Persist, Version};
 pub use resolver::{
     Build, Builtins, Chain, Declarations, Declared, Resolved, Resolver, ScopedFactory,
 };
+#[cfg(feature = "go")]
+pub use runtime::go::PLUGIN_API;
 #[cfg(feature = "node")]
 pub use runtime::resolve_entry;
 #[cfg(feature = "runtimes")]

@@ -26,11 +26,25 @@ export function supported(plugin, name) {
 }
 
 // Cordis's internal/* events drive the runner itself and do not exist on the
-// other runtimes, so a leaf plugin can neither listen to nor emit them
-// (boundary rule 5: internal/* stays internal).
+// other runtimes, so a leaf plugin can neither listen to nor emit them, and a
+// mount cannot declare them for emission (boundary rule 5: internal/* stays
+// internal). This is the one place the Node side defines the check: the leaf
+// adapter, the runner's mount and the test tool all use the wording here
+// (`node/rutis/src/testing.mjs` repeats it, since the SDK is its own package
+// and cannot import the runtime).
+export const INTERNAL_MESSAGE = name => `event ${name} is internal to the runtime`
+export const EMITS_MESSAGE = name => `${INTERNAL_MESSAGE(name)} and cannot be emitted from rutis`
+
 export function reserved(name) {
-  if (typeof name === 'string' && name.startsWith('internal/')) throw new Error(`event ${name} is internal to the runtime`)
+  if (typeof name === 'string' && name.startsWith('internal/')) throw new Error(INTERNAL_MESSAGE(name))
   return name
+}
+
+/// Reject an `emits` declaration that lists an internal event.
+export function refuseEmits(names) {
+  for (const name of names ?? []) {
+    if (String(name).startsWith('internal/')) throw new Error(EMITS_MESSAGE(name))
+  }
 }
 
 // The Cordis plugin that runs a leaf plugin. Events share Cordis's process

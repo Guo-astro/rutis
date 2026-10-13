@@ -36,8 +36,9 @@ use crate::{EntryStatus, Loader, LoaderError, Resolved, Resolver, ServiceCatalog
 /// to read their manifest.
 pub const GO_MARKER: &[u8] = b"rutis-go-runtime:1";
 
-/// The plugin API this host supports.
-const PLUGIN_API: u64 = 2;
+/// The plugin API of Go binaries this host runs, read from their manifests.
+/// The one definition: `rutis-host` uses it for the same check.
+pub const PLUGIN_API: u64 = 2;
 
 /// How often [`GoRuntimes`] looks for runtimes to start or stop.
 const SWEEP: Duration = Duration::from_millis(100);

@@ -261,6 +261,7 @@ func (h eventHost) Check(ctx context.Context, callback func(context.Context) err
 	return callback(ctx)
 }
 
+// guarantee: sdk/leaf-events (call chain, reentrancy, aggregate crossing)
 func TestEventsCrossTheSessionAndKeepReentrantCallChains(t *testing.T) {
 	chains := make(chan []string, 1)
 	local := make(chan []string, 1)

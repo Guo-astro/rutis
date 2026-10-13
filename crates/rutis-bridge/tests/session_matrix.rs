@@ -44,6 +44,22 @@ enum Via {
 /// The Python interpreter: one with `websockets` for WebSocket channels
 /// (`RUTIS_PYTHON`), else `python3` (`python` on Windows, where
 /// setup-python installs no `python3`).
+/// The mount every conformance cell uses: the runtime receives the events
+/// `weather.expected.json` says the host emits.
+fn weather_mount<'a>(anchor: &'a Path, launcher: &'a Launcher) -> Mount<'a> {
+    Mount {
+        anchor: Some(anchor),
+        launcher: Some(launcher),
+        emits: rutis_bridge::runtime::testing::weather_emits(),
+        ..Mount::default()
+    }
+}
+
+/// The same events, for a mount built by hand (`Process::attach`).
+fn weather_emits_only() -> Vec<String> {
+    rutis_bridge::runtime::testing::weather_emits()
+}
+
 fn python() -> String {
     std::env::var("RUTIS_PYTHON")
         .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into())
@@ -111,12 +127,7 @@ async fn start(runtime: Runtime, via: Via, dir: &Path) -> (Arc<Process>, PathBuf
     };
     let process = Process::mount(
         &repo().join("node/rutis-runtime"),
-        Mount {
-            anchor: Some(&anchor),
-            launcher: Some(&launcher),
-            emits: rutis_bridge::runtime::testing::weather_emits(),
-            ..Mount::default()
-        },
+        weather_mount(&anchor, &launcher),
     )
     .await
     .unwrap_or_else(|error| panic!("{runtime:?} ({via:?}) failed to start: {error}"));
@@ -147,7 +158,7 @@ async fn handed_over(launcher: Launcher, anchor: &Path) -> Arc<Process> {
     let process = Process::attach(
         channel,
         Mount {
-            emits: rutis_bridge::runtime::testing::weather_emits(),
+            emits: weather_emits_only(),
             ..Mount::default()
         },
         format,
@@ -226,7 +237,7 @@ async fn listening(launcher: Launcher, anchor: &Path) -> Arc<Process> {
     let process = Process::attach(
         channel,
         Mount {
-            emits: rutis_bridge::runtime::testing::weather_emits(),
+            emits: weather_emits_only(),
             ..Mount::default()
         },
         format,

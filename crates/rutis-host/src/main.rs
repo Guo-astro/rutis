@@ -16,8 +16,9 @@ mod stop;
 use stop::Stopped;
 
 /// The plugin API of Go binaries this host runs (their manifests); Node, Bun
-/// and Python runtimes check their own plugins against their own API.
-const PLUGIN_API: u32 = 2;
+/// and Python runtimes check their own plugins against their own API. One
+/// definition, shared with the loader that reads the manifests.
+const PLUGIN_API: u64 = rutis_loader::PLUGIN_API;
 
 const USAGE: &str = "\
 rutis-host: run rutis plugins written in TypeScript, JavaScript, Python and Go
@@ -441,7 +442,7 @@ async fn check(args: &[String]) -> Result<(), String> {
                             None => name.clone(),
                         })
                         .collect();
-                    let api = match manifest.plugin_api <= PLUGIN_API as u64 {
+                    let api = match manifest.plugin_api <= PLUGIN_API {
                         true => "compatible",
                         false => "incompatible: upgrade the host",
                     };
@@ -458,7 +459,7 @@ async fn check(args: &[String]) -> Result<(), String> {
                         manifest.plugin_api,
                         plugins.join(", ")
                     );
-                    if manifest.plugin_api > PLUGIN_API as u64 {
+                    if manifest.plugin_api > PLUGIN_API {
                         failed += 1;
                     }
                 }

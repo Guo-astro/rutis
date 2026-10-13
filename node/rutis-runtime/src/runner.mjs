@@ -5,7 +5,7 @@ import { statSync } from 'node:fs'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { Process } from './client.mjs'
 import { toJsonSchema } from './schema.mjs'
-import { isLeaf, supported, toCordis } from './leaf.mjs'
+import { isLeaf, refuseEmits, supported, toCordis } from './leaf.mjs'
 
 // `<channel> [--id <endpoint>] [--peer <endpoint>] [--format endpoint] <first plugin or anchor>`.
 // Local channels (`fd:3`, a socket path) speak the compat protocol unless
@@ -445,10 +445,10 @@ function forward(name, values) {
 // order; a single-plugin mount passes only `args.config`.
 function mount(args) {
   // Boundary rule 5: Cordis's own events stay on the Cordis side.
-  for (const [field, names] of [['events', args.events], ['emits', args.emits]]) {
-    const internal = (names ?? []).filter(name => String(name).startsWith('internal/'))
-    if (internal.length && field === 'emits') throw new Error(`event ${internal[0]} is internal to the runtime and cannot be emitted from rutis`)
-    if (internal.length) throw new Error(`framework-internal events do not cross the boundary (mount ${field}): ${internal.join(', ')}`)
+  refuseEmits(args.emits)
+  {
+    const internal = (args.events ?? []).filter(name => String(name).startsWith('internal/'))
+    if (internal.length) throw new Error(`framework-internal events do not cross the boundary (mount events): ${internal.join(', ')}`)
   }
   if (fibers) throw new Error('plugins are already mounted')
   fibers = []

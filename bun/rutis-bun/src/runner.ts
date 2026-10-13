@@ -30,9 +30,19 @@ import { declared, locate, Modules, versionOf, type Kind } from './plugin.ts'
 import { MANIFEST } from './session.ts'
 
 // internal/* names Cordis's own events on Node; no leaf plugin listens to or
-// emits them on either runtime (boundary rule 5).
+// emits them, and a mount cannot declare them for emission (boundary rule 5).
+// The wording matches the Node side (`node/rutis-runtime/src/leaf.mjs`).
+const internalMessage = (name: unknown) => `event ${name} is internal to the runtime`
+
 function reserved(name: string): void {
-  if (typeof name === 'string' && name.startsWith('internal/')) throw new Error(`event ${name} is internal to the runtime`)
+  if (typeof name === 'string' && name.startsWith('internal/')) throw new Error(internalMessage(name))
+}
+
+// Reject an `emits` declaration that lists an internal event.
+function refuseEmits(names: unknown): void {
+  for (const name of (names ?? []) as string[]) {
+    if (String(name).startsWith('internal/')) throw new Error(`${internalMessage(name)} and cannot be emitted from rutis`)
+  }
 }
 
 // events: leaf plugins receive what rutis emits (RuntimePlugin::emits).
@@ -257,9 +267,7 @@ export class Runtime {
   #control(method: string, args: any): unknown {
     switch (method) {
       case 'mount':
-        for (const name of args.emits ?? []) {
-          if (String(name).startsWith('internal/')) throw new Error(`event ${name} is internal to the runtime and cannot be emitted from rutis`)
-        }
+        refuseEmits(args.emits)
         this.#emits = new Set(args.emits ?? [])
         return {
           services: {},

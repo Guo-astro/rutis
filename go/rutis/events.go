@@ -19,7 +19,7 @@ type listener struct {
 	call func(context.Context, ...any) error
 }
 
-func eventName(name string) error {
+func checkEventName(name string) error {
 	if strings.HasPrefix(name, "internal/") {
 		return fmt.Errorf("event %s is internal to the runtime", name)
 	}
@@ -33,7 +33,7 @@ func eventName(name string) error {
 // is one of the row's tasks, like Ctx.Go: unloading cancels its context and
 // waits for it to return before the cleanups run.
 func (c *Ctx) On(name string, call func(context.Context, ...any) error) func() {
-	if err := eventName(name); err != nil {
+	if err := checkEventName(name); err != nil {
 		panic(err)
 	}
 	if call == nil {
@@ -69,7 +69,7 @@ func (c *Ctx) Emit(ctx context.Context, name string, args ...any) error {
 	if ctx == nil {
 		panic("rutis: a nil context: pass the context.Context your caller gave you")
 	}
-	if err := eventName(name); err != nil {
+	if err := checkEventName(name); err != nil {
 		return err
 	}
 	for _, entry := range c.rt.listeners(name) {

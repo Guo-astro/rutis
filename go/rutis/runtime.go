@@ -451,7 +451,7 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 		}
 		emits := map[string]bool{}
 		for _, name := range mount.Emits {
-			if err := eventName(name); err != nil {
+			if err := checkEventName(name); err != nil {
 				return nil, err
 			}
 			emits[name] = true
@@ -470,7 +470,7 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 		if err != nil {
 			return nil, err
 		}
-		if err := eventName(name); err != nil {
+		if err := checkEventName(name); err != nil {
 			return nil, err
 		}
 		rt.mu.Lock()

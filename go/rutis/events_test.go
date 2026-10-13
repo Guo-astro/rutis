@@ -25,6 +25,7 @@ func eventRows(t *testing.T) (*runtimeState, *Ctx, *Ctx) {
 	return rt, contexts[0], contexts[1]
 }
 
+// guarantee: sdk/leaf-events (registration, disposal, unload)
 func TestEventRegistrationLifecycle(t *testing.T) {
 	rt, a, b := eventRows(t)
 	ctx := context.Background()
@@ -78,7 +79,8 @@ func TestEventRegistrationLifecycle(t *testing.T) {
 	workers.Wait()
 }
 
-// guarantee: sdk/leaf-events (a running listener delays the cleanups)
+// guarantee: sdk/leaf-events (host emission waits; cleanups run last,
+// a running listener delays them)
 func TestHostEmissionWaitsForRowCancellation(t *testing.T) {
 	rt, a, b := eventRows(t)
 	caller := context.Background()
