@@ -38,7 +38,7 @@ Numbers have the form `<family>/<name>` and are never reused; when a guarantee i
 | `loader/` | `loader/<name>` | rutis-loader designs and user documentation: [design-rutis-loader-2026-10-02](design-rutis-loader-2026-10-02.en.md), [instances](design-loader-instance-mounts-and-services-2026-10-07.en.md), the loader behaviour in [instance services](design-instance-services-2026-10-08.en.md), [multi-language runtimes](design-multilang-runtimes-2026-10-03.en.md), [Connect Nodes](guide/nodes.en.md) | registered (§14) |
 | `host/` | `host/<name>` | rutis-host user documentation [rutis-host](guide/rutis-host.en.md), [S2 end-to-end design](design-e2e-dev-loop-2026-10-11.en.md) | registered (§11, §13, §15) |
 | `dsh/` | `dsh/<name>` | rutis-dsh designs and documentation | reserved; `dsh/user-layer-format` registered (#207) |
-| `sdk/` | `sdk/<name>` | plugin SDKs and test tools: [plugin API](guide/plugin-api.en.md), quality standard Q6.7 | `sdk/testing-matches-runtime` registered (#206) |
+| `sdk/` | `sdk/<name>` | plugin SDKs and test tools: [plugin API](guide/plugin-api.en.md), quality standard Q6.7 | `sdk/testing-matches-runtime` (#206) and `sdk/leaf-events` registered |
 
 How `<name>` is formed in each family:
 
@@ -242,7 +242,8 @@ Source: [plugin API](guide/plugin-api.en.md), quality standard Q6.7.
 
 | Number | Content | Level | Status | Verification | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `sdk/testing-matches-runtime` | The test tools (`@arcships/rutis/testing`, `rutis.testing`, strict mode) give the same results for calls on a plugin as a real runtime: sync, async, callbacks, errors crossing the boundary (name and message only), values copied or refused; known differences are bounded and written down ([plugin API](guide/plugin-api.en.md), "Where the test tool differs from a real runtime"; marked `allowed` in the expectations file) | contract behaviour | partly verified | `rutis-bridge/src/runtime/testing.rs::runtime` (run by `rutis-bridge/tests/session_matrix.rs` on every channel of Node, Python, Go and Bun), `node/rutis/test/conformance.test.mjs`, `python/rutis/tests/test_conformance.py::Conformance::test_the_testing_tool_returns_what_the_real_runtime_does` | Both sides are checked against one expectations file, `rutis-bridge/src/runtime/testing/weather.expected.json` (Q6.7.2). Go's `rutistest` and the Bun test tool are not yet compared; Maps, Sets, Dates, binary data and bigints are refused under the current rules, pending #308 |
+| `sdk/testing-matches-runtime` | The test tools (`@arcships/rutis/testing`, `rutis.testing`, strict mode) give the same results for calls on a plugin as a real runtime: sync, async, callbacks, errors crossing the boundary (name and message only), values copied or refused, host events (the `emits` gate); known differences are bounded and written down ([plugin API](guide/plugin-api.en.md), "Where the test tool differs from a real runtime"; marked `allowed` in the expectations file) | contract behaviour | partly verified | `rutis-bridge/src/runtime/testing.rs::runtime` (run by `rutis-bridge/tests/session_matrix.rs` on every channel of Node, Python, Go and Bun), `node/rutis/test/conformance.test.mjs`, `python/rutis/tests/test_conformance.py::Conformance::test_the_testing_tool_returns_what_the_real_runtime_does` | Both sides are checked against one expectations file, `rutis-bridge/src/runtime/testing/weather.expected.json` (Q6.7.2); `events` is mandatory for all four runtimes and the Node/Python test tools. Go's `rutistest` is not yet compared against the full expectations file; Maps, Sets, Dates, binary data and bigints are refused under the current rules, pending #308 |
+| `sdk/leaf-events` | Node, Bun, Python and Go leaf plugins (plugin API 2) receive and emit events: one bus shared with plugins in the process (on Node, Cordis plugins too); listeners are removed on unload, failed load, `update` and dispose; the host's `Process::emit` sends only names declared in `emits` at mount, awaits every listener and aggregates failures in registration order; a restarted runtime's new mount carries `emits` again; `internal/*` cannot be listened to, emitted or declared; `emits` on a runtime without the `events` feature fails at mount; a local synchronous listener error stops later listeners, thrown to the emitter in Node/Bun/Python and returned as the first error in Go | contract behaviour | verified | `node/rutis-runtime/test/leaf.test.mjs`, `bun/rutis-bun/test/runner.test.ts`, `node/rutis/test/plugin.test.mjs`, `python/rutis/tests/test_scopes.py`, `python/rutis/tests/test_testing.py`, `go/rutis/events_test.go`, `go/rutis/sdk_test.go`, `rutis-bridge/tests/local_runtime.rs::local_runtime_events_follow_leaf_lifecycle`, `::a_runtime_without_events_refuses_emits_before_rows_load` | Go listeners preserve the caller context's call chain and are cancelled with their row; host listeners run concurrently with no execution order guarantee. The runtime → host direction (`Mount.events`) is not available to `RuntimePlugin`. Python's fatal asynchronous failure is tested in a subprocess; the test tool's unload-wait difference is documented |
 
 ---
 
@@ -337,12 +338,12 @@ Sources: the sections of the user documentation [rutis-host](guide/rutis-host.en
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
 | `bridge/*` | 17 | 0 | 0 | 1 | 18 |
 | `host/*`, `dsh/*` (§11) | 2 | 0 | 0 | 0 | 2 |
-| `sdk/*` (§12) | 0 | 1 | 0 | 0 | 1 |
+| `sdk/*` (§12) | 1 | 1 | 0 | 0 | 2 |
 | `host/*` (§13) | 2 | 0 | 0 | 0 | 2 |
 | `loader/*` (§14) | 31 | 5 | 0 | 0 | 36 |
 | `host/*` (§15) | 12 | 3 | 1 | 0 | 16 |
-| Total | 106 | 13 | 1 | 2 | 122 |
+| Total | 107 | 13 | 1 | 2 | 123 |
 
-30 core promises: 25 verified, 5 partly verified (D22, D28, 5.8, `loader/instance-edits-all-or-none`, `loader/instance-close-leaves-nothing`), 0 not verified. 90 contract behaviours: 81 verified, 8 partly verified (D5, `sdk/testing-matches-runtime`, `loader/persist-queue`, `loader/saved-layers-restore`, `loader/go-runtimes`, `host/stop-deadline`, `host/exit-codes`, `host/row-state-lines`), 1 not verified (`host/go-add`).
+30 core promises: 25 verified, 5 partly verified (D22, D28, 5.8, `loader/instance-edits-all-or-none`, `loader/instance-close-leaves-nothing`), 0 not verified. 91 contract behaviours: 82 verified, 8 partly verified (D5, `sdk/testing-matches-runtime`, `loader/persist-queue`, `loader/saved-layers-restore`, `loader/go-runtimes`, `host/stop-deadline`, `host/exit-codes`, `host/row-state-lines`), 1 not verified (`host/go-add`).
 
 **0.10 baseline**: 0 unverified core promises, 1 unverified contract behaviour (`host/go-add`). From 0.11 on, a newly registered row that is "not verified" pushes the contract number above the baseline (Q9.4.4), so new rows should be registered together with their tests. The maintainer confirms which rows are core promises and may change them.

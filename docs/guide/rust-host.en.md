@@ -63,7 +63,13 @@ let mut catalog = ServiceCatalog::new();
 catalog.share_by_name();
 
 // Local Node runtime: the directory containing @arcships/rutis-runtime and the package.json used for resolution.
-let node = LocalRuntime::node("app/node_modules/@arcships/rutis-runtime", "app/package.json");
+// `emits` names the events the host may emit into the runtime (`Process::emit`):
+// the runtime rejects an event it was not named, and plugins receive the
+// named ones with `ctx.on` (the same event bus). Set before the runtime is mounted.
+// Only runtimes reporting the `events` feature (Node, Bun, Python, Go) accept `emits`; others
+// fail at mount. `internal/*` cannot be declared.
+let node = LocalRuntime::node("app/node_modules/@arcships/rutis-runtime", "app/package.json")
+    .emits(["file-changed", "active-leaf-changed"]);
 let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
 // Local Python runtime: plugin module directory and an interpreter with rutis installed.
 let python = LocalRuntime::python("app/plugins").interpreter("app/.venv/bin/python");

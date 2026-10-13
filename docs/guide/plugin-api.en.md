@@ -1,6 +1,6 @@
 # Plugin API
 
-TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) and Go plugins (`github.com/arcships/rutis/go/rutis`, see [Go plugins](go-plugin.en.md)) use the same conventions. The current plugin API version is **1**.
+TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) and Go plugins (`github.com/arcships/rutis/go/rutis`, see [Go plugins](go-plugin.en.md)) use the same conventions. The current plugin API version is **2**.
 
 ## Declarations
 
@@ -18,6 +18,18 @@ TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) an
 | `ctx.use(name)` | Gets a service declared in `inject`. A service provided by a plugin in the same runtime process is the object itself; services from other processes, languages, or machines are proxies. |
 | `ctx.provide(name, value)` | Provides a service until the plugin is unloaded or the returned function is called. |
 | `ctx.effect(cleanup)` | Runs `cleanup` when the plugin is unloaded. It may be async. |
+| `ctx.on(name, listener)` | Listens on the runtime process's shared event bus: events the host emits into it (names declared with the runtime's `emits`, see [Embedding in a Rust application](rust-host.en.md)) and events plugins in the process emit with `ctx.emit`. The listener is unregistered when the plugin unloads; the returned function unregisters it at once. |
+| `ctx.emit(name, ...args)` | Dispatches on this runtime process's event bus to listeners in this plugin and other plugins in the same process; calls listeners synchronously without awaiting returned promises/coroutines (for Go and listener errors, see below). |
+
+Node, Bun, Python and Go support leaf events (plugin API 2) and report the `events` runtime feature. Node shares its bus with Cordis plugins in the same process. Go exposes `ctx.On(name, func(context.Context, ...any) error) func()` and `ctx.Emit(callerCtx, name, args...) error`; listeners receive a context preserving the current call chain and cancelled when their plugin unloads. Pass the received caller context when emitting from a plugin method; in `Apply`, the plugin's `ctx` itself can be used.
+
+Local emission calls listeners in registration order. A synchronous exception in Node, Bun or Python stops later listeners; returned promises/coroutines are not awaited, and unhandled asynchronous failures end the runtime process. Go's `ctx.Emit` executes synchronously and returns the first error; goroutines started by the plugin follow the existing `ctx.Go` contract. The host's `Process::emit` instead waits for every listener and aggregates failures as `AggregateError`. Go starts a goroutine for each host-event listener, so their execution order is not guaranteed.
+
+`internal/*` belongs to the runtime and cannot be listened to, emitted or listed in `emits`. When `RuntimePlugin` / `LocalRuntime` has `emits` configured, a runtime lacking the `events` feature fails at mount (`lacks events`). This feature check does not cover direct `Process::mount` / `attach` for static Cordis mounts: older Node runtimes already deliver Cordis events without reporting the feature.
+
+`emits` only declares host → runtime events. A leaf plugin's `ctx.emit` / `ctx.Emit` dispatches within the process; `RuntimePlugin` exposes no `Mount.events` / `EventSink` configuration, so runtime → Rust host forwarding is not available here.
+
+Test tools declare host events at load: Node's `load(plugin, { emits })`, Python's `load(plugin, emits=[...])`, and Go's `rutistest.Load(t, plugin, config, services, "event", ...)`. Their host-emission entry points are `await t.emit(...)`, `await t.emit(...)`, and `loaded.Emit(callerCtx, name, args...)`; all check the declaration and wait for listeners. The Python test tool waits for local asynchronous listeners at unload and reports their failures; a real runtime exits on an unhandled asynchronous failure.
 
 Cleanups run in reverse registration order: the function returned by `apply` runs first, followed by functions registered with `ctx.effect`.
 
@@ -83,8 +95,10 @@ The test tools (`@arcships/rutis/testing`, `rutis.testing`) and the real runtime
 | Sync calls do not block, so there is no `SyncWaitCycle`; no cancellation (`AbortSignal`, coroutine cancellation) | The plugin and the test share one event loop |
 | Python: an exception that crosses is a `RemoteError` whose `__cause__` is the original exception | For debugging; a real runtime's `RemoteError` has no `__cause__` |
 | TypeScript: only plugins written with `definePlugin` load, not Cordis plugins | The test tool does not include Cordis |
+| TypeScript / Python events: the plugin under test hears only what it emits with `ctx.emit` and what `t.emit` sends; on a real runtime the whole process shares one event bus, so it also hears other plugins in the process (and, on Node, Cordis plugins) | The test tool loads one plugin. `t.emit` accepts only names declared in `emits` at load, as `RuntimePlugin::emits`; both refuse `internal/*` |
+| Python reports local asynchronous listener failures at unload, waiting for these listeners; the real runtime exits on an unhandled asynchronous failure | Keeps the test process running while failing the test explicitly |
 
-Maps, Sets, Dates, binary data and bigints are refused on both sides, so they are not a difference; whether they will cross later is [#308](https://github.com/arcships/rutis/issues/308). With strict mode off (`strict: false`), values skip the table above and other differences can appear. Go's `rutistest` and Bun are not yet checked against this file.
+Maps, Sets, Dates, binary data and bigints are refused on both sides, so they are not a difference; whether they will cross later is [#308](https://github.com/arcships/rutis/issues/308). With strict mode off (`strict: false`), values skip the table above and other differences can appear. Go's `rutistest` is not yet checked against the full file; all four real runtimes are checked against its event expectations.
 
 ## Synchronous calls and reentrancy
 
@@ -111,3 +125,5 @@ When the caller abandons an async call (for example, on timeout), the call is ca
 ## Versions
 
 Plugins are tagged with the plugin API version they use (`definePlugin` / `define_plugin` / `rutis.Define` adds the tag automatically). If the runtime is older than the plugin requires, loading fails with an explanation of what to upgrade. Depend on the SDK's major version range; it does not need to match the host version.
+
+Plugin API 2 adds leaf events. New runtimes still accept API 1. Plugins tagged API 2 by the new SDK need an updated runtime; Go binaries also need a host supporting API 2. Wire protocol and Go manifest formats are unchanged.

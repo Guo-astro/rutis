@@ -63,7 +63,11 @@ let mut catalog = ServiceCatalog::new();
 catalog.share_by_name();
 
 // 本机的 Node 运行时：@arcships/rutis-runtime 所在的目录，和插件解析所用的 package.json。
-let node = LocalRuntime::node("app/node_modules/@arcships/rutis-runtime", "app/package.json");
+// `emits` 声明宿主会向该运行时发哪些事件（`Process::emit`）：运行时拒绝未声明的事件，
+// 插件用 `ctx.on`（同名事件总线）接收。在运行时挂载前设置。只有报告 `events` 能力的运行时
+// （Node、Bun、Python、Go）接受 `emits`，其他运行时在挂载时失败；`internal/*` 不能声明。
+let node = LocalRuntime::node("app/node_modules/@arcships/rutis-runtime", "app/package.json")
+    .emits(["file-changed", "active-leaf-changed"]);
 let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
 // 本机的 Python 运行时：插件模块所在的目录，装着 rutis 的解释器。
 let python = LocalRuntime::python("app/plugins").interpreter("app/.venv/bin/python");

@@ -239,30 +239,34 @@ pub async fn runtime(
         );
     }
 
-    if process.supports("events") {
-        for (i, entry) in expected["events"].as_array().unwrap().iter().enumerate() {
-            let name = entry["emit"].as_str().unwrap();
-            let what = format!("events[{i}] {name}");
-            let args = entry["args"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(argument)
-                .collect();
-            let emitted = process.emit(name, args).await;
-            match entry.get("then") {
-                Some(then) => {
-                    emitted.unwrap_or_else(|error| panic!("{what}: {error}"));
-                    let method = then["call"].as_str().unwrap();
-                    let args = then["args"].as_array().unwrap().iter().map(argument);
-                    let reply =
-                        call(&weather, method, &kind(method), Value::List(args.collect())).await;
-                    let mut then = then.clone();
-                    then["why"] = entry["why"].clone();
-                    check(&what, &then, reply);
-                }
-                None => check(&what, entry, emitted.map(|()| Value::Data(Json::Null))),
+    // The shared conformance plugin requires leaf events on every runtime.
+    assert!(
+        process.supports("events"),
+        "{}: the runtime must report the `events` feature",
+        entry.display()
+    );
+    for (i, entry) in expected["events"].as_array().unwrap().iter().enumerate() {
+        let name = entry["emit"].as_str().unwrap();
+        let what = format!("events[{i}] {name}");
+        let args = entry["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(argument)
+            .collect();
+        let emitted = process.emit(name, args).await;
+        match entry.get("then") {
+            Some(then) => {
+                emitted.unwrap_or_else(|error| panic!("{what}: {error}"));
+                let method = then["call"].as_str().unwrap();
+                let args = then["args"].as_array().unwrap().iter().map(argument);
+                let reply =
+                    call(&weather, method, &kind(method), Value::List(args.collect())).await;
+                let mut then = then.clone();
+                then["why"] = entry["why"].clone();
+                check(&what, &then, reply);
             }
+            None => check(&what, entry, emitted.map(|()| Value::Data(Json::Null))),
         }
     }
     drop(weather);
