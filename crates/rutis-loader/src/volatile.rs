@@ -131,6 +131,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// guarantee: loader/volatile-in-place
     #[test]
     fn finds_paths_through_refs_and_compares() {
         let schema = json!({

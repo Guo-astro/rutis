@@ -170,6 +170,7 @@ async fn nodes(rows: Value) -> Nodes {
     }
 }
 
+/// guarantee: loader/peer-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_wait_for_the_host_then_run_there_once() {
     let nodes = nodes(json!([
@@ -262,6 +263,7 @@ async fn rows_wait_for_the_host_then_run_there_once() {
     .await;
 }
 
+/// guarantee: loader/peer-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_stop_with_the_host_and_the_link_and_the_peer_stays() {
     let nodes = nodes(json!([{ "id": "g", "name": "peer:mac/greeter", "config": {} }])).await;
@@ -308,6 +310,7 @@ async fn rows_stop_with_the_host_and_the_link_and_the_peer_stays() {
 
 /// Both nodes configured through their loaders: a `rutis-bridge/peer` row
 /// each, mac hosting what its own loader resolves.
+/// guarantee: loader/peer-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn loader_rows_compose_links_and_change_features_in_place() {
     use rutis_bridge::session::{host_key, HostDispatch};
@@ -424,6 +427,7 @@ async fn loader_rows_compose_links_and_change_features_in_place() {
 
 /// Hosted rows share the link's one session: loading one creates no
 /// session, unloading one closes none, and the others keep running.
+/// guarantee: loader/peer-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn hosted_rows_share_the_session_of_their_link() {
     let nodes = nodes(json!([
@@ -469,6 +473,7 @@ async fn hosted_rows_share_the_session_of_their_link() {
 
 /// Two nodes host rows for each other, start together, and reconnect,
 /// without either waiting on the other's rows: a host never waits for rows.
+/// guarantee: loader/peer-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn nodes_hosting_for_each_other_start_and_reconnect_without_deadlock() {
     let transport = Arc::new(MemoryTransport::default());

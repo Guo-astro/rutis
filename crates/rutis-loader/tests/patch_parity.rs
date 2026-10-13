@@ -20,6 +20,7 @@ fn layers(value: &Value) -> Vec<Layer> {
         .collect()
 }
 
+/// guarantee: loader/patch-parity
 #[test]
 fn matches_cordis_apply_entry_patches() {
     let cases: Vec<Value> =
@@ -44,6 +45,7 @@ fn matches_cordis_apply_entry_patches() {
     }
 }
 
+/// guarantee: loader/patch-parity
 #[test]
 fn inputs_are_not_modified_and_dropping_a_layer_reverts() {
     let base = Layer::new(
@@ -65,6 +67,7 @@ fn inputs_are_not_modified_and_dropping_a_layer_reverts() {
     assert_eq!(only_base.rows[0]["config"], json!({ "x": 1 }));
 }
 
+/// guarantee: loader/patch-parity
 #[test]
 fn flat_rows_carry_owner_parent_and_overrides() {
     let composed = apply_patches(&[

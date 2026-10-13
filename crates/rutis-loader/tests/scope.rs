@@ -90,6 +90,7 @@ fn expr(source: &str) -> Value {
     json!({ "__jsExpr": source })
 }
 
+/// guarantee: loader/isolate-and-inject
 #[tokio::test]
 async fn isolate_private_and_shared() {
     let (h, store, _root, loader) = setup(false).await;
@@ -121,6 +122,7 @@ async fn isolate_private_and_shared() {
     assert!(log.contains(&"consume:B".to_owned()), "{log:?}");
 }
 
+/// guarantee: loader/isolate-and-inject, loader/rows-gate-on-services
 #[tokio::test]
 async fn inject_gates_a_row() {
     let (_h, store, _root, loader) = setup(false).await;
@@ -147,6 +149,7 @@ async fn inject_gates_a_row() {
     assert_eq!(state(&loader, "e"), Some(FiberState::Active));
 }
 
+/// guarantee: loader/isolate-and-inject
 #[tokio::test]
 async fn unknown_services_and_intercept_config_are_unresolved() {
     let (_h, store, _root, loader) = setup(false).await;
@@ -172,6 +175,7 @@ async fn unknown_services_and_intercept_config_are_unresolved() {
     ));
 }
 
+/// guarantee: loader/edit-dry-run-first, loader/update-in-place-or-respawn
 #[tokio::test]
 async fn changing_the_scope_respawns_and_persists() {
     let (_h, store, _root, loader) = setup(false).await;
@@ -206,6 +210,7 @@ async fn changing_the_scope_respawns_and_persists() {
     assert_eq!(state(&loader, "e"), Some(FiberState::Active));
 }
 
+/// guarantee: loader/expressions
 #[tokio::test]
 async fn disabled_and_config_expressions() {
     let (_h, store, root, loader) = setup(true).await;
@@ -244,6 +249,7 @@ async fn disabled_and_config_expressions() {
     );
 }
 
+/// guarantee: loader/expressions
 #[tokio::test]
 async fn expression_failures_are_reported() {
     let (_h, store, _root, loader) = setup(true).await;
@@ -272,6 +278,7 @@ async fn expression_failures_are_reported() {
     ));
 }
 
+/// guarantee: loader/expressions
 #[tokio::test]
 async fn without_an_evaluator_expressions_are_unresolved() {
     let (_h, store, _root, loader) = setup(false).await;
@@ -293,6 +300,7 @@ async fn without_an_evaluator_expressions_are_unresolved() {
     assert_eq!(state(&loader, "y"), Some(FiberState::Active));
 }
 
+/// guarantee: loader/edit-dry-run-first, loader/expressions
 #[tokio::test]
 async fn edits_keep_raw_expressions() {
     let (_h, store, root, loader) = setup(true).await;

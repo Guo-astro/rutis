@@ -175,6 +175,7 @@ fn state(loader: &Loader, id: &str) -> Option<FiberState> {
 /// A row waits for what it injects; within the process it gets the
 /// provider's own object; when the provider goes, only its user stops, and
 /// before the provider does.
+/// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_gate_share_and_stop_with_their_provider() {
     let fixture = fixture().await;
@@ -207,6 +208,7 @@ async fn rows_gate_share_and_stop_with_their_provider() {
 }
 
 /// After the module's source changes, reloading the row runs the new code.
+/// guarantee: loader/reload-all-or-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn reloading_a_row_runs_the_edited_module() {
     let fixture = fixture().await;
@@ -241,6 +243,7 @@ async fn reloading_a_row_runs_the_edited_module() {
 
 /// A row of an installed package records the package's version; a module
 /// the project lacks is unresolved, and the other rows run.
+/// guarantee: loader/unresolved-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn packages_report_versions_and_missing_modules_are_unresolved() {
     let fixture = fixture_with(|dir| {
@@ -277,6 +280,7 @@ async fn packages_report_versions_and_missing_modules_are_unresolved() {
 /// A plugin that ends the process takes the runtime's rows down with it:
 /// they wait for the runtime instead of holding a dead process, and run
 /// again once the runtime restarts.
+/// guarantee: loader/runtime-down-stops-its-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dead_process_stops_the_rows_until_restart() {
     let fixture = fixture().await;
@@ -317,6 +321,7 @@ async fn a_dead_process_stops_the_rows_until_restart() {
 
 /// A Bun runtime that cannot start (no runtime package here) fails, and
 /// resolving its rows does not wait for it: they wait as rows.
+/// guarantee: loader/runtime-start-failure-isolated
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_that_cannot_start_does_not_block_resolution() {
     let dir = tempfile::tempdir().unwrap();
@@ -346,6 +351,7 @@ async fn a_runtime_that_cannot_start_does_not_block_resolution() {
 /// An edit that breaks the plugin fails the reload, and the previous module
 /// stays (`Loader::reload` is all or nothing): the row keeps running the old
 /// code. Once the plugin is fixed, a reload runs the new one.
+/// guarantee: loader/reload-all-or-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn a_broken_edit_keeps_the_previous_module_and_a_fix_reloads() {
     let fixture = fixture().await;

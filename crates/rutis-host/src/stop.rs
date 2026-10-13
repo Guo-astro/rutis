@@ -248,6 +248,7 @@ mod tests {
 
     /// The flag, in either form, wins over the variable and leaves the
     /// other arguments; without either, the default.
+    /// guarantee: host/stop-deadline
     #[test]
     fn the_deadline_comes_from_the_flag_then_the_variable() {
         let some = |value: &str| Some(value.to_owned());
@@ -266,6 +267,7 @@ mod tests {
         assert_eq!(deadline_in(&[], None), Ok((DEFAULT_DEADLINE, Vec::new())));
     }
 
+    /// guarantee: host/stop-deadline
     #[test]
     fn a_deadline_that_is_not_a_number_of_seconds_is_an_error() {
         for bad in ["abc", "-1", "0", "inf", ""] {

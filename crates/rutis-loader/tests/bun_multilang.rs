@@ -254,6 +254,7 @@ fn state(loader: &Loader, id: &str) -> Option<FiberState> {
     }
 }
 
+/// guarantee: loader/runtimes-do-not-wait-for-each-other
 #[tokio::test(flavor = "multi_thread")]
 async fn three_runtimes_start_cold_and_use_each_other() {
     let fixture = fixture().await;

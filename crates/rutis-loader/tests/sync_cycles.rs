@@ -358,6 +358,7 @@ fn python(name: &str, dir: &Path) -> LocalRuntime {
 /// the first completes. Calls back on the caller's own chain are not
 /// refused.
 /// risk: P10, C6
+/// guarantee: bridge/sync-wait-cycle-refused
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn two_node_runtimes_calling_each_other() {
     let dir = tempfile::tempdir().unwrap();
@@ -445,6 +446,7 @@ async fn two_node_runtimes_calling_each_other() {
 /// stack-order edges the cycle goes unnoticed. The host refuses `s2`'s call
 /// back, and everything else completes.
 /// risk: P10, C6
+/// guarantee: bridge/sync-wait-cycle-refused
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn one_node_and_two_python_runtimes() {
     let dir = tempfile::tempdir().unwrap();

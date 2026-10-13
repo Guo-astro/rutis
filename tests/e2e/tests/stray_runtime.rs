@@ -44,6 +44,7 @@ export default definePlugin({
 "#;
 
 /// risk: B3 (runtimes outlive a killed host)
+/// guarantee: host/killed-host-leaves-no-runtimes
 #[test]
 fn a_runtime_whose_host_was_killed_unloads_its_rows_and_exits() {
     let s = Scenario::new("stray-runtime");

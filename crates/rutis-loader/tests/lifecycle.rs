@@ -157,6 +157,7 @@ fn self_disposed(changes: &Arc<Mutex<Vec<LoaderChanged>>>) -> Option<(String, Op
     })
 }
 
+/// guarantee: loader/self-dispose
 #[tokio::test]
 async fn a_plugin_that_disposes_itself_disables_its_row() {
     let store = MemStore::default();
@@ -184,6 +185,7 @@ async fn a_plugin_that_disposes_itself_disables_its_row() {
     );
 }
 
+/// guarantee: loader/self-dispose
 #[tokio::test]
 async fn without_an_editable_layer_the_failure_is_reported() {
     let store = MemStore::default();
@@ -218,6 +220,7 @@ impl Listener<LoaderChanged> for SelfDisposals {
 
 // In-process only (the kernel, the loader and its monitors are tasks of
 // this runtime), so the paused clock applies.
+/// guarantee: loader/self-dispose
 #[tokio::test(start_paused = true)]
 async fn loader_disposals_are_not_self_disposals() {
     let store = MemStore::default();
@@ -255,6 +258,7 @@ async fn loader_disposals_are_not_self_disposals() {
     assert!(self_disposed(&changes).is_none());
 }
 
+/// guarantee: loader/volatile-in-place
 #[tokio::test]
 async fn volatile_fields_change_in_place() {
     let store = MemStore::default();

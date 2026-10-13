@@ -2,8 +2,8 @@
 
 [中文](quality-status.md) · [Quality standard](quality-standard.en.md)
 
-Status: kept up to date with the code. Last updated: 2026-10-10 (corrected after the #202 review), baseline `main` `a8733d4` (after 0.8.0).
-Companion to: [Quality standard](quality-standard.en.md). This document maps the standard, clause by clause, to the current implementation: which clauses are met, which partly, what is missing and how it will be added. The standard describes rules that stay the same; the file names, test names, issue numbers and versions here change with the implementation.
+Status: kept up to date with the code. Last updated: 2026-10-12 (end of step two / 0.10), baseline `main` `f8ce69b` (before the 0.10 release). Previous: 2026-10-10, baseline `a8733d4` (after 0.8.0).
+Companion to: [Quality standard](quality-standard.en.md). This document maps the standard, clause by clause, to the current implementation: which clauses are met, which partly, what is missing and how it will be added. The standard describes rules that stay the same; the file names, test names, issue numbers and versions here change with the implementation. Which tests verify each guarantee is in the [guarantee register](guarantees.en.md).
 
 ---
 
@@ -15,75 +15,75 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 
 | Clause | Content | Status | Current state and gaps |
 | --- | --- | --- | --- |
-| Q3.1 | Core guarantees verified at the highest level | Partly | Lifecycle rules are verified thoroughly in the core; "nothing left behind" and "explicit failure on interruption" are not verified as a black box or on Windows (B2, B3, C10, E1) |
-| Q3.1, Q8.3 | Core guarantees verified in two independent ways | Partly | Session and runtime conformance is driven from Rust; the Node / Python SDKs' own session tests are incomplete (Python lacks release counting, grant rollback and more, #178) |
-| Q3.4 | Behavior explicitly not guaranteed is pinned | Not met | D29 (events not filtered by isolate) and D22 (no dependency cycle detection) have no regression tests (#177) |
-| Q4.5 | Risk assessment recorded | Partly | §4 of this document is the first pass |
-| Q5.1.2 | Verification checks results | Partly | No ErrorSink assertions in `typed_plugin.rs`; `contract.rs` sorts before asserting D24, hiding delivery order (#177) |
-| Q5.2 | Each listed fault verified by injection | Partly | Runtime crashes yes; a link dropping mid-call, slow peers, concurrent starts, the host receiving signals no (#178, #184, #174). The `fault` decorator exists but is only used in the memory channel's own tests |
-| Q5.3.2 | Encryption across machines, TLS required off loopback | Partly | Positive cases verified; among negative cases only an untrusted CA is (`websocket.rs` asserts `AuthRejected`), not an expired certificate or a hostname mismatch; no TLS tests on the Python side (#178) |
-| Q5.3.3 | Credentials never in output | Partly | Required by design, no common automated check |
-| Q5.3.4 | Limits on external input, no crash on malformed input | Partly | WebSocket has a 16 MiB limit with tests; local line framing has no limit (#173); no fuzzing at all (#179) |
-| Q5.3.6 | Unsafe code concentrated, checks before loading | Partly | `unsafe` is concentrated in dylib loading and process spawning; dylib checks are verified by scripts; 5 items in `design-dylib-sdk` §13 are unchecked and need reconciling |
-| Q5.3.7 | Dependency vulnerability and license checks | Not met | No `cargo deny`, `npm audit` or `pip-audit` in CI |
-| Q5.4.2 | Residue checked at the end of every scenario | Partly | Only the two soak tests sample fds and threads; `runtime_rows.rs` has one process assertion (Unix only) |
-| Q5.4.4 | No orphans when the host is forcibly terminated | Not met | Not verified on any platform |
-| Q5.5.2 | Conflict detection for several writers | Partly | The loader implements CAS and replay; the multi-writer tests listed in its design §17 need checking one by one |
-| Q5.5.3 | Persisted formats readable by later versions | Not met | No samples from earlier releases are kept (J3) |
-| Q5.5.4 | Cross-language value round trips verified | Partly | The conformance suites cover only a few fixed values (P7) |
-| Q5.6.1, Q5.6.3 | Error content and pinned output | Not met | No output snapshots; no tests for `rutis-host` error output |
-| Q5.6.2 | No branching on error text | Met | Connection errors are classified by structured category, with tests across implementations |
-| Q5.7.1 | Performance figures marked guarantee or reference | Partly | "About 30 µs per synchronous call" in the design philosophy is not marked; benchmarks have no fixed environment |
-| Q5.7.2 | Declared scale | Not met | Nothing declared publicly; the scale in §2.2 is an assumption to confirm |
+| Q3.1 | Core guarantees verified at the highest level | Partly | "Nothing left behind" and "explicit failure on interruption" are now verified as a black box on all three platforms: E2E scenarios end with residue checks (#221, #277); S3, S5 and `fault_links.rs` verify that interrupted calls fail explicitly and are not retried (#317, #322, #285). Missing: `core/D22`, `core/D28` and `boundary/5.8` are "partly verified" in the register; on Unix a runtime whose event loop is not empty does not exit after its host is `kill -9`ed (B3); long runs are not verified (#192) |
+| Q3.1, Q8.3 | Core guarantees verified in two independent ways | Partly | The Python SDK's session tests now match Node's (release counting, grant rollback, protocol version, #288); cross-runtime synchronous calls have a TLA+ model (#222). Nobody has checked, guarantee by guarantee, that each core guarantee has two independent verifications (the register has a single "verification" column) |
+| Q3.4 | Behavior explicitly not guaranteed is pinned | Partly | D29 (events not filtered by isolate) has a regression test (`event_order.rs`, #280); the limits on values are registered as not guaranteed and tested (`bridge/value-limits`, #296). D22 (no dependency cycle detection) is still not pinned by a test |
+| Q4.5 | Risk assessment recorded | Partly | §4 of this document is updated at the end of each step (this time 2026-10-12); design documents do not state risks (Q9.1.1) |
+| Q5.1.2 | Results are checked | Partly | The two known places are fixed: `typed_plugin.rs` asserts what the ErrorSink receives (#286); D24 in `contract.rs` asserts the arrival order and no longer sorts first (#280). Other tests have not been reviewed systematically |
+| Q5.2 | Each fault on the list injected | Partly | Injected: a link dropping mid-call, cancellation and release under delay, new calls during a reconnect, multiple hops (`fault_links.rs`, #285); `kill -9` of a runtime (S3, #317); a network cut between two hosts, the far end restarting, a changed token (S5, #322); concurrent starts (`concurrent_launch.rs`, #215); the host receiving signals (`signals.rs` #216; Ctrl-C and Windows Ctrl-Break in E2E, #277); protocol version mismatch (#288, #335); malformed frames (`malformed`, five implementations). Missing: a configuration broken while running (`run` does not read a new configuration, see #274); a plugin blocking the event loop (`boundary/5.8` partly verified); repeated faults during long runs (#192) |
+| Q5.3.2 | Encryption across machines, TLS off loopback | Partly | Negative TLS: expired certificate, hostname mismatch, untrusted CA, verified on the Rust side (`websocket.rs`) and the Python side (`test_websocket.py`) (#297), and between two host processes (S5 step 6). The category for an invalid client certificate on Windows is fixed (#300 → #334). Missing: whether a listener without TLS on a non-loopback address is refused has not been checked (B8) |
+| Q5.3.3 | Credentials kept out of output | Partly | Every E2E scenario ends by checking that no captured output contains the scenario's credentials (#221, #277); in S5 the token is absent from the output when it is refused (#322). Library-level logs, traces and diagnostics have no common check |
+| Q5.3.4 | External input bounded, malformed input does not crash | Partly | WebSocket has a 16 MiB limit; local line framing has a limit (#173 → #214); value nesting is limited to 64 levels, and going over fails only that call (#279 → #338); the malformed-frame check covers five implementations (Go after #294 → #305). No fuzzing (#179) |
+| Q5.3.6 | Unsafe code concentrated, checked before loading | Partly | `unsafe` is concentrated in dylib loading and process spawning; dylib checks verified by scripts; 5 items in `design-dylib-sdk` §13 unchecked, need reconciling |
+| Q5.3.7 | Dependency vulnerability and license checks | Partly | Weekly `deps.yml`: `cargo deny check advisories`, `npm audit`, `pip-audit` (#256); does not block merging. Licenses are not checked; there is no fixed check for the reason behind a new dependency |
+| Q5.4.2 | Residue checked at the end of each scenario | Partly | The E2E harness checks at the end of each scenario: processes the host started (Linux, macOS by scenario marker, Windows by Job Object), socket files, ports, temporary directory, credentials (#221, #277). fds and threads of the test process are checked only in the two soak tests; tokio task counts only in `instance_subtrees.rs` (#286); registrations inside runtimes have no query (§5) |
+| Q5.4.4 | No orphans when the host is killed | Met | `cross_language.rs` `kill -9`s the host on all three platforms and the residue checks confirm the runtimes exit (Unix through the channel closing, Windows through rutis-host's Job Object). On Unix, a runtime whose plugin keeps a timer, or whose cleanup never returns, also unloads its rows and exits within the deadline (#353, fixed by #354; `stray_runtime.rs`, `rutis-bridge/tests/host_gone.rs`, Node, Python, Go and Bun) |
+| Q5.5.2 | Conflict detection with several writers | Partly | The loader implements CAS and replay; the multi-writer tests listed in its design §17 need checking item by item |
+| Q5.5.3 | Persisted formats forward compatible | Partly | `rutis.json` has a top-level `format` (absent means 1; newer than supported is refused with a hint to upgrade); `tests/fixtures/persisted/` holds samples from 0.8.0, 0.9.0, 0.9.1, and `rejected/` asserts the error messages; `docs/release.md` adds a sample per release (#207 → #284). By decision, dsh's `cordis.patch.yml` gets no version field (it follows Cordis, plan Q4) and relies on the samples alone, which does not fully match "every format has a version" |
+| Q5.5.4 | Cross-language value round trips verified | Met | The conversion rules are in `guide/plugin-api.md`; `value_roundtrip.rs` generates values with proptest on the Rust side, round-trips them through Node, Python, Go and Bun and compares them, 256 cases each, printing the seed on failure, plus a release counting invariant (#296); the problems it found are fixed (#290 → #312, #302 → #311, #279 → #338). Values outside the table (Date, Map, Set, binary, big integers) are refused explicitly and registered as not guaranteed (plan Q5; whether to support them is #308). Runs on Unix only |
+| Q5.6.1, Q5.6.3 | Error content and pinning | Partly | Common `rutis-host` errors are pinned word for word (`rutis-host/tests/errors.rs`, #205 → #217); a protocol version mismatch says which end to upgrade (#293 → #335); the category of a refused link appears in `run`'s output (#321 → #336). Library-level errors in the SDKs and the bridge are not pinned |
+| Q5.6.2 | No branching on error text | Met | Connection errors are classified by structured category, with cross-implementation tests |
+| Q5.7.1 | Performance figures marked as guarantee or reference | Partly | "About 30 µs per synchronous call" is not marked in the design philosophy; benchmarks have no fixed environment |
+| Q5.7.2 | Declared scale | Not met | Nothing declared externally; the scale in §2.2 is an assumption to confirm |
 
 ### 1.2 Component types
 
 | Clause | Component | Status | Current state and gaps |
 | --- | --- | --- | --- |
-| Q6.1 | Core `rutis` | Partly | 65 contract tests, 57 Cordis parity tests, interleaving tests; missing: model checking with controlled scheduling (K2), single- and multi-threaded execution not both covered, task counts and table capacity on a long-lived root (K5), the items in #177 |
-| Q6.2 | Session protocol, runtime control operations, node operations | Partly | Conformance suites complete; missing: malformed / unknown frames (P3), SDK version mismatch (P8), multi-hop cancellation (P6), fault injection (Q5.2). The cross-runtime synchronous call policy is not model-checked (P10) |
-| Q6.3 | Local sockets, inherited fd, loopback, WebSocket, memory channel | Partly | All Rust channels run the channel contract; the Node and Python channel implementations do not; the local channel has no size limit (#173) |
-| Q6.4 | Frame decoding, framing, handshakes, configuration, manifests, patch merging | Partly | Patch merging has differential verification (against cordis-plugin-include); the rest has no boundary-value tests or fuzzing |
-| Q6.5 | Parts that start processes or hold connections | Partly | Concurrent creation has a race (#184); residue checks incomplete |
-| Q6.6 | `rutis-host`, `rutis.json`, project templates | Not met | No black-box tests (`main.rs` at 0% coverage); signal handling missing (#174); templates only checked for generated file content |
-| Q6.7 | Node / Python SDKs and test tools | Partly | Both SDKs have test tools with strict mode; test tools are not compared with real runtimes (A1) |
-| Q6.8 | Node and Python runtimes; Bun (planned) | Partly | Both runtimes pass conformance. On Windows the loader's row kinds run (loopback handover, including Node and Python cold-starting together and using each other's services); but session conformance (`runtime_conformance.rs`) and the runtime conformance matrix (`session_matrix.rs`, including its WebSocket columns) do not, and 5 tests in `runtime_rows.rs` are Unix only. Reentrancy rules written, cross-runtime policy undecided |
-| Q6.9 | Service contracts across implementations | Partly | Method shapes can be declared; every language can name its errors; value passing rules are written, but cross-language round trips cover only a few fixed values (P7) and test tools are not compared with real runtimes (A1); replacement itself has no end-to-end verification (S4 #188). Whether implementations return the same data is out of scope (item 4, decided 2026-10-11) |
-| Q6.10 | Loader editable layer, dsh profile files | Partly | Atomic writes and conflict replay implemented; no samples from earlier releases |
-| Q6.11 | Cordis binding generation | Partly | Generator unit tests; real baseline plugins compiled and called; no periodic verification against new external versions (F4) |
-| Q6.12 | dylib loading | Partly | Runs on every merge on Linux and macOS; Windows only when dylib code changes |
-| Q6.13 | Node links, remote runtimes, leases | Partly | Library-level tests complete; no verification between two independent host processes (E11); no real network conditions (E12); the backoff sequence (from 0.5 s, 30 s cap, ±20%, reset) has unit tests, but the link's actual retry timing and the reset after 60 s stable do not (E3); leases and reconnection not model-checked (E4, E5) |
-| Q6.14 | Cordis mounts and Cordis nodes | Partly | Differential verification against native Cordis; boundary rules 3, 4, 5, 7 not verified (#178) |
-| Q6.15 | npm, PyPI, binaries, crates.io | Not met | Packaging only; never installed and run in a clean environment (#193) |
+| Q6.1 | Core `rutis` | Partly | Contract, Cordis parity, interleaving tests; #177 completed event ordering (D24, D31, D29) and lifecycle and reclamation (D7, D8, dropped futures, task counts for instance-subtrees §5) (#280, #286, follow-up #345). Missing: model checking with controlled scheduling (K2, #179); contract tests mostly use the single-threaded runtime only; D22's cycles and D28's isolate ownership are untested |
+| Q6.2 | Session protocol, runtime control operations, node operations | Partly | Conformance suites; malformed frames, unknown ops, unknown references (`malformed`, five implementations); protocol version mismatch (unit tests in three SDKs #288, message #335); multi-hop cancellation and release, fault injection (#285); the cross-runtime synchronous call policy chosen with TLA+ and implemented (#222, #261). Missing: the previous release meeting the current one (#209); resource limits on references and calls (waiting for design); fuzzing (#179) |
+| Q6.3 | Local socket, inherited fd, loopback, WebSocket, memory channel | Partly | All Rust channels run the channel contract; the local channel has a size limit (#214). The Node and Python channel implementations do not run the channel contract (P1) |
+| Q6.4 | Frame decoding, framing, handshakes, configuration, manifests, patch merging | Partly | Patch merging has differential verification (against cordis-plugin-include); the line framing limit and the nesting depth limit have boundary value tests (#214, #338); every `rutis.json` field has unit tests (#217). No fuzzing (#179) |
+| Q6.5 | Parts that spawn processes and hold connections | Partly | The concurrent start race is fixed (#184 → #215); E2E scenarios end with process residue checks on three platforms. Missing: runtimes that outlive a killed host on Unix (Q5.4.4); long runs (#192) |
+| Q6.6 | `rutis-host`, `rutis.json`, project templates | Partly | Black-box tests: the E2E harness starts a real `rutis-host` (#221); S2 development loop, S3, S5, S9 installation (#253, #317, #322, #254) on three platforms; signal handling (#174 → #216); configuration, assembly and common error output (#217); projects generated from templates are installed, tested and run in S2. Missing: `run` does not support changing the configuration while running (whether it should is #274); on Windows only Ctrl-Break is verified, not Ctrl-C or closing the console |
+| Q6.7 | Node / Python SDKs and test tools | Partly | Both SDKs have test tools with a strict mode; the test tools and the real runtimes compare against the same expectations file (#206 → #298, `sdk/testing-matches-runtime`). Go's `rutistest` and Bun's test tool are not compared |
+| Q6.8 | Node, Python, Go runtimes; Bun | Partly | Node, Python and Go pass conformance; on Windows the loopback and WebSocket columns of session conformance and of the runtime conformance matrix run (#176 → #295, #309; matrix in [ci.md](ci.en.md) §4). Cross-runtime synchronous calls: policy B implemented (#228 → #261). Bun: B1 merged (#200); B2 and B3 for admission under Q6.8 not done (#194); Windows is not a declared platform for Bun |
+| Q6.9 | Service contracts across implementations | Partly | Method shapes can be declared; every language can name errors; value round trips have property tests (#296); the Node and Python test tools match the real runtimes (#298); replacement is verified end to end (S4, #326). Missing: comparing the Go and Bun test tools; Date, Map, Set, binary and big integers are always refused (#308, waiting for design). Whether implementations return the same data is out of scope (item 4, decided 2026-10-11) |
+| Q6.10 | Loader editable layers, dsh profile files | Partly | Atomic writes and conflict replay implemented; the dsh user layer has samples per release (#284). Multi-writer tests not checked item by item (Q5.5.2) |
+| Q6.11 | Cordis binding generation | Partly | The generator has unit tests; real plugin baselines are compiled and called; new external releases are not checked regularly (F4, #190) |
+| Q6.12 | dylib loading | Met | Linux and macOS run on PRs that change dylib code and on every push to main; Windows (`dylib-windows.yml`) also runs on dylib changes and on every push to main (ci.md §2). Reconciling the check before loading is under Q5.3.6 |
+| Q6.13 | Node links, remote runtimes, leases | Partly | Library tests complete; two independent host processes verified over loopback (S5, `nodes.rs`, #322, #336): a call in flight during a network cut fails once, the link comes back, the far end restarted gives a new lease, a changed token is refused, a certificate for another name or an expired one is refused. Missing: real network conditions (E12, #341); revoking credentials while running (#273); the link's actual retry timing and the reset after 60 s stable (E3); model checking of leases and reconnection (E4, E5, #210) |
+| Q6.14 | Cordis mounts and Cordis nodes | Partly | Differential verification against native Cordis; boundary rules 3, 4, 5, 7 have cross-process tests (`boundary_rules.rs` and others, #283), and the silent degradation they found now fails explicitly (#281, #282 → #337). Missing: a `serial` across the boundary running as serial on the far side needs a protocol change (#340); `boundary/5.8` partly verified |
+| Q6.15 | npm, PyPI, binaries, crates.io | Partly | `install.yml`: npm, PyPI and release binaries installed and run in a clean directory, on three platforms on main, linux-x64 on PRs, five platforms before a release; after a release the guides' examples run with the registry packages (#193 → #254, #266 → #324). Missing: crates.io and the Go module have no installation check; marking the Python guide's examples (#266 (d), waits for #259) |
 | Q6.16 | `rutis-dev` dev channel | Partly | Local socket and `0600` implemented; "absent from production builds" not verified |
 
 ### 1.3 Test rules, process, matrix, release
 
 | Clause | Content | Status | Current state and gaps |
 | --- | --- | --- | --- |
-| Q7.1 | Determinism | Partly | 7 places depend on the real clock (#182) |
-| Q7.2 | Reproducibility | Not met | No seeds in `interleave.rs` or `stress.yml` |
-| Q7.3 | No masking of failures | Partly | CI does not retry; no process for recording intermittent failures |
-| Q7.4 | Background exceptions fail tests | Not met | The exception in #197 was only printed in a background thread |
-| Q7.6 | Black box and white box separate | Not met | No black-box layer |
+| Q7.1 | Determinism | Met | Assertions depending on the real clock removed: core #182 → #220; other crates and Node, Python, Bun, Go #231 → #257, #278, #299, #301; shared waiting helpers in `rutis-test-support`. Intermittent failures found since are recorded and fixed under Q7.3 (§9.2) |
+| Q7.2 | Reproducibility | Met | `interleave.rs` and `stress.yml` print a seed per round, and the job summary gives the replay command (#220, #245); property tests and `fault_links.rs` print their seeds (#296, #285) |
+| Q7.3 | No masking of failures | Met | CI does not retry; intermittent failures are recorded as issues and then fixed (ci.md §7). During 0.10: #289, #303, #306, #307, #314, #316, #342 and others recorded and fixed |
+| Q7.4 | Background exceptions fail tests | Partly | Exceptions in background threads fail Python tests (#197 → #218); the E2E harness fails on a split probe line; the PR working rules include this item. Rust and Node tests have no common mechanism |
+| Q7.6 | Black box and white box separate | Met | Black-box layer `tests/e2e`: the harness depends on no rutis crate and works only through the binaries, configuration files and probe plugins (#175 → #221); S4's fixture host is part of the system under test |
 | Q7.7 | References can be regenerated | Partly | The patch reference file has generation instructions; CI does not check it |
-| Q7.8 | Skips explained | Not met | Whole-file `cfg(unix)` makes Windows silently empty |
-| Q8.1 | Three layers | Partly | Rules layer thorough; composition only at library level; environment only builds |
-| Q9.1.1 | Designs state levels, risks, acceptance | Partly | Most designs have acceptance sections; none state levels or risks |
-| Q9.3.2 | Incompatible changes detected; versions meeting across releases | Partly | `cargo semver-checks` only warns; the previous release meeting the current one is not verified |
-| Q9.4 | Guarantee register | Not met | No register (#181) |
-| Q10.2 | Minimum and latest versions in the support matrix | Partly | Node verified on 24 (Linux) and 26 (macOS), 22 to add once the minimum drops; Python on 3.12 only; the websockets lower bound never verified (#197); MSRV 1.85 never verified; on Windows loader rows are verified, the bridge's session and runtime conformance suites are not |
+| Q7.8 | Skips explained | Partly | Test files that run on some platforms only state the reason next to their `cfg`; skipped cells use `ignore = "reason"`; the conformance matrix is in ci.md §4 (#176); the residue checks report which checks did not run on the platform. The `cfg(unix)` of `rutis-dev/tests/channel.rs` gives no reason |
+| Q8.1 | Three layers | Partly | Rules layer thorough; composition layer has black-box E2E and fault injection (S2–S5, `fault_links.rs`); environment layer has the support matrix and clean installation (S9). Missing: long runs (#192), real networks (#341) |
+| Q9.1.1 | Designs state levels, risks, acceptance | Partly | Most designs have acceptance sections; the PR template gained items for persisted formats and the guarantee register (#284, #276); designs do not state levels or risks |
+| Q9.3.2 | Incompatible changes detected; versions meeting across releases | Partly | `cargo semver-checks` only warns; a protocol version mismatch says which end to upgrade (#335); the previous release meeting the current one is not verified (#209) |
+| Q9.4 | Guarantee register | Partly | The [register](guarantees.en.md) exists (#276, #310, then updated by each PR); test comments carry `guarantee: <id>`; 0.10 is the baseline and Q9.4.4 applies from 0.11 (plan Q3). The `loader/` family and the rest of `host/` are not registered yet (#181) |
+| Q10.2 | Minimum and latest versions in the support matrix | Met | Linux jobs use the minimum versions (Node 22, Python 3.10, websockets 15, Bun 1.4.0, Go oldstable), macOS and Windows the latest; MSRV 1.88 verified by the `msrv` job (#204 → #256; ci.md §9). The runtime × channel × platform matrix is in ci.md §4, with a reason for each cell that does not run (#176) |
 | Q11.3.2 | No coverage gate | Met | — |
-| Q12.1 | Verification at levels | Partly | Before merge and daily; the main line runs exactly what PRs run, with no extra full matrix or installation checks; packaging jobs run on every PR (§8.2) |
-| Q12.3 | Selection by change | Not met | Every PR runs every job (§8.2) |
-| Q12.4 | Cancel superseded runs | Not met | No `concurrency` |
-| Q12.5 | One merge condition | Not met | No aggregate check |
-| Q12.6 | Time as developers wait | Not met | 22–46 min from push to result; dylib on the critical path; 6–8 macOS jobs per run |
-| Q12.7 | No duplication | Not met | Build reproducibility checked in three places |
-| Q12.8 | Main line failures first | Partly | Done by habit, no written process |
-| Q12.9 | Measure CI | Not met | §8.1 is the first measurement |
-| Q12.10 | CI configuration is code | Partly | Reviewed; PRs that change CI already run everything |
-| Q13 | Release gate | Partly | Version consistency check, packaging, two-machine smoke test; missing clean installation, register check, persisted samples, post-release verification |
+| Q12.1 | Verification at levels | Partly | PRs select by change; main runs every job, installation on three platforms (`install.yml`), MSRV, feature combinations, two-machine reproducibility; nightly `stress.yml` (core rounds, multi-process test rounds #245, two soaks); weekly dependency checks and CI measurements. Missing: versions meeting across releases on main (#209); nightly fuzzing, model checking, real networks, the latest Cordis baseline (#179, #341, #190) |
+| Q12.3 | Selection by change | Met | The `changes` job turns switches on by change; main runs everything (#203 → #213; ci.md §3) |
+| Q12.4 | Cancel superseded runs | Partly | A new push to a PR cancels the old run (#224). On main, `ci.yml`, `install.yml` and `dylib-windows.yml` are grouped by ref: a running run is not cancelled, but a waiting one is replaced by the next merge, so not every merge gets its own complete result; a later run checks it together with the others (ci.md §7). This does not match "every merge has a complete result" in this clause; see §10 |
+| Q12.5 | One merge condition | Met | `ci-ok` is the only required check (#213; ci.md §5) |
+| Q12.6 | Time as developers wait | Partly | Target: an ordinary code PR gets a result within 10 minutes of the push, queueing included (ci.md §1). Measured on 2026-10-12: median 15.6 minutes, p90 42.9 (9 runs, most before or during the move to self-hosted runners, §8.3). Not enough data since the move |
+| Q12.7 | No duplication | Partly | Duplicate release builds removed (#265 → #275); on PRs the reproducibility check runs only when `repro` is on, as a single-machine check inside the dylib jobs, and the two-machine `sdk-repro*` comparison runs only on main (#213, #275). On main the single-machine and two-machine reproducibility checks both run |
+| Q12.8 | Main line failures first | Met | Process written in ci.md §7 |
+| Q12.9 | Measure CI | Met | `tools/ci-stats.mjs` and the weekly `ci-stats.yml` (#213); §8.1 and §8.3 are two measurements |
+| Q12.10 | CI configuration is code | Met | CI changes go in their own PR and run every job (ci.md §6) |
+| Q13 | Release gate | Partly | Version consistency check, packaging, two-machine smoke test, installation on five platforms before a release, verification with registry packages after a release (#254), persisted samples saved (#284). Missing: checking the register starts with 0.11 (plan Q3); versions meeting across releases (#209) |
 
 ---
 
@@ -98,7 +98,9 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 | `rutis-bridge` | Channels, the session protocol, language runtimes, node links, Cordis mounts | Rust embedders; rutis-host |
 | `rutis-host` | A host without writing Rust: `run` / `dev` / `check` / `new` + `rutis.json` | Plugin authors; operators |
 | Node packages | `@arcships/rutis` (plugin SDK and test tool), `@arcships/rutis-runtime` (runtime, Cordis node bridge), `@arcships/rutis-host` (distribution) | Plugin authors; Cordis applications |
+| Bun package | `@arcships/rutis-bun` (Bun runtime, #194 B1) | Plugin authors |
 | Python packages | `rutis` (plugin SDK, test tool, runtime), `rutis-host` (distribution) | Plugin authors |
+| Go module | `github.com/arcships/rutis/go/rutis` (plugin SDK, `rutistest`, runtime) | Plugin authors |
 | dylib toolchain | `rutis-sdk`, `rutis-dylib*`, `rutis-dev` (dev channel) | Rust plugin authors |
 | Applications | `rutis-dsh`, `rutis-agent` | Used in this repository; also the framework's first users |
 
@@ -106,9 +108,9 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 
 | Condition | Value | Source |
 | --- | --- | --- |
-| Operating systems | Linux, macOS, Windows x64 (MSVC) | guide/README |
-| Language environments | Node ≥ 22 (after #195), Python ≥ 3.10 (after #196), Rust ≥ 1.85, Bun (#194, planned) | guides, design decisions |
-| Optional dependencies | `websockets` ≥ 13 (Python networking) | pyproject |
+| Operating systems | Linux, macOS, Windows x64 (MSVC); Bun not on Windows | guide/README |
+| Language environments | Node ≥ 22, Python ≥ 3.10, Rust ≥ 1.88, Bun ≥ 1.4, Go ≥ 1.24 | guides, 0.10 release notes |
+| Optional dependencies | `websockets` ≥ 15 (Python networking) | pyproject |
 | Processes | The host is one process; each language runtime is at least one; plugins may start their own children | multilanguage design |
 | Network | Local: Unix socket / inherited fd / loopback TCP; across machines: WebSocket + TLS, possibly behind a reverse proxy, possibly disconnected, half-open, delayed | network stack design |
 | Trust | Plugins trusted; networks and remote machines not fully trusted; running out of process is not a sandbox | remote design §7 |
@@ -128,6 +130,8 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 
 ### 2.3 Existing tests
 
+Counted on 2026-10-10 (baseline `a8733d4`; coverage from the local measurement in #183, including Node / Python child processes started by Rust tests). Not recounted since; what 0.9 and 0.10 added is in the second table.
+
 | Part | Tests | Test functions | Line coverage |
 | --- | --- | ---: | ---: |
 | Core `rutis` | 20 files including contract `contract.rs`, Cordis parity `parity.rs`, interleaving `interleave.rs`; 8 doctests, 4 `compile_fail` | 287 | 92.8% |
@@ -139,9 +143,28 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 | Node packages | `node/*/test/` | 46 | 86% |
 | Python packages | `python/rutis/tests/` | 25 | 81% |
 
-Coverage figures come from the local measurement in #183 and include Node / Python child processes started by Rust tests.
+Added in 0.9 and 0.10 (as of `f8ce69b`):
 
-CI: `ci.yml` (full Linux run, macOS networking and runtimes, Windows runtimes, packaging, semver, dylib, SDK reproducibility); `stress.yml` (daily: core tests repeated 20 rounds, two 600 s soaks); `dylib-windows.yml` (only when dylib code changes). CI has no fmt, clippy, dependency checks, MSRV, minimum language versions, clean installation or black-box tests.
+| Part | Content | PR |
+| --- | --- | --- |
+| E2E harness `tests/e2e` | Starts real `rutis-host` processes and probe plugins in each language; depends on no rutis crate (Q7.6). Each scenario ends with residue checks: processes (Linux, macOS by the scenario marker `RUTIS_E2E_SCENARIO`, Windows by Job Object), socket files, ports, temporary directory, credentials in the output. Stops the host with Ctrl-Break on Windows; `descendants` lists the host's descendant processes; a TCP proxy (`cut`, `restore`) simulates network cuts | #221, #277 |
+| Scenario S2, development loop | `dev_loop.rs`: `new` → template tests → `dev` → hot reload → a broken file → `check` → `run` → Ctrl-C; Node, Python, Bun, Go; three platforms (no Bun on Windows) | #253, #323 |
+| Scenario S3, languages and crashes | `runtime_crash.rs`: Python, TS and Bun rows; the Python runtime `kill -9`ed during a call, the call fails explicitly, other runtimes' pids unchanged, a host restart recovers; `cross_language.rs`: TS ↔ Python, runtimes exit after the host is `kill -9`ed | #317, #221 |
+| Scenario S4, moving an implementation | `migration.rs` + the fixture Rust host `tests/e2e/fixture-host`: `calendar` moves from Python to node B and then to Rust; `planner` unchanged, host pid unchanged, every call during a switch succeeds or fails explicitly, no residue of the old implementation | #326, #330 |
+| Scenario S5, two host processes | `nodes.rs`: two hosts over loopback; network cut, the far end `kill -9`ed and restarted, a changed token, a certificate for another name or expired; an execution count on B confirms no retry | #322, #336 |
+| Scenario S9, installation | `install.rs`: npm, PyPI and release binaries installed and run in a clean directory (`install.yml`); `doc_examples.rs`: the guides' examples run with registry packages after a release | #254, #324 |
+| Windows and loopback columns of the conformance suites | Session conformance and the runtime conformance matrix no longer whole-file `cfg(unix)`; loopback and WebSocket columns run on Windows; added session contract × WebSocket and loopback, runtime contract × `Handover::Loopback`, node contract × Rust↔Rust WebSocket. Matrix in ci.md §4 | #295, #309, #313, #328 |
+| Fault injection | `fault_links.rs`: the `fault` decorator on sessions and links (dropped mid-call, cancellation and release under delay, calls during a reconnect, multiple hops, interleaved replies, large and deep values); `concurrent_launch.rs` (concurrent starts) | #285, #215 |
+| Property tests | `value_roundtrip.rs` (proptest): values generated on the Rust side, round-tripped through Node, Python, Go, Bun and compared; nesting depth limit; release counting invariant | #296 |
+| Other protocol tests | `boundary_rules.rs` (boundary rules 3, 4, 5, 7); `sdk_protocol.rs` and protocol version 99 tests in both SDKs; Python release counting and grant rollback; Python column in `websocket_cross.rs`; negative TLS in Rust and Python | #283, #288, #297 |
+| Core | `event_order.rs` (D24, D31, D29, panics in async waterfall); `lifecycle_order.rs` (D7, dropped restart / update futures); additions to `typed_plugin.rs`, `instance_subtrees.rs` | #280, #286, #345 |
+| `rutis-host` | 8 files under `tests/`: signals, configuration, `check`, common error output, project templates, persisted samples, link state, whole output lines | #216, #217, #284, #336, #339 |
+| Test tools and real runtimes | One expectations file, `weather.expected.json`: real runtimes through `session_matrix.rs`, one test each for the Node and Python test tools | #298 |
+| Persisted samples | `tests/fixtures/persisted/`: 0.8.0, 0.9.0, 0.9.1, `rejected/` | #284 |
+| TLA+ | `specs/cross-runtime-sync/`: cross-runtime synchronous calls and the deadlock policy, run by hand with `run.sh` | #222 |
+| Guarantee register | [guarantees.en.md](guarantees.en.md): `core/`, `boundary/`, `instance/`, `bridge/`, `host/`, `dsh/`, `sdk/` families; about 100 `guarantee: <id>` test comments | #276, #310 |
+
+CI: `ci.yml` (PRs select jobs by change, main runs everything; full Linux run on the minimum versions, E2E, lint, platform-specific tests on macOS and Windows, Bun and Go runtimes, dylib, packaging, semver, MSRV, feature combinations, reproducibility); `install.yml` (installation smoke tests); `stress.yml` (nightly: core rounds, multi-process test rounds, two 600 s soaks); `dylib-windows.yml`; `deps.yml` and `ci-stats.yml` (weekly). Details in [ci.md](ci.en.md). CI has no fuzzing, model checking, actionlint, license checks, or versions meeting across releases.
 
 ## 3. Control codes
 
@@ -173,7 +196,7 @@ The risk tables in §4 refer to controls by these codes; how to choose among the
 
 ## 4. Risk analysis
 
-Rating as in standard §4 (impact, likelihood, P0 / P1 / P2).
+Rating as in standard §4 (impact, likelihood, P0 / P1 / P2). The "Current" column is the state on 2026-10-12.
 
 ### 4.1 Base layer: core and protocols
 
@@ -184,31 +207,31 @@ Every scenario depends on this layer, so it is analyzed on its own.
 | # | What can go wrong | Dimension | Impact | Likelihood | Pri | Control | Stage | Current |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | K1 | Lifecycle rules do not hold: a cleanup runs zero or two times, a plugin starts before dependencies are ready, wrong eviction order | Correctness | High | Medium | P0 | K (65 contract, 57 parity), U | PR | Yes |
-| K2 | Races under concurrent interleaving: lost wakeups, driver exit races, a forked tail chain | Correctness | High | Medium (happened 3 times) | P0 | SH (only the points that failed before); multi-threaded repetition with seeds | PR (small SH), nightly | Partly: no seed in `interleave.rs`; `stress.yml` does nothing for single-threaded tests (#182) |
-| K3 | Event ordering guarantees only half hold: per-emitter order with several emitters, delivery after a panic | Correctness | Medium | Medium | P1 | K | PR | Partly (D24, D31, #177) |
-| K4 | Behavior written as "not guaranteed" changes silently (D29 events not filtered by isolate, D22 no cycle detection) | Correctness | Medium | Low | P2 | U (regression tests pin current behavior) | PR | No (#177) |
-| K5 | Repeated creation and destruction on a long-lived root grows internal tables and tasks | Residue | High | Medium | P0 | U + R (task counts and table sizes back to baseline); SK | PR, nightly | Partly: `transient_release.rs` checks entry counts and Weak only (#177) |
-| K6 | A user callback panic crosses the boundary and kills a driver task | Faults | High | Low | P1 | U | PR | Yes; panic propagation in async waterfall missing (#177) |
-| K7 | Wrong behavior without a tokio runtime or on a current_thread runtime | Compatibility | Medium | Medium | P1 | U (D8); contract tests in both flavors | PR | Partly: D8 untested |
-| K8 | Dropping a waiting future interrupts a cleanup already started | Correctness | High | Low | P1 | U | PR | Partly: dropped restart / update futures untested (#177) |
+| K2 | Races under concurrent interleaving: lost wakeups, driver exit races, a forked tail chain | Correctness | High | Medium (happened 3 times) | P0 | SH (only the points that failed before); multi-threaded repetition with seeds | PR (small SH), nightly | Partly: `interleave.rs` seeded, `stress.yml` changes thread count and seed each round (#220); no SH (#179) |
+| K3 | Event ordering guarantees only half hold: per-emitter order with several emitters, delivery after a panic | Correctness | Medium | Medium | P1 | K | PR | Yes (`event_order.rs`, #280) |
+| K4 | Behavior written as "not guaranteed" changes silently (D29 events not filtered by isolate, D22 no cycle detection) | Correctness | Medium | Low | P2 | U (regression tests pin current behavior) | PR | Partly: D29 yes (#280); D22 no |
+| K5 | Repeated creation and destruction on a long-lived root grows internal tables and tasks | Residue | High | Medium | P0 | U + R (task counts and table sizes back to baseline); SK | PR, nightly | Partly: U + R yes (task counts and capacity in `instance_subtrees.rs`, #286); no SK (#191, #192) |
+| K6 | A user callback panic crosses the boundary and kills a driver task | Faults | High | Low | P1 | U | PR | Yes (panic propagation in async waterfall, #280) |
+| K7 | Wrong behavior without a tokio runtime or on a current_thread runtime | Compatibility | Medium | Medium | P1 | U (D8); contract tests in both flavors | PR | Partly: D8 tested (#286); contract tests mostly use the single-threaded runtime only |
+| K8 | Dropping a waiting future interrupts a cleanup already started | Correctness | High | Low | P1 | U | PR | Yes (`lifecycle_order.rs`, #286) |
 | K9 | `diagnostics()` disagrees with the actual state | Diagnosability | Medium | Medium | P1 | U | PR | Yes (`lifecycle_diagnostics.rs`) |
-| K10 | Tests depend on machine speed: false alarms under CI load, or testing nothing on fast machines | — | Medium | High | P0 | Determinism rules (standard Q7.1) | PR | Partly: 7 places depend on the real clock (#182) |
+| K10 | Tests depend on machine speed: false alarms under CI load, or testing nothing on fast machines | — | Medium | High | P0 | Determinism rules (standard Q7.1) | PR | Yes (#220, #231) |
 
 #### Channels and the session protocol
 
 | # | What can go wrong | Dimension | Impact | Likelihood | Pri | Control | Stage | Current |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | P1 | A channel breaks its contract: lost or reordered messages, backpressure failing, close not waking | Correctness | High | Low | P1 | K (channel contract, 6 checks) | PR | Rust channels yes; Node and Python channels do not run the contract |
-| P2 | Malformed frames, oversized lines, writes without newlines cause a crash or unbounded memory | Faults, security | High | Medium | P0 | U (boundary values); FZ (frame decoding, line framing) | PR, nightly | WebSocket has a limit and tests; the local channel does not (#173) |
-| P3 | Unknown op, wrong field types, nonexistent reference ids make the session hang or are silently ignored | Faults | Medium | Medium | P1 | U (each language) | PR | No (#173) |
-| P4 | Reference counting errors: released too early (the far end's calls fail) or never (leak) | Correctness, residue | High | Medium | P0 | K; PT (after any grant / release sequence, table size = number not released) | PR | Rust and Node yes; Python partly (#178) |
+| P2 | Malformed frames, oversized lines, writes without newlines cause a crash or unbounded memory | Faults, security | High | Medium | P0 | U (boundary values); FZ (frame decoding, line framing) | PR, nightly | Partly: U yes (WebSocket and the local channel both have limits, #214); no FZ (#179) |
+| P3 | Unknown op, wrong field types, nonexistent reference ids make the session hang or are silently ignored | Faults | Medium | Medium | P1 | U (each language) | PR | Yes: the conformance suites' `malformed` check, five implementations (#214; Go #305) |
+| P4 | Reference counting errors: released too early (the far end's calls fail) or never (leak) | Correctness, residue | High | Medium | P0 | K; PT (after any grant / release sequence, table size = number not released) | PR | Yes (Python #288; PT #296) |
 | P5 | Call chain rewriting is wrong when forwarding across sessions: callbacks reach the wrong runtime or deadlock | Correctness | High | Medium | P0 | K (`rpc_callbacks.rs`, same call ids on both sides) | PR | Yes |
-| P6 | Cancellation does not reach the far end, or is lost across hops | Correctness | Medium | Medium | P1 | K (`abortable`); one new multi-hop cancellation test | PR | Single hop yes; multi-hop no (#178) |
-| P7 | Values convert differently across the three languages: `undefined` / `null` / absent, large integers, dataclasses, nesting depth | Correctness | High | High | P0 | PT (the same random values round-tripped Rust↔Node and Rust↔Python, compared); K | PR | Partly: conformance covers a few fixed values |
-| P8 | On a protocol version or capability mismatch, things hang or fail only after loading | Compatibility, diagnosability | Medium | High (runtimes and hosts upgrade independently) | P1 | U (each language); MX (previous release's runtime vs current host) | PR, merge | Rust yes; neither SDK (#178) |
+| P6 | Cancellation does not reach the far end, or is lost across hops | Correctness | Medium | Medium | P1 | K (`abortable`); one new multi-hop cancellation test | PR | Yes (`fault_links.rs`, #285) |
+| P7 | Values convert differently across the three languages: `undefined` / `null` / absent, large integers, dataclasses, nesting depth | Correctness | High | High | P0 | PT (the same random values round-tripped Rust↔Node and Rust↔Python, compared); K | PR | Yes (`value_roundtrip.rs`, Go and Bun included, #296; fixes #312, #311, #338); Unix only |
+| P8 | On a protocol version or capability mismatch, things hang or fail only after loading | Compatibility, diagnosability | Medium | High (runtimes and hosts upgrade independently) | P1 | U (each language); MX (previous release's runtime vs current host) | PR, merge | Partly: U yes (#288; the message says which end to upgrade, #335); no MX (#209) |
 | P9 | During a synchronous call the far end calls back: Node should return `SyncWaitCycle`, Python should execute; behavior differs from the docs | Correctness | Medium | Medium | P1 | K (`reenter`) | PR | Yes |
-| P10 | The cross-runtime synchronous call policy itself has holes (two non-reentrant runtimes calling each other) | Correctness | High | Medium | P0 | TLA (design time); then K with counterexample tests | Design | No; design undecided (multilanguage design §9) |
-| P11 | Exceptions in background threads or workers are swallowed and tests pass anyway | — | High | High (#197 happened) | P0 | Test rule: background exceptions fail tests (standard Q7.4) | PR | No |
+| P10 | The cross-runtime synchronous call policy itself has holes (two non-reentrant runtimes calling each other) | Correctness | High | Medium | P0 | TLA (design time); then K with counterexample tests | Design | Yes: policy B chosen with TLA+ (#222), implemented and tested (`rpc_callbacks.rs`, `sync_cycles.rs`, #261). Two known limits: a runtime that does not declare itself reentrant is treated as non-reentrant; a runtime that does not declare `sync-wait` is outside detection |
+| P11 | Exceptions in background threads or workers are swallowed and tests pass anyway | — | High | High (#197 happened) | P0 | Test rule: background exceptions fail tests (standard Q7.4) | PR | Partly: Python yes (#218); Rust and Node have no common mechanism |
 
 ---
 
@@ -226,14 +249,14 @@ Each scenario first says what it is, which parts it goes through and under what 
 
 | # | What can go wrong | Dimension | Impact | Likelihood | Pri | Control | Stage | Current |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| A1 | Test tool and real runtime disagree: a plugin passing in `load()` fails in a host (or the other way) | Correctness | High | Medium | P0 | X: run the runtime conformance fixture (`conformance-weather`) both through the test tool and in real runtimes and compare | PR | No |
-| A2 | A generated project does not install, test and run as is | Compatibility, docs | Medium | High (dependencies and toolchains move fast) | P1 | E (S2 steps 1–2); MX | Merge | Only generated file content checked |
-| A3 | After a reload the old code still runs, or the old instance is not unloaded | Correctness, residue | High | Medium | P0 | E + R | PR | Library level in the loader; not at the binary level |
-| A4 | A syntax error crashes `dev`, or the old version stops serving | Faults | Medium | High | P1 | E (break a file, assert the old version keeps serving and `cannot reload` is printed) | PR | No |
+| A1 | Test tool and real runtime disagree: a plugin passing in `load()` fails in a host (or the other way) | Correctness | High | Medium | P0 | X: run the runtime conformance fixture (`conformance-weather`) both through the test tool and in real runtimes and compare | PR | Partly: Node and Python yes (one expectations file, #298); Go `rutistest` and Bun no |
+| A2 | A generated project does not install, test and run as is | Compatibility, docs | Medium | High (dependencies and toolchains move fast) | P1 | E (S2 steps 1–2); MX | Merge | Yes (S2, #253) |
+| A3 | After a reload the old code still runs, or the old instance is not unloaded | Correctness, residue | High | Medium | P0 | E + R | PR | Yes (S2, #253) |
+| A4 | A syntax error crashes `dev`, or the old version stops serving | Faults | Medium | High | P1 | E (break a file, assert the old version keeps serving and `cannot reload` is printed) | PR | Yes (S2, #253) |
 | A5 | Resource use grows after hundreds of reloads | Residue | Medium | Medium | P1 | E + R, looped N times | Nightly | No |
-| A6 | `check` misjudges: errors on something that runs, passes something that does not | Diagnosability | Medium | Medium | P1 | G (a set of good and bad projects, output and exit codes compared) | PR | No |
-| A7 | Error messages do not say which file, line or service | Diagnosability | Medium | High | P1 | G (snapshots of common errors); DR | PR | No |
-| A8 | On Windows, paths, venv (`Scripts\python.exe`), line endings parsed wrong | Compatibility | Medium | Medium | P1 | E on Windows | PR | No |
+| A6 | `check` misjudges: errors on something that runs, passes something that does not | Diagnosability | Medium | Medium | P1 | G (a set of good and bad projects, output and exit codes compared) | PR | Yes (`rutis-host/tests/check.rs`, #217; #258) |
+| A7 | Error messages do not say which file, line or service | Diagnosability | Medium | High | P1 | G (snapshots of common errors); DR | PR | Yes (`rutis-host/tests/errors.rs`, #217) |
+| A8 | On Windows, paths, venv (`Scripts\python.exe`), line endings parsed wrong | Compatibility | Medium | Medium | P1 | E on Windows | PR | Yes (S2 on Windows, #323) |
 | A9 | On a plugin API version mismatch, the error does not say what to upgrade | Compatibility, diagnosability | Medium | Low | P2 | U (both SDKs) | PR | Yes |
 | A10 | A declared method shape disagrees with the implementation (declared sync but returns a Promise) and the test tool misses it | Correctness | Medium | Medium | P1 | U (test tool strict mode) | PR | Yes |
 | A11 | Python re-imports only the entry module (known limitation); users expect changes to other modules to apply | Docs | Low | High | P2 | Documented; `dev` hints when other modules change | — | Documented |
@@ -249,16 +272,16 @@ Each scenario first says what it is, which parts it goes through and under what 
 
 | # | What can go wrong | Dimension | Impact | Likelihood | Pri | Control | Stage | Current |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| B1 | A channel's package is broken: platform package not selected, wheel missing files, binary does not run on a clean machine | Compatibility | High | Medium | P0 | IN (three platforms × npm / PyPI / binary, this build's packages); again with registry packages after release | Merge, after release | Packaging only (#193) |
-| B2 | On SIGINT / SIGTERM (Windows: Ctrl-C, Ctrl-Break, console close) cleanup does not run; exit codes differ from the docs | Residue | High | High (#174 happened) | P0 | E + R (each signal in turn) | PR | No |
-| B3 | After the host is SIGKILLed, runtime children are orphaned | Residue | High | Medium | P0 | E + R (Unix through channel close, Windows through a Job Object) | PR | No |
-| B4 | After a configuration is broken, old rows are unloaded and new ones do not start | Faults | High | Medium | P0 | E (write a broken configuration, assert the old version keeps serving); loader K exists | PR | Loader yes; host level no. Check first whether `run` watches the configuration file |
-| B5 | `rutis.json` parsing: unknown fields silently ignored, wrong base for relative paths, wrong precedence of credential environment variables | Correctness, diagnosability | Medium | Medium | P1 | U (each field); FZ (configuration, low priority) | PR | Partly |
-| B6 | Missing runtime package, interpreter not found, port in use, bad certificate file give insufficient errors | Diagnosability | Medium | High | P1 | G (a snapshot per error) | PR | Partly |
-| B7 | Credentials appear in logs, errors, status output, traces | Security | High | Low | P1 | Common E assertion: token values absent from all captured output | PR | Partly |
+| B1 | A channel's package is broken: platform package not selected, wheel missing files, binary does not run on a clean machine | Compatibility | High | Medium | P0 | IN (three platforms × npm / PyPI / binary, this build's packages); again with registry packages after release | Merge, after release | Yes (S9, #254, #324); marking the Python guide's examples waits for #259 (#266) |
+| B2 | On SIGINT / SIGTERM (Windows: Ctrl-C, Ctrl-Break, console close) cleanup does not run; exit codes differ from the docs | Residue | High | High (#174 happened) | P0 | E + R (each signal in turn) | PR | Partly: SIGINT and SIGTERM on Unix yes (#216); Ctrl-Break on Windows yes (#277, #324); Ctrl-C and console close on Windows no |
+| B3 | After the host is SIGKILLed, runtime children are orphaned | Residue | High | Medium | P0 | E + R (Unix through channel close, Windows through a Job Object) | PR | Yes: on three platforms (`cross_language.rs`); on Unix, runtimes whose event loop stays busy or whose cleanup never returns also exit within the deadline (#353, #354; `stray_runtime.rs`, `host_gone.rs`) |
+| B4 | After a configuration is broken, old rows are unloaded and new ones do not start | Faults | High | Medium | P0 | E (write a broken configuration, assert the old version keeps serving); loader K exists | PR | Loader yes; `run` does not watch its configuration (checked 2026-10-11), whether it should is #274 |
+| B5 | `rutis.json` parsing: unknown fields silently ignored, wrong base for relative paths, wrong precedence of credential environment variables | Correctness, diagnosability | Medium | Medium | P1 | U (each field); FZ (configuration, low priority) | PR | Yes (U, `rutis-host/tests/config.rs`, #217; #226); no FZ |
+| B6 | Missing runtime package, interpreter not found, port in use, bad certificate file give insufficient errors | Diagnosability | Medium | High | P1 | G (a snapshot per error) | PR | Yes (`errors.rs`, #217) |
+| B7 | Credentials appear in logs, errors, status output, traces | Security | High | Low | P1 | Common E assertion: token values absent from all captured output | PR | Yes (E2E residue checks, #221, #277; S5 #322) |
 | B8 | A listener without TLS binds to a non-loopback address | Security | High | Low | P1 | U | PR | To check |
-| B9 | Status output format changes break operators' scripts | Compatibility | Low | Medium | P2 | G | PR | No |
-| B10 | When the process manager restarts the host, the previous socket file or port is not released and the new process fails to start | Residue | Medium | Medium | P1 | E (restart right after kill -9) | PR | No |
+| B9 | Status output format changes break operators' scripts | Compatibility | Low | Medium | P2 | G | PR | Partly: the link state and listening address lines are tested (`links.rs`, #336) |
+| B10 | When the process manager restarts the host, the previous socket file or port is not released and the new process fails to start | Residue | Medium | Medium | P1 | E (restart right after kill -9) | PR | Partly: restarting with the same configuration right after a Ctrl-C stop, binding the listener's port again (S3, #317); restarting right after the host is `kill -9`ed is not verified (the residue checks only confirm the ports can be bound again) |
 
 #### Scenario C: composing languages
 
@@ -272,15 +295,15 @@ Each scenario first says what it is, which parts it goes through and under what 
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | C1 | Runtimes wait for each other on a cold start | Correctness | High | Low | P1 | K (the M1/M2 boundary conformance test) | PR | Yes |
 | C2 | A row starts before its declared dependencies are complete (two-phase readiness fails) | Correctness | High | Medium | P0 | K (`runtime_rows.rs`, resolve before start) | PR | Yes |
-| C3 | One runtime crashing affects others, or unrelated rows stop | Faults | High | Medium | P0 | K (M2 §3.4); E (kill -9, assert other runtimes' pids unchanged) | PR | Library level yes; black box no |
-| C4 | When a runtime crashes, calls in flight hang instead of failing explicitly | Faults | High | Medium | P0 | FI (the conformance fixture's `crash()` during a call) | PR | Partly |
-| C5 | Values convert inconsistently across languages (see P7) | Correctness | High | High | P0 | PT | PR | Partly |
-| C6 | Two Node runtimes deadlock on crossing synchronous calls (known limitation); the limitation grows with a third language | Correctness | High | Medium | P0 | TLA (choose a policy); docs; K counterexamples once chosen | Design | Documented only |
+| C3 | One runtime crashing affects others, or unrelated rows stop | Faults | High | Medium | P0 | K (M2 §3.4); E (kill -9, assert other runtimes' pids unchanged) | PR | Yes (S3, #317; no Bun row on Windows) |
+| C4 | When a runtime crashes, calls in flight hang instead of failing explicitly | Faults | High | Medium | P0 | FI (the conformance fixture's `crash()` during a call) | PR | Yes (S3 #317; `fault_links.rs` #285) |
+| C5 | Values convert inconsistently across languages (see P7) | Correctness | High | High | P0 | PT | PR | Yes (#296) |
+| C6 | Two Node runtimes deadlock on crossing synchronous calls (known limitation); the limitation grows with a third language | Correctness | High | Medium | P0 | TLA (choose a policy); docs; K counterexamples once chosen | Design | Yes: policy B, the host detects wait cycles and returns `SyncWaitCycle` (#222, #261); limits in P10 |
 | C7 | The Python runtime is reentrant, so a plugin's service is called in the middle of its own synchronous call and its state is changed concurrently | Correctness | Medium | Medium | P1 | Docs; optionally simulate reentry in the test tool's strict mode | — | Documented |
 | C8 | Wrong withdrawal order: providers stop before consumers | Correctness | High | Low | P1 | K | PR | Yes |
 | C9 | Direct objects within one runtime vs proxies across runtimes differ beyond what the docs say | Correctness | Medium | Medium | P1 | K (`multilang.rs`) | PR | Yes |
-| C10 | Any of the above fails on Windows (loopback TCP + token handover) | Compatibility | High | Medium | P0 | MX: the loopback and WebSocket columns of the conformance suites run on Windows | PR | Partly: the loader's row kinds run on Windows over loopback (including the cross-language cold start); 5 bridge test files, among them session conformance and the runtime conformance matrix, are whole-file `cfg(unix)` and empty on Windows (#176) |
-| C11 | Starting several runtimes concurrently in one process fails intermittently | Faults | Medium | High (#184 about 50% locally) | P0 | FI: N threads starting together, 100 rounds | PR | No |
+| C10 | Any of the above fails on Windows (loopback TCP + token handover) | Compatibility | High | Medium | P0 | MX: the loopback and WebSocket columns of the conformance suites run on Windows | PR | Yes (#295, #309; matrix in ci.md §4; Bun does not support Windows) |
+| C11 | Starting several runtimes concurrently in one process fails intermittently | Faults | Medium | High (#184 about 50% locally) | P0 | FI: N threads starting together, 100 rounds | PR | Yes (`concurrent_launch.rs`, #215) |
 | C12 | A runtime writing heavily to stdout / stderr fills the pipe and blocks | Faults | Medium | Low | P2 | FI (fixture writing continuously) | Nightly | No |
 
 #### Scenario D: embedding in a Rust application, multi-tenant instances
@@ -295,13 +318,13 @@ Each scenario first says what it is, which parts it goes through and under what 
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | D1 | Service visibility leaks between instances: tenant A reads tenant B's service | Security, correctness | High | Low | P1 | K (`instances.rs`, `instance_services.rs`, `instance_runtimes.rs`) | PR | Yes |
 | D2 | Residue after closing an instance: core registrations, registrations inside runtimes, export slots, proxies | Residue | High | Medium | P0 | U + R (registrations inside runtimes too, not only diagnostics) | PR | Partly |
-| D3 | Thousands of create/close cycles grow tasks, memory, table capacity | Residue | High | Medium | P0 | SK (1000 rounds, task counts and table capacity back to baseline) | Nightly | Partly (instance-subtrees §5 not fully implemented, #177) |
+| D3 | Thousands of create/close cycles grow tasks, memory, table capacity | Residue | High | Medium | P0 | SK (1000 rounds, task counts and table capacity back to baseline) | Nightly | Partly: task counts and capacity for instance-subtrees §5 have U (#286); no 1000-round soak (#191) |
 | D4 | One edit affects several instances, some succeed and some fail | Correctness | High | Low | P1 | K | PR | Yes |
-| D5 | After persisting and restarting, state differs from before | Correctness | High | Medium | P0 | K (restart consistency in loader §17); E (S7) | PR | §17 needs checking item by item |
+| D5 | After persisting and restarting, state differs from before | Correctness | High | Medium | P0 | K (restart consistency in loader §17); E (S7) | PR | §17 needs checking item by item; S7 in step three (#191) |
 | D6 | Several processes write the same storage and changes are lost | Correctness | High | Medium (dsh's CLI and web UI open together) | P0 | K (loader multi-writer CAS, replay drops); PT (random edits with simulated conflicts, final storage = all edits) | PR | To check |
 | D7 | Undeclared breaking changes in public APIs | Compatibility | Medium | High (0.x) | P1 | SV (semver-checks exists); migration guide code compiled | PR | Partly |
 | D8 | Embedders calling a synchronous method from a current_thread runtime or a blocked thread deadlock | Faults | Medium | Medium | P1 | K (the network stack's requirement that the channel progresses while the caller's current_thread is blocked) | PR | To check |
-| D9 | Builds fail with only some features enabled | Compatibility | Medium | Medium | P1 | ST (the existing 7 combinations) | PR | Yes |
+| D9 | Builds fail with only some features enabled | Compatibility | Medium | Medium | P1 | ST (feature combinations, the `checks` job on main) | PR | Yes |
 | D10 | `shutdown` does not finish by its deadline and embedders cannot tell the state | Diagnosability | Medium | Low | P2 | U | PR | Yes |
 | D11 | Latency grows abnormally at the upper bound of instances | Performance | Medium | Low | P2 | BM (create, close, read services with 1000 instances) | Weekly | No |
 
@@ -315,19 +338,19 @@ Each scenario first says what it is, which parts it goes through and under what 
 
 | # | What can go wrong | Dimension | Impact | Likelihood | Pri | Control | Stage | Current |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| E1 | When the network drops, calls in flight report success, or are retried automatically so side effects run twice | Faults | High | Medium | P0 | FI (`fault::drop_and_close` after frame N, the far end counts side effects) | PR | No: `fault` only used in the memory channel's own tests (#178) |
+| E1 | When the network drops, calls in flight report success, or are retried automatically so side effects run twice | Faults | High | Medium | P0 | FI (`fault::drop_and_close` after frame N, the far end counts side effects) | PR | Yes (`fault_links.rs` #285; between two processes in S5, #322) |
 | E2 | A half-open connection is not found within 30 s | Faults | Medium | Medium | P1 | FI (`half_open` with a paused clock) | PR | Yes |
 | E3 | Reconnection backoff differs from the docs (from 0.5 s, capped at 30 s, ±20%, reset after 60 s stable; 30 s after rejected credentials; stop on incompatibility) | Correctness | Medium | Medium | P1 | U (paused clock, exact intervals asserted) | PR | Partly: a unit test in `link.rs` covers the backoff sequence (from 0.5 s, 30 s cap, ±20%, reset); the link's actual retry timing, the reset after 60 s stable and the 30 s after rejected credentials are untested |
-| E4 | During takeover of a remote runtime, old and new leases coexist; late instructions of the old session act on the new lease | Correctness | High | Low | P1 | TLA (design); K (`leases.rs`) | Design, PR | Partly |
-| E5 | Connections still possible after credentials are revoked; a registration revoked mid-handshake still lets the old handshake hand over | Security | High | Low | P1 | K (`link.rs`); TLA | PR | Partly |
-| E6 | TLS check holes: still connects with an expired certificate, wrong CA, hostname mismatch | Security | High | Medium | P0 | U (three negative cases, Rust and Python each) | PR | Partly: untrusted CA on the Rust side yes; expired certificate, hostname mismatch and the Python side no (#178) |
-| E7 | A malformed WebSocket upgrade request crashes the listener | Security, faults | High | Medium | P0 | FZ | Nightly | No |
-| E8 | Rejection categories differ between implementations (Python↔Rust) | Compatibility | Medium | Medium | P1 | K (a Python column in `websocket_cross.rs`) | PR | Node↔Rust only |
-| E9 | Cancellation and release not passed hop by hop | Correctness, residue | Medium | Medium | P1 | K (new multi-hop cancellation and release tests) | PR | No |
+| E4 | During takeover of a remote runtime, old and new leases coexist; late instructions of the old session act on the new lease | Correctness | High | Low | P1 | TLA (design); K (`leases.rs`) | Design, PR | Partly: no TLA (#210) |
+| E5 | Connections still possible after credentials are revoked; a registration revoked mid-handshake still lets the old handshake hand over | Security | High | Low | P1 | K (`link.rs`); TLA | PR | Partly: no TLA (#210); no mechanism for revoking while running (#273) |
+| E6 | TLS check holes: still connects with an expired certificate, wrong CA, hostname mismatch | Security | High | Medium | P0 | U (three negative cases, Rust and Python each) | PR | Yes (#297; S5 step 6, #322) |
+| E7 | A malformed WebSocket upgrade request crashes the listener | Security, faults | High | Medium | P0 | FZ | Nightly | No (#179) |
+| E8 | Rejection categories differ between implementations (Python↔Rust) | Compatibility | Medium | Medium | P1 | K (a Python column in `websocket_cross.rs`) | PR | Yes (#288) |
+| E9 | Cancellation and release not passed hop by hop | Correctness, residue | Medium | Medium | P1 | K (new multi-hop cancellation and release tests) | PR | Yes (`fault_links.rs`, #285) |
 | E10 | Service announcements arrive out of order and an old one restores a withdrawn service | Correctness | Medium | Low | P2 | U (constructed reordering) | PR | To check |
-| E11 | Behavior between two independent host processes (not within one test process) differs from library-level tests | Correctness | Medium | Medium | P1 | E (S5: two `rutis-host` processes over loopback) | PR | No |
-| E12 | Under real conditions (200 ms delay, 5% loss), timeouts and frequent reconnects | Faults, performance | Medium | Medium | P1 | E + containers + netem | Nightly | No |
-| E13 | When the two ends run different versions, the incompatibility message does not tell which end to upgrade | Compatibility, diagnosability | Medium | High | P1 | MX (previous release's node vs current); G | Merge | Partly |
+| E11 | Behavior between two independent host processes (not within one test process) differs from library-level tests | Correctness | Medium | Medium | P1 | E (S5: two `rutis-host` processes over loopback) | PR | Yes (S5, #322, #336) |
+| E12 | Under real conditions (200 ms delay, 5% loss), timeouts and frequent reconnects | Faults, performance | Medium | Medium | P1 | E + containers + netem | Nightly | No (#341) |
+| E13 | When the two ends run different versions, the incompatibility message does not tell which end to upgrade | Compatibility, diagnosability | Medium | High | P1 | MX (previous release's node vs current); G | Merge | Partly: the message says which end to upgrade (#335); no MX (#209) |
 | E14 | A remote runtime accepts `file:` or absolute plugin paths | Security | High | Low | P1 | U | PR | To check |
 | E15 | Resource use grows as one link drops and reconnects repeatedly | Residue | Medium | Medium | P1 | SK (`websocket_soak.rs` exists) | Nightly | Yes |
 
@@ -343,12 +366,12 @@ Each scenario first says what it is, which parts it goes through and under what 
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | F1 | Mounted behavior differs from native Cordis | Correctness | High | Medium | P0 | X (`dsh_baseline.rs` compares the same scenarios with native Cordis) | PR | Yes |
 | F2 | Generator type mapping errors (optional vs nullable, newtypes, unions of live objects) | Correctness | High | Medium | P0 | U (15 in `generate.test.mjs`); generate from baseline plugins, compile and call | PR | Yes |
-| F3 | Violations of boundary rules 3, 4, 5, 7 not detected, silently degraded | Correctness | Medium | Medium | P1 | K (one cross-process test per rule, compared with native) | PR | No (#178) |
-| F4 | A new Cordis or plugin release breaks mounting | Compatibility | Medium | High | P1 | X: nightly baseline with the latest published versions (lock files unchanged), report only | Nightly | No |
+| F3 | Violations of boundary rules 3, 4, 5, 7 not detected, silently degraded | Correctness | Medium | Medium | P1 | K (one cross-process test per rule, compared with native) | PR | Yes (`boundary_rules.rs` #283; silent degradation now fails explicitly, #337); the protocol change for `serial` across the boundary waits for design (#340) |
+| F4 | A new Cordis or plugin release breaks mounting | Compatibility | Medium | High | P1 | X: nightly baseline with the latest published versions (lock files unchanged), report only | Nightly | No (#190) |
 | F5 | After the Node process exits on an uncaught plugin exception, services are not withdrawn or dependents do not stop | Faults | High | Medium | P0 | K | PR | Yes |
 | F6 | After moving to another directory (`RUTIS_CORDIS_ROOT`), the runtime or plugins cannot be found | Compatibility | Medium | Medium | P1 | E (build, copy elsewhere, run) | Merge | No |
 | F7 | Members that cannot be bound are not reported at build time | Diagnosability | Low | Medium | P2 | G (snapshot of build warnings) | PR | To check |
-| F8 | Mounting through `rutis.json` (not at library level) behaves differently | Correctness | Medium | Medium | P1 | E (S6) | Nightly | No |
+| F8 | Mounting through `rutis.json` (not at library level) behaves differently | Correctness | Medium | Medium | P1 | E (S6) | Nightly | No (#190) |
 
 #### Scenario G: moving an implementation (try → prove → solidify)
 
@@ -361,10 +384,10 @@ Each scenario first says what it is, which parts it goes through and under what 
 | # | What can go wrong | Dimension | Impact | Likelihood | Pri | Control | Stage | Current |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | G1 | Implementations of the same service in different languages return differently shaped data (field names, optional fields, error types); consumers break after the switch | Correctness | — | — | Out of scope | The service's authors are responsible (standard Q6.9.4, decided 2026-10-11). The part rutis owns: the same value converts the same way between languages (P7), and test tools behave like real runtimes (A1) | — | — |
-| G2 | Calls hang during the switch | Faults | Medium | Medium | P1 | E (S4: continuous calls during the switch, each succeeds or fails explicitly) | PR | No |
-| G3 | The old implementation leaves residue after the switch (processes, links) | Residue | Medium | Medium | P1 | E + R | PR | No |
+| G2 | Calls hang during the switch | Faults | Medium | Medium | P1 | E (S4: continuous calls during the switch, each succeeds or fails explicitly) | PR | Yes (S4, #326; with a fixture host, `run` see #274) |
+| G3 | The old implementation leaves residue after the switch (processes, links) | Residue | Medium | Medium | P1 | E + R | PR | Yes (S4, #326) |
 | G4 | Consumers do not restart and keep the old implementation | Correctness | High | Low | P1 | K (core eviction) | PR | Yes |
-| G5 | The host needs a restart during the switch (breaks the guarantee) | Correctness | High | Low | P1 | E (host pid unchanged) | PR | No |
+| G5 | The host needs a restart during the switch (breaks the guarantee) | Correctness | High | Low | P1 | E (host pid unchanged) | PR | Yes (S4, #326) |
 
 #### Scenario H: an agent writes a plugin, connects it, iterates
 
@@ -392,9 +415,9 @@ Each scenario first says what it is, which parts it goes through and under what 
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | I1 | A library with mismatched identity (SDK, toolchain, artifact hash) is loaded and its initializers run | Security, faults | High | Medium | P0 | E (`tools/test-dylib*.sh`, `test-sdk-bundle.sh`) | PR (Linux, macOS) | Yes; 5 items in `design-dylib-sdk` §13 unchecked, need reconciling |
 | I2 | After a failed swap the old version stops serving | Faults | High | Low | P1 | E | PR | Yes |
-| I3 | SDK builds are not reproducible | Compatibility | Medium | Medium | P1 | Two runners build independently and compare hashes | PR | Yes |
-| I4 | dylib problems on Windows | Compatibility | Medium | Medium | P1 | E (dylib-windows) | Only on dylib changes | Partly: suggest running on every merge |
-| I5 | A toolchain mismatch is not caught by `xtask dev` before compiling | Diagnosability | Medium | Medium | P1 | E | PR | No (#193 item 5) |
+| I3 | SDK builds are not reproducible | Compatibility | Medium | Medium | P1 | Two runners build independently and compare hashes | Main (on PRs, a single-machine check only when `repro` is on) | Yes |
+| I4 | dylib problems on Windows | Compatibility | Medium | Medium | P1 | E (dylib-windows) | On dylib changes and every push to main | Yes |
+| I5 | A toolchain mismatch is not caught by `xtask dev` before compiling | Diagnosability | Medium | Medium | P1 | E | PR | No (#260, outside this plan) |
 | I6 | The dev channel is present in production builds | Security | High | Low | P1 | ST (production builds contain no dev listener symbols or feature) | Merge | No |
 | I7 | dev channel commands behave unclearly with missing arguments, missing targets, or a closing host | Diagnosability | Low | Medium | P2 | U (commands × errors) | PR | Partly (5 tests) |
 
@@ -409,8 +432,8 @@ Each scenario first says what it is, which parts it goes through and under what 
 | # | What can go wrong | Dimension | Impact | Likelihood | Pri | Control | Stage | Current |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | J1 | Code in a migration guide is outdated and following it does not compile | Docs | Medium | Medium | P1 | SV ("after" code from migration guides compiled and run; one exists in `migration_example.rs`) | PR | Partly |
-| J2 | A host upgraded without its runtime (or the reverse) behaves unclearly: hangs, or fails after loading | Compatibility | Medium | High | P1 | MX: the previous release's runtime package with the current host must either work or fail clearly at start | Merge | No |
-| J3 | Persisted configuration written by an older version (loader layers, dsh profiles) cannot be read by the new one, or changes meaning | Compatibility | High | Medium | P0 | U: each release stores a persisted sample as a fixture; new versions must read it | PR | No |
+| J2 | A host upgraded without its runtime (or the reverse) behaves unclearly: hangs, or fails after loading | Compatibility | Medium | High | P1 | MX: the previous release's runtime package with the current host must either work or fail clearly at start | Merge | No (#209) |
+| J3 | Persisted configuration written by an older version (loader layers, dsh profiles) cannot be read by the new one, or changes meaning | Compatibility | High | Medium | P0 | U: each release stores a persisted sample as a fixture; new versions must read it | PR | Yes (samples from 0.8.0, 0.9.0, 0.9.1; `format` in `rutis.json`, #284) |
 | J4 | Release train versions are inconsistent and users get two copies of the core | Compatibility | High | Low | P1 | ST (`scripts/train.mjs`) | PR | Yes |
 | J5 | A new plugin SDK marks a higher plugin API and old hosts give an unclear error | Compatibility, diagnosability | Medium | Medium | P1 | U | PR | Yes |
 
@@ -420,51 +443,52 @@ Each scenario first says what it is, which parts it goes through and under what 
 
 | # | What can go wrong | Dimension | Impact | Likelihood | Pri | Control | Stage | Current |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| L1 | The host's fds, threads, tasks, memory grow over time | Residue, performance | High | Medium | P0 | SK: host-process soak with random operations (edits, reloads, killing runtimes, dropping links), resource curves sampled, no sustained growth asserted | Nightly (1 h), weekly (longer) | Partly: only the two bridge-level soaks |
+| L1 | The host's fds, threads, tasks, memory grow over time | Residue, performance | High | Medium | P0 | SK: host-process soak with random operations (edits, reloads, killing runtimes, dropping links), resource curves sampled, no sustained growth asserted | Nightly (1 h), weekly (longer) | Partly: only the two bridge-level soaks (#192) |
 | L2 | A slow listener makes the event backlog grow without bound | Performance | Medium | Medium | P1 | U (backlog diagnostics); docs | PR | Diagnostics yes, no limit (by design) |
-| L3 | After runtime processes are killed repeatedly, host state or counters go wrong | Faults | Medium | Medium | P1 | SK (random operations include kills) | Nightly | No |
+| L3 | After runtime processes are killed repeatedly, host state or counters go wrong | Faults | Medium | Medium | P1 | SK (random operations include kills) | Nightly | No (#192) |
 | L4 | Failures in random operation sequences cannot be reproduced | — | Medium | High | P1 | Sequences generated from seeds; seed and sequence saved on failure | Nightly | — |
 
 ---
 
-## 5. Residue checks: proposed approach
+## 5. Residue checks: approach and state
 
-How standard Q5.4.2 is to be checked on the current implementation; not implemented yet. Today only the two soak tests sample fds and threads (tolerance +16) and check that every child process is reaped. To apply to every black-box scenario, every soak and every repeated create/destroy test:
+How standard Q5.4.2 is checked on the current implementation. The E2E harness implements five checks — processes, sockets, ports, temporary directory, credentials (`tests/e2e/src/residue.rs`, #221, #277) — and runs them at the end of every E2E scenario. After reporting residue it ends those processes, so a failed scenario leaves nothing running; checks that do not run on the platform are listed in the report (Q7.8).
 
-| Item | How |
-| --- | --- |
-| Every process the host started has exited | Linux: the test process sets `PR_SET_CHILD_SUBREAPER` and enumerates by process group; macOS: `ps` by process group; Windows: the host runs in a Job Object whose process list must be empty |
-| Socket files removed | No `*.sock` under the scenario's temporary directory |
-| Ports released | `bind` on recorded ports succeeds again |
-| fds and threads of the test process | Back to baseline, tolerance to be decided (the existing soak uses +16); the sampling code in `local_soak.rs` is to be moved into a shared test module |
-| Live tokio tasks | `Handle::metrics().num_alive_tasks()` back to baseline |
-| Core registries | Fibers, bindings, listeners, event backlog in `diagnostics()` back to baseline |
-| Registrations inside runtimes | Runtimes provide a test query returning how many rows, proxies and export slots they hold |
-| Credentials absent from output | No token value in any captured output |
+| Item | How | State |
+| --- | --- | --- |
+| Every process the host started has exited | Linux, macOS: processes the harness starts carry the environment variable `RUTIS_E2E_SCENARIO` and are found by it (Linux reads `/proc/<pid>/environ`, macOS uses `KERN_PROCARGS2`), plus the host's process group and the children of everything found; on Linux the test process sets `PR_SET_CHILD_SUBREAPER` to reap orphans. Windows: the host runs in a Job Object whose process list must be empty | Implemented (E2E). On macOS the environment of Apple's own programs cannot be read, so such a program is missed once it leaves the host's group and is orphaned (stated in the module comment) |
+| Socket files removed | No socket file under the scenario's temporary directory (Windows: by the `*.sock` name) | Implemented (E2E) |
+| Ports released | `bind` on recorded ports (the proxies' included) succeeds again | Implemented (E2E) |
+| The hosts' temporary directory is empty | — | Implemented (E2E) |
+| Credentials absent from output | No token value of the scenario in any captured output | Implemented (E2E) |
+| fds and threads of the test process | Back to baseline, tolerance to be decided (the existing soak uses +16); the sampling code in `local_soak.rs` is to be moved into a shared test module | Only the two soak tests |
+| Live tokio tasks | `Handle::metrics().num_alive_tasks()` back to baseline | Only in `instance_subtrees.rs` (#286) |
+| Core registries | Fibers, bindings, listeners, event backlog in `diagnostics()` back to baseline | Asserted by some tests on their own; no shared check |
+| Registrations inside runtimes | Runtimes provide a test query returning how many rows, proxies and export slots they hold | No |
 
 ## 6. Controls to build
 
-The controls used by the P0 and P1 risks of §4, merged into what needs building or extending.
+The controls used by the P0 and P1 risks in §4, merged into what needs building or extending.
 
-| Control | Risks served | Current | Work |
+| Control | Risks served | State | Still to do |
 | --- | --- | --- | --- |
-| **Determinism rules** | K10, P11, and the trustworthiness of every test | Partly | Standard Q7.1–Q7.5; #182 |
-| **E + R: black-box harness and residue checks** | A3–A5, A8, B2–B4, B10, C3, E11, F6, G2, G3, G5, H4 | No | `tests/e2e/`: the harness starts real binaries or installed packages, probe plugins (TS, Python), residue checks; scenarios written in Rust (#175) |
-| **Scenarios** | As above | No | S2 development loop (A), S3 languages and crashes (C), S9 installation (B1) first; then S4 moving implementations (G), S5 nodes in two processes (E); S6 Cordis (F8), S7 embedding and instances (D5), S8 long runs (L1, L3) nightly |
-| **FI: fault injection on sessions and links** | C4, C11, E1, E2 | `fault` exists, self-tested only | Wire into session conformance and link tests; concurrent start test (#178, #184) |
-| **MX: version and platform matrix** | C10, A8, E13, J2, P8 | Node 24 / 26, Python 3.12; Windows skips the bridge's session and runtime conformance suites | Node 22 (once the minimum drops), minimum and latest Python, the websockets lower bound; Windows loopback and WebSocket columns; previous release's runtime vs current host |
-| **IN: installation smoke test** | B1 | No | Three platforms × three channels after merge; again with registry packages after release (#193) |
-| **PT: cross-language value round trips** | P7, C5, P4 | Partly | The same random values round-tripped Rust↔Node and Rust↔Python and compared; release counting invariant |
-| **X: test tools vs real runtimes** | A1 | No | The conformance fixture run both in test tools and in real runtimes |
-| **X: nightly baseline with the latest Cordis plugins** | F4 | No | Nightly install of the latest versions, baseline run, report only |
-| **FZ** | P2, E7, B5 | No | Session frames, local line framing, WebSocket upgrade requests; configuration files at low priority (#179) |
-| **SH** | K2 | No | Only the 3 places that failed before: lost wakeup in TransitionTask, the `post_join` race, exactly-once cleanup under concurrent dispose (#179) |
-| **TLA** | P10, C6, E4, E5 | No | §7 |
-| **SK: host-level soak** | L1, L3, D3, A5, H4 | Bridge level only | Host-process soak with seeded random operations |
-| **G: output snapshots** | A6, A7, B6, B9, E13, F7, H3 | No | Common errors, `check` output, status output |
-| **J3: persisted samples** | J3 | No | A sample per release; new versions must read it |
-| **ST** | All | No fmt or clippy in CI | fmt, clippy, `cargo deny`, MSRV, actionlint |
-| **Unit and contract tests to add** | K3–K8, P3, P6, P8, E3, E6, E8, E9, F3 and more | Partly | #177, #178, #173 |
+| **Determinism rules** | K10, P11, and the credibility of every test | Yes (#220, #231; Python background exceptions #218) | No common mechanism for background exceptions in Rust and Node tests (P11) |
+| **E + R: black-box end-to-end harness and residue checks** | A3–A5, A8, B2–B4, B10, C3, E11, F6, G2, G3, G5, H4 | Yes (`tests/e2e`, #221, #277; three platforms) | Checks for the test process's fds and threads and for registrations inside runtimes (§5); runtimes that outlive a killed host on Unix (B3) |
+| **Scenarios** | As above | S2, S3, S4, S5 (loopback), S9 done | Step three: S6 Cordis (F8, #190), S7 embedding and instances (D5, #191), S8 long runs (L1, L3, #192), S5 with containers + netem (E12, #341); waiting for design: S1 (#185) |
+| **FI: fault injection on sessions and links** | C4, C11, E1, E2 | Yes (`fault_links.rs` #285; `concurrent_launch.rs` #215; S3, S5) | Repeated faults during long runs (#192) |
+| **MX: version and platform matrix** | C10, A8, E13, J2, P8 | Minimum and latest versions, MSRV (#256); loopback and WebSocket columns on Windows (#295, #309) | Previous release's runtime vs current host (#209) |
+| **IN: installation smoke tests** | B1 | Yes (#254, #324) | crates.io, the Go module; marking the Python guide's examples (#266 (d), waits for #259) |
+| **PT: cross-language value round trips** | P7, C5, P4 | Yes (#296) | Does not run on Windows |
+| **X: test tools vs real runtimes** | A1 | Node, Python yes (#298) | Go `rutistest`, Bun test tool |
+| **X: nightly baseline with the latest Cordis plugins** | F4 | No | Nightly install of the latest versions, run the baseline, report only (#190) |
+| **FZ** | P2, E7, B5 | No | Session frames, local line framing, WebSocket upgrade requests; configuration at low priority (#179) |
+| **SH** | K2 | No | Only the three places that failed before: TransitionTask lost wakeup, the `post_join` race, exactly-once concurrent dispose (#179) |
+| **TLA** | P10, C6, E4, E5 | Spec 1 done (#222) | Spec 2 (#210); §7 |
+| **SK: host-level soak** | L1, L3, D3, A5, H4 | Bridge level only | Host-process soak with random operations, seeded (#192) |
+| **G: output snapshots** | A6, A7, B6, B9, E13, F7, H3 | Common `rutis-host` errors, `check`, link state (#217, #336) | Status output as a whole; SDK errors; H3 waits for design |
+| **J3: persisted format samples** | J3 | Yes (#284) | Add a sample with each release (`docs/release.md`) |
+| **Completing ST** | All | fmt and clippy (`lint`), MSRV, feature combinations, weekly vulnerability checks (#256) | actionlint, license checks |
+| **More unit and contract tests** | K3–K8, P3, P6, P8, E3, E6, E8, E9, F3 and others | 0.10 completed K3, K6, K8, P3, P6, E6, E8, E9, F3 (#280, #286, #285, #283, #288, #297) | D22 for K4, both flavors for K7, the actual retry timing for E3 |
 
 ---
 
@@ -472,7 +496,11 @@ The controls used by the P0 and P1 risks of §4, merged into what needs building
 
 The two places selected by standard §11.2.
 
-### 7.1 Spec 1: cross-runtime synchronous calls and the deadlock policy (P10, C6)
+### 7.1 Spec 1: cross-runtime synchronous calls and the deadlock policy (P10, C6) — done
+
+**Result** (#208 → #222, 2026-10-11): the model is in [`specs/cross-runtime-sync/`](../specs/cross-runtime-sync/README.en.md). Policy B was chosen: the host tracks waits across sessions, and when forwarding a call would close a wait cycle it does not forward it and returns `SyncWaitCycle` instead. The conclusion is written back into multilanguage design §9. The implementation is #228 → #261: the `sync` field on frames and the `sync-wait` and `sync-stack` capabilities; tests in `rpc_callbacks.rs` and `rutis-loader/tests/sync_cycles.rs`. Two points decided during implementation: a runtime that does not declare itself reentrant is treated as non-reentrant; a runtime that does not declare `sync-wait` is outside detection (no false errors).
+
+The scope as it was planned is kept below for the record.
 
 **Why first**: multilanguage design §9 states this is unresolved. The Node runtime is not reentrant, the Python one is, and two Node runtimes making crossing synchronous calls deadlock. A policy must be chosen before a third language (Swift, Go, or Bun #194). Deadlocks appear only in particular interleavings, which tests hit unreliably.
 
@@ -493,7 +521,7 @@ The two places selected by standard §11.2.
 
 **Output**: the chosen policy written back into multilanguage design §9; counterexamples turned into tests in `rpc_callbacks.rs`.
 
-### 7.2 Spec 2: remote lease takeover, link reconnection and registration revocation (E4, E5)
+### 7.2 Spec 2: remote lease takeover, link reconnection and registration revocation (E4, E5) — step three (#210)
 
 **Why**: remote design §4.4 defines the takeover order (authenticate → close the old session → clean up the old lease → answer the new hello); the network stack design defines registration generations, revocation during handshakes, and that late results are not handed over. The existing `leases.rs` and `link.rs` cover only the timings they can construct.
 
@@ -506,148 +534,169 @@ The two places selected by standard §11.2.
 
 **Scale**: 2 controllers, up to 3 reconnects each, messages delayed by up to 2 steps.
 
+Revoking credentials while running has no mechanism yet (#273, waiting for design); "identity revocation" in the model has to match the design of #273.
+
 ### 7.3 Practice
 
-- Specs live in `specs/<name>/`: `.tla`, `.cfg` and a README (which design and section, what is simplified, which invariants are checked).
-- TLC runs small configurations nightly; larger ones by hand when the design changes.
-- When a design change touches these two protocols, the PR template requires updating the spec.
+- Specs live in `specs/<name>/`: `.tla`, `.cfg`, `expected.txt`, `run.sh` and a README (which design and section, what is simplified, which invariants are checked). Spec 1 follows this layout.
+- The plan was to run small TLC configurations nightly: not yet in CI; `run.sh` is run by hand. Larger configurations by hand when the design changes.
+- When a design change touches these two protocols, the spec is updated with it.
 - No trace validation (checking implementation logs against the spec); too costly for now.
-- Timing: Spec 1 before Bun (#194) or a third language; Spec 2 before the next major change to lease code.
+- Timing: Spec 1 was done before Bun; Spec 2 before the next major change to lease code.
 
 ---
 
-## 8. Continuous integration: current state and changes
+## 8. Continuous integration
 
-Corresponds to standard §12.
+Standard §12. How CI runs today and what to do when changing it is in [ci.md](ci.en.md). This section records measurements and the gaps against the standard.
 
-### 8.1 Measurements (2026-10-10, last 30 runs of `ci.yml`)
+### 8.1 Measurements before the changes (history: 2026-10-10, last 30 runs of `ci.yml`)
 
-From push to result: 22–25 minutes without queueing, 35–46 minutes when busy, once over 2 hours.
+The data below is from before the changes, kept for comparison; it does not describe the current state.
 
-Execution time of each job in a run without queueing (#202, run `38024950688`):
+Push to result: 22–25 minutes without queueing, 35–46 minutes when busy, once more than 2 hours.
 
-| Job | Execution | Breakdown |
+Job durations in one run without queueing (#202, run `38024950688`):
+
+| Job | Duration | Breakdown |
 | --- | ---: | --- |
-| dylib-macos | 25.1 min | build reproducibility 9.8, external plugin build 7.6, launcher checks 5.3 |
-| dylib-linux | 20.9 min | build reproducibility 9.1, external plugin build 6.1, launcher checks 4.4 |
+| dylib-macos | 25.1 min | reproducible build 9.8, external plugin build 7.6, launcher checks 5.3 |
+| dylib-linux | 20.9 min | reproducible build 9.1, external plugin build 6.1, launcher checks 4.4 |
 | test (full Linux) | 7.7 min | `cargo test --workspace` 3.3 |
 | sdk-repro ×2, sdk-repro-macos ×2 | 3.6–4.9 min each | — |
 | runtimes-windows | 4.2 min | — |
 | network-macos | 2.2 min | — |
-| The other 8 | < 3 min each | — |
+| the other 8 | < 3 min each | — |
 
-With repeated pushes to one branch (`feat/bun-runtime` pushed 6 times between 02:10 and 02:52, 6 runs at once), macOS jobs queued (run `38016607150`): sdk-repro-macos 32 minutes, dylib-macos 23.5, static-platforms 14.7, network-macos 10.7.
+With repeated pushes to one branch (`feat/bun-runtime` pushed 6 times between 02:10 and 02:52, 6 runs at once), macOS queue times (run `38016607150`): sdk-repro-macos 32 minutes, dylib-macos 23.5, static-platforms 14.7, network-macos 10.7.
 
-### 8.2 Problems
+The problems then: no `concurrency`; no selection by change, so a docs-only PR ran all 17 jobs; the dylib jobs on the critical path; 6–8 macOS jobs per run; build reproducibility checked in three places; packaging jobs on every PR; no aggregate check; no measurements.
 
-| Clause | Current state |
-| --- | --- |
-| Q12.4 Cancel superseded runs | No `concurrency` setting; older runs of the same PR run to the end and occupy runners |
-| Q12.3 Selection by change | `ci.yml` selects nothing by path: a docs-only PR runs all 17 jobs and waits 20–25 minutes for dylib |
-| Q12.6.1 Critical path | dylib-macos / dylib-linux are the critical path, three times longer than any other job |
-| Q12.6.2 Scarce resources | Each run takes 6 macOS jobs (8 on the Bun branch); macOS runners are few, and queueing for them is the main wait when busy |
-| Q12.6.3, Q12.7 No duplication; uncacheable checks | Build reproducibility is checked in three places: `sdk-repro` (hashes from two Linux runners), `sdk-repro-macos` (two macOS runners), and `test-dylib-repro.sh` inside both dylib jobs; all before merging, none can use caches |
-| Q12.1 Levels | Packaging-only jobs (`release-windows`, `release-wheel-aarch64`, `release-dry-run`) run on every PR, though they can only fail when packaging files change |
-| Q12.5 Aggregate check | None; once jobs are selected by change, an aggregate check is needed as the required check in branch protection |
-| Q12.9 Measurement | None; this section is the first measurement |
+### 8.2 What was done
 
-### 8.3 Mapping from change to verification
-
-Before merging, a first job determines what changed and later jobs run accordingly; on the main line everything runs (Q12.3).
-
-| Change | Runs before merging |
-| --- | --- |
-| Documentation only (`docs/**`, `*.md`) | Link check |
-| Core, bridge, loader, host, Node / Python packages | Full Linux tests; macOS networking and runtimes (with the static build check); Windows runtimes; static checks |
-| dylib: `rutis-dylib*`, `rutis-sdk`, `rutis-dev`, `rutis-xtask`, `tools/*dylib*`, `tools/test-sdk-bundle.sh`, `tests/dylib-fixtures/**`; and core changes that change the SDK's content | Also dylib-linux, dylib-macos |
-| Packaging: `release*.yml`, `scripts/train.mjs`, each `pyproject.toml` / `package.json`, `node/rutis-host/scripts/**` | Also the three packaging jobs |
-| `Cargo.lock`, root `Cargo.toml`, `rust-toolchain.toml`, `.github/workflows/**` | Everything (Q12.3.2, Q12.10) |
-
-### 8.4 Target layout
-
-| When | Budget (push to result, including queueing) | Content |
+| Change | Clauses | PR |
 | --- | --- | --- |
-| **PR** | Docs only ≤ 2 min; ordinary changes ≤ 15 min; dylib changes ≤ 25 min | Selected per §8.3; `concurrency` cancels older runs; aggregate check `ci-ok`. At most 1 macOS job per run (2 when dylib changes). Added as tests are built: ST, U, K, X (except the daily baseline), the conformance matrix, E (S2 on three platforms; S3, S4, S5 loopback), small SH, PT, minimum and latest Node / Python / websockets |
-| **Merge to main** | ≤ 60 min | Every job: build reproducibility compared across two runners, packaging, dylib-windows, IN on three platforms, MX previous release's runtime vs current host, MSRV, `cargo deny`, DOC, F6 |
-| **Nightly** | ≤ 4 h | Core tests repeated with varying thread counts (seeded); SK (bridge level 600 s, host level 1 h); FZ 20 min per target; large SH; TLC; E: S5 with containers + netem, S6, S7, S8; X: latest Cordis plugin baseline |
-| **Weekly** | ≤ 8 h | Long host soaks; BM (fixed machine); CI measurement summary (Q12.9) |
+| A new push to a PR cancels the old run; on main runs are grouped by ref and a running one is not cancelled | Q12.4 | #224 |
+| The `changes` job turns switches on by change, PRs run only the related jobs, main runs everything; the aggregate check `ci-ok` is the only required check; dylib on Linux split into launcher, sdk-bundle and repro jobs; `sdk-repro*` and packaging moved to main; weekly CI measurements (`ci-stats.yml`, `tools/ci-stats.mjs`) | Q12.1, Q12.3, Q12.5, Q12.6.1, Q12.7, Q12.9 | #213 |
+| CI design and process document `docs/ci.md` | Q12.8, Q12.10 | #237 |
+| `lint` (fmt, clippy `-D warnings`); MSRV 1.88; Linux on the minimum versions (Node 22, Python 3.10, websockets 15), macOS and Windows on the latest; weekly dependency vulnerability checks in `deps.yml` | Q5.3.7, Q10.2, ST | #256 |
+| Installation smoke tests in `install.yml`; installation on five platforms before a release, verification with registry packages after it | Q6.15, Q13 | #254 |
+| The `e2e` job (in parallel with `rust`); duplicate release builds removed | Q12.7 | #265 → #275 |
+| Platform-specific tests on macOS and Windows: first `value_roundtrip` and `fault_links` added, then every test file by default, excluding only the platform-independent ones (`PURE_TESTS_*`) | Q10.2, Q7.8 | #313, #328 |
+| A `multiprocess` job in nightly `stress.yml`: the bridge's and loader's multi-process tests repeated over many rounds | Q7.3 | #245 |
+| Self-hosted runners: macOS jobs such as `dylib-macos` and `sdk-repro-macos`, and jobs that do not depend on the OS (`links`, `js-py`, `msrv`, `checks`, `release-dry-run`, `semver-rutis`, `changes`, `ci-ok`) run on self-hosted macOS by default (repository variables `MACOS_RUNNER` and `GATE_RUNNER` switch them back); the Linux jobs and `runtimes-windows` can be switched to self-hosted runners with `LINUX_RUNNER` and `WINDOWS_RUNNER` (GitHub's runners by default) | Q12.6.2 | #333, #348, #350 |
 
-Tests run with `cargo nextest`: each test in its own process, with timeouts, `retries = 0`.
+`network-macos` runs on the self-hosted macOS machine too (repository variable `NETWORK_MACOS_RUNNER`; moved once #344 fixed #287, ci.md §10).
 
-### 8.5 Expected effect
+### 8.3 Measurements (2026-10-12, the last 40 completed runs of `ci.yml` on 2026-10-12)
 
-| PR | Now | After |
-| --- | --- | --- |
-| Docs only | 22–46 min | About 1 min |
-| Ordinary code change | 22–46 min | About 8 min (critical path: full Linux tests) |
-| dylib change | 22–46 min | About 22 min; about 10 min on Linux after splitting, macOS unchanged (reproducibility cannot be cached) |
-| Repeated pushes to one branch | Every run completes | Only the last completes |
+From `node tools/ci-stats.mjs 40 ci.yml --since 2026-10-11`. Jobs were being moved to self-hosted runners that day (#333, #348, #350), so old and new runners are mixed in the data; it is a record of the move only.
 
-### 8.6 Steps
+| Runs | Count | Push to result, median | p90 | Max |
+| --- | ---: | ---: | ---: | ---: |
+| main (push) | 13 | 26.3 min | 48.6 min | 48.6 min |
+| PR | 27 | 14.3 min | 38.2 min | 42.9 min |
+| PR, ordinary code change | 9 | 15.6 min | 42.9 min | 42.9 min |
 
-1. Add `concurrency` and cancel older runs on PRs (Q12.4). A few lines, merged on their own, effective at once.
-2. Select jobs per §8.3; add the aggregate check `ci-ok` and update branch protection; merge `static-platforms (macos)` into `network-macos`; keep only the single-machine reproducibility check inside the dylib jobs, and move the two-runner `sdk-repro*` and the three packaging jobs to the main line (Q12.3, Q12.5, Q12.6, Q12.7).
-3. On Linux, split the dylib job into three parallel jobs: launcher, build reproducibility, external plugin build (Q12.6.1). macOS is not split.
-4. Weekly CI measurement: push to result, queueing, job times, intermittent failures, main line failures (Q12.9).
+- The target for ordinary code PRs is 10 minutes (ci.md §1); the median is 15.6 minutes, so it is not met. Queueing is the main cause: several jobs waited 20–40 minutes at most.
+- The last two runs after the move: #350's PR run took 10.1 minutes (every job, since it changed CI), the main run after merging 7.2 minutes.
+- Longest median durations: `runtimes-windows` 8.2 minutes, `dylib-linux-repro` 7.5, `rust` 6.2, `network-macos` 4.5.
+- main failed 3 times (after merging #339, #349, #348); 6 runs were rerun (4 passed on rerun; the intermittent failures behind them are recorded and fixed, §9.2).
+
+### 8.4 Gaps against the standard
+
+| Clause | Gap |
+| --- | --- |
+| Q12.4 | On main, runs are grouped by ref: a waiting run is replaced by the next merge, so not every merge gets its own complete result (ci.md §7). See §10 |
+| Q12.6 | The median for ordinary code PRs is 15.6 minutes (§8.3) against a 10-minute target; a week of data with the self-hosted runners settled is needed to judge |
+| Q12.7 | On main the single-machine and two-machine reproducibility checks both run |
+| Q12.1 | Nightly lacks fuzzing, TLC, real networks and the latest Cordis baseline; main lacks versions meeting across releases; weekly lacks long host soaks and benchmarks (#179, #341, #190, #209, #192) |
 
 ## 9. Plan
 
-Ordered by risk level, P0 first; within a level, infrastructure others depend on first. Aligned with the current release plan.
+Ordered by risk level, P0 first; within a level, infrastructure other work depends on first. Aligned with the current release plan. #183 tracks progress.
 
-### 9.1 Step one (0.8.1 → 0.9): infrastructure and P0s that already happened
+### 9.1 Step one (0.8.1 → 0.9): infrastructure and P0s that already happened — done
 
-| Item | Risks covered | Issue |
+| Item | Risks covered | issue → PR |
 | --- | --- | --- |
-| Fix the four known bugs with regression tests | P2, B2, C11, P11 | #173, #174, #184, #197 |
-| Determinism rules; nextest; seeds in `interleave.rs` | K10, P11 | #182 |
-| CI changes §8.6 steps 1–2: cancel superseded runs, select by change, aggregate check, merge macOS jobs, remove duplicates | Feedback speed for every risk | #203 |
-| ST (fmt, clippy, deny, MSRV); minimum version matrix | All; MX | #204 |
-| E2E harness + residue checks + S2 | A3–A5, A8, B2, B3, B10 | #175, #186 |
-| S9 installation smoke test | B1; acceptance of #195, #196 | #193 |
-| Unit tests for rutis-host configuration and assembly; snapshots of common errors | B5, B6, A6, A7 | #205 |
+| Four known bugs fixed with regression tests | P2, B2, C11, P11 | #173 → #214, #174 → #216, #184 → #215, #197 → #218 |
+| Determinism rules; seeds in `interleave.rs` | K10, P11 | #182 → #220 |
+| CI: cancel old runs, select by change, aggregate check, merge macOS jobs, remove duplication | Feedback speed for every risk | #203 → #213, #224, #237; finishing #265 → #275 |
+| Completing ST (fmt, clippy, dependency checks, MSRV); minimum version matrix | All; MX | #204 → #256 |
+| E2E harness + residue checks + S2 | A3–A5, A8, B2, B3, B10 | #175 → #221, #186 → #253 |
+| S9 installation smoke tests | B1; acceptance of #195, #196 | #193 → #254 |
+| Unit tests for rutis-host configuration and assembly; snapshots of common errors | B5, B6, A6, A7 | #205 → #217; #258 |
 
-### 9.2 Step two (0.10): P0s across processes and platforms
+Found by E2E and fixed: #225, #226 (#261, #217). Minimum Node lowered to 22 (#195 → #219), Python to 3.10 (#196 → #255).
 
-| Item | Risks covered | Issue |
-| --- | --- | --- |
-| S3, S4, S5 loopback | C3, G2, G3, G5, E11 | #187, #188, #189 |
-| `fault` wired into sessions and links; negative TLS; missing protocol cases; SDK parity | C4, E1, E6, E8, E9, P3, P6, P8, F3 | #178 |
-| Windows columns; missing cells | C10 | #176 |
-| Cross-language value round-trip property tests | P7, C5, P4 | part of #178 |
-| Test tools vs real runtimes | A1 | #206 |
-| Persisted samples | J3 | #207 |
-| Core guarantees completed | K3–K8 | #177 |
-| Guarantee register | All | #181 |
-| TLA+ Spec 1 | P10, C6 | #208 |
+### 9.2 Step two (0.10): P0s across processes and platforms — done (2026-10-12)
+
+Plan: [design-quality-step2-2026-10-11](design-quality-step2-2026-10-11.en.md) (#272).
+
+| Item | Risks covered | issue → PR | State |
+| --- | --- | --- | --- |
+| S3 composing languages and crashes | C3, C4, B10 | #187 → #317 | Done; recovery by restarting the host (plan Q1); no Bun row on Windows |
+| S4 moving an implementation | G2, G3, G5 | #188 → #326, #330 | Done; with a fixture Rust host (plan Q1) |
+| S5 two host processes over loopback | E11, E1, E6 | #189 → #322, #336 | Done; revoking while running is #273, containers + netem #341 |
+| Protocol layer: fault injection and links, boundary rules 3/4/5/7, SDK alignment, negative TLS, value round-trip property tests | C4, E1, E6, E8, E9, P3, P4, P6, P7, P8, F3 | #178 → #285, #283, #288, #297, #296 | Done; resource limits wait for design |
+| Windows columns of the conformance suites; missing cells | C10 | #176 → #295, #309 | Done |
+| Test tools vs real runtimes | A1 | #206 → #298 | Done (Node, Python); Go and Bun test tools follow later |
+| Persisted format samples and the `format` field | J3 | #207 → #284 | Done; `format` stated in the 0.10 release notes |
+| Completing core guarantees | K3–K8 | #177 → #280, #286; follow-up #345 | Done; D22's cycles and both flavors for K7 not done |
+| Real clocks in other crates and languages | K10 | #231 → #257, #278, #299, #301 | Done |
+| E2E residue checks on Windows (Job Object); S2 on Windows, S9 stop on Windows | B3, C10 | #232 → #277, #323, #324 | Done |
+| Follow-up cells of the S9 installation smoke tests | B1 | #266 → #324 | Bun row, websockets 15.0, Go row and stop on Windows done; marking the Python guide's examples waits for #259 (in progress) |
+| Guarantee register | All | #181 → #276, #310 | In progress: the `loader/` family and the rest of `host/` not registered; 0.10 uses the current state as its baseline (plan Q3) |
+| TLA+ Spec 1 and the implementation of policy B | P10, C6 | #208 → #222; #228 → #261 | Done |
+
+Defects found by step two's tests and fixed: #279 (#338), #281 #282 (#337), #287 (#344), #290 (#312), #291 #292 (#345), #293 (#335), #294 (#305), #300 (#334), #302 (#311), #304 (#346), #321 (#336), #325 (#330), #327 (#331), #332 (#339). Intermittent failures: #289 (#301), #303 (#319), #306 #307 #316 (#320), #314 (#318), #342 (#347), the depth limit test (#349); also #233 (#243), #234 (#244), #246 #249 (#261), #247 (#248), #250 (#252).
+
+Moved out or opened during step two: revoking while running (#273), changing `run`'s configuration while running (#274), Date / Map / Set / binary / big integers (#308) and emit carrying its dispatch mode (#340) went to "waiting for design"; S5 with containers + netem (#341) went to step three.
 
 ### 9.3 Step three (0.11): long runs, fuzzing, concurrency models, undecided designs
 
-| Item | Risks covered | Issue |
+| Item | Risks covered | issue |
 | --- | --- | --- |
-| CI changes §8.6 steps 3–4: split dylib jobs on Linux; CI measurement | Critical path; Q12.9 | #203 |
 | Three FZ targets; three SH models | P2, E7, K2 | #179 |
-| Host-level soak (S8); S6, S7 | L1, L3, D3, F8, D5 | #192, #190, #191 |
+| Host-level soak (S8) | L1, L3 | #192 |
+| S6 Cordis plugins; nightly baseline with the latest Cordis plugins | F8, F4 | #190 |
+| S7 Rust embedding and multiple tenants | D2, D3, D5 | #191 |
 | Previous release's runtime vs current host | J2, E13 | #209 |
-| Nightly baseline with the latest Cordis plugins | F4 | part of #190 |
 | TLA+ Spec 2 | E4, E5 | #210 |
-| Bun columns | Bun variant of C10 | #194 (after Spec 1) |
+| Bun runtime admitted under Q6.8 (B2, B3) | The Bun variant of C10 | #194 |
+| S5 nightly: two containers, non-loopback + TLS, netem | E12 | #341 |
+
+"CI changes §8.6 steps 3–4" (splitting the dylib jobs on Linux, CI measurements), formerly in step three, were done in #213.
 
 ### 9.4 Waiting for design
 
 | Item | Prerequisite |
 | --- | --- |
-| All controls of scenario H (S1 #185) | The design for plugin services becoming agent tools; decisions on isolating agent-written plugins and their permissions |
+| All controls for scenario H (S1 #185) | A design for "plugin services as agent tools"; decisions on isolation and permissions for agent-written plugins |
 | Resource limits on references and calls | A design first (raised in #178) |
+| Revoking a peer's credentials while running, without restarting (#273) | The remote design; S5 gains a step afterwards |
+| Whether `rutis-host run` supports changing its configuration while running and restarting a crashed runtime (#274) | A design decision; affects B4, and whether S3 and S4 can use `rutis-host` |
+| Passing Date, Map, Set, binary and big integers across languages (#308) | A design for the value conversion rules; refused explicitly today |
+| emit carrying its dispatch mode, so a `serial` across the boundary runs as serial on the far side (#340) | A design for the protocol change (the conclusion of #281) |
 
 ---
 
 ## 10. Assumptions to confirm and open questions
 
 1. **Scale assumptions** (§2.2): affect the ratings of D11, L1, L2 and the length and size of soaks.
-2. **Whether `rutis-host run` watches its configuration file**: affects how B4 is verified.
+2. ~~Whether `rutis-host run` watches its configuration file~~: checked (2026-10-11): it does not. 0.10 leaves `run` as it is; S3 recovers by restarting the host, S4 uses a fixture host (step two plan Q1); whether `run` should support changing its configuration while running is #274.
 3. ~~Service contract test tool (G1)~~: decided (2026-10-11). Whether implementations of one service return the same data is up to the service's authors; rutis provides no contract tool (standard Q6.9.4). rutis only guarantees that the rules for converting values across languages hold in every runtime and test tool (P7, A1).
 4. **Isolation and permissions for agent-written plugins (H1, H2)**: design philosophy §8 "permissions" lists this as open.
-5. **Adopting TLA+**: the first spec, including learning, takes about one to two weeks; staffing to confirm.
+5. ~~Adopting TLA+~~: Spec 1 is done (#222). Spec 2 is in step three (#210). TLC is not in the nightly runs yet.
+6. ~~Revoking the token in S5~~: decided (step two plan Q2): revoking while running is a requirement on remote, opened as #273; S5 in 0.10 tests "after a restart with another token, the reconnect is refused".
+7. ~~From which release the register's release gate applies~~: decided (plan Q3): 0.10 sets the baseline, Q9.4.4 applies from 0.11.
+8. ~~Whether persisted formats get a version field~~: decided (plan Q4): `rutis.json` gets a top-level `format`; dsh's `cordis.patch.yml` is Cordis's configuration format and gets none.
+9. ~~What to do with values outside the conversion table~~: decided (plan Q5): state the current behavior in the table first and register it as not guaranteed; changing the implementation is a separate issue (#308).
+10. ~~How step two is implemented~~: decided (plan Q6): one PR per item; the plan PR keeps only the plan.
+11. **The concurrency group on main and Q12.4**: on main, runs are grouped by ref and a waiting run is replaced by the next merge (ci.md §7), so not every merge has a complete result. Change the standard (allow a later run to check several merges together), or change CI (group by commit on main)?
+12. ~~Runtimes that outlive a killed host on Unix (Q5.4.4, B3)~~: fixed (#353, #354): once the session ends, a runtime unloads its rows within `RUTIS_SHUTDOWN_TIMEOUT` (passed on from rutis-host's `--shutdown-timeout`, 10 seconds by default) and exits.
+13. ~~Whether to move `network-macos` to the self-hosted runner~~: moved (repository variable `NETWORK_MACOS_RUNNER`, ci.md §10).
 
 ---
 

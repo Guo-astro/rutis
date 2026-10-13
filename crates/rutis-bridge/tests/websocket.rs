@@ -586,6 +586,7 @@ fn regenerate_python_tls_fixtures() {
     }
 }
 
+/// guarantee: host/listen-tls
 #[test]
 fn listeners_off_loopback_need_tls() {
     let open = Config::new().listener(ListenerConfig::new(

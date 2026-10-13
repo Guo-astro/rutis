@@ -10,6 +10,7 @@ use rutis_loader::{
 use serde_json::json;
 
 /// Finding 1: Moving a group keeps the children another patch inserted into it.
+/// guarantee: loader/groups
 #[test]
 fn moving_a_group_keeps_separately_inserted_children() {
     let layers = vec![Layer::new(
@@ -45,6 +46,7 @@ fn moving_a_group_keeps_separately_inserted_children() {
 
 /// Finding 2: A respawned group keeps its new children registered even though the
 /// old instance's cleanup runs after the new one started.
+/// guarantee: loader/groups
 #[tokio::test]
 async fn respawned_group_keeps_its_children_tracked() {
     let h = Harness::new();
@@ -70,6 +72,7 @@ async fn respawned_group_keeps_its_children_tracked() {
 
 /// Finding 3: An update the plugin rejects is a failure, and the loader reports the
 /// config the plugin still runs.
+/// guarantee: loader/reconcile
 #[tokio::test]
 async fn rejected_external_update_is_reported() {
     let h = Harness::new();
@@ -110,6 +113,7 @@ async fn rejected_external_update_is_reported() {
 }
 
 /// Finding 4: A row loaded from the layers has its config validated before start.
+/// guarantee: loader/reconcile
 #[tokio::test]
 async fn first_load_validates_the_config() {
     let h = Harness::new();
@@ -136,6 +140,7 @@ async fn first_load_validates_the_config() {
 
 /// Finding 5: An override patch whose name assertion fails is inert; an edit must
 /// not merge into it.
+/// guarantee: loader/ownership-and-overrides
 #[test]
 fn edits_skip_override_patches_with_a_failing_name_assertion() {
     let layers = vec![
@@ -187,6 +192,7 @@ fn edits_skip_override_patches_with_a_failing_name_assertion() {
 }
 
 /// Finding 6: After the host shut down, `flush` writes nothing.
+/// guarantee: loader/closed-after-shutdown
 #[tokio::test]
 async fn flush_after_shutdown_is_closed() {
     let h = Harness::new();

@@ -83,6 +83,7 @@ fn start(s: &Scenario) -> (Host, Probe, Probe) {
 }
 
 /// risk: C (cross-language composition), B3 (runtimes outlive a killed host)
+/// guarantee: host/killed-host-leaves-no-runtimes
 #[test]
 fn a_ts_row_uses_a_python_service() {
     let s = Scenario::new("ts-uses-py");
@@ -117,6 +118,7 @@ fn a_ts_row_uses_a_python_service() {
 /// tagged with it; the Node runtime refused them, ended its session and
 /// exited normally, and the call failed with `BindingError: the process
 /// exited normally`. Found by this harness: #225.
+/// guarantee: host/stop-on-signal
 #[test]
 fn a_python_call_through_ts_back_to_python() {
     let s = Scenario::new("py-ts-py");

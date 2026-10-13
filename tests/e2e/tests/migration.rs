@@ -289,6 +289,7 @@ fn end_a(a: &mut Host, watch: &Probe, on: &str, pid: u32) {
 /// untouched), core/D22 (`planner` waits, without failing, while no
 /// `calendar` runs), bridge/call-chains-across-processes (`planner`'s
 /// chain crosses the link to B's runtime, #325)
+/// guarantee: loader/services-by-name
 #[test]
 fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
     let s = Scenario::new("migration");
@@ -345,6 +346,7 @@ fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
 ///
 /// guarantee: core/D14 (`planner` follows the switch, its row untouched),
 /// core/D22 (`planner` waits, without failing, while no `calendar` runs)
+/// guarantee: loader/services-by-name
 #[test]
 fn an_implementation_moves_from_python_to_rust_while_the_host_runs() {
     let s = Scenario::new("migration-rust");

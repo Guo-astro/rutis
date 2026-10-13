@@ -58,6 +58,7 @@ fn plugin(version: &str) -> String {
 }
 
 /// After the module's source changes, reloading the row runs the new code.
+/// guarantee: loader/reload-all-or-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn reloading_a_row_runs_the_edited_module() {
     let dir = tempfile::tempdir().unwrap();

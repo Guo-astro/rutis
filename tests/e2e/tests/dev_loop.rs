@@ -458,18 +458,21 @@ fn dev_loop(kind: Kind) {
 }
 
 /// risk: A2, A3, A4, A7, B2 (Node)
+/// guarantee: host/stop-on-signal, host/dev-reload, host/dev-failed-reload-keeps-old, host/new, host/check
 #[test]
 fn the_node_plugin_development_loop() {
     dev_loop(Kind::Node);
 }
 
 /// risk: A2, A3, A4, A7, A8, B2 (Python)
+/// guarantee: host/stop-on-signal, host/dev-reload, host/dev-failed-reload-keeps-old, host/new, host/check
 #[test]
 fn the_python_plugin_development_loop() {
     dev_loop(Kind::Python);
 }
 
 /// risk: A2, A3, A4, A7, B2 (Bun)
+/// guarantee: host/stop-on-signal, host/dev-reload, host/dev-failed-reload-keeps-old, host/new, host/check
 #[test]
 #[cfg_attr(windows, ignore = "Bun is not declared for Windows (Bun design §10)")]
 fn the_bun_plugin_development_loop() {
@@ -477,6 +480,7 @@ fn the_bun_plugin_development_loop() {
 }
 
 /// risk: A2, A3, A4, A7, B2 (Go: a rebuild and a runtime restart, not a reload)
+/// guarantee: host/stop-on-signal, host/dev-reload, host/dev-failed-reload-keeps-old, host/new, host/check
 #[test]
 fn the_go_plugin_development_loop() {
     dev_loop(Kind::Go);

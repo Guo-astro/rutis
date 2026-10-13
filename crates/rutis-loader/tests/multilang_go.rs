@@ -320,6 +320,7 @@ fn row_state(loader: &Loader, id: &str) -> Option<FiberState> {
 /// Three runtimes start cold with rows using each other's services: none
 /// waits for another, every row starts, synchronous calls into Go that call
 /// back into Node or Python complete.
+/// guarantee: loader/runtimes-do-not-wait-for-each-other
 #[tokio::test(flavor = "multi_thread")]
 async fn three_runtimes_start_cold_and_use_each_other() {
     let fixture = fixture().await;
@@ -346,6 +347,7 @@ async fn three_runtimes_start_cold_and_use_each_other() {
 
 /// A Go provider that goes stops exactly its users, in every language,
 /// before it stops itself.
+/// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_go_provider_that_goes_stops_its_users_first() {
     let fixture = fixture().await;
@@ -397,6 +399,7 @@ async fn a_go_provider_that_goes_stops_its_users_first() {
 
 /// What a Go plugin injects gates it: it waits for the service, and stops
 /// when it goes.
+/// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn injected_services_gate_a_go_plugin() {
     let fixture = fixture().await;

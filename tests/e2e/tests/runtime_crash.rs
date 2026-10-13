@@ -206,6 +206,7 @@ fn stop(host: &mut Host) {
 /// call in progress when its runtime's session ends fails explicitly, not
 /// a hang; here the session ends with the killed Python runtime; a runtime
 /// process that ends takes its services with it).
+/// guarantee: host/row-state-lines
 #[test]
 fn a_killed_runtime_fails_its_calls_and_a_restart_recovers() {
     let s = Scenario::new("runtime-crash");

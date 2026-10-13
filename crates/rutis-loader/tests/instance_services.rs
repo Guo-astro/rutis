@@ -202,6 +202,7 @@ fn active(entry: &EntryInfo) -> bool {
     matches!(&entry.status, EntryStatus::Running(s) if s.state == FiberState::Active)
 }
 
+/// guarantee: loader/instance-services
 #[tokio::test]
 async fn an_instance_name_gates_on_its_own_instance() {
     let (s, report) = setup(json!([
@@ -237,6 +238,7 @@ async fn an_instance_name_gates_on_its_own_instance() {
     assert_eq!(users.iter().filter(|e| active(e)).count(), 1);
 }
 
+/// guarantee: loader/instance-services
 #[tokio::test]
 async fn an_instance_name_outside_its_instances_is_unresolved() {
     let (s, report) = setup(json!([
@@ -254,6 +256,7 @@ async fn an_instance_name_outside_its_instances_is_unresolved() {
     }
 }
 
+/// guarantee: loader/instance-services
 #[tokio::test]
 async fn expressions_see_the_copy_s_instance() {
     let (s, report) = setup(json!([

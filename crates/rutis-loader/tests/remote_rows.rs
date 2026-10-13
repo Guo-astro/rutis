@@ -106,6 +106,7 @@ async fn remote_python(project: &Path) -> (tokio::process::Child, String) {
     (child, address)
 }
 
+/// guarantee: loader/remote-runtime-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn a_remote_python_runtime_runs_loader_rows() {
     let project = tempfile::tempdir().unwrap();
@@ -189,6 +190,7 @@ async fn a_remote_python_runtime_runs_loader_rows() {
 
 /// The same with a remote Node runtime: the row names an npm package that
 /// exists only where the runtime runs.
+/// guarantee: loader/remote-runtime-rows
 #[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_remote_node_runtime_resolves_and_runs_npm_rows() {
@@ -325,6 +327,7 @@ async fn a_remote_node_runtime_resolves_and_runs_npm_rows() {
 /// The rows of a remote runtime share its one control session: both
 /// services come from the same session, and unloading one row leaves the
 /// session and the other row's service.
+/// guarantee: loader/remote-runtime-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_rows_share_the_runtime_session() {
     let project = tempfile::tempdir().unwrap();
