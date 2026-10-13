@@ -8,7 +8,7 @@
 
 #![cfg(unix)]
 
-use rutis_e2e::{repo, Scenario};
+use rutis_e2e::{build_guard, repo, Scenario};
 use serde_json::Value;
 
 #[test]
@@ -82,8 +82,9 @@ fn follow(example: &Value) {
                     .to_string();
                 continue;
             }
+            // Setup steps: installs and builds.
             let mut command = s.program(&cwd, "sh", ["-c", line], &[]);
-            let status = command.wait_exit();
+            let status = command.wait_exit_within(build_guard());
             if !status.success() {
                 let output: Vec<String> =
                     command.lines().into_iter().map(|line| line.text).collect();

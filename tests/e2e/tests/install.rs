@@ -18,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rutis_e2e::{repo, Host, Lang, Scenario};
+use rutis_e2e::{build_guard, repo, Host, Lang, Scenario};
 use serde_json::{json, Value};
 
 const IGNORED: &str = "needs built packages: install.yml runs it with RUTIS_E2E_ARTIFACTS";
@@ -115,7 +115,7 @@ fn npm() -> &'static str {
 fn run(s: &Scenario, dir: &str, program: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> Host {
     let what = format!("{} {}", program.as_ref().to_string_lossy(), args.join(" "));
     let mut command = s.program(dir, program, args, &[]);
-    let status = command.wait_exit();
+    let status = command.wait_exit_within(build_guard());
     if !status.success() {
         let output: Vec<String> = command.lines().into_iter().map(|line| line.text).collect();
         panic!("{what}: {status}\n  {}", output.join("\n  "));
@@ -764,7 +764,7 @@ fn go_build(s: &Scenario, src: &str, out: &str) {
         env.push(("GOPROXY", "off"));
     }
     let mut build = s.program(src, "go", ["build", "-o", &binary, "."], &env);
-    let status = build.wait_exit();
+    let status = build.wait_exit_within(build_guard());
     if !status.success() {
         let output: Vec<String> = build.lines().into_iter().map(|line| line.text).collect();
         panic!("go build: {status}\n  {}", output.join("\n  "));
