@@ -12,7 +12,9 @@ import { fileURLToPath } from 'node:url'
 
 // The plugin API this runtime runs: a plugin written against a newer one is
 // refused, naming both.
-export const PLUGIN_API = 1
+// 2: ctx.on and ctx.emit (leaf events). A runtime that supports only 1
+// refuses such a plugin at load instead of failing in apply.
+export const PLUGIN_API = 2
 // What `definePlugin` marks its plugins with, across copies of the SDK.
 const PLUGIN = Symbol.for('rutis.leaf-plugin')
 

@@ -13,6 +13,9 @@
 //
 // Within the process, `ctx.use(name)` returns the object itself when another
 // row here provides it, so those calls never leave the process.
+// Rows also share an event bus: `ctx.on` listens until the row unloads, and
+// `ctx.emit` calls listeners synchronously. Host `emit` calls may use only
+// the names declared by `mount.emits`, and wait for every listener to settle.
 //
 // A row's `isolate` gives some names a scope label: rows isolating a name
 // with the same label share it, and the same name under another label
@@ -23,7 +26,14 @@ import type { Client } from './client.ts'
 import { declared, locate, Modules, versionOf, type Kind } from './plugin.ts'
 import { MANIFEST } from './session.ts'
 
-export const FEATURES = ['rows.v2', 'hosts', 'leaf', 'scopes']
+// internal/* names Cordis's own events on Node; no leaf plugin listens to or
+// emits them on either runtime (boundary rule 5).
+function reserved(name: string): void {
+  if (typeof name === 'string' && name.startsWith('internal/')) throw new Error(`event ${name} is internal to the runtime`)
+}
+
+// events: leaf plugins receive what rutis emits (RuntimePlugin::emits).
+export const FEATURES = ['rows.v2', 'hosts', 'leaf', 'scopes', 'events']
 
 // How the service `name` is identified in the scope `label`. Neither may
 // contain NUL and a label may not be empty, so no two pairs share an id.
@@ -51,6 +61,7 @@ const idIn = (row: Row, name: string) => scopedId(name, row.isolate.get(name))
 
 interface Slot { row: string, methods: Set<string>, object: unknown, handle: string | null, generation: number }
 interface Handle { name: string, object: any, current: boolean, released: boolean }
+type Listener = (...args: any[]) => unknown
 
 export class Runtime {
   client?: Client
@@ -62,6 +73,8 @@ export class Runtime {
   #hosts = new Map<string, unknown>()
   #slots = new Map<string, Slot>()
   #handles = new Map<string, Handle>()
+  #events = new Map<string, Set<Listener>>()
+  #emits = new Set<string>()
   #version = 0
 
   constructor(project: string) { this.#project = project }
@@ -118,6 +131,38 @@ export class Runtime {
     if (entry.released) this.#handles.delete(handle)
   }
 
+  // ── Events ────────────────────────────────────────────────────
+
+  #on(row: Row, name: string, callback: Listener): () => void {
+    if (this.#rows.get(row.key) !== row) throw new Error(`row ${row.key} is not active`)
+    if (typeof callback !== 'function') throw new TypeError('on needs a listener function')
+    reserved(name)
+    const listeners = this.#events.get(name) ?? new Set<Listener>()
+    this.#events.set(name, listeners)
+    // A registration has its own identity even when the callback is reused.
+    const listener = callback.bind(null)
+    listeners.add(listener)
+    const off = () => {
+      if (!listeners.delete(listener)) return
+      if (!listeners.size) this.#events.delete(name)
+      const index = row.cleanups.indexOf(off)
+      if (index >= 0) row.cleanups.splice(index, 1)
+    }
+    row.cleanups.push(off)
+    return off
+  }
+
+  #emit(name: string, args: any[]): void {
+    reserved(name)
+    for (const callback of [...(this.#events.get(name) ?? [])]) callback(...args)
+  }
+
+  async #parallel(name: string, args: any[]): Promise<void> {
+    const results = await Promise.allSettled([...(this.#events.get(name) ?? [])].map(async callback => callback(...args)))
+    const errors = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+    if (errors.length) throw new AggregateError(errors.map(error => error.reason))
+  }
+
   // ── Rows ──────────────────────────────────────────────────────
 
   async load(key: string, entry: string, config: unknown, isolate: Array<[string, string]> | null, exports: Row['exports'] | null) {
@@ -141,6 +186,8 @@ export class Runtime {
         if (typeof cleanup !== 'function') throw new TypeError('effect needs a cleanup function')
         row.cleanups.push(cleanup)
       },
+      on: (name: string, callback: Listener) => this.#on(row, name, callback),
+      emit: (name: string, ...args: any[]) => this.#emit(name, args),
     }
     try {
       const cleanup = await plugin.apply(ctx, config)
@@ -172,7 +219,7 @@ export class Runtime {
       if (slot?.handle) this.#retire(slot.handle)
     }
     const errors: unknown[] = []
-    for (const cleanup of row.cleanups.reverse()) {
+    for (const cleanup of row.cleanups.splice(0).reverse()) {
       try { await cleanup() } catch (error) { errors.push(error) }
     }
     if (errors.length) throw errors[0]
@@ -201,6 +248,7 @@ export class Runtime {
     for (const key of [...this.#rows.keys()].reverse()) {
       try { await this.unload(key) } catch {}
     }
+    this.#events.clear()
   }
 
   // ── Dispatch ──────────────────────────────────────────────────
@@ -218,9 +266,13 @@ export class Runtime {
     return Reflect.apply(operation, entry.object, args)
   }
 
-  #control(method: string, args: any[]): unknown {
+  #control(method: string, args: any): unknown {
     switch (method) {
       case 'mount':
+        for (const name of args.emits ?? []) {
+          if (String(name).startsWith('internal/')) throw new Error(`event ${name} is internal to the runtime and cannot be emitted from rutis`)
+        }
+        this.#emits = new Set(args.emits ?? [])
         return {
           services: {},
           features: FEATURES,
@@ -230,6 +282,11 @@ export class Runtime {
       case 'dispose':
         this.closing = true
         return (async () => { await this.dispose(); await this.client?.drain(); return null })()
+      case 'emit': {
+        const [name, values] = args
+        if (!this.#emits.has(name)) throw new Error(`event ${name} is not declared for emission from rutis`)
+        return this.#parallel(name, values ?? [])
+      }
       case 'rows.load': {
         const [key, entry, config, isolate, _inject, exports] = args
         return this.load(key, String(entry), config, isolate, exports)

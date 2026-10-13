@@ -1,8 +1,9 @@
 import { expect, test } from 'bun:test'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FEATURES, handleOf, Runtime, scopedId } from '../src/runner.ts'
+import type { Context } from '../../../node/rutis/src/index.d.ts'
 
 function project(files: Record<string, string>) {
   const dir = mkdtempSync(join(tmpdir(), 'rutis-bun-'))
@@ -90,3 +91,67 @@ test('rows.schema reports what a module declares', async () => {
     config: null, inject: [], provides: { tools: { title: 'sync' } }, version: null,
   })
 })
+
+async function eventRows(run: (runtime: Runtime, a: Context, b: Context) => Promise<void>) {
+  const dir = project({ 'events.ts': 'export function apply(ctx, name) { ctx.provide(name, ctx) }' })
+  const runtime = new Runtime(dir)
+  try {
+    runtime.dispatch('', 'mount', { emits: ['changed'] })
+    for (const key of ['a', 'b']) await runtime.load(key, './events.ts', key, null, null)
+    await run(runtime, runtime.lookup('a') as Context, runtime.lookup('b') as Context)
+  } finally {
+    await runtime.dispose()
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test('host events require declared names; shared listeners dispose independently and unload', () => eventRows(async (runtime, a, b) => {
+  const received: number[] = []
+  const listener = (value: number) => { received.push(value) }
+  a.on('changed', listener)
+  const off = b.on('changed', listener)
+  b.on('changed', listener)
+  await runtime.dispatch('', 'emit', ['changed', [7]])
+  expect(received).toEqual([7, 7, 7])
+  expect(() => runtime.dispatch('', 'emit', ['undeclared', []])).toThrow('not declared for emission from rutis')
+  off()
+  expect(a.emit('changed', 8)).toBeUndefined()
+  expect(received).toEqual([7, 7, 7, 8, 8])
+  await runtime.unload('b')
+  a.emit('changed', 9)
+  expect(received).toEqual([7, 7, 7, 8, 8, 9])
+  expect(() => a.on('internal/dispatch', () => {})).toThrow('event internal/dispatch is internal to the runtime')
+  expect(() => a.emit('internal/service')).toThrow('event internal/service is internal to the runtime')
+  expect(() => runtime.dispatch('', 'mount', { emits: ['internal/dispatch'] })).toThrow('is internal to the runtime and cannot be emitted from rutis')
+}))
+
+test('host emission awaits every listener and aggregates sync and async errors', () => eventRows(async (runtime, a, b) => {
+  const errors = [new TypeError('sync failure'), new RangeError('async failure')]
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  let waiting = false
+  a.on('changed', () => { throw errors[0] })
+  b.on('changed', async () => { throw errors[1] })
+  a.on('changed', async () => { waiting = true; await pending })
+  let settled = false
+  const outcome = (runtime.dispatch('', 'emit', ['changed', []]) as Promise<void>).then(
+    () => { settled = true; return null },
+    error => { settled = true; return error },
+  )
+  expect(waiting).toBe(true)
+  await Bun.sleep(0)
+  expect(settled).toBe(false)
+  release()
+  const error = await outcome
+  expect(error).toBeInstanceOf(AggregateError)
+  expect(error.errors).toEqual(errors)
+}))
+
+// guarantee: sdk/leaf-events (listener errors)
+test('a sync listener error stops later listeners and reaches the emitter', () => eventRows(async (_runtime, a) => {
+  const seen: number[] = []
+  a.on('e', () => { seen.push(1); throw new Error('sync failure') })
+  a.on('e', () => { seen.push(2) })
+  expect(() => a.emit('e')).toThrow('sync failure')
+  expect(seen).toEqual([1])
+}))
