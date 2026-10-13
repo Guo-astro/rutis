@@ -3053,7 +3053,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rutis"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "rutis-test-support",
  "thiserror 2.0.20",
@@ -3087,7 +3087,7 @@ dependencies = [
 
 [[package]]
 name = "rutis-bridge"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "futures-util",
  "getrandom 0.2.17",
@@ -3168,7 +3168,7 @@ dependencies = [
 
 [[package]]
 name = "rutis-dylib"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "libc",
  "rutis",
@@ -3187,7 +3187,7 @@ dependencies = [
 
 [[package]]
 name = "rutis-dylib-launcher"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "sha2",
  "windows-sys 0.61.2",
@@ -3195,7 +3195,7 @@ dependencies = [
 
 [[package]]
 name = "rutis-dylib-meta"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "object",
 ]
@@ -3237,7 +3237,7 @@ dependencies = [
 
 [[package]]
 name = "rutis-host"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "libc",
  "rustls-pki-types",
@@ -3254,7 +3254,7 @@ dependencies = [
 
 [[package]]
 name = "rutis-loader"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "rutis",
  "rutis-bridge",
@@ -3270,7 +3270,7 @@ dependencies = [
 
 [[package]]
 name = "rutis-sdk"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "rutis",
  "serde_json",

@@ -43,7 +43,7 @@ ENDPOINT_PROTOCOL = 3
 CAPABILITIES = ["signals", "reentrant-sync", "sync-wait", "sync-stack"]
 # What it declares in the compat format, where older hosts ignore it.
 COMPAT_CAPABILITIES = ["reentrant-sync", "sync-wait", "sync-stack"]
-IMPLEMENTATION = {"name": "rutis", "version": "0.9.1"}
+IMPLEMENTATION = {"name": "rutis", "version": "0.10.0"}
 
 
 def version_mismatch(far, local: int, implementation) -> str:

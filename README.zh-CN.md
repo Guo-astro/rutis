@@ -225,7 +225,7 @@ stateDiagram-v2
 
 Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)：SDK，以及每个插件二进制自带的运行时。
 
-以上所有包组成发布列车，一起发布、版本相同，当前为 0.9。各个 rutis 包请使用同一个版本。
+以上所有包组成发布列车，一起发布、版本相同，当前为 0.10。各个 rutis 包请使用同一个版本。
 
 ## 用 rutis 构建
 
