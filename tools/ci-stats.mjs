@@ -99,8 +99,8 @@ for (const [name, job] of byDuration) {
 }
 out.push('');
 
-const mainFailures = rows.filter((row) => row.run.event === 'push' && row.run.head_branch === 'main' && row.run.conclusion === 'failure');
-out.push(`### Failures on main: ${mainFailures.length}`, '');
+const mainFailures = rows.filter((row) => row.run.event !== 'pull_request' && row.run.head_branch === 'main' && row.run.conclusion === 'failure');
+out.push(`### Failures on main (nightly runs, runs by hand): ${mainFailures.length}`, '');
 for (const { run } of mainFailures) out.push(`- [${run.head_sha.slice(0, 7)}](${run.html_url}) ${run.created_at} ${run.display_title}`);
 const reruns = rows.filter((row) => row.run.run_attempt > 1);
 out.push('', `### Rerun runs (possible flaky failures): ${reruns.length}`, '');

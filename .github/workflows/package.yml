@@ -1,6 +1,6 @@
 # What a release publishes, built once (Q12.7): release.yml calls this, and
-# so does install.yml for main, so the packages the install scenarios test
-# are made the way released ones are. It uploads:
+# so does install.yml (nightly runs, pull requests), so the packages the
+# install scenarios test are made the way released ones are. It uploads:
 #
 #   binary-<platform>  dist/: the release archive and its .sha256;
 #                      npm-bin/: the binary for the platform package

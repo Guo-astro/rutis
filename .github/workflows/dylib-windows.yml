@@ -1,16 +1,17 @@
 # Windows dylib plugin tests. They take about 25 minutes on pull requests
 # (40 with the reproducibility check), so pull requests run them only when
-# they touch the dylib code. Every merge to main runs them, as do release
-# tags and manual runs (Actions → dylib-windows → Run workflow). Other
-# Windows builds are checked on every code change by ci.yml's
+# they touch the dylib code. The nightly runs (nightly.yml) run them, as do
+# release tags and manual runs (Actions → dylib-windows → Run workflow).
+# Other Windows builds are checked on every code change by ci.yml's
 # runtimes-windows job.
 #
 # The reproducible-SDK check builds the SDK twice from scratch (about 15
 # minutes) and rarely breaks from ordinary changes, so pull requests skip it;
-# main, release tags and manual runs keep it.
+# the nightly runs, release tags and manual runs keep it.
 #
 # Changes elsewhere (the rutis kernel, dependency updates in Cargo.lock) can
-# also break Windows dylib plugins; main catches those after the merge.
+# also break Windows dylib plugins; the nightly run catches those after the
+# merge.
 
 name: dylib-windows
 
@@ -31,16 +32,18 @@ on:
       - "tools/lib/**"
       - "rust-toolchain.toml"
       - ".github/workflows/dylib-windows.yml"
-  # Every merge to main (quality status §8.4), and release tags.
+  # Release tags.
   push:
-    branches: ["main"]
     tags: ["v*"]
   workflow_dispatch:
+  # The nightly runs (nightly.yml; quality status §8.4).
+  workflow_call:
 
-# A new push to a pull request cancels its run still in progress; on main
-# a newer merge replaces a waiting run, never the one in progress (as ci.yml).
+# A new push to a pull request cancels its run still in progress; any other
+# run has a group of its own (github.run_id is the caller's for a call), as
+# in ci.yml.
 concurrency:
-  group: dylib-windows-${{ github.event.pull_request.number || github.ref }}
+  group: dylib-windows-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

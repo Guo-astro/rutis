@@ -4,7 +4,7 @@
 # (Node, Python, Bun, Go), which otherwise fail once in a while on someone
 # else's pull request. The network stack soaks (links cut and relinked,
 # processes started and ended, over and over) check that nothing piles up.
-# Runs nightly and on demand.
+# Runs in the nightly runs (nightly.yml calls it) and on demand.
 #
 # Each round of the rutis tests varies what it can: the number of test
 # threads (1, 2, all cores), the test order (shuffled), the build (every
@@ -15,8 +15,6 @@
 name: stress
 
 on:
-  schedule:
-    - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       rounds:
@@ -24,6 +22,15 @@ on:
         default: "20"
       soak_secs:
         description: How long each soak runs, in seconds
+        default: "600"
+  # nightly.yml, with the defaults.
+  workflow_call:
+    inputs:
+      rounds:
+        type: string
+        default: "20"
+      soak_secs:
+        type: string
         default: "600"
 
 permissions:
