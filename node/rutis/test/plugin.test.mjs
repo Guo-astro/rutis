@@ -76,3 +76,81 @@ test('a plugin that needs a newer plugin API is refused', async () => {
   const future = { ...weather, api: PLUGIN_API + 1 }
   await assert.rejects(load(future, { services: { llm: {} } }), /needs plugin API/)
 })
+
+test('host emission waits for every listener and aggregates failures', async () => {
+  const gate = Promise.withResolvers()
+  const called = []
+  const payload = { n: 1 }
+  const t = await load(definePlugin({
+    apply(ctx) {
+      ctx.on('tick', value => {
+        value.n = 2
+        called.push('sync')
+        throw new TypeError('sync failure')
+      })
+      ctx.on('tick', async () => {
+        await gate.promise
+        throw new RangeError('async failure')
+      })
+      ctx.on('tick', () => { called.push('success') })
+    },
+  }), { emits: ['tick'] })
+  let settled = false
+  const done = t.emit('tick', payload)
+    .finally(() => { settled = true })
+    .catch(error => error)
+  assert.deepEqual(called, ['sync', 'success'], 'a throwing listener does not stop dispatch')
+  assert.equal(payload.n, 1, 'event data is copied across the boundary')
+  await Promise.resolve()
+  assert.equal(settled, false, 'the async listener is still pending')
+  gate.resolve()
+  const error = await done
+  assert.ok(error instanceof AggregateError)
+  assert.deepEqual(error.errors.map(item => [item.name, item.message]), [
+    ['TypeError', 'sync failure'], ['RangeError', 'async failure'],
+  ])
+  await t.unload()
+})
+
+test('duplicate listeners dispose independently and failed unload clears listeners', async () => {
+  const received = []
+  const cleaned = []
+  const handler = value => { received.push(value) }
+  let context, off
+  const t = await load(definePlugin({
+    apply(ctx) {
+      context = ctx
+      ctx.on('early', handler)
+      ctx.effect(() => {
+        cleaned.push('first')
+        throw new Error('cleanup failed')
+      })
+      off = ctx.on('tick', handler)
+      ctx.effect(() => { cleaned.push('middle') })
+      ctx.on('tick', handler)
+      ctx.effect(() => { cleaned.push('last') })
+    },
+  }), { emits: ['tick'] })
+  await t.emit('tick', 1)
+  assert.deepEqual(received, [1, 1])
+  off()
+  off()
+  assert.equal(context.emit('tick', 2), undefined)
+  assert.deepEqual(received, [1, 1, 2], 'the other registration remains active')
+  await assert.rejects(t.unload(), /cleanup failed/)
+  context.emit('tick', 3)
+  context.emit('early', 4)
+  assert.deepEqual(received, [1, 1, 2], 'even the listener before the failed cleanup is removed')
+  assert.deepEqual(cleaned, ['last', 'middle', 'first'], 'manual off skips no cleanup')
+})
+
+test('internal/* events are refused, as on the real runtimes', async () => {
+  let context
+  const plugin = definePlugin({ apply(ctx) { context = ctx } })
+  const t = await load(plugin)
+  assert.throws(() => context.on('internal/dispatch', () => {}), /event internal\/dispatch is internal to the runtime/)
+  assert.throws(() => context.emit('internal/service'), /event internal\/service is internal to the runtime/)
+  await assert.rejects(t.emit('internal/status'), /event internal\/status is internal to the runtime/)
+  await t.unload()
+  await assert.rejects(load(plugin, { emits: ['internal/service'] }), /is internal to the runtime and cannot be emitted from rutis/)
+})

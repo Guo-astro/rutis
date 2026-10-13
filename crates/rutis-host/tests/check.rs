@@ -142,7 +142,7 @@ async fn check_fails_what_cannot_run() {
         &[
             ("package.json", r#"{ "name": "app", "type": "module" }"#),
             ("greeter.mjs", &node_plugin("{}", "")),
-            ("future.mjs", &node_plugin("{}", ", api: 2")),
+            ("future.mjs", &node_plugin("{}", ", api: 3")),
             ("broken.mjs", "throw new Error('broken on import')\n"),
             (
                 "future_py.py",
@@ -174,7 +174,7 @@ async fn check_fails_what_cannot_run() {
          greeter (file://<dir>/greeter.mjs): ok\n  \
          inject: []\n  \
          provides: {}\n\
-         future (file://<dir>/future.mjs): cannot load \"file://<dir>/future.mjs\": Error: plugin <dir>/future.mjs needs plugin API 2; this runtime supports 1: upgrade @arcships/rutis-runtime where the host runs\n\
+         future (file://<dir>/future.mjs): cannot load \"file://<dir>/future.mjs\": Error: plugin <dir>/future.mjs needs plugin API 3; this runtime supports 2: upgrade @arcships/rutis-runtime where the host runs\n\
          broken (file://<dir>/broken.mjs): cannot load \"file://<dir>/broken.mjs\": Error: broken on import\n\
          missing (weather-plugin): no plugin named \"weather-plugin\"\n  \
          install it where its runtime finds it (a runtime under runtimes), or correct the row's name\n\

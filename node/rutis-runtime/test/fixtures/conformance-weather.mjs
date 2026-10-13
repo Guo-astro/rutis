@@ -23,8 +23,11 @@ export default definePlugin({
   },
   apply(ctx) {
     const clock = ctx.use('clock')
+    let city = 'Oslo'
+    // `events` in the expectations: the host changes the city.
+    ctx.on('weather/city', name => { city = name })
     ctx.provide('weather', {
-      today() { return `Oslo at ${clock.now()}` },
+      today() { return `${city} at ${clock.now()}` },
       async later() { return 'Oslo later' },
       each(callback) { return ['mon', 'tue'].map(day => callback(day)) },
       echo(value) { return value },

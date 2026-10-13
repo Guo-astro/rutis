@@ -47,6 +47,68 @@ async fn a_runtime_that_cannot_start_says_why() {
     );
 }
 
+#[cfg(feature = "node")]
+#[tokio::test(flavor = "multi_thread")]
+async fn local_runtime_events_follow_leaf_lifecycle() {
+    use rutis_bridge::runtime::row_projection;
+    use rutis_test_support::{eventually, within};
+    use serde_json::json;
+
+    within("runtime event declarations survive restart", async {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let package = repo.join("node/rutis-runtime");
+        let entry = repo.join("crates/rutis-bridge/tests/fixtures/leaf-events.mjs");
+        let runtime =
+            LocalRuntime::node(&package, package.join("package.json")).emits(["leaf/changed"]);
+        let handle = runtime.handle();
+        let root = Ctx::root().unwrap();
+        let view = root.plugin(runtime);
+        (&view).await.unwrap();
+        for generation in 1..=2 {
+            let process = handle.ready().await.unwrap();
+            let exports = process.describe_row(&entry).await.unwrap().provides;
+            process
+                .load_row_exporting(
+                    "observer",
+                    &entry,
+                    json!({ "observe": true }),
+                    &[],
+                    &[],
+                    &exports,
+                    row_projection(&exports),
+                )
+                .await
+                .unwrap();
+            let probe = eventually(|| process.service("probe"), "the observer").await;
+            process
+                .load_row("listener", &entry, json!({}), &[], &[])
+                .await
+                .unwrap();
+            process
+                .emit("leaf/changed", vec![json!(generation).into()])
+                .await
+                .unwrap();
+            let expected = json!([generation]);
+            assert_eq!(
+                process.call_async(&probe, "seen", json!([])).await.unwrap(),
+                expected
+            );
+            process.unload_row("listener").await.unwrap();
+            process.emit("leaf/changed", vec![]).await.unwrap();
+            assert_eq!(
+                process.call_async(&probe, "seen", json!([])).await.unwrap(),
+                expected
+            );
+            if generation == 1 {
+                view.restart().await.unwrap();
+                process.closed().await;
+            }
+        }
+        root.shutdown().await.unwrap();
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_without_events_refuses_emits_before_rows_load() {
     use std::sync::Arc;

@@ -1,13 +1,16 @@
 // Leaf plugins, as the SDK (@arcships/rutis) makes them: a JavaScript or
 // TypeScript plugin that needs no Cordis. The runtime loads it into its
-// Cordis Context like any plugin, so it shares services with Cordis plugins
-// in the same process; the plugin itself only sees `ctx.use`, `ctx.provide`
-// and `ctx.effect`. The runtime does not import the SDK: it recognises its
-// plugins by the symbol the SDK marks them with.
+// Cordis Context like any plugin, so it shares services — and the event
+// bus — with Cordis plugins in the same process; the plugin itself only
+// sees `ctx.use`, `ctx.provide`, `ctx.effect`, `ctx.on` and `ctx.emit`.
+// The runtime does not import the SDK: it recognises its plugins by the
+// symbol the SDK marks them with.
 
 // The plugin APIs this runtime runs: a plugin written against a newer one
 // is refused, naming both.
-export const PLUGIN_API = 1
+// 2: ctx.on and ctx.emit (leaf events). A runtime that supports only 1
+// refuses such a plugin at load instead of failing in apply.
+export const PLUGIN_API = 2
 
 const PLUGIN = Symbol.for('rutis.leaf-plugin')
 
@@ -22,7 +25,16 @@ export function supported(plugin, name) {
   return plugin
 }
 
-// The Cordis plugin that runs a leaf plugin.
+// Cordis's internal/* events drive the runner itself and do not exist on the
+// other runtimes, so a leaf plugin can neither listen to nor emit them
+// (boundary rule 5: internal/* stays internal).
+export function reserved(name) {
+  if (typeof name === 'string' && name.startsWith('internal/')) throw new Error(`event ${name} is internal to the runtime`)
+  return name
+}
+
+// The Cordis plugin that runs a leaf plugin. Events share Cordis's process
+// bus; `context.on` owns listener cleanup through the plugin's fiber.
 export function toCordis(spec) {
   return {
     name: spec.name ?? 'leaf',
@@ -36,6 +48,8 @@ export function toCordis(spec) {
         },
         provide: (name, value) => context.provide(name, value),
         effect: cleanup => { context.effect(() => cleanup) },
+        on: (name, handler) => context.on(reserved(name), handler),
+        emit: (name, ...args) => context.emit(reserved(name), ...args),
       }
       const cleanup = await spec.apply(ctx, config)
       if (cleanup !== undefined && cleanup !== null) {

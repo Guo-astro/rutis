@@ -50,7 +50,8 @@ const rows = new Map() // key -> { fiber, inner, config, exports, loading }
 // rutis services registered one by one (`hosts.*`): id -> withdraw
 const hosts = new Map()
 // What this runner supports beyond protocol 2, reported by `mount`.
-const FEATURES = ['rows.v2', 'hosts', 'leaf.js', 'scopes']
+// events: leaf plugins receive what rutis emits (RuntimePlugin::emits).
+const FEATURES = ['rows.v2', 'hosts', 'leaf.js', 'scopes', 'events']
 
 // A service in a scope: rows isolating `name` with `label` share it, and the
 // same name in another scope (another instance, say) is another service.
@@ -455,6 +456,9 @@ function mount(args) {
     slots.set(name, { name, methods: new Set(methods), scope: undefined, object: undefined, identity: undefined, handle: null, generation: 0, version: 0 })
   }
   const plugins = args.plugins ?? [{ entry: pluginPath, config: args.config }]
+  for (const name of args.emits ?? []) {
+    if (String(name).startsWith('internal/')) throw new Error(`event ${name} is internal to the runtime and cannot be emitted from rutis`)
+  }
   emits = new Set(args.emits ?? [])
   // Services the rutis application provides are registered before the
   // plugins load, so the plugins' dependencies on them resolve natively.
