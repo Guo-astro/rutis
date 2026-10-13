@@ -14,6 +14,9 @@ cross between the plugin and the test as they would between processes: data
 is copied (a dataclass arrives as a dict), functions and objects with
 behaviour pass by reference, sync methods return values and async ones
 awaitables; what works only in one process fails here too.
+
+Unlike the runtime, an uncaught async listener from `ctx.emit` does not
+exit the test process: unload waits for it and reports an AggregateError.
 """
 
 from __future__ import annotations
@@ -26,7 +29,8 @@ from types import ModuleType
 from typing import Any, AsyncIterator, Callable
 
 from . import plugin as sdk
-from .peer import MAX_DEPTH, MAX_SAFE_INTEGER, RemoteError, _holds_reference, _is_live
+from .events import Events, reserved
+from .peer import AggregateError, MAX_DEPTH, MAX_SAFE_INTEGER, RemoteError, _holds_reference, _is_live, decode_error, encode_error
 
 
 class PluginTestError(AssertionError):
@@ -86,8 +90,8 @@ def _crossed_error(error: Exception) -> Exception:
     testing tool's own errors are not crossed."""
     if isinstance(error, PluginTestError):
         return error
-    if isinstance(error, RemoteError):
-        return RemoteError(error.name, error.message)
+    if isinstance(error, (AggregateError, RemoteError)):
+        return decode_error(encode_error(error))
     return RemoteError(type(error).__name__, str(error))
 
 
@@ -163,12 +167,29 @@ def _shaped(name: str, service: Any, shape: dict, strict: bool) -> Any:
 
 
 class Loaded:
-    def __init__(self, plugin: sdk.Plugin, strict: bool) -> None:
+    def __init__(self, plugin: sdk.Plugin, strict: bool, emits=()) -> None:
         self._plugin = plugin
         self._strict = strict
         self._provided: dict[str, list] = {}
         self._cleanups: list[Callable] = []
+        self._disposers: list[Callable] = []
         self._unloaded = False
+        self._events = Events()
+        self._emits = {reserved(name) for name in emits}
+
+    async def emit(self, name: str, *args: Any) -> None:
+        """Emit a declared host event, waiting for every listener to settle."""
+        if self._unloaded:
+            raise PluginTestError("the plugin is unloaded")
+        if name not in self._emits:
+            raise PluginTestError(f"event {name} is not declared for emission from rutis")
+        values = [_cross(arg, f"event {name} argument {i}") for i, arg in enumerate(args)] if self._strict else args
+        try:
+            await self._events.parallel(name, *values)
+        except Exception as error:
+            if not self._strict:
+                raise
+            raise decode_error(encode_error(error)) from error
 
     def service(self, name: str) -> Any:
         """The service `name` the plugin provides, as rutis sees it: its
@@ -191,11 +212,19 @@ class Loaded:
         if self._unloaded:
             return
         self._unloaded = True
-        for cleanup in reversed(self._cleanups):
-            result = cleanup()
-            if inspect.isawaitable(result):
-                await result
-        self._provided.clear()
+        for off in self._disposers[:]:
+            off()
+        cleanups = self._cleanups[::-1]
+        self._cleanups.clear()
+        try:
+            for cleanup in cleanups:
+                result = cleanup()
+                if inspect.isawaitable(result):
+                    await result
+        finally:
+            self._events.clear()
+            self._provided.clear()
+            await self._events.drain()
 
 
 class _Context(sdk.Context):
@@ -229,6 +258,14 @@ class _Context(sdk.Context):
             raise PluginTestError("effect needs a cleanup function")
         self._loaded._cleanups.append(cleanup)
 
+    def on(self, name: str, listener: Callable) -> Callable[[], None]:
+        if self._loaded._unloaded:
+            raise PluginTestError("the plugin is unloaded")
+        return self._loaded._events.on(name, listener, self._loaded._disposers)
+
+    def emit(self, name: str, *args: Any) -> None:
+        self._loaded._events.emit(name, *args)
+
 
 @asynccontextmanager
 async def load(
@@ -237,6 +274,7 @@ async def load(
     config: Any = None,
     services: dict | None = None,
     strict: bool = True,
+    emits=(),
 ) -> AsyncIterator[Loaded]:
     """Load `plugin` (a module with `apply`, or what `define_plugin` returns)
     with `config` and the services in `services`; unload it on exit."""
@@ -250,17 +288,17 @@ async def load(
     for name in plugin.inject:
         if name not in services:
             raise PluginTestError(f"the plugin injects {name}: give the test a service {name}")
-    loaded = Loaded(plugin, strict)
+    loaded = Loaded(plugin, strict, emits)
     ctx = _Context(loaded, services)
     config = config if config is not None else {}
-    returned = plugin.apply(ctx, _cross(config, "config") if strict else config)
-    if inspect.isawaitable(returned):
-        returned = await returned
-    if returned is not None:
-        if not callable(returned):
-            raise PluginTestError("apply must return a cleanup function or None")
-        loaded._cleanups.append(returned)
     try:
+        returned = plugin.apply(ctx, _cross(config, "config") if strict else config)
+        if inspect.isawaitable(returned):
+            returned = await returned
+        if returned is not None:
+            if not callable(returned):
+                raise PluginTestError("apply must return a cleanup function or None")
+            loaded._cleanups.append(returned)
         yield loaded
     finally:
         await loaded.unload()

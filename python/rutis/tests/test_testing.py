@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import background
 
-from rutis import PLUGIN_API, define_plugin
+from rutis import AggregateError, PLUGIN_API, RemoteError, define_plugin
 from rutis.testing import PluginTestError, load
 
 
@@ -143,6 +143,96 @@ class Testing(background.TestCase):
 
         with self.assertRaisesRegex(PluginTestError, "needs plugin API"):
             run(go())
+
+    def test_host_events_wait_for_all_listeners_and_cross_aggregate_errors(self):
+        async def go():
+            gate, started = asyncio.Event(), asyncio.Event()
+            called = []
+
+            def apply(ctx, config):
+                def fail(value):
+                    value["n"] += 1
+                    raise ValueError("sync")
+
+                async def wait(value):
+                    started.set()
+                    await gate.wait()
+                    raise TypeError("async")
+
+                ctx.on("tick", fail)
+                ctx.on("tick", wait)
+                ctx.on("tick", lambda value: called.append(value["n"]))
+
+            async with load(define_plugin(apply), emits=["tick"]) as t:
+                value = {"n": 1}
+                done = asyncio.create_task(t.emit("tick", value))
+                await started.wait()
+                self.assertEqual((called, value, done.done()), ([2], {"n": 1}, False))
+                gate.set()
+                with self.assertRaises(RemoteError) as failure:
+                    await done
+                error = failure.exception
+                self.assertEqual(error.name, "AggregateError")
+                nodes = error.graph["nodes"]
+                errors = nodes[error.graph["root"]["value"]]["errors"]
+                self.assertEqual([(nodes[ref["value"]]["name"], nodes[ref["value"]]["message"]) for ref in errors],
+                                 [("ValueError", "sync"), ("TypeError", "async")])
+
+        run(go())
+
+    def test_event_disposers_and_failed_cleanup_remove_every_listener(self):
+        async def go():
+            seen, saved = [], []
+
+            def apply(ctx, config):
+                callback = lambda value: seen.append(value)
+                ctx.on("early", callback)
+                def cleanup():
+                    ctx.emit("early", 99)
+                    raise asyncio.CancelledError()
+                ctx.effect(cleanup)
+                off = ctx.on("tick", callback)
+                ctx.on("tick", callback)
+                saved.extend([ctx, off])
+
+            with self.assertRaises(asyncio.CancelledError):
+                async with load(define_plugin(apply), emits=["tick"]) as t:
+                    await t.emit("tick", 1)
+                    saved[1]()
+                    saved[1]()
+                    self.assertIsNone(saved[0].emit("tick", 2))
+                    self.assertEqual(seen, [1, 1, 2])
+                    for operation in (saved[0].on, saved[0].emit):
+                        with self.assertRaisesRegex(ValueError, "internal"):
+                            operation("internal/test", lambda: None)
+            saved[0].emit("early", 3)
+            self.assertEqual(seen, [1, 1, 2], "cleanup emissions cannot reach the unloading plugin")
+            with self.assertRaisesRegex(PluginTestError, "unloaded"):
+                saved[0].on("tick", lambda: None)
+
+        run(go())
+
+    def test_unhandled_async_emission_fails_the_test_at_unload(self):
+        order = []
+
+        async def fail():
+            order.append("listener")
+            await asyncio.sleep(0)
+            raise ValueError("async event")
+
+        async def go():
+            def apply(ctx, config):
+                ctx.on("tick", fail)
+                ctx.emit("tick")
+                order.append("emitter")
+
+            with self.assertRaises(AggregateError) as failure:
+                async with load(define_plugin(apply)):
+                    pass
+            self.assertEqual(str(failure.exception.errors[0]), "async event")
+            self.assertEqual(order, ["listener", "emitter"], "ctx.emit starts async listeners eagerly")
+
+        run(go())
 
 
 if __name__ == "__main__":

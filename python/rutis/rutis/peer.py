@@ -111,6 +111,14 @@ class SyncWaitCycle(RemoteError):
         super().__init__("SyncWaitCycle", message)
 
 
+class AggregateError(Exception):
+    """Ordered listener failures, also on Python 3.10 (no ExceptionGroup)."""
+
+    def __init__(self, errors):
+        super().__init__("")
+        self.errors = list(errors)
+
+
 class Signal:
     """Cancellation of the call that received it: set when the caller
     cancels. Methods that accept it check `cancelled` or await `wait()`."""
@@ -134,12 +142,44 @@ def encode_error(thrown: BaseException) -> dict:
         name, message = thrown.name, thrown.message
     else:
         name, message = type(thrown).__name__, str(thrown)
-    stack = "".join(traceback.format_exception(thrown))
-    node = {"type": "error", "name": name, "message": message, "stack": stack}
+    nodes, seen = [], {}
+
+    def visit(error):
+        if id(error) in seen:
+            return seen[id(error)]
+        offset = len(nodes)
+        reference = {"type": "reference", "value": offset}
+        seen[id(error)] = reference
+        if isinstance(error, RemoteError) and error.graph is not None:
+            def shift(value):
+                if isinstance(value, list):
+                    return [shift(item) for item in value]
+                if isinstance(value, dict):
+                    if value.get("type") == "reference":
+                        return {"type": "reference", "value": value["value"] + offset}
+                    return {key: shift(item) for key, item in value.items()}
+                return value
+
+            nodes.extend(shift(error.graph["nodes"]))
+            reference = shift(error.graph["root"])
+            seen[id(error)] = reference
+            return reference
+        node = {
+            "type": "error",
+            "name": error.name if isinstance(error, RemoteError) else type(error).__name__,
+            "message": error.message if isinstance(error, RemoteError) else str(error),
+            "stack": "".join(traceback.format_exception(error)),
+        }
+        nodes.append(node)
+        if isinstance(error, AggregateError):
+            node["errors"] = [visit(item) for item in error.errors]
+        return reference
+
+    root = visit(thrown)
     return {
         "name": name,
         "message": message,
-        "graph": {"root": {"type": "reference", "value": 0}, "nodes": [node]},
+        "graph": {"root": root, "nodes": nodes},
     }
 
 

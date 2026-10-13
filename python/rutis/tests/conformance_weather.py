@@ -33,9 +33,10 @@ SAMPLES = {
 class Weather:
     def __init__(self, clock):
         self.clock = clock
+        self.city = "Oslo"
 
     def today(self):
-        return f"Oslo at {self.clock.now()}"
+        return f"{self.city} at {self.clock.now()}"
 
     async def later(self):
         return "Oslo later"
@@ -60,4 +61,6 @@ provides = {"weather": Weather}
 
 
 def apply(ctx, config):
-    ctx.provide("weather", Weather(ctx.use("clock")))
+    weather = Weather(ctx.use("clock"))
+    ctx.on("weather/city", lambda city: setattr(weather, "city", city))
+    ctx.provide("weather", weather)

@@ -146,7 +146,7 @@ async fn check_fails_what_cannot_run() {
             ("broken.mjs", "throw new Error('broken on import')\n"),
             (
                 "future_py.py",
-                "from rutis import Plugin\nplugin = Plugin(lambda ctx, config: None, api=2)\n",
+                "from rutis import Plugin\nplugin = Plugin(lambda ctx, config: None, api=3)\n",
             ),
             (
                 "rutis.json",
@@ -179,7 +179,7 @@ async fn check_fails_what_cannot_run() {
          missing (weather-plugin): no plugin named \"weather-plugin\"\n  \
          install it where its runtime finds it (a runtime under runtimes), or correct the row's name\n\
          nowhere (py:nowhere): cannot load \"py:nowhere\": ModuleNotFoundError: No module named 'nowhere'\n\
-         future-py (py:future_py): cannot load \"py:future_py\": RuntimeError: plugin future_py needs plugin API 2; this runtime supports 1: upgrade the rutis package where the runtime runs\n"
+         future-py (py:future_py): cannot load \"py:future_py\": RuntimeError: plugin future_py needs plugin API 3; this runtime supports 2: upgrade the rutis package where the runtime runs\n"
     );
     assert_eq!(
         checked.stderr,
