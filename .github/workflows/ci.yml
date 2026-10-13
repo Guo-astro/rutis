@@ -1163,6 +1163,10 @@ jobs:
         with:
           node-version: '26'
       - run: npm --prefix node/rutis-runtime ci
+      # The SDK: the e2e scenarios junction `@arcships/rutis` to this checkout,
+      # and its testing tool (used by the Node template's tests) needs its own
+      # dependencies.
+      - run: npm --prefix node/rutis ci
       # setup-python's Windows installer needs an administrator, which the
       # self-hosted runners are not: they take the machine's Python, in a
       # virtual environment with pip.
