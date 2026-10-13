@@ -748,6 +748,9 @@ jobs:
         with:
           node-version: '22'
       - run: npm --prefix node/rutis-runtime ci
+      # The SDK, whose testing tool `bun/rutis-bun/test/sdk.test.ts` imports
+      # (`node/rutis/src/testing.mjs`) and which needs its own dependencies.
+      - run: npm --prefix node/rutis ci
       # setup-python's macOS builds install only under /Users/runner (the
       # hosted image's user): the self-hosted Macs take uv's Python 3.12, in
       # a virtual environment (as js-py).
@@ -830,6 +833,8 @@ jobs:
           node-version: '26'
           cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: node/rutis-runtime/package-lock.json
+      # The SDK, and its own dependencies (the testing tool uses Cordis).
+      - run: npm --prefix node/rutis ci
       # The SDK's own tests do not depend on the platform: full runs only.
       - run: npm --prefix node/rutis test
         if: needs.changes.outputs.all == 'true'

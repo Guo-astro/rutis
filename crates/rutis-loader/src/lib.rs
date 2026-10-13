@@ -36,10 +36,10 @@ pub use persist::{NoPersist, Persist, Version};
 pub use resolver::{
     Build, Builtins, Chain, Declarations, Declared, Resolved, Resolver, ScopedFactory,
 };
-#[cfg(feature = "go")]
-pub use runtime::PLUGIN_API;
 #[cfg(feature = "node")]
 pub use runtime::resolve_entry;
+#[cfg(feature = "go")]
+pub use runtime::PLUGIN_API;
 #[cfg(feature = "runtimes")]
 pub use runtime::{is_runtime_name, RowsSource, RuntimeResolver, RuntimeRows, RuntimeRowsPlugin};
 #[cfg(feature = "go")]
