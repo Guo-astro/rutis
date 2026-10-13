@@ -19,14 +19,15 @@ This document describes how CI runs today and what to do when changing it. The r
 
 | Workflow | When it runs | What it does |
 | --- | --- | --- |
-| `ci.yml` | Every pull request; nightly, called by `nightly.yml` (`all=true`); by hand (any branch, `all` on by default) | Tests and checks (below) |
+| `ci.yml` | Every pull request; nightly, called by `nightly.yml` (`all=true`); in the release gate, called by `release.yml` (`all=true`); by hand (any branch, `all` on by default) | Tests and checks (below) |
 | `nightly.yml` | Every day at 19:00 UTC, when main has new commits; by hand (`force`: run without new commits) | Calls `ci.yml` (every job), `install.yml` (five platforms), `dylib-windows.yml` and `stress.yml`; opens an issue on failure (below, §7) |
-| `dylib-windows.yml` | Pull requests touching dylib files (the same files as the `dylib` switch); nightly, called by `nightly.yml`; `v*` tags; by hand | Dylib tests on Windows |
+| `dylib-windows.yml` | Pull requests touching dylib files (the same files as the `dylib` switch); nightly, called by `nightly.yml`; in the release gate, called by `release.yml` (no longer on `v*` tags of its own); by hand | Dylib tests on Windows |
 | `stress.yml` | Nightly, called by `nightly.yml`; by hand | Kernel tests and multi-process tests repeated; long network tests (below) |
 | `ci-stats.yml` | Weekly; by hand | CI timings and failures |
 | `deps.yml` | Weekly; by hand | Dependency vulnerability checks: `cargo deny check advisories` (without the example projects), `npm audit` of `@arcships/rutis-runtime`, `pip-audit` of the Python package. Not on pull requests and does not block merges; GitHub notifies the maintainer on failure |
 | `install.yml` | Nightly, called by `nightly.yml`; pull requests touching packaging, build configuration or the install tests (`package.yml`, `install.yml`, `tests/e2e/**`, the packages' `package.json` and `pyproject.toml`, `node/rutis-host/scripts/**`, `Cargo.toml`, `Cargo.lock` and others); called by `release.yml` on a release; by hand | Builds this commit's packages with `package.yml`, installs and runs them: npm, PyPI, the release binary. Five platforms nightly and before a release (linux-x64, linux-arm64, darwin-x64, darwin-arm64, win32-x64), only linux-x64 on pull requests, three by default when run by hand (linux-x64, darwin-arm64, win32-x64) |
-| `release.yml`, `release-cli.yml` | Tags | Releases |
+| `release.yml` | `v*` tags; by hand (`dry-run`, on by default: the release gate only, nothing published) | Release gate (calls `ci.yml` with `all=true`, `package.yml`, `install.yml` on five platforms, `dylib-windows.yml`), publishing, checks after publishing ([release](release.en.md)) |
+| `release-cli.yml` | `cli-v*` tags | Releases rutis-cli |
 
 ### The nightly `nightly.yml`
 

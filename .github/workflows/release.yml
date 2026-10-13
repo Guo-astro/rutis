@@ -12,18 +12,37 @@
 #              the Go module proxy serves it from there)
 #   GitHub     rutis-host binaries
 #
-# The packages are built once (package.yml) and installed and run on every
-# platform before anything is published (install.yml); what is published is
-# those files. After publishing, each channel is installed again from its
-# registry; a failure opens an issue. Each publish skips what its registry
-# already has, so a release that fails halfway is finished by running it
-# again. rutis-cli releases on its own
-# (cli-v*, release-cli.yml).
+# The release gate (docs/release.md, docs/design-ci-redesign-2026-10-13.md
+# §5): every job of ci.yml (all=true), the Windows dylib tests
+# (dylib-windows.yml), and the packages, built once (package.yml) and
+# installed and run on every platform (install.yml). Nothing is published,
+# the Go module tag included, unless all of it passes; what is published is
+# the files the gate installed. After publishing, the registries are waited
+# for (every npm platform package too), then each channel is installed again
+# from its registry; a failure opens an issue. Each publish skips what its
+# registry already has, so a release that fails halfway is finished by
+# running it again. rutis-cli releases on its own (cli-v*, release-cli.yml).
+#
+# A rehearsal: `gh workflow run release.yml --ref <branch> -f dry-run=true`
+# runs the whole gate on that branch and publishes nothing (the publishing
+# jobs, the GitHub Release and the checks after publishing are skipped, so
+# no secret or environment is used). dry-run=false publishes only on a tag
+# ref (`--ref vX.Y.Z`), as a pushed tag does.
 name: release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Run the release gate only; publish nothing
+        type: boolean
+        default: true
+      tag:
+        description: The tag (vX.Y.Z) the train must be at (default the train's version, scripts/train.mjs)
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -33,21 +52,71 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The version: a pushed tag's, checked against the train; on a run by hand
+  # the train's (the input `tag`, if given, must match). `publish` is true
+  # for a pushed tag, and for a run by hand with dry-run=false on a tag ref.
   verify:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - run: node scripts/train.mjs "$GITHUB_REF_NAME"
       - id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        env:
+          EVENT: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$EVENT" = push ]; then
+            version=$(node scripts/train.mjs "$GITHUB_REF_NAME")
+            publish=true
+          elif [ "$DRY_RUN" = false ]; then
+            # The publishing jobs take the version and the release from the
+            # tag the run is on.
+            if [ "$GITHUB_REF_TYPE" != tag ]; then
+              echo "dry-run=false publishes from a tag: run it with --ref vX.Y.Z (this run is on the $GITHUB_REF_TYPE $GITHUB_REF_NAME)" >&2
+              exit 1
+            fi
+            if [ -n "$TAG" ] && [ "$TAG" != "$GITHUB_REF_NAME" ]; then
+              echo "the input tag is $TAG, but this run is on the tag $GITHUB_REF_NAME" >&2
+              exit 1
+            fi
+            version=$(node scripts/train.mjs "$GITHUB_REF_NAME")
+            publish=true
+          else
+            version=$(node scripts/train.mjs ${TAG:+"$TAG"})
+            publish=false
+          fi
+          {
+            echo "version=$version"
+            echo "publish=$publish"
+          } | tee -a "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY"
 
-  # Built once, by the steps main builds with (package.yml); every
-  # platform is installed and run from these files before anything is
+  # Every job of ci.yml, as the nightly runs do, in parallel with the
+  # packages. Its runs have a concurrency group of their own (ci-<this
+  # run's id>), so it never waits on this run's group.
+  ci:
+    needs: verify
+    uses: ./.github/workflows/ci.yml
+    # ci.yml's `changes` job reads pull requests.
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      all: true
+
+  # The Windows dylib plugin tests, the reproducible-SDK check included (it
+  # runs for every event but pull_request).
+  dylib-windows:
+    needs: verify
+    uses: ./.github/workflows/dylib-windows.yml
+
+  # Built once, by the steps the nightly runs build with (package.yml);
+  # every platform is installed and run from these files before anything is
   # published (install.yml, the release gate: Q13.1.6).
   package:
     needs: verify
@@ -66,7 +135,8 @@ jobs:
       platforms: '["linux-x64","linux-arm64","darwin-x64","darwin-arm64","win32-x64"]'
 
   crates:
-    needs: install
+    needs: [verify, ci, install, dylib-windows]
+    if: needs.verify.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     environment: release
     steps:
@@ -96,7 +166,8 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
 
   npm:
-    needs: install
+    needs: [verify, ci, install, dylib-windows]
+    if: needs.verify.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -139,7 +210,8 @@ jobs:
   # trusted-publishing token to a single publisher, so two projects with
   # identical publishers (same workflow and environment) cannot share a job.
   pypi:
-    needs: install
+    needs: [verify, ci, install, dylib-windows]
+    if: needs.verify.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     environment: pypi
     permissions:
@@ -157,7 +229,8 @@ jobs:
           skip-existing: true
 
   pypi-host:
-    needs: install
+    needs: [verify, ci, install, dylib-windows]
+    if: needs.verify.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     environment: pypi-host
     permissions:
@@ -173,9 +246,11 @@ jobs:
         with:
           skip-existing: true
 
-  # A Go module in a subdirectory is released by a tag with its path.
+  # A Go module in a subdirectory is released by a tag with its path; the
+  # tag is a publication, so it waits for the whole gate too.
   go:
-    needs: verify
+    needs: [verify, ci, install, dylib-windows]
+    if: needs.verify.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -198,7 +273,8 @@ jobs:
           fi
 
   github:
-    needs: [crates, npm, pypi, pypi-host]
+    needs: [verify, crates, npm, pypi, pypi-host]
+    if: needs.verify.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -218,8 +294,8 @@ jobs:
 
   # After publishing: each channel from its registry, on Linux, and the
   # crate and the Go module (Q6.15.3). The registries can take minutes to
-  # serve a new version; this waits for them first (a hang guard, not a
-  # synchronization). A failure opens an issue; whether to deprecate or
+  # serve a new version; this waits for them first, every npm platform
+  # package included. On a dry run it is skipped with what it needs. A failure opens an issue; whether to deprecate or
   # yank is the maintainer's decision (docs/release.md, Q13.2).
   published:
     needs: [verify, github, go]
@@ -233,18 +309,41 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+      # Every npm platform package too, and whatever the launcher's
+      # optionalDependencies name: npm installs @arcships/rutis-host without
+      # a platform package it cannot fetch yet, and the launcher then fails.
       - name: wait for the registries
         env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
-          for i in $(seq 60); do
-            npm view "@arcships/rutis-host@$VERSION" version >/dev/null 2>&1 \
-              && curl -sf "https://pypi.org/pypi/rutis-host/$VERSION/json" >/dev/null \
-              && curl -sf -A "rutis release (github.com/arcships/rutis)" "https://crates.io/api/v1/crates/rutis-host/$VERSION" >/dev/null \
-              && exit 0
+          served() { npm view "$1" version --prefer-online >/dev/null 2>&1; }
+          # What the registries do not serve yet, one line each.
+          missing() {
+            served "@arcships/rutis-host@$VERSION" || echo "npm @arcships/rutis-host@$VERSION"
+            for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+              served "@arcships/rutis-host-$platform@$VERSION" || echo "npm @arcships/rutis-host-$platform@$VERSION"
+            done
+            if deps=$(npm view "@arcships/rutis-host@$VERSION" optionalDependencies --json --prefer-online 2>/dev/null) && [ -n "$deps" ]; then
+              for dep in $(node -e 'for (const [n, v] of Object.entries(JSON.parse(process.argv[1]))) console.log(`${n}@${v}`)' "$deps"); do
+                served "$dep" || echo "npm $dep (an optional dependency of @arcships/rutis-host@$VERSION)"
+              done
+            fi
+            curl -sf "https://pypi.org/pypi/rutis-host/$VERSION/json" >/dev/null || echo "PyPI rutis-host $VERSION"
+            curl -sf -A "rutis release (github.com/arcships/rutis)" "https://crates.io/api/v1/crates/rutis-host/$VERSION" >/dev/null \
+              || echo "crates.io rutis-host $VERSION"
+          }
+          # 15 minutes: a hang guard, not a synchronization.
+          while :; do
+            left=$(missing)
+            if [ -z "$left" ]; then
+              echo "the registries serve $VERSION"
+              exit 0
+            fi
+            [ "$SECONDS" -lt 900 ] || break
             sleep 15
           done
-          echo "the registries do not serve $VERSION after 15 minutes" >&2
+          echo "after 15 minutes the registries still do not serve:" >&2
+          echo "$left" >&2
           exit 1
       - name: the crate and the Go module
         env:
