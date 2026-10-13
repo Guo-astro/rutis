@@ -1277,7 +1277,10 @@ jobs:
           # rustup's own cargo, not a build cache's shim on PATH (mbx on the
           # self-hosted Mac, docs/ci.md §10): the cache keeps its own target
           # directory, and the two builds would no longer differ only by the
-          # paths remapped above.
+          # paths remapped above. RUSTC: the same toolchain's rustc, also for
+          # build scripts run outside this checkout (out of reach of its
+          # rust-toolchain.toml, rustup's proxy would take its default).
+          export RUSTC="$(rustup which rustc)"
           "$(rustup which cargo)" build --release --locked -p rutis-cli --features dylib-plugins
           sdk_file="$CARGO_TARGET_DIR/release/librutis_sdk.dylib"
           if ! otool -L "$sdk_file" | grep -Eq '@rpath/libstd-[^ ]*\.dylib'; then
