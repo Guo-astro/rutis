@@ -101,3 +101,5 @@
 | 1 | `ci.yml` 加 `workflow_call`（`all`）；新增 `nightly.yml`（有新提交才跑、失败开问题单）；三个工作流去掉 `push: main`；`stress.yml` 并入；`ci.md`、质量规范、`quality-status.md` 同步 | 手动触发 `nightly.yml` 一次：全部任务跑完，人为让一个任务失败，确认会开问题单 |
 | 2 | `dylib-windows` 和 macOS 矩阵项改用自托管 runner | 在 PR 上把 `dylib-windows` 完整跑一遍（runner 以 `NETWORK SERVICE` 运行，文件锁、Job Object、导出符号检查可能有差异） |
 | 3 | `release.yml`：完整 CI 进发布门，`go` 等发布门，发布后验证等 npm 平台包；`dylib-windows` 去掉 tag 触发；`release.md` 同步 | 用 `workflow_dispatch` 在一个测试 tag 上跑到"发布"之前的步骤（发布步骤加一个 `dry-run` 输入） |
+
+实现 PR 3 时和计划的差别：演练不需要测试 tag，`release.yml` 的 `workflow_dispatch` 可以在任何分支上运行（`dry-run` 默认打开，`tag` 输入可选，用来核对版本号）；`dry-run=false` 只能在 tag 上运行。发布后验证除了五个 npm 平台包，还检查 `@arcships/rutis-host` 的 optionalDependencies 列出的每个包都能取到。

@@ -1,13 +1,14 @@
 # Windows dylib plugin tests. They take about 25 minutes on pull requests
 # (40 with the reproducibility check), so pull requests run them only when
-# they touch the dylib code. The nightly runs (nightly.yml) run them, as do
-# release tags and manual runs (Actions → dylib-windows → Run workflow).
+# they touch the dylib code. The nightly runs (nightly.yml) and the release
+# gate (release.yml) call them; manual runs: Actions → dylib-windows → Run
+# workflow.
 # Other Windows builds are checked on every code change by ci.yml's
 # runtimes-windows job.
 #
 # The reproducible-SDK check builds the SDK twice from scratch (about 15
 # minutes) and rarely breaks from ordinary changes, so pull requests skip it;
-# the nightly runs, release tags and manual runs keep it.
+# the nightly runs, releases and manual runs keep it.
 #
 # Changes elsewhere (the rutis kernel, dependency updates in Cargo.lock) can
 # also break Windows dylib plugins; the nightly run catches those after the
@@ -32,11 +33,9 @@ on:
       - "tools/lib/**"
       - "rust-toolchain.toml"
       - ".github/workflows/dylib-windows.yml"
-  # Release tags.
-  push:
-    tags: ["v*"]
   workflow_dispatch:
-  # The nightly runs (nightly.yml; quality status §8.4).
+  # The nightly runs (nightly.yml; quality status §8.4) and the release gate
+  # (release.yml).
   workflow_call:
 
 # A new push to a pull request cancels its run still in progress; any other

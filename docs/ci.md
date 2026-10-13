@@ -19,14 +19,15 @@
 
 | workflow | 什么时候运行 | 做什么 |
 | --- | --- | --- |
-| `ci.yml` | 每个 PR；每晚由 `nightly.yml` 调用（`all=true`）；手动（任何分支，`all` 默认打开） | 测试和检查（下文） |
+| `ci.yml` | 每个 PR；每晚由 `nightly.yml` 调用（`all=true`）；发布门里由 `release.yml` 调用（`all=true`）；手动（任何分支，`all` 默认打开） | 测试和检查（下文） |
 | `nightly.yml` | 每天 UTC 19:00，main 有新提交时；手动（`force`：没有新提交也跑） | 调用 `ci.yml`（全部任务）、`install.yml`（五个平台）、`dylib-windows.yml`、`stress.yml`；失败时开问题单（下文、§7） |
-| `dylib-windows.yml` | PR 改了 dylib 相关文件（与 `dylib` 开关相同）；每晚由 `nightly.yml` 调用；打 `v*` tag；手动 | Windows 上的 dylib 测试 |
+| `dylib-windows.yml` | PR 改了 dylib 相关文件（与 `dylib` 开关相同）；每晚由 `nightly.yml` 调用；发布门里由 `release.yml` 调用（打 `v*` tag 不再单独触发）；手动 | Windows 上的 dylib 测试 |
 | `stress.yml` | 每晚由 `nightly.yml` 调用；手动 | 重复运行内核测试和多进程测试；网络长时间测试（下文） |
 | `ci-stats.yml` | 每周；手动 | 统计 CI 的耗时和失败 |
 | `deps.yml` | 每周；手动 | 依赖漏洞检查：`cargo deny check advisories`（不含示例项目）、`@arcships/rutis-runtime` 的 `npm audit`、Python 包的 `pip-audit`。不在 PR 上跑，不阻止合并；失败时 GitHub 通知维护者 |
 | `install.yml` | 每晚由 `nightly.yml` 调用；PR 改了打包、构建配置或安装测试（`package.yml`、`install.yml`、`tests/e2e/**`、各包的 `package.json`、`pyproject.toml`、`node/rutis-host/scripts/**`、`Cargo.toml`、`Cargo.lock` 等）；发布时由 `release.yml` 调用；手动 | 用 `package.yml` 构建这次提交的包并安装运行：npm、PyPI、release 二进制。每晚和发布前五个平台（linux-x64、linux-arm64、darwin-x64、darwin-arm64、win32-x64），PR 上只有 linux-x64，手动运行默认三个平台（linux-x64、darwin-arm64、win32-x64） |
-| `release.yml`、`release-cli.yml` | 打 tag | 发布 |
+| `release.yml` | 打 `v*` tag；手动（`dry-run` 默认打开：只跑发布门，不发布） | 发布门（调用 `ci.yml`（`all=true`）、`package.yml`、`install.yml`（五个平台）、`dylib-windows.yml`）、发布、发布后验证（[发布](release.md)） |
+| `release-cli.yml` | 打 `cli-v*` tag | 发布 rutis-cli |
 
 ### 每晚的 `nightly.yml`
 

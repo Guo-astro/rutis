@@ -1,10 +1,11 @@
-# 常规 CI:PR 自动跑测试 + 编译检查;每晚(nightly.yml)和手动运行跑全部任务。
+# 常规 CI:PR 自动跑测试 + 编译检查;每晚(nightly.yml)、发布(release.yml)和手动运行跑全部任务。
 # 防回归:任何改动(agent/cli/内核/bridge/rutis-dsh)引入的失败在此显式变红。
 #
 # Pull requests run only the jobs their change affects (docs/quality-status.md
 # §8.3, Q12.3). Full runs (input `all`) run every job: nightly.yml calls this
-# workflow every night main has new commits, and a run by hand (Actions → ci →
-# Run workflow, any branch) is one too. A merge to main runs nothing. The
+# workflow every night main has new commits, release.yml calls it in the
+# release gate, and a run by hand (Actions → ci → Run workflow, any
+# branch) is one too. A merge to main runs nothing. The
 # `changes` job decides, and `ci-ok` is the one check a merge waits for
 # (Q12.5).
 #
