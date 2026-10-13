@@ -6,26 +6,37 @@
 
 ## 1. 规则
 
-1. PR 只运行和这次改动有关的任务；main 上每次运行全部任务。
-2. PR 推了新提交，旧的那次运行自动取消；main 上的运行不取消。
+1. PR 只运行和这次改动有关的任务；每晚（main 有新提交时）和发布前运行全部任务。合并到 main 不运行检查。
+2. PR 推了新提交，旧的那次运行自动取消；每晚的运行和手动运行不取消。
 3. 合并只看一个检查：`ci-ok`。
 4. macOS 机器少，一次运行尽量只占一个 macOS 任务。
 5. 同一项检查只在一个任务里跑。
 6. 改 CI 配置的 PR 运行全部任务。
-7. Rust 编译缓存只在 main 上保存；PR 读取 main 的缓存，不保存自己的。
+7. Rust 编译缓存只在 main 上的运行（每晚的运行）里保存；PR 读取 main 的缓存，不保存自己的。
 8. 时间目标：普通代码 PR 从推送到出结果不超过 10 分钟，排队也算在内。
 
 ## 2. 有哪些 workflow
 
 | workflow | 什么时候运行 | 做什么 |
 | --- | --- | --- |
-| `ci.yml` | 每个 PR；每次推送 main | 测试和检查（下文） |
-| `dylib-windows.yml` | PR 改了 dylib 相关文件（与 `dylib` 开关相同）；每次推送 main；打 `v*` tag；手动 | Windows 上的 dylib 测试 |
-| `stress.yml` | 每晚；手动 | 重复运行内核测试和多进程测试；网络长时间测试（下文） |
+| `ci.yml` | 每个 PR；每晚由 `nightly.yml` 调用（`all=true`）；手动（任何分支，`all` 默认打开） | 测试和检查（下文） |
+| `nightly.yml` | 每天 UTC 19:00，main 有新提交时；手动（`force`：没有新提交也跑） | 调用 `ci.yml`（全部任务）、`install.yml`（五个平台）、`dylib-windows.yml`、`stress.yml`；失败时开问题单（下文、§7） |
+| `dylib-windows.yml` | PR 改了 dylib 相关文件（与 `dylib` 开关相同）；每晚由 `nightly.yml` 调用；打 `v*` tag；手动 | Windows 上的 dylib 测试 |
+| `stress.yml` | 每晚由 `nightly.yml` 调用；手动 | 重复运行内核测试和多进程测试；网络长时间测试（下文） |
 | `ci-stats.yml` | 每周；手动 | 统计 CI 的耗时和失败 |
 | `deps.yml` | 每周；手动 | 依赖漏洞检查：`cargo deny check advisories`（不含示例项目）、`@arcships/rutis-runtime` 的 `npm audit`、Python 包的 `pip-audit`。不在 PR 上跑，不阻止合并；失败时 GitHub 通知维护者 |
-| `install.yml` | 每次推送 main；PR 改了打包、构建配置或安装测试（`package.yml`、`install.yml`、`tests/e2e/**`、各包的 `package.json`、`pyproject.toml`、`node/rutis-host/scripts/**`、`Cargo.toml`、`Cargo.lock` 等）；发布时由 `release.yml` 调用；手动 | 用 `package.yml` 构建这次提交的包并安装运行：npm、PyPI、release 二进制。main 上三个平台（linux-x64、darwin-arm64、win32-x64），PR 上只有 linux-x64。linux-arm64、darwin-x64（含 aarch64 wheel）只在发布前的五平台安装检查（`release.yml`）里构建 |
+| `install.yml` | 每晚由 `nightly.yml` 调用；PR 改了打包、构建配置或安装测试（`package.yml`、`install.yml`、`tests/e2e/**`、各包的 `package.json`、`pyproject.toml`、`node/rutis-host/scripts/**`、`Cargo.toml`、`Cargo.lock` 等）；发布时由 `release.yml` 调用；手动 | 用 `package.yml` 构建这次提交的包并安装运行：npm、PyPI、release 二进制。每晚和发布前五个平台（linux-x64、linux-arm64、darwin-x64、darwin-arm64、win32-x64），PR 上只有 linux-x64，手动运行默认三个平台（linux-x64、darwin-arm64、win32-x64） |
 | `release.yml`、`release-cli.yml` | 打 tag | 发布 |
+
+### 每晚的 `nightly.yml`
+
+合并到 main 不运行任何检查：PR 已经按改动跑过相关的任务。PR 上没测到的两类问题由每晚的运行补上：路径表漏了某个依赖，PR 上该跑的任务没跑（Q12.3.3）；两个 PR 各自通过，合在一起才出问题。
+
+- 时间：每天 UTC 19:00（北京时间凌晨 3 点）。第一个任务 `plan` 比较 main 当前的提交和上一次成功的每晚运行的提交，相同就跳过，后面的任务都不跑。
+- 内容：调用 `ci.yml`（`all=true`，全部任务）、`install.yml`（构建这次提交的包，五个平台安装运行；`darwin-arm64` 在自托管 macOS 上，其他格子用 GitHub 的干净机器）、`dylib-windows.yml`、`stress.yml`（默认轮数）。四个同时开始。
+- 失败时 `report` 任务开问题单（§7）。
+- 手动运行：Actions 页面选 `nightly`，点 “Run workflow”；没有新提交也要跑时勾选 `force`，或者 `gh workflow run nightly.yml -f force=true`。在别的分支上手动运行时，比较的是那个分支上一次成功的每晚运行。
+- 只想跑一次全部 CI 任务（不要安装、dylib-windows、stress）：`gh workflow run ci.yml --ref <分支>`（`all` 默认打开）。
 
 ### 每晚的 `stress.yml`
 
@@ -47,24 +58,24 @@
 
 ## 3. PR 上怎么决定跑哪些任务
 
-`ci.yml` 的第一个任务 `changes` 看这个 PR 改了哪些文件，输出下面几个开关。后面的任务根据开关决定跑不跑。推送 main 时所有开关都打开。
+`ci.yml` 的第一个任务 `changes` 看这个 PR 改了哪些文件，输出下面几个开关。后面的任务根据开关决定跑不跑。完整运行（输入 `all` 为 true：每晚、手动运行）时所有开关都打开；不是 PR、`all` 又为 false 时所有开关都关闭，只跑 `changes` 和 `ci-ok`。
 
 | 开关 | 改了这些文件时打开 |
 | --- | --- |
 | `all` | `Cargo.lock`、根目录的 `Cargo.toml`、`rust-toolchain.toml`、`.github/workflows/**`。打开时其他开关也全部打开 |
 | `code` | 除 `docs/**` 和 `*.md` 以外的任何文件 |
-| `dylib` | dylib 相关的 crate：`rutis-dylib*`、`rutis-sdk`、`rutis-dev`、`rutis-xtask`，以及链接 SDK、放着 dylib 宿主测试的 `rutis-cli`；`tools/*dylib*`、`tools/build-dylib-bundle.sh`、`tools/test-sdk-bundle.sh`、`tools/lib/**`、`tests/dylib-fixtures/**`。**内核 `crates/rutis` 不在内**：内核改动也会影响 SDK，但 dylib 任务在过去 88 次运行里没有失败过，内核 PR 不再为它等 20 分钟，由合并后 main 上的运行检查 |
+| `dylib` | dylib 相关的 crate：`rutis-dylib*`、`rutis-sdk`、`rutis-dev`、`rutis-xtask`，以及链接 SDK、放着 dylib 宿主测试的 `rutis-cli`；`tools/*dylib*`、`tools/build-dylib-bundle.sh`、`tools/test-sdk-bundle.sh`、`tools/lib/**`、`tests/dylib-fixtures/**`。**内核 `crates/rutis` 不在内**：内核改动也会影响 SDK，但 dylib 任务在过去 88 次运行里没有失败过，内核 PR 不再为它等 20 分钟，由每晚的运行检查 |
 | `packaging` | `scripts/train.mjs`、各个 `pyproject.toml` 和 `package.json`、`crates/*/Cargo.toml`、`node/rutis-host/scripts/**` |
 | `docs` | 任何 `.md` 文件 |
 | `bun` | `bun/**`、`node/rutis/**`、`crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host` |
 | `go` | `go/**`、`crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host` |
-| `repro` | `crates/rutis-sdk`、`crates/rutis-cli/build.rs`、`tools/test-dylib-repro.sh`、`tools/build-dylib-bundle.sh`、`tools/lib/**`。内核改动也会影响 SDK，但它的可复现检查放在 main 上 |
+| `repro` | `crates/rutis-sdk`、`crates/rutis-cli/build.rs`、`tools/test-dylib-repro.sh`、`tools/build-dylib-bundle.sh`、`tools/lib/**`。内核改动也会影响 SDK，但它的可复现检查放在完整运行里 |
 
 ## 4. 每个任务
 
-“PR 上”一列是这个任务在 PR 上什么时候运行、运行哪些内容；main 上（以及打开 `all` 的 PR 上）每个任务都运行，内容是全量的。
+“PR 上”一列是这个任务在 PR 上什么时候运行、运行哪些内容；完整运行中（每晚、手动运行，以及打开 `all` 的 PR 上）每个任务都运行，内容是全量的。
 
-| 任务 | 机器 | PR 上 | main 上多做的 | 内容 |
+| 任务 | 机器 | PR 上 | 完整运行多做的 | 内容 |
 | --- | --- | --- | --- | --- |
 | `links` | macOS（自托管，§10） | `docs` | — | 检查 Markdown 里的相对链接 |
 | `rust` | Linux | `code` | Linux 上 loopback 方式启动运行时的重跑 | 全部 Rust 测试，每项只跑一次：工作区（除 bridge、loader、`rutis-e2e`）、loader 全部行类型、bridge 全部 feature。用最低支持版本（§9） |
@@ -81,13 +92,13 @@
 | `dylib-linux-launcher`、`dylib-linux-sdk-bundle` | Linux | `dylib` | — | dylib 测试，分两个任务同时跑 |
 | `dylib-linux-repro` | Linux | `repro` | 整个任务 | SDK 可复现构建（在一台机器上用两个目录各构建一次） |
 | `dylib-macos` | macOS（自托管，§10） | `dylib` | 可复现构建一步 | 同样的 dylib 测试，在一个任务里依次跑，共用一次构建的 bundle；可复现构建这一步只在 `repro` 打开时跑 |
-| `release-dry-run` | macOS（自托管，§10） | `packaging` | 整个任务 | 发布要用的包能构建（crate、npm 包、Python 包）。各平台的二进制和 wheel 由 `install.yml` 构建并安装（§2）：PR 上只有 Linux x64，Windows、macOS 的打包在合并后的 main 上检查，aarch64 在发布前检查 |
+| `release-dry-run` | macOS（自托管，§10） | `packaging` | 整个任务 | 发布要用的包能构建（crate、npm 包、Python 包）。各平台的二进制和 wheel 由 `install.yml` 构建并安装（§2）：PR 上只有 Linux x64，其他平台的打包在每晚和发布前检查 |
 | `sdk-repro`、`sdk-repro-macos` 及比对 | Linux、macOS（自托管，§10） | 只在 `all` 时 | 整个任务 | 在两台机器上分别构建 SDK，比较结果是否相同（比较在自托管的 macOS 上） |
 | `ci-ok` | macOS（自托管，§10） | 总是 | — | 汇总（§5） |
 
 ### 和平台有关的测试
 
-PR 上 macOS、Windows 默认跑 bridge、loader 的全部测试文件和两个 crate 的单元测试（`--lib`），只跳过 `ci.yml` 顶部 `PURE_TESTS_BRIDGE`、`PURE_TESTS_LOADER` 列出的测试文件；rutis-host 的测试全跑。列表里的测试只依赖 Rust 代码本身：内存通道上的协议、行的配置和生命周期等，不启动进程、不开 socket、除了读 fixture 不碰文件、不依赖操作系统的行为。它们在各平台上结果相同，PR 上只在 Linux 的 `rust` 任务里跑，main 上三个平台都跑。跳过它们是为了让 macOS、Windows 的时间有上限。
+PR 上 macOS、Windows 默认跑 bridge、loader 的全部测试文件和两个 crate 的单元测试（`--lib`），只跳过 `ci.yml` 顶部 `PURE_TESTS_BRIDGE`、`PURE_TESTS_LOADER` 列出的测试文件；rutis-host 的测试全跑。列表里的测试只依赖 Rust 代码本身：内存通道上的协议、行的配置和生命周期等，不启动进程、不开 socket、除了读 fixture 不碰文件、不依赖操作系统的行为。它们在各平台上结果相同，PR 上只在 Linux 的 `rust` 任务里跑，完整运行中三个平台都跑。跳过它们是为了让 macOS、Windows 的时间有上限。
 
 传给 `cargo test` 的 `--lib --test <名字> ...` 由 `tools/platform-tests.sh` 在任务运行时生成：`crates/<crate>/tests/` 下的每个测试文件，去掉列表里的名字。所以新加的测试文件默认在三个平台上都跑，不需要记得登记；只有确定不启动进程、不打开通道或文件的测试才加进 `PURE_TESTS_*`。列表里的名字找不到对应文件时，脚本报错，`lint` 任务失败，重命名或删除测试文件不会让列表悄悄失效。每晚 `stress.yml` 的 `multiprocess` 任务用同一个脚本重复运行同一组测试（§2）。
 
@@ -127,7 +138,7 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 
 | 实现 | 通道 | Linux | macOS | Windows |
 | --- | --- | --- | --- | --- |
-| Rust 节点 | memory（`tests/node_conformance.rs`） | 运行 | main 上运行 | main 上运行 |
+| Rust 节点 | memory（`tests/node_conformance.rs`） | 运行 | 完整运行中运行 | 完整运行中运行 |
 | Rust 节点 | WebSocket（`tests/websocket_conformance.rs`，两个 rutis 根经 loopback WebSocket 链接） | 运行 | 运行 | 运行 |
 | Cordis 节点 | WebSocket（`tests/websocket_conformance.rs`） | 运行 | 运行 | 运行 |
 
@@ -143,7 +154,7 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 | 只有 Python 包 | `rust`、`e2e`、`js-py`、`lint`、`network-macos`、`runtimes-windows` | 约 5–8 分钟 |
 | 改了 `package.json`、`pyproject.toml`、`crates/*/Cargo.toml` | 再加 `release-dry-run` 和 `semver-rutis`；改了包的 `package.json`、`pyproject.toml` 时还有 `install.yml`（Linux x64） | 不变，打包任务与测试并行 |
 | dylib | 再加 dylib 任务；`dylib-windows.yml` | 约 20–25 分钟（dylib 的预算） |
-| CI 配置、`Cargo.lock`、根 `Cargo.toml` | 全部，同 main | 约 25 分钟 |
+| CI 配置、`Cargo.lock`、根 `Cargo.toml` | 全部，同完整运行 | 约 25 分钟 |
 
 ## 5. 合并条件
 
@@ -157,18 +168,18 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 
 CI 慢下来，通常是一项一项加检查加出来的。新增检查（新任务、已有任务里的新步骤、新的版本或平台）前按下面的顺序回答：
 
-1. **它防的是哪类问题，放在哪一级。** 级别是 PR、main、每日（`stress.yml`）、每周。默认放 main 或每日；只有必须在合并前拦住的问题才放 PR。放 main 的检查失败了，按 §7 优先处理，同样会被发现，只是晚一点。
+1. **它防的是哪类问题，放在哪一级。** 级别是 PR、每晚（`nightly.yml`：`ci.yml` 的完整运行、`install.yml`、`dylib-windows.yml`、`stress.yml`）、每周。默认放每晚；只有必须在合并前拦住的问题才放 PR。放每晚的检查失败了，按 §7 优先处理，同样会被发现，只是晚一点。
 2. **放 PR 的，写明它占多少时间。** 它不能让关键路径（最慢的那个任务）变长：放进一个并行的 Linux 任务，或者在已有任务里替换掉别的内容。不新增 macOS、Windows 任务；macOS、Windows 上只跑和平台有关的测试（§4）。
 3. **能替换就不新增。** 例如支持矩阵的最低版本：把 Linux 任务里的版本换成最低版本，macOS 保持最新版，而不是再加一个任务跑最低版本。
 4. **目标：普通代码 PR 从推送到出结果不超过 10 分钟，排队也算在内。** 用 `node tools/ci-stats.mjs [次数] [workflow] [--since 日期]` 测量（每周的 `ci-stats.yml` 也会跑），看"ordinary code"一行：第一次运行、跑了 `rust`、没跑 `checks` 和 `dylib-` 任务的 PR。
-5. **结果会因外部数据变化的检查不放 PR。** 漏洞库、新版本发布会让代码没变的 PR 失败；这类检查放每周（`deps.yml`）。超出时，从关键路径上的任务开始调整：拆成并行任务，或者把成本高、很少失败的部分移到 main。
+5. **结果会因外部数据变化的检查不放 PR。** 漏洞库、新版本发布会让代码没变的 PR 失败；这类检查放每周（`deps.yml`）。超出时，从关键路径上的任务开始调整：拆成并行任务，或者把成本高、很少失败的部分移到每晚。
 
 把这几条的答案写进 PR 描述。
 
 ### 加一个任务
 
 1. 先按上面的流程决定它放在哪一级。
-2. 给它加 `needs: changes` 和 `if: needs.changes.outputs.<开关> == 'true'`（只在 main 上跑的用 `all`）。没有合适的开关就在 `changes` 里加一个，并写进 §3。
+2. 给它加 `needs: changes` 和 `if: needs.changes.outputs.<开关> == 'true'`（只在完整运行中跑的用 `all`）。没有合适的开关就在 `changes` 里加一个，并写进 §3。
 3. 把它加进 `ci-ok` 的 `needs`。
 4. 看已有任务里是不是已经在做同样的检查；能放进已有任务的，不新开任务。
 5. 要用 macOS 时，先看能不能放进 `network-macos`。普通改动最多占 1 个 macOS 任务，改 dylib 时最多 2 个。
@@ -178,35 +189,36 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 
 1. `changes` 加一个这种语言的开关，包括它的运行时目录，以及 `crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host`。
 2. 在 `rust`、`e2e`（最低支持版本）和 `network-macos`（最新版本）里安装这种语言（§9），在已有的 bridge、loader、host 测试步骤里加上它的 feature；它的测试文件默认在 macOS、Windows 上跑（§4），不需要登记。
-3. 如果要测多个版本，加一个 `runtimes-<语言>` 任务：按第 1 步的开关运行，加进 `ci-ok`，PR 上只在 Linux 跑最低支持版本；其他版本和 macOS 只在 main 上跑（做法见 `runtimes-bun` 和 `changes` 的 `bun-matrix`）。
+3. 如果要测多个版本，加一个 `runtimes-<语言>` 任务：按第 1 步的开关运行，加进 `ci-ok`，PR 上只在 Linux 跑最低支持版本；其他版本和 macOS 只在完整运行中跑（做法见 `runtimes-bun` 和 `changes` 的 `bun-matrix`）。
 4. 发布相关：`release-dry-run`、`scripts/train.mjs`、`release.yml` 都加上它的包。
 5. 更新 §3、§4。
 
 ### 改开关对应的文件
 
 - 改 `changes` 等于改了 `.github/workflows/**`，这个 PR 会运行全部任务。
-- 如果某个任务在 PR 上被跳过，合并后在 main 上失败了，说明开关漏了某些文件：修好失败后，把漏掉的文件加进开关。
+- 如果某个任务在 PR 上被跳过，之后在每晚的运行中失败了，说明开关漏了某些文件：修好失败后，把漏掉的文件加进开关。
 
 ### 改 CI 配置
 
 - 单独开 PR，提交类型用 `ci:`。
 - 改 CI 配置的 PR 运行全部任务，所以只在 PR 上跑的那部分（例如 macOS、Windows 上的测试子集）在这个 PR 里不会跑到；合并后看之后第一个普通 PR 的运行。
-- 合并后看 main 上第一次运行的结果。
+- 合并后手动运行一次 `nightly.yml`（`gh workflow run nightly.yml -f force=true`），或者看第二天每晚运行的结果。
 
 ## 7. 失败怎么处理
 
-- main 上失败优先处理：找出是哪次合并引起的，修好之前不再合并可能受影响的改动。
-- main 上的运行被手动取消后，要重新运行，每次合并都要有完整结果。
-- main 上 `ci.yml`、`install.yml`、`dylib-windows.yml` 各自同一时间最多一个运行在跑、一个在等（并发组按 ref，不按提交）：正在跑的不会被取消；又有合并时，新的运行替换在等的那个。所以连续合并时不是每个合并提交都单独运行，而是下一次运行检查它之前的所有合并；main 上失败时，失败的运行包含哪几次合并要看它的提交和上一次运行之间的差。PR 上新的推送取消正在跑的运行。发布（tag）有自己的 ref，`release.yml` 调用的 `install.yml` 不会和 main 的运行互相替换。
+- 每晚的运行失败时，`nightly.yml` 的 `report` 任务开一个问题单：标签 `ci`，指派给维护者，标题 `nightly: <日期> 失败`，写明失败的任务和提交范围（上一次成功的每晚运行的提交到这次的提交，附比较链接）。已经有未关闭的 `nightly:` 问题单时，在它下面追加评论，不另开。
+- 每晚失败优先处理：在提交范围里找出是哪次合并引起的，修好之前不再合并可能受影响的改动。修好后关闭问题单。
+- 每晚的运行比较的是上一次**成功**的运行：失败之后即使没有新提交，下一晚也会再跑一次同一段提交。想早点确认修复，手动运行 `nightly.yml`（`force`）。被手动取消的每晚运行也不算成功。
+- 合并到 main 不运行检查。PR 上新的推送取消正在跑的运行。每晚的运行同一时间只有一个，不取消；手动运行和 `nightly.yml`、`release.yml` 调用的运行各自是独立的并发组，不会互相取消或替换。
 - 偶尔失败的测试：先想办法稳定复现，再修。不用自动重试来掩盖。
 
 ## 8. 编译缓存
 
-- 所有任务用 `Swatinem/rust-cache`，设置 `save-if: github.ref == 'refs/heads/main'`：只有 main 上的运行保存缓存。
+- 所有任务用 `Swatinem/rust-cache`，设置 `save-if: github.ref == 'refs/heads/main'`：只有 main 上的运行（每晚的运行，或在 main 上手动运行）保存缓存。
 - PR 只能读取 main 和它自己的缓存。PR 不保存，是为了不占用仓库 10 GB 的缓存空间，把 main 的缓存挤掉。
 - 自托管的 macOS runner 不用 `rust-cache`，保留自己的 target 目录（§10）。
 - 加任务时照此设置（`ci.yml` 里 `rust` 任务的 `rust-cache` 处有说明）。
-- 不能用缓存的检查（SDK 可复现构建）放在 main 上，PR 只在 `repro` 打开时运行。
+- 不能用缓存的检查（SDK 可复现构建）放在完整运行里，PR 只在 `repro` 打开时运行。
 
 ## 9. 版本
 
@@ -220,17 +232,17 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 | Bun | `bun/rutis-bun/package.json` 的 `engines.bun` | 声明的最低版本 | `latest` |
 | Go | `go/rutis/go.mod` | `oldstable` | `stable` |
 | Rust 工具链 | `rust-toolchain.toml` | 所有 workflow 的 `dtolnay/rust-toolchain@<版本>` 与它相同 | 同左 |
-| MSRV | 根 `Cargo.toml` 的 `rust-version` | `msrv` 任务（main） | — |
+| MSRV | 根 `Cargo.toml` 的 `rust-version` | `msrv` 任务（完整运行） | — |
 
 端到端场景（`rutis-e2e`）三个平台都跑：Linux 在 `e2e`（最低版本），macOS 在 `network-macos`、Windows 在 `runtimes-windows`（最新版本；Windows 上只跑不限于 Unix 的场景）。
 
-`runtimes-go`、`runtimes-bun` 在 main 上的 macOS 矩阵项里，Node、Python 只是跨语言行的对端，和 Linux 一样用最低版本。发布用的 Node（`release.yml`、`package.yml` 和 `ci.yml` 的 `release-dry-run`）是发布工具的版本，不属于支持矩阵。
+`runtimes-go`、`runtimes-bun` 在完整运行中的 macOS 矩阵项里，Node、Python 只是跨语言行的对端，和 Linux 一样用最低版本。发布用的 Node（`release.yml`、`package.yml` 和 `ci.yml` 的 `release-dry-run`）是发布工具的版本，不属于支持矩阵。
 
 **改了声明，要在同一个 PR 里改 CI 的版本**：改 `engines`、`requires-python`、websockets 下限或 `rust-version` 的 PR，同时改上表里对应任务的版本；否则声明的最低版本没有经过验证（Q10.3）。
 
 ## 10. 自托管的 macOS runner
 
-`ci.yml` 的 `dylib-macos`、`sdk-repro-macos`，以及 `install.yml` 在 main 和 PR 上的 `darwin-arm64`，跑在自托管的 macOS runner 上：一台专用、隔离的 Mac，可以装多个 runner 实例，标签都是 `self-hosted, macOS, ARM64`（第一个实例叫 `macos-1`）。结果和操作系统无关的任务也在那里跑，免得排队等 GitHub 的 Linux runner：`ci.yml` 的 `links`、`js-py`（Node 22、Python 3.10、websockets 15，Python 由 uv 装）、`msrv`、`checks`、`release-dry-run`、`semver-rutis`、两个 SDK 比对，`runtimes-go`/`runtimes-bun` 在完整运行时的 macOS 矩阵项（Go oldstable、Bun 1.4.0，Node 22，Python 由 uv 装），以及只做调度的 `changes`、`ci-ok`，`install.yml`、`package.yml` 的 `plan`（发布时，即 tag 上，`plan` 仍用 `ubuntu-24.04`）。只有一个实例时它们会排在正在跑的 macOS 任务后面，所以要多加实例（现在有 `macos-1` 到 `macos-4`）。`msrv`、`checks` 在 macOS 上编译，不编译只在 Linux 上的 cfg 代码；这部分由 Linux 上的 `lint`（clippy，全部 feature）编译。留在 Linux 上的：`rust`、`e2e`、`lint`、`runtimes-go`/`runtimes-bun` 的 ubuntu 矩阵项、`dylib-linux-*`、`sdk-repro`。`network-macos` 也在自托管的机器上跑（仓库变量 `NETWORK_MACOS_RUNNER` 为 `["self-hosted","macOS","ARM64"]`；删掉变量回到 GitHub 的 `macos-15`。曾因 #287 留在 GitHub 上，#344 修复后切过来）。其余任务仍用 GitHub 的 runner：`darwin-x64`（要 Intel 的 `macos-15-intel`）、`package.yml` 的 macOS 构建（发布用的文件）、`release.yml` 调用 `install.yml` 时的 `darwin-arm64`（发布前的检查用 `macos-15`）；Linux 和 Windows 的任务见 §11。
+`ci.yml` 的 `dylib-macos`、`sdk-repro-macos`，以及 `install.yml` 在 PR 和每晚的运行中的 `darwin-arm64`，跑在自托管的 macOS runner 上：一台专用、隔离的 Mac，可以装多个 runner 实例，标签都是 `self-hosted, macOS, ARM64`（第一个实例叫 `macos-1`）。结果和操作系统无关的任务也在那里跑，免得排队等 GitHub 的 Linux runner：`ci.yml` 的 `links`、`js-py`（Node 22、Python 3.10、websockets 15，Python 由 uv 装）、`msrv`、`checks`、`release-dry-run`、`semver-rutis`、两个 SDK 比对，`runtimes-go`/`runtimes-bun` 在完整运行时的 macOS 矩阵项（Go oldstable、Bun 1.4.0，Node 22，Python 由 uv 装），以及只做调度的 `changes`、`ci-ok`，`install.yml`、`package.yml` 的 `plan`（发布时，即 tag 上，`plan` 仍用 `ubuntu-24.04`）。只有一个实例时它们会排在正在跑的 macOS 任务后面，所以要多加实例（现在有 `macos-1` 到 `macos-4`）。`msrv`、`checks` 在 macOS 上编译，不编译只在 Linux 上的 cfg 代码；这部分由 Linux 上的 `lint`（clippy，全部 feature）编译。留在 Linux 上的：`rust`、`e2e`、`lint`、`runtimes-go`/`runtimes-bun` 的 ubuntu 矩阵项、`dylib-linux-*`、`sdk-repro`。`network-macos` 也在自托管的机器上跑（仓库变量 `NETWORK_MACOS_RUNNER` 为 `["self-hosted","macOS","ARM64"]`；删掉变量回到 GitHub 的 `macos-15`。曾因 #287 留在 GitHub 上，#344 修复后切过来）。其余任务仍用 GitHub 的 runner：`darwin-x64`（要 Intel 的 `macos-15-intel`）、`package.yml` 的 macOS 构建（发布用的文件）、`release.yml` 调用 `install.yml` 时和手动运行 `install.yml` 时的 `darwin-arm64`（发布前的检查用 `macos-15`）；Linux 和 Windows 的任务见 §11。
 
 **切回 GitHub 的 runner，不用改代码**：仓库变量 `MACOS_RUNNER`（Settings → Secrets and variables → Actions → Variables）是 `runs-on` 的 JSON 值，没设置时为 `["self-hosted","macOS","ARM64"]`。设成 `"macos-15"`（带引号）就全部回到 GitHub 的 macOS；删掉变量就回到自托管。`gh variable set MACOS_RUNNER --body '"macos-15"'`。调度任务用另一个变量 `GATE_RUNNER`，切回时设成 `"ubuntu-24.04"`。
 

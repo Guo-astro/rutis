@@ -1,0 +1,145 @@
+# The nightly run (docs/ci.md §2, Q12.3, Q12.4): every job of ci.yml, the
+# install checks on every platform with this commit's packages
+# (install.yml), the Windows dylib tests (dylib-windows.yml) and the stress
+# tests (stress.yml), on main's latest commit. A merge to main runs nothing,
+# so this run is what checks every commit merged since the last successful
+# nightly run: the paths a pull request skipped, and pull requests that pass
+# alone but fail together.
+#
+# It runs only when main has commits the last successful nightly run did
+# not check (force=true runs it anyway). A failure opens an issue (label
+# `ci`, assigned to the maintainer) with the failed jobs and the commits
+# checked, or comments on the one still open.
+#
+# By hand: Actions → nightly → Run workflow, or
+# `gh workflow run nightly.yml -f force=true`.
+name: nightly
+
+on:
+  schedule:
+    # 03:00 in Beijing.
+    - cron: "0 19 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Run even when main has no new commits since the last successful nightly run
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One nightly run at a time per branch; a run in progress is never cancelled.
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Whether there is anything new: this commit against the last successful
+  # nightly run's.
+  plan:
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      base: ${{ steps.plan.outputs.base }}
+    steps:
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          base=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow nightly.yml --branch "$BRANCH" \
+            --status success --limit 1 --json headSha --jq '.[0].headSha // ""')
+          run=true
+          if [ "$base" = "$GITHUB_SHA" ] && [ "$FORCE" != true ]; then run=false; fi
+          {
+            echo "base=$base"
+            echo "run=$run"
+          } | tee -a "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY"
+          if [ "$run" = false ]; then
+            echo "The last successful nightly run already checked $GITHUB_SHA: nothing to run." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+  ci:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    uses: ./.github/workflows/ci.yml
+    # ci.yml's `changes` job reads pull requests.
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      all: true
+      base: ${{ needs.plan.outputs.base }}
+
+  # This commit's packages, built and installed on every platform; GitHub's
+  # clean machines but darwin-arm64 (docs/ci.md §10).
+  install:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    uses: ./.github/workflows/install.yml
+    with:
+      source: local
+      platforms: '["linux-x64","linux-arm64","darwin-x64","darwin-arm64","win32-x64"]'
+      self-hosted: true
+
+  dylib-windows:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    uses: ./.github/workflows/dylib-windows.yml
+
+  stress:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    uses: ./.github/workflows/stress.yml
+
+  # A failure opens an issue, or comments on the nightly issue still open (as
+  # release.yml's `report`).
+  report:
+    needs: [plan, ci, install, dylib-windows, stress]
+    if: failure()
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - name: open an issue or comment on the open one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ needs.plan.outputs.base }}
+          SERVER: ${{ github.server_url }}
+        run: |
+          run_url="$SERVER/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          # Every job of this run, those of the called workflows included
+          # ("ci / rust").
+          failed=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | "- [\(.name)](\(.html_url))：\(.conclusion)"')
+          if [ -n "$BASE" ]; then
+            range="[\`${BASE:0:10}..${GITHUB_SHA:0:10}\`]($SERVER/$GITHUB_REPOSITORY/compare/$BASE...$GITHUB_SHA)（上一次成功的每晚运行到这次）"
+          else
+            range="[\`${GITHUB_SHA:0:10}\`]($SERVER/$GITHUB_REPOSITORY/commit/$GITHUB_SHA)（没有成功的每晚运行可比较）"
+          fi
+          {
+            echo "每晚运行失败：$run_url"
+            echo
+            echo "提交范围：$range"
+            echo
+            echo "失败的任务："
+            echo
+            echo "${failed:-（没有找到失败的任务，见运行页面）}"
+            echo
+            echo "处理方式见 docs/ci.md §7。"
+          } > "$RUNNER_TEMP/body.md"
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --label ci --state open \
+            --search 'nightly in:title' --json number,title \
+            --jq '[.[] | select(.title | startswith("nightly:"))][0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --label ci --assignee eric8810 \
+              --title "nightly: $(date -u +%F) 失败" --body-file "$RUNNER_TEMP/body.md"
+          fi

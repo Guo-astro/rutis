@@ -1,18 +1,39 @@
-# 常规 CI:push / PR 自动跑测试 + 编译检查。
+# 常规 CI:PR 自动跑测试 + 编译检查;每晚(nightly.yml)和手动运行跑全部任务。
 # 防回归:任何改动(agent/cli/内核/bridge/rutis-dsh)引入的失败在此显式变红。
 #
 # Pull requests run only the jobs their change affects (docs/quality-status.md
-# §8.3, Q12.3); every push to main runs every job. The `changes` job decides,
-# and `ci-ok` is the one check a merge waits for (Q12.5).
+# §8.3, Q12.3). Full runs (input `all`) run every job: nightly.yml calls this
+# workflow every night main has new commits, and a run by hand (Actions → ci →
+# Run workflow, any branch) is one too. A merge to main runs nothing. The
+# `changes` job decides, and `ci-ok` is the one check a merge waits for
+# (Q12.5).
 #
 # rutis-agent 的 rutui 依赖已从 crates.io 解析,无需额外 checkout。
 
 name: ci
 
 on:
-  push:
-    branches: ["main"]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      all:
+        description: Run every job (false runs only `changes` and `ci-ok`)
+        type: boolean
+        default: true
+      base:
+        description: The commit the links check compares with (default the parent commit)
+        type: string
+        default: ""
+  workflow_call:
+    inputs:
+      all:
+        description: Run every job (nightly.yml, release.yml)
+        type: boolean
+        default: false
+      base:
+        description: The commit the links check compares with (default the parent commit)
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -34,18 +55,20 @@ env:
     check instance_peers instance_services instances lifecycle loader
     migration_example overlay patch_parity peer_rows regressions scope
 
-# A new push to a pull request cancels its run still in progress. On main
-# (one group per ref) the run in progress always runs to the end, and at most
-# one waits: a newer merge replaces the waiting run, so the next run checks
-# every merge since (Q12.4; docs/ci.md §3).
+# A new push to a pull request cancels its run still in progress (Q12.4).
+# Other runs (by hand, or called by nightly.yml or release.yml, where
+# github.run_id is the caller's) each have a group of their own: they are
+# never cancelled or held back by another run, and a called run never waits
+# on its caller.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # What the change touches. The mapping from paths to jobs is reviewed like
-  # code; a job skipped on a pull request that then fails on main means a
-  # path is missing here (Q12.3.3).
+  # code; a job skipped on a pull request that then fails in a full run
+  # (nightly) means a path is missing here (Q12.3.3). Without a pull request
+  # the input `all` decides: every job, or none.
   #
   # This job and ci-ok only orchestrate: they run on the self-hosted macOS
   # runners (docs/ci.md §10); the repository variable GATE_RUNNER (JSON)
@@ -81,7 +104,7 @@ jobs:
               - .github/workflows/**
             # The dylib crates, their tools and fixtures, and rutis-cli, which
             # links the SDK and holds the dylib host tests. Kernel changes
-            # reach the SDK too, but main runs the dylib jobs after them
+            # reach the SDK too, but full runs run the dylib jobs after them
             # (Q12.1): kernel pull requests would otherwise wait 20 minutes
             # on jobs that have not failed in 88 runs.
             dylib:
@@ -120,7 +143,8 @@ jobs:
               - crates/rutis-loader/**
               - crates/rutis-host/**
             # What decides whether the SDK builds reproducibly. Kernel
-            # changes reach the SDK too, but are checked on main (Q12.6.3).
+            # changes reach the SDK too, but are checked in full runs
+            # (Q12.6.3).
             repro:
               - crates/rutis-sdk/**
               - crates/rutis-cli/build.rs
@@ -140,7 +164,9 @@ jobs:
               - '!**/*.md'
       - id: select
         env:
-          PUSH: ${{ github.event_name != 'pull_request' }}
+          # The input (workflow_dispatch, workflow_call); empty on a pull
+          # request.
+          FULL: ${{ inputs.all }}
           ALL: ${{ steps.paths.outputs.all }}
           CODE: ${{ steps.code.outputs.code }}
           DYLIB: ${{ steps.paths.outputs.dylib }}
@@ -156,7 +182,7 @@ jobs:
           LINUX=$(jq -c . <<< "$LINUX_RUNNER")
           MACOS=$(jq -c . <<< "$MACOS_RUNNER")
           all=false
-          if [ "$PUSH" = true ] || [ "$ALL" = true ]; then all=true; fi
+          if [ "$FULL" = true ] || [ "$ALL" = true ]; then all=true; fi
           pick() { if [ "$all" = true ] || [ "$1" = true ]; then echo true; else echo false; fi; }
           {
             echo "all=$all"
@@ -199,12 +225,16 @@ jobs:
         if: runner.environment == 'self-hosted'
         with:
           node-version: '24'
+      # Compared with the pull request's base, the input `base` (nightly.yml:
+      # its last successful run's commit), or else this commit's parent.
       - name: relative Markdown links
         env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha || inputs.base }}
         run: |
-          if [ -n "$BASE" ] && [ "$BASE" != 0000000000000000000000000000000000000000 ] \
-            && git fetch --quiet --depth=1 origin "$BASE"; then
+          if [ -z "$BASE" ] && git fetch --quiet --depth=2 origin "$GITHUB_SHA"; then
+            BASE=$(git rev-parse --verify --quiet HEAD^ || true)
+          fi
+          if [ -n "$BASE" ] && git fetch --quiet --depth=1 origin "$BASE"; then
             node tools/check-md-links.mjs --base "$BASE"
           else
             node tools/check-md-links.mjs
@@ -217,7 +247,7 @@ jobs:
   # longest one sets the time (Q12.6.1): `rust` (every Rust test once, but the
   # end-to-end scenarios), `e2e` (the scenarios), `js-py` (the Node and Python
   # packages), and `checks` (compile checks of
-  # feature combinations: on main and for changes that run everything, as
+  # feature combinations: in full runs and for changes that run everything, as
   # they catch rare errors and run no tests). `js-py`, `checks` and `msrv`
   # do not depend on the OS and run on the self-hosted macOS runners
   # (docs/ci.md §10); `checks` and `msrv` there skip Linux-only cfg code,
@@ -247,8 +277,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
-          # Saved on main only: pull requests read main's caches, and their
-          # own would crowd main's out of the repository's 10 GB.
+          # Saved on main only (the nightly runs): pull requests read main's
+          # caches, and their own would crowd main's out of the repository's
+          # 10 GB.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The oldest Node the packages support (engines.node).
@@ -299,7 +330,7 @@ jobs:
       # The same rows with the runtimes started as on Windows: a loopback
       # channel and a one-time token instead of an inherited socket. Pull
       # requests run these tests in runtimes-windows, where loopback is how
-      # processes start; main also runs them here.
+      # processes start; full runs also run them here.
       - name: cargo test (rutis-loader runtimes, loopback channels)
         if: needs.changes.outputs.all == 'true'
         env:
@@ -484,7 +515,7 @@ jobs:
         run: bash tools/ci-self-hosted.sh end
 
   # The declared MSRV (rust-version in Cargo.toml) builds the libraries and
-  # binaries, with our Cargo.lock (Q10.3). With `all`: on main, and on pull
+  # binaries, with our Cargo.lock (Q10.3). With `all`: in full runs, and on pull
   # requests that change Cargo.lock or Cargo.toml, which is how a dependency
   # that needs a newer rustc arrives. rutis-agent and rutis-cli are examples
   # and declare no MSRV.
@@ -861,7 +892,7 @@ jobs:
         if: always() && runner.environment == 'self-hosted'
         run: bash tools/ci-self-hosted.sh end
 
-  # What a release publishes, packaged on main and when packaging changes
+  # What a release publishes, packaged in full runs and when packaging changes
   # (Q12.1): the crates build from their packages, the npm packages pack, the
   # Python packages build.
   release-dry-run:
@@ -906,7 +937,7 @@ jobs:
   # 时给出警告，并在 job 摘要中列出，提示发布时需要提升的版本；不使 CI 失败
   # （0.x 允许在 minor 版本中破坏）。真正的拦截在 release.yml：版本号不允许的
   # 破坏性变更会使发布失败。
-  # On main and when packaging changes: it only warns, and what it reports
+  # In full runs and when packaging changes: it only warns, and what it reports
   # matters when the train is released (Q12.1).
   semver-rutis:
     needs: changes
@@ -969,7 +1000,7 @@ jobs:
         run: bash tools/ci-self-hosted.sh end
 
   # The single-runner reproducibility check (two source and target paths on
-  # one runner); the two-runner comparison runs on main (sdk-repro).
+  # one runner); the two-runner comparison runs in full runs (sdk-repro).
   dylib-linux-repro:
     needs: changes
     if: needs.changes.outputs.repro == 'true'
@@ -1162,7 +1193,7 @@ jobs:
 
   # Builds of the SDK on two separate runners compared by hash. The SDK
   # cannot come from a cache, so this stays off pull requests (Q12.6.3) and
-  # runs on main and for changes that run everything; the dylib jobs keep the
+  # runs in full runs and for changes that run everything; the dylib jobs keep the
   # single-runner check for dylib changes.
   sdk-repro:
     needs: changes
@@ -1243,7 +1274,14 @@ jobs:
           export RUSTFLAGS="--remap-path-prefix=$PWD=/src --remap-path-prefix=$CARGO_HOME=/cargo --remap-path-prefix=$CARGO_TARGET_DIR=/target"
           export RUTIS_SDK_LOCKFILE="$PWD/Cargo.lock"
           export RUTIS_SDK_ARTIFACT_SHA256="$(printf '0%.0s' {1..64})"
-          cargo build --release --locked -p rutis-cli --features dylib-plugins
+          # rustup's own cargo, not a build cache's shim on PATH (mbx on the
+          # self-hosted Mac, docs/ci.md §10): the cache keeps its own target
+          # directory, and the two builds would no longer differ only by the
+          # paths remapped above. RUSTC: the same toolchain's rustc, also for
+          # build scripts run outside this checkout (out of reach of its
+          # rust-toolchain.toml, rustup's proxy would take its default).
+          export RUSTC="$(rustup which rustc)"
+          "$(rustup which cargo)" build --release --locked -p rutis-cli --features dylib-plugins
           sdk_file="$CARGO_TARGET_DIR/release/librutis_sdk.dylib"
           if ! otool -L "$sdk_file" | grep -Eq '@rpath/libstd-[^ ]*\.dylib'; then
             otool -L "$sdk_file"

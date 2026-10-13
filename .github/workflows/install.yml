@@ -4,27 +4,28 @@
 # (tests/e2e/tests/install.rs). One job per platform runs the three
 # channels one after another.
 #
-#   main          builds this commit's packages (package.yml) on three
-#                 platforms and installs them
+#   nightly.yml   calls it every night main has new commits: builds that
+#                 commit's packages (package.yml) on every platform and
+#                 installs them (self-hosted: true)
 #   pull request  only when packaging or these tests change: Linux x64
 #   release.yml   calls it twice: before publishing, on every platform,
 #                 with the packages it built (source: local, build: false);
 #                 after publishing, from the registries (source: registry)
-#   by hand       any version and source
+#   by hand       any version and source; by default this commit's
+#                 packages on three platforms
 #
 # The minimum versions go on Linux (Node 22, Python 3.10, Bun 1.4.0, Go
 # oldstable; websockets 15.0 is the PyPI cell's own);
 # macOS and Windows take the latest (docs/ci.md §9).
 #
-# darwin-arm64 runs on the self-hosted macOS runners for main and pull
-# requests (the repository variable MACOS_RUNNER switches it, docs/ci.md
-# §10); a release (release.yml, which names its platforms) keeps the
-# GitHub-hosted macos-15.
+# darwin-arm64 runs on the self-hosted macOS runners for pull requests and
+# the nightly runs (input self-hosted; the repository variable MACOS_RUNNER
+# switches it, docs/ci.md §10); a release (release.yml) and a run by hand
+# keep the GitHub-hosted macos-15. The other platforms always run on
+# GitHub's clean machines.
 name: install
 
 on:
-  push:
-    branches: [main]
   pull_request:
     paths:
       - .github/workflows/package.yml
@@ -66,14 +67,19 @@ on:
         description: Build the packages here (false when the caller built them in this run)
         type: boolean
         default: true
+      self-hosted:
+        description: darwin-arm64 on the self-hosted macOS runners (nightly.yml)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-# As ci.yml: one group per pull request or ref. release.yml's calls run on
-# its tag's ref (and with their own source), apart from main's runs.
+# As ci.yml: one group per pull request, cancelled by a new push; any other
+# run has its own (github.run_id is the caller's for a call, and release.yml
+# calls this twice in one run, with different sources).
 concurrency:
-  group: install-${{ github.event.pull_request.number || github.ref }}-${{ inputs.source || 'local' }}
+  group: install-${{ github.event.pull_request.number || github.run_id }}-${{ inputs.source || 'local' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -102,7 +108,7 @@ jobs:
           VERSION: ${{ inputs.version }}
           PLATFORMS: ${{ inputs.platforms }}
           BUILD: ${{ inputs.build }}
-          REF: ${{ github.ref }}
+          SELF_HOSTED: ${{ inputs.self-hosted }}
           MACOS_RUNNER: ${{ vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]' }}
         run: |
           node - <<'EOF' >> "$GITHUB_OUTPUT"
@@ -111,10 +117,10 @@ jobs:
           const main = ['linux-x64', 'darwin-arm64', 'win32-x64']
           const platforms = process.env.PLATFORMS ? JSON.parse(process.env.PLATFORMS)
             : process.env.EVENT === 'pull_request' ? ['linux-x64'] : main
-          // Main and pull requests: the self-hosted runners; a release and a
-          // run by hand: GitHub's.
-          const selfHosted = !process.env.PLATFORMS && (process.env.EVENT === 'pull_request'
-            || (process.env.EVENT === 'push' && process.env.REF === 'refs/heads/main'))
+          // Pull requests and the nightly runs: the self-hosted runners; a
+          // release and a run by hand: GitHub's.
+          const selfHosted = process.env.SELF_HOSTED === 'true'
+            || (!process.env.PLATFORMS && process.env.EVENT === 'pull_request')
           const runners = {
             'linux-x64': { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-musl', wheel: 'x86_64', node: '22', python: '3.10' },
             'linux-arm64': { os: 'ubuntu-24.04-arm', target: 'aarch64-unknown-linux-musl', wheel: 'aarch64', node: '22', python: '3.10' },

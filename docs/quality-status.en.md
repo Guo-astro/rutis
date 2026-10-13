@@ -51,10 +51,10 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 | Q6.9 | Service contracts across implementations | Partly | Method shapes can be declared; every language can name errors; value round trips have property tests (#296); the Node and Python test tools match the real runtimes (#298); replacement is verified end to end (S4, #326). Missing: comparing the Go and Bun test tools; Date, Map, Set, binary and big integers are always refused (#308, waiting for design). Whether implementations return the same data is out of scope (item 4, decided 2026-10-11) |
 | Q6.10 | Loader editable layers, dsh profile files | Partly | Atomic writes and conflict replay implemented; the dsh user layer has samples per release (#284). Multi-writer tests not checked item by item (Q5.5.2) |
 | Q6.11 | Cordis binding generation | Partly | The generator has unit tests; real plugin baselines are compiled and called; new external releases are not checked regularly (F4, #190) |
-| Q6.12 | dylib loading | Met | Linux and macOS run on PRs that change dylib code and on every push to main; Windows (`dylib-windows.yml`) also runs on dylib changes and on every push to main (ci.md §2). Reconciling the check before loading is under Q5.3.6 |
+| Q6.12 | dylib loading | Met | Linux and macOS run on PRs that change dylib code and nightly; Windows (`dylib-windows.yml`) also runs on dylib changes and nightly (ci.md §2). Reconciling the check before loading is under Q5.3.6 |
 | Q6.13 | Node links, remote runtimes, leases | Partly | Library tests complete; two independent host processes verified over loopback (S5, `nodes.rs`, #322, #336): a call in flight during a network cut fails once, the link comes back, the far end restarted gives a new lease, a changed token is refused, a certificate for another name or an expired one is refused. Missing: real network conditions (E12, #341); revoking credentials while running (#273); the link's actual retry timing and the reset after 60 s stable (E3); model checking of leases and reconnection (E4, E5, #210) |
 | Q6.14 | Cordis mounts and Cordis nodes | Partly | Differential verification against native Cordis; boundary rules 3, 4, 5, 7 have cross-process tests (`boundary_rules.rs` and others, #283), and the silent degradation they found now fails explicitly (#281, #282 → #337). Missing: a `serial` across the boundary running as serial on the far side needs a protocol change (#340); `boundary/5.8` partly verified |
-| Q6.15 | npm, PyPI, binaries, crates.io | Partly | `install.yml`: npm, PyPI and release binaries installed and run in a clean directory, on three platforms on main, linux-x64 on PRs, five platforms before a release; after a release the guides' examples run with the registry packages (#193 → #254, #266 → #324). Missing: crates.io and the Go module have no installation check; marking the Python guide's examples (#266 (d), waits for #259) |
+| Q6.15 | npm, PyPI, binaries, crates.io | Partly | `install.yml`: npm, PyPI and release binaries installed and run in a clean directory, on five platforms nightly, linux-x64 on PRs, five platforms before a release; after a release the guides' examples run with the registry packages (#193 → #254, #266 → #324). Missing: crates.io and the Go module have no installation check; marking the Python guide's examples (#266 (d), waits for #259) |
 | Q6.16 | `rutis-dev` dev channel | Partly | Local socket and `0600` implemented; "absent from production builds" not verified |
 
 ### 1.3 Test rules, process, matrix, release
@@ -74,12 +74,12 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 | Q9.4 | Guarantee register | Partly | The [register](guarantees.en.md) exists (#276, #310, then updated by each PR); test comments carry `guarantee: <id>`; 0.10 is the baseline and Q9.4.4 applies from 0.11 (plan Q3). The `loader/` family and the rest of `host/` are not registered yet (#181) |
 | Q10.2 | Minimum and latest versions in the support matrix | Met | Linux jobs use the minimum versions (Node 22, Python 3.10, websockets 15, Bun 1.4.0, Go oldstable), macOS and Windows the latest; MSRV 1.88 verified by the `msrv` job (#204 → #256; ci.md §9). The runtime × channel × platform matrix is in ci.md §4, with a reason for each cell that does not run (#176) |
 | Q11.3.2 | No coverage gate | Met | — |
-| Q12.1 | Verification at levels | Partly | PRs select by change; main runs every job, installation on three platforms (`install.yml`), MSRV, feature combinations, two-machine reproducibility; nightly `stress.yml` (core rounds, multi-process test rounds #245, two soaks); weekly dependency checks and CI measurements. Missing: versions meeting across releases on main (#209); nightly fuzzing, model checking, real networks, the latest Cordis baseline (#179, #341, #190) |
-| Q12.3 | Selection by change | Met | The `changes` job turns switches on by change; main runs everything (#203 → #213; ci.md §3) |
-| Q12.4 | Cancel superseded runs | Partly | A new push to a PR cancels the old run (#224). On main, `ci.yml`, `install.yml` and `dylib-windows.yml` are grouped by ref: a running run is not cancelled, but a waiting one is replaced by the next merge, so not every merge gets its own complete result; a later run checks it together with the others (ci.md §7). This does not match "every merge has a complete result" in this clause; see §10 |
+| Q12.1 | Verification at levels | Partly | PRs select by change; nightly (`nightly.yml`, when main has new commits) every job, installation on five platforms (`install.yml`), Windows dylib, MSRV, feature combinations, two-machine reproducibility, and `stress.yml` (core rounds, multi-process test rounds #245, two soaks); weekly dependency checks and CI measurements. Missing: nightly versions meeting across releases (#209), fuzzing, model checking, real networks, the latest Cordis baseline (#179, #341, #190) |
+| Q12.3 | Selection by change | Met | The `changes` job turns switches on by change; nightly `nightly.yml` runs every job when main has new commits (`ci.yml`'s `all`), and it can be run by hand (#203 → #213, #369; ci.md §3). Before a release: step 2 of release.md checks that the commit released has a passing nightly run; `release.yml` calling the full CI itself is step 3 of the CI redesign |
+| Q12.4 | Cancel superseded runs | Met | A new push to a PR cancels the old run (#224). A merge to main runs nothing; the nightly run checks every commit merged since the last successful nightly run and is not cancelled; a failure opens an issue (label `ci`) naming the failed jobs and the commit range (#369; ci.md §7) |
 | Q12.5 | One merge condition | Met | `ci-ok` is the only required check (#213; ci.md §5) |
-| Q12.6 | Time as developers wait | Partly | Target: an ordinary code PR gets a result within 10 minutes of the push, queueing included (ci.md §1). Measured on 2026-10-12: median 15.6 minutes, p90 42.9 (9 runs, most before or during the move to self-hosted runners, §8.3). Not enough data since the move |
-| Q12.7 | No duplication | Partly | Duplicate release builds removed (#265 → #275); on PRs the reproducibility check runs only when `repro` is on, as a single-machine check inside the dylib jobs, and the two-machine `sdk-repro*` comparison runs only on main (#213, #275). On main the single-machine and two-machine reproducibility checks both run |
+| Q12.6 | Time as developers wait | Partly | Target: an ordinary code PR gets a result within 10 minutes of the push, queueing included (ci.md §1); the time requirements apply to PRs and releases only, not to the nightly run. Measured on 2026-10-12: median 15.6 minutes, p90 42.9 (9 runs, most before or during the move to self-hosted runners, §8.3). Not enough data since the move |
+| Q12.7 | No duplication | Partly | Duplicate release builds removed (#265 → #275); on PRs the reproducibility check runs only when `repro` is on, as a single-machine check inside the dylib jobs, and the two-machine `sdk-repro*` comparison runs only in full runs (#213, #275). In full runs the single-machine and two-machine reproducibility checks both run |
 | Q12.8 | Main line failures first | Met | Process written in ci.md §7 |
 | Q12.9 | Measure CI | Met | `tools/ci-stats.mjs` and the weekly `ci-stats.yml` (#213); §8.1 and §8.3 are two measurements |
 | Q12.10 | CI configuration is code | Met | CI changes go in their own PR and run every job (ci.md §6) |
@@ -164,7 +164,7 @@ Added in 0.9 and 0.10 (as of `f8ce69b`):
 | TLA+ | `specs/cross-runtime-sync/`: cross-runtime synchronous calls and the deadlock policy, run by hand with `run.sh` | #222 |
 | Guarantee register | [guarantees.en.md](guarantees.en.md): `core/`, `boundary/`, `instance/`, `bridge/`, `host/`, `dsh/`, `sdk/` families; about 100 `guarantee: <id>` test comments | #276, #310 |
 
-CI: `ci.yml` (PRs select jobs by change, main runs everything; full Linux run on the minimum versions, E2E, lint, platform-specific tests on macOS and Windows, Bun and Go runtimes, dylib, packaging, semver, MSRV, feature combinations, reproducibility); `install.yml` (installation smoke tests); `stress.yml` (nightly: core rounds, multi-process test rounds, two 600 s soaks); `dylib-windows.yml`; `deps.yml` and `ci-stats.yml` (weekly). Details in [ci.md](ci.en.md). CI has no fuzzing, model checking, actionlint, license checks, or versions meeting across releases.
+CI: `ci.yml` (PRs select jobs by change, nightly runs everything; full Linux run on the minimum versions, E2E, lint, platform-specific tests on macOS and Windows, Bun and Go runtimes, dylib, packaging, semver, MSRV, feature combinations, reproducibility); `install.yml` (installation smoke tests); `nightly.yml` (calls the three above and `stress.yml` every night, opens an issue on failure); `stress.yml` (nightly: core rounds, multi-process test rounds, two 600 s soaks); `dylib-windows.yml`; `deps.yml` and `ci-stats.yml` (weekly). Details in [ci.md](ci.en.md). CI has no fuzzing, model checking, actionlint, license checks, or versions meeting across releases.
 
 ## 3. Control codes
 
@@ -324,7 +324,7 @@ Each scenario first says what it is, which parts it goes through and under what 
 | D6 | Several processes write the same storage and changes are lost | Correctness | High | Medium (dsh's CLI and web UI open together) | P0 | K (loader multi-writer CAS, replay drops); PT (random edits with simulated conflicts, final storage = all edits) | PR | To check |
 | D7 | Undeclared breaking changes in public APIs | Compatibility | Medium | High (0.x) | P1 | SV (semver-checks exists); migration guide code compiled | PR | Partly |
 | D8 | Embedders calling a synchronous method from a current_thread runtime or a blocked thread deadlock | Faults | Medium | Medium | P1 | K (the network stack's requirement that the channel progresses while the caller's current_thread is blocked) | PR | To check |
-| D9 | Builds fail with only some features enabled | Compatibility | Medium | Medium | P1 | ST (feature combinations, the `checks` job on main) | PR | Yes |
+| D9 | Builds fail with only some features enabled | Compatibility | Medium | Medium | P1 | ST (feature combinations, the nightly `checks` job) | PR | Yes |
 | D10 | `shutdown` does not finish by its deadline and embedders cannot tell the state | Diagnosability | Medium | Low | P2 | U | PR | Yes |
 | D11 | Latency grows abnormally at the upper bound of instances | Performance | Medium | Low | P2 | BM (create, close, read services with 1000 instances) | Weekly | No |
 
@@ -415,8 +415,8 @@ Each scenario first says what it is, which parts it goes through and under what 
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | I1 | A library with mismatched identity (SDK, toolchain, artifact hash) is loaded and its initializers run | Security, faults | High | Medium | P0 | E (`tools/test-dylib*.sh`, `test-sdk-bundle.sh`) | PR (Linux, macOS) | Yes; 5 items in `design-dylib-sdk` §13 unchecked, need reconciling |
 | I2 | After a failed swap the old version stops serving | Faults | High | Low | P1 | E | PR | Yes |
-| I3 | SDK builds are not reproducible | Compatibility | Medium | Medium | P1 | Two runners build independently and compare hashes | Main (on PRs, a single-machine check only when `repro` is on) | Yes |
-| I4 | dylib problems on Windows | Compatibility | Medium | Medium | P1 | E (dylib-windows) | On dylib changes and every push to main | Yes |
+| I3 | SDK builds are not reproducible | Compatibility | Medium | Medium | P1 | Two runners build independently and compare hashes | Nightly (on PRs, a single-machine check only when `repro` is on) | Yes |
+| I4 | dylib problems on Windows | Compatibility | Medium | Medium | P1 | E (dylib-windows) | On dylib changes and nightly | Yes |
 | I5 | A toolchain mismatch is not caught by `xtask dev` before compiling | Diagnosability | Medium | Medium | P1 | E | PR | No (#260, outside this plan) |
 | I6 | The dev channel is present in production builds | Security | High | Low | P1 | ST (production builds contain no dev listener symbols or feature) | Merge | No |
 | I7 | dev channel commands behave unclearly with missing arguments, missing targets, or a closing host | Diagnosability | Low | Medium | P2 | U (commands × errors) | PR | Partly (5 tests) |
@@ -607,10 +607,10 @@ From `node tools/ci-stats.mjs 40 ci.yml --since 2026-10-11`. Jobs were being mov
 
 | Clause | Gap |
 | --- | --- |
-| Q12.4 | On main, runs are grouped by ref: a waiting run is replaced by the next merge, so not every merge gets its own complete result (ci.md §7). See §10 |
+| Q12.4 | ~~On main, runs are grouped by ref, so not every merge gets its own complete result~~: the standard now has the nightly run check every commit since the last one (#369); met |
 | Q12.6 | The median for ordinary code PRs is 15.6 minutes (§8.3) against a 10-minute target; a week of data with the self-hosted runners settled is needed to judge |
-| Q12.7 | On main the single-machine and two-machine reproducibility checks both run |
-| Q12.1 | Nightly lacks fuzzing, TLC, real networks and the latest Cordis baseline; main lacks versions meeting across releases; weekly lacks long host soaks and benchmarks (#179, #341, #190, #209, #192) |
+| Q12.7 | In full runs the single-machine and two-machine reproducibility checks both run |
+| Q12.1 | Nightly lacks fuzzing, TLC, real networks, the latest Cordis baseline and versions meeting across releases; weekly lacks long host soaks and benchmarks (#179, #341, #190, #209, #192) |
 
 ## 9. Plan
 
@@ -694,7 +694,7 @@ Moved out or opened during step two: revoking while running (#273), changing `ru
 8. ~~Whether persisted formats get a version field~~: decided (plan Q4): `rutis.json` gets a top-level `format`; dsh's `cordis.patch.yml` is Cordis's configuration format and gets none.
 9. ~~What to do with values outside the conversion table~~: decided (plan Q5): state the current behavior in the table first and register it as not guaranteed; changing the implementation is a separate issue (#308).
 10. ~~How step two is implemented~~: decided (plan Q6): one PR per item; the plan PR keeps only the plan.
-11. **The concurrency group on main and Q12.4**: on main, runs are grouped by ref and a waiting run is replaced by the next merge (ci.md §7), so not every merge has a complete result. Change the standard (allow a later run to check several merges together), or change CI (group by commit on main)?
+11. ~~The concurrency group on main and Q12.4~~: resolved (2026-10-13, [CI redesign](design-ci-redesign-2026-10-13.en.md), #369): a merge to main no longer runs checks; the nightly run checks every commit since the last successful one, and a failure opens an issue naming the commit range; the standard's Q12.3 and Q12.4 changed with it.
 12. ~~Runtimes that outlive a killed host on Unix (Q5.4.4, B3)~~: fixed (#353, #354): once the session ends, a runtime unloads its rows within `RUTIS_SHUTDOWN_TIMEOUT` (passed on from rutis-host's `--shutdown-timeout`, 10 seconds by default) and exits.
 13. ~~Whether to move `network-macos` to the self-hosted runner~~: moved (repository variable `NETWORK_MACOS_RUNNER`, ci.md §10).
 

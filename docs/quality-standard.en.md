@@ -89,7 +89,7 @@ rutis's behavior falls into four levels; the strength of verification depends on
 
 | Priority | Rule | Required verification |
 | --- | --- | --- |
-| P0 | High impact with medium or high likelihood; or involves a core guarantee | Automated; runs before merging when the change affects it, and on every run on the main line (Q12.3); covers every declared platform |
+| P0 | High impact with medium or high likelihood; or involves a core guarantee | Automated; runs before merging when the change affects it, and in every daily and pre-release full run (Q12.3); covers every declared platform |
 | P1 | High impact with low likelihood; or medium impact with medium or high likelihood | Automated; runs at least daily and before release |
 | P2 | Everything else | May rely on review, documentation or manual verification only |
 
@@ -318,7 +318,7 @@ E.g.: Rust bindings generated from another language's type declarations.
 2. every kind of refusal has a counterexample verified;
 3. when a replacement fails, the old version keeps working;
 4. builds are reproducible: the same source built at different paths and on different machines gives the same artifact;
-5. every supported platform is verified: before merging according to what the change affects, and on every run on the main line (Q12.3); not only when the relevant code changes.
+5. every supported platform is verified: before merging according to what the change affects, and in every daily and pre-release full run (Q12.3); not only when the relevant code changes.
 
 ### Q6.13 Distribution and network nodes
 
@@ -513,23 +513,23 @@ Continuous integration is where quality control is carried out: it runs most of 
 | When | What runs |
 | --- | --- |
 | Before every merge | P0 verification affected by the change (Q12.3); static checks; the cheaper parts on each platform |
-| After merging to the main line | All verification: all platforms, every cell of the support matrix; clean installation; versions meeting across releases; reproducible builds |
+| Daily (when the main line has new merges), and before release | All verification: all platforms, every cell of the support matrix; clean installation; versions meeting across releases; reproducible builds |
 | Daily | Longer P1 verification: long runs, fuzzing, large-scale model checking, real network conditions, new versions of external ecosystems |
 | Before release | §13 |
 
 **Q12.2** Verification before merging is kept within a reasonable time; when it grows beyond that, the expensive parts that find little are moved to a later level, not deleted.
 
-**Q12.3 Selection by change.** Before merging, only the verification affected by the change runs; on the main line, all verification runs every time.
+**Q12.3 Selection by change.** Before merging, only the verification affected by the change runs; all verification runs **at least once a day** (when the main line has new merges) and **before every release**.
 
 1. The mapping from what changed to what is verified lives in the CI configuration and is reviewed like code;
 2. changes whose impact cannot be determined (build configuration, dependency lock files, the CI configuration itself, widely shared parts) run all verification;
-3. when a verification skipped before merging fails on the main line, after the fix the mapping is checked for this kind of change and corrected (Q9.2.3).
+3. when a verification skipped before merging fails in a daily or pre-release full run, after the fix the mapping is checked for this kind of change and corrected (Q9.2.3).
 
-**Q12.4 Cancel superseded runs.** When a change gets a new commit, runs in progress for the older commit are cancelled at once. Runs on the main line are not cancelled; every merge gets a complete result.
+**Q12.4 Cancel superseded runs.** When a change gets a new commit, runs in progress for the older commit are cancelled at once. The daily full run checks every commit merged since the last successful run and is not cancelled; when it fails, an issue is opened naming the failed verification and the commit range (from the last successful run's commit to this run's).
 
 **Q12.5 One merge condition.** The merge condition is a single aggregate check: it passes when every selected verification passes; verifications skipped because they were not selected do not count as failures; the aggregate check itself always runs and cannot be skipped.
 
-**Q12.6 Time is measured as developers wait.** The time budget for verification before merging counts from pushing a commit to getting a result, including queueing, not only execution.
+**Q12.6 Time is measured as developers wait.** The time budget for verification before merging and before release counts from pushing a commit (or tag) to getting a result, including queueing, not only execution. The requirements below apply to verification before merging and before release only; the daily full run is not on a developer's waiting path.
 
 1. Shorten the critical path (the longest item) first, then the rest; verification on the critical path may be split into parallel parts;
 2. on scarce execution resources (platforms or machines of limited number), each run takes as few jobs as possible; checks that can be done one after another on the same machine are merged into one job;
@@ -549,7 +549,7 @@ Continuous integration is where quality control is carried out: it runs most of 
 
 **Q13.1** A release requires all of the following:
 
-1. all verification after merging to the main line passes; the most recent daily runs all pass;
+1. all verification passes on the commit released (a daily or pre-release full run); the most recent daily runs all pass;
 2. no new intermittent failures or skipped verifications;
 3. all core guarantees verified; unverified contract behaviors no more than at the previous release (Q9.4.4);
 4. incompatible changes detected, declared and accompanied by migration notes whose code is verified;
