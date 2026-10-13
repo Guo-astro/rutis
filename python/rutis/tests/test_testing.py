@@ -144,6 +144,7 @@ class Testing(background.TestCase):
         with self.assertRaisesRegex(PluginTestError, "needs plugin API"):
             run(go())
 
+    # guarantee: sdk/leaf-events (host emission waits; aggregate crosses)
     def test_host_events_wait_for_all_listeners_and_cross_aggregate_errors(self):
         async def go():
             gate, started = asyncio.Event(), asyncio.Event()
@@ -181,6 +182,7 @@ class Testing(background.TestCase):
 
         run(go())
 
+    # guarantee: sdk/leaf-events (disposers; a failed cleanup removes listeners)
     def test_event_disposers_and_failed_cleanup_remove_every_listener(self):
         async def go():
             seen, saved = [], []
@@ -213,6 +215,7 @@ class Testing(background.TestCase):
 
         run(go())
 
+    # guarantee: sdk/leaf-events (local failures surface at unload)
     def test_unhandled_async_emission_fails_the_test_at_unload(self):
         order = []
 
@@ -235,6 +238,7 @@ class Testing(background.TestCase):
 
         run(go())
 
+    # guarantee: sdk/leaf-events (unload cancels unfinished local listeners)
     def test_unload_cancels_unfinished_local_listeners(self):
         async def go():
             cancelled = asyncio.Event()
@@ -258,6 +262,7 @@ class Testing(background.TestCase):
 
         run(go())
 
+    # guarantee: sdk/leaf-events (a body or cleanup error is kept)
     def test_local_failures_do_not_replace_body_or_cleanup_errors(self):
         async def fail():
             raise ValueError("async event")

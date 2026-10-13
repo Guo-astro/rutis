@@ -77,6 +77,7 @@ test('a plugin that needs a newer plugin API is refused', async () => {
   await assert.rejects(load(future, { services: { llm: {} } }), /needs plugin API/)
 })
 
+// guarantee: sdk/leaf-events (host emission waits; aggregate errors)
 test('host emission waits for every listener and aggregates failures', async () => {
   const gate = Promise.withResolvers()
   const payload = { n: 1 }
@@ -108,6 +109,7 @@ test('host emission waits for every listener and aggregates failures', async () 
   await t.unload()
 })
 
+// guarantee: sdk/leaf-events (disposers; a failed unload clears listeners)
 test('duplicate listeners dispose independently and failed unload clears listeners', async () => {
   const received = []
   const cleaned = []
@@ -140,6 +142,7 @@ test('duplicate listeners dispose independently and failed unload clears listene
   assert.deepEqual(cleaned, ['last', 'middle', 'first'], 'manual off skips no cleanup')
 })
 
+// guarantee: sdk/leaf-events (internal/* refused)
 test('internal/* events are refused, as on the real runtimes', async () => {
   let context
   const plugin = definePlugin({ apply(ctx) { context = ctx } })

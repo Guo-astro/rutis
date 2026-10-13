@@ -553,6 +553,7 @@ async fn internal_events_stay_on_the_cordis_side() {
 /// the event: on the rutis side before the process starts, and in the Node
 /// runtime for a controller that sends such a mount anyway (#282).
 #[tokio::test(flavor = "multi_thread")]
+// guarantee: sdk/leaf-events (internal/* cannot be declared)
 async fn a_mount_listing_an_internal_event_fails() {
     let plugin = fixture("boundary-rules.mjs");
     let mut accepted = Vec::new();

@@ -70,6 +70,7 @@ class ScopedIds(background.TestCase):
             asyncio.run(runtime.load("p", provider, {}, None, {"x": ""}))
         self.assertNotIn("x", runtime.services)
 
+    # guarantee: sdk/leaf-events (shared rows, update, failed apply, unload)
     def test_events_share_rows_and_leave_on_update_failure_and_unload(self):
         seen, contexts = [], []
 
@@ -115,6 +116,7 @@ class ScopedIds(background.TestCase):
 
         asyncio.run(go())
 
+    # guarantee: sdk/leaf-events (an unhandled async listener ends the process)
     def test_unhandled_async_plugin_event_exits_the_runtime_process(self):
         script = """
 import asyncio, sys, types

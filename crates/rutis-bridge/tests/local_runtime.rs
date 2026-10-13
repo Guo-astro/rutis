@@ -47,6 +47,7 @@ async fn a_runtime_that_cannot_start_says_why() {
     );
 }
 
+// guarantee: sdk/leaf-events (declared events survive restart)
 #[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
 async fn local_runtime_events_follow_leaf_lifecycle() {
@@ -109,6 +110,7 @@ async fn local_runtime_events_follow_leaf_lifecycle() {
     .await;
 }
 
+// guarantee: sdk/leaf-events (a runtime without `events` fails at mount)
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_without_events_refuses_emits_before_rows_load() {
     use std::sync::Arc;
