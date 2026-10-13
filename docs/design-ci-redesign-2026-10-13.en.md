@@ -2,7 +2,7 @@
 
 [中文](design-ci-redesign-2026-10-13.md) · [CI](ci.en.md) · [Quality standard](quality-standard.en.md) §12
 
-Status: draft. The maintainer still has to answer the questions in section 7.
+Status: agreed (2026-10-13). All five questions in section 7 were decided as recommended.
 
 ## 1. The problem
 
@@ -86,7 +86,7 @@ From now on `install.yml` and packaging run only nightly, at release, and on pul
 
 `docs/ci.md` §3 (triggers), §7 (failures) and §10–11 (self-hosted runners) change with it. So do steps 2–4 of `docs/release.md`.
 
-## 7. Questions for the maintainer
+## 7. The maintainer's decisions (2026-10-13, all as recommended)
 
 1. Is it acceptable that a merge to main runs no checks at all, and that gaps are caught only by the nightly run and before releases?
 2. Should `dylib-windows` be part of the release gate? Including it adds 25–40 minutes to a release (possibly less on the self-hosted Windows machine). Without it, only the nightly run covers it. Recommended: include it, because it is the only check of Windows compatibility for dylib plugins.
