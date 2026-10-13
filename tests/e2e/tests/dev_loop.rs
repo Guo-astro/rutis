@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rutis_e2e::{repo, Host, Lang, Probe, Scenario};
+use rutis_e2e::{build_guard, repo, Host, Lang, Probe, Scenario};
 use serde_json::{json, Value};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -267,7 +267,11 @@ fn prepare(s: &Scenario, kind: Kind) {
                 ["-m", "venv", "--without-pip", ".venv"],
                 &[],
             );
-            assert!(venv.wait_exit().success(), "{} -m venv", python());
+            assert!(
+                venv.wait_exit_within(build_guard()).success(),
+                "{} -m venv",
+                python()
+            );
         }
         Kind::Go => {
             let sdk = repo().join("go/rutis");
@@ -369,7 +373,10 @@ fn dev_loop(kind: Kind) {
     // this also fills the build cache the first dev build uses.
     prepare(&s, kind);
     let mut tests = template_tests(&s, kind);
-    assert!(tests.wait_exit().success(), "the template's tests failed");
+    assert!(
+        tests.wait_exit_within(build_guard()).success(),
+        "the template's tests failed"
+    );
 
     // 3. check, on the template project as generated.
     let mut check = s.host_in_with("demo", ["check"], GO_ENV);

@@ -378,17 +378,23 @@ impl Host {
 
     /// Wait until the host process exits, within the hang guard.
     pub fn wait_exit(&mut self) -> ExitStatus {
+        self.wait_exit_within(hang_guard())
+    }
+
+    /// Wait until the process exits, within `guard`: [`crate::build_guard`]
+    /// for a build or an install.
+    pub fn wait_exit_within(&mut self, guard: Duration) -> ExitStatus {
         if let Some(status) = self.status {
             return status;
         }
-        let deadline = Instant::now() + hang_guard();
+        let deadline = Instant::now() + guard;
         loop {
             if let Some(status) = self.child.try_wait().expect("the host's status") {
                 self.status = Some(status);
                 return status;
             }
             if Instant::now() >= deadline {
-                self.fail(&format!("it did not exit within {:?}", hang_guard()));
+                self.fail(&format!("it did not exit within {guard:?}"));
             }
             // Polling the exit: std has no wait with a timeout.
             std::thread::sleep(Duration::from_millis(20));

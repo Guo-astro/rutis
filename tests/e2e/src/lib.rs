@@ -37,6 +37,7 @@
 //! it). Settings: `RUTIS_E2E_HOST` (the program to test instead),
 //! `RUTIS_E2E_FIXTURE_HOST` (likewise, the fixture host), `RUTIS_E2E_DIR`
 //! (where scenario directories go), `RUTIS_E2E_TIMEOUT` (the hang guard,
+//! seconds), `RUTIS_E2E_BUILD_TIMEOUT` (the guard of builds and installs,
 //! seconds).
 
 mod host;
@@ -72,6 +73,19 @@ pub fn hang_guard() -> Duration {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(30);
+    Duration::from_secs(seconds)
+}
+
+/// How long a build or an install a scenario runs (`go build`, `npm
+/// install`, `pip install`, a virtual environment) may take before it
+/// fails as hung: 10 min, or `RUTIS_E2E_BUILD_TIMEOUT` seconds. A cold
+/// build cache rebuilds a toolchain's standard library, which takes longer
+/// than the hang guard on a slow machine (the Intel macOS runners).
+pub fn build_guard() -> Duration {
+    let seconds = std::env::var("RUTIS_E2E_BUILD_TIMEOUT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(600);
     Duration::from_secs(seconds)
 }
 
