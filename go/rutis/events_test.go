@@ -41,8 +41,10 @@ func TestEventRegistrationLifecycle(t *testing.T) {
 	if err := a.Emit(ctx, "changed"); err != nil || calls.Load() != 5 {
 		t.Fatalf("off: %v, calls %d", err, calls.Load())
 	}
-	if err := rt.unload(ctx, "b"); err != nil {
-		t.Fatal(err)
+	a.On("unload", func(ctx context.Context, _ ...any) error { return rt.unload(ctx, "b") })
+	b.On("unload", listen)
+	if err := a.Emit(ctx, "unload"); err != nil || calls.Load() != 5 {
+		t.Fatalf("inactive snapshot listener ran: %v, calls %d", err, calls.Load())
 	}
 	if err := a.Emit(ctx, "changed"); err != nil || calls.Load() != 6 {
 		t.Fatalf("unload: %v, calls %d", err, calls.Load())
@@ -76,13 +78,26 @@ func TestEventRegistrationLifecycle(t *testing.T) {
 	workers.Wait()
 }
 
+// guarantee: sdk/leaf-events (a running listener delays the cleanups)
 func TestHostEmissionWaitsForRowCancellation(t *testing.T) {
 	rt, a, b := eventRows(t)
 	caller := context.Background()
 	first := errors.New("first")
 	a.On("changed", func(context.Context, ...any) error { return first })
 	started := make(chan struct{}, 1)
-	b.On("changed", func(ctx context.Context, _ ...any) error { started <- struct{}{}; <-ctx.Done(); return ctx.Err() })
+	var finished atomic.Bool
+	b.On("changed", func(ctx context.Context, _ ...any) error {
+		started <- struct{}{}
+		<-ctx.Done()
+		finished.Store(true)
+		return ctx.Err()
+	})
+	b.Effect(func(context.Context) error {
+		if !finished.Load() {
+			return errors.New("cleanup ran before the cancelled listener finished")
+		}
+		return nil
+	})
 	_, err := rt.control(caller, "mount", []any{map[string]any{"emits": []string{"changed"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -105,5 +120,48 @@ func TestHostEmissionWaitsForRowCancellation(t *testing.T) {
 	var aggregate *AggregateError
 	if !errors.As(err, &aggregate) || len(aggregate.Errors) != 2 || aggregate.Errors[0] != first || !errors.Is(aggregate.Errors[1], context.Canceled) {
 		t.Fatalf("errors lost or reordered: %v", err)
+	}
+}
+
+// guarantee: sdk/leaf-events (failed load and update)
+func TestFailedApplyAndUpdateRemoveListeners(t *testing.T) {
+	type config struct {
+		Label string
+		Fail  bool
+	}
+	var mu sync.Mutex
+	var seen []string
+	def := Define(Plugin[config]{Name: "events", Apply: func(c *Ctx, config config) error {
+		c.On("changed", func(context.Context, ...any) error {
+			mu.Lock()
+			defer mu.Unlock()
+			seen = append(seen, config.Label)
+			return nil
+		})
+		if config.Fail {
+			return errors.New("apply failed")
+		}
+		return nil
+	}})
+	rt := newRuntime([]*Definition{def})
+	ctx := context.Background()
+	t.Cleanup(func() { _ = rt.dispose(ctx) })
+	if err := rt.load(ctx, "a", "events", map[string]any{"label": "first"}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.update(ctx, "a", map[string]any{"label": "updated"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.load(ctx, "f", "events", map[string]any{"label": "failed", "fail": true}, nil, nil); err == nil {
+		t.Fatal("the failing apply loaded")
+	}
+	if _, err := rt.control(ctx, "mount", []any{map[string]any{"emits": []string{"changed"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.control(ctx, "emit", []any{"changed", []any{}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 1 || seen[0] != "updated" {
+		t.Fatalf("listeners of the old config or the failed row remain: %v", seen)
 	}
 }

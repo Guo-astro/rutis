@@ -112,11 +112,16 @@ class SyncWaitCycle(RemoteError):
 
 
 class AggregateError(Exception):
-    """Ordered listener failures, also on Python 3.10 (no ExceptionGroup)."""
+    """Ordered listener failures, also on Python 3.10 (no ExceptionGroup).
+    It crosses as Cordis's AggregateError (an empty message, the failures
+    in `errors`); str() reads as Rust's CordisError::Aggregate."""
 
     def __init__(self, errors):
         super().__init__("")
         self.errors = list(errors)
+
+    def __str__(self) -> str:
+        return f"multiple errors: {self.errors!r}"
 
 
 class Signal:
@@ -135,13 +140,18 @@ class Signal:
         await self._event.wait()
 
 
+def _message(error: BaseException) -> str:
+    # An AggregateError crosses with no message, as Cordis's does.
+    return "" if isinstance(error, AggregateError) else str(error)
+
+
 def encode_error(thrown: BaseException) -> dict:
     if isinstance(thrown, SyncWaitCycle):
         return {"name": "SyncWaitCycle", "message": thrown.message}
     if isinstance(thrown, RemoteError):
         name, message = thrown.name, thrown.message
     else:
-        name, message = type(thrown).__name__, str(thrown)
+        name, message = type(thrown).__name__, _message(thrown)
     nodes, seen = [], {}
 
     def visit(error):
@@ -167,7 +177,7 @@ def encode_error(thrown: BaseException) -> dict:
         node = {
             "type": "error",
             "name": error.name if isinstance(error, RemoteError) else type(error).__name__,
-            "message": error.message if isinstance(error, RemoteError) else str(error),
+            "message": error.message if isinstance(error, RemoteError) else _message(error),
             "stack": "".join(traceback.format_exception(error)),
         }
         nodes.append(node)

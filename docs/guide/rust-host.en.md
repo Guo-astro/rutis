@@ -48,6 +48,8 @@ root.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Clock))?;
 
 Services provided by plugins also appear in rutis under `host_key(name)`, so Rust plugins can use them by name.
 
+Declare host events through `emits` on the Rust API below; `rutis-host` JSON configuration does not yet expose this setting. Local events between plugins in one process do not need it.
+
 ## Runtime and loader
 
 ```rust

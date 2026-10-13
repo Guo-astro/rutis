@@ -48,6 +48,8 @@ root.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Clock))?;
 
 插件提供的服务同样以 `host_key(名字)` 出现在 rutis 里，Rust 插件可以按名字使用它们。
 
+宿主事件的 `emits` 声明通过下述 Rust API 配置；`rutis-host` 的 JSON 配置暂未提供这个入口。同进程插件的本地事件不需要该声明。
+
 ## 运行时与加载器
 
 ```rust

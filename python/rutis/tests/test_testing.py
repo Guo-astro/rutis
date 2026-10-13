@@ -173,6 +173,7 @@ class Testing(background.TestCase):
                     await done
                 error = failure.exception
                 self.assertEqual(error.name, "AggregateError")
+                self.assertEqual(error.message, "", "it crosses as Cordis's AggregateError")
                 nodes = error.graph["nodes"]
                 errors = nodes[error.graph["root"]["value"]]["errors"]
                 self.assertEqual([(nodes[ref["value"]]["name"], nodes[ref["value"]]["message"]) for ref in errors],
@@ -217,7 +218,6 @@ class Testing(background.TestCase):
 
         async def fail():
             order.append("listener")
-            await asyncio.sleep(0)
             raise ValueError("async event")
 
         async def go():
@@ -230,7 +230,55 @@ class Testing(background.TestCase):
                 async with load(define_plugin(apply)):
                     pass
             self.assertEqual(str(failure.exception.errors[0]), "async event")
+            self.assertEqual(str(failure.exception), "multiple errors: [ValueError('async event')]")
             self.assertEqual(order, ["listener", "emitter"], "ctx.emit starts async listeners eagerly")
+
+        run(go())
+
+    def test_unload_cancels_unfinished_local_listeners(self):
+        async def go():
+            cancelled = asyncio.Event()
+
+            async def stay():
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+
+            def apply(ctx, config):
+                ctx.on("tick", stay)
+                ctx.emit("tick")
+
+            async def scope():
+                async with load(define_plugin(apply)):
+                    pass
+
+            await asyncio.wait_for(scope(), 1)
+            self.assertTrue(cancelled.is_set())
+
+        run(go())
+
+    def test_local_failures_do_not_replace_body_or_cleanup_errors(self):
+        async def fail():
+            raise ValueError("async event")
+
+        async def go():
+            for cleanup in (None, ValueError("cleanup"), asyncio.CancelledError(), AggregateError([ValueError("cleanup")])):
+                primary = cleanup if cleanup is not None else AssertionError("test body")
+
+                def apply(ctx, config):
+                    ctx.on("tick", fail)
+                    ctx.emit("tick")
+                    if cleanup is not None:
+                        def stop():
+                            raise cleanup
+                        ctx.effect(stop)
+
+                with self.assertRaises(type(primary)) as failure:
+                    async with load(define_plugin(apply)):
+                        if cleanup is None:
+                            raise primary
+                self.assertIs(failure.exception, primary)
 
         run(go())
 

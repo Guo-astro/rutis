@@ -292,6 +292,7 @@ jobs:
             node/rutis-runtime/package-lock.json
             node/baseline/package-lock.json
             crates/rutis-dsh/dsh/package-lock.json
+            bun/rutis-bun/bun.lock
       # The Node runtime the Rust tests start.
       - run: npm --prefix node/rutis-runtime ci
       # Real published Cordis plugins for the Cordis mount baseline test
@@ -303,6 +304,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
+      # The Bun runtime the Rust tests start (Cordis, from package.json).
+      - run: bun install --frozen-lockfile
+        working-directory: bun/rutis-bun
       # The oldest Python (requires-python) and the
       # oldest websockets (rutis[network]).
       - uses: actions/setup-python@v5
@@ -370,12 +374,18 @@ jobs:
         with:
           node-version: '22'
           cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
-          cache-dependency-path: node/rutis-runtime/package-lock.json
+          cache-dependency-path: |
+            node/rutis-runtime/package-lock.json
+            bun/rutis-bun/bun.lock
       - run: npm --prefix node/rutis-runtime ci
+      # The SDK the Bun runtime's rows and the templates import.
+      - run: npm --prefix node/rutis ci
       # The oldest Bun (engines.bun).
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+        working-directory: bun/rutis-bun
       # The oldest Python (requires-python) and the oldest websockets
       # (rutis[network]); the scenarios use the checkout's python/rutis.
       - uses: actions/setup-python@v5
@@ -432,6 +442,8 @@ jobs:
             crates/rutis-dsh/dsh/package-lock.json
       # The release train: one version for every package released together.
       - run: node scripts/train.mjs
+      # The SDK's testing tool uses the same Cordis as the runtimes.
+      - run: npm --prefix node/rutis ci
       - run: npm --prefix node/rutis test
       - run: npm --prefix node/rutis-runtime ci
       - run: npm --prefix node/rutis-runtime test
@@ -751,6 +763,9 @@ jobs:
           uv python install 3.12
           uv venv --seed --python-preference only-managed --python 3.12 "$RUNNER_TEMP/python"
           echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
+      # The Bun runtime's own dependencies (Cordis), from its lockfile.
+      - run: bun install --frozen-lockfile
+        working-directory: bun/rutis-bun
       - run: bun --version
       - run: bun test
         working-directory: bun/rutis-bun

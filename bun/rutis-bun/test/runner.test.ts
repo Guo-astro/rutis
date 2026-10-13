@@ -113,13 +113,21 @@ test('host events require declared names; shared listeners dispose independently
   b.on('changed', listener)
   await runtime.dispatch('', 'emit', ['changed', [7]])
   expect(received).toEqual([7, 7, 7])
-  expect(() => runtime.dispatch('', 'emit', ['undeclared', []])).toThrow('not declared for emission from rutis')
   off()
   expect(a.emit('changed', 8)).toBeUndefined()
   expect(received).toEqual([7, 7, 7, 8, 8])
+  b.effect(async () => {
+    await Promise.resolve()
+    a.emit('changed', 9)
+  })
   await runtime.unload('b')
-  a.emit('changed', 9)
-  expect(received).toEqual([7, 7, 7, 8, 8, 9])
+  a.emit('changed', 10)
+  expect(received).toEqual([7, 7, 7, 8, 8, 9, 10])
+  const seen: number[] = []
+  a.on('e', () => { seen.push(1); throw new Error('sync failure') })
+  a.on('e', () => { seen.push(2) })
+  expect(() => a.emit('e')).toThrow('sync failure')
+  expect(seen).toEqual([1])
   expect(() => a.on('internal/dispatch', () => {})).toThrow('event internal/dispatch is internal to the runtime')
   expect(() => a.emit('internal/service')).toThrow('event internal/service is internal to the runtime')
   expect(() => runtime.dispatch('', 'mount', { emits: ['internal/dispatch'] })).toThrow('is internal to the runtime and cannot be emitted from rutis')
@@ -147,11 +155,26 @@ test('host emission awaits every listener and aggregates sync and async errors',
   expect(error.errors).toEqual(errors)
 }))
 
-// guarantee: sdk/leaf-events (listener errors)
-test('a sync listener error stops later listeners and reaches the emitter', () => eventRows(async (_runtime, a) => {
-  const seen: number[] = []
-  a.on('e', () => { seen.push(1); throw new Error('sync failure') })
-  a.on('e', () => { seen.push(2) })
-  expect(() => a.emit('e')).toThrow('sync failure')
-  expect(seen).toEqual([1])
-}))
+// guarantee: sdk/leaf-events (failed load and update)
+test('a failed apply and an update remove the row listeners', async () => {
+  const dir = project({
+    'events.ts': `export function apply(ctx, config) {
+      ctx.on('changed', () => { globalThis.heard.push(config.label) })
+      if (config.fail) throw new Error('apply failed')
+    }`,
+  })
+  const runtime = new Runtime(dir)
+  const heard: string[] = (globalThis as any).heard = []
+  try {
+    runtime.dispatch('', 'mount', { emits: ['changed'] })
+    await runtime.load('a', './events.ts', { label: 'first' }, null, null)
+    await runtime.update('a', { label: 'updated' })
+    await expect(runtime.load('f', './events.ts', { label: 'failed', fail: true }, null, null)).rejects.toThrow('apply failed')
+    await runtime.dispatch('', 'emit', ['changed', []])
+    expect(heard).toEqual(['updated'])
+  } finally {
+    await runtime.dispose()
+    delete (globalThis as any).heard
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

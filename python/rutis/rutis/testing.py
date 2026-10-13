@@ -16,7 +16,8 @@ behaviour pass by reference, sync methods return values and async ones
 awaitables; what works only in one process fails here too.
 
 Unlike the runtime, an uncaught async listener from `ctx.emit` does not
-exit the test process: unload waits for it and reports an AggregateError.
+exit the test process: unload cancels unfinished listeners and reports
+already completed failures as an AggregateError.
 """
 
 from __future__ import annotations
@@ -207,7 +208,7 @@ class Loaded:
         """The names of the services the plugin provides now."""
         return list(self._provided)
 
-    async def unload(self) -> None:
+    async def unload(self, *, _report_events=True) -> None:
         """Run the cleanups, latest first; the plugin's services are withdrawn."""
         if self._unloaded:
             return
@@ -216,15 +217,17 @@ class Loaded:
             off()
         cleanups = self._cleanups[::-1]
         self._cleanups.clear()
+        cleaned = False
         try:
             for cleanup in cleanups:
                 result = cleanup()
                 if inspect.isawaitable(result):
                     await result
+            cleaned = True
         finally:
             self._events.clear()
             self._provided.clear()
-            await self._events.drain()
+            await self._events.drain(report=_report_events and cleaned)
 
 
 class _Context(sdk.Context):
@@ -291,6 +294,7 @@ async def load(
     loaded = Loaded(plugin, strict, emits)
     ctx = _Context(loaded, services)
     config = config if config is not None else {}
+    completed = False
     try:
         returned = plugin.apply(ctx, _cross(config, "config") if strict else config)
         if inspect.isawaitable(returned):
@@ -300,8 +304,9 @@ async def load(
                 raise PluginTestError("apply must return a cleanup function or None")
             loaded._cleanups.append(returned)
         yield loaded
+        completed = True
     finally:
-        await loaded.unload()
+        await loaded.unload(_report_events=completed)
 
 
 __all__ = ["Loaded", "PluginTestError", "load"]

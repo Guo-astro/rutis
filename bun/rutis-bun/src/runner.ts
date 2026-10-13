@@ -13,15 +13,18 @@
 //
 // Within the process, `ctx.use(name)` returns the object itself when another
 // row here provides it, so those calls never leave the process.
-// Rows also share an event bus: `ctx.on` listens until the row unloads, and
-// `ctx.emit` calls listeners synchronously. Host `emit` calls may use only
-// the names declared by `mount.emits`, and wait for every listener to settle.
+// Rows also share an event bus, Cordis's own as on the Node runtime: each row
+// owns a Cordis fiber, so `ctx.on` listens until the row unloads, `ctx.emit`
+// is Cordis's `emit` and a host `emit` is its `parallel`, which waits for
+// every listener. Host `emit` calls may use only the names declared by
+// `mount.emits`.
 //
 // A row's `isolate` gives some names a scope label: rows isolating a name
 // with the same label share it, and the same name under another label
 // (another instance, say) is another service. Services, host proxies and
 // export slots are registered by id (`scopes`): the name outside any scope,
 // the name, a NUL and the label inside one.
+import { Context, type Fiber } from '@deepseek-ai/cordis'
 import type { Client } from './client.ts'
 import { declared, locate, Modules, versionOf, type Kind } from './plugin.ts'
 import { MANIFEST } from './session.ts'
@@ -55,6 +58,8 @@ interface Row {
   exports: Record<string, Record<string, Kind>>
   isolate: Map<string, string>
   cleanups: Array<() => unknown>
+  // Owns the row's event listeners; disposed first on unload.
+  events?: Fiber
   provided: string[]
 }
 const idIn = (row: Row, name: string) => scopedId(name, row.isolate.get(name))
@@ -73,7 +78,7 @@ export class Runtime {
   #hosts = new Map<string, unknown>()
   #slots = new Map<string, Slot>()
   #handles = new Map<string, Handle>()
-  #events = new Map<string, Set<Listener>>()
+  #events = new Context()
   #emits = new Set<string>()
   #version = 0
 
@@ -133,34 +138,12 @@ export class Runtime {
 
   // ── Events ────────────────────────────────────────────────────
 
-  #on(row: Row, name: string, callback: Listener): () => void {
-    if (this.#rows.get(row.key) !== row) throw new Error(`row ${row.key} is not active`)
-    if (typeof callback !== 'function') throw new TypeError('on needs a listener function')
-    reserved(name)
-    const listeners = this.#events.get(name) ?? new Set<Listener>()
-    this.#events.set(name, listeners)
-    // A registration has its own identity even when the callback is reused.
-    const listener = callback.bind(null)
-    listeners.add(listener)
-    const off = () => {
-      if (!listeners.delete(listener)) return
-      if (!listeners.size) this.#events.delete(name)
-      const index = row.cleanups.indexOf(off)
-      if (index >= 0) row.cleanups.splice(index, 1)
-    }
-    row.cleanups.push(off)
-    return off
-  }
-
-  #emit(name: string, args: any[]): void {
-    reserved(name)
-    for (const callback of [...(this.#events.get(name) ?? [])]) callback(...args)
-  }
-
-  async #parallel(name: string, args: any[]): Promise<void> {
-    const results = await Promise.allSettled([...(this.#events.get(name) ?? [])].map(async callback => callback(...args)))
-    const errors = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-    if (errors.length) throw new AggregateError(errors.map(error => error.reason))
+  // The row's Cordis context: listeners registered there leave with the row.
+  async #fiber(row: Row): Promise<Context> {
+    let context!: Context
+    row.events = this.#events.plugin({ name: `row:${row.key}`, apply: (ctx: Context) => { context = ctx } })
+    await row.events.await()
+    return context
   }
 
   // ── Rows ──────────────────────────────────────────────────────
@@ -179,6 +162,7 @@ export class Runtime {
     for (const [name, methods] of Object.entries(row.exports)) {
       this.#slots.set(idIn(row, name), { row: key, methods: new Set(Object.keys(methods ?? {})), object: undefined, handle: null, generation: 0 })
     }
+    const events = await this.#fiber(row)
     const ctx = {
       use: (name: string) => this.lookup(idIn(row, name)),
       provide: (name: string, value: unknown) => this.provide(row, name, value),
@@ -186,8 +170,12 @@ export class Runtime {
         if (typeof cleanup !== 'function') throw new TypeError('effect needs a cleanup function')
         row.cleanups.push(cleanup)
       },
-      on: (name: string, callback: Listener) => this.#on(row, name, callback),
-      emit: (name: string, ...args: any[]) => this.#emit(name, args),
+      on: (name: string, callback: Listener) => {
+        reserved(name)
+        if (this.#rows.get(row.key) !== row) throw new Error(`row ${row.key} is not active`)
+        return events.on(name, callback)
+      },
+      emit: (name: string, ...args: any[]) => { reserved(name); events.emit(name, ...args) },
     }
     try {
       const cleanup = await plugin.apply(ctx, config)
@@ -207,6 +195,7 @@ export class Runtime {
     const row = this.#rows.get(key)
     if (!row) return null
     this.#rows.delete(key)
+    await row.events?.dispose()
     // Withdrawals first: rutis hears them before the plugin goes away.
     for (const id of row.provided) {
       if (this.#services.get(id)?.row === key) { this.#services.delete(id); this.#refresh(id) }
@@ -248,7 +237,6 @@ export class Runtime {
     for (const key of [...this.#rows.keys()].reverse()) {
       try { await this.unload(key) } catch {}
     }
-    this.#events.clear()
   }
 
   // ── Dispatch ──────────────────────────────────────────────────
@@ -285,7 +273,7 @@ export class Runtime {
       case 'emit': {
         const [name, values] = args
         if (!this.#emits.has(name)) throw new Error(`event ${name} is not declared for emission from rutis`)
-        return this.#parallel(name, values ?? [])
+        return this.#events.parallel(name, ...(values ?? []))
       }
       case 'rows.load': {
         const [key, entry, config, isolate, _inject, exports] = args

@@ -610,10 +610,14 @@ async fn a_mount_listing_an_internal_event_fails() {
         match refused {
             Err(Error::Remote { message, .. }) => assert_eq!(
                 message,
-                format!(
-                    "framework-internal events do not cross the boundary \
+                if field == "emits" {
+                    "event internal/service is internal to the runtime and cannot be emitted from rutis".into()
+                } else {
+                    format!(
+                        "framework-internal events do not cross the boundary \
                      (mount {field}): internal/service"
-                )
+                    )
+                }
             ),
             other => panic!("the runtime took the mount: {other:?}"),
         }

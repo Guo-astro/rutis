@@ -13,6 +13,7 @@
 // reference, sync methods return values and async ones promises; what
 // works only in one process fails here too.
 
+import { Context } from '@deepseek-ai/cordis'
 import { PLUGIN_API, isPlugin } from './index.mjs'
 
 export class PluginTestError extends Error {
@@ -194,7 +195,12 @@ export async function load(plugin, { config = {}, services = {}, strict = true, 
   }
   const provided = new Map()
   const cleanups = []
-  const events = new Map()
+  // Events are Cordis's own, as on the Node runtime: the plugin's listeners
+  // belong to a fiber of a Context of its own, which unload disposes.
+  const bus = new Context()
+  let events
+  const fiber = bus.plugin({ name: 'rutis-testing', apply: context => { events = context } })
+  await fiber.await()
   let unloaded = false
   const ctx = {
     use(name) {
@@ -222,24 +228,11 @@ export async function load(plugin, { config = {}, services = {}, strict = true, 
       if (unloaded) throw new PluginTestError('the plugin is unloaded')
       if (typeof handler !== 'function') throw new PluginTestError('on needs a listener function')
       internal(name)
-      let listeners = events.get(name)
-      if (!listeners) events.set(name, (listeners = new Set()))
-      const entry = { handler }
-      listeners.add(entry)
-      const off = () => {
-        if (!listeners.delete(entry)) return
-        if (!listeners.size) events.delete(name)
-        const index = cleanups.indexOf(off)
-        if (index >= 0) cleanups.splice(index, 1)
-      }
-      cleanups.push(off)
-      return off
+      return events.on(name, handler)
     },
     emit(name, ...args) {
       internal(name)
-      const listeners = events.get(name)
-      if (!listeners) return
-      for (const { handler } of [...listeners]) handler(...args)
+      events.emit(name, ...args)
     },
   }
   const returned = await plugin.apply(ctx, strict ? cross(config, 'config') : config)
@@ -265,10 +258,9 @@ export async function load(plugin, { config = {}, services = {}, strict = true, 
       if (unloaded) throw new PluginTestError('the plugin is unloaded')
       if (!declared.has(name)) throw new PluginTestError(`event ${name} is not declared for emission from rutis`)
       const values = strict ? args.map((arg, i) => cross(arg, `event ${name} argument ${i}`)) : args
-      const results = await Promise.allSettled([...(events.get(name) ?? [])].map(async ({ handler }) => handler(...values)))
-      const errors = results.filter(result => result.status === 'rejected').map(result => result.reason)
-      if (errors.length) {
-        const error = new AggregateError(errors)
+      try {
+        await bus.parallel(name, ...values)
+      } catch (error) {
         throw strict ? crossThrown(error, `event ${name}`) : error
       }
     },
@@ -277,9 +269,10 @@ export async function load(plugin, { config = {}, services = {}, strict = true, 
       if (unloaded) return
       unloaded = true
       try {
+        // The listeners leave first, as on every runtime.
+        await fiber.dispose()
         for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
       } finally {
-        events.clear()
         provided.clear()
       }
     },

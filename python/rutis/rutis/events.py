@@ -1,4 +1,12 @@
-"""The process event bus shared by the runtime and its test tool."""
+"""The process event bus shared by the runtime and its test tool.
+
+A port of Cordis's EventsService (cordis src/events.ts), which the Node
+runtime uses as is: `emit` calls the snapshot of listeners in registration
+order and stops at a synchronous exception without awaiting what they
+return; `parallel` starts every listener and aggregates the failures in
+registration order. Listener ownership follows the row, as a Cordis fiber
+owns its listeners.
+"""
 
 import asyncio
 import contextvars
@@ -52,6 +60,7 @@ class Events:
         return off
 
     def emit(self, name, *args):
+        # Cordis `emit`: awaitables start eagerly and are not awaited.
         reserved(name)
         for listener in list(self.listeners.get(name, {}).values()):
             result = listener(*args)
@@ -69,6 +78,7 @@ class Events:
                 self.unhandled(task.exception())
 
     async def parallel(self, name, *args):
+        # Cordis `parallel`: Promise.allSettled, then AggregateError.
         reserved(name)
 
         async def call(listener):
@@ -80,14 +90,19 @@ class Events:
         if errors:
             raise AggregateError(errors)
 
-    async def drain(self):
+    async def drain(self, *, report=True):
         # The test tool reports fire-and-forget failures instead of exiting
-        # its own process, and waits for these listeners before reporting.
+        # its own process, cancelling unfinished listeners on unload.
         while self.pending:
+            for task in tuple(self.pending):
+                task.cancel()
             await asyncio.gather(*self.pending, return_exceptions=True)
+            # gather may finish eagerly; let the done callbacks collect errors.
+            await asyncio.sleep(0)
         if self.failures:
             errors, self.failures = self.failures, []
-            raise AggregateError(errors)
+            if report:
+                raise AggregateError(errors)
 
     def clear(self):
         self.listeners.clear()

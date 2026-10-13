@@ -31,9 +31,19 @@ func (e *RemoteError) Is(target error) bool {
 var ErrSyncWaitCycle = errors.New("SyncWaitCycle")
 
 // AggregateError holds every failed event listener in registration order.
+// It crosses as Cordis's AggregateError (an empty message, the failures in
+// `errors`); Error reads as Rust's CordisError::Aggregate.
 type AggregateError struct{ Errors []error }
 
-func (e *AggregateError) Error() string   { return "event listeners failed" }
+func (e *AggregateError) Error() string {
+	messages := make([]string, 0, len(e.Errors))
+	for _, err := range e.Errors {
+		if err != nil {
+			messages = append(messages, err.Error())
+		}
+	}
+	return "multiple errors: [" + strings.Join(messages, "; ") + "]"
+}
 func (e *AggregateError) Name() string    { return "AggregateError" }
 func (e *AggregateError) Unwrap() []error { return e.Errors }
 
@@ -117,10 +127,7 @@ func encodeError(err error) map[string]any {
 				return shift(graph.Root).(map[string]any)
 			}
 		}
-		name, message := ErrorName(err), err.Error()
-		if remote, ok := err.(*RemoteError); ok {
-			message = remote.Message
-		}
+		name, message := ErrorName(err), wireMessage(err)
 		id := len(nodes)
 		node := map[string]any{"type": "error", "name": name, "message": message, "stack": name + ": " + message}
 		nodes = append(nodes, node)
@@ -141,11 +148,19 @@ func encodeError(err error) map[string]any {
 		return map[string]any{"type": "reference", "value": id}
 	}
 	root := visit(err)
-	message := err.Error()
-	if remote, ok := err.(*RemoteError); ok {
-		message = remote.Message
+	return map[string]any{"name": ErrorName(err), "message": wireMessage(err), "graph": map[string]any{"root": root, "nodes": nodes}}
+}
+
+// wireMessage is the message an error crosses with: the far end's own for a
+// RemoteError, none for an AggregateError (as Cordis's), else Error().
+func wireMessage(err error) string {
+	switch err := err.(type) {
+	case *RemoteError:
+		return err.Message
+	case *AggregateError:
+		return ""
 	}
-	return map[string]any{"name": ErrorName(err), "message": message, "graph": map[string]any{"root": root, "nodes": nodes}}
+	return err.Error()
 }
 
 func decodeError(raw json.RawMessage) error {

@@ -447,6 +447,7 @@ function mount(args) {
   // Boundary rule 5: Cordis's own events stay on the Cordis side.
   for (const [field, names] of [['events', args.events], ['emits', args.emits]]) {
     const internal = (names ?? []).filter(name => String(name).startsWith('internal/'))
+    if (internal.length && field === 'emits') throw new Error(`event ${internal[0]} is internal to the runtime and cannot be emitted from rutis`)
     if (internal.length) throw new Error(`framework-internal events do not cross the boundary (mount ${field}): ${internal.join(', ')}`)
   }
   if (fibers) throw new Error('plugins are already mounted')
@@ -456,9 +457,6 @@ function mount(args) {
     slots.set(name, { name, methods: new Set(methods), scope: undefined, object: undefined, identity: undefined, handle: null, generation: 0, version: 0 })
   }
   const plugins = args.plugins ?? [{ entry: pluginPath, config: args.config }]
-  for (const name of args.emits ?? []) {
-    if (String(name).startsWith('internal/')) throw new Error(`event ${name} is internal to the runtime and cannot be emitted from rutis`)
-  }
   emits = new Set(args.emits ?? [])
   // Services the rutis application provides are registered before the
   // plugins load, so the plugins' dependencies on them resolve natively.
