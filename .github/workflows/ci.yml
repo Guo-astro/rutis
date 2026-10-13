@@ -862,6 +862,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+      # The Bun runtime the Rust tests below start (Cordis, from package.json).
+      - run: bun install --frozen-lockfile
+        working-directory: bun/rutis-bun
       - uses: actions/setup-go@v5
         with:
           go-version: stable
