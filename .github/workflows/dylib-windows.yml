@@ -84,6 +84,7 @@ jobs:
             echo "CARGO_TARGET_DIR=$dir/target"
             echo "CARGO_BUILD_JOBS=$jobs"
             echo "RUST_TEST_THREADS=$jobs"
+            echo "GOCACHE=$dir/go-build"
           } >> "$GITHUB_ENV"
           echo "/tmp is $(cygpath -w /tmp)"
           find /tmp/ -maxdepth 1 -name 'rutis-*' -mmin +720 -print 2>/dev/null |
@@ -114,3 +115,9 @@ jobs:
         run: bash tools/test-dylib-repro.sh
       - name: external plugin build against a prebuilt SDK
         run: bash tools/test-sdk-bundle.sh "${{ steps.bundle.outputs.dir }}"
+      # After a failure, this instance's Go build cache goes (a job cut
+      # short can leave it truncated, #374; tools/ci-self-hosted.sh does the
+      # same on the other self-hosted runners).
+      - name: self-hosted runner, end
+        if: failure() && runner.environment == 'self-hosted'
+        run: rm -rf "$GOCACHE"

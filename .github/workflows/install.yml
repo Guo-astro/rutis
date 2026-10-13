@@ -262,4 +262,6 @@ jobs:
           retention-days: 14
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
