@@ -30,6 +30,13 @@ func (e *RemoteError) Is(target error) bool {
 // ErrSyncWaitCycle matches a SyncWaitCycle error received from the far end.
 var ErrSyncWaitCycle = errors.New("SyncWaitCycle")
 
+// AggregateError holds every failed event listener in registration order.
+type AggregateError struct{ Errors []error }
+
+func (e *AggregateError) Error() string   { return "event listeners failed" }
+func (e *AggregateError) Name() string    { return "AggregateError" }
+func (e *AggregateError) Unwrap() []error { return e.Errors }
+
 // PanicError is a recovered panic, thrown with its stack.
 type PanicError struct {
 	Value any
@@ -43,8 +50,7 @@ func (e *PanicError) Name() string  { return "Panic" }
 // far end's name for a RemoteError, "Error" for the standard library's
 // plain errors, else its type name (*fs.PathError -> PathError).
 func ErrorName(err error) string {
-	var remote *RemoteError
-	if errors.As(err, &remote) && err == error(remote) {
+	if remote, ok := err.(*RemoteError); ok {
 		return remote.Name
 	}
 	if named, ok := err.(interface{ Name() string }); ok {
@@ -65,26 +71,81 @@ func ErrorName(err error) string {
 }
 
 func encodeError(err error) map[string]any {
-	var remote *RemoteError
-	if errors.As(err, &remote) && err == error(remote) && remote.Name == "SyncWaitCycle" && remote.Graph == nil {
-		return map[string]any{"name": "SyncWaitCycle", "message": remote.Message}
+	if remote, ok := err.(*RemoteError); ok && remote.Name == "SyncWaitCycle" && remote.Graph == nil {
+		return map[string]any{"name": remote.Name, "message": remote.Message}
 	}
-	name := ErrorName(err)
+	var nodes []any
+	seen := map[*AggregateError]int{}
+	var visit func(error) map[string]any
+	visit = func(err error) map[string]any {
+		if aggregate, ok := err.(*AggregateError); ok {
+			if id, found := seen[aggregate]; found {
+				return map[string]any{"type": "reference", "value": id}
+			}
+			seen[aggregate] = len(nodes)
+		}
+		if remote, ok := err.(*RemoteError); ok && len(remote.Graph) != 0 {
+			var graph struct {
+				Root  map[string]any
+				Nodes []any
+			}
+			if json.Unmarshal(remote.Graph, &graph) == nil && graph.Root != nil {
+				offset := len(nodes)
+				var shift func(any) any
+				shift = func(value any) any {
+					switch value := value.(type) {
+					case map[string]any:
+						if value["type"] == "reference" {
+							if id, ok := value["value"].(float64); ok {
+								value["value"] = id + float64(offset)
+							}
+						} else {
+							for key, item := range value {
+								value[key] = shift(item)
+							}
+						}
+					case []any:
+						for i, item := range value {
+							value[i] = shift(item)
+						}
+					}
+					return value
+				}
+				for _, node := range graph.Nodes {
+					nodes = append(nodes, shift(node))
+				}
+				return shift(graph.Root).(map[string]any)
+			}
+		}
+		name, message := ErrorName(err), err.Error()
+		if remote, ok := err.(*RemoteError); ok {
+			message = remote.Message
+		}
+		id := len(nodes)
+		node := map[string]any{"type": "error", "name": name, "message": message, "stack": name + ": " + message}
+		nodes = append(nodes, node)
+		if aggregate, ok := err.(*AggregateError); ok {
+			children := make([]any, 0, len(aggregate.Errors))
+			for _, child := range aggregate.Errors {
+				if child != nil {
+					children = append(children, visit(child))
+				}
+			}
+			node["errors"] = children
+		} else {
+			var panicked *PanicError
+			if errors.As(err, &panicked) {
+				node["stack"] = node["stack"].(string) + "\n" + panicked.Stack
+			}
+		}
+		return map[string]any{"type": "reference", "value": id}
+	}
+	root := visit(err)
 	message := err.Error()
-	if err == error(remote) {
+	if remote, ok := err.(*RemoteError); ok {
 		message = remote.Message
 	}
-	stack := name + ": " + message
-	var panicked *PanicError
-	if errors.As(err, &panicked) {
-		stack += "\n" + panicked.Stack
-	}
-	node := map[string]any{"type": "error", "name": name, "message": message, "stack": stack}
-	return map[string]any{
-		"name":    name,
-		"message": message,
-		"graph":   map[string]any{"root": map[string]any{"type": "reference", "value": 0}, "nodes": []any{node}},
-	}
+	return map[string]any{"name": ErrorName(err), "message": message, "graph": map[string]any{"root": root, "nodes": nodes}}
 }
 
 func decodeError(raw json.RawMessage) error {

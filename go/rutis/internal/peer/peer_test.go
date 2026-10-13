@@ -404,3 +404,24 @@ func TestAFarEndOfAnotherProtocolVersionIsRefusedSayingWhichEndToUpgrade(t *test
 		}
 	}
 }
+
+func TestAggregateErrorGraphsKeepRepeatedAndCyclicChildren(t *testing.T) {
+	remote := &RemoteError{Name: "AggregateError", Graph: json.RawMessage(`{
+		"root":{"type":"reference","value":0},
+		"nodes":[{"type":"error","name":"AggregateError","message":"","errors":[{"type":"reference","value":1}]},
+		         {"type":"error","name":"TypeError","message":"remote child"}]
+	}`)}
+	cyclic := &AggregateError{}
+	cyclic.Errors = []error{cyclic, nil, errors.New("child"), remote, cyclic}
+	wire := encodeError(cyclic)
+	graph := wire["graph"].(map[string]any)
+	nodes := graph["nodes"].([]any)
+	children := nodes[0].(map[string]any)["errors"].([]any)
+	if len(nodes) != 4 || len(children) != 4 || children[0].(map[string]any)["value"] != 0 || children[3].(map[string]any)["value"] != 0 || nodes[1].(map[string]any)["message"] != "child" {
+		t.Fatalf("invalid aggregate graph: %v", graph)
+	}
+	imported := nodes[2].(map[string]any)["errors"].([]any)
+	if imported[0].(map[string]any)["value"] != float64(3) || nodes[3].(map[string]any)["name"] != "TypeError" || nodes[3].(map[string]any)["message"] != "remote child" {
+		t.Fatalf("nested remote aggregate lost: %v", graph)
+	}
+}

@@ -3,12 +3,15 @@ package rutis_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/internal/peer"
+	"github.com/arcships/rutis/go/rutis/internal/testwait"
 	"github.com/arcships/rutis/go/rutis/rutistest"
 )
 
@@ -248,5 +251,73 @@ func TestAnUndeclaredServiceIsRefused(t *testing.T) {
 	})
 	if message := loadFails(t, undeclared, nil); !strings.Contains(message, "Provides does not declare it") {
 		t.Fatal(message)
+	}
+}
+
+type eventHost struct{ chains chan []string }
+
+func (h eventHost) Check(ctx context.Context, callback func(context.Context) error) error {
+	h.chains <- peer.ChainOf(ctx)
+	return callback(ctx)
+}
+
+func TestEventsCrossTheSessionAndKeepReentrantCallChains(t *testing.T) {
+	chains := make(chan []string, 1)
+	local := make(chan []string, 1)
+	plugin := rutis.Define(rutis.Plugin[rutis.NoConfig]{
+		Name: "events", Inject: []string{"check"},
+		Apply: func(c *rutis.Ctx, _ rutis.NoConfig) error {
+			var host struct {
+				Check func(context.Context, func(context.Context) error) error
+			}
+			if err := c.Use("check", &host); err != nil {
+				return err
+			}
+			c.On("local", func(ctx context.Context, args ...any) error {
+				if payload, ok := args[0].(map[string]any); !ok || payload["city"] != "Bergen" {
+					return fmt.Errorf("payload was not decoded: %T %v", args[0], args[0])
+				}
+				local <- peer.ChainOf(ctx)
+				return nil
+			})
+			c.On("changed", func(ctx context.Context, args ...any) error {
+				return host.Check(ctx, func(ctx context.Context) error { return c.Emit(ctx, "local", args...) })
+			})
+			c.On("failed", func(context.Context, ...any) error { return &rutis.RemoteError{Name: "TypeError", Message: "first"} })
+			c.On("failed", func(context.Context, ...any) error { panic("second") })
+			return nil
+		},
+	})
+	loaded := rutistest.Load(t, plugin, nil, map[string]any{"check": eventHost{chains}}, "changed", "failed")
+	ctx := context.Background()
+	if err := loaded.Emit(ctx, "changed", map[string]any{"city": "Bergen"}); err != nil {
+		t.Fatal(err)
+	}
+	if chain := testwait.Within(t, "host event callback", chains); len(chain) != 2 {
+		t.Fatalf("host callback chain: %v", chain)
+	}
+	if chain := testwait.Within(t, "reentrant local emission", local); len(chain) != 3 {
+		t.Fatalf("local listener chain: %v", chain)
+	}
+	var remote *rutis.RemoteError
+	if err := loaded.Emit(ctx, "failed"); !errors.As(err, &remote) || remote.Name != "AggregateError" {
+		t.Fatalf("aggregate did not cross: %v", err)
+	}
+	var graph struct {
+		Nodes []struct {
+			Name, Message string
+			Errors        []struct{ Value int }
+		}
+	}
+	if err := json.Unmarshal(remote.Graph, &graph); err != nil {
+		t.Fatal(err)
+	}
+	root := graph.Nodes[0]
+	if len(root.Errors) != 2 {
+		t.Fatalf("aggregate children lost: %s", remote.Graph)
+	}
+	one, two := graph.Nodes[root.Errors[0].Value], graph.Nodes[root.Errors[1].Value]
+	if one.Name != "TypeError" || one.Message != "first" || two.Name != "Panic" || two.Message != "panic: second" {
+		t.Fatalf("child errors lost or reordered: %s", remote.Graph)
 	}
 }

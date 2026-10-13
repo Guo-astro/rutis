@@ -37,7 +37,7 @@ use crate::{EntryStatus, Loader, LoaderError, Resolved, Resolver, ServiceCatalog
 pub const GO_MARKER: &[u8] = b"rutis-go-runtime:1";
 
 /// The plugin API this host supports.
-const PLUGIN_API: u64 = 1;
+const PLUGIN_API: u64 = 2;
 
 /// How often [`GoRuntimes`] looks for runtimes to start or stop.
 const SWEEP: Duration = Duration::from_millis(100);
