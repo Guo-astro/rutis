@@ -396,11 +396,19 @@ fn npm_installs_and_runs_this_build() {
     // the `bun` on PATH.
     #[cfg(unix)]
     {
-        let bun = match from_registry() {
-            true => format!("@arcships/rutis-bun@{version}"),
-            false => npm_tarball("rutis-bun").display().to_string(),
-        };
-        run(&s, "npm", npm(), &["install", "--omit=optional", &bun]);
+        // From a registry this platform's package is an optional
+        // dependency of @arcships/rutis-host: `--omit=optional` would remove
+        // it (#363). From the files it was installed by name.
+        match from_registry() {
+            true => {
+                let bun = format!("@arcships/rutis-bun@{version}");
+                run(&s, "npm", npm(), &["install", &bun]);
+            }
+            false => {
+                let bun = npm_tarball("rutis-bun").display().to_string();
+                run(&s, "npm", npm(), &["install", "--omit=optional", &bun]);
+            }
+        }
         run(&s, "npm", "bun", &["--version"]);
         s.write("npm/greeter-bun.ts", GREETER_BUN_TS);
         s.write_json(
