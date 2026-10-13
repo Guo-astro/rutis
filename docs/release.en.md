@@ -57,9 +57,13 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 Expected behavior: the dialer prints `clock: <n>` every second. After a network outage, both sides report a heartbeat timeout and wait to reconnect within 30 seconds; after recovery, they report `ready, session <n+1>`. Restarting the listener makes the dialer retry with backoff. A wrong token returns `AuthRejected … 403`; an untrusted CA returns `AuthRejected … UnknownIssuer`.
 
-[Write a TypeScript plugin](guide/typescript-plugin.en.md) is followed by the check after publishing (its marked examples, `tools/doc-examples.mjs`); [Write a Python plugin](guide/python-plugin.en.md) still has to be followed by hand with the published packages from a clean environment until #259 completes its example.
+[Write a TypeScript plugin](guide/typescript-plugin.en.md) and [Write a Python plugin](guide/python-plugin.en.md) are both followed by the check after publishing (their marked examples, `tools/doc-examples.mjs`).
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
+
+## 0.10.0
+
+The first release that saves its persisted samples in the release PR (the samples of 0.8.0–0.9.1 were added afterwards in #284), and the first in which `rutis.json` has a top-level `format`: an older file without `format` reads as 1, so the 0.10.0 expectations equal 0.9.1's and only the sample gains `"format": 1`. From this release the examples of [Write a Python plugin](guide/python-plugin.en.md) are followed by the check after publishing (#259) instead of by hand.
 
 ## 0.9.0
 

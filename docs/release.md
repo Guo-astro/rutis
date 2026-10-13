@@ -57,9 +57,13 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 要看到：拨号方每秒打印 `clock: <n>`；断网后 30 秒内两边报告心跳超时并等待重连，恢复后 `ready, session <n+1>`；重启监听方后拨号方退避重连；错误的 token 是 `AuthRejected … 403`，不信任的 CA 是 `AuthRejected … UnknownIssuer`。
 
-[写一个 TypeScript 插件](guide/typescript-plugin.md) 已由发布后验证照着走（标记过的示例，`tools/doc-examples.mjs`）；[写一个 Python 插件](guide/python-plugin.md) 的示例在 #259 补全之前仍要人工用发布的包从零走一遍。
+[写一个 TypeScript 插件](guide/typescript-plugin.md) 和 [写一个 Python 插件](guide/python-plugin.md) 都由发布后验证照着走（标记过的示例，`tools/doc-examples.mjs`）。
 
 每晚的 stress 工作流还跑两个浸泡测试（link 反复断开重连、进程反复拉起结束），检查文件描述符、线程数不增长、进程都被回收。
+
+## 0.10.0
+
+第一次在发布 PR 里保存持久化样本（0.8.0–0.9.1 的样本是 #284 事后补的），也是 `rutis.json` 第一次有顶层 `format`：没写 `format` 的旧文件按 1 读，所以 0.10.0 的期望与 0.9.1 相同，只是样本多了 `"format": 1`。[写一个 Python 插件](guide/python-plugin.md) 的示例从这一版起由发布后验证照着走（#259），不再人工走。
 
 ## 0.9.0
 
