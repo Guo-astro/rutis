@@ -6,6 +6,17 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 . "$repo_dir/tools/lib/dylib-common.sh"
 base="$(cd "$(mktemp -d /tmp/rutis-dylib-repro.XXXXXX)" && pwd -P)"
+# The builds compared here are rustup's own cargo and rustc of this
+# checkout's toolchain, not a build cache's shim on PATH (mbx on the
+# self-hosted Mac, docs/ci.md §10): a cache could hand both builds the same
+# outputs, and its own target directory defeats the path remapping below.
+# RUSTC also covers build scripts run outside the checkout, where rustup's
+# proxy would not see rust-toolchain.toml.
+if command -v rustup > /dev/null 2>&1 && cargo_bin="$(cd "$repo_dir" && rustup which cargo 2> /dev/null)"; then
+  RUSTC="$(cd "$repo_dir" && rustup which rustc)"
+  export RUSTC
+  cargo() { "$cargo_bin" "$@"; }
+fi
 cargo_home="${CARGO_HOME:-$HOME/.cargo}"
 cargo_home="$(cd "$cargo_home" 2> /dev/null && pwd -P || printf '%s' "$cargo_home")"
 for slot in a b; do
