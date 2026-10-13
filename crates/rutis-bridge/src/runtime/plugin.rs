@@ -26,6 +26,11 @@ use crate::runtime::{Mount, Process};
 /// mounts use neither, so only [`RuntimePlugin`] checks them.
 const ROW_FEATURES: [&str; 2] = ["rows.v2", "hosts"];
 
+/// What [`RuntimePlugin::emits`] needs from a runtime: delivering host events
+/// to its leaf plugins. Checked at mount, so a runtime without it fails there
+/// (boundary rule §5) rather than on the first `emit`.
+const EVENTS_FEATURE: &str = "events";
+
 /// The service a running runtime provides.
 pub struct Runtime {
     process: Arc<Process>,
@@ -144,6 +149,8 @@ pub struct RuntimePlugin {
     remote: bool,
     anchor: PathBuf,
     hosts: Arc<HashMap<String, Value>>,
+    /// Events the host may emit into the runtime's process.
+    emits: Vec<String>,
     state: Arc<watch::Sender<RuntimeState>>,
 }
 
@@ -156,8 +163,16 @@ impl RuntimePlugin {
             runtime,
             anchor,
             hosts: Arc::default(),
+            emits: Vec::new(),
             state: Arc::new(watch::channel(RuntimeState::Idle).0),
         }
+    }
+
+    /// Declare events the host may send with [`Process::emit`]; other names
+    /// are rejected. Set before mounting.
+    pub fn emits(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.emits = names.into_iter().map(Into::into).collect();
+        self
     }
 
     /// A runtime that runs elsewhere: its session is `RuntimeSession#<name>`,
@@ -246,7 +261,11 @@ impl Plugin for RuntimePlugin {
                             self.runtime
                         ))
                     })?;
-                Process::over(session, Mount::default()).await
+                let mount = Mount {
+                    emits: self.emits.clone(),
+                    ..Mount::default()
+                };
+                Process::over(session, mount).await
             };
             let mounted = tokio::select! {
                 mounted = start => Some(mounted),
@@ -283,6 +302,17 @@ impl Plugin for RuntimePlugin {
                      (or a runtime speaking its row contract) is required",
                     self.runtime,
                     missing.join(" and ")
+                ));
+                self.state
+                    .send_replace(RuntimeState::Down(error.to_string()));
+                return Err(error.into());
+            }
+            if !self.emits.is_empty() && !process.supports(EVENTS_FEATURE) {
+                let error = crate::runtime::Error::Value(format!(
+                    "the {} runtime lacks {EVENTS_FEATURE}: it cannot deliver {} to its plugins; \
+                     upgrade to a runtime supporting leaf events",
+                    self.runtime,
+                    self.emits.join(", ")
                 ));
                 self.state
                     .send_replace(RuntimeState::Down(error.to_string()));

@@ -5,6 +5,7 @@
     "The plugin injects `clock`, whose `now()` returns 0, 1, 2, ... one per call, and provides `service` with `methods`.",
     "A call: `call` (method), `args` (JSON; {\"$callback\": ...} is a function the caller passes: \"upper\" returns its argument upper-cased; {\"throws\": {name, message, fields}} throws an error with that name and message and extra `fields`), and what it does: `returns` (a JSON value; keys in `ignore` are not compared; `copied`: it is not the object passed in), `throws` ({} for any error, or the `name` and `message` the caller receives; the thrown error's extra `fields` do not cross) or `exits` (the plugin's process exits with this status).",
     "`samples` are values one language makes: the plugin's `samples()` names the ones it has, `sample(name)` returns one; a runtime whose plugin has no `samples` method has none.",
+    "`events` (after `calls` and `samples`): the host emits `emit` with `args` (JSON) as Process::emit does, the runtime mounted with `emits`; then `then` is a call as in `calls`, or the emission `throws`. The session matrix requires these checks on Node, Bun, Python and Go; the Node and Python testing tools also check them.",
     "`allowed`: the testing tool does not do what this entry says, and why (a bounded, written-down difference, also in docs/guide/plugin-api.md). Every other entry holds for both."
   ],
   "service": "weather",
@@ -33,6 +34,19 @@
       "args": [],
       "exits": 17,
       "allowed": "the testing tool runs the plugin in the test's own process, so a plugin that ends its process ends the test: the tool cannot show this, and tests do not call it"
+    }
+  ],
+  "emits": ["weather/city"],
+  "events": [
+    {
+      "emit": "weather/city", "args": ["Bergen"],
+      "then": { "call": "today", "args": [], "returns": "Bergen at 2" },
+      "why": "a leaf listener receives a declared host event, and its effect is visible to the next call"
+    },
+    {
+      "emit": "weather/undeclared", "args": [],
+      "throws": { "message": "event weather/undeclared is not declared for emission from rutis" },
+      "why": "only events declared in emits can be sent"
     }
   ],
   "samples": [

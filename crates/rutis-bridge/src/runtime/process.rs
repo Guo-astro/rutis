@@ -104,7 +104,7 @@ pub struct Mount<'a> {
     pub hosts: Vec<Host>,
     /// Cordis events forwarded to the rutis side, and where they go.
     pub events: Option<(Vec<String>, Arc<dyn EventSink>)>,
-    /// Events the rutis side may emit into Cordis (see `Process::emit`).
+    /// Events the rutis side may emit into the runtime (see `Process::emit`).
     pub emits: Vec<String>,
     /// With no `plugins`: start an empty Context whose Cordis resolves from
     /// this file (a `package.json`), and load plugins later one by one with
@@ -1086,8 +1086,8 @@ impl Process {
         self.peer.invoke(handle, method, RpcValue::List(args))
     }
 
-    /// Emit a declared event in the Cordis Context with `parallel`; resolves
-    /// once the Cordis listeners are done.
+    /// Emit a declared event in the runtime; resolves once all listeners
+    /// have finished, reporting their failures together.
     pub async fn emit(&self, event: &str, args: Vec<RpcValue>) -> Result<(), Error> {
         let args = RpcValue::List(vec![json!(event).into(), RpcValue::List(args)]);
         crate::runtime::rpc::settle(self.peer.invoke_async("", "emit", args).await?).await?;

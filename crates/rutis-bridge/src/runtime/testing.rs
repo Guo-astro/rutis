@@ -16,6 +16,19 @@ use crate::session::{settle, Error, Reply, Value};
 /// `about` says how to read it.
 pub const WEATHER_EXPECTED: &str = include_str!("testing/weather.expected.json");
 
+/// The events a runtime under [`runtime`] is mounted to receive
+/// (`emits` in [`WEATHER_EXPECTED`]); mount with these as `Mount::emits`.
+pub fn weather_emits() -> Vec<String> {
+    let expected: serde_json::Value =
+        serde_json::from_str(WEATHER_EXPECTED).expect("weather.expected.json");
+    expected["emits"]
+        .as_array()
+        .expect("emits")
+        .iter()
+        .map(|name| name.as_str().expect("an event name").to_owned())
+        .collect()
+}
+
 /// **Runtime** ([`runtime`]): a runtime loads, as a row, a plugin `entry`
 /// that injects `clock` (a rutis host service with `now`, sync, returning
 /// 0, 1, 2, ...) and provides `weather`:
@@ -224,6 +237,33 @@ pub async fn runtime(
             "{}: the plugin has no samples(), so no values only its language makes are checked",
             entry.display()
         );
+    }
+
+    if process.supports("events") {
+        for (i, entry) in expected["events"].as_array().unwrap().iter().enumerate() {
+            let name = entry["emit"].as_str().unwrap();
+            let what = format!("events[{i}] {name}");
+            let args = entry["args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(argument)
+                .collect();
+            let emitted = process.emit(name, args).await;
+            match entry.get("then") {
+                Some(then) => {
+                    emitted.unwrap_or_else(|error| panic!("{what}: {error}"));
+                    let method = then["call"].as_str().unwrap();
+                    let args = then["args"].as_array().unwrap().iter().map(argument);
+                    let reply =
+                        call(&weather, method, &kind(method), Value::List(args.collect())).await;
+                    let mut then = then.clone();
+                    then["why"] = entry["why"].clone();
+                    check(&what, &then, reply);
+                }
+                None => check(&what, entry, emitted.map(|()| Value::Data(Json::Null))),
+            }
+        }
     }
     drop(weather);
 

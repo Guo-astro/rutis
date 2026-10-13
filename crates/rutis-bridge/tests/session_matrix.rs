@@ -114,6 +114,7 @@ async fn start(runtime: Runtime, via: Via, dir: &Path) -> (Arc<Process>, PathBuf
         Mount {
             anchor: Some(&anchor),
             launcher: Some(&launcher),
+            emits: rutis_bridge::runtime::testing::weather_emits(),
             ..Mount::default()
         },
     )
@@ -143,9 +144,16 @@ async fn handed_over(launcher: Launcher, anchor: &Path) -> Arc<Process> {
         .unwrap();
     assert_eq!(channel.info.transport, "tcp", "a loopback channel");
     let format = rutis_bridge::session::Format::Compat;
-    let process = Process::attach(channel, Mount::default(), format)
-        .await
-        .unwrap();
+    let process = Process::attach(
+        channel,
+        Mount {
+            emits: rutis_bridge::runtime::testing::weather_emits(),
+            ..Mount::default()
+        },
+        format,
+    )
+    .await
+    .unwrap();
     // The transport ends its processes when dropped: keep it for the test.
     std::mem::forget(transport);
     process
@@ -215,9 +223,16 @@ async fn listening(launcher: Launcher, anchor: &Path) -> Arc<Process> {
         rutis_bridge::session::Endpoint::rust(PeerId::new("main").unwrap())
             .expect(PeerId::new("runtime").unwrap()),
     );
-    let process = Process::attach(channel, Mount::default(), format)
-        .await
-        .unwrap();
+    let process = Process::attach(
+        channel,
+        Mount {
+            emits: rutis_bridge::runtime::testing::weather_emits(),
+            ..Mount::default()
+        },
+        format,
+    )
+    .await
+    .unwrap();
     assert!(
         process.connection().supports("runtime"),
         "a runner declares its contract"

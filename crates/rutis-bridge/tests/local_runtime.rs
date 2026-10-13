@@ -46,3 +46,61 @@ async fn a_runtime_that_cannot_start_says_why() {
         "{reason}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_without_events_refuses_emits_before_rows_load() {
+    use std::sync::Arc;
+
+    use rutis_bridge::channel::PeerId;
+    use rutis_bridge::runtime::{runtime_session_key, RuntimePlugin, RuntimeSession};
+    use rutis_bridge::session::{Connection, Dispatch, Endpoint, Error, Format, Reply, Value};
+    use rutis_test_support::within;
+    use serde_json::json;
+
+    // This old runtime has the row contract but not the event capability.
+    struct OldRuntime;
+    impl Dispatch for OldRuntime {
+        fn invoke(&self, _: &Connection, target: &str, method: &str, _: Value) -> Reply {
+            assert_eq!((target, method), ("", "mount"));
+            Ok(json!({ "services": {}, "features": ["rows.v2", "hosts"] }).into())
+        }
+    }
+    struct Session(Connection);
+    impl RuntimeSession for Session {
+        fn connection(&self) -> Connection {
+            self.0.clone()
+        }
+        fn route(
+            &self,
+            _: Arc<dyn Dispatch>,
+        ) -> Result<Box<dyn std::any::Any + Send + Sync>, Error> {
+            // No rows load, so this runtime makes no calls back to its host.
+            Ok(Box::new(()))
+        }
+    }
+    within("the old runtime refusing declared events", async {
+        let (a, b) = rutis_bridge::transport::memory::pair();
+        let endpoint = |name| Format::Endpoint(Endpoint::rust(PeerId::new(name).unwrap()));
+        let old = Connection::open_with(b, Arc::new(OldRuntime), endpoint("old")).unwrap();
+        let session = Connection::open_with(a, Arc::new(OldRuntime), endpoint("main")).unwrap();
+        session.ready().await.unwrap();
+        let root = Ctx::root().unwrap();
+        root.provide_as::<dyn RuntimeSession>(
+            runtime_session_key("old"),
+            Arc::new(Session(session.clone())),
+        )
+        .unwrap();
+        let runtime = RuntimePlugin::remote("old").emits(["leaf/changed"]);
+        let handle = runtime.handle();
+        let view = root.plugin(runtime);
+        assert!((&view).await.is_err());
+        let RuntimeState::Down(message) = handle.state() else {
+            panic!("the runtime should refuse declared events before rows load")
+        };
+        assert!(message.contains("lacks events"), "{message}");
+        root.shutdown().await.unwrap();
+        session.close(Error::Transport("test finished".into()));
+        old.closed().await;
+    })
+    .await;
+}
