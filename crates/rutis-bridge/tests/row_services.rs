@@ -1,15 +1,17 @@
 //! Rows exporting services to rutis and using host services leased one by
 //! one: what rutis-loader builds JavaScript rows on.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::task::Poll;
 
-use rutis::Ctx;
-use rutis_bridge::runtime::{row_projection, Mount, Process};
+use rutis::{BoxFuture, CordisError, Ctx, EventKey, Listener, ServiceChange, ServiceChanged};
+use rutis_bridge::runtime::{row_projection, Mount, Process, Projection, RowService};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value as RpcValue};
-use rutis_test_support::until;
+use rutis_test_support::{recv_within, until, within};
 use serde_json::{json, Value};
 
 const WEATHER: &str = r#"
@@ -212,6 +214,152 @@ async fn row_services_reach_rutis_and_hosts_are_leased() {
     assert!(has_clock(), "one lease is left");
     second.release().await.unwrap();
     assert!(!has_clock(), "the last lease withdraws it");
+    process.dispose().await.unwrap();
+    ctx.shutdown().await.unwrap();
+}
+
+const GREETER: &str = r#"
+export function apply(ctx) {
+  ctx.provide('greeter', { greet() { return 'Hello' } })
+}
+"#;
+
+/// A row projection for `greeter` whose first proxy is made only once
+/// `release` says so, after telling `held`: its publisher stops in the
+/// middle of that publication.
+fn held_projection() -> (Arc<Projection>, mpsc::Receiver<()>, mpsc::Sender<()>) {
+    let (tell, held) = mpsc::channel();
+    let (release, wait) = mpsc::channel::<()>();
+    let mut first = Some((tell, wait));
+    let projection = Projection::new();
+    projection.service_keyed::<dyn HostDispatch>(
+        "greeter",
+        host_key("greeter"),
+        move |process, handle| {
+            if let Some((tell, wait)) = first.take() {
+                tell.send(()).unwrap();
+                recv_within("the test releases the publication", &wait);
+            }
+            Arc::new(RowService::new(process, handle, json!({ "greet": "sync" })))
+        },
+    );
+    (projection, held, release)
+}
+
+/// Counts the services published in a context.
+#[derive(Clone, Default)]
+struct Published(Arc<AtomicUsize>);
+
+impl Listener<ServiceChanged> for Published {
+    fn call<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        changed: &'a ServiceChanged,
+    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
+        if changed.change == ServiceChange::Provided {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+        Box::pin(async { Ok(None) })
+    }
+}
+
+/// Load the greeter row exporting to `projection`, and wait until its
+/// publisher is held in the middle of publishing the service.
+async fn load_held(
+    process: &Arc<Process>,
+    entry: &Path,
+    projection: &Arc<Projection>,
+    held: mpsc::Receiver<()>,
+) {
+    let loading = {
+        let process = process.clone();
+        let entry = entry.to_owned();
+        let projection = projection.clone();
+        tokio::spawn(async move {
+            let provides = json!({ "greeter": { "greet": "sync" } });
+            process
+                .load_row_exporting(
+                    "greeter",
+                    &entry,
+                    json!({}),
+                    &[],
+                    &[],
+                    provides.as_object().unwrap(),
+                    projection,
+                )
+                .await
+        })
+    };
+    tokio::task::spawn_blocking(move || recv_within("the publication", &held))
+        .await
+        .unwrap();
+    within("the load", loading).await.unwrap().unwrap();
+}
+
+/// #372: the row is unloaded, and its projection closed, while its service
+/// is still being published. Unloading reports the withdrawal to the
+/// projection, which leaves it to the publication under way; closing used
+/// to drop it, and the service stayed in rutis after its row was gone.
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_keeps_a_withdrawal_reported_during_a_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    let process = rows_process(dir.path()).await;
+    let entry = write(dir.path(), "greeter.mjs", GREETER);
+    let ctx = Ctx::root().unwrap();
+    let published = Published::default();
+    ctx.events()
+        .on(&ctx, &EventKey::of(), published.clone())
+        .unwrap();
+    let (projection, held, release) = held_projection();
+    projection.attach(&ctx, process.clone()).unwrap();
+    load_held(&process, &entry, &projection, held).await;
+
+    process.unload_row("greeter").await.unwrap();
+    projection.close();
+    release.send(()).unwrap();
+    // The publication completes, then the withdrawal follows.
+    until(
+        || published.0.load(Ordering::SeqCst) == 1,
+        "the publication",
+    )
+    .await;
+    until(
+        || {
+            ctx.get_as::<dyn HostDispatch>(host_key("greeter"))
+                .is_none()
+        },
+        "the withdrawal",
+    )
+    .await;
+    process.dispose().await.unwrap();
+    ctx.shutdown().await.unwrap();
+}
+
+/// #372: `withdraw` called while a service is being published waits for
+/// that publication and withdraws its service too. It used to return at
+/// once and leave the service in rutis.
+#[tokio::test(flavor = "multi_thread")]
+async fn withdraw_waits_for_a_publication_under_way() {
+    let dir = tempfile::tempdir().unwrap();
+    let process = rows_process(dir.path()).await;
+    let entry = write(dir.path(), "greeter.mjs", GREETER);
+    let ctx = Ctx::root().unwrap();
+    let (projection, held, release) = held_projection();
+    projection.attach(&ctx, process.clone()).unwrap();
+    load_held(&process, &entry, &projection, held).await;
+
+    let mut withdrawal = std::pin::pin!(projection.withdraw());
+    let pending =
+        std::future::poll_fn(|cx| Poll::Ready(withdrawal.as_mut().poll(cx).is_pending())).await;
+    assert!(pending, "withdraw waits for the publication under way");
+    release.send(()).unwrap();
+    within("the withdrawal", withdrawal).await;
+    assert!(
+        ctx.get_as::<dyn HostDispatch>(host_key("greeter"))
+            .is_none(),
+        "withdrawn once withdraw returns"
+    );
+    process.unload_row("greeter").await.unwrap();
     process.dispose().await.unwrap();
     ctx.shutdown().await.unwrap();
 }
