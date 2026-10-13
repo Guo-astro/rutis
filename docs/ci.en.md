@@ -256,6 +256,7 @@ A self-hosted machine keeps its state between jobs, and several instances run at
 - `setup-bun` installs Bun into `~/.bun/bin`, which the instances of a machine share, while `network-macos` and `runtimes-bun` install different versions at the same time in a full run: on self-hosted macOS, `runtimes-bun` gives `setup-bun` a `HOME` under `runner.temp`, and no cache;
 - directories `tools/*.sh` leave in `/tmp/rutis-*` are removed after 12 hours;
 - several instances compiling at once overload the machine (4 instances on 10 cores each running 10 rustc reached a load of 79): each job's `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` are the CPU count divided by the machine's instances (the `~/actions-runner*/` directories with a `.runner` file), at least 2; the start prints them and the load. When instances live elsewhere, or for another value, set the repository variable `RUTIS_CI_JOBS`. `sdk-repro-macos` is limited the same way, which does not change what it builds.
+- Go's build cache `GOCACHE` is each instance's own (`~/.cache/rutis-ci/<runner name>/go-build`; on Windows `_work/_rutis-ci/go-build`). After a failed job, the end step deletes the instance's Go cache: a job cancelled halfway can leave a half-written cache file, and every later build that reads it fails ("malformed elf file", #374). The next job builds Go's standard library again, about one minute more.
 
 **Before adding an instance, the machine needs**:
 
