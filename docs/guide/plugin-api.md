@@ -1,6 +1,6 @@
 # 插件 API
 
-TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`）和 Go 插件（`github.com/arcships/rutis/go/rutis`，见 [写一个 Go 插件](go-plugin.md)）的写法与规则相同。当前插件 API 版本：**1**。
+TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`）和 Go 插件（`github.com/arcships/rutis/go/rutis`，见 [写一个 Go 插件](go-plugin.md)）的写法与规则相同。当前插件 API 版本：**2**。
 
 ## 声明
 
@@ -18,6 +18,20 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 | `ctx.use(name)` | `inject` 里声明的服务。同一个运行时进程里的插件提供的，是对象本身；其他进程、其他语言、其他机器提供的，是代理 |
 | `ctx.provide(name, value)` | 提供服务，直到插件卸载，或调用返回的函数 |
 | `ctx.effect(cleanup)` | 插件卸载时运行 `cleanup`（可以是 async） |
+| `ctx.on(name, listener)` | 监听运行时进程共享事件总线上的事件：宿主发进来的（运行时的 `emits` 声明名字，见[在 Rust 应用里嵌入](rust-host.md)），以及进程里插件 `ctx.emit` 的。监听随插件卸载注销；返回的函数立即注销 |
+| `ctx.emit(name, ...args)` | 向本运行时进程的事件总线分发事件，供本插件和同进程的其他插件监听；同步调用监听器，不等待它们返回的 Promise / 协程（Go 的接口见下） |
+
+Node、Bun、Python 和 Go 都支持叶子插件事件（插件 API 2），并报告 `events` 运行时能力。Node 和 Bun 用 Cordis 自己的事件服务（Bun 的每个 row 持一个 Cordis fiber），因此和同进程的 Cordis 插件共享一条总线、分发语义与 Cordis 一致；Python 和 Go 的总线按同一套语义实现（对照 `cordis/src/events.ts` 与 `crates/rutis/src/bus.rs`）。Go 的接口是 `ctx.On(name, func(context.Context, ...any) error) func()` 和 `ctx.Emit(callerCtx, name, args...) error`；监听器收到保留当前调用链、随所属插件卸载取消的 context；卸载等正在执行的监听器结束后才运行清理。插件方法里发事件时传收到的 `callerCtx`，在 `Apply` 里可传 `ctx` 本身。
+
+本地发事件按注册顺序调用监听器：Node、Bun 和 Python 的 `ctx.emit` 同步抛错时停止后续监听器；返回的 Promise / 协程不等待，未处理的异步失败结束运行时进程。Go 的 `ctx.Emit` 同步执行，遇到首个错误返回；插件另起的 goroutine 沿用 `ctx.Go` 的约定。宿主 `Process::emit` 则等待全部监听器，并以 `AggregateError` 汇总错误；Go 为这些监听器启动 goroutine，因此不保证宿主事件监听器的执行顺序。与 Rust 的 `Ctx::dispose_self` 同一约定：监听器不得等待自己所属的 row 卸载完成（Go 的监听器经宿主回调同步卸载或更新自身行会等到自己），要卸载就结束监听器之后再做。
+
+一个跨过会话的错误被再次抛出时，Node、Bun、Python 和 Go 都带着它完整的错误图（cause、`AggregateError` 的子错误）再跨一次，不限于聚合的情形：Node 解码出的是真正的 `Error` 对象，重新编码时自然带上整个图，Python 和 Go 的 `encode_error` / `encodeError` 把 `RemoteError` 的图拼进去（节点追加、引用偏移）以保持一致。
+
+`internal/*` 属于运行时，不能监听、发出或列在 `emits` 中。`RuntimePlugin` / `LocalRuntime` 设置了 `emits`，而运行时未报告 `events` 时，挂载失败（`lacks events`）。这项能力检查不用于直接 `Process::mount` / `attach` 的 Cordis 静态挂载：旧版 Node 已支持 Cordis 事件，却没有这项能力声明。
+
+`emits` 只声明宿主 → 运行时。叶子插件的 `ctx.emit` / `ctx.Emit` 在进程内分发；`RuntimePlugin` 没有提供 `Mount.events` / `EventSink` 配置入口，所以运行时 → Rust 宿主的方向暂不可用。
+
+Node 和 Python 的测试工具用运行时自己的那份事件实现：Node 的测试工具与运行时同样走 Cordis，Python 的测试工具用 `rutis.events`。测试工具也在加载时声明事件：Node 的 `load(plugin, { emits })`、Python 的 `load(plugin, emits=[...])`、Go 的 `rutistest.Load(t, plugin, config, services, "event", ...)`。宿主发入的入口分别是 `await t.emit(...)`、`await t.emit(...)` 和 `loaded.Emit(callerCtx, name, args...)`，都校验白名单并等待监听器。Python 测试工具在卸载时取消并收尾未完成的本地异步监听器；已有测试体或清理异常时保留原始异常，否则报告监听失败。真实运行时对未处理的异步失败退出进程。
 
 清理按注册的相反顺序运行：`apply` 返回的清理函数最先，然后是 `ctx.effect` 注册的。
 
@@ -82,9 +96,11 @@ Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（�
 | 不重启：配置变化、注入的服务撤销都不会让插件停下再启动 | `load` 只启动一次，生命周期由宿主决定（见上） |
 | 同步调用不阻塞，不会出现 `SyncWaitCycle`；没有取消（`AbortSignal`、协程取消） | 插件与测试在同一个事件循环里 |
 | Python：跨过边界的异常是 `RemoteError`，它的 `__cause__` 是原来的异常 | 方便调试；真实运行时的 `RemoteError` 没有 `__cause__` |
-| TypeScript：只能加载 `definePlugin` 写的插件，不能加载 Cordis 插件 | 测试工具不包含 Cordis |
+| TypeScript：只能加载 `definePlugin` 写的插件，不能加载 Cordis 插件（事件用的是 Cordis 的事件服务，插件模型仍不是 Cordis 的） | 测试工具只挂一个插件，没有服务与依赖门控 |
+| TypeScript / Python 事件：被测插件只听到自己 `ctx.emit` 和 `t.emit` 发的事件；真实运行时整个进程共享一条事件总线，同进程其他插件（Node 上还有 Cordis 插件）发的事件也会听到 | 测试工具只加载一个插件。`t.emit` 只接受加载时 `emits` 声明的名字，与 `RuntimePlugin::emits` 相同；两边都拒绝 `internal/*` |
+| Python 工具在卸载时取消并收尾本地异步监听，测试体或清理异常优先；真实运行时在未处理的异步失败时退出进程 | 避免结束测试进程，同时让测试明确失败 |
 
-Map、Set、Date、二进制、bigint 两边都拒绝，这不是差异；它们以后是否可以传递见 [#308](https://github.com/arcships/rutis/issues/308)。关闭严格模式（`strict: false`）时值不经过上表，以上之外的差异都可能出现。Go 的 `rutistest` 和 Bun 尚未对这份期望文件比对。
+Map、Set、Date、二进制、bigint 两边都拒绝，这不是差异；它们以后是否可以传递见 [#308](https://github.com/arcships/rutis/issues/308)。关闭严格模式（`strict: false`）时值不经过上表，以上之外的差异都可能出现。Go 的 `rutistest` 尚未对整份期望文件比对；四种真实运行时都比对其中的事件期望。
 
 ## 同步调用与可重入
 
@@ -111,3 +127,5 @@ async 方法的调用方放弃等待（例如超时）时，调用被取消：�
 ## 版本
 
 插件上标记着它所用的插件 API 版本（`definePlugin` / `define_plugin` / `rutis.Define` 自动标记）。运行时比插件旧时，加载失败并说明需要升级什么；插件依赖 SDK 的大版本范围即可，不需要与宿主版本对齐。
+
+插件 API 2 增加叶子事件。新版运行时继续接受 API 1；升级 SDK 后生成的 API 2 插件需要一起升级运行时，Go 二进制还需要支持 API 2 的宿主。协议版本和 Go manifest 格式不变。

@@ -15,6 +15,7 @@ A host starts it as one process and runs plugins in it as rows named `bun:<modul
 ```
 
 - **Plugins** are written with [`@arcships/rutis`](https://www.npmjs.com/package/@arcships/rutis) (`definePlugin`), or as a module exporting `apply(ctx, config)` with `inject`, `provides` and `config`.
+- **Events** are shared by rows in the same process: `ctx.on(name, listener)` returns a disposer and removes the listener when its row unloads; `ctx.emit(name, ...args)` calls listeners synchronously without awaiting their promises. A host can send events with `Process::emit` after declaring the names with `LocalRuntime::emits`, `RuntimePlugin::emits`, or the `Mount.emits` field; host emission waits for all listeners and reports their errors together. Plugin emission stays within the Bun process.
 - **Modules** resolve from the project: npm names and subpaths from its `node_modules`, `./paths` relative to it. Install plugins with `bun add`.
 - **Nothing is installed or read behind the host's back**: the runtime always runs with `--no-install` (a missing package fails, it is never downloaded) and `--no-env-file` (the environment is what the host gives). The project's `bunfig.toml` applies, as the project's own configuration.
 - **Synchronous calls are re-entrant**: while a plugin's synchronous call into rutis waits, calls into this runtime still run, so runtimes that call each other never wait for each other for ever. A plugin's service may therefore be called while that plugin is inside a synchronous call: do not hold a lock across a call into rutis.

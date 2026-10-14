@@ -13,6 +13,7 @@
 // reference, sync methods return values and async ones promises; what
 // works only in one process fails here too.
 
+import { Context } from '@deepseek-ai/cordis'
 import { PLUGIN_API, isPlugin } from './index.mjs'
 
 export class PluginTestError extends Error {
@@ -167,21 +168,49 @@ function shaped(name, object, shape, strict) {
   return service
 }
 
+// As on the real runtimes, internal/* events belong to the runtime. The SDK
+// is a package of its own, so it keeps its own copy of the wording the
+// runtime uses (`node/rutis-runtime/src/leaf.mjs`).
+const internalMessage = name => `event ${name} is internal to the runtime`
+
+// A name is a string: Cordis's `emit` takes an object, null or function first
+// argument as `this`, so any other type would let `emit(null, 'internal/service')`
+// past the check.
+function internal(name) {
+  if (typeof name !== 'string') throw new TypeError(`an event name is a string, not ${name === null ? 'null' : typeof name}`)
+  if (name.startsWith('internal/')) throw new PluginTestError(internalMessage(name))
+}
+
 /**
  * Load `plugin` (what definePlugin returns, or a module whose default export
- * it is) with `config` and the services in `services`.
+ * it is) with `config` and the services in `services`. `emits` lists the
+ * events `t.emit` may send, as `RuntimePlugin::emits` does on a real runtime.
  */
-export async function load(plugin, { config = {}, services = {}, strict = true } = {}) {
+export async function load(plugin, { config = {}, services = {}, strict = true, emits = [] } = {}) {
   plugin = isPlugin(plugin) ? plugin : plugin?.default
   if (!isPlugin(plugin)) throw new PluginTestError('load needs a plugin made with definePlugin')
   if (plugin.api > PLUGIN_API) {
     throw new PluginTestError(`the plugin needs plugin API ${plugin.api}; this SDK supports ${PLUGIN_API}`)
   }
+  if (!Array.isArray(emits) || emits.some(name => typeof name !== 'string')) throw new PluginTestError('emits must be a list of event names')
+  // As the runners' mount: internal/* cannot be declared for emission (the
+  // sentence of rutis's own check, `Process::mount`, naming every one).
+  {
+    const internal = emits.filter(name => name.startsWith('internal/'))
+    if (internal.length) throw new PluginTestError(`framework-internal events do not cross the boundary (mount emits): ${internal.join(', ')}`)
+  }
+  const declared = new Set(emits)
   for (const name of plugin.inject) {
     if (!(name in services)) throw new PluginTestError(`the plugin injects ${name}: give the test a service ${name}`)
   }
   const provided = new Map()
   const cleanups = []
+  // Events are Cordis's own, as on the Node runtime: the plugin's listeners
+  // belong to a fiber of a Context of its own, which unload disposes.
+  const bus = new Context()
+  let events
+  const fiber = bus.plugin({ name: 'rutis-testing', apply: context => { events = context } })
+  await fiber.await()
   let unloaded = false
   const ctx = {
     use(name) {
@@ -205,6 +234,16 @@ export async function load(plugin, { config = {}, services = {}, strict = true }
       if (typeof cleanup !== 'function') throw new PluginTestError('effect needs a cleanup function')
       cleanups.push(cleanup)
     },
+    on(name, handler) {
+      if (unloaded) throw new PluginTestError('the plugin is unloaded')
+      if (typeof handler !== 'function') throw new PluginTestError('on needs a listener function')
+      internal(name)
+      return events.on(name, handler)
+    },
+    emit(name, ...args) {
+      internal(name)
+      events.emit(name, ...args)
+    },
   }
   const returned = await plugin.apply(ctx, strict ? cross(config, 'config') : config)
   if (returned !== undefined && returned !== null) {
@@ -223,12 +262,29 @@ export async function load(plugin, { config = {}, services = {}, strict = true }
     },
     /** The names of the services the plugin provides now. */
     provided: () => [...provided.keys()],
+    /** Emit as the host would with `Process::emit`: copy arguments in strict mode and await every listener, aggregating their errors. */
+    async emit(name, ...args) {
+      internal(name)
+      if (unloaded) throw new PluginTestError('the plugin is unloaded')
+      if (!declared.has(name)) throw new PluginTestError(`event ${name} is not declared for emission from rutis`)
+      const values = strict ? args.map((arg, i) => cross(arg, `event ${name} argument ${i}`)) : args
+      try {
+        await bus.parallel(name, ...values)
+      } catch (error) {
+        throw strict ? crossThrown(error, `event ${name}`) : error
+      }
+    },
     /** Run the cleanups, latest first; the plugin's services are withdrawn. */
     async unload() {
       if (unloaded) return
       unloaded = true
-      for (const cleanup of cleanups.reverse()) await cleanup()
-      provided.clear()
+      try {
+        // The listeners leave first, as on every runtime.
+        await fiber.dispose()
+        for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
+      } finally {
+        provided.clear()
+      }
     },
   }
 }

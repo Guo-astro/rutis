@@ -38,7 +38,7 @@
 | `loader/` | `loader/<名字>` | rutis-loader 的设计与用户文档：[design-rutis-loader-2026-10-02](design-rutis-loader-2026-10-02.md)、[实例](design-loader-instance-mounts-and-services-2026-10-07.md)、[实例服务](design-instance-services-2026-10-08.md) 中 loader 的行为、[多语言运行时](design-multilang-runtimes-2026-10-03.md)、[连接节点](guide/nodes.md) | 已登记（§14） |
 | `host/` | `host/<名字>` | rutis-host 的用户文档 [rutis-host](guide/rutis-host.md)、[S2 端到端设计](design-e2e-dev-loop-2026-10-11.md) | 已登记（§11、§13、§15） |
 | `dsh/` | `dsh/<名字>` | rutis-dsh 设计与文档 | 预留；`dsh/user-layer-format` 已登记（#207） |
-| `sdk/` | `sdk/<名字>` | 插件 SDK 与测试工具：[插件 API](guide/plugin-api.md)、质量规范 Q6.7 | `sdk/testing-matches-runtime` 已登记（#206） |
+| `sdk/` | `sdk/<名字>` | 插件 SDK 与测试工具：[插件 API](guide/plugin-api.md)、质量规范 Q6.7 | `sdk/testing-matches-runtime`（#206）、`sdk/leaf-events`（#366）已登记 |
 
 各族的 `<名字>` 规则：
 
@@ -242,7 +242,8 @@ PR 模板中有对应的检查项。
 
 | 编号 | 内容 | 级别 | 状态 | 验证 | 说明 |
 | --- | --- | --- | --- | --- | --- |
-| `sdk/testing-matches-runtime` | 测试工具（`@arcships/rutis/testing`、`rutis.testing`，严格模式）对插件的调用结果与真实运行时相同：同步、异步、回调、错误跨边界（只带名字和消息）、值的复制与拒绝；已知差异有界并写明（[插件 API](guide/plugin-api.md)「测试工具与真实运行时的差异」，期望文件中标为 `allowed`） | 契约行为 | 部分验证 | `rutis-bridge/src/runtime/testing.rs::runtime`（经 `rutis-bridge/tests/session_matrix.rs` 在 Node、Python、Go、Bun 各通道上运行）、`node/rutis/test/conformance.test.mjs`、`python/rutis/tests/test_conformance.py::Conformance::test_the_testing_tool_returns_what_the_real_runtime_does` | 两侧对同一份期望文件 `rutis-bridge/src/runtime/testing/weather.expected.json` 比对（Q6.7.2）。Go 的 `rutistest` 与 Bun 的测试工具尚未比对；Map、Set、Date、二进制、bigint 按现行规则拒绝，待 #308 |
+| `sdk/testing-matches-runtime` | 测试工具（`@arcships/rutis/testing`、`rutis.testing`，严格模式）对插件的调用结果与真实运行时相同：同步、异步、回调、错误跨边界（只带名字和消息）、值的复制与拒绝、宿主发入的事件（`emits` 闸门）；已知差异有界并写明（[插件 API](guide/plugin-api.md)「测试工具与真实运行时的差异」，期望文件中标为 `allowed`） | 契约行为 | 部分验证 | `rutis-bridge/src/runtime/testing.rs::runtime`（经 `rutis-bridge/tests/session_matrix.rs` 在 Node、Python、Go、Bun 各通道上运行）、`node/rutis/test/conformance.test.mjs`、`python/rutis/tests/test_conformance.py::Conformance::test_the_testing_tool_returns_what_the_real_runtime_does` | 两侧对同一份期望文件 `rutis-bridge/src/runtime/testing/weather.expected.json` 比对（Q6.7.2）；`events` 在四个运行时及 Node、Python 测试工具上必测。Go 的 `rutistest` 尚未对照整份期望文件；Map、Set、Date、二进制、bigint 按现行规则拒绝，待 #308 |
+| `sdk/leaf-events` | Node、Bun、Python、Go 的叶子插件（插件 API 2）收发事件：与同进程插件（Node、Bun 上含 Cordis 插件）共享一条事件总线；监听随插件卸载、加载失败、`update`、dispose 注销；宿主 `Process::emit` 只能发挂载时 `emits` 声明的名字，等待全部监听器并按注册顺序汇总错误；运行时重启后新挂载重新带上 `emits`；`internal/*` 不能监听、发出或声明（挂载时的拒绝用 `Process::mount` 的原句，列出全部名字），事件名必须是字符串（否则 `TypeError`）；运行时没有 `events` 能力时设置 `emits` 在挂载时失败；本地同步监听错误中止后续监听器，Node/Bun/Python 抛给发出方，Go 返回首个 error | 契约行为 | 已验证 | `node/rutis-runtime/test/leaf.test.mjs`（`leaf events delegate to the shared Cordis bus and leave with their fiber`、`a failed apply and an update remove the leaf listeners, as the runner drives the fiber`）、`bun/rutis-bun/test/runner.test.ts`（`host events require declared names; shared listeners dispose independently and unload`、`host emission awaits every listener and aggregates sync and async errors`、`a failed apply and an update remove the row listeners`）、`node/rutis/test/plugin.test.mjs`（`host emission waits for every listener and aggregates failures`、`duplicate listeners dispose independently and failed unload clears listeners`、`internal/* events are refused, as on the real runtimes`）、`python/rutis/tests/test_scopes.py::ScopedIds::test_events_share_rows_and_leave_on_update_failure_and_unload`、`::test_unhandled_async_plugin_event_exits_the_runtime_process`、`python/rutis/tests/test_testing.py::Testing::test_host_events_wait_for_all_listeners_and_cross_aggregate_errors`、`::test_the_host_emits_declared_names_only_and_never_internal_ones`、`::test_event_disposers_and_failed_cleanup_remove_every_listener`、`::test_unhandled_async_emission_fails_the_test_at_unload`、`::test_unload_cancels_unfinished_local_listeners`、`::test_local_failures_do_not_replace_body_or_cleanup_errors`、`go/rutis/events_test.go::TestEventRegistrationLifecycle`、`::TestHostEmissionWaitsForRowCancellation`、`::TestFailedApplyAndUpdateRemoveListeners`、`go/rutis/sdk_test.go::TestEventsCrossTheSessionAndKeepReentrantCallChains`、`rutis-bridge/tests/local_runtime.rs::local_runtime_events_follow_leaf_lifecycle`、`::a_runtime_without_events_refuses_emits_before_rows_load`、`rutis-bridge/tests/boundary_rules.rs::a_mount_listing_an_internal_event_fails` | Go 监听器保留 caller context 的调用链，随所属行取消，并在清理之前结束；宿主事件并发执行，不保证执行顺序。运行时 → 宿主方向（`Mount.events`）对 `RuntimePlugin` 不可用。Python 异步失败结束真实进程有子进程测试；测试工具取消后等待的差异已注明；加载失败和 `update` 时移除监听在 Node、Bun、Go 各有测试 |
 
 ---
 
@@ -327,7 +328,7 @@ PR 模板中有对应的检查项。
 
 ---
 
-## 16. 统计（基准：0.10 发布前的 main（`f8ce69b`））
+## 16. 统计（现状；0.10 的基线（`f8ce69b`）见本节末尾）
 
 | 范围 | 已验证 | 部分验证 | 未验证 | 明确不保证 | 合计 |
 | --- | --- | --- | --- | --- | --- |
@@ -337,12 +338,12 @@ PR 模板中有对应的检查项。
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
 | `bridge/*` | 17 | 0 | 0 | 1 | 18 |
 | `host/*`、`dsh/*`（§11） | 2 | 0 | 0 | 0 | 2 |
-| `sdk/*`（§12） | 0 | 1 | 0 | 0 | 1 |
+| `sdk/*`（§12） | 1 | 1 | 0 | 0 | 2 |
 | `host/*`（§13） | 2 | 0 | 0 | 0 | 2 |
 | `loader/*`（§14） | 31 | 5 | 0 | 0 | 36 |
 | `host/*`（§15） | 12 | 3 | 1 | 0 | 16 |
-| 合计 | 106 | 13 | 1 | 2 | 122 |
+| 合计 | 107 | 13 | 1 | 2 | 123 |
 
-核心承诺 30 条：已验证 25，部分验证 5（D22、D28、5.8、`loader/instance-edits-all-or-none`、`loader/instance-close-leaves-nothing`），未验证 0。契约行为 90 条：已验证 81，部分验证 8（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`），未验证 1（`host/go-add`）。
+核心承诺 30 条：已验证 25，部分验证 5（D22、D28、5.8、`loader/instance-edits-all-or-none`、`loader/instance-close-leaves-nothing`），未验证 0。契约行为 91 条：已验证 82，部分验证 8（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`），未验证 1（`host/go-add`）。
 
 **0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 1 条（`host/go-add`）。从 0.11 起，新登记的"未验证"条目会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。

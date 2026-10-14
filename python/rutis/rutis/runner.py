@@ -29,13 +29,21 @@ import importlib.metadata
 import inspect
 import os
 import sys
+import traceback
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import plugin as sdk
+from .events import Events, refused_emits
 from .peer import Peer, RemoteFuture
 
-FEATURES = ["rows.v2", "hosts", "leaf", "scopes"]
+FEATURES = ["rows.v2", "hosts", "leaf", "scopes", "events"]
+
+
+def _unhandled_event(error):
+    traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
+    sys.stderr.flush()
+    os._exit(1)
 
 
 def scoped_id(name: str, label: str | None) -> str:
@@ -114,6 +122,7 @@ class Row:
     # Service name -> scope label.
     isolate: dict = field(default_factory=dict)
     cleanups: list = field(default_factory=list)
+    listeners: list = field(default_factory=list)
     # Ids of the services it provided.
     provided: list = field(default_factory=list)
 
@@ -136,6 +145,14 @@ class Context(sdk.Context):
     def effect(self, cleanup: Callable) -> None:
         self._row.cleanups.append(cleanup)
 
+    def on(self, name: str, listener: Callable) -> Callable[[], None]:
+        if self._runtime.rows.get(self._row.key) is not self._row:
+            raise RuntimeError(f"row {self._row.key} is not active")
+        return self._runtime.events.on(name, listener, self._row.listeners)
+
+    def emit(self, name: str, *args: Any) -> None:
+        self._runtime.events.emit(name, *args)
+
 
 class Runtime:
     def __init__(self) -> None:
@@ -147,6 +164,8 @@ class Runtime:
         self.handles: dict[str, dict] = {}
         self.version = 0
         self.closing = False
+        self.events = Events(_unhandled_event)
+        self.emits = set()
         # The source file of each plugin module when it was imported.
         self.stamps: dict[str, tuple | None] = {}
 
@@ -241,13 +260,18 @@ class Runtime:
             for name in exports:
                 self._refresh(row.id(name))
         except BaseException:
-            await self.unload(key)
+            try:
+                await self.unload(key)
+            except Exception:
+                pass
             raise
 
     async def unload(self, key: str) -> None:
         row = self.rows.pop(key, None)
         if row is None:
             return
+        for off in row.listeners[:]:
+            off()
         # Withdrawals first: rutis hears them before the plugin goes away.
         for id in list(row.provided):
             if self.services.get(id, (None,))[0] == key:
@@ -259,7 +283,9 @@ class Runtime:
             if slot is not None and slot.handle is not None:
                 self._retire(slot.handle)
         errors = []
-        for cleanup in reversed(row.cleanups):
+        cleanups = row.cleanups[::-1]
+        row.cleanups.clear()
+        for cleanup in cleanups:
             try:
                 await _settle(cleanup())
             except Exception as error:  # noqa: BLE001 - run every cleanup
@@ -307,6 +333,7 @@ class Runtime:
                 await self.unload(key)
             except Exception:  # noqa: BLE001 - disposal goes on
                 pass
+        self.events.clear()
 
     # ── Dispatch ─────────────────────────────────────────────────
 
@@ -327,7 +354,17 @@ class Runtime:
 
     def _control(self, method: str, args: Any) -> Any:
         if method == "mount":
+            names = args.get("emits", [])
+            refused = refused_emits(names)
+            if refused is not None:
+                raise ValueError(refused)
+            self.emits = set(names)
             return {"services": {}, "features": FEATURES}
+        if method == "emit":
+            name, values = args
+            if name not in self.emits:
+                raise ValueError(f"event {name} is not declared for emission from rutis")
+            return self.events.parallel(name, *(values or []))
         if method == "dispose":
             self.closing = True
             return self._dispose_and_drain()

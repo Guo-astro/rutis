@@ -67,7 +67,7 @@ mod rows;
 #[cfg(feature = "go")]
 pub use go::{
     read_go_manifest, GoBinaries, GoBinary, GoManifest, GoResolver, GoRuntimeInfo, GoRuntimeState,
-    GoRuntimes, GoRuntimesHandle, GO_MARKER,
+    GoRuntimes, GoRuntimesHandle, GO_MARKER, PLUGIN_API,
 };
 pub use rows::{RowsSource, RuntimeRows, RuntimeRowsPlugin};
 

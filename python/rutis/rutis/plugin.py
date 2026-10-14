@@ -51,10 +51,18 @@ class Context:
         """Run `cleanup` (sync or async) when the plugin unloads."""
         raise NotImplementedError
 
+    def on(self, name: str, listener: Callable) -> Callable[[], None]:
+        """Listen on the process event bus until disposal or plugin unload."""
+        raise NotImplementedError
+
+    def emit(self, name: str, *args: Any) -> None:
+        """Call listeners synchronously; schedule awaitables without waiting."""
+        raise NotImplementedError
+
 
 # The plugin API this SDK writes plugins against. A runtime refuses a plugin
 # that needs a newer one, naming both.
-PLUGIN_API = 1
+PLUGIN_API = 2
 
 
 @dataclass

@@ -13,17 +13,44 @@
 //
 // Within the process, `ctx.use(name)` returns the object itself when another
 // row here provides it, so those calls never leave the process.
+// Rows also share an event bus, Cordis's own as on the Node runtime: each row
+// owns a Cordis fiber, so `ctx.on` listens until the row unloads, `ctx.emit`
+// is Cordis's `emit` and a host `emit` is its `parallel`, which waits for
+// every listener. Host `emit` calls may use only the names declared by
+// `mount.emits`.
 //
 // A row's `isolate` gives some names a scope label: rows isolating a name
 // with the same label share it, and the same name under another label
 // (another instance, say) is another service. Services, host proxies and
 // export slots are registered by id (`scopes`): the name outside any scope,
 // the name, a NUL and the label inside one.
+import { Context, type Fiber } from '@deepseek-ai/cordis'
 import type { Client } from './client.ts'
 import { declared, locate, Modules, versionOf, type Kind } from './plugin.ts'
 import { MANIFEST } from './session.ts'
 
-export const FEATURES = ['rows.v2', 'hosts', 'leaf', 'scopes']
+// internal/* names Cordis's own events on Node; no leaf plugin listens to or
+// emits them, and a mount cannot declare them for emission (boundary rule 5).
+// The wording matches the Node side (`node/rutis-runtime/src/leaf.mjs`).
+const internalMessage = (name: unknown) => `event ${name} is internal to the runtime`
+
+// A name is a string: Cordis's `emit` takes an object, null or function first
+// argument as `this`, so any other type would let `emit(null, 'internal/service')`
+// past the check.
+function reserved(name: unknown): asserts name is string {
+  if (typeof name !== 'string') throw new TypeError(`an event name is a string, not ${name === null ? 'null' : typeof name}`)
+  if (name.startsWith('internal/')) throw new Error(internalMessage(name))
+}
+
+// Refuse an `emits` declaration listing internal events, with the sentence of
+// rutis's own check (`Process::mount`, #337), naming every one.
+function refuseEmits(names: unknown): void {
+  const internal = ((names ?? []) as unknown[]).map(String).filter(name => name.startsWith('internal/'))
+  if (internal.length) throw new Error(`framework-internal events do not cross the boundary (mount emits): ${internal.join(', ')}`)
+}
+
+// events: leaf plugins receive what rutis emits (RuntimePlugin::emits).
+export const FEATURES = ['rows.v2', 'hosts', 'leaf', 'scopes', 'events']
 
 // How the service `name` is identified in the scope `label`. Neither may
 // contain NUL and a label may not be empty, so no two pairs share an id.
@@ -45,12 +72,15 @@ interface Row {
   exports: Record<string, Record<string, Kind>>
   isolate: Map<string, string>
   cleanups: Array<() => unknown>
+  // Owns the row's event listeners; disposed first on unload.
+  events?: Fiber
   provided: string[]
 }
 const idIn = (row: Row, name: string) => scopedId(name, row.isolate.get(name))
 
 interface Slot { row: string, methods: Set<string>, object: unknown, handle: string | null, generation: number }
 interface Handle { name: string, object: any, current: boolean, released: boolean }
+type Listener = (...args: any[]) => unknown
 
 export class Runtime {
   client?: Client
@@ -62,6 +92,8 @@ export class Runtime {
   #hosts = new Map<string, unknown>()
   #slots = new Map<string, Slot>()
   #handles = new Map<string, Handle>()
+  #events = new Context()
+  #emits = new Set<string>()
   #version = 0
 
   constructor(project: string) { this.#project = project }
@@ -118,6 +150,16 @@ export class Runtime {
     if (entry.released) this.#handles.delete(handle)
   }
 
+  // ── Events ────────────────────────────────────────────────────
+
+  // The row's Cordis context: listeners registered there leave with the row.
+  async #fiber(row: Row): Promise<Context> {
+    let context!: Context
+    row.events = this.#events.plugin({ name: `row:${row.key}`, apply: (ctx: Context) => { context = ctx } })
+    await row.events.await()
+    return context
+  }
+
   // ── Rows ──────────────────────────────────────────────────────
 
   async load(key: string, entry: string, config: unknown, isolate: Array<[string, string]> | null, exports: Row['exports'] | null) {
@@ -134,6 +176,7 @@ export class Runtime {
     for (const [name, methods] of Object.entries(row.exports)) {
       this.#slots.set(idIn(row, name), { row: key, methods: new Set(Object.keys(methods ?? {})), object: undefined, handle: null, generation: 0 })
     }
+    const events = await this.#fiber(row)
     const ctx = {
       use: (name: string) => this.lookup(idIn(row, name)),
       provide: (name: string, value: unknown) => this.provide(row, name, value),
@@ -141,6 +184,12 @@ export class Runtime {
         if (typeof cleanup !== 'function') throw new TypeError('effect needs a cleanup function')
         row.cleanups.push(cleanup)
       },
+      on: (name: string, callback: Listener) => {
+        reserved(name)
+        if (this.#rows.get(row.key) !== row) throw new Error(`row ${row.key} is not active`)
+        return events.on(name, callback)
+      },
+      emit: (name: string, ...args: any[]) => { reserved(name); events.emit(name, ...args) },
     }
     try {
       const cleanup = await plugin.apply(ctx, config)
@@ -160,6 +209,7 @@ export class Runtime {
     const row = this.#rows.get(key)
     if (!row) return null
     this.#rows.delete(key)
+    await row.events?.dispose()
     // Withdrawals first: rutis hears them before the plugin goes away.
     for (const id of row.provided) {
       if (this.#services.get(id)?.row === key) { this.#services.delete(id); this.#refresh(id) }
@@ -172,7 +222,7 @@ export class Runtime {
       if (slot?.handle) this.#retire(slot.handle)
     }
     const errors: unknown[] = []
-    for (const cleanup of row.cleanups.reverse()) {
+    for (const cleanup of row.cleanups.splice(0).reverse()) {
       try { await cleanup() } catch (error) { errors.push(error) }
     }
     if (errors.length) throw errors[0]
@@ -218,9 +268,11 @@ export class Runtime {
     return Reflect.apply(operation, entry.object, args)
   }
 
-  #control(method: string, args: any[]): unknown {
+  #control(method: string, args: any): unknown {
     switch (method) {
       case 'mount':
+        refuseEmits(args.emits)
+        this.#emits = new Set(args.emits ?? [])
         return {
           services: {},
           features: FEATURES,
@@ -230,6 +282,11 @@ export class Runtime {
       case 'dispose':
         this.closing = true
         return (async () => { await this.dispose(); await this.client?.drain(); return null })()
+      case 'emit': {
+        const [name, values] = args
+        if (!this.#emits.has(name)) throw new Error(`event ${name} is not declared for emission from rutis`)
+        return this.#events.parallel(name, ...(values ?? []))
+      }
       case 'rows.load': {
         const [key, entry, config, isolate, _inject, exports] = args
         return this.load(key, String(entry), config, isolate, exports)

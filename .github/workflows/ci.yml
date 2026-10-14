@@ -294,6 +294,7 @@ jobs:
             node/rutis-runtime/package-lock.json
             node/baseline/package-lock.json
             crates/rutis-dsh/dsh/package-lock.json
+            bun/rutis-bun/bun.lock
       # The Node runtime the Rust tests start.
       - run: npm --prefix node/rutis-runtime ci
       # Real published Cordis plugins for the Cordis mount baseline test
@@ -305,6 +306,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
+      # The Bun runtime the Rust tests start (Cordis, from package.json).
+      - run: bun install --frozen-lockfile
+        working-directory: bun/rutis-bun
       # The oldest Python (requires-python) and the
       # oldest websockets (rutis[network]).
       - uses: actions/setup-python@v5
@@ -374,12 +378,18 @@ jobs:
         with:
           node-version: '22'
           cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
-          cache-dependency-path: node/rutis-runtime/package-lock.json
+          cache-dependency-path: |
+            node/rutis-runtime/package-lock.json
+            bun/rutis-bun/bun.lock
       - run: npm --prefix node/rutis-runtime ci
+      # The SDK the Bun runtime's rows and the templates import.
+      - run: npm --prefix node/rutis ci
       # The oldest Bun (engines.bun).
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+        working-directory: bun/rutis-bun
       # The oldest Python (requires-python) and the oldest websockets
       # (rutis[network]); the scenarios use the checkout's python/rutis.
       - uses: actions/setup-python@v5
@@ -438,6 +448,8 @@ jobs:
             crates/rutis-dsh/dsh/package-lock.json
       # The release train: one version for every package released together.
       - run: node scripts/train.mjs
+      # The SDK's testing tool uses the same Cordis as the runtimes.
+      - run: npm --prefix node/rutis ci
       - run: npm --prefix node/rutis test
       - run: npm --prefix node/rutis-runtime ci
       - run: npm --prefix node/rutis-runtime test
@@ -752,6 +764,9 @@ jobs:
         with:
           node-version: '22'
       - run: npm --prefix node/rutis-runtime ci
+      # The SDK, whose testing tool `bun/rutis-bun/test/sdk.test.ts` imports
+      # (`node/rutis/src/testing.mjs`) and which needs its own dependencies.
+      - run: npm --prefix node/rutis ci
       # setup-python's macOS builds install only under /Users/runner (the
       # hosted image's user): the self-hosted Macs take uv's Python 3.12, in
       # a virtual environment (as js-py).
@@ -767,6 +782,9 @@ jobs:
           uv python install 3.12
           uv venv --seed --python-preference only-managed --python 3.12 "$RUNNER_TEMP/python"
           echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
+      # The Bun runtime's own dependencies (Cordis), from its lockfile.
+      - run: bun install --frozen-lockfile
+        working-directory: bun/rutis-bun
       - run: bun --version
       - run: bun test
         working-directory: bun/rutis-bun
@@ -833,6 +851,8 @@ jobs:
           node-version: '26'
           cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: node/rutis-runtime/package-lock.json
+      # The SDK, and its own dependencies (the testing tool uses Cordis).
+      - run: npm --prefix node/rutis ci
       # The SDK's own tests do not depend on the platform: full runs only.
       - run: npm --prefix node/rutis test
         if: needs.changes.outputs.all == 'true'
@@ -860,6 +880,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+      # The Bun runtime the Rust tests below start (Cordis, from package.json).
+      - run: bun install --frozen-lockfile
+        working-directory: bun/rutis-bun
       - uses: actions/setup-go@v5
         with:
           go-version: stable
@@ -938,8 +961,19 @@ jobs:
           node-version: '24'
       - uses: astral-sh/setup-uv@v6
       - run: node scripts/train.mjs
+      # A train crate's verification build takes its train dependencies from
+      # a temporary registry, and cargo fingerprints a registry package by its
+      # version alone: a kept target directory (self-hosted, docs/ci.md §10;
+      # rust-cache) would reuse a dependency built from an earlier tarball of
+      # the same version, so a change to one crate's API would not reach the
+      # others' verification (macos-4 failed on `rutis_loader::PLUGIN_API`
+      # this way). So the train crates' own artifacts go first: `cargo clean
+      # -p` removes every build of a crate, the registry copy included.
       - name: cargo package
-        run: cargo package --locked $(node scripts/train.mjs --crates | sed 's/[^ ]*/-p &/g')
+        run: |
+          crates=$(node scripts/train.mjs --crates | sed 's/[^ ]*/-p &/g')
+          cargo clean $crates
+          cargo package --locked $crates
       - name: npm pack
         run: |
           for package in node/rutis node/rutis-runtime bun/rutis-bun node/rutis-host; do
@@ -1177,6 +1211,10 @@ jobs:
         with:
           node-version: '26'
       - run: npm --prefix node/rutis-runtime ci
+      # The SDK: the e2e scenarios junction `@arcships/rutis` to this checkout,
+      # and its testing tool (used by the Node template's tests) needs its own
+      # dependencies.
+      - run: npm --prefix node/rutis ci
       # setup-python's Windows installer needs an administrator, which the
       # self-hosted runners are not: they take the machine's Python, in a
       # virtual environment with pip.

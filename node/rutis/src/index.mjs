@@ -17,7 +17,9 @@
 
 // The plugin API this SDK writes plugins against. A runtime refuses a plugin
 // that needs a newer one, naming both.
-export const PLUGIN_API = 1
+// 2: ctx.on and ctx.emit (leaf events). A runtime that supports only 1
+// refuses such a plugin at load instead of failing in apply.
+export const PLUGIN_API = 2
 
 // Marks what definePlugin returns, across copies of this package.
 export const PLUGIN = Symbol.for('rutis.leaf-plugin')

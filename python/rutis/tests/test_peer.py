@@ -9,7 +9,7 @@ import unittest
 import background
 from support import HANG_GUARD, within
 
-from rutis.peer import ENDPOINT_PROTOCOL, PROTOCOL, Peer
+from rutis.peer import ENDPOINT_PROTOCOL, PROTOCOL, AggregateError, Peer, decode_error, encode_error
 
 
 class PeerTests(background.IsolatedAsyncioTestCase):
@@ -642,3 +642,28 @@ class IntegerLimitTests(background.IsolatedAsyncioTestCase):
         self.assertEqual(reply["op"], "return", reply)
         self.assertEqual(reply["value"], {"type": "data", "value": [self.SAFE, -self.SAFE, True]})
         self.assertIsNone(peer.closed_error)
+
+
+class ErrorGraphTests(unittest.TestCase):
+    FAR = {
+        "name": "TypeError",
+        "message": "far",
+        "graph": {
+            "root": {"type": "reference", "value": 0},
+            "nodes": [
+                {"type": "error", "name": "TypeError", "message": "far", "stack": "far", "cause": {"type": "reference", "value": 1}},
+                {"type": "error", "name": "Error", "message": "root cause", "stack": "root cause"},
+            ],
+        },
+    }
+
+    def test_a_remote_error_thrown_on_crosses_with_its_whole_graph(self):
+        # Alone, not only inside an AggregateError: as Node's decoded Error re-encodes.
+        wire = encode_error(decode_error(self.FAR))
+        self.assertEqual((wire["name"], wire["message"], wire["graph"]), ("TypeError", "far", self.FAR["graph"]))
+        # Inside one, its nodes follow the aggregate's and its references shift.
+        wire = encode_error(AggregateError([ValueError("near"), decode_error(self.FAR)]))
+        nodes = wire["graph"]["nodes"]
+        self.assertEqual([node["name"] for node in nodes], ["AggregateError", "ValueError", "TypeError", "Error"])
+        self.assertEqual(nodes[0]["errors"], [{"type": "reference", "value": 1}, {"type": "reference", "value": 2}])
+        self.assertEqual(nodes[2]["cause"], {"type": "reference", "value": 3})

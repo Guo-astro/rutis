@@ -5,7 +5,7 @@ import { statSync } from 'node:fs'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { Process } from './client.mjs'
 import { toJsonSchema } from './schema.mjs'
-import { isLeaf, supported, toCordis } from './leaf.mjs'
+import { isLeaf, refuseInternal, supported, toCordis } from './leaf.mjs'
 
 // `<channel> [--id <endpoint>] [--peer <endpoint>] [--format endpoint] <first plugin or anchor>`.
 // Local channels (`fd:3`, a socket path) speak the compat protocol unless
@@ -50,7 +50,8 @@ const rows = new Map() // key -> { fiber, inner, config, exports, loading }
 // rutis services registered one by one (`hosts.*`): id -> withdraw
 const hosts = new Map()
 // What this runner supports beyond protocol 2, reported by `mount`.
-const FEATURES = ['rows.v2', 'hosts', 'leaf.js', 'scopes']
+// events: leaf plugins receive what rutis emits (RuntimePlugin::emits).
+const FEATURES = ['rows.v2', 'hosts', 'leaf.js', 'scopes', 'events']
 
 // A service in a scope: rows isolating `name` with `label` share it, and the
 // same name in another scope (another instance, say) is another service.
@@ -444,10 +445,8 @@ function forward(name, values) {
 // order; a single-plugin mount passes only `args.config`.
 function mount(args) {
   // Boundary rule 5: Cordis's own events stay on the Cordis side.
-  for (const [field, names] of [['events', args.events], ['emits', args.emits]]) {
-    const internal = (names ?? []).filter(name => String(name).startsWith('internal/'))
-    if (internal.length) throw new Error(`framework-internal events do not cross the boundary (mount ${field}): ${internal.join(', ')}`)
-  }
+  refuseInternal('emits', args.emits)
+  refuseInternal('events', args.events)
   if (fibers) throw new Error('plugins are already mounted')
   fibers = []
   for (const [name, methods] of Object.entries(args.services ?? {})) {

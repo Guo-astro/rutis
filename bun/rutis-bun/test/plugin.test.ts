@@ -17,7 +17,7 @@ test('module exports and definePlugin both declare a plugin', () => {
   expect(declared({ default: made }, 'x').apply).toBe(apply)
   expect(() => declared({ default: {} }, 'x')).toThrow('no apply')
   expect(() => declared({ apply, provides: { s: { m: 'later' } } }, 'x')).toThrow("kind must be 'sync' or 'async'")
-  expect(() => declared({ apply, api: PLUGIN_API + 1 }, 'x')).toThrow('upgrade @arcships/rutis-bun')
+  expect(() => declared({ apply, api: PLUGIN_API + 1 }, 'x')).toThrow('needs plugin API 3; this runtime supports 2')
 })
 
 test('entries resolve from the project to real paths, or are not found', () => {

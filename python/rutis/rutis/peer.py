@@ -111,6 +111,19 @@ class SyncWaitCycle(RemoteError):
         super().__init__("SyncWaitCycle", message)
 
 
+class AggregateError(Exception):
+    """Ordered listener failures, also on Python 3.10 (no ExceptionGroup).
+    It crosses as Cordis's AggregateError (an empty message, the failures
+    in `errors`); str() reads as Rust's CordisError::Aggregate."""
+
+    def __init__(self, errors):
+        super().__init__("")
+        self.errors = list(errors)
+
+    def __str__(self) -> str:
+        return f"multiple errors: {self.errors!r}"
+
+
 class Signal:
     """Cancellation of the call that received it: set when the caller
     cancels. Methods that accept it check `cancelled` or await `wait()`."""
@@ -127,19 +140,61 @@ class Signal:
         await self._event.wait()
 
 
+def _message(error: BaseException) -> str:
+    # An AggregateError crosses with no message, as Cordis's does.
+    return "" if isinstance(error, AggregateError) else str(error)
+
+
 def encode_error(thrown: BaseException) -> dict:
+    """The wire form of `thrown`: its error graph (an AggregateError's
+    children in order, shared and cyclic nodes once). A RemoteError thrown
+    on, inside an aggregate or alone, crosses with the far end's graph
+    spliced in (nodes appended, references shifted), as Node does: it
+    decodes into a real Error whose re-encoding carries the whole graph."""
     if isinstance(thrown, SyncWaitCycle):
         return {"name": "SyncWaitCycle", "message": thrown.message}
     if isinstance(thrown, RemoteError):
         name, message = thrown.name, thrown.message
     else:
-        name, message = type(thrown).__name__, str(thrown)
-    stack = "".join(traceback.format_exception(thrown))
-    node = {"type": "error", "name": name, "message": message, "stack": stack}
+        name, message = type(thrown).__name__, _message(thrown)
+    nodes, seen = [], {}
+
+    def visit(error):
+        if id(error) in seen:
+            return seen[id(error)]
+        offset = len(nodes)
+        reference = {"type": "reference", "value": offset}
+        seen[id(error)] = reference
+        if isinstance(error, RemoteError) and error.graph is not None:
+            def shift(value):
+                if isinstance(value, list):
+                    return [shift(item) for item in value]
+                if isinstance(value, dict):
+                    if value.get("type") == "reference":
+                        return {"type": "reference", "value": value["value"] + offset}
+                    return {key: shift(item) for key, item in value.items()}
+                return value
+
+            nodes.extend(shift(error.graph["nodes"]))
+            reference = shift(error.graph["root"])
+            seen[id(error)] = reference
+            return reference
+        node = {
+            "type": "error",
+            "name": error.name if isinstance(error, RemoteError) else type(error).__name__,
+            "message": error.message if isinstance(error, RemoteError) else _message(error),
+            "stack": "".join(traceback.format_exception(error)),
+        }
+        nodes.append(node)
+        if isinstance(error, AggregateError):
+            node["errors"] = [visit(item) for item in error.errors]
+        return reference
+
+    root = visit(thrown)
     return {
         "name": name,
         "message": message,
-        "graph": {"root": {"type": "reference", "value": 0}, "nodes": [node]},
+        "graph": {"root": root, "nodes": nodes},
     }
 
 

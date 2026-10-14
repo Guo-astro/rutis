@@ -41,6 +41,22 @@ enum Via {
     WebSocket,
 }
 
+/// The mount every conformance cell uses: the runtime receives the events
+/// `weather.expected.json` says the host emits.
+fn weather_mount<'a>(anchor: &'a Path, launcher: &'a Launcher) -> Mount<'a> {
+    Mount {
+        anchor: Some(anchor),
+        launcher: Some(launcher),
+        emits: rutis_bridge::runtime::testing::weather_emits(),
+        ..Mount::default()
+    }
+}
+
+/// The same events, for a mount built by hand (`Process::attach`).
+fn weather_emits_only() -> Vec<String> {
+    rutis_bridge::runtime::testing::weather_emits()
+}
+
 /// The Python interpreter: one with `websockets` for WebSocket channels
 /// (`RUTIS_PYTHON`), else `python3` (`python` on Windows, where
 /// setup-python installs no `python3`).
@@ -111,11 +127,7 @@ async fn start(runtime: Runtime, via: Via, dir: &Path) -> (Arc<Process>, PathBuf
     };
     let process = Process::mount(
         &repo().join("node/rutis-runtime"),
-        Mount {
-            anchor: Some(&anchor),
-            launcher: Some(&launcher),
-            ..Mount::default()
-        },
+        weather_mount(&anchor, &launcher),
     )
     .await
     .unwrap_or_else(|error| panic!("{runtime:?} ({via:?}) failed to start: {error}"));
@@ -143,9 +155,16 @@ async fn handed_over(launcher: Launcher, anchor: &Path) -> Arc<Process> {
         .unwrap();
     assert_eq!(channel.info.transport, "tcp", "a loopback channel");
     let format = rutis_bridge::session::Format::Compat;
-    let process = Process::attach(channel, Mount::default(), format)
-        .await
-        .unwrap();
+    let process = Process::attach(
+        channel,
+        Mount {
+            emits: weather_emits_only(),
+            ..Mount::default()
+        },
+        format,
+    )
+    .await
+    .unwrap();
     // The transport ends its processes when dropped: keep it for the test.
     std::mem::forget(transport);
     process
@@ -215,9 +234,16 @@ async fn listening(launcher: Launcher, anchor: &Path) -> Arc<Process> {
         rutis_bridge::session::Endpoint::rust(PeerId::new("main").unwrap())
             .expect(PeerId::new("runtime").unwrap()),
     );
-    let process = Process::attach(channel, Mount::default(), format)
-        .await
-        .unwrap();
+    let process = Process::attach(
+        channel,
+        Mount {
+            emits: weather_emits_only(),
+            ..Mount::default()
+        },
+        format,
+    )
+    .await
+    .unwrap();
     assert!(
         process.connection().supports("runtime"),
         "a runner declares its contract"

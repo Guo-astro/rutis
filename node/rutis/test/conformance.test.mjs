@@ -64,7 +64,7 @@ function check(what, entry, { returns, thrown }, args = []) {
 }
 
 test('the testing tool returns what the real runtime does (weather.expected.json)', async t => {
-  const plugin = await load(weather, { services: { clock: clock() } })
+  const plugin = await load(weather, { services: { clock: clock() }, emits: expected.emits })
   const service = plugin.service(expected.service)
   for (const [method, kind] of Object.entries(expected.methods)) {
     assert.equal(weather.provides[expected.service][method], kind, `the plugin declares ${method} as ${kind}`)
@@ -90,6 +90,17 @@ test('the testing tool returns what the real runtime does (weather.expected.json
     }
     const done = await outcome(() => service.sample(name))
     await t.test(`sample ${name}`, () => check(`sample ${name}`, entry, done))
+  }
+  for (const [i, entry] of expected.events.entries()) {
+    const what = `events[${i}] ${entry.emit}`
+    const emitted = await outcome(() => plugin.emit(entry.emit, ...entry.args))
+    if (entry.then) {
+      await t.test(`${what} emitted`, () => assert.equal(emitted.thrown, undefined, `${what}: ${emitted.thrown?.stack}`))
+      const done = await outcome(() => service[entry.then.call](...entry.then.args.map(argument)))
+      await t.test(what, () => check(what, { ...entry.then, why: entry.why }, done))
+    } else {
+      await t.test(what, () => check(what, entry, emitted))
+    }
   }
   await plugin.unload()
 })

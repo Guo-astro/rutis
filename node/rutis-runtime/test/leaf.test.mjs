@@ -1,0 +1,61 @@
+// guarantee: sdk/leaf-events (shared bus, cleanup, listener errors, internal/* refused, API 2)
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { Context } from '@deepseek-ai/cordis'
+import { definePlugin } from '../../rutis/src/index.mjs'
+import { supported, toCordis } from '../src/leaf.mjs'
+
+test('leaf events delegate to the shared Cordis bus and leave with their fiber', async () => {
+  const root = new Context()
+  const received = []
+  const seen = []
+  let leaf
+  root.on('leaf-output', value => { received.push(['root', value]) })
+  const spec = definePlugin({
+    apply(ctx) {
+      leaf = ctx
+      ctx.on('root-event', value => { received.push(['leaf', value]) })
+      ctx.emit('leaf-output', 1)
+      ctx.on('e', () => { seen.push(1); throw new Error('sync failure') })
+      ctx.on('e', () => { seen.push(2) })
+    },
+  })
+  const plugin = root.plugin(toCordis(supported(spec, 'events')))
+  await plugin.await()
+  assert.throws(() => leaf.on('internal/dispatch', () => {}), /is internal to the runtime/)
+  assert.throws(() => leaf.emit('internal/service'), /is internal to the runtime/)
+  // A non-string name is not Cordis's `this` argument: `emit(null, 'internal/service')` does not dispatch.
+  assert.throws(() => leaf.on(null, () => {}), TypeError)
+  assert.throws(() => leaf.emit(null, 'internal/service'), TypeError)
+  assert.throws(() => leaf.emit({}, 'internal/service'), TypeError)
+  assert.throws(() => leaf.emit('e'), /sync failure/)
+  assert.deepEqual(seen, [1])
+  await root.parallel('root-event', 2)
+  assert.deepEqual(received, [['root', 1], ['leaf', 2]])
+  await plugin.dispose()
+  await root.parallel('root-event', 3)
+  assert.deepEqual(received, [['root', 1], ['leaf', 2]], 'unload removes the leaf listener')
+})
+
+// guarantee: sdk/leaf-events (failed load and update)
+test('a failed apply and an update remove the leaf listeners, as the runner drives the fiber', async () => {
+  const root = new Context()
+  const seen = []
+  const spec = definePlugin({
+    apply(ctx, config) {
+      ctx.on('tick', () => { seen.push(config.label) })
+      if (config.fail) throw new Error('apply failed')
+    },
+  })
+  const plugin = root.plugin(toCordis(supported(spec, 'events')), { label: 'first' })
+  await plugin.await()
+  // rows.update: the runner restarts the fiber with the new config.
+  plugin.update({ label: 'updated' }, true)
+  await plugin.await()
+  const failed = root.plugin(toCordis(supported(spec, 'events')), { label: 'failed', fail: true })
+  await assert.rejects(failed.await(), /apply failed/)
+  await root.parallel('tick')
+  assert.deepEqual(seen, ['updated'])
+  await failed.dispose()
+  await plugin.dispose()
+})

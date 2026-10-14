@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/arcships/rutis/go/rutis"
@@ -21,6 +22,7 @@ type Clock struct {
 }
 
 type Weather struct {
+	mu    sync.RWMutex
 	clock Clock
 	city  string
 }
@@ -30,11 +32,15 @@ func (w *Weather) Today(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 	return fmt.Sprintf("%s at %d", w.city, now), nil
 }
 
 func (w *Weather) Later(ctx context.Context) string {
 	time.Sleep(10 * time.Millisecond)
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 	return w.city + " later"
 }
 
@@ -69,7 +75,21 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 		if city == "" {
 			city = "Oslo"
 		}
-		ctx.Provide("weather", &Weather{clock: clock, city: city})
+		w := &Weather{clock: clock, city: city}
+		ctx.Provide("weather", w)
+		ctx.On("weather/city", func(_ context.Context, args ...any) error {
+			if len(args) != 1 {
+				return fmt.Errorf("weather/city needs one city")
+			}
+			city, ok := args[0].(string)
+			if !ok {
+				return fmt.Errorf("weather/city needs a string")
+			}
+			w.mu.Lock()
+			w.city = city
+			w.mu.Unlock()
+			return nil
+		})
 		ctx.Effect(func(context.Context) error {
 			fmt.Println("weather: bye")
 			return nil

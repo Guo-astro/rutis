@@ -546,7 +546,7 @@ async fn internal_events_stay_on_the_cordis_side() {
     mounted.process.dispose().await.unwrap();
 }
 
-/// guarantee: boundary/5.5
+/// guarantee: boundary/5.5, sdk/leaf-events
 ///
 /// Asking the runtime to carry an `internal/*` event, in either direction,
 /// is a violation it can detect, so the mount fails with an error naming

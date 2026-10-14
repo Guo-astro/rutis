@@ -58,4 +58,8 @@ var today string
 err := loaded.Service("weather").Call(context.Background(), "today", &today)
 ```
 
+Events are shared by plugins in the same process. `ctx.On(name, func(context.Context, ...any) error)` returns an independent disposer and removes its listener when the row unloads. `ctx.Emit(callerCtx, name, args...)` calls listeners in order and returns the first error; pass your caller's context so calls made by listeners keep the synchronous wait chain. Each listener's context is also cancelled when its row unloads. `internal/*` names are reserved.
+
+A host declares incoming names with `RuntimePlugin::emits` (or `Mount::emits`); host emission waits for every listener and collects their failures in an `AggregateError`. In tests, declare those names as the final arguments of `rutistest.Load(..., services, "weather/city")`, then call `loaded.Emit(callerCtx, "weather/city", "Bergen")` through the real session. Plugin emission stays within the Go process.
+
 Start a project with `rutis-host new <name> --lang go`. Guide: [docs/guide/go-plugin.en.md](https://github.com/arcships/rutis/blob/main/docs/guide/go-plugin.en.md) (中文: [go-plugin.md](https://github.com/arcships/rutis/blob/main/docs/guide/go-plugin.md)). Go 1.24 or later; standard library only.

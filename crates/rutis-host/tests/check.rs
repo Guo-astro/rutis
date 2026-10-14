@@ -120,7 +120,7 @@ async fn check_passes_what_can_run() {
     assert_eq!(checked.stderr, "");
     assert_eq!(
         checked.stdout,
-        "plugin API: 1 (supported by this host)\n\
+        "plugin API for Go binaries: 2 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
          greeter (file://<dir>/plugins/greeter.mjs): ok\n  \
          inject: []\n  \
          provides: {\"greeter\":{\"hello\":\"sync\"}}\n\
@@ -142,11 +142,11 @@ async fn check_fails_what_cannot_run() {
         &[
             ("package.json", r#"{ "name": "app", "type": "module" }"#),
             ("greeter.mjs", &node_plugin("{}", "")),
-            ("future.mjs", &node_plugin("{}", ", api: 2")),
+            ("future.mjs", &node_plugin("{}", ", api: 3")),
             ("broken.mjs", "throw new Error('broken on import')\n"),
             (
                 "future_py.py",
-                "from rutis import Plugin\nplugin = Plugin(lambda ctx, config: None, api=2)\n",
+                "from rutis import Plugin\nplugin = Plugin(lambda ctx, config: None, api=3)\n",
             ),
             (
                 "rutis.json",
@@ -170,16 +170,16 @@ async fn check_fails_what_cannot_run() {
     .await;
     assert_eq!(
         checked.stdout,
-        "plugin API: 1 (supported by this host)\n\
+        "plugin API for Go binaries: 2 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
          greeter (file://<dir>/greeter.mjs): ok\n  \
          inject: []\n  \
          provides: {}\n\
-         future (file://<dir>/future.mjs): cannot load \"file://<dir>/future.mjs\": Error: plugin <dir>/future.mjs needs plugin API 2; this runtime supports 1: upgrade @arcships/rutis-runtime where the host runs\n\
+         future (file://<dir>/future.mjs): cannot load \"file://<dir>/future.mjs\": Error: plugin <dir>/future.mjs needs plugin API 3; this runtime supports 2: upgrade @arcships/rutis-runtime where the host runs\n\
          broken (file://<dir>/broken.mjs): cannot load \"file://<dir>/broken.mjs\": Error: broken on import\n\
          missing (weather-plugin): no plugin named \"weather-plugin\"\n  \
          install it where its runtime finds it (a runtime under runtimes), or correct the row's name\n\
          nowhere (py:nowhere): cannot load \"py:nowhere\": ModuleNotFoundError: No module named 'nowhere'\n\
-         future-py (py:future_py): cannot load \"py:future_py\": RuntimeError: plugin future_py needs plugin API 2; this runtime supports 1: upgrade the rutis package where the runtime runs\n"
+         future-py (py:future_py): cannot load \"py:future_py\": RuntimeError: plugin future_py needs plugin API 3; this runtime supports 2: upgrade the rutis package where the runtime runs\n"
     );
     assert_eq!(
         checked.stderr,
@@ -214,7 +214,7 @@ async fn check_refuses_a_configuration_that_is_not_valid() {
     let checked = check(dir.path(), &["rutis.json"], &[]).await;
     assert_eq!(
         checked.stdout,
-        "plugin API: 1 (supported by this host)\n\
+        "plugin API for Go binaries: 2 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
          w (weather): no plugin named \"weather\"\n  \
          install it where its runtime finds it (a runtime under runtimes), or correct the row's name\n"
     );
@@ -257,7 +257,7 @@ async fn check_without_a_configuration_checks_the_project() {
     assert_eq!(checked.stderr, "");
     assert_eq!(
         checked.stdout,
-        "plugin API: 1 (supported by this host)\n\
+        "plugin API for Go binaries: 2 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
          weather (file://<dir>/src/index.mjs): ok\n  \
          inject: []\n  \
          provides: {\"weather\":{\"now\":\"async\"}}\n"
@@ -321,7 +321,7 @@ async fn check_fails_on_a_service_nothing_provides() {
     assert_eq!(
         stdout,
         [
-            "plugin API: 1 (supported by this host)",
+            "plugin API for Go binaries: 2 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
             "chat (file://<dir>/chat.mjs): cannot run: nothing provides llm",
             "  inject: [\"llm\"]",
             "  provides: {}",
@@ -380,7 +380,7 @@ async fn check_passes_a_service_that_may_come_from_a_remote_runtime() {
     assert_eq!(
         stdout,
         [
-            "plugin API: 1 (supported by this host)",
+            "plugin API for Go binaries: 2 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
             "chat (file://<dir>/chat.mjs): ok",
             "  inject: [\"embeddings\"]",
             "  provides: {}",

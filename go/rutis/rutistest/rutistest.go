@@ -52,8 +52,9 @@ type Loaded struct {
 
 // Load loads `plugin` with `config` (a value of its config type, or nil)
 // and the services in `services` (Go values whose exported methods are the
-// service's methods). The plugin is unloaded when the test ends.
-func Load(t testing.TB, plugin *rutis.Definition, config any, services map[string]any) *Loaded {
+// service's methods). emits lists events the test may send; by default none
+// are allowed. The plugin is unloaded when the test ends.
+func Load(t testing.TB, plugin *rutis.Definition, config any, services map[string]any, emits ...string) *Loaded {
 	t.Helper()
 	declared := describe(t, plugin)
 	for _, name := range declared.Inject {
@@ -87,7 +88,7 @@ func Load(t testing.TB, plugin *rutis.Definition, config any, services map[strin
 	testwait.Within(t, "rutistest: the handshake", session.Ready())
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := session.Call(ctx, "", "mount", []any{map[string]any{}}, false); err != nil {
+	if _, err := session.Call(ctx, "", "mount", []any{map[string]any{"emits": emits}}, false); err != nil {
 		t.Fatalf("rutistest: mount: %v", err)
 	}
 	for _, name := range declared.Inject {
@@ -182,6 +183,17 @@ func cutPrefix(s, prefix string) (string, bool) {
 		return s[len(prefix):], true
 	}
 	return "", false
+}
+
+// Emit sends an event through the real session, awaiting every listener.
+// Load must declare the name in its emits arguments.
+func (l *Loaded) Emit(ctx context.Context, name string, args ...any) error {
+	values, err := convert.ToPeerArgs(args)
+	if err != nil {
+		return err
+	}
+	_, err = l.session.Call(ctx, "", "emit", []any{name, values}, false)
+	return err
 }
 
 // Provided lists the services the plugin provides now.

@@ -404,3 +404,127 @@ func TestAFarEndOfAnotherProtocolVersionIsRefusedSayingWhichEndToUpgrade(t *test
 		}
 	}
 }
+
+// A RemoteError thrown on crosses with its whole graph, alone as inside an
+// aggregate: as Node's decoded Error re-encodes.
+func TestARemoteErrorThrownOnCrossesWithItsWholeGraph(t *testing.T) {
+	far := func() *RemoteError {
+		return &RemoteError{Name: "TypeError", Message: "far", Graph: json.RawMessage(`{
+		"root":{"type":"reference","value":0},
+		"nodes":[{"type":"error","name":"TypeError","message":"far","cause":{"type":"reference","value":1}},
+		         {"type":"error","name":"Error","message":"root cause"}]
+	}`)}
+	}
+	wire := encodeError(far())
+	nodes := wire["graph"].(map[string]any)["nodes"].([]any)
+	if wire["name"] != "TypeError" || wire["message"] != "far" || len(nodes) != 2 || nodes[0].(map[string]any)["cause"].(map[string]any)["value"] != float64(1) || nodes[1].(map[string]any)["message"] != "root cause" {
+		t.Fatalf("the graph of a remote error thrown on: %v", wire)
+	}
+	wire = encodeError(&AggregateError{Errors: []error{errors.New("near"), far()}})
+	nodes = wire["graph"].(map[string]any)["nodes"].([]any)
+	names := make([]any, len(nodes))
+	for i, node := range nodes {
+		names[i] = node.(map[string]any)["name"]
+	}
+	if fmt.Sprint(names) != "[AggregateError Error TypeError Error]" || nodes[2].(map[string]any)["cause"].(map[string]any)["value"] != float64(3) {
+		t.Fatalf("the graph of a remote error inside an aggregate: %v", wire)
+	}
+}
+
+func TestAggregateErrorGraphsKeepRepeatedAndCyclicChildren(t *testing.T) {
+	remote := &RemoteError{Name: "AggregateError", Graph: json.RawMessage(`{
+		"root":{"type":"reference","value":0},
+		"nodes":[{"type":"error","name":"AggregateError","message":"","errors":[{"type":"reference","value":1}]},
+		         {"type":"error","name":"TypeError","message":"remote child"}]
+	}`)}
+	cyclic := &AggregateError{}
+	cyclic.Errors = []error{cyclic, nil, errors.New("child"), remote, cyclic}
+	wire := encodeError(cyclic)
+	graph := wire["graph"].(map[string]any)
+	nodes := graph["nodes"].([]any)
+	children := nodes[0].(map[string]any)["errors"].([]any)
+	if len(nodes) != 4 || len(children) != 4 || children[0].(map[string]any)["value"] != 0 || children[3].(map[string]any)["value"] != 0 || nodes[1].(map[string]any)["message"] != "child" {
+		t.Fatalf("invalid aggregate graph: %v", graph)
+	}
+	imported := nodes[2].(map[string]any)["errors"].([]any)
+	if imported[0].(map[string]any)["value"] != float64(3) || nodes[3].(map[string]any)["name"] != "TypeError" || nodes[3].(map[string]any)["message"] != "remote child" {
+		t.Fatalf("nested remote aggregate lost: %v", graph)
+	}
+}
+
+func TestAggregateErrorGraphsRepeatRemoteChildrenAtTheirOwnNodes(t *testing.T) {
+	remote := func() *RemoteError {
+		return &RemoteError{Name: "AggregateError", Graph: json.RawMessage(`{
+			"root":{"type":"reference","value":0},
+			"nodes":[{"type":"error","name":"AggregateError","message":"","errors":[{"type":"reference","value":1}]},
+			         {"type":"error","name":"TypeError","message":"remote child"}]
+		}`)}
+	}
+	// checkRemote asserts a reference lands on an imported remote root whose
+	// child reference lands on the imported TypeError.
+	checkRemote := func(t *testing.T, nodes []any, ref any) {
+		t.Helper()
+		id := int(toFloat(ref.(map[string]any)["value"]))
+		root := nodes[id].(map[string]any)
+		if root["name"] != "AggregateError" {
+			t.Fatalf("reference %d lands on %v", id, root)
+		}
+		child := int(toFloat(root["errors"].([]any)[0].(map[string]any)["value"]))
+		if leaf := nodes[child].(map[string]any); leaf["name"] != "TypeError" || leaf["message"] != "remote child" {
+			t.Fatalf("remote child reference %d lands on %v", child, leaf)
+		}
+	}
+
+	t.Run("flat", func(t *testing.T) {
+		shared := remote()
+		wire := encodeError(&AggregateError{Errors: []error{shared, errors.New("between"), shared}})
+		nodes := wire["graph"].(map[string]any)["nodes"].([]any)
+		children := nodes[0].(map[string]any)["errors"].([]any)
+		t.Logf("nodes=%v children=%v", nodes, children)
+		checkRemote(t, nodes, children[0])
+		checkRemote(t, nodes, children[2])
+		if nodes[toInt(children[1])].(map[string]any)["message"] != "between" {
+			t.Fatalf("middle child misplaced: %v", children)
+		}
+	})
+
+	t.Run("nested", func(t *testing.T) {
+		shared := remote()
+		inner := &AggregateError{Errors: []error{shared, shared}}
+		outer := &AggregateError{Errors: []error{shared, inner, shared, inner}}
+		wire := encodeError(outer)
+		nodes := wire["graph"].(map[string]any)["nodes"].([]any)
+		children := nodes[0].(map[string]any)["errors"].([]any)
+		t.Logf("nodes=%v children=%v", nodes, children)
+		checkRemote(t, nodes, children[0])
+		checkRemote(t, nodes, children[2])
+		if children[1].(map[string]any)["value"] != children[3].(map[string]any)["value"] {
+			t.Fatalf("repeated inner aggregate split: %v", children)
+		}
+		innerNode := nodes[toInt(children[1])].(map[string]any)
+		innerChildren := innerNode["errors"].([]any)
+		checkRemote(t, nodes, innerChildren[0])
+		checkRemote(t, nodes, innerChildren[1])
+		// The graph must survive a JSON round trip (what a receiver parses).
+		raw, err := json.Marshal(wire)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded := decodeError(raw).(*RemoteError)
+		if decoded.Name != "AggregateError" || decoded.Message != "" || len(decoded.Graph) == 0 {
+			t.Fatalf("decoded %#v", decoded)
+		}
+	})
+}
+
+func toFloat(value any) float64 {
+	switch value := value.(type) {
+	case int:
+		return float64(value)
+	case float64:
+		return value
+	}
+	panic(fmt.Sprintf("not a number: %#v", value))
+}
+
+func toInt(ref any) int { return int(toFloat(ref.(map[string]any)["value"])) }

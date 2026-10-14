@@ -17,7 +17,7 @@ import (
 )
 
 // features are what this runtime supports of the runtime contract.
-var features = []string{"rows.v2", "hosts", "leaf", "scopes"}
+var features = []string{"rows.v2", "hosts", "leaf", "scopes", "events"}
 
 // Future is an asynchronous result of another process.
 type Future = convert.Future
@@ -126,6 +126,8 @@ type runtimeState struct {
 	version  int64
 	loaded   int64
 	closing  bool
+	events   map[string][]*listener
+	emits    map[string]bool
 }
 
 func newRuntime(defs []*Definition) *runtimeState {
@@ -140,6 +142,8 @@ func newRuntime(defs []*Definition) *runtimeState {
 		hosts:    map[string]map[string]string{},
 		slots:    map[string]*slot{},
 		handles:  map[string]*handleEntry{},
+		events:   map[string][]*listener{},
+		emits:    map[string]bool{},
 	}
 }
 
@@ -330,6 +334,7 @@ func (rt *runtimeState) unload(ctx context.Context, key string) error {
 		return nil
 	}
 	delete(rt.rows, key)
+	rt.forgetListeners(r)
 	// Withdrawals first: rutis hears them before the plugin goes away.
 	for _, id := range append([]string{}, r.provided...) {
 		if existing, ok := rt.services[id]; ok && existing.row == key {
@@ -440,12 +445,50 @@ func argument[T any](args []any, i int) (T, error) {
 func (rt *runtimeState) control(ctx context.Context, method string, args []any) (any, error) {
 	switch method {
 	case "mount":
+		mount, err := argument[struct{ Emits []string }](args, 0)
+		if err != nil {
+			return nil, fmt.Errorf("mount: %w", err)
+		}
+		var internal []string
+		emits := map[string]bool{}
+		for _, name := range mount.Emits {
+			if strings.HasPrefix(name, "internal/") {
+				internal = append(internal, name)
+			}
+			emits[name] = true
+		}
+		if len(internal) != 0 {
+			// The sentence of rutis's own check (Process::mount, #337), naming every one.
+			return nil, fmt.Errorf("framework-internal events do not cross the boundary (mount emits): %s", strings.Join(internal, ", "))
+		}
+		rt.mu.Lock()
+		rt.emits = emits
+		rt.mu.Unlock()
 		return map[string]any{
 			"services":       map[string]any{},
 			"features":       features,
 			"implementation": map[string]string{"name": Implementation, "version": Version},
 			"engine":         map[string]string{"name": "go", "version": goruntime.Version()},
 		}, nil
+	case "emit":
+		name, err := argument[string](args, 0)
+		if err != nil {
+			return nil, err
+		}
+		if err := checkEventName(name); err != nil {
+			return nil, err
+		}
+		rt.mu.Lock()
+		declared := rt.emits[name]
+		rt.mu.Unlock()
+		if !declared {
+			return nil, fmt.Errorf("event %s is not declared for emission from rutis", name)
+		}
+		values, err := argument[[]any](args, 1)
+		if err != nil {
+			return nil, err
+		}
+		return nil, rt.emit(ctx, name, values)
 	case "dispose":
 		rt.mu.Lock()
 		rt.closing = true

@@ -1,6 +1,7 @@
 /target
 /.rutis
 host/
+node_modules/
 
 # Logo promo art and exploration kept locally, not part of the tracked set.
 /assets/logo/banner/

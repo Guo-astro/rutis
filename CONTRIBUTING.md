@@ -36,10 +36,10 @@ Thank you for spending time on rutis. A bug report, a sentence in the docs that 
 cargo test --workspace                                  # the core and most crates
 cargo test -p rutis-bridge --all-features               # channels, sessions, runtimes, nodes
 cargo test -p rutis-loader --features node,python,peer,bun  # every kind of loader row
-npm --prefix node/rutis test
+npm --prefix node/rutis ci && npm --prefix node/rutis test
 npm --prefix node/rutis-runtime ci && npm --prefix node/rutis-runtime test
 (cd python/rutis && python3 -m unittest discover -s tests)
-(cd bun/rutis-bun && bun test)
+(cd bun/rutis-bun && bun install --frozen-lockfile && bun test)
 ```
 
 When you change one part, running the related tests is enough. CI runs the checks your change affects on the pull request, and every check on main; how it chooses them, and how to change CI, is in [docs/ci.en.md](docs/ci.en.md).
