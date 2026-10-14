@@ -8,7 +8,8 @@
 #          scenario directory, and points the job at this runner's own
 #          directories (GITHUB_ENV): RUTIS_E2E_DIR, short for Unix socket
 #          paths (tests/e2e/src/lib.rs; /tmp/rutis-e2e for a runner alone),
-#          and CARGO_TARGET_DIR, kept between jobs in place of rust-cache,
+#          and CARGO_TARGET_DIR, kept between jobs in place of rust-cache
+#          (the job's own with RUTIS_CI_FRESH_TARGET=1),
 #          emptied above RUTIS_CI_TARGET_MAX_GB; and limits CARGO_BUILD_JOBS
 #          and RUST_TEST_THREADS to the machine's share of this instance
 #          (RUTIS_CI_JOBS overrides it); GOCACHE, this instance's own
@@ -27,6 +28,15 @@ phase=${1:?usage: $0 start|end}
 : "${RUNNER_NAME:?}" "${GITHUB_WORKSPACE:?}"
 cache="$HOME/.cache/rutis-ci/$RUNNER_NAME"
 target="$cache/target"
+# Jobs that build the dylib SDK (RUTIS_CI_FRESH_TARGET=1) build in a target
+# directory of their own job instead, which the runner empties afterwards:
+# a dylib's file name carries no hash, so builds of rutis-sdk with different
+# features or flags write the same librutis_sdk file, and a kept directory
+# came to hand rutis-cli an SDK built against another serde_json, which cargo
+# took for up to date (E0308, #376). GitHub's runners start empty.
+if [ "${RUTIS_CI_FRESH_TARGET:-}" = 1 ]; then
+  target="${RUNNER_TEMP:?}/target"
+fi
 # The machine's runner instances: each a ~/actions-runner*/ with a .runner
 # file. A runner alone (as in the Linux runners' containers, one each, with
 # their own /tmp and long names) takes the default, shortest directory.
@@ -132,7 +142,10 @@ if [ "$phase" = start ]; then
   # directory of ours, filled by mbx and by cargo alike, came to hold
   # rutis-sdk and rutis-cli built against two different serde_json (E0308).
   cargo_bin=$(command -v cargo 2>/dev/null || true)
-  if [ -n "$cargo_bin" ] && [ -f "$(dirname "$cargo_bin")/mbx-target" ]; then
+  if [ "${RUTIS_CI_FRESH_TARGET:-}" = 1 ]; then
+    echo "a target directory of this job's own: $target"
+    mkdir -p "$target"
+  elif [ -n "$cargo_bin" ] && [ -f "$(dirname "$cargo_bin")/mbx-target" ]; then
     echo "cargo is mbx ($cargo_bin): mbx keeps the target directory"
     remove "$target"
     target=

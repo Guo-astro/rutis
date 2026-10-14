@@ -1041,6 +1041,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+          RUTIS_CI_FRESH_TARGET: '1'
         run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
       # Self-hosted runners keep their target directory instead.
@@ -1072,6 +1073,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+          RUTIS_CI_FRESH_TARGET: '1'
         run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
       # Self-hosted runners keep their target directory instead.
@@ -1099,6 +1101,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+          RUTIS_CI_FRESH_TARGET: '1'
         run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
       # Self-hosted runners keep their target directory instead.
@@ -1126,6 +1129,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           RUTIS_CI_JOBS: ${{ vars.RUTIS_CI_JOBS }}
+          RUTIS_CI_FRESH_TARGET: '1'
         run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
       # Self-hosted runners keep their target directory instead.
