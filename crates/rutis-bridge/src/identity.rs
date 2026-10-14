@@ -174,7 +174,10 @@ impl Identity for StaticIdentity {
 /// the dialer is told 401, a refused one 403), and the access point admits
 /// the id once the far end greeted ([`Admission::admit`]; a rejection
 /// closes the channel with [`Closer::rejected`](crate::channel::Closer::rejected)).
-/// Either refusal is an authentication failure to the dialer.
+/// Either refusal is an authentication failure to the dialer. Whether the
+/// id is well formed is the protocol's, not the admission's: a hello naming
+/// no endpoint, or an invalid one, fails the session as incompatible before
+/// any admission.
 pub trait Admission: Send + Sync + 'static {
     /// This endpoint's id: the id of the listener's endpoint.
     fn local(&self) -> &PeerId;
@@ -182,9 +185,9 @@ pub trait Admission: Send + Sync + 'static {
     /// Whether what the far end presented lets it connect at all.
     fn verify(&self, presented: Presented<'_>) -> bool;
 
-    /// The connection id of a far end that greeted naming `reported`
-    /// (`None` if it named nothing), or why it is rejected.
-    fn admit(&self, reported: Option<&str>) -> Result<PeerId, Rejection>;
+    /// The connection id of a far end that greeted as `reported`, or why
+    /// it is rejected.
+    fn admit(&self, reported: &PeerId) -> Result<PeerId, Rejection>;
 }
 
 /// Why an [`Admission`] turned a connection away. For diagnostics, sent to
@@ -262,10 +265,8 @@ impl Admission for SharedToken {
         }
     }
 
-    fn admit(&self, reported: Option<&str>) -> Result<PeerId, Rejection> {
-        let reported =
-            reported.ok_or_else(|| Rejection("the runtime greeted without an id".into()))?;
-        PeerId::new(reported).map_err(|error| Rejection(error.to_string()))
+    fn admit(&self, reported: &PeerId) -> Result<PeerId, Rejection> {
+        Ok(reported.clone())
     }
 }
 
@@ -319,9 +320,6 @@ mod tests {
         assert!(admission.verify(Presented::Bearer("shared")));
         assert!(!admission.verify(Presented::Bearer("share")));
         assert!(!admission.verify(Presented::Certificate(b"shared")));
-        assert_eq!(admission.admit(Some("pixel-7")), Ok(id("pixel-7")));
-        assert!(admission.admit(Some("Pixel 7")).is_err());
-        assert!(admission.admit(Some("")).is_err());
-        assert!(admission.admit(None).is_err());
+        assert_eq!(admission.admit(&id("pixel-7")), Ok(id("pixel-7")));
     }
 }

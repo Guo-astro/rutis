@@ -483,11 +483,12 @@ impl Receiver for Admitting {
         let (Some(verdict), Some(first)) = (self.verdict.take(), &message) else {
             return Ok(message);
         };
-        // Anything but an endpoint-format hello is the session's to refuse.
+        // Anything but an endpoint-format hello naming a valid endpoint is
+        // the session's to refuse (as incompatible).
         let Some(reported) = reported(first) else {
             return Ok(message);
         };
-        let admitted = self.admission.admit(reported.as_deref());
+        let admitted = self.admission.admit(&reported);
         let rejected = admitted.as_ref().err().cloned();
         let _ = verdict.set(admitted);
         if let Some(rejection) = rejected {
@@ -500,35 +501,34 @@ impl Receiver for Admitting {
     }
 }
 
-/// The endpoint an endpoint-format hello names (`Some(None)` when it names
-/// none, or not as a string); `None` for any other message.
-fn reported(message: &[u8]) -> Option<Option<String>> {
+/// The endpoint an endpoint-format hello names, if it names a valid one.
+fn reported(message: &[u8]) -> Option<PeerId> {
     let hello: serde_json::Value = serde_json::from_slice(message).ok()?;
     let endpoint_format = hello.get("op")? == "hello"
         && hello.get("version")?.as_u64()? == u64::from(crate::session::ENDPOINT_PROTOCOL);
-    endpoint_format.then(|| {
-        hello
-            .get("endpoint")
-            .and_then(|endpoint| endpoint.as_str())
-            .map(str::to_owned)
-    })
+    if !endpoint_format {
+        return None;
+    }
+    PeerId::new(hello.get("endpoint")?.as_str()?).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::reported;
+    use crate::channel::PeerId;
 
     #[test]
     fn only_an_endpoint_format_hello_reports_an_id() {
         let hello = |text: &str| reported(text.as_bytes());
         assert_eq!(
             hello(r#"{"op":"hello","version":3,"endpoint":"pixel"}"#),
-            Some(Some("pixel".into()))
+            Some(PeerId::new("pixel").unwrap())
         );
-        assert_eq!(hello(r#"{"op":"hello","version":3}"#), Some(None));
+        assert_eq!(hello(r#"{"op":"hello","version":3}"#), None);
+        assert_eq!(hello(r#"{"op":"hello","version":3,"endpoint":7}"#), None);
         assert_eq!(
-            hello(r#"{"op":"hello","version":3,"endpoint":7}"#),
-            Some(None)
+            hello(r#"{"op":"hello","version":3,"endpoint":"Pixel 7"}"#),
+            None
         );
         assert_eq!(hello(r#"{"op":"hello","version":2}"#), None);
         assert_eq!(hello(r#"{"op":"invoke","version":3}"#), None);

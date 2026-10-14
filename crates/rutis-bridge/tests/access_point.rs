@@ -195,7 +195,7 @@ async fn a_wrong_or_missing_token_is_refused_before_any_session() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_invalid_or_missing_id_is_rejected_at_the_hello() {
+async fn an_invalid_or_missing_id_fails_the_handshake_as_incompatible() {
     let mut main = main().await;
     for hello in [
         json!({ "op": "hello", "version": 3, "endpoint": "Pixel 7" }),
@@ -206,11 +206,12 @@ async fn an_invalid_or_missing_id_is_rejected_at_the_hello() {
             .await
             .unwrap();
         // Only main's hello, then the end: the session never went further.
+        // Retrying cannot fix the id, so it is not an admission's refusal.
         assert_eq!(read.len(), 1, "{read:?}");
         assert!(read[0].contains(r#""op":"hello""#), "{read:?}");
         let event = next(&mut main.events).await;
         assert!(
-            matches!(&event, AccessEvent::Rejected { reason } if reason.contains("id")),
+            matches!(&event, AccessEvent::Failed { reason } if reason.contains("endpoint")),
             "{event:?}"
         );
     }
