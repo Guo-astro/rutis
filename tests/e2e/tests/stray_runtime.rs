@@ -16,7 +16,10 @@ use rutis_e2e::{hang_guard, Scenario};
 use serde_json::json;
 
 /// A plugin whose timer nothing clears: the Node runtime's event loop never
-/// empties. Its cleanup leaves a mark.
+/// empties. Its cleanup leaves a mark, then never finishes. One row, not a
+/// stuck row beside it: the runtime unloads rows in the order they were
+/// loaded, which follows how fast their modules import, so a stuck row
+/// loaded after it would be unloaded first and hold its cleanup back.
 const STRAY: &str = r#"
 import { writeFileSync } from 'node:fs'
 import { definePlugin } from '@arcships/rutis'
@@ -26,19 +29,10 @@ export default definePlugin({
   apply(ctx, config) {
     setInterval(() => {}, 1 << 30)
     ctx.provide('stray', { ping: () => 'pong' })
-    return () => writeFileSync(config.marker, 'cleaned up')
-  },
-})
-"#;
-
-/// A plugin whose cleanup never finishes. Loaded first, it is unloaded
-/// last, after the stray row's cleanup ran.
-const STUCK: &str = r#"
-import { definePlugin } from '@arcships/rutis'
-
-export default definePlugin({
-  apply() {
-    return () => new Promise(() => {})
+    return () => {
+      writeFileSync(config.marker, 'cleaned up')
+      return new Promise(() => {})
+    }
   },
 })
 "#;
@@ -50,19 +44,17 @@ fn a_runtime_whose_host_was_killed_unloads_its_rows_and_exits() {
     let s = Scenario::new("stray-runtime");
     s.link_node_sdk();
     s.write("stray.ts", STRAY);
-    s.write("stuck.ts", STUCK);
     let marker = s.path("cleaned-up");
     s.write_json(
         "rutis.json",
         &json!({
             "runtimes": { "node": {} },
             "rows": [
-                { "id": "stuck", "name": "./stuck.ts" },
                 { "id": "stray", "name": "./stray.ts", "config": { "marker": marker } },
             ],
         }),
     );
-    // The runtime gives up the stuck cleanup after the host's deadline,
+    // The runtime gives up the unfinished cleanup after the host's deadline,
     // which the host passes on to it.
     let mut host = s.host(["run", "--shutdown-timeout", "1", "rutis.json"]);
     host.expect("stray: running");
@@ -84,7 +76,7 @@ fn a_runtime_whose_host_was_killed_unloads_its_rows_and_exits() {
     host.wait_exit();
 
     // Unix: the runtime exits by itself, once its deadline (1 s) gave up
-    // the stuck cleanup; the hang guard only guards against it never
+    // the unfinished cleanup; the hang guard only guards against it never
     // exiting. Windows: it ended with the host's job.
     let guard = Instant::now() + Duration::from_secs(1) + hang_guard();
     loop {
