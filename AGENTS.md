@@ -1,6 +1,6 @@
 # AGENTS
 
-给在本仓库工作的 coding agent 的任务指引，放在 `.agents/skills/<名字>/SKILL.md`。
+给 coding agent 的任务指引，放在 `.agents/skills/<名字>/`。每个 skill 自包含（`SKILL.md` + `references/`），可以整个目录拷走单独使用。
 
 | 任务 | 指引 |
 | --- | --- |
