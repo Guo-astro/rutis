@@ -493,7 +493,7 @@ Later (when needed): downloading prebuilt binaries (`swift add <URL>`), receivin
 | Row / runtime names | `go:<plugin>` / `go-<name>` | `swift:<plugin>` / `swift-<name>` |
 | Execution unit per call | a goroutine (blocking wait) | a Task (suspending wait, no thread held) |
 | Reentrancy / sync-stack | reentrant / not declared | same |
-| sync-wait | not declared (outside wait-cycle detection) | declared |
+| sync-wait | declared | same |
 | Call chain | `context.Context` | `@TaskLocal` |
 | Method enumeration | reflection, `MethodsOf` | explicit closure table |
 | Schema | reflected, overridable | hand-written |

@@ -1014,9 +1014,6 @@ type frame struct {
 	Args           json.RawMessage `json:"args"`
 	Value          json.RawMessage `json:"value"`
 	Error          json.RawMessage `json:"error"`
-	// The caller waits synchronously (`sync-wait`): for the host's
-	// wait-cycle check, nothing here.
-	Sync json.RawMessage `json:"sync"`
 }
 
 func (p *Peer) receive(f *frame) error {

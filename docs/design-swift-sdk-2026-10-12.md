@@ -493,7 +493,7 @@ A1 只依赖 S1 的会话层与拨出稿 R-P1，可与 S2 并行。
 | 行名 / 运行时名 | `go:<插件>` / `go-<名>` | `swift:<插件>` / `swift-<名>` |
 | 每调用执行单元 | goroutine（阻塞等待） | Task（挂起等待，不占线程） |
 | 可重入 / sync-stack | 可重入 / 不声明 | 同 |
-| sync-wait | 不声明（不在等待环检测内） | 声明 |
+| sync-wait | 声明 | 同 |
 | 调用链 | `context.Context` | `@TaskLocal` |
 | 方法枚举 | 反射 `MethodsOf` | 显式闭包表 |
 | Schema | 反射生成，可覆盖 | 手写 |
