@@ -14,7 +14,7 @@
 
 | 限制 | 现状（`main` `a763cdc`） | 后果 |
 | --- | --- | --- |
-| 方向写死 | Python、Go、Bun、Node 的远程运行时只实现 `listen:`，由 rutis 拨入；Bun 明确拒绝拨出 | 远程机器必须能被 rutis 直接访问（固定地址、不在 NAT 后）；每种语言各自实现带 TLS 的 WebSocket 服务端，每台远程机器各自管证书（Python 3.13.6 的 TLS 死锁即其代价） |
+| 方向写死 | Python、Go、Node 的远程运行时只实现 `listen:`，由 rutis 拨入；Bun 运行时还不支持远程（监听与拨出都拒绝） | 远程机器必须能被 rutis 直接访问（固定地址、不在 NAT 后）；每种语言各自实现带 TLS 的 WebSocket 服务端，每台远程机器各自管证书（Python 3.13.6 的 TLS 死锁即其代价） |
 | 拓扑静态 | 一个远程运行时 = 一行 link + 一条 `runtimes.remote` 声明 + 一个专属 token；实例里的 link 不能开 `runtime` | 数量会变的场景（扩缩容的 worker、多台设备）接不住 |
 | 身份与连接耦合 | 监听方按每个对端的 token 认人，写在连接层 | 无法把身份交给独立的管理服务 |
 
@@ -99,7 +99,8 @@
 | --- | --- |
 | Rust 侧 | 接入点接受多条连接、连接即实例、运行时键按实例区分、身份层与过渡实现、`mount` 回复的 `plugins`、rutis-host 配置（`listen` / `instances`）、`runtimes.remote[].language` 接受 `swift`、`kotlin` / `kt` |
 | Python | 拨出客户端（`dial:`）；首个现有语言（其 TLS 服务端问题最多，拨出收益最大） |
-| Node、Bun、Go | 拨出客户端，紧随 Python |
+| Node、Go | 拨出客户端，紧随 Python |
+| Bun | 监听与拨出都要补（现在都不支持），紧随 Python |
 | Swift、Kotlin | 监听与拨出都实现（Swift SDK §六、Android 稿 §五） |
 | 文档 | 连接节点指南加拨出与动态接入；推荐方式改为拨出 |
 
@@ -115,4 +116,4 @@
 | R-P0 | 实测监听侧 link + `runtime` 现状 | 结论回填 §三 |
 | R-P1 | Rust 侧：§七 的 Rust 工作；`dial_conformance` 框架 | 两条连接带同名插件，各自实例内的使用者只用到本连接的服务；断开一条只关闭其实例；现有远程运行时测试全绿 |
 | R-P2 | Python 拨出 | Python 运行时拨出接入，`dial_conformance` Python 列过 |
-| R-P3 | Node、Bun、Go 拨出；Swift、Kotlin 随应用接入（Swift A1、Android K-P2） | 每种语言都过 `dial_conformance`（拨出）与 `websocket_conformance`（监听） |
+| R-P3 | Node、Go 拨出；Bun 监听与拨出；Swift、Kotlin 随应用接入（Swift A1、Android K-P2） | 每种语言都过 `dial_conformance`（拨出）与 `websocket_conformance`（监听） |

@@ -14,7 +14,7 @@ Existing remote runtimes assume "a few fixed servers". Within that assumption th
 
 | Limit | Today (`main` `a763cdc`) | Consequence |
 | --- | --- | --- |
-| Fixed direction | The Python, Go, Bun and Node remote runtimes only implement `listen:`, with rutis dialing in; Bun explicitly refuses to dial out | A remote machine must be directly reachable by rutis (fixed address, not behind NAT); every language implements its own WebSocket server with TLS, and every remote machine manages its own certificates (the Python 3.13.6 TLS deadlock is the price of this) |
+| Fixed direction | The Python, Go and Node remote runtimes only implement `listen:`, with rutis dialing in; the Bun runtime does not support remote use yet (it refuses both listening and dialing out) | A remote machine must be directly reachable by rutis (fixed address, not behind NAT); every language implements its own WebSocket server with TLS, and every remote machine manages its own certificates (the Python 3.13.6 TLS deadlock is the price of this) |
 | Static topology | One remote runtime = one link row + one `runtimes.remote` entry + one dedicated token; a link inside an instance cannot enable `runtime` | Cases where the count changes (scaling workers, many devices) cannot be handled |
 | Identity coupled to the connection | The listening side identifies peers by a per-peer token, written into the connection layer | Identity cannot be handed to a separate management service |
 
@@ -99,7 +99,8 @@ Conformance tests: `rutis-bridge/tests/dial_conformance.rs`, shaped like `websoc
 | --- | --- |
 | Rust side | Access point accepting many connections, connection-as-instance, per-instance runtime keys, the identity layer and its transitional implementation, `plugins` in the `mount` reply, rutis-host configuration (`listen` / `instances`), `runtimes.remote[].language` accepting `swift`, `kotlin` / `kt` |
 | Python | Dial-out client (`dial:`); the first existing language (its TLS server has the most problems, so dialing out helps it most) |
-| Node, Bun, Go | Dial-out client, right after Python |
+| Node, Go | Dial-out client, right after Python |
+| Bun | Both listening and dialing out (neither is supported today), right after Python |
 | Swift, Kotlin | Both listening and dialing out (Swift SDK §6, Android design §5) |
 | Docs | Add dialing out and dynamic connections to the Connect Nodes guide; change the recommended approach to dialing out |
 
@@ -115,4 +116,4 @@ Conformance tests: `rutis-bridge/tests/dial_conformance.rs`, shaped like `websoc
 | R-P0 | Test the current state of a listening-side link + `runtime` | Findings written back into §3 |
 | R-P1 | Rust side: the Rust work in §7; the `dial_conformance` framework | Two connections carry same-named plugins, and consumers in each instance only use their own connection's services; dropping one connection closes only its instance; existing remote runtime tests all pass |
 | R-P2 | Python dialing out | The Python runtime dials out and connects; the Python column of `dial_conformance` passes |
-| R-P3 | Node, Bun, Go dialing out; Swift and Kotlin connect with apps (Swift A1, Android K-P2) | Every language passes `dial_conformance` (dialing out) and `websocket_conformance` (listening) |
+| R-P3 | Node and Go dialing out; Bun listening and dialing out; Swift and Kotlin connect with apps (Swift A1, Android K-P2) | Every language passes `dial_conformance` (dialing out) and `websocket_conformance` (listening) |
