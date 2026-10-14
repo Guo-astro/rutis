@@ -36,10 +36,10 @@
 cargo test --workspace                                  # 内核与大部分 crate
 cargo test -p rutis-bridge --all-features               # 通道、会话、运行时、节点
 cargo test -p rutis-loader --features node,python,peer,bun  # loader 的各种插件行
-npm --prefix node/rutis test
+npm --prefix node/rutis ci && npm --prefix node/rutis test
 npm --prefix node/rutis-runtime ci && npm --prefix node/rutis-runtime test
 (cd python/rutis && python3 -m unittest discover -s tests)
-(cd bun/rutis-bun && bun test)
+(cd bun/rutis-bun && bun install --frozen-lockfile && bun test)
 ```
 
 只改了一部分时，跑相关的那几项即可。CI 在 PR 上运行受改动影响的检查，在 main 上运行全部检查；怎样选择、怎样修改 CI，见 [docs/ci.md](docs/ci.md)。

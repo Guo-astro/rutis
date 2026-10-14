@@ -9,7 +9,7 @@ export interface Context {
   effect(cleanup: () => unknown): void
   /** Listen to an event of this runtime's shared event bus: the host emits into it (names declared with `emits` on the runtime) and plugins may emit too. The listener is unregistered when the plugin unloads. */
   on(name: string, listener: (...args: any[]) => any): () => void
-  /** Dispatch synchronously to this runtime process's listeners, including other plugins; does not await listener promises. Forwarding to a Rust host requires a Node mount configured with `Mount.events` and an `EventSink`. */
+  /** Dispatch synchronously to this runtime process's listeners, including other plugins; does not await listener promises. `RuntimePlugin` exposes no `Mount.events` / `EventSink` configuration, so runtime → Rust host forwarding is not available. */
   emit(name: string, ...args: any[]): void
 }
 
