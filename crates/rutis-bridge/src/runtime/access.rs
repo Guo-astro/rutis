@@ -54,11 +54,16 @@ impl Plugin for RuntimeAccessPlugin {
             })?;
             ctx.provide_as::<dyn RuntimeSession>(
                 runtime_session_key(&self.runtime),
-                Arc::new(PeerSession(peer)),
+                peer_session(peer),
             )?;
             Ok(Effect::Done)
         })
     }
+}
+
+/// `peer` as a runtime session.
+pub(crate) fn peer_session(peer: Arc<Peer>) -> Arc<dyn RuntimeSession> {
+    Arc::new(PeerSession(peer))
 }
 
 struct PeerSession(Arc<Peer>);

@@ -7,6 +7,9 @@
 //! - Links between rutis nodes ([`LinkPlugin`]) and what runs on them:
 //!   services exported and imported, plugins hosted for a peer, events
 //!   forwarded ([`PeerPlugin`] composes them).
+//! - Access points ([`AccessPointPlugin`]): one listener admitting many
+//!   runtimes that dial out to rutis, each by the id it greets with, as an
+//!   [`Admission`] decides.
 //! - [`transport`]: what links run over (local processes and Unix sockets,
 //!   in-process channels, WebSocket with feature `websocket`). A transport
 //!   provides a [`Transport`] under [`transport_key`]; links depend on that
@@ -33,6 +36,7 @@ pub mod session;
 pub mod testing;
 pub mod transport;
 
+mod access_point;
 mod compose;
 mod events;
 mod host;
@@ -42,12 +46,16 @@ mod peer;
 mod registration;
 mod services;
 
+pub use access_point::{
+    Accept, Accepted, AccessEvent, AccessPointConfig, AccessPointPlugin, Release,
+};
 pub use channel::{Channel, ConnectError, PeerId};
 pub use compose::{Features, PeerHandle, PeerPlugin};
 pub use events::{node_event, EventsPlugin, NodeEvent};
 pub use host::{Described, HostPlugin, Installed, PluginCatalog, ServiceKeys, StaticCatalog};
 pub use identity::{
-    fingerprint, identity_key, Credential, Identity, IdentityPlugin, Presented, StaticIdentity,
+    admission_key, fingerprint, identity_key, Admission, AdmissionPlugin, Credential, Identity,
+    IdentityPlugin, Presented, Rejection, SharedToken, StaticIdentity,
 };
 pub use link::{protocol, Connect, Failure, LinkConfig, LinkPlugin, LinkState, Retry};
 pub use peer::{family, peer_key, Handler, Offered, Offers, Peer};

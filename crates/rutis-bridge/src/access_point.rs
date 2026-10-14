@@ -1,0 +1,537 @@
+//! An access point: one listener registration that admits many runtime
+//! connections (`docs/design-remote-runtime-dial-2026-10-14.md` §四–§六).
+//!
+//! Runtimes dial out to rutis. Each presents a credential and greets with
+//! an id of its own; the [`Admission`] decides whom the access point admits
+//! and as which connection id. Connections with different ids coexist. A
+//! newer connection with the id of a current one takes over: the old one
+//! is closed and released before the new one is accepted. What happens with
+//! each connection (an instance, a runtime mounted on its session) is the
+//! [`Accept`] given to the plugin. The access point provides no service per
+//! connection, so the id a runtime chooses never claims a key of the
+//! application.
+//!
+//! On its listener the access point registers as a link does, its name
+//! standing for the far end: the transport routes a connection to it when
+//! the admission verifies the credential. Static links and access points
+//! share a listener as long as no credential is accepted by two of them
+//! (such a connection is refused as ambiguous, 403) and no linked peer
+//! there has the access point's name (the second registration fails).
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+
+use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, TypeKey};
+use tokio::sync::{broadcast, mpsc};
+
+use crate::channel::{Channel, ChannelError, Closer, PeerId, Receiver};
+use crate::link::{Greet, Live};
+use crate::runtime::RuntimeSession;
+use crate::session::Error;
+use crate::{
+    admission_key, transport_key, Admission, Credential, Identity, Peer, Presented, Registration,
+    Rejection, Retry, Transport,
+};
+
+/// Undoes what [`Accept::accept`] set up for a connection.
+pub type Release = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>;
+
+/// What an access point does with each connection it admits.
+pub trait Accept: Send + Sync + 'static {
+    /// Set up `connection`: an instance for it, a runtime on its session.
+    /// The access point awaits the returned release when the connection
+    /// ends or is taken over, before it accepts a newer connection with the
+    /// same id. An error closes the connection.
+    fn accept(&self, connection: Accepted) -> BoxFuture<'_, Result<Release, String>>;
+}
+
+/// A connection the access point admitted.
+#[derive(Clone)]
+pub struct Accepted {
+    peer: Arc<Peer>,
+}
+
+impl Accepted {
+    /// The connection id the admission gave it.
+    pub fn id(&self) -> &PeerId {
+        self.peer.id()
+    }
+
+    /// The far end as a peer: its session and the families it calls. Its
+    /// generation is unique within the access point.
+    pub fn peer(&self) -> &Arc<Peer> {
+        &self.peer
+    }
+
+    /// The connection as a runtime session: provided as
+    /// `RuntimeSession#<runtime>`, a [`RuntimePlugin::remote`](crate::runtime::RuntimePlugin::remote)
+    /// runs its rows on it.
+    pub fn runtime_session(&self) -> Arc<dyn RuntimeSession> {
+        crate::runtime::peer_session(self.peer.clone())
+    }
+}
+
+/// What happened at an access point, for observers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AccessEvent {
+    /// The connection `generation` of `id` was admitted and accepted.
+    Connected { id: PeerId, generation: u64 },
+    /// A newer connection of `id` took over: the connection `generation`
+    /// was closed and released.
+    Replaced { id: PeerId, generation: u64 },
+    /// The connection `generation` of `id` ended and was released.
+    Disconnected {
+        id: PeerId,
+        generation: u64,
+        reason: String,
+    },
+    /// The admission rejected a connection.
+    Rejected { reason: String },
+    /// A connection failed before it was accepted: its handshake, or the
+    /// [`Accept`].
+    Failed { reason: String },
+}
+
+#[derive(Clone, Debug)]
+pub struct AccessPointConfig {
+    /// The access point's name: what its registration on the listener is
+    /// keyed by, as a link's is by its far end.
+    pub name: PeerId,
+    /// The transport's kind (`Transport#<kind>`).
+    pub transport: String,
+    /// The admission's name (`Admission#<name>`).
+    pub admission: String,
+    /// The listener of the transport to register on.
+    pub listener: String,
+    /// How long a runtime may take to greet.
+    pub handshake: Duration,
+    /// Capabilities each runtime must declare (`runtime`).
+    pub require: Vec<String>,
+    /// Capabilities this end declares besides the session's own and `node`.
+    pub declare: Vec<String>,
+}
+
+impl AccessPointConfig {
+    pub fn new(name: PeerId, transport: &str, admission: &str, listener: &str) -> Self {
+        Self {
+            name,
+            transport: transport.into(),
+            admission: admission.into(),
+            listener: listener.into(),
+            handshake: Retry::default().handshake,
+            require: Vec::new(),
+            declare: Vec::new(),
+        }
+    }
+
+    pub fn handshake(mut self, handshake: Duration) -> Self {
+        self.handshake = handshake;
+        self
+    }
+
+    /// Require each runtime to declare `capability`.
+    pub fn require(mut self, capability: &str) -> Self {
+        self.require.push(capability.into());
+        self
+    }
+
+    /// Declare `capability` to each runtime.
+    pub fn declare(mut self, capability: &str) -> Self {
+        self.declare.push(capability.into());
+        self
+    }
+}
+
+/// The access point plugin: depends on `Transport#<kind>` and
+/// `Admission#<name>`, registers on the listener while applied, and hands
+/// each admitted connection to its [`Accept`].
+pub struct AccessPointPlugin {
+    label: String,
+    config: AccessPointConfig,
+    injects: [TypeKey; 2],
+    accept: Option<Arc<dyn Accept>>,
+    events: broadcast::Sender<AccessEvent>,
+}
+
+impl AccessPointPlugin {
+    pub fn new(config: AccessPointConfig) -> Self {
+        Self {
+            label: format!("rutis-bridge/access-point#{}", config.name),
+            injects: [
+                transport_key(&config.transport),
+                admission_key(&config.admission),
+            ],
+            accept: None,
+            events: broadcast::channel(64).0,
+            config,
+        }
+    }
+
+    /// Hand each admitted connection to `accept`. Without one, connections
+    /// are kept and observable, and nothing runs on them.
+    pub fn accept(mut self, accept: impl Accept) -> Self {
+        self.accept = Some(Arc::new(accept));
+        self
+    }
+
+    /// What happens from now on.
+    pub fn events(&self) -> broadcast::Receiver<AccessEvent> {
+        self.events.subscribe()
+    }
+}
+
+impl Plugin for AccessPointPlugin {
+    fn name(&self) -> &str {
+        &self.label
+    }
+
+    fn injects(&self) -> &[TypeKey] {
+        &self.injects
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        Box::pin(async move {
+            let failed =
+                |what: String| CordisError::PluginFailed(format!("{}: {what}", self.label).into());
+            let transport = ctx
+                .get_as::<dyn Transport>(self.injects[0].clone())
+                .ok_or_else(|| failed("the transport is not provided".into()))?;
+            let admission = ctx
+                .get_as::<dyn Admission>(self.injects[1].clone())
+                .ok_or_else(|| failed("the admission is not provided".into()))?;
+            let (sender, mut delivered) = mpsc::unbounded_channel::<Channel>();
+            let registered = transport
+                .register(Registration {
+                    listener: self.config.listener.clone(),
+                    peer: self.config.name.clone(),
+                    identity: Arc::new(Routing {
+                        admission: admission.clone(),
+                        name: self.config.name.clone(),
+                    }),
+                    protocol: crate::protocol(),
+                    deliver: Box::new(move |channel| {
+                        if let Err(refused) = sender.send(channel) {
+                            refused.0.closer.close("the access point stopped");
+                        }
+                    }),
+                })
+                .map_err(|error| failed(error.to_string()))?;
+            let shared = Arc::new(Shared {
+                config: self.config.clone(),
+                admission,
+                accept: self.accept.clone(),
+                events: self.events.clone(),
+                generation: AtomicU64::new(0),
+                slots: Mutex::default(),
+            });
+            let running = shared.clone();
+            let task = tokio::spawn(async move {
+                // Dropped with this task: aborts every connection's.
+                let mut connections = tokio::task::JoinSet::new();
+                loop {
+                    tokio::select! {
+                        channel = delivered.recv() => {
+                            let Some(channel) = channel else { return };
+                            connections.spawn(running.clone().connection(channel));
+                        }
+                        Some(_) = connections.join_next() => {}
+                    }
+                }
+            });
+            ctx.effect(move || {
+                Effect::AsyncDisposer(Box::new(move || {
+                    Box::pin(async move {
+                        drop(registered);
+                        task.abort();
+                        let _ = task.await;
+                        shared.end_all("the access point stopped").await;
+                        Ok(())
+                    })
+                }))
+            })?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// The admission as the identity the registration routes by: a credential
+/// it verifies proves the access point's name.
+struct Routing {
+    admission: Arc<dyn Admission>,
+    name: PeerId,
+}
+
+impl Identity for Routing {
+    fn local(&self) -> &PeerId {
+        self.admission.local()
+    }
+
+    fn credential(&self, _: &PeerId) -> Option<Credential> {
+        None
+    }
+
+    fn verify(&self, presented: Presented<'_>) -> Option<PeerId> {
+        self.admission.verify(presented).then(|| self.name.clone())
+    }
+}
+
+/// The current connection of one id.
+struct Current {
+    id: PeerId,
+    generation: u64,
+    live: Live,
+}
+
+/// Where the connection of one id is kept. Locked from the arrival of a
+/// newer connection until it is accepted, so takeovers of one id run one
+/// at a time and other ids are not held up.
+type Slot = Arc<tokio::sync::Mutex<Option<Current>>>;
+
+struct Shared {
+    config: AccessPointConfig,
+    admission: Arc<dyn Admission>,
+    accept: Option<Arc<dyn Accept>>,
+    events: broadcast::Sender<AccessEvent>,
+    generation: AtomicU64,
+    slots: Mutex<HashMap<PeerId, Slot>>,
+}
+
+impl Shared {
+    fn emit(&self, event: AccessEvent) {
+        // Nobody observing is fine.
+        let _ = self.events.send(event);
+    }
+
+    /// Admit, accept and keep one delivered connection until it ends.
+    async fn connection(self: Arc<Self>, channel: Channel) {
+        let Channel {
+            sender,
+            receiver,
+            closer,
+            mut info,
+        } = channel;
+        // Routed by its credential alone: its id comes with its hello.
+        info.peer = None;
+        let verdict = Arc::new(OnceLock::new());
+        let channel = Channel {
+            sender,
+            receiver: Box::new(Admitting {
+                inner: receiver,
+                closer: closer.clone(),
+                admission: self.admission.clone(),
+                verdict: Some(verdict.clone()),
+            }),
+            closer: closer.clone(),
+            info,
+        };
+        let greet = Greet {
+            local: self.admission.local().clone(),
+            expected: None,
+            declare: &self.config.declare,
+            require: &self.config.require,
+            compat: false,
+            timeout: self.config.handshake,
+        };
+        let opened = greet.open(channel).await;
+        if let Some(Err(rejection)) = verdict.get() {
+            return self.emit(AccessEvent::Rejected {
+                reason: rejection.to_string(),
+            });
+        }
+        let (session, operations) = match opened {
+            Ok(opened) => opened,
+            Err(error) => {
+                return self.emit(AccessEvent::Failed {
+                    reason: error.to_string(),
+                })
+            }
+        };
+        // Ready means it greeted in the endpoint format, so was admitted.
+        let Some(Ok(id)) = verdict.get().cloned() else {
+            let reason = "the far end greeted without being admitted";
+            session.close(Error::Transport(reason.into()));
+            return self.emit(AccessEvent::Failed {
+                reason: reason.into(),
+            });
+        };
+
+        let slot = self.slot(&id);
+        let mut current = slot.lock().await;
+        // A newer connection takes over: the old one is closed and
+        // released before this one is accepted.
+        if let Some(old) = current.take() {
+            old.live.closer.replaced();
+            old.live.end("replaced by a new connection").await;
+            self.emit(AccessEvent::Replaced {
+                id: id.clone(),
+                generation: old.generation,
+            });
+        }
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let peer = Arc::new(Peer::new(
+            id.clone(),
+            session.clone(),
+            generation,
+            operations.clone(),
+        ));
+        let release: Release = match &self.accept {
+            None => Box::new(|| Box::pin(async {})),
+            Some(accept) => match accept.accept(Accepted { peer }).await {
+                Ok(release) => release,
+                Err(error) => {
+                    drop(current);
+                    let reason = format!("{id}: {error}");
+                    session.close(Error::Transport(reason.clone()));
+                    operations.detach();
+                    self.forget(&id, slot);
+                    return self.emit(AccessEvent::Failed { reason });
+                }
+            },
+        };
+        *current = Some(Current {
+            id: id.clone(),
+            generation,
+            live: Live::new(session.clone(), closer, operations, release),
+        });
+        drop(current);
+        self.emit(AccessEvent::Connected {
+            id: id.clone(),
+            generation,
+        });
+
+        session.closed().await;
+        let mut current = slot.lock().await;
+        // Unless a newer connection took over, and released this one.
+        if current
+            .as_ref()
+            .is_some_and(|current| current.generation == generation)
+        {
+            let ended = current.take().expect("checked");
+            let reason = session
+                .close_reason()
+                .map_or_else(|| "the session ended".to_owned(), |error| error.to_string());
+            ended.live.end("session ended").await;
+            self.emit(AccessEvent::Disconnected {
+                id: id.clone(),
+                generation,
+                reason,
+            });
+        }
+        drop(current);
+        self.forget(&id, slot);
+    }
+
+    fn slot(&self, id: &PeerId) -> Slot {
+        self.slots
+            .lock()
+            .unwrap()
+            .entry(id.clone())
+            .or_default()
+            .clone()
+    }
+
+    /// Drop the slot of `id` if it is empty and nobody else holds it.
+    fn forget(&self, id: &PeerId, slot: Slot) {
+        let mut slots = self.slots.lock().unwrap();
+        // Slots are cloned only under this lock: the count is exact.
+        let unused =
+            Arc::strong_count(&slot) == 2 && slot.try_lock().is_ok_and(|current| current.is_none());
+        if unused {
+            slots.remove(id);
+        }
+    }
+
+    /// End every connection (the access point stops).
+    async fn end_all(&self, reason: &str) {
+        let slots: Vec<Slot> = self
+            .slots
+            .lock()
+            .unwrap()
+            .drain()
+            .map(|(_, slot)| slot)
+            .collect();
+        for slot in slots {
+            let current = slot.lock().await.take();
+            if let Some(current) = current {
+                current.live.end(reason).await;
+                self.emit(AccessEvent::Disconnected {
+                    id: current.id,
+                    generation: current.generation,
+                    reason: reason.into(),
+                });
+            }
+        }
+    }
+}
+
+/// The receiver of a connection not admitted yet: the far end's hello is
+/// admitted before the session reads it, so a rejected one never reaches
+/// the session, and the channel closes as rejected.
+struct Admitting {
+    inner: Box<dyn Receiver>,
+    closer: Arc<dyn Closer>,
+    admission: Arc<dyn Admission>,
+    /// Until the first message.
+    verdict: Option<Arc<OnceLock<Result<PeerId, Rejection>>>>,
+}
+
+impl Receiver for Admitting {
+    fn recv(&mut self) -> Result<Option<Vec<u8>>, ChannelError> {
+        let message = self.inner.recv()?;
+        let (Some(verdict), Some(first)) = (self.verdict.take(), &message) else {
+            return Ok(message);
+        };
+        // Anything but an endpoint-format hello is the session's to refuse.
+        let Some(reported) = reported(first) else {
+            return Ok(message);
+        };
+        let admitted = self.admission.admit(reported.as_deref());
+        let rejected = admitted.as_ref().err().cloned();
+        let _ = verdict.set(admitted);
+        if let Some(rejection) = rejected {
+            self.closer.rejected(&rejection.0);
+            return Err(ChannelError::Closed {
+                reason: format!("rejected: {rejection}"),
+            });
+        }
+        Ok(message)
+    }
+}
+
+/// The endpoint an endpoint-format hello names (`Some(None)` when it names
+/// none, or not as a string); `None` for any other message.
+fn reported(message: &[u8]) -> Option<Option<String>> {
+    let hello: serde_json::Value = serde_json::from_slice(message).ok()?;
+    let endpoint_format = hello.get("op")? == "hello"
+        && hello.get("version")?.as_u64()? == u64::from(crate::session::ENDPOINT_PROTOCOL);
+    endpoint_format.then(|| {
+        hello
+            .get("endpoint")
+            .and_then(|endpoint| endpoint.as_str())
+            .map(str::to_owned)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reported;
+
+    #[test]
+    fn only_an_endpoint_format_hello_reports_an_id() {
+        let hello = |text: &str| reported(text.as_bytes());
+        assert_eq!(
+            hello(r#"{"op":"hello","version":3,"endpoint":"pixel"}"#),
+            Some(Some("pixel".into()))
+        );
+        assert_eq!(hello(r#"{"op":"hello","version":3}"#), Some(None));
+        assert_eq!(
+            hello(r#"{"op":"hello","version":3,"endpoint":7}"#),
+            Some(None)
+        );
+        assert_eq!(hello(r#"{"op":"hello","version":2}"#), None);
+        assert_eq!(hello(r#"{"op":"invoke","version":3}"#), None);
+        assert_eq!(hello("not json"), None);
+    }
+}
