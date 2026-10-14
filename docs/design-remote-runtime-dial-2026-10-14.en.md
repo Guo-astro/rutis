@@ -42,7 +42,7 @@ New:      rutis (access point, the only TLS server) ◀──dial out── runt
 - rutis has the same control over runtimes that dial in to it as today: loading, configuration, unloading and gating are all driven by rutis (remote plugins §4.1).
 - The runtime-side channel is written `dial:wss://…`, symmetric with the existing `listen:wss://…`; every language supports both.
 - Choosing: use listening when the remote machine has a fixed address that rutis can reach directly; use dialing out when it is behind NAT, its address changes, or the number of machines changes (devices, scaling workers).
-- Combining a listening-side link with `runtime` is not rejected by the existing code but has not been tested: R-P0 tests it, and if it does not work, R-P1 fixes it as well.
+- A listening-side link with `runtime` works today (R-P0, 2026-10-14): once the runtime connects, rutis sends `mount`, loads rows and gates services as usual, and withdraws them when it disconnects; the handshake checks the runtime's self-reported id against the link's peer end to end. No runtime can dial out yet, so the test stands in with a relay that dials both listeners (`rutis-loader/tests/remote_rows.rs::a_runtime_link_can_listen`). R-P1 needs no change to links for this.
 
 ## 4. Dynamic connections are instances
 
