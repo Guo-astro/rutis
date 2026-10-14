@@ -192,6 +192,9 @@ class Testing(background.TestCase):
                 with self.assertRaisesRegex(PluginTestError, "^event other is not declared for emission from rutis$"):
                     await t.emit("other")
                 await t.emit("tick")
+            with self.assertRaisesRegex(PluginTestError, "^event internal/service is internal to the runtime and cannot be emitted from rutis$"):
+                async with load(define_plugin(lambda ctx, config: None), emits=["internal/service"]):
+                    pass
 
         run(go())
 
