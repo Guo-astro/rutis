@@ -207,6 +207,20 @@ class Testing(background.TestCase):
 
         run(go())
 
+    # guarantee: sdk/leaf-events (the host emits declared names only)
+    def test_emits_is_a_list_of_event_names(self):
+        async def go():
+            # As the Node test tool: a bare string or a non-string entry is refused,
+            # not read as characters or skipped.
+            for emits in ("tick", ["tick", None], {"tick": 1}):
+                with self.assertRaisesRegex(PluginTestError, "^emits must be a list of event names$"):
+                    async with load(define_plugin(lambda ctx, config: None), emits=emits):
+                        pass
+            async with load(define_plugin(lambda ctx, config: None), emits=("tick",)) as t:
+                await t.emit("tick")
+
+        run(go())
+
     # guarantee: sdk/leaf-events (disposers; a failed cleanup removes listeners)
     def test_event_disposers_and_failed_cleanup_remove_every_listener(self):
         async def go():

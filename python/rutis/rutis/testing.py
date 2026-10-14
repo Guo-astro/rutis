@@ -176,6 +176,9 @@ class Loaded:
         self._disposers: list[Callable] = []
         self._unloaded = False
         self._events = Events()
+        # As the Node test tool: a string is not a list of one name.
+        if not isinstance(emits, (list, tuple)) or not all(isinstance(name, str) for name in emits):
+            raise PluginTestError("emits must be a list of event names")
         # As the runners' mount: internal/* cannot be declared for emission.
         refused = refused_emits(emits)
         if refused is not None:
