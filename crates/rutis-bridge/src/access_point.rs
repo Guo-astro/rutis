@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, TypeKey};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::channel::{Channel, ChannelError, Closer, PeerId, Receiver};
 use crate::link::{Greet, Live};
@@ -218,35 +218,40 @@ impl Plugin for AccessPointPlugin {
                     }),
                 })
                 .map_err(|error| failed(error.to_string()))?;
+            let (stop, stopping) = watch::channel(false);
             let shared = Arc::new(Shared {
                 config: self.config.clone(),
                 admission,
                 accept: self.accept.clone(),
                 events: self.events.clone(),
+                arrival: AtomicU64::new(0),
                 generation: AtomicU64::new(0),
                 slots: Mutex::default(),
+                stopping,
             });
-            let running = shared.clone();
+            let mut stopped = shared.stopping.clone();
             let task = tokio::spawn(async move {
-                // Dropped with this task: aborts every connection's.
                 let mut connections = tokio::task::JoinSet::new();
                 loop {
                     tokio::select! {
                         channel = delivered.recv() => {
-                            let Some(channel) = channel else { return };
-                            connections.spawn(running.clone().connection(channel));
+                            let Some(channel) = channel else { break };
+                            connections.spawn(shared.clone().connection(channel));
                         }
                         Some(_) = connections.join_next() => {}
+                        _ = stopped.wait_for(|stopped| *stopped) => break,
                     }
                 }
+                // Not aborted: each connection releases what its accept set
+                // up, also one stopped half-way through a takeover.
+                while connections.join_next().await.is_some() {}
             });
             ctx.effect(move || {
                 Effect::AsyncDisposer(Box::new(move || {
                     Box::pin(async move {
                         drop(registered);
-                        task.abort();
+                        let _ = stop.send(true);
                         let _ = task.await;
-                        shared.end_all("the access point stopped").await;
                         Ok(())
                     })
                 }))
@@ -279,7 +284,9 @@ impl Identity for Routing {
 
 /// The current connection of one id.
 struct Current {
-    id: PeerId,
+    /// When it was delivered: of two connections of an id, the one that
+    /// arrived later is current, whichever greeted first.
+    arrival: u64,
     generation: u64,
     live: Live,
 }
@@ -294,8 +301,11 @@ struct Shared {
     admission: Arc<dyn Admission>,
     accept: Option<Arc<dyn Accept>>,
     events: broadcast::Sender<AccessEvent>,
+    arrival: AtomicU64,
     generation: AtomicU64,
     slots: Mutex<HashMap<PeerId, Slot>>,
+    /// Set when the access point stops: connections end and release.
+    stopping: watch::Receiver<bool>,
 }
 
 impl Shared {
@@ -306,6 +316,8 @@ impl Shared {
 
     /// Admit, accept and keep one delivered connection until it ends.
     async fn connection(self: Arc<Self>, channel: Channel) {
+        let arrival = self.arrival.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut stopping = self.stopping.clone();
         let Channel {
             sender,
             receiver,
@@ -334,7 +346,12 @@ impl Shared {
             compat: false,
             timeout: self.config.handshake,
         };
-        let opened = greet.open(channel).await;
+        // A connection still greeting when the access point stops has
+        // nothing to release.
+        let opened = tokio::select! {
+            opened = greet.open(channel) => opened,
+            _ = stopping.wait_for(|stopped| *stopped) => return,
+        };
         if let Some(Err(rejection)) = verdict.get() {
             return self.emit(AccessEvent::Rejected {
                 reason: rejection.to_string(),
@@ -359,6 +376,22 @@ impl Shared {
 
         let slot = self.slot(&id);
         let mut current = slot.lock().await;
+        let superseded = if *self.stopping.borrow() {
+            Some("the access point stopped".to_owned())
+        } else {
+            current
+                .as_ref()
+                .filter(|current| current.arrival > arrival)
+                .map(|_| format!("{id}: a newer connection is current"))
+        };
+        if let Some(reason) = superseded {
+            drop(current);
+            closer.replaced();
+            session.close(Error::Transport(reason.clone()));
+            operations.detach();
+            self.forget(&id, slot);
+            return self.emit(AccessEvent::Failed { reason });
+        }
         // A newer connection takes over: the old one is closed and
         // released before this one is accepted.
         if let Some(old) = current.take() {
@@ -391,7 +424,7 @@ impl Shared {
             },
         };
         *current = Some(Current {
-            id: id.clone(),
+            arrival,
             generation,
             live: Live::new(session.clone(), closer, operations, release),
         });
@@ -401,7 +434,10 @@ impl Shared {
             generation,
         });
 
-        session.closed().await;
+        let stopped = tokio::select! {
+            _ = session.closed() => false,
+            _ = stopping.wait_for(|stopped| *stopped) => true,
+        };
         let mut current = slot.lock().await;
         // Unless a newer connection took over, and released this one.
         if current
@@ -409,10 +445,13 @@ impl Shared {
             .is_some_and(|current| current.generation == generation)
         {
             let ended = current.take().expect("checked");
-            let reason = session
-                .close_reason()
-                .map_or_else(|| "the session ended".to_owned(), |error| error.to_string());
-            ended.live.end("session ended").await;
+            let reason = match stopped {
+                true => "the access point stopped".to_owned(),
+                false => session
+                    .close_reason()
+                    .map_or_else(|| "the session ended".to_owned(), |error| error.to_string()),
+            };
+            ended.live.end(&reason).await;
             self.emit(AccessEvent::Disconnected {
                 id: id.clone(),
                 generation,
@@ -440,28 +479,6 @@ impl Shared {
             Arc::strong_count(&slot) == 2 && slot.try_lock().is_ok_and(|current| current.is_none());
         if unused {
             slots.remove(id);
-        }
-    }
-
-    /// End every connection (the access point stops).
-    async fn end_all(&self, reason: &str) {
-        let slots: Vec<Slot> = self
-            .slots
-            .lock()
-            .unwrap()
-            .drain()
-            .map(|(_, slot)| slot)
-            .collect();
-        for slot in slots {
-            let current = slot.lock().await.take();
-            if let Some(current) = current {
-                current.live.end(reason).await;
-                self.emit(AccessEvent::Disconnected {
-                    id: current.id,
-                    generation: current.generation,
-                    reason: reason.into(),
-                });
-            }
         }
     }
 }

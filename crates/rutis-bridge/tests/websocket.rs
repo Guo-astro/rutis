@@ -718,7 +718,7 @@ fn a_rejection_closes_with_4003() {
     accepted.closer.rejected("bad id");
     let ended = dialed.receiver.recv();
     assert!(
-        matches!(&ended, Err(rutis_bridge::channel::ChannelError::Closed { reason }) if reason == "rejected: bad id"),
+        matches!(&ended, Err(rutis_bridge::channel::ChannelError::Rejected { reason }) if reason == "rejected: bad id"),
         "{ended:?}"
     );
 }

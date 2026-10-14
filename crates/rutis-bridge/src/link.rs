@@ -450,13 +450,16 @@ impl Link {
                             backoff.reset();
                         }
                         // Why it ended: for a local runtime, how its
-                        // process ended.
-                        let reason = live.session.close_reason().map_or_else(
+                        // process ended; an identity the far end rejected
+                        // after the greeting (an access point refusing this
+                        // end's id) is an authentication failure.
+                        let ended = live.session.close_reason();
+                        let reason = ended.as_ref().map_or_else(
                             || "the session ended".to_owned(),
                             |error| error.to_string(),
                         );
                         live.end("session ended").await;
-                        (Failure::Retryable, reason)
+                        (ended.as_ref().map_or(Failure::Retryable, classify), reason)
                     }
                 },
             };

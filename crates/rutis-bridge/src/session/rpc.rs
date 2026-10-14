@@ -2037,9 +2037,13 @@ fn transport(error: impl std::fmt::Display) -> Error {
 /// The error a channel failure ends a session with: `"<label>: <reason>"`,
 /// or the bare reason for an unlabelled channel.
 fn ended(label: &str, error: ChannelError) -> Error {
-    match label {
-        "" => transport(error),
-        label => Error::Transport(format!("{label}: {error}")),
+    let reason = match label {
+        "" => error.to_string(),
+        label => format!("{label}: {error}"),
+    };
+    match error {
+        ChannelError::Closed { .. } => Error::Transport(reason),
+        ChannelError::Rejected { .. } => Error::Handshake(Handshake::IdentityMismatch(reason)),
     }
 }
 

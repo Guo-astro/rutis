@@ -385,3 +385,163 @@ async fn a_static_link_and_an_access_point_share_a_listener() {
     .await;
     assert!(stopped.contains("already registered"), "{stopped}");
 }
+
+/// Of two connections of one id, the one that arrived later is current,
+/// even if the earlier one greets after it: a stale connection whose hello
+/// was held up does not take over.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_earlier_connection_greeting_late_does_not_take_over() {
+    let mut main = main().await;
+    let stale = dial_channel(&main.transport, "shared").await.unwrap();
+    // Delivered and counted before the fresh one arrives.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _fresh = runtime(&main.transport, "pixel", "shared").await;
+    assert!(matches!(
+        next(&mut main.events).await,
+        AccessEvent::Connected { .. }
+    ));
+    let read = tokio::task::spawn_blocking(move || {
+        greet_raw(
+            stale,
+            json!({ "op": "hello", "version": 3, "endpoint": "pixel" }),
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(read.len(), 1, "{read:?}");
+    let event = next(&mut main.events).await;
+    assert!(
+        matches!(&event, AccessEvent::Failed { reason } if reason.contains("newer connection")),
+        "{event:?}"
+    );
+    assert_eq!(main.log.lines(), ["accept pixel 1"]);
+}
+
+/// Accepts once told to, then releases as `Log` does.
+struct Slow {
+    entered: Arc<tokio::sync::Notify>,
+    proceed: Arc<tokio::sync::Notify>,
+    log: Log,
+}
+
+impl Accept for Slow {
+    fn accept(&self, connection: Accepted) -> BoxFuture<'_, Result<Release, String>> {
+        Box::pin(async move {
+            self.entered.notify_one();
+            self.proceed.notified().await;
+            self.log.accept(connection).await
+        })
+    }
+}
+
+/// An access point stopping while a connection is being accepted waits for
+/// the accept, then releases what it set up.
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_while_accepting_still_releases() {
+    let transport = Arc::new(MemoryTransport::default());
+    transport.endpoint("main-in", id("main"));
+    let root = Ctx::root().unwrap();
+    (&root.plugin(MemoryPlugin::with_transport(transport.clone())))
+        .await
+        .unwrap();
+    (&root.plugin(AdmissionPlugin::new(
+        "phone",
+        SharedToken::new(id("main"), "shared"),
+    )))
+        .await
+        .unwrap();
+    let log = Log::default();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let proceed = Arc::new(tokio::sync::Notify::new());
+    let access = root.plugin(
+        AccessPointPlugin::new(
+            AccessPointConfig::new(id("phone"), "memory", "phone", "main-in").handshake(HANG_GUARD),
+        )
+        .accept(Slow {
+            entered: entered.clone(),
+            proceed: proceed.clone(),
+            log: log.clone(),
+        }),
+    );
+    (&access).await.unwrap();
+    let _pixel = runtime(&transport, "pixel", "shared").await;
+    within("the accept", entered.notified()).await;
+    let stopping = tokio::spawn(async move { access.dispose().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    proceed.notify_one();
+    within("the stop", stopping).await.unwrap().unwrap();
+    assert_eq!(log.lines(), ["accept pixel 1", "release pixel 1"]);
+}
+
+/// Refuses every id.
+struct Nobody;
+impl rutis_bridge::Admission for Nobody {
+    fn local(&self) -> &PeerId {
+        static MAIN: std::sync::OnceLock<PeerId> = std::sync::OnceLock::new();
+        MAIN.get_or_init(|| id("main"))
+    }
+    fn verify(&self, _: rutis_bridge::Presented<'_>) -> bool {
+        true
+    }
+    fn admit(&self, reported: &PeerId) -> Result<PeerId, rutis_bridge::Rejection> {
+        Err(rutis_bridge::Rejection(format!("{reported} is not known")))
+    }
+}
+
+/// A Rust dialer whose id an access point rejects (WebSocket close 4003)
+/// waits as for rejected credentials, not as for a lost connection.
+#[cfg(feature = "websocket")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dialer_whose_id_is_rejected_waits_as_rejected() {
+    use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
+    use rutis_bridge::Failure;
+
+    let main = Ctx::root().unwrap();
+    let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
+        "public",
+        "127.0.0.1:0".parse().unwrap(),
+        id("main"),
+    )))
+    .unwrap();
+    let handle = websocket.clone();
+    (&main.plugin(websocket)).await.unwrap();
+    let address = format!(
+        "ws://{}/rutis",
+        handle.transport().unwrap().local_addr("public").unwrap()
+    );
+    (&main.plugin(AdmissionPlugin::new("phone", Nobody)))
+        .await
+        .unwrap();
+    (&main.plugin(AccessPointPlugin::new(AccessPointConfig::new(
+        id("phone"),
+        "websocket",
+        "phone",
+        "public",
+    ))))
+        .await
+        .unwrap();
+
+    let pixel = Ctx::root().unwrap();
+    (&pixel.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
+        .await
+        .unwrap();
+    pixel.plugin(IdentityPlugin::new(
+        "pixel",
+        StaticIdentity::new(id("pixel")).present(id("main"), Credential::Bearer("any".into())),
+    ));
+    let link = LinkPlugin::new(LinkConfig::dial(id("main"), "websocket", "pixel", &address));
+    let state = link.state();
+    pixel.plugin(link);
+    eventually(
+        || match &*state.borrow() {
+            LinkState::Waiting {
+                failure: Failure::AuthRejected,
+                error,
+                ..
+            } => Some(error.clone()),
+            _ => None,
+        },
+        "the link waiting as rejected",
+    )
+    .await;
+}

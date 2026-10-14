@@ -188,7 +188,7 @@ fn far_close(frame: Option<CloseFrame>) -> Ending {
         Some(frame) => match u16::from(frame.code) {
             1000 | GOING_AWAY => Ending::Finished,
             REPLACED => Ending::Failed("replaced by a new connection".into()),
-            REJECTED => Ending::Failed(format!("rejected: {}", frame.reason)),
+            REJECTED => Ending::Rejected(format!("rejected: {}", frame.reason)),
             code => Ending::Failed(format!("closed by the far end ({code}): {}", frame.reason)),
         },
     }
