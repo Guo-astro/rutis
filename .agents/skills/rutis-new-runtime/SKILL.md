@@ -1,120 +1,120 @@
 ---
 name: rutis-new-runtime
-description: Use when adding support for a new plugin language or platform to rutis — "add a runtime", "新增运行时", "support Kotlin/Swift/Ruby/… plugins", writing a new leaf SDK, or making an existing runtime work remotely. Covers whether to do it at all, the design doc, the framework constraints, the decisions every runtime must state (artifact model, reentrancy and capabilities, channels, method enumeration, distribution), the runtime contract, and the checklist of places in the rutis repository a runtime touches, based on how Bun and Go were added. Self-contained; reference material is in references/.
+description: Use when adding support for a new plugin language or platform to rutis — "add a runtime", "support Kotlin/Swift/Ruby/… plugins", writing a new leaf SDK, or making an existing runtime work remotely. Covers whether to do it at all, the design doc, the framework constraints, the decisions every runtime must state (artifact model, reentrancy and capabilities, channels, method enumeration, distribution), the runtime contract, and the checklist of places in the rutis repository a runtime touches, based on how Bun and Go were added. Self-contained; reference material is in references/.
 ---
 
-# 为 rutis 添加一个语言运行时
+# Adding a language runtime to rutis
 
-rutis（https://github.com/arcships/rutis）用 Rust 写核心，其他语言的插件通过**运行时**接入。本 skill 不依赖 rutis 仓库的文档，需要的参考都在 `references/`：
+rutis (https://github.com/arcships/rutis) has a Rust core; plugins in other languages connect through **runtimes**. This skill does not depend on the rutis documentation; everything it refers to is in `references/`:
 
-| 文件 | 内容 |
+| File | Contents |
 | --- | --- |
-| `references/principles.md` | rutis 的设计原则与"该不该做"的判断标准 |
-| `references/plugin-api.md` | 所有语言共用的插件 API（插件作者看到的那一面） |
-| `references/runtime-contract.md` | 运行时要实现的契约：帧与通道、握手与能力、`mount`、控制操作、值、清单、一致性测试 |
+| `references/principles.md` | rutis design principles and how to decide whether a capability belongs |
+| `references/plugin-api.md` | The plugin API shared by all languages (what plugin authors see) |
+| `references/runtime-contract.md` | What a runtime implements: frames and channels, handshake and capabilities, `mount`, control operations, values, manifests, conformance tests |
 
-核心认识：rutis 的范式（依赖门控、生命周期、配置对账）**只在 Rust 内核里实现一份**。运行时与它的 SDK 是很薄的叶子层，只负责把一种语言的插件接上。想在新语言里再实现一遍范式，就是走错了方向。
+The key idea: the rutis paradigm (dependency gating, lifecycle, configuration reconciliation) is **implemented once, in the Rust core**. A runtime and its SDK are a thin leaf layer that only connects one language's plugins. If you find yourself implementing the paradigm again in the new language, you are going the wrong way.
 
-## 0. 先判断该不该做
+## 0. Decide whether to do it
 
-按 `references/principles.md` 的判断标准：
+Using the criteria in `references/principles.md`:
 
-- 它带来什么生态能力？接一种运行时是为了生态，不是为了多一种语言。
-- 有具体的使用方吗？没有就先不做。Go 和 Kotlin 桌面 JVM 都是"有需求时再做"。
-- 已有运行时能覆盖吗？比如 TS 插件已经能在 Node 和 Bun 里跑。
+- What ecosystem does it bring? A runtime is added for an ecosystem, not to have one more language.
+- Is there a concrete user? If not, wait — Go and the desktop Kotlin/JVM runtime were both "when there is a need".
+- Does an existing runtime already cover it? (TS plugins already run on Node and Bun.)
 
-## 1. 先写设计稿，再写代码
+## 1. Design doc first, code second
 
-- 在 rutis 仓库写 `docs/design-<语言>-runtime-<日期>.md` 与 `.en.md`，以中文为准。结构可参考：
-  - 编译成程序的语言：https://github.com/arcships/rutis/blob/main/docs/design-go-runtime-2026-10-10.md
-  - 按名字装载的语言：https://github.com/arcships/rutis/blob/main/docs/design-bun-runtime-2026-10-09.md
-  - 带应用托管的语言：https://github.com/arcships/rutis/blob/main/docs/design-swift-sdk-2026-10-12.md
-- 决策表要写定，不留"待定"；有明显默认答案的直接定下来，并写明理由。
-- 写一节"与总体稿的出入"。合并时同步更新多语言总体稿的里程碑和 §九（可重入的进展）。
+- In the rutis repository write `docs/design-<language>-runtime-<date>.md` and `.en.md` (the Chinese one is authoritative). Structures to follow:
+  - a language compiled into programs: https://github.com/arcships/rutis/blob/main/docs/design-go-runtime-2026-10-10.en.md
+  - a language that loads packages by name: https://github.com/arcships/rutis/blob/main/docs/design-bun-runtime-2026-10-09.en.md
+  - a language with app hosting: https://github.com/arcships/rutis/blob/main/docs/design-swift-sdk-2026-10-12.en.md
+- Settle the decision table; leave no "to be decided". Where a default is obvious, take it and state why.
+- Include a "departures from the master plan" section. When merging, update the multi-language master plan's milestones and §9 (reentrancy progress).
 
-## 2. 框架约束
+## 2. Framework constraints
 
-| 约束 | 含义 |
+| Constraint | Meaning |
 | --- | --- |
-| 叶子插件 | SDK 只提供 `define`（`inject`、`provides` 及方法形状、配置 schema、`apply`）、`ctx.use` / `ctx.provide` / `ctx.effect` / `ctx.on` / `ctx.emit`、取消、错误。不提供子插件、事件树、本地依赖图 |
-| rutis 驱动 | 运行时不决定依赖是否满足、启动顺序、重启策略；全部 `inject` 由 rutis 门控（特性 `leaf`） |
-| 同一个插件 API | 与 `references/plugin-api.md` 一致：声明、ctx、生命周期、清理顺序、截止时间、值规则、插件 API 版本（当前为 2） |
-| 平台语言实现 | 运行时和 SDK 全部用该语言实现，**不依赖 Rust**（不用 FFI 或原生扩展去桥接 rutis） |
-| 两个方向 | 本地通道必须有；要支持远程时，`listen:` 和 `dial:` 两个方向都实现 |
-| 不碰业务层 | 平台前后台、设备、身份、存储都不进运行时 |
-| 测试即契约 | 必须通过 rutis 仓库 Rust 侧的一致性测试，只有自己的单测不够 |
+| Leaf plugins | The SDK offers only `define` (`inject`, `provides` with method shapes, config schema, `apply`), `ctx.use` / `ctx.provide` / `ctx.effect` / `ctx.on` / `ctx.emit`, cancellation and errors. No child plugins, event trees or local dependency graphs |
+| rutis drives | The runtime does not decide whether dependencies are met, start order or restart policy; every `inject` is gated by rutis (feature `leaf`) |
+| One plugin API | Matches `references/plugin-api.md`: declarations, ctx, lifecycle, cleanup order, deadline, value rules, plugin API version (currently 2) |
+| Platform-language implementation | The runtime and SDK are written entirely in that language, **with no Rust dependency** (no FFI or native extension bridging to rutis) |
+| Both directions | Local channels are required; for remote use implement both `listen:` and `dial:` |
+| Stay out of business logic | Platform foreground/background, devices, identity and storage do not belong in a runtime |
+| Tests are the contract | Pass the Rust-side conformance tests in the rutis repository, not just your own unit tests |
 
-## 3. 每个运行时都要回答的决策
+## 3. Decisions every runtime must state
 
-| 决策 | 选项与依据 |
+| Decision | Options and how to choose |
 | --- | --- |
-| 产物模型 | **按名字装载**：一个运行时进程装载多个已安装的包（Node、Bun、Python），行名 `<前缀>:<模块>`。**编译成程序**：插件编进可执行文件，用 `--rutis-manifest` 自描述，按需启动（Go；Swift 在 macOS 上复用这套机制）。**应用托管**：插件编进应用，由应用连到 rutis（Swift / Kotlin 应用） |
-| 行名前缀 | 不得与已有前缀冲突：`py`、`bun`、`go`、`swift`、`kt` 等 |
-| 执行模型 | 每个进来的调用一个执行单元（线程、goroutine、Task、虚拟线程）就是可重入的；读线程只解析帧，不跑插件代码 |
-| 能力声明 | 按 `references/runtime-contract.md` §2 如实声明 `sync-wait`、`reentrant-sync`、`sync-stack`、`objects`。新运行时应当声明 `sync-wait`，否则不在等待环检测范围内 |
-| 通道 | 本地支持 `fd:3`、socket 路径拨回、`tcp:127.0.0.1:<port>`（Windows 用这个）；语言拿不到继承的 fd 时用拨回。远程支持 `listen:wss://` 和 `dial:wss://` |
-| 方法枚举与 schema | 语言有反射就自动派生（Go、Python），没有就用显式方法表加手写 schema（Swift、Kotlin） |
-| 分发 | 用该语言的标准包管理发布（npm、PyPI、Go 模块、SwiftPM、Maven Central），版本跟随 rutis 的发布列车 |
+| Artifact model | **Load by name**: one runtime process loads several installed packages (Node, Bun, Python); rows are `<prefix>:<module>`. **Compiled program**: plugins are built into an executable that describes itself with `--rutis-manifest` and is started on demand (Go; Swift on macOS reuses this machinery). **App hosting**: plugins are built into an app that connects to rutis (Swift / Kotlin apps) |
+| Row prefix | Must not collide with existing ones: `py`, `bun`, `go`, `swift`, `kt`, … |
+| Execution model | One execution unit per incoming call (thread, goroutine, Task, virtual thread) makes the runtime reentrant; the reader thread only parses frames and never runs plugin code |
+| Capabilities | Declare `sync-wait`, `reentrant-sync`, `sync-stack`, `objects` honestly, per `references/runtime-contract.md` §2. A new runtime should declare `sync-wait`; otherwise it is outside wait-cycle detection |
+| Channels | Local: `fd:3`, dialing back to a socket path, `tcp:127.0.0.1:<port>` (used on Windows); dial back when the language cannot take an inherited fd. Remote: `listen:wss://` and `dial:wss://` |
+| Method enumeration and schema | Derive them where the language has reflection (Go, Python); otherwise use an explicit method table and a hand-written schema (Swift, Kotlin) |
+| Distribution | The language's standard package channel (npm, PyPI, Go modules, SwiftPM, Maven Central); versions follow the rutis release train |
 
-## 4. 运行时契约
+## 4. The runtime contract
 
-完整内容见 `references/runtime-contract.md`。实现时最快的办法是对照一个现有实现读：
+All of it is in `references/runtime-contract.md`. The fastest way to get the behavior right is to read an existing implementation alongside it:
 
-- Python：https://github.com/arcships/rutis/tree/main/python/rutis/rutis（`peer.py`、`runner.py`、`__main__.py`、`websocket.py`）
-- Go：https://github.com/arcships/rutis/tree/main/go/rutis（`serve.go`、`listen.go`、`runtime.go`、`plugin.go`）
-- Bun：https://github.com/arcships/rutis/tree/main/bun/rutis-bun/src
+- Python: https://github.com/arcships/rutis/tree/main/python/rutis/rutis (`peer.py`, `runner.py`, `__main__.py`, `websocket.py`)
+- Go: https://github.com/arcships/rutis/tree/main/go/rutis (`serve.go`, `listen.go`, `runtime.go`, `plugin.go`)
+- Bun: https://github.com/arcships/rutis/tree/main/bun/rutis-bun/src
 
-## 5. rutis 仓库里要改的地方
+## 5. What changes in the rutis repository
 
-下面的清单按 Bun（arcships/rutis#200）和 Go（arcships/rutis#227）实际改动的文件整理。
+Compiled from the files Bun (arcships/rutis#200) and Go (arcships/rutis#227) actually changed.
 
-**语言侧**
-- [ ] `<语言>/…`：会话层、SDK、运行时入口、无宿主测试助手（如 Go 的 `rutistest`、Python 的 `rutis.testing`）
-- [ ] 一致性测试入口（供 Rust 测试拉起）
+**Language side**
+- [ ] `<language>/…`: session layer, SDK, runtime entry point, host-free test helper (like Go's `rutistest`, Python's `rutis.testing`)
+- [ ] A conformance entry point for the Rust tests to start
 
 **rutis-bridge**
-- [ ] `src/runtime/process.rs`：`Launcher::<语言>`（命令、工作目录、通道交接方式）
-- [ ] `src/runtime/local.rs`：`LocalRuntime::<语言>` 与运行时名
-- [ ] `src/runtime/mod.rs`；`Cargo.toml` 加 feature
-- [ ] 测试：`tests/runtime_conformance.rs`、`tests/session_matrix.rs`、`tests/<语言>_runtime.rs`；支持远程时加 `tests/websocket_conformance.rs`（拨出另有 `dial_conformance.rs`）
+- [ ] `src/runtime/process.rs`: `Launcher::<language>` (command, working directory, how the channel is handed over)
+- [ ] `src/runtime/local.rs`: `LocalRuntime::<language>` and the runtime name
+- [ ] `src/runtime/mod.rs`; a feature in `Cargo.toml`
+- [ ] Tests: `tests/runtime_conformance.rs`, `tests/session_matrix.rs`, `tests/<language>_runtime.rs`; for remote use `tests/websocket_conformance.rs` (and `dial_conformance.rs` for dialing out)
 
 **rutis-loader**
-- [ ] 按名字装载：`src/runtime.rs`（`RuntimeResolver`）。编译成程序：`src/runtime/<语言>.rs`，复用 Go 的清单机制
-- [ ] `src/lib.rs`；`Cargo.toml` 加 feature
-- [ ] 测试：`tests/<语言>_rows.rs`、`tests/multilang_<语言>.rs`、`tests/instance_<语言>.rs`、`tests/leases.rs`
+- [ ] Load by name: `src/runtime.rs` (`RuntimeResolver`). Compiled program: `src/runtime/<language>.rs`, reusing Go's manifest machinery
+- [ ] `src/lib.rs`; a feature in `Cargo.toml`
+- [ ] Tests: `tests/<language>_rows.rs`, `tests/multilang_<language>.rs`, `tests/instance_<language>.rs`, `tests/leases.rs`
 
 **rutis-host**
-- [ ] `src/config.rs`：新增 `runtimes.<语言>` 字段
-- [ ] `src/host.rs`：挂载分支、预检解释器或工具链版本、`runtimes.remote[].language` 的映射
-- [ ] `src/main.rs`、`src/project.rs`、`src/new.rs`：`check`、`dev`（宿主不编译，只调用项目自己的构建）、`new --lang <语言>`
-- [ ] `templates/<语言>/`：插件、测试、`rutis.dev.json`、发布 workflow
+- [ ] `src/config.rs`: a `runtimes.<language>` field
+- [ ] `src/host.rs`: the mount branch, a preflight check of the interpreter or toolchain version, the `runtimes.remote[].language` mapping
+- [ ] `src/main.rs`, `src/project.rs`, `src/new.rs`: `check`, `dev` (the host never compiles; it only runs the project's own build), `new --lang <language>`
+- [ ] `templates/<language>/`: plugin, tests, `rutis.dev.json`, publish workflow
 
-**发布与 CI**
-- [ ] `.github/workflows/ci.yml` 加 `runtimes-<语言>` job；`release.yml`
-- [ ] `scripts/train.mjs`：版本文件与包坐标
+**Release and CI**
+- [ ] `.github/workflows/ci.yml`: a `runtimes-<language>` job; `release.yml`
+- [ ] `scripts/train.mjs`: version file and package coordinates
 
-**文档（`.md` 与 `.en.md` 都要改）**
-- [ ] `docs/guide/<语言>-plugin.md`；`docs/guide/plugin-api.md` 加一列；`docs/guide/rutis-host.md`；涉及远程时改 `docs/guide/nodes.md`
-- [ ] `README` 的包表；`CONTRIBUTING` 的工具链说明
-- [ ] 多语言总体稿：里程碑与 §九
+**Documentation (both `.md` and `.en.md`)**
+- [ ] `docs/guide/<language>-plugin.md`; a column in `docs/guide/plugin-api.md`; `docs/guide/rutis-host.md`; `docs/guide/nodes.md` for remote use
+- [ ] The package table in the READMEs; toolchains in CONTRIBUTING
+- [ ] The multi-language master plan: milestones and §9
 
-## 6. 分阶段（照 Go / Swift 的节奏）
+## 6. Phases (the Go / Swift rhythm)
 
-1. 设计稿合并。
-2. 会话层与一致性测试入口：通过 `runtime_conformance`。
-3. 运行时契约、SDK 与 Rust 接入：通过 `<语言>_runtime`、`<语言>_rows` 以及 `multilang` 里的新列；现有测试全部保持通过。
-4. 开发流程：`new`、`dev`、`check`、模板、发布。
-5. 远程：`listen:` 与 `dial:`，通过 `websocket_conformance` 和 `dial_conformance`。
+1. Merge the design doc.
+2. Session layer and conformance entry point: pass `runtime_conformance`.
+3. Runtime contract, SDK and Rust wiring: pass `<language>_runtime`, `<language>_rows` and the new `multilang` column; all existing tests stay green.
+4. Developer workflow: `new`, `dev`, `check`, template, publishing.
+5. Remote: `listen:` and `dial:`, passing `websocket_conformance` and `dial_conformance`.
 
-## 7. 常见错误
+## 7. Common mistakes
 
-| 错误 | 正确做法 |
+| Mistake | Instead |
 | --- | --- |
-| 在 SDK 里实现依赖等待、重试、启动顺序 | 交给 rutis 门控；SDK 只执行 `rows.load` / `unload` |
-| 用 FFI 嵌入 Rust 来省掉协议实现 | 用平台语言实现；靠一致性测试保证和其他语言行为一致 |
-| 能力不声明或乱声明 | 按执行模型如实声明 `reentrant-sync`、`sync-stack`、`sync-wait` |
-| 在读线程上跑插件代码，或在读线程上做同步桥接 | 每个进来的调用一个执行单元 |
-| 宿主替插件编译代码 | `dev` 只调用项目自己的构建；`run` 只运行现成产物 |
-| 叶子事件跨进程转发 | 事件只在本运行时进程内分发；宿主 → 运行时由 `emits` 声明，运行时 → 宿主暂不可用 |
-| 文档只写中文或只写英文 | `.md` 与 `.en.md` 同步 |
-| 只跑自己的单测 | Rust 侧的一致性测试才是契约 |
+| Implementing dependency waits, retries or start order in the SDK | Leave gating to rutis; the SDK only carries out `rows.load` / `unload` |
+| Embedding Rust through FFI to avoid implementing the protocol | Implement it in the platform language; conformance tests keep it consistent with the others |
+| Omitting or guessing capabilities | Declare `reentrant-sync`, `sync-stack`, `sync-wait` according to the execution model |
+| Running plugin code, or bridging sync calls, on the reader thread | One execution unit per incoming call |
+| Having the host compile plugin code | `dev` runs only the project's own build; `run` runs only ready-made artifacts |
+| Forwarding leaf events across processes | Events are dispatched within the runtime process; host → runtime is declared with `emits`, runtime → host is not available yet |
+| Writing docs in only one language | Keep `.md` and `.en.md` in step |
+| Running only your own unit tests | The Rust-side conformance tests are the contract |

@@ -1,133 +1,133 @@
-> 摘自 rutis 仓库 `docs/guide/plugin-api.md`（main，2026-10-14），随 skill 一起分发以便独立使用；以原文为准：https://github.com/arcships/rutis/blob/main/docs/guide/plugin-api.md
+> Copied from `docs/guide/plugin-api.en.md` in the rutis repository (main, 2026-10-14) so this skill can be used on its own. The original is authoritative: https://github.com/arcships/rutis/blob/main/docs/guide/plugin-api.en.md
 
-# 插件 API
+# Plugin API
 
-TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`）和 Go 插件（`github.com/arcships/rutis/go/rutis`，见 [写一个 Go 插件](https://github.com/arcships/rutis/blob/main/docs/guide/go-plugin.md)）的写法与规则相同。当前插件 API 版本：**2**。
+TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) and Go plugins (`github.com/arcships/rutis/go/rutis`, see [Go plugins](https://github.com/arcships/rutis/blob/main/docs/guide/go-plugin.en.md)) use the same conventions. The current plugin API version is **2**.
 
-## 声明
+## Declarations
 
-| 声明 | TypeScript（`definePlugin({...})`） | Python（`define_plugin(apply, ...)` 或模块变量） | Go（`rutis.Define(rutis.Plugin[C]{...})`） | 含义 |
+| Declaration | TypeScript (`definePlugin({...})`) | Python (`define_plugin(apply, ...)` or module variable) | Go (`rutis.Define(rutis.Plugin[C]{...})`) | Meaning |
 | --- | --- | --- | --- | --- |
-| 用到的服务 | `inject: ['llm']` | `inject=["llm"]` | `Inject: []string{"llm"}` | 都就绪才启动；任何一个撤销，插件停下，等它回来再启动 |
-| 提供的服务 | `provides: { weather: { today: 'async' } }` | `provides={"weather": Weather}` 或 `{"weather": {"today": "async"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](https://github.com/arcships/rutis/blob/main/docs/guide/rutis.Sync("Unit"))}`（导出方法，除 `Sync` 列出的外都是 `async`） | 名字和每个方法的种类（`sync` / `async`）。只有声明过的方法能被别的插件调用 |
-| 配置 | `config: { type: 'object', ... }` | `config={...}`（模块变量写 `Config`） | 类型 `C`（Schema 由它生成），或 `Schema` | JSON Schema；宿主据此校验和展示配置 |
-| 启动 | `apply(ctx, config)` | `apply(ctx, config)` | `Apply: func(ctx *rutis.Ctx, config C) error` | 可以是 async；返回清理函数或不返回（Go：返回错误即装载失败） |
+| Services used | `inject: ['llm']` | `inject=["llm"]` | `Inject: []string{"llm"}` | The plugin starts when all are ready. If any is revoked, the plugin stops and waits for it to return. |
+| Services provided | `provides: { weather: { today: 'async' } }` | `provides={"weather": Weather}` or `{"weather": {"today": "async"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](https://github.com/arcships/rutis/blob/main/docs/guide/rutis.Sync("Unit"))}` (exported methods, `async` unless `Sync` names them) | Declares the service name and each method kind (`sync` / `async`). Other plugins can call only declared methods. |
+| Configuration | `config: { type: 'object', ... }` | `config={...}` (module variable: `Config`) | the type `C` (schema derived from it), or `Schema` | JSON Schema used by the host to validate and display configuration. |
+| Startup | `apply(ctx, config)` | `apply(ctx, config)` | `Apply: func(ctx *rutis.Ctx, config C) error` | May be async; returns a cleanup function or nothing (Go: an error fails the load). |
 
-## ctx
+## `ctx`
 
-| 方法 | 作用 |
+| Method | Purpose |
 | --- | --- |
-| `ctx.use(name)` | `inject` 里声明的服务。同一个运行时进程里的插件提供的，是对象本身；其他进程、其他语言、其他机器提供的，是代理 |
-| `ctx.provide(name, value)` | 提供服务，直到插件卸载，或调用返回的函数 |
-| `ctx.effect(cleanup)` | 插件卸载时运行 `cleanup`（可以是 async） |
-| `ctx.on(name, listener)` | 监听运行时进程共享事件总线上的事件：宿主发进来的（运行时的 `emits` 声明名字，见[在 Rust 应用里嵌入](https://github.com/arcships/rutis/blob/main/docs/guide/rust-host.md)），以及进程里插件 `ctx.emit` 的。监听随插件卸载注销；返回的函数立即注销 |
-| `ctx.emit(name, ...args)` | 向本运行时进程的事件总线分发事件，供本插件和同进程的其他插件监听；同步调用监听器，不等待它们返回的 Promise / 协程（Go 的接口见下） |
+| `ctx.use(name)` | Gets a service declared in `inject`. A service provided by a plugin in the same runtime process is the object itself; services from other processes, languages, or machines are proxies. |
+| `ctx.provide(name, value)` | Provides a service until the plugin is unloaded or the returned function is called. |
+| `ctx.effect(cleanup)` | Runs `cleanup` when the plugin is unloaded. It may be async. |
+| `ctx.on(name, listener)` | Listens on the runtime process's shared event bus: events the host emits into it (names declared with the runtime's `emits`, see [Embedding in a Rust application](https://github.com/arcships/rutis/blob/main/docs/guide/rust-host.en.md)) and events plugins in the process emit with `ctx.emit`. The listener is unregistered when the plugin unloads; the returned function unregisters it at once. |
+| `ctx.emit(name, ...args)` | Dispatches on this runtime process's event bus to listeners in this plugin and other plugins in the same process; calls listeners synchronously without awaiting returned promises/coroutines (for Go and listener errors, see below). |
 
-Node、Bun、Python 和 Go 都支持叶子插件事件（插件 API 2），并报告 `events` 运行时能力。Node 和 Bun 用 Cordis 自己的事件服务（Bun 的每个 row 持一个 Cordis fiber），因此和同进程的 Cordis 插件共享一条总线、分发语义与 Cordis 一致；Python 和 Go 的总线按同一套语义实现（对照 `cordis/src/events.ts` 与 `crates/rutis/src/bus.rs`）。Go 的接口是 `ctx.On(name, func(context.Context, ...any) error) func()` 和 `ctx.Emit(callerCtx, name, args...) error`；监听器收到保留当前调用链、随所属插件卸载取消的 context；卸载等正在执行的监听器结束后才运行清理。插件方法里发事件时传收到的 `callerCtx`，在 `Apply` 里可传 `ctx` 本身。
+Node, Bun, Python and Go support leaf events (plugin API 2) and report the `events` runtime feature. Node and Bun use Cordis's own event service (each Bun row holds a Cordis fiber), so they share one bus with Cordis plugins in the same process and dispatch exactly as Cordis does; Python and Go implement the same semantics (against `cordis/src/events.ts` and `crates/rutis/src/bus.rs`). Go exposes `ctx.On(name, func(context.Context, ...any) error) func()` and `ctx.Emit(callerCtx, name, args...) error`; listeners receive a context preserving the current call chain and cancelled when their plugin unloads. Unload waits for running listeners to finish before cleanups. Pass the received caller context when emitting from a plugin method; in `Apply`, the plugin's `ctx` itself can be used.
 
-本地发事件按注册顺序调用监听器：Node、Bun 和 Python 的 `ctx.emit` 同步抛错时停止后续监听器；返回的 Promise / 协程不等待，未处理的异步失败结束运行时进程。Go 的 `ctx.Emit` 同步执行，遇到首个错误返回；插件另起的 goroutine 沿用 `ctx.Go` 的约定。宿主 `Process::emit` 则等待全部监听器，并以 `AggregateError` 汇总错误；Go 为这些监听器启动 goroutine，因此不保证宿主事件监听器的执行顺序。与 Rust 的 `Ctx::dispose_self` 同一约定：监听器不得等待自己所属的 row 卸载完成（Go 的监听器经宿主回调同步卸载或更新自身行会等到自己），要卸载就结束监听器之后再做。
+Local emission calls listeners in registration order. A synchronous exception in Node, Bun or Python stops later listeners; returned promises/coroutines are not awaited, and unhandled asynchronous failures end the runtime process. Go's `ctx.Emit` executes synchronously and returns the first error; goroutines started by the plugin follow the existing `ctx.Go` contract. The host's `Process::emit` instead waits for every listener and aggregates failures as `AggregateError`. Go starts a goroutine for each host-event listener, so their execution order is not guaranteed. As with Rust's `Ctx::dispose_self`, a listener must not wait for its own row to unload (a Go listener that synchronously unloads or updates its own row through a host callback would wait on itself): let the listener return first.
 
-一个跨过会话的错误被再次抛出时，Node、Bun、Python 和 Go 都带着它完整的错误图（cause、`AggregateError` 的子错误）再跨一次，不限于聚合的情形：Node 解码出的是真正的 `Error` 对象，重新编码时自然带上整个图，Python 和 Go 的 `encode_error` / `encodeError` 把 `RemoteError` 的图拼进去（节点追加、引用偏移）以保持一致。
+An error that crossed a session and is thrown on crosses again with its whole error graph (causes, an `AggregateError`'s children) on Node, Bun, Python and Go, not only inside an aggregate: Node decodes it into a real `Error` whose re-encoding carries the whole graph, and Python's `encode_error` and Go's `encodeError` splice a `RemoteError`'s graph in (nodes appended, references shifted) to match.
 
-`internal/*` 属于运行时，不能监听、发出或列在 `emits` 中。`RuntimePlugin` / `LocalRuntime` 设置了 `emits`，而运行时未报告 `events` 时，挂载失败（`lacks events`）。这项能力检查不用于直接 `Process::mount` / `attach` 的 Cordis 静态挂载：旧版 Node 已支持 Cordis 事件，却没有这项能力声明。
+`internal/*` belongs to the runtime and cannot be listened to, emitted or listed in `emits`. When `RuntimePlugin` / `LocalRuntime` has `emits` configured, a runtime lacking the `events` feature fails at mount (`lacks events`). This feature check does not cover direct `Process::mount` / `attach` for static Cordis mounts: older Node runtimes already deliver Cordis events without reporting the feature.
 
-`emits` 只声明宿主 → 运行时。叶子插件的 `ctx.emit` / `ctx.Emit` 在进程内分发；`RuntimePlugin` 没有提供 `Mount.events` / `EventSink` 配置入口，所以运行时 → Rust 宿主的方向暂不可用。
+`emits` only declares host → runtime events. A leaf plugin's `ctx.emit` / `ctx.Emit` dispatches within the process; `RuntimePlugin` exposes no `Mount.events` / `EventSink` configuration, so runtime → Rust host forwarding is not available here.
 
-Node 和 Python 的测试工具用运行时自己的那份事件实现：Node 的测试工具与运行时同样走 Cordis，Python 的测试工具用 `rutis.events`。测试工具也在加载时声明事件：Node 的 `load(plugin, { emits })`、Python 的 `load(plugin, emits=[...])`、Go 的 `rutistest.Load(t, plugin, config, services, "event", ...)`。宿主发入的入口分别是 `await t.emit(...)`、`await t.emit(...)` 和 `loaded.Emit(callerCtx, name, args...)`，都校验白名单并等待监听器。Python 测试工具在卸载时取消并收尾未完成的本地异步监听器；已有测试体或清理异常时保留原始异常，否则报告监听失败。真实运行时对未处理的异步失败退出进程。
+The Node and Python test tools use the runtime's own event implementation: Node's goes through Cordis, as the runtime does, and Python's uses `rutis.events`. Test tools declare host events at load: Node's `load(plugin, { emits })`, Python's `load(plugin, emits=[...])`, and Go's `rutistest.Load(t, plugin, config, services, "event", ...)`. Their host-emission entry points are `await t.emit(...)`, `await t.emit(...)`, and `loaded.Emit(callerCtx, name, args...)`; all check the declaration and wait for listeners. The Python test tool cancels and settles unfinished local asynchronous listeners at unload. It preserves an existing test-body or cleanup exception; otherwise it reports listener failures. A real runtime exits on an unhandled asynchronous failure.
 
-清理按注册的相反顺序运行：`apply` 返回的清理函数最先，然后是 `ctx.effect` 注册的。
+Cleanups run in reverse registration order: the function returned by `apply` runs first, followed by functions registered with `ctx.effect`.
 
-Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（或 `*rutis.Service`）；`ctx.Provide(name, value)`；`ctx.Effect(func(context.Context) error)`；`ctx.Go(task)` 起一个卸载时停下的 goroutine。`*rutis.Ctx` 是插件卸载时取消的 `context.Context`。
+In Go: `ctx.Use(name, &target)` binds the service to a struct of function fields (or a `*rutis.Service`); `ctx.Provide(name, value)`; `ctx.Effect(func(context.Context) error)`; `ctx.Go(task)` runs a goroutine stopped at unload. `*rutis.Ctx` is a `context.Context` cancelled when the plugin unloads.
 
-## 生命周期
+## Lifecycle
 
-插件不决定自己什么时候运行，宿主决定：
+The host controls when a plugin runs:
 
-- `inject` 的服务都就绪时启动（`apply`）；
-- 任何一个撤销时停下（运行清理），它回来时再启动；
-- 配置变了：重启（运行清理，再用新配置 `apply`）；
-- 插件提供的服务被撤销时，用到它的插件先停下，提供者后停。
+- It starts (`apply`) when all injected services are ready.
+- If any injected service is revoked, it stops and cleans up. It starts again when the service returns.
+- A configuration change restarts it: cleanup runs, then `apply` runs with the new configuration.
+- When a provided service is revoked, plugins that use it stop first, followed by its provider.
 
-所以 `apply` 里拿到的服务在插件运行期间一直有效，不需要处理"服务中途消失"。
+Services obtained in `apply` remain valid while the plugin is running, so the plugin does not need to handle a service disappearing midway through its work.
 
-宿主停止时卸载所有插件，每个清理执行一次，然后运行时进程退出。宿主没有卸载就没了（被强制结束、崩溃）时，运行时发现和宿主的连接断开，自己卸载所有插件，然后退出进程；插件留下的定时器、套接字、线程、goroutine 不会让它继续运行。
+When the host stops, it unloads every plugin, each cleanup runs once, and then the runtime process exits. When the host goes away without unloading them (it was killed, or crashed), the runtime sees its connection to the host close, unloads every plugin itself, and exits; timers, sockets, threads or goroutines a plugin left behind do not keep it running.
 
-清理有截止时间：宿主停止时是 `rutis-host` 的 `--shutdown-timeout`（默认 10 秒，见 [rutis-host](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.md#停止与退出码)）；宿主没了时，运行时用同一个时间（`rutis-host` 把它放在环境变量 `RUTIS_SHUTDOWN_TIMEOUT` 里传给运行时，没有时 10 秒）。过了截止时间还没完成的清理，以及排在它后面的，不再等待：运行时在 stderr 写一行说明，以退出码 1 退出。所以必须完成的工作不要只靠清理；清理里不要无限等待。Node 和 Bun 里，同步阻塞的清理（死循环）占住线程，截止时间无法打断。
+Cleanups have a deadline: when the host stops, the `--shutdown-timeout` of `rutis-host` (10 seconds by default, see [rutis-host](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.en.md#stopping-and-exit-status)); when the host went away, the runtime uses the same time (`rutis-host` passes it to its runtimes in the `RUTIS_SHUTDOWN_TIMEOUT` environment variable; 10 seconds without it). A cleanup not finished by then, and those after it, are not waited for: the runtime writes a line saying so on stderr and exits with status 1. So work that must happen should not rely on cleanup alone, and a cleanup should not wait without end. In Node and Bun, a cleanup that blocks synchronously (an endless loop) holds the thread, and the deadline cannot interrupt it.
 
-## 值怎样传递
+## Passing values
 
-插件和它用到的服务可能不在同一个进程。跨进程时：
+A plugin and the services it uses may run in different processes. Across processes:
 
-| 值 | 怎样传递 |
+| Value | How it is passed |
 | --- | --- |
-| `null` / `None`、布尔、数字、字符串 | 复制 |
-| 数组 / list、普通对象 / 字符串键的 dict | 递归复制 |
-| Python dataclass | 复制为 dict |
-| `Error` / 异常 | 作为值传递时复制为数据 `{ name, message }`（TypeScript 另带 `stack`）；抛出时另一端得到同名、同消息的错误（TypeScript 中内置错误类保留类，其余是 `Error`；Python 中是 `rutis.peer.RemoteError`，`name` 是原来的类名），其他属性不传 |
-| 函数、Promise / 协程 | 按引用：另一端调用或 await 的是原来那个 |
-| 带方法的对象、类的实例 | 按引用：另一端拿到代理，调用的是原对象 |
-| symbol、bigint、Map、Set、TypeScript 的 Date、二进制、循环引用、`NaN` / `Infinity` | 不能跨进程（调用失败）。Map、Set、Date、二进制、bigint 是否改为可传递由 [#308](https://github.com/arcships/rutis/issues/308) 决定，在此之前真实运行时和测试工具都拒绝它们 |
-| TypeScript 数据（不含函数、带方法的对象）里的 `undefined` | 变成 `null` |
-| Go 的结构体、切片、`map[string]T` | 按 JSON 复制（遵循 `json` 标签）；结构体一律是数据，要按引用传对象写 `rutis.Ref(v)`。超出 ±2^53−1 的整数、`[]byte`、channel、非字符串键的 map 不能跨进程 |
-| Python 的 `int` | 复制。超出 ±(2^53−1)（即绝对值大于 9007199254740991）的整数不能跨进程：发送它的一方在发出前拒绝，只让这次调用失败，错误信息说明上限（`integer beyond ±(2^53-1)`），会话继续；不论它是参数还是返回值、嵌套在第几层。和 JavaScript 的安全整数、Go 的上限相同。需要更大的整数时用字符串传。`bool` 不受影响。见 [#356](https://github.com/arcships/rutis/issues/356) |
-| 嵌套超过 64 层的值 | 不能跨进程（这次调用失败，见下） |
+| `null` / `None`, booleans, numbers, strings | Copied |
+| Arrays / lists, plain objects / dictionaries with string keys | Recursively copied |
+| Python dataclasses | Copied as dictionaries |
+| `Error` / exceptions | Passed as a value: copied as data `{ name, message }` (in TypeScript also `stack`). Thrown: the other side receives an error with the same name and message (in TypeScript a built-in error class keeps its class, any other is an `Error`; in Python a `rutis.peer.RemoteError` whose `name` is the original class name); other attributes are not passed |
+| Functions, Promises / coroutines | Passed by reference: the other side calls or awaits the original |
+| Objects with methods, class instances | Passed by reference: the other side receives a proxy that calls the original object |
+| Symbols, bigints, Maps, Sets, TypeScript Dates, binary data, cyclic references, `NaN` / `Infinity` | Cannot cross processes (the call fails). Whether Maps, Sets, Dates, binary data and bigints should cross is decided in [#308](https://github.com/arcships/rutis/issues/308); until then both the real runtimes and the test tools refuse them |
+| `undefined` inside TypeScript data (holding no functions or objects with methods) | Becomes `null` |
+| Go structs, slices, `map[string]T` | Copied as JSON (by their `json` tags); a struct is always data, `rutis.Ref(v)` passes an object by reference. Integers beyond ±2^53−1, `[]byte`, channels and non-string map keys cannot cross |
+| Python `int` | Copied. An integer beyond ±(2^53−1) (absolute value above 9007199254740991) cannot cross processes: the side sending it refuses it before sending, failing only that call, with an error naming the limit (`integer beyond ±(2^53-1)`), and the session goes on; whether it is an argument or a result, at any nesting depth. The same limit as JavaScript's safe integers and Go. Pass larger integers as strings. `bool` is not affected. See [#356](https://github.com/arcships/rutis/issues/356) |
+| Values nested more than 64 levels deep | Cannot cross processes (the call fails, see below) |
 
-嵌套深度：一个值最多嵌套 **64 层**。数组 / list / tuple、对象 / dict（含 dataclass）、Go 的切片、map、结构体各算一层，里面有没有引用都一样；作为值传递的 `Error` / 异常也算一层。调用的参数列表本身不算一层：每个参数各自最多 64 层；返回值最多 64 层。更深的值由**要发送它的一方**在发出之前拒绝，只让这次调用失败，错误信息说明上限（`value nested deeper than 64 levels`）：
+Nesting depth: a value nests at most **64 levels**. Each array / list / tuple, object / dictionary (dataclasses included), and Go slice, map or struct is a level, whether or not it holds references; an `Error` / exception passed as a value is a level too. A call's argument list is not a level: each argument may nest 64 levels; a result may nest 64 levels. The side that **would send** a deeper value refuses it before sending, failing only that call, with an error naming the limit (`value nested deeper than 64 levels`):
 
-- 作为参数：调用方的这次调用失败（Rust 中是 `Error::Value`），对端不执行它；
-- 作为返回值：调用方收到被调方抛出的错误；
-- 会话继续，同一会话上的其他调用（包括同时进行的）不受影响。
+- as an argument: the caller's call fails (in Rust with `Error::Value`) and the far end does not run it;
+- as a result: the caller receives the error the callee throws;
+- the session goes on, and other calls on it (those running at the same time included) are not affected.
 
-五个运行时（Rust、Node、Bun、Python、Go）和测试工具的严格模式都按这个上限在发送时检查。上限约束的是发送：接收的 Rust 一侧为不遵守上限的对端（例如更早的版本）留了余量，线上不超过 144 层的帧照常读取，所以从这样的对端**收到**的值可能超过 64 层（最多约 70 层含引用的数组、约 142 层数据）；这部分余量不保证，插件不要依赖。帧更深、Rust 一侧不读时：能看出它属于哪个调用，就只让那个调用失败（对端的调用收到错误；对本侧调用的回复让本侧的调用失败），其中的引用直到会话结束才释放；看不出属于哪个调用时，结束会话并说明原因。见 [#279](https://github.com/arcships/rutis/issues/279)。
+All five runtimes (Rust, Node, Bun, Python, Go) and the test tool's strict mode check this limit when sending. The limit binds the sender: the receiving Rust side leaves a margin for a far end that does not keep to it (an older version, say) and reads frames up to 144 levels deep on the wire, so a value **received** from such a far end may nest deeper than 64 levels (up to about 70 levels of arrays holding references, about 142 of data); that margin is not guaranteed and plugins must not rely on it. When such a far end sends a frame nested too deep for the Rust side to read: if the frame shows which call it belongs to, only that call fails (the far end's call receives an error; a reply to this side's call fails that call), and the references in it are released only when the session ends; if it does not, the session ends, saying why. See [#279](https://github.com/arcships/rutis/issues/279).
 
-数字有下面这些边界。它们是现在的行为，**不保证**以后不变（明确不保证），依赖它们的插件需要自己处理：
+Numbers have the limits below. They describe current behaviour and are **not guaranteed** to stay this way (explicitly not guaranteed); a plugin that depends on them must handle them itself:
 
-- JavaScript（Node、Bun）里数字是 IEEE 754 双精度：超出 ±(2^53−1) 的整数变成最接近的双精度值（2^53+1 到 JS 一端是 2^53）；`-0` 变成 `0`；整数值的浮点数（Python 的 `2.0`）到 JS 一端就是 `2`，再传出去是整数。需要精确的大整数时用字符串传。
-- Python 发出的整数都在 ±(2^53−1) 以内（更大的不能跨进程，见上表）；Python 保留 `-0.0`。
-- NaN、±Infinity 不能跨进程。
+- In JavaScript (Node, Bun) numbers are IEEE 754 doubles: an integer beyond ±(2^53−1) becomes the nearest double (2^53+1 arrives in JS as 2^53); `-0` becomes `0`; an integral float (Python's `2.0`) arrives in JS as `2` and leaves again as an integer. Pass large integers that must stay exact as strings.
+- Every integer Python sends is within ±(2^53−1) (larger ones cannot cross, see the table above); Python keeps `-0.0`.
+- NaN and ±Infinity cannot cross.
 
-同一个进程里没有复制，所以"传过去之后改原对象，另一端也看到"这类写法在单元测试里可能成立、跨进程就不成立。测试工具的严格模式（默认）按上表传值，提前暴露这种问题。
+Values are not copied within one process. Code that mutates an object after passing it may work in a unit test but fail across processes. The test tool's strict mode (enabled by default) applies the rules above to expose this early.
 
-### 测试工具与真实运行时的差异
+### Where the test tool differs from a real runtime
 
-测试工具（`@arcships/rutis/testing`、`rutis.testing`）和真实运行时对同一份期望文件比对：对同一个插件做同一组调用（同步、异步、回调、错误、上表的值），结果必须相同（[`weather.expected.json`](https://github.com/arcships/rutis/blob/main/crates/rutis-bridge/src/runtime/testing/weather.expected.json)）。严格模式下已知的差异只有下面这些：
+The test tools (`@arcships/rutis/testing`, `rutis.testing`) and the real runtimes are checked against the same expectations file: the same calls on the same plugin (sync, async, callbacks, errors, the values in the table above) must give the same results ([`weather.expected.json`](https://github.com/arcships/rutis/blob/main/crates/rutis-bridge/src/runtime/testing/weather.expected.json)). In strict mode, these are the only known differences:
 
-| 差异 | 原因 |
+| Difference | Why |
 | --- | --- |
-| 结束进程的插件（`process.exit`、`os._exit`）结束的是测试本身 | 测试工具在测试的进程里运行插件；期望文件里这一条标为 `allowed`，测试工具不做这个调用 |
-| 不重启：配置变化、注入的服务撤销都不会让插件停下再启动 | `load` 只启动一次，生命周期由宿主决定（见上） |
-| 同步调用不阻塞，不会出现 `SyncWaitCycle`；没有取消（`AbortSignal`、协程取消） | 插件与测试在同一个事件循环里 |
-| Python：跨过边界的异常是 `RemoteError`，它的 `__cause__` 是原来的异常 | 方便调试；真实运行时的 `RemoteError` 没有 `__cause__` |
-| TypeScript：只能加载 `definePlugin` 写的插件，不能加载 Cordis 插件（事件用的是 Cordis 的事件服务，插件模型仍不是 Cordis 的） | 测试工具只挂一个插件，没有服务与依赖门控 |
-| TypeScript / Python 事件：被测插件只听到自己 `ctx.emit` 和 `t.emit` 发的事件；真实运行时整个进程共享一条事件总线，同进程其他插件（Node 上还有 Cordis 插件）发的事件也会听到 | 测试工具只加载一个插件。`t.emit` 只接受加载时 `emits` 声明的名字，与 `RuntimePlugin::emits` 相同；两边都拒绝 `internal/*` |
-| Python 工具在卸载时取消并收尾本地异步监听，测试体或清理异常优先；真实运行时在未处理的异步失败时退出进程 | 避免结束测试进程，同时让测试明确失败 |
+| A plugin that ends its process (`process.exit`, `os._exit`) ends the test | The test tool runs the plugin in the test's process; the expectations file marks this entry `allowed`, and the test tool does not make that call |
+| No restarts: a config change or a withdrawn injected service does not stop and start the plugin | `load` starts it once; the host decides the lifecycle (see above) |
+| Sync calls do not block, so there is no `SyncWaitCycle`; no cancellation (`AbortSignal`, coroutine cancellation) | The plugin and the test share one event loop |
+| Python: an exception that crosses is a `RemoteError` whose `__cause__` is the original exception | For debugging; a real runtime's `RemoteError` has no `__cause__` |
+| TypeScript: only plugins written with `definePlugin` load, not Cordis plugins (events go through Cordis's event service; the plugin model is still not Cordis's) | The tool mounts one plugin, with no services or dependency gating |
+| TypeScript / Python events: the plugin under test hears only what it emits with `ctx.emit` and what `t.emit` sends; on a real runtime the whole process shares one event bus, so it also hears other plugins in the process (and, on Node, Cordis plugins) | The test tool loads one plugin. `t.emit` accepts only names declared in `emits` at load, as `RuntimePlugin::emits`; both refuse `internal/*` |
+| The Python tool cancels and settles local asynchronous listeners at unload, preserving test-body or cleanup exceptions; the real runtime exits on an unhandled asynchronous failure | Keeps the test process running while failing the test explicitly |
 
-Map、Set、Date、二进制、bigint 两边都拒绝，这不是差异；它们以后是否可以传递见 [#308](https://github.com/arcships/rutis/issues/308)。关闭严格模式（`strict: false`）时值不经过上表，以上之外的差异都可能出现。Go 的 `rutistest` 尚未对整份期望文件比对；四种真实运行时都比对其中的事件期望。
+Maps, Sets, Dates, binary data and bigints are refused on both sides, so they are not a difference; whether they will cross later is [#308](https://github.com/arcships/rutis/issues/308). With strict mode off (`strict: false`), values skip the table above and other differences can appear. Go's `rutistest` is not yet checked against the full file; all four real runtimes are checked against its event expectations.
 
-## 同步调用与可重入
+## Synchronous calls and reentrancy
 
-声明为 `sync` 的方法同步返回结果，跨进程时调用方阻塞等待。期间：
+A method declared `sync` returns synchronously. Across processes, the caller blocks while waiting. During that wait:
 
-- 被调用的一方如果反过来调用调用方（回调），调用能到达正在等待的调用方并执行；
-- Python 运行时在同步等待期间也执行其他进来的调用，所以 Python 插件的服务可能在它自己正处于一次同步调用之中时被调用：**调用别的服务时不要持有锁**；
-- Go 运行时每个进来的调用都在自己的 goroutine 上执行，所以总是可重入：Go 插件提供的对象要能被并发调用。调用链放在 `context.Context` 里：调用别的服务时**把收到的 ctx 传下去**，否则正在同步等你的调用方可能认不出你的回调。
-- Node 运行时在同步等待期间只执行属于这条调用链的调用，其他调用放到它的栈清空之后。
-- Python、Node（和 Bun）运行时在同步等待期间执行的调用压在等待的调用之上：先开始的调用要等后开始的结束。
+- If the callee calls back into the caller, the callback can reach and run in the waiting caller.
+- The Python runtime also handles other incoming calls while waiting synchronously. A Python service may therefore be called while it is already handling another synchronous call. **Do not hold locks while calling another service.**
+- The Go runtime runs every incoming call on a goroutine of its own, so it is always reentrant: provided Go objects must be safe for concurrent use. The call chain travels in `context.Context`: **pass on the ctx you were given** when calling other services, or a synchronous caller waiting on you may not recognize your callback.
+- The Node runtime handles only calls that belong to the current call chain while waiting synchronously; it runs the others once its stack is empty.
+- In the Python, Node (and Bun) runtimes, a call run during a synchronous wait is stacked above the waiting one: the call that started first waits for the one that started later.
 
-几个运行时互相同步调用时，可能所有参与方都在等别人：两个 Node 运行时互相同步调用；一个 Node 运行时和两个 Python 运行时嵌套调用，也可能如此。宿主在转发每个同步调用之前检查它会不会形成这样的等待环；会的话不转发，调用方得到 `SyncWaitCycle` 错误，其余调用照常完成。收到它时不要立即重试同一个调用（多半会再次形成同一个环），可以改用 `async` 方法、换个时机，或者把它当作失败处理。
+When runtimes call each other synchronously, every participant may end up waiting for another: two Node runtimes calling each other, or one Node and two Python runtimes in a nested pattern. Before forwarding each synchronous call, the host checks whether it would close such a wait cycle; if it would, the call is not forwarded, its caller gets a `SyncWaitCycle` error, and every other call completes. Do not retry the same call at once (it will most likely close the same cycle again): use an `async` method, try at another moment, or treat it as a failure.
 
-检查只涵盖声明了 `sync-wait` 能力的运行时（本仓库的 Node、Python、Bun 运行时；协议见[多语言设计](https://github.com/arcships/rutis/blob/main/docs/design-multilang-runtimes-2026-10-03.md) §九）。没有声明的运行时（旧版 SDK、Go 运行时）发出的同步调用不在检查之内，与以前一样可能卡死；不声明 `reentrant-sync` 的运行时按不可重入看待。跨运行时、可能交叉的调用仍然首选 `async` 方法。
+The check covers runtimes that declare the `sync-wait` capability (the Node, Python and Bun runtimes of this repository; the protocol is in §9 of the [multi-language design](https://github.com/arcships/rutis/blob/main/docs/design-multilang-runtimes-2026-10-03.en.md)). Synchronous calls from a runtime that does not declare it (an older SDK, the Go runtime) are outside the check and may deadlock as before; a runtime that does not declare `reentrant-sync` is taken as non-reentrant. For calls across runtimes that may cross in both directions, `async` methods are still the first choice.
 
-需要等待事件循环推进的结果（例如在同步方法里等一个 Promise）不能放在同步方法里，会得到 `SyncWaitCycle` 错误：改成 `async`。
+Do not wait inside a synchronous method for a result that requires the event loop to advance, such as a Promise. This produces `SyncWaitCycle`; make the method `async` instead.
 
-`async` 方法在回复之前就执行到它的第一个 `await`，和 JS 的 async 函数一样；从不挂起的 `async` 方法因此在同步调用链上也能被等待。各个支持的 Python 版本都是这样（3.12 起是 asyncio 自带的 eager start，3.10、3.11 由 rutis 实现）。
+An `async` method runs up to its first `await` before the reply, like a JS async function, so an `async` method that never suspends can be awaited inside a synchronous call chain too. This holds on every supported Python (asyncio's own eager start from 3.12, rutis's on 3.10 and 3.11).
 
-## 取消
+## Cancellation
 
-async 方法的调用方放弃等待（例如超时）时，调用被取消：被调用的 Python 协程被取消；Go 方法的 `context.Context` 被取消；JavaScript 方法在调用方传了 `AbortSignal` 参数时收到 abort（Rust 绑定调用 Cordis 方法时会传）。没有这两种情况时，被调用的方法照常运行完，结果被丢弃。
+When the caller abandons an async call (for example, on timeout), the call is cancelled: a Python coroutine is cancelled, a Go method's `context.Context` is cancelled, and a JavaScript method receives an abort when the caller supplied an `AbortSignal` (Rust bindings pass one when calling Cordis methods). Without either mechanism, the callee runs to completion and its result is discarded.
 
-## 版本
+## Versions
 
-插件上标记着它所用的插件 API 版本（`definePlugin` / `define_plugin` / `rutis.Define` 自动标记）。运行时比插件旧时，加载失败并说明需要升级什么；插件依赖 SDK 的大版本范围即可，不需要与宿主版本对齐。
+Plugins are tagged with the plugin API version they use (`definePlugin` / `define_plugin` / `rutis.Define` adds the tag automatically). If the runtime is older than the plugin requires, loading fails with an explanation of what to upgrade. Depend on the SDK's major version range; it does not need to match the host version.
 
-插件 API 2 增加叶子事件。新版运行时继续接受 API 1；升级 SDK 后生成的 API 2 插件需要一起升级运行时，Go 二进制还需要支持 API 2 的宿主。协议版本和 Go manifest 格式不变。
+Plugin API 2 adds leaf events. New runtimes still accept API 1. Plugins tagged API 2 by the new SDK need an updated runtime; Go binaries also need a host supporting API 2. Wire protocol and Go manifest formats are unchanged.

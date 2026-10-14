@@ -1,18 +1,18 @@
-> 摘自 rutis 仓库 `docs/guide/nodes.md`（main，2026-10-14），随 skill 一起分发以便独立使用；以原文为准：https://github.com/arcships/rutis/blob/main/docs/guide/nodes.md
+> Copied from `docs/guide/nodes.en.md` in the rutis repository (main, 2026-10-14) so this skill can be used on its own. The original is authoritative: https://github.com/arcships/rutis/blob/main/docs/guide/nodes.en.md
 
-# 连接节点
+# Connect Nodes
 
-一个 rutis 宿主是一个**节点**。节点之间用 **link** 连接：一端拨号（`dial`），一端监听（`listen`），连上后在这条连接上共享服务、代为运行插件、转发事件。断开后自动重连。
+A rutis host is a **node**. Nodes connect through a **link**: one side dials (`dial`) and the other listens (`listen`). Once connected, they can share services, run plugins on each other's behalf, and forward events. The connection reconnects automatically when interrupted.
 
-下面用 `rutis.json` 的行来写；在 Rust 里用 `rutis_bridge::PeerPlugin` 做同样的事（见 [在 Rust 应用里嵌入](https://github.com/arcships/rutis/blob/main/docs/guide/rust-host.md)）。
+The examples below configure rows in `rutis.json`. In Rust, use `rutis_bridge::PeerPlugin` for the same purpose (see [Embed in a Rust application](https://github.com/arcships/rutis/blob/main/docs/guide/rust-host.en.md)).
 
-## 一条 link
+## A link
 
 ```json
 { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis" } }
 ```
 
-另一端（`office`）监听：
+The other side (`office`) listens:
 
 ```json
 {
@@ -24,12 +24,12 @@
 }
 ```
 
-两端用同一个 token：拨号方出示 `RUTIS_TOKEN`（或 `RUTIS_TOKEN_OFFICE`），监听方用它核对来者是 `main`。
+Both sides use the same token. The dialing side presents `RUTIS_TOKEN` (or `RUTIS_TOKEN_OFFICE`); the listening side uses it to verify that the peer is `main`.
 
-- `dial` 是 `wss://…`（跨机器，必须 TLS），或 `ws://127.0.0.1…`（本机回环）。
-- 自签证书：把签发它的 CA 放进拨号方的 `RUTIS_CA`。
-- 断开后重连：从 0.5 秒开始退避，最长 30 秒；凭据被拒（403、证书不受信任）时每 30 秒重试一次；协议不兼容时停止并报告。
-- `rutis-host run` 在 link 的状态变化时打印一行，带可读的类别，不带 token；节点行自己的 `running` 只说明这一行在运行，不说明连上了：
+- `dial` accepts `wss://…` for remote connections (TLS required) or `ws://127.0.0.1…` for the local loopback interface.
+- For a self-signed certificate, add its issuing CA to `RUTIS_CA` on the dialing side.
+- After a disconnect, retries use backoff starting at 0.5 seconds and capped at 30 seconds. Rejected credentials (403 or an untrusted certificate) are retried every 30 seconds. An incompatible protocol stops retrying and reports an error.
+- `rutis-host run` prints a line when a link's state changes, with a readable category and never the token. The node row's own `running` only says that the row runs, not that the link is connected:
 
   ```
   office: link connected
@@ -38,41 +38,41 @@
   office: link stopped: incompatible (office does not declare runtime)
   ```
 
-  `auth-rejected` 是凭据被拒（token 不对、证书名字不符或过期、CA 不受信任），`incompatible` 是不兼容（不再重试），`link down` 是暂时连不上。完整格式见 [rutis-host 打印什么](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.md#run-打印什么)。
-- 监听方的 link 还没就绪时连进来的拨号方会被要求重试，所以两端可以按任意顺序启动。
+  `auth-rejected` means the credentials were refused (a wrong token, a certificate for another name or expired, an untrusted CA), `incompatible` that the ends do not fit (not retried), and `link down` that the far end cannot be reached for now. The full format is in [What `run` prints](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.en.md#what-run-prints).
+- A dialing peer that arrives before the listening side's link is ready is asked to retry, so either side can start first.
 
-## 在 link 上做什么
+## What a link can do
 
-节点行的 `config` 决定这条连接上做什么。`export`、`import`、`events` 改了不会断开连接，只重启对应的那部分。
+The node row's `config` determines what happens over the connection. Changing `export`, `import`, or `events` does not disconnect the link; only the corresponding feature restarts.
 
-| 字段 | 作用 |
+| Field | Purpose |
 | --- | --- |
-| `export: ["weather"]` | 把本节点的服务 `weather` 给对端用 |
-| `import: ["calendar"]` | 把对端的服务 `calendar` 作为本节点的服务；本节点已有同名服务时拒绝 |
-| `events: { "out": ["tick"], "in": ["tock"] }` | 事件单向转发 |
-| `host: true` | 允许对端在本节点上运行这里装着的插件（只对可信的对端打开） |
-| `rows: true` | 本文件里 `peer:<对端>/<插件>` 的行在对端运行 |
-| `runtime: "<名字>"` | 对端是一个语言运行时，见下文 |
+| `export: ["weather"]` | Makes this node's `weather` service available to the peer. |
+| `import: ["calendar"]` | Registers the peer's `calendar` service on this node. It is rejected if this node already has a service with that name. |
+| `events: { "out": ["tick"], "in": ["tock"] }` | Forwards events in one direction. |
+| `host: true` | Allows the peer to run plugins installed on this node. Enable only for trusted peers. |
+| `rows: true` | Runs rows named `peer:<peer>/<plugin>` from this file on the peer. |
+| `runtime: "<name>"` | Identifies the peer as a language runtime; see below. |
 
-服务跨节点时调用链保持：同步调用期间的回调、回调里再调回去，都能穿过多个节点。
+Calls retain their call chain across nodes: callbacks during a synchronous call, including callbacks that call back again, can cross multiple nodes.
 
-## 在别的节点上运行插件
+## Run a plugin on another node
 
-对端开了 `host: true`，本端开了 `rows: true` 时，`peer:<对端>/<插件>` 的行在对端加载那个插件：
+When the peer enables `host: true` and this node enables `rows: true`, a `peer:<peer>/<plugin>` row loads that plugin on the peer:
 
 ```json
 { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "rows": true } },
 { "id": "scanner", "name": "peer:office/scanner-plugin", "config": { "dpi": 300 } }
 ```
 
-插件在对端运行，用对端的服务；它的配置、启停仍由本端决定。对端离线时这一行等待，回来后重新加载。行的 `isolate` / `inject` 交给对端执行。
+The plugin runs on the peer and uses that node's services. This node still controls its configuration and lifecycle. If the peer goes offline, the row waits and reloads the plugin when the peer returns. The peer executes the row's `isolate` and `inject` settings.
 
-## 别的机器上的语言运行时
+## A language runtime on another machine
 
-在 GPU 机器上只运行一个 Python 运行时，由主节点管理它的插件：
+For example, run a Python runtime on a GPU machine and manage its plugins from the main node:
 
 ```bash
-# GPU 机器：装好 rutis[network] 和插件，监听
+# On the GPU machine: install rutis[network] and the plugins, then listen
 RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
   python -m rutis listen:wss://0.0.0.0:7443/rutis --id gpu --peer main /srv/plugins
 ```
@@ -88,16 +88,16 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 }
 ```
 
-远程 Python 运行时的行名是 `<运行时名>:<模块>`，模块在远程机器上解析。Node 运行时同样可以远程运行：在那台机器的 Node 项目里执行 `node node_modules/@arcships/rutis-runtime/src/runner.mjs listen:wss://… --id <名字> --peer <控制方> ./package.json`（插件从这个 package.json 解析），`language` 写 `node`。远程运行时一次服务一个控制方；控制方断开时，它为这个控制方运行的插件全部卸载。
+A remote Python runtime row is named `<runtime-name>:<module>`; the module is resolved on the remote machine. A Node runtime can also run remotely: in the Node project on that machine, run `node node_modules/@arcships/rutis-runtime/src/runner.mjs listen:wss://… --id <name> --peer <controller> ./package.json` (plugins are resolved from that `package.json`) and set `language` to `node`. A remote runtime serves one controller at a time. When its controller disconnects, it unloads all plugins running for that controller.
 
-## 把 Cordis 应用接成节点
+## Connect a Cordis application as a node
 
-已有的 Cordis 应用用 `@arcships/rutis-runtime/bridge` 成为一个节点，见 [Cordis](https://github.com/arcships/rutis/blob/main/docs/guide/cordis.md)。
+An existing Cordis application can become a node through `@arcships/rutis-runtime/bridge`; see [Cordis](https://github.com/arcships/rutis/blob/main/docs/guide/cordis.en.md).
 
-## 安全
+## Security
 
-- 跨机器只用 `wss://`。不带 TLS 的监听器只能绑定回环地址。
-- Python 运行时监听 `wss://` 不能用 CPython 3.13.6：它的 TLS socket 在一个线程阻塞读、另一个线程写时死锁（[python/cpython#137583](https://github.com/python/cpython/issues/137583)），每个握手都会卡住，所以 rutis 在这个版本上拒绝启动 `listen:wss://`。用 3.13.7 或更新的版本（3.13.5 及更早、3.14 不受影响）；`ws://` 不受影响。
-- 每个对端一个 token（`RUTIS_TOKEN_<节点>`），只在需要的节点上设置。
-- `host: true` 让对端能在本节点运行这里装着的任何插件，只对可信的对端打开；它只能加载已安装的插件，不能加载文件路径。
-- 节点只按名字共享 `export` 里列出的服务。
+- Use `wss://` for remote connections. A listener without TLS may bind only to a loopback address.
+- A Python runtime cannot listen on `wss://` with CPython 3.13.6: its TLS sockets deadlock when one thread is blocked reading while another writes ([python/cpython#137583](https://github.com/python/cpython/issues/137583)), so every handshake hangs, and rutis refuses to start `listen:wss://` on that version. Use 3.13.7 or later (3.13.5 and earlier, and 3.14, are not affected); `ws://` is not affected.
+- Use one token per peer (`RUTIS_TOKEN_<NODE>`) and set it only on the nodes that need it.
+- `host: true` lets a peer run any plugin installed on this node. Enable it only for trusted peers. It can load installed plugins, not file paths.
+- Nodes share services by name, and only services listed in `export` are shared.
