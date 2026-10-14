@@ -81,7 +81,9 @@ jobs:
           [ "$jobs" -ge 2 ] || jobs=2
           echo "$NUMBER_OF_PROCESSORS CPUs: $jobs jobs and test threads; $dir"
           {
-            echo "CARGO_TARGET_DIR=$dir/target"
+            # A target directory of this job's own (tools/ci-self-hosted.sh,
+            # RUTIS_CI_FRESH_TARGET): kept dylib builds go stale (#376).
+            echo "CARGO_TARGET_DIR=$(cygpath -m "$RUNNER_TEMP")/target"
             echo "CARGO_BUILD_JOBS=$jobs"
             echo "RUST_TEST_THREADS=$jobs"
             echo "GOCACHE=$dir/go-build"
