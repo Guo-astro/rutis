@@ -69,11 +69,12 @@ val weather = Rutis.define(
 
 | API | 规则 |
 | --- | --- |
-| `Rutis.define` | 校验声明（名称、方法表与形状一致）；带插件 API 版本 1 |
+| `Rutis.define` | 校验声明（名称、方法表与形状一致）；带插件 API 版本 2 |
 | `apply` | 可为 suspend；抛异常则装载失败，已登记的清理照常运行 |
 | `ctx.use(name, factory)` | `name` 须在 `inject` 中；同进程提供者直接给本地实现 |
 | `ctx.provide(name, methods)` | 方法表须与 `provides` 声明的形状一致；至卸载或返回的撤销函数为止 |
 | `ctx.effect(cleanup)` | 可为 suspend，卸载时逆序执行 |
+| `ctx.on(name, listener)` / `ctx.emit(name, args…)` | 叶子事件（插件 API 2）：本运行时进程内的事件总线，语义与其他运行时相同；不跨进程，`internal/*` 不可用 |
 | `ctx.launch { }` | 在行的协程作用域运行；卸载时取消并等待 |
 | 方法形状 | 默认 `async`，`sync` 显式标记 |
 | 配置 | kotlinx-serialization 解码到 `@Serializable` 类型；schema 显式给出；失败即装载失败 |
@@ -99,7 +100,7 @@ val weather = Rutis.define(
 | suspend 桥接 | 在本调用线程上 `runBlocking`；不在读线程上桥接 |
 | 取消 | `cancel` 帧 → 取消该调用的协程作用域并中断其线程 |
 | 插件线程未捕获异常 | 应用崩溃：对 rutis 表现为断开 |
-| 契约 | endpoint 协议 3；特性 `["rows.v2", "hosts", "leaf", "scopes"]`；`mount` 回复带 `plugins`（拨出稿 §四）与 `implementation`、`engine`（kotlin + ART 版本）；调用号前缀 `node:` |
+| 契约 | endpoint 协议 3，握手声明能力 `runtime`；特性 `["rows.v2", "hosts", "leaf", "scopes", "events"]`；`mount` 回复带 `plugins`（拨出稿 §四）与 `implementation`、`engine`（kotlin + ART 版本）；调用号前缀 `node:` |
 
 ## 五、应用托管
 

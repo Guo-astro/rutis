@@ -20,7 +20,7 @@
 | S7 | 同一进程内调用不走 IPC；跨进程、跨语言经 rutis 按名字转发 | 四 |
 | S8 | 每个进来的调用一个 Task；声明 `sync-wait` 与 `reentrant-sync`，不声明 `sync-stack`。适用于两种形态 | 五 |
 | S9 | 调用链放 `@TaskLocal`；等待挂起当前 Task，不阻塞线程；方法默认 `async`，`.sync` 标记；调用对端 `sync` 方法时帧带 `sync: true` | 五 |
-| S10 | 叶子插件；插件 API 版本 1；配置 `Codable` 解码，Schema 手写在配置类型上 | 四 |
+| S10 | 叶子插件；插件 API 版本 2（含叶子事件 `ctx.on` / `ctx.emit`）；配置 `Codable` 解码，Schema 手写在配置类型上 | 四 |
 | S11 | 提供服务：显式闭包表（Swift 无方法反射） | 四 |
 | S12 | 使用服务：`RutisClient` 闭包字段结构体，参数包推断签名；推断不稳的签名回退到 0–3 参数重载 | 四 |
 | S13 | 值按类型系统分界：值类型按数据复制，闭包按引用；对象须 `Rutis.ref` 显式按引用 | 四 |
@@ -84,7 +84,7 @@ Rutis.serve(WeatherKits.calendar, WeatherKits.contacts)
 {
   "manifest": 1,
   "sdk": "0.11.0",
-  "pluginApi": 1,
+  "pluginApi": 2,
   "runtime": "rutis-swift-runtime:1",
   "platform": "macos/arm64",
   "plugins": {
@@ -210,6 +210,8 @@ let weather = Rutis.define(Plugin(
 | `ctx.use(name, C.self)` | `C: RutisClient`；`name` 须在 `inject` 中；同进程提供者直接给本地实现 |
 | `ctx.provide(name, methods)` | 闭包表须与 `provides` 声明的形状一致；至卸载或返回的撤销函数为止 |
 | `ctx.effect(cleanup)` | `cleanup` 可 `async`，卸载时逆序执行 |
+| `ctx.on(name, listener)` | 监听本运行时进程事件总线上的事件（宿主经 `emits` 发入的，及同进程插件 `ctx.emit` 的）；随插件卸载注销，返回的函数立即注销；监听器带调用链、随插件卸载取消 |
+| `ctx.emit(name, args...)` | 向本进程事件总线分发，按注册顺序同步调用监听器，遇首个错误返回；不跨进程。`internal/*` 不可用 |
 | `ctx.spawn { ... }` | 子 Task 中运行，捕获错误写 stderr；卸载时取消并等待 |
 | `RutisCtx` | 行作用域：取消（卸载时取消行 Task 树）、`project`、调用链（§五） |
 | `Rutis.NoConfig` | 无配置 |
@@ -291,7 +293,7 @@ protocol RutisClient { init(_ service: RutisService) }
 
 ### 6.2 契约
 
-compat 协议版本 2（本地通道）、endpoint 协议 3（拨出）；特性 `["rows.v2", "hosts", "leaf", "scopes"]`；能力 `signals`、`sync-wait`、`reentrant-sync`；会话内调用号 `node:` 前缀（与其他叶子运行时相同）。
+compat 协议版本 2（本地通道）、endpoint 协议 3（远程，监听与拨出）；特性 `["rows.v2", "hosts", "leaf", "scopes", "events"]`；能力 `signals`、`sync-wait`、`reentrant-sync`，endpoint 握手另声明 `runtime`；会话内调用号 `node:` 前缀（与其他叶子运行时相同）。
 
 | 控制操作 | 行为 |
 | --- | --- |

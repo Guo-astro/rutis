@@ -69,11 +69,12 @@ val weather = Rutis.define(
 
 | API | Rule |
 | --- | --- |
-| `Rutis.define` | Validates the declaration (names; method tables match the shapes); carries plugin API version 1 |
+| `Rutis.define` | Validates the declaration (names; method tables match the shapes); carries plugin API version 2 |
 | `apply` | May be suspend; throwing fails the load, and cleanups already registered still run |
 | `ctx.use(name, factory)` | `name` must be in `inject`; a provider in the same process hands over its local implementation directly |
 | `ctx.provide(name, methods)` | The method table must match the shape declared in `provides`; lasts until unload or until the returned withdraw function is called |
 | `ctx.effect(cleanup)` | May be suspend; runs in reverse order on unload |
+| `ctx.on(name, listener)` / `ctx.emit(name, args…)` | Leaf events (plugin API 2): an event bus within this runtime process, with the same semantics as other runtimes; does not cross processes; `internal/*` is not available |
 | `ctx.launch { }` | Runs in the row's coroutine scope; cancelled and awaited on unload |
 | Method shape | `async` by default; `sync` is marked explicitly |
 | Config | Decoded with kotlinx-serialization into a `@Serializable` type; the schema is given explicitly; failure fails the load |
@@ -99,7 +100,7 @@ val weather = Rutis.define(
 | suspend bridging | `runBlocking` on that call's thread; never bridged on the reader thread |
 | Cancellation | A `cancel` frame → cancel that call's coroutine scope and interrupt its thread |
 | Uncaught exceptions on plugin threads | The app crashes: rutis sees a disconnect |
-| Contract | endpoint protocol 3; features `["rows.v2", "hosts", "leaf", "scopes"]`; the `mount` reply carries `plugins` (dial-out design §4) plus `implementation` and `engine` (kotlin + ART version); call id prefix `node:` |
+| Contract | endpoint protocol 3, the handshake declaring capability `runtime`; features `["rows.v2", "hosts", "leaf", "scopes", "events"]`; the `mount` reply carries `plugins` (dial-out design §4) plus `implementation` and `engine` (kotlin + ART version); call id prefix `node:` |
 
 ## 5. App hosting
 

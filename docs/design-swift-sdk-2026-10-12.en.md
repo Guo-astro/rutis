@@ -20,7 +20,7 @@ Out of scope: a Swift-side Cordis; build systems other than SwiftPM; the host co
 | S7 | Calls within one process skip IPC; across processes and languages, rutis forwards by name | 4 |
 | S8 | One Task per incoming call; declares `sync-wait` and `reentrant-sync`, not `sync-stack`. Applies to both shapes | 5 |
 | S9 | The call chain lives in a `@TaskLocal`; a wait suspends the current Task and never blocks a thread; methods default to `async`, `.sync` marks the rest; calling a peer's `sync` method sends a frame with `sync: true` | 5 |
-| S10 | Leaf plugin; plugin API version 1; config decoded via `Codable`, its schema written by hand on the config type | 4 |
+| S10 | Leaf plugin; plugin API version 2 (with leaf events `ctx.on` / `ctx.emit`); config decoded via `Codable`, its schema written by hand on the config type | 4 |
 | S11 | Providing services: an explicit closure table (Swift has no method reflection) | 4 |
 | S12 | Using services: a `RutisClient` struct of closure fields, signatures inferred with parameter packs; signatures that infer poorly fall back to 0–3-argument overloads | 4 |
 | S13 | Values split along the type system: value types copy as data, closures cross as references; objects need an explicit `Rutis.ref` | 4 |
@@ -84,7 +84,7 @@ Rutis.serve(WeatherKits.calendar, WeatherKits.contacts)
 {
   "manifest": 1,
   "sdk": "0.11.0",
-  "pluginApi": 1,
+  "pluginApi": 2,
   "runtime": "rutis-swift-runtime:1",
   "platform": "macos/arm64",
   "plugins": {
@@ -210,6 +210,8 @@ let weather = Rutis.define(Plugin(
 | `ctx.use(name, C.self)` | `C: RutisClient`; `name` must be in `inject`; a same-process provider hands over its local implementation |
 | `ctx.provide(name, methods)` | the closure table must match the shape declared in `provides`; lasts until unload or the returned withdraw function |
 | `ctx.effect(cleanup)` | `cleanup` may be `async`; runs in reverse order at unload |
+| `ctx.on(name, listener)` | listens for events on this runtime process's event bus (those the host sends in via `emits`, and those emitted by same-process plugins via `ctx.emit`); unregistered at plugin unload, or immediately by the returned function; listeners carry a call chain and are cancelled at plugin unload |
+| `ctx.emit(name, args...)` | dispatches to this process's event bus, calling listeners synchronously in registration order and returning at the first error; does not cross processes. `internal/*` is not available |
 | `ctx.spawn { ... }` | runs in a child Task, errors captured to stderr; cancelled and awaited at unload |
 | `RutisCtx` | the row scope: cancellation (unload cancels the row's Task tree), `project`, the call chain (§5) |
 | `Rutis.NoConfig` | no configuration |
@@ -291,7 +293,7 @@ Applies to both shapes.
 
 ### 6.2 Contract
 
-Compat protocol version 2 (local channels), endpoint protocol 3 (dial-out); features `["rows.v2", "hosts", "leaf", "scopes"]`; capabilities `signals`, `sync-wait`, `reentrant-sync`; call ids in this session use the `node:` prefix (as every leaf runtime).
+Compat protocol version 2 (local channels), endpoint protocol 3 (remote, listening and dialing out); features `["rows.v2", "hosts", "leaf", "scopes", "events"]`; capabilities `signals`, `sync-wait`, `reentrant-sync`, plus `runtime` declared in the endpoint handshake; call ids in this session use the `node:` prefix (as every leaf runtime).
 
 | Control operation | Behavior |
 | --- | --- |
