@@ -253,7 +253,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 
 - 结束这个实例之前的任务留下的进程：命令行或工作目录在这个实例的工作区、target 目录或场景目录下的进程，不碰 runner 本身和别的实例的任务；
 - 场景目录 `RUTIS_E2E_DIR` 是每个实例自己的 `/tmp/rutis-e2e-<runner 名>`（不用 `runner.temp`：Unix socket 路径在 macOS 上最长 104 字节，见 `tests/e2e/src/lib.rs`），开头和结尾清空；
-- 编译不用 `rust-cache`（它会把缓存再上传到 GitHub），`CARGO_TARGET_DIR` 是每个实例保留的 `~/.cache/rutis-ci/<runner 名>/target`，超过 30 GB（`RUTIS_CI_TARGET_MAX_GB`）时清空；机器上的 `cargo` 是 mbx（构建缓存）的 shim 时，不设 `CARGO_TARGET_DIR`，由 mbx 管理编译目录，并删掉这个目录（两者混用时，同一个编译目录里出现过依赖两个不同 `serde_json` 的 `rutis-sdk` 和 `rutis-cli`）；`setup-node`、`setup-go` 的缓存也只在 GitHub 的 runner 上用；
+- 编译不用 `rust-cache`（它会把缓存再上传到 GitHub），`CARGO_TARGET_DIR` 是每个实例保留的 `~/.cache/rutis-ci/<runner 名>/target`，超过 30 GB（`RUTIS_CI_TARGET_MAX_GB`）时清空；`release-dry-run` 打包前先 `cargo clean -p` 列车里的 crate（cargo 只按版本号判断 registry 来源的包要不要重编，保留的编译目录会把同版本的旧构建当成新的，见该步骤的注释）；机器上的 `cargo` 是 mbx（构建缓存）的 shim 时，不设 `CARGO_TARGET_DIR`，由 mbx 管理编译目录，并删掉这个目录（两者混用时，同一个编译目录里出现过依赖两个不同 `serde_json` 的 `rutis-sdk` 和 `rutis-cli`）；`setup-node`、`setup-go` 的缓存也只在 GitHub 的 runner 上用；
 - Python 不用 `setup-python`（它的 macOS 版本只能装在 `/Users/runner` 下），用 uv 装任务要的版本，每个任务在 `runner.temp` 里建一个带 pip 的虚拟环境放进 `PATH`；
 - `setup-bun` 把 Bun 装进 `~/.bun/bin`，同一台机器上的实例共用这个目录，而 `network-macos` 和 `runtimes-bun` 在完整运行里同时装不同的版本：`runtimes-bun` 在自托管 macOS 上给 `setup-bun` 一个 `runner.temp` 下的 `HOME`，不用缓存；
 - `tools/*.sh` 留在 `/tmp/rutis-*` 的目录超过 12 小时后删除；

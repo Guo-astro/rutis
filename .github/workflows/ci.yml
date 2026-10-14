@@ -961,8 +961,19 @@ jobs:
           node-version: '24'
       - uses: astral-sh/setup-uv@v6
       - run: node scripts/train.mjs
+      # A train crate's verification build takes its train dependencies from
+      # a temporary registry, and cargo fingerprints a registry package by its
+      # version alone: a kept target directory (self-hosted, docs/ci.md §10;
+      # rust-cache) would reuse a dependency built from an earlier tarball of
+      # the same version, so a change to one crate's API would not reach the
+      # others' verification (macos-4 failed on `rutis_loader::PLUGIN_API`
+      # this way). So the train crates' own artifacts go first: `cargo clean
+      # -p` removes every build of a crate, the registry copy included.
       - name: cargo package
-        run: cargo package --locked $(node scripts/train.mjs --crates | sed 's/[^ ]*/-p &/g')
+        run: |
+          crates=$(node scripts/train.mjs --crates | sed 's/[^ ]*/-p &/g')
+          cargo clean $crates
+          cargo package --locked $crates
       - name: npm pack
         run: |
           for package in node/rutis node/rutis-runtime bun/rutis-bun node/rutis-host; do
