@@ -242,6 +242,8 @@ jobs:
           fi
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   # The Linux tests of an ordinary change, in parallel jobs so that the
@@ -343,6 +345,8 @@ jobs:
         run: cargo test -p rutis-loader --features node,python,go,peer --test runtime_rows --test python_rows --test multilang --test leases --test instance_runtimes --test go_rows --test multilang_go --test instance_go --test sync_cycles
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   # The end-to-end scenarios (tests/e2e): real rutis-host processes on
@@ -419,6 +423,8 @@ jobs:
           retention-days: 14
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   js-py:
@@ -474,6 +480,8 @@ jobs:
         working-directory: python/rutis
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   # fmt and clippy, in parallel with the tests (not on the critical path).
@@ -525,6 +533,8 @@ jobs:
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   # The declared MSRV (rust-version in Cargo.toml) builds the libraries and
@@ -560,6 +570,8 @@ jobs:
         run: cargo +1.88 check --workspace --exclude rutis-agent --exclude rutis-cli --locked
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   checks:
@@ -619,6 +631,8 @@ jobs:
         run: cargo test -p rutis-loader --features go --no-run
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   # The Go SDK and runtime: the SDK's own tests (race detector on), then
@@ -700,6 +714,8 @@ jobs:
         run: cargo test -p rutis-host go
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   # The Bun runtime: its own tests, and the Rust tests that run it, on the
@@ -792,6 +808,8 @@ jobs:
         run: cargo test -p rutis-host bun
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   # The network stack and the runtimes on macOS: starting processes on an
@@ -914,6 +932,8 @@ jobs:
         run: cargo check --workspace --all-targets
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   # What a release publishes, packaged in full runs and when packaging changes
@@ -955,6 +975,8 @@ jobs:
           ls dist
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   # 列车里已发布的 crate 相对 crates.io 最新版的公开 API 变化：发现破坏性变更
@@ -992,6 +1014,8 @@ jobs:
           done
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   # The dylib checks on Linux, in three parallel jobs to shorten the critical
@@ -1021,6 +1045,8 @@ jobs:
         run: bash tools/test-dylib-launcher.sh
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   # The single-runner reproducibility check (two source and target paths on
@@ -1048,6 +1074,8 @@ jobs:
         run: bash tools/test-dylib-repro.sh
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   dylib-linux-sdk-bundle:
@@ -1071,6 +1099,8 @@ jobs:
         run: bash tools/test-sdk-bundle.sh
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   # On macOS the same checks stay in one job: macOS runners are scarce, and a
@@ -1112,6 +1142,8 @@ jobs:
         run: bash tools/test-sdk-bundle.sh "${{ steps.bundle.outputs.dir }}"
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
   # The runtimes on Windows: Node, Python and Go processes on loopback
@@ -1152,6 +1184,7 @@ jobs:
             echo "RUTIS_E2E_DIR=$dir/e2e"
             echo "CARGO_BUILD_JOBS=$jobs"
             echo "RUST_TEST_THREADS=$jobs"
+            echo "GOCACHE=$dir/go-build"
           } >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@1.98.1
       # Self-hosted runners keep their target directory instead.
@@ -1218,6 +1251,12 @@ jobs:
       - name: keep workspace static builds available
         if: '!cancelled()'
         run: cargo check --workspace --all-targets
+      # After a failure, this instance's Go build cache goes (a job cut
+      # short can leave it truncated, #374; tools/ci-self-hosted.sh does the
+      # same on the other self-hosted runners).
+      - name: self-hosted runner, end
+        if: failure() && runner.environment == 'self-hosted'
+        run: rm -rf "$GOCACHE"
 
   # Builds of the SDK on two separate runners compared by hash. The SDK
   # cannot come from a cache, so this stays off pull requests (Q12.6.3) and

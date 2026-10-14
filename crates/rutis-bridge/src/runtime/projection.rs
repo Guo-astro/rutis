@@ -39,6 +39,9 @@ struct State {
     target: Option<(Ctx, Arc<Process>)>,
     runtime: Option<tokio::runtime::Handle>,
     applying: bool,
+    /// Closed while a publication was under way: the publisher applies the
+    /// withdrawals reported until then, and closes when it is done.
+    closing: bool,
     slots: HashMap<String, Slot>,
 }
 
@@ -46,6 +49,8 @@ struct State {
 /// process, closed when that plugin is disposed.
 pub struct Projection {
     state: Mutex<State>,
+    /// Woken when a publisher finishes.
+    idle: tokio::sync::Notify,
     me: Weak<Projection>,
 }
 
@@ -53,6 +58,7 @@ impl Projection {
     pub fn new() -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
             state: Mutex::default(),
+            idle: tokio::sync::Notify::new(),
             me: me.clone(),
         })
     }
@@ -162,10 +168,21 @@ impl Projection {
     /// the kernel stops their consumers first. Then stop following changes,
     /// as [`Projection::close`]. A plugin that unloads its provider calls
     /// this first, so the provider outlives everything that uses it.
+    ///
+    /// A publication under way finishes first: until then its slot is not
+    /// here to withdraw, and its service would stay.
     pub async fn withdraw(&self) {
-        let (target, mut slots) = {
-            let mut state = self.state.lock().unwrap();
-            (state.target.take(), std::mem::take(&mut state.slots))
+        let (target, mut slots) = loop {
+            let idle = self.idle.notified();
+            let mut idle = std::pin::pin!(idle);
+            idle.as_mut().enable();
+            {
+                let mut state = self.state.lock().unwrap();
+                if !state.applying {
+                    break (state.target.take(), std::mem::take(&mut state.slots));
+                }
+            }
+            idle.await;
         };
         let Some((ctx, process)) = target else {
             return;
@@ -186,9 +203,18 @@ impl Projection {
 
     /// Stop following changes and drop the bindings' writers, which hold the
     /// process; the plugin's own effects withdraw the registrations.
+    ///
+    /// During a publication the publisher closes the projection once it is
+    /// done, after applying the withdrawals reported before this call (an
+    /// unloaded row reports its services' withdrawal and leaves them to the
+    /// publication under way). It publishes nothing new meanwhile.
     pub fn close(&self) {
         let slots = {
             let mut state = self.state.lock().unwrap();
+            if state.applying {
+                state.closing = true;
+                return;
+            }
             state.target = None;
             std::mem::take(&mut state.slots)
         };
@@ -212,14 +238,17 @@ impl Projection {
             state.applying = true;
         }
         loop {
+            let mut closed = HashMap::new();
             let work = {
                 let mut state = self.state.lock().unwrap();
+                let closing = state.closing;
                 let next = state.target.clone().and_then(|target| {
                     state
                         .slots
                         .iter_mut()
                         .find(|(name, slot)| {
                             slot.handle != slot.applied
+                                && (!closing || slot.handle.is_none())
                                 && !slot.withdrawing
                                 && slot.apply.is_some()
                                 && !attempted.contains(&(name.to_string(), slot.handle.clone()))
@@ -236,10 +265,16 @@ impl Projection {
                 });
                 if next.is_none() {
                     state.applying = false;
+                    if std::mem::take(&mut state.closing) {
+                        state.target = None;
+                        closed = std::mem::take(&mut state.slots);
+                    }
                 }
                 next
             };
             let Some(((ctx, process), (name, handle, mut apply))) = work else {
+                drop(closed);
+                self.idle.notify_waiters();
                 return failure.map_or(Ok(()), Err);
             };
             attempted.insert((name.clone(), handle.clone()));

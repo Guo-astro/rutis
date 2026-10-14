@@ -2,3 +2,11 @@
 /.rutis
 host/
 node_modules/
+
+# Logo promo art and exploration kept locally, not part of the tracked set.
+/assets/logo/banner/
+/assets/logo/brand/preview/
+/assets/logo/candidate-*.png
+/assets/logo/r2/
+/assets/logo/r3/
+/assets/logo/vector/

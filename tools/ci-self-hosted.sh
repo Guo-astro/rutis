@@ -11,8 +11,10 @@
 #          and CARGO_TARGET_DIR, kept between jobs in place of rust-cache,
 #          emptied above RUTIS_CI_TARGET_MAX_GB; and limits CARGO_BUILD_JOBS
 #          and RUST_TEST_THREADS to the machine's share of this instance
-#          (RUTIS_CI_JOBS overrides it)
-#   end    ends what this job left running and empties the scenario directory
+#          (RUTIS_CI_JOBS overrides it); GOCACHE, this instance's own
+#   end    ends what this job left running and empties the scenario
+#          directory; after a failed job (JOB_STATUS=failure), empties the
+#          instance's Go build cache
 #
 # Everything is scoped to this runner instance (RUNNER_NAME): its workspace,
 # target directory and scenario directory. Processes of another instance's
@@ -164,5 +166,19 @@ if [ "$phase" = start ]; then
     # would pair setup-go's go command with another release's compiler.
     # Empty, go finds its own.
     [ -z "${GOROOT:-}" ] || echo "GOROOT="
+    # Go's build cache, this instance's own: the runner instances of a
+    # machine would otherwise share one, and emptying it (below) would pull
+    # files from under another instance's build.
+    echo "GOCACHE=$cache/go-build"
   } >> "$GITHUB_ENV"
+fi
+
+# A job that failed may have been one cut short while Go wrote its build
+# cache, which then holds a truncated entry and fails every later build that
+# reads it ("malformed elf file", #374). After a failure the cache goes; the
+# next job builds it again (about a minute). JOB_STATUS is the workflow's
+# `job.status`.
+if [ "$phase" = end ] && [ "${JOB_STATUS:-}" = failure ] && [ -d "$cache/go-build" ]; then
+  echo "the job failed: emptying this instance's Go build cache ($cache/go-build)"
+  remove "$cache/go-build"
 fi

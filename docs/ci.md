@@ -256,6 +256,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 - `setup-bun` 把 Bun 装进 `~/.bun/bin`，同一台机器上的实例共用这个目录，而 `network-macos` 和 `runtimes-bun` 在完整运行里同时装不同的版本：`runtimes-bun` 在自托管 macOS 上给 `setup-bun` 一个 `runner.temp` 下的 `HOME`，不用缓存；
 - `tools/*.sh` 留在 `/tmp/rutis-*` 的目录超过 12 小时后删除；
 - 几个实例同时编译会把机器压满（10 核上 4 个实例各开 10 个 rustc，负载到过 79）：每个任务的 `CARGO_BUILD_JOBS` 和 `RUST_TEST_THREADS` 设成 CPU 数除以机器上的实例数（`~/actions-runner*/` 里有 `.runner` 的目录数），至少 2，开头会打印选的值和当时的负载。实例不装在 `~/actions-runner*` 下，或要别的值时，设仓库变量 `RUTIS_CI_JOBS`。`sdk-repro-macos` 也照此限制，不影响构建结果。
+- Go 的编译缓存 `GOCACHE` 是每个实例自己的（`~/.cache/rutis-ci/<runner 名>/go-build`，Windows 上在 `_work/_rutis-ci/go-build`）；任务失败后，结尾一步删掉这个实例的 Go 缓存：被中途取消的任务可能留下写了一半的缓存文件，之后读到它的构建都会失败（"malformed elf file"，#374）。下一次任务重新编译 Go 的标准库，大约多一分钟。
 
 **加一个实例前，机器上要有**：
 
