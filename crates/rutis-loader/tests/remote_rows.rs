@@ -508,14 +508,20 @@ async fn a_runtime_link_can_listen() {
         .await
         .unwrap();
 
-    // The relay: rutis's side is retried until its link listens.
+    // The relay: rutis's side is retried while its link is not listening
+    // yet (503); any other refusal is the failure.
     let runtime = connect(&runtime_address, "main-token").await.unwrap();
     let rutis = COLD
         .within("rutis's listener", async {
             loop {
                 match connect(&address, "gpu-token").await {
                     Ok(socket) => break socket,
-                    Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+                    Err(tokio_tungstenite::tungstenite::Error::Http(response))
+                        if response.status() == 503 =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(50)).await
+                    }
+                    Err(error) => panic!("rutis refused the relay: {error}"),
                 }
             }
         })
