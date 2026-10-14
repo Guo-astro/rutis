@@ -31,7 +31,7 @@ Out of scope:
 5. **Same-process calls stay local.** Plugins in one runtime call each other's services directly without IPC. rutis manages who depends on whom and who stops first, not the call itself. Only cross-language calls use IPC (about 30 µs for sync calls, measured on Node).
 6. **Add isolation instances only when needed.** An unstable plugin can go into another runtime instance. This is the same rule as “put plugins needing isolation in different mounts”; do not do it by default.
 7. **Two runtime classes:**
-   - **Load code by name** (Node, Python, Swift): one process loads multiple plugins by name; Swift uses `dlopen` for plugin bundles.
+   - **Load code by name** (Node, Python, Swift): one process loads multiple plugins by name; Swift uses `dlopen` for plugin bundles (the M3 design has since changed this to a compiled program, as with Go; see [the Swift SDK](design-swift-sdk-2026-10-12.en.md) appendix A).
    - **Plugins are compiled programs** (Go): Go cannot reliably load code at runtime, so compile a group of plugins into one executable and run it as one runtime process. Updating code replaces the binary and restarts the group.
 8. **Reuse the current protocol**; no protocol version bump for this work. Keep frames, references, cancellation, sync call chains, and `rows.*` controls (§5). Add only services projected into rutis by name and method shape (sync vs async).
 9. **A runtime must not depend on services used by its rows.** The runtime plugin depends only on what is needed to start its process. Gating for services used by plugins (host-provided or from another language) belongs to each consumer row; call routing binds/unbinds dynamically after runtime startup. This prevents runtimes waiting on one another when languages share services (§4).
@@ -146,7 +146,7 @@ This is the same two-stage release (`Peer` / `PeerRows`) used by the remote desi
 | Language | Runtime process | Notes |
 | --- | --- | --- |
 | Python | One Python process, load by module name | Implement session layer from research prototype; one locked environment (uv project) per runtime; create another instance for dependency conflicts; Python 3.10+ (on 3.10 and 3.11 rutis provides eager start, see the [Python 3.10 design](design-python-310-2026-10-11.en.md)) |
-| Swift / ObjC | One signed helper app using `dlopen` for plugin bundles | TCC permissions belong to helper, so it needs its own signature and usage description; Swift can call ObjC directly; Apple platforms only |
+| Swift / ObjC | One signed helper app using `dlopen` for plugin bundles (revised: one signed binary per plugin group, plus app hosting; see [the Swift SDK](design-swift-sdk-2026-10-12.en.md)) | TCC permissions belong to helper, so it needs its own signature and usage description; Swift can call ObjC directly; Apple platforms only |
 | Go | Compile a group of plugins into one executable | Do not use Go `plugin` package; code change rebuilds and restarts group; deployment owns builds, host does not compile at runtime |
 
 ## 8. Processes and efficiency
@@ -187,6 +187,8 @@ This is the same two-stage release (`Peer` / `PeerRows`) used by the remote desi
 
   Progress (2026-10-10): every leaf runtime integrated or designed so far chose reentrancy: Python (M2), Bun ([the Bun runtime](design-bun-runtime-2026-10-09.en.md) §3.4) and Go ([the Go plugin runtime](design-go-runtime-2026-10-10.en.md) D9, Appendix G, a goroutine per call). On that basis the Go design **proposes** the rule "every leaf runtime is reentrant; only the Cordis runtime is not". It is not decided yet: Swift (M3) has not answered, and its design confirms or overturns the proposal, recorded here then. Rust now detects wait cycles (#228, above): crossing synchronous calls between two Cordis runtimes become `SyncWaitCycle`.
 
+  Progress (2026-10-14): Swift ([the Swift SDK](design-swift-sdk-2026-10-12.en.md) §5, a Task per call) and Kotlin ([Android app hosting](design-android-runtime-2026-10-12.en.md) §4, a thread per call) also chose reentrancy, and declare `sync-wait` but not `sync-stack`. Every leaf runtime is now reentrant; this is recorded as a convention, not an enforced rule: reentrancy is still judged by the handshake capability `reentrant-sync` (#228's decision is unchanged). The Go runtime does not declare `sync-wait`, so it is outside wait-cycle detection; adding it is left to a follow-up change to the Go runtime.
+
 ## 10. Relationship to decision #107
 
 | #107 conclusion | This design |
@@ -207,5 +209,6 @@ This is the same two-stage release (`Peer` / `PeerRows`) used by the remote desi
 | M1 | Extend contract: configurable runtime launch command; `rows.schema` returns dependencies and service shapes; project row services into rutis by name and register in service-name catalog; cross-session reference transfer and call-chain rewrite; move host-service dependencies off runtime and gate by row, dynamically register via `hosts.provide / hosts.withdraw`; two-stage runtime release. First implement on Node runtime. | JS row service can be injected by name into Rust row; JS plugin dependencies participate in rutis gating; resolve a row injecting `llm` before runtime startup and prove it waits until `llm` appears, then stops on revocation; all existing tests pass. |
 | M1/M2 boundary | Cold-start two runtimes together: Python provider P and JS provider J each provide a service; JS consumer uses P, Python consumer uses J. | All four rows start without runtimes waiting on each other; revoking either provider stops only its corresponding consumer. |
 | M2 | Python runtime plugin + leaf SDK + contract compatibility tests | Same compatibility suite passes on Node and Python; Python and JS plugins use each other's services; same-process calls bypass IPC. |
-| M3 | Swift runtime plugin (macOS) + leaf SDK | EventKit plugin runs in signed helper app; system permission prompt identifies the helper. |
+| M3 | Swift runtime plugin (macOS) + leaf SDK, plus Apple app hosting (design: [the Swift SDK](design-swift-sdk-2026-10-12.en.md), [app integration](design-app-integration-2026-10-14.en.md)) | EventKit plugin runs in a signed binary; system permission prompt identifies that binary; app-hosting acceptance is in Swift SDK §15. |
 | M4 | Go, when there is concrete demand (design: [the Go plugin runtime](design-go-runtime-2026-10-10.en.md)) | Compile a group of Go plugins into one executable launched by runtime plugin; replacing binary restarts that group. |
+| M5 | Android app hosting (Kotlin SDK; design: [Android app hosting](design-android-runtime-2026-10-12.en.md), [app integration](design-app-integration-2026-10-14.en.md); connection: [dialing out and dynamic connections](design-remote-runtime-dial-2026-10-14.en.md)) | The app dials out to connect and loads plugins according to rutis configuration; same-named plugins on two devices each live in their own instance. |
