@@ -22,13 +22,14 @@
 
 | # | 决策 | 章节 |
 | --- | --- | --- |
-| R1 | 运行时可主动拨出到 rutis 的接入点；推荐拨出，运行时侧监听长期保留 | 三 |
+| R1 | 每个远程运行时都支持两个方向：监听（rutis 拨入）与拨出（运行时连到 rutis 的接入点）；用哪个是部署选择，不是语言限制 | 三 |
 | R2 | rutis 的一个接入点接受多条运行时连接；每条连接是一个实例（`instanced` 分组），连接进来创建、断开关闭 | 四 |
 | R3 | 连接以握手时自报的 id 区分；同一 id 的新连接接管旧连接 | 五 |
 | R4 | 身份是可替换的一层：过渡期用共享 token + 自报 id（rutis 不核实）；管理服务接入后换成核实过的 id，其余不变 | 五 |
 | R5 | 拨出与重连行为是一份与语言无关的规范，由 `dial_conformance` 一致性测试约束 | 六 |
 | R6 | 现有方式（静态配置、rutis 拨入监听的运行时）行为不变，不强制迁移 | 八 |
 | R7 | 传输安全规则不变：非回环必须 TLS；拨出时 TLS 服务端只在 rutis 一侧 | 三 |
+| R8 | 运行时侧全部用平台语言自己实现，不依赖 Rust（Python、Node、Bun、Go、Swift、Kotlin） | 七 |
 
 ## 三、方向
 
@@ -39,7 +40,8 @@
 
 - 拨出后，运行时一侧只需要 WebSocket **客户端**，各语言实现难度低于现有的服务端。
 - rutis 对拨进来的运行时的控制权与现有一致：装载、配置、卸载、门控都由 rutis 驱动（远程插件 §4.1）。
-- 运行时侧 channel 写作 `dial:wss://…`（与现有 `listen:wss://…` 对称）；只拨出的 SDK（Swift、Kotlin）对 `listen:` 报错。
+- 运行时侧 channel 写作 `dial:wss://…`，与现有 `listen:wss://…` 对称；每种语言两种都支持。
+- 选择：远程机器有固定地址、能被 rutis 直接访问时用监听；在 NAT 后、地址会变、数量会变（设备、扩缩容的 worker）时用拨出。
 - 监听侧 link 与 `runtime` 的组合在现有代码中未被拒绝、未实测：R-P0 实测，不通则在 R-P1 一并补上。
 
 ## 四、动态接入即实例
@@ -97,14 +99,14 @@
 | --- | --- |
 | Rust 侧 | 接入点接受多条连接、连接即实例、运行时键按实例区分、身份层与过渡实现、`mount` 回复的 `plugins`、rutis-host 配置（`listen` / `instances`）、`runtimes.remote[].language` 接受 `swift`、`kotlin` / `kt` |
 | Python | 拨出客户端（`dial:`）；首个现有语言（其 TLS 服务端问题最多，拨出收益最大） |
-| Go、Bun、Node | 拨出客户端；有需求时做 |
-| Swift、Kotlin | 只实现拨出（Swift SDK §六、Android 稿 §五） |
+| Node、Bun、Go | 拨出客户端，紧随 Python |
+| Swift、Kotlin | 监听与拨出都实现（Swift SDK §六、Android 稿 §五） |
 | 文档 | 连接节点指南加拨出与动态接入；推荐方式改为拨出 |
 
 ## 八、兼容
 
 - 现有配置（`runtimes.remote` + link `dial` + `runtime`）行为不变。
-- 运行时侧 `listen:` 长期保留，不计划弃用。
+- 运行时侧 `listen:` 是两个方向之一，长期保留。
 
 ## 九、阶段
 
@@ -113,4 +115,4 @@
 | R-P0 | 实测监听侧 link + `runtime` 现状 | 结论回填 §三 |
 | R-P1 | Rust 侧：§七 的 Rust 工作；`dial_conformance` 框架 | 两条连接带同名插件，各自实例内的使用者只用到本连接的服务；断开一条只关闭其实例；现有远程运行时测试全绿 |
 | R-P2 | Python 拨出 | Python 运行时拨出接入，`dial_conformance` Python 列过 |
-| R-P3 | Swift、Kotlin 随应用接入（Swift A1、Android K-P2）；其余语言有需求时 | 各语言过同一套测试 |
+| R-P3 | Node、Bun、Go 拨出；Swift、Kotlin 随应用接入（Swift A1、Android K-P2） | 每种语言都过 `dial_conformance`（拨出）与 `websocket_conformance`（监听） |

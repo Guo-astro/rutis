@@ -7,7 +7,7 @@
 
 定位：Android 应用把自身能力与所在设备的能力作为 rutis 插件提供；插件用 Kotlin 编写、编进应用，由 rutis 驱动。桌面 JVM 运行时见 [Kotlin 运行时](design-kotlin-runtime-2026-10-12.md)（挂起）。
 
-范围外：设备监听；在设备上装载新代码（DEX 下载、上传、热替换）；应用的前后台、前台服务、Doze 适配（业务层，见应用接入 §七）；Intent 等 Android 生态反向调用 rutis；在设备上运行 rutis 本体；Play 合规流程本身。
+范围外：在设备上装载新代码（DEX 下载、上传、热替换）；应用的前后台、前台服务、Doze 适配（业务层，见应用接入 §七）；Intent 等 Android 生态反向调用 rutis；在设备上运行 rutis 本体；Play 合规流程本身。
 
 ## 一、决策
 
@@ -15,12 +15,12 @@
 | --- | --- | --- |
 | K1 | 插件按 rutis 范式编写、编进应用（APK / AAB），由 rutis 驱动装载、配置、卸载 | 二 |
 | K2 | SDK 对应用只提供 `start` / `stop`；前台服务、Doze、厂商后台限制属于业务层 | 五 |
-| K3 | 连接为应用拨出到 rutis 的接入点（`wss://`），每条连接在 rutis 侧是一个实例；无明文例外 | 五 |
+| K3 | 远程连接两个方向都支持：拨出到 rutis 的接入点（推荐，每条连接在 rutis 侧是一个实例）与监听（rutis 拨入）；非回环必须 `wss://`，无明文例外 | 五 |
 | K4 | SDK 是 Kotlin 库，两个 target：android 与 jvm；jvm target 用于桌面上的一致性测试，也是将来桌面运行时的基础 | 七 |
 | K5 | 每个进来的调用一个平台线程；`suspend` 方法在本调用线程上 `runBlocking` 桥接；声明 `sync-wait` 与 `reentrant-sync`，不声明 `sync-stack` | 四 |
 | K6 | 无运行时反射：服务方法用显式方法表，配置 schema 显式给出（与 Swift 一致）；KSP 生成器为后续项 | 三 |
 | K7 | 值：JSON 兼容类型递归复制；函数与显式 `Rutis.ref` 按引用；整数超出 ±2^53−1 报错 | 三 |
-| K8 | 依赖：kotlin-stdlib、kotlinx-coroutines-core、kotlinx-serialization-json、OkHttp（WebSocket 客户端） | 七 |
+| K8 | 依赖：kotlin-stdlib、kotlinx-coroutines-core、kotlinx-serialization-json、OkHttp（WebSocket 客户端）、Java-WebSocket（WebSocket 服务端，纯 Java） | 七 |
 | K9 | 系统权限归属应用；未授权 = `apply` 或方法调用失败；运行中撤销运行时权限时系统会杀应用进程，对 rutis 表现为断开 | 六 |
 | K10 | 平台：Android 10（API 29）起；纯 Kotlin，无 native 代码 | 七 |
 | K11 | 宿主侧只需 `runtimes.remote[].language` 接受 `"kotlin"` / `"kt"`；其余按拨出稿 | 八 |
@@ -121,6 +121,7 @@ rutis.stop()    // 全部插件逆序清理，然后断开
 | `stop()` | 卸载全部行（清理逆序），关闭连接；可再次 `start()` |
 | 状态 | `rutis.state`（`Stopped` / `Connecting` / `Connected`，`StateFlow`）供业务层显示；SDK 不据此做生命周期决定 |
 | 证书 | 非回环必须 `wss://`；自签证书经 SDK 参数信任其 CA |
+| 监听 | `RutisApp(listen = "wss://0.0.0.0:7443/rutis", …)` 改为等 rutis 拨入，语义同 Go 的远程监听（一次一个控制方、新连接接管）；适合地址固定的设备，一般场景推荐拨出 |
 | 换代码 | 发新版本应用 |
 | 业务层参考 | 需要常驻时由应用开前台服务（Android 14 起须声明前台服务类型）并引导电池优化白名单；否则跟随界面 `start` / `stop`。写进 SDK 指南，不进 SDK |
 
@@ -163,13 +164,14 @@ rutis.stop()    // 全部插件逆序清理，然后断开
 | 会话一致性 | `rutis-bridge/tests/runtime_conformance.rs` + Kotlin conformance 入口（jvm target） | `session::testing::session` |
 | 运行时一致性 | `multilang.rs` 加 Kotlin 列 | 叶子插件；多语言互调；撤提供者只停使用者；`inject` 门控；交叉同步调用不卡死 |
 | 拨出 | `dial_conformance.rs` 加 Kotlin 列 | 拨出稿 §六 全部条目 |
+| 监听 | `websocket_conformance.rs` 加 Kotlin 远程端 | 与 Go 的远程监听同一套断言 |
 | 设备 | Android 模拟器仪表化测试 | `RutisApp` 在 ART 上拨出接入、装载、`stop` / `start`；权限被拒的错误传回 |
 | CI | JDK job（jvm target）+ 模拟器 job | Gradle 构建先于 cargo 测试 |
 
 | 阶段 | 工作 | 验收 |
 | --- | --- | --- |
 | K-P1 | SDK 核心（会话、插件 API、值、线程），jvm target | 桌面过会话与运行时一致性测试 |
-| K-P2 | 拨出通道、`RutisApp`、android target；依赖拨出稿 R-P1 | 模拟器与真机上的应用拨出接入，按 rutis 配置装载插件；`stop` 后使用者停下，`start` 后恢复；两台设备同名插件各在自己的实例；`dial_conformance` Kotlin 列过 |
+| K-P2 | 拨出与监听通道、`RutisApp`、android target；依赖拨出稿 R-P1 | 模拟器与真机上的应用拨出接入，按 rutis 配置装载插件；`stop` 后使用者停下，`start` 后恢复；两台设备同名插件各在自己的实例；`dial_conformance`、`websocket_conformance` Kotlin 列过 |
 | K-P3 | 示例能力插件（contacts、notify、device）与 SDK 指南 | 真机：授权提示指向应用，拒绝后错误传回 |
 
 后续（有需求时）：KSP 生成方法表与 schema；桌面 JVM 运行时（重开 Kotlin 运行时稿）。
@@ -178,12 +180,12 @@ rutis.stop()    // 全部插件逆序清理，然后断开
 
 | 初稿 | 本文 | 理由 |
 | --- | --- | --- |
-| 设备监听、宿主拨入 | 应用拨出 | 设备地址不稳定、在 NAT 后；方向与拨出稿一致 |
+| 只有设备监听、宿主拨入 | 两个方向都支持，推荐拨出 | 设备地址不稳定、在 NAT 后；方向与拨出稿 R1 一致 |
 | 局域网允许明文 `ws://` | 删除 | 违反远程插件 §7"非回环必须 TLS"；宿主拨号端也拒绝非回环明文 |
 | 经认证端点上传 DEX、`DexClassLoader` 装载 | 删除，插件编进应用 | 违反远程插件 §7"不提供代码上传"；与 iOS 模型一致 |
 | 热载预算（每插件 50 次）与自重启 | 删除 | 不再装载新代码 |
 | 权限对账（30 秒周期）、撤销即撤服务 | 删除，权限是插件自己的事 | 撤销运行时权限时系统直接杀进程，对账路径不会发生 |
 | 前台服务、Doze、厂商自启动引导 | 移到业务层参考 | SDK 不管平台生命周期 |
 | 辅助 APK 作为唯一载体 | 任意应用接入 SDK 即可托管插件 | 应用本身按范式提供能力 |
-| SDK 只依赖 kotlin-stdlib | K8 | Android 无内置 WebSocket 客户端；配置解码用 kotlinx-serialization（编译期，无运行时反射） |
+| SDK 只依赖 kotlin-stdlib | K8 | Android 无内置 WebSocket 客户端与服务端；配置解码用 kotlinx-serialization（编译期，无运行时反射） |
 | arm64-v8a 与 x86_64 | 无 ABI 限制 | 纯 Kotlin，无 native 代码 |

@@ -2,7 +2,7 @@
 
 [English](design-swift-sdk-2026-10-12.en.md)
 
-状态：定稿，未实现。日期：2026-10-12，2026-10-14 定稿修订（应用部分改为按 [应用接入](design-app-integration-2026-10-14.md)，连接改为只拨出，见 §十六）。基准：`main` `a763cdc`（0.10.0）。
+状态：定稿，未实现。日期：2026-10-12，2026-10-14 定稿修订（应用部分改为按 [应用接入](design-app-integration-2026-10-14.md)，远程连接支持监听与拨出，见 §十六）。基准：`main` `a763cdc`（0.10.0）。
 依据：[多语言总体稿](design-multilang-runtimes-2026-10-03.md)（本文是其 M3，对其 dlopen 方案的修订见附录 A）、[应用接入](design-app-integration-2026-10-14.md)（形态②的通用部分）、[远程运行时：拨出与动态接入](design-remote-runtime-dial-2026-10-14.md)（连接）、[Go 插件运行时](design-go-runtime-2026-10-10.md)（形态①沿用其决策与机器，对照见附录 C）、[插件 API](guide/plugin-api.md)。
 
 范围外：Swift 侧 Cordis；SwiftPM 之外的编译系统；宿主运行时编译 Swift 代码；Linux 与 Windows（§十三）；应用的前后台、后台存活、推送唤醒（业务层，见应用接入 §七）；App Intents 等 Apple 生态反向调用 rutis；在设备上运行 rutis 本体。
@@ -24,7 +24,7 @@
 | S11 | 提供服务：显式闭包表（Swift 无方法反射） | 四 |
 | S12 | 使用服务：`RutisClient` 闭包字段结构体，参数包推断签名；推断不稳的签名回退到 0–3 参数重载 | 四 |
 | S13 | 值按类型系统分界：值类型按数据复制，闭包按引用；对象须 `Rutis.ref` 显式按引用 | 四 |
-| S14 | SDK 只实现拨出，不实现 WebSocket 监听 | 六 |
+| S14 | 远程连接两个方向都支持：拨出（`dial:`）与监听（`listen:`）；应用托管推荐拨出 | 六 |
 | S15 | 宿主不编译；`run` 只运行现成二进制，`dev` 只重建项目自身；不同 SDK 版本的二进制可共存 | 十、十一 |
 | S16 | SDK 位于 `swift/rutis`，经仓库根 `Package.swift` 分发，版本跟主发布线的 `v` tag；核心只依赖 Foundation | 十二 |
 | S17 | 平台：macOS 14+（两种形态）、iOS / iPadOS 17+（形态②）；Linux 后续，Windows 不做 | 十三 |
@@ -156,7 +156,8 @@ root.plugin(SwiftRuntimes::new(swift, project).idle(Duration::from_secs(60)));
 | --- | --- | --- |
 | 核心 | 会话协议（compat / endpoint）、叶子 API、值、并发、`RutisTest` | macOS + iOS（只依赖 Foundation；不触碰进程与文件系统设施） |
 | 通道·进程 | `fd:3`、`unix:`、`tcp:`（POSIX） | macOS（形态①） |
-| 通道·拨出 | WebSocket 客户端（Foundation `URLSessionWebSocketTask`），按 [拨出稿](design-remote-runtime-dial-2026-10-14.md) §六 的规范重连 | macOS + iOS（形态②；形态①远程） |
+| 通道·拨出 | WebSocket 客户端（Foundation `URLSessionWebSocketTask`），按 [拨出稿](design-remote-runtime-dial-2026-10-14.md) §六 的规范重连 | macOS + iOS |
+| 通道·监听 | WebSocket 服务端（Network.framework `NWListener` + `NWProtocolWebSocket`），语义同 Go 的远程监听（一次一个控制方、新连接接管） | macOS + iOS |
 | serve 打包 | `Rutis.serve` / `serveArgs` / 清单 CLI | macOS（形态①） |
 | 应用托管 | `RutisApp`（§七） | macOS + iOS（形态②） |
 
@@ -282,8 +283,8 @@ protocol RutisClient { init(_ service: RutisService) }
 | `fd:3` | ① | Unix 本地继承：`dup` + POSIX read/write |
 | `unix:<path>` | ① | 拨回：POSIX socket |
 | `tcp:127.0.0.1:<port>` | ①（预留） | 先发 `RUTIS_CHANNEL_TOKEN` + 换行，随即从环境删除 |
-| `dial:wss://…` | ①远程、② | WebSocket 客户端，子协议 `rutis.3`；凭据与 id 按拨出稿 §五；重连按拨出稿 §六 |
-| `listen:…` | — | 不支持：报错说明 Swift SDK 只拨出（S14） |
+| `dial:wss://…` | ①远程、②（推荐） | WebSocket 客户端，子协议 `rutis.3`；凭据与 id 按拨出稿 §五；重连按拨出稿 §六 |
+| `listen:ws://…` / `listen:wss://…` | ①远程、② | WebSocket 服务端；非回环必须 `wss://`（`RUTIS_CERT` / `RUTIS_KEY` 语义）；凭据、心跳、消息上限同 Go 的远程监听 |
 
 - 按行分帧；单条消息长度上限同 [#173](https://github.com/arcships/rutis/issues/173)；`project` 参数经 `Rutis.project` 提供（形态②中为应用的约定目录）。
 - 非回环地址必须 `wss://`；自签证书经 `RUTIS_CA` 语义（SDK API 参数）信任。
@@ -394,7 +395,7 @@ await rutis.stop()        // 全部插件逆序清理，然后断开
 | 清单 | **仓库根** `Package.swift`，目标用 `path:` 指向 `swift/rutis/Sources/...`；平台 `.macOS(.v14)`、`.iOS(.v17)`。SwiftPM git 依赖只认仓库根（附录 E.1）；仓库打包体积约 18 MiB（2026-10-14），依赖方克隆代价可接受 |
 | 版本 | `Rutis.sdkVersion` 跟主发布线：现有 `v0.x.y` tag 正是 SwiftPM 认的形式（附录 E.2），无需新 tag 命名空间；`from:` 从首个含根 `Package.swift` 的 release 起 |
 | 依赖方写法 | 插件作者与应用同一条：`.package(url: "https://github.com/arcships/rutis", from: "0.11.0")` + `.product(name: "Rutis", package: "rutis")`；应用在 Xcode 里直接添加包 |
-| 依赖 | 核心仅 Foundation；拨出用 `URLSessionWebSocketTask`；不引入 uniffi / swift-bridge（附录 B） |
+| 依赖 | 核心仅 Foundation；拨出用 `URLSessionWebSocketTask`，监听用 Network.framework；不引入 uniffi / swift-bridge（附录 B） |
 | 兼容 | 同一协议版本内，任意 SDK 版本的二进制 / 应用可在任意宿主版本运行，前提是插件 API 不高于宿主支持 |
 | 语言模式 | Swift 5 模式起步，API 按 Sendable 友好设计；工具链策略同 Go："当前两个稳定版"（今日为 6.3、6.4） |
 | 文档 | `docs/guide/swift-plugin.md`（形态①）、`docs/guide/swift-app.md`（形态②，含本地网络权限等接入注意事项），中英；`docs/guide/plugin-api.md` 加 Swift 列 |
@@ -421,6 +422,7 @@ await rutis.stop()        // 全部插件逆序清理，然后断开
 | 清单 / 多二进制 / 按需 | `rutis-loader/tests/swift_rows.rs` | 与 `go_rows.rs` 同构全套 |
 | 运行时一致性 | `multilang.rs`（feature `swift`） | Swift 叶子插件；多语言冷启动互调；提供者移除只停使用者；`inject` 门控 |
 | 交叉同步调用 | `multilang.rs` | Node→Swift→回调 Node（带链）、Swift↔Go、Swift↔Python：不卡死；Node 与 Swift 的交叉同步环被检测为 `SyncWaitCycle` |
+| 监听 | `rutis-bridge/tests/websocket_conformance.rs` 加 Swift 远程端 | 与 Go 的远程监听同一套断言 |
 | 拨出 | `rutis-bridge/tests/dial_conformance.rs` 加 Swift 列（拨出稿 §六） | 退避、凭据被拒、同 id 接管、断开即关闭实例、`stop` / `start` |
 | 授权（e2e） | e2e 套件 | 形态① EventKit；形态② iOS HealthKit：提示归属、拒绝后错误传回。授权点击为人工验收清单，其余自动化 |
 | 夹具 | `crates/rutis-loader/tests/fixtures/swift` | 测试开始时构建成至少两个二进制 |
@@ -432,7 +434,7 @@ await rutis.stop()        // 全部插件逆序清理，然后断开
 | --- | --- | --- |
 | S1 | SDK 核心（会话、叶子 API、值、并发）+ 形态①的 `serve`（`fd` / `unix`）、清单、`RutisTest`；`binary.rs` 抽取 + `go.rs` 薄封装；`Launcher::swift`、feature；`SwiftResolver`；`SwiftRuntimes`（仅 `eager`） | §十四 除按需、拨出、授权外全部通过；多二进制并行；iOS Simulator 单测过；Go 原有测试全绿 |
 | S2 | 形态①按需启动与空闲停止；rutis-host（`runtimes.swift`、`dev`、`check`、`new --lang swift`）；指南；TCC / EventKit | 按需启动测试过；`dev` 改代码只重启本运行时；授权提示指向二进制、拒绝错误传回 |
-| A1 | 形态②：拨出通道、`RutisApp`；依赖拨出稿 R-P1 | 应用（模拟器与真机）拨出接入，按 rutis 配置装载插件；`stop` 后使用者停下，`start` 后恢复；两台设备同名插件各在自己的实例；`dial_conformance` Swift 列过 |
+| A1 | 形态②：拨出与监听通道、`RutisApp`；依赖拨出稿 R-P1 | 应用（模拟器与真机）拨出接入，按 rutis 配置装载插件；`stop` 后使用者停下，`start` 后恢复；两台设备同名插件各在自己的实例；`dial_conformance`、`websocket_conformance` Swift 列过 |
 
 A1 只依赖 S1 的会话层与拨出稿 R-P1，可与 S2 并行。
 
@@ -447,7 +449,7 @@ A1 只依赖 S1 的会话层与拨出稿 R-P1，可与 S2 并行。
 | 总体稿行名 `swift:Calendar.bundle` | 形态① `swift:<插件名>`；形态② `<运行时名>:<插件名>`（拨出稿） |
 | 总体稿 §二.7 把 Swift 归为"按名字加载代码的" | 归为与 Go 相同的"插件就是编译好的程序"；iOS 上集成单位是应用 |
 | 总体稿 §九 待定"Swift（M3）确认可重入" | 可重入，并声明 `sync-wait`（§五） |
-| 初稿形态②a（应用监听，宿主拨入） | 删除：设备地址不稳定、证书需带 IP，且与拨出稿方向不符 |
+| 初稿形态②a（应用监听，宿主拨入） | 监听保留为通道能力（S14）；应用托管推荐拨出：设备地址不稳定、证书需带 IP |
 | 初稿形态②b（应用作为 peer 拨出，export / import） | 删除：改为由 rutis 驱动的运行时语义（应用接入 D2），export / import 的治理模型不再需要 |
 | 初稿后台存活、APNs、App Intents | 删除：前后台属于业务层；反向调用不在范围内 |
 | 初稿能力只声明 `signals`、`reentrant-sync` | 加 `sync-wait`：不声明则不在等待环检测范围内 |
@@ -477,7 +479,7 @@ A1 只依赖 S1 的会话层与拨出稿 R-P1，可与 S2 并行。
 | uniffi Swift 6 支持标注 partial；swift-bridge 0.x 且曾断更约 16 个月——均不采用 | [UniFFI Swift](https://mozilla.github.io/uniffi-rs/latest/swift/overview.html)、crates.io |
 | 阻塞读不应落在协作线程池（池宽 = 核数）；专用线程 + continuation 是标准做法 | Swift concurrency 文档 |
 | 裸可执行文件把 Info.plist 链进 `__TEXT,__info_plist`（`-sectcreate`）是长期既有技术 | CMake / swift-forums 实践 |
-| `URLSessionWebSocketTask` 是 Foundation 的 WebSocket 客户端，支持子协议与自定义 TLS 信任 | Apple 文档 |
+| `URLSessionWebSocketTask` 是 Foundation 的 WebSocket 客户端，支持子协议与自定义 TLS 信任；Network.framework 的 `NWListener` + `NWProtocolWebSocket` 是带子协议与 TLS 的 WebSocket 服务端 | Apple 文档 |
 | iOS：无进程 spawn、禁止下载执行代码、后台应用挂起、本地网络权限（iOS 14+） | Apple 平台文档 |
 
 ### C. 与 Go 运行时逐项对照（形态①）
@@ -496,7 +498,7 @@ A1 只依赖 S1 的会话层与拨出稿 R-P1，可与 S2 并行。
 | 值默认 | 数据，`rutis.Ref` 显式引用 | 值类型即数据；class 须 `Rutis.ref` |
 | sync 方法内发调用 | 可以（阻塞 goroutine） | 不可以（代理全 async） |
 | panic / fatalError | 捕获为错误；goroutine 未捕获 → 进程退出 | 错误即 `throws`；`fatalError` → 进程退出 |
-| 远程 | 监听（`listen:`） | 只拨出 |
+| 远程 | 监听（`listen:`）；拨出随拨出稿 R-P3 | 监听与拨出 |
 | 平台 | Linux / macOS / Windows | macOS（①）/ macOS + iOS（②） |
 | 分发 | git tag `go/rutis/vX.Y.Z` + 模块代理 | 根 `Package.swift` + 主发布线 `v` tag |
 

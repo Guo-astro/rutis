@@ -22,7 +22,7 @@ Out of scope: loading new code on the device (download, upload, hot replacement)
 | D6 | Which plugins are loaded, and with what configuration, is decided by rows in the rutis configuration; plugins the app carries but the configuration does not mention are not loaded | 5 |
 | D7 | rutis does not model devices: device IDs, device information and the like are services provided by ordinary plugins; rutis only does plugin discovery and connection | 3 |
 | D8 | No aliases: when several app connections carry same-named plugins, each connection is an instance, and same-named services resolve within their own instance | 5 |
-| D9 | The app dials out by IP / server name to a rutis access point; connections, instances, identity and reconnection all follow the dial-out design | 6 |
+| D9 | The app is recommended to dial out by IP / server name to a rutis access point (each SDK also supports listening, see dial-out design R1); connections, instances, identity and reconnection all follow the dial-out design | 6 |
 | D10 | The SDKs are native implementations (Swift / Kotlin), with no embedded Rust | 8 |
 
 ## 2. Requirements
@@ -98,7 +98,7 @@ Integration notes (the iOS local network permission, usage descriptions for each
 
 ## 8. Implementation: native
 
-The Swift and Kotlin SDKs each implement the session protocol, the runtime contract and dialing out in native code, as Python, Node, Bun and Go do; no embedded Rust.
+The Swift and Kotlin SDKs each implement the session protocol, the runtime contract and connections in both directions in native code, as Python, Node, Bun and Go do; no embedded Rust (dial-out design R8).
 
 | Consideration | Conclusion |
 | --- | --- |

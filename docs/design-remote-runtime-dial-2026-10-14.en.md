@@ -22,13 +22,14 @@ Existing remote runtimes assume "a few fixed servers". Within that assumption th
 
 | # | Decision | Section |
 | --- | --- | --- |
-| R1 | A runtime can dial out to a rutis access point; dialing out is recommended, and runtime-side listening is kept long term | 3 |
+| R1 | Every remote runtime supports both directions: listening (rutis dials in) and dialing out (the runtime connects to a rutis access point); which one to use is a deployment choice, not a language restriction | 3 |
 | R2 | One rutis access point accepts many runtime connections; each connection is an instance (an `instanced` group), created when the connection arrives and closed when it drops | 4 |
 | R3 | Connections are told apart by an id the runtime reports itself in the handshake; a new connection with the same id takes over the old one | 5 |
 | R4 | Identity is a replaceable layer: during the transition, a shared token + self-reported id (rutis does not verify it); once a management service is connected, a verified id replaces it and nothing else changes | 5 |
 | R5 | Dial-out and reconnection behavior is one language-independent specification, enforced by the `dial_conformance` conformance tests | 6 |
 | R6 | The existing approach (static configuration, rutis dialing in to listening runtimes) behaves the same; no forced migration | 8 |
 | R7 | Transport security rules are unchanged: non-loopback must use TLS; when dialing out, the TLS server is only on the rutis side | 3 |
+| R8 | The runtime side is implemented entirely in each platform language, with no Rust dependency (Python, Node, Bun, Go, Swift, Kotlin) | 7 |
 
 ## 3. Direction
 
@@ -39,7 +40,8 @@ New:      rutis (access point, the only TLS server) ◀──dial out── runt
 
 - When dialing out, the runtime side only needs a WebSocket **client**, which is easier to implement in each language than the existing server.
 - rutis has the same control over runtimes that dial in to it as today: loading, configuration, unloading and gating are all driven by rutis (remote plugins §4.1).
-- The runtime-side channel is written `dial:wss://…` (symmetric with the existing `listen:wss://…`); dial-out-only SDKs (Swift, Kotlin) report an error for `listen:`.
+- The runtime-side channel is written `dial:wss://…`, symmetric with the existing `listen:wss://…`; every language supports both.
+- Choosing: use listening when the remote machine has a fixed address that rutis can reach directly; use dialing out when it is behind NAT, its address changes, or the number of machines changes (devices, scaling workers).
 - Combining a listening-side link with `runtime` is not rejected by the existing code but has not been tested: R-P0 tests it, and if it does not work, R-P1 fixes it as well.
 
 ## 4. Dynamic connections are instances
@@ -97,14 +99,14 @@ Conformance tests: `rutis-bridge/tests/dial_conformance.rs`, shaped like `websoc
 | --- | --- |
 | Rust side | Access point accepting many connections, connection-as-instance, per-instance runtime keys, the identity layer and its transitional implementation, `plugins` in the `mount` reply, rutis-host configuration (`listen` / `instances`), `runtimes.remote[].language` accepting `swift`, `kotlin` / `kt` |
 | Python | Dial-out client (`dial:`); the first existing language (its TLS server has the most problems, so dialing out helps it most) |
-| Go, Bun, Node | Dial-out client; when there is demand |
-| Swift, Kotlin | Dial-out only (Swift SDK §6, Android design §5) |
+| Node, Bun, Go | Dial-out client, right after Python |
+| Swift, Kotlin | Both listening and dialing out (Swift SDK §6, Android design §5) |
 | Docs | Add dialing out and dynamic connections to the Connect Nodes guide; change the recommended approach to dialing out |
 
 ## 8. Compatibility
 
 - Existing configuration (`runtimes.remote` + link `dial` + `runtime`) behaves the same.
-- Runtime-side `listen:` is kept long term, with no plan to deprecate it.
+- Runtime-side `listen:` is one of the two directions and is kept long term.
 
 ## 9. Phases
 
@@ -113,4 +115,4 @@ Conformance tests: `rutis-bridge/tests/dial_conformance.rs`, shaped like `websoc
 | R-P0 | Test the current state of a listening-side link + `runtime` | Findings written back into §3 |
 | R-P1 | Rust side: the Rust work in §7; the `dial_conformance` framework | Two connections carry same-named plugins, and consumers in each instance only use their own connection's services; dropping one connection closes only its instance; existing remote runtime tests all pass |
 | R-P2 | Python dialing out | The Python runtime dials out and connects; the Python column of `dial_conformance` passes |
-| R-P3 | Swift and Kotlin connect with apps (Swift A1, Android K-P2); other languages when there is demand | Every language passes the same tests |
+| R-P3 | Node, Bun, Go dialing out; Swift and Kotlin connect with apps (Swift A1, Android K-P2) | Every language passes `dial_conformance` (dialing out) and `websocket_conformance` (listening) |

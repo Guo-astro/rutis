@@ -2,7 +2,7 @@
 
 [中文](design-swift-sdk-2026-10-12.md)
 
-Status: final, not implemented. Date: 2026-10-12; final revision 2026-10-14 (the app part now follows [app integration](design-app-integration-2026-10-14.en.md), and connections are dial-out only, see §16). Base: `main` `a763cdc` (0.10.0).
+Status: final, not implemented. Date: 2026-10-12; final revision 2026-10-14 (the app part now follows [app integration](design-app-integration-2026-10-14.en.md), and remote connections support listening and dialing out, see §16). Base: `main` `a763cdc` (0.10.0).
 Depends on: [the multilang master plan](design-multilang-runtimes-2026-10-03.en.md) (this is its M3; the revision of its dlopen approach is appendix A), [app integration](design-app-integration-2026-10-14.en.md) (the generic part of shape ②), [remote runtimes: dial-out and dynamic access](design-remote-runtime-dial-2026-10-14.en.md) (connections), [the Go plugin runtime](design-go-runtime-2026-10-10.en.md) (shape ① reuses its decisions and machinery; a side-by-side is appendix C), [the plugin API](guide/plugin-api.en.md).
 
 Out of scope: a Swift-side Cordis; build systems other than SwiftPM; the host compiling Swift code; Linux and Windows (§13); app foreground/background, background survival, push wakeup (the business layer, see app integration §7); App Intents and other ways for the Apple ecosystem to call back into rutis; running rutis itself on the device.
@@ -24,7 +24,7 @@ Out of scope: a Swift-side Cordis; build systems other than SwiftPM; the host co
 | S11 | Providing services: an explicit closure table (Swift has no method reflection) | 4 |
 | S12 | Using services: a `RutisClient` struct of closure fields, signatures inferred with parameter packs; signatures that infer poorly fall back to 0–3-argument overloads | 4 |
 | S13 | Values split along the type system: value types copy as data, closures cross as references; objects need an explicit `Rutis.ref` | 4 |
-| S14 | The SDK implements dial-out only, no WebSocket listener | 6 |
+| S14 | Remote connections support both directions: dialing out (`dial:`) and listening (`listen:`); dialing out is recommended for app hosting | 6 |
 | S15 | The host does not compile; `run` only runs ready-made binaries, `dev` only rebuilds the project itself; binaries of different SDK versions coexist | 10, 11 |
 | S16 | The SDK lives at `swift/rutis`, distributed through the repository-root `Package.swift`, versioned by the main release line's `v` tags; the core depends only on Foundation | 12 |
 | S17 | Platforms: macOS 14+ (both shapes), iOS / iPadOS 17+ (shape ②); Linux later, Windows out | 13 |
@@ -156,7 +156,8 @@ At `swift/rutis` (SwiftPM target `Rutis`), Swift 5 language mode, toolchain 5.9 
 | --- | --- | --- |
 | Core | session protocols (compat / endpoint), leaf API, values, concurrency, `RutisTest` | macOS + iOS (Foundation only; touches no process or file-system facilities) |
 | Channel·process | `fd:3`, `unix:`, `tcp:` (POSIX) | macOS (shape ①) |
-| Channel·dial | the WebSocket client (Foundation `URLSessionWebSocketTask`), reconnecting per [the dial-out design](design-remote-runtime-dial-2026-10-14.en.md) §6 | macOS + iOS (shape ②; shape ① remote) |
+| Channel·dial | the WebSocket client (Foundation `URLSessionWebSocketTask`), reconnecting per [the dial-out design](design-remote-runtime-dial-2026-10-14.en.md) §6 | macOS + iOS |
+| Channel·listen | the WebSocket server (Network.framework `NWListener` + `NWProtocolWebSocket`), with the same semantics as Go's remote listening (one controller at a time, a new connection takes over) | macOS + iOS |
 | serve packaging | `Rutis.serve` / `serveArgs` / the manifest CLI | macOS (shape ①) |
 | App hosting | `RutisApp` (§7) | macOS + iOS (shape ②) |
 
@@ -282,8 +283,8 @@ Applies to both shapes.
 | `fd:3` | ① | Unix local inheritance: `dup` + POSIX read/write |
 | `unix:<path>` | ① | dial-back: POSIX socket |
 | `tcp:127.0.0.1:<port>` | ① (reserved) | send `RUTIS_CHANNEL_TOKEN` + newline first, then remove it from the environment |
-| `dial:wss://…` | ① remote, ② | WebSocket client, subprotocol `rutis.3`; credentials and id per the dial-out design §5; reconnect per the dial-out design §6 |
-| `listen:…` | — | not supported: errors, explaining that the Swift SDK only dials out (S14) |
+| `dial:wss://…` | ① remote, ② (recommended) | WebSocket client, subprotocol `rutis.3`; credentials and id per the dial-out design §5; reconnect per the dial-out design §6 |
+| `listen:ws://…` / `listen:wss://…` | ① remote, ② | WebSocket server; non-loopback must be `wss://` (`RUTIS_CERT` / `RUTIS_KEY` semantics); credentials, heartbeat and message size limit as in Go's remote listening |
 
 - Line framing; the per-message size limit as [#173](https://github.com/arcships/rutis/issues/173); the `project` argument is provided through `Rutis.project` (in shape ②, the app's agreed directory).
 - Non-loopback addresses must use `wss://`; a self-signed certificate is trusted through the `RUTIS_CA` semantics (an SDK API parameter).
@@ -394,7 +395,7 @@ As Go §12: `dev` watches `.swift`, `Package.swift`, `Package.resolved` → `swi
 | Manifest | a `Package.swift` at the **repository root**, targets pointed at `swift/rutis/Sources/...` via `path:`; platforms `.macOS(.v14)`, `.iOS(.v17)`. SwiftPM git dependencies only read the repository root (appendix E.1); the repository's packed size is about 18 MiB (2026-10-14), an acceptable clone cost for dependents |
 | Versioning | `Rutis.sdkVersion` follows the main release line: the existing `v0.x.y` tags are exactly the form SwiftPM accepts (appendix E.2), so no new tag namespace; `from:` starts at the first release containing the root `Package.swift` |
 | How dependents write it | plugin authors and apps share one line: `.package(url: "https://github.com/arcships/rutis", from: "0.11.0")` + `.product(name: "Rutis", package: "rutis")`; apps add the package directly in Xcode |
-| Dependencies | core: Foundation only; dial-out uses `URLSessionWebSocketTask`; no uniffi / swift-bridge (appendix B) |
+| Dependencies | core: Foundation only; dial-out uses `URLSessionWebSocketTask`, listening uses Network.framework; no uniffi / swift-bridge (appendix B) |
 | Compatibility | within one protocol version, a binary / app of any SDK version runs on a host of any version, provided its plugin API is not above what the host supports |
 | Language mode | Swift 5 mode to start, the API designed Sendable-friendly; the toolchain policy as Go: "the current two stable releases" (today 6.3 and 6.4) |
 | Docs | `docs/guide/swift-plugin.md` (shape ①), `docs/guide/swift-app.md` (shape ②, including integration notes such as the local-network permission), Chinese and English; a Swift column in `docs/guide/plugin-api.md` |
@@ -421,6 +422,7 @@ As Go §12: `dev` watches `.swift`, `Package.swift`, `Package.resolved` → `swi
 | Manifest / binaries / on-demand | `rutis-loader/tests/swift_rows.rs` | the full set mirroring `go_rows.rs` |
 | Runtime conformance | `multilang.rs` (feature `swift`) | a Swift leaf plugin; cross-language cold starts calling each other; a provider going away stops only its users; `inject` gating |
 | Cross sync calls | `multilang.rs` | Node→Swift→calling back into Node (with the chain), Swift↔Go, Swift↔Python: no deadlock; a cross sync cycle between Node and Swift is detected as `SyncWaitCycle` |
+| Listening | `rutis-bridge/tests/websocket_conformance.rs` gains a Swift remote end | the same assertions as Go's remote listening |
 | Dial-out | `rutis-bridge/tests/dial_conformance.rs` gains a Swift column (the dial-out design §6) | backoff, rejected credentials, same-id takeover, the instance closing on disconnect, `stop` / `start` |
 | Authorization (e2e) | the e2e suite | shape ① EventKit; shape ② iOS HealthKit: prompt attribution, the error going back after a denial. Clicking the prompts is a manual acceptance checklist, the rest is automated |
 | Fixtures | `crates/rutis-loader/tests/fixtures/swift` | built into at least two binaries at test start |
@@ -432,7 +434,7 @@ As Go §12: `dev` watches `.swift`, `Package.swift`, `Package.resolved` → `swi
 | --- | --- | --- |
 | S1 | the SDK core (session, leaf API, values, concurrency) + shape ①'s `serve` (`fd` / `unix`), manifest, `RutisTest`; the `binary.rs` extraction + the thin `go.rs` wrapper; `Launcher::swift`, the feature; `SwiftResolver`; `SwiftRuntimes` (`eager` only) | all of §14 except on-demand, dial-out and authorization pass; several binaries in parallel; the iOS Simulator unit tests pass; Go's existing tests stay green |
 | S2 | shape ① on-demand start and idle stop; rutis-host (`runtimes.swift`, `dev`, `check`, `new --lang swift`); the guides; TCC / EventKit | the on-demand tests pass; `dev` restarts only its own runtime after a code change; the prompt points at the binary, a denial's error goes back |
-| A1 | shape ②: the dial-out channel, `RutisApp`; depends on the dial-out design's R-P1 | an app (simulator and device) dials out and connects, and loads plugins per the rutis configuration; after `stop` its users stop, after `start` they recover; same-named plugins on two devices each live in their own instance; the `dial_conformance` Swift column passes |
+| A1 | shape ②: the dial-out and listening channels, `RutisApp`; depends on the dial-out design's R-P1 | an app (simulator and device) dials out and connects, and loads plugins per the rutis configuration; after `stop` its users stop, after `start` they recover; same-named plugins on two devices each live in their own instance; the `dial_conformance` and `websocket_conformance` Swift columns pass |
 
 A1 depends only on S1's session layer and the dial-out design's R-P1, and can run in parallel with S2.
 
@@ -447,7 +449,7 @@ Later (when needed): downloading prebuilt binaries (`swift add <URL>`), receivin
 | Master plan row name `swift:Calendar.bundle` | shape ① `swift:<plugin>`; shape ② `<runtime>:<plugin>` (the dial-out design) |
 | Master plan §2.7 files Swift under "runtimes that load code by name" | filed with Go under "the plugin is a compiled program"; on iOS the integration unit is the app |
 | Master plan §9 open question "Swift (M3) confirms reentrancy" | reentrant, and declares `sync-wait` (§5) |
-| First draft shape ②a (the app listens, the host dials in) | removed: device addresses are unstable, certificates would need IPs, and it runs against the dial-out design's direction |
+| First draft shape ②a (the app listens, the host dials in) | listening kept as a channel capability (S14); dialing out recommended for app hosting: device addresses are unstable, certificates would need IPs |
 | First draft shape ②b (the app dials out as a peer, export / import) | removed: replaced by runtime semantics driven by rutis (app integration D2); the export / import governance model is no longer needed |
 | First draft background survival, APNs, App Intents | removed: foreground/background belongs to the business layer; calling back into rutis is out of scope |
 | First draft capabilities declare only `signals`, `reentrant-sync` | adds `sync-wait`: without it the runtime is outside wait-cycle detection |
@@ -477,7 +479,7 @@ Later (when needed): downloading prebuilt binaries (`swift add <URL>`), receivin
 | UniFFI's Swift 6 support is marked partial; swift-bridge is 0.x and had a roughly 16-month hiatus; neither is adopted | [UniFFI Swift](https://mozilla.github.io/uniffi-rs/latest/swift/overview.html), crates.io |
 | Blocking reads must not sit on the cooperative pool (its width is the core count); a dedicated thread + continuation is the standard approach | Swift concurrency docs |
 | Linking an Info.plist into a bare executable's `__TEXT,__info_plist` (`-sectcreate`) is long-standing practice | CMake / swift-forums practice |
-| `URLSessionWebSocketTask` is Foundation's WebSocket client, supporting subprotocols and custom TLS trust | Apple documentation |
+| `URLSessionWebSocketTask` is Foundation's WebSocket client, supporting subprotocols and custom TLS trust; Network.framework's `NWListener` + `NWProtocolWebSocket` is a WebSocket server with subprotocols and TLS | Apple documentation |
 | iOS: no process spawning, downloading and executing code is forbidden, background apps are suspended, local-network permission (iOS 14+) | Apple platform documentation |
 
 ### C. Side-by-side with the Go runtime (shape ①)
@@ -496,7 +498,7 @@ Later (when needed): downloading prebuilt binaries (`swift add <URL>`), receivin
 | Values by default | data, `rutis.Ref` for explicit references | value types are data; classes need `Rutis.ref` |
 | Calling out from a sync method | allowed (blocks the goroutine) | not allowed (all proxies are async) |
 | panic / fatalError | captured as an error; uncaught in a goroutine → process exit | errors are `throws`; `fatalError` → process exit |
-| Remote | listens (`listen:`) | dial-out only |
+| Remote | listens (`listen:`); dialing out comes with dial-out design R-P3 | listens and dials out |
 | Platforms | Linux / macOS / Windows | macOS (①) / macOS + iOS (②) |
 | Distribution | git tag `go/rutis/vX.Y.Z` + the module proxy | root `Package.swift` + the main release line's `v` tags |
 

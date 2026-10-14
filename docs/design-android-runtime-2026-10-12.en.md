@@ -7,7 +7,7 @@ Based on: [app integration](design-app-integration-2026-10-14.en.md) (the genera
 
 Positioning: an Android app provides its own capabilities and those of the device it runs on as rutis plugins; the plugins are written in Kotlin, compiled into the app, and driven by rutis. For the desktop-JVM runtime, see [the Kotlin runtime](design-kotlin-runtime-2026-10-12.en.md) (suspended).
 
-Out of scope: the device listening; loading new code on the device (DEX download, upload, hot swap); app foreground/background, foreground services, Doze handling (business layer; see app integration §7); Intents and other Android-ecosystem calls back into rutis; running rutis itself on the device; the Play compliance process itself.
+Out of scope: loading new code on the device (DEX download, upload, hot swap); app foreground/background, foreground services, Doze handling (business layer; see app integration §7); Intents and other Android-ecosystem calls back into rutis; running rutis itself on the device; the Play compliance process itself.
 
 ## 1. Decisions
 
@@ -15,12 +15,12 @@ Out of scope: the device listening; loading new code on the device (DEX download
 | --- | --- | --- |
 | K1 | Plugins are written in the rutis style, compiled into the app (APK / AAB), and loaded, configured and unloaded under rutis's control | 2 |
 | K2 | The SDK gives the app only `start` / `stop`; foreground services, Doze and vendor background limits belong to the business layer | 5 |
-| K3 | The connection is the app dialing out to a rutis access point (`wss://`); each connection is one instance on the rutis side; no plaintext exception | 5 |
+| K3 | Remote connections support both directions: dialing out to a rutis access point (recommended; each connection is one instance on the rutis side) and listening (rutis dials in); non-loopback must be `wss://`, no plaintext exception | 5 |
 | K4 | The SDK is a Kotlin library with two targets: android and jvm; the jvm target is for conformance tests on the desktop and is also the basis for a future desktop runtime | 7 |
 | K5 | One platform thread per incoming call; `suspend` methods are bridged with `runBlocking` on that call's thread; declares `sync-wait` and `reentrant-sync`, not `sync-stack` | 4 |
 | K6 | No runtime reflection: service methods use explicit method tables and config schemas are given explicitly (consistent with Swift); a KSP generator is a follow-up | 3 |
 | K7 | Values: JSON-compatible types are copied recursively; functions and explicit `Rutis.ref` go by reference; integers beyond ±2^53−1 are an error | 3 |
-| K8 | Dependencies: kotlin-stdlib, kotlinx-coroutines-core, kotlinx-serialization-json, OkHttp (WebSocket client) | 7 |
+| K8 | Dependencies: kotlin-stdlib, kotlinx-coroutines-core, kotlinx-serialization-json, OkHttp (WebSocket client), Java-WebSocket (WebSocket server, pure Java) | 7 |
 | K9 | System permissions belong to the app; not granted = `apply` or the method call fails; when a runtime permission is revoked while running, the system kills the app process, which rutis sees as a disconnect | 6 |
 | K10 | Platform: Android 10 (API 29) and later; pure Kotlin, no native code | 7 |
 | K11 | The only host-side change: `runtimes.remote[].language` accepts `"kotlin"` / `"kt"`; everything else follows the dial-out design | 8 |
@@ -121,6 +121,7 @@ rutis.stop()    // clean up all plugins in reverse order, then disconnect
 | `stop()` | Unloads all rows (cleanups in reverse order) and closes the connection; `start()` may be called again |
 | State | `rutis.state` (`Stopped` / `Connecting` / `Connected`, a `StateFlow`) for the business layer to display; the SDK makes no lifecycle decisions based on it |
 | Certificates | Non-loopback must be `wss://`; for a self-signed certificate, trust its CA through an SDK parameter |
+| Listening | `RutisApp(listen = "wss://0.0.0.0:7443/rutis", …)` instead waits for rutis to dial in, with the same semantics as Go's remote listening (one controller at a time, a new connection takes over); suits devices with a fixed address; dialing out is recommended in general |
 | Changing code | Ship a new version of the app |
 | Business-layer reference | When it needs to stay resident, the app runs a foreground service (from Android 14 the foreground service type must be declared) and guides the user to the battery-optimization allowlist; otherwise it follows the UI with `start` / `stop`. This goes in the SDK guide, not in the SDK |
 
@@ -163,13 +164,14 @@ For a configuration example, see dial-out design §4 (with `language` set to `ko
 | Session conformance | `rutis-bridge/tests/runtime_conformance.rs` + a Kotlin conformance entry point (jvm target) | `session::testing::session` |
 | Runtime conformance | A Kotlin column in `multilang.rs` | Leaf plugins; cross-language calls; withdrawing a provider stops only its consumers; `inject` gating; crossed synchronous calls do not deadlock |
 | Dial-out | A Kotlin column in `dial_conformance.rs` | Every item of dial-out design §6 |
+| Listening | A Kotlin remote end in `websocket_conformance.rs` | The same assertions as Go's remote listening |
 | Device | Android emulator instrumented tests | `RutisApp` on ART dials out to the access point, loads, `stop` / `start`; errors from denied permissions go back |
 | CI | JDK job (jvm target) + emulator job | Gradle build before cargo tests |
 
 | Phase | Work | Acceptance |
 | --- | --- | --- |
 | K-P1 | SDK core (session, plugin API, values, threading), jvm target | Passes session and runtime conformance on the desktop |
-| K-P2 | Dial-out channel, `RutisApp`, android target; depends on dial-out design R-P1 | Apps on emulators and real devices dial out to the access point and load plugins according to rutis configuration; consumers stop after `stop` and recover after `start`; same-named plugins on two devices each live in their own instance; the `dial_conformance` Kotlin column passes |
+| K-P2 | Dial-out and listening channels, `RutisApp`, android target; depends on dial-out design R-P1 | Apps on emulators and real devices dial out to the access point and load plugins according to rutis configuration; consumers stop after `stop` and recover after `start`; same-named plugins on two devices each live in their own instance; the `dial_conformance` and `websocket_conformance` Kotlin columns pass |
 | K-P3 | Example capability plugins (contacts, notify, device) and the SDK guide | Real device: permission prompts point at the app; after denial the error goes back |
 
 Follow-ups (when needed): KSP generation of method tables and schemas; the desktop-JVM runtime (reopening the Kotlin runtime design).
@@ -178,12 +180,12 @@ Follow-ups (when needed): KSP generation of method tables and schemas; the deskt
 
 | First draft | This document | Reason |
 | --- | --- | --- |
-| Device listens, host dials in | App dials out | Device addresses are unstable and behind NAT; the direction matches the dial-out design |
+| Only device listening, host dials in | Both directions supported, dialing out recommended | Device addresses are unstable and behind NAT; the direction matches dial-out design R1 |
 | Plaintext `ws://` allowed on the LAN | Removed | Violates remote plugins §7 "non-loopback must use TLS"; the host's dialing side also rejects non-loopback plaintext |
 | DEX uploaded through an authenticated endpoint, loaded with `DexClassLoader` | Removed; plugins are compiled into the app | Violates remote plugins §7 "no code upload"; consistent with the iOS model |
 | Hot reload budget (50 per plugin) and self-restart | Removed | New code is no longer loaded |
 | Permission reconciliation (30-second cycle), revocation withdraws services | Removed; permissions are the plugin's own business | When a runtime permission is revoked the system kills the process outright, so the reconciliation path never happens |
 | Foreground service, Doze, vendor auto-start guidance | Moved to the business-layer reference | The SDK does not manage the platform lifecycle |
 | Helper APK as the only carrier | Any app that integrates the SDK can host plugins | The app itself provides capabilities in the rutis style |
-| SDK depends on kotlin-stdlib only | K8 | Android has no built-in WebSocket client; config decoding uses kotlinx-serialization (compile time, no runtime reflection) |
+| SDK depends on kotlin-stdlib only | K8 | Android has no built-in WebSocket client or server; config decoding uses kotlinx-serialization (compile time, no runtime reflection) |
 | arm64-v8a and x86_64 | No ABI restriction | Pure Kotlin, no native code |
