@@ -1,5 +1,10 @@
 <div align="center">
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo/brand/rutis-lockup-inverse.svg">
+  <img src="assets/logo/brand/rutis-lockup.svg" alt="rutis" width="320">
+</picture>
+
 # rutis
 
 **A plugin runtime for software that iterates on itself**
