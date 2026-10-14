@@ -251,6 +251,7 @@ Receiving: function types → Go functions calling the remote one; `*rutis.Futur
 | --- | --- |
 | Session structure | one reader goroutine; one reply channel per outgoing call; a new goroutine per incoming `call` / `invoke` / `get` / `await` / control operation; one write lock; separate locks per table |
 | Reentrancy | any incoming call runs at any time; declares `reentrant-sync` |
+| Wait-cycle detection | call frames of synchronous calls carry `sync: true` (sent only to a far end that declared `sync-wait`); declares `sync-wait`, not `sync-stack` (#385) |
 | Plugin obligations | service objects safe for concurrent use; no lock held across calls into other services |
 | Call chain | incoming: `path + [id]` in the method's ctx; outgoing: `path` from the ctx given; `Apply` / cleanup ctx carry the `rows.load` / `rows.unload` chain |
 | ctx checks | `nil` ctx panics; in development mode (`RUTIS_DEV=1`), a chainless ctx while an incoming synchronous call runs warns once with the call site |
@@ -276,7 +277,7 @@ Receiving: function types → Go functions calling the remote one; `*rutis.Futur
 
 ### 8.2 Contract
 
-Features `["rows.v2", "hosts", "leaf", "scopes"]`; capabilities `signals`, `reentrant-sync`.
+Features `["rows.v2", "hosts", "leaf", "scopes"]`; capabilities `signals`, `reentrant-sync`, `sync-wait` (`reentrant-sync` and `sync-wait` in the compat handshake).
 
 | Control operation | Behaviour |
 | --- | --- |

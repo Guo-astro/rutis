@@ -325,6 +325,52 @@ func TestACallBeforeTheHandshakeEndsTheSession(t *testing.T) {
 	}
 }
 
+func TestSynchronousCallsSayTheyWaitToAFarEndThatAsked(t *testing.T) {
+	for _, declared := range []string{`["sync-wait"]`, `[]`} {
+		a, b := net.Pipe()
+		runtime, _ := New(NewLines(a), Options{})
+		far := NewLines(b)
+		calls := make(chan frame, 2)
+		go func() {
+			var hello frame
+			message, _ := far.Recv()
+			_ = json.Unmarshal(message, &hello)
+			calls <- hello
+			_ = far.Send([]byte(`{"op":"hello","version":2,"capabilities":` + declared + `}`))
+			for {
+				message, err := far.Recv()
+				if err != nil {
+					return
+				}
+				var f frame
+				_ = json.Unmarshal(message, &f)
+				calls <- f
+				_ = far.Send([]byte(`{"op":"return","id":` + string(f.ID) + `,"value":{"type":"undefined"}}`))
+			}
+		}()
+		_ = runtime.Start()
+		testwait.Within(t, "the handshake", runtime.Ready())
+		if hello := <-calls; string(hello.Capabilities) != `["reentrant-sync","sync-wait"]` {
+			t.Fatalf("the compat hello declares %s", hello.Capabilities)
+		}
+		for _, sync := range []bool{true, false} {
+			if _, err := runtime.Call(context.Background(), "host:x", "m", nil, sync); err != nil {
+				t.Fatal(err)
+			}
+			want := ""
+			if sync && declared != `[]` {
+				want = "true"
+			}
+			if got := (<-calls).Sync; string(got) != want {
+				t.Fatalf("declared %s, sync %v: the call says sync %q", declared, sync, got)
+			}
+		}
+		runtime.Close(nil)
+		a.Close()
+		b.Close()
+	}
+}
+
 func TestConcurrentCallsGoOutInTheOrderOfTheirIdentities(t *testing.T) {
 	host, runtime := pair(t, nil, func(ctx context.Context, target, method string, args []any) (any, error) {
 		return "ok", nil

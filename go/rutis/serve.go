@@ -211,7 +211,7 @@ func startSession(channel peer.Channel, endpoint *peer.Endpoint, defs []*Definit
 		Dispatch:       rt.dispatch,
 		Endpoint:       endpoint,
 		Implementation: map[string]string{"name": Implementation, "version": Version},
-		Capabilities:   []string{"signals", "reentrant-sync"},
+		Capabilities:   []string{"signals", "reentrant-sync", "sync-wait"},
 	})
 	if err != nil {
 		return nil, err

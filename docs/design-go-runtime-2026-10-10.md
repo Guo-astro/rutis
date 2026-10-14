@@ -251,6 +251,7 @@ type LLM struct {
 | --- | --- |
 | 会话结构 | 一个读 goroutine；每个发出的调用一个回复 channel；每个进来的 `call` / `invoke` / `get` / `await` / 控制操作一个新 goroutine；写帧一把锁；各表各自加锁 |
 | 可重入 | 任何时候执行任何进来的调用；声明 `reentrant-sync` |
+| 等待环检测 | 同步调用的调用帧带 `sync: true`（只发给声明了 `sync-wait` 的对端），声明 `sync-wait`；不声明 `sync-stack`（#385） |
 | 插件要求 | 服务对象并发安全；调用其他服务时不持锁 |
 | 调用链 | 进来的调用：`path + [id]` 放入方法 ctx；发出的调用：从传入 ctx 取 `path`；`Apply` / 清理的 ctx 带 `rows.load` / `rows.unload` 的链 |
 | ctx 检查 | `nil` ctx → panic；开发模式（`RUTIS_DEV=1`）下，无链 ctx 且进程内有进来的同步调用 → 警告一次并指出位置 |
@@ -276,7 +277,7 @@ type LLM struct {
 
 ### 8.2 契约
 
-特性 `["rows.v2", "hosts", "leaf", "scopes"]`；能力 `signals`、`reentrant-sync`。
+特性 `["rows.v2", "hosts", "leaf", "scopes"]`；能力 `signals`、`reentrant-sync`、`sync-wait`（compat 握手里为 `reentrant-sync`、`sync-wait`）。
 
 | 控制操作 | 行为 |
 | --- | --- |

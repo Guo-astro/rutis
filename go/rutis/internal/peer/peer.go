@@ -42,6 +42,12 @@ var (
 	sequence       = regexp.MustCompile(`^[1-9][0-9]*$`)
 )
 
+// What this side declares in the compat format, where older hosts ignore
+// it. `sync-wait`: its synchronous calls say so (`sync: true`), for the
+// host's wait-cycle check (#228). Not `sync-stack`: every incoming call runs
+// on a goroutine of its own.
+var compatCapabilities = []string{"reentrant-sync", "sync-wait"}
+
 // UndefinedType is the wire's `undefined`: an omitted argument or field.
 type UndefinedType struct{}
 
@@ -137,6 +143,8 @@ type Peer struct {
 	ref       int64
 	handshake bool
 	greeting  *Greeting
+	// What the far end declared (either format), once it greeted.
+	declared []string
 
 	pending    map[string]chan result
 	exports    map[int64]*export
@@ -191,6 +199,7 @@ func (p *Peer) Start() error {
 	hello := map[string]any{"op": "hello"}
 	if p.opts.Endpoint == nil {
 		hello["version"] = Protocol
+		hello["capabilities"] = compatCapabilities
 	} else {
 		capabilities := append(append([]string{}, p.opts.Capabilities...), p.opts.Endpoint.Declare...)
 		hello["version"] = EndpointProtocol
@@ -221,10 +230,7 @@ func (p *Peer) Supports(capability string) bool {
 }
 
 func (p *Peer) supports(capability string) bool {
-	if p.greeting == nil {
-		return false
-	}
-	for _, c := range p.greeting.Capabilities {
+	for _, c := range p.declared {
 		if c == capability {
 			return true
 		}
@@ -394,7 +400,7 @@ func (f *RemoteFunction) Call(ctx context.Context, args []any, sync bool) (any, 
 	if err != nil {
 		return nil, err
 	}
-	value, err := p.call(ctx, "call", map[string]any{"reference": f.record.id}, args, true, nil, !sync)
+	value, err := p.call(ctx, "call", p.waiting(map[string]any{"reference": f.record.id}, sync), args, true, nil, !sync)
 	if err != nil || sync {
 		return value, err
 	}
@@ -840,7 +846,17 @@ func equal(a, b []string) bool {
 // an asynchronous call (ctx cancels it, and the far end hears so). The
 // call carries ctx's chain.
 func (p *Peer) Call(ctx context.Context, target, method string, args []any, sync bool) (any, error) {
-	return p.call(ctx, "invoke", map[string]any{"target": target, "method": method}, args, true, nil, !sync)
+	return p.call(ctx, "invoke", p.waiting(map[string]any{"target": target, "method": method}, sync), args, true, nil, !sync)
+}
+
+// waiting marks a synchronous call's frame: this goroutine waits for the
+// reply, and a host that checks for wait cycles needs to know (#228). Only
+// for a far end that declared `sync-wait`: others would refuse the field.
+func (p *Peer) waiting(fields map[string]any, sync bool) map[string]any {
+	if sync && p.Supports("sync-wait") {
+		fields["sync"] = true
+	}
+	return fields
 }
 
 // Notify sends a call whose result nobody awaits. It is sent before Notify
@@ -998,6 +1014,9 @@ type frame struct {
 	Args           json.RawMessage `json:"args"`
 	Value          json.RawMessage `json:"value"`
 	Error          json.RawMessage `json:"error"`
+	// The caller waits synchronously (`sync-wait`): for the host's
+	// wait-cycle check, nothing here.
+	Sync json.RawMessage `json:"sync"`
 }
 
 func (p *Peer) receive(f *frame) error {
@@ -1142,6 +1161,7 @@ func (p *Peer) greet(f *frame) error {
 		if version != Protocol || len(f.Endpoint) > 0 {
 			return errors.New("incompatible session: " + versionMismatch(f, Protocol))
 		}
+		_ = json.Unmarshal(f.Capabilities, &p.declared)
 		return nil
 	}
 	if version != EndpointProtocol {
@@ -1161,6 +1181,7 @@ func (p *Peer) greet(f *frame) error {
 	var capabilities []string
 	_ = json.Unmarshal(f.Capabilities, &capabilities)
 	p.greeting = &Greeting{Endpoint: endpoint, Implementation: f.Implementation, Capabilities: capabilities}
+	p.declared = capabilities
 	return nil
 }
 
