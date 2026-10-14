@@ -180,6 +180,8 @@ class Loaded:
 
     async def emit(self, name: str, *args: Any) -> None:
         """Emit a declared host event, waiting for every listener to settle."""
+        if name.startswith("internal/"):
+            raise PluginTestError(f"event {name} is internal to the runtime")
         if self._unloaded:
             raise PluginTestError("the plugin is unloaded")
         if name not in self._emits:

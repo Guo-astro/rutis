@@ -182,6 +182,19 @@ class Testing(background.TestCase):
 
         run(go())
 
+    # guarantee: sdk/leaf-events (internal/* refused; the host emits declared names only)
+    def test_the_host_emits_declared_names_only_and_never_internal_ones(self):
+        async def go():
+            async with load(define_plugin(lambda ctx, config: None), emits=["tick"]) as t:
+                # The same wording as the Node test tool and the real runtimes, as a PluginTestError.
+                with self.assertRaisesRegex(PluginTestError, "^event internal/test is internal to the runtime$"):
+                    await t.emit("internal/test")
+                with self.assertRaisesRegex(PluginTestError, "^event other is not declared for emission from rutis$"):
+                    await t.emit("other")
+                await t.emit("tick")
+
+        run(go())
+
     # guarantee: sdk/leaf-events (disposers; a failed cleanup removes listeners)
     def test_event_disposers_and_failed_cleanup_remove_every_listener(self):
         async def go():
