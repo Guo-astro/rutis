@@ -376,7 +376,8 @@ impl Shared {
 
         let slot = self.slot(&id);
         let mut current = slot.lock().await;
-        let superseded = if *self.stopping.borrow() {
+        let stopped = *self.stopping.borrow();
+        let superseded = if stopped {
             Some("the access point stopped".to_owned())
         } else {
             current
@@ -386,7 +387,10 @@ impl Shared {
         };
         if let Some(reason) = superseded {
             drop(current);
-            closer.replaced();
+            match stopped {
+                true => closer.close(&reason),
+                false => closer.replaced(),
+            }
             session.close(Error::Transport(reason.clone()));
             operations.detach();
             self.forget(&id, slot);
