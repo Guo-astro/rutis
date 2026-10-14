@@ -125,6 +125,7 @@ Using core alone must not pull in extensions; using only a local runtime must no
 - Leaf plugins declare apply, inject, provides, configuration, and cleanup; they do not provide subplugin trees, an event system, or an independent dependency graph.
 - Services within one runtime pass native objects directly; cross-runtime or Rust calls route through the controlling rutis.
 - A remote runtime must not decide dependency satisfaction, startup order, or restart policy itself.
+- Connection direction (revised 2026-10-14): a runtime may also dial out to the controlling rutis's access point; one access point accepts many connections and each connection is an instance. See [Remote runtimes: dialing out and dynamic connections](design-remote-runtime-dial-2026-10-14.en.md).
 
 ### 4.2 Runtime contract
 
