@@ -173,8 +173,12 @@ function shaped(name, object, shape, strict) {
 // runtime uses (`node/rutis-runtime/src/leaf.mjs`).
 const internalMessage = name => `event ${name} is internal to the runtime`
 
+// A name is a string: Cordis's `emit` takes an object, null or function first
+// argument as `this`, so any other type would let `emit(null, 'internal/service')`
+// past the check.
 function internal(name) {
-  if (typeof name === 'string' && name.startsWith('internal/')) throw new PluginTestError(internalMessage(name))
+  if (typeof name !== 'string') throw new TypeError(`an event name is a string, not ${name === null ? 'null' : typeof name}`)
+  if (name.startsWith('internal/')) throw new PluginTestError(internalMessage(name))
 }
 
 /**
@@ -189,9 +193,11 @@ export async function load(plugin, { config = {}, services = {}, strict = true, 
     throw new PluginTestError(`the plugin needs plugin API ${plugin.api}; this SDK supports ${PLUGIN_API}`)
   }
   if (!Array.isArray(emits) || emits.some(name => typeof name !== 'string')) throw new PluginTestError('emits must be a list of event names')
-  // As the runners' mount: internal/* cannot be declared for emission.
-  for (const name of emits) {
-    if (name.startsWith('internal/')) throw new PluginTestError(`${internalMessage(name)} and cannot be emitted from rutis`)
+  // As the runners' mount: internal/* cannot be declared for emission (the
+  // sentence of rutis's own check, `Process::mount`, naming every one).
+  {
+    const internal = emits.filter(name => name.startsWith('internal/'))
+    if (internal.length) throw new PluginTestError(`framework-internal events do not cross the boundary (mount emits): ${internal.join(', ')}`)
   }
   const declared = new Set(emits)
   for (const name of plugin.inject) {

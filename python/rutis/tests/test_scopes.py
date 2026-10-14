@@ -89,8 +89,9 @@ class ScopedIds(background.TestCase):
 
         async def go():
             self.assertIn("events", runtime.dispatch("", "mount", {"emits": ["tick", "failure"]})["features"])
-            with self.assertRaisesRegex(ValueError, "internal"):
-                runtime.dispatch("", "mount", {"emits": ["internal/test"]})
+            # The sentence of rutis's own check (`Process::mount`), naming every internal event.
+            with self.assertRaisesRegex(ValueError, r"^framework-internal events do not cross the boundary \(mount emits\): internal/test, internal/other$"):
+                runtime.dispatch("", "mount", {"emits": ["tick", "internal/test", "internal/other"]})
             await runtime.load("a", entry, {"label": "first"}, None)
             await runtime.load("b", entry, {"label": "other"}, None)
             await runtime.update("a", {"label": "updated"})

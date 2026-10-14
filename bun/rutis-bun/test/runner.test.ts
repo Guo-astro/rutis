@@ -105,6 +105,7 @@ async function eventRows(run: (runtime: Runtime, a: Context, b: Context) => Prom
   }
 }
 
+// guarantee: sdk/leaf-events (emits gate, shared bus, disposers, unload, internal/* refused)
 test('host events require declared names; shared listeners dispose independently and unload', () => eventRows(async (runtime, a, b) => {
   const received: number[] = []
   const listener = (value: number) => { received.push(value) }
@@ -130,9 +131,16 @@ test('host events require declared names; shared listeners dispose independently
   expect(seen).toEqual([1])
   expect(() => a.on('internal/dispatch', () => {})).toThrow('event internal/dispatch is internal to the runtime')
   expect(() => a.emit('internal/service')).toThrow('event internal/service is internal to the runtime')
-  expect(() => runtime.dispatch('', 'mount', { emits: ['internal/dispatch'] })).toThrow('is internal to the runtime and cannot be emitted from rutis')
+  // A non-string name is not Cordis's `this` argument: `emit(null, 'internal/service')` does not dispatch.
+  expect(() => (a as any).on(null, () => {})).toThrow(TypeError)
+  expect(() => (a as any).emit(null, 'internal/service')).toThrow(TypeError)
+  expect(() => (a as any).emit({}, 'internal/service')).toThrow(TypeError)
+  // The sentence of rutis's own check (`Process::mount`), naming every internal event.
+  expect(() => runtime.dispatch('', 'mount', { emits: ['changed', 'internal/dispatch', 'internal/service'] }))
+    .toThrow('framework-internal events do not cross the boundary (mount emits): internal/dispatch, internal/service')
 }))
 
+// guarantee: sdk/leaf-events (host emission waits; aggregate errors)
 test('host emission awaits every listener and aggregates sync and async errors', () => eventRows(async (runtime, a, b) => {
   const errors = [new TypeError('sync failure'), new RangeError('async failure')]
   let release!: () => void

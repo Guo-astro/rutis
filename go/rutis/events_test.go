@@ -104,6 +104,11 @@ func TestHostEmissionWaitsForRowCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The sentence of rutis's own check (Process::mount), naming every internal event.
+	_, err = rt.control(caller, "mount", []any{map[string]any{"emits": []string{"changed", "internal/service", "internal/status"}}})
+	if want := "framework-internal events do not cross the boundary (mount emits): internal/service, internal/status"; err == nil || err.Error() != want {
+		t.Fatalf("a mount declaring internal events: %v", err)
+	}
 	if _, err := rt.control(caller, "emit", []any{"undeclared", []any{}}); err == nil {
 		t.Fatal("undeclared emission accepted")
 	}

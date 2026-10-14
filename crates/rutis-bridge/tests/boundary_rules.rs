@@ -546,14 +546,13 @@ async fn internal_events_stay_on_the_cordis_side() {
     mounted.process.dispose().await.unwrap();
 }
 
-/// guarantee: boundary/5.5
+/// guarantee: boundary/5.5, sdk/leaf-events
 ///
 /// Asking the runtime to carry an `internal/*` event, in either direction,
 /// is a violation it can detect, so the mount fails with an error naming
 /// the event: on the rutis side before the process starts, and in the Node
 /// runtime for a controller that sends such a mount anyway (#282).
 #[tokio::test(flavor = "multi_thread")]
-// guarantee: sdk/leaf-events (internal/* cannot be declared)
 async fn a_mount_listing_an_internal_event_fails() {
     let plugin = fixture("boundary-rules.mjs");
     let mut accepted = Vec::new();
@@ -611,14 +610,10 @@ async fn a_mount_listing_an_internal_event_fails() {
         match refused {
             Err(Error::Remote { message, .. }) => assert_eq!(
                 message,
-                if field == "emits" {
-                    "event internal/service is internal to the runtime and cannot be emitted from rutis".into()
-                } else {
-                    format!(
-                        "framework-internal events do not cross the boundary \
+                format!(
+                    "framework-internal events do not cross the boundary \
                      (mount {field}): internal/service"
-                    )
-                }
+                )
             ),
             other => panic!("the runtime took the mount: {other:?}"),
         }

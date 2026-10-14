@@ -24,6 +24,10 @@ test('leaf events delegate to the shared Cordis bus and leave with their fiber',
   await plugin.await()
   assert.throws(() => leaf.on('internal/dispatch', () => {}), /is internal to the runtime/)
   assert.throws(() => leaf.emit('internal/service'), /is internal to the runtime/)
+  // A non-string name is not Cordis's `this` argument: `emit(null, 'internal/service')` does not dispatch.
+  assert.throws(() => leaf.on(null, () => {}), TypeError)
+  assert.throws(() => leaf.emit(null, 'internal/service'), TypeError)
+  assert.throws(() => leaf.emit({}, 'internal/service'), TypeError)
   assert.throws(() => leaf.emit('e'), /sync failure/)
   assert.deepEqual(seen, [1])
   await root.parallel('root-event', 2)

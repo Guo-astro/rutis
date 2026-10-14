@@ -31,20 +31,23 @@ export function supported(plugin, name) {
 // internal). This is the one place the Node side defines the check: the leaf
 // adapter, the runner's mount and the test tool all use the wording here
 // (`node/rutis/src/testing.mjs` repeats it, since the SDK is its own package
-// and cannot import the runtime).
+// and cannot import the runtime). A name is a string: Cordis's `emit` takes
+// an object, null or function first argument as `this`, so any other type
+// would let `emit(null, 'internal/service')` past the check.
 export const INTERNAL_MESSAGE = name => `event ${name} is internal to the runtime`
-export const EMITS_MESSAGE = name => `${INTERNAL_MESSAGE(name)} and cannot be emitted from rutis`
 
 export function reserved(name) {
-  if (typeof name === 'string' && name.startsWith('internal/')) throw new Error(INTERNAL_MESSAGE(name))
+  if (typeof name !== 'string') throw new TypeError(`an event name is a string, not ${name === null ? 'null' : typeof name}`)
+  if (name.startsWith('internal/')) throw new Error(INTERNAL_MESSAGE(name))
   return name
 }
 
-/// Reject an `emits` declaration that lists an internal event.
-export function refuseEmits(names) {
-  for (const name of names ?? []) {
-    if (String(name).startsWith('internal/')) throw new Error(EMITS_MESSAGE(name))
-  }
+/// Refuse a mount whose `field` (`emits` or `events`) lists internal events,
+/// with the sentence of rutis's own check (`Process::mount`, #337), naming
+/// every one.
+export function refuseInternal(field, names) {
+  const internal = (names ?? []).filter(name => String(name).startsWith('internal/'))
+  if (internal.length) throw new Error(`framework-internal events do not cross the boundary (mount ${field}): ${internal.join(', ')}`)
 }
 
 // The Cordis plugin that runs a leaf plugin. Events share Cordis's process

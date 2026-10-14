@@ -17,9 +17,21 @@ from .peer import AggregateError
 
 
 def reserved(name: str) -> str:
+    if not isinstance(name, str):
+        raise TypeError(f"an event name is a string, not {type(name).__name__}")
     if name.startswith("internal/"):
         raise ValueError(f"event {name} is internal to the runtime")
     return name
+
+
+def refused_emits(names) -> str | None:
+    """The error a mount declaring internal events for emission gets: the
+    sentence of rutis's own check (`Process::mount`, #337), naming every
+    one; None when the declaration is fine."""
+    internal = [name for name in names if isinstance(name, str) and name.startswith("internal/")]
+    if internal:
+        return f"framework-internal events do not cross the boundary (mount emits): {', '.join(internal)}"
+    return None
 
 
 async def _settle(value):

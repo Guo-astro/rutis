@@ -185,15 +185,24 @@ class Testing(background.TestCase):
     # guarantee: sdk/leaf-events (internal/* refused; the host emits declared names only)
     def test_the_host_emits_declared_names_only_and_never_internal_ones(self):
         async def go():
-            async with load(define_plugin(lambda ctx, config: None), emits=["tick"]) as t:
+            saved = []
+            async with load(define_plugin(lambda ctx, config: saved.append(ctx)), emits=["tick"]) as t:
                 # The same wording as the Node test tool and the real runtimes, as a PluginTestError.
                 with self.assertRaisesRegex(PluginTestError, "^event internal/test is internal to the runtime$"):
                     await t.emit("internal/test")
                 with self.assertRaisesRegex(PluginTestError, "^event other is not declared for emission from rutis$"):
                     await t.emit("other")
+                # A name is a string on every side of the bus (on Node, a non-string
+                # would be Cordis's `this` argument).
+                for operation in (saved[0].on, saved[0].emit):
+                    with self.assertRaisesRegex(TypeError, "^an event name is a string, not NoneType$"):
+                        operation(None, "internal/test")
+                with self.assertRaisesRegex(TypeError, "^an event name is a string, not NoneType$"):
+                    await t.emit(None, "internal/test")
                 await t.emit("tick")
-            with self.assertRaisesRegex(PluginTestError, "^event internal/service is internal to the runtime and cannot be emitted from rutis$"):
-                async with load(define_plugin(lambda ctx, config: None), emits=["internal/service"]):
+            # The sentence of the runtimes' mount (`Process::mount`), naming every internal event.
+            with self.assertRaisesRegex(PluginTestError, r"^framework-internal events do not cross the boundary \(mount emits\): internal/service, internal/status$"):
+                async with load(define_plugin(lambda ctx, config: None), emits=["tick", "internal/service", "internal/status"]):
                     pass
 
         run(go())

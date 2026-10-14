@@ -30,7 +30,7 @@ from types import ModuleType
 from typing import Any, AsyncIterator, Callable
 
 from . import plugin as sdk
-from .events import Events
+from .events import Events, refused_emits
 from .peer import AggregateError, MAX_DEPTH, MAX_SAFE_INTEGER, RemoteError, _holds_reference, _is_live, decode_error, encode_error
 
 
@@ -177,13 +177,15 @@ class Loaded:
         self._unloaded = False
         self._events = Events()
         # As the runners' mount: internal/* cannot be declared for emission.
-        for name in emits:
-            if name.startswith("internal/"):
-                raise PluginTestError(f"event {name} is internal to the runtime and cannot be emitted from rutis")
+        refused = refused_emits(emits)
+        if refused is not None:
+            raise PluginTestError(refused)
         self._emits = set(emits)
 
     async def emit(self, name: str, *args: Any) -> None:
         """Emit a declared host event, waiting for every listener to settle."""
+        if not isinstance(name, str):
+            raise TypeError(f"an event name is a string, not {type(name).__name__}")
         if name.startswith("internal/"):
             raise PluginTestError(f"event {name} is internal to the runtime")
         if self._unloaded:

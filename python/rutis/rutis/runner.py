@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import plugin as sdk
-from .events import Events, reserved
+from .events import Events, refused_emits
 from .peer import Peer, RemoteFuture
 
 FEATURES = ["rows.v2", "hosts", "leaf", "scopes", "events"]
@@ -355,8 +355,9 @@ class Runtime:
     def _control(self, method: str, args: Any) -> Any:
         if method == "mount":
             names = args.get("emits", [])
-            for name in names:
-                reserved(name)
+            refused = refused_emits(names)
+            if refused is not None:
+                raise ValueError(refused)
             self.emits = set(names)
             return {"services": {}, "features": FEATURES}
         if method == "emit":

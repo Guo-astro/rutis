@@ -449,12 +449,17 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 		if err != nil {
 			return nil, fmt.Errorf("mount: %w", err)
 		}
+		var internal []string
 		emits := map[string]bool{}
 		for _, name := range mount.Emits {
-			if err := checkEventName(name); err != nil {
-				return nil, err
+			if strings.HasPrefix(name, "internal/") {
+				internal = append(internal, name)
 			}
 			emits[name] = true
+		}
+		if len(internal) != 0 {
+			// The sentence of rutis's own check (Process::mount, #337), naming every one.
+			return nil, fmt.Errorf("framework-internal events do not cross the boundary (mount emits): %s", strings.Join(internal, ", "))
 		}
 		rt.mu.Lock()
 		rt.emits = emits

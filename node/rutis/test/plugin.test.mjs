@@ -150,6 +150,14 @@ test('internal/* events are refused, as on the real runtimes', async () => {
   assert.throws(() => context.on('internal/dispatch', () => {}), /event internal\/dispatch is internal to the runtime/)
   assert.throws(() => context.emit('internal/service'), /event internal\/service is internal to the runtime/)
   await assert.rejects(t.emit('internal/status'), /event internal\/status is internal to the runtime/)
+  // A non-string name is not Cordis's `this` argument: `emit(null, 'internal/service')` does not dispatch.
+  assert.throws(() => context.on(null, () => {}), TypeError)
+  assert.throws(() => context.emit(null, 'internal/service'), TypeError)
+  assert.throws(() => context.emit({}, 'internal/service'), TypeError)
+  await assert.rejects(t.emit(null, 'internal/status'), TypeError)
   await t.unload()
-  await assert.rejects(load(plugin, { emits: ['internal/service'] }), /is internal to the runtime and cannot be emitted from rutis/)
+  // The sentence of the runtimes' mount (`Process::mount`), naming every internal event.
+  await assert.rejects(load(plugin, { emits: ['tick', 'internal/service', 'internal/status'] }), {
+    message: 'framework-internal events do not cross the boundary (mount emits): internal/service, internal/status',
+  })
 })

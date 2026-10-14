@@ -34,15 +34,19 @@ import { MANIFEST } from './session.ts'
 // The wording matches the Node side (`node/rutis-runtime/src/leaf.mjs`).
 const internalMessage = (name: unknown) => `event ${name} is internal to the runtime`
 
-function reserved(name: string): void {
-  if (typeof name === 'string' && name.startsWith('internal/')) throw new Error(internalMessage(name))
+// A name is a string: Cordis's `emit` takes an object, null or function first
+// argument as `this`, so any other type would let `emit(null, 'internal/service')`
+// past the check.
+function reserved(name: unknown): asserts name is string {
+  if (typeof name !== 'string') throw new TypeError(`an event name is a string, not ${name === null ? 'null' : typeof name}`)
+  if (name.startsWith('internal/')) throw new Error(internalMessage(name))
 }
 
-// Reject an `emits` declaration that lists an internal event.
+// Refuse an `emits` declaration listing internal events, with the sentence of
+// rutis's own check (`Process::mount`, #337), naming every one.
 function refuseEmits(names: unknown): void {
-  for (const name of (names ?? []) as string[]) {
-    if (String(name).startsWith('internal/')) throw new Error(`${internalMessage(name)} and cannot be emitted from rutis`)
-  }
+  const internal = ((names ?? []) as unknown[]).map(String).filter(name => name.startsWith('internal/'))
+  if (internal.length) throw new Error(`framework-internal events do not cross the boundary (mount emits): ${internal.join(', ')}`)
 }
 
 // events: leaf plugins receive what rutis emits (RuntimePlugin::emits).
