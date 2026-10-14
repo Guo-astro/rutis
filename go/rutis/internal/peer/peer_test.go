@@ -405,6 +405,32 @@ func TestAFarEndOfAnotherProtocolVersionIsRefusedSayingWhichEndToUpgrade(t *test
 	}
 }
 
+// A RemoteError thrown on crosses with its whole graph, alone as inside an
+// aggregate: as Node's decoded Error re-encodes.
+func TestARemoteErrorThrownOnCrossesWithItsWholeGraph(t *testing.T) {
+	far := func() *RemoteError {
+		return &RemoteError{Name: "TypeError", Message: "far", Graph: json.RawMessage(`{
+		"root":{"type":"reference","value":0},
+		"nodes":[{"type":"error","name":"TypeError","message":"far","cause":{"type":"reference","value":1}},
+		         {"type":"error","name":"Error","message":"root cause"}]
+	}`)}
+	}
+	wire := encodeError(far())
+	nodes := wire["graph"].(map[string]any)["nodes"].([]any)
+	if wire["name"] != "TypeError" || wire["message"] != "far" || len(nodes) != 2 || nodes[0].(map[string]any)["cause"].(map[string]any)["value"] != float64(1) || nodes[1].(map[string]any)["message"] != "root cause" {
+		t.Fatalf("the graph of a remote error thrown on: %v", wire)
+	}
+	wire = encodeError(&AggregateError{Errors: []error{errors.New("near"), far()}})
+	nodes = wire["graph"].(map[string]any)["nodes"].([]any)
+	names := make([]any, len(nodes))
+	for i, node := range nodes {
+		names[i] = node.(map[string]any)["name"]
+	}
+	if fmt.Sprint(names) != "[AggregateError Error TypeError Error]" || nodes[2].(map[string]any)["cause"].(map[string]any)["value"] != float64(3) {
+		t.Fatalf("the graph of a remote error inside an aggregate: %v", wire)
+	}
+}
+
 func TestAggregateErrorGraphsKeepRepeatedAndCyclicChildren(t *testing.T) {
 	remote := &RemoteError{Name: "AggregateError", Graph: json.RawMessage(`{
 		"root":{"type":"reference","value":0},

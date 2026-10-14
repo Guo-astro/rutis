@@ -146,6 +146,11 @@ def _message(error: BaseException) -> str:
 
 
 def encode_error(thrown: BaseException) -> dict:
+    """The wire form of `thrown`: its error graph (an AggregateError's
+    children in order, shared and cyclic nodes once). A RemoteError thrown
+    on, inside an aggregate or alone, crosses with the far end's graph
+    spliced in (nodes appended, references shifted), as Node does: it
+    decodes into a real Error whose re-encoding carries the whole graph."""
     if isinstance(thrown, SyncWaitCycle):
         return {"name": "SyncWaitCycle", "message": thrown.message}
     if isinstance(thrown, RemoteError):

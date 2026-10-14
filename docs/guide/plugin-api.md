@@ -25,6 +25,8 @@ Node、Bun、Python 和 Go 都支持叶子插件事件（插件 API 2），并�
 
 本地发事件按注册顺序调用监听器：Node、Bun 和 Python 的 `ctx.emit` 同步抛错时停止后续监听器；返回的 Promise / 协程不等待，未处理的异步失败结束运行时进程。Go 的 `ctx.Emit` 同步执行，遇到首个错误返回；插件另起的 goroutine 沿用 `ctx.Go` 的约定。宿主 `Process::emit` 则等待全部监听器，并以 `AggregateError` 汇总错误；Go 为这些监听器启动 goroutine，因此不保证宿主事件监听器的执行顺序。与 Rust 的 `Ctx::dispose_self` 同一约定：监听器不得等待自己所属的 row 卸载完成（Go 的监听器经宿主回调同步卸载或更新自身行会等到自己），要卸载就结束监听器之后再做。
 
+一个跨过会话的错误被再次抛出时，Node、Bun、Python 和 Go 都带着它完整的错误图（cause、`AggregateError` 的子错误）再跨一次，不限于聚合的情形：Node 解码出的是真正的 `Error` 对象，重新编码时自然带上整个图，Python 和 Go 的 `encode_error` / `encodeError` 把 `RemoteError` 的图拼进去（节点追加、引用偏移）以保持一致。
+
 `internal/*` 属于运行时，不能监听、发出或列在 `emits` 中。`RuntimePlugin` / `LocalRuntime` 设置了 `emits`，而运行时未报告 `events` 时，挂载失败（`lacks events`）。这项能力检查不用于直接 `Process::mount` / `attach` 的 Cordis 静态挂载：旧版 Node 已支持 Cordis 事件，却没有这项能力声明。
 
 `emits` 只声明宿主 → 运行时。叶子插件的 `ctx.emit` / `ctx.Emit` 在进程内分发；`RuntimePlugin` 没有提供 `Mount.events` / `EventSink` 配置入口，所以运行时 → Rust 宿主的方向暂不可用。

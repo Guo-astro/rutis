@@ -80,6 +80,11 @@ func ErrorName(err error) string {
 	return t.Name()
 }
 
+// encodeError is the wire form of err: its error graph (an AggregateError's
+// children in order, cyclic aggregates once). A RemoteError thrown on,
+// inside an aggregate or alone, crosses with the far end's graph spliced
+// in (nodes appended, references shifted), as Node does: it decodes into a
+// real Error whose re-encoding carries the whole graph.
 func encodeError(err error) map[string]any {
 	if remote, ok := err.(*RemoteError); ok && remote.Name == "SyncWaitCycle" && remote.Graph == nil {
 		return map[string]any{"name": remote.Name, "message": remote.Message}
