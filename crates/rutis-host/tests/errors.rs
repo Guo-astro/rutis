@@ -244,3 +244,51 @@ async fn a_certificate_that_is_wrong() {
     );
     std::env::remove_var("RUTIS_CA");
 }
+
+/// A runtime that dials in (`listen` and `instances`): the listener, the
+/// group and the token it needs.
+/// risk: B6
+/// guarantee: host/error-messages
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_that_dials_in_without_what_it_needs() {
+    let _environment = environment();
+    let dir = tempfile::tempdir().unwrap();
+    let config = |remote: &str, rows: &str| {
+        format!(
+            r#"{{ "listen": [{{ "name": "public", "address": "127.0.0.1:0" }}],
+                 "runtimes": {{ "remote": [{{ "name": "phone", "language": "python"{remote} }}] }},
+                 "rows": [{rows}] }}"#
+        )
+    };
+    let group = r#"{ "id": "phone", "group": true, "instanced": true, "config": [] }"#;
+    let both = r#", "listen": "public", "instances": "phone""#;
+    let cases = [
+        (
+            config(r#", "listen": "public""#, group),
+            "remote runtime phone: listen needs instances: name the instanced group each connection is an instance of",
+        ),
+        (
+            config(r#", "instances": "phone""#, group),
+            "remote runtime phone: instances needs listen: name the listener its runtimes dial in to",
+        ),
+        (
+            config(r#", "listen": "lan", "instances": "phone""#, group),
+            "remote runtime phone: no listener named lan: add it to listen",
+        ),
+        (
+            config(r#", "listen": "public", "instances": "phones""#, group),
+            r#"remote runtime phone: no top-level row phones: instances names a group with "instanced": true"#,
+        ),
+        (
+            config(both, r#"{ "id": "phone", "group": true, "config": [] }"#),
+            r#"remote runtime phone: row phone is not an instanced group: give it "group": true and "instanced": true"#,
+        ),
+        (
+            config(both, group),
+            "remote runtime phone: set RUTIS_TOKEN_PHONE (or RUTIS_TOKEN): the token its runtimes present when they dial in",
+        ),
+    ];
+    for (text, expected) in cases {
+        assert_eq!(first_error(dir.path(), &text).await, expected, "{text}");
+    }
+}

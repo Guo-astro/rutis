@@ -477,6 +477,9 @@ pub struct Process {
     features: std::sync::OnceLock<Vec<String>>,
     /// What the runtime said of itself when mounted (see [`Process::about`]).
     about: std::sync::OnceLock<Value>,
+    /// The plugins the runtime said it has when mounted, if it said (see
+    /// [`Process::plugins`]).
+    plugins: std::sync::OnceLock<Option<HashMap<String, RowSchema>>>,
     /// The services each loaded row exports, by row key (ids, see
     /// [`scoped_id`]).
     exports: Mutex<HashMap<String, Vec<String>>>,
@@ -718,6 +721,7 @@ impl Process {
             child,
             features: std::sync::OnceLock::new(),
             about: std::sync::OnceLock::new(),
+            plugins: std::sync::OnceLock::new(),
             exports: Mutex::default(),
             host_changes: tokio::sync::Mutex::new(()),
             _directory: directory,
@@ -744,6 +748,13 @@ impl Process {
             .filter_map(|field| Some((field.to_owned(), mounted.get(field)?.clone())))
             .collect();
         let _ = process.about.set(Value::Object(about));
+        // Optional: a runtime that does not list its plugins is asked for
+        // each one (`rows.schema`).
+        let plugins: Option<HashMap<String, RowSchema>> = match mounted.get("plugins") {
+            None | Some(Value::Null) => None,
+            Some(plugins) => Some(crate::runtime::decode(plugins.clone())?),
+        };
+        let _ = process.plugins.set(plugins);
         Ok(process)
     }
 
@@ -930,6 +941,14 @@ impl Process {
     pub fn about(&self) -> &Value {
         static NOTHING: Value = Value::Null;
         self.about.get().unwrap_or(&NOTHING)
+    }
+
+    /// The plugins the runtime has, by the name a row gives them, each as
+    /// [`Process::describe_row`] would describe it: when its `mount` reply
+    /// listed them (`plugins`). `None` for a runtime that did not, whose
+    /// plugins are described one by one.
+    pub fn plugins(&self) -> Option<&HashMap<String, RowSchema>> {
+        self.plugins.get().and_then(Option::as_ref)
     }
 
     /// Whether the Node runtime supports `feature` (reported when mounting).

@@ -348,6 +348,9 @@ struct Failing {
     failure: Failure,
     scope: Option<u64>,
     value: String,
+    /// The copy is [`Unavailable`](crate::Unavailable) in its instance: it
+    /// fails there alone, and never counts as a new failure of a change.
+    unavailable: bool,
 }
 
 impl Failing {

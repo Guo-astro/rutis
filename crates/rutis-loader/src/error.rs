@@ -86,6 +86,34 @@ pub enum LoaderError {
     Closed,
 }
 
+/// Why one copy of a row cannot run in its instance while copies in other
+/// instances can: what the instance brings lacks something the row needs,
+/// such as a runtime connection without the row's plugin. A scoped factory
+/// ([`crate::ScopedFactory`]) returns it in [`CordisError::PluginFailed`].
+/// The copy fails with it in that instance alone: an edit is neither
+/// refused by the dry run nor rolled back because of it.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct Unavailable(pub String);
+
+impl Unavailable {
+    /// `self` as the error a scoped factory returns.
+    pub fn into_error(self) -> CordisError {
+        CordisError::PluginFailed(Box::new(self))
+    }
+
+    /// Whether `error` says a copy is [`Unavailable`] in its instance.
+    pub fn is(error: &LoaderError) -> bool {
+        match error {
+            LoaderError::Rejected { error, .. } => matches!(
+                &**error,
+                CordisError::PluginFailed(source) if source.is::<Unavailable>()
+            ),
+            _ => false,
+        }
+    }
+}
+
 /// What a [`crate::Persist`] implementation reports.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum PersistError {

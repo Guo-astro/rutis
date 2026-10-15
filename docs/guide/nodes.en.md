@@ -88,6 +88,27 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 
 A remote Python runtime row is named `<runtime-name>:<module>`; the module is resolved on the remote machine. A Node runtime can also run remotely: in the Node project on that machine, run `node node_modules/@arcships/rutis-runtime/src/runner.mjs listen:wss://… --id <name> --peer <controller> ./package.json` (plugins are resolved from that `package.json`) and set `language` to `node`. A remote runtime serves one controller at a time. When its controller disconnects, it unloads all plugins running for that controller.
 
+### Runtimes that connect in
+
+A runtime can also connect to rutis instead: use this when the remote machines are behind NAT, change address, or come and go in numbers (devices, workers that scale). On the rutis side, give the `runtimes.remote` entry `listen` (the listener they connect to) and `instances` (an `instanced` group), and write no node row:
+
+```json
+{
+  "id": "main",
+  "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
+  "runtimes": { "remote": [{ "name": "worker", "language": "python", "listen": "public", "instances": "worker" }] },
+  "rows": [
+    { "id": "worker", "group": true, "instanced": true, "config": [
+      { "id": "embedder", "name": "worker:embedder" }
+    ] }
+  ]
+}
+```
+
+Every connection presents the same token (`RUTIS_TOKEN_WORKER`, or `RUTIS_TOKEN`), reports an id of its own, and becomes an instance of the group: created when it connects, closed when it disconnects; a newer connection with the same id takes over. The group's rows run, in each instance, on that instance's connection, and the services they provide are seen only in that instance. For the fields and rules, see [rutis-host](rutis-host.en.md#runtimes-that-connect-in).
+
+The rutis side is ready; connecting out (`dial:wss://…`) comes to the language runtimes next: Python with [#383](https://github.com/arcships/rutis/issues/383); Node, Go and Bun with [#384](https://github.com/arcships/rutis/issues/384). Until then a runtime only listens, and rutis connects to it (as above).
+
 ## Connect a Cordis application as a node
 
 An existing Cordis application can become a node through `@arcships/rutis-runtime/bridge`; see [Cordis](cordis.en.md).

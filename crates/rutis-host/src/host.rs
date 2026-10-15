@@ -12,11 +12,14 @@ use rutis_bridge::transport::local::LocalPlugin;
 use rutis_bridge::transport::websocket::{
     Config, ListenerConfig, ServerTls, Trust, WebSocketPlugin,
 };
-use rutis_bridge::{Credential, IdentityPlugin, PeerId, StaticIdentity};
+use rutis_bridge::{
+    AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Credential, IdentityPlugin, PeerId,
+    SharedToken, StaticIdentity,
+};
 use rutis_loader::{
     register_peer_node, Builtins, Chain, GoBinaries, GoResolver, GoRuntimes, GoRuntimesHandle,
-    Layer, Loader, LoaderOptions, LoaderPlugin, Patch, PeerResolver, RuntimeResolver, RuntimeRows,
-    RuntimeRowsPlugin, ServiceCatalog,
+    Layer, Loader, LoaderOptions, LoaderPlugin, Patch, PeerResolver, RuntimeInstances,
+    RuntimeResolver, RuntimeRows, RuntimeRowsPlugin, ServiceCatalog,
 };
 
 use crate::config::{
@@ -118,6 +121,19 @@ impl Host {
     /// [`Host::start`], with what an embedding program adds.
     pub async fn start_with(config: &HostConfig, embedding: Embedding) -> Result<Self, Error> {
         config.check_runtime_names()?;
+        config.check_dialing_runtimes()?;
+        // The token of each runtime that dials in, before anything starts.
+        let mut dialing = Vec::new();
+        for remote in &config.runtimes.remote {
+            if remote.dials_in()?.is_some() && token(&remote.name).is_none() {
+                return Err(format!(
+                    "remote runtime {}: set RUTIS_TOKEN_{} (or RUTIS_TOKEN): the token its \
+                     runtimes present when they dial in",
+                    remote.name,
+                    remote.name.to_uppercase().replace('-', "_")
+                ));
+            }
+        }
         let root = Ctx::root().map_err(|error| error.to_string())?;
         let mut catalog = ServiceCatalog::new();
         catalog.share_by_name();
@@ -193,17 +209,28 @@ impl Host {
         }
 
         for remote in &config.runtimes.remote {
-            let runtime = RuntimePlugin::remote(&remote.name);
-            let handle = runtime.handle();
-            let rows = match remote.language.as_str() {
-                "python" | "py" | "go" => RuntimeResolver::modules(handle.clone()),
-                "node" => RuntimeResolver::node(handle.clone()),
+            let node = match remote.language.as_str() {
+                "python" | "py" | "go" => false,
+                "node" => true,
                 other => {
                     return Err(format!(
                         "remote runtime {}: the language is python, go or node, not {other}",
                         remote.name
                     ))
                 }
+            };
+            // Each connection an instance, its rows `<name>:<plugin>` on it.
+            if let Some((listen, group)) = remote.dials_in()? {
+                let instances = RuntimeInstances::new(&remote.name, group, &catalog);
+                chain = chain.with(instances.clone());
+                dialing.push((remote.name.clone(), listen.to_owned(), instances));
+                continue;
+            }
+            let runtime = RuntimePlugin::remote(&remote.name);
+            let handle = runtime.handle();
+            let rows = match node {
+                false => RuntimeResolver::modules(handle.clone()),
+                true => RuntimeResolver::node(handle.clone()),
             };
             let rows = Arc::new(rows.with_catalog(&catalog));
             root.plugin(runtime);
@@ -225,6 +252,25 @@ impl Host {
             .map_err(|error| format!("the loader: {error}"))?;
         for rows in &resolvers {
             root.plugin(RuntimeRowsPlugin::new(rows.clone()));
+        }
+        // An access point per runtime that dials in: no link row, the
+        // connections come and go with their instances.
+        let local = PeerId::new(config.id.clone()).map_err(|error| format!("id: {error}"))?;
+        for (name, listen, instances) in dialing {
+            let token = token(&name).expect("checked above");
+            root.plugin(AdmissionPlugin::new(
+                &name,
+                SharedToken::new(local.clone(), token),
+            ));
+            let id = PeerId::new(name.clone())
+                .map_err(|error| format!("remote runtime {name}: {error}"))?;
+            let access = AccessPointPlugin::new(
+                AccessPointConfig::new(id, "websocket", &name, &listen).require("runtime"),
+            )
+            .accept(instances.accept(loader.clone(), root.clone()));
+            (&root.plugin(access))
+                .await
+                .map_err(|error| format!("remote runtime {name}: {error}"))?;
         }
         let go = match go {
             Some((resolver, settings)) => {
@@ -916,6 +962,8 @@ mod tests {
                 remote: vec![RemoteRuntime {
                     name: remote.into(),
                     language: "python".into(),
+                    listen: None,
+                    instances: None,
                 }],
                 ..Runtimes::default()
             },

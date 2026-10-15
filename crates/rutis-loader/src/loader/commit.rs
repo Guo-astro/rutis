@@ -10,7 +10,7 @@ use crate::edit::{apply_edit, Edit};
 use crate::error::Failure;
 use crate::patch::Layer;
 use crate::resolver::Build;
-use crate::{LoaderError, PersistError};
+use crate::{LoaderError, PersistError, Unavailable};
 
 use super::desired::{Desired, Row};
 use super::{Failing, Inner, LoaderChanged, PendingEditDropped, Slot, State};
@@ -216,8 +216,9 @@ impl Inner {
             error: Arc::new(error),
         };
         for (copy, base, build) in targets {
+            // A copy unavailable in its instance fails there alone.
             let check = |result: Result<(), LoaderError>| match result {
-                Err(error) if !tolerated(copy, &error) => Err(error),
+                Err(error) if !tolerated(copy, &error) && !Unavailable::is(&error) => Err(error),
                 _ => Ok(()),
             };
             // Evaluate where the plugin would run: its group, with its
