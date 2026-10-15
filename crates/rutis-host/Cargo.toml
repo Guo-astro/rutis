@@ -36,6 +36,3 @@ libc = "0.2"
 # Path only: cargo publish drops it.
 rutis-test-support = { path = "../rutis-test-support" }
 tempfile = "3"
-# The relay of dial_in.rs: a WebSocket client on each side.
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
-futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

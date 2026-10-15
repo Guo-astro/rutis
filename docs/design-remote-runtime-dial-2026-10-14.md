@@ -2,7 +2,7 @@
 
 [English](design-remote-runtime-dial-2026-10-14.en.md)
 
-状态：定稿，未实现。日期：2026-10-14。基准：`main` `a763cdc`（0.10.0）。
+状态：定稿；R-P1（Rust 侧）、R-P2（Python 拨出）已实现，其余见 §七。日期：2026-10-14。基准：`main` `a763cdc`（0.10.0）。
 依据：[远程插件](design-remote-plugins-2026-10-03.md)（本文修订其 §4 运行时接入的连接方式）、[连接节点](guide/nodes.md)（link）、[按需创建实例](design-loader-instance-mounts-and-services-2026-10-07.md)、[实例内服务名](design-instance-services-2026-10-08.md)、[Go 插件运行时](design-go-runtime-2026-10-10.md)、[Bun 运行时](design-bun-runtime-2026-10-09.md)。
 使用者：[应用接入](design-app-integration-2026-10-14.md)、[Swift SDK](design-swift-sdk-2026-10-12.md)、[Android 应用托管](design-android-runtime-2026-10-12.md)。
 
@@ -100,16 +100,23 @@
 
 一致性测试：`rutis-bridge/tests/dial_conformance.rs`，与 `websocket_conformance` 同形——rutis 侧起接入点，按语言拉起拨出方，逐条验证上表。
 
+- 实现（R-P2，#383）：
+  - 拨出方的约定（每种语言相同，`dial_conformance` 按此检查）：命令行 `dial:<地址> --id <id> --peer <rutis 的 id> <项目>`；凭据 `RUTIS_TOKEN`，额外信任的 CA `RUTIS_CA`；非回环的 `ws://` 与不合法的 id 启动时即拒绝（退出状态非零）。状态行写 stderr：`rutis: connected to …`、`rutis: cannot connect (…); retrying in <秒>s`、`rutis: connection lost (…); retrying in <秒>s`、`rutis: refused: auth-rejected (…); retrying in <秒>s`、`rutis: refused: incompatible (…); stopping`（随后以状态 1 退出）。SIGTERM / Ctrl-C 是主动停止，退出状态 0。
+  - 等待时间与 `link.rs` 的 `Retry` 默认值相同：退避 ±20% 抖动；"连接稳定"是一次会话持续 60 秒；凭据被拒固定 30 秒；接入点 10 秒内不打招呼算可重试失败。测试用 `RUTIS_RETRY=<初始 ms>,<上限 ms>,<稳定 ms>,<被拒 ms>` 缩短，与 `RUTIS_HEARTBEAT` 同类，只供测试。
+  - 分类与 Rust 拨出方相同，按类型或状态码，不看文字：升级时 401 / 403、本端拒绝服务端证书为凭据被拒；400 / 404 / 405 / 426、子协议不符、对端 hello 的版本本端不会说为不兼容；对端以不同于 `--peer` 的 id 打招呼为凭据被拒（同 `IdentityMismatch`）；其余（连不上、超时、断开、被接管 4002）可重试。接入点在拨出方收到 rutis 的 hello 之后才以 4003 拒绝 id，所以被拒前可能先出现一行 `connected to`。
+  - 同 id 接管不设特例：被接管的一方按退避重连，又接管对方。两个进程用同一个 id 时会一直轮流顶掉对方，节奏随退避放慢到每方约 30 秒一次（会话不满 60 秒，退避不重置）。自报 id 不由 rutis 核实（§五），id 唯一由部署保证。
+  - Python：`rutis/dialing.py`（规则与重连循环，纯 Python）、`rutis/websocket.py` 的 `dial`。连接由 websockets 的 asyncio 客户端在一个专用事件循环线程上完成全部读写：它的线程客户端从两个线程读写同一个 TLS socket，OpenSSL 不支持，实测约 5% 的 `wss://` 握手丢失响应。同一原因，拨出不受 CPython 3.13.6 的 TLS 死锁影响（监听仍拒绝该版本）。
+
 ## 七、各方工作
 
-| 一方 | 工作 |
-| --- | --- |
-| Rust 侧 | 接入点接受多条连接、连接即实例、运行时键按实例区分、身份层与过渡实现、`mount` 回复的 `plugins`、rutis-host 配置（`listen` / `instances`）、`runtimes.remote[].language` 接受 `swift`、`kotlin` / `kt` |
-| Python | 拨出客户端（`dial:`）；首个现有语言（其 TLS 服务端问题最多，拨出收益最大） |
-| Node、Go | 拨出客户端，紧随 Python |
-| Bun | 监听与拨出都要补（现在都不支持），紧随 Python |
-| Swift、Kotlin | 监听与拨出都实现（Swift SDK §六、Android 稿 §五） |
-| 文档 | 连接节点指南加拨出与动态接入；推荐方式改为拨出 |
+| 一方 | 工作 | 状态 |
+| --- | --- | --- |
+| Rust 侧 | 接入点接受多条连接、连接即实例、运行时键按实例区分、身份层与过渡实现、`mount` 回复的 `plugins`、rutis-host 配置（`listen` / `instances`）、`runtimes.remote[].language` 接受 `swift`、`kotlin` / `kt` | 已实现（#396、#399），`swift`、`kotlin` 随应用接入 |
+| Python | 拨出客户端（`dial:`）；首个现有语言（其 TLS 服务端问题最多，拨出收益最大） | 已实现（#383），`dial_conformance` Python 列通过 |
+| Node、Go | 拨出客户端，紧随 Python | 未实现（#384） |
+| Bun | 监听与拨出都要补（现在都不支持），紧随 Python | 未实现（#384） |
+| Swift、Kotlin | 监听与拨出都实现（Swift SDK §六、Android 稿 §五） | 未实现 |
+| 文档 | 连接节点指南加拨出与动态接入；推荐方式改为拨出 | 已写拨出与动态接入（Python）；推荐方式待各语言都能拨出后再改 |
 
 ## 八、兼容
 

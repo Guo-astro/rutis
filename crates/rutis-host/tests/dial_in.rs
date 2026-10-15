@@ -3,9 +3,8 @@
 //! `<name>:<plugin>` rows run on it, and a local row in the same instance
 //! uses its services; when it goes, so does the instance.
 //!
-//! No runtime dials out yet (#383): a Python runtime listens, and a relay
-//! dials it and the host's listener and passes the frames between them.
-//! The handshake is end to end, so the host sees a runtime that dialed in.
+//! The runtime is a real one: `python -m rutis dial:…` to the host's
+//! listener, with the shared token.
 
 // The test holds the environment until it ends, across its awaits: the
 // variables it sets are for the host it starts.
@@ -17,7 +16,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{environment, repo, write};
-use futures_util::{SinkExt, StreamExt};
 use rutis_host::config::HostConfig;
 use rutis_host::host::Host;
 use rutis_test_support::{Guard, HANG_GUARD};
@@ -67,67 +65,28 @@ fn python() -> String {
         .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into())
 }
 
-/// The remote runtime `pixel`, listening for `test` with a token.
-async fn remote_python(project: &Path) -> (tokio::process::Child, String) {
+/// The remote runtime `pixel`, dialing `address` for `test` with the
+/// shared token.
+fn remote_python(project: &Path, address: &str) -> tokio::process::Child {
     let mut child = tokio::process::Command::new(python())
-        .args(["-m", "rutis", "listen:ws://127.0.0.1:0/rutis"])
+        .args(["-m", "rutis"])
+        .arg(format!("dial:{address}"))
         .args(["--id", "pixel", "--peer", "test"])
         .arg(project)
         .env("PYTHONPATH", repo().join("python/rutis"))
-        .env("RUTIS_TOKEN", "runtime-token")
+        .env("RUTIS_TOKEN", "shared")
         .current_dir(project)
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .unwrap();
     let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
-    let address = COLD
-        .within("the runtime's address", async {
-            loop {
-                let line = lines
-                    .next_line()
-                    .await
-                    .unwrap()
-                    .expect("the runtime's address");
-                if let Some(address) = line.strip_prefix("rutis: listening on ") {
-                    break address.to_owned();
-                }
-            }
-        })
-        .await;
     tokio::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {
             eprintln!("runtime: {line}");
         }
     });
-    (child, address)
-}
-
-/// A WebSocket client to a listener at `address`, presenting `token` and
-/// speaking the endpoint protocol.
-async fn connect(
-    address: &str,
-    token: &str,
-) -> Result<
-    tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
-    tokio_tungstenite::tungstenite::Error,
-> {
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    let url = url::Url::parse(address).unwrap();
-    let tcp = tokio::net::TcpStream::connect((
-        url.host_str().unwrap(),
-        url.port_or_known_default().unwrap(),
-    ))
-    .await
-    .map_err(tokio_tungstenite::tungstenite::Error::Io)?;
-    let mut request = address.into_client_request().unwrap();
-    let headers = request.headers_mut();
-    headers.insert(
-        "Sec-WebSocket-Protocol",
-        rutis_bridge::protocol().parse().unwrap(),
-    );
-    headers.insert("Authorization", format!("Bearer {token}").parse().unwrap());
-    Ok(tokio_tungstenite::client_async(request, tcp).await?.0)
+    child
 }
 
 /// guarantee: loader/runtime-connection-instances
@@ -143,7 +102,6 @@ async fn a_runtime_that_dials_in_is_an_instance() {
             ("digest.py", DIGEST),
         ],
     );
-    let (_runtime, runtime_address) = remote_python(&remote).await;
 
     std::env::set_var("RUTIS_TOKEN_PHONE", "shared");
     std::env::set_var("RUTIS_PYTHON_PATH", repo().join("python/rutis"));
@@ -168,29 +126,7 @@ async fn a_runtime_that_dials_in_is_an_instance() {
         .unwrap();
     host.load(config.rows()).await.unwrap();
     let address = format!("ws://{}/rutis", host.listening[0].1);
-
-    // The relay.
-    let runtime = connect(&runtime_address, "runtime-token").await.unwrap();
-    let rutis = connect(&address, "shared").await.unwrap();
-    let (mut to_runtime, mut from_runtime) = runtime.split();
-    let (mut to_rutis, mut from_rutis) = rutis.split();
-    let relay = tokio::spawn(async move {
-        let up = async {
-            while let Some(Ok(message)) = from_runtime.next().await {
-                if to_rutis.send(message).await.is_err() {
-                    break;
-                }
-            }
-        };
-        let down = async {
-            while let Some(Ok(message)) = from_rutis.next().await {
-                if to_runtime.send(message).await.is_err() {
-                    break;
-                }
-            }
-        };
-        tokio::select! { _ = up => {}, _ = down => {} }
-    });
+    let mut runtime = remote_python(&remote, &address);
 
     // The host's row in the connection's instance uses its `contacts`,
     // which is that instance's own.
@@ -211,7 +147,7 @@ async fn a_runtime_that_dials_in_is_an_instance() {
     assert_eq!(copies("contacts"), 1);
 
     // The connection goes: its instance closes.
-    relay.abort();
+    runtime.kill().await.unwrap();
     COLD.eventually(
         || (host.service("digest").is_none() && copies("contacts") == 0).then_some(()),
         "the instance closed",

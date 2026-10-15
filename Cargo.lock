@@ -3239,7 +3239,6 @@ dependencies = [
 name = "rutis-host"
 version = "0.10.0"
 dependencies = [
- "futures-util",
  "libc",
  "rustls-pki-types",
  "rutis",
@@ -3250,7 +3249,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
- "tokio-tungstenite 0.30.0",
  "url",
 ]
 

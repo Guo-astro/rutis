@@ -107,7 +107,22 @@ A runtime can also connect to rutis instead: use this when the remote machines a
 
 Every connection presents the same token (`RUTIS_TOKEN_WORKER`, or `RUTIS_TOKEN`), reports an id of its own, and becomes an instance of the group: created when it connects, closed when it disconnects; a newer connection with the same id takes over. The group's rows run, in each instance, on that instance's connection, and the services they provide are seen only in that instance. For the fields and rules, see [rutis-host](rutis-host.en.md#runtimes-that-connect-in).
 
-The rutis side is ready; connecting out (`dial:wss://…`) comes to the language runtimes next: Python with [#383](https://github.com/arcships/rutis/issues/383); Node, Go and Bun with [#384](https://github.com/arcships/rutis/issues/384). Until then a runtime only listens, and rutis connects to it (as above).
+A Python runtime connects in with `dial:`:
+
+```bash
+# The worker machine: with rutis[network] and the plugins installed, connect to rutis
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  python -m rutis dial:wss://main.example.com:7443/rutis --id worker-1 --peer main /srv/plugins
+```
+
+- `--id` is the id this connection reports (lower-case letters, digits and `-`), which names its instance; `--peer` is the rutis `id`.
+- `RUTIS_TOKEN` equals `RUTIS_TOKEN_WORKER` on the rutis side; `RUTIS_CA` is a further trusted CA (for a self-signed certificate), besides the system roots. A non-loopback address must be `wss://`.
+- The runtime keeps the connection itself and reconnects by fixed rules: when it cannot connect or the connection drops, it waits from 0.5 s, doubling up to 30 s, back to 0.5 s once a connection has lasted 60 s; a refused token or id (401 / 403 at the upgrade, or rutis rejecting the id with close code 4003) is tried again every 30 s; an incompatible protocol (400 at the upgrade and the like) is not retried, and the process exits with status 1. On every disconnect all rows are unloaded first (cleanups in reverse order); a reconnection is a new session, and the rows load again.
+- States go to stderr: `rutis: connected to …`, `rutis: connection lost (…); retrying in 1s`, `rutis: refused: auth-rejected (…); retrying in 30s`, `rutis: refused: incompatible (…); stopping`.
+- SIGTERM or Ctrl-C stops it: all rows are unloaded, the connection closes, and it does not reconnect.
+- Two processes with the same id take over from each other, displacing one another in turn at the pace of their backoffs; give every machine and worker an id of its own.
+
+Dialing out for Node, Go and Bun is [#384](https://github.com/arcships/rutis/issues/384); until then they only listen, and rutis connects to them (as above).
 
 ## Connect a Cordis application as a node
 
@@ -116,7 +131,7 @@ An existing Cordis application can become a node through `@arcships/rutis-runtim
 ## Security
 
 - Use `wss://` for remote connections. A listener without TLS may bind only to a loopback address.
-- A Python runtime cannot listen on `wss://` with CPython 3.13.6: its TLS sockets deadlock when one thread is blocked reading while another writes ([python/cpython#137583](https://github.com/python/cpython/issues/137583)), so every handshake hangs, and rutis refuses to start `listen:wss://` on that version. Use 3.13.7 or later (3.13.5 and earlier, and 3.14, are not affected); `ws://` is not affected.
+- A Python runtime cannot listen on `wss://` with CPython 3.13.6: its TLS sockets deadlock when one thread is blocked reading while another writes ([python/cpython#137583](https://github.com/python/cpython/issues/137583)), so every handshake hangs, and rutis refuses to start `listen:wss://` on that version. Use 3.13.7 or later (3.13.5 and earlier, and 3.14, are not affected); `ws://` is not affected. Dialing out (`dial:wss://`) is not affected either: one thread does all of a connection's reads and writes.
 - Use one token per peer (`RUTIS_TOKEN_<NODE>`) and set it only on the nodes that need it.
 - `host: true` lets a peer run any plugin installed on this node. Enable it only for trusted peers. It can load installed plugins, not file paths.
 - Nodes share services by name, and only services listed in `export` are shared.
