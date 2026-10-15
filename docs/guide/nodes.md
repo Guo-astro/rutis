@@ -107,7 +107,22 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 
 每条连接出示同一个 token（`RUTIS_TOKEN_WORKER`，或 `RUTIS_TOKEN`），自报一个 id，成为分组的一个实例：连进来时创建，断开时关闭，同一 id 的新连接接管旧连接。分组里的行在每个实例中运行在该实例的连接上，它们提供的服务只在本实例里可见。字段与规则见 [rutis-host](rutis-host.md#连进来的运行时)。
 
-rutis 一侧已经就绪；语言运行时的拨出（`dial:wss://…`）随后补上：Python 见 [#383](https://github.com/arcships/rutis/issues/383)，Node、Go、Bun 见 [#384](https://github.com/arcships/rutis/issues/384)。在那之前运行时只能监听，由 rutis 去连（上面的方式）。
+Python 运行时用 `dial:` 连进来：
+
+```bash
+# worker 机器：装好 rutis[network] 和插件，连到 rutis
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  python -m rutis dial:wss://main.example.com:7443/rutis --id worker-1 --peer main /srv/plugins
+```
+
+- `--id` 是这条连接自报的 id（小写字母、数字、`-`），即它的实例名；`--peer` 是 rutis 的 `id`。
+- `RUTIS_TOKEN` 与 rutis 一侧的 `RUTIS_TOKEN_WORKER` 相同；`RUTIS_CA` 是额外信任的 CA（自签证书时用），系统根证书照常信任。非回环地址只能用 `wss://`。
+- 运行时自己保持连接，按固定规则重连：连不上、连接断开时从 0.5 秒起翻倍等待，最长 30 秒，连接持续 60 秒后重新从 0.5 秒算；token 或 id 被拒绝（升级时 401 / 403，或 rutis 以关闭码 4003 拒绝这个 id）每 30 秒再试；协议不兼容（升级时 400 等）不再重试，进程以状态 1 退出。每次断开都先卸载全部行（清理逆序执行），重连是新的会话，行重新装载。
+- 状态写在 stderr：`rutis: connected to …`、`rutis: connection lost (…); retrying in 1s`、`rutis: refused: auth-rejected (…); retrying in 30s`、`rutis: refused: incompatible (…); stopping`。
+- SIGTERM 或 Ctrl-C 停下它：卸载全部行，关闭连接，不再重连。
+- 两个进程用同一个 id 会互相接管，按各自的退避轮流把对方顶掉；每台机器、每个 worker 用不同的 id。
+
+Node、Go、Bun 的拨出见 [#384](https://github.com/arcships/rutis/issues/384)；在那之前它们只能监听，由 rutis 去连（上面的方式）。
 
 ## 把 Cordis 应用接成节点
 
@@ -116,7 +131,7 @@ rutis 一侧已经就绪；语言运行时的拨出（`dial:wss://…`）随后�
 ## 安全
 
 - 跨机器只用 `wss://`。不带 TLS 的监听器只能绑定回环地址。
-- Python 运行时监听 `wss://` 不能用 CPython 3.13.6：它的 TLS socket 在一个线程阻塞读、另一个线程写时死锁（[python/cpython#137583](https://github.com/python/cpython/issues/137583)），每个握手都会卡住，所以 rutis 在这个版本上拒绝启动 `listen:wss://`。用 3.13.7 或更新的版本（3.13.5 及更早、3.14 不受影响）；`ws://` 不受影响。
+- Python 运行时监听 `wss://` 不能用 CPython 3.13.6：它的 TLS socket 在一个线程阻塞读、另一个线程写时死锁（[python/cpython#137583](https://github.com/python/cpython/issues/137583)），每个握手都会卡住，所以 rutis 在这个版本上拒绝启动 `listen:wss://`。用 3.13.7 或更新的版本（3.13.5 及更早、3.14 不受影响）；`ws://` 不受影响。拨出（`dial:wss://`）由一个线程完成连接的全部读写，不受影响。
 - 每个对端一个 token（`RUTIS_TOKEN_<节点>`），只在需要的节点上设置。
 - `host: true` 让对端能在本节点运行这里装着的任何插件，只对可信的对端打开；它只能加载已安装的插件，不能加载文件路径。
 - 节点只按名字共享 `export` 里列出的服务。

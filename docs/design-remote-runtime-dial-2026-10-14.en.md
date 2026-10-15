@@ -2,7 +2,7 @@
 
 [中文](design-remote-runtime-dial-2026-10-14.md)
 
-Status: final, not implemented. Date: 2026-10-14. Baseline: `main` `a763cdc` (0.10.0).
+Status: final; R-P1 (the Rust side) and R-P2 (Python dialing out) implemented, the rest in §7. Date: 2026-10-14. Baseline: `main` `a763cdc` (0.10.0).
 Based on: [remote plugins](design-remote-plugins-2026-10-03.en.md) (this document revises how runtimes connect in its §4), [Connect Nodes](guide/nodes.en.md) (link), [creating plugin instances on demand](design-loader-instance-mounts-and-services-2026-10-07.en.md), [service names inside instances](design-instance-services-2026-10-08.en.md), [the Go plugin runtime](design-go-runtime-2026-10-10.en.md), [the Bun runtime](design-bun-runtime-2026-10-09.en.md).
 Used by: [app integration](design-app-integration-2026-10-14.en.md), [the Swift SDK](design-swift-sdk-2026-10-12.en.md), [Android app hosting](design-android-runtime-2026-10-12.en.md).
 
@@ -100,16 +100,23 @@ Language-independent; every language implements it:
 
 Conformance tests: `rutis-bridge/tests/dial_conformance.rs`, shaped like `websocket_conformance`: the rutis side starts an access point, launches the dialing side per language, and checks each row of the table above.
 
+- Implementation (R-P2, #383):
+  - What every dialer does (the same in each language; `dial_conformance` checks it): the command line `dial:<address> --id <id> --peer <rutis id> <project>`; the credential in `RUTIS_TOKEN`, a further trusted CA in `RUTIS_CA`; a non-loopback `ws://` and an invalid id are refused at start (non-zero exit status). State lines go to stderr: `rutis: connected to …`, `rutis: cannot connect (…); retrying in <s>s`, `rutis: connection lost (…); retrying in <s>s`, `rutis: refused: auth-rejected (…); retrying in <s>s`, `rutis: refused: incompatible (…); stopping` (then exit status 1). SIGTERM / Ctrl-C is the dialer's own stop, exit status 0.
+  - The waits are the defaults of `Retry` in `link.rs`: backoff with ±20% jitter; "stable" is a session lasting 60 s; a fixed 30 s after rejected credentials; an access point that does not greet within 10 s is a retryable failure. Tests shorten them with `RUTIS_RETRY=<initial ms>,<max ms>,<stable ms>,<rejected ms>`, of a kind with `RUTIS_HEARTBEAT` and for tests only.
+  - Failures are classified as the Rust dialer classifies them, by type or status, never by text: 401 / 403 at the upgrade and a server certificate this side refuses are rejected credentials; 400 / 404 / 405 / 426, a subprotocol mismatch and a far hello whose version this side does not speak are incompatible; a far end greeting with an id other than `--peer` is rejected credentials (as `IdentityMismatch`); everything else (cannot connect, timeouts, disconnects, being taken over with 4002) is retryable. The access point rejects an id with 4003 only after the dialer has received rutis's hello, so a `connected to` line may come before the rejection.
+  - Same-id takeover has no special case: the one taken over reconnects by its backoff and takes over in turn. Two processes with one id keep displacing each other, at a pace that slows with the backoff to about once every 30 s each (a session shorter than 60 s does not reset it). Self-reported ids are not verified by rutis (§5); unique ids are the deployment's to ensure.
+  - Python: `rutis/dialing.py` (the rules and the reconnect loop, pure Python) and `dial` in `rutis/websocket.py`. The websockets asyncio client does all of a connection's reads and writes on one dedicated event loop thread: its threading client reads and writes one TLS socket from two threads, which OpenSSL does not support, and about 5% of `wss://` handshakes lost their response in a test. For the same reason dialing out is not affected by CPython 3.13.6's TLS deadlock (listening still refuses that version).
+
 ## 7. Work per party
 
-| Party | Work |
-| --- | --- |
-| Rust side | Access point accepting many connections, connection-as-instance, per-instance runtime keys, the identity layer and its transitional implementation, `plugins` in the `mount` reply, rutis-host configuration (`listen` / `instances`), `runtimes.remote[].language` accepting `swift`, `kotlin` / `kt` |
-| Python | Dial-out client (`dial:`); the first existing language (its TLS server has the most problems, so dialing out helps it most) |
-| Node, Go | Dial-out client, right after Python |
-| Bun | Both listening and dialing out (neither is supported today), right after Python |
-| Swift, Kotlin | Both listening and dialing out (Swift SDK §6, Android design §5) |
-| Docs | Add dialing out and dynamic connections to the Connect Nodes guide; change the recommended approach to dialing out |
+| Party | Work | Status |
+| --- | --- | --- |
+| Rust side | Access point accepting many connections, connection-as-instance, per-instance runtime keys, the identity layer and its transitional implementation, `plugins` in the `mount` reply, rutis-host configuration (`listen` / `instances`), `runtimes.remote[].language` accepting `swift`, `kotlin` / `kt` | Implemented (#396, #399); `swift` and `kotlin` come with app integration |
+| Python | Dial-out client (`dial:`); the first existing language (its TLS server has the most problems, so dialing out helps it most) | Implemented (#383); the Python column of `dial_conformance` passes |
+| Node, Go | Dial-out client, right after Python | Not implemented (#384) |
+| Bun | Both listening and dialing out (neither is supported today), right after Python | Not implemented (#384) |
+| Swift, Kotlin | Both listening and dialing out (Swift SDK §6, Android design §5) | Not implemented |
+| Docs | Add dialing out and dynamic connections to the Connect Nodes guide; change the recommended approach to dialing out | Dialing out and dynamic connections written (Python); the recommendation changes once every language dials out |
 
 ## 8. Compatibility
 

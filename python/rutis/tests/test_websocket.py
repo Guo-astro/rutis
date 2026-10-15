@@ -20,6 +20,7 @@ try:
     from websockets.sync.client import connect
 
     from rutis import websocket
+    from rutis.dialing import AUTH_REJECTED, INCOMPATIBLE, RETRYABLE, DialError
 except ImportError:  # the optional `network` dependency is missing
     websocket = None
 
@@ -336,6 +337,82 @@ runpy.run_module("rutis", run_name="__main__")
         relay.frozen.set()
         with self.assertRaises(ConnectionError):
             blocking_within("the heartbeat timeout", channel.recv)
+
+
+@unittest.skipIf(websocket is None, "needs the websockets package (rutis[network])")
+class DialTest(background.TestCase):
+    """The dialing side (`dial:`), against the listener above: each failure
+    classified as rutis-bridge's dialer classifies it (dialing.py)."""
+
+    def test_messages_cross_and_the_far_ends_close_code_is_kept(self):
+        address, channels = listen()
+        dialed = websocket.dial(address, PROTOCOL, "secret")
+        accepted = channels.get(timeout=HANG_GUARD)
+        dialed.send(b'{"op":"hello"}')
+        self.assertEqual(blocking_within("the message", accepted.recv), b'{"op":"hello"}')
+        accepted.send(b"{}")
+        self.assertEqual(blocking_within("the reply", dialed.recv), b"{}")
+        accepted.close_with(4003, "pixel is not known")
+        with self.assertRaisesRegex(ConnectionError, "rejected: pixel is not known"):
+            blocking_within("the close", dialed.recv)
+        self.assertEqual(dialed.far_close, 4003)
+
+    def test_refusals_are_classified_by_status(self):
+        address, _ = listen()
+        cases = [
+            (address, "guess", PROTOCOL, AUTH_REJECTED),
+            (address, None, PROTOCOL, AUTH_REJECTED),
+            (address, "secret", "rutis.99", INCOMPATIBLE),
+            (address.replace("/rutis", "/elsewhere"), "secret", PROTOCOL, INCOMPATIBLE),
+        ]
+        for target, token, protocol, failure in cases:
+            with self.subTest(target=target, token=token, protocol=protocol):
+                with self.assertRaises(DialError) as refused:
+                    websocket.dial(target, protocol, token)
+                self.assertEqual(refused.exception.failure, failure, refused.exception.reason)
+                self.assertNotIn("secret", refused.exception.reason)
+
+    def test_nobody_listening_is_retryable(self):
+        port = socket.create_server(("127.0.0.1", 0))
+        address = f"ws://127.0.0.1:{port.getsockname()[1]}/rutis"
+        port.close()
+        with self.assertRaises(DialError) as refused:
+            websocket.dial(address, PROTOCOL, "secret")
+        self.assertEqual(refused.exception.failure, RETRYABLE)
+
+    def test_only_loopback_goes_without_tls(self):
+        for address in ("ws://example.com/rutis", "ws://10.0.0.1:7443/rutis", "http://127.0.0.1/rutis"):
+            with self.subTest(address=address):
+                with self.assertRaises(ValueError):
+                    websocket.dial_host(address)
+        for address in ("ws://127.0.0.1:1/rutis", "ws://[::1]:1/rutis", "ws://localhost:1/rutis", "wss://example.com/rutis"):
+            with self.subTest(address=address):
+                websocket.dial_host(address)
+
+    @unittest.skipIf(
+        websocket is not None and websocket.tls_refusal() is not None,
+        "this Python cannot serve wss:// (TlsRefusalTest)",
+    )
+    def test_wss_verifies_the_access_point_trusting_rutis_ca(self):
+        listener = websocket.listen(
+            "wss://127.0.0.1:0/rutis",
+            PROTOCOL,
+            SECRET,
+            cert=os.path.join(TLS, "localhost.pem"),
+            key=os.path.join(TLS, "localhost.key"),
+            announce=lambda _: None,
+        )
+        self.addCleanup(listener.close)
+        address = f"wss://localhost:{urlsplit(listener.address).port}/rutis"
+        with self.assertRaises(DialError) as refused:
+            websocket.dial(address, PROTOCOL, SECRET, websocket.client_tls(None))
+        self.assertEqual(refused.exception.failure, AUTH_REJECTED)
+        self.assertNotIn(SECRET, refused.exception.reason)
+        dialed = websocket.dial(address, PROTOCOL, SECRET, websocket.client_tls(os.path.join(TLS, "ca.pem")))
+        accepted = blocking_within("the accepted connection", listener.accept)
+        accepted.send(b"{}")
+        self.assertEqual(blocking_within("the message", dialed.recv), b"{}")
+        dialed.close()
 
 
 def closed_code(client):

@@ -26,17 +26,17 @@ Keep one sentence in mind: **rutis has no such thing as a "remote plugin" — on
 
 When unsure, ask one question: **who decides whether the plugin is loaded and with what configuration?** This rutis → remote runtime / app hosting. The other side → node link.
 
-## 2. What works today (2026-10-14; check the repository before relying on it)
+## 2. What works today (2026-10-15; check the repository before relying on it)
 
 | Language | Remote listening `listen:` (rutis dials in) | Dialing out `dial:` (runtime connects to rutis) |
 | --- | --- | --- |
-| Python | ✅ | Designed, not implemented ([#383](https://github.com/arcships/rutis/issues/383)) |
+| Python | ✅ | ✅ ([#383](https://github.com/arcships/rutis/issues/383)) |
 | Node / TypeScript | ✅ | Not implemented ([#384](https://github.com/arcships/rutis/issues/384)) |
 | Go | ✅ | Not implemented (#384) |
 | Bun | ❌ no remote use yet (#384) | ❌ |
 | Swift / Kotlin apps | Designed, not implemented ([#389](https://github.com/arcships/rutis/issues/389), [#391](https://github.com/arcships/rutis/issues/391)) | Same |
 
-"One access point accepting many connections, one instance per connection" (many devices, autoscaled workers) is [#382](https://github.com/arcships/rutis/issues/382), not implemented. Today one remote runtime is one static entry in `rutis.json`. Tracking issue: [#392](https://github.com/arcships/rutis/issues/392).
+"One access point accepting many connections, one instance per connection" (many devices, autoscaled workers) works on the rutis side ([#382](https://github.com/arcships/rutis/issues/382): `listen` and `instances` on a `runtimes.remote` entry); of the language runtimes only Python can connect to it so far (step 4b). Tracking issue: [#392](https://github.com/arcships/rutis/issues/392).
 
 ## 3. Write the plugin: the paradigm, same as local
 
@@ -68,6 +68,30 @@ On the remote machine:
    ```
 
    A Go plugin binary accepts `listen:wss://…` as its channel the same way.
+
+## 4b. Or let a Python runtime connect in (dialing out)
+
+When the remote machines are behind NAT, change address, or come and go in numbers, the runtime connects to rutis instead. On the remote machine, with the plugins installed:
+
+```bash
+RUTIS_TOKEN=… RUTIS_CA=ca.pem \
+  python -m rutis dial:wss://main.example.com:7443/rutis --id worker-1 --peer main /srv/plugins
+```
+
+- `--id` is this connection's own id (`[a-z0-9-]+`, unique per process: two processes with one id keep taking over from each other); `--peer` is the rutis `id`. `RUTIS_CA` is needed only for a self-signed certificate on the rutis side.
+- It reconnects by itself: backoff 0.5 s doubling to 30 s; refused token or id every 30 s; an incompatible protocol stops it (exit status 1). Each disconnect unloads its rows; each reconnection is a new session. SIGTERM / Ctrl-C stops it for good. It reports on stderr: `rutis: connected to …`, `rutis: connection lost (…); retrying in …`, `rutis: refused: auth-rejected (…)`, `rutis: refused: incompatible (…); stopping`.
+- The rutis side: a `listen` entry, and on the `runtimes.remote` entry `listen` plus `instances` naming an `instanced` group whose rows are `<name>:<plugin>`; no link row. The token is `RUTIS_TOKEN_<NAME>` there:
+
+  ```json
+  {
+    "id": "main",
+    "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
+    "runtimes": { "remote": [{ "name": "worker", "language": "python", "listen": "public", "instances": "worker" }] },
+    "rows": [{ "id": "worker", "group": true, "instanced": true, "config": [{ "id": "embedder", "name": "worker:embedder" }] }]
+  }
+  ```
+
+  Every connection is one instance of the group: its rows run on it, and the services they provide are seen only in that instance.
 
 ## 5. Configure the rutis side
 

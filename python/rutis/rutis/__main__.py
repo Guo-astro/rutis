@@ -7,7 +7,10 @@ this one; `unix:<path>` (or a bare path), a socket to dial;
 RUTIS_CHANNEL_TOKEN first (how processes are started on Windows); or
 `listen:ws://…` / `listen:wss://…`, a WebSocket address to listen on for the
 controlling rutis (the token it must present in RUTIS_TOKEN, a
-listener certificate and key in RUTIS_CERT and RUTIS_KEY).
+listener certificate and key in RUTIS_CERT and RUTIS_KEY); or
+`dial:ws://…` / `dial:wss://…`, a rutis access point to dial and to dial
+again (`dialing`), presenting the token in RUTIS_TOKEN and trusting the CA
+in RUTIS_CA besides the system's.
 Local channels speak the compat protocol; network channels the endpoint
 format, as `--id`, expecting `--peer` as the controller when given.
 """
@@ -15,6 +18,7 @@ format, as `--id`, expecting `--peer` as the controller when given.
 import asyncio
 import logging
 import os
+import signal
 import socket
 import sys
 import threading
@@ -59,11 +63,19 @@ def parse(argv: list[str]) -> tuple[str, dict | None, str]:
     if len(rest) != 1:
         raise ValueError("usage: python3 -m rutis <channel> [--id <endpoint>] [--peer <endpoint>] <project>")
     endpoint = None
-    if channel.startswith("listen:"):
+    if channel.startswith(("listen:", "dial:")):
         if "id" not in flags:
             raise ValueError(f"a network channel needs --id <endpoint>: {channel}")
         # A runner is a runtime: the controller manages its rows.
         endpoint = {"local": flags["id"], "expected": flags.get("peer"), "declare": ["runtime"]}
+    if channel.startswith("dial:"):
+        # What retrying cannot fix fails here, before any dial.
+        from . import websocket
+        from .peer import _ENDPOINT_ID
+
+        websocket.dial_host(channel[len("dial:"):])
+        if not _ENDPOINT_ID.match(flags["id"]):
+            raise ValueError(f"invalid endpoint id {flags['id']}: use lower-case letters, digits and -")
     return channel, endpoint, rest[0]
 
 
@@ -89,13 +101,25 @@ class Session:
         self.runtime.closing = True
         await self.runtime.dispose()
 
+    async def stop(self) -> None:
+        """Stop for good: every row goes while the controller still hears
+        from this end, then the connection closes. Cleanups that do not
+        finish within the deadline are given up, as when a session ends."""
+        give_up_after(shutdown_deadline())
+        self.runtime.closing = True
+        await self.runtime.dispose()
+        self.peer.close(ConnectionError("the runtime stopped"))
+        self.channel.close("the runtime stopped")
 
-async def run(channel: str, endpoint: dict | None, project: str) -> None:
+
+async def run(channel: str, endpoint: dict | None, project: str) -> int:
     if project and project not in sys.path:
         sys.path.insert(0, project)
     if channel.startswith("listen:"):
         await serve(channel[len("listen:"):], endpoint)
-        return
+        return 0
+    if channel.startswith("dial:"):
+        return await dial_out(channel[len("dial:"):], endpoint)
     session = Session(open_channel(channel), endpoint)
     session.start()
     await session.peer.closed
@@ -105,6 +129,7 @@ async def run(channel: str, endpoint: dict | None, project: str) -> None:
     # one that blocks the event loop.
     give_up_after(shutdown_deadline())
     await session.end()
+    return 0
 
 
 DEADLINE = "RUTIS_SHUTDOWN_TIMEOUT"
@@ -177,14 +202,68 @@ async def serve(spec: str, endpoint: dict) -> None:
             current = None
 
 
+async def dial_out(spec: str, endpoint: dict) -> int:
+    """A runtime that dials a rutis access point and stays connected: each
+    connection is a new session, whose rows go when it ends; it dials again
+    by the rules of `dialing` until it is stopped (SIGTERM, Ctrl-C: the rows
+    go, then the connection closes) or the access point is incompatible
+    (exit status 1)."""
+    from . import websocket
+    from .dialing import keep_dialing
+    from .peer import ENDPOINT_PROTOCOL
+
+    # Spent once read: what this process starts does not inherit it.
+    token = os.environ.pop("RUTIS_TOKEN", None)
+    ca = os.environ.get("RUTIS_CA")
+    try:
+        tls = websocket.client_tls(ca) if spec.startswith("wss:") else None
+    except (OSError, ValueError) as error:
+        # ssl.SSLError is an OSError: a file that holds no certificate.
+        print(f"rutis: RUTIS_CA {ca}: {error}", file=sys.stderr, flush=True)
+        return 1
+    protocol = f"rutis.{ENDPOINT_PROTOCOL}"
+    stopping = asyncio.Event()
+    stop_on_signals(stopping)
+
+    def start(channel) -> Session:
+        session = Session(channel, endpoint)
+        session.start()
+        return session
+
+    return await keep_dialing(
+        f"{spec} as {endpoint['local']}",
+        lambda: websocket.dial(spec, protocol, token, tls),
+        start,
+        stopping,
+    )
+
+
+def stop_on_signals(stopping: asyncio.Event) -> None:
+    """Set `stopping` on SIGINT and SIGTERM (where the platform has it)."""
+    loop = asyncio.get_running_loop()
+    for name in ("SIGINT", "SIGTERM"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        try:
+            loop.add_signal_handler(number, stopping.set)
+        except NotImplementedError:
+            # Windows: no loop signal handlers.
+            signal.signal(number, lambda *_: loop.call_soon_threadsafe(stopping.set))
+
+
 def main() -> None:
+    # The state lines are UTF-8 everywhere: on Windows a pipe would get the
+    # ANSI code page, and an OS error's text in it.
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     try:
         channel, endpoint, project = parse(sys.argv[1:])
-    except ValueError as error:
+    except (ValueError, ImportError) as error:
         sys.exit(str(error))
     code = 0
     try:
-        asyncio.run(run(channel, endpoint, project))
+        code = asyncio.run(run(channel, endpoint, project))
     except Exception:  # noqa: BLE001 - reported; the exit code says it failed
         traceback.print_exc()
         code = 1
