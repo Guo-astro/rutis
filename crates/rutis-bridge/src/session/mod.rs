@@ -23,10 +23,14 @@ pub(crate) mod rpc;
 mod services;
 #[cfg(feature = "testing")]
 pub mod testing;
+pub mod values;
 
-pub use objects::{arg, decode_value, JsError, ObjectRef, RemoteFunction};
+pub use objects::{
+    arg, decode_value, Bytes, JsError, ObjectRef, RemoteFunction, ValueMap, ValueSet,
+};
 pub use rpc::*;
 pub use services::{host_key, host_key_in, HostDispatch};
+pub use values::{BigInt, Date, DateTime, Decimal, Instant, TimeOfDay, Uuid};
 
 /// What [`Error`] says about a session that ended or a call that failed.
 #[derive(Debug, Clone, thiserror::Error)]

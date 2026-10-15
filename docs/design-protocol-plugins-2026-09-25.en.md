@@ -164,6 +164,39 @@ This is a descriptor fragment; it omits common errors, capability requirements, 
 
 Interface identity is exact version plus raw bundle-byte SHA-256; admission validates the full reachable interface set. Even a minor version adding members first uses explicit multi-version adaptation; this is conservative transitional policy and semver is not proof of compatibility. Object/callback direction, async behavior, permissions, and lifecycle are part of contract; validating argument JSON alone is insufficient.
 
+### 6.1 Tagged values in the session protocol (current, normative)
+
+> This section is the current specification, not part of the historical proposal above: it defines how values beyond JSON are encoded and negotiated in the session protocol (`crates/rutis-bridge/src/session`, the Node, Bun, Python and Go runtimes, the Swift and Kotlin SDKs). Design and reasons: [cross-language value types](design-value-types-2026-10-15.en.md) (#308, #355, #360).
+
+**Values.** A value in a session is a JSON object with a `type` tag, `{"type": <tag>, "value": <content>}`. The existing tags are `undefined` (no `value`), `data` (JSON), `list`, `record`, `signal` and `reference`. The ten tags below rank with `reference`: an array or object holding one is encoded as a `list` / `record` (as when it holds a reference). A plain JSON field is never read as a type.
+
+| Tag | `value` | Rules |
+| --- | --- | --- |
+| `instant` | a string, e.g. `"2026-10-15T03:22:15.123456789Z"` | A point in time. RFC 3339, `YYYY-MM-DDTHH:MM:SS`, optionally `.` and 1–9 fraction digits, ending in an uppercase `Z` (UTC only, no offsets); uppercase `T`; years 0001–9999; no leap second (seconds 00–59) |
+| `datetime` | a string, e.g. `"2026-10-15T14:30:05.25"` | A local date and time without a time zone. As `instant` without the `Z`; the receiver keeps it as it is, never reads it in any time zone, and never converts it to or from an `instant` |
+| `date` | a string, e.g. `"2026-10-15"` | A date, `YYYY-MM-DD`, years 0001–9999, a day that exists |
+| `time` | a string, e.g. `"14:30:05.25"` | A time of day, `HH:MM:SS`, 24-hour (00–23), optionally 1–9 fraction digits, no time zone |
+| `bytes` | a string, e.g. `"aGVsbG8="` | Binary data. Base64 (RFC 4648 §4, the standard alphabet), padded with `=`, no whitespace; unused low bits are 0 |
+| `map` | an array `[[key, value], …]` | Key-value pairs, each a two-element array of tagged values, in the sender's iteration order |
+| `set` | an array `[element, …]` | Tagged values, in the sender's iteration order |
+| `bigint` | a string, e.g. `"-123456789012345678901"` | An integer in decimal, optionally `-`, no leading zeros, never `-0`, at most 4300 digits |
+| `decimal` | a string, e.g. `"-12.3400"` | A decimal number, `-?(0\|[1-9][0-9]*)(\.[0-9]+)?`: an optional fraction, no exponent, trailing zeros kept (`1.10` and `1.1` are different values); at most 4300 digits in all; no NaN or infinity |
+| `uuid` | a string, e.g. `"0f8fad5b-d9cb-469f-a165-70867728950e"` | Lowercase hex, 8-4-4-4-12 |
+
+Examples: `{"type":"instant","value":"2026-10-15T03:22:15Z"}`; `{"type":"map","value":[[{"type":"data","value":"a"},{"type":"data","value":1}]]}`.
+
+**Map keys and set elements.** Only strings, finite numbers and booleans (`data`), and `bigint`, `datetime`, `date`, `time`, `decimal` and `uuid` values; never `instant`, `bytes`, `null`, `undefined`, arrays, objects, `map`, `set`, references or `signal`. No two keys of one map, and no two elements of one set, may be equal: numbers compare by value (`1` and `1.0`, `0` and `-0` are equal), the rest by kind and text. The sender checks before sending; when the receiver, converting them to its language's types, finds two keys equal (Python's `1` and `True`, say), that call fails. A `map` entry whose value is `undefined` is sent as `null`.
+
+**Depth.** A `map` or `set` is one level, as a `list` or `record` is, of the 64-level limit (#279). One `map` level takes three JSON levels on the wire (the outer object, the entry array, each pair's array), so the Rust side reads frames up to `3 × 64 + 16` = 208 levels deep.
+
+**Capabilities.** One per tag: `value-instant`, `value-datetime`, `value-date`, `value-time`, `value-bytes`, `value-map`, `value-set`, `value-bigint`, `value-decimal`, `value-uuid`. A side declaring one takes values of that tag. The endpoint format (protocol 3) declares them in `hello.capabilities`; so does the compat format (protocol 2), as with `sync-wait` (older implementations ignore the extra field; Rust's `COMPAT_DECLARED` lists these names). The protocol version does not change. An implementation may declare only some.
+
+**Sending.** A tag is sent only to a far end that declared its capability. To one that did not, **that call fails** (in arguments: the call is not sent; in a result: the far end receives a `throw`), the error naming the value and the missing capability; the session goes on. A host forwarding a call to another session (directly, or a call on a reference through a relay) checks again against the **downstream** far end's capabilities: if the upstream side can send a value and the downstream side cannot take it, the forwarded call fails.
+
+**Receiving.** A tag this side did not declare, a `value` not in the format above, or map keys / set elements that break the rules above or are equal fail only the call they came in: a call from the far end is answered with a `throw`, a reply to this side's call fails that call; the session goes on. A `value` of the wrong JSON shape (an `instant` whose `value` is not a string, a `map` entry that is not a two-element array) makes the frame malformed and ends the session.
+
+**Precision and boundaries.** A receiver whose clock is coarser than an `instant` (JS milliseconds, Python microseconds) truncates toward negative infinity, without an error; Rust, Go and Kotlin keep nanoseconds. A plain number (`data`) that is an integer beyond ±(2^53−1) fails as before; `bigint` is only for explicit big integers. Events forwarded between nodes (`NodeEvent`, whose arguments are JSON) do not carry these values: an event holding one is refused when forwarded.
+
 ## 7. Object identity, proxies, and authorization
 
 ### 7.1 Real objects and references

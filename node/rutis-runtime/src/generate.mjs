@@ -166,7 +166,8 @@ export function generate(plugins, nodePackage, { provide = [], events = [], emit
     if (flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return '::rutis_bridge::cordis::serde_json::Value'
     if (flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Null)) return '()'
     if (flags & ts.TypeFlags.Never) throw new Unsupported('never type')
-    if (flags & ts.TypeFlags.BigIntLike) throw new Unsupported('bigint')
+    // Tagged values (#308): they cross under their own tags.
+    if (flags & ts.TypeFlags.BigIntLike) return '::rutis_bridge::cordis::rpc::BigInt'
     if (flags & ts.TypeFlags.ESSymbolLike) throw new Unsupported('symbol')
     if (type.isUnion()) {
       const { optional, members } = stripNullish(type)
@@ -186,13 +187,39 @@ export function generate(plugins, nodePackage, { provide = [], events = [], emit
     const lib = type.getSymbol()?.declarations?.[0]?.getSourceFile()
     if (symbol?.endsWith('Error') && lib && program.isSourceFileDefaultLibrary(lib)) return '::rutis_bridge::cordis::JsError'
     if (symbol === 'AbortSignal') throw new Unsupported('AbortSignal parameter (cancellation is not bound yet)')
-    if (['Uint8Array', 'ArrayBuffer', 'Buffer', 'DataView'].includes(symbol)) throw new Unsupported(`${symbol} (binary data is not bound yet)`)
+    const builtIn = !!(lib && program.isSourceFileDefaultLibrary(lib))
+    if (builtIn && symbol === 'Date') return '::rutis_bridge::cordis::rpc::Instant'
+    // Binary data arrives in JS as a Uint8Array: other binary types would
+    // not be what the plugin declared.
+    if (builtIn && symbol === 'Uint8Array') return '::rutis_bridge::cordis::rpc::Bytes'
+    if (['ArrayBuffer', 'Buffer', 'DataView'].includes(symbol)) throw new Unsupported(`${symbol} (binary data is bound as Uint8Array only)`)
+    if (builtIn && ['Map', 'ReadonlyMap'].includes(symbol)) {
+      const [key, value] = checker.getTypeArguments(type)
+      return `::rutis_bridge::cordis::rpc::ValueMap<${mapKey(key, `${hint}Key`)}, ${rust(value, `${hint}Value`)}>`
+    }
+    if (builtIn && ['Set', 'ReadonlySet'].includes(symbol)) {
+      return `::rutis_bridge::cordis::rpc::ValueSet<${mapKey(checker.getTypeArguments(type)[0], `${hint}Item`)}>`
+    }
     if (['AsyncIterable', 'AsyncIterableIterator', 'AsyncGenerator', 'ReadableStream', 'Iterable'].includes(symbol)) throw new Unsupported(`${symbol} (streams are not bound yet)`)
     if (['Promise', 'PromiseLike'].includes(symbol)) throw new Unsupported('nested Promise')
     if (checker.isArrayType(type)) return `Vec<${rust(checker.getTypeArguments(type)[0], `${hint}Item`)}>`
     if (checker.isTupleType(type)) throw new Unsupported(`tuple ${checker.typeToString(type)}`)
     if (type.getCallSignatures().length || type.getConstructSignatures().length) throw new Unsupported('function value (callbacks are not bound yet)')
     return object(type, hint)
+  }
+
+  // A Map key or Set element: only values every language takes as a key
+  // (strings, numbers, booleans, bigints; design §5). A Date is an object
+  // compared by identity as a JS key, so it is refused like any object.
+  function mapKey(type, hint) {
+    if (!type) throw new Unsupported('Map or Set without type arguments')
+    const primitive = member => member.flags & (ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike | ts.TypeFlags.BigIntLike)
+    // Branded primitives (`string & { __brand: 'Id' }`) are keys too.
+    const branded = type.isIntersection() && type.types.some(primitive)
+    if (!branded && !(type.isUnion() ? type.types : [type]).every(primitive)) {
+      throw new Unsupported(`${checker.typeToString(type)} as a Map key or Set element (only strings, numbers, booleans and bigints)`)
+    }
+    return rust(type, hint)
   }
 
   // What is being mapped, for diagnostics raised while mapping its types.

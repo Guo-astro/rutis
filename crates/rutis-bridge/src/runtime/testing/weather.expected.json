@@ -6,7 +6,9 @@
     "A call: `call` (method), `args` (JSON; {\"$callback\": ...} is a function the caller passes: \"upper\" returns its argument upper-cased; {\"throws\": {name, message, fields}} throws an error with that name and message and extra `fields`), and what it does: `returns` (a JSON value; keys in `ignore` are not compared; `copied`: it is not the object passed in), `throws` ({} for any error, or the `name` and `message` the caller receives; the thrown error's extra `fields` do not cross) or `exits` (the plugin's process exits with this status).",
     "`samples` are values one language makes: the plugin's `samples()` names the ones it has, `sample(name)` returns one; a runtime whose plugin has no `samples` method has none.",
     "`events` (after `calls` and `samples`): the host emits `emit` with `args` (JSON) as Process::emit does, the runtime mounted with `emits`; then `then` is a call as in `calls`, or the emission `throws`. The session matrix requires these checks on Node, Bun, Python and Go; the Node and Python testing tools also check them.",
-    "`allowed`: the testing tool does not do what this entry says, and why (a bounded, written-down difference, also in docs/guide/plugin-api.md). Every other entry holds for both."
+    "`allowed`: the testing tool does not do what this entry says, and why (a bounded, written-down difference, also in docs/guide/plugin-api.md). Every other entry holds for both.",
+    "Tagged values (#308, docs/design-value-types-2026-10-15.md) are written {\"$<tag>\": <the value's wire text>}: {\"$instant\": \"2026-10-15T03:22:15.123Z\"}, {\"$bytes\": \"aGVsbG8=\"} (base64), {\"$map\": [[key, value], ...]}, {\"$set\": [element, ...]}, and so for datetime, date, time, bigint, decimal and uuid. No plain value is written so.",
+    "`pending`: no runtime's plugin names this sample yet; a runtime names it in its `samples()` once it sends that value (#308 phase 3), and the entry then holds for it like any other. Until then it is not checked."
   ],
   "service": "weather",
   "methods": { "today": "sync", "later": "async", "each": "sync", "echo": "sync", "crash": "sync" },
@@ -65,6 +67,19 @@
     { "sample": "python/exception-value", "returns": { "name": "ValueError", "message": "bad" }, "why": "an exception returned as a value arrives as data: its name and message" },
     { "sample": "python/safe-int", "returns": [9007199254740991, -9007199254740991, true], "why": "integers within ±(2^53−1) cross, and a bool stays a bool" },
     { "sample": "python/big-int", "throws": {}, "why": "an integer beyond ±(2^53−1) does not cross (#356): past 2^64 Rust would read it as a float, past 2^53 JavaScript cannot hold it exactly" },
-    { "sample": "python/big-int-nested", "throws": {}, "why": "nor does one inside data" }
+    { "sample": "python/big-int-nested", "throws": {}, "why": "nor does one inside data" },
+    { "sample": "node/value-instant", "returns": { "$instant": "2026-10-15T03:22:15.123Z" }, "pending": "#308 phase 3", "why": "a Date (new Date('2026-10-15T03:22:15.123Z')) arrives as an instant" },
+    { "sample": "node/value-bytes", "returns": { "$bytes": "aGVsbG8=" }, "pending": "#308 phase 3", "why": "a Uint8Array arrives as bytes" },
+    { "sample": "node/value-map", "returns": { "$map": [[1, "a"], ["1", "b"], [true, null]] }, "pending": "#308 phase 3", "why": "a Map arrives as a map, its keys of different kinds kept apart and in order, undefined as null" },
+    { "sample": "node/value-set", "returns": { "$set": ["a", 1] }, "pending": "#308 phase 3", "why": "a Set arrives as a set, in order" },
+    { "sample": "node/value-bigint", "returns": { "$bigint": "-123456789012345678901" }, "pending": "#308 phase 3", "why": "a bigint arrives as a big integer" },
+    { "sample": "node/value-constructed", "returns": [{ "$datetime": "2026-10-15T14:30:05.25" }, { "$date": "2026-10-15" }, { "$time": "14:30:05.25" }, { "$decimal": "1.10" }, { "$uuid": "0f8fad5b-d9cb-469f-a165-70867728950e" }], "pending": "#308 phase 3", "why": "the SDK constructors send a datetime, date, time, decimal and uuid; the decimal keeps its trailing zero" },
+    { "sample": "node/value-date-key", "throws": {}, "pending": "#308 phase 3", "why": "a Map keyed by a Date does not cross: a Date compares by identity as a key (design §5)" },
+    { "sample": "python/value-instant", "returns": { "$instant": "2026-10-15T03:22:15.123456Z" }, "pending": "#308 phase 3", "why": "a datetime with a time zone arrives as an instant in UTC, to the microsecond" },
+    { "sample": "python/value-naive-datetime", "returns": { "$datetime": "2026-10-15T14:30:05.25" }, "pending": "#308 phase 3", "why": "a datetime without a time zone arrives as a local datetime, not read in any zone (design V5)" },
+    { "sample": "python/value-decimal-uuid", "returns": [{ "$decimal": "-12.3400" }, { "$uuid": "0f8fad5b-d9cb-469f-a165-70867728950e" }], "pending": "#308 phase 3", "why": "a Decimal and a UUID arrive as values, not as object references (#355)" },
+    { "sample": "python/value-int-keys", "returns": { "$map": [[1, "a"], [2, "b"]] }, "pending": "#308 phase 3", "why": "a dict with integer keys arrives as a map" },
+    { "sample": "go/value-instant", "returns": { "$instant": "2026-10-15T03:22:15.123456789Z" }, "pending": "#308 phase 3", "why": "a time.Time arrives as an instant in UTC, to the nanosecond" },
+    { "sample": "go/value-struct-bytes", "returns": { "raw": { "$bytes": "aGVsbG8=" } }, "pending": "#308 phase 3", "why": "a []byte inside a struct arrives as bytes, not as base64 text (V9)" }
   ]
 }

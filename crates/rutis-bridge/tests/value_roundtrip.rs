@@ -22,6 +22,15 @@
 //! with an error naming the limit, and the session goes on (#279): each
 //! runtime is checked as the sender of a value too deep, in an argument
 //! and in a result.
+//!
+//! Tagged values (#308): the ten values beyond JSON (instant, datetime,
+//! date, time, bytes, map, set, bigint, decimal, uuid), mixed with data,
+//! lists and records, map keys and set elements of the kinds design §5
+//! allows and none equal, round-trip unchanged through a far end that
+//! declared their capabilities; to one that did not, each such call fails
+//! on this side before it is sent, naming the capability, and the session
+//! goes on. Only the Rust far end takes them so far: the language
+//! runtimes follow in phase 3 of the design.
 #![cfg(all(unix, feature = "testing"))]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -62,11 +71,16 @@ fn main_endpoint(far: &str) -> Format {
 
 /// A Rust far end serving [`Fixture`] over an in-memory channel.
 fn rust_far_end() -> (Connection, Connection) {
+    rust_far_end_as(Endpoint::rust(id("rust")))
+}
+
+/// [`rust_far_end`], greeting as `far` (with its capabilities).
+fn rust_far_end_as(far: Endpoint) -> (Connection, Connection) {
     let (a, b) = rutis_bridge::transport::memory::pair();
     let far = Connection::open_with(
         b,
         Arc::new(Fixture::default()),
-        Format::Endpoint(Endpoint::rust(id("rust")).expect(id("main"))),
+        Format::Endpoint(far.expect(id("main"))),
     )
     .unwrap();
     (
@@ -364,6 +378,192 @@ fn has_unsafe_integer(value: &Json) -> bool {
     }
 }
 
+// ── Tagged values (#308) ─────────────────────────────────────────────
+
+use rutis_bridge::session as rpc;
+
+fn date() -> impl Strategy<Value = rpc::Date> {
+    // Every day of years 0001–9999.
+    let first = rpc::Date::new(1, 1, 1).unwrap().days_since_unix_epoch();
+    let last = rpc::Date::new(9999, 12, 31)
+        .unwrap()
+        .days_since_unix_epoch();
+    (first..=last).prop_map(|days| rpc::Date::from_days_since_unix_epoch(days).unwrap())
+}
+
+fn time_of_day() -> impl Strategy<Value = rpc::TimeOfDay> {
+    (
+        0u8..24,
+        0u8..60,
+        0u8..60,
+        prop_oneof![
+            Just(0u32),
+            0u32..1_000_000_000,
+            (0u32..1000).prop_map(|ms| ms * 1_000_000)
+        ],
+    )
+        .prop_map(|(h, m, s, ns)| rpc::TimeOfDay::new(h, m, s, ns).unwrap())
+}
+
+/// Decimal digits, `0` or without a leading zero, with an optional `-`.
+fn integer_text(digits: usize) -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just("0".to_owned()),
+        (
+            any::<bool>(),
+            proptest::string::string_regex(&format!("[1-9][0-9]{{0,{digits}}}")).unwrap()
+        )
+            .prop_map(|(negative, digits)| {
+                if negative {
+                    format!("-{digits}")
+                } else {
+                    digits
+                }
+            }),
+    ]
+}
+
+fn bigint() -> impl Strategy<Value = rpc::BigInt> {
+    prop_oneof![
+        any::<i128>().prop_map(rpc::BigInt::from),
+        integer_text(60).prop_map(|text| text.parse().unwrap()),
+        // The most digits allowed.
+        Just("9".repeat(rpc::values::MAX_DIGITS).parse().unwrap()),
+    ]
+}
+
+fn decimal() -> impl Strategy<Value = rpc::Decimal> {
+    (
+        any::<bool>(),
+        integer_text(30),
+        prop::option::of("[0-9]{1,30}"),
+    )
+        .prop_map(|(negative, integer, fraction)| {
+            let sign = if negative && !integer.starts_with('-') {
+                "-"
+            } else {
+                ""
+            };
+            let fraction = fraction.map(|f| format!(".{f}")).unwrap_or_default();
+            format!("{sign}{integer}{fraction}").parse().unwrap()
+        })
+}
+
+/// A value every language takes as a map key or set element (design §5).
+fn key_value() -> impl Strategy<Value = Value> {
+    prop_oneof![
+        3 => string().prop_map(|text| Value::Data(Json::String(text))),
+        2 => number().prop_map(Value::Data),
+        1 => any::<bool>().prop_map(|flag| Value::Data(Json::Bool(flag))),
+        1 => bigint().prop_map(Value::BigInt),
+        1 => (date(), time_of_day()).prop_map(|(d, t)| Value::DateTime(rpc::DateTime::new(d, t))),
+        1 => date().prop_map(Value::Date),
+        1 => time_of_day().prop_map(Value::Time),
+        1 => decimal().prop_map(Value::Decimal),
+        1 => any::<u128>().prop_map(|n| Value::Uuid(rpc::Uuid::from_u128(n))),
+    ]
+}
+
+/// What makes two keys equal, as the session compares them: numbers by
+/// value (a coarse, conservative stand-in), the rest as written.
+fn key_identity(key: &Value) -> String {
+    match key {
+        Value::Data(Json::Number(n)) => {
+            let x = n.as_f64().unwrap();
+            format!("n{}", if x == 0.0 { 0.0 } else { x })
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+/// `entries` without the later ones whose key repeats an earlier one's.
+fn distinct<T>(entries: Vec<T>, key: impl Fn(&T) -> &Value) -> Vec<T> {
+    let mut seen = BTreeSet::new();
+    entries
+        .into_iter()
+        .filter(|entry| seen.insert(key_identity(key(entry))))
+        .collect()
+}
+
+fn tagged_leaf() -> impl Strategy<Value = Value> {
+    let instant = (-62_135_596_800i64..=253_402_300_799, 0u32..1_000_000_000)
+        .prop_map(|(s, ns)| Value::Instant(rpc::Instant::from_unix(s, ns).unwrap()));
+    prop_oneof![
+        3 => leaf().prop_map(Value::Data),
+        2 => key_value(),
+        1 => instant,
+        1 => prop::collection::vec(any::<u8>(), 0..48).prop_map(Value::Bytes),
+    ]
+}
+
+/// Data, tagged values, lists, records, maps and sets, nested up to 6
+/// levels.
+fn tagged_value() -> impl Strategy<Value = Value> {
+    tagged_leaf().prop_recursive(6, 48, 4, |inner| {
+        prop_oneof![
+            prop::collection::vec(inner.clone(), 0..4).prop_map(Value::List),
+            prop::collection::btree_map(key(), inner.clone(), 0..4).prop_map(Value::Record),
+            prop::collection::vec((key_value(), inner), 0..4)
+                .prop_map(|entries| Value::Map(distinct(entries, |(key, _)| key))),
+            prop::collection::vec(key_value(), 0..4)
+                .prop_map(|elements| Value::Set(distinct(elements, |element| element))),
+        ]
+    })
+}
+
+/// guarantee: bridge/value-tags. Tagged values come back from the far
+/// end's echo exactly as sent.
+fn tagged_round_trip(far: &Connection, name: &str) {
+    check(
+        &format!("{name} tagged round trip"),
+        tagged_value(),
+        |sent| {
+            let args = Value::List(vec![sent.clone()]);
+            let echoed = far
+                .invoke("conformance", "echo", args)
+                .map_err(|error| TestCaseError::fail(format!("echo failed: {error}")))?;
+            prop_assert_eq!(echoed, sent);
+            Ok(())
+        },
+    );
+}
+
+/// Whether `value` holds a tagged value.
+fn holds_tagged(value: &Value) -> bool {
+    match value {
+        Value::List(items) => items.iter().any(holds_tagged),
+        Value::Record(fields) => fields.values().any(holds_tagged),
+        other => other.tag().is_some(),
+    }
+}
+
+/// guarantee: bridge/value-tags. To a far end that declared none of the
+/// tagged values, a call carrying one fails on this side, naming the
+/// capability; data still crosses; the session goes on.
+fn tagged_refused(far: &Connection, name: &str) {
+    check(&format!("{name} tagged refused"), tagged_value(), |sent| {
+        let tagged = holds_tagged(&sent);
+        let echoed = far.invoke("conformance", "echo", Value::List(vec![sent.clone()]));
+        match (tagged, echoed) {
+            (true, Err(Error::Value(message))) => {
+                prop_assert!(
+                    message.contains("did not declare the capability value-"),
+                    "{}",
+                    message
+                );
+            }
+            (false, Ok(echoed)) => prop_assert_eq!(echoed, sent),
+            (_, other) => {
+                return Err(TestCaseError::fail(format!(
+                    "tagged {tagged}: unexpected {other:?}"
+                )))
+            }
+        }
+        prop_assert!(far.close_reason().is_none());
+        Ok(())
+    });
+}
+
 // ── The depth limit ──────────────────────────────────────────────────
 
 /// Data `depth` arrays deep.
@@ -615,6 +815,28 @@ async fn rust_values_round_trip() {
     let (near, _far) = rust_far_end();
     near.ready().await.unwrap();
     tokio::task::spawn_blocking(move || round_trip(&near, "rust", Numbers::Exact))
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rust_tagged_values_round_trip() {
+    let (near, _far) = rust_far_end();
+    near.ready().await.unwrap();
+    tokio::task::spawn_blocking(move || tagged_round_trip(&near, "rust"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rust_tagged_values_refused_without_capabilities() {
+    let mut older = Endpoint::rust(id("rust"));
+    older
+        .capabilities
+        .retain(|capability| !capability.starts_with("value-"));
+    let (near, _far) = rust_far_end_as(older);
+    near.ready().await.unwrap();
+    tokio::task::spawn_blocking(move || tagged_refused(&near, "rust"))
         .await
         .unwrap();
 }

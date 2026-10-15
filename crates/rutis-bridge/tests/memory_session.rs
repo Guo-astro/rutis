@@ -34,7 +34,11 @@ async fn a_session_runs_on_a_memory_channel() {
         // Older far ends ignore the capabilities of a compat handshake.
         assert_eq!(
             read(&mut remote),
-            json!({ "op": "hello", "version": PROTOCOL, "capabilities": ["sync-wait"] })
+            json!({ "op": "hello", "version": PROTOCOL, "capabilities": [
+                "sync-wait", "value-instant", "value-datetime", "value-date", "value-time",
+                "value-bytes", "value-map", "value-set", "value-bigint", "value-decimal",
+                "value-uuid",
+            ] })
         );
         send(&mut remote, json!({ "op": "hello", "version": PROTOCOL }));
         // A call from here reaches the far end.

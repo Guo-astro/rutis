@@ -111,12 +111,20 @@ impl crate::Handler for Inbound {
         if method != "events.forward" {
             return Err(Error::Value(format!("{method} is not offered here")));
         }
+        // Events between nodes are JSON (`NodeEvent`): tagged values (an
+        // instant, bytes, a map, ...) do not cross here (#308, boundary
+        // rule 7).
         let fields = args
             .list()?
             .into_iter()
             .next()
             .ok_or_else(|| Error::Value("events.forward needs the event".into()))?
-            .json()?;
+            .json()
+            .map_err(|error| {
+                Error::Value(format!(
+                    "events forwarded between nodes carry JSON data only: {error}"
+                ))
+            })?;
         let name: String = crate::session::decode(fields["name"].clone())?;
         if !self.names.contains(&name) {
             return Err(Error::Value(format!("event {name} is not forwarded here")));
@@ -178,5 +186,69 @@ impl Plugin for EventsPlugin {
             }
             Ok(Effect::Done)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::rpc::Dispatch;
+
+    struct Nothing;
+    impl Dispatch for Nothing {
+        fn invoke(&self, _: &Connection, _: &str, _: &str, _: Value) -> Reply {
+            Ok(Value::Undefined)
+        }
+    }
+
+    /// guarantee: bridge/value-tags
+    ///
+    /// Boundary rule 7 (#308): an event forwarded between nodes is JSON, so
+    /// one carrying a tagged value is refused, saying why; a JSON event is
+    /// emitted.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn node_events_with_tagged_values_are_refused() {
+        use crate::Handler;
+        let (local, _far) = crate::transport::memory::pair();
+        let peer = Connection::open(local, Arc::new(Nothing)).unwrap();
+        let inbound = Inbound {
+            ctx: Ctx::root().unwrap(),
+            names: HashSet::from(["tick".to_owned()]),
+        };
+        let event = |args: Value| {
+            Value::List(vec![Value::Record(
+                [
+                    ("name".to_owned(), Value::Data(json!("tick"))),
+                    ("args".to_owned(), args),
+                ]
+                .into(),
+            )])
+        };
+        let instant = "2026-10-15T03:22:15Z".parse().unwrap();
+        for tagged in [
+            Value::List(vec![Value::Instant(instant)]),
+            Value::List(vec![Value::Map(vec![])]),
+            Value::List(vec![Value::Bytes(vec![1])]),
+        ] {
+            let error = inbound
+                .invoke(&peer, "events", "events.forward", event(tagged))
+                .map(|_| ())
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("events forwarded between nodes carry JSON data only"),
+                "{error}"
+            );
+        }
+        let emitted = inbound
+            .invoke(
+                &peer,
+                "events",
+                "events.forward",
+                event(Value::Data(json!([1]))),
+            )
+            .unwrap();
+        crate::session::rpc::settle(emitted).await.unwrap();
     }
 }

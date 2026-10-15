@@ -2,7 +2,7 @@
 
 [English](design-value-types-2026-10-15.en.md)
 
-状态：定稿，未实现。日期：2026-10-15。基准：`main`（0.10 之后，#400–#402 已合入）。
+状态：定稿；阶段 1（规范，见[协议设计](design-protocol-plugins-2026-09-25.md) §6.1）与阶段 2（Rust）已实现，阶段 3、4 未实现。日期：2026-10-15。基准：`main`（0.10 之后，#400–#402 已合入）。
 依据：[#308](https://github.com/arcships/rutis/issues/308) 的方案草稿与核对、[#355](https://github.com/arcships/rutis/issues/355)、[#360](https://github.com/arcships/rutis/issues/360)、维护者决定（2026-10-15，记在 #308）；[插件 API](guide/plugin-api.md)「值怎样传递」；[协议设计](design-protocol-plugins-2026-09-25.md) §六（显式带标记的值）；[设计哲学](design-philosophy.md) §七。
 
 范围：会话协议的值层，以及 Rust、Node、Bun、Python、Go 五种实现和它们的测试工具；Swift、Kotlin SDK 按本文实现（[Swift SDK](design-swift-sdk-2026-10-12.md)、[Android 应用托管](design-android-runtime-2026-10-12.md)）。
