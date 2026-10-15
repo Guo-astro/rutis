@@ -149,9 +149,9 @@ The dial-out contract (`tests/dial_conformance.rs`: rutis runs an access point, 
 | Implementation | Linux | macOS | Windows |
 | --- | --- | --- | --- |
 | Python | Runs | Runs | Runs; the own-stop case is skipped: it sends SIGTERM, which Windows does not have |
+| Go | Runs | Runs | Runs; the own-stop case is skipped: it sends SIGTERM, which Windows does not have |
 | Node | Runs | Runs | Runs; the own-stop case is skipped: as above |
 | Bun | Runs | Runs | Not compiled: Bun on Windows is not a declared platform |
-| Go | Not run: it cannot dial out yet (#384) | Same as Linux | Same as Linux |
 
 Other bridge test files compiled on Unix only (each says why next to its `cfg`): `bun_runtime.rs`, `bun_channel.rs` (Bun); `local_spawn.rs` (the `fd:3` and dial-back handovers; `local_loopback.rs` covers Windows' loopback handover); `local_plugin.rs`, `value_roundtrip.rs` (Unix sockets); `local_stdio.rs` (`dup2`); `concurrent_launch.rs` (descriptors inherited across fork/exec); the two soaks on Linux only (they read `/proc`).
 

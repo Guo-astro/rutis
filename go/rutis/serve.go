@@ -78,8 +78,11 @@ func ServeArgs(args []string, defs ...*Definition) error {
 	if strings.HasPrefix(channel, "listen:") {
 		return listen(strings.TrimPrefix(channel, "listen:"), endpoint, defs)
 	}
+	if strings.HasPrefix(channel, "dial:") {
+		return dialOut(strings.TrimPrefix(channel, "dial:"), endpoint, defs)
+	}
 	if strings.HasPrefix(channel, "ws:") || strings.HasPrefix(channel, "wss:") {
-		return fmt.Errorf("the Go runtime only listens: %s", channel)
+		return fmt.Errorf("a WebSocket channel is listen:<address> or dial:<address>: %s", channel)
 	}
 	conn, err := openChannel(channel)
 	if err != nil {
@@ -152,12 +155,21 @@ func parseArgs(args []string) (channel string, endpoint *peer.Endpoint, dir stri
 	if len(rest) != 1 {
 		return "", nil, "", errors.New(usage)
 	}
-	if strings.HasPrefix(channel, "listen:") {
+	if strings.HasPrefix(channel, "listen:") || strings.HasPrefix(channel, "dial:") {
 		if flags["id"] == "" {
 			return "", nil, "", fmt.Errorf("a network channel needs --id <endpoint>: %s", channel)
 		}
 		// A runner is a runtime: the controller manages its rows.
 		endpoint = &peer.Endpoint{Local: flags["id"], Expected: flags["peer"], Declare: []string{"runtime"}}
+	}
+	if strings.HasPrefix(channel, "dial:") {
+		// What retrying cannot fix fails here, before any dial.
+		if _, err := dialHost(strings.TrimPrefix(channel, "dial:")); err != nil {
+			return "", nil, "", err
+		}
+		if !peer.ValidID(flags["id"]) {
+			return "", nil, "", fmt.Errorf("invalid endpoint id %s: use lower-case letters, digits and -", flags["id"])
+		}
 	}
 	return channel, endpoint, rest[0], nil
 }

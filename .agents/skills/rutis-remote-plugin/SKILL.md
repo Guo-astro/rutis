@@ -32,11 +32,11 @@ When unsure, ask one question: **who decides whether the plugin is loaded and wi
 | --- | --- | --- |
 | Python | ✅ | ✅ ([#383](https://github.com/arcships/rutis/issues/383)) |
 | Node / TypeScript | ✅ | ✅ ([#384](https://github.com/arcships/rutis/issues/384)) |
-| Go | ✅ | Not implemented (#384) |
+| Go | ✅ | ✅ ([#384](https://github.com/arcships/rutis/issues/384)) |
 | Bun | ✅ (#384) | ✅ (#384) |
 | Swift / Kotlin apps | Designed, not implemented ([#389](https://github.com/arcships/rutis/issues/389), [#391](https://github.com/arcships/rutis/issues/391)) | Same |
 
-"One access point accepting many connections, one instance per connection" (many devices, autoscaled workers) works on the rutis side ([#382](https://github.com/arcships/rutis/issues/382): `listen` and `instances` on a `runtimes.remote` entry); of the language runtimes Python, Node and Bun can connect to it so far (step 4b). Tracking issue: [#392](https://github.com/arcships/rutis/issues/392).
+"One access point accepting many connections, one instance per connection" (many devices, autoscaled workers) works on the rutis side ([#382](https://github.com/arcships/rutis/issues/382): `listen` and `instances` on a `runtimes.remote` entry); of the language runtimes Python, Go, Node and Bun can connect to it so far (step 4b). Tracking issue: [#392](https://github.com/arcships/rutis/issues/392).
 
 ## 3. Write the plugin: the paradigm, same as local
 
@@ -88,6 +88,10 @@ RUTIS_TOKEN=… RUTIS_CA=ca.pem \
 # Bun (inside that machine's Bun project)
 RUTIS_TOKEN=… RUTIS_CA=ca.pem \
   bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
+
+# Go: the plugin binary takes the same channel, flags and environment
+RUTIS_TOKEN=… RUTIS_CA=ca.pem \
+  ./weather dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
 ```
 
 - `--id` is this connection's own id (`[a-z0-9-]+`, unique per process: two processes with one id keep taking over from each other); `--peer` is the rutis `id`. `RUTIS_CA` is needed only for a self-signed certificate on the rutis side.

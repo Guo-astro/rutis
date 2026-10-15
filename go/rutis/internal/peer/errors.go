@@ -27,6 +27,15 @@ func (e *RemoteError) Is(target error) bool {
 	return target == ErrSyncWaitCycle && e.Name == "SyncWaitCycle"
 }
 
+// ErrIncompatible is what a session ends with when the far end greeted in
+// a way this side cannot speak (another protocol version, no valid
+// endpoint): retrying cannot fix it.
+var ErrIncompatible = errors.New("incompatible session")
+
+// ErrEndpointMismatch is what a session ends with when the far end greeted
+// as another endpoint than the expected one.
+var ErrEndpointMismatch = errors.New("endpoint mismatch")
+
 // ErrSyncWaitCycle matches a SyncWaitCycle error received from the far end.
 var ErrSyncWaitCycle = errors.New("SyncWaitCycle")
 

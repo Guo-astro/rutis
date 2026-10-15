@@ -4,9 +4,9 @@
 //! every rule of the dial-out table is checked against what the access
 //! point observes and what the runtime says on stderr.
 //!
-//! A column per language: Python, Node and Bun (Unix only, as the whole Bun
-//! runtime is); Go with #384; Swift and Kotlin with their SDKs (Swift A1,
-//! Android K-P2). A language joins by a
+//! A column per language: Python, Go, Node and Bun (Unix only, as the whole
+//! Bun runtime is); Swift and Kotlin with their SDKs (Swift A1, Android
+//! K-P2). A language joins by a
 //! [`Language`] variant (the command that dials, the conformance plugin in
 //! its project) and a `column!` line. What every dialer must do:
 //!
@@ -69,6 +69,8 @@ enum Language {
     /// Unix only: Bun on Windows is not a declared platform.
     #[cfg(all(unix, feature = "bun"))]
     Bun,
+    #[cfg(feature = "go")]
+    Go,
 }
 
 /// The conformance plugin as the npm package `marker` in `project`, which
@@ -90,6 +92,27 @@ fn marker_package(project: &Path, fixture: &str) {
 fn python_program() -> String {
     std::env::var("RUTIS_PYTHON")
         .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into())
+}
+
+/// The Go conformance dialer (`go/rutis/internal/fixtures/dial`, the
+/// plugin `marker` in it), built once per test binary with the `go` on
+/// PATH.
+#[cfg(feature = "go")]
+fn go_dialer() -> &'static Path {
+    static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BINARY.get_or_init(|| {
+        let directory = tempfile::tempdir().unwrap().keep();
+        let binary = directory.join(format!("dial{}", std::env::consts::EXE_SUFFIX));
+        let status = std::process::Command::new("go")
+            .args(["build", "-o"])
+            .arg(&binary)
+            .arg("./internal/fixtures/dial")
+            .current_dir(repo().join("go/rutis"))
+            .status()
+            .expect("go is on PATH");
+        assert!(status.success(), "go build ./internal/fixtures/dial");
+        binary
+    })
 }
 
 impl Language {
@@ -141,6 +164,15 @@ impl Language {
                     .args(["--id", id, "--peer", "main"])
                     .arg(project)
                     .current_dir(project);
+                command
+            }
+            #[cfg(feature = "go")]
+            Language::Go => {
+                let mut command = tokio::process::Command::new(go_dialer());
+                command
+                    .arg(format!("dial:{address}"))
+                    .args(["--id", id, "--peer", "main"])
+                    .arg(project);
                 command
             }
         }
@@ -592,4 +624,6 @@ column!(python, Language::Python);
 column!(node, Language::Node);
 #[cfg(all(unix, feature = "bun"))]
 column!(bun, Language::Bun);
-// Go: #384. Swift and Kotlin: with their SDKs (Swift A1, Android K-P2).
+#[cfg(feature = "go")]
+column!(go, Language::Go);
+// Swift and Kotlin: with their SDKs (Swift A1, Android K-P2).

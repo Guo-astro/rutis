@@ -115,6 +115,14 @@ RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
   python -m rutis dial:wss://main.example.com:7443/rutis --id worker-1 --peer main /srv/plugins
 ```
 
+A Go plugin binary takes the same `dial:` channel, with the same arguments, environment variables, reconnection rules and state lines as Python (set `language` to `go`):
+
+```bash
+# The worker machine: with the plugin binary there, connect to rutis
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  ./weather dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
+```
+
 - `--id` is the id this connection reports (lower-case letters, digits and `-`), which names its instance; `--peer` is the rutis `id`.
 - `RUTIS_TOKEN` equals `RUTIS_TOKEN_WORKER` on the rutis side; `RUTIS_CA` is a further trusted CA (for a self-signed certificate), besides the system roots. A non-loopback address must be `wss://`.
 - The runtime keeps the connection itself and reconnects by fixed rules: when it cannot connect or the connection drops, it waits from 0.5 s, doubling up to 30 s, back to 0.5 s once a connection has lasted 60 s; a refused token or id (401 / 403 at the upgrade, or rutis rejecting the id with close code 4003) is tried again every 30 s; an incompatible protocol (400 at the upgrade and the like) is not retried, and the process exits with status 1. On every disconnect all rows are unloaded first (cleanups in reverse order); a reconnection is a new session, and the rows load again.
@@ -134,8 +142,6 @@ RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
 ```
 
 Node and Bun run each session in a child process: on a disconnect the child unloads every row and exits, and a reconnection starts a new one. `RUTIS_CA` is trusted together with the roots Node and Bun trust by default.
-
-Dialing out for Go is [#384](https://github.com/arcships/rutis/issues/384); until then it only listens, and rutis connects to it (as above).
 
 ## Connect a Cordis application as a node
 

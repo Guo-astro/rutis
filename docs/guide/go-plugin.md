@@ -141,3 +141,19 @@ rutis-host go add example.com/weather/cmd/weather@v0.1.0   # 用本机的 Go 工
 ```
 
 也可以下载发布里对应平台的二进制放进目录（macOS 上下载的二进制带隔离属性，`rutis-host check` 会提示）。行名 `go:<插件名>` 由宿主在所有二进制里查找；两个二进制里有同名插件时，写成 `go-<二进制名>:<插件名>`。目录里的二进制在第一次有行用到时才启动，空闲 60 秒后停下（`"start": "eager"` 全部启动并一直运行）；换了二进制要重启宿主才生效。见 [rutis-host 与 rutis.json](rutis-host.md)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)（`GoResolver`、`GoRuntimes`）。
+
+## 7. 在另一台机器上运行
+
+插件二进制也能在别的机器上作为远程运行时运行，`language` 写 `go`。两种方式，参数与 Python 运行时相同，见 [连接节点](nodes.md#别的机器上的语言运行时)：
+
+```bash
+# 监听，由 rutis 来连（证书与私钥在 RUTIS_CERT、RUTIS_KEY）
+RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
+  ./weather listen:wss://0.0.0.0:7443/rutis --id gpu --peer main .
+
+# 拨出，连到 rutis 的接入点，断开后按固定规则重连
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  ./weather dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
+```
+
+拨出时状态写在 stderr（`rutis: connected to …` 等），SIGTERM 或 Ctrl-C 卸载全部行后退出；接入点协议不兼容时以状态 1 退出。规则见 [连进来的运行时](nodes.md#连进来的运行时)。
