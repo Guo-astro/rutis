@@ -13,7 +13,7 @@ use crate::error::Failure;
 use crate::patch::{apply_patches, Layer};
 use crate::resolver::{Build, BuildLink, Resolved};
 use crate::volatile::{volatile_change, volatile_paths, VolatileUpdate};
-use crate::LoaderError;
+use crate::{LoaderError, Unavailable};
 
 use super::desired::{BoundScope, Desired, Eval, Row};
 use super::plugins::{EntryConfig, EntryFactory, GroupPlugin};
@@ -654,6 +654,7 @@ impl Inner {
                 },
                 scope,
                 value: value.to_string(),
+                unavailable: false,
             };
             if !out.contains(&failing) {
                 out.push(failing);
@@ -707,6 +708,14 @@ impl Inner {
                     push(&row.id, scope, error, &row.value);
                 }
             }
+        }
+        // Copies unavailable in their instance fail there alone.
+        for failing in &mut out {
+            let slot = Slot {
+                row: failing.failure.id.clone(),
+                scope: failing.scope,
+            };
+            failing.unavailable = state.rejected.get(&slot).is_some_and(Unavailable::is);
         }
         out
     }
@@ -983,7 +992,11 @@ impl Inner {
 
         let state = self.state.lock().unwrap();
         let after = Self::failures(&state);
-        let new_failures = Failing::public(after.iter().filter(|f| !before.contains(f)));
+        let new_failures = Failing::public(
+            after
+                .iter()
+                .filter(|f| !f.unavailable && !before.contains(f)),
+        );
         ReconcileReport {
             warnings: state.desired.warnings.clone(),
             issues: state.desired.issues.clone(),

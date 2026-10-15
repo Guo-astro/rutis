@@ -88,6 +88,27 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 
 远程 Python 运行时的行名是 `<运行时名>:<模块>`，模块在远程机器上解析。Node 运行时同样可以远程运行：在那台机器的 Node 项目里执行 `node node_modules/@arcships/rutis-runtime/src/runner.mjs listen:wss://… --id <名字> --peer <控制方> ./package.json`（插件从这个 package.json 解析），`language` 写 `node`。远程运行时一次服务一个控制方；控制方断开时，它为这个控制方运行的插件全部卸载。
 
+### 连进来的运行时
+
+运行时也可以反过来连到 rutis：远程机器在 NAT 后、地址会变，或者数量会变（多台设备、扩缩容的 worker）时用这种方式。rutis 一侧在 `runtimes.remote` 的条目里写 `listen`（接入的监听器）和 `instances`（一个 `instanced` 分组），不写节点行：
+
+```json
+{
+  "id": "main",
+  "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
+  "runtimes": { "remote": [{ "name": "worker", "language": "python", "listen": "public", "instances": "worker" }] },
+  "rows": [
+    { "id": "worker", "group": true, "instanced": true, "config": [
+      { "id": "embedder", "name": "worker:embedder" }
+    ] }
+  ]
+}
+```
+
+每条连接出示同一个 token（`RUTIS_TOKEN_WORKER`，或 `RUTIS_TOKEN`），自报一个 id，成为分组的一个实例：连进来时创建，断开时关闭，同一 id 的新连接接管旧连接。分组里的行在每个实例中运行在该实例的连接上，它们提供的服务只在本实例里可见。字段与规则见 [rutis-host](rutis-host.md#连进来的运行时)。
+
+rutis 一侧已经就绪；语言运行时的拨出（`dial:wss://…`）随后补上：Python 见 [#383](https://github.com/arcships/rutis/issues/383)，Node、Go、Bun 见 [#384](https://github.com/arcships/rutis/issues/384)。在那之前运行时只能监听，由 rutis 去连（上面的方式）。
+
 ## 把 Cordis 应用接成节点
 
 已有的 Cordis 应用用 `@arcships/rutis-runtime/bridge` 成为一个节点，见 [Cordis](cordis.md)。

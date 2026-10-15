@@ -25,6 +25,9 @@
 //! - **Go** (feature `go`, [`GoResolver`], [`GoRuntimes`]): a row named
 //!   `go:<plugin>` runs the plugin in the Go binary that has it, one runtime
 //!   per binary, started when a row uses it.
+//! - **Runtimes that dial in** ([`RuntimeInstances`]): each connection an
+//!   access point admits is an instance of an `instanced` group, whose rows
+//!   `<runtime>:<plugin>` run on that connection.
 //!
 //! Services cross between the rows and the rest of rutis by name, as
 //! `dyn HostDispatch` at `host_key(name)`:
@@ -61,9 +64,12 @@ use crate::{
     volatile_key, Loader, LoaderError, Resolved, Resolver, ServiceCatalog, VolatileUpdate,
 };
 
+mod connections;
 #[cfg(feature = "go")]
 mod go;
 mod rows;
+pub(crate) use connections::{claimed, claimed_names};
+pub use connections::{AcceptInstances, RuntimeConnection, RuntimeInstances};
 #[cfg(feature = "go")]
 pub use go::{
     read_go_manifest, GoBinaries, GoBinary, GoManifest, GoResolver, GoRuntimeInfo, GoRuntimeState,
@@ -455,7 +461,7 @@ impl JsModule {
             .collect();
         Ok(JsFactory::with_keys(
             &self.name,
-            &self.runtime,
+            RowRuntime::Named(self.runtime.clone()),
             self.entry.clone(),
             keyed(&mut self.gated.iter())?,
             self.provides.clone(),
@@ -465,9 +471,20 @@ impl JsModule {
     }
 }
 
+/// Where a row's runtime comes from.
+#[derive(Clone)]
+pub(crate) enum RowRuntime {
+    /// The runtime named so, through its [`RuntimeRows`]: rows wait for
+    /// it and stop when it goes.
+    Named(String),
+    /// One runtime connection's process ([`RuntimeInstances`]): the row
+    /// runs in that connection's instance, which ends with it.
+    Connection(Arc<Process>),
+}
+
 struct JsFactory {
     name: String,
-    runtime: String,
+    runtime: RowRuntime,
     entry: PathBuf,
     /// The injected services that gate the row in rutis, with their keys.
     gated: Vec<(String, TypeKey)>,
@@ -500,24 +517,37 @@ impl JsFactory {
             .keys()
             .map(|name| (name.clone(), host_key(name)))
             .collect();
-        Self::with_keys(name, runtime, entry, gated, provides, provided, Vec::new())
+        Self::with_keys(
+            name,
+            RowRuntime::Named(runtime.to_owned()),
+            entry,
+            gated,
+            provides,
+            provided,
+            Vec::new(),
+        )
     }
 
-    fn with_keys(
+    pub(crate) fn with_keys(
         name: &str,
-        runtime: &str,
+        runtime: RowRuntime,
         entry: PathBuf,
         gated: Vec<(String, TypeKey)>,
         provides: Map<String, Value>,
         provided: Vec<(String, TypeKey)>,
         scopes: Vec<(String, String)>,
     ) -> Self {
-        let injects = std::iter::once(RuntimeRows::key(runtime))
+        let rows = match &runtime {
+            RowRuntime::Named(runtime) => Some(RuntimeRows::key(runtime)),
+            RowRuntime::Connection(_) => None,
+        };
+        let injects = rows
+            .into_iter()
             .chain(gated.iter().map(|(_, key)| key.clone()))
             .collect();
         Self {
             name: name.to_owned(),
-            runtime: runtime.to_owned(),
+            runtime,
             entry,
             gated,
             provides,
@@ -555,7 +585,7 @@ impl PluginFactory<Value> for JsFactory {
 /// One generation of a JavaScript row: loaded on apply, disposed on cleanup.
 struct JsRow {
     name: String,
-    runtime: String,
+    runtime: RowRuntime,
     entry: PathBuf,
     config: Value,
     gated: Vec<(String, TypeKey)>,
@@ -580,18 +610,26 @@ impl Plugin for JsRow {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
         Box::pin(async move {
-            let runtime = ctx
-                .require_as::<RuntimeRows>(RuntimeRows::key(&self.runtime))?
-                .runtime()
-                .clone();
-            let process = runtime.process().clone();
+            let (process, runtime) = match &self.runtime {
+                RowRuntime::Named(name) => {
+                    let runtime = ctx
+                        .require_as::<RuntimeRows>(RuntimeRows::key(name))?
+                        .runtime()
+                        .clone();
+                    (runtime.process().clone(), Some(runtime))
+                }
+                RowRuntime::Connection(process) => (process.clone(), None),
+            };
             // Every lease taken is released: by the cleanup once the row
             // runs, here when it does not get that far. The kernel waits for
             // apply to finish, so this frame gets to release them; only a
             // panic in it leaves them raised, in a runtime whose state is
             // then unknown anyway.
             let mut leases: Vec<HostLease> = Vec::new();
-            let (key, projection) = match self.start(ctx, &runtime, &mut leases).await {
+            let started = self
+                .start(ctx, &process, runtime.as_deref(), &mut leases)
+                .await;
+            let (key, projection) = match started {
                 Ok(started) => started,
                 Err(error) => {
                     release(leases).await;
@@ -626,10 +664,10 @@ impl JsRow {
     async fn start(
         &self,
         ctx: &Ctx,
-        runtime: &Arc<Runtime>,
+        process: &Arc<Process>,
+        runtime: Option<&Runtime>,
         leases: &mut Vec<HostLease>,
     ) -> Result<(String, Arc<Projection>), CordisError> {
-        let process = runtime.process();
         let row = ctx
             .get::<Loader>()
             .and_then(|loader| loader.row(ctx.instance()));
@@ -663,7 +701,7 @@ impl JsRow {
                     name,
                     label_of(name).as_deref(),
                     dispatch,
-                    runtime.host_methods(name),
+                    runtime.and_then(|runtime| runtime.host_methods(name)),
                 )
                 .await
                 .map_err(failed)?;

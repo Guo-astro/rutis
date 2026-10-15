@@ -20,7 +20,7 @@ mod volatile;
 
 pub use catalog::{ExprScope, Expressions, ServiceCatalog};
 pub use edit::{apply_edit, Edit};
-pub use error::{Failure, LoaderError, PersistError};
+pub use error::{Failure, LoaderError, PersistError, Unavailable};
 pub use loader::{
     CheckReport, CreateInstance, Editable, EntryInfo, EntryStatus, Instance, InstanceInfo,
     InstanceResult, Isolate, Loader, LoaderChanged, LoaderOptions, LoaderPlugin, NewEntry,
@@ -41,7 +41,10 @@ pub use runtime::resolve_entry;
 #[cfg(feature = "go")]
 pub use runtime::PLUGIN_API;
 #[cfg(feature = "runtimes")]
-pub use runtime::{is_runtime_name, RowsSource, RuntimeResolver, RuntimeRows, RuntimeRowsPlugin};
+pub use runtime::{
+    is_runtime_name, AcceptInstances, RowsSource, RuntimeConnection, RuntimeInstances,
+    RuntimeResolver, RuntimeRows, RuntimeRowsPlugin,
+};
 #[cfg(feature = "go")]
 pub use runtime::{
     read_go_manifest, GoBinaries, GoBinary, GoManifest, GoResolver, GoRuntimeInfo, GoRuntimeState,

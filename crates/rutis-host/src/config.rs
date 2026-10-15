@@ -111,8 +111,9 @@ pub struct Runtimes {
     pub bun: Option<BunRuntime>,
     /// Go binaries, one runtime each, started when a row uses them.
     pub go: Option<GoRuntime>,
-    /// Runtimes on other machines, reached through a `rutis-bridge/peer` row
-    /// with `"runtime": "<name>"`.
+    /// Runtimes on other machines: reached through a `rutis-bridge/peer`
+    /// row with `"runtime": "<name>"`, or dialing in to a listener, each
+    /// connection an instance of a group (`listen` and `instances`).
     #[serde(default)]
     pub remote: Vec<RemoteRuntime>,
 }
@@ -124,6 +125,36 @@ pub struct RemoteRuntime {
     /// `python`: rows `<name>:<module>`; `go`: rows `<name>:<plugin>`;
     /// `node`: npm names, resolved there when no runtime before it has them.
     pub language: String,
+    /// The listener (of `listen`) its runtimes dial in to, with the token
+    /// `RUTIS_TOKEN_<NAME>` (else `RUTIS_TOKEN`) and an id of their own.
+    /// Goes with `instances`.
+    #[serde(default)]
+    pub listen: Option<String>,
+    /// The top-level `instanced` group each connection is an instance of:
+    /// its rows `<name>:<plugin>` run on that connection. Goes with
+    /// `listen`.
+    #[serde(default)]
+    pub instances: Option<String>,
+}
+
+impl RemoteRuntime {
+    /// The listener and group of a runtime that dials in, `None` for one
+    /// reached through a link; one without the other is an error.
+    pub fn dials_in(&self) -> Result<Option<(&str, &str)>, String> {
+        let name = &self.name;
+        match (&self.listen, &self.instances) {
+            (Some(listen), Some(instances)) => Ok(Some((listen, instances))),
+            (None, None) => Ok(None),
+            (Some(_), None) => Err(format!(
+                "remote runtime {name}: listen needs instances: name the instanced group \
+                 each connection is an instance of"
+            )),
+            (None, Some(_)) => Err(format!(
+                "remote runtime {name}: instances needs listen: name the listener its \
+                 runtimes dial in to"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -411,6 +442,36 @@ impl HostConfig {
                 ));
             }
             seen.push(name);
+        }
+        Ok(())
+    }
+
+    /// Each runtime that dials in names a listener of `listen` and a
+    /// top-level `instanced` group of `rows`.
+    pub fn check_dialing_runtimes(&self) -> Result<(), String> {
+        for remote in &self.runtimes.remote {
+            let Some((listen, group)) = remote.dials_in()? else {
+                continue;
+            };
+            let name = &remote.name;
+            if !self.listen.iter().any(|listener| listener.name == listen) {
+                return Err(format!(
+                    "remote runtime {name}: no listener named {listen}: add it to listen"
+                ));
+            }
+            let row = self.rows.iter().find(|row| row["id"] == group);
+            let Some(row) = row else {
+                return Err(format!(
+                    "remote runtime {name}: no top-level row {group}: instances names a group \
+                     with \"instanced\": true"
+                ));
+            };
+            if row["group"] != true || row["instanced"] != true {
+                return Err(format!(
+                    "remote runtime {name}: row {group} is not an instanced group: give it \
+                     \"group\": true and \"instanced\": true"
+                ));
+            }
         }
         Ok(())
     }

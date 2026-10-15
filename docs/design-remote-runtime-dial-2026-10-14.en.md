@@ -50,7 +50,7 @@ New:      rutis (access point, the only TLS server) ◀──dial out── runt
 - A connection arrives → an instance is created with the connection id; it drops → that instance is closed, all services in it are withdrawn, and consumers stop.
 - The runtime reports the plugins it carries in the `mount` reply (`plugins`, each entry the same as a `rows.schema` reply); when a row in the group points, in some instance, to a plugin that connection does not carry, the row fails in that instance with "this connection does not contain plugin X", without affecting other instances. Adding fields such as `engine` to the `mount` reply is not a protocol change (precedent: Bun §3.3).
 - Service names inside an instance resolve within that instance (the instance services design, no fallback), so several connections carrying same-named plugins do not conflict, and there are no aliases; rows outside an instance cannot use its services; when needed, put the consumer in the same group.
-- Configuration: a `runtimes.remote` entry gains `listen` (the access point name) and `instances` (the `instanced` group id); having both means a dynamic connection. Rows in the group use `<runtime name>:<plugin>`, which in each instance resolves to that instance's connection. No separate link row is needed: rutis-host generates the listening-side link for such entries.
+- Configuration: a `runtimes.remote` entry gains `listen` (the access point name) and `instances` (the `instanced` group id); having both means a dynamic connection. Rows in the group use `<runtime name>:<plugin>`, which in each instance resolves to that instance's connection. No separate link row is needed: rutis-host starts an access point on that listener for such entries (implementation below).
 
   ```json
   {
@@ -69,6 +69,13 @@ New:      rutis (access point, the only TLS server) ◀──dial out── runt
   1. An access point accepts many connections (today a link is one-to-one);
   2. A connection triggers instance creation and closing (today only business code calls `create_instance`);
   3. Runtime links are allowed inside instances (today `RuntimeSession#<name>` is a global key and `peer.rs` refuses it); runtime keys are distinguished per instance.
+
+- Implementation (R-P1, #382):
+  - The access point is `rutis-bridge`'s `AccessPointPlugin` (not a link row; `peer.rs` keeps refusing `runtime` links inside instances). `rutis-loader`'s `RuntimeInstances` handles each connection: it mounts a runtime on the connection's session and calls `create_instance` with the connection (`RuntimeConnection`) as the value; the release calls `remove_instance`. A connection's runtime process belongs to its instance and rows hold it directly, not through a runtime service key, so no per-instance `RuntimeSession` key is needed.
+  - The `mount` reply's `plugins` is `{ "<plugin>": <rows.schema reply> }`, keyed by the row name after `<runtime name>:`; it is optional, and without it each plugin is asked for with `rows.schema` (a remote `NotFound` means "not contained"). Each connection is read once.
+  - The services a connection's plugins provide are published at `host_key_in(name, instance)`. A shared name resolves, when the instance chain meets a connection that provides it, to that connection's instance key (for Rust rows and rows of every language alike), so local runtime rows (such as `py:digest`) use their own connection's service too, isolated by the instance label (which needs `scopes`); names the connection does not provide stay global.
+  - "This connection does not contain plugin X" is a per-copy `Unavailable`: only that copy fails; an edit's dry run is not refused for it, and reconcile does not count it as a new failure to roll back.
+  - A `<runtime name>:` row outside the group fails, saying it runs only in that group.
 
 ## 5. Identity layer
 

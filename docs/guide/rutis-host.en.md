@@ -144,9 +144,38 @@ The endpoint ID of this node. Connected nodes see this name. Defaults to `host`.
 | `bun` | `project` (default `.`), `runtime`, `program` | Starts the Bun runtime, with rows named `bun:<module>`. Modules resolve from `project` (packages in `node_modules`, `./relative-paths`). Install `@arcships/rutis-bun` there or specify it with `runtime`; `program` is the Bun executable, by default `bun` on `PATH`. See [Write a Bun plugin](bun-plugin.en.md). |
 | `py` | `project` (default `.`), `python` | Starts the Python runtime. The interpreter defaults to `$VIRTUAL_ENV/bin/python`, then `<project>/.venv/bin/python`, then `python3` (on Windows, `Scripts\python.exe` and `python`). Its environment must contain `rutis` and the plugins. |
 | `go` | `dir`, `binaries`, `start` (`on-demand` by default / `eager`), `idle` (seconds, default 60), `project` (default `.`) | Go plugins: one runtime process per binary. Every executable in `dir` that contains the Go SDK's marker counts (the directory is trusted as a whole and should be dedicated); `binaries` lists single files. A runtime is named after its file (`netkit` → `go-netkit`). An on-demand runtime starts when a row first uses it and stops after `idle` seconds without one; `eager` starts all and keeps them running (not together with `idle`). A replaced binary takes effect when the host restarts. |
-| `remote` | `name`, `language` | A runtime on another machine, connected through a node row with `"runtime": "<name>"`; see [Connect nodes](nodes.en.md). |
+| `remote` | `name`, `language`, `listen`, `instances` | A runtime on another machine: connected through a node row with `"runtime": "<name>"`, see [Connect nodes](nodes.en.md); or, with `listen` and `instances`, one that connects in, see below. |
 
 If a runtime package is missing, startup fails and prints an installation command.
+
+#### Runtimes that connect in
+
+With `listen` (the name of a listener under `listen`) and `instances` (the id of a top-level `instanced` group), rutis does not connect to the runtime: the runtime connects to that listener. Any number of connections may come in, and each is an instance of the group:
+
+```json
+{
+  "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
+  "runtimes": {
+    "py": { "project": "." },
+    "remote": [{ "name": "phone", "language": "python", "listen": "public", "instances": "phone" }]
+  },
+  "rows": [
+    { "id": "phone", "group": true, "instanced": true, "config": [
+      { "id": "contacts", "name": "phone:contacts" },
+      { "id": "digest", "name": "py:digest" }
+    ] }
+  ]
+}
+```
+
+- A runtime connecting presents the token `RUTIS_TOKEN_<NAME>` (the runtime's name in uppercase, `-` written as `_`; `RUTIS_TOKEN` when that is not set) and reports an id of its own (`[a-z0-9-]`). A wrong token is refused; the id only tells connections apart and is not a credential.
+- Each connection is an instance of the group: created when it connects, closed when it disconnects. A newer connection with the same id takes over: the old instance closes before the new one is created.
+- The group's `<name>:<plugin>` rows run, in each instance, on that instance's connection. When a connection does not have the plugin, the row fails in that instance only (`this connection does not contain plugin <plugin>`); other instances are not affected, and adding such a row is not refused because of it.
+- The services a connection's plugins provide belong to its instance: several connections with the same plugin do not collide, and rows in the same instance (in any language) that use the name get their own connection's service. Rows outside the instance cannot use them; put the consumer in the group.
+- No node row is needed. `listen` and `instances` go together; a listener or group that does not exist, a group that is not `instanced`, or a missing token stops the host at startup.
+- `<name>:` rows belong in that group; anywhere else the row fails.
+
+No language runtime connects out yet (Python with [#383](https://github.com/arcships/rutis/issues/383); Node, Go and Bun with [#384](https://github.com/arcships/rutis/issues/384)); see [Connect nodes](nodes.en.md).
 
 ### `listen`
 
@@ -174,7 +203,7 @@ Do not put credentials in the file:
 | Environment variable | Purpose |
 | --- | --- |
 | `RUTIS_TOKEN` | Token presented when connecting to other nodes and checked when accepting connections. |
-| `RUTIS_TOKEN_<NODE>` | Token for a specific node (uppercase, with `-` written as `_`); takes precedence over `RUTIS_TOKEN`. |
+| `RUTIS_TOKEN_<NODE>` | Token for a specific node (uppercase, with `-` written as `_`); takes precedence over `RUTIS_TOKEN`. For a runtime that connects in (`listen` / `instances`), by the runtime's name: every connection presents this one token. |
 | `RUTIS_CA` | Additional trusted CA certificate in PEM format for `wss://` connections. |
 | `RUTIS_CERT` / `RUTIS_KEY` | Listener certificate and key when they are not specified under `listen`. |
 
