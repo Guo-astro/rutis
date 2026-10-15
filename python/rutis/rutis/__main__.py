@@ -253,6 +253,10 @@ def stop_on_signals(stopping: asyncio.Event) -> None:
 
 
 def main() -> None:
+    # The state lines are UTF-8 everywhere: on Windows a pipe would get the
+    # ANSI code page, and an OS error's text in it.
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     try:
         channel, endpoint, project = parse(sys.argv[1:])
     except (ValueError, ImportError) as error:

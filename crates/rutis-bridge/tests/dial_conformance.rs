@@ -238,14 +238,22 @@ impl Dialer {
             .kill_on_drop(true)
             .spawn()
             .unwrap();
-        let mut stderr = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
+        let mut stderr = tokio::io::BufReader::new(child.stderr.take().unwrap());
         let (sender, lines) = mpsc::unbounded_channel();
         let who = who.to_owned();
         tokio::spawn(async move {
-            while let Ok(Some(line)) = stderr.next_line().await {
+            // Bytes, not UTF-8 lines: a line that is not UTF-8 (an OS error
+            // in a Windows code page) must not end the reading.
+            let mut line = Vec::new();
+            while let Ok(read) = stderr.read_until(b'\n', &mut line).await {
+                if read == 0 {
+                    break;
+                }
+                let text = String::from_utf8_lossy(&line).trim_end().to_owned();
+                line.clear();
                 // For a failure's record.
-                eprintln!("[{who}] {line}");
-                let _ = sender.send(line);
+                eprintln!("[{who}] {text}");
+                let _ = sender.send(text);
             }
         });
         Self {
