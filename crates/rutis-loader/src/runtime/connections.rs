@@ -82,14 +82,10 @@ impl RuntimeConnection {
         &self.inner.process
     }
 
-    /// Whether a plugin of this connection provides `name`: of every plugin
-    /// it lists, or, when it lists none, of those described so far.
+    /// Whether a plugin of this connection that a row runs provides `name`:
+    /// of the plugins described for rows, not of every plugin it lists, so a
+    /// plugin no row runs claims no name.
     fn provides(&self, name: &str) -> bool {
-        if let Some(plugins) = self.inner.process.plugins() {
-            return plugins
-                .values()
-                .any(|plugin| plugin.provides.contains_key(name));
-        }
         self.inner
             .described
             .lock()
@@ -103,12 +99,6 @@ impl RuntimeConnection {
 
     /// Every name [`RuntimeConnection::provides`].
     fn provided(&self) -> BTreeSet<String> {
-        if let Some(plugins) = self.inner.process.plugins() {
-            return plugins
-                .values()
-                .flat_map(|plugin| plugin.provides.keys().cloned())
-                .collect();
-        }
         self.inner
             .described
             .lock()
@@ -156,6 +146,12 @@ impl RuntimeConnection {
 
 /// The instance enclosing a copy in `build` whose connection provides the
 /// shared name `name`, innermost first: there `name` is that instance's own.
+///
+/// What a connection provides is read when its rows are resolved. A row of
+/// the runtime added to the group later, by a loader edit, claims its names
+/// for copies built from then on; copies already running keep the keys they
+/// were built with until they are rebuilt (rutis-host reads its rows once,
+/// before any connection, so it does not meet this).
 pub(crate) fn claimed(name: &str, build: &Build) -> Option<InstanceId> {
     connections(build)
         .find(|(connection, _)| connection.provides(name))

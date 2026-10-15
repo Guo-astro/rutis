@@ -225,6 +225,19 @@ impl PluginFactory<NoConfig> for ReaderFactory {
     }
 }
 
+/// The global `weather`: `whoami()` answers `global`.
+struct GlobalWeather;
+
+impl HostDispatch for GlobalWeather {
+    fn invoke(&self, _method: &str, _args: RpcValue) -> Reply {
+        Ok(RpcValue::Data(json!("global")))
+    }
+
+    fn methods(&self) -> Option<Value> {
+        Some(json!({ "whoami": "sync" }))
+    }
+}
+
 // ── Harness ─────────────────────────────────────────────────────
 
 /// `main`: a loader whose `phone` group has `phone:contacts` and a Rust
@@ -252,10 +265,35 @@ async fn main() -> Main {
         .await
         .unwrap();
 
+    // A global `weather`: a connection whose plugins include one no row
+    // runs must not take the name over in its instance.
+    root.provide_as::<dyn HostDispatch>(
+        rutis_bridge::session::host_key("weather"),
+        Arc::new(GlobalWeather),
+    )
+    .unwrap();
+
     let mut catalog = ServiceCatalog::new();
     catalog.share_by_name();
     let log = Log::default();
     let mut builtins = Builtins::new();
+    {
+        let (catalog, log) = (catalog.clone(), log.clone());
+        builtins.register_with::<NoConfig, _, _>("weather-reader", move |build| {
+            let key = catalog
+                .key_in("weather", build)
+                .map_err(|error| CordisError::PluginFailed(error.to_string().into()))?;
+            let connection = build
+                .value::<RuntimeConnection>()
+                .map(|connection| connection.id().to_string())
+                .unwrap_or_default();
+            Ok(ReaderFactory {
+                key: [key],
+                connection,
+                log: log.clone(),
+            })
+        });
+    }
     {
         let (catalog, log) = (catalog.clone(), log.clone());
         builtins.register_with::<NoConfig, _, _>("reader", move |build| {
@@ -286,7 +324,8 @@ async fn main() -> Main {
     let rows: Vec<Patch> = serde_json::from_value(json!([{ "insert": [{
         "id": "phone", "group": true, "instanced": true, "config": [
             { "id": "contacts", "name": "phone:contacts" },
-            { "id": "reader", "name": "reader" }
+            { "id": "reader", "name": "reader" },
+            { "id": "weather-reader", "name": "weather-reader" }
         ]
     }] }]))
     .unwrap();
@@ -510,4 +549,16 @@ async fn rows_of_the_runtime_run_only_in_its_group() {
         "entry \"stray\" rejected: plugin failed: phone:contacts runs only inside the phone group, \
          in the instance of a runtime connection"
     );
+}
+
+/// A connection lists a plugin no row runs (`weather`): it claims no name,
+/// so in its instance a row using `weather` gets the global one.
+/// guarantee: loader/runtime-connection-instances
+#[tokio::test(flavor = "multi_thread")]
+async fn a_listed_plugin_no_row_runs_claims_no_name() {
+    let mut main = main().await;
+    let _pixel = dial(&main, "pixel", &["contacts", "weather"], true).await;
+    main.connected("pixel").await;
+    main.heard("reader in pixel hears pixel").await;
+    main.heard("reader in pixel hears global").await;
 }
