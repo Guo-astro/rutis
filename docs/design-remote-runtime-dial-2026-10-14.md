@@ -42,7 +42,7 @@
 - rutis 对拨进来的运行时的控制权与现有一致：装载、配置、卸载、门控都由 rutis 驱动（远程插件 §4.1）。
 - 运行时侧 channel 写作 `dial:wss://…`，与现有 `listen:wss://…` 对称；每种语言两种都支持。
 - 选择：远程机器有固定地址、能被 rutis 直接访问时用监听；在 NAT 后、地址会变、数量会变（设备、扩缩容的 worker）时用拨出。
-- 监听侧 link 与 `runtime` 的组合在现有代码中未被拒绝、未实测：R-P0 实测，不通则在 R-P1 一并补上。
+- 监听侧 link 与 `runtime` 的组合现在就可用（R-P0，2026-10-14）：运行时连进来后，rutis 照常发 `mount`、装载行、门控服务，断开即撤销；握手端到端核对运行时自报的 id 与 link 的对端。还没有运行时能拨出，测试用一个中继分别拨两端的监听来代替（`rutis-loader/tests/remote_rows.rs::a_runtime_link_can_listen`）。R-P1 无需为此改动 link。
 
 ## 四、动态接入即实例
 

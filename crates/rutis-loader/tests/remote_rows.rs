@@ -421,3 +421,153 @@ async fn remote_rows_share_the_runtime_session() {
     assert_eq!(pong.json().unwrap(), json!("pong"));
     root.shutdown().await.unwrap();
 }
+
+/// A WebSocket client to a listener at `address`, presenting `token` and
+/// speaking the endpoint protocol.
+async fn connect(
+    address: &str,
+    token: &str,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    tokio_tungstenite::tungstenite::Error,
+> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let url = url::Url::parse(address).unwrap();
+    let tcp = tokio::net::TcpStream::connect((
+        url.host_str().unwrap(),
+        url.port_or_known_default().unwrap(),
+    ))
+    .await
+    .map_err(tokio_tungstenite::tungstenite::Error::Io)?;
+    let mut request = address.into_client_request().unwrap();
+    let headers = request.headers_mut();
+    headers.insert(
+        "Sec-WebSocket-Protocol",
+        rutis_bridge::protocol().parse().unwrap(),
+    );
+    headers.insert("Authorization", format!("Bearer {token}").parse().unwrap());
+    Ok(tokio_tungstenite::client_async(request, tcp).await?.0)
+}
+
+/// A remote runtime that dials rutis, stood in for until a runtime can
+/// dial (#383): both ends listen, and a relay dials each and passes the
+/// frames between them. The handshake is end to end — the runtime greets as
+/// `gpu`, rutis checks that against the link — so what is tested is rutis's
+/// listening side of a runtime link (dial-out design R-P0).
+/// guarantee: loader/remote-runtime-rows
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_link_can_listen() {
+    use futures_util::{SinkExt, StreamExt};
+    use rutis_bridge::transport::websocket::ListenerConfig;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("weather_plugin.py"), WEATHER).unwrap();
+    let (_runtime_process, runtime_address) = remote_python(project.path()).await;
+
+    let root = Ctx::root().unwrap();
+    let clock = Clock::default();
+    root.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(clock.clone()))
+        .unwrap();
+    let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
+        "public",
+        "127.0.0.1:0".parse().unwrap(),
+        id("main"),
+    )))
+    .unwrap();
+    let transport = websocket.clone();
+    (&root.plugin(websocket)).await.unwrap();
+    let address = format!(
+        "ws://{}/rutis",
+        transport.transport().unwrap().local_addr("public").unwrap()
+    );
+    root.plugin(IdentityPlugin::new(
+        "main",
+        StaticIdentity::new(id("main")).accept_token("gpu-token", id("gpu")),
+    ));
+    root.plugin(LinkPlugin::new(
+        LinkConfig::listen(id("gpu"), "websocket", "main", "public").require("runtime"),
+    ));
+    root.plugin(RuntimeAccessPlugin::new(id("gpu"), "py"));
+    let python = RuntimePlugin::remote("py");
+    let rows = Arc::new(RuntimeResolver::modules(python.handle()));
+    let handle = python.handle();
+    root.plugin(python);
+    let plugin_loader = LoaderPlugin::new(
+        Chain::new().with_shared(rows.clone()),
+        LoaderOptions::default(),
+    );
+    let loader = plugin_loader.handle();
+    root.plugin(plugin_loader).await.unwrap();
+    root.plugin(RuntimeRowsPlugin::new(rows));
+    let patches: Vec<Patch> = serde_json::from_value(json!([{
+        "insert": [{ "id": "w", "name": "py:weather_plugin", "config": {} }]
+    }]))
+    .unwrap();
+    loader
+        .reconcile(vec![Layer::new("rows", patches)], None)
+        .await
+        .unwrap();
+
+    // The relay: rutis's side is retried while its link is not listening
+    // yet (503); any other refusal is the failure.
+    let runtime = connect(&runtime_address, "main-token").await.unwrap();
+    let rutis = COLD
+        .within("rutis's listener", async {
+            loop {
+                match connect(&address, "gpu-token").await {
+                    Ok(socket) => break socket,
+                    Err(tokio_tungstenite::tungstenite::Error::Http(response))
+                        if response.status() == 503 =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(50)).await
+                    }
+                    Err(error) => panic!("rutis refused the relay: {error}"),
+                }
+            }
+        })
+        .await;
+    let (mut to_runtime, mut from_runtime) = runtime.split();
+    let (mut to_rutis, mut from_rutis) = rutis.split();
+    let relay = tokio::spawn(async move {
+        let up = async {
+            while let Some(Ok(message)) = from_runtime.next().await {
+                if to_rutis.send(message).await.is_err() {
+                    break;
+                }
+            }
+        };
+        let down = async {
+            while let Some(Ok(message)) = from_rutis.next().await {
+                if to_runtime.send(message).await.is_err() {
+                    break;
+                }
+            }
+        };
+        tokio::select! { _ = up => {}, _ = down => {} }
+    });
+
+    // The runtime that came in runs the row, as one rutis dialed would.
+    let weather = COLD
+        .eventually(
+            || root.get_as::<dyn HostDispatch>(host_key("weather")),
+            "the remote row's service",
+        )
+        .await;
+    assert!(handle.is_remote() && handle.supports("leaf"));
+    let today = weather.invoke("today", json!([]).into()).unwrap();
+    assert_eq!(today.json().unwrap(), json!("remote at 1"));
+    drop(weather);
+
+    // The connection goes: the row stops and its service goes.
+    relay.abort();
+    COLD.eventually(
+        || {
+            root.get_as::<dyn HostDispatch>(host_key("weather"))
+                .is_none()
+                .then_some(())
+        },
+        "the withdrawal",
+    )
+    .await;
+    root.shutdown().await.unwrap();
+}
