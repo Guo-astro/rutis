@@ -13,11 +13,11 @@
 
 | # | 决定 |
 | --- | --- |
-| V1 | 0.11 一次做完全部九种值：时间点、日期、时刻、二进制、Map、Set、大整数、Decimal、UUID；连同 #355 的一致性修复 |
+| V1 | 0.11 一次做完全部十种值：时间点、本地日期时间、日期、时刻、二进制、Map、Set、大整数、Decimal、UUID；连同 #355 的一致性修复 |
 | V2 | 原则：**默认转换，不丢信息**。每种值在每种语言有一个默认对应；对方没有同样的类型时，转成最接近且不丢信息的表示。只有确实会丢信息时报错 |
 | V3 | 线上编码：与 `reference` 同级的新标记，不把普通 JSON 字段解释为类型 |
 | V4 | 协商：每种值一个能力；对端没有声明时，**只让这次调用失败**，会话继续；不升协议版本号 |
-| V5 | 没有时区的日期时间（Python 无 `tzinfo` 的 `datetime`、Kotlin `LocalDateTime`）：按**发送方本地时区**解释为时间点 |
+| V5 | 没有时区的日期时间（Python 无 `tzinfo` 的 `datetime`、Kotlin `LocalDateTime`）是**独立的一种值**（本地日期时间，`datetime`），原样传递，不猜时区、不转成时间点（同 Arrow、JS Temporal `PlainDateTime`、`java.time.LocalDateTime`） |
 | V6 | 大整数只在**显式**时按大整数传；普通整数超出 ±(2^53−1) 仍报错。JS 收到的类型因此固定：普通数字是 `number`，大整数是 `bigint` |
 | V7 | 时间点精度不同时，接收方按自己的精度**向负无穷截断**，写进边界规则，不报错 |
 | V8 | Map 的键与 Set 的元素只能是"在每种语言里都是值"的东西（§五）；转换后键重复（会丢条目）时这次调用失败 |
@@ -31,6 +31,7 @@
 | 值 | 标记 | JS（Node、Bun） | Python | Go | Rust | Kotlin | Swift |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 时间点 | `instant` | `Date` | `datetime`（带时区，UTC） | `time.Time`（UTC） | `Instant` | `java.time.Instant` | `Date` |
+| 本地日期时间 | `datetime` | `"YYYY-MM-DDTHH:MM:SS[.f…]"` 字符串 | `datetime`（无时区） | `rutis.DateTime` | `DateTime` | `LocalDateTime` | `Rutis.DateTime` |
 | 日期 | `date` | `"YYYY-MM-DD"` 字符串 | `date` | `rutis.Date` | `Date` | `LocalDate` | `Rutis.CalendarDate` |
 | 时刻 | `time` | `"HH:MM:SS[.f…]"` 字符串 | `time`（无时区） | `rutis.TimeOfDay` | `TimeOfDay` | `LocalTime` | `Rutis.TimeOfDay` |
 | 二进制 | `bytes` | `Uint8Array` | `bytes` | `[]byte` | `Vec<u8>` | `ByteArray` | `Data` |
@@ -40,8 +41,8 @@
 | Decimal | `decimal` | 字符串 | `Decimal` | 字符串 | `Decimal`（字符串） | `BigDecimal` | `Decimal` |
 | UUID | `uuid` | 字符串（小写） | `UUID` | 字符串（小写） | `Uuid` | `java.util.UUID` | `UUID` |
 
-- Rust 的 `Instant`、`Date`、`TimeOfDay`、`BigInt`、`Decimal`、`Uuid` 是 rutis-bridge 自己的小类型（不引入 chrono、num-bigint），各自提供与常用库互转的方法；Go 的 `rutis.Date`、`rutis.TimeOfDay`，Swift 的 `Rutis.CalendarDate`、`Rutis.TimeOfDay`、`Rutis.BigInt` 同理。
-- **JS 里的字符串**：日期、时刻、Decimal、UUID 在 JS 没有对应类型，收到为字符串，内容完整。要以原类型发出，用 SDK 的构造函数：`rutis.date('2026-10-15')`、`rutis.time('14:30')`、`rutis.decimal('1.10')`、`rutis.uuid('…')`；普通字符串照旧是字符串。Go 的 Decimal、UUID 同理（`rutis.Decimal`、`rutis.UUID` 命名字符串类型）。
+- Rust 的 `Instant`、`DateTime`、`Date`、`TimeOfDay`、`BigInt`、`Decimal`、`Uuid` 是 rutis-bridge 自己的小类型（不引入 chrono、num-bigint），各自提供与常用库互转的方法；Go 的 `rutis.DateTime`、`rutis.Date`、`rutis.TimeOfDay`，Swift 的 `Rutis.DateTime`、`Rutis.CalendarDate`、`Rutis.TimeOfDay`、`Rutis.BigInt` 同理。
+- **JS 里的字符串**：本地日期时间、日期、时刻、Decimal、UUID 在 JS 没有对应类型，收到为字符串，内容完整。要以原类型发出，用 SDK 的构造函数：`rutis.datetime('2026-10-15T14:30')`、`rutis.date('2026-10-15')`、`rutis.time('14:30')`、`rutis.decimal('1.10')`、`rutis.uuid('…')`；普通字符串照旧是字符串。Go 的 Decimal、UUID 同理（`rutis.Decimal`、`rutis.UUID` 命名字符串类型）。
 - **Python 的大整数**：收到 `bigint` 得到 `rutis.BigInt`（`int` 的子类，参与运算得到普通 `int`），原样发回仍是大整数；普通 `int` 超出范围报错并提示用 `rutis.BigInt(n)`。
 - **Swift 的 Decimal**：Foundation `Decimal` 只有 38 位有效数字，超出时这次调用失败（会丢信息）。
 - **Go 的 Set**：Go 没有 set 类型；按声明的目标类型解码，目标是 `any` 时得到去重后的切片。
@@ -53,6 +54,7 @@
 | 标记 | `value` | 规则 |
 | --- | --- | --- |
 | `instant` | `"2026-10-15T03:22:15.123456789Z"` | RFC 3339，UTC（`Z`），0–9 位小数，年份 0001–9999 |
+| `datetime` | `"2026-10-15T14:30:05.25"` | 无时区，0–9 位小数，年份 0001–9999 |
 | `date` | `"2026-10-15"` | 年份 0001–9999 |
 | `time` | `"14:30:05.25"` | 24 小时制，0–9 位小数，无时区 |
 | `bytes` | `"aGVsbG8="` | base64（RFC 4648 §4，带填充） |
@@ -66,14 +68,14 @@
 
 ## 四、能力与协商
 
-- 能力名：`value-instant`、`value-date`、`value-time`、`value-bytes`、`value-map`、`value-set`、`value-bigint`、`value-decimal`、`value-uuid`。endpoint 与 compat 两种握手都声明（compat 同 `sync-wait`：旧实现忽略握手里多出的字段；Rust 的 `COMPAT_DECLARED` 加上这些名字）。
+- 能力名：`value-instant`、`value-datetime`、`value-date`、`value-time`、`value-bytes`、`value-map`、`value-set`、`value-bigint`、`value-decimal`、`value-uuid`。endpoint 与 compat 两种握手都声明（compat 同 `sync-wait`：旧实现忽略握手里多出的字段；Rust 的 `COMPAT_DECLARED` 加上这些名字）。
 - 发送方只向声明了相应能力的对端发送该标记；对端没有声明时，**这次调用失败**，错误说明哪种值、对端不支持，会话继续。
 - 宿主转发时按**下游**对端的能力再检查：上游能发、下游不能收时，被转发的这次调用失败。
 - 新实现（Swift、Kotlin）可以只实现一部分：没声明的类型，对端不会发给它。
 
 ## 五、Map 的键与 Set 的元素
 
-- 允许：字符串、有限数字、布尔、`bigint`、`date`、`time`、`decimal`、`uuid`。
+- 允许：字符串、有限数字、布尔、`bigint`、`datetime`、`date`、`time`、`decimal`、`uuid`。
 - 不允许：`instant`（JS `Date` 是对象，作键按身份比较）、`bytes`、`null`、数组、对象、`map`、`set`、引用。发送方在发出前拒绝。
 - 接收方转换后键重复时（例如 JS `Map` 的键 `1` 与 `true` 到 Python dict 会合并），这次调用失败：会丢条目。
 - 字符串键的 `Map` 仍按 `map` 标记传（不是对象），对方收到 `Map` / `dict`，不变成普通对象：JS 普通对象照旧按对象（`data`）传。
@@ -82,9 +84,9 @@
 
 | 语言 | 规则 |
 | --- | --- |
-| JS | `Date` → `instant`（无效日期报错）；`Uint8Array`、`ArrayBuffer`、`DataView`、`Buffer` → `bytes`；`Map` → `map`；`Set` → `set`；`bigint` → `bigint`；SDK 构造函数 → `date` / `time` / `decimal` / `uuid` |
-| Python | 带时区 `datetime` → `instant`；无时区 `datetime` → 按本地时区（V5）；`date` → `date`；`time`（带时区的拒绝）→ `time`；`bytes`、`bytearray`、`memoryview` → `bytes`；`set`、`frozenset` → `set`；非字符串键的 `dict` 与 `rutis.Map` → `map`；`rutis.BigInt` → `bigint`；`Decimal` → `decimal`；`UUID` → `uuid`。`datetime`、`Decimal`、`UUID` 不再按对象引用传（#355） |
-| Go | `time.Time` → `instant`；`rutis.Date` / `rutis.TimeOfDay` → `date` / `time`；`[]byte` → `bytes`；非字符串键的 map → `map`；`*big.Int` / `big.Int` → `bigint`；`rutis.Decimal` / `rutis.UUID` → `decimal` / `uuid`。结构体字段、带类型的切片与 map 递归经同一编码器（V9），不再静默变成字符串或 base64 |
+| JS | `Date` → `instant`（无效日期报错）；`Uint8Array`、`ArrayBuffer`、`DataView`、`Buffer` → `bytes`；`Map` → `map`；`Set` → `set`；`bigint` → `bigint`；SDK 构造函数 → `datetime` / `date` / `time` / `decimal` / `uuid` |
+| Python | 带时区 `datetime` → `instant`；无时区 `datetime` → `datetime`（V5）；`date` → `date`；`time`（带时区的拒绝）→ `time`；`bytes`、`bytearray`、`memoryview` → `bytes`；`set`、`frozenset` → `set`；非字符串键的 `dict` 与 `rutis.Map` → `map`；`rutis.BigInt` → `bigint`；`Decimal` → `decimal`；`UUID` → `uuid`。`datetime`、`Decimal`、`UUID` 不再按对象引用传（#355） |
+| Go | `time.Time` → `instant`；`rutis.DateTime` / `rutis.Date` / `rutis.TimeOfDay` → `datetime` / `date` / `time`；`[]byte` → `bytes`；非字符串键的 map → `map`；`*big.Int` / `big.Int` → `bigint`；`rutis.Decimal` / `rutis.UUID` → `decimal` / `uuid`。结构体字段、带类型的切片与 map 递归经同一编码器（V9），不再静默变成字符串或 base64 |
 | Rust | `Value` 的新变体（V11）；`Value::json()` 遇到新值报错（同引用）；Cordis 生成器把 `Uint8Array`、`Date`、`bigint`、`Map`、`Set` 映射到上面的 Rust 类型 |
 | Kotlin、Swift | 按 §二 的类型；值层用 SDK 自己的编码器逐个检查，不依赖 `JSONEncoder` / kotlinx 的默认编码（它们会把日期编成数字、二进制编成 base64） |
 
@@ -93,7 +95,7 @@
 ## 七、边界规则（写进插件 API 文档）
 
 1. 默认转换按 §二，不丢信息；会丢信息时这次调用失败，错误说明原因。
-2. 没有时区的日期时间按发送方本地时区解释。
+2. 没有时区的日期时间是本地日期时间，原样传递，不猜时区；它与时间点是两种值，不互相转换。
 3. 时间点按接收方精度向负无穷截断。
 4. 普通整数超出 ±(2^53−1) 报错；大整数要显式。
 5. Map 键、Set 元素的限制见 §五；转换后键重复则失败。
@@ -113,8 +115,8 @@
 
 | 测试 | 内容 |
 | --- | --- |
-| 期望文件 `weather.expected.json` | 每种值的往返样例（各语言发、各语言收），把现在的 `throws` 改为 `returns`；截断、本地时区、键重复、超界等失败样例 |
-| `tests/value_roundtrip.rs` | 属性测试生成器加九种值与 §五 的键规则 |
+| 期望文件 `weather.expected.json` | 每种值的往返样例（各语言发、各语言收），把现在的 `throws` 改为 `returns`；截断、键重复、超界等失败样例 |
+| `tests/value_roundtrip.rs` | 属性测试生成器加十种值与 §五 的键规则 |
 | 各语言单测 | 编解码、边界、错误文本 |
 | 跨版本（#209） | 上一个发布版本的运行时 ↔ 当前宿主：新值的调用失败、会话继续；宿主转发给旧下游时同样 |
 | 测试工具 | Node `@arcships/rutis/testing`、Python `rutis.testing`、Go `rutistest` 与真实运行时同一份期望 |
@@ -136,9 +138,35 @@
 
 | 草案 | 本文 | 理由 |
 | --- | --- | --- |
-| 0.11 只做二进制与日期，其余拒绝 | 九种值全部在 0.11 | 维护者决定：插件作者只适应一次，协议只改一次，Swift / Kotlin SDK 拿到完整规则 |
-| 无时区 `datetime` 拒绝 | 按发送方本地时区解释 | 维护者决定：默认转换优先，不报错 |
+| 0.11 只做二进制与日期，其余拒绝 | 十种值全部在 0.11 | 维护者决定：插件作者只适应一次，协议只改一次，Swift / Kotlin SDK 拿到完整规则 |
+| 无时区 `datetime` 拒绝 | 独立的本地日期时间值，原样传递 | 维护者决定：不报错、不猜时区、不丢信息（参考 §十二） |
 | Python `date`、`time` 拒绝 | `date`、`time` 两个标记 | #360 |
-| 标记名 `date` 表示时间点 | 时间点为 `instant`，`date` 留给日历日期 | 三种时间值各有其名 |
+| 标记名 `date` 表示时间点 | 时间点为 `instant`，另有 `datetime`、`date`、`time` | 四种时间值各有其名，同 JS Temporal 与 `java.time` |
 | Python 超界整数按大小自动发 `bigint` 的选项 | 只有显式的大整数 | #360：JS 收到的类型不随数值大小变化 |
 | Decimal、UUID 在没有对应类型的语言里用包装对象 | 用字符串，SDK 提供构造函数发出原类型 | 维护者决定：默认转换，内容不丢 |
+
+## 十二、原则与参考
+
+**原则**
+
+1. 类型写在明处：带标记的值，不靠字段名猜类型（协议设计 §六）。
+2. 不悄悄丢信息：能转就转，会丢信息才报错（设计哲学 §七 原则 7）。
+3. 收到的类型稳定：同一种值不随数值大小变成别的类型。
+4. 用各语言顺手的类型：一张统一的语义表，加每种语言的对应表。
+5. 新旧共存：按类型协商，不支持的只让这次调用失败。
+6. 测试工具与真实运行时同一份期望（一致性测试即契约）。
+
+**参考**
+
+| 项目 / 标准 | 借鉴 |
+| --- | --- |
+| Protocol Buffers（proto3 JSON 映射、一致性测试套件） | 每种语言的对应表；int64 在 JSON 里用字符串（同 V6 的问题）；所有实现跑同一套一致性测试 |
+| Apache Arrow | 时间类型区分带时区与不带时区（V5）；Decimal 的精度语义 |
+| JS Temporal 提案、`java.time` | 时间点 / 本地日期时间 / 日期 / 时刻四分（`Instant`、`PlainDateTime`、`PlainDate`、`PlainTime`） |
+| Smithy（AWS） | 一份模型、多语言 SDK 的类型表；2.0 删去 set 类型——set 的跨语言语义难统一，所以本文限制 Set 元素（§五） |
+| WebAssembly 组件模型（WIT） | 数据按值、资源按引用，与 rutis 的值 / 引用划分相同；刻意少而精的内置类型 |
+| GraalVM Polyglot 互操作 | 按能力描述值（是否日期、是否 map、能否放进 long），与按类型协商相近 |
+| CBOR（RFC 8949）类型标签 | 用标签扩展类型（时间、大整数、十进制、UUID、set、非字符串键 map），是"带标记的值"的先例 |
+| HTML structured clone | JS 一侧支持的类型集合（`Date`、`Map`、`Set`、`Uint8Array`、`bigint`） |
+| RFC 3339、RFC 4648、RFC 9562、I-JSON（RFC 7493） | 时间文本格式、base64、UUID、JSON 整数的安全范围 ±(2^53−1) |
+| MongoDB Extended JSON、superjson | 反例：用 `$date` 一类特殊字段名标类型，会与用户数据撞名 |
