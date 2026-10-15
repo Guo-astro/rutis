@@ -158,7 +158,7 @@ func main() {
 		Dispatch:       service.dispatch,
 		Endpoint:       &peer.Endpoint{Local: "go", Expected: "main"},
 		Implementation: map[string]string{"name": "conformance", "version": "0"},
-		Capabilities:   []string{"signals", "reentrant-sync"},
+		Capabilities:   []string{"signals", "reentrant-sync", "sync-wait"},
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
