@@ -270,7 +270,8 @@ type LLM struct {
 | `unix:<path>` | 拨回 | `net.Dial("unix", …)` |
 | `tcp:127.0.0.1:<port>` | Windows 本地 | 先发 `RUTIS_CHANNEL_TOKEN` + 换行，随即从环境删除 |
 | `listen:ws://…` / `listen:wss://…` | 远程（G2） | §九 |
-| `ws://…` | — | 启动报错：只监听 |
+| `dial:ws://…` / `dial:wss://…` | 拨出到 rutis 接入点（#384） | `dial.go`，规则见 [远程运行时拨出](design-remote-runtime-dial-2026-10-14.md) §六 |
+| `ws://…` | — | 启动报错：写成 `listen:` 或 `dial:` |
 
 - 按行分帧；单条消息长度上限同 [#173](https://github.com/arcships/rutis/issues/173)，超限关闭通道。
 - `project` 参数保留，经 `rutis.Project()` 提供。

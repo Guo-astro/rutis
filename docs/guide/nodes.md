@@ -115,6 +115,14 @@ RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
   python -m rutis dial:wss://main.example.com:7443/rutis --id worker-1 --peer main /srv/plugins
 ```
 
+Go 插件二进制接受同样的 `dial:` 通道，参数、环境变量、重连规则和状态行都与 Python 相同（`language` 写 `go`）：
+
+```bash
+# worker 机器：插件二进制在这里，连到 rutis
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  ./weather dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
+```
+
 - `--id` 是这条连接自报的 id（小写字母、数字、`-`），即它的实例名；`--peer` 是 rutis 的 `id`。
 - `RUTIS_TOKEN` 与 rutis 一侧的 `RUTIS_TOKEN_WORKER` 相同；`RUTIS_CA` 是额外信任的 CA（自签证书时用），系统根证书照常信任。非回环地址只能用 `wss://`。
 - 运行时自己保持连接，按固定规则重连：连不上、连接断开时从 0.5 秒起翻倍等待，最长 30 秒，连接持续 60 秒后重新从 0.5 秒算；token 或 id 被拒绝（升级时 401 / 403，或 rutis 以关闭码 4003 拒绝这个 id）每 30 秒再试；协议不兼容（升级时 400 等）不再重试，进程以状态 1 退出。每次断开都先卸载全部行（清理逆序执行），重连是新的会话，行重新装载。
@@ -122,7 +130,7 @@ RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
 - SIGTERM 或 Ctrl-C 停下它：卸载全部行，关闭连接，不再重连。
 - 两个进程用同一个 id 会互相接管，按各自的退避轮流把对方顶掉；每台机器、每个 worker 用不同的 id。
 
-Node、Go、Bun 的拨出见 [#384](https://github.com/arcships/rutis/issues/384)；在那之前它们只能监听，由 rutis 去连（上面的方式）。
+Node、Bun 的拨出见 [#384](https://github.com/arcships/rutis/issues/384)；在那之前它们只能监听，由 rutis 去连（上面的方式）。
 
 ## 把 Cordis 应用接成节点
 

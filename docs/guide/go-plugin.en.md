@@ -141,3 +141,19 @@ rutis-host go add example.com/weather/cmd/weather@v0.1.0   # go install, with th
 ```
 
 Or download the binary for the platform from a release into the directory (on macOS a downloaded binary is quarantined; `rutis-host check` says so). The host finds `go:<plugin>` in all binaries; when two binaries have a plugin of the same name, write `go-<binary name>:<plugin>`. A binary in the directory starts when a row first uses it and stops after 60 s idle (`"start": "eager"` starts all and keeps them running); a replaced binary takes effect when the host restarts. See [rutis-host and rutis.json](rutis-host.en.md); for Rust hosts, [embedding in a Rust application](rust-host.en.md) (`GoResolver`, `GoRuntimes`).
+
+## 7. Run it on another machine
+
+A plugin binary can also run on another machine as a remote runtime, with `language` set to `go`. Two ways, with the same arguments as the Python runtime; see [Connect nodes](nodes.en.md#a-language-runtime-on-another-machine):
+
+```bash
+# Listen, and rutis connects (certificate and key in RUTIS_CERT, RUTIS_KEY)
+RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
+  ./weather listen:wss://0.0.0.0:7443/rutis --id gpu --peer main .
+
+# Dial out to a rutis access point, reconnecting by fixed rules after a disconnect
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  ./weather dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
+```
+
+Dialing out, it reports its state on stderr (`rutis: connected to …` and so on); SIGTERM or Ctrl-C unloads all rows and exits; an incompatible access point makes it exit with status 1. For the rules, see [Runtimes that connect in](nodes.en.md#runtimes-that-connect-in).

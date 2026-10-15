@@ -32,11 +32,11 @@ When unsure, ask one question: **who decides whether the plugin is loaded and wi
 | --- | --- | --- |
 | Python | ✅ | ✅ ([#383](https://github.com/arcships/rutis/issues/383)) |
 | Node / TypeScript | ✅ | Not implemented ([#384](https://github.com/arcships/rutis/issues/384)) |
-| Go | ✅ | Not implemented (#384) |
+| Go | ✅ | ✅ ([#384](https://github.com/arcships/rutis/issues/384)) |
 | Bun | ❌ no remote use yet (#384) | ❌ |
 | Swift / Kotlin apps | Designed, not implemented ([#389](https://github.com/arcships/rutis/issues/389), [#391](https://github.com/arcships/rutis/issues/391)) | Same |
 
-"One access point accepting many connections, one instance per connection" (many devices, autoscaled workers) works on the rutis side ([#382](https://github.com/arcships/rutis/issues/382): `listen` and `instances` on a `runtimes.remote` entry); of the language runtimes only Python can connect to it so far (step 4b). Tracking issue: [#392](https://github.com/arcships/rutis/issues/392).
+"One access point accepting many connections, one instance per connection" (many devices, autoscaled workers) works on the rutis side ([#382](https://github.com/arcships/rutis/issues/382): `listen` and `instances` on a `runtimes.remote` entry); of the language runtimes Python and Go can connect to it so far (step 4b). Tracking issue: [#392](https://github.com/arcships/rutis/issues/392).
 
 ## 3. Write the plugin: the paradigm, same as local
 
@@ -69,13 +69,17 @@ On the remote machine:
 
    A Go plugin binary accepts `listen:wss://…` as its channel the same way.
 
-## 4b. Or let a Python runtime connect in (dialing out)
+## 4b. Or let a Python or Go runtime connect in (dialing out)
 
 When the remote machines are behind NAT, change address, or come and go in numbers, the runtime connects to rutis instead. On the remote machine, with the plugins installed:
 
 ```bash
 RUTIS_TOKEN=… RUTIS_CA=ca.pem \
   python -m rutis dial:wss://main.example.com:7443/rutis --id worker-1 --peer main /srv/plugins
+
+# Go: the plugin binary takes the same channel, flags and environment
+RUTIS_TOKEN=… RUTIS_CA=ca.pem \
+  ./weather dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
 ```
 
 - `--id` is this connection's own id (`[a-z0-9-]+`, unique per process: two processes with one id keep taking over from each other); `--peer` is the rutis `id`. `RUTIS_CA` is needed only for a self-signed certificate on the rutis side.

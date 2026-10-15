@@ -270,7 +270,8 @@ Receiving: function types → Go functions calling the remote one; `*rutis.Futur
 | `unix:<path>` | dial back | `net.Dial("unix", …)` |
 | `tcp:127.0.0.1:<port>` | Windows, local | send `RUTIS_CHANNEL_TOKEN` + newline first, then remove it from the environment |
 | `listen:ws://…` / `listen:wss://…` | remote (G2) | §9 |
-| `ws://…` | — | error at startup: listen only |
+| `dial:ws://…` / `dial:wss://…` | dialing out to a rutis access point (#384) | `dial.go`; rules in [remote runtimes dialing out](design-remote-runtime-dial-2026-10-14.en.md) §6 |
+| `ws://…` | — | error at startup: write `listen:` or `dial:` |
 
 - Line framing; per-message length limit as in [#173](https://github.com/arcships/rutis/issues/173); exceeding it closes the channel.
 - `project` is accepted and offered as `rutis.Project()`.

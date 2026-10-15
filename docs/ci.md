@@ -148,7 +148,8 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 | 实现 | Linux | macOS | Windows |
 | --- | --- | --- | --- |
 | Python | 运行 | 运行 | 运行；主动停止一项跳过：它发 SIGTERM，Windows 没有 |
-| Node、Go、Bun | 不跑：还不能拨出（#384） | 同 Linux | 同 Linux |
+| Go | 运行 | 运行 | 运行；主动停止一项跳过：它发 SIGTERM，Windows 没有 |
+| Node、Bun | 不跑：还不能拨出（#384） | 同 Linux | 同 Linux |
 
 只在 Unix 上编译的其他 bridge 测试文件（原因写在各文件的 `cfg` 旁）：`bun_runtime.rs`、`bun_channel.rs`（Bun）；`local_spawn.rs`（`fd:3`、回拨两种交接，Windows 的 loopback 交接由 `local_loopback.rs` 覆盖）；`local_plugin.rs`、`value_roundtrip.rs`（Unix socket）；`local_stdio.rs`（`dup2`）；`concurrent_launch.rs`（跨 fork/exec 继承的描述符）；两个浸泡测试只在 Linux（读 `/proc`）。
 

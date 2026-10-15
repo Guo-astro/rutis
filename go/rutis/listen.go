@@ -2,6 +2,7 @@ package rutis
 
 import (
 	"bufio"
+	"crypto/rand"
 	"crypto/sha1"
 	"crypto/subtle"
 	"crypto/tls"
@@ -72,6 +73,8 @@ const (
 	unsupported = 1003
 	tooBig      = 1009
 	replaced    = 4002
+	// rejected is an access point rejecting the id a dialer greeted with.
+	rejected = 4003
 )
 
 // heartbeat is the ping interval and how long a silent far end is kept
@@ -229,18 +232,26 @@ func listenWebSocket(spec, protocol, token, cert, key string) (<-chan *wsConn, s
 	return accepted, boundAddress, nil
 }
 
-// wsConn is a server-side WebSocket connection carrying text messages.
+// wsConn is a WebSocket connection carrying text messages: accepted by a
+// listener, or dialed (`client`: it masks what it sends).
 type wsConn struct {
 	conn     net.Conn
 	reader   *bufio.Reader
+	client   bool
 	writeMu  sync.Mutex
 	once     sync.Once
 	done     chan struct{}
 	lastSeen atomic.Int64
+	// farClose is the code of the far end's close frame, once it closed
+	// with one.
+	farClose atomic.Int32
 }
 
 func newWSConn(conn net.Conn, reader *bufio.Reader) *wsConn {
-	ws := &wsConn{conn: conn, reader: reader, done: make(chan struct{})}
+	return startWSConn(&wsConn{conn: conn, reader: reader, done: make(chan struct{})})
+}
+
+func startWSConn(ws *wsConn) *wsConn {
 	ws.lastSeen.Store(time.Now().UnixNano())
 	go ws.heartbeat()
 	return ws
@@ -266,14 +277,28 @@ func (ws *wsConn) heartbeat() {
 
 func (ws *wsConn) writeFrame(opcode byte, payload []byte) error {
 	header := []byte{0x80 | opcode}
+	var mask byte
+	if ws.client {
+		mask = 0x80
+	}
 	switch n := len(payload); {
 	case n < 126:
-		header = append(header, byte(n))
+		header = append(header, mask|byte(n))
 	case n <= 0xFFFF:
-		header = append(header, 126, byte(n>>8), byte(n))
+		header = append(header, mask|126, byte(n>>8), byte(n))
 	default:
-		header = append(header, 127)
+		header = append(header, mask|127)
 		header = binary.BigEndian.AppendUint64(header, uint64(n))
+	}
+	if ws.client {
+		var key [4]byte
+		_, _ = rand.Read(key[:])
+		header = append(header, key[:]...)
+		masked := make([]byte, len(payload))
+		for i, b := range payload {
+			masked[i] = b ^ key[i%4]
+		}
+		payload = masked
 	}
 	ws.writeMu.Lock()
 	defer ws.writeMu.Unlock()
@@ -313,12 +338,16 @@ func (ws *wsConn) Recv() ([]byte, error) {
 			if len(payload) >= 2 {
 				code = int(binary.BigEndian.Uint16(payload))
 			}
+			ws.farClose.Store(int32(code))
 			ws.closeWith(code, "")
 			if code == 1000 || code == goingAway || code == 1005 {
 				return nil, io.EOF
 			}
 			if code == replaced {
 				return nil, errors.New("replaced by a new connection")
+			}
+			if code == rejected {
+				return nil, fmt.Errorf("rejected: %s", string(payload[min(2, len(payload)):]))
 			}
 			return nil, fmt.Errorf("closed (%d): %s", code, string(payload[min(2, len(payload)):]))
 		case 0x9:
@@ -370,7 +399,11 @@ func (ws *wsConn) readFrame() (bool, byte, []byte, error) {
 		}
 		length = binary.BigEndian.Uint64(extended[:])
 	}
-	if !masked {
+	if masked == ws.client {
+		if ws.client {
+			ws.closeWith(1002, "server frames must not be masked")
+			return false, 0, nil, errors.New("a masked server frame")
+		}
 		ws.closeWith(1002, "client frames must be masked")
 		return false, 0, nil, errors.New("an unmasked client frame")
 	}
@@ -379,15 +412,19 @@ func (ws *wsConn) readFrame() (bool, byte, []byte, error) {
 		return false, 0, nil, fmt.Errorf("a message exceeds the limit of %d bytes", peer.MaxMessage)
 	}
 	var mask [4]byte
-	if _, err := io.ReadFull(ws.reader, mask[:]); err != nil {
-		return false, 0, nil, err
+	if masked {
+		if _, err := io.ReadFull(ws.reader, mask[:]); err != nil {
+			return false, 0, nil, err
+		}
 	}
 	payload := make([]byte, length)
 	if _, err := io.ReadFull(ws.reader, payload); err != nil {
 		return false, 0, nil, err
 	}
-	for i := range payload {
-		payload[i] ^= mask[i%4]
+	if masked {
+		for i := range payload {
+			payload[i] ^= mask[i%4]
+		}
 	}
 	return fin, opcode, payload, nil
 }

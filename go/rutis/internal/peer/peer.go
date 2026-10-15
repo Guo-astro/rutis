@@ -75,6 +75,9 @@ func newSignal() *Signal { return &Signal{done: make(chan struct{})} }
 func (s *Signal) Done() <-chan struct{} { return s.done }
 func (s *Signal) cancel()               { s.once.Do(func() { close(s.done) }) }
 
+// ValidID reports whether `id` is a valid endpoint id (`[a-z0-9-]+`).
+func ValidID(id string) bool { return endpointID.MatchString(id) }
+
 // Endpoint selects the endpoint format: this side's id, the far end's
 // expected id (if known), and capabilities to declare beyond the session's.
 type Endpoint struct {
@@ -1156,23 +1159,23 @@ func (p *Peer) greet(f *frame) error {
 	_ = json.Unmarshal(f.Version, &version)
 	if p.opts.Endpoint == nil {
 		if version != Protocol || len(f.Endpoint) > 0 {
-			return errors.New("incompatible session: " + versionMismatch(f, Protocol))
+			return fmt.Errorf("%w: %s", ErrIncompatible, versionMismatch(f, Protocol))
 		}
 		_ = json.Unmarshal(f.Capabilities, &p.declared)
 		return nil
 	}
 	if version != EndpointProtocol {
-		return errors.New("incompatible session: " + versionMismatch(f, EndpointProtocol))
+		return fmt.Errorf("%w: %s", ErrIncompatible, versionMismatch(f, EndpointProtocol))
 	}
 	var endpoint string
 	if json.Unmarshal(f.Endpoint, &endpoint) != nil || !endpointID.MatchString(endpoint) {
-		return errors.New("incompatible session: the far end named no valid endpoint")
+		return fmt.Errorf("%w: the far end named no valid endpoint", ErrIncompatible)
 	}
 	if expected := p.opts.Endpoint.Expected; expected != "" && expected != endpoint {
-		return fmt.Errorf("endpoint mismatch: the far end greeted as %s, but %s is the expected endpoint", endpoint, expected)
+		return fmt.Errorf("%w: the far end greeted as %s, but %s is the expected endpoint", ErrEndpointMismatch, endpoint, expected)
 	}
 	if endpoint == p.opts.Endpoint.Local {
-		return fmt.Errorf("endpoint mismatch: the far end greeted as this endpoint (%s)", endpoint)
+		return fmt.Errorf("%w: the far end greeted as this endpoint (%s)", ErrEndpointMismatch, endpoint)
 	}
 	p.remote = endpoint + ":"
 	var capabilities []string
