@@ -694,6 +694,9 @@ async fn a_restart_given_up_half_way_leaves_the_runtime_usable() {
         "the row after the restart",
     )
     .await;
+    // Active is not yet published: the row's service follows (#403).
+    COLD.eventually(|| service(&fixture.root, "ping"), "the row's service")
+        .await;
     assert_eq!(
         call(&fixture.root, "ping", "echo", json!(["still"]))
             .await
