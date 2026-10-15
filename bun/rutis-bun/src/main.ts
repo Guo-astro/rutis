@@ -1,18 +1,28 @@
-// `bun --no-install --no-env-file src/main.ts <channel> <project>`: one runtime
-// process, started by a rutis host (rutis-bridge's `Launcher::bun`).
+// `bun --no-install --no-env-file src/main.ts <channel> [--id <endpoint>]
+// [--peer <endpoint>] <project>`: one runtime process, started by a rutis
+// host (rutis-bridge's `Launcher::bun`), or a remote one.
 //
 // The channel is `fd:<n>`, a socket inherited from the process that started
-// this one; `unix:<path>` (or a bare path), a socket to dial; or
+// this one; `unix:<path>` (or a bare path), a socket to dial;
 // `tcp:<host>:<port>`, a loopback address to dial, presenting the token in
-// RUTIS_CHANNEL_TOKEN first (how processes are started on Windows). Local
-// channels speak the compat protocol. Plugin modules resolve from <project>.
+// RUTIS_CHANNEL_TOKEN first (how processes are started on Windows); or,
+// remote (remote.ts), `listen:ws://…` / `listen:wss://…`, a WebSocket
+// address to listen on for the controlling rutis (the token it must present
+// in RUTIS_TOKEN, a listener certificate and key in RUTIS_CERT and
+// RUTIS_KEY), or `dial:ws://…` / `dial:wss://…`, a rutis access point to
+// dial and to dial again (dialing.ts), presenting the token in RUTIS_TOKEN
+// and trusting the CA in RUTIS_CA besides the default roots. Local channels
+// speak the compat protocol unless `--format endpoint`; remote ones the
+// endpoint format, as `--id`, expecting `--peer` as the controller when
+// given. Plugin modules resolve from <project>.
 import { resolve } from 'node:path'
 import { Client } from './client.ts'
 import { takeToken } from './channel.ts'
+import { dialOut, serve } from './remote.ts'
 import { Runtime } from './runner.ts'
 import { MANIFEST } from './session.ts'
 
-const USAGE = 'usage: bun --no-install --no-env-file <rutis-bun>/src/main.ts <channel> <project>'
+const USAGE = 'usage: bun --no-install --no-env-file <rutis-bun>/src/main.ts <channel> [--id <endpoint>] [--peer <endpoint>] <project>'
 
 function fail(message: string): never {
   process.stderr.write(`rutis-bun: ${message}\n`)
@@ -42,13 +52,33 @@ for (const event of ['uncaughtException', 'unhandledRejection'] as const) {
     process.exit(1)
   })
 }
-const args = process.argv.slice(2)
-if (args.length !== 2 || args[1].startsWith('--')) fail(USAGE)
-const [channel, project] = args
-if (channel.startsWith('listen:')) fail(`${channel}: listening as a remote runtime is not supported by this version`)
+const [channel, ...rest] = process.argv.slice(2)
+const flags: Record<string, string> = {}
+while (rest[0]?.startsWith('--')) {
+  const flag = rest.shift()!.slice(2)
+  if (rest.length < 2) fail(USAGE)
+  flags[flag] = rest.shift()!
+}
+if (!channel || rest.length !== 1) fail(USAGE)
+const project = resolve(rest[0])
+const remote = /^(listen|dial):/.test(channel)
+if ((remote || flags.format === 'endpoint') && !flags.id) fail(`a network channel needs --id <endpoint>: ${channel}`)
+if (channel.startsWith('listen:')) {
+  try { await serve(channel.slice('listen:'.length), { id: flags.id, peer: flags.peer, project }) } catch (error: any) {
+    fail(error.message)
+  }
+}
+if (channel.startsWith('dial:')) {
+  const code = await dialOut(channel.slice('dial:'.length), { id: flags.id, peer: flags.peer, project })
+  process.exit(code)
+}
+// A runner is a runtime: the controller manages its rows.
+const endpoint = flags.format === 'endpoint' ? { local: flags.id, expected: flags.peer, declare: ['runtime'] } : undefined
+// The session of a dialing runtime: its supervisor reports what ends it.
+const dialed = flags.supervisor === 'dial'
 const token = takeToken()
 
-const runtime = new Runtime(resolve(project))
+const runtime = new Runtime(project)
 // The process lives until the session ends. The worker and its port should
 // keep it alive, but Bun 1.2 may end a process whose only pending work is
 // there (exiting normally, mid-session); a timer keeps it, and leaving
@@ -56,11 +86,24 @@ const runtime = new Runtime(resolve(project))
 const alive = setInterval(() => {}, 1 << 30)
 let client: Client
 try {
-  client = await Client.connect(channel, { dispatch: runtime.dispatch, token })
+  client = await Client.connect(channel, { dispatch: runtime.dispatch, token, endpoint })
 } catch (error: any) {
+  // The supervisor ended the session before it greeted, and said why.
+  if (dialed) process.exit(1)
   fail(`cannot connect on ${channel}: ${error.message}`)
 }
 runtime.client = client
+if (dialed) {
+  // Stopped: the rows go while rutis still hears from this end, then the
+  // session ends (and so does this process, below).
+  const stop = () => {
+    if (runtime.closing) return
+    runtime.closing = true
+    runtime.dispose().catch(() => {}).then(() => client.end())
+  }
+  process.on('SIGINT', stop)
+  process.on('SIGTERM', stop)
+}
 let ended = false
 process.on('exit', code => {
   if (!ended) process.stderr.write(`rutis-bun: exiting (${code}) before the session ended\n`)

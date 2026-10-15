@@ -54,7 +54,23 @@ export function versionMismatch(far, local, implementation) {
 export const CAPABILITIES = ['signals', 'sync-wait', 'sync-stack']
 // What it declares in the compat format, where older hosts ignore it.
 const COMPAT_CAPABILITIES = ['sync-wait', 'sync-stack']
-const ENDPOINT_ID = /^[a-z0-9-]+$/
+export const ENDPOINT_ID = /^[a-z0-9-]+$/
+
+// What a far end's endpoint-format hello says of it, or why it is refused:
+// an error whose `category` says what it means for a link or a dialer
+// (incompatible: stop; auth-rejected: retry slowly). `endpoint` is this
+// side's ({ local, expected?, verified? }).
+export function greetingOf(frame, endpoint) {
+  const fail = (category, message) => Object.assign(new Error(message), { category })
+  if (frame.version !== ENDPOINT_PROTOCOL) throw fail('incompatible', `incompatible session: ${versionMismatch(frame.version, ENDPOINT_PROTOCOL, frame.implementation)}`)
+  const far = frame.endpoint
+  if (typeof far !== 'string' || !ENDPOINT_ID.test(far)) throw fail('incompatible', 'incompatible session: the far end named no valid endpoint')
+  for (const [whose, expected] of [['verified', endpoint.verified], ['expected', endpoint.expected]]) {
+    if (expected !== undefined && expected !== far) throw fail('auth-rejected', `endpoint mismatch: the far end greeted as ${far}, but ${expected} is the ${whose} endpoint`)
+  }
+  if (far === endpoint.local) throw fail('auth-rejected', `endpoint mismatch: the far end greeted as this endpoint (${far})`)
+  return { endpoint: far, implementation: frame.implementation, capabilities: Array.isArray(frame.capabilities) ? frame.capabilities : [] }
+}
 
 // How deep a value crossing a session may nest (#279): each array or
 // object is a level, so 64 nested arrays cross and 65 do not; a call's
@@ -134,15 +150,8 @@ export class Session {
       if (Array.isArray(frame.capabilities)) this.#declared = frame.capabilities
       return
     }
-    if (frame.version !== ENDPOINT_PROTOCOL) throw fail('incompatible', `incompatible session: ${versionMismatch(frame.version, ENDPOINT_PROTOCOL, frame.implementation)}`)
-    const endpoint = frame.endpoint
-    if (typeof endpoint !== 'string' || !ENDPOINT_ID.test(endpoint)) throw fail('incompatible', 'incompatible session: the far end named no valid endpoint')
-    for (const [whose, expected] of [['verified', this.#endpoint.verified], ['expected', this.#endpoint.expected]]) {
-      if (expected !== undefined && expected !== endpoint) throw fail('auth-rejected', `endpoint mismatch: the far end greeted as ${endpoint}, but ${expected} is the ${whose} endpoint`)
-    }
-    if (endpoint === this.#endpoint.local) throw fail('auth-rejected', `endpoint mismatch: the far end greeted as this endpoint (${endpoint})`)
-    this.#remote = `${endpoint}:`
-    this.greeting = { endpoint, implementation: frame.implementation, capabilities: Array.isArray(frame.capabilities) ? frame.capabilities : [] }
+    this.greeting = greetingOf(frame, this.#endpoint)
+    this.#remote = `${this.greeting.endpoint}:`
     this.#declared = this.greeting.capabilities
   }
   supports(capability) { return this.greeting?.capabilities.includes(capability) ?? false }

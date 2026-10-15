@@ -322,7 +322,9 @@ async fn python_meets_the_session_contract_on_a_websocket() {
 // No Go cell on a WebSocket: the Go SDK's WebSocket listener is internal to
 // the runtime (package rutis, `listen.go`), and the session fixture is a
 // separate program; the Go runtime's WebSocket column is in
-// session_matrix.rs. No Bun cell: the Bun runtime has no WebSocket channel.
+// session_matrix.rs. No Bun cell either: the Bun runtime's WebSocket
+// listener is in its supervising process (`src/remote.ts`), and its
+// WebSocket column is in session_matrix.rs too.
 
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]

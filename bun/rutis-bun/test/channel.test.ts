@@ -100,7 +100,7 @@ test('sending refuses a raw newline and an oversized message', async () => {
   a.destroy(); b.destroy()
 })
 
-test('a runtime does not dial WebSocket endpoints', async () => {
+test('a WebSocket address is not a session channel', async () => {
   const error = await open('ws://127.0.0.1:1/rutis', collect().handlers).catch(error => error)
   expect(error).toBeInstanceOf(ConnectError)
   expect(error.category).toBe('incompatible')

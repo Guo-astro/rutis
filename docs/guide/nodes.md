@@ -86,7 +86,7 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 }
 ```
 
-远程 Python 运行时的行名是 `<运行时名>:<模块>`，模块在远程机器上解析。Node 运行时同样可以远程运行：在那台机器的 Node 项目里执行 `node node_modules/@arcships/rutis-runtime/src/runner.mjs listen:wss://… --id <名字> --peer <控制方> ./package.json`（插件从这个 package.json 解析），`language` 写 `node`。远程运行时一次服务一个控制方；控制方断开时，它为这个控制方运行的插件全部卸载。
+远程 Python 运行时的行名是 `<运行时名>:<模块>`，模块在远程机器上解析。Node 运行时同样可以远程运行：在那台机器的 Node 项目里执行 `node node_modules/@arcships/rutis-runtime/src/runner.mjs listen:wss://… --id <名字> --peer <控制方> ./package.json`（插件从这个 package.json 解析），`language` 写 `node`；Bun 运行时也一样：在那台机器的 Bun 项目里执行 `bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts listen:wss://… --id <名字> --peer <控制方> .`（插件从这个目录解析，行名 `<运行时名>:<模块>`），`language` 写 `bun`。远程运行时一次服务一个控制方；控制方断开时，它为这个控制方运行的插件全部卸载。
 
 ### 连进来的运行时
 
@@ -130,7 +130,18 @@ RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
 - SIGTERM 或 Ctrl-C 停下它：卸载全部行，关闭连接，不再重连。
 - 两个进程用同一个 id 会互相接管，按各自的退避轮流把对方顶掉；每台机器、每个 worker 用不同的 id。
 
-Node、Bun 的拨出见 [#384](https://github.com/arcships/rutis/issues/384)；在那之前它们只能监听，由 rutis 去连（上面的方式）。
+Node、Bun 运行时用同样的参数、环境变量和规则拨出，`runtimes.remote` 的 `language` 分别写 `node`、`bun`：
+
+```bash
+# Node 项目里（插件从 package.json 解析）
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  node node_modules/@arcships/rutis-runtime/src/runner.mjs dial:wss://main.example.com:7443/rutis --id worker-1 --peer main ./package.json
+# Bun 项目里（插件从这个目录解析）
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
+```
+
+Node、Bun 的每个会话由一个子进程运行：断开时子进程卸载全部行后退出，重连起新的子进程。`RUTIS_CA` 与 Node、Bun 默认信任的根证书一起信任。
 
 ## 把 Cordis 应用接成节点
 

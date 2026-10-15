@@ -67,6 +67,8 @@ export class Process {
   references() { return this.#session.references() }
   drain() { return this.#session.drain() }
   closed() { return this.#exited }
+  // End this side: the far end sees the channel end.
+  end() { this.#port.postMessage({ end: true }) }
   async dispose() {
     this.#port.postMessage({ dispose: true })
     try { await this.callAsync('', 'dispose', null) }

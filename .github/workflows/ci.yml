@@ -793,13 +793,16 @@ jobs:
       # Only the Bun tests of the contract suites: the other runtimes run
       # in their own jobs.
       - name: cargo test (rutis-bridge, the contract suites with Bun)
-        run: cargo test -p rutis-bridge --features bun,testing,websocket --test runtime_conformance --test session_matrix bun
+        run: cargo test -p rutis-bridge --features bun,testing,websocket --test runtime_conformance --test session_matrix --test dial_conformance bun
       - name: cargo test (rutis-bridge, the runtime contract with Bun on loopback channels)
         env:
           RUTIS_LOCAL_HANDOVER: loopback
         run: cargo test -p rutis-bridge --features bun,testing,websocket --test session_matrix bun
       - name: cargo test (rutis-loader, Bun rows)
         run: cargo test -p rutis-loader --features bun,node,python --test bun_rows --test bun_instances --test bun_multilang
+      # A listening Bun runtime's leases (the other languages run in `rust`).
+      - name: cargo test (rutis-loader, remote Bun runtime leases)
+        run: cargo test -p rutis-loader --features bun,node,python --test leases bun
       - name: cargo test (rutis-loader, Bun rows on loopback channels)
         env:
           RUTIS_LOCAL_HANDOVER: loopback

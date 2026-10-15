@@ -51,8 +51,29 @@ export async function loopback(token) {
   })
   return { address: `tcp:127.0.0.1:${server.address().port}`, accepted, server }
 }
-export async function serve({ spec, id, peer, anchor }) {
+
+// Start the runner of one session, as `id` expecting `peer` (`args`: more
+// flags for it); `exited` runs when it exits. Resolves to { child, socket },
+// the socket undefined when it exited before connecting.
+export async function spawnSession({ id, peer, anchor, args: extra = [] }, exited) {
   const runner = fileURLToPath(new URL('./runner.mjs', import.meta.url))
+  const token = LOOPBACK ? randomBytes(32).toString('hex') : undefined
+  const listener = LOOPBACK ? await loopback(token) : undefined
+  const args = [...process.execArgv, runner, listener?.address ?? 'fd:3', '--id', id, '--format', 'endpoint', ...extra]
+  if (peer) args.push('--peer', peer)
+  args.push(anchor)
+  const child = spawn(process.execPath, args, {
+    stdio: LOOPBACK ? ['ignore', 'inherit', 'inherit'] : ['ignore', 'inherit', 'inherit', 'pipe'],
+    env: LOOPBACK ? { ...process.env, [TOKEN]: token } : process.env,
+  })
+  child.once('exit', () => { listener?.server.close(); exited?.() })
+  const socket = LOOPBACK
+    ? await Promise.race([listener.accepted, new Promise(resolve => child.once('exit', () => resolve(undefined)))])
+    : child.stdio[3]
+  return { child, socket }
+}
+
+export async function serve({ spec, id, peer, anchor }) {
   let current
   let switching = Promise.resolve()
   let latest
@@ -86,20 +107,11 @@ export async function serve({ spec, id, peer, anchor }) {
   }
 
   async function start(ws, link) {
-    const token = LOOPBACK ? randomBytes(32).toString('hex') : undefined
-    const listener = LOOPBACK ? await loopback(token) : undefined
-    const args = [...process.execArgv, runner, listener?.address ?? 'fd:3', '--id', id, '--format', 'endpoint']
-    if (peer) args.push('--peer', peer)
-    args.push(anchor)
-    const child = spawn(process.execPath, args, {
-      stdio: LOOPBACK ? ['ignore', 'inherit', 'inherit'] : ['ignore', 'inherit', 'inherit', 'pipe'],
-      env: LOOPBACK ? { ...process.env, [TOKEN]: token } : process.env,
+    const session = { ws }
+    const { child, socket } = await spawnSession({ id, peer, anchor }, () => {
+      if (current === session) { current = undefined; ws.close('runtime session ended') }
     })
-    const session = { ws, child }
-    child.once('exit', () => { listener?.server.close(); if (current === session) { current = undefined; ws.close('runtime session ended') } })
-    const socket = LOOPBACK
-      ? await Promise.race([listener.accepted, new Promise(resolve => child.once('exit', () => resolve(undefined)))])
-      : child.stdio[3]
+    session.child = child
     if (!socket) {
       // The child ended before connecting: so does the session, now, since
       // no later exit will.

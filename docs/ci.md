@@ -119,7 +119,7 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 | Node、Python | WebSocket（夹具监听，Rust 拨入） | 运行 | 运行 | 运行 |
 | Go | WebSocket | 不跑：Go SDK 的 WebSocket 监听在运行时内部（`package rutis`），会话夹具是单独的程序用不到；Go 运行时的 WebSocket 列在运行时契约里 | 同 Linux | 同 Linux |
 | Bun | Unix socket、loopback TCP | 运行（畸形帧检查只在 Unix socket 上） | 运行 | 不编译：Bun 在 Windows 上不是声明支持的平台 |
-| Bun | WebSocket | 不跑：Bun 运行时没有 WebSocket 通道 | 同 Linux | 同 Linux |
+| Bun | WebSocket | 不跑：Bun 运行时的 WebSocket 监听在它的监督进程里（`src/remote.ts`），会话夹具是单独的程序用不到；Bun 运行时的 WebSocket 列在运行时契约里 | 同 Linux | 同 Linux |
 
 运行时契约（`runtime::testing::runtime`，`tests/session_matrix.rs`）：
 
@@ -130,7 +130,8 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 | Node、Python、Go | loopback TCP（本地传输的 `Handover::Loopback`，与 `LocalRuntime` 启动运行时的方式相同，再 `Process::attach`） | 运行 | 运行 | 运行 |
 | Node、Python、Go | WebSocket（运行时监听，Rust 拨入） | 运行 | 运行 | 运行 |
 | Bun | `fd:3`、回拨 socket 路径 | 运行；`runtimes-bun` 用 `RUTIS_LOCAL_HANDOVER=loopback` 重跑 | 运行 | 不编译：同上 |
-| Bun | loopback TCP、WebSocket | 不跑单独的列：loopback 由上一行的重跑覆盖；Bun 运行时没有 WebSocket 通道 | 同 Linux | 不编译：同上 |
+| Bun | loopback TCP | 不跑单独的列：由上一行的重跑覆盖 | 同 Linux | 不编译：同上 |
+| Bun | WebSocket（运行时监听，Rust 拨入） | 运行 | 运行 | 不编译：同上 |
 | 不声明 `fd` 的 Node 包回退到回拨 | — | 运行 | 运行 | 跳过：Windows 只有 loopback |
 
 前两列和最后一行经 `Process` 门面启动进程，契约还检查崩溃后的退出状态；loopback、WebSocket 两列接到通道上，只检查崩溃结束会话。Windows 上 `Process` 门面的 loopback 启动由 `python_runtime.rs`、`go_runtime.rs` 等覆盖。
@@ -149,7 +150,8 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 | --- | --- | --- | --- |
 | Python | 运行 | 运行 | 运行；主动停止一项跳过：它发 SIGTERM，Windows 没有 |
 | Go | 运行 | 运行 | 运行；主动停止一项跳过：它发 SIGTERM，Windows 没有 |
-| Node、Bun | 不跑：还不能拨出（#384） | 同 Linux | 同 Linux |
+| Node | 运行 | 运行 | 运行；主动停止一项跳过：同上 |
+| Bun | 运行 | 运行 | 不编译：Bun 在 Windows 上不是声明支持的平台 |
 
 只在 Unix 上编译的其他 bridge 测试文件（原因写在各文件的 `cfg` 旁）：`bun_runtime.rs`、`bun_channel.rs`（Bun）；`local_spawn.rs`（`fd:3`、回拨两种交接，Windows 的 loopback 交接由 `local_loopback.rs` 覆盖）；`local_plugin.rs`、`value_roundtrip.rs`（Unix socket）；`local_stdio.rs`（`dup2`）；`concurrent_launch.rs`（跨 fork/exec 继承的描述符）；两个浸泡测试只在 Linux（读 `/proc`）。
 

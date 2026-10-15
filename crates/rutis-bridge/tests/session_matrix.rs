@@ -3,7 +3,7 @@
 //! inherited socket (`fd:3`), on a socket path it dials back, on a loopback
 //! address it dials presenting a token, and over a loopback WebSocket it
 //! listens on (dialed by Rust and attached); the Bun runtime (feature `bun`,
-//! Unix only) on the first two. Risk C10: the matrix, with every skipped
+//! Unix only) on the first two and the WebSocket. Risk C10: the matrix, with every skipped
 //! cell's reason, is in docs/ci.md.
 #![cfg(all(feature = "testing", feature = "websocket"))]
 
@@ -440,4 +440,10 @@ async fn bun_on_an_inherited_socket() {
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_dialing_a_socket_path() {
     semantics(Runtime::Bun, Via::DialBack).await;
+}
+
+#[cfg(all(unix, feature = "bun"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn bun_listening_on_a_websocket() {
+    semantics(Runtime::Bun, Via::WebSocket).await;
 }

@@ -48,6 +48,18 @@ test('a takeover closes with 4002, read as replaced', async () => {
   listener.close()
 })
 
+test('an access point rejecting the id closes with 4003, read as rejected, with its code', async () => {
+  const { WebSocketServer } = await import('ws')
+  const server = new WebSocketServer({ port: 0, host: '127.0.0.1', handleProtocols: () => PROTOCOL })
+  await within('the server to listen', new Promise(resolve => server.once('listening', resolve)))
+  server.on('connection', socket => socket.close(4003, 'pixel is not known'))
+  let closed
+  const ended = new Promise(resolve => { closed = resolve })
+  await open(`ws://127.0.0.1:${server.address().port}/rutis`, { message() {}, closed: (reason, code) => closed({ reason, code }) }, { protocol: PROTOCOL })
+  assert.deepEqual(await within('the close', ended), { reason: 'rejected: pixel is not known', code: 4003 })
+  server.close()
+})
+
 test('authentication, subprotocol and address failures carry categories', async () => {
   const listener = await listen('ws://127.0.0.1:0/rutis', { handlers: () => inbox().handlers, accepted: () => {} }, { protocol: PROTOCOL, token: 'secret' })
   const category = async options => {

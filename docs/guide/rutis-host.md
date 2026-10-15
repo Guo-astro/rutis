@@ -175,7 +175,7 @@ rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-
 - 不需要另写节点行。`listen` 与 `instances` 要同时写；监听器、分组不存在，分组不是 `instanced`，或者没有 token，启动时报错。
 - `<name>:` 行只能放在这个分组里；放在别处时这一行失败。
 
-Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主的 id> <项目>` 连进来，Go 插件二进制用 `<二进制> dial:wss://… --id <id> --peer <本宿主的 id> <项目>`，见 [连接节点](nodes.md#连进来的运行时)；Node、Bun 的拨出随 [#384](https://github.com/arcships/rutis/issues/384)。
+Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主的 id> <项目>` 连进来，Go 插件二进制用 `<二进制> dial:wss://… --id <id> --peer <本宿主的 id> <项目>`，Node、Bun 运行时同样以 `dial:` 连进来；命令见 [连接节点](nodes.md#连进来的运行时)。
 
 ### listen
 
