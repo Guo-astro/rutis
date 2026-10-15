@@ -29,6 +29,7 @@ pub(crate) mod unix;
 /// Where a runtime process's standard streams go ([`Launcher::stdin`],
 /// [`LocalRuntime::stdin`]).
 pub use crate::transport::local::Stdio;
+pub(crate) use access::peer_session;
 pub use access::RuntimeAccessPlugin;
 pub use events::{EmitToCordis, EventSink, Events};
 pub use local::LocalRuntime;

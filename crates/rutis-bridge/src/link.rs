@@ -13,9 +13,10 @@ use std::time::Duration;
 use crate::channel::{Channel, Closer, ConnectError, PeerId};
 use crate::session::rpc::{Connection, Endpoint, Format};
 use crate::session::{Error, Handshake};
-use rutis::{BoxFuture, CordisError, Ctx, Disposer, Effect, Plugin, TypeKey};
+use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, TypeKey};
 use tokio::sync::{mpsc, watch};
 
+use crate::access_point::Release;
 use crate::peer::{Operations, Peer};
 use crate::{identity_key, peer_key, transport_key, Dial, Identity, Registration, Transport};
 
@@ -247,25 +248,42 @@ struct Link {
     generation: u64,
 }
 
-/// A ready session and what the link holds for it. Dropping it closes the
+/// A ready session and what is held for it. Dropping it closes the
 /// session.
-struct Live {
-    session: Connection,
-    closer: Arc<dyn Closer>,
+pub(crate) struct Live {
+    pub(crate) session: Connection,
+    pub(crate) closer: Arc<dyn Closer>,
     operations: Arc<Operations>,
-    /// In a mutex only to make `Live` shareable while the link awaits.
-    provided: Mutex<Option<Disposer>>,
+    /// Undoes what was set up on the session (the provided peer). In a
+    /// mutex only to make `Live` shareable while its holder awaits.
+    release: Mutex<Option<Release>>,
     /// tokio's clock, the same as std's unless paused: a test on the
     /// paused clock can check the reset after `stable` (#231).
     since: tokio::time::Instant,
 }
 
 impl Live {
-    /// Withdraw the peer, then close the session.
-    async fn end(self, reason: &str) {
-        let provided = self.provided.lock().unwrap().take();
-        if let Some(provided) = provided {
-            let _ = provided.dispose().await;
+    pub(crate) fn new(
+        session: Connection,
+        closer: Arc<dyn Closer>,
+        operations: Arc<Operations>,
+        release: Release,
+    ) -> Self {
+        Self {
+            session,
+            closer,
+            operations,
+            release: Mutex::new(Some(release)),
+            since: tokio::time::Instant::now(),
+        }
+    }
+
+    /// Undo what was set up on the session (withdraw the peer), then close
+    /// it.
+    pub(crate) async fn end(self, reason: &str) {
+        let release = self.release.lock().unwrap().take();
+        if let Some(release) = release {
+            release().await;
         }
         self.session.close(Error::Transport(reason.into()));
     }
@@ -275,6 +293,74 @@ impl Drop for Live {
     fn drop(&mut self) {
         self.session.close(Error::Transport("link stopped".into()));
         self.operations.detach();
+    }
+}
+
+/// How this end opens a session: as `local`, expecting a far end (if it
+/// names one), declaring and requiring capabilities.
+pub(crate) struct Greet<'a> {
+    pub(crate) local: PeerId,
+    pub(crate) expected: Option<PeerId>,
+    pub(crate) declare: &'a [String],
+    pub(crate) require: &'a [String],
+    pub(crate) compat: bool,
+    pub(crate) timeout: Duration,
+}
+
+impl Greet<'_> {
+    /// Open a session on `channel` and wait, at most `timeout`, for the far
+    /// end to greet as expected, declaring what is required. On failure the
+    /// session is closed.
+    pub(crate) async fn open(
+        &self,
+        channel: Channel,
+    ) -> Result<(Connection, Arc<Operations>), Error> {
+        let operations = Arc::new(Operations::default());
+        let mut endpoint = Endpoint::rust(self.local.clone());
+        endpoint.expected = self.expected.clone();
+        // A rutis endpoint is a full framework node.
+        endpoint.capabilities.push("node".into());
+        endpoint.capabilities.extend(self.declare.iter().cloned());
+        let format = match self.compat {
+            true => Format::Compat,
+            false => Format::Endpoint(endpoint),
+        };
+        let session = Connection::open_with(channel, operations.clone(), format)?;
+        let ready = tokio::time::timeout(self.timeout, session.ready()).await;
+        match ready {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                session.close(error.clone());
+                return Err(error);
+            }
+            Err(_) => {
+                let error = Error::Transport("the far end did not greet in time".into());
+                session.close(error.clone());
+                return Err(error);
+            }
+        }
+        // The contract is checked before use, not guessed from failing calls.
+        // A compat far end declares nothing, and is what its spawner said.
+        let missing = match self.compat {
+            true => None,
+            false => self
+                .require
+                .iter()
+                .find(|capability| !session.supports(capability)),
+        };
+        if let Some(missing) = missing {
+            let far = session.greeting().map_or_else(
+                || "the far end".to_owned(),
+                |greeting| greeting.endpoint.to_string(),
+            );
+            let error = Error::Handshake(Handshake::Incompatible(format!(
+                "{far} does not declare {missing}"
+            )));
+            session.close(error.clone());
+            return Err(error);
+        }
+        operations.attach(session.clone(), !self.compat);
+        Ok((session, operations))
     }
 }
 
@@ -298,51 +384,15 @@ impl Link {
     /// expected endpoint, provide the peer.
     async fn start(&mut self, channel: Channel) -> Result<Live, Error> {
         let closer = channel.closer.clone();
-        let operations = Arc::new(Operations::default());
-        let mut endpoint =
-            Endpoint::rust(self.identity.local().clone()).expect(self.config.peer.clone());
-        // A rutis endpoint is a full framework node.
-        endpoint.capabilities.push("node".into());
-        endpoint
-            .capabilities
-            .extend(self.config.declare.iter().cloned());
-        let format = match self.config.compat {
-            true => Format::Compat,
-            false => Format::Endpoint(endpoint),
+        let greet = Greet {
+            local: self.identity.local().clone(),
+            expected: Some(self.config.peer.clone()),
+            declare: &self.config.declare,
+            require: &self.config.require,
+            compat: self.config.compat,
+            timeout: self.config.retry.handshake,
         };
-        let session = Connection::open_with(channel, operations.clone(), format)?;
-        let ready = tokio::time::timeout(self.config.retry.handshake, session.ready()).await;
-        match ready {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                session.close(error.clone());
-                return Err(error);
-            }
-            Err(_) => {
-                let error = Error::Transport("the far end did not greet in time".into());
-                session.close(error.clone());
-                return Err(error);
-            }
-        }
-        // The contract is checked before use, not guessed from failing calls.
-        // A compat far end declares nothing, and is what its spawner said.
-        let missing = match self.config.compat {
-            true => None,
-            false => self
-                .config
-                .require
-                .iter()
-                .find(|capability| !session.supports(capability)),
-        };
-        if let Some(missing) = missing {
-            let error = Error::Handshake(Handshake::Incompatible(format!(
-                "{} does not declare {missing}",
-                self.config.peer
-            )));
-            session.close(error.clone());
-            return Err(error);
-        }
-        operations.attach(session.clone(), !self.config.compat);
+        let (session, operations) = greet.open(channel).await?;
         self.generation += 1;
         let peer = Peer::new(
             self.config.peer.clone(),
@@ -357,13 +407,12 @@ impl Link {
         self.state.send_replace(LinkState::Ready {
             generation: self.generation,
         });
-        Ok(Live {
-            session,
-            closer,
-            operations,
-            provided: Mutex::new(Some(provided)),
-            since: tokio::time::Instant::now(),
-        })
+        let release: Release = Box::new(move || {
+            Box::pin(async move {
+                let _ = provided.dispose().await;
+            })
+        });
+        Ok(Live::new(session, closer, operations, release))
     }
 
     async fn wait(&self, failure: Failure, error: String, retry_in: Duration) {
@@ -401,13 +450,16 @@ impl Link {
                             backoff.reset();
                         }
                         // Why it ended: for a local runtime, how its
-                        // process ended.
-                        let reason = live.session.close_reason().map_or_else(
+                        // process ended; an identity the far end rejected
+                        // after the greeting (an access point refusing this
+                        // end's id) is an authentication failure.
+                        let ended = live.session.close_reason();
+                        let reason = ended.as_ref().map_or_else(
                             || "the session ended".to_owned(),
                             |error| error.to_string(),
                         );
                         live.end("session ended").await;
-                        (Failure::Retryable, reason)
+                        (ended.as_ref().map_or(Failure::Retryable, classify), reason)
                     }
                 },
             };

@@ -162,6 +162,114 @@ impl Identity for StaticIdentity {
     }
 }
 
+/// The identity layer of an access point
+/// (`docs/design-remote-runtime-dial-2026-10-14.md` §五): which runtime
+/// connections it admits, and as which connection id. It takes over from
+/// [`Identity`] where the far end is not known in advance; a static link's
+/// per-peer identity is the other implementation of the same layer.
+///
+/// Admission has two steps, because the credential arrives with the
+/// connection and the id only with the session hello: the transport checks
+/// the credential before the upgrade ([`Admission::verify`]: without one
+/// the dialer is told 401, a refused one 403), and the access point admits
+/// the id once the far end greeted ([`Admission::admit`]; a rejection
+/// closes the channel with [`Closer::rejected`](crate::channel::Closer::rejected)).
+/// Either refusal is an authentication failure to the dialer. Whether the
+/// id is well formed is the protocol's, not the admission's: a hello naming
+/// no endpoint, or an invalid one, fails the session as incompatible before
+/// any admission.
+pub trait Admission: Send + Sync + 'static {
+    /// This endpoint's id: the id of the listener's endpoint.
+    fn local(&self) -> &PeerId;
+
+    /// Whether what the far end presented lets it connect at all.
+    fn verify(&self, presented: Presented<'_>) -> bool;
+
+    /// The connection id of a far end that greeted as `reported`, or why
+    /// it is rejected.
+    fn admit(&self, reported: &PeerId) -> Result<PeerId, Rejection>;
+}
+
+/// Why an [`Admission`] turned a connection away. For diagnostics, sent to
+/// the far end; it carries no credentials.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct Rejection(pub String);
+
+/// The key an admission named `name` is provided under (`Admission#phone`).
+pub fn admission_key(name: &str) -> TypeKey {
+    TypeKey::keyed_dynamic::<dyn Admission>(name.to_owned())
+}
+
+/// Provides an admission as `Admission#<name>`.
+pub struct AdmissionPlugin {
+    label: String,
+    key: String,
+    admission: Arc<dyn Admission>,
+}
+
+impl AdmissionPlugin {
+    pub fn new(name: &str, admission: impl Admission) -> Self {
+        Self {
+            label: format!("rutis-bridge/admission#{name}"),
+            key: name.to_owned(),
+            admission: Arc::new(admission),
+        }
+    }
+}
+
+impl rutis::Plugin for AdmissionPlugin {
+    fn name(&self) -> &str {
+        &self.label
+    }
+
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a rutis::Ctx,
+    ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
+        Box::pin(async move {
+            ctx.provide_as::<dyn Admission>(admission_key(&self.key), self.admission.clone())?;
+            Ok(rutis::Effect::Done)
+        })
+    }
+}
+
+/// The interim admission (design §五): one token shared by every runtime
+/// of an access point, and the id each greets with as its connection id.
+/// The id is not verified: it only tells connections apart and names
+/// their instances, and proves nothing.
+pub struct SharedToken {
+    local: PeerId,
+    token: Arc<str>,
+}
+
+impl SharedToken {
+    /// Admit, on the endpoint `local`, whoever presents `token`.
+    pub fn new(local: PeerId, token: impl Into<Arc<str>>) -> Self {
+        Self {
+            local,
+            token: token.into(),
+        }
+    }
+}
+
+impl Admission for SharedToken {
+    fn local(&self) -> &PeerId {
+        &self.local
+    }
+
+    fn verify(&self, presented: Presented<'_>) -> bool {
+        match presented {
+            Presented::Bearer(token) => constant_time_eq(self.token.as_bytes(), token.as_bytes()),
+            Presented::Certificate(_) => false,
+        }
+    }
+
+    fn admit(&self, reported: &PeerId) -> Result<PeerId, Rejection> {
+        Ok(reported.clone())
+    }
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -203,5 +311,15 @@ mod tests {
         let credential = identity.credential(&id("mac")).unwrap();
         assert_eq!(format!("{credential:?}"), "Bearer(…)");
         assert!(identity.credential(&id("pi")).is_none());
+    }
+
+    #[test]
+    fn a_shared_token_admits_any_valid_id_it_is_presented_with() {
+        let admission = SharedToken::new(id("main"), "shared");
+        assert_eq!(admission.local(), &id("main"));
+        assert!(admission.verify(Presented::Bearer("shared")));
+        assert!(!admission.verify(Presented::Bearer("share")));
+        assert!(!admission.verify(Presented::Certificate(b"shared")));
+        assert_eq!(admission.admit(&id("pixel-7")), Ok(id("pixel-7")));
     }
 }

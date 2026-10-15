@@ -52,6 +52,15 @@ pub trait Closer: Send + Sync {
     fn replaced(&self) {
         self.close("replaced by a new connection");
     }
+
+    /// Close because the far end's identity was rejected after the channel
+    /// was established (an access point refusing the id a runtime greeted
+    /// with). A transport that can tell the far end so (WebSocket close
+    /// code 4003, which dialers treat as an authentication failure) does;
+    /// others just close.
+    fn rejected(&self, reason: &str) {
+        self.close(&format!("rejected: {reason}"));
+    }
 }
 
 /// What the connector established about a channel. Identity is delivered
@@ -109,6 +118,12 @@ pub struct InvalidPeerId(pub String);
 pub enum ChannelError {
     #[error("{reason}")]
     Closed { reason: String },
+    /// The far end rejected this end's identity after the channel was
+    /// established (an access point refusing the id this end greeted
+    /// with): an authentication failure, which a session ends with as an
+    /// identity mismatch. Only a transport that can say so reports it.
+    #[error("{reason}")]
+    Rejected { reason: String },
 }
 
 /// Why a channel could not be established. The category decides what a

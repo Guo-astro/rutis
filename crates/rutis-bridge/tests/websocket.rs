@@ -708,6 +708,21 @@ fn a_takeover_closes_the_old_connection_with_4002() {
     );
 }
 
+/// An access point rejecting the id a runtime greeted with closes with
+/// 4003, which dialers take as an authentication failure.
+#[test]
+fn a_rejection_closes_with_4003() {
+    let server = server(Limits::default());
+    let client = client(Limits::default());
+    let (mut dialed, accepted, _r) = connected(&server, &client);
+    accepted.closer.rejected("bad id");
+    let ended = dialed.receiver.recv();
+    assert!(
+        matches!(&ended, Err(rutis_bridge::channel::ChannelError::Rejected { reason }) if reason == "rejected: bad id"),
+        "{ended:?}"
+    );
+}
+
 #[test]
 fn an_orderly_close_reads_as_a_normal_end() {
     let server = server(Limits::default());

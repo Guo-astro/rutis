@@ -13,6 +13,8 @@ pub(crate) enum Ending {
     /// The far end finished normally.
     Finished,
     Failed(String),
+    /// The far end rejected this end's identity (close code 4003).
+    Rejected(String),
 }
 
 struct State {
@@ -144,10 +146,15 @@ impl Pipe {
 }
 
 fn closed(ending: &Ending) -> ChannelError {
-    ChannelError::Closed {
-        reason: match ending {
-            Ending::Finished => "closed".into(),
-            Ending::Failed(reason) => reason.clone(),
+    match ending {
+        Ending::Finished => ChannelError::Closed {
+            reason: "closed".into(),
+        },
+        Ending::Failed(reason) => ChannelError::Closed {
+            reason: reason.clone(),
+        },
+        Ending::Rejected(reason) => ChannelError::Rejected {
+            reason: reason.clone(),
         },
     }
 }

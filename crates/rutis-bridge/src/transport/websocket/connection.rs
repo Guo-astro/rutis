@@ -27,6 +27,9 @@ pub(crate) const GOING_AWAY: u16 = 1001;
 pub(crate) const TOO_BIG: u16 = 1009;
 /// A newer connection of the same endpoint took over.
 pub(crate) const REPLACED: u16 = 4002;
+/// The far end's identity was rejected after the upgrade (an access point
+/// refusing the id it greeted with): an authentication failure.
+pub(crate) const REJECTED: u16 = 4003;
 /// Close frame reasons are at most 123 bytes.
 const REASON_LIMIT: usize = 123;
 
@@ -111,6 +114,10 @@ impl Closer for WsCloser {
     fn replaced(&self) {
         self.0.close(REPLACED, "replaced by a new connection");
     }
+
+    fn rejected(&self, reason: &str) {
+        self.0.close(REJECTED, reason);
+    }
 }
 
 /// Counts a running connection task for the transport's shutdown.
@@ -181,6 +188,7 @@ fn far_close(frame: Option<CloseFrame>) -> Ending {
         Some(frame) => match u16::from(frame.code) {
             1000 | GOING_AWAY => Ending::Finished,
             REPLACED => Ending::Failed("replaced by a new connection".into()),
+            REJECTED => Ending::Rejected(format!("rejected: {}", frame.reason)),
             code => Ending::Failed(format!("closed by the far end ({code}): {}", frame.reason)),
         },
     }

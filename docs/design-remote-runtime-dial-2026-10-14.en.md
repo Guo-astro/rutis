@@ -84,8 +84,8 @@ Language-independent; every language implements it:
 | Item | Rule |
 | --- | --- |
 | Backoff | Retryable failures start at 0.5 seconds and double up to 30 seconds, reset once the connection is stable (same as the existing link) |
-| Credentials rejected | Retry every 30 seconds |
-| Incompatible protocol | Stop and report |
+| Credentials rejected | Retry every 30 seconds. The dialer tells this from 401 / 403 at the upgrade, or from the access point refusing the id after the hello (WebSocket close code 4003) |
+| Incompatible protocol | Stop and report. A hello with no id or an invalid one (`[a-z0-9-]+`) belongs here: retrying cannot fix it |
 | Disconnect | The rutis side closes that connection's instance; the runtime side unloads all rows (cleanup runs in reverse order), then reconnects with backoff |
 | Reconnect | New session, new instance, load again, independent of any state from the previous connection |
 | Takeover by the same id | When a new connection arrives the old one is closed; the old instance finishes cleanup before the new connection is admitted |
