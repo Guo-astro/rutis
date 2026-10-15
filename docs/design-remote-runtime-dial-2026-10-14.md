@@ -106,6 +106,7 @@
   - 分类与 Rust 拨出方相同，按类型或状态码，不看文字：升级时 401 / 403、本端拒绝服务端证书为凭据被拒；400 / 404 / 405 / 426、子协议不符、对端 hello 的版本本端不会说为不兼容；对端以不同于 `--peer` 的 id 打招呼为凭据被拒（同 `IdentityMismatch`）；其余（连不上、超时、断开、被接管 4002）可重试。接入点在拨出方收到 rutis 的 hello 之后才以 4003 拒绝 id，所以被拒前可能先出现一行 `connected to`。
   - 同 id 接管不设特例：被接管的一方按退避重连，又接管对方。两个进程用同一个 id 时会一直轮流顶掉对方，节奏随退避放慢到每方约 30 秒一次（会话不满 60 秒，退避不重置）。自报 id 不由 rutis 核实（§五），id 唯一由部署保证。
   - Python：`rutis/dialing.py`（规则与重连循环，纯 Python）、`rutis/websocket.py` 的 `dial`。连接由 websockets 的 asyncio 客户端在一个专用事件循环线程上完成全部读写：它的线程客户端从两个线程读写同一个 TLS socket，OpenSSL 不支持，实测约 5% 的 `wss://` 握手丢失响应。同一原因，拨出不受 CPython 3.13.6 的 TLS 死锁影响（监听仍拒绝该版本）。
+  - Go：`go/rutis/dial.go`（规则、重连循环与 WebSocket 客户端），只用标准库：客户端与 `listen.go` 共用同一个帧实现（`wsConn`，拨出方给发出的帧加掩码）。会话结束按错误类型分类：`internal/peer` 的 `ErrIncompatible`、`ErrEndpointMismatch`，与关闭码 4003。不兼容时 `Serve` 把 `refused: incompatible (…); stopping` 作为错误打印并以状态 1 退出。
 
 ## 七、各方工作
 
@@ -113,7 +114,8 @@
 | --- | --- | --- |
 | Rust 侧 | 接入点接受多条连接、连接即实例、运行时键按实例区分、身份层与过渡实现、`mount` 回复的 `plugins`、rutis-host 配置（`listen` / `instances`）、`runtimes.remote[].language` 接受 `swift`、`kotlin` / `kt` | 已实现（#396、#399），`swift`、`kotlin` 随应用接入 |
 | Python | 拨出客户端（`dial:`）；首个现有语言（其 TLS 服务端问题最多，拨出收益最大） | 已实现（#383），`dial_conformance` Python 列通过 |
-| Node、Go | 拨出客户端，紧随 Python | 未实现（#384） |
+| Node | 拨出客户端，紧随 Python | 未实现（#384） |
+| Go | 拨出客户端，紧随 Python | 已实现（#384），`dial_conformance` Go 列通过 |
 | Bun | 监听与拨出都要补（现在都不支持），紧随 Python | 未实现（#384） |
 | Swift、Kotlin | 监听与拨出都实现（Swift SDK §六、Android 稿 §五） | 未实现 |
 | 文档 | 连接节点指南加拨出与动态接入；推荐方式改为拨出 | 已写拨出与动态接入（Python）；推荐方式待各语言都能拨出后再改 |

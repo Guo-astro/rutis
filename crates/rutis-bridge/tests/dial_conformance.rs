@@ -4,7 +4,7 @@
 //! every rule of the dial-out table is checked against what the access
 //! point observes and what the runtime says on stderr.
 //!
-//! A column per language: Python now; Node, Go and Bun with #384; Swift and
+//! A column per language: Python and Go now; Node and Bun with #384; Swift and
 //! Kotlin with their SDKs (Swift A1, Android K-P2). A language joins by a
 //! [`Language`] variant (the command that dials, the conformance plugin in
 //! its project) and a `column!` line. What every dialer must do:
@@ -64,6 +64,8 @@ const BACKOFF: [f64; 4] = [0.1, 0.2, 0.4, 0.4];
 #[derive(Clone, Copy, Debug)]
 enum Language {
     Python,
+    #[cfg(feature = "go")]
+    Go,
 }
 
 /// The Python interpreter: one with `websockets` (`RUTIS_PYTHON`), else
@@ -72,6 +74,27 @@ enum Language {
 fn python_program() -> String {
     std::env::var("RUTIS_PYTHON")
         .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into())
+}
+
+/// The Go conformance dialer (`go/rutis/internal/fixtures/dial`, the
+/// plugin `marker` in it), built once per test binary with the `go` on
+/// PATH.
+#[cfg(feature = "go")]
+fn go_dialer() -> &'static Path {
+    static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BINARY.get_or_init(|| {
+        let directory = tempfile::tempdir().unwrap().keep();
+        let binary = directory.join(format!("dial{}", std::env::consts::EXE_SUFFIX));
+        let status = std::process::Command::new("go")
+            .args(["build", "-o"])
+            .arg(&binary)
+            .arg("./internal/fixtures/dial")
+            .current_dir(repo().join("go/rutis"))
+            .status()
+            .expect("go is on PATH");
+        assert!(status.success(), "go build ./internal/fixtures/dial");
+        binary
+    })
 }
 
 impl Language {
@@ -93,6 +116,15 @@ impl Language {
                     .args(["--id", id, "--peer", "main"])
                     .arg(project)
                     .env("PYTHONPATH", repo().join("python/rutis"));
+                command
+            }
+            #[cfg(feature = "go")]
+            Language::Go => {
+                let mut command = tokio::process::Command::new(go_dialer());
+                command
+                    .arg(format!("dial:{address}"))
+                    .args(["--id", id, "--peer", "main"])
+                    .arg(project);
                 command
             }
         }
@@ -541,5 +573,7 @@ macro_rules! column {
 }
 
 column!(python, Language::Python);
-// Node, Go and Bun: #384. Swift and Kotlin: with their SDKs (Swift A1,
+#[cfg(feature = "go")]
+column!(go, Language::Go);
+// Node and Bun: #384. Swift and Kotlin: with their SDKs (Swift A1,
 // Android K-P2).

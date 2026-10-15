@@ -106,6 +106,7 @@ Conformance tests: `rutis-bridge/tests/dial_conformance.rs`, shaped like `websoc
   - Failures are classified as the Rust dialer classifies them, by type or status, never by text: 401 / 403 at the upgrade and a server certificate this side refuses are rejected credentials; 400 / 404 / 405 / 426, a subprotocol mismatch and a far hello whose version this side does not speak are incompatible; a far end greeting with an id other than `--peer` is rejected credentials (as `IdentityMismatch`); everything else (cannot connect, timeouts, disconnects, being taken over with 4002) is retryable. The access point rejects an id with 4003 only after the dialer has received rutis's hello, so a `connected to` line may come before the rejection.
   - Same-id takeover has no special case: the one taken over reconnects by its backoff and takes over in turn. Two processes with one id keep displacing each other, at a pace that slows with the backoff to about once every 30 s each (a session shorter than 60 s does not reset it). Self-reported ids are not verified by rutis (§5); unique ids are the deployment's to ensure.
   - Python: `rutis/dialing.py` (the rules and the reconnect loop, pure Python) and `dial` in `rutis/websocket.py`. The websockets asyncio client does all of a connection's reads and writes on one dedicated event loop thread: its threading client reads and writes one TLS socket from two threads, which OpenSSL does not support, and about 5% of `wss://` handshakes lost their response in a test. For the same reason dialing out is not affected by CPython 3.13.6's TLS deadlock (listening still refuses that version).
+  - Go: `go/rutis/dial.go` (the rules, the reconnect loop and the WebSocket client), standard library only: the client shares one frame implementation with `listen.go` (`wsConn`; the dialing side masks the frames it sends). A session's end is classified by error type: `internal/peer`'s `ErrIncompatible` and `ErrEndpointMismatch`, and close code 4003. When the access point is incompatible, `Serve` prints `refused: incompatible (…); stopping` as its error and exits with status 1.
 
 ## 7. Work per party
 
@@ -113,7 +114,8 @@ Conformance tests: `rutis-bridge/tests/dial_conformance.rs`, shaped like `websoc
 | --- | --- | --- |
 | Rust side | Access point accepting many connections, connection-as-instance, per-instance runtime keys, the identity layer and its transitional implementation, `plugins` in the `mount` reply, rutis-host configuration (`listen` / `instances`), `runtimes.remote[].language` accepting `swift`, `kotlin` / `kt` | Implemented (#396, #399); `swift` and `kotlin` come with app integration |
 | Python | Dial-out client (`dial:`); the first existing language (its TLS server has the most problems, so dialing out helps it most) | Implemented (#383); the Python column of `dial_conformance` passes |
-| Node, Go | Dial-out client, right after Python | Not implemented (#384) |
+| Node | Dial-out client, right after Python | Not implemented (#384) |
+| Go | Dial-out client, right after Python | Implemented (#384); the Go column of `dial_conformance` passes |
 | Bun | Both listening and dialing out (neither is supported today), right after Python | Not implemented (#384) |
 | Swift, Kotlin | Both listening and dialing out (Swift SDK §6, Android design §5) | Not implemented |
 | Docs | Add dialing out and dynamic connections to the Connect Nodes guide; change the recommended approach to dialing out | Dialing out and dynamic connections written (Python); the recommendation changes once every language dials out |
