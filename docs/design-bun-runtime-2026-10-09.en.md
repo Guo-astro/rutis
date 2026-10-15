@@ -329,3 +329,15 @@ Nothing this design uses depends on a recent version: `Bun.connect({ fd })`, `wo
 | §8 Bun variants of E2E S2 / S3 | Not in this change | They come with the E2E framework of #186 / #187 |
 | §8 a project from `new --lang bun` passes `check` | Only the generated files are tested | Running `check` needs `@arcships/rutis-bun` installed from npm; it belongs to S2's end-to-end test (#186) |
 | §5.2: `runtime` also looks for a `rutis-bun` executable on `PATH` by default | B1 looks only for the project's `@arcships/rutis-bun` | The executable comes in B3 |
+
+## 12. Adjustments made during implementation (B2, #384)
+
+B2 was implemented together with [remote runtimes dialing out](design-remote-runtime-dial-2026-10-14.en.md): besides listening, the Bun runtime dials out too (`dial:ws://…` / `dial:wss://…`, by the rules of that design's §6).
+
+| What this document said | Implementation | Why |
+| --- | --- | --- |
+| §3.2: `ws://…` fails at start with "the Bun runtime only listens" | A remote runtime listens (`listen:`) or dials out (`dial:`); a bare `ws://…` is still not a session channel | Dial-out design R1: every remote runtime both listens and dials |
+| §4: leases are cleaned up in the process, the module cache kept across leases | One child runtime process per session (`src/main.ts` on a loopback channel, presenting a one-time token first); the parent (`src/remote.ts`) relays message by message between the WebSocket and the child; a session ends with its child | As the Node runtime listens and dials; `Client` opens its connection in its I/O worker from a channel address, and a WebSocket cannot be handed to a worker, so the parent only relays and never blocks; nothing is kept between sessions |
+| The dialing client | Bun's built-in `ws` client (`import { WebSocket } from 'ws'`, no npm package installed) | Bun's `WebSocket` does not report the status of a refused upgrade, so 401 / 403 cannot be told from 400; the built-in `ws` client reports it (`unexpected-response`). A failed TLS handshake shows only as close code 1015 and counts as an authentication failure |
+| Remote runtime arguments | `<channel> [--id <endpoint>] [--peer <controller>] <project>`; the child also gets `--format endpoint` and (dialing) `--supervisor dial` | As the Node runtime |
+| `language: "bun"` in `remote` | Accepted; rows `<remote-runtime>:<module>` (`Naming::Modules`) | §5.1; `rutis-host/src/host.rs::tests::a_remote_bun_runtime_runs_rows_named_after_it` |

@@ -11,12 +11,16 @@ import { isLeaf, refuseInternal, supported, toCordis } from './leaf.mjs'
 // Local channels (`fd:3`, a socket path) speak the compat protocol unless
 // `--format endpoint`; network channels (`ws://`, `wss://`) the endpoint
 // format, as `--id`, expecting `--peer` as the controller when given.
-// `listen:…` serves controllers one session at a time (serve.mjs).
+// `listen:…` serves controllers one session at a time (serve.mjs);
+// `dial:ws://…` / `dial:wss://…` dials a rutis access point and dials
+// again (dial.mjs). Both run each session in a child runner; a dialing
+// runtime's (`--supervisor dial`), on SIGINT or SIGTERM, unloads its rows
+// and ends its session.
 const { channelSpec, pluginPath, endpoint, flags } = (() => {
   const [channelSpec, ...rest] = process.argv.slice(2)
   const flags = {}
   while (rest[0]?.startsWith('--')) flags[rest.shift().slice(2)] = rest.shift()
-  const network = /^(wss?|listen):/.test(channelSpec) || flags.format === 'endpoint'
+  const network = /^(wss?|listen|dial):/.test(channelSpec) || flags.format === 'endpoint'
   if (network && !flags.id) throw new Error(`a network channel needs --id <endpoint>: ${channelSpec}`)
   // A runner is a runtime: the controller manages its rows.
   const endpoint = network ? { local: flags.id, expected: flags.peer, declare: ['runtime'] } : undefined
@@ -27,6 +31,14 @@ if (channelSpec.startsWith('listen:')) {
   const { serve } = await import('./serve.mjs')
   await serve({ spec: channelSpec.slice('listen:'.length), id: flags.id, peer: flags.peer, anchor: pluginPath })
 }
+if (channelSpec.startsWith('dial:')) {
+  const { dialOut } = await import('./dial.mjs')
+  const code = await dialOut({ spec: channelSpec.slice('dial:'.length), id: flags.id, peer: flags.peer, anchor: pluginPath })
+  await new Promise(resolve => process.stderr.write('', resolve))
+  process.exit(code)
+}
+// The session of a dialing runtime: its supervisor reports what ends it.
+const dialed = flags.supervisor === 'dial'
 
 // The plugins' Service classes must come from the same Cordis instance as the
 // Context, so prefer the Cordis that the (first) plugin itself resolves.
@@ -558,7 +570,24 @@ function dispatch(target, method, args) {
 }
 
 // Calls on exported objects and functions may replace services too.
-peer = await Process.connect(channelSpec, dispatch, () => { if (slots.size && !closing) refresh() }, endpoint)
+try {
+  peer = await Process.connect(channelSpec, dispatch, () => { if (slots.size && !closing) refresh() }, endpoint)
+} catch (error) {
+  // The supervisor ended the session before it greeted, and said why.
+  if (dialed) process.exit(1)
+  throw error
+}
+if (dialed) {
+  // Stopped: the rows go while rutis still hears from this end, then the
+  // session ends (and so does this process, below).
+  const stop = () => {
+    if (closing) return
+    closing = true
+    dispose().catch(() => {}).then(() => peer.end())
+  }
+  process.on('SIGINT', stop)
+  process.on('SIGTERM', stop)
+}
 // Spent once connected: what this process starts does not inherit it.
 delete process.env.RUTIS_CHANNEL_TOKEN
 await peer.closed()

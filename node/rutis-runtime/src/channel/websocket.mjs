@@ -13,7 +13,7 @@ import { ConnectError } from './errors.mjs'
 // drop a far end silent for 30 s; 16 MiB per message, 1009 over it.
 
 export const LIMITS = { maxMessage: 16 * 1024 * 1024, ping: 10_000, timeout: 30_000, handshake: 10_000 }
-const GOING_AWAY = 1001, TOO_BIG = 1009, REPLACED = 4002
+export const GOING_AWAY = 1001, TOO_BIG = 1009, REPLACED = 4002, REJECTED = 4003
 
 const truncate = reason => {
   let bytes = Buffer.from(reason ?? '')
@@ -46,15 +46,28 @@ const loopback = host => {
   return bare === 'localhost' || (isIP(bare) === 4 && bare.startsWith('127.')) || bare === '::1'
 }
 
+// The host of `spec`, an access point to dial; throws unless it is a ws://
+// or wss:// address, and a non-loopback one needs wss:// (the rule of
+// rutis-bridge's dialer).
+export function dialHost(spec) {
+  let url
+  try { url = new URL(spec) } catch { throw new Error(`${spec} is not a ws:// or wss:// address`) }
+  if (!['ws:', 'wss:'].includes(url.protocol) || !url.hostname) throw new Error(`${spec} is not a ws:// or wss:// address`)
+  if (url.protocol === 'ws:' && !loopback(url.hostname)) throw new Error(`${spec}: a non-loopback address needs wss://`)
+  return url.hostname
+}
+
 // A channel over an open WebSocket: { send(text), end(), close(reason), replaced() }.
+// `closed(reason, code)` gets the close code received from the far end
+// (1006 when none came).
 function wrap(socket, { message, closed }, limits) {
   let ended = false, failure
   let lastSeen = Date.now()
-  const finish = reason => {
+  const finish = (reason, code) => {
     if (ended) return
     ended = true
     clearInterval(heartbeat)
-    closed(reason)
+    closed(reason, code)
   }
   const heartbeat = setInterval(() => {
     if (Date.now() - lastSeen > limits.timeout) {
@@ -81,9 +94,10 @@ function wrap(socket, { message, closed }, limits) {
   socket.on('close', (code, reason) => {
     if (failure === undefined) {
       if (code === REPLACED) failure = 'replaced by a new connection'
+      else if (code === REJECTED) failure = `rejected: ${reason}`
       else if (code !== 1000 && code !== GOING_AWAY && code !== 1005) failure = `closed by the far end (${code}): ${reason}`
     }
-    finish(failure)
+    finish(failure, code)
   })
   return {
     send(text) {

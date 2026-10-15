@@ -140,9 +140,10 @@ export async function open(spec: string, handlers: Handlers, token?: string): Pr
     return frame(stream, handlers)
   }
   if (scheme === 'ws' || scheme === 'wss') {
-    // A remote runtime is reached by its controller, which dials and
-    // reconnects; a runtime never dials one (remote plugins design §4.4).
-    throw new ConnectError('incompatible', `${spec}: the Bun runtime does not dial; it listens (listen:ws://…)`)
+    // A session channel is local: a remote runtime listens (listen:ws://…)
+    // or dials an access point (dial:ws://…), and runs each session in a
+    // runtime of its own on a local channel (remote.ts).
+    throw new ConnectError('incompatible', `${spec}: not a session channel; a remote runtime listens (listen:ws://…) or dials an access point (dial:ws://…)`)
   }
   throw new ConnectError('incompatible', `no channel for ${scheme}: addresses`)
 }

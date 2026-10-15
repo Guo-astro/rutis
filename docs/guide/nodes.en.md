@@ -86,7 +86,7 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 }
 ```
 
-A remote Python runtime row is named `<runtime-name>:<module>`; the module is resolved on the remote machine. A Node runtime can also run remotely: in the Node project on that machine, run `node node_modules/@arcships/rutis-runtime/src/runner.mjs listen:wss://… --id <name> --peer <controller> ./package.json` (plugins are resolved from that `package.json`) and set `language` to `node`. A remote runtime serves one controller at a time. When its controller disconnects, it unloads all plugins running for that controller.
+A remote Python runtime row is named `<runtime-name>:<module>`; the module is resolved on the remote machine. A Node runtime can also run remotely: in the Node project on that machine, run `node node_modules/@arcships/rutis-runtime/src/runner.mjs listen:wss://… --id <name> --peer <controller> ./package.json` (plugins are resolved from that `package.json`) and set `language` to `node`; likewise a Bun runtime: in the Bun project on that machine, run `bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts listen:wss://… --id <name> --peer <controller> .` (plugins are resolved from that directory, rows named `<runtime-name>:<module>`) and set `language` to `bun`. A remote runtime serves one controller at a time. When its controller disconnects, it unloads all plugins running for that controller.
 
 ### Runtimes that connect in
 
@@ -122,7 +122,20 @@ RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
 - SIGTERM or Ctrl-C stops it: all rows are unloaded, the connection closes, and it does not reconnect.
 - Two processes with the same id take over from each other, displacing one another in turn at the pace of their backoffs; give every machine and worker an id of its own.
 
-Dialing out for Node, Go and Bun is [#384](https://github.com/arcships/rutis/issues/384); until then they only listen, and rutis connects to them (as above).
+Node and Bun runtimes dial out with the same arguments, environment variables and rules; set `language` in `runtimes.remote` to `node` or `bun`:
+
+```bash
+# In a Node project (plugins are resolved from package.json)
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  node node_modules/@arcships/rutis-runtime/src/runner.mjs dial:wss://main.example.com:7443/rutis --id worker-1 --peer main ./package.json
+# In a Bun project (plugins are resolved from this directory)
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
+```
+
+Node and Bun run each session in a child process: on a disconnect the child unloads every row and exits, and a reconnection starts a new one. `RUTIS_CA` is trusted together with the roots Node and Bun trust by default.
+
+Dialing out for Go is [#384](https://github.com/arcships/rutis/issues/384); until then it only listens, and rutis connects to it (as above).
 
 ## Connect a Cordis application as a node
 

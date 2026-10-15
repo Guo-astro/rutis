@@ -74,6 +74,23 @@ A host's `rutis.json`:
 
 As for TypeScript plugins: `npm publish` (the template's workflow publishes on a `v*` tag). A host installs it with `bun add` and adds a row `{ "id": "greeter", "name": "bun:greeter" }`.
 
+## 6. Run on another machine
+
+A Bun runtime can also run on another machine, its plugins managed by rutis elsewhere, in either direction (see [Connect nodes](nodes.en.md)):
+
+```bash
+# Listen, and rutis connects (on the rutis side: a node row and runtimes.remote with language bun)
+RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
+  bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts listen:wss://0.0.0.0:7443/rutis --id edge --peer main .
+# Dial out to a rutis access point (on the rutis side: runtimes.remote with listen and instances)
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
+```
+
+- Plugins are resolved from the last argument, the project directory; rows are named `<runtime-name>:<module>`, such as `edge:greeter` or `edge:./report.ts`.
+- Each session runs in a child runtime process: when the session ends (a disconnect, a newer connection taking over) it unloads every row and exits, and the next session starts a new process.
+- Dialing out reconnects by fixed rules and reports its state on stderr (`rutis: connected to …` and so on); SIGTERM or Ctrl-C unloads every row and exits. The rules are in [Connect nodes](nodes.en.md#runtimes-that-connect-in). `RUTIS_CA` is trusted together with the roots Bun trusts by default.
+
 ## Environment
 
-Bun 1.4 or later. This version of the Bun runtime runs on the host's machine; listening as a remote runtime (`listen:`) is not supported yet. Windows is not tested yet.
+Bun 1.4 or later. Windows is not tested yet.

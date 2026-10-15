@@ -210,11 +210,11 @@ impl Host {
 
         for remote in &config.runtimes.remote {
             let node = match remote.language.as_str() {
-                "python" | "py" | "go" => false,
+                "python" | "py" | "go" | "bun" => false,
                 "node" => true,
                 other => {
                     return Err(format!(
-                        "remote runtime {}: the language is python, go or node, not {other}",
+                        "remote runtime {}: the language is python, go, node or bun, not {other}",
                         remote.name
                     ))
                 }
@@ -1040,6 +1040,71 @@ mod tests {
         let host = Host::start(&config).await.unwrap();
         host.load(config.rows()).await.unwrap();
         assert_eq!(greeting(&host).await, "Remote, Ada");
+        child.start_kill().unwrap();
+    }
+
+    /// A Bun runtime on another machine (here, listening on loopback): a
+    /// peer row links to it, and its rows are `<runtime>:<module>`. Bun on
+    /// Windows is not tested yet.
+    /// guarantee: loader/remote-runtime-rows
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_remote_bun_runtime_runs_rows_named_after_it() {
+        use tokio::io::AsyncBufReadExt;
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("package.json"), "{}").unwrap();
+        std::fs::write(
+            project.path().join("greeter.ts"),
+            "export const provides = { greeter: { hello: 'sync' } }\n\
+             export function apply(ctx) { ctx.provide('greeter', { hello: (name: string) => 'Bun, ' + name }) }\n",
+        )
+        .unwrap();
+        let mut child = tokio::process::Command::new("bun")
+            .args(["--no-install", "--no-env-file"])
+            .arg(repo().join("bun/rutis-bun/src/main.ts"))
+            .args([
+                "listen:ws://127.0.0.1:0/rutis",
+                "--id",
+                "edge",
+                "--peer",
+                "remote-bun",
+            ])
+            .arg(project.path())
+            .current_dir(project.path())
+            .env("RUTIS_TOKEN", "edge-token")
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
+        let address = within("the runtime's address", async {
+            loop {
+                let line = lines
+                    .next_line()
+                    .await
+                    .unwrap()
+                    .expect("the runtime's address");
+                if let Some(address) = line.strip_prefix("rutis: listening on ") {
+                    break address.to_owned();
+                }
+            }
+        })
+        .await;
+        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+
+        std::env::set_var("RUTIS_TOKEN_EDGE", "edge-token");
+        let config: HostConfig = serde_json::from_value(json!({
+            "id": "remote-bun",
+            "runtimes": { "remote": [{ "name": "edge", "language": "bun" }] },
+            "rows": [
+                { "id": "edge", "name": "rutis-bridge/peer", "config": { "peer": "edge", "dial": address, "runtime": "edge" } },
+                { "id": "greeter", "name": "edge:./greeter.ts" }
+            ]
+        }))
+        .unwrap();
+        let host = Host::start(&config).await.unwrap();
+        host.load(config.rows()).await.unwrap();
+        assert_eq!(greeting(&host).await, "Bun, Ada");
         child.start_kill().unwrap();
     }
 

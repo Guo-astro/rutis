@@ -175,7 +175,7 @@ With `listen` (the name of a listener under `listen`) and `instances` (the id of
 - No node row is needed. `listen` and `instances` go together; a listener or group that does not exist, a group that is not `instanced`, or a missing token stops the host at startup.
 - `<name>:` rows belong in that group; anywhere else the row fails.
 
-A Python runtime connects in with `python -m rutis dial:wss://… --id <id> --peer <this host's id> <project>`; see [Connect nodes](nodes.en.md#runtimes-that-connect-in). Dialing out for Node, Go and Bun comes with [#384](https://github.com/arcships/rutis/issues/384).
+A Python runtime connects in with `python -m rutis dial:wss://… --id <id> --peer <this host's id> <project>`; see [Connect nodes](nodes.en.md#runtimes-that-connect-in). Node and Bun runtimes connect in with `dial:` too (the commands are in the same section); dialing out for Go comes with [#384](https://github.com/arcships/rutis/issues/384).
 
 ### `listen`
 

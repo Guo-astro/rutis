@@ -74,6 +74,23 @@ bunx --bun rutis-host dev
 
 与 TypeScript 插件相同：`npm publish`（模板的 workflow 在打 `v*` tag 时发布）。宿主用 `bun add` 安装后，加一行 `{ "id": "greeter", "name": "bun:greeter" }`。
 
+## 6. 在别的机器上运行
+
+Bun 运行时也可以在另一台机器上运行，由那里的 rutis 管理它的插件，两个方向都可以（见 [连接节点](nodes.md)）：
+
+```bash
+# 监听，由 rutis 来连（rutis 一侧写节点行与 runtimes.remote，language 为 bun）
+RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
+  bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts listen:wss://0.0.0.0:7443/rutis --id edge --peer main .
+# 拨出，连到 rutis 的接入点（rutis 一侧写 runtimes.remote 的 listen 与 instances）
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
+```
+
+- 插件从最后一个参数（项目目录）解析；行名写作 `<运行时名>:<模块>`，如 `edge:greeter`、`edge:./report.ts`。
+- 每个会话由一个子运行时进程运行：会话结束（断开、被新的连接接管）时它卸载全部行后退出，下一个会话起新的进程。
+- 拨出按固定规则重连，状态写在 stderr（`rutis: connected to …` 等），SIGTERM 或 Ctrl-C 卸载全部行后退出，规则见 [连接节点](nodes.md#连进来的运行时)。`RUTIS_CA` 与 Bun 默认信任的根证书一起信任。
+
 ## 环境
 
-Bun 1.4 或更高。本版本的 Bun 运行时在宿主所在的机器上运行；作为远程运行时监听（`listen:`）尚不支持。Windows 尚未测试。
+Bun 1.4 或更高。Windows 尚未测试。

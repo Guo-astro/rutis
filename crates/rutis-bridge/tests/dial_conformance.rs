@@ -4,8 +4,9 @@
 //! every rule of the dial-out table is checked against what the access
 //! point observes and what the runtime says on stderr.
 //!
-//! A column per language: Python now; Node, Go and Bun with #384; Swift and
-//! Kotlin with their SDKs (Swift A1, Android K-P2). A language joins by a
+//! A column per language: Python, Node and Bun (Unix only, as the whole Bun
+//! runtime is); Go with #384; Swift and Kotlin with their SDKs (Swift A1,
+//! Android K-P2). A language joins by a
 //! [`Language`] variant (the command that dials, the conformance plugin in
 //! its project) and a `column!` line. What every dialer must do:
 //!
@@ -64,6 +65,23 @@ const BACKOFF: [f64; 4] = [0.1, 0.2, 0.4, 0.4];
 #[derive(Clone, Copy, Debug)]
 enum Language {
     Python,
+    Node,
+    /// Unix only: Bun on Windows is not a declared platform.
+    #[cfg(all(unix, feature = "bun"))]
+    Bun,
+}
+
+/// The conformance plugin as the npm package `marker` in `project`, which
+/// the Node and Bun runtimes resolve the row's entry `marker` to.
+fn marker_package(project: &Path, fixture: &str) {
+    let package = project.join("node_modules/marker");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("package.json"),
+        r#"{"name":"marker","version":"1.0.0","type":"module","main":"index.mjs"}"#,
+    )
+    .unwrap();
+    std::fs::copy(repo().join(fixture), package.join("index.mjs")).unwrap();
 }
 
 /// The Python interpreter: one with `websockets` (`RUTIS_PYTHON`), else
@@ -93,6 +111,36 @@ impl Language {
                     .args(["--id", id, "--peer", "main"])
                     .arg(project)
                     .env("PYTHONPATH", repo().join("python/rutis"));
+                command
+            }
+            Language::Node => {
+                marker_package(
+                    project,
+                    "node/rutis-runtime/test/fixtures/conformance-dial.mjs",
+                );
+                let anchor = project.join("package.json");
+                std::fs::write(&anchor, "{}").unwrap();
+                let runtime = repo().join("node/rutis-runtime");
+                let mut command = tokio::process::Command::new("node");
+                command
+                    .arg(runtime.join("src/runner.mjs"))
+                    .arg(format!("dial:{address}"))
+                    .args(["--id", id, "--peer", "main"])
+                    .arg(anchor)
+                    .current_dir(runtime);
+                command
+            }
+            #[cfg(all(unix, feature = "bun"))]
+            Language::Bun => {
+                marker_package(project, "bun/rutis-bun/test/fixtures/conformance-dial.ts");
+                let mut command = tokio::process::Command::new("bun");
+                command
+                    .args(["--no-install", "--no-env-file"])
+                    .arg(repo().join("bun/rutis-bun/src/main.ts"))
+                    .arg(format!("dial:{address}"))
+                    .args(["--id", id, "--peer", "main"])
+                    .arg(project)
+                    .current_dir(project);
                 command
             }
         }
@@ -541,5 +589,7 @@ macro_rules! column {
 }
 
 column!(python, Language::Python);
-// Node, Go and Bun: #384. Swift and Kotlin: with their SDKs (Swift A1,
-// Android K-P2).
+column!(node, Language::Node);
+#[cfg(all(unix, feature = "bun"))]
+column!(bun, Language::Bun);
+// Go: #384. Swift and Kotlin: with their SDKs (Swift A1, Android K-P2).

@@ -313,3 +313,15 @@ RuntimeResolver::modules(handle)       // 现有：行名 "bun:<模块>"
 | §8 E2E S2 / S3 的 Bun 变体 | 未在本次实现 | 随 #186 / #187 的 E2E 框架一起加入 |
 | §8 `new --lang bun` 生成的项目能通过 `check` | 只测试了生成的文件 | 运行 `check` 需要从 npm 安装 `@arcships/rutis-bun`，归 S2（#186）的端到端测试 |
 | §5.2 `runtime` 默认还在 `PATH` 上找 `rutis-bun` 可执行程序 | B1 只找项目里的 `@arcships/rutis-bun` | 可执行程序在 B3 才有 |
+
+## 12. 实现时的调整（B2，#384）
+
+B2 随[远程运行时拨出](design-remote-runtime-dial-2026-10-14.md)一起实现：监听之外，Bun 运行时也能拨出（`dial:ws://…` / `dial:wss://…`，规则见那份设计 §六）。
+
+| 本文原来的说法 | 实现 | 原因 |
+| --- | --- | --- |
+| §3.2 `ws://…` 启动时报错 "the Bun runtime only listens" | 远程运行时监听（`listen:`）或拨出（`dial:`）；单独的 `ws://…` 仍不是会话通道 | 拨出设计 R1：每种远程运行时都支持监听与拨出 |
+| §4 租约在进程内清理，模块缓存跨租约保留 | 每个会话一个子运行时进程（`src/main.ts` 走回环通道，先出示一次性 token），父进程（`src/remote.ts`）在 WebSocket 与子进程之间逐条转发；会话结束即子进程退出 | 与 Node 运行时监听、拨出的做法相同；`Client` 的 I/O 在 worker 里按通道地址建立连接，WebSocket 无法交给 worker，父进程只转发、从不阻塞；会话之间不留任何状态 |
+| 拨出的客户端 | Bun 内置的 `ws` 客户端（`import { WebSocket } from 'ws'`，不安装 npm 包） | Bun 的 `WebSocket` 不报告升级被拒的状态码，无法区分 401 / 403 与 400；内置的 `ws` 客户端报告（`unexpected-response`）。TLS 握手失败只有关闭码 1015，按凭据被拒处理 |
+| 远程运行时的参数 | `<通道> [--id <端点>] [--peer <控制方>] <项目>`；子进程另带 `--format endpoint` 与（拨出时）`--supervisor dial` | 与 Node 运行时相同 |
+| `remote` 的 `language: "bun"` | 接受，行名 `<远程运行时名>:<模块>`（`Naming::Modules`） | §5.1；`rutis-host/src/host.rs::tests::a_remote_bun_runtime_runs_rows_named_after_it` |

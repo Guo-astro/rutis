@@ -4,7 +4,7 @@
 //! that reconnects gets a new lease. Each plugin start and cleanup is
 //! written to a log on the runtime's side. Python needs `websockets`
 //! (RUTIS_PYTHON, else python3; python on Windows); Go (feature `go`) the
-//! Go toolchain.
+//! Go toolchain; Bun (feature `bun`, Unix only) `bun` on PATH.
 #![cfg(all(feature = "node", feature = "python"))]
 
 use std::path::{Path, PathBuf};
@@ -40,6 +40,9 @@ enum Language {
     Node,
     #[cfg_attr(not(feature = "go"), allow(dead_code))]
     Go,
+    /// Unix only: Bun on Windows is not a declared platform.
+    #[cfg(all(unix, feature = "bun"))]
+    Bun,
 }
 
 /// A runtime listening for controllers, and the log its plugin writes.
@@ -73,6 +76,8 @@ impl Remote {
             Language::Python => "py:logger",
             Language::Node => "logger",
             Language::Go => "edge:logger",
+            #[cfg(all(unix, feature = "bun"))]
+            Language::Bun => "edge:logger",
         }
     }
 
@@ -81,6 +86,8 @@ impl Remote {
             Language::Python => "py",
             Language::Node => "node",
             Language::Go => "edge",
+            #[cfg(all(unix, feature = "bun"))]
+            Language::Bun => "edge",
         }
     }
 }
@@ -161,6 +168,33 @@ async fn remote_with_start_delay(language: Language, start_delay_ms: u64) -> Rem
                 .arg("listen:ws://127.0.0.1:0/rutis")
                 .args(["--id", "remote", "--peer", "main"])
                 .arg(project.path());
+            command
+        }
+        #[cfg(all(unix, feature = "bun"))]
+        Language::Bun => {
+            let package = project.path().join("node_modules/logger");
+            std::fs::create_dir_all(&package).unwrap();
+            std::fs::write(
+                package.join("package.json"),
+                json!({ "name": "logger", "version": "1.0.0", "type": "module", "main": "index.mjs" }).to_string(),
+            )
+            .unwrap();
+            std::fs::write(
+                package.join("index.mjs"),
+                format!(
+                    "import {{ appendFileSync }} from 'node:fs'\nawait new Promise(resolve => setTimeout(resolve, {start_delay_ms}))\nexport function apply(ctx, config) {{\n  appendFileSync({log:?}, `start ${{config.who}}\\n`)\n  return () => {{\n    if (config.stopDelayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, config.stopDelayMs)\n    appendFileSync({log:?}, `stop ${{config.who}}\\n`)\n  }}\n}}\n",
+                    log = log.display().to_string()
+                ),
+            )
+            .unwrap();
+            let mut command = tokio::process::Command::new("bun");
+            command
+                .args(["--no-install", "--no-env-file"])
+                .arg(repo().join("bun/rutis-bun/src/main.ts"))
+                .arg("listen:ws://127.0.0.1:0/rutis")
+                .args(["--id", "remote", "--peer", "main"])
+                .arg(project.path())
+                .current_dir(project.path());
             command
         }
     };
@@ -246,8 +280,8 @@ async fn controller_with_options(
     root.plugin(RuntimeAccessPlugin::new(id("remote"), remote.runtime()));
     let runtime = RuntimePlugin::remote(remote.runtime());
     let rows = Arc::new(match remote.language {
-        Language::Python | Language::Go => RuntimeResolver::modules(runtime.handle()),
         Language::Node => RuntimeResolver::node(runtime.handle()),
+        _ => RuntimeResolver::modules(runtime.handle()),
     });
     root.plugin(runtime);
     let plugin = LoaderPlugin::new(
@@ -417,4 +451,34 @@ async fn go_takeover_with_a_slow_cleanup() {
 #[tokio::test(flavor = "multi_thread")]
 async fn go_reconnecting_controller_gets_a_new_lease() {
     a_reconnecting_controller_gets_a_new_lease(Language::Go).await;
+}
+
+/// guarantee: loader/remote-runtime-lease
+#[cfg(all(unix, feature = "bun"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn bun_successive_controllers_get_clean_leases() {
+    successive_controllers_get_clean_leases(Language::Bun).await;
+}
+
+/// guarantee: loader/remote-runtime-lease
+#[cfg(all(unix, feature = "bun"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn bun_takeover_after_the_old_lease_is_gone() {
+    a_newer_controller_takes_over_after_the_old_lease_is_gone(Language::Bun).await;
+}
+
+/// guarantee: loader/remote-runtime-lease
+#[cfg(all(unix, feature = "bun"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn bun_takeover_with_a_slow_cleanup() {
+    // clock: widen — a cleanup slower than the maximum retry delay; what
+    // `takeover` asserts holds whatever it is.
+    takeover(Language::Bun, 400).await;
+}
+
+/// guarantee: loader/remote-runtime-lease
+#[cfg(all(unix, feature = "bun"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn bun_reconnecting_controller_gets_a_new_lease() {
+    a_reconnecting_controller_gets_a_new_lease(Language::Bun).await;
 }
