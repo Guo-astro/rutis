@@ -16,6 +16,7 @@ from pathlib import Path
 import background
 import conformance_weather
 
+from rutis import Map, _values
 from rutis import plugin as sdk
 from rutis.peer import RemoteError
 from rutis.testing import load
@@ -57,7 +58,21 @@ def argument(arg):
 
 def same(a, b):
     """JSON equality that tells apart what JSON does: bool from int, list
-    from tuple, float from int except where JSON cannot."""
+    from tuple, float from int except where JSON cannot. A tagged value is
+    written {"$<tag>": <its wire text>} (`about` in the expectations): `a`
+    must be of that tag with that text; a set's elements in any order."""
+    if isinstance(b, dict) and len(b) == 1 and next(iter(b)).startswith("$"):
+        (tag, text), = b.items()
+        tag = tag[1:]
+        if tag == "map":
+            return (
+                isinstance(a, Map)
+                and len(a) == len(text)
+                and all(same(key, k) and same(value, v) for (key, value), (k, v) in zip(a.items(), text))
+            )
+        if tag == "set":
+            return type(a) is set and len(a) == len(text) and all(any(same(x, e) for x in a) for e in text)
+        return _values.tag_of(a) == tag and _values.write(tag, a) == text
     if isinstance(b, bool) or b is None:
         return a is b
     if isinstance(b, (int, float)):

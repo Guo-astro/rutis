@@ -397,8 +397,9 @@ class ReferenceCountTests(background.IsolatedAsyncioTestCase):
             return 42
 
         peer, read = self.session(lambda target, method, args: None)
-        # The callback is granted before the set (which cannot cross) fails.
-        with self.assertRaisesRegex(TypeError, "cannot cross the boundary"):
+        # The callback is granted before the set (which this far end did
+        # not declare it takes) fails.
+        with self.assertRaisesRegex(ValueError, "did not declare the capability value-set"):
             peer.call("test", "bad", [callback, {"nested": {1, 2}}])
         self.assertEqual(peer._exports, {}, "the partial grant is rolled back")
         self.assertEqual(peer._identities, {})

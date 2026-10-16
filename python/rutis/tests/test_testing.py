@@ -113,7 +113,7 @@ class Testing(background.TestCase):
                 item["n"] = 2
                 self.assertEqual(t.service("store").first(), {"n": 1})
                 with self.assertRaisesRegex(PluginTestError, "cannot cross"):
-                    t.service("store").put({1, 2})
+                    t.service("store").put(object)
                 # Nesting: 64 levels cross, 65 do not (#279).
                 nest = lambda depth: functools.reduce(lambda inner, _: [inner], range(depth), "bottom")
                 t.service("store").put(nest(64))

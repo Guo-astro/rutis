@@ -11,7 +11,9 @@ It checks what a host would: the plugin uses only the services it declares
 in `inject`, provides what it declares in `provides` with every declared
 method, and runs its cleanups on unload. With `strict` (the default), values
 cross between the plugin and the test as they would between processes: data
-is copied (a dataclass arrives as a dict), functions and objects with
+is copied (a dataclass arrives as a dict; a datetime, Decimal, UUID, set,
+bytes, `rutis.Map` or `rutis.BigInt` as the runtime sends and receives it,
+#308), functions and objects with
 behaviour pass by reference, sync methods return values and async ones
 awaitables; what works only in one process fails here too.
 
@@ -31,7 +33,18 @@ from typing import Any, AsyncIterator, Callable
 
 from . import plugin as sdk
 from .events import Events, refused_emits
-from .peer import AggregateError, MAX_DEPTH, MAX_SAFE_INTEGER, RemoteError, _holds_reference, _is_live, decode_error, encode_error
+from . import _values
+from .peer import (
+    MAX_DEPTH,
+    MAX_SAFE_INTEGER,
+    UNDEFINED,
+    AggregateError,
+    RemoteError,
+    _beyond_data,
+    _is_live,
+    decode_error,
+    encode_error,
+)
 
 
 class PluginTestError(AssertionError):
@@ -45,9 +58,17 @@ def _cross(value: Any, where: str, data: bool = False, depth: int = 0) -> Any:
     `depth`: the lists and dicts around it (at most MAX_DEPTH, #279)."""
     if value is None or isinstance(value, (bool, str)):
         return value
+    if value is UNDEFINED:
+        return None
+    tag = _values.tag_of(value)
+    if tag is not None:
+        return _cross_tagged(tag, value, where, depth)
     if isinstance(value, int):
         if not -MAX_SAFE_INTEGER <= value <= MAX_SAFE_INTEGER:
-            raise PluginTestError(f"{where}: an integer beyond ±(2^53-1) cannot cross between processes (#356)")
+            raise PluginTestError(
+                f"{where}: an integer beyond ±(2^53-1) cannot cross between processes (#356): "
+                "send it as rutis.BigInt(n)"
+            )
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -58,12 +79,10 @@ def _cross(value: Any, where: str, data: bool = False, depth: int = 0) -> Any:
             f"{where}: a value nested deeper than {MAX_DEPTH} levels cannot cross between processes"
         )
     if isinstance(value, (list, tuple)):
-        data = data or not _holds_reference(value)
+        data = data or not _beyond_data(value)
         return [_cross(item, f"{where}[{i}]", data, depth + 1) for i, item in enumerate(value)]
     if isinstance(value, dict):
-        if not all(isinstance(key, str) for key in value):
-            raise PluginTestError(f"{where}: only string keys cross between processes")
-        data = data or not _holds_reference(value)
+        data = data or not _beyond_data(value)
         return {key: _cross(item, f"{where}.{key}", data, depth + 1) for key, item in value.items()}
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         try:
@@ -83,6 +102,33 @@ def _cross(value: Any, where: str, data: bool = False, depth: int = 0) -> Any:
     if _is_live(value):
         return _Reference(value, where)
     raise PluginTestError(f"{where}: {type(value).__name__} cannot cross between processes")
+
+
+def _cross_tagged(tag: str, value: Any, where: str, depth: int) -> Any:
+    """A tagged value (#308) as the other process receives it: written and
+    read as the runtime does (an instant in UTC, to the microsecond; a map
+    as a `rutis.Map`; bytes as bytes), refused where the runtime refuses."""
+    try:
+        if tag not in ("map", "set"):
+            return _values.read(tag, _values.write(tag, value))
+        if depth >= MAX_DEPTH:
+            raise PluginTestError(
+                f"{where}: a value nested deeper than {MAX_DEPTH} levels cannot cross between processes"
+            )
+        if tag == "set":
+            elements = list(value)
+            _values.check_keys(elements, "set element")
+            return _values.received_set(
+                [_cross(element, f"{where} element", False, depth + 1) for element in elements]
+            )
+        entries = list(value.items())
+        _values.check_keys((key for key, _item in entries), "map key")
+        return _values.received_map(
+            [_cross(key, f"{where} key", False, depth + 1) for key, _item in entries],
+            [_cross(item, f"{where}[{key!r}]", False, depth + 1) for key, item in entries],
+        )
+    except (ValueError, _values.Refused) as error:
+        raise PluginTestError(f"{where}: {error}") from None
 
 
 def _crossed_error(error: Exception) -> Exception:
