@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -24,7 +25,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"weak"
+
+	"github.com/arcships/rutis/go/rutis/internal/values"
 )
 
 const (
@@ -45,8 +49,9 @@ var (
 // What this side declares in the compat format, where older hosts ignore
 // it. `sync-wait`: its synchronous calls say so (`sync: true`), for the
 // host's wait-cycle check (#228). Not `sync-stack`: every incoming call runs
-// on a goroutine of its own.
-var compatCapabilities = []string{"reentrant-sync", "sync-wait"}
+// on a goroutine of its own. `value-<tag>`: it takes every tagged value
+// (#308).
+var compatCapabilities = append([]string{"reentrant-sync", "sync-wait"}, ValueCapabilities...)
 
 // UndefinedType is the wire's `undefined`: an omitted argument or field.
 type UndefinedType struct{}
@@ -459,6 +464,14 @@ func (p *Peer) Release(proxy any) {
 	}
 }
 
+// releaseAll gives back the references a refused value carried; p.mu is
+// not held.
+func (p *Peer) releaseAll(records []*imported) {
+	for _, record := range records {
+		p.release(record)
+	}
+}
+
 func (p *Peer) release(record *imported) {
 	p.mu.Lock()
 	if record.released || p.closeErr != nil {
@@ -477,22 +490,26 @@ func (p *Peer) release(record *imported) {
 	}
 }
 
-func holdsReference(value any) bool {
+// marked reports whether `value` holds a reference or a tagged value, so
+// it crosses as a list or record rather than as data.
+func marked(value any) bool {
 	switch v := value.(type) {
 	case Func, Object, *RemoteFunction, *RemoteFuture:
 		return true
 	case []any:
 		for _, item := range v {
-			if holdsReference(item) {
+			if marked(item) {
 				return true
 			}
 		}
 	case map[string]any:
 		for _, item := range v {
-			if holdsReference(item) {
+			if marked(item) {
 				return true
 			}
 		}
+	default:
+		return tagOf(value) != ""
 	}
 	return false
 }
@@ -535,12 +552,57 @@ func jsonDepth(text []byte) int {
 // level).
 func (p *Peer) encode(value any, grants *[]int64, origin []string, depth int) (map[string]any, error) {
 	switch value.(type) {
-	case []any, map[string]any, error:
+	case []any, map[string]any, error, Map, Set:
 		if depth >= MaxDepth {
 			return nil, ErrTooDeep
 		}
 	}
+	if tag := tagOf(value); tag != "" {
+		if v, ok := value.(*big.Int); ok && v == nil {
+			return map[string]any{"type": "data", "value": nil}, nil
+		}
+		if !p.supports("value-" + tag) {
+			return nil, valueErrorf("cannot send %s: the far end does not take %s values (it did not declare the capability value-%s)", describe(value), tag, tag)
+		}
+	}
 	switch v := value.(type) {
+	case Map:
+		if err := CheckKeys(v.keys(), "map key"); err != nil {
+			return nil, err
+		}
+		entries := make([]any, len(v))
+		for i, entry := range v {
+			key, err := p.encode(entry.Key, grants, origin, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			item := entry.Value
+			// Undefined is null in data (design V10).
+			if _, undefined := item.(UndefinedType); undefined {
+				item = nil
+			}
+			encoded, err := p.encode(item, grants, origin, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			entries[i] = []any{key, encoded}
+		}
+		return map[string]any{"type": "map", "value": entries}, nil
+	case Set:
+		if err := CheckKeys(v, "set element"); err != nil {
+			return nil, err
+		}
+		elements := make([]any, len(v))
+		for i, element := range v {
+			encoded, err := p.encode(element, grants, origin, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			elements[i] = encoded
+		}
+		return map[string]any{"type": "set", "value": elements}, nil
+	case time.Time, values.DateTime, values.Date, values.TimeOfDay, []byte, *big.Int, values.Decimal, values.UUID:
+		return tagged(v)
 	case UndefinedType:
 		return map[string]any{"type": "undefined"}, nil
 	case *RemoteFunction:
@@ -565,7 +627,7 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string, depth int) (m
 		}
 		return p.exportValue(v, "object", key, grants, origin)
 	case []any:
-		if holdsReference(v) {
+		if marked(v) {
 			items := make([]any, len(v))
 			for i, item := range v {
 				encoded, err := p.encode(item, grants, origin, depth+1)
@@ -577,7 +639,7 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string, depth int) (m
 			return map[string]any{"type": "list", "value": items}, nil
 		}
 	case map[string]any:
-		if holdsReference(v) {
+		if marked(v) {
 			items := make(map[string]any, len(v))
 			for key, item := range v {
 				encoded, err := p.encode(item, grants, origin, depth+1)
@@ -601,7 +663,7 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string, depth int) (m
 	return map[string]any{"type": "data", "value": json.RawMessage(data)}, nil
 }
 
-// plain replaces undefined inside data by null.
+// plain replaces undefined inside data by null (design V10).
 func plain(value any) any {
 	switch v := value.(type) {
 	case UndefinedType:
@@ -615,9 +677,6 @@ func plain(value any) any {
 	case map[string]any:
 		out := make(map[string]any, len(v))
 		for key, item := range v {
-			if _, undefined := item.(UndefinedType); undefined {
-				continue
-			}
 			out[key] = plain(item)
 		}
 		return out
@@ -691,8 +750,17 @@ type wireValue struct {
 }
 
 // decode turns a wire value into a value; p.mu is held. `call` is the
-// call whose arguments these are ("" elsewhere).
-func (p *Peer) decode(raw json.RawMessage, call string) (any, error) {
+// call whose arguments these are ("" elsewhere). The error returned is a
+// malformed frame, which ends the session; a value this side cannot take
+// is in the decoding's `refused`, and fails only its call.
+func (p *Peer) decode(raw json.RawMessage, call string) (any, *decoding, error) {
+	d := &decoding{call: call}
+	value, err := p.decodeWith(raw, d)
+	return value, d, err
+}
+
+func (p *Peer) decodeWith(raw json.RawMessage, d *decoding) (any, error) {
+	call := d.call
 	if len(raw) == 0 {
 		return Undefined, nil
 	}
@@ -715,7 +783,7 @@ func (p *Peer) decode(raw json.RawMessage, call string) (any, error) {
 		}
 		out := make([]any, len(items))
 		for i, item := range items {
-			decoded, err := p.decode(item, call)
+			decoded, err := p.decodeWith(item, d)
 			if err != nil {
 				return nil, err
 			}
@@ -729,7 +797,7 @@ func (p *Peer) decode(raw json.RawMessage, call string) (any, error) {
 		}
 		out := make(map[string]any, len(items))
 		for key, item := range items {
-			decoded, err := p.decode(item, call)
+			decoded, err := p.decodeWith(item, d)
 			if err != nil {
 				return nil, err
 			}
@@ -747,7 +815,10 @@ func (p *Peer) decode(raw json.RawMessage, call string) (any, error) {
 		}
 		return signal, nil
 	case "reference":
-		return p.decodeReference(wire.Value)
+		return p.decodeReference(wire.Value, d)
+	}
+	if isTag(wire.Type) {
+		return p.decodeTagged(wire.Type, wire.Value, d)
 	}
 	return nil, errors.New("invalid wire value")
 }
@@ -759,7 +830,7 @@ func (p *Peer) originPattern() *regexp.Regexp {
 	return endpointOrigin
 }
 
-func (p *Peer) decodeReference(raw json.RawMessage) (any, error) {
+func (p *Peer) decodeReference(raw json.RawMessage, d *decoding) (any, error) {
 	var value struct {
 		ID     *json.Number `json:"id"`
 		Kind   string       `json:"kind"`
@@ -819,6 +890,7 @@ func (p *Peer) decodeReference(raw json.RawMessage) (any, error) {
 	}
 	record := &imported{id: ref, kind: value.Kind, origin: origin, grants: 1}
 	p.imports[ref] = record
+	d.fresh = append(d.fresh, record)
 	if value.Kind == "function" {
 		proxy := &RemoteFunction{peer: p, record: record}
 		record.function = weak.Make(proxy)
@@ -1050,12 +1122,18 @@ func (p *Peer) receive(f *frame) error {
 		}
 		var outcome result
 		if f.Op == "return" {
-			value, err := p.decode(f.Value, "")
+			value, d, err := p.decode(f.Value, "")
 			if err != nil {
 				p.mu.Unlock()
 				return err
 			}
 			outcome.value = value
+			if d.refused != nil {
+				// A value this side cannot take fails the call waiting for
+				// it; the references it carried go back.
+				outcome = result{err: d.refused}
+				defer p.releaseAll(d.fresh)
+			}
 		} else {
 			outcome.err = decodeError(f.Error)
 		}
@@ -1195,6 +1273,8 @@ type job struct {
 	args     []any
 	entry    *export
 	business bool
+	refused  error
+	fresh    []*imported
 	ctx      context.Context
 	cancel   context.CancelFunc
 }
@@ -1237,11 +1317,14 @@ func (p *Peer) invocation(f *frame) (*job, error) {
 		}
 	}
 	if f.Op == "invoke" || f.Op == "call" {
-		decoded, err := p.decode(f.Args, id)
+		decoded, d, err := p.decode(f.Args, id)
 		if err != nil {
 			return nil, err
 		}
 		j.args = arguments(decoded)
+		// Arguments this side cannot take fail the call: it is answered by
+		// a throw, and the references they carried go back.
+		j.refused, j.fresh = d.refused, d.fresh
 	}
 	switch {
 	case f.Op == "invoke":
@@ -1305,6 +1388,11 @@ func (p *Peer) execute(j *job) {
 	}
 	defer j.cancel()
 	ctx := WithChain(j.ctx, append(append([]string{}, j.path...), j.id))
+	if j.refused != nil {
+		p.releaseAll(j.fresh)
+		p.respond(j.id, nil, j.refused, ChainOf(ctx))
+		return
+	}
 	value, err := protect(func() (any, error) {
 		switch {
 		case j.op == "invoke":
