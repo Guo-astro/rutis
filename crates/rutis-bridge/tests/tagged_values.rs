@@ -2,7 +2,8 @@
 //! end that did not declare a value's capability fails, through a host's
 //! own forwarding and through relays; `Process::emit` checks its arguments
 //! against the runtime's capabilities; generated types carry tagged values
-//! through serde (`arg`, `decode_value`). The wire rules are tested in
+//! through serde (`arg`, `decode_value`), and their integers beyond
+//! ±(2^53−1) as bigints. The wire rules are tested in
 //! `src/session/rpc/tests.rs`, the formats in `src/session/values.rs`.
 
 use std::sync::{Arc, Mutex, OnceLock};
@@ -327,4 +328,153 @@ fn generated_types_carry_tagged_values_through_serde() {
     );
     let read: Reading = serde_json::from_value(serde_json::to_value(reading()).unwrap()).unwrap();
     assert_eq!(read, reading());
+}
+
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Counters {
+    id: u64,
+    delta: i64,
+    safe: i64,
+    wide: i128,
+    huge: u128,
+    ids: ValueMap<u64, String>,
+    levels: Vec<i64>,
+    ratio: f64,
+}
+
+const SAFE: i64 = (1 << 53) - 1;
+
+fn counters() -> Counters {
+    Counters {
+        id: u64::MAX,
+        delta: -SAFE - 1,
+        safe: SAFE,
+        wide: i128::MIN,
+        huge: u128::MAX,
+        ids: ValueMap(vec![(1 << 60, "far".into()), (7, "near".into())]),
+        levels: vec![SAFE, SAFE + 1],
+        ratio: 9007199254740993.0,
+    }
+}
+
+/// guarantee: bridge/value-tags
+///
+/// Rust integers in generated types (serde) need no wrapper (design V6):
+/// one beyond ±(2^53−1) crosses as a bigint, `i128` and `u128` beyond 64
+/// bits too, and a received bigint decodes into an integer type that holds
+/// it. To a far end without `value-bigint`, the call fails, naming the
+/// capability; integers within the range still cross as data.
+#[tokio::test(flavor = "multi_thread")]
+async fn rust_integers_beyond_2_53_cross_as_bigints() {
+    let value = arg(&counters()).unwrap();
+    let Value::Record(fields) = &value else {
+        panic!("a record expected, got {value:?}")
+    };
+    // Beyond 64 bits JSON data cannot hold them: bigints already.
+    assert_eq!(fields["wide"], Value::BigInt(i128::MIN.into()));
+    assert_eq!(fields["huge"], Value::BigInt(u128::MAX.into()));
+
+    let (near, far) = session(
+        Endpoint::rust(id("near")),
+        Arc::new(Nothing),
+        Endpoint::rust(id("far")),
+        Arc::new(Downstream),
+    );
+    near.ready().await.unwrap();
+    far.ready().await.unwrap();
+    let echoed = near
+        .invoke_async("t", "echo", Value::List(vec![value]))
+        .await
+        .unwrap();
+    let Value::List(mut echoed) = echoed else {
+        panic!("a list expected")
+    };
+    let Value::Record(mut fields) = echoed.remove(0) else {
+        panic!("a record expected")
+    };
+    assert_eq!(fields["id"], Value::BigInt(u64::MAX.into()));
+    assert_eq!(fields["delta"], Value::BigInt((-SAFE - 1).into()));
+    assert_eq!(fields["safe"], Value::Data(json!(SAFE)));
+    assert_eq!(
+        fields["levels"],
+        Value::List(vec![
+            Value::Data(json!(SAFE)),
+            Value::BigInt((SAFE + 1).into())
+        ])
+    );
+    assert_eq!(fields["ratio"], Value::Data(json!(9007199254740993.0)));
+    assert_eq!(
+        fields["ids"],
+        Value::Map(vec![
+            (
+                Value::BigInt((1u64 << 60).into()),
+                Value::Data(json!("far"))
+            ),
+            (Value::Data(json!(7)), Value::Data(json!("near"))),
+        ])
+    );
+    // Within 64 bits the bigints decode into the integer fields. Past 64
+    // bits serde has no path from data into an `i128`: such a bigint
+    // decodes into a `BigInt` only.
+    let wide = fields.remove("wide").unwrap();
+    let huge = fields.remove("huge").unwrap();
+    assert_eq!(decode_value::<BigInt>(wide).unwrap(), i128::MIN.into());
+    assert!(decode_value::<u128>(huge).is_err());
+    fields.insert("wide".into(), Value::Data(json!(-5)));
+    fields.insert("huge".into(), Value::Data(json!(5)));
+    let back: Counters = decode_value(Value::Record(fields)).unwrap();
+    assert_eq!(
+        back,
+        Counters {
+            wide: -5,
+            huge: 5,
+            ..counters()
+        }
+    );
+
+    // A received bigint decodes into an integer type that holds it, and
+    // into a `BigInt`; into one that does not hold it, it fails.
+    assert_eq!(
+        decode_value::<u64>(Value::BigInt(u64::MAX.into())).unwrap(),
+        u64::MAX
+    );
+    assert_eq!(decode_value::<i64>(Value::BigInt(5.into())).unwrap(), 5);
+    assert_eq!(
+        decode_value::<BigInt>(Value::BigInt(5.into())).unwrap(),
+        5.into()
+    );
+    assert!(decode_value::<i64>(Value::BigInt(u64::MAX.into())).is_err());
+    assert!(decode_value::<u32>(Value::BigInt((1i64 << 40).into())).is_err());
+    // As data, a bigint within 64 bits is its number.
+    assert_eq!(
+        decode_value::<serde_json::Value>(Value::BigInt(u64::MAX.into())).unwrap(),
+        json!(u64::MAX)
+    );
+    assert_eq!(
+        Value::BigInt(i64::MIN.into()).json().unwrap(),
+        json!(i64::MIN)
+    );
+    assert!(Value::BigInt(u128::MAX.into()).json().is_err());
+
+    let (old, _old_far) = session(
+        Endpoint::rust(id("near")),
+        Arc::new(Nothing),
+        without_values("old"),
+        Arc::new(Downstream),
+    );
+    old.ready().await.unwrap();
+    let args = Value::List(vec![arg(&(1u64 << 60)).unwrap()]);
+    match old.invoke_async("t", "echo", args).await {
+        Err(Error::Value(message)) => assert!(
+            message.contains("did not declare the capability value-bigint"),
+            "{message}"
+        ),
+        other => panic!("a value error expected, got {other:?}"),
+    }
+    let safe = Value::List(vec![arg(&SAFE).unwrap()]);
+    assert_eq!(
+        old.invoke_async("t", "echo", safe.clone()).await.unwrap(),
+        safe
+    );
+    assert!(old.close_reason().is_none());
 }
