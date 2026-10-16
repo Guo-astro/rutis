@@ -2,7 +2,7 @@
 
 [中文](design-value-types-2026-10-15.md)
 
-Status: final, not implemented. Date: 2026-10-15. Base: `main` (after 0.10, with #400–#402 merged).
+Status: final; phase 1 (the specification, see [protocol design](design-protocol-plugins-2026-09-25.en.md) §6.1) and phase 2 (Rust) implemented, phases 3 and 4 not yet. Date: 2026-10-15. Base: `main` (after 0.10, with #400–#402 merged).
 Sources: the draft and review in [#308](https://github.com/arcships/rutis/issues/308), [#355](https://github.com/arcships/rutis/issues/355), [#360](https://github.com/arcships/rutis/issues/360), maintainer decisions (2026-10-15, recorded in #308); "Passing values" in [the plugin API](guide/plugin-api.en.md); [the protocol design](design-protocol-plugins-2026-09-25.en.md) §6 (explicitly tagged values); [design philosophy](design-philosophy.en.md) §7.
 
 Scope: the value layer of the session protocol, and the five implementations in Rust, Node, Bun, Python and Go together with their test tools; the Swift and Kotlin SDKs implement this document ([Swift SDK](design-swift-sdk-2026-10-12.en.md), [Android app hosting](design-android-runtime-2026-10-12.en.md)).

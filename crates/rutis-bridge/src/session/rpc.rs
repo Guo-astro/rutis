@@ -18,19 +18,32 @@ use tokio::sync::{oneshot, watch, Notify};
 use crate::channel::PeerId;
 pub use crate::session::protocol::Implementation;
 use crate::session::protocol::{Frame, Kind, WireValue, VERSION};
+use crate::session::values::{
+    base64_decode, base64_encode, check_keys, BigInt, Date, DateTime, Decimal, Instant, TimeOfDay,
+    Uuid,
+};
 use crate::session::{Error, Handshake};
 
 pub type Reply = Result<Value, Error>;
 type Callback = dyn Fn(Value) -> Reply + Send + Sync;
 
-/// The current value slice supports JSON data, owned functions and async results.
-/// `invoke` returns a Future reference; only `wait`/`wait_async` await it.
-#[derive(Clone, Debug)]
+/// A value crossing a session: JSON data, references to functions, objects
+/// and async results, and the tagged values beyond JSON (points in time,
+/// local dates and times, binary data, maps, sets, big integers, decimals,
+/// UUIDs; see [`values`](crate::session::values)). `invoke` returns a
+/// Future reference; only `wait`/`wait_async` await it.
+///
+/// A tagged value is sent only to a far end that declared its capability
+/// `value-<tag>`; to any other, the call carrying it fails, naming the
+/// value and the capability, and the session goes on. More kinds of value
+/// may be added: match with a `_` arm.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Value {
     Undefined,
     Data(Json),
     List(Vec<Value>),
-    /// A plain object whose fields contain references.
+    /// A plain object whose fields contain references or tagged values.
     Record(std::collections::BTreeMap<String, Value>),
     Reference(Reference),
     /// As an argument: an AbortSignal the callee receives, aborted when this
@@ -38,8 +51,51 @@ pub enum Value {
     /// marks the call as cancellable: a Rust callee is cancelled by the
     /// future it returned being dropped.
     Signal,
+    /// A point in time (tag `instant`): JS `Date`, Python `datetime` with a
+    /// time zone, Go `time.Time`.
+    Instant(Instant),
+    /// A local date and time without a time zone (tag `datetime`).
+    DateTime(DateTime),
+    /// A calendar date (tag `date`).
+    Date(Date),
+    /// A time of day without a time zone (tag `time`).
+    Time(TimeOfDay),
+    /// Binary data (tag `bytes`): JS `Uint8Array`, Python `bytes`, Go
+    /// `[]byte`.
+    Bytes(Vec<u8>),
+    /// A map (tag `map`), its entries in order. Keys are strings, finite
+    /// numbers, booleans, or bigint, datetime, date, time, decimal and uuid
+    /// values, no two equal; a value `Undefined` is sent as null.
+    Map(Vec<(Value, Value)>),
+    /// A set (tag `set`), its elements in order, of the kinds a map key
+    /// may be, no two equal.
+    Set(Vec<Value>),
+    /// An integer of any size, sent explicitly as one (tag `bigint`).
+    BigInt(BigInt),
+    /// A decimal number, its text kept (tag `decimal`).
+    Decimal(Decimal),
+    /// A UUID (tag `uuid`).
+    Uuid(Uuid),
 }
 impl Value {
+    /// The tag of a value beyond JSON data (`instant`, `map`, ...), whose
+    /// capability is `value-<tag>`; `None` for data, lists, records,
+    /// references and signals.
+    pub fn tag(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Instant(_) => "instant",
+            Self::DateTime(_) => "datetime",
+            Self::Date(_) => "date",
+            Self::Time(_) => "time",
+            Self::Bytes(_) => "bytes",
+            Self::Map(_) => "map",
+            Self::Set(_) => "set",
+            Self::BigInt(_) => "bigint",
+            Self::Decimal(_) => "decimal",
+            Self::Uuid(_) => "uuid",
+            _ => return None,
+        })
+    }
     pub fn list(self) -> Result<Vec<Value>, Error> {
         match self {
             Self::List(values) => Ok(values),
@@ -63,6 +119,12 @@ impl Value {
                 .map(Json::Object),
             Self::Reference(_) => Err(Error::Value("expected data, received a reference".into())),
             Self::Signal => Err(Error::Value("expected data, received a signal".into())),
+            // Not JSON: as text it would be a string the receiver takes for
+            // one (decode it with `decode_value` into its type instead).
+            other => Err(Error::Value(format!(
+                "expected data, received {}",
+                crate::session::values::describe(&other)
+            ))),
         }
     }
     pub fn reference(self) -> Result<Reference, Error> {
@@ -529,12 +591,53 @@ fn next_tag() -> String {
     )
 }
 
+/// The capabilities of the tagged values, `value-<tag>` (#308): a side
+/// declaring one takes values of that tag.
+const VALUE_CAPABILITIES: [&str; 10] = [
+    "value-instant",
+    "value-datetime",
+    "value-date",
+    "value-time",
+    "value-bytes",
+    "value-map",
+    "value-set",
+    "value-bigint",
+    "value-decimal",
+    "value-uuid",
+];
 /// What this side declares in a compat-format handshake: it marks its
-/// synchronous waits, and takes such marks (#228).
-const COMPAT_CAPABILITIES: [&str; 1] = ["sync-wait"];
+/// synchronous waits, and takes such marks (#228); it takes every tagged
+/// value (#308).
+const COMPAT_CAPABILITIES: [&str; 11] = [
+    "sync-wait",
+    "value-instant",
+    "value-datetime",
+    "value-date",
+    "value-time",
+    "value-bytes",
+    "value-map",
+    "value-set",
+    "value-bigint",
+    "value-decimal",
+    "value-uuid",
+];
 /// What a compat-format handshake may declare that means anything here; any
 /// other capability there is ignored, as before the format had any.
-const COMPAT_DECLARED: [&str; 3] = ["sync-wait", "sync-stack", "reentrant-sync"];
+const COMPAT_DECLARED: [&str; 13] = [
+    "sync-wait",
+    "sync-stack",
+    "reentrant-sync",
+    "value-instant",
+    "value-datetime",
+    "value-date",
+    "value-time",
+    "value-bytes",
+    "value-map",
+    "value-set",
+    "value-bigint",
+    "value-decimal",
+    "value-uuid",
+];
 
 struct Import {
     peer: Weak<SessionState>,
@@ -713,7 +816,8 @@ pub struct Endpoint {
     pub implementation: Implementation,
     /// What this side supports: `objects`, `signals`, `reentrant-sync`,
     /// `forwarding`, `sync-wait` (and, for a runtime with one thread and one
-    /// stack, `sync-stack`). Capabilities grant no permission.
+    /// stack, `sync-stack`), and `value-<tag>` for each tagged value it
+    /// takes. Capabilities grant no permission.
     pub capabilities: Vec<String>,
 }
 
@@ -735,8 +839,10 @@ impl Endpoint {
                 "forwarding",
                 "sync-wait",
             ]
+            .into_iter()
+            .chain(VALUE_CAPABILITIES)
             .map(String::from)
-            .to_vec(),
+            .collect(),
         }
     }
 
@@ -899,7 +1005,7 @@ impl Connection {
         std::thread::Builder::new()
             .name("rutis-reader".into())
             // Set, not left to RUST_MIN_STACK: a frame within
-            // MAX_FRAME_DEPTH takes about 450 KiB to parse in a debug build.
+            // MAX_FRAME_DEPTH takes about 640 KiB to parse in a debug build.
             .stack_size(READER_STACK)
             .spawn(move || {
                 let result: Result<(), Error> = (|| loop {
@@ -947,6 +1053,13 @@ impl Connection {
             },
         };
         declared.iter().any(|c| c == capability)
+    }
+    /// Whether this side declared `capability` in its handshake.
+    fn declares(&self, capability: &str) -> bool {
+        match &self.0.format {
+            Format::Compat => COMPAT_CAPABILITIES.contains(&capability),
+            Format::Endpoint(endpoint) => endpoint.capabilities.iter().any(|c| c == capability),
+        }
     }
     /// After the handshake: what the far end does while it waits
     /// synchronously, for the wait-cycle check ([`waits`]).
@@ -1306,10 +1419,57 @@ impl Connection {
         levels: usize,
         grants: &mut Vec<u64>,
     ) -> Result<WireValue, Error> {
-        if matches!(value, Value::List(_) | Value::Record(_)) && levels == 0 {
+        if matches!(
+            value,
+            Value::List(_) | Value::Record(_) | Value::Map(_) | Value::Set(_)
+        ) && levels == 0
+        {
             return Err(too_deep());
         }
+        if let Some(tag) = value.tag() {
+            let capability = format!("value-{tag}");
+            if !self.supports(&capability) {
+                return Err(Error::Value(format!(
+                    "cannot send {}: the far end does not take {tag} values \
+                     (it did not declare the capability {capability})",
+                    crate::session::values::describe(value)
+                )));
+            }
+        }
         Ok(match value {
+            Value::Instant(value) => WireValue::Instant(value.to_string()),
+            Value::DateTime(value) => WireValue::DateTime(value.to_string()),
+            Value::Date(value) => WireValue::Date(value.to_string()),
+            Value::Time(value) => WireValue::Time(value.to_string()),
+            Value::Bytes(value) => WireValue::Bytes(base64_encode(value)),
+            Value::BigInt(value) => WireValue::BigInt(value.to_string()),
+            Value::Decimal(value) => WireValue::Decimal(value.to_string()),
+            Value::Uuid(value) => WireValue::Uuid(value.to_string()),
+            Value::Map(entries) => {
+                check_keys(entries.iter().map(|(key, _)| key), "map key")?;
+                WireValue::Map(
+                    entries
+                        .iter()
+                        .map(|(key, value)| {
+                            // Undefined is null in data (design V10).
+                            let value = match value {
+                                Value::Undefined => WireValue::Data(Json::Null),
+                                value => self.encode_inner(value, levels - 1, grants)?,
+                            };
+                            Ok((self.encode_inner(key, levels - 1, grants)?, value))
+                        })
+                        .collect::<Result<_, Error>>()?,
+                )
+            }
+            Value::Set(elements) => {
+                check_keys(elements, "set element")?;
+                WireValue::Set(
+                    elements
+                        .iter()
+                        .map(|element| self.encode_inner(element, levels - 1, grants))
+                        .collect::<Result<_, _>>()?,
+                )
+            }
             Value::Undefined => WireValue::Undefined,
             Value::Data(value) => {
                 if !fits(value, levels) {
@@ -1366,26 +1526,100 @@ impl Connection {
         }
         Ok(wire)
     }
+    /// Decode every one of `values`, even past a value error (so each
+    /// reference in them is imported); the first value error, if any. A
+    /// transport error ends the session and stops at once.
+    fn decode_each(
+        &self,
+        values: impl IntoIterator<Item = WireValue>,
+    ) -> Result<Vec<Value>, Error> {
+        let mut decoded = Vec::new();
+        let mut refused = None;
+        for value in values {
+            match self.decode(value) {
+                Ok(value) => decoded.push(value),
+                Err(error @ Error::Value(_)) => {
+                    refused.get_or_insert(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        match refused {
+            Some(error) => Err(error),
+            None => Ok(decoded),
+        }
+    }
+    /// Decode a value from the far end. A transport error ends the session;
+    /// a value error (a tagged value this side did not declare, or one not
+    /// in its format) fails only the call it came in.
+    ///
+    /// A value error does not stop the decode: every reference in the value
+    /// is still imported, so dropping what was decoded releases each one
+    /// on the far end, as for a value taken.
     fn decode(&self, value: WireValue) -> Reply {
+        let refused = value.tag().and_then(|tag| {
+            let capability = format!("value-{tag}");
+            (!self.declares(&capability)).then(|| {
+                Error::Value(format!(
+                    "received a {tag} value, which this side does not take \
+                     (it did not declare the capability {capability})"
+                ))
+            })
+        });
+        let value = match (refused, value) {
+            // Their entries are still read, for the references in them.
+            (Some(error), WireValue::Map(entries)) => {
+                self.decode_each(entries.into_iter().flat_map(|(key, value)| [key, value]))?;
+                return Err(error);
+            }
+            (Some(error), WireValue::Set(elements)) => {
+                self.decode_each(elements)?;
+                return Err(error);
+            }
+            (Some(error), _) => return Err(error),
+            (None, value) => value,
+        };
         Ok(match value {
+            WireValue::Instant(text) => Value::Instant(text.parse()?),
+            WireValue::DateTime(text) => Value::DateTime(text.parse()?),
+            WireValue::Date(text) => Value::Date(text.parse()?),
+            WireValue::Time(text) => Value::Time(text.parse()?),
+            WireValue::Bytes(text) => Value::Bytes(base64_decode(&text)?),
+            WireValue::BigInt(text) => Value::BigInt(text.parse()?),
+            WireValue::Decimal(text) => Value::Decimal(text.parse()?),
+            WireValue::Uuid(text) => Value::Uuid(text.parse()?),
+            WireValue::Map(entries) => {
+                let mut decoded = self
+                    .decode_each(entries.into_iter().flat_map(|(key, value)| [key, value]))?
+                    .into_iter();
+                let mut entries = Vec::new();
+                while let (Some(key), Some(value)) = (decoded.next(), decoded.next()) {
+                    // Undefined is null in data (design V10).
+                    let value = match value {
+                        Value::Undefined => Value::Data(Json::Null),
+                        value => value,
+                    };
+                    entries.push((key, value));
+                }
+                check_keys(entries.iter().map(|(key, _)| key), "map key")?;
+                Value::Map(entries)
+            }
+            WireValue::Set(elements) => {
+                let elements = self.decode_each(elements)?;
+                check_keys(&elements, "set element")?;
+                Value::Set(elements)
+            }
             WireValue::Undefined => Value::Undefined,
             WireValue::Data(value) => Value::Data(value),
-            WireValue::List(values) => Value::List(
-                values
-                    .into_iter()
-                    .map(|value| self.decode(value))
-                    .collect::<Result<_, _>>()?,
-            ),
+            WireValue::List(values) => Value::List(self.decode_each(values)?),
             // A Rust callee is cancelled by its future being dropped, once
             // the caller gives the call up and releases its result; the
             // signal itself only marks the call as cancellable.
             WireValue::Signal => Value::Signal,
-            WireValue::Record(fields) => Value::Record(
-                fields
-                    .into_iter()
-                    .map(|(key, value)| Ok((key, self.decode(value)?)))
-                    .collect::<Result<_, Error>>()?,
-            ),
+            WireValue::Record(fields) => {
+                let (keys, values): (Vec<_>, Vec<_>) = fields.into_iter().unzip();
+                Value::Record(keys.into_iter().zip(self.decode_each(values)?).collect())
+            }
             WireValue::Reference {
                 id,
                 home: true,
@@ -1582,6 +1816,26 @@ impl Connection {
             _ => Err(Error::Transport(message)),
         }
     }
+    /// The arguments of the far end's call `id`; `None` when they hold a
+    /// value this side does not take (one it did not declare, or not in
+    /// its format): that call fails with a throw saying why, and the
+    /// session goes on.
+    fn decode_args(&self, id: &str, args: WireValue) -> Result<Option<Value>, Error> {
+        match self.decode(args) {
+            Ok(args) => Ok(Some(args)),
+            Err(error @ Error::Value(_)) => {
+                if !id.starts_with(self.remote_prefix()) {
+                    return Err(transport("invalid invocation identity/path"));
+                }
+                let _ = self.write(Frame::Throw {
+                    id: id.to_owned(),
+                    error: error.into(),
+                });
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
     fn receive(&self, frame: Frame) -> Result<(), Error> {
         if let Some(error) = &self.0.calls.lock().unwrap().closed {
             return Err(error.clone());
@@ -1606,10 +1860,14 @@ impl Connection {
         let (id, mut path, call, sync) = match frame {
             Frame::Return { id, value } => {
                 // Decode first: a discarded late reply still releases the
-                // references it granted when its values drop.
-                let value = self.decode(value)?;
+                // references it granted when its values drop. A value this
+                // side cannot take fails the call waiting for it.
+                let value = match self.decode(value) {
+                    Err(error @ Error::Value(_)) => Err(error),
+                    value => Ok(value?),
+                };
                 if let Some(waiting) = self.reply_target(&id)? {
-                    finish(waiting, Ok(value));
+                    finish(waiting, value);
                 }
                 return Ok(());
             }
@@ -1660,12 +1918,12 @@ impl Connection {
                 method,
                 args,
                 sync,
-            } => (
-                id,
-                path,
-                Accepted::Invoke(target, method, self.decode(args)?),
-                sync,
-            ),
+            } => {
+                let Some(args) = self.decode_args(&id, args)? else {
+                    return Ok(());
+                };
+                (id, path, Accepted::Invoke(target, method, args), sync)
+            }
             // Rust exports objects only as relays of other sessions' objects.
             Frame::Call {
                 id,
@@ -1674,12 +1932,13 @@ impl Connection {
                 method: Some(method),
                 args,
                 sync,
-            } => (
-                id,
-                path,
-                Accepted::Method(self.export_object(reference)?, method, self.decode(args)?),
-                sync,
-            ),
+            } => {
+                let object = self.export_object(reference)?;
+                let Some(args) = self.decode_args(&id, args)? else {
+                    return Ok(());
+                };
+                (id, path, Accepted::Method(object, method, args), sync)
+            }
             Frame::Get {
                 id,
                 path,
@@ -1699,12 +1958,13 @@ impl Connection {
                 method: None,
                 args,
                 sync,
-            } => (
-                id,
-                path,
-                Accepted::Call(self.export(reference)?, self.decode(args)?),
-                sync,
-            ),
+            } => {
+                let object = self.export(reference)?;
+                let Some(args) = self.decode_args(&id, args)? else {
+                    return Ok(());
+                };
+                (id, path, Accepted::Call(object, args), sync)
+            }
             Frame::Await {
                 id,
                 path,
@@ -1963,13 +2223,14 @@ fn finish(waiting: Waiting, result: Reply) {
 pub const MAX_DEPTH: usize = 64;
 
 /// How deep a frame this side reads may nest, counting every JSON array
-/// and object. Each level of a value takes at most two on the wire (the
-/// `{"type":"list","value":[...]}` wrapper and its array), the frame and
-/// argument list three more, and a reference at the bottom three: a
-/// value within [`MAX_DEPTH`] stays within `2 * MAX_DEPTH + 6`; the rest
-/// is margin. A deeper frame fails its call, or, if no call can be told
-/// from it, ends the session.
-pub(crate) const MAX_FRAME_DEPTH: usize = 2 * MAX_DEPTH + 16;
+/// and object. Each level of a value takes at most three on the wire (the
+/// `{"type":"map","value":[[k, v]]}` wrapper, its array and an entry's
+/// pair; a list or record takes two), the frame and argument list three
+/// more, and a reference at the bottom three: a value within
+/// [`MAX_DEPTH`] stays within `3 * MAX_DEPTH + 6`; the rest is margin. A
+/// deeper frame fails its call, or, if no call can be told from it, ends
+/// the session.
+pub(crate) const MAX_FRAME_DEPTH: usize = 3 * MAX_DEPTH + 16;
 
 /// The reader thread's stack: room for parsing, decoding and dropping a
 /// frame [`MAX_FRAME_DEPTH`] deep, whatever `RUST_MIN_STACK` says.

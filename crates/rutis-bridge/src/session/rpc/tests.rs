@@ -1147,6 +1147,13 @@ fn wire_records(depth: usize) -> String {
         format!(r#"{{"value":{{"k":{inner}}},"type":"record"}}"#)
     })
 }
+/// Maps `depth` deep around a reference, each holding the next as the
+/// value of its one entry, `value` before `type`.
+fn wire_maps(depth: usize) -> String {
+    (0..depth).fold(REFERENCE.to_string(), |inner, _| {
+        format!(r#"{{"value":[[{{"type":"data","value":"k"}},{inner}]],"type":"map"}}"#)
+    })
+}
 /// A JSON object `depth` deep.
 fn objects(depth: usize) -> String {
     (0..depth).fold("1".to_string(), |inner, _| format!(r#"{{"k":{inner}}}"#))
@@ -1155,16 +1162,21 @@ fn invoke_frame(id: &str, args: &str) -> String {
     format!(r#"{{"args":{args},"op":"invoke","id":"{id}","path":[],"target":"t","method":"m"}}"#)
 }
 /// Invocations of each kind exactly [`MAX_FRAME_DEPTH`] deep: lists and
-/// records around a reference (two levels each), a data object.
+/// records around a reference (two levels each), maps around one (three
+/// levels each), a data object.
 fn deepest_invocations() -> Vec<(&'static str, String)> {
     let levels = (MAX_FRAME_DEPTH - 4) / 2;
     let frames = vec![
         ("lists", invoke_frame("node:1", &wire_lists(levels))),
         ("records", invoke_frame("node:2", &wire_records(levels))),
         (
+            "maps",
+            invoke_frame("node:3", &wire_maps((MAX_FRAME_DEPTH - 4) / 3)),
+        ),
+        (
             "a data object",
             invoke_frame(
-                "node:3",
+                "node:4",
                 &format!(
                     r#"{{"value":{},"type":"data"}}"#,
                     objects(MAX_FRAME_DEPTH - 2)
@@ -1187,20 +1199,29 @@ fn deepest_throw(id: &str) -> String {
     frame
 }
 
-/// A frame the deepest a far end within the limit sends parses.
+/// A frame the deepest a far end within the limit sends parses: lists
+/// take two wire levels each, maps three.
 #[test]
 fn a_frame_from_within_the_limit_is_within_the_frame_depth() {
-    let frame = invoke_frame("node:1", &wire_lists(MAX_DEPTH + 1));
-    assert_eq!(frame_depth(&frame), 2 * MAX_DEPTH + 6);
-    assert!(frame_depth(&frame) <= MAX_FRAME_DEPTH);
-    assert!(matches!(
-        parse_frame(frame.as_bytes()),
-        Ok(Frame::Invoke { .. })
-    ));
+    let lists = invoke_frame("node:1", &wire_lists(MAX_DEPTH + 1));
+    assert_eq!(frame_depth(&lists), 2 * MAX_DEPTH + 6);
+    // The argument list, then maps to the limit.
+    let maps = invoke_frame(
+        "node:1",
+        &format!(r#"{{"value":[{}],"type":"list"}}"#, wire_maps(MAX_DEPTH)),
+    );
+    assert_eq!(frame_depth(&maps), 3 * MAX_DEPTH + 6);
+    for frame in [lists, maps] {
+        assert!(frame_depth(&frame) <= MAX_FRAME_DEPTH);
+        assert!(matches!(
+            parse_frame(frame.as_bytes()),
+            Ok(Frame::Invoke { .. })
+        ));
+    }
 }
 
-/// Frames exactly [`MAX_FRAME_DEPTH`] deep, of every kind (lists and
-/// records holding references, a data object, an error graph), go the
+/// Frames exactly [`MAX_FRAME_DEPTH`] deep, of every kind (lists, records
+/// and maps holding references, a data object, an error graph), go the
 /// real receive path: parsed and decoded on the reader thread (its stack
 /// set explicitly, [`READER_STACK`]), dropped after the call. In a debug
 /// build too. Parsing alone is also checked on a thread with that stack.
@@ -1420,4 +1441,491 @@ async fn a_frame_too_deep_fails_its_call_and_the_session_goes_on() {
         Some(Error::Transport(message)) => assert!(message.contains("64 levels"), "{message}"),
         other => panic!("{other:?}"),
     }
+}
+
+// ── Tagged values (#308) ─────────────────────────────────────────────
+
+/// The capabilities this side declares cover every tagged value, in both
+/// formats, and a compat-format far end may declare them.
+#[test]
+fn this_side_declares_every_value_capability_in_both_formats() {
+    use crate::session::values::VALUE_TAGS;
+    let endpoint = Endpoint::rust(PeerId::new("main").unwrap());
+    for tag in VALUE_TAGS {
+        let capability = format!("value-{tag}");
+        assert!(VALUE_CAPABILITIES.contains(&capability.as_str()), "{tag}");
+        assert!(COMPAT_CAPABILITIES.contains(&capability.as_str()), "{tag}");
+        assert!(COMPAT_DECLARED.contains(&capability.as_str()), "{tag}");
+        assert!(endpoint.capabilities.contains(&capability), "{tag}");
+    }
+}
+
+impl Remote {
+    /// [`Remote::start`], greeting in the compat format with
+    /// `capabilities`.
+    fn start_declaring(stream: Far, capabilities: &[&str]) -> Self {
+        let mut remote = Self {
+            reader: stream.try_clone().unwrap(),
+            writer: stream,
+        };
+        assert!(matches!(remote.read(), Frame::Hello { .. }));
+        remote.send(Frame::Hello {
+            version: VERSION,
+            endpoint: None,
+            implementation: None,
+            capabilities: Some(capabilities.iter().map(|c| c.to_string()).collect()),
+        });
+        remote
+    }
+    fn send_json(&mut self, frame: Json) {
+        let bytes = serde_json::to_vec(&frame).unwrap();
+        self.writer.sender.lock().unwrap().send(&bytes).unwrap();
+    }
+    fn read_json(&mut self) -> Json {
+        let message = self
+            .reader
+            .receiver
+            .lock()
+            .unwrap()
+            .recv()
+            .unwrap()
+            .unwrap();
+        serde_json::from_slice(&message).unwrap()
+    }
+}
+
+/// Each tagged value, and its wire form.
+fn tagged_samples() -> Vec<(Value, Json)> {
+    let instant: Instant = "2026-10-15T03:22:15.123456789Z".parse().unwrap();
+    let uuid: Uuid = "0f8fad5b-d9cb-469f-a165-70867728950e".parse().unwrap();
+    vec![
+        (
+            Value::Instant(instant),
+            json!({ "type": "instant", "value": "2026-10-15T03:22:15.123456789Z" }),
+        ),
+        (
+            Value::DateTime("2026-10-15T14:30:05.25".parse().unwrap()),
+            json!({ "type": "datetime", "value": "2026-10-15T14:30:05.25" }),
+        ),
+        (
+            Value::Date("2026-10-15".parse().unwrap()),
+            json!({ "type": "date", "value": "2026-10-15" }),
+        ),
+        (
+            Value::Time("14:30:05.25".parse().unwrap()),
+            json!({ "type": "time", "value": "14:30:05.25" }),
+        ),
+        (
+            Value::Bytes(b"hello".to_vec()),
+            json!({ "type": "bytes", "value": "aGVsbG8=" }),
+        ),
+        (
+            Value::Map(vec![
+                (Value::Data(json!("a")), Value::Data(json!(1))),
+                (Value::BigInt(2.into()), Value::Instant(instant)),
+            ]),
+            json!({ "type": "map", "value": [
+                [{ "type": "data", "value": "a" }, { "type": "data", "value": 1 }],
+                [{ "type": "bigint", "value": "2" },
+                 { "type": "instant", "value": "2026-10-15T03:22:15.123456789Z" }],
+            ] }),
+        ),
+        (
+            Value::Set(vec![Value::Data(json!(1)), Value::Uuid(uuid)]),
+            json!({ "type": "set", "value": [
+                { "type": "data", "value": 1 },
+                { "type": "uuid", "value": "0f8fad5b-d9cb-469f-a165-70867728950e" },
+            ] }),
+        ),
+        (
+            Value::BigInt("-123456789012345678901".parse().unwrap()),
+            json!({ "type": "bigint", "value": "-123456789012345678901" }),
+        ),
+        (
+            Value::Decimal("-12.3400".parse().unwrap()),
+            json!({ "type": "decimal", "value": "-12.3400" }),
+        ),
+        (
+            Value::Uuid(uuid),
+            json!({ "type": "uuid", "value": "0f8fad5b-d9cb-469f-a165-70867728950e" }),
+        ),
+        // In an object: a record, as with references.
+        (
+            Value::Record([("at".to_owned(), Value::Instant(instant))].into()),
+            json!({ "type": "record", "value": {
+                "at": { "type": "instant", "value": "2026-10-15T03:22:15.123456789Z" },
+            } }),
+        ),
+    ]
+}
+
+/// guarantee: bridge/value-tags
+///
+/// To a far end that declared their capabilities, tagged values go out in
+/// their wire formats and come back as the same values.
+#[tokio::test(flavor = "multi_thread")]
+async fn tagged_values_cross_in_their_wire_formats_to_a_far_end_that_declared_them() {
+    let (peer, remote) = connected(Arc::new(EchoArgs));
+    let (values, wire): (Vec<_>, Vec<_>) = tagged_samples().into_iter().unzip();
+    let remote = tokio::task::spawn_blocking(move || {
+        let mut remote = Remote::start_declaring(remote, &VALUE_CAPABILITIES);
+        let frame = remote.read_json();
+        assert_eq!(frame["op"], "invoke");
+        assert_eq!(frame["args"], json!({ "type": "list", "value": wire }));
+        // Echo the arguments back as they came.
+        remote.send_json(json!({ "op": "return", "id": frame["id"], "value": frame["args"] }));
+        // A map value undefined is null (design V10).
+        let frame = remote.read_json();
+        assert_eq!(
+            frame["args"]["value"][0]["value"][0][1],
+            json!({ "type": "data", "value": null })
+        );
+        remote.send_json(
+            json!({ "op": "return", "id": frame["id"], "value": { "type": "undefined" } }),
+        );
+        remote
+    });
+    peer.ready().await.unwrap();
+    let back = peer
+        .invoke_async("t", "m", Value::List(values.clone()))
+        .await
+        .unwrap();
+    assert_eq!(back, Value::List(values));
+    peer.invoke_async(
+        "t",
+        "m",
+        Value::List(vec![Value::Map(vec![(
+            Value::Data(json!("gone")),
+            Value::Undefined,
+        )])]),
+    )
+    .await
+    .unwrap();
+    let _remote = remote.await.unwrap();
+    assert!(peer.close_reason().is_none());
+}
+
+/// guarantee: bridge/value-tags
+///
+/// Map keys and set elements this side would send are checked before the
+/// call goes out: of a kind every language takes as a key, none equal to
+/// another; a map nests as a level of the depth limit. Each failure fails
+/// only its call.
+#[tokio::test(flavor = "multi_thread")]
+async fn map_keys_and_set_elements_are_checked_before_sending() {
+    let (peer, remote) = connected(Arc::new(EchoArgs));
+    let remote = tokio::task::spawn_blocking(move || {
+        let mut remote = Remote::start_declaring(remote, &VALUE_CAPABILITIES);
+        // Only the last call is sent.
+        let Frame::Invoke { id, args, .. } = remote.read() else {
+            panic!("invoke expected")
+        };
+        remote.ret(id, args);
+        remote
+    });
+    peer.ready().await.unwrap();
+    let instant = Instant::from_unix(0, 0).unwrap();
+    let refused = |value: Value| {
+        let peer = peer.clone();
+        async move {
+            match peer.invoke_async("t", "m", Value::List(vec![value])).await {
+                Err(Error::Value(message)) => message,
+                other => panic!("a value error expected, got {other:?}"),
+            }
+        }
+    };
+    for (key, kind) in [
+        (Value::Instant(instant), "an instant"),
+        (Value::Bytes(vec![1]), "bytes"),
+        (Value::Data(json!(null)), "null"),
+        (Value::Data(json!([1])), "an array"),
+        (Value::Map(vec![]), "a map"),
+        (Value::callback(|_| Ok(Value::Undefined)), "a reference"),
+    ] {
+        let message = refused(Value::Map(vec![(key.clone(), Value::Data(json!(1)))])).await;
+        assert!(
+            message.contains(&format!("a map key cannot be {kind}")),
+            "{message}"
+        );
+        let message = refused(Value::Set(vec![key])).await;
+        assert!(
+            message.contains(&format!("a set element cannot be {kind}")),
+            "{message}"
+        );
+    }
+    let message = refused(Value::Map(vec![
+        (Value::Data(json!(1)), Value::Data(json!("a"))),
+        (Value::Data(json!(1.0)), Value::Data(json!("b"))),
+    ]))
+    .await;
+    assert!(message.contains("duplicate map key 1"), "{message}");
+    let message = refused(Value::Set(vec![
+        Value::Date("2026-10-15".parse().unwrap()),
+        Value::Date("2026-10-15".parse().unwrap()),
+    ]))
+    .await;
+    assert!(
+        message.contains("duplicate set element 2026-10-15"),
+        "{message}"
+    );
+    let maps = (0..MAX_DEPTH + 1).fold(Value::Data(json!(1)), |inner, _| {
+        Value::Map(vec![(Value::Data(json!("k")), inner)])
+    });
+    assert_too_deep(peer.invoke_async("t", "m", Value::List(vec![maps])).await);
+    let set = Value::List(vec![Value::Set(vec![Value::Data(json!("x"))])]);
+    assert_eq!(peer.invoke_async("t", "m", set.clone()).await.unwrap(), set);
+    let _remote = remote.await.unwrap();
+    assert!(peer.close_reason().is_none());
+}
+
+/// guarantee: bridge/value-tags
+///
+/// A call refused for a value it carries still takes the references it
+/// carries, and releases them: the far end's exports do not stay granted
+/// until the session ends. The session keeps serving.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_call_releases_the_references_it_carries() {
+    let (peer, remote) = connected(Arc::new(EchoArgs));
+    let remote = tokio::task::spawn_blocking(move || {
+        let mut remote = Remote::start_declaring(remote, &VALUE_CAPABILITIES);
+        let function = |id: u64| {
+            json!({ "type": "reference",
+                    "value": { "id": id, "kind": "function", "home": false, "origin": [] } })
+        };
+        let refused = [
+            // Bad base64 beside a function.
+            json!([{ "type": "bytes", "value": "not base64!" }, function(1)]),
+            // A map with colliding keys holding one.
+            json!([{ "type": "map", "value": [
+                [{ "type": "data", "value": 1 }, function(2)],
+                [{ "type": "data", "value": 1 }, { "type": "data", "value": 2 }],
+            ] }]),
+            // A function after the bad value, nested in a record.
+            json!([{ "type": "record", "value": {
+                "a": { "type": "instant", "value": "yesterday" },
+                "b": function(3),
+            } }]),
+        ];
+        for (n, args) in refused.into_iter().enumerate() {
+            let id = format!("node:{}", n + 1);
+            remote.send_json(json!({
+                "op": "invoke", "id": id, "path": [], "target": "t", "method": "m",
+                "args": { "type": "list", "value": args },
+            }));
+            // A release of the function, and the call's throw, in any order.
+            let (mut released, mut thrown) = (false, false);
+            while !(released && thrown) {
+                let frame = remote.read_json();
+                match frame["op"].as_str() {
+                    Some("release") => {
+                        assert_eq!(frame["reference"], json!(n + 1));
+                        assert_eq!(frame["count"], json!(1));
+                        released = true;
+                    }
+                    Some("throw") => {
+                        assert_eq!(frame["id"], id);
+                        thrown = true;
+                    }
+                    _ => panic!("a release or a throw expected, got {frame}"),
+                }
+            }
+        }
+        // Still serving.
+        remote.send_json(json!({
+            "op": "invoke", "id": "node:9", "path": [], "target": "t", "method": "m",
+            "args": { "type": "list", "value": [{ "type": "date", "value": "2026-10-15" }] },
+        }));
+        let reply = remote.read_json();
+        assert_eq!(reply["op"], "return", "{reply}");
+        remote
+    });
+    peer.ready().await.unwrap();
+    let _remote = remote.await.unwrap();
+    assert!(peer.0.imports.lock().unwrap().is_empty());
+    assert!(peer.close_reason().is_none());
+}
+
+/// Returns a tagged value for `instant`, its arguments otherwise.
+struct Tagging;
+impl Dispatch for Tagging {
+    fn invoke(&self, _: &Connection, _: &str, method: &str, args: Value) -> Reply {
+        match method {
+            "instant" => Ok(Value::Instant(Instant::from_unix(0, 0).unwrap())),
+            _ => Ok(args),
+        }
+    }
+}
+
+/// guarantee: bridge/value-tags
+///
+/// A far end that did not declare a value's capability (an older runtime)
+/// is never sent that value: a call carrying it fails before it is sent,
+/// with an error naming the value and the capability, as does a reply
+/// carrying one (the far end receives the error). Values it declared still
+/// cross, and the session goes on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tagged_value_to_a_far_end_without_its_capability_fails_only_that_call() {
+    let (peer, remote) = connected(Arc::new(Tagging));
+    let (answered, calls) = tokio::sync::oneshot::channel();
+    let remote = tokio::task::spawn_blocking(move || {
+        // `value-date` only; `objects` means nothing in this format.
+        let mut remote = Remote::start_declaring(remote, &["value-date", "objects"]);
+        // The first frame read is the date: the bytes were not sent.
+        let frame = remote.read_json();
+        assert_eq!(
+            frame["args"]["value"][0],
+            json!({ "type": "date", "value": "2026-10-15" })
+        );
+        remote.send_json(json!({ "op": "return", "id": frame["id"], "value": frame["args"] }));
+        // A reply carrying an instant fails on this side's end: the far end
+        // receives the error.
+        remote.send_json(json!({
+            "op": "invoke", "id": "node:1", "path": [], "target": "t", "method": "instant",
+            "args": { "type": "data", "value": [] },
+        }));
+        let reply = remote.read_json();
+        assert_eq!(reply["op"], "throw", "{reply}");
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("cannot send an instant")
+                && message.contains("capability value-instant"),
+            "{message}"
+        );
+        answered.send(()).unwrap();
+        remote
+    });
+    peer.ready().await.unwrap();
+    assert!(peer.supports("value-date") && !peer.supports("value-bytes"));
+    match peer
+        .invoke_async("t", "m", Value::List(vec![Value::Bytes(vec![1, 2])]))
+        .await
+    {
+        Err(Error::Value(message)) => assert_eq!(
+            message,
+            "cannot send bytes: the far end does not take bytes values \
+             (it did not declare the capability value-bytes)"
+        ),
+        other => panic!("a value error expected, got {other:?}"),
+    }
+    let date = Value::List(vec![Value::Date("2026-10-15".parse().unwrap())]);
+    assert_eq!(
+        peer.invoke_async("t", "m", date.clone()).await.unwrap(),
+        date
+    );
+    calls.await.unwrap();
+    let _remote = remote.await.unwrap();
+    assert!(peer.close_reason().is_none());
+}
+
+/// guarantee: bridge/value-tags
+///
+/// What this side receives is checked: a tagged value it did not declare,
+/// one not in its format, a map whose keys collide or a key of a kind no
+/// key may be fails only the call it came in (a call from the far end
+/// with a throw, a reply by failing the call waiting for it); the session
+/// goes on.
+#[tokio::test(flavor = "multi_thread")]
+async fn received_tagged_values_are_checked_and_only_their_call_fails() {
+    // This side takes every tagged value but `uuid`.
+    let mut endpoint = Endpoint::rust(PeerId::new("main").unwrap());
+    endpoint.capabilities.retain(|c| c != "value-uuid");
+    let (local, far) = far_pair();
+    let peer =
+        Connection::open_with(local, Arc::new(EchoArgs), Format::Endpoint(endpoint)).unwrap();
+    let (answered, calls) = tokio::sync::oneshot::channel();
+    let remote = tokio::task::spawn_blocking(move || {
+        let mut remote = Remote {
+            reader: far.try_clone().unwrap(),
+            writer: far,
+        };
+        assert!(matches!(remote.read(), Frame::Hello { .. }));
+        remote.send(Frame::Hello {
+            version: crate::session::ENDPOINT_PROTOCOL,
+            endpoint: Some("far".into()),
+            implementation: None,
+            capabilities: Some(VALUE_CAPABILITIES.map(String::from).to_vec()),
+        });
+        let data = |value: Json| json!({ "type": "data", "value": value });
+        let refusals = [
+            (
+                json!({ "type": "uuid", "value": "0f8fad5b-d9cb-469f-a165-70867728950e" }),
+                "received a uuid value, which this side does not take \
+                 (it did not declare the capability value-uuid)",
+            ),
+            (
+                json!({ "type": "map", "value": [[data(json!(1)), data(json!("a"))],
+                                                 [data(json!(1.0)), data(json!("b"))]] }),
+                "duplicate map key 1",
+            ),
+            (
+                json!({ "type": "map", "value": [[{ "type": "bytes", "value": "AA==" },
+                                                  data(json!(1))]] }),
+                "a map key cannot be bytes",
+            ),
+            (
+                json!({ "type": "set", "value": [data(json!(null))] }),
+                "a set element cannot be null",
+            ),
+            (
+                json!({ "type": "instant", "value": "2026-13-01T00:00:00Z" }),
+                "invalid instant \"2026-13-01T00:00:00Z\"",
+            ),
+            (
+                json!({ "type": "instant", "value": "2026-10-15T03:22:15+02:00" }),
+                "invalid instant",
+            ),
+            (
+                json!({ "type": "bytes", "value": "aGVsbG8" }),
+                "invalid bytes",
+            ),
+            (
+                json!({ "type": "bigint", "value": "007" }),
+                "invalid bigint",
+            ),
+            (
+                json!({ "type": "decimal", "value": "1e5" }),
+                "invalid decimal",
+            ),
+            // A good one after all of them.
+            (
+                json!({ "type": "instant", "value": "2026-10-15T03:22:15.5Z" }),
+                "",
+            ),
+        ];
+        for (n, (arg, expected)) in refusals.into_iter().enumerate() {
+            let id = format!("far:{}", n + 1);
+            remote.send_json(json!({
+                "op": "invoke", "id": id, "path": [], "target": "t",
+                "method": "m", "args": { "type": "list", "value": [arg.clone()] },
+            }));
+            let reply = remote.read_json();
+            assert_eq!(reply["id"], id);
+            if expected.is_empty() {
+                assert_eq!(reply["op"], "return", "{reply}");
+                assert_eq!(reply["value"], json!({ "type": "list", "value": [arg] }));
+                continue;
+            }
+            assert_eq!(reply["op"], "throw", "{reply}");
+            let message = reply["error"]["message"].as_str().unwrap();
+            assert!(message.contains(expected), "{message}");
+        }
+        answered.send(()).unwrap();
+        // This side calls: the reply is a set with equal elements.
+        let frame = remote.read_json();
+        remote.send_json(json!({
+            "op": "return", "id": frame["id"],
+            "value": { "type": "set", "value": [data(json!("x")), data(json!("x"))] },
+        }));
+        remote
+    });
+    peer.ready().await.unwrap();
+    calls.await.unwrap();
+    match peer.invoke_async("t", "m", Value::Undefined).await {
+        Err(Error::Value(message)) => {
+            assert!(message.contains("duplicate set element \"x\""), "{message}")
+        }
+        other => panic!("a value error expected, got {other:?}"),
+    }
+    let _remote = remote.await.unwrap();
+    assert!(peer.close_reason().is_none());
 }

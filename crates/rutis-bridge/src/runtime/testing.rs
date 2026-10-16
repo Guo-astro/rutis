@@ -118,14 +118,61 @@ pub async fn runtime(
         }
     }
 
+    // A value as the expectations write it: data as JSON, a tagged value
+    // as `{"$<tag>": <its wire value>}` (`about` in WEATHER_EXPECTED).
+    fn written(value: Value) -> Result<Json, Error> {
+        let tagged = |tag: &str, value: Json| json!({ format!("${tag}"): value });
+        Ok(match value {
+            Value::List(values) => {
+                Json::Array(values.into_iter().map(written).collect::<Result<_, _>>()?)
+            }
+            Value::Record(fields) => Json::Object(
+                fields
+                    .into_iter()
+                    .map(|(key, value)| Ok((key, written(value)?)))
+                    .collect::<Result<_, Error>>()?,
+            ),
+            Value::Bytes(bytes) => tagged(
+                "bytes",
+                json!(crate::session::values::base64_encode(&bytes)),
+            ),
+            Value::Map(entries) => tagged(
+                "map",
+                Json::Array(
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| Ok(json!([written(key)?, written(value)?])))
+                        .collect::<Result<_, Error>>()?,
+                ),
+            ),
+            Value::Set(elements) => tagged(
+                "set",
+                Json::Array(
+                    elements
+                        .into_iter()
+                        .map(written)
+                        .collect::<Result<_, _>>()?,
+                ),
+            ),
+            Value::Instant(value) => tagged("instant", json!(value.to_string())),
+            Value::DateTime(value) => tagged("datetime", json!(value.to_string())),
+            Value::Date(value) => tagged("date", json!(value.to_string())),
+            Value::Time(value) => tagged("time", json!(value.to_string())),
+            Value::BigInt(value) => tagged("bigint", json!(value.to_string())),
+            Value::Decimal(value) => tagged("decimal", json!(value.to_string())),
+            Value::Uuid(value) => tagged("uuid", json!(value.to_string())),
+            other => other.json()?,
+        })
+    }
+
     // `reply` is what `entry` expects.
     fn check(what: &str, entry: &Json, reply: Reply) {
         let why = entry["why"].as_str().unwrap_or_default();
         if let Some(returns) = entry.get("returns") {
-            let mut value = reply
-                .unwrap_or_else(|error| panic!("{what} ({why}): expected {returns}, got {error}"))
-                .json()
-                .unwrap_or_else(|error| panic!("{what} ({why}): not data: {error}"));
+            let value = reply
+                .unwrap_or_else(|error| panic!("{what} ({why}): expected {returns}, got {error}"));
+            let mut value =
+                written(value).unwrap_or_else(|error| panic!("{what} ({why}): not data: {error}"));
             if let (Some(ignore), Some(object)) = (entry.get("ignore"), value.as_object_mut()) {
                 for key in ignore.as_array().unwrap() {
                     object.remove(key.as_str().unwrap());

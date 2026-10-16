@@ -44,6 +44,43 @@ pub(crate) enum WireValue {
         kind: Kind,
         origin: Vec<String>,
     },
+    // The tagged values (#308; `docs/design-protocol-plugins-2026-09-25.md`
+    // §6.1), sent only to a far end that declared `value-<tag>`. Their text
+    // is checked when decoded (`session::values`).
+    /// RFC 3339 in UTC.
+    Instant(String),
+    #[serde(rename = "datetime")]
+    DateTime(String),
+    Date(String),
+    Time(String),
+    /// Base64, padded.
+    Bytes(String),
+    /// Key-value pairs in the sender's order.
+    Map(Vec<(WireValue, WireValue)>),
+    Set(Vec<WireValue>),
+    #[serde(rename = "bigint")]
+    BigInt(String),
+    Decimal(String),
+    Uuid(String),
+}
+
+impl WireValue {
+    /// The tag of a tagged value, whose capability is `value-<tag>`.
+    pub(crate) fn tag(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Instant(_) => "instant",
+            Self::DateTime(_) => "datetime",
+            Self::Date(_) => "date",
+            Self::Time(_) => "time",
+            Self::Bytes(_) => "bytes",
+            Self::Map(_) => "map",
+            Self::Set(_) => "set",
+            Self::BigInt(_) => "bigint",
+            Self::Decimal(_) => "decimal",
+            Self::Uuid(_) => "uuid",
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]

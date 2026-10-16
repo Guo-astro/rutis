@@ -30,10 +30,35 @@ fn ts_type(ty: &Type) -> Result<String> {
         Type::Tuple(tuple) if tuple.elems.is_empty() => Ok("void".into()),
         Type::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
             let segment = &path.path.segments[0];
+            // The type arguments of `name<...>`, if it has `count`.
+            let arguments = |count: usize| match &segment.arguments {
+                PathArguments::AngleBracketed(args) if args.args.len() == count => args
+                    .args
+                    .iter()
+                    .map(|arg| match arg {
+                        GenericArgument::Type(inner) => Ok(inner),
+                        _ => Err(unsupported(ty, "unsupported type argument")),
+                    })
+                    .collect::<Result<Vec<_>>>(),
+                _ => Err(unsupported(ty, "unsupported type arguments")),
+            };
             match segment.ident.to_string().as_str() {
                 "f64" => Ok("number".into()),
                 "bool" => Ok("boolean".into()),
                 "String" => Ok("string".into()),
+                // Tagged values (#308), as rutis_bridge::session names them.
+                "Instant" => Ok("Date".into()),
+                "BigInt" => Ok("bigint".into()),
+                "Bytes" => Ok("Uint8Array".into()),
+                "ValueMap" => {
+                    let types = arguments(2)?;
+                    Ok(format!(
+                        "Map<{}, {}>",
+                        ts_type(types[0])?,
+                        ts_type(types[1])?
+                    ))
+                }
+                "ValueSet" => Ok(format!("Set<{}>", ts_type(arguments(1)?[0])?)),
                 "Vec" => match &segment.arguments {
                     PathArguments::AngleBracketed(args) if args.args.len() == 1 => {
                         match &args.args[0] {
@@ -271,7 +296,7 @@ fn generate(
                     let js = camel(&name.to_string());
                     let ty = ts_type(&arg.ty)?;
                     decode.push_str(&format!(
-                        "let {name}: {} = ::rutis_bridge::cordis::decode(args[{}].clone().json()?)?; {}\n",
+                        "let {name}: {} = ::rutis_bridge::cordis::decode_value(args[{}].clone())?; {}\n",
                         arg.ty.to_token_stream(),
                         args_rust.len(),
                         validate(&name.to_string(), &ty)
@@ -321,7 +346,11 @@ fn generate(
                 let returned = if output_ts == "void" {
                     format!("{invoke}; Ok(::rutis_bridge::cordis::rpc::Value::Undefined)")
                 } else {
-                    format!("let result: {} = {invoke}; {} ::rutis_bridge::cordis::serde_json::to_value(result).map(::rutis_bridge::cordis::rpc::Value::from).map_err(|error| ::rutis_bridge::cordis::Error::Value(error.to_string()))", output.to_token_stream(), validate("result", &output_ts))
+                    format!(
+                        "let result: {} = {invoke}; {} ::rutis_bridge::cordis::arg(&result)",
+                        output.to_token_stream(),
+                        validate("result", &output_ts)
+                    )
                 };
                 let returned = if sig.asyncness.is_some() {
                     format!("Ok(::rutis_bridge::cordis::rpc::Value::future(async move {{ {returned} }}))")
@@ -518,6 +547,35 @@ mod tests {
         let error = generate(&source, "fixture", Path::new("/node")).unwrap_err();
         assert!(error.to_string().contains("type binding not implemented"));
         assert!(error.span().start().line > 1);
+    }
+
+    /// Tagged values (#308) are typed for TypeScript and cross through
+    /// `arg` / `decode_value`, not as JSON.
+    #[test]
+    fn tagged_value_types_become_their_typescript_types() {
+        let source = PLUGIN.replace(
+            "pub fn current(&self) -> f64",
+            "pub fn current(&self, at: Instant, raw: Bytes, tags: ValueSet<String>, \
+             counts: ValueMap<String, f64>, big: BigInt) -> f64",
+        );
+        let (rust, _, dts) = generate(&source, "fixture", Path::new("/node")).unwrap();
+        assert!(
+            dts.contains(
+                "current(at: Date, raw: Uint8Array, tags: Set<string>, \
+                 counts: Map<string, number>, big: bigint): number;"
+            ),
+            "{dts}"
+        );
+        assert!(
+            rust.contains(
+                "let at: Instant = ::rutis_bridge::cordis::decode_value(args[0].clone())?;"
+            ),
+            "{rust}"
+        );
+        assert!(
+            rust.contains("::rutis_bridge::cordis::arg(&result)"),
+            "{rust}"
+        );
     }
 
     #[test]

@@ -19,15 +19,65 @@ async function fixture(body, run) {
 
 test('unsupported members are reported with their source location, not dropped silently', async () => {
   await fixture(`import type { Context } from '@deepseek-ai/cordis'
-    class Service { bytes(): Uint8Array { return new Uint8Array() } ping(): number { return 1 } }
+    class Service { bytes(): ArrayBuffer { return new ArrayBuffer(0) } ping(): number { return 1 } }
     export function apply(ctx: Context) { ctx.provide('session', new Service()) }
   `, file => {
     const { rust, diagnostics } = generate(file, root)
     assert.equal(diagnostics.length, 1)
-    assert.match(diagnostics[0], /plugin\.ts:\d+:\d+: session\.bytes is not bound: Uint8Array/)
+    assert.match(diagnostics[0], /plugin\.ts:\d+:\d+: session\.bytes is not bound: ArrayBuffer \(binary data is bound as Uint8Array only\)/)
     assert.match(rust, /pub fn ping\(&self\)/)
     assert.match(rust, /Members not bound yet:\n\/\/\/ - `bytes`/)
     assert.doesNotMatch(rust, /fn bytes\(/)
+  })
+})
+
+test('dates, binary data, bigints, maps and sets become the tagged value types (#308)', async () => {
+  await fixture(`import type { Context } from '@deepseek-ai/cordis'
+    export interface Reading { at: Date; raw: Uint8Array; tags: Set<string>; counts: Map<string, number>; big?: bigint }
+    class Service {
+      read(at: Date, raw: Uint8Array): Reading { throw new Error() }
+      count(ids: ReadonlySet<bigint>): Map<number, Date[]> { throw new Error() }
+      byDate(index: Map<Date, string>): void {}
+      byObject(index: Set<{ id: string }>): void {}
+    }
+    export function apply(ctx: Context) { ctx.provide('meter', new Service()) }
+  `, file => {
+    const { rust, diagnostics } = generate(file, root)
+    assert.match(rust, /pub at: ::rutis_bridge::cordis::rpc::Instant,/)
+    assert.match(rust, /pub raw: ::rutis_bridge::cordis::rpc::Bytes,/)
+    assert.match(rust, /pub tags: ::rutis_bridge::cordis::rpc::ValueSet<String>,/)
+    assert.match(rust, /pub counts: ::rutis_bridge::cordis::rpc::ValueMap<String, f64>,/)
+    assert.match(rust, /pub big: Option<::rutis_bridge::cordis::rpc::BigInt>,/)
+    assert.match(rust, /pub fn read\(&self, at: &::rutis_bridge::cordis::rpc::Instant, raw: &::rutis_bridge::cordis::rpc::Bytes\) -> Result<Reading, ::rutis_bridge::cordis::Error>/)
+    assert.match(rust, /pub fn count\(&self, ids: &::rutis_bridge::cordis::rpc::ValueSet<::rutis_bridge::cordis::rpc::BigInt>\) -> Result<::rutis_bridge::cordis::rpc::ValueMap<f64, Vec<::rutis_bridge::cordis::rpc::Instant>>, ::rutis_bridge::cordis::Error>/)
+    // A Date or an object as a key is refused (design §5).
+    assert.equal(diagnostics.length, 2, diagnostics.join('\n'))
+    assert.match(diagnostics[0], /meter\.byDate is not bound: Date as a Map key or Set element/)
+    assert.match(diagnostics[1], /meter\.byObject is not bound: \{ id: string; \} as a Map key or Set element/)
+  })
+})
+
+test('unions holding tagged values are reported, not bound as dynamic JSON (#308)', async () => {
+  await fixture(`import type { Context } from '@deepseek-ai/cordis'
+    export interface Item { at: Date }
+    class Service {
+      size(): bigint | string { return 1n }
+      pick(choice: 1n | 2n): void {}
+      index(): Map<string, Item> | string { return '' }
+      stamp(): { at: Date } | number { return 1 }
+      plain(): string | number { return 1 }
+      maybe(): bigint | undefined { return undefined }
+    }
+    export function apply(ctx: Context) { ctx.provide('store', new Service()) }
+  `, file => {
+    const { rust, diagnostics } = generate(file, root)
+    assert.equal(diagnostics.length, 4, diagnostics.join('\n'))
+    for (const [index, member] of ['size', 'pick', 'index', 'stamp'].entries()) {
+      assert.match(diagnostics[index], new RegExp(`store\\.${member} is not bound: union .* \\(a union holding a bigint, Date, Uint8Array, Map or Set is not bound yet\\)`))
+    }
+    // Unions without tagged values, and an optional bigint, still bind.
+    assert.match(rust, /pub fn plain\(&self\) -> Result<::rutis_bridge::cordis::serde_json::Value, ::rutis_bridge::cordis::Error>/)
+    assert.match(rust, /pub fn maybe\(&self\) -> Result<Option<::rutis_bridge::cordis::rpc::BigInt>, ::rutis_bridge::cordis::Error>/)
   })
 })
 

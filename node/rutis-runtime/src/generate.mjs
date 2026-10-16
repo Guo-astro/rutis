@@ -159,6 +159,26 @@ export function generate(plugins, nodePackage, { provide = [], events = [], emit
     })
   }
 
+  // Whether values of a type can be (or contain) tagged values (#308):
+  // bigints, Dates, Uint8Arrays, Maps and Sets.
+  function holdsTagged(type, seen = new Set()) {
+    if (seen.has(type)) return false
+    seen.add(type)
+    if (type.flags & ts.TypeFlags.BigIntLike) return true
+    if (type.isUnion() || type.isIntersection()) return type.types.some(member => holdsTagged(member, seen))
+    if (!(type.flags & ts.TypeFlags.Object)) return false
+    const declared = type.getSymbol()?.declarations?.[0]?.getSourceFile()
+    const builtIn = declared && program.isSourceFileDefaultLibrary(declared)
+    if (builtIn && ['Date', 'Uint8Array', 'Map', 'ReadonlyMap', 'Set', 'ReadonlySet'].includes(type.getSymbol()?.getName())) return true
+    if (checker.isArrayType(type) || checker.isTupleType(type)) return checker.getTypeArguments(type).some(member => holdsTagged(member, seen))
+    if (builtIn) return false
+    const index = checker.getIndexInfoOfType(type, ts.IndexKind.String)
+    return (index && holdsTagged(index.type, seen)) || checker.getPropertiesOfType(type).some(property => {
+      const declaration = property.valueDeclaration ?? property.declarations?.[0]
+      return declaration && holdsTagged(checker.getTypeOfSymbolAtLocation(property, declaration), seen)
+    })
+  }
+
   // Map a TypeScript type to a Rust type used for data (arguments, results,
   // fields). Throws Unsupported with the reason for non-data types.
   function rust(type, hint) {
@@ -166,7 +186,8 @@ export function generate(plugins, nodePackage, { provide = [], events = [], emit
     if (flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return '::rutis_bridge::cordis::serde_json::Value'
     if (flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Null)) return '()'
     if (flags & ts.TypeFlags.Never) throw new Unsupported('never type')
-    if (flags & ts.TypeFlags.BigIntLike) throw new Unsupported('bigint')
+    // Tagged values (#308): they cross under their own tags.
+    if (flags & ts.TypeFlags.BigIntLike) return '::rutis_bridge::cordis::rpc::BigInt'
     if (flags & ts.TypeFlags.ESSymbolLike) throw new Unsupported('symbol')
     if (type.isUnion()) {
       const { optional, members } = stripNullish(type)
@@ -186,13 +207,39 @@ export function generate(plugins, nodePackage, { provide = [], events = [], emit
     const lib = type.getSymbol()?.declarations?.[0]?.getSourceFile()
     if (symbol?.endsWith('Error') && lib && program.isSourceFileDefaultLibrary(lib)) return '::rutis_bridge::cordis::JsError'
     if (symbol === 'AbortSignal') throw new Unsupported('AbortSignal parameter (cancellation is not bound yet)')
-    if (['Uint8Array', 'ArrayBuffer', 'Buffer', 'DataView'].includes(symbol)) throw new Unsupported(`${symbol} (binary data is not bound yet)`)
+    const builtIn = !!(lib && program.isSourceFileDefaultLibrary(lib))
+    if (builtIn && symbol === 'Date') return '::rutis_bridge::cordis::rpc::Instant'
+    // Binary data arrives in JS as a Uint8Array: other binary types would
+    // not be what the plugin declared.
+    if (builtIn && symbol === 'Uint8Array') return '::rutis_bridge::cordis::rpc::Bytes'
+    if (['ArrayBuffer', 'Buffer', 'DataView'].includes(symbol)) throw new Unsupported(`${symbol} (binary data is bound as Uint8Array only)`)
+    if (builtIn && ['Map', 'ReadonlyMap'].includes(symbol)) {
+      const [key, value] = checker.getTypeArguments(type)
+      return `::rutis_bridge::cordis::rpc::ValueMap<${mapKey(key, `${hint}Key`)}, ${rust(value, `${hint}Value`)}>`
+    }
+    if (builtIn && ['Set', 'ReadonlySet'].includes(symbol)) {
+      return `::rutis_bridge::cordis::rpc::ValueSet<${mapKey(checker.getTypeArguments(type)[0], `${hint}Item`)}>`
+    }
     if (['AsyncIterable', 'AsyncIterableIterator', 'AsyncGenerator', 'ReadableStream', 'Iterable'].includes(symbol)) throw new Unsupported(`${symbol} (streams are not bound yet)`)
     if (['Promise', 'PromiseLike'].includes(symbol)) throw new Unsupported('nested Promise')
     if (checker.isArrayType(type)) return `Vec<${rust(checker.getTypeArguments(type)[0], `${hint}Item`)}>`
     if (checker.isTupleType(type)) throw new Unsupported(`tuple ${checker.typeToString(type)}`)
     if (type.getCallSignatures().length || type.getConstructSignatures().length) throw new Unsupported('function value (callbacks are not bound yet)')
     return object(type, hint)
+  }
+
+  // A Map key or Set element: only values every language takes as a key
+  // (strings, numbers, booleans, bigints; design §5). A Date is an object
+  // compared by identity as a JS key, so it is refused like any object.
+  function mapKey(type, hint) {
+    if (!type) throw new Unsupported('Map or Set without type arguments')
+    const primitive = member => member.flags & (ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike | ts.TypeFlags.BigIntLike)
+    // Branded primitives (`string & { __brand: 'Id' }`) are keys too.
+    const branded = type.isIntersection() && type.types.some(primitive)
+    if (!branded && !(type.isUnion() ? type.types : [type]).every(primitive)) {
+      throw new Unsupported(`${checker.typeToString(type)} as a Map key or Set element (only strings, numbers, booleans and bigints)`)
+    }
+    return rust(type, hint)
   }
 
   // What is being mapped, for diagnostics raised while mapping its types.
@@ -224,6 +271,9 @@ export function generate(plugins, nodePackage, { provide = [], events = [], emit
     }
     // Dynamic JSON would lose the objects a union member may hold.
     if (members.some(member => holdsLive(member))) return mixedUnion(type, members, hint)
+    // Nor can it hold tagged values (#308): a binding that took them as
+    // JSON would fail on every value of that member.
+    if (members.some(member => holdsTagged(member))) throw new Unsupported(`union ${checker.typeToString(type)} (a union holding a bigint, Date, Uint8Array, Map or Set is not bound yet)`)
     // Other unions (e.g. discriminated objects) stay dynamic JSON: the data
     // crosses unchanged, only its static Rust shape is not generated.
     return '::rutis_bridge::cordis::serde_json::Value'
