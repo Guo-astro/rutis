@@ -64,7 +64,7 @@ test('strict mode crosses values as between processes', async () => {
   t.service('store').put(item)
   item.n = 2
   assert.equal(t.service('store').take().n, 1, 'data is copied, not shared')
-  assert.throws(() => t.service('store').put(1n), /bigint cannot cross/)
+  assert.throws(() => t.service('store').put(Symbol('s')), /symbol cannot cross/)
   // Nesting: 64 levels cross, 65 do not (#279).
   const nest = depth => Array.from({ length: depth }).reduce(inner => [inner], 'bottom')
   t.service('store').put(nest(64))

@@ -29,6 +29,27 @@ function argument(arg) {
   return () => { throw Object.assign(new Error(message), { name }, fields) }
 }
 
+// A value as the expectations write it ({"$<tag>": ...} for a tagged value,
+// `about` in the file), as JavaScript receives it: an instant as a Date
+// to the millisecond, bytes as a Uint8Array, a map as a Map, a set as a
+// Set, a bigint as a bigint, a datetime, date, time, decimal or uuid as its
+// text.
+const readers = {
+  $instant: text => new Date(text.replace(/(\.\d{3})\d+Z$/, '$1Z')),
+  $bytes: text => new Uint8Array(Buffer.from(text, 'base64')),
+  $map: entries => new Map(entries.map(([key, value]) => [received(key), received(value)])),
+  $set: elements => new Set(elements.map(received)),
+  $bigint: BigInt,
+  $datetime: String, $date: String, $time: String, $decimal: String, $uuid: String,
+}
+function received(value) {
+  if (Array.isArray(value)) return value.map(received)
+  if (value === null || typeof value !== 'object') return value
+  const keys = Object.keys(value)
+  if (keys.length === 1 && Object.hasOwn(readers, keys[0])) return readers[keys[0]](value[keys[0]])
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, received(item)]))
+}
+
 // What the call did, as the expectations write it.
 async function outcome(make) {
   try {
@@ -47,7 +68,7 @@ function check(what, entry, { returns, thrown }, args = []) {
       value = { ...value }
       for (const key of entry.ignore) delete value[key]
     }
-    assert.deepStrictEqual(value, entry.returns, why)
+    assert.deepStrictEqual(value, received(entry.returns), why)
     if (entry.copied) assert.ok(args.every(arg => arg !== returns), `${why}: a copy, not the object passed in`)
   } else {
     assert.ok(thrown !== undefined, `${why}: expected an error, got ${JSON.stringify(returns)}`)

@@ -2,28 +2,30 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { readFileSync } from 'node:fs'
 import { encode } from './codec.mjs'
 import { encodeError, decodeError } from './errors.mjs'
+import { VALUE_CAPABILITIES, ValueError, base64Decode, base64Encode, bytesOf, checkKeys, checkText, constructedTag, describe, instantFromText, instantText, keyOf, tagOf, undeclared } from './values.mjs'
 
 // Values with behaviour cross by reference, so their identity and state stay
 // with the owner: objects with methods and class instances become object
-// references. Built-in value types are not objects of this kind.
+// references. Built-in value types are not objects of this kind, nor are
+// the values the SDK constructors make (`rutis.date(…)`, ...).
 const builtins = [Date, RegExp, Map, Set, WeakMap, WeakSet, ArrayBuffer, DataView, Error, Promise]
 function isLive(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value) || ArrayBuffer.isView(value)) return false
-  if (builtins.some(type => value instanceof type)) return false
+  if (builtins.some(type => value instanceof type) || constructedTag(value)) return false
   const prototype = Object.getPrototypeOf(value)
   if (prototype !== Object.prototype && prototype !== null) return true
   return Object.values(value).some(item => typeof item === 'function')
 }
-// Whether a value holds a reference anywhere: itself, or inside the arrays
-// and plain objects it contains. Such plain objects are encoded field by field.
-function holdsReference(value, seen = new Set()) {
-  if (typeof value === 'function' || value instanceof Promise || isLive(value)) return true
+// Whether a value holds a reference or a tagged value (a Date, a Map, ...)
+// anywhere: itself, or inside the arrays and plain objects it contains.
+// Such plain objects are encoded field by field.
+function needsRecord(value, seen = new Set()) {
+  if (typeof value === 'function' || value instanceof Promise || isLive(value) || tagOf(value)) return true
   if (value === null || typeof value !== 'object' || seen.has(value)) return false
   if (!Array.isArray(value) && ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return false
   seen.add(value)
-  return Object.values(value).some(item => holdsReference(item, seen))
+  return Object.values(value).some(item => needsRecord(item, seen))
 }
-const needsRecord = value => holdsReference(value)
 
 // The protocol version this runtime speaks; builds check it against the
 // rutis-bridge crate (package.json `rutisProtocol`).
@@ -51,9 +53,10 @@ export function versionMismatch(far, local, implementation) {
 // `sync-wait`: its synchronous calls say so (`sync: true`), for the host's
 // wait-cycle check; `sync-stack`: calls run while it waits are stacked on
 // its one thread. It is not reentrant, so it does not declare that.
-export const CAPABILITIES = ['signals', 'sync-wait', 'sync-stack']
+// `value-<tag>`: it takes all ten tagged values (#308, ./values.mjs).
+export const CAPABILITIES = ['signals', 'sync-wait', 'sync-stack', ...VALUE_CAPABILITIES]
 // What it declares in the compat format, where older hosts ignore it.
-const COMPAT_CAPABILITIES = ['sync-wait', 'sync-stack']
+const COMPAT_CAPABILITIES = ['sync-wait', 'sync-stack', ...VALUE_CAPABILITIES]
 export const ENDPOINT_ID = /^[a-z0-9-]+$/
 
 // What a far end's endpoint-format hello says of it, or why it is refused:
@@ -210,6 +213,11 @@ export class Session {
       entry.grants++; grants.push(id)
       return { type: 'reference', value: { id, kind: entry.kind, home: false, origin: entry.origin } }
     }
+    const tag = tagOf(value)
+    if (tag) return this.#encodeTagged(value, tag, grants, business, depth)
+    // Binary data is a Uint8Array, an ArrayBuffer or a DataView: another
+    // typed array's element type would be lost.
+    if (ArrayBuffer.isView(value)) throw new ValueError(`cannot send ${describe(value)}: binary data crosses as a Uint8Array (or Buffer), an ArrayBuffer or a DataView`)
     if (value !== null && typeof value === 'object' && depth >= MAX_DEPTH) throw tooDeep()
     if (Array.isArray(value)) return { type: 'list', value: value.map(value => this.#encode(value, grants, business, depth + 1)) }
     // An Error passed as a value (e.g. to a callback) crosses as data.
@@ -220,11 +228,89 @@ export class Session {
     checkData(value, new Set(), depth)
     return { type: 'data', value }
   }
+  // A Date, binary data, a Map, a Set, a bigint or an SDK constructor's
+  // value, to a far end that declared it takes `tag`; else this call fails.
+  #encodeTagged(value, tag, grants, business, depth) {
+    if (!this.#declared.includes(`value-${tag}`)) throw undeclared(value, tag)
+    switch (tag) {
+      case 'instant': return { type: tag, value: instantText(value) }
+      case 'bytes': return { type: tag, value: base64Encode(bytesOf(value)) }
+      case 'bigint': return { type: tag, value: checkText(tag, String(value)) }
+      case 'map': case 'set': {
+        // Each a level, as an array is (#279).
+        if (depth >= MAX_DEPTH) throw tooDeep()
+        const entries = tag === 'map' ? [...value] : [...value].map(element => [element])
+        checkKeys(entries.map(([key]) => keyOf(key)), tag === 'map' ? 'map key' : 'set element')
+        const item = item => this.#encode(item, grants, business, depth + 1)
+        // Undefined in a map is null, as in data (design V10).
+        return { type: tag, value: entries.map(([key, entry]) => tag === 'set' ? item(key) : [item(key), entry === undefined ? { type: 'data', value: null } : item(entry)]) }
+      }
+      default: return { type: tag, value: checkText(tag, value.value) }
+    }
+  }
   #rollback(grants) {
     for (const id of grants) { const entry = this.#exports.get(id); if (--entry.grants === 0) this.#exports.delete(id) }
   }
+  // What is being decoded: the first value this side does not take, and the
+  // references imported (`#decodeValue`).
+  #decoding
+  // Decode `wire`, a call's arguments or result, as `{ value }`; or as
+  // `{ refused }`, why only that call fails: a tagged value not in its
+  // format, or map keys that collide. Decoding goes on past a refused
+  // value, so every reference in it is imported, and then released again,
+  // as for a value dropped. A frame not in the protocol's shape still ends
+  // the session.
+  #decodeValue(wire) {
+    const decoding = { refused: undefined, imported: [] }, outer = this.#decoding
+    this.#decoding = decoding
+    let value
+    try { value = this.#decode(wire) } finally { this.#decoding = outer }
+    if (!decoding.refused) return { value }
+    const counts = new Map()
+    for (const record of decoding.imported) counts.set(record, (counts.get(record) ?? 0) + 1)
+    for (const [record, count] of counts) {
+      if (record.released) continue
+      if (count >= record.grants) { this.#finalizer.unregister(record); this.#release(record); continue }
+      record.grants -= count
+      try { this.#write({ op: 'release', reference: record.id, count }) } catch (error) { this.#fault(error) }
+    }
+    return { refused: decoding.refused }
+  }
+  #refuse(error) {
+    if (!(error instanceof ValueError) || !this.#decoding) throw error
+    this.#decoding.refused ??= error
+    return undefined
+  }
+  // A tagged value's text, as `read` makes it this side's value.
+  #text(wire, read) {
+    if (typeof wire.value !== 'string') throw new Error(`invalid ${wire.type} value`)
+    try { return read(wire.value) } catch (error) { return this.#refuse(error) }
+  }
+  // A map's entries or a set's elements, made into a Map or Set once all
+  // are decoded and checked as keys; undefined when the call is refused.
+  #collection(wire, what, make) {
+    const entries = wire.type === 'map'
+      ? wire.value.map(([key, value]) => [key, this.#decode(key), this.#decode(value)])
+      : wire.value.map(element => [element, this.#decode(element)])
+    if (this.#decoding?.refused) return undefined
+    // Undefined in a map is null, as in data (design V10).
+    const made = make(entries.map(([, key, value]) => wire.type === 'map' ? [key, value === undefined ? null : value] : key))
+    try { checkKeys(entries.map(([key, value]) => [key?.type, value]), what, made) } catch (error) { return this.#refuse(error) }
+    return made
+  }
   #decode(wire) {
     switch (wire?.type) {
+      case 'instant': return this.#text(wire, instantFromText)
+      // Strings in JavaScript, as written (design §2).
+      case 'datetime': case 'date': case 'time': case 'decimal': case 'uuid': return this.#text(wire, text => checkText(wire.type, text))
+      case 'bigint': return this.#text(wire, text => BigInt(checkText('bigint', text)))
+      case 'bytes': return this.#text(wire, base64Decode)
+      case 'map':
+        if (!Array.isArray(wire.value) || wire.value.some(entry => !Array.isArray(entry) || entry.length !== 2)) throw new Error('invalid map')
+        return this.#collection(wire, 'map key', entries => new Map(entries))
+      case 'set':
+        if (!Array.isArray(wire.value)) throw new Error('invalid set')
+        return this.#collection(wire, 'set element', elements => new Set(elements))
       case 'undefined': return undefined
       case 'data': return wire.value
       case 'list': return wire.value.map(value => this.#decode(value))
@@ -249,7 +335,7 @@ export class Session {
         if (proxy) {
           const record = this.#proxies.get(proxy)
           if (record.kind !== kind || JSON.stringify(record.origin) !== JSON.stringify(origin) || !Number.isSafeInteger(record.grants + 1)) throw new Error('invalid repeated grant')
-          record.grants++; return proxy
+          record.grants++; this.#decoding?.imported.push(record); return proxy
         }
         const record = { id, kind, origin, grants: 1, released: false }
         const check = () => { if (record.released) throw new Error('reference released') }
@@ -258,6 +344,7 @@ export class Session {
           : new RemotePromise(() => { check(); return this.#requestAsync('await', { reference: id }, undefined, origin) })
         record.weak = new WeakRef(proxy)
         this.#imports.set(id, record.weak); this.#proxies.set(proxy, record)
+        this.#decoding?.imported.push(record)
         this.#finalizer.register(proxy, record, record)
         return proxy
       }
@@ -333,10 +420,11 @@ export class Session {
       if (frame.op === 'return' || frame.op === 'throw') {
         // Decode/pin before admitting a subsequent release frame.
         if (frame.op === 'throw' && (typeof frame.error?.name !== 'string' || typeof frame.error.message !== 'string')) throw new Error('invalid error')
-        const value = frame.op === 'return' ? this.#decode(frame.value) : decodeError(frame.error)
+        // A result this side does not take fails the call waiting for it.
+        const { value, refused } = frame.op === 'return' ? this.#decodeValue(frame.value) : { value: decodeError(frame.error), refused: undefined }
         const pending = this.#pending.get(frame.id)
         if (!pending) throw new Error('response for unknown call')
-        this.#pending.delete(frame.id); pending({ ok: frame.op === 'return', value }); return
+        this.#pending.delete(frame.id); pending(refused ? { ok: false, value: refused } : { ok: frame.op === 'return', value }); return
       }
       if (frame.op === 'cancel') {
         if (typeof frame.id !== 'string') throw new Error('invalid cancel')
@@ -358,11 +446,18 @@ export class Session {
       if (frame.op === 'invoke' && (typeof frame.target !== 'string' || typeof frame.method !== 'string')) throw new Error('invalid target or method')
       if (frame.op === 'call' && frame.method !== undefined && typeof frame.method !== 'string') throw new Error('invalid method')
       if (frame.op === 'get' && typeof frame.property !== 'string') throw new Error('invalid property')
-      let args
+      let decoded
       this.#decodingFor = frame.id
-      try { args = frame.op === 'await' || frame.op === 'get' ? undefined : this.#decode(frame.args) } finally { this.#decodingFor = undefined }
+      try { decoded = frame.op === 'await' || frame.op === 'get' ? { value: undefined } : this.#decodeValue(frame.args) } finally { this.#decodingFor = undefined }
       const kind = frame.op === 'await' ? 'future' : frame.op === 'get' || frame.method !== undefined ? 'object' : 'function'
       const entry = frame.op === 'invoke' ? undefined : this.#export(frame.reference, kind)
+      // Arguments this side does not take: only this call fails.
+      if (decoded.refused) {
+        this.#signals.delete(frame.id)
+        this.#write({ op: 'throw', id: frame.id, error: encodeError(decoded.refused) })
+        return
+      }
+      const args = decoded.value
       const business = entry?.business ?? frame.target !== ''
       if (business) this.#active++
       const job = { frame, args, entry, business }
