@@ -152,9 +152,10 @@ fn deserialize_tagged<'de, D: Deserializer<'de>>(
 }
 
 /// Serde for the types of tagged values kept as text: a marker inside
-/// `arg` / `decode_value`, the text elsewhere.
+/// `arg` / `decode_value`, the text elsewhere. `integers`: whether the
+/// type also takes an integer.
 macro_rules! tagged_text {
-    ($($type:ident => $variant:ident, $what:literal;)*) => {$(
+    ($($type:ident => $variant:ident, $what:literal, $integers:literal;)*) => {$(
         impl Serialize for $type {
             fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                 serialize_tagged(
@@ -169,6 +170,11 @@ macro_rules! tagged_text {
                 match deserialize_tagged(deserializer)? {
                     Ok(Tagged::Leaf(Value::$variant(value))) => Ok(value),
                     Err(Json::String(text)) => text.parse().map_err(de::Error::custom),
+                    // A bigint that fits 64 bits is decoded as its number
+                    // (see `marked`); only a `BigInt` takes one.
+                    Err(Json::Number(number)) if $integers && !number.is_f64() => {
+                        number.to_string().parse().map_err(de::Error::custom)
+                    }
                     Ok(Tagged::Leaf(other)) => Err(de::Error::custom(format!(
                         concat!("expected ", $what, ", received {}"),
                         describe(&other)
@@ -186,13 +192,13 @@ macro_rules! tagged_text {
     )*};
 }
 tagged_text! {
-    Instant => Instant, "an instant";
-    DateTime => DateTime, "a datetime";
-    Date => Date, "a date";
-    TimeOfDay => Time, "a time";
-    BigInt => BigInt, "a bigint";
-    Decimal => Decimal, "a decimal";
-    Uuid => Uuid, "a uuid";
+    Instant => Instant, "an instant", false;
+    DateTime => DateTime, "a datetime", false;
+    Date => Date, "a date", false;
+    TimeOfDay => Time, "a time", false;
+    BigInt => BigInt, "a bigint", true;
+    Decimal => Decimal, "a decimal", false;
+    Uuid => Uuid, "a uuid", false;
 }
 
 /// Binary data in generated types (tag `bytes`; JS `Uint8Array`): a
@@ -343,7 +349,260 @@ impl<'de, T: DeserializeOwned> Deserialize<'de> for ValueSet<T> {
 /// An entry of a map or set as JSON; references and tagged values in it
 /// become markers of the encoding in progress.
 fn plain_json<T: Serialize + ?Sized>(value: &T) -> Result<Json, String> {
-    serde_json::to_value(value).map_err(|error| error.to_string())
+    value.serialize(Exact).map_err(|error| error.to_string())
+}
+
+/// Serializes as `serde_json::to_value` does, except that an `i128` or
+/// `u128` beyond 64 bits, which JSON data cannot hold, becomes a bigint
+/// (design V6); used while an argument is encoded.
+struct Exact;
+
+/// Scalars as `serde_json::to_value` makes them.
+macro_rules! as_json {
+    ($($method:ident($type:ty);)*) => {$(
+        fn $method(self, value: $type) -> Result<Json, serde_json::Error> {
+            serde_json::value::Serializer.$method(value)
+        }
+    )*};
+}
+
+impl Serializer for Exact {
+    type Ok = Json;
+    type Error = serde_json::Error;
+    type SerializeSeq = Items;
+    type SerializeTuple = Items;
+    type SerializeTupleStruct = Items;
+    type SerializeTupleVariant = Variant<Items>;
+    type SerializeMap = Fields;
+    type SerializeStruct = Fields;
+    type SerializeStructVariant = Variant<Fields>;
+
+    as_json! {
+        serialize_bool(bool);
+        serialize_i8(i8);
+        serialize_i16(i16);
+        serialize_i32(i32);
+        serialize_i64(i64);
+        serialize_u8(u8);
+        serialize_u16(u16);
+        serialize_u32(u32);
+        serialize_u64(u64);
+        serialize_f32(f32);
+        serialize_f64(f64);
+        serialize_char(char);
+        serialize_str(&str);
+        serialize_bytes(&[u8]);
+        serialize_unit_struct(&'static str);
+    }
+    fn serialize_i128(self, value: i128) -> Result<Json, serde_json::Error> {
+        match i64::try_from(value) {
+            Ok(value) => Ok(value.into()),
+            Err(_) => BigInt::from(value).serialize(serde_json::value::Serializer),
+        }
+    }
+    fn serialize_u128(self, value: u128) -> Result<Json, serde_json::Error> {
+        match u64::try_from(value) {
+            Ok(value) => Ok(value.into()),
+            Err(_) => BigInt::from(value).serialize(serde_json::value::Serializer),
+        }
+    }
+    fn serialize_none(self) -> Result<Json, serde_json::Error> {
+        Ok(Json::Null)
+    }
+    fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> Result<Json, serde_json::Error> {
+        value.serialize(self)
+    }
+    fn serialize_unit(self) -> Result<Json, serde_json::Error> {
+        Ok(Json::Null)
+    }
+    fn serialize_unit_variant(
+        self,
+        _: &'static str,
+        _: u32,
+        variant: &'static str,
+    ) -> Result<Json, serde_json::Error> {
+        Ok(variant.into())
+    }
+    fn serialize_newtype_struct<T: Serialize + ?Sized>(
+        self,
+        _: &'static str,
+        value: &T,
+    ) -> Result<Json, serde_json::Error> {
+        value.serialize(self)
+    }
+    fn serialize_newtype_variant<T: Serialize + ?Sized>(
+        self,
+        _: &'static str,
+        _: u32,
+        variant: &'static str,
+        value: &T,
+    ) -> Result<Json, serde_json::Error> {
+        Ok(Json::Object(Map::from_iter([(
+            variant.to_owned(),
+            value.serialize(self)?,
+        )])))
+    }
+    fn serialize_seq(self, len: Option<usize>) -> Result<Items, serde_json::Error> {
+        Ok(Items(Vec::with_capacity(len.unwrap_or(0))))
+    }
+    fn serialize_tuple(self, len: usize) -> Result<Items, serde_json::Error> {
+        self.serialize_seq(Some(len))
+    }
+    fn serialize_tuple_struct(
+        self,
+        _: &'static str,
+        len: usize,
+    ) -> Result<Items, serde_json::Error> {
+        self.serialize_seq(Some(len))
+    }
+    fn serialize_tuple_variant(
+        self,
+        _: &'static str,
+        _: u32,
+        variant: &'static str,
+        len: usize,
+    ) -> Result<Variant<Items>, serde_json::Error> {
+        Ok(Variant(variant, self.serialize_seq(Some(len))?))
+    }
+    fn serialize_map(self, _: Option<usize>) -> Result<Fields, serde_json::Error> {
+        Ok(Fields(Map::new(), None))
+    }
+    fn serialize_struct(self, _: &'static str, _: usize) -> Result<Fields, serde_json::Error> {
+        self.serialize_map(None)
+    }
+    fn serialize_struct_variant(
+        self,
+        _: &'static str,
+        _: u32,
+        variant: &'static str,
+        _: usize,
+    ) -> Result<Variant<Fields>, serde_json::Error> {
+        Ok(Variant(variant, self.serialize_map(None)?))
+    }
+}
+
+/// The items of an array being serialized by [`Exact`].
+struct Items(Vec<Json>);
+
+impl ser::SerializeSeq for Items {
+    type Ok = Json;
+    type Error = serde_json::Error;
+    fn serialize_element<T: Serialize + ?Sized>(
+        &mut self,
+        value: &T,
+    ) -> Result<(), serde_json::Error> {
+        self.0.push(value.serialize(Exact)?);
+        Ok(())
+    }
+    fn end(self) -> Result<Json, serde_json::Error> {
+        Ok(Json::Array(self.0))
+    }
+}
+impl ser::SerializeTuple for Items {
+    type Ok = Json;
+    type Error = serde_json::Error;
+    fn serialize_element<T: Serialize + ?Sized>(
+        &mut self,
+        value: &T,
+    ) -> Result<(), serde_json::Error> {
+        ser::SerializeSeq::serialize_element(self, value)
+    }
+    fn end(self) -> Result<Json, serde_json::Error> {
+        ser::SerializeSeq::end(self)
+    }
+}
+impl ser::SerializeTupleStruct for Items {
+    type Ok = Json;
+    type Error = serde_json::Error;
+    fn serialize_field<T: Serialize + ?Sized>(
+        &mut self,
+        value: &T,
+    ) -> Result<(), serde_json::Error> {
+        ser::SerializeSeq::serialize_element(self, value)
+    }
+    fn end(self) -> Result<Json, serde_json::Error> {
+        ser::SerializeSeq::end(self)
+    }
+}
+
+/// The fields of an object being serialized by [`Exact`], and the key
+/// waiting for its value.
+struct Fields(Map<String, Json>, Option<String>);
+
+impl ser::SerializeMap for Fields {
+    type Ok = Json;
+    type Error = serde_json::Error;
+    /// A key as `serde_json` takes one: a string, or a number, boolean or
+    /// character written as one.
+    fn serialize_key<T: Serialize + ?Sized>(&mut self, key: &T) -> Result<(), serde_json::Error> {
+        self.1 = Some(match key.serialize(serde_json::value::Serializer)? {
+            Json::String(key) => key,
+            Json::Number(key) => key.to_string(),
+            Json::Bool(key) => key.to_string(),
+            _ => return Err(ser::Error::custom("key must be a string")),
+        });
+        Ok(())
+    }
+    fn serialize_value<T: Serialize + ?Sized>(
+        &mut self,
+        value: &T,
+    ) -> Result<(), serde_json::Error> {
+        let key = self.1.take().expect("a key before its value");
+        self.0.insert(key, value.serialize(Exact)?);
+        Ok(())
+    }
+    fn end(self) -> Result<Json, serde_json::Error> {
+        Ok(Json::Object(self.0))
+    }
+}
+impl ser::SerializeStruct for Fields {
+    type Ok = Json;
+    type Error = serde_json::Error;
+    fn serialize_field<T: Serialize + ?Sized>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> Result<(), serde_json::Error> {
+        self.0.insert(key.to_owned(), value.serialize(Exact)?);
+        Ok(())
+    }
+    fn end(self) -> Result<Json, serde_json::Error> {
+        ser::SerializeMap::end(self)
+    }
+}
+
+/// An enum variant with fields being serialized by [`Exact`]:
+/// `{"<variant>": <fields>}`.
+struct Variant<T>(&'static str, T);
+
+impl ser::SerializeTupleVariant for Variant<Items> {
+    type Ok = Json;
+    type Error = serde_json::Error;
+    fn serialize_field<T: Serialize + ?Sized>(
+        &mut self,
+        value: &T,
+    ) -> Result<(), serde_json::Error> {
+        ser::SerializeSeq::serialize_element(&mut self.1, value)
+    }
+    fn end(self) -> Result<Json, serde_json::Error> {
+        let items = ser::SerializeSeq::end(self.1)?;
+        Ok(Json::Object(Map::from_iter([(self.0.to_owned(), items)])))
+    }
+}
+impl ser::SerializeStructVariant for Variant<Fields> {
+    type Ok = Json;
+    type Error = serde_json::Error;
+    fn serialize_field<T: Serialize + ?Sized>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> Result<(), serde_json::Error> {
+        ser::SerializeStruct::serialize_field(&mut self.1, key, value)
+    }
+    fn end(self) -> Result<Json, serde_json::Error> {
+        let fields = ser::SerializeMap::end(self.1)?;
+        Ok(Json::Object(Map::from_iter([(self.0.to_owned(), fields)])))
+    }
 }
 
 /// An entry of a map or set read from JSON holding markers of the decoding
@@ -553,7 +812,7 @@ fn encoding<T: Serialize + ?Sized>(
 ) -> (serde_json::Result<Json>, Vec<Reference>, Vec<Tagged>) {
     let previous = ENCODING.with(|current| current.replace(Some(Vec::new())));
     let previous_tagged = ENCODING_TAGGED.with(|current| current.replace(Some(Vec::new())));
-    let json = with_keys(keys, || serde_json::to_value(value));
+    let json = with_keys(keys, || value.serialize(Exact));
     let references = ENCODING
         .with(|current| current.replace(previous))
         .unwrap_or_default();
@@ -570,7 +829,14 @@ fn held<T: Serialize>(value: &T) -> Result<(Vec<Reference>, usize), Error> {
     let keys = Keys::new(NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     let (result, references, tagged) = encoding(value, &keys);
     result.map_err(|error| Error::Value(error.to_string()))?;
-    Ok((references, tagged.len()))
+    // A bigint that fits 64 bits was decoded as a number (see `marked`).
+    let typed = tagged
+        .iter()
+        .filter(|tagged| {
+            !matches!(tagged, Tagged::Leaf(Value::BigInt(value)) if value.to_json_number().is_some())
+        })
+        .count();
+    Ok((references, typed))
 }
 
 /// Every object key starting with [`PREFIX`] in the data of `value`.
@@ -643,6 +909,11 @@ fn marked(
                 .collect();
             tagged.push(Tagged::Set(elements));
             keys.value_marker(tagged.len() - 1)
+        }
+        // An integer type takes a bigint that fits it (design V6); a
+        // `BigInt` takes the number too.
+        Value::BigInt(value) if value.to_json_number().is_some() => {
+            Json::Number(value.to_json_number().expect("fits"))
         }
         leaf => {
             tagged.push(Tagged::Leaf(leaf));
