@@ -38,3 +38,17 @@ export function definePlugin(spec) {
 
 // Whether `value` is a plugin definePlugin made.
 export const isPlugin = value => value?.[PLUGIN] === true
+
+// Values JavaScript has no type for, to send as what they are (#308): a
+// local date and time, a date, a time of day, a decimal, a UUID. Received,
+// they are strings; a plain string is sent as a string.
+//
+//   import * as rutis from '@arcships/rutis'
+//   return { at: rutis.datetime('2026-10-15T14:30'), price: rutis.decimal('1.10') }
+//
+// A Date, Uint8Array, Map, Set and bigint need no constructor: they cross
+// as an instant, bytes, a map, a set and a big integer.
+export { datetime, date, time, decimal, uuid } from './values.mjs'
+// The mark on what they make, across copies of this package and in the
+// runtimes: `Symbol.for('rutis.value')`.
+export { MARK as VALUE } from './values.mjs'

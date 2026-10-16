@@ -1680,6 +1680,144 @@ async fn map_keys_and_set_elements_are_checked_before_sending() {
 
 /// guarantee: bridge/value-tags
 ///
+/// An integer in data beyond ±(2^53−1) crosses as a bigint (design V6),
+/// the arrays and objects holding it as lists and records; data without
+/// one, floats included, crosses as it is. As a map key or set element it
+/// is the bigint key, equal to the same `BigInt`; a whole number that
+/// large written as a float is not exact and is refused as a key. To a far
+/// end that did not declare `value-bigint`, the call fails before it is
+/// sent and the session goes on.
+#[tokio::test(flavor = "multi_thread")]
+async fn integers_beyond_2_53_cross_as_bigints() {
+    const SAFE: i64 = (1 << 53) - 1;
+    let sent = json!([
+        [SAFE, -SAFE, 1.5, 9007199254740993.0],
+        { "id": SAFE + 1, "ok": true, "deep": [[u64::MAX], { "small": 1 }] },
+    ]);
+    let (peer, remote) = connected(Arc::new(EchoArgs));
+    let remote = tokio::task::spawn_blocking(move || {
+        let mut remote = Remote::start_declaring(remote, &VALUE_CAPABILITIES);
+        let frame = remote.read_json();
+        let bigint = |text: &str| json!({ "type": "bigint", "value": text });
+        assert_eq!(
+            frame["args"],
+            json!({ "type": "list", "value": [
+                { "type": "data", "value": [SAFE, -SAFE, 1.5, 9007199254740993.0] },
+                { "type": "record", "value": {
+                    "id": bigint("9007199254740992"),
+                    "ok": { "type": "data", "value": true },
+                    "deep": { "type": "list", "value": [
+                        { "type": "list", "value": [bigint("18446744073709551615")] },
+                        { "type": "data", "value": { "small": 1 } },
+                    ] },
+                } },
+            ] })
+        );
+        remote.send_json(json!({ "op": "return", "id": frame["id"], "value": frame["args"] }));
+        let frame = remote.read_json();
+        assert_eq!(
+            frame["args"]["value"][0],
+            json!({ "type": "map", "value": [
+                [bigint("-9223372036854775808"), { "type": "data", "value": "min" }],
+                [{ "type": "data", "value": SAFE }, { "type": "data", "value": "safe" }],
+            ] })
+        );
+        remote.send_json(json!({ "op": "return", "id": frame["id"], "value": frame["args"] }));
+        remote
+    });
+    peer.ready().await.unwrap();
+    let args = Value::Data(sent.clone()).list().unwrap();
+    let back = peer
+        .invoke_async("t", "m", Value::List(args))
+        .await
+        .unwrap();
+    // Received, the bigints are `BigInt`s; as data, the numbers sent.
+    assert_eq!(back.json().unwrap(), sent);
+    let map = Value::Map(vec![
+        (Value::Data(json!(i64::MIN)), Value::Data(json!("min"))),
+        (Value::Data(json!(SAFE)), Value::Data(json!("safe"))),
+    ]);
+    let back = peer
+        .invoke_async("t", "m", Value::List(vec![map]))
+        .await
+        .unwrap();
+    let Value::List(back) = back else {
+        panic!("a list expected")
+    };
+    assert_eq!(
+        back[0],
+        Value::Map(vec![
+            (Value::BigInt(i64::MIN.into()), Value::Data(json!("min"))),
+            (Value::Data(json!(SAFE)), Value::Data(json!("safe"))),
+        ])
+    );
+    let refused = |value: Value| {
+        let peer = peer.clone();
+        async move {
+            match peer.invoke_async("t", "m", Value::List(vec![value])).await {
+                Err(Error::Value(message)) => message,
+                other => panic!("a value error expected, got {other:?}"),
+            }
+        }
+    };
+    let message = refused(Value::Set(vec![
+        Value::Data(json!(SAFE + 1)),
+        Value::BigInt((SAFE + 1).into()),
+    ]))
+    .await;
+    assert!(
+        message.contains("duplicate set element 9007199254740992"),
+        "{message}"
+    );
+    let message = refused(Value::Map(vec![(
+        Value::Data(json!(9007199254740993.0)),
+        Value::Data(json!(1)),
+    )]))
+    .await;
+    assert!(
+        message.contains("a map key cannot be the float 9007199254740992.0"),
+        "{message}"
+    );
+    let _remote = remote.await.unwrap();
+    assert!(peer.close_reason().is_none());
+
+    // A far end without `value-bigint`: data within the range still
+    // crosses.
+    let (peer, remote) = connected(Arc::new(EchoArgs));
+    let remote = tokio::task::spawn_blocking(move || {
+        let mut remote = Remote::start_declaring(remote, &["value-date"]);
+        let frame = remote.read_json();
+        remote.send_json(json!({ "op": "return", "id": frame["id"], "value": frame["args"] }));
+        remote
+    });
+    peer.ready().await.unwrap();
+    match peer
+        .invoke_async(
+            "t",
+            "m",
+            Value::List(vec![Value::Data(json!({ "n": [u64::MAX] }))]),
+        )
+        .await
+    {
+        Err(Error::Value(message)) => assert_eq!(
+            message,
+            "cannot send the integer 18446744073709551615, beyond ±(2^53-1) and so a bigint: \
+             the far end does not take bigint values (it did not declare the capability \
+             value-bigint)"
+        ),
+        other => panic!("a value error expected, got {other:?}"),
+    }
+    let safe = Value::List(vec![Value::Data(json!([SAFE, -SAFE]))]);
+    assert_eq!(
+        peer.invoke_async("t", "m", safe.clone()).await.unwrap(),
+        safe
+    );
+    let _remote = remote.await.unwrap();
+    assert!(peer.close_reason().is_none());
+}
+
+/// guarantee: bridge/value-tags
+///
 /// A call refused for a value it carries still takes the references it
 /// carries, and releases them: the far end's exports do not stay granted
 /// until the session ends. The session keeps serving.

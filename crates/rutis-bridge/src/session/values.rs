@@ -521,8 +521,10 @@ impl fmt::Display for Instant {
 // ── Big integers and decimals ────────────────────────────────────────
 
 /// An integer of any size up to [`MAX_DIGITS`] digits (tag `bigint`),
-/// kept as its decimal text. Only values sent as a `BigInt` cross as one:
-/// a plain number beyond ±(2^53−1) is not turned into one (design V6).
+/// kept as its decimal text. A `BigInt` always crosses as one, whatever
+/// its size. Rust integers need none: one beyond ±(2^53−1) crosses as a
+/// bigint by itself (design V6). A `BigInt` holds an integer past 128
+/// bits, or one received that must go on as a bigint.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BigInt(String);
 
@@ -541,6 +543,13 @@ impl BigInt {
     /// The value, if it fits a `u128`.
     pub fn to_u128(&self) -> Option<u128> {
         self.0.parse().ok()
+    }
+    /// The value as a JSON number, if it fits an `i64` or a `u64`.
+    pub(crate) fn to_json_number(&self) -> Option<serde_json::Number> {
+        match self.0.parse::<i64>() {
+            Ok(value) => Some(value.into()),
+            Err(_) => self.0.parse::<u64>().ok().map(Into::into),
+        }
     }
 }
 
@@ -819,12 +828,27 @@ pub(crate) fn describe(value: &Value) -> &'static str {
 }
 
 /// The largest integer every language holds exactly, 2^53−1.
-const SAFE_INTEGER: u64 = (1 << 53) - 1;
+pub(crate) const SAFE_INTEGER: u64 = (1 << 53) - 1;
 
-fn unsafe_key(what: &str, number: &serde_json::Number) -> Error {
-    Error::Value(format!(
-        "a {what} cannot be the integer {number}, beyond ±(2^53-1): send it as a bigint"
-    ))
+/// Whether `number` is an integer beyond ±(2^53−1), which crosses as a
+/// bigint (design V6).
+pub(crate) fn beyond_safe(number: &serde_json::Number) -> bool {
+    match (number.as_i64(), number.as_u64()) {
+        (Some(integer), _) => integer.unsigned_abs() > SAFE_INTEGER,
+        (None, Some(integer)) => integer > SAFE_INTEGER,
+        (None, None) => false,
+    }
+}
+
+/// Whether JSON data holds an integer beyond ±(2^53−1).
+pub(crate) fn holds_beyond_safe(json: &serde_json::Value) -> bool {
+    use serde_json::Value as Json;
+    match json {
+        Json::Number(number) => beyond_safe(number),
+        Json::Array(items) => items.iter().any(holds_beyond_safe),
+        Json::Object(fields) => fields.values().any(holds_beyond_safe),
+        _ => false,
+    }
 }
 
 fn key(value: &Value, what: &str) -> Result<Key, Error> {
@@ -832,23 +856,25 @@ fn key(value: &Value, what: &str) -> Result<Key, Error> {
     Ok(match value {
         Value::Data(Json::String(text)) => Key::Text(text.clone()),
         Value::Data(Json::Bool(flag)) => Key::Bool(*flag),
+        // An integer beyond ±(2^53−1) crosses as a bigint (design V6): it
+        // is the key that bigint is.
+        Value::Data(Json::Number(number)) if beyond_safe(number) => Key::BigInt(number.to_string()),
         Value::Data(Json::Number(number)) => match (number.as_i64(), number.as_u64()) {
-            // Beyond ±(2^53−1) JavaScript holds no integer exactly, so
-            // two such keys may be one there (design V6): send a bigint.
-            (Some(integer), _) if integer.unsigned_abs() > SAFE_INTEGER => {
-                return Err(unsafe_key(what, number))
-            }
-            (None, Some(integer)) if integer > SAFE_INTEGER => {
-                return Err(unsafe_key(what, number))
-            }
             (Some(integer), _) => Key::Integer(integer.into()),
             (None, Some(integer)) => Key::Integer(integer.into()),
             _ => {
                 let float = number.as_f64().unwrap_or(f64::NAN);
-                if float.fract() == 0.0 && float.abs() < 1e38 {
+                if float.fract() != 0.0 {
+                    Key::Float(float.to_bits())
+                } else if float.abs() <= SAFE_INTEGER as f64 {
                     Key::Integer(float as i128)
                 } else {
-                    Key::Float(float.to_bits())
+                    // Not exact: in JavaScript 2^53 and 2^53+1 are one
+                    // number, so two such keys may be one there.
+                    return Err(Error::Value(format!(
+                        "a {what} cannot be the float {number}: a whole number beyond \
+                         ±(2^53-1) written as a float is not exact in every language"
+                    )));
                 }
             }
         },
@@ -1200,8 +1226,9 @@ mod tests {
             "map key",
         )
         .unwrap();
-        // Integers beyond ±(2^53−1) are not keys: 2^53 and 2^53+1 are one
-        // number in JavaScript (design V6, boundary rule 4).
+        // Integers beyond ±(2^53−1) are keys as the bigints they cross as
+        // (design V6): equal to the same bigint, and the float nearest
+        // them, not exact, is refused.
         for beyond in [
             json!(SAFE_INTEGER + 1),
             json!(SAFE_INTEGER + 2),
@@ -1209,18 +1236,40 @@ mod tests {
             json!(u64::MAX),
             json!(i64::MIN),
         ] {
-            let error = check_keys(&[Value::Data(beyond)], "map key").unwrap_err();
+            check_keys(
+                &[
+                    Value::Data(beyond.clone()),
+                    Value::Data(json!(SAFE_INTEGER)),
+                ],
+                "map key",
+            )
+            .unwrap();
+            let same = Value::BigInt(beyond.to_string().parse().unwrap());
+            let error = check_keys(&[Value::Data(beyond), same], "set element").unwrap_err();
             assert!(
-                error
-                    .to_string()
-                    .contains("beyond ±(2^53-1): send it as a bigint"),
+                error.to_string().contains("duplicate set element"),
                 "{error}"
             );
-            let error =
-                check_keys(&[Value::Data(json!(SAFE_INTEGER + 1))], "set element").unwrap_err();
-            assert!(error
-                .to_string()
-                .contains("a set element cannot be the integer"));
+        }
+        check_keys(
+            &[
+                Value::Data(json!(SAFE_INTEGER + 1)),
+                Value::Data(json!(SAFE_INTEGER + 2)),
+                Value::Data(json!(SAFE_INTEGER as f64)),
+                Value::Data(json!(-(SAFE_INTEGER as f64))),
+            ],
+            "map key",
+        )
+        .unwrap();
+        for float in [9007199254740993.0, 9007199254740992.0, -1e300, 1e20] {
+            let error = check_keys(&[Value::Data(json!(float))], "map key").unwrap_err();
+            assert!(
+                error.to_string().contains(&format!(
+                    "a map key cannot be the float {}: a whole number beyond ±(2^53-1)",
+                    json!(float)
+                )),
+                "{error}"
+            );
         }
     }
 

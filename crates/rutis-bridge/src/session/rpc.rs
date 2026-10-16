@@ -19,8 +19,8 @@ use crate::channel::PeerId;
 pub use crate::session::protocol::Implementation;
 use crate::session::protocol::{Frame, Kind, WireValue, VERSION};
 use crate::session::values::{
-    base64_decode, base64_encode, check_keys, BigInt, Date, DateTime, Decimal, Instant, TimeOfDay,
-    Uuid,
+    base64_decode, base64_encode, check_keys, holds_beyond_safe, BigInt, Date, DateTime, Decimal,
+    Instant, TimeOfDay, Uuid,
 };
 use crate::session::{Error, Handshake};
 
@@ -70,7 +70,9 @@ pub enum Value {
     /// A set (tag `set`), its elements in order, of the kinds a map key
     /// may be, no two equal.
     Set(Vec<Value>),
-    /// An integer of any size, sent explicitly as one (tag `bigint`).
+    /// An integer of any size (tag `bigint`). An integer in `Data` beyond
+    /// ±(2^53−1) is sent as one too (design V6), and the arrays and
+    /// objects holding it as lists and records.
     BigInt(BigInt),
     /// A decimal number, its text kept (tag `decimal`).
     Decimal(Decimal),
@@ -103,6 +105,9 @@ impl Value {
             _ => Err(Error::Value("expected argument array".into())),
         }
     }
+    /// The value as JSON data: lists and records as arrays and objects,
+    /// a bigint that fits an `i64` or `u64` as the number. Any other
+    /// tagged value, a reference or a signal is an error.
     pub fn json(self) -> Result<Json, Error> {
         match self {
             Self::Undefined => Ok(Json::Null),
@@ -119,6 +124,11 @@ impl Value {
                 .map(Json::Object),
             Self::Reference(_) => Err(Error::Value("expected data, received a reference".into())),
             Self::Signal => Err(Error::Value("expected data, received a signal".into())),
+            // An integer beyond ±(2^53−1) sent as data comes back a bigint
+            // (design V6): as data, it is the number again.
+            Self::BigInt(value) => value.to_json_number().map(Json::Number).ok_or_else(|| {
+                Error::Value("expected data, received a bigint beyond 64 bits".into())
+            }),
             // Not JSON: as text it would be a string the receiver takes for
             // one (decode it with `decode_value` into its type instead).
             other => Err(Error::Value(format!(
@@ -1427,14 +1437,7 @@ impl Connection {
             return Err(too_deep());
         }
         if let Some(tag) = value.tag() {
-            let capability = format!("value-{tag}");
-            if !self.supports(&capability) {
-                return Err(Error::Value(format!(
-                    "cannot send {}: the far end does not take {tag} values \
-                     (it did not declare the capability {capability})",
-                    crate::session::values::describe(value)
-                )));
-            }
+            self.sendable(tag, || crate::session::values::describe(value).to_owned())?;
         }
         Ok(match value {
             Value::Instant(value) => WireValue::Instant(value.to_string()),
@@ -1475,7 +1478,7 @@ impl Connection {
                 if !fits(value, levels) {
                     return Err(too_deep());
                 }
-                WireValue::Data(value.clone())
+                self.encode_data(value)?
             }
             Value::List(values) => WireValue::List(
                 values
@@ -1501,6 +1504,47 @@ impl Connection {
                 Body::Relay(import) => self.encode_import(import, grants)?,
                 _ => self.encode_local(object, grants)?,
             },
+        })
+    }
+    /// Whether a value tagged `tag` may be sent: only to a far end that
+    /// declared `value-<tag>`; `what` names the value for the error.
+    fn sendable(&self, tag: &str, what: impl FnOnce() -> String) -> Result<(), Error> {
+        let capability = format!("value-{tag}");
+        if self.supports(&capability) {
+            return Ok(());
+        }
+        Err(Error::Value(format!(
+            "cannot send {}: the far end does not take {tag} values \
+             (it did not declare the capability {capability})",
+            what()
+        )))
+    }
+    /// JSON data as sent: an integer beyond ±(2^53−1) crosses as a bigint
+    /// (design V6), and the arrays and objects holding one as lists and
+    /// records.
+    fn encode_data(&self, value: &Json) -> Result<WireValue, Error> {
+        if !holds_beyond_safe(value) {
+            return Ok(WireValue::Data(value.clone()));
+        }
+        Ok(match value {
+            Json::Array(items) => WireValue::List(
+                items
+                    .iter()
+                    .map(|item| self.encode_data(item))
+                    .collect::<Result<_, _>>()?,
+            ),
+            Json::Object(fields) => WireValue::Record(
+                fields
+                    .iter()
+                    .map(|(key, value)| Ok((key.clone(), self.encode_data(value)?)))
+                    .collect::<Result<_, Error>>()?,
+            ),
+            number => {
+                self.sendable("bigint", || {
+                    format!("the integer {number}, beyond ±(2^53-1) and so a bigint")
+                })?;
+                WireValue::BigInt(number.to_string())
+            }
         })
     }
     fn encode_local(

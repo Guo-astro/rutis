@@ -12,10 +12,11 @@
 //! are IEEE 754 doubles. There an integer beyond ±(2^53−1) comes back as the
 //! nearest double, -0 as 0 and an integral float (`2.0`) as an integer;
 //! the table lists these as not guaranteed. Every other float comes back
-//! bit for bit (#290), and every object key as sent (#302). Python sends
-//! an integer beyond ±(2^53−1) as a bigint (#308, design V6): echoed, it
-//! comes back as one, the arrays and objects around it as lists and
-//! records. NaN and ±Infinity are not JSON and are not generated.
+//! bit for bit (#290), and every object key as sent (#302). An integer
+//! beyond ±(2^53−1) crosses as a bigint (design V6): to a far end that did
+//! not declare `value-bigint`, a value holding one fails on this side
+//! before it is sent, naming the capability. NaN and ±Infinity are not
+//! JSON and are not generated.
 //!
 //! Values nest up to the limit, 64 levels (`MAX_DEPTH`). Past it, the
 //! side that would send the value fails that call, whichever side it is,
@@ -26,11 +27,14 @@
 //! Tagged values (#308): the ten values beyond JSON (instant, datetime,
 //! date, time, bytes, map, set, bigint, decimal, uuid), mixed with data,
 //! lists and records, map keys and set elements of the kinds design §5
-//! allows and none equal, round-trip unchanged through a far end that
-//! declared their capabilities; to one that did not, each such call fails
+//! allows and none equal, round-trip through a far end that declared their
+//! capabilities, unchanged but for integers beyond ±(2^53−1) in data,
+//! which come back as the bigints they crossed as; to one that did not, each such call fails
 //! on this side before it is sent, naming the capability, and the session
-//! goes on. Only the Rust far end takes them so far: the language
-//! runtimes follow in phase 3 of the design.
+//! goes on. Node and Bun take them as JavaScript does (design §2): their
+//! echo sends back an instant to the millisecond and a datetime, date,
+//! time, decimal or uuid as its text, and refuses a map or set whose keys
+//! JavaScript cannot hold apart.
 #![cfg(all(unix, feature = "testing"))]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -286,9 +290,6 @@ enum Numbers {
     /// As sent: integer or float, the same value, a float bit for bit
     /// (-0 kept).
     Exact,
-    /// As `Exact`, but the far end sends an integer beyond ±(2^53−1) as
-    /// a bigint (Python, design V6).
-    BigIntegers,
     /// As IEEE 754 doubles (JavaScript).
     Doubles,
 }
@@ -300,7 +301,7 @@ fn same(sent: &Json, got: &Json, numbers: Numbers, at: &str) -> Result<(), Strin
         (Json::Number(a), Json::Number(b)) => {
             let (x, y) = (a.as_f64().unwrap(), b.as_f64().unwrap());
             let equal = match numbers {
-                Numbers::Exact | Numbers::BigIntegers => match (a.is_f64(), b.is_f64()) {
+                Numbers::Exact => match (a.is_f64(), b.is_f64()) {
                     (true, true) => x.to_bits() == y.to_bits(),
                     (false, false) => a == b,
                     _ => false,
@@ -343,20 +344,28 @@ fn same(sent: &Json, got: &Json, numbers: Numbers, at: &str) -> Result<(), Strin
 /// guarantee: bridge/value-roundtrip. Risk P7, C5.
 fn round_trip(far: &Connection, name: &str, numbers: Numbers) {
     check(&format!("{name} round trip"), value(), |sent| {
-        let echoed = far.invoke(
-            "conformance",
-            "echo",
-            Value::List(vec![Value::Data(sent.clone())]),
-        );
-        if matches!(numbers, Numbers::BigIntegers) && has_unsafe_integer(&sent) {
-            let echoed =
-                echoed.map_err(|error| TestCaseError::fail(format!("echo failed: {error}")))?;
-            prop_assert_eq!(echoed, with_bigints(&sent));
-            return Ok(());
+        let echoed = far
+            .invoke(
+                "conformance",
+                "echo",
+                Value::List(vec![Value::Data(sent.clone())]),
+            )
+            .and_then(Value::json);
+        // Beyond ±(2^53−1) an integer is a bigint (design V6), sent only to
+        // a far end that takes them.
+        if has_unsafe_integer(&sent) && !far.supports("value-bigint") {
+            return match echoed {
+                Err(Error::Value(message))
+                    if message.contains("did not declare the capability value-bigint") =>
+                {
+                    Ok(())
+                }
+                other => Err(TestCaseError::fail(format!(
+                    "an error naming value-bigint expected, got {other:?}"
+                ))),
+            };
         }
-        let got = echoed
-            .and_then(Value::json)
-            .map_err(|error| TestCaseError::fail(format!("echo failed: {error}")))?;
+        let got = echoed.map_err(|error| TestCaseError::fail(format!("echo failed: {error}")))?;
         same(&sent, &got, numbers, "$").map_err(TestCaseError::fail)
     });
 }
@@ -372,26 +381,6 @@ fn has_unsafe_integer(value: &Json) -> bool {
         Json::Array(items) => items.iter().any(has_unsafe_integer),
         Json::Object(fields) => fields.values().any(has_unsafe_integer),
         _ => false,
-    }
-}
-
-/// `value` as a far end that sends an integer beyond ±(2^53−1) as a
-/// bigint echoes it: such integers bigints, the arrays and objects holding
-/// one lists and records, the rest data.
-fn with_bigints(value: &Json) -> Value {
-    if !has_unsafe_integer(value) {
-        return Value::Data(value.clone());
-    }
-    match value {
-        Json::Number(n) => Value::BigInt(n.to_string().parse().unwrap()),
-        Json::Array(items) => Value::List(items.iter().map(with_bigints).collect()),
-        Json::Object(fields) => Value::Record(
-            fields
-                .iter()
-                .map(|(key, value)| (key.clone(), with_bigints(value)))
-                .collect(),
-        ),
-        _ => unreachable!("only numbers are integers"),
     }
 }
 
@@ -466,13 +455,22 @@ fn decimal() -> impl Strategy<Value = rpc::Decimal> {
         })
 }
 
+/// Whether `number` is a float whose whole value is beyond ±(2^53−1): not
+/// exact in every language, so no key (design §5).
+fn inexact_whole(number: &Json) -> bool {
+    number
+        .as_f64()
+        .is_some_and(|x| x.fract() == 0.0 && x.abs() > SAFE as f64)
+        && number.is_f64()
+}
+
 /// A value every language takes as a map key or set element (design §5).
 fn key_value() -> impl Strategy<Value = Value> {
     prop_oneof![
         3 => string().prop_map(|text| Value::Data(Json::String(text))),
-        // Integers beyond ±(2^53−1) are not keys (design V6).
+        // An integer beyond ±(2^53−1) is a bigint key (design V6).
         2 => number()
-            .prop_filter("a safe integer", |n| !has_unsafe_integer(n))
+            .prop_filter("an exact number", |n| !inexact_whole(n))
             .prop_map(Value::Data),
         1 => any::<bool>().prop_map(|flag| Value::Data(Json::Bool(flag))),
         1 => bigint().prop_map(Value::BigInt),
@@ -485,9 +483,13 @@ fn key_value() -> impl Strategy<Value = Value> {
 }
 
 /// What makes two keys equal, as the session compares them: numbers by
-/// value (a coarse, conservative stand-in), the rest as written.
+/// value (a coarse, conservative stand-in), an integer beyond ±(2^53−1) as
+/// the bigint it crosses as, the rest as written.
 fn key_identity(key: &Value) -> String {
     match key {
+        Value::Data(number @ Json::Number(n)) if has_unsafe_integer(number) => {
+            format!("{:?}", Value::BigInt(n.to_string().parse().unwrap()))
+        }
         Value::Data(Json::Number(n)) => {
             let x = n.as_f64().unwrap();
             format!("n{}", if x == 0.0 { 0.0 } else { x })
@@ -542,15 +544,196 @@ fn tagged_round_trip(far: &Connection, name: &str) {
             let echoed = far
                 .invoke("conformance", "echo", args)
                 .map_err(|error| TestCaseError::fail(format!("echo failed: {error}")))?;
-            prop_assert_eq!(echoed, sent);
+            prop_assert_eq!(echoed, as_received(sent));
             Ok(())
         },
     );
 }
 
-/// Whether `value` holds a tagged value.
+/// What a JavaScript far end's echo (Node, Bun) sends back for `sent`
+/// (design §2): an instant truncated to the millisecond (V7), a datetime,
+/// date, time, decimal or uuid as its text; `None` when it refuses the
+/// call, for a map or set whose keys it cannot hold apart (§5).
+fn javascript_echo(sent: &Value) -> Option<Value> {
+    let text = |text: String| Value::Data(Json::String(text));
+    Some(match sent {
+        Value::Instant(instant) => Value::Instant(
+            rpc::Instant::from_unix(
+                instant.unix_seconds(),
+                instant.subsec_nanos() / 1_000_000 * 1_000_000,
+            )
+            .unwrap(),
+        ),
+        Value::DateTime(value) => text(value.to_string()),
+        Value::Date(value) => text(value.to_string()),
+        Value::Time(value) => text(value.to_string()),
+        Value::Decimal(value) => text(value.to_string()),
+        Value::Uuid(value) => text(value.to_string()),
+        Value::List(items) => {
+            Value::List(items.iter().map(javascript_echo).collect::<Option<_>>()?)
+        }
+        Value::Record(fields) => Value::Record(
+            fields
+                .iter()
+                .map(|(key, value)| Some((key.clone(), javascript_echo(value)?)))
+                .collect::<Option<_>>()?,
+        ),
+        Value::Map(entries) => {
+            let entries = entries
+                .iter()
+                .map(|(key, value)| Some((javascript_echo(key)?, javascript_echo(value)?)))
+                .collect::<Option<Vec<_>>>()?;
+            javascript_keys(entries.iter().map(|(key, _)| key))?;
+            Value::Map(entries)
+        }
+        Value::Set(elements) => {
+            let elements = elements
+                .iter()
+                .map(javascript_echo)
+                .collect::<Option<Vec<_>>>()?;
+            javascript_keys(&elements)?;
+            Value::Set(elements)
+        }
+        other => other.clone(),
+    })
+}
+
+/// Whether JavaScript holds `keys` apart, as received: no integral number
+/// beyond ±(2^53−1) (a double is not that integer), and no two equal once
+/// a datetime, date, ... is its text.
+fn javascript_keys<'a>(keys: impl IntoIterator<Item = &'a Value>) -> Option<()> {
+    let mut seen = BTreeSet::new();
+    for key in keys {
+        let identity = match key {
+            Value::Data(Json::Number(n)) => {
+                let x = n.as_f64().unwrap();
+                if x.fract() == 0.0 && x.abs() > SAFE as f64 {
+                    return None;
+                }
+                format!("n{}", if x == 0.0 { 0.0 } else { x })
+            }
+            other => format!("{other:?}"),
+        };
+        seen.insert(identity).then_some(())?;
+    }
+    Some(())
+}
+
+/// A value as JSON, a tagged value as `{"$<tag>": ...}` (as the expectations
+/// in `weather.expected.json` write it), to compare with `same`.
+fn written(value: &Value) -> Json {
+    let tagged = |tag: &str, value: Json| json!({ format!("${tag}"): value });
+    match value {
+        Value::Data(json) => json.clone(),
+        Value::List(items) => Json::Array(items.iter().map(written).collect()),
+        Value::Record(fields) => Json::Object(
+            fields
+                .iter()
+                .map(|(key, value)| (key.clone(), written(value)))
+                .collect(),
+        ),
+        Value::Map(entries) => tagged(
+            "map",
+            entries
+                .iter()
+                .map(|(key, value)| json!([written(key), written(value)]))
+                .collect(),
+        ),
+        Value::Set(elements) => tagged("set", elements.iter().map(written).collect()),
+        Value::Bytes(bytes) => tagged("bytes", json!(bytes)),
+        other => match other.tag() {
+            Some(tag) => tagged(tag, json!(format!("{other:?}"))),
+            None => json!(format!("{other:?}")),
+        },
+    }
+}
+
+/// guarantee: bridge/value-tags. Tagged values come back from a JavaScript
+/// far end's echo as JavaScript holds them ([`javascript_echo`]); a value
+/// it cannot hold fails that call only.
+fn javascript_tagged_round_trip(far: &Connection, name: &str) {
+    check(
+        &format!("{name} tagged round trip"),
+        tagged_value(),
+        |sent| {
+            let echoed = far.invoke("conformance", "echo", Value::List(vec![sent.clone()]));
+            // Integers beyond ±(2^53−1) cross as bigints (V6).
+            match (javascript_echo(&as_received(sent.clone())), echoed) {
+                (Some(expected), Ok(echoed)) => {
+                    same(
+                        &written(&expected),
+                        &written(&echoed),
+                        Numbers::Doubles,
+                        "$",
+                    )
+                    .map_err(TestCaseError::fail)?;
+                }
+                // Refused by the far end, or here before sending (a whole
+                // float beyond the range as a key).
+                (None, Err(error)) => {
+                    let message = error.to_string();
+                    prop_assert!(
+                        message.contains("map key") || message.contains("set element"),
+                        "{}",
+                        message
+                    );
+                }
+                (expected, echoed) => {
+                    return Err(TestCaseError::fail(format!(
+                        "expected {expected:?}, got {echoed:?}"
+                    )))
+                }
+            }
+            prop_assert!(far.close_reason().is_none());
+            Ok(())
+        },
+    );
+}
+
+/// `value` as it comes back: an integer beyond ±(2^53−1) in data as the
+/// bigint it crossed as, the arrays and objects holding one as lists and
+/// records (design V6).
+fn as_received(value: Value) -> Value {
+    match value {
+        Value::Data(json) if has_unsafe_integer(&json) => match json {
+            Json::Array(items) => Value::List(
+                items
+                    .into_iter()
+                    .map(Value::Data)
+                    .map(as_received)
+                    .collect(),
+            ),
+            Json::Object(fields) => Value::Record(
+                fields
+                    .into_iter()
+                    .map(|(key, value)| (key, as_received(Value::Data(value))))
+                    .collect(),
+            ),
+            number => Value::BigInt(number.to_string().parse().unwrap()),
+        },
+        Value::List(items) => Value::List(items.into_iter().map(as_received).collect()),
+        Value::Record(fields) => Value::Record(
+            fields
+                .into_iter()
+                .map(|(key, value)| (key, as_received(value)))
+                .collect(),
+        ),
+        Value::Map(entries) => Value::Map(
+            entries
+                .into_iter()
+                .map(|(key, value)| (as_received(key), as_received(value)))
+                .collect(),
+        ),
+        Value::Set(elements) => Value::Set(elements.into_iter().map(as_received).collect()),
+        other => other,
+    }
+}
+
+/// Whether `value` holds a tagged value, an integer beyond ±(2^53−1) in
+/// data included.
 fn holds_tagged(value: &Value) -> bool {
     match value {
+        Value::Data(json) => has_unsafe_integer(json),
         Value::List(items) => items.iter().any(holds_tagged),
         Value::Record(fields) => fields.values().any(holds_tagged),
         other => other.tag().is_some(),
@@ -890,6 +1073,14 @@ async fn node_values_round_trip() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn node_tagged_values_round_trip() {
+    let (near, _child) = far_end(node(), "node").await;
+    tokio::task::spawn_blocking(move || javascript_tagged_round_trip(&near, "node"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn node_depth_limit() {
     let (near, _child) = far_end(node(), "node").await;
     tokio::task::spawn_blocking(move || depth_limit(&near, "node"))
@@ -910,7 +1101,7 @@ async fn node_releases_balance() {
 #[tokio::test(flavor = "multi_thread")]
 async fn python_values_round_trip() {
     let (near, _child) = far_end(python(), "python").await;
-    tokio::task::spawn_blocking(move || round_trip(&near, "python", Numbers::BigIntegers))
+    tokio::task::spawn_blocking(move || round_trip(&near, "python", Numbers::Exact))
         .await
         .unwrap();
 }
@@ -984,6 +1175,15 @@ async fn bun_far_end() -> (Connection, tokio::process::Child) {
 async fn bun_values_round_trip() {
     let (near, _child) = bun_far_end().await;
     tokio::task::spawn_blocking(move || round_trip(&near, "bun", Numbers::Doubles))
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "bun")]
+#[tokio::test(flavor = "multi_thread")]
+async fn bun_tagged_values_round_trip() {
+    let (near, _child) = bun_far_end().await;
+    tokio::task::spawn_blocking(move || javascript_tagged_round_trip(&near, "bun"))
         .await
         .unwrap();
 }
