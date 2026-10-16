@@ -298,7 +298,9 @@ def _too_deep() -> ValueError:
 # integers a JavaScript number holds exactly and the limit Go keeps. Past
 # 2^64 Rust would read one as a float. A larger one fails its own call here,
 # before it is sent; the session goes on. `bool` is an int and crosses as
-# before; a `rutis.BigInt` crosses as a big integer (#308).
+# before. Beyond it, an int crosses as a bigint instead (#308, design V6):
+# only an int inside data that is not looked into (deeper than MAX_DEPTH)
+# reaches this limit.
 MAX_SAFE_INTEGER = _values.MAX_SAFE_INTEGER
 
 
@@ -306,8 +308,7 @@ def _too_large() -> ValueError:
     # Without the integer: a very long one cannot even be written (Python
     # limits int-to-str conversion).
     return ValueError(
-        "integer beyond ±(2^53-1), the largest a plain integer crossing a session may be: "
-        "send it as rutis.BigInt(n)"
+        "integer beyond ±(2^53-1), the largest an integer crossing a session as data may be"
     )
 
 

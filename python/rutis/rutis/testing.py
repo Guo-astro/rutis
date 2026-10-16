@@ -12,7 +12,7 @@ in `inject`, provides what it declares in `provides` with every declared
 method, and runs its cleanups on unload. With `strict` (the default), values
 cross between the plugin and the test as they would between processes: data
 is copied (a dataclass arrives as a dict; a datetime, Decimal, UUID, set,
-bytes, `rutis.Map` or `rutis.BigInt` as the runtime sends and receives it,
+bytes or an int beyond ±(2^53−1) as the runtime sends and receives it,
 #308), functions and objects with
 behaviour pass by reference, sync methods return values and async ones
 awaitables; what works only in one process fails here too.
@@ -36,7 +36,6 @@ from .events import Events, refused_emits
 from . import _values
 from .peer import (
     MAX_DEPTH,
-    MAX_SAFE_INTEGER,
     UNDEFINED,
     AggregateError,
     RemoteError,
@@ -64,11 +63,7 @@ def _cross(value: Any, where: str, data: bool = False, depth: int = 0) -> Any:
     if tag is not None:
         return _cross_tagged(tag, value, where, depth)
     if isinstance(value, int):
-        if not -MAX_SAFE_INTEGER <= value <= MAX_SAFE_INTEGER:
-            raise PluginTestError(
-                f"{where}: an integer beyond ±(2^53-1) cannot cross between processes (#356): "
-                "send it as rutis.BigInt(n)"
-            )
+        # Within ±(2^53−1): beyond it, an int is a bigint (above).
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -107,7 +102,9 @@ def _cross(value: Any, where: str, data: bool = False, depth: int = 0) -> Any:
 def _cross_tagged(tag: str, value: Any, where: str, depth: int) -> Any:
     """A tagged value (#308) as the other process receives it: written and
     read as the runtime does (an instant in UTC, to the microsecond; a map
-    as a `rutis.Map`; bytes as bytes), refused where the runtime refuses."""
+    as a dict subclass that crosses as a map again; bytes as bytes; an
+    int beyond ±(2^53−1) as one that crosses as a bigint again), refused
+    where the runtime refuses."""
     try:
         if tag not in ("map", "set"):
             return _values.read(tag, _values.write(tag, value))

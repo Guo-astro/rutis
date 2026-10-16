@@ -16,7 +16,7 @@ from pathlib import Path
 import background
 import conformance_weather
 
-from rutis import Map, _values
+from rutis import _values
 from rutis import plugin as sdk
 from rutis.peer import RemoteError
 from rutis.testing import load
@@ -66,7 +66,7 @@ def same(a, b):
         tag = tag[1:]
         if tag == "map":
             return (
-                isinstance(a, Map)
+                isinstance(a, _values.Map)
                 and len(a) == len(text)
                 and all(same(key, k) and same(value, v) for (key, value), (k, v) in zip(a.items(), text))
             )

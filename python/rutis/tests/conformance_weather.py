@@ -9,7 +9,6 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
-from rutis import BigInt, Map
 from rutis.peer import UNDEFINED
 
 inject = ["clock"]
@@ -39,8 +38,8 @@ SAMPLES = {
     "python/value-decimal-uuid": lambda: [Decimal("-12.3400"), UUID("0F8FAD5B-D9CB-469F-A165-70867728950E")],
     "python/value-int-keys": lambda: {1: "a", 2: "b"},
     "python/value-date-time": lambda: [date(2026, 10, 15), time(14, 30, 5, 250000)],
-    "python/value-bigint": lambda: BigInt(-123456789012345678901),
-    "python/value-str-map": lambda: Map({"a": 1, "b": [frozenset()]}),
+    "python/value-bigint": lambda: -123456789012345678901,
+    "python/value-mixed-keys": lambda: {"a": 1, 2: [frozenset()]},
     "python/value-bytes-kinds": lambda: [bytearray(b"hello"), memoryview(b"")],
     "python/value-aware-time": lambda: time(14, 30, tzinfo=timezone.utc),
     "python/value-decimal-nan": lambda: Decimal("NaN"),

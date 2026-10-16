@@ -10,11 +10,15 @@ below, and only to a far end that declared the capability `value-<tag>`.
 | `date` | `date` | `2026-10-15` |
 | `time` | `time` without a time zone | `14:30:05.25` |
 | `bytes` | `bytes` (`bytearray`, `memoryview` sent too) | base64 (RFC 4648 §4, padded) |
-| `map` | `rutis.Map` (a dict with a key that is not a string sent too) | `[[key, value], …]` |
+| `map` | a dict with a key that is not a string; a received map (`Map`) | `[[key, value], …]` |
 | `set` | `set` (`frozenset` sent too) | `[element, …]` |
-| `bigint` | `rutis.BigInt` | decimal integer, at most 4300 digits |
+| `bigint` | an int beyond ±(2^53−1); a received bigint (`BigInt`) | decimal integer, at most 4300 digits |
 | `decimal` | `Decimal` | decimal, no exponent, trailing zeros kept |
 | `uuid` | `UUID` | lowercase `8-4-4-4-12` hex |
+
+Plugins write plain Python (design V0): `BigInt` and `Map` are internal,
+what a received bigint or map arrives as, so that passed on it keeps its
+tag (a JS `5n` comes back `5n`, a JS `Map` with string keys a `Map`).
 
 Python keeps microseconds: an instant, local date and time or time of day
 with more digits is truncated toward negative infinity when received
@@ -49,11 +53,10 @@ _V = TypeVar("_V")
 
 
 class BigInt(int):
-    """An integer that crosses as a big integer (tag `bigint`), of any size
-    up to 4300 digits. A received bigint arrives as one, and sent back it
-    is a bigint again; arithmetic on it gives a plain int. A plain int
-    crosses only within ±(2^53−1) (design V6): wrap a larger one,
-    `rutis.BigInt(n)`."""
+    """A received big integer (tag `bigint`): an int to the plugin, which
+    crosses as a bigint again even within ±(2^53−1); arithmetic on it gives
+    a plain int. A plain int beyond ±(2^53−1) crosses as a bigint by itself
+    (design V6)."""
 
     __slots__ = ()
 
@@ -65,10 +68,10 @@ class BigInt(int):
 
 
 class Map(Dict[_K, _V]):
-    """A dict that crosses as a map (tag `map`), even when its keys are all
-    strings, so the far end receives a map (a JS `Map`) and not an object.
-    A dict with a key that is not a string crosses as a map anyway; a
-    received map arrives as a `Map`."""
+    """A received map (tag `map`): a dict to the plugin, which crosses as a
+    map again even when its keys are all strings (a plain dict with string
+    keys crosses as an object). A dict with a key that is not a string
+    crosses as a map by itself."""
 
     __slots__ = ()
 
@@ -87,7 +90,10 @@ def tag_of(value: Any) -> str | None:
     string keys and references."""
     if isinstance(value, BigInt):
         return "bigint"
-    if value is None or isinstance(value, (bool, int, float, str, list, tuple)):
+    if isinstance(value, int) and not isinstance(value, bool):
+        # Beyond ±(2^53−1) an integer is a bigint (design V6).
+        return None if -MAX_SAFE_INTEGER <= value <= MAX_SAFE_INTEGER else "bigint"
+    if value is None or isinstance(value, (bool, float, str, list, tuple)):
         return None
     if isinstance(value, _dt.datetime):
         return "datetime" if value.utcoffset() is None else "instant"
@@ -302,10 +308,9 @@ def key_of(value: Any, what: str) -> tuple:
     if isinstance(value, BigInt):
         return ("bigint", int(value))
     if isinstance(value, int):
-        # Beyond ±(2^53−1) JavaScript holds no integer exactly, so two such
-        # keys may be one there (design V6).
+        # Beyond ±(2^53−1) it crosses as a bigint (design V6).
         if not -MAX_SAFE_INTEGER <= value <= MAX_SAFE_INTEGER:
-            raise ValueError(f"a {what} cannot be an integer beyond ±(2^53-1): send it as rutis.BigInt(n)")
+            return ("bigint", value)
         return ("number", value)
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -345,6 +350,11 @@ def check_keys(keys: Iterable[Any], what: str) -> None:
 
 
 def _received(keys: list, what: str) -> None:
+    for key in keys:
+        # A number on the wire beyond ±(2^53−1) is no key (§6.1): such an
+        # integer is sent as a bigint, which arrives as a BigInt.
+        if type(key) is int and not -MAX_SAFE_INTEGER <= key <= MAX_SAFE_INTEGER:
+            raise Refused(f"a {what} cannot be the number {_shown(key)}, beyond ±(2^53-1): it is sent as a bigint")
     try:
         check_keys(keys, what)
     except ValueError as error:

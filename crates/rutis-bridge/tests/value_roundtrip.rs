@@ -13,9 +13,9 @@
 //! nearest double, -0 as 0 and an integral float (`2.0`) as an integer;
 //! the table lists these as not guaranteed. Every other float comes back
 //! bit for bit (#290), and every object key as sent (#302). Python sends
-//! no integer beyond ±(2^53−1): echoing one fails that call with an error
-//! naming the limit (#356). NaN and ±Infinity are not JSON and are not
-//! generated.
+//! an integer beyond ±(2^53−1) as a bigint (#308, design V6): echoed, it
+//! comes back as one, the arrays and objects around it as lists and
+//! records. NaN and ±Infinity are not JSON and are not generated.
 //!
 //! Values nest up to the limit, 64 levels (`MAX_DEPTH`). Past it, the
 //! side that would send the value fails that call, whichever side it is,
@@ -286,10 +286,9 @@ enum Numbers {
     /// As sent: integer or float, the same value, a float bit for bit
     /// (-0 kept).
     Exact,
-    /// As `Exact`, but the far end sends no integer beyond ±(2^53−1)
-    /// (Python, #356): a value holding one fails the echo, naming the
-    /// limit, and the session goes on.
-    SafeIntegers,
+    /// As `Exact`, but the far end sends an integer beyond ±(2^53−1) as
+    /// a bigint (Python, design V6).
+    BigIntegers,
     /// As IEEE 754 doubles (JavaScript).
     Doubles,
 }
@@ -301,7 +300,7 @@ fn same(sent: &Json, got: &Json, numbers: Numbers, at: &str) -> Result<(), Strin
         (Json::Number(a), Json::Number(b)) => {
             let (x, y) = (a.as_f64().unwrap(), b.as_f64().unwrap());
             let equal = match numbers {
-                Numbers::Exact | Numbers::SafeIntegers => match (a.is_f64(), b.is_f64()) {
+                Numbers::Exact | Numbers::BigIntegers => match (a.is_f64(), b.is_f64()) {
                     (true, true) => x.to_bits() == y.to_bits(),
                     (false, false) => a == b,
                     _ => false,
@@ -344,22 +343,20 @@ fn same(sent: &Json, got: &Json, numbers: Numbers, at: &str) -> Result<(), Strin
 /// guarantee: bridge/value-roundtrip. Risk P7, C5.
 fn round_trip(far: &Connection, name: &str, numbers: Numbers) {
     check(&format!("{name} round trip"), value(), |sent| {
-        let echoed = far
-            .invoke(
-                "conformance",
-                "echo",
-                Value::List(vec![Value::Data(sent.clone())]),
-            )
-            .and_then(Value::json);
-        if matches!(numbers, Numbers::SafeIntegers) && has_unsafe_integer(&sent) {
-            return match echoed {
-                Err(Error::Remote { message, .. }) if message.contains("2^53-1") => Ok(()),
-                other => Err(TestCaseError::fail(format!(
-                    "an error naming the integer limit expected, got {other:?}"
-                ))),
-            };
+        let echoed = far.invoke(
+            "conformance",
+            "echo",
+            Value::List(vec![Value::Data(sent.clone())]),
+        );
+        if matches!(numbers, Numbers::BigIntegers) && has_unsafe_integer(&sent) {
+            let echoed =
+                echoed.map_err(|error| TestCaseError::fail(format!("echo failed: {error}")))?;
+            prop_assert_eq!(echoed, with_bigints(&sent));
+            return Ok(());
         }
-        let got = echoed.map_err(|error| TestCaseError::fail(format!("echo failed: {error}")))?;
+        let got = echoed
+            .and_then(Value::json)
+            .map_err(|error| TestCaseError::fail(format!("echo failed: {error}")))?;
         same(&sent, &got, numbers, "$").map_err(TestCaseError::fail)
     });
 }
@@ -375,6 +372,26 @@ fn has_unsafe_integer(value: &Json) -> bool {
         Json::Array(items) => items.iter().any(has_unsafe_integer),
         Json::Object(fields) => fields.values().any(has_unsafe_integer),
         _ => false,
+    }
+}
+
+/// `value` as a far end that sends an integer beyond ±(2^53−1) as a
+/// bigint echoes it: such integers bigints, the arrays and objects holding
+/// one lists and records, the rest data.
+fn with_bigints(value: &Json) -> Value {
+    if !has_unsafe_integer(value) {
+        return Value::Data(value.clone());
+    }
+    match value {
+        Json::Number(n) => Value::BigInt(n.to_string().parse().unwrap()),
+        Json::Array(items) => Value::List(items.iter().map(with_bigints).collect()),
+        Json::Object(fields) => Value::Record(
+            fields
+                .iter()
+                .map(|(key, value)| (key.clone(), with_bigints(value)))
+                .collect(),
+        ),
+        _ => unreachable!("only numbers are integers"),
     }
 }
 
@@ -893,7 +910,7 @@ async fn node_releases_balance() {
 #[tokio::test(flavor = "multi_thread")]
 async fn python_values_round_trip() {
     let (near, _child) = far_end(python(), "python").await;
-    tokio::task::spawn_blocking(move || round_trip(&near, "python", Numbers::SafeIntegers))
+    tokio::task::spawn_blocking(move || round_trip(&near, "python", Numbers::BigIntegers))
         .await
         .unwrap();
 }

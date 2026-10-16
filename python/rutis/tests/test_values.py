@@ -15,8 +15,8 @@ from uuid import UUID
 
 import background
 
-from rutis import BigInt, Map
 from rutis import _values as values
+from rutis._values import BigInt, Map
 from rutis.peer import CAPABILITIES, COMPAT_CAPABILITIES, UNDEFINED, Peer, RemoteFunction
 from rutis.testing import PluginTestError, _cross
 
@@ -116,7 +116,9 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(values.tag_of(frozenset()), "set")
         self.assertEqual(values.tag_of({1: "a"}), "map")
         self.assertEqual(values.tag_of(Map({"a": 1})), "map")
-        for plain in ({"a": 1}, {}, 2**60, True, 1.5, "x", None, [date(2026, 1, 1)]):
+        self.assertEqual(values.tag_of(2**53), "bigint")
+        self.assertEqual(values.tag_of(-(2**53)), "bigint")
+        for plain in ({"a": 1}, {}, 2**53 - 1, True, 1.5, "x", None, [date(2026, 1, 1)]):
             self.assertIsNone(values.tag_of(plain))
 
 
@@ -155,8 +157,9 @@ class KeyTests(unittest.TestCase):
             with self.subTest(key=key):
                 with self.assertRaises(ValueError):
                     values.check_keys([key], "map key")
-        with self.assertRaisesRegex(ValueError, r"beyond ±\(2\^53-1\): send it as rutis.BigInt\(n\)"):
-            values.check_keys([2**53], "map key")
+        # Beyond ±(2^53−1) an int key is a bigint (design V6).
+        self.assertEqual(values.key_of(2**53, "map key"), ("bigint", 2**53))
+        values.check_keys([2**53, -(2**64)], "map key")
 
     def test_keys_equal_on_the_wire_are_refused(self):
         with self.assertRaisesRegex(ValueError, "duplicate map key 1"):
@@ -174,6 +177,12 @@ class KeyTests(unittest.TestCase):
                     values.received_set(keys)
         self.assertEqual(values.received_map(["1", 1], ["a", "b"]), {"1": "a", 1: "b"})
         self.assertIs(type(values.received_map([], [])), Map)
+        # A number on the wire beyond ±(2^53−1) is no key; a bigint is.
+        with self.assertRaisesRegex(values.Refused, "beyond"):
+            values.received_map([2**53], ["a"])
+        with self.assertRaisesRegex(values.Refused, "beyond"):
+            values.received_set([-(2**53)])
+        self.assertEqual(values.received_set([BigInt(2**53)]), {2**53})
 
 
 class SessionTests(background.IsolatedAsyncioTestCase):
@@ -246,6 +255,24 @@ class SessionTests(background.IsolatedAsyncioTestCase):
         self.assertEqual(decoded[5], {"plain": {2}})
         self.assertEqual(decoded[6], Map({"k": b"\x00"}))
         self.assertIs(type(decoded[7]), BigInt)
+
+    async def test_an_int_beyond_the_safe_range_crosses_as_a_bigint(self):
+        # Design V6: no wrapper; within the range it stays a number.
+        peer, _read = self.session(lambda target, method, args: None)
+        self.assertEqual(
+            peer._encode({"n": [1, 2**64], 2**53: True}, [], False),
+            {
+                "type": "map",
+                "value": [
+                    [{"type": "data", "value": "n"}, {"type": "list", "value": [{"type": "data", "value": 1}, {"type": "bigint", "value": "18446744073709551616"}]}],
+                    [{"type": "bigint", "value": "9007199254740992"}, {"type": "data", "value": True}],
+                ],
+            },
+        )
+        # A received bigint within the range passes on as a bigint.
+        received = peer._decode({"type": "bigint", "value": "5"})
+        self.assertEqual(peer._encode(received, [], False), {"type": "bigint", "value": "5"})
+        self.assertEqual(peer._encode(received + 1, [], False), {"type": "data", "value": 6})
 
     async def test_undefined_inside_data_is_null_and_a_dict_keeps_its_key(self):
         # #355, design V10: as data, beside a tagged value, or in a map.
@@ -388,6 +415,10 @@ class TestingToolTests(unittest.TestCase):
         self.assertEqual(_cross(frozenset({1}), "v"), {1})
         self.assertIs(type(_cross(bytearray(b"x"), "v")), bytes)
         self.assertIs(type(_cross(BigInt(3), "v")), BigInt)
+        # An int beyond ±(2^53−1) crosses as a bigint, an int to the plugin.
+        self.assertEqual(_cross(2**64, "v"), 2**64)
+        self.assertIs(type(_cross(2**64, "v")), BigInt)
+        self.assertEqual(_cross({2**53: [-(2**60)]}, "v"), {2**53: [-(2**60)]})
         self.assertEqual(_cross({"a": UNDEFINED}, "v"), {"a": None})
         self.assertEqual(_cross(Decimal("1.10"), "v").as_tuple(), Decimal("1.10").as_tuple())
 
@@ -397,8 +428,6 @@ class TestingToolTests(unittest.TestCase):
             (Decimal("NaN"), "only finite decimals"),
             ({(1, 2): "a"}, "a map key cannot be a list"),
             ({None: "a"}, "a map key cannot be None"),
-            ({2**53: "a"}, "send it as rutis.BigInt"),
-            (2**53, "send it as rutis.BigInt"),
         ):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(PluginTestError, message):
