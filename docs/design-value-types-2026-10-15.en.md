@@ -13,12 +13,13 @@ Out of scope: event forwarding between nodes (`NodeEvent` arguments are JSON; th
 
 | # | Decision |
 | --- | --- |
+| V0 | **Top principle: developer transparency**. Plugins write only code native to their language; rutis does all conversion, and normal use needs no rutis-specific types or idioms. The only exception: creating, from nothing, a value of a type the language lacks (such as a date-only value in JS) uses an SDK constructor (revised 2026-10-17) |
 | V1 | 0.11 does all ten values in one go: instant, local date-time, date, time of day, binary, Map, Set, big integer, Decimal, UUID; together with the consistency fixes from #355 |
 | V2 | Principle: **convert by default, never lose information**. Each value has one default counterpart in each language; when the other side has no identical type, it is converted to the closest representation that loses no information. An error is raised only when information really would be lost |
 | V3 | Wire encoding: new tags at the same level as `reference`; ordinary JSON fields are never interpreted as types |
 | V4 | Negotiation: one capability per value; when the peer has not declared it, **only this call fails** and the session continues; the protocol version number is not bumped |
 | V5 | Date-times without a time zone (Python `datetime` without `tzinfo`, Kotlin `LocalDateTime`) are **a value of their own** (local date-time, `datetime`), passed as is, without guessing a time zone and without converting to an instant (as in Arrow, JS Temporal `PlainDateTime` and `java.time.LocalDateTime`) |
-| V6 | Big integers are sent as big integers only when **explicit**; ordinary integers outside ±(2^53−1) are still an error. The type JS receives is therefore fixed: ordinary numbers are `number`, big integers are `bigint` |
+| V6 | Integers outside ±(2^53−1) are sent as big integers **automatically** (Python `int`, Go `int64` / `uint64` / `*big.Int`, Rust integers, Kotlin `Long` / `BigInteger`), with no error and no wrapper. Cost: when JS receives an integer from another language, it is a `number` within range and a `bigint` beyond it (revised 2026-10-17, replacing "only when explicit") |
 | V7 | When instant precision differs, the receiver **truncates toward negative infinity** to its own precision; this is written into the boundary rules and is not an error |
 | V8 | Map keys and Set elements can only be things that "are values in every language" (§5); if keys become duplicates after conversion (entries would be lost), this call fails |
 | V9 | Go structs, typed slices and maps, and top-level `time.Time` all go through the same encoder and are checked one by one, no longer through `encoding/json` |
@@ -37,13 +38,14 @@ Out of scope: event forwarding between nodes (`NodeEvent` arguments are JSON; th
 | Binary | `bytes` | `Uint8Array` | `bytes` | `[]byte` | `Vec<u8>` | `ByteArray` | `Data` |
 | Map | `map` | `Map` | `dict` | `map[K]V` | `Vec<(Value, Value)>` | `Map` | `Dictionary` |
 | Set | `set` | `Set` | `set` | slice (`map[K]struct{}` when declared as that) | `Vec<Value>` | `Set` | `Set` |
-| Big integer | `bigint` | `bigint` | `rutis.BigInt` (a subclass of `int`) | `*big.Int` | `BigInt` | `BigInteger` | `Rutis.BigInt` |
+| Big integer | `bigint` | `bigint` | `int` (what is received is a subclass of `int`; see below) | `*big.Int` | `BigInt` | `BigInteger` | `Rutis.BigInt` |
 | Decimal | `decimal` | string | `Decimal` | string | `Decimal` (string) | `BigDecimal` | `Decimal` |
 | UUID | `uuid` | string (lowercase) | `UUID` | string (lowercase) | `Uuid` | `java.util.UUID` | `UUID` |
 
 - Rust's `Instant`, `DateTime`, `Date`, `TimeOfDay`, `BigInt`, `Decimal` and `Uuid` are small types of rutis-bridge's own (chrono and num-bigint are not pulled in), each with methods to convert to and from the common libraries; the same goes for Go's `rutis.DateTime`, `rutis.Date` and `rutis.TimeOfDay`, and Swift's `Rutis.DateTime`, `Rutis.CalendarDate`, `Rutis.TimeOfDay` and `Rutis.BigInt`.
-- **Strings in JS**: local date-time, date, time of day, Decimal and UUID have no counterpart type in JS; they are received as strings with the full content. To send one as the original type, use the SDK constructors: `rutis.datetime('2026-10-15T14:30')`, `rutis.date('2026-10-15')`, `rutis.time('14:30')`, `rutis.decimal('1.10')`, `rutis.uuid('…')`; ordinary strings are still strings. The same goes for Go's Decimal and UUID (the named string types `rutis.Decimal` and `rutis.UUID`).
-- **Big integers in Python**: receiving a `bigint` gives a `rutis.BigInt` (a subclass of `int`; arithmetic on it yields an ordinary `int`), and sending it back unchanged is still a big integer; an ordinary `int` out of range is an error that suggests `rutis.BigInt(n)`.
+- **Strings in JS**: local date-time, date, time of day, Decimal and UUID have no counterpart type in JS; they are received as **plain strings** with the full content, and `===` and the like work as usual. Cost: when such a value is passed on through JS to another language unchanged, its type is not kept (a `date` sent by Python comes back through JS as a `str`). There are no "strings that remember their type" objects, because `===` on objects compares identity and would make common code such as UUID comparisons silently wrong. To create one from nothing, or to pass one on as the original type, use the SDK constructors: `rutis.datetime('2026-10-15T14:30')`, `rutis.date('2026-10-15')`, `rutis.time('14:30')`, `rutis.decimal('1.10')`, `rutis.uuid('…')`; ordinary strings are still strings. The same goes for Go's Decimal and UUID (the named string types `rutis.Decimal` and `rutis.UUID`).
+- **Big integers in Python**: an ordinary `int` out of range is sent as a big integer automatically, with nothing special to write. A received `bigint` is a subclass of `int` (developers just use it as an `int`), and sending it back unchanged is still a big integer, so a `5n` sent by JS and passed on through Python back to JS is still `5n`. The same goes for Go: a `bigint` received into `any` is a `*big.Int`.
+- **Map**: a JS `Map` with string keys arrives in Python as a subclass of `dict`, and passing it on unchanged is still a Map; an ordinary Python `dict` with string keys is still passed as an object. Developers do not need to tell them apart.
 - **Decimal in Swift**: Foundation `Decimal` has only 38 significant digits; beyond that, this call fails (information would be lost).
 - **Set in Go**: Go has no set type; it decodes according to the declared target type, and when the target is `any` it yields a deduplicated slice.
 
@@ -85,7 +87,7 @@ Examples: `{"type":"instant","value":"2026-10-15T03:22:15Z"}`; `{"type":"map","v
 | Language | Rules |
 | --- | --- |
 | JS | `Date` → `instant` (invalid dates are an error); `Uint8Array`, `ArrayBuffer`, `DataView`, `Buffer` → `bytes`; `Map` → `map`; `Set` → `set`; `bigint` → `bigint`; SDK constructors → `datetime` / `date` / `time` / `decimal` / `uuid` |
-| Python | Time-zone-aware `datetime` → `instant`; `datetime` without a time zone → `datetime` (V5); `date` → `date`; `time` (time-zone-aware ones are rejected) → `time`; `bytes`, `bytearray`, `memoryview` → `bytes`; `set`, `frozenset` → `set`; `dict` with non-string keys and `rutis.Map` → `map`; `rutis.BigInt` → `bigint`; `Decimal` → `decimal`; `UUID` → `uuid`. `datetime`, `Decimal` and `UUID` are no longer passed as object references (#355) |
+| Python | Time-zone-aware `datetime` → `instant`; `datetime` without a time zone → `datetime` (V5); `date` → `date`; `time` (time-zone-aware ones are rejected) → `time`; `bytes`, `bytearray`, `memoryview` → `bytes`; `set`, `frozenset` → `set`; `dict` with non-string keys and received Maps (a `dict` subclass) → `map`; `int` outside ±(2^53−1) and received big integers → `bigint`; `Decimal` → `decimal`; `UUID` → `uuid`. `datetime`, `Decimal` and `UUID` are no longer passed as object references (#355) |
 | Go | `time.Time` → `instant`; `rutis.DateTime` / `rutis.Date` / `rutis.TimeOfDay` → `datetime` / `date` / `time`; `[]byte` → `bytes`; maps with non-string keys → `map`; `*big.Int` / `big.Int` → `bigint`; `rutis.Decimal` / `rutis.UUID` → `decimal` / `uuid`. Struct fields and typed slices and maps go recursively through the same encoder (V9), and no longer silently become strings or base64 |
 | Rust | New variants of `Value` (V11); `Value::json()` returns an error on the new values (as it does for references); the Cordis generator maps `Uint8Array`, `Date`, `bigint`, `Map` and `Set` to the Rust types above |
 | Kotlin, Swift | The types in §2; the value layer uses the SDK's own encoder and checks values one by one, without relying on the default encoding of `JSONEncoder` / kotlinx (which encodes dates as numbers and binary as base64) |
@@ -97,7 +99,7 @@ Instant precision (V7): JS milliseconds, Python microseconds, Swift roughly micr
 1. Default conversion follows §2 and loses no information; when information would be lost, this call fails and the error says why.
 2. Date-times without a time zone are local date-times, passed as is, without guessing a time zone; they and instants are two different values and are not converted into each other.
 3. Instants are truncated toward negative infinity to the receiver's precision.
-4. Ordinary integers outside ±(2^53−1) are an error; big integers must be explicit.
+4. Integers outside ±(2^53−1) are sent as big integers automatically; JS receives them as `bigint`, and as `number` within range. A JS `number` of its own outside the range is still imprecise (a limitation of JS itself); use `bigint` for exact values.
 5. The restrictions on Map keys and Set elements are in §5; if keys become duplicates after conversion, the call fails.
 6. When the peer does not support a value, this call fails and the session continues.
 7. Event forwarding between nodes (`NodeEvent`, with JSON arguments) does not carry the new values: an event containing a new value is rejected when forwarded. Leaf events inside the same runtime process are delivered as usual.
@@ -109,6 +111,7 @@ Instant precision (V7): JS milliseconds, Python microseconds, Swift roughly micr
 - Go: `time.Time`, `[]byte` and out-of-range integers inside structs used to go through `encoding/json` and become strings or base64, or go unchecked; now they are encoded per §6 or are an error.
 - Keys whose value is `undefined` in a Python dict used to be dropped; now they are `null`.
 - Rust: `Value` gets variants and is marked `#[non_exhaustive]`; exhaustive matches need one more arm.
+- Python and Go integers outside ±(2^53−1) used to be an error; now they are sent as big integers automatically.
 - Values that used to be rejected (JS `Date`, `Map`, `Set`, binary, `bigint`, and so on) can now be passed, but only to peers that declared the capability: with runtimes of older versions, these calls still fail.
 
 ## 9. Tests
@@ -142,16 +145,18 @@ Phase 3 depends on phase 2; the consistency fixes from #355 are done with each l
 | `datetime` without a time zone is rejected | A separate local date-time value, passed as is | Maintainer decision: no error, no guessing of time zones, no information lost (see §12) |
 | Python `date` and `time` are rejected | Two tags, `date` and `time` | #360 |
 | The tag name `date` means an instant | Instants are `instant`, plus `datetime`, `date` and `time` | Each of the four time values has its own name, as in JS Temporal and `java.time` |
-| An option for Python to send out-of-range integers as `bigint` automatically based on size | Only explicit big integers | #360: the type JS receives does not depend on the size of the number |
+| An option for Python to send out-of-range integers as `bigint` automatically based on size | Sent as big integers automatically (V6) | Maintainer decision 2026-10-17: developer transparency (V0) takes priority over "the type JS receives is fixed" (the original #360 requirement) |
+| (Phase 3 implementation) Received values are "strings that remember their type" objects | JS receives plain strings | `===` on objects compares identity and would make common code silently wrong; the cost of losing the type when passing on through JS is documented |
 | Decimal and UUID use wrapper objects in languages without a counterpart type | Strings, with SDK constructors to send the original type | Maintainer decision: default conversion, no content lost |
 
 ## 12. Principles and references
 
 **Principles**
 
+0. Developer transparency (V0): write native code and let rutis do the conversion; this takes priority over the principles below.
 1. Types are explicit: values are tagged, and types are never guessed from field names (protocol design §6).
 2. No silent loss of information: convert whenever possible, and raise an error only when information would be lost (design philosophy §7, principle 7).
-3. Received types are stable: the same value does not turn into a different type depending on its size.
+3. Received types are as stable as possible; this gives way when it conflicts with 0 (in JS an integer is `number` or `bigint` depending on its size).
 4. Use the types that are natural in each language: one shared table of semantics, plus a mapping table per language.
 5. Old and new coexist: negotiation is per type, and an unsupported value only makes this call fail.
 6. The test tools and the real runtimes share the same expectations (the conformance tests are the contract).
