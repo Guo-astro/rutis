@@ -10,11 +10,15 @@
 // method, and runs its cleanups on unload. With `strict` (the default),
 // values cross between the plugin and the test as they would between
 // processes: data is copied, functions and objects with behaviour pass by
-// reference, sync methods return values and async ones promises; what
-// works only in one process fails here too.
+// reference, sync methods return values and async ones promises; a Date,
+// binary data, a Map, a Set, a bigint and the values of the SDK
+// constructors cross as the runtimes send and receive them (#308: a Date
+// to the millisecond, a datetime, date, time, decimal or uuid as its
+// text); what works only in one process fails here too.
 
 import { Context } from '@deepseek-ai/cordis'
 import { PLUGIN_API, isPlugin } from './index.mjs'
+import { ValueError, bytesOf, checkKeys, checkText, constructedTag, instantFromText, instantText, keyOf, tagOf } from './values.mjs'
 
 export class PluginTestError extends Error {
   name = 'PluginTestError'
@@ -28,21 +32,22 @@ const constructors = { Error, TypeError, RangeError, ReferenceError, SyntaxError
 // with methods. Everything else is data.
 function hasBehaviour(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value) || ArrayBuffer.isView(value)) return false
-  if (builtins.some(type => value instanceof type)) return false
+  if (builtins.some(type => value instanceof type) || constructedTag(value)) return false
   const prototype = Object.getPrototypeOf(value)
   if (prototype !== Object.prototype && prototype !== null) return true
   return Object.values(value).some(item => typeof item === 'function')
 }
 
-// Whether a value holds a reference anywhere: itself, or inside the arrays
-// and plain objects it contains. A plain object that holds none is plain
-// data (JSON), where undefined becomes null.
-function holdsReference(value, seen = new Set()) {
-  if (typeof value === 'function' || value instanceof Promise || hasBehaviour(value)) return true
+// Whether a value holds a reference or a tagged value (a Date, a Map, ...)
+// anywhere: itself, or inside the arrays and plain objects it contains. A
+// plain object that holds none is plain data (JSON), where undefined
+// becomes null.
+function holdsSpecial(value, seen = new Set()) {
+  if (typeof value === 'function' || value instanceof Promise || hasBehaviour(value) || tagOf(value)) return true
   if (value === null || typeof value !== 'object' || seen.has(value)) return false
   if (!Array.isArray(value) && ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return false
   seen.add(value)
-  return Object.values(value).some(item => holdsReference(item, seen))
+  return Object.values(value).some(item => holdsSpecial(item, seen))
 }
 
 // How deep a value crossing between processes may nest, as in the
@@ -55,7 +60,7 @@ const MAX_DEPTH = 64
 function cross(value, where, seen = new Set(), data = false, depth = 0) {
   if (value === undefined) return data ? null : undefined
   if (value === null) return value
-  if (typeof value === 'symbol' || typeof value === 'bigint') {
+  if (typeof value === 'symbol') {
     throw new PluginTestError(`${where}: a ${typeof value} cannot cross between processes`)
   }
   if (typeof value === 'number' && !Number.isFinite(value)) {
@@ -65,6 +70,14 @@ function cross(value, where, seen = new Set(), data = false, depth = 0) {
     return (...args) => crossResult(() => value(...args.map((arg, i) => cross(arg, `${where} argument ${i}`))), where)
   }
   if (value instanceof Promise) return value.then(result => cross(result, where), thrown => { throw crossThrown(thrown, where) })
+  const tag = tagOf(value)
+  if (tag) {
+    try {
+      return crossTagged(value, tag, where, seen, depth)
+    } catch (error) {
+      throw error instanceof ValueError ? new PluginTestError(`${where}: ${error.message}`) : error
+    }
+  }
   if (typeof value !== 'object') return value
   if (hasBehaviour(value)) return reference(value, where)
   if (seen.has(value)) throw new PluginTestError(`${where}: cyclic data cannot cross between processes`)
@@ -80,10 +93,43 @@ function cross(value, where, seen = new Set(), data = false, depth = 0) {
   seen.add(value)
   try {
     if (Array.isArray(value)) return value.map((item, i) => cross(item, `${where}[${i}]`, seen, data, depth + 1))
-    const inData = data || !holdsReference(value)
+    const inData = data || !holdsSpecial(value)
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cross(item, `${where}.${key}`, seen, inData, depth + 1)]))
   } finally {
     seen.delete(value)
+  }
+}
+
+// A tagged value as the other process receives it (the runtimes'
+// session.mjs, values.mjs).
+function crossTagged(value, tag, where, seen, depth) {
+  switch (tag) {
+    case 'instant': return instantFromText(instantText(value))
+    case 'bytes': return new Uint8Array(bytesOf(value))
+    case 'bigint': return BigInt(checkText(tag, String(value)))
+    case 'map': case 'set': {
+      if (seen.has(value)) throw new PluginTestError(`${where}: cyclic data cannot cross between processes`)
+      if (depth >= MAX_DEPTH) throw new PluginTestError(`${where}: a value nested deeper than ${MAX_DEPTH} levels cannot cross between processes`)
+      const what = tag === 'map' ? 'map key' : 'set element'
+      const entries = tag === 'map' ? [...value] : [...value].map(element => [element])
+      const keys = entries.map(([key]) => keyOf(key))
+      checkKeys(keys, what)
+      seen.add(value)
+      let made
+      try {
+        const item = (item, at) => cross(item, `${where}${at}`, seen, false, depth + 1)
+        made = tag === 'map'
+          // Undefined in a map is null, as in data (design V10).
+          ? new Map(entries.map(([key, entry], i) => [item(key, ` key ${i}`), entry === undefined ? null : item(entry, ` value ${i}`)]))
+          : new Set(entries.map(([element], i) => item(element, ` element ${i}`)))
+      } finally {
+        seen.delete(value)
+      }
+      // Received, a datetime, date, ... is its text: no two keys may meet.
+      checkKeys(keys, what, made)
+      return made
+    }
+    default: return checkText(tag, value.value)
   }
 }
 

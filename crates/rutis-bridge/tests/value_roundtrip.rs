@@ -31,8 +31,10 @@
 //! capabilities, unchanged but for integers beyond ±(2^53−1) in data,
 //! which come back as the bigints they crossed as; to one that did not, each such call fails
 //! on this side before it is sent, naming the capability, and the session
-//! goes on. Only the Rust far end takes them so far: the language
-//! runtimes follow in phase 3 of the design.
+//! goes on. Node and Bun take them as JavaScript does (design §2): their
+//! echo sends back an instant to the millisecond and a datetime, date,
+//! time, decimal or uuid as its text, and refuses a map or set whose keys
+//! JavaScript cannot hold apart.
 #![cfg(all(unix, feature = "testing"))]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -548,6 +550,146 @@ fn tagged_round_trip(far: &Connection, name: &str) {
     );
 }
 
+/// What a JavaScript far end's echo (Node, Bun) sends back for `sent`
+/// (design §2): an instant truncated to the millisecond (V7), a datetime,
+/// date, time, decimal or uuid as its text; `None` when it refuses the
+/// call, for a map or set whose keys it cannot hold apart (§5).
+fn javascript_echo(sent: &Value) -> Option<Value> {
+    let text = |text: String| Value::Data(Json::String(text));
+    Some(match sent {
+        Value::Instant(instant) => Value::Instant(
+            rpc::Instant::from_unix(
+                instant.unix_seconds(),
+                instant.subsec_nanos() / 1_000_000 * 1_000_000,
+            )
+            .unwrap(),
+        ),
+        Value::DateTime(value) => text(value.to_string()),
+        Value::Date(value) => text(value.to_string()),
+        Value::Time(value) => text(value.to_string()),
+        Value::Decimal(value) => text(value.to_string()),
+        Value::Uuid(value) => text(value.to_string()),
+        Value::List(items) => {
+            Value::List(items.iter().map(javascript_echo).collect::<Option<_>>()?)
+        }
+        Value::Record(fields) => Value::Record(
+            fields
+                .iter()
+                .map(|(key, value)| Some((key.clone(), javascript_echo(value)?)))
+                .collect::<Option<_>>()?,
+        ),
+        Value::Map(entries) => {
+            let entries = entries
+                .iter()
+                .map(|(key, value)| Some((javascript_echo(key)?, javascript_echo(value)?)))
+                .collect::<Option<Vec<_>>>()?;
+            javascript_keys(entries.iter().map(|(key, _)| key))?;
+            Value::Map(entries)
+        }
+        Value::Set(elements) => {
+            let elements = elements
+                .iter()
+                .map(javascript_echo)
+                .collect::<Option<Vec<_>>>()?;
+            javascript_keys(&elements)?;
+            Value::Set(elements)
+        }
+        other => other.clone(),
+    })
+}
+
+/// Whether JavaScript holds `keys` apart, as received: no integral number
+/// beyond ±(2^53−1) (a double is not that integer), and no two equal once
+/// a datetime, date, ... is its text.
+fn javascript_keys<'a>(keys: impl IntoIterator<Item = &'a Value>) -> Option<()> {
+    let mut seen = BTreeSet::new();
+    for key in keys {
+        let identity = match key {
+            Value::Data(Json::Number(n)) => {
+                let x = n.as_f64().unwrap();
+                if x.fract() == 0.0 && x.abs() > SAFE as f64 {
+                    return None;
+                }
+                format!("n{}", if x == 0.0 { 0.0 } else { x })
+            }
+            other => format!("{other:?}"),
+        };
+        seen.insert(identity).then_some(())?;
+    }
+    Some(())
+}
+
+/// A value as JSON, a tagged value as `{"$<tag>": ...}` (as the expectations
+/// in `weather.expected.json` write it), to compare with `same`.
+fn written(value: &Value) -> Json {
+    let tagged = |tag: &str, value: Json| json!({ format!("${tag}"): value });
+    match value {
+        Value::Data(json) => json.clone(),
+        Value::List(items) => Json::Array(items.iter().map(written).collect()),
+        Value::Record(fields) => Json::Object(
+            fields
+                .iter()
+                .map(|(key, value)| (key.clone(), written(value)))
+                .collect(),
+        ),
+        Value::Map(entries) => tagged(
+            "map",
+            entries
+                .iter()
+                .map(|(key, value)| json!([written(key), written(value)]))
+                .collect(),
+        ),
+        Value::Set(elements) => tagged("set", elements.iter().map(written).collect()),
+        Value::Bytes(bytes) => tagged("bytes", json!(bytes)),
+        other => match other.tag() {
+            Some(tag) => tagged(tag, json!(format!("{other:?}"))),
+            None => json!(format!("{other:?}")),
+        },
+    }
+}
+
+/// guarantee: bridge/value-tags. Tagged values come back from a JavaScript
+/// far end's echo as JavaScript holds them ([`javascript_echo`]); a value
+/// it cannot hold fails that call only.
+fn javascript_tagged_round_trip(far: &Connection, name: &str) {
+    check(
+        &format!("{name} tagged round trip"),
+        tagged_value(),
+        |sent| {
+            let echoed = far.invoke("conformance", "echo", Value::List(vec![sent.clone()]));
+            // Integers beyond ±(2^53−1) cross as bigints (V6).
+            match (javascript_echo(&as_received(sent.clone())), echoed) {
+                (Some(expected), Ok(echoed)) => {
+                    same(
+                        &written(&expected),
+                        &written(&echoed),
+                        Numbers::Doubles,
+                        "$",
+                    )
+                    .map_err(TestCaseError::fail)?;
+                }
+                // Refused by the far end, or here before sending (a whole
+                // float beyond the range as a key).
+                (None, Err(error)) => {
+                    let message = error.to_string();
+                    prop_assert!(
+                        message.contains("map key") || message.contains("set element"),
+                        "{}",
+                        message
+                    );
+                }
+                (expected, echoed) => {
+                    return Err(TestCaseError::fail(format!(
+                        "expected {expected:?}, got {echoed:?}"
+                    )))
+                }
+            }
+            prop_assert!(far.close_reason().is_none());
+            Ok(())
+        },
+    );
+}
+
 /// `value` as it comes back: an integer beyond ±(2^53−1) in data as the
 /// bigint it crossed as, the arrays and objects holding one as lists and
 /// records (design V6).
@@ -931,6 +1073,14 @@ async fn node_values_round_trip() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn node_tagged_values_round_trip() {
+    let (near, _child) = far_end(node(), "node").await;
+    tokio::task::spawn_blocking(move || javascript_tagged_round_trip(&near, "node"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn node_depth_limit() {
     let (near, _child) = far_end(node(), "node").await;
     tokio::task::spawn_blocking(move || depth_limit(&near, "node"))
@@ -1025,6 +1175,15 @@ async fn bun_far_end() -> (Connection, tokio::process::Child) {
 async fn bun_values_round_trip() {
     let (near, _child) = bun_far_end().await;
     tokio::task::spawn_blocking(move || round_trip(&near, "bun", Numbers::Doubles))
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "bun")]
+#[tokio::test(flavor = "multi_thread")]
+async fn bun_tagged_values_round_trip() {
+    let (near, _child) = bun_far_end().await;
+    tokio::task::spawn_blocking(move || javascript_tagged_round_trip(&near, "bun"))
         .await
         .unwrap();
 }

@@ -34,3 +34,30 @@ export declare const PLUGIN_API: number
 export declare const PLUGIN: unique symbol
 export declare function definePlugin<C = any>(spec: PluginSpec<C>): Plugin<C>
 export declare function isPlugin(value: unknown): value is Plugin
+
+/** The mark on a value made by `datetime`, `date`, `time`, `decimal` or `uuid` (`Symbol.for('rutis.value')`). */
+export declare const VALUE: unique symbol
+
+/**
+ * A local date and time, date, time of day, decimal or UUID to send as that
+ * value (#308): JavaScript has no type for them. Received, they are strings
+ * (`value`'s text); a plain string is sent as a string.
+ */
+export interface TaggedValue<Tag extends 'datetime' | 'date' | 'time' | 'decimal' | 'uuid'> {
+  readonly [VALUE]: Tag
+  /** The value's text, as it crosses. */
+  readonly value: string
+  toString(): string
+  toJSON(): string
+}
+
+/** A local date and time without a time zone: `'2026-10-15T14:30'`, `'2026-10-15T14:30:05.25'` (years 0001–9999, 0–9 fraction digits). Received as its text. */
+export declare function datetime(text: string): TaggedValue<'datetime'>
+/** A calendar date: `'2026-10-15'` (years 0001–9999). Received as its text. */
+export declare function date(text: string): TaggedValue<'date'>
+/** A time of day without a time zone: `'14:30'`, `'14:30:05.25'` (24-hour). Received as its text. */
+export declare function time(text: string): TaggedValue<'time'>
+/** A decimal number, trailing zeros kept: `'1.10'`, `'-12.3400'` (no exponent, at most 4300 digits). Received as its text. */
+export declare function decimal(text: string | bigint): TaggedValue<'decimal'>
+/** A UUID, `8-4-4-4-12` hex in either case; sent and received in lowercase. */
+export declare function uuid(text: string): TaggedValue<'uuid'>

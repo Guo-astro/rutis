@@ -279,7 +279,7 @@ pub async fn runtime(
             check(&format!("sample {name}"), entry, reply);
         }
     } else {
-        // Q7.8: the Go and Bun plugins have no samples (#206 follow-ups).
+        // Q7.8: a plugin may have no samples (Go, #206 follow-ups).
         eprintln!(
             "{}: the plugin has no samples(), so no values only its language makes are checked",
             entry.display()
