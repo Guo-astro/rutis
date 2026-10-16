@@ -12,10 +12,11 @@
 //! are IEEE 754 doubles. There an integer beyond ±(2^53−1) comes back as the
 //! nearest double, -0 as 0 and an integral float (`2.0`) as an integer;
 //! the table lists these as not guaranteed. Every other float comes back
-//! bit for bit (#290), and every object key as sent (#302). Python sends
-//! no integer beyond ±(2^53−1): echoing one fails that call with an error
-//! naming the limit (#356). NaN and ±Infinity are not JSON and are not
-//! generated.
+//! bit for bit (#290), and every object key as sent (#302). An integer
+//! beyond ±(2^53−1) crosses as a bigint (design V6): to a far end that did
+//! not declare `value-bigint`, a value holding one fails on this side
+//! before it is sent, naming the capability. NaN and ±Infinity are not
+//! JSON and are not generated.
 //!
 //! Values nest up to the limit, 64 levels (`MAX_DEPTH`). Past it, the
 //! side that would send the value fails that call, whichever side it is,
@@ -26,8 +27,9 @@
 //! Tagged values (#308): the ten values beyond JSON (instant, datetime,
 //! date, time, bytes, map, set, bigint, decimal, uuid), mixed with data,
 //! lists and records, map keys and set elements of the kinds design §5
-//! allows and none equal, round-trip unchanged through a far end that
-//! declared their capabilities; to one that did not, each such call fails
+//! allows and none equal, round-trip through a far end that declared their
+//! capabilities, unchanged but for integers beyond ±(2^53−1) in data,
+//! which come back as the bigints they crossed as; to one that did not, each such call fails
 //! on this side before it is sent, naming the capability, and the session
 //! goes on. Only the Rust far end takes them so far: the language
 //! runtimes follow in phase 3 of the design.
@@ -286,10 +288,6 @@ enum Numbers {
     /// As sent: integer or float, the same value, a float bit for bit
     /// (-0 kept).
     Exact,
-    /// As `Exact`, but the far end sends no integer beyond ±(2^53−1)
-    /// (Python, #356): a value holding one fails the echo, naming the
-    /// limit, and the session goes on.
-    SafeIntegers,
     /// As IEEE 754 doubles (JavaScript).
     Doubles,
 }
@@ -301,7 +299,7 @@ fn same(sent: &Json, got: &Json, numbers: Numbers, at: &str) -> Result<(), Strin
         (Json::Number(a), Json::Number(b)) => {
             let (x, y) = (a.as_f64().unwrap(), b.as_f64().unwrap());
             let equal = match numbers {
-                Numbers::Exact | Numbers::SafeIntegers => match (a.is_f64(), b.is_f64()) {
+                Numbers::Exact => match (a.is_f64(), b.is_f64()) {
                     (true, true) => x.to_bits() == y.to_bits(),
                     (false, false) => a == b,
                     _ => false,
@@ -351,11 +349,17 @@ fn round_trip(far: &Connection, name: &str, numbers: Numbers) {
                 Value::List(vec![Value::Data(sent.clone())]),
             )
             .and_then(Value::json);
-        if matches!(numbers, Numbers::SafeIntegers) && has_unsafe_integer(&sent) {
+        // Beyond ±(2^53−1) an integer is a bigint (design V6), sent only to
+        // a far end that takes them.
+        if has_unsafe_integer(&sent) && !far.supports("value-bigint") {
             return match echoed {
-                Err(Error::Remote { message, .. }) if message.contains("2^53-1") => Ok(()),
+                Err(Error::Value(message))
+                    if message.contains("did not declare the capability value-bigint") =>
+                {
+                    Ok(())
+                }
                 other => Err(TestCaseError::fail(format!(
-                    "an error naming the integer limit expected, got {other:?}"
+                    "an error naming value-bigint expected, got {other:?}"
                 ))),
             };
         }
@@ -449,13 +453,22 @@ fn decimal() -> impl Strategy<Value = rpc::Decimal> {
         })
 }
 
+/// Whether `number` is a float whose whole value is beyond ±(2^53−1): not
+/// exact in every language, so no key (design §5).
+fn inexact_whole(number: &Json) -> bool {
+    number
+        .as_f64()
+        .is_some_and(|x| x.fract() == 0.0 && x.abs() > SAFE as f64)
+        && number.is_f64()
+}
+
 /// A value every language takes as a map key or set element (design §5).
 fn key_value() -> impl Strategy<Value = Value> {
     prop_oneof![
         3 => string().prop_map(|text| Value::Data(Json::String(text))),
-        // Integers beyond ±(2^53−1) are not keys (design V6).
+        // An integer beyond ±(2^53−1) is a bigint key (design V6).
         2 => number()
-            .prop_filter("a safe integer", |n| !has_unsafe_integer(n))
+            .prop_filter("an exact number", |n| !inexact_whole(n))
             .prop_map(Value::Data),
         1 => any::<bool>().prop_map(|flag| Value::Data(Json::Bool(flag))),
         1 => bigint().prop_map(Value::BigInt),
@@ -468,9 +481,13 @@ fn key_value() -> impl Strategy<Value = Value> {
 }
 
 /// What makes two keys equal, as the session compares them: numbers by
-/// value (a coarse, conservative stand-in), the rest as written.
+/// value (a coarse, conservative stand-in), an integer beyond ±(2^53−1) as
+/// the bigint it crosses as, the rest as written.
 fn key_identity(key: &Value) -> String {
     match key {
+        Value::Data(number @ Json::Number(n)) if has_unsafe_integer(number) => {
+            format!("{:?}", Value::BigInt(n.to_string().parse().unwrap()))
+        }
         Value::Data(Json::Number(n)) => {
             let x = n.as_f64().unwrap();
             format!("n{}", if x == 0.0 { 0.0 } else { x })
@@ -525,15 +542,56 @@ fn tagged_round_trip(far: &Connection, name: &str) {
             let echoed = far
                 .invoke("conformance", "echo", args)
                 .map_err(|error| TestCaseError::fail(format!("echo failed: {error}")))?;
-            prop_assert_eq!(echoed, sent);
+            prop_assert_eq!(echoed, as_received(sent));
             Ok(())
         },
     );
 }
 
-/// Whether `value` holds a tagged value.
+/// `value` as it comes back: an integer beyond ±(2^53−1) in data as the
+/// bigint it crossed as, the arrays and objects holding one as lists and
+/// records (design V6).
+fn as_received(value: Value) -> Value {
+    match value {
+        Value::Data(json) if has_unsafe_integer(&json) => match json {
+            Json::Array(items) => Value::List(
+                items
+                    .into_iter()
+                    .map(Value::Data)
+                    .map(as_received)
+                    .collect(),
+            ),
+            Json::Object(fields) => Value::Record(
+                fields
+                    .into_iter()
+                    .map(|(key, value)| (key, as_received(Value::Data(value))))
+                    .collect(),
+            ),
+            number => Value::BigInt(number.to_string().parse().unwrap()),
+        },
+        Value::List(items) => Value::List(items.into_iter().map(as_received).collect()),
+        Value::Record(fields) => Value::Record(
+            fields
+                .into_iter()
+                .map(|(key, value)| (key, as_received(value)))
+                .collect(),
+        ),
+        Value::Map(entries) => Value::Map(
+            entries
+                .into_iter()
+                .map(|(key, value)| (as_received(key), as_received(value)))
+                .collect(),
+        ),
+        Value::Set(elements) => Value::Set(elements.into_iter().map(as_received).collect()),
+        other => other,
+    }
+}
+
+/// Whether `value` holds a tagged value, an integer beyond ±(2^53−1) in
+/// data included.
 fn holds_tagged(value: &Value) -> bool {
     match value {
+        Value::Data(json) => has_unsafe_integer(json),
         Value::List(items) => items.iter().any(holds_tagged),
         Value::Record(fields) => fields.values().any(holds_tagged),
         other => other.tag().is_some(),
@@ -893,7 +951,7 @@ async fn node_releases_balance() {
 #[tokio::test(flavor = "multi_thread")]
 async fn python_values_round_trip() {
     let (near, _child) = far_end(python(), "python").await;
-    tokio::task::spawn_blocking(move || round_trip(&near, "python", Numbers::SafeIntegers))
+    tokio::task::spawn_blocking(move || round_trip(&near, "python", Numbers::Exact))
         .await
         .unwrap();
 }
