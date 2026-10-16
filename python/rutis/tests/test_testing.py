@@ -113,21 +113,21 @@ class Testing(background.TestCase):
                 item["n"] = 2
                 self.assertEqual(t.service("store").first(), {"n": 1})
                 with self.assertRaisesRegex(PluginTestError, "cannot cross"):
-                    t.service("store").put({1, 2})
+                    t.service("store").put(object)
                 # Nesting: 64 levels cross, 65 do not (#279).
                 nest = lambda depth: functools.reduce(lambda inner, _: [inner], range(depth), "bottom")
                 t.service("store").put(nest(64))
                 with self.assertRaisesRegex(PluginTestError, "nested deeper than 64 levels cannot cross"):
                     t.service("store").put(nest(65))
-                # Integers: within ±(2^53−1) cross, beyond it do not (#356).
+                # Integers of any size cross: beyond ±(2^53−1) as bigints
+                # (design V6), which stay ints to the plugin.
                 for big in (2**53, -(2**53), [1, {"n": 2**64 + 1}]):
-                    with self.assertRaisesRegex(PluginTestError, r"beyond ±\(2\^53-1\) cannot cross"):
-                        t.service("store").put(big)
+                    t.service("store").put(big)
+                    self.assertEqual(t.service("store").last(), big)
                 safe = [2**53 - 1, -(2**53 - 1), True]
                 t.service("store").put(safe)
                 self.assertEqual(t.service("store").last(), safe)
-                with self.assertRaisesRegex(PluginTestError, r"store.big.*beyond ±\(2\^53-1\) cannot cross"):
-                    t.service("store").big()
+                self.assertEqual(t.service("store").big(), {"n": [2**53]})
                 with self.assertRaisesRegex(PluginTestError, "declared sync but returned an awaitable"):
                     t.service("store").wrong()
 
