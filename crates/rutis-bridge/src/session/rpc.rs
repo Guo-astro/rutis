@@ -1526,19 +1526,59 @@ impl Connection {
         }
         Ok(wire)
     }
+    /// Decode every one of `values`, even past a value error (so each
+    /// reference in them is imported); the first value error, if any. A
+    /// transport error ends the session and stops at once.
+    fn decode_each(
+        &self,
+        values: impl IntoIterator<Item = WireValue>,
+    ) -> Result<Vec<Value>, Error> {
+        let mut decoded = Vec::new();
+        let mut refused = None;
+        for value in values {
+            match self.decode(value) {
+                Ok(value) => decoded.push(value),
+                Err(error @ Error::Value(_)) => {
+                    refused.get_or_insert(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        match refused {
+            Some(error) => Err(error),
+            None => Ok(decoded),
+        }
+    }
     /// Decode a value from the far end. A transport error ends the session;
     /// a value error (a tagged value this side did not declare, or one not
     /// in its format) fails only the call it came in.
+    ///
+    /// A value error does not stop the decode: every reference in the value
+    /// is still imported, so dropping what was decoded releases each one
+    /// on the far end, as for a value taken.
     fn decode(&self, value: WireValue) -> Reply {
-        if let Some(tag) = value.tag() {
+        let refused = value.tag().and_then(|tag| {
             let capability = format!("value-{tag}");
-            if !self.declares(&capability) {
-                return Err(Error::Value(format!(
+            (!self.declares(&capability)).then(|| {
+                Error::Value(format!(
                     "received a {tag} value, which this side does not take \
                      (it did not declare the capability {capability})"
-                )));
+                ))
+            })
+        });
+        let value = match (refused, value) {
+            // Their entries are still read, for the references in them.
+            (Some(error), WireValue::Map(entries)) => {
+                self.decode_each(entries.into_iter().flat_map(|(key, value)| [key, value]))?;
+                return Err(error);
             }
-        }
+            (Some(error), WireValue::Set(elements)) => {
+                self.decode_each(elements)?;
+                return Err(error);
+            }
+            (Some(error), _) => return Err(error),
+            (None, value) => value,
+        };
         Ok(match value {
             WireValue::Instant(text) => Value::Instant(text.parse()?),
             WireValue::DateTime(text) => Value::DateTime(text.parse()?),
@@ -1549,46 +1589,37 @@ impl Connection {
             WireValue::Decimal(text) => Value::Decimal(text.parse()?),
             WireValue::Uuid(text) => Value::Uuid(text.parse()?),
             WireValue::Map(entries) => {
-                let entries = entries
-                    .into_iter()
-                    .map(|(key, value)| {
-                        let value = match self.decode(value)? {
-                            // Undefined is null in data (design V10).
-                            Value::Undefined => Value::Data(Json::Null),
-                            value => value,
-                        };
-                        Ok((self.decode(key)?, value))
-                    })
-                    .collect::<Result<Vec<_>, Error>>()?;
+                let mut decoded = self
+                    .decode_each(entries.into_iter().flat_map(|(key, value)| [key, value]))?
+                    .into_iter();
+                let mut entries = Vec::new();
+                while let (Some(key), Some(value)) = (decoded.next(), decoded.next()) {
+                    // Undefined is null in data (design V10).
+                    let value = match value {
+                        Value::Undefined => Value::Data(Json::Null),
+                        value => value,
+                    };
+                    entries.push((key, value));
+                }
                 check_keys(entries.iter().map(|(key, _)| key), "map key")?;
                 Value::Map(entries)
             }
             WireValue::Set(elements) => {
-                let elements = elements
-                    .into_iter()
-                    .map(|element| self.decode(element))
-                    .collect::<Result<Vec<_>, _>>()?;
+                let elements = self.decode_each(elements)?;
                 check_keys(&elements, "set element")?;
                 Value::Set(elements)
             }
             WireValue::Undefined => Value::Undefined,
             WireValue::Data(value) => Value::Data(value),
-            WireValue::List(values) => Value::List(
-                values
-                    .into_iter()
-                    .map(|value| self.decode(value))
-                    .collect::<Result<_, _>>()?,
-            ),
+            WireValue::List(values) => Value::List(self.decode_each(values)?),
             // A Rust callee is cancelled by its future being dropped, once
             // the caller gives the call up and releases its result; the
             // signal itself only marks the call as cancellable.
             WireValue::Signal => Value::Signal,
-            WireValue::Record(fields) => Value::Record(
-                fields
-                    .into_iter()
-                    .map(|(key, value)| Ok((key, self.decode(value)?)))
-                    .collect::<Result<_, Error>>()?,
-            ),
+            WireValue::Record(fields) => {
+                let (keys, values): (Vec<_>, Vec<_>) = fields.into_iter().unzip();
+                Value::Record(keys.into_iter().zip(self.decode_each(values)?).collect())
+            }
             WireValue::Reference {
                 id,
                 home: true,

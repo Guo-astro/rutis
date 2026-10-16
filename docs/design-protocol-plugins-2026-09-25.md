@@ -227,7 +227,7 @@ JSON Schema 2020-12 的受限子集只负责值类型与配置。对象引用不
 
 例：`{"type":"instant","value":"2026-10-15T03:22:15Z"}`；`{"type":"map","value":[[{"type":"data","value":"a"},{"type":"data","value":1}]]}`。
 
-**Map 的键与 Set 的元素。** 只能是字符串、有限数字、布尔（`data`），以及 `bigint`、`datetime`、`date`、`time`、`decimal`、`uuid`；不能是 `instant`、`bytes`、`null`、`undefined`、数组、对象、`map`、`set`、引用、`signal`。同一个 map 的两个键、同一个 set 的两个元素不得相等：数字按数值比较（`1` 与 `1.0`、`0` 与 `-0` 相等），其余按种类和文本比较。发送方在发出前检查；接收方转换成本语言的类型后若有键相等（例如 Python 里 `1` 与 `True`），这次调用失败。`map` 里值为 `undefined` 的条目，发送方写成 `null`。
+**Map 的键与 Set 的元素。** 只能是字符串、有限数字（整数在 ±(2^53−1) 以内，更大的整数用 `bigint`）、布尔（`data`），以及 `bigint`、`datetime`、`date`、`time`、`decimal`、`uuid`；不能是 `instant`、`bytes`、`null`、`undefined`、数组、对象、`map`、`set`、引用、`signal`。同一个 map 的两个键、同一个 set 的两个元素不得相等：数字按数值比较（`1` 与 `1.0`、`0` 与 `-0` 相等），其余按种类和文本比较。发送方在发出前检查；接收方转换成本语言的类型后若有键相等（例如 Python 里 `1` 与 `True`），这次调用失败。`map` 里值为 `undefined` 的条目，发送方写成 `null`。
 
 **深度。** `map`、`set` 与 `list`、`record` 一样各算一层，计入 64 层的上限（#279）。一层 `map` 在线上占三层 JSON（外层对象、条目数组、每对的数组），所以 Rust 一侧读取的帧深度上限是 `3 × 64 + 16` = 208 层。
 

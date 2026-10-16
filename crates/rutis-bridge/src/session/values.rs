@@ -243,6 +243,13 @@ impl Date {
     }
     /// The date `days` after 1970-01-01, if its year is 1–9999.
     pub fn from_days_since_unix_epoch(days: i64) -> Result<Self, Error> {
+        // 0001-01-01 and 9999-12-31: checked first, so the arithmetic
+        // below never overflows.
+        if !(-719_162..=2_932_896).contains(&days) {
+            return Err(Error::Value(format!(
+                "{days} days from 1970 leave years 0001–9999"
+            )));
+        }
         let (year, month, day) = civil_from_days(days);
         u16::try_from(year)
             .map_err(|_| Error::Value(format!("{days} days from 1970 leave years 0001–9999")))
@@ -811,12 +818,29 @@ pub(crate) fn describe(value: &Value) -> &'static str {
     }
 }
 
+/// The largest integer every language holds exactly, 2^53−1.
+const SAFE_INTEGER: u64 = (1 << 53) - 1;
+
+fn unsafe_key(what: &str, number: &serde_json::Number) -> Error {
+    Error::Value(format!(
+        "a {what} cannot be the integer {number}, beyond ±(2^53-1): send it as a bigint"
+    ))
+}
+
 fn key(value: &Value, what: &str) -> Result<Key, Error> {
     use serde_json::Value as Json;
     Ok(match value {
         Value::Data(Json::String(text)) => Key::Text(text.clone()),
         Value::Data(Json::Bool(flag)) => Key::Bool(*flag),
         Value::Data(Json::Number(number)) => match (number.as_i64(), number.as_u64()) {
+            // Beyond ±(2^53−1) JavaScript holds no integer exactly, so
+            // two such keys may be one there (design V6): send a bigint.
+            (Some(integer), _) if integer.unsigned_abs() > SAFE_INTEGER => {
+                return Err(unsafe_key(what, number))
+            }
+            (None, Some(integer)) if integer > SAFE_INTEGER => {
+                return Err(unsafe_key(what, number))
+            }
             (Some(integer), _) => Key::Integer(integer.into()),
             (None, Some(integer)) => Key::Integer(integer.into()),
             _ => {
@@ -956,9 +980,11 @@ mod tests {
         let now = SystemTime::now();
         let instant = Instant::try_from(now).unwrap();
         assert_eq!(instant.to_system_time(), Some(now));
-        let before = UNIX_EPOCH - Duration::new(5, 250);
+        // A whole number of 100 ns: Windows keeps `SystemTime` in 100 ns
+        // units, so a finer time would already be rounded when built.
+        let before = UNIX_EPOCH - Duration::new(5, 300);
         let instant = Instant::try_from(before).unwrap();
-        assert_eq!(instant.to_string(), "1969-12-31T23:59:54.99999975Z");
+        assert_eq!(instant.to_string(), "1969-12-31T23:59:54.9999997Z");
         assert_eq!(instant.to_system_time(), Some(before));
         let utc = instant.to_utc();
         assert_eq!(Instant::from_utc(utc), instant);
@@ -1167,11 +1193,53 @@ mod tests {
                 Value::BigInt(1.into()),
                 Value::Decimal("1".parse().unwrap()),
                 Value::Decimal("1.0".parse().unwrap()),
-                Value::Data(json!(u64::MAX)),
-                Value::Data(json!(u64::MAX - 1)),
+                Value::Data(json!(SAFE_INTEGER)),
+                Value::Data(json!(-(SAFE_INTEGER as i64))),
+                Value::Data(json!(SAFE_INTEGER - 1)),
             ],
             "map key",
         )
         .unwrap();
+        // Integers beyond ±(2^53−1) are not keys: 2^53 and 2^53+1 are one
+        // number in JavaScript (design V6, boundary rule 4).
+        for beyond in [
+            json!(SAFE_INTEGER + 1),
+            json!(SAFE_INTEGER + 2),
+            json!(-(SAFE_INTEGER as i64) - 1),
+            json!(u64::MAX),
+            json!(i64::MIN),
+        ] {
+            let error = check_keys(&[Value::Data(beyond)], "map key").unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("beyond ±(2^53-1): send it as a bigint"),
+                "{error}"
+            );
+            let error =
+                check_keys(&[Value::Data(json!(SAFE_INTEGER + 1))], "set element").unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("a set element cannot be the integer"));
+        }
+    }
+
+    #[test]
+    fn days_far_outside_the_calendar_are_errors_not_overflows() {
+        for days in [i64::MAX, i64::MIN, i64::MAX - 719_468, 2_932_897, -719_163] {
+            assert!(Date::from_days_since_unix_epoch(days).is_err(), "{days}");
+        }
+        assert_eq!(
+            Date::from_days_since_unix_epoch(2_932_896)
+                .unwrap()
+                .to_string(),
+            "9999-12-31"
+        );
+        assert_eq!(
+            Date::from_days_since_unix_epoch(-719_162)
+                .unwrap()
+                .to_string(),
+            "0001-01-01"
+        );
     }
 }

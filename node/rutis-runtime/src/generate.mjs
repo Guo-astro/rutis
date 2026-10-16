@@ -159,6 +159,26 @@ export function generate(plugins, nodePackage, { provide = [], events = [], emit
     })
   }
 
+  // Whether values of a type can be (or contain) tagged values (#308):
+  // bigints, Dates, Uint8Arrays, Maps and Sets.
+  function holdsTagged(type, seen = new Set()) {
+    if (seen.has(type)) return false
+    seen.add(type)
+    if (type.flags & ts.TypeFlags.BigIntLike) return true
+    if (type.isUnion() || type.isIntersection()) return type.types.some(member => holdsTagged(member, seen))
+    if (!(type.flags & ts.TypeFlags.Object)) return false
+    const declared = type.getSymbol()?.declarations?.[0]?.getSourceFile()
+    const builtIn = declared && program.isSourceFileDefaultLibrary(declared)
+    if (builtIn && ['Date', 'Uint8Array', 'Map', 'ReadonlyMap', 'Set', 'ReadonlySet'].includes(type.getSymbol()?.getName())) return true
+    if (checker.isArrayType(type) || checker.isTupleType(type)) return checker.getTypeArguments(type).some(member => holdsTagged(member, seen))
+    if (builtIn) return false
+    const index = checker.getIndexInfoOfType(type, ts.IndexKind.String)
+    return (index && holdsTagged(index.type, seen)) || checker.getPropertiesOfType(type).some(property => {
+      const declaration = property.valueDeclaration ?? property.declarations?.[0]
+      return declaration && holdsTagged(checker.getTypeOfSymbolAtLocation(property, declaration), seen)
+    })
+  }
+
   // Map a TypeScript type to a Rust type used for data (arguments, results,
   // fields). Throws Unsupported with the reason for non-data types.
   function rust(type, hint) {
@@ -251,6 +271,9 @@ export function generate(plugins, nodePackage, { provide = [], events = [], emit
     }
     // Dynamic JSON would lose the objects a union member may hold.
     if (members.some(member => holdsLive(member))) return mixedUnion(type, members, hint)
+    // Nor can it hold tagged values (#308): a binding that took them as
+    // JSON would fail on every value of that member.
+    if (members.some(member => holdsTagged(member))) throw new Unsupported(`union ${checker.typeToString(type)} (a union holding a bigint, Date, Uint8Array, Map or Set is not bound yet)`)
     // Other unions (e.g. discriminated objects) stay dynamic JSON: the data
     // crosses unchanged, only its static Rust shape is not generated.
     return '::rutis_bridge::cordis::serde_json::Value'

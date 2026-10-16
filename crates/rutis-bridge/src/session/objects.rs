@@ -24,8 +24,45 @@ use crate::session::values::{
 };
 use crate::session::Error;
 
-const MARK: &str = "\u{0}rutis:reference";
-const TAGGED: &str = "\u{0}rutis:value";
+/// What the marker keys of one encode or decode start with.
+const PREFIX: &str = "\u{0}rutis:";
+
+/// The keys of the markers one encode or decode uses: a single-field
+/// object `{<reference>: n}` stands for the n-th reference, `{<value>: n}`
+/// for the n-th tagged value. Each operation picks keys the data it
+/// carries does not use (see [`arg`], [`decode_value`]), so user JSON is
+/// never read as a marker, whatever keys it has.
+#[derive(Clone)]
+struct Keys {
+    reference: String,
+    value: String,
+}
+
+impl Keys {
+    fn new(nonce: u64) -> Self {
+        Self {
+            reference: format!("{PREFIX}reference:{nonce}"),
+            value: format!("{PREFIX}value:{nonce}"),
+        }
+    }
+    /// Keys whose names are not in `taken`.
+    fn avoiding(taken: &std::collections::HashSet<String>) -> Self {
+        loop {
+            let keys = Self::new(NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+            if !taken.contains(&keys.reference) && !taken.contains(&keys.value) {
+                return keys;
+            }
+        }
+    }
+    fn reference_marker(&self, index: usize) -> Json {
+        Json::Object(Map::from_iter([(self.reference.clone(), index.into())]))
+    }
+    fn value_marker(&self, index: usize) -> Json {
+        Json::Object(Map::from_iter([(self.value.clone(), index.into())]))
+    }
+}
+
+static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// A tagged value inside serde data: a leaf, or a map or set whose entries
 /// are JSON holding markers of the same tables.
@@ -37,16 +74,43 @@ enum Tagged {
 }
 
 thread_local! {
+    /// The marker keys of the encode or decode in progress on this thread.
+    static KEYS: RefCell<Option<Keys>> = const { RefCell::new(None) };
     static DECODING: RefCell<Vec<Reference>> = const { RefCell::new(Vec::new()) };
     static ENCODING: RefCell<Option<Vec<Reference>>> = const { RefCell::new(None) };
     static DECODING_TAGGED: RefCell<Vec<Tagged>> = const { RefCell::new(Vec::new()) };
     static ENCODING_TAGGED: RefCell<Option<Vec<Tagged>>> = const { RefCell::new(None) };
 }
 
-fn tag_marker(index: usize) -> Json {
-    let mut marker = Map::new();
-    marker.insert(TAGGED.into(), index.into());
-    Json::Object(marker)
+fn current_keys() -> Option<Keys> {
+    KEYS.with(|keys| keys.borrow().clone())
+}
+
+/// The index a single-field `{<key>: n}` object stands for, if `json` is
+/// one and `key` is a marker key of the operation in progress.
+fn marker_index(json: &Json, key: impl Fn(&Keys) -> &str) -> Option<usize> {
+    let keys = current_keys()?;
+    json.as_object()
+        .filter(|fields| fields.len() == 1)
+        .and_then(|fields| fields.get(key(&keys)))
+        .and_then(Json::as_u64)
+        .map(|index| index as usize)
+}
+
+/// Every object key in `json` that starts with [`PREFIX`].
+fn prefixed_keys(json: &Json, found: &mut std::collections::HashSet<String>) {
+    match json {
+        Json::Object(fields) => {
+            for (key, value) in fields {
+                if key.starts_with(PREFIX) {
+                    found.insert(key.clone());
+                }
+                prefixed_keys(value, found);
+            }
+        }
+        Json::Array(items) => items.iter().for_each(|item| prefixed_keys(item, found)),
+        _ => {}
+    }
 }
 
 /// Serialize a tagged value: while an argument is encoded, as a marker of
@@ -56,9 +120,10 @@ fn serialize_tagged<S: Serializer>(
     tagged: impl FnOnce() -> Result<Tagged, String>,
     plain: impl FnOnce(S) -> Result<S::Ok, S::Error>,
 ) -> Result<S::Ok, S::Error> {
-    if ENCODING_TAGGED.with(|current| current.borrow().is_none()) {
-        return plain(serializer);
-    }
+    let keys = match current_keys() {
+        Some(keys) if ENCODING_TAGGED.with(|current| current.borrow().is_some()) => keys,
+        _ => return plain(serializer),
+    };
     // Built before it is recorded: a map's entries record their own.
     let tagged = tagged().map_err(ser::Error::custom)?;
     let index = ENCODING_TAGGED.with(|current| {
@@ -67,7 +132,7 @@ fn serialize_tagged<S: Serializer>(
         list.push(tagged);
         list.len() - 1
     });
-    tag_marker(index).serialize(serializer)
+    keys.value_marker(index).serialize(serializer)
 }
 
 /// Deserialize what may be a tagged value: the one a marker stands for, or
@@ -76,17 +141,12 @@ fn deserialize_tagged<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Result<Tagged, Json>, D::Error> {
     let json = Json::deserialize(deserializer)?;
-    let index = json
-        .as_object()
-        .filter(|fields| fields.len() == 1)
-        .and_then(|fields| fields.get(TAGGED))
-        .and_then(Json::as_u64);
-    let Some(index) = index else {
+    let Some(index) = marker_index(&json, |keys| &keys.value) else {
         return Ok(Err(json));
     };
     // Not consumed, as for references.
     DECODING_TAGGED
-        .with(|tagged| tagged.borrow().get(index as usize).cloned())
+        .with(|tagged| tagged.borrow().get(index).cloned())
         .map(Ok)
         .ok_or_else(|| de::Error::custom("tagged value outside of a decode"))
 }
@@ -394,16 +454,12 @@ impl std::error::Error for JsError {}
 
 fn referenced<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Reference, D::Error> {
     let marker = Json::deserialize(deserializer)?;
-    let index = marker
-        .as_object()
-        .filter(|fields| fields.len() == 1)
-        .and_then(|fields| fields.get(MARK))
-        .and_then(Json::as_u64)
+    let index = marker_index(&marker, |keys| &keys.reference)
         .ok_or_else(|| de::Error::custom("expected a reference, received data"))?;
     // Not consumed: serde may try the same input again, e.g. for the next
     // variant of an untagged enum.
     DECODING
-        .with(|references| references.borrow().get(index as usize).cloned())
+        .with(|references| references.borrow().get(index).cloned())
         .ok_or_else(|| de::Error::custom("reference outside of a decode"))
 }
 
@@ -414,12 +470,18 @@ fn mark<S: Serializer>(reference: &Reference, serializer: S) -> Result<S::Ok, S:
             references.len() - 1
         })
     });
-    let index = index.ok_or_else(|| {
+    let (index, keys) = index.zip(current_keys()).ok_or_else(|| {
         ser::Error::custom("a reference can only be serialized as a call argument")
     })?;
-    let mut marker = Map::new();
-    marker.insert(MARK.into(), index.into());
-    Json::Object(marker).serialize(serializer)
+    keys.reference_marker(index).serialize(serializer)
+}
+
+/// Run `operation` with `keys` as this thread's marker keys.
+fn with_keys<R>(keys: &Keys, operation: impl FnOnce() -> R) -> R {
+    let previous = KEYS.with(|current| current.replace(Some(keys.clone())));
+    let result = operation();
+    KEYS.with(|current| current.replace(previous));
+    result
 }
 
 /// Decode a call result into a generated type; object references in it
@@ -435,16 +497,22 @@ fn mark<S: Serializer>(reference: &Reference, serializer: S) -> Result<S::Ok, S:
 /// Tagged values likewise decode into their types ([`Instant`], [`Bytes`],
 /// [`ValueMap`], ...); one that would land in dynamic JSON fails the decode.
 pub fn decode_value<T: de::DeserializeOwned + Serialize>(value: Value) -> Result<T, Error> {
+    // Marker keys no object in the data uses: the data is never read as a
+    // marker.
+    let mut taken = std::collections::HashSet::new();
+    value_keys(&value, &mut taken);
+    let keys = Keys::avoiding(&taken);
     let mut references = Vec::new();
     let mut tagged = Vec::new();
-    let json = marked(value, &mut references, &mut tagged);
+    let json = marked(value, &keys, &mut references, &mut tagged);
     if references.is_empty() && tagged.is_empty() {
-        return serde_json::from_value(json).map_err(|error| Error::Value(error.to_string()));
+        return with_keys(&keys, || serde_json::from_value(json))
+            .map_err(|error| Error::Value(error.to_string()));
     }
     let count = tagged.len();
     let previous = DECODING.with(|current| current.replace(references.clone()));
     let previous_tagged = DECODING_TAGGED.with(|current| current.replace(tagged));
-    let result = serde_json::from_value::<T>(json);
+    let result = with_keys(&keys, || serde_json::from_value::<T>(json));
     DECODING.with(|current| current.replace(previous));
     DECODING_TAGGED.with(|current| current.replace(previous_tagged));
     let value = result.map_err(|error| Error::Value(error.to_string()))?;
@@ -481,10 +549,11 @@ pub fn decode_value<T: de::DeserializeOwned + Serialize>(value: Value) -> Result
 /// its `ObjectRef`s and `RemoteFunction`s, and its tagged values.
 fn encoding<T: Serialize + ?Sized>(
     value: &T,
+    keys: &Keys,
 ) -> (serde_json::Result<Json>, Vec<Reference>, Vec<Tagged>) {
     let previous = ENCODING.with(|current| current.replace(Some(Vec::new())));
     let previous_tagged = ENCODING_TAGGED.with(|current| current.replace(Some(Vec::new())));
-    let json = serde_json::to_value(value);
+    let json = with_keys(keys, || serde_json::to_value(value));
     let references = ENCODING
         .with(|current| current.replace(previous))
         .unwrap_or_default();
@@ -497,92 +566,180 @@ fn encoding<T: Serialize + ?Sized>(
 /// The references a decoded value holds in its `ObjectRef`s and
 /// `RemoteFunction`s, and how many tagged values it holds in their types.
 fn held<T: Serialize>(value: &T) -> Result<(Vec<Reference>, usize), Error> {
-    let (result, references, tagged) = encoding(value);
+    // Only what is recorded counts here, so any keys do.
+    let keys = Keys::new(NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let (result, references, tagged) = encoding(value, &keys);
     result.map_err(|error| Error::Value(error.to_string()))?;
     Ok((references, tagged.len()))
 }
 
-fn marked(value: Value, references: &mut Vec<Reference>, tagged: &mut Vec<Tagged>) -> Json {
+/// Every object key starting with [`PREFIX`] in the data of `value`.
+fn value_keys(value: &Value, found: &mut std::collections::HashSet<String>) {
+    match value {
+        Value::Data(json) => prefixed_keys(json, found),
+        Value::List(values) => values.iter().for_each(|value| value_keys(value, found)),
+        Value::Record(fields) => {
+            for (key, value) in fields {
+                if key.starts_with(PREFIX) {
+                    found.insert(key.clone());
+                }
+                value_keys(value, found);
+            }
+        }
+        Value::Map(entries) => {
+            for (key, value) in entries {
+                value_keys(key, found);
+                value_keys(value, found);
+            }
+        }
+        Value::Set(elements) => elements.iter().for_each(|value| value_keys(value, found)),
+        _ => {}
+    }
+}
+
+fn marked(
+    value: Value,
+    keys: &Keys,
+    references: &mut Vec<Reference>,
+    tagged: &mut Vec<Tagged>,
+) -> Json {
     match value {
         Value::Undefined => Json::Null,
         Value::Data(json) => json,
         Value::List(values) => Json::Array(
             values
                 .into_iter()
-                .map(|value| marked(value, references, tagged))
+                .map(|value| marked(value, keys, references, tagged))
                 .collect(),
         ),
         Value::Record(fields) => Json::Object(
             fields
                 .into_iter()
-                .map(|(key, value)| (key, marked(value, references, tagged)))
+                .map(|(key, value)| (key, marked(value, keys, references, tagged)))
                 .collect(),
         ),
         Value::Signal => Json::Null,
         Value::Reference(reference) => {
             references.push(reference);
-            let mut marker = Map::new();
-            marker.insert(MARK.into(), (references.len() - 1).into());
-            Json::Object(marker)
+            keys.reference_marker(references.len() - 1)
         }
         Value::Map(entries) => {
             let entries = entries
                 .into_iter()
                 .map(|(key, value)| {
                     (
-                        marked(key, references, tagged),
-                        marked(value, references, tagged),
+                        marked(key, keys, references, tagged),
+                        marked(value, keys, references, tagged),
                     )
                 })
                 .collect();
             tagged.push(Tagged::Map(entries));
-            tag_marker(tagged.len() - 1)
+            keys.value_marker(tagged.len() - 1)
         }
         Value::Set(elements) => {
             let elements = elements
                 .into_iter()
-                .map(|element| marked(element, references, tagged))
+                .map(|element| marked(element, keys, references, tagged))
                 .collect();
             tagged.push(Tagged::Set(elements));
-            tag_marker(tagged.len() - 1)
+            keys.value_marker(tagged.len() - 1)
         }
         leaf => {
             tagged.push(Tagged::Leaf(leaf));
-            tag_marker(tagged.len() - 1)
+            keys.value_marker(tagged.len() - 1)
         }
     }
+}
+
+/// How often `json` and the entries of `tagged` use each marker key, as
+/// object keys anywhere (marker or not).
+fn key_uses(json: &Json, tagged: &[Tagged], keys: &Keys) -> (usize, usize) {
+    fn walk(json: &Json, keys: &Keys, uses: &mut (usize, usize)) {
+        match json {
+            Json::Object(fields) => {
+                for (key, value) in fields {
+                    uses.0 += usize::from(*key == keys.reference);
+                    uses.1 += usize::from(*key == keys.value);
+                    walk(value, keys, uses);
+                }
+            }
+            Json::Array(items) => items.iter().for_each(|item| walk(item, keys, uses)),
+            _ => {}
+        }
+    }
+    let mut uses = (0, 0);
+    walk(json, keys, &mut uses);
+    for entry in tagged {
+        match entry {
+            Tagged::Leaf(_) => {}
+            Tagged::Map(entries) => entries.iter().for_each(|(key, value)| {
+                walk(key, keys, &mut uses);
+                walk(value, keys, &mut uses);
+            }),
+            Tagged::Set(elements) => elements.iter().for_each(|json| walk(json, keys, &mut uses)),
+        }
+    }
+    uses
 }
 
 /// Encode a call argument; `ObjectRef`s in it pass their original object,
 /// and tagged values ([`Instant`], [`Bytes`], [`ValueMap`], ...) cross
 /// under their tags.
 pub fn arg<T: Serialize + ?Sized>(value: &T) -> Result<Value, Error> {
-    let (json, references, tagged) = encoding(value);
-    let json = json.map_err(|error| Error::Value(error.to_string()))?;
-    Ok(if references.is_empty() && tagged.is_empty() {
-        Value::Data(json)
-    } else {
-        unmarked(json, &references, &tagged)
-    })
+    let mut keys = Keys::new(NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    // The data is only known once serialized: if any of it uses a marker
+    // key, which only the markers recorded may, encode again with keys it
+    // does not use. Serialized again, the same data uses the same keys.
+    for _ in 0..3 {
+        let (json, references, tagged) = encoding(value, &keys);
+        let json = json.map_err(|error| Error::Value(error.to_string()))?;
+        if references.is_empty() && tagged.is_empty() {
+            return Ok(Value::Data(json));
+        }
+        if key_uses(&json, &tagged, &keys) == (references.len(), tagged.len()) {
+            return Ok(unmarked(json, &keys, &references, &tagged));
+        }
+        let mut taken = std::collections::HashSet::new();
+        prefixed_keys(&json, &mut taken);
+        for entry in &tagged {
+            match entry {
+                Tagged::Leaf(_) => {}
+                Tagged::Map(entries) => entries.iter().for_each(|(key, value)| {
+                    prefixed_keys(key, &mut taken);
+                    prefixed_keys(value, &mut taken);
+                }),
+                Tagged::Set(elements) => elements
+                    .iter()
+                    .for_each(|json| prefixed_keys(json, &mut taken)),
+            }
+        }
+        keys = Keys::avoiding(&taken);
+    }
+    Err(Error::Value(
+        "the value serializes differently each time, so its markers cannot be told from its data"
+            .into(),
+    ))
 }
 
-fn unmarked(json: Json, references: &[Reference], tagged: &[Tagged]) -> Value {
+fn unmarked(json: Json, keys: &Keys, references: &[Reference], tagged: &[Tagged]) -> Value {
     match json {
         Json::Object(fields) => {
             if fields.len() == 1 {
                 if let Some(reference) = fields
-                    .get(MARK)
+                    .get(&keys.reference)
                     .and_then(Json::as_u64)
                     .and_then(|index| references.get(index as usize))
                 {
                     return Value::Reference(reference.clone());
                 }
                 if let Some(value) = fields
-                    .get(TAGGED)
+                    .get(&keys.value)
                     .and_then(Json::as_u64)
                     .and_then(|index| tagged.get(index as usize))
                 {
-                    let unmarked = |json: &Json| unmarked(json.clone(), references, tagged);
+                    // A map's entries hold only markers recorded before the
+                    // map's own: this ends.
+                    let unmarked = |json: &Json| unmarked(json.clone(), keys, references, tagged);
                     return match value {
                         Tagged::Leaf(value) => value.clone(),
                         Tagged::Map(entries) => Value::Map(
@@ -600,16 +757,120 @@ fn unmarked(json: Json, references: &[Reference], tagged: &[Tagged]) -> Value {
             Value::Record(
                 fields
                     .into_iter()
-                    .map(|(key, value)| (key, unmarked(value, references, tagged)))
+                    .map(|(key, value)| (key, unmarked(value, keys, references, tagged)))
                     .collect(),
             )
         }
         Json::Array(values) => Value::List(
             values
                 .into_iter()
-                .map(|value| unmarked(value, references, tagged))
+                .map(|value| unmarked(value, keys, references, tagged))
                 .collect(),
         ),
         json => Value::Data(json),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
+
+    /// Objects shaped as markers, under the keys of the operations about
+    /// to run on any thread and the unnumbered keys of earlier versions,
+    /// pointing at the first entries of the tables.
+    fn forgeries() -> Vec<Json> {
+        let next = NONCE.load(Ordering::Relaxed);
+        let mut forged = vec![
+            json!({ "\u{0}rutis:value": 0 }),
+            json!({ "\u{0}rutis:reference": 0 }),
+        ];
+        for nonce in next..next + 32 {
+            let keys = Keys::new(nonce);
+            for index in 0..3 {
+                forged.push(keys.value_marker(index));
+                forged.push(keys.reference_marker(index));
+            }
+        }
+        forged
+    }
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Payload {
+        at: Instant,
+        data: Json,
+        counts: ValueMap<String, Json>,
+        nested: ValueMap<String, ValueMap<String, Json>>,
+        tags: ValueSet<String>,
+    }
+
+    fn payload() -> Payload {
+        let forged = forgeries();
+        let entries: Vec<(String, Json)> = forged
+            .iter()
+            .enumerate()
+            .map(|(index, json)| (format!("k{index}"), json.clone()))
+            .collect();
+        Payload {
+            at: "2026-10-15T03:22:15Z".parse().unwrap(),
+            data: json!({ "list": forged.clone(), "deeper": { "x": forged[2].clone() } }),
+            counts: ValueMap(entries.clone()),
+            nested: ValueMap(vec![("inner".into(), ValueMap(entries))]),
+            tags: ValueSet(
+                forged
+                    .iter()
+                    .map(|json| json.as_object().unwrap().keys().next().unwrap().clone())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+            ),
+        }
+    }
+
+    /// User JSON whose objects look like markers, even under the very keys
+    /// the next operations pick, is carried as data, top level and inside
+    /// maps, sets and nested values: never read as a marker, and never
+    /// sending the decode around a cycle.
+    #[test]
+    fn data_shaped_like_a_marker_stays_data() {
+        let sent = payload();
+        let value = arg(&sent).unwrap();
+        let Value::Record(fields) = &value else {
+            panic!("a record expected, got {value:?}")
+        };
+        assert_eq!(fields["at"], Value::Instant(sent.at));
+        let Value::Map(counts) = &fields["counts"] else {
+            panic!("a map expected")
+        };
+        for ((_, got), (_, json)) in counts.iter().zip(&sent.counts.0) {
+            assert_eq!(
+                got,
+                &Value::Record(
+                    json.as_object()
+                        .unwrap()
+                        .iter()
+                        .map(|(key, value)| (key.clone(), Value::Data(value.clone())))
+                        .collect()
+                )
+            );
+        }
+        let back: Payload = decode_value(value).unwrap();
+        assert_eq!(back, sent);
+
+        // Received: plain data and the same data inside a map.
+        for forged in forgeries() {
+            let got: Json = decode_value(Value::Data(forged.clone())).unwrap();
+            assert_eq!(got, forged);
+            let map = Value::Map(vec![(Value::Data(json!("k")), Value::Data(forged.clone()))]);
+            let got: ValueMap<String, Json> = decode_value(map).unwrap();
+            assert_eq!(got.0, vec![("k".to_owned(), forged.clone())]);
+            let list = Value::List(vec![
+                Value::Instant("2026-10-15T03:22:15Z".parse().unwrap()),
+                Value::Data(forged.clone()),
+            ]);
+            let (_, got): (Instant, Json) = decode_value(list).unwrap();
+            assert_eq!(got, forged);
+        }
     }
 }

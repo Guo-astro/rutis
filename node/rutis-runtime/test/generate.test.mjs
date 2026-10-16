@@ -57,6 +57,30 @@ test('dates, binary data, bigints, maps and sets become the tagged value types (
   })
 })
 
+test('unions holding tagged values are reported, not bound as dynamic JSON (#308)', async () => {
+  await fixture(`import type { Context } from '@deepseek-ai/cordis'
+    export interface Item { at: Date }
+    class Service {
+      size(): bigint | string { return 1n }
+      pick(choice: 1n | 2n): void {}
+      index(): Map<string, Item> | string { return '' }
+      stamp(): { at: Date } | number { return 1 }
+      plain(): string | number { return 1 }
+      maybe(): bigint | undefined { return undefined }
+    }
+    export function apply(ctx: Context) { ctx.provide('store', new Service()) }
+  `, file => {
+    const { rust, diagnostics } = generate(file, root)
+    assert.equal(diagnostics.length, 4, diagnostics.join('\n'))
+    for (const [index, member] of ['size', 'pick', 'index', 'stamp'].entries()) {
+      assert.match(diagnostics[index], new RegExp(`store\\.${member} is not bound: union .* \\(a union holding a bigint, Date, Uint8Array, Map or Set is not bound yet\\)`))
+    }
+    // Unions without tagged values, and an optional bigint, still bind.
+    assert.match(rust, /pub fn plain\(&self\) -> Result<::rutis_bridge::cordis::serde_json::Value, ::rutis_bridge::cordis::Error>/)
+    assert.match(rust, /pub fn maybe\(&self\) -> Result<Option<::rutis_bridge::cordis::rpc::BigInt>, ::rutis_bridge::cordis::Error>/)
+  })
+})
+
 test('objects with methods become live object proxies with getters and methods', async () => {
   await fixture(`import type { Context } from '@deepseek-ai/cordis'
     export interface Session { readonly id: string; readonly turns: number; close(): Promise<void>; rename(title: string): Session }

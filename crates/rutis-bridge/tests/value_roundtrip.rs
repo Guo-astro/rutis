@@ -453,7 +453,10 @@ fn decimal() -> impl Strategy<Value = rpc::Decimal> {
 fn key_value() -> impl Strategy<Value = Value> {
     prop_oneof![
         3 => string().prop_map(|text| Value::Data(Json::String(text))),
-        2 => number().prop_map(Value::Data),
+        // Integers beyond ±(2^53−1) are not keys (design V6).
+        2 => number()
+            .prop_filter("a safe integer", |n| !has_unsafe_integer(n))
+            .prop_map(Value::Data),
         1 => any::<bool>().prop_map(|flag| Value::Data(Json::Bool(flag))),
         1 => bigint().prop_map(Value::BigInt),
         1 => (date(), time_of_day()).prop_map(|(d, t)| Value::DateTime(rpc::DateTime::new(d, t))),

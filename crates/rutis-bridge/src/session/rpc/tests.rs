@@ -1678,6 +1678,73 @@ async fn map_keys_and_set_elements_are_checked_before_sending() {
     assert!(peer.close_reason().is_none());
 }
 
+/// guarantee: bridge/value-tags
+///
+/// A call refused for a value it carries still takes the references it
+/// carries, and releases them: the far end's exports do not stay granted
+/// until the session ends. The session keeps serving.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_call_releases_the_references_it_carries() {
+    let (peer, remote) = connected(Arc::new(EchoArgs));
+    let remote = tokio::task::spawn_blocking(move || {
+        let mut remote = Remote::start_declaring(remote, &VALUE_CAPABILITIES);
+        let function = |id: u64| {
+            json!({ "type": "reference",
+                    "value": { "id": id, "kind": "function", "home": false, "origin": [] } })
+        };
+        let refused = [
+            // Bad base64 beside a function.
+            json!([{ "type": "bytes", "value": "not base64!" }, function(1)]),
+            // A map with colliding keys holding one.
+            json!([{ "type": "map", "value": [
+                [{ "type": "data", "value": 1 }, function(2)],
+                [{ "type": "data", "value": 1 }, { "type": "data", "value": 2 }],
+            ] }]),
+            // A function after the bad value, nested in a record.
+            json!([{ "type": "record", "value": {
+                "a": { "type": "instant", "value": "yesterday" },
+                "b": function(3),
+            } }]),
+        ];
+        for (n, args) in refused.into_iter().enumerate() {
+            let id = format!("node:{}", n + 1);
+            remote.send_json(json!({
+                "op": "invoke", "id": id, "path": [], "target": "t", "method": "m",
+                "args": { "type": "list", "value": args },
+            }));
+            // A release of the function, and the call's throw, in any order.
+            let (mut released, mut thrown) = (false, false);
+            while !(released && thrown) {
+                let frame = remote.read_json();
+                match frame["op"].as_str() {
+                    Some("release") => {
+                        assert_eq!(frame["reference"], json!(n + 1));
+                        assert_eq!(frame["count"], json!(1));
+                        released = true;
+                    }
+                    Some("throw") => {
+                        assert_eq!(frame["id"], id);
+                        thrown = true;
+                    }
+                    _ => panic!("a release or a throw expected, got {frame}"),
+                }
+            }
+        }
+        // Still serving.
+        remote.send_json(json!({
+            "op": "invoke", "id": "node:9", "path": [], "target": "t", "method": "m",
+            "args": { "type": "list", "value": [{ "type": "date", "value": "2026-10-15" }] },
+        }));
+        let reply = remote.read_json();
+        assert_eq!(reply["op"], "return", "{reply}");
+        remote
+    });
+    peer.ready().await.unwrap();
+    let _remote = remote.await.unwrap();
+    assert!(peer.0.imports.lock().unwrap().is_empty());
+    assert!(peer.close_reason().is_none());
+}
+
 /// Returns a tagged value for `instant`, its arguments otherwise.
 struct Tagging;
 impl Dispatch for Tagging {
