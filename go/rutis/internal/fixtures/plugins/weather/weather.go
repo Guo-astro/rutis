@@ -6,7 +6,9 @@ package weather
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -62,10 +64,66 @@ func (w *Weather) Echo(ctx context.Context, value any) any { return value }
 
 func (w *Weather) Crash() { os.Exit(17) }
 
+// Reading is a struct with fields encoding/json would have turned into
+// text: they cross as their values (V9).
+type Reading struct {
+	Raw []byte     `json:"raw,omitempty"`
+	At  *time.Time `json:"at,omitempty"`
+	N   int64      `json:"n,omitempty"`
+}
+
+var oslo = time.FixedZone("Oslo", 2*3600)
+
+// samples are values only Go makes, by name (`samples` in the
+// expectations).
+var samples = map[string]func() any{
+	"go/value-instant":      func() any { return time.Date(2026, 10, 15, 5, 22, 15, 123456789, oslo) },
+	"go/value-struct-bytes": func() any { return Reading{Raw: []byte("hello")} },
+	"go/value-struct-time": func() any {
+		at := time.Date(2026, 10, 15, 5, 22, 15, 0, oslo)
+		return Reading{At: &at}
+	},
+	"go/value-int-keys": func() any { return map[int]string{2: "b", 1: "a"} },
+	"go/value-set":      func() any { return map[string]struct{}{"b": {}, "a": {}} },
+	"go/value-bigint": func() any {
+		n, _ := new(big.Int).SetString("-123456789012345678901", 10)
+		return n
+	},
+	"go/value-constructed": func() any {
+		return []any{
+			rutis.DateTime{Date: rutis.Date{Year: 2026, Month: 10, Day: 15}, Time: rutis.TimeOfDay{Hour: 14, Minute: 30, Second: 5, Nanosecond: 250_000_000}},
+			rutis.Date{Year: 2026, Month: 10, Day: 15},
+			rutis.TimeOfDay{Hour: 14, Minute: 30, Second: 5, Nanosecond: 250_000_000},
+			rutis.Decimal("1.10"),
+			rutis.UUID("0f8fad5b-d9cb-469f-a165-70867728950e"),
+		}
+	},
+	"go/big-int-in-struct": func() any { return Reading{N: 1 << 60} },
+}
+
+// Samples names the values only Go makes.
+func (w *Weather) Samples() []string {
+	names := make([]string, 0, len(samples))
+	for name := range samples {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Sample returns the value `name`.
+func (w *Weather) Sample(name string) (any, error) {
+	sample, ok := samples[name]
+	if !ok {
+		return nil, fmt.Errorf("no sample %s", name)
+	}
+	return sample(), nil
+}
+
 var Plugin = rutis.Define(rutis.Plugin[Config]{
 	Name:     "weather",
 	Inject:   []string{"clock"},
-	Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Today", "Each", "Echo", "Crash"))},
+	Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Today", "Each", "Echo", "Crash", "Samples", "Sample"))},
 	Apply: func(ctx *rutis.Ctx, config Config) error {
 		var clock Clock
 		if err := ctx.Use("clock", &clock); err != nil {

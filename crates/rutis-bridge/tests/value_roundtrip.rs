@@ -952,6 +952,69 @@ async fn go_depth_limit() {
         .unwrap();
 }
 
+/// `value` as a far end that holds lists and records of data as data
+/// sends it back: a list or record holding no tagged value is data (on the
+/// wire, the two are the same value).
+#[cfg(feature = "go")]
+fn as_data(value: Value) -> Value {
+    match value {
+        Value::List(items) => {
+            let items: Vec<Value> = items.into_iter().map(as_data).collect();
+            if items.iter().any(holds_tagged) {
+                Value::List(items)
+            } else {
+                Value::Data(Json::Array(
+                    items.into_iter().map(|item| item.json().unwrap()).collect(),
+                ))
+            }
+        }
+        Value::Record(fields) => {
+            let fields: BTreeMap<String, Value> = fields
+                .into_iter()
+                .map(|(key, value)| (key, as_data(value)))
+                .collect();
+            if fields.values().any(holds_tagged) {
+                Value::Record(fields)
+            } else {
+                Value::Data(Json::Object(
+                    fields
+                        .into_iter()
+                        .map(|(key, value)| (key, value.json().unwrap()))
+                        .collect(),
+                ))
+            }
+        }
+        Value::Map(entries) => Value::Map(
+            entries
+                .into_iter()
+                .map(|(key, value)| (as_data(key), as_data(value)))
+                .collect(),
+        ),
+        Value::Set(elements) => Value::Set(elements.into_iter().map(as_data).collect()),
+        other => other,
+    }
+}
+
+/// guarantee: bridge/value-tags. Tagged values come back from the Go
+/// session's echo as sent: lists and records holding none come back as
+/// the same data.
+#[cfg(feature = "go")]
+#[tokio::test(flavor = "multi_thread")]
+async fn go_tagged_values_round_trip() {
+    let (near, _child) = go_far_end().await;
+    tokio::task::spawn_blocking(move || {
+        check("go tagged round trip", tagged_value(), |sent| {
+            let echoed = near
+                .invoke("conformance", "echo", Value::List(vec![sent.clone()]))
+                .map_err(|error| TestCaseError::fail(format!("echo failed: {error}")))?;
+            prop_assert_eq!(as_data(echoed), as_data(sent));
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+}
+
 #[cfg(feature = "bun")]
 async fn bun_far_end() -> (Connection, tokio::process::Child) {
     let mut command = tokio::process::Command::new("bun");

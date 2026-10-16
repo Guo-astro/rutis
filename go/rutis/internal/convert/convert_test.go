@@ -3,7 +3,9 @@ package convert
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/arcships/rutis/go/rutis/internal/peer"
@@ -25,29 +27,31 @@ type point struct {
 	Y int `json:"y"`
 }
 
-func TestDataCrossesAsJSON(t *testing.T) {
+func TestDataCrossesValueByValue(t *testing.T) {
 	value, err := ToPeer(point{1, 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(value.(json.RawMessage)) != `{"x":1,"y":2}` {
-		t.Fatalf("%s", value)
+	if !reflect.DeepEqual(value, map[string]any{"x": int64(1), "y": int64(2)}) {
+		t.Fatalf("%#v", value)
 	}
 	var back point
-	if err := Decode(value, &back); err != nil || back != (point{1, 2}) {
+	if err := Decode(json.RawMessage(`{"x":1,"y":2}`), &back); err != nil || back != (point{1, 2}) {
 		t.Fatalf("%v %v", back, err)
 	}
 	if _, err := ToPeer(int64(1) << 60); err == nil {
 		t.Fatal("an integer beyond 2^53 must not cross")
 	}
-	if _, err := ToPeer([]byte("x")); err == nil {
-		t.Fatal("bytes must not cross")
+	// Inside a struct too (V9): encoding/json would not have checked it.
+	_, err = ToPeer(struct{ N uint64 }{1 << 60})
+	if err == nil || !strings.Contains(err.Error(), "send it as a *big.Int") {
+		t.Fatalf("%v", err)
 	}
-	if _, err := ToPeer(map[int]string{1: "a"}); err == nil {
-		t.Fatal("non-string keys must not cross")
+	if _, err := ToPeer(struct{ C chan int }{make(chan int)}); err == nil {
+		t.Fatal("a channel cannot cross")
 	}
-	if _, err := ToPeer(struct{ F func() }{func() {}}); err == nil {
-		t.Fatal("a struct is data: a function field cannot cross")
+	if _, err := ToPeer([]float64{math.NaN()}); err == nil {
+		t.Fatal("NaN cannot cross")
 	}
 }
 
@@ -66,9 +70,8 @@ func TestFunctionsCrossAndAreCalledWithWireArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := []reflect.Value{reflect.ValueOf(result)}
-	if got := string(out[0].Interface().(json.RawMessage)); got != `"n3"` {
-		t.Fatalf("%s", got)
+	if result != "n3" {
+		t.Fatalf("%#v", result)
 	}
 }
 
@@ -78,7 +81,7 @@ func TestCallStripsTrailingUndefinedAndRejectsExtraArguments(t *testing.T) {
 		t.Fatal("extra arguments are an error")
 	}
 	value, err := Call(context.Background(), fn, nil)
-	if err != nil || string(value.(json.RawMessage)) != "1" {
+	if err != nil || value != int64(1) {
 		t.Fatalf("a missing argument is its zero value: %v %v", value, err)
 	}
 }

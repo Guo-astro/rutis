@@ -11,9 +11,10 @@
 //	}
 //
 // The plugin runs in its real runtime, across a real session: values cross
-// as they would between processes (data is copied, functions and Ref
+// as they would between processes (data is copied, time.Time, []byte and
+// the other tagged values cross as their values, functions and Ref
 // objects pass by reference), so what works only in one process fails here
-// too. It checks what a host would: the plugin uses only the services it
+// too; the test side takes every tagged value, as a host does. It checks what a host would: the plugin uses only the services it
 // declares in Inject, provides what Provides declares with the declared
 // types, and its cleanups succeed.
 package rutistest

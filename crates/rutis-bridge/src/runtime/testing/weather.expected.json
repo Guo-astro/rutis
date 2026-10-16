@@ -1,7 +1,7 @@
 {
   "about": [
     "What calls on the runtime conformance plugin (conformance-weather) return: one list that both the real runtimes and the SDK testing tools are checked against (issue #206, risk A1, Q6.7.2).",
-    "Real runtimes: rutis_bridge::runtime::testing::runtime (crates/rutis-bridge/tests/session_matrix.rs). Testing tools: node/rutis/test/conformance.test.mjs (@arcships/rutis/testing) and python/rutis/tests/test_conformance.py (rutis.testing), in strict mode.",
+    "Real runtimes: rutis_bridge::runtime::testing::runtime (crates/rutis-bridge/tests/session_matrix.rs). Testing tools: node/rutis/test/conformance.test.mjs (@arcships/rutis/testing) and python/rutis/tests/test_conformance.py (rutis.testing), in strict mode, and go/rutis/rutistest/conformance_test.go (rutistest).",
     "The plugin injects `clock`, whose `now()` returns 0, 1, 2, ... one per call, and provides `service` with `methods`.",
     "A call: `call` (method), `args` (JSON; {\"$callback\": ...} is a function the caller passes: \"upper\" returns its argument upper-cased; {\"throws\": {name, message, fields}} throws an error with that name and message and extra `fields`), and what it does: `returns` (a JSON value; keys in `ignore` are not compared; `copied`: it is not the object passed in), `throws` ({} for any error, or the `name` and `message` the caller receives; the thrown error's extra `fields` do not cross) or `exits` (the plugin's process exits with this status).",
     "`samples` are values one language makes: the plugin's `samples()` names the ones it has, `sample(name)` returns one; a runtime whose plugin has no `samples` method has none.",
@@ -79,7 +79,13 @@
     { "sample": "python/value-naive-datetime", "returns": { "$datetime": "2026-10-15T14:30:05.25" }, "pending": "#308 phase 3", "why": "a datetime without a time zone arrives as a local datetime, not read in any zone (design V5)" },
     { "sample": "python/value-decimal-uuid", "returns": [{ "$decimal": "-12.3400" }, { "$uuid": "0f8fad5b-d9cb-469f-a165-70867728950e" }], "pending": "#308 phase 3", "why": "a Decimal and a UUID arrive as values, not as object references (#355)" },
     { "sample": "python/value-int-keys", "returns": { "$map": [[1, "a"], [2, "b"]] }, "pending": "#308 phase 3", "why": "a dict with integer keys arrives as a map" },
-    { "sample": "go/value-instant", "returns": { "$instant": "2026-10-15T03:22:15.123456789Z" }, "pending": "#308 phase 3", "why": "a time.Time arrives as an instant in UTC, to the nanosecond" },
-    { "sample": "go/value-struct-bytes", "returns": { "raw": { "$bytes": "aGVsbG8=" } }, "pending": "#308 phase 3", "why": "a []byte inside a struct arrives as bytes, not as base64 text (V9)" }
+    { "sample": "go/value-instant", "returns": { "$instant": "2026-10-15T03:22:15.123456789Z" }, "why": "a time.Time arrives as an instant in UTC, to the nanosecond" },
+    { "sample": "go/value-struct-bytes", "returns": { "raw": { "$bytes": "aGVsbG8=" } }, "why": "a []byte inside a struct arrives as bytes, not as base64 text (V9)" },
+    { "sample": "go/value-struct-time", "returns": { "at": { "$instant": "2026-10-15T03:22:15Z" } }, "why": "a time.Time inside a struct (here at +02:00) arrives as an instant in UTC, not as RFC 3339 text in its zone (V9)" },
+    { "sample": "go/value-int-keys", "returns": { "$map": [[1, "a"], [2, "b"]] }, "why": "a map with integer keys arrives as a map, its keys in order" },
+    { "sample": "go/value-set", "returns": { "$set": ["a", "b"] }, "why": "a map[K]struct{} arrives as a set, its elements in order" },
+    { "sample": "go/value-bigint", "returns": { "$bigint": "-123456789012345678901" }, "why": "a *big.Int arrives as a big integer" },
+    { "sample": "go/value-constructed", "returns": [{ "$datetime": "2026-10-15T14:30:05.25" }, { "$date": "2026-10-15" }, { "$time": "14:30:05.25" }, { "$decimal": "1.10" }, { "$uuid": "0f8fad5b-d9cb-469f-a165-70867728950e" }], "why": "rutis.DateTime, Date, TimeOfDay, Decimal and UUID arrive as a datetime, date, time, decimal and uuid; the decimal keeps its trailing zero" },
+    { "sample": "go/big-int-in-struct", "throws": {}, "why": "an integer beyond ±(2^53−1) inside a struct does not cross (V9): encoding/json did not check it" }
   ]
 }
