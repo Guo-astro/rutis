@@ -20,16 +20,19 @@ import asyncio
 import collections
 import contextvars
 import dataclasses
+import datetime as _dt
+import decimal
 import json
 import re
 import socket
 import sys
 import threading
 import traceback
+import uuid
 import weakref
 from typing import Any, Callable
 
-from . import _eager
+from . import _eager, _values
 from .channel import SocketChannel
 
 PROTOCOL = 2
@@ -39,10 +42,11 @@ ENDPOINT_PROTOCOL = 3
 # What this implementation supports in the endpoint format. It sends objects
 # but cannot receive them, so it does not declare `objects`. `sync-wait`: its
 # synchronous calls say so (`sync: true`), for the host's wait-cycle check;
-# `sync-stack`: calls run while it waits are stacked on its one thread.
-CAPABILITIES = ["signals", "reentrant-sync", "sync-wait", "sync-stack"]
+# `sync-stack`: calls run while it waits are stacked on its one thread;
+# `value-<tag>`: it takes every tagged value (#308, `rutis._values`).
+CAPABILITIES = ["signals", "reentrant-sync", "sync-wait", "sync-stack", *_values.CAPABILITIES]
 # What it declares in the compat format, where older hosts ignore it.
-COMPAT_CAPABILITIES = ["reentrant-sync", "sync-wait", "sync-stack"]
+COMPAT_CAPABILITIES = ["reentrant-sync", "sync-wait", "sync-stack", *_values.CAPABILITIES]
 IMPLEMENTATION = {"name": "rutis", "version": "0.10.0"}
 
 
@@ -91,6 +95,8 @@ class _Undefined:
 
 
 UNDEFINED = _Undefined()
+# Undefined inside data, as sent (design V10).
+_NULL = {"type": "data", "value": None}
 
 
 class RemoteError(Exception):
@@ -213,6 +219,9 @@ def dumps(frame: dict) -> bytes:
 
 
 _DATA = (type(None), bool, int, float, str)
+# Values of their own kind (#308): they cross by value under their tag, not
+# as references (#355).
+_VALUES = (_dt.date, _dt.time, decimal.Decimal, uuid.UUID, memoryview)
 
 
 def _is_future(value: Any) -> bool:
@@ -221,7 +230,9 @@ def _is_future(value: Any) -> bool:
 
 def _is_live(value: Any) -> bool:
     """An object with behaviour, which crosses by reference."""
-    if isinstance(value, _DATA + (list, tuple, dict, bytes, bytearray, set, frozenset)):
+    if value is UNDEFINED:
+        return False
+    if isinstance(value, _DATA + _VALUES + (list, tuple, dict, bytes, bytearray, set, frozenset)):
         return False
     if isinstance(value, BaseException) or dataclasses.is_dataclass(value):
         return False
@@ -247,10 +258,33 @@ def _holds_reference(value: Any, seen: set | None = None, depth: int = 0) -> boo
     return False
 
 
+def _beyond_data(value: Any, seen: set | None = None, depth: int = 0) -> bool:
+    """Whether `value` holds a reference or a tagged value, so it crosses
+    as a list or record of tagged parts, not as JSON data. Not looked for
+    past MAX_DEPTH levels, as `_holds_reference`."""
+    if _values.tag_of(value) is not None:
+        return True
+    if isinstance(value, (RemoteFunction, RemoteFuture)):
+        return True
+    if callable(value) or _is_future(value) or _is_live(value):
+        return True
+    if dataclasses.is_dataclass(value):
+        items: Any = [getattr(value, field.name) for field in dataclasses.fields(value)]
+    elif isinstance(value, (list, tuple, dict)):
+        items = value.values() if isinstance(value, dict) else value
+    else:
+        return False
+    seen = seen if seen is not None else set()
+    if id(value) in seen or depth > MAX_DEPTH:
+        return False
+    seen.add(id(value))
+    return any(_beyond_data(item, seen, depth + 1) for item in items)
+
+
 # How deep a value crossing a session may nest (#279): each list, tuple,
-# dict (or dataclass) is a level, so 64 nested lists cross and 65 do not;
-# a call's argument list is not a level. A deeper value fails its own call
-# here, before it is sent; the session goes on.
+# dict, map or set (or dataclass) is a level, so 64 nested lists cross and
+# 65 do not; a call's argument list is not a level. A deeper value fails its
+# own call here, before it is sent; the session goes on.
 MAX_DEPTH = 64
 
 
@@ -260,25 +294,28 @@ def _too_deep() -> ValueError:
     )
 
 
-# The largest integer crossing a session (#356): ±(2^53−1), the integers a
-# JavaScript number holds exactly and the limit Go keeps. Past 2^64 Rust
-# would read one as a float. A larger one fails its own call here, before
-# it is sent; the session goes on. `bool` is an int and crosses as before.
-MAX_SAFE_INTEGER = 2**53 - 1
+# The largest plain integer crossing a session (#356): ±(2^53−1), the
+# integers a JavaScript number holds exactly and the limit Go keeps. Past
+# 2^64 Rust would read one as a float. A larger one fails its own call here,
+# before it is sent; the session goes on. `bool` is an int and crosses as
+# before. Beyond it, an int crosses as a bigint instead (#308, design V6):
+# only an int inside data that is not looked into (deeper than MAX_DEPTH)
+# reaches this limit.
+MAX_SAFE_INTEGER = _values.MAX_SAFE_INTEGER
 
 
 def _too_large() -> ValueError:
     # Without the integer: a very long one cannot even be written (Python
     # limits int-to-str conversion).
     return ValueError(
-        "integer beyond ±(2^53-1), the largest an integer crossing a session may be: send it as a string"
+        "integer beyond ±(2^53-1), the largest an integer crossing a session as data may be"
     )
 
 
 def _data(value: Any, depth: int = 0) -> Any:
     """Plain data for the wire, or TypeError (ValueError if nested deeper
     than MAX_DEPTH or an integer beyond ±MAX_SAFE_INTEGER; `depth` counts
-    the levels around it)."""
+    the levels around it). A dict's undefined value is None (#355)."""
     if isinstance(value, _DATA):
         if isinstance(value, int) and not -MAX_SAFE_INTEGER <= value <= MAX_SAFE_INTEGER:
             raise _too_large()
@@ -290,7 +327,7 @@ def _data(value: Any, depth: int = 0) -> Any:
     if isinstance(value, dict):
         if not all(isinstance(key, str) for key in value):
             raise TypeError("only string keys cross the boundary")
-        return {key: _data(item, depth + 1) for key, item in value.items() if item is not UNDEFINED}
+        return {key: _data(item, depth + 1) for key, item in value.items()}
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         try:
             fields = dataclasses.asdict(value)
@@ -423,6 +460,8 @@ class Peer:
         # (call, result) while a call's result is encoded.
         self._answering: tuple[str, Any] | None = None
         self._decoding_for: str | None = None
+        # The imports a value being decoded made, released if it is refused.
+        self._new_imports: list | None = None
         self._active = 0
         self._draining: list[asyncio.Future] = []
         self._handshake = False
@@ -640,25 +679,81 @@ class Peer:
                 "type": "reference",
                 "value": {"id": ref, "kind": entry.kind, "home": False, "origin": entry.origin},
             }
+        tag = _values.tag_of(value)
+        if tag is not None:
+            return self._encode_tagged(tag, value, grants, business, depth)
         if isinstance(value, (list, tuple, dict, BaseException)) and depth >= MAX_DEPTH:
             raise _too_deep()
         if isinstance(value, (list, tuple)):
-            if _holds_reference(value):
+            # An argument list keeps an undefined argument as one.
+            if _beyond_data(value) or (depth < 0 and any(item is UNDEFINED for item in value)):
                 return {
                     "type": "list",
-                    "value": [self._encode(item, grants, business, depth + 1) for item in value],
+                    # In data undefined is null (design V10); an argument
+                    # list keeps it, as an omitted argument.
+                    "value": [
+                        _NULL if item is UNDEFINED and depth >= 0 else self._encode(item, grants, business, depth + 1)
+                        for item in value
+                    ],
                 }
             return {"type": "data", "value": _data(value, depth)}
         if isinstance(value, BaseException):
             return {"type": "data", "value": {"name": type(value).__name__, "message": str(value)}}
-        if isinstance(value, dict) and _holds_reference(value):
-            if not all(isinstance(key, str) for key in value):
-                raise TypeError("only string keys cross the boundary")
+        if isinstance(value, dict) and _beyond_data(value):
             return {
                 "type": "record",
-                "value": {key: self._encode(item, grants, business, depth + 1) for key, item in value.items()},
+                "value": {
+                    key: _NULL if item is UNDEFINED else self._encode(item, grants, business, depth + 1)
+                    for key, item in value.items()
+                },
             }
+        if dataclasses.is_dataclass(value) and not isinstance(value, type) and _beyond_data(value):
+            # A dataclass crosses as a dict of its fields (asdict copies
+            # them): tagged values in it as such, but no references.
+            try:
+                fields = dataclasses.asdict(value)
+            except RecursionError:
+                raise _too_deep() from None
+            if _holds_reference(fields):
+                raise TypeError(
+                    f"{type(value).__name__} cannot cross the boundary: a dataclass crosses as data, "
+                    "without functions or objects with behaviour"
+                )
+            return self._encode(fields, grants, business, depth)
         return {"type": "data", "value": _data(value, depth)}
+
+    def _encode_tagged(self, tag: str, value: Any, grants: list, business: bool, depth: int) -> dict:
+        """A tagged value (#308), sent only to a far end that declared
+        `value-<tag>`: to any other, the call carrying it fails."""
+        capability = f"value-{tag}"
+        if capability not in self._declared:
+            raise ValueError(
+                f"cannot send {_values.describe(value)}: the far end does not take {tag} values "
+                f"(it did not declare the capability {capability})"
+            )
+        if tag not in ("map", "set"):
+            return {"type": tag, "value": _values.write(tag, value)}
+        if depth >= MAX_DEPTH:
+            raise _too_deep()
+        if tag == "set":
+            elements = list(value)
+            _values.check_keys(elements, "set element")
+            return {"type": "set", "value": [self._encode(item, grants, business, depth + 1) for item in elements]}
+        entries = list(value.items())
+        _values.check_keys((key for key, _item in entries), "map key")
+        return {
+            "type": "map",
+            "value": [
+                [
+                    self._encode(key, grants, business, depth + 1),
+                    # Undefined is null in data (design V10).
+                    _NULL
+                    if item is UNDEFINED
+                    else self._encode(item, grants, business, depth + 1),
+                ]
+                for key, item in entries
+            ],
+        }
 
     def _future_done(self, entry: _Export, done: asyncio.Future) -> None:
         # Recorded early when an await needed it first (see _execute).
@@ -688,18 +783,71 @@ class Peer:
         if kind == "data":
             return wire["value"]
         if kind == "list":
-            return [self._decode(item) for item in wire["value"]]
+            return self._decode_each(wire["value"])
         if kind == "record":
             if not isinstance(wire["value"], dict):
                 raise ValueError("invalid record")
-            return {key: self._decode(item) for key, item in wire["value"].items()}
+            fields = wire["value"]
+            return dict(zip(fields, self._decode_each(fields.values())))
         if kind == "signal":
             if self._decoding_for is None:
                 raise ValueError("a signal is only valid as a call argument")
             return self._signals.setdefault(self._decoding_for, Signal())
         if kind == "reference":
             return self._decode_reference(wire["value"])
+        if kind in _values.TAGS:
+            return self._decode_tagged(kind, wire.get("value"))
         raise ValueError("invalid wire value")
+
+    def _decode_each(self, wires: Any) -> list:
+        """Decode every one of `wires`, even past a refused one (so each
+        reference in them is imported, and released if the call fails);
+        then raise the first refusal. A malformed value raises at once: it
+        ends the session."""
+        decoded, refused = [], None
+        for wire in wires:
+            try:
+                decoded.append(self._decode(wire))
+            except _values.Refused as error:
+                refused = refused or error
+        if refused is not None:
+            raise refused
+        return decoded
+
+    def _decode_tagged(self, tag: str, value: Any) -> Any:
+        """A tagged value (#308). The wrong JSON shape is a malformed frame
+        (ValueError, the session ends); text not in the tag's format, or
+        map keys and set elements against the rules, refuse the value
+        (`_values.Refused`: only its call fails)."""
+        if tag == "map":
+            if not isinstance(value, list) or not all(isinstance(entry, list) and len(entry) == 2 for entry in value):
+                raise ValueError("invalid map: expected an array of [key, value] pairs")
+            parts = self._decode_each([part for entry in value for part in entry])
+            # Undefined is null in data (design V10).
+            items = [None if item is UNDEFINED else item for item in parts[1::2]]
+            return _values.received_map(parts[0::2], items)
+        if tag == "set":
+            if not isinstance(value, list):
+                raise ValueError("invalid set: expected an array")
+            return _values.received_set(self._decode_each(value))
+        if not isinstance(value, str):
+            raise ValueError(f"invalid {tag}: expected a string")
+        return _values.read(tag, value)
+
+    def _decode_checked(self, wire: Any) -> tuple:
+        """(True, the value), or (False, ValueError) when it holds a value
+        this side refuses: only the call it came in fails, and the
+        references it carried are released at once."""
+        imported: list = []
+        outer, self._new_imports = self._new_imports, imported
+        try:
+            return True, self._decode(wire)
+        except _values.Refused as refused:
+            for record in imported:
+                self._release(record)
+            return False, ValueError(str(refused))
+        finally:
+            self._new_imports = outer
 
     def _decode_reference(self, value: dict) -> Any:
         ref, home, kind, origin = value.get("id"), value.get("home"), value.get("kind"), value.get("origin")
@@ -724,6 +872,8 @@ class Peer:
             record.grants += 1
             return proxy
         record = _Import(ref, kind, origin)
+        if self._new_imports is not None:
+            self._new_imports.append(record)
         proxy = RemoteFunction(self, record) if kind == "function" else RemoteFuture(self, record)
         record.proxy = weakref.ref(proxy)
         self._imports[ref] = record
@@ -912,7 +1062,8 @@ class Peer:
                 isinstance(error, dict) and isinstance(error.get("name"), str) and isinstance(error.get("message"), str)
             ):
                 raise ValueError("invalid error")
-            value = self._decode(frame["value"]) if op == "return" else decode_error(frame["error"])
+            # A value this side refuses fails the call waiting for it.
+            ok, value = self._decode_checked(frame["value"]) if op == "return" else (False, decode_error(frame["error"]))
             call = frame.get("id")
             finish = self._pending.pop(call, None)
             if finish is None:
@@ -920,7 +1071,7 @@ class Peer:
                     self._cancelled.discard(call)
                     return
                 raise ValueError("response for unknown call")
-            finish((op == "return", value))
+            finish((ok, value))
             return
         if op == "cancel":
             call = frame.get("id")
@@ -969,9 +1120,14 @@ class Peer:
         if op in ("invoke", "call"):
             self._decoding_for = call
             try:
-                args = self._decode(frame.get("args"))
+                ok, args = self._decode_checked(frame.get("args"))
             finally:
                 self._decoding_for = None
+            if not ok:
+                # Arguments this side refuses: only this call fails (#308).
+                self._signals.pop(call, None)
+                self._send({"op": "throw", "id": call, "error": encode_error(args)})
+                return
         if op == "await":
             kind = "future"
         elif op == "get" or frame.get("method") is not None:

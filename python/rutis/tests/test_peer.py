@@ -397,8 +397,9 @@ class ReferenceCountTests(background.IsolatedAsyncioTestCase):
             return 42
 
         peer, read = self.session(lambda target, method, args: None)
-        # The callback is granted before the set (which cannot cross) fails.
-        with self.assertRaisesRegex(TypeError, "cannot cross the boundary"):
+        # The callback is granted before the set (which this far end did
+        # not declare it takes) fails.
+        with self.assertRaisesRegex(ValueError, "did not declare the capability value-set"):
             peer.call("test", "bad", [callback, {"nested": {1, 2}}])
         self.assertEqual(peer._exports, {}, "the partial grant is rolled back")
         self.assertEqual(peer._identities, {})
@@ -573,9 +574,11 @@ class DepthTests(unittest.TestCase):
 
 
 class IntegerLimitTests(background.IsolatedAsyncioTestCase):
-    """#356: an integer crosses only within ±(2^53−1), as in JavaScript
-    and Go; a larger one fails its own call, at any depth, and the
-    session goes on. `bool` is an int and crosses as before."""
+    """#356, design V6: an integer crosses as a number only within
+    ±(2^53−1), as in JavaScript and Go; a larger one crosses as a bigint,
+    at any depth, so to a far end that did not declare `value-bigint` it
+    fails its own call, and the session goes on. `bool` is an int and
+    crosses as before."""
 
     SAFE = 2**53 - 1
 
@@ -607,7 +610,7 @@ class IntegerLimitTests(background.IsolatedAsyncioTestCase):
 
         return peer, read
 
-    async def test_an_argument_beyond_the_limit_fails_that_call_and_the_session_goes_on(self):
+    async def test_an_argument_beyond_the_limit_to_a_far_end_without_bigints_fails_that_call(self):
         def callback():
             return 1
 
@@ -615,7 +618,7 @@ class IntegerLimitTests(background.IsolatedAsyncioTestCase):
         # Beside a reference too: a list holding one crosses as a list.
         for args in ([2**53], [[1, {"n": 2**64 + 1}]], [callback, {"n": -(2**53)}]):
             with self.subTest(args=args):
-                with self.assertRaisesRegex(ValueError, r"beyond ±\(2\^53-1\)"):
+                with self.assertRaisesRegex(ValueError, "did not declare the capability value-bigint"):
                     peer.call("test", "big", args)
         self.assertEqual(peer._exports, {}, "the partial grant is rolled back")
         # Failed encodings consume their invocation ids, but send nothing.
@@ -626,7 +629,7 @@ class IntegerLimitTests(background.IsolatedAsyncioTestCase):
         self.assertEqual(sent["args"], {"type": "data", "value": [self.SAFE, -self.SAFE, True]})
         self.assertIsNone(peer.closed_error)
 
-    async def test_a_result_beyond_the_limit_fails_that_call_and_the_session_goes_on(self):
+    async def test_a_result_beyond_the_limit_to_a_far_end_without_bigints_fails_that_call(self):
         def callback():
             return 1
 
@@ -636,7 +639,7 @@ class IntegerLimitTests(background.IsolatedAsyncioTestCase):
             peer._receive(ReferenceCountTests.invoke(sequence, method))
             reply = await read()
             self.assertEqual(reply["op"], "throw", reply)
-            self.assertRegex(reply["error"]["message"], r"beyond ±\(2\^53-1\)")
+            self.assertRegex(reply["error"]["message"], "did not declare the capability value-bigint")
         peer._receive(ReferenceCountTests.invoke(3, "safe"))
         reply = await read()
         self.assertEqual(reply["op"], "return", reply)

@@ -61,7 +61,8 @@ class ValueTests(background.TestCase):
         self.assertFalse(_holds_reference([1, {"a": "b"}]))
 
     def test_data(self):
-        self.assertEqual(_data((1, {"a": UNDEFINED, "b": None})), [1, {"b": None}])
+        # An undefined value is None; the key stays (#355).
+        self.assertEqual(_data((1, {"a": UNDEFINED, "b": None})), [1, {"a": None, "b": None}])
         with self.assertRaises(TypeError):
             _data({1: "a"})
 
