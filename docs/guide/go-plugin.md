@@ -86,7 +86,7 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 | 使用服务 | 函数字段的结构体可以只写用到的方法；或用 `*rutis.Service` 按名字调用：`svc.Call(ctx, "ask", &answer, "q")` |
 | `ctx` | `*rutis.Ctx` 是一个 `context.Context`，插件卸载时取消；插件自己起的 goroutine 用 `ctx.Go(...)` 或看 `ctx.Done()` |
 | 并发 | 每个进来的调用在自己的 goroutine 上执行：提供的对象要能被并发调用，调用别的服务时不要持有锁 |
-| 值 | 数据（数字、字符串、切片、map、结构体）复制，结构体字段与切片、map 的元素逐个检查（字段名按 `json` 标签）；`time.Time`（时间点，UTC）、`[]byte`、`*big.Int`、键不是字符串的 map、`map[K]struct{}`（Set）与 `rutis.DateTime`、`rutis.Date`、`rutis.TimeOfDay`、`rutis.Decimal`、`rutis.UUID` 按各自的值传，见[值怎样传递](plugin-api.md#值怎样传递)；超出 ±(2^53−1) 的整数用 `*big.Int`；函数按引用；对象要按引用传时写 `rutis.Ref(v)` |
+| 值 | 数据（数字、字符串、切片、map、结构体）复制，结构体字段与切片、map 的元素逐个检查（字段名按 `json` 标签）；`time.Time`（时间点，UTC）、`[]byte`、`*big.Int`、键不是字符串的 map、`map[K]struct{}`（Set）与 `rutis.DateTime`、`rutis.Date`、`rutis.TimeOfDay`、`rutis.Decimal`、`rutis.UUID` 按各自的值传，见[值怎样传递](plugin-api.md#值怎样传递)；超出 ±(2^53−1) 的整数（`int64`、`uint64` 等）自动按大整数传，收到的大整数解码进声明的整数类型，到 `any` 时是 `*big.Int`；函数按引用；对象要按引用传时写 `rutis.Ref(v)` |
 | 错误 | 返回的 `error` 带着类型名跨进程（`*QuotaError` → `QuotaError`，实现 `Name() string` 可以自定）；panic 变成名为 `Panic` 的错误 |
 
 **一定把 ctx 传下去。** 调用链（`path`）放在 `context.Context` 里：Node 同步调用你的方法、你的方法又同步回调 Node 时，只有带着收到的 ctx，Node 才认得出这是它正在等的调用链；换成 `context.Background()` 两边会互相等。`rutis-host dev` 下，丢了调用链的调用会在 stderr 警告一次。

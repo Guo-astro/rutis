@@ -16,8 +16,10 @@ import (
 //	[]byte, [N]byte    binary data (bytes)
 //	map[K]V            a map, when K is not a string type (map)
 //	map[K]struct{}     a set (set); a set also decodes into a slice
-//	*big.Int, big.Int  an integer of any size (bigint); plain integers
-//	                   beyond ±(2^53-1) do not cross
+//	*big.Int, big.Int  an integer of any size (bigint); so is any integer
+//	                   beyond ±(2^53-1) (int64, uint64, ...): a bigint
+//	                   received decodes into the declared integer type
+//	                   when it fits, and into `any` as *big.Int
 //	Decimal            a decimal number, its text kept (decimal)
 //	UUID               a UUID (uuid)
 //

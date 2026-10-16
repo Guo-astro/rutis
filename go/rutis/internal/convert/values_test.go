@@ -147,6 +147,10 @@ type Outer struct {
 	Zero  values.Date `json:"zero,omitzero"`
 }
 
+type bigJSON struct{}
+
+func (bigJSON) MarshalJSON() ([]byte, error) { return []byte(`[-9007199254740992, 1.5]`), nil }
+
 type Celsius float64
 
 func (c Celsius) MarshalJSON() ([]byte, error) { return []byte(`{"celsius": 21}`), nil }
@@ -163,9 +167,13 @@ func TestStructsAreWrittenAsEncodingJSONWritesThem(t *testing.T) {
 	if err != nil || string(value.(json.RawMessage)) != `{"celsius":21}` {
 		t.Errorf("a MarshalJSON writes itself: %#v %v", value, err)
 	}
-	// A big integer written by a MarshalJSON is checked too.
-	if _, err := ToPeer(json.Number("9007199254740993")); err == nil {
-		t.Error("json.Number beyond 2^53")
+	// A big integer written by a MarshalJSON crosses as a bigint too.
+	if value, err := ToPeer(json.Number("9007199254740993")); err != nil || value.(*big.Int).String() != "9007199254740993" {
+		t.Errorf("json.Number beyond 2^53: %#v %v", value, err)
+	}
+	value, err = ToPeer(bigJSON{})
+	if list, ok := value.([]any); err != nil || !ok || list[0].(*big.Int).String() != "-9007199254740992" || string(list[1].(json.RawMessage)) != "1.5" {
+		t.Errorf("%#v %v", value, err)
 	}
 }
 
@@ -203,6 +211,18 @@ func TestMapsAndSetsDecodeIntoTheirDeclaredTypes(t *testing.T) {
 	var n int64
 	if err := call("big", &n); err != nil || n != 42 {
 		t.Errorf("a bigint into an integer it fits: %v %v", n, err)
+	}
+	// Beyond ±(2^53-1): a bigint, *big.Int in any, back into the integer.
+	var large int64
+	if err := call("echo", &large, int64(-1)<<60); err != nil || large != -1<<60 {
+		t.Errorf("an int64 beyond 2^53 crosses and comes back: %v %v", large, err)
+	}
+	var widest uint64
+	if err := call("echo", &widest, uint64(1<<64-1)); err != nil || widest != 1<<64-1 {
+		t.Errorf("%v %v", widest, err)
+	}
+	if err := call("echo", &anything, int64(1)<<60); err != nil || anything.(*big.Int).String() != "1152921504606846976" {
+		t.Errorf("a bigint into any is a *big.Int: %#v %v", anything, err)
 	}
 	var small int8
 	if err := call("echo", &small, big.NewInt(300)); err == nil {

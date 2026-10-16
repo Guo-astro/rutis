@@ -24,7 +24,7 @@ import (
 // ── Go -> wire ───────────────────────────────────────────────────
 //
 // Every value goes through this one encoder, field by field and item by
-// item (design V9): integers are checked against ±(2^53-1), time.Time is
+// item (design V9): integers beyond ±(2^53-1) are bigints, time.Time is
 // an instant, []byte is bytes, maps with keys other than strings are maps,
 // map[K]struct{} is a set, *big.Int is a bigint, and DateTime, Date,
 // TimeOfDay, Decimal and UUID are their tags. Structs are objects with the
@@ -164,7 +164,7 @@ func toPeerValue(rv reflect.Value, levels, hops int) (any, error) {
 		if _, err := strconv.ParseFloat(text, 64); err != nil || !json.Valid([]byte(text)) {
 			return nil, fmt.Errorf("invalid json.Number %q", text)
 		}
-		return integerChecked(json.RawMessage(text))
+		return withBigInts(json.RawMessage(text))
 	}
 	if marshaled, ok, err := marshaled(rv); ok {
 		return marshaled, err
@@ -179,13 +179,14 @@ func toPeerValue(rv reflect.Value, levels, hops int) (any, error) {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		n := rv.Int()
 		if n > peer.MaxSafe || n < -peer.MaxSafe {
-			return nil, fmt.Errorf("the integer %d is beyond ±(2^53-1), which crosses between processes intact: send it as a *big.Int", n)
+			// Beyond what every language holds exactly: a bigint (V6).
+			return big.NewInt(n), nil
 		}
 		return n, nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		n := rv.Uint()
 		if n > peer.MaxSafe {
-			return nil, fmt.Errorf("the integer %d is beyond 2^53-1, which crosses between processes intact: send it as a *big.Int", n)
+			return new(big.Int).SetUint64(n), nil
 		}
 		return n, nil
 	case reflect.Float32, reflect.Float64:
@@ -262,7 +263,7 @@ func marshaled(rv reflect.Value) (any, bool, error) {
 		if err := json.Compact(&compact, data); err != nil {
 			return nil, true, fmt.Errorf("%s cannot cross between processes: its MarshalJSON wrote invalid JSON", t)
 		}
-		value, err := integerChecked(json.RawMessage(compact.Bytes()))
+		value, err := withBigInts(json.RawMessage(compact.Bytes()))
 		return value, true, err
 	case t.Implements(textMarshalerType) || addressable && reflect.PointerTo(t).Implements(textMarshalerType):
 		if addressable && !t.Implements(textMarshalerType) {
@@ -277,24 +278,63 @@ func marshaled(rv reflect.Value) (any, bool, error) {
 	return nil, false, nil
 }
 
-// integerChecked refuses JSON whose integers are beyond ±(2^53-1).
-func integerChecked(data json.RawMessage) (any, error) {
+// withBigInts is JSON as it crosses: as it is, unless it holds integers
+// beyond ±(2^53-1), which cross as bigints (V6) in its items.
+func withBigInts(data json.RawMessage) (any, error) {
+	if !holdsBigInt(data) {
+		return data, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var tree any
+	if err := decoder.Decode(&tree); err != nil {
+		return nil, err
+	}
+	return fromJSON(tree), nil
+}
+
+func holdsBigInt(data json.RawMessage) bool {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	for {
 		token, err := decoder.Token()
 		if err != nil {
-			break
+			return false
 		}
-		number, ok := token.(json.Number)
-		if !ok || strings.ContainsAny(string(number), ".eE") {
-			continue
-		}
-		if n, ok := new(big.Int).SetString(string(number), 10); ok && n.CmpAbs(big.NewInt(peer.MaxSafe)) > 0 {
-			return nil, fmt.Errorf("the integer %s is beyond ±(2^53-1), which crosses between processes intact: send it as a *big.Int", number)
+		if number, ok := token.(json.Number); ok && bigInteger(number) != nil {
+			return true
 		}
 	}
-	return data, nil
+}
+
+// bigInteger is `number` when it is an integer beyond ±(2^53-1).
+func bigInteger(number json.Number) *big.Int {
+	if strings.ContainsAny(string(number), ".eE") {
+		return nil
+	}
+	if n, ok := new(big.Int).SetString(string(number), 10); ok && n.CmpAbs(big.NewInt(peer.MaxSafe)) > 0 {
+		return n
+	}
+	return nil
+}
+
+func fromJSON(tree any) any {
+	switch v := tree.(type) {
+	case json.Number:
+		if n := bigInteger(v); n != nil {
+			return n
+		}
+		return json.RawMessage(v)
+	case []any:
+		for i, item := range v {
+			v[i] = fromJSON(item)
+		}
+	case map[string]any:
+		for key, item := range v {
+			v[key] = fromJSON(item)
+		}
+	}
+	return tree
 }
 
 func quotedField(item any) any {

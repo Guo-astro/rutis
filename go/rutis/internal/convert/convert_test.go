@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"math/big"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/arcships/rutis/go/rutis/internal/peer"
@@ -39,13 +39,21 @@ func TestDataCrossesValueByValue(t *testing.T) {
 	if err := Decode(json.RawMessage(`{"x":1,"y":2}`), &back); err != nil || back != (point{1, 2}) {
 		t.Fatalf("%v %v", back, err)
 	}
-	if _, err := ToPeer(int64(1) << 60); err == nil {
-		t.Fatal("an integer beyond 2^53 must not cross")
+	// An integer beyond ±(2^53-1) crosses as a bigint (V6), wherever it
+	// is: inside a struct too (V9), and as a map key.
+	if value, _ := ToPeer(int64(-1) << 60); value.(*big.Int).String() != "-1152921504606846976" {
+		t.Fatalf("%#v", value)
 	}
-	// Inside a struct too (V9): encoding/json would not have checked it.
-	_, err = ToPeer(struct{ N uint64 }{1 << 60})
-	if err == nil || !strings.Contains(err.Error(), "send it as a *big.Int") {
-		t.Fatalf("%v", err)
+	value, err = ToPeer(struct{ N uint64 }{1<<64 - 1})
+	if err != nil || value.(map[string]any)["N"].(*big.Int).String() != "18446744073709551615" {
+		t.Fatalf("%#v %v", value, err)
+	}
+	if value, _ := ToPeer(int64(peer.MaxSafe)); value != int64(peer.MaxSafe) {
+		t.Fatalf("2^53-1 is a number: %#v", value)
+	}
+	value, err = ToPeer(map[int64]bool{1 << 60: true})
+	if err != nil || value.(peer.Map)[0].Key.(*big.Int).String() != "1152921504606846976" {
+		t.Fatalf("%#v %v", value, err)
 	}
 	if _, err := ToPeer(struct{ C chan int }{make(chan int)}); err == nil {
 		t.Fatal("a channel cannot cross")

@@ -99,6 +99,7 @@ var samples = map[string]func() any{
 		}
 	},
 	"go/big-int-in-struct": func() any { return Reading{N: 1 << 60} },
+	"go/big-int-keys":      func() any { return map[uint64]string{1<<64 - 1: "max", 1: "one"} },
 }
 
 // Samples names the values only Go makes.
