@@ -127,9 +127,16 @@ test('each tag arrives as its JavaScript value', () => {
   assert.equal(received({ type: 'instant', value: '0001-01-01T00:00:00Z' }).getTime(), -62135596800000)
   assert.equal(received({ type: 'instant', value: '9999-12-31T23:59:59.999999999Z' }).getTime(), 253402300799999)
   for (const [tag, text] of [['datetime', '2026-10-15T14:30:05.250'], ['date', '2026-10-15'], ['time', '14:30:05'], ['decimal', '-12.3400'], ['uuid', '0f8fad5b-d9cb-469f-a165-70867728950e']]) {
+    // Plain strings, not objects: `===` and the rest work as on any string.
     assert.equal(received({ type: tag, value: text }), text, tag)
   }
   assert.equal(received({ type: 'bigint', value: '-123456789012345678901' }), -123456789012345678901n)
+  // Integers from other languages: a bigint stays a bigint, whatever its
+  // size (a JS 5n forwarded back is 5n); a number is a number, beyond
+  // ±(2^53−1) as imprecise as JavaScript itself (design V6, rule 4).
+  assert.equal(received({ type: 'bigint', value: '5' }), 5n)
+  assert.equal(received(data(9007199254740991)), 9007199254740991)
+  assert.equal(typeof received(data(9007199254740993)), 'number')
   const bytes = received({ type: 'bytes', value: 'aGVsbG8=' })
   assert.equal(bytes.constructor, Uint8Array)
   assert.deepEqual(bytes, new TextEncoder().encode('hello'))

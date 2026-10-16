@@ -69,7 +69,10 @@ test('the testing tool crosses tagged values as the runtimes do', async () => {
   assert.equal(back(-(10n ** 30n)), -(10n ** 30n))
   assert.throws(() => back(10n ** 4300n), /at most 4300 digits/)
   // The constructors' values arrive as their text.
-  assert.deepEqual(back([rutis.date('2026-10-15'), rutis.decimal('1.10')]), ['2026-10-15', '1.10'])
+  const texts = back([rutis.date('2026-10-15'), rutis.decimal('1.10')])
+  assert.deepEqual(texts, ['2026-10-15', '1.10'])
+  assert.ok(texts.every(text => typeof text === 'string'), 'plain strings, not objects')
+  assert.equal(back(5n), 5n)
   // In plain objects and arrays, next to undefined, which stays undefined
   // outside data as on the runtimes.
   assert.deepEqual(back({ at: when, none: undefined, list: [1n] }), { at: when, none: undefined, list: [1n] })
