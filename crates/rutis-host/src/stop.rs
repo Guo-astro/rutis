@@ -163,7 +163,7 @@ impl Signals {
 
 /// Listen for `kind`, unless this process was started ignoring it.
 #[cfg(unix)]
-fn unix_signal(
+pub(crate) fn unix_signal(
     kind: tokio::signal::unix::SignalKind,
 ) -> std::io::Result<Option<tokio::signal::unix::Signal>> {
     let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
@@ -177,7 +177,7 @@ fn unix_signal(
 
 /// The next of `signal`; never, when it is not listened to.
 #[cfg(unix)]
-async fn recv(signal: &mut Option<tokio::signal::unix::Signal>) {
+pub(crate) async fn recv(signal: &mut Option<tokio::signal::unix::Signal>) {
     match signal {
         Some(signal) => {
             signal.recv().await;

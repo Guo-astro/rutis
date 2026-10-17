@@ -275,7 +275,7 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | B1 | 某个安装渠道的包坏了：平台包没被选中、wheel 缺文件、二进制在干净机器上跑不起来 | 兼容 | 高 | 中 | P0 | IN（三个平台 × npm / PyPI / 二进制，本次构建的包）；发布后用注册表上的包再跑一次 | 合并、发布后 | 有（S9，#254、#324）；Python 指南示例的标记等 #259（#266） |
 | B2 | 收到 SIGINT / SIGTERM（Windows：Ctrl-C、Ctrl-Break、关闭控制台）时不执行清理；退出码不符合文档 | 残留 | 高 | 高（#174 已发生） | P0 | E + R（每种信号轮换） | PR | 部分：Unix 的 SIGINT、SIGTERM 有（#216）；Windows 的 Ctrl-Break 有（#277、#324）；Windows 的 Ctrl-C、关闭控制台没有 |
 | B3 | 宿主被 SIGKILL 后，运行时子进程成为孤儿 | 残留 | 高 | 中 | P0 | E + R（Unix 靠通道断开，Windows 靠 Job Object） | PR | 有：三个平台（`cross_language.rs`）；Unix 上事件循环不空、清理不返回的运行时也在截止时间内退出（#353、#354，`stray_runtime.rs`、`host_gone.rs`） |
-| B4 | 配置改坏后，旧的行被卸载、新的起不来 | 故障 | 高 | 中 | P0 | E（写入错误配置，断言旧版本继续服务）；loader 库级 K 已有 | PR | loader 有；`run` 不监视配置（2026-10-11 核对），是否支持见 #274 |
+| B4 | 配置改坏后，旧的行被卸载、新的起不来 | 故障 | 高 | 中 | P0 | E（写入错误配置，断言旧版本继续服务）；loader 库级 K 已有 | PR | loader 有；`run` 运行中重新读配置（SIGUSR1、`--watch-config`，#274）全有或全无，E 见 `host/reload-config` |
 | B5 | `rutis.json` 解析问题：未知字段被静默忽略、相对路径基准错误、凭据环境变量优先级错误 | 语义、诊断 | 中 | 中 | P1 | U（每个字段）；FZ（配置文件，低优先级） | PR | 有（U，`rutis-host/tests/config.rs`，#217；#226）；FZ 没有 |
 | B6 | 运行时包缺失、解释器找不到、端口被占、证书文件错误时，错误信息不足 | 诊断 | 中 | 高 | P1 | G（每种错误一个快照） | PR | 有（`errors.rs`，#217） |
 | B7 | 凭据出现在日志、错误信息、状态输出、trace 里 | 安全 | 高 | 低 | P1 | E 的公共断言：所有捕获输出中查不到 token 值 | PR | 有（E2E 残余检查，#221、#277；S5 #322） |

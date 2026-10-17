@@ -21,6 +21,10 @@ impl Language for Bun {
         runtimes.bun.is_some()
     }
 
+    fn settings(&self, runtimes: &Runtimes) -> Option<String> {
+        runtimes.bun.as_ref().map(|bun| format!("{bun:?}"))
+    }
+
     fn rebase(&self, runtimes: &mut Runtimes, at: &dyn Fn(&mut PathBuf)) {
         if let Some(bun) = &mut runtimes.bun {
             at(&mut bun.project);

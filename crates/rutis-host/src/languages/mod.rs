@@ -48,6 +48,18 @@ pub trait Language: Sync {
     /// Whether `runtimes` configures it.
     fn configured(&self, runtimes: &Runtimes) -> bool;
 
+    /// Its settings in `runtimes` as text, `None` when it is not
+    /// configured: a running host compares them with the configuration
+    /// read again ([`crate::host::Host::reload`]), and refuses a change.
+    fn settings(&self, runtimes: &Runtimes) -> Option<String>;
+
+    /// Whether a running host stops its runtime when the configuration
+    /// read again no longer has it, once its rows are gone; otherwise
+    /// removing it is refused like a change.
+    fn stops_when_removed(&self) -> bool {
+        true
+    }
+
     /// Make its relative paths absolute with `at`.
     fn rebase(&self, runtimes: &mut Runtimes, at: &dyn Fn(&mut PathBuf));
 
