@@ -16,6 +16,7 @@ import asyncio
 import hmac
 import inspect
 import ipaddress
+import logging
 import os
 import queue
 import ssl
@@ -31,6 +32,7 @@ try:
         ConnectionClosed,
         ConnectionClosedOK,
         InvalidHandshake,
+        InvalidMessage,
         InvalidStatus,
         NegotiationError,
     )
@@ -66,6 +68,39 @@ def tls_refusal(python=None) -> str | None:
     return None
 
 
+class _Quiet(logging.Handler):
+    """What websockets logs for a connection: a network end (heartbeat
+    timeout, reset, closed by the far end, a handshake that never finished)
+    is not an error, and the session's end says it in one state line; what
+    remains (a bug, say) is printed with its traceback (#434)."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.levelno < logging.WARNING:
+            return
+        error = record.exc_info[1] if record.exc_info else None
+        if _network_end(error):
+            return
+        try:
+            text = f"rutis: websockets: {record.getMessage()}"
+            if record.exc_info:
+                text += "\n" + logging.Formatter().formatException(record.exc_info)
+            print(text, file=sys.stderr, flush=True)
+        except Exception:  # noqa: BLE001 - as logging.Handler.handleError
+            self.handleError(record)
+
+
+def _network_end(error: BaseException | None) -> bool:
+    return isinstance(error, (ConnectionClosed, InvalidMessage, OSError, EOFError, asyncio.TimeoutError))
+
+
+# Every connection logs here, not to the websockets logger (where Python's
+# last-resort handler would print its tracebacks) nor to a plugin's.
+_LOGGER = logging.getLogger("rutis.websocket")
+_LOGGER.propagate = False
+_LOGGER.setLevel(logging.WARNING)
+_LOGGER.addHandler(_Quiet())
+
+
 def _heartbeat() -> tuple[float, float]:
     """Ping interval and the extra wait for an answer, in seconds. Tests
     shorten them with RUTIS_HEARTBEAT=<ping ms>,<timeout ms>."""
@@ -82,6 +117,8 @@ class WebSocketChannel:
         self._ended = ended
         # The code of the far end's close frame, once it closed with one.
         self.far_close: int | None = None
+        # Why the connection ended, once it did (`_reason`).
+        self.ended_by: str | None = None
 
     def send(self, message: bytes) -> None:
         if len(message) > MAX_MESSAGE:
@@ -101,13 +138,14 @@ class WebSocketChannel:
             return None
         except ConnectionClosed as error:
             self._closed_by(error)
-            raise ConnectionError(_reason(error)) from error
+            raise ConnectionError(self.ended_by) from error
         if isinstance(message, bytes):
             self.close_with(1003, "binary messages are reserved for a binary encoding")
             raise ConnectionError("received a binary message")
         return message.encode("utf-8")
 
     def _closed_by(self, error: ConnectionClosed) -> None:
+        self.ended_by = _reason(error)
         if error.rcvd is not None:
             self.far_close = error.rcvd.code
         self._ended.set()
@@ -132,11 +170,14 @@ def _reason(error: ConnectionClosed) -> str:
     frame = error.rcvd or error.sent
     if frame is None:
         return "connection lost"
+    if error.rcvd is None and frame.code == 1011 and frame.reason == "keepalive ping timeout":
+        # This end's heartbeat gave up on a far end that stopped answering.
+        return "heartbeat timeout"
     if frame.code == REPLACED:
         return "replaced by a new connection"
     if frame.code == REJECTED:
         return f"rejected: {frame.reason}"
-    return f"closed ({frame.code}): {frame.reason}"
+    return f"closed ({frame.code}): {frame.reason}" if frame.reason else f"closed ({frame.code})"
 
 
 def protocol_refusal(ours: str, offered: list[str]) -> str:
@@ -334,6 +375,7 @@ def listen(
         # A far end that stopped answering will not finish a closing
         # handshake either: do not stretch detection past the timeout.
         close_timeout=min(ping, 1.0),
+        logger=_LOGGER,
     )
     bound_host, bound_port = server.socket.getsockname()[:2]
     shown = f"[{bound_host}]" if ":" in bound_host else bound_host
@@ -416,6 +458,7 @@ def dial(spec: str, protocol: str, token: str | None, tls: ssl.SSLContext | None
                 ping_interval=ping,
                 ping_timeout=timeout,
                 close_timeout=min(ping, 1.0),
+                logger=_LOGGER,
             )
         )
     except InvalidStatus as error:

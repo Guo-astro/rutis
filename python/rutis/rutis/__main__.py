@@ -174,6 +174,7 @@ async def serve(spec: str, endpoint: dict) -> None:
     stops on SIGTERM and Ctrl-C: the rows go while the controller still
     hears from this end, the connection and the listener close."""
     from . import websocket
+    from .dialing import report
     from .peer import ENDPOINT_PROTOCOL
 
     listener = await asyncio.to_thread(
@@ -215,12 +216,25 @@ async def serve(spec: str, endpoint: dict) -> None:
                 raise
             accepting = asyncio.ensure_future(asyncio.to_thread(listener.accept))
             if current is not None:
+                report("session ended (replaced by a new connection)")
                 await current.end(replaced=True)
             current = Session(channel, endpoint)
             current.start()
         elif current is not None and current.peer.closed in done:
+            report(f"session ended ({ended_because(current)}); waiting for a controller")
             await current.end()
             current = None
+
+
+def ended_because(session: Session) -> str:
+    """Why a session ended, for its state line: what ended the connection
+    (closed by the controller, a heartbeat timeout, lost), else what ended
+    the session."""
+    ended_by = getattr(session.channel, "ended_by", None)
+    if ended_by:
+        return ended_by
+    reason = str(session.peer.closed_error or "the session closed")
+    return reason.removeprefix("session failed: ")
 
 
 async def dial_out(spec: str, endpoint: dict) -> int:

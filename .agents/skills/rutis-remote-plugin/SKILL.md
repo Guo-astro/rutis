@@ -72,6 +72,8 @@ On the remote machine:
 
    A Go plugin binary accepts `listen:wss://…` as its channel the same way.
 
+   The Python runtime reports on stderr: `rutis: listening on …`; when a session ends, `rutis: session ended (<reason>); waiting for a controller` (reason such as `heartbeat timeout`, `connection lost`, `closed (1001): …`), or `rutis: session ended (replaced by a new connection)` when a new connection takes over.
+
 ## 4b. Or let the runtime connect in (dialing out)
 
 When the remote machines are behind NAT, change address, or come and go in numbers, the runtime connects to rutis instead. On the remote machine, with the plugins installed:

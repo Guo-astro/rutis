@@ -377,8 +377,84 @@ runpy.run_module("rutis", run_name="__main__")
         client.send("{}")
         self.assertEqual(blocking_within("the message", channel.recv), b"{}")
         relay.frozen.set()
-        with self.assertRaises(ConnectionError):
+        with self.assertRaises(ConnectionError) as ended:
             blocking_within("the heartbeat timeout", channel.recv)
+        self.assertEqual(str(ended.exception), "heartbeat timeout")
+        self.assertEqual(channel.ended_by, "heartbeat timeout")
+
+    def test_a_listening_runtime_reports_a_dropped_session_in_one_line(self):
+        # #434: python -m rutis listen:… whose controller's network drops
+        # (its heartbeat times out) prints one state line and goes on
+        # listening; not websockets' log with a traceback.
+        import subprocess
+        import sys
+
+        from rutis.peer import ENDPOINT_PROTOCOL
+
+        package = os.path.dirname(os.path.dirname(os.path.abspath(websocket.__file__)))
+        child = subprocess.Popen(
+            [sys.executable, "-m", "rutis", "listen:ws://127.0.0.1:0/rutis", "--id", "py", "--peer", "main", "."],
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, "PYTHONPATH": package, "RUTIS_TOKEN": "secret", "RUTIS_HEARTBEAT": "100,1000"},
+        )
+        try:
+            line = blocking_within("listening", child.stderr.readline).strip()
+            self.assertTrue(line.startswith("rutis: listening on "), line)
+            address = line[len("rutis: listening on "):]
+            relay = FreezableRelay(urlsplit(address).port)
+            protocol = f"rutis.{ENDPOINT_PROTOCOL}"
+            first = dial(f"ws://127.0.0.1:{relay.port}/rutis", protocol=protocol, ping_interval=None)
+            # The session is up: the runtime greets its controller.
+            first.recv(timeout=HANG_GUARD)
+            relay.frozen.set()
+            line = blocking_within("the state line", child.stderr.readline).strip()
+            self.assertEqual(line, "rutis: session ended (heartbeat timeout); waiting for a controller")
+            # Still listening: the next controller is greeted.
+            second = dial(address, protocol=protocol)
+            try:
+                second.recv(timeout=HANG_GUARD)
+            finally:
+                second.close()
+            child.terminate()
+            child.wait(timeout=HANG_GUARD)
+            rest = child.stderr.read()
+        finally:
+            child.kill()
+            child.wait()
+            child.stderr.close()
+        self.assertNotIn("Traceback", rest)
+        self.assertNotIn("keepalive", rest)
+
+    def test_websockets_logs_only_what_is_not_a_network_end(self):
+        import io
+        import logging
+
+        from websockets.exceptions import ConnectionClosedError
+        from websockets.frames import Close
+
+        def logged(error):
+            try:
+                raise error
+            except BaseException:
+                with unittest.mock.patch("sys.stderr", io.StringIO()) as stderr:
+                    websocket._LOGGER.error("keepalive ping failed", exc_info=True)
+            return stderr.getvalue()
+
+        for error in (
+            ConnectionClosedError(None, Close(1011, "keepalive ping timeout")),
+            ConnectionResetError(54, "Connection reset by peer"),
+            TimeoutError("timed out while closing connection"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                self.assertEqual(logged(error), "")
+        printed = logged(RuntimeError("a bug"))
+        self.assertTrue(printed.startswith("rutis: websockets: keepalive ping failed\n"), printed)
+        self.assertIn("Traceback", printed)
+        self.assertIn("RuntimeError: a bug", printed)
+        with unittest.mock.patch("sys.stderr", io.StringIO()) as stderr:
+            websocket._LOGGER.log(logging.INFO, "server listening")
+        self.assertEqual(stderr.getvalue(), "")
 
 
 @unittest.skipIf(websocket is None, "needs the websockets package (rutis[network])")
