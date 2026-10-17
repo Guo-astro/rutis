@@ -228,7 +228,6 @@ impl Plugin for AccessPointPlugin {
                 admission,
                 accept: self.accept.clone(),
                 events: self.events.clone(),
-                arrival: AtomicU64::new(0),
                 generation: AtomicU64::new(0),
                 slots: Mutex::default(),
                 stopping,
@@ -236,11 +235,15 @@ impl Plugin for AccessPointPlugin {
             let mut stopped = shared.stopping.clone();
             let task = tokio::spawn(async move {
                 let mut connections = tokio::task::JoinSet::new();
+                // Counted here, in the order of delivery: the connection
+                // tasks may first run in any order.
+                let mut arrival = 0;
                 loop {
                     tokio::select! {
                         channel = delivered.recv() => {
                             let Some(channel) = channel else { break };
-                            connections.spawn(shared.clone().connection(channel));
+                            arrival += 1;
+                            connections.spawn(shared.clone().connection(channel, arrival));
                         }
                         Some(_) = connections.join_next() => {}
                         _ = stopped.wait_for(|stopped| *stopped) => break,
@@ -312,7 +315,6 @@ struct Shared {
     admission: Arc<dyn Admission>,
     accept: Option<Arc<dyn Accept>>,
     events: broadcast::Sender<AccessEvent>,
-    arrival: AtomicU64,
     generation: AtomicU64,
     slots: Mutex<HashMap<PeerId, Slot>>,
     /// Set when the access point stops: connections end and release.
@@ -326,8 +328,7 @@ impl Shared {
     }
 
     /// Admit, accept and keep one delivered connection until it ends.
-    async fn connection(self: Arc<Self>, channel: Channel) {
-        let arrival = self.arrival.fetch_add(1, Ordering::SeqCst) + 1;
+    async fn connection(self: Arc<Self>, channel: Channel, arrival: u64) {
         let mut stopping = self.stopping.clone();
         let Channel {
             sender,

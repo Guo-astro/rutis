@@ -20,7 +20,7 @@
 | workflow | 什么时候运行 | 做什么 |
 | --- | --- | --- |
 | `ci.yml` | 每个 PR；每晚由 `nightly.yml` 调用（`all=true`）；发布门里由 `release.yml` 调用（`all=true`）；手动（任何分支，`all` 默认打开） | 测试和检查（下文） |
-| `nightly.yml` | 每天 UTC 19:00，main 有新提交时；手动（`force`：没有新提交也跑） | 调用 `ci.yml`（全部任务）、`install.yml`（五个平台）、`dylib-windows.yml`、`stress.yml`；失败时开问题单（下文、§7） |
+| `nightly.yml` | 每天 UTC 19:00，main 有新提交时；手动（`force`：没有新提交也跑） | 调用 `ci.yml`（全部任务）、`install.yml`（五个平台）、`dylib-windows.yml`、`stress.yml`；用最新已发布的 Cordis 插件跑一遍 Cordis 检查，只报告（`cordis-latest`，下文）；失败时开问题单（下文、§7） |
 | `dylib-windows.yml` | PR 改了 dylib 相关文件（与 `dylib` 开关相同）；每晚由 `nightly.yml` 调用；发布门里由 `release.yml` 调用（打 `v*` tag 不再单独触发）；手动 | Windows 上的 dylib 测试 |
 | `stress.yml` | 每晚由 `nightly.yml` 调用；手动 | 重复运行内核测试和多进程测试；网络长时间测试；大规模运行内核的 shuttle 模型，以及模糊测试（下文） |
 | `ci-stats.yml` | 每周；手动 | 统计 CI 的耗时和失败 |
@@ -34,8 +34,9 @@
 合并到 main 不运行任何检查：PR 已经按改动跑过相关的任务。PR 上没测到的两类问题由每晚的运行补上：路径表漏了某个依赖，PR 上该跑的任务没跑（Q12.3.3）；两个 PR 各自通过，合在一起才出问题。
 
 - 时间：每天 UTC 19:00（北京时间凌晨 3 点）。第一个任务 `plan` 比较 main 当前的提交和上一次成功的每晚运行的提交，相同就跳过，后面的任务都不跑。
-- 内容：调用 `ci.yml`（`all=true`，全部任务）、`install.yml`（构建这次提交的包，五个平台安装运行；`darwin-arm64` 在自托管 macOS 上，其他格子用 GitHub 的干净机器）、`dylib-windows.yml`、`stress.yml`（默认轮数）。四个同时开始。
+- 内容：调用 `ci.yml`（`all=true`，全部任务）、`install.yml`（构建这次提交的包，五个平台安装运行；`darwin-arm64` 在自托管 macOS 上，其他格子用 GitHub 的干净机器）、`dylib-windows.yml`、`stress.yml`（默认轮数），以及任务 `cordis-latest`。五个同时开始。
 - 失败时 `report` 任务开问题单（§7）。
+- `cordis-latest`（风险 F4，规范 Q6.14.4）：把 `node/baseline` 的 Cordis 和 dsh 插件换成最新已发布的版本（每个包取 `latest` 与 `next` 两个 dist-tag 中较新的一个，`node/baseline/latest.mjs`；锁文件不改、不提交），再跑用到它们的检查：库级挂载与原生 Cordis 对照（`rutis-bridge` 的 `dsh_baseline`）、生成的绑定（`examples/dsh-baseline`，去掉挂载的版本固定）、S6（`tests/e2e/tests/cordis.rs`）。最新版本之间 peer 依赖冲突、装不到一起时，先报告，再用 `--legacy-peer-deps` 安装，检查照常跑。**只报告**：上游发新版不应让 main 的每晚运行失败，所以这个任务不会失败（`continue-on-error`），`report` 不等它，也不开问题单；作业摘要列出每个包锁定的和最新的版本、每项检查的结果，失败的检查在运行页面上显示为警告。维护者看到警告后判断：是 rutis 的问题就登记 issue 修复，是上游的不兼容就在升级锁文件时处理。
 - 手动运行：Actions 页面选 `nightly`，点 “Run workflow”；没有新提交也要跑时勾选 `force`，或者 `gh workflow run nightly.yml -f force=true`。在别的分支上手动运行时，比较的是那个分支上一次成功的每晚运行。
 - 只想跑一次全部 CI 任务（不要安装、dylib-windows、stress）：`gh workflow run ci.yml --ref <分支>`（`all` 默认打开）。
 
@@ -83,7 +84,7 @@
 | --- | --- | --- | --- | --- |
 | `links` | macOS（自托管，§10） | `docs` | — | 检查 Markdown 里的相对链接 |
 | `rust` | Linux | `code` | Linux 上 loopback 方式启动运行时的重跑 | 全部 Rust 测试，每项只跑一次：工作区（除 bridge、loader、`rutis-e2e`）、loader 全部行类型、bridge 全部 feature；内核的 shuttle 模型，1000 次迭代（用 `--cfg rutis_shuttle` 在 `target/shuttle` 里构建，远不到一分钟；`stress.yml` 大规模运行）。用最低支持版本（§9） |
-| `e2e` | Linux | `code` | — | 端到端场景 `cargo test -p rutis-e2e`（`tests/e2e`：真实的 rutis-host 进程、项目目录、各语言的探针插件），与 `rust` 并行，用最低支持版本（§9）。失败时上传 `RUTIS_E2E_DIR`（失败场景的目录和日志）为 artifact `e2e-linux`。安装场景不在这里跑，由 `install.yml` 跑。同样的场景在 macOS 上由 `network-macos` 跑，在 Windows 上由 `runtimes-windows` 跑（只跑不限于 Unix 的场景） |
+| `e2e` | Linux | `code` | 跨版本相遇：`cargo test -p rutis-e2e --test cross_version -- --ignored`（#209），上一个发布版本的运行时包、Go SDK、`rutis-host` 与这次提交相遇；从 npm、PyPI、Go 模块代理下载，装在 `runner.temp`（不进 Rust 缓存），约 1–2 分钟。结果随新版本发布而变（§6 第 5 条），不在 PR 上跑；它只随本项目自己的发布而变，又要在发布门里跑，所以放完整运行（每晚、发布门），不放每周。放进已有的 `e2e`（Node、Python、Bun、Go 都已装好），不新开任务（§6「加一个任务」第 4 条）；完整运行中 `e2e` 不在关键路径上 | 端到端场景 `cargo test -p rutis-e2e`（`tests/e2e`：真实的 rutis-host 进程、项目目录、各语言的探针插件），与 `rust` 并行，用最低支持版本（§9）。失败时上传 `RUTIS_E2E_DIR`（失败场景的目录和日志）为 artifact `e2e-linux`。安装场景不在这里跑，由 `install.yml` 跑。同样的场景在 macOS 上由 `network-macos` 跑，在 Windows 上由 `runtimes-windows` 跑（只跑不限于 Unix 的场景） |
 | `js-py` | macOS（自托管，§10） | `code` | — | `scripts/train.mjs`；Node 包（`node/rutis`、`rutis-runtime`、`rutis-host`）和 rutis-dsh 的 dsh 测试；Python 单元测试 |
 | `lint` | Linux | `code` | — | `cargo fmt --check`；`PURE_TESTS_*` 里的每个名字都有对应的测试文件（§4）；`cargo clippy --workspace --all-targets --all-features -- -D warnings`。与测试并行。没有基线：警告在引入它的 PR 里改掉，升级工具链带来的新 lint 在升级的 PR 里改掉 |
 | `msrv` | macOS（自托管，§10） | 只在 `all` 时（改了 `Cargo.lock`、`Cargo.toml` 等） | 整个任务 | 用声明的 MSRV（`Cargo.toml` 的 `rust-version`）和仓库的 `Cargo.lock` 编译库和二进制（`cargo +<版本> check --workspace`，不含示例项目 `rutis-agent`、`rutis-cli`） |

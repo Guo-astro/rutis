@@ -30,19 +30,22 @@
 //! for an event. A failed scenario keeps its directory, with every host's
 //! output in `logs/`, under [`root`].
 //!
-//! Running: `npm --prefix node/rutis-runtime ci`, a `python3` (3.10 or
-//! newer; the checkout's `python/rutis` is used), then
+//! Running: `npm --prefix node/rutis-runtime ci`, `npm --prefix
+//! node/baseline ci` (the published Cordis plugins of S6), a `python3`
+//! (3.10 or newer; the checkout's `python/rutis` is used), then
 //! `cargo test -p rutis-e2e`, which builds `rutis-host` first (and the
 //! fixture Rust host, `tests/e2e/fixture-host`, for the scenarios that run
 //! it). Settings: `RUTIS_E2E_HOST` (the program to test instead),
 //! `RUTIS_E2E_FIXTURE_HOST` (likewise, the fixture host), `RUTIS_E2E_DIR`
 //! (where scenario directories go), `RUTIS_E2E_TIMEOUT` (the hang guard,
 //! seconds), `RUTIS_E2E_BUILD_TIMEOUT` (the guard of builds and installs,
-//! seconds).
+//! seconds); for the cross-version scenarios, `RUTIS_E2E_PREVIOUS` and
+//! `RUTIS_E2E_CACHE` ([`previous`]).
 
 mod host;
 #[cfg(windows)]
 mod job;
+pub mod previous;
 mod proxy;
 mod residue;
 
