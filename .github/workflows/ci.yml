@@ -90,6 +90,7 @@ jobs:
       go: ${{ steps.select.outputs.go }}
       go-matrix: ${{ steps.select.outputs.go-matrix }}
       repro: ${{ steps.select.outputs.repro }}
+      specs: ${{ steps.select.outputs.specs }}
     steps:
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         if: github.event_name == 'pull_request'
@@ -152,6 +153,9 @@ jobs:
               - tools/test-dylib-repro.sh
               - tools/build-dylib-bundle.sh
               - tools/lib/**
+            # The TLA+ models (their READMEs too: they state the results).
+            specs:
+              - specs/**
       # Anything that is not documentation (every pattern must match).
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         if: github.event_name == 'pull_request'
@@ -176,6 +180,7 @@ jobs:
           BUN: ${{ steps.paths.outputs.bun }}
           GO: ${{ steps.paths.outputs.go }}
           REPRO: ${{ steps.paths.outputs.repro }}
+          SPECS: ${{ steps.paths.outputs.specs }}
           # JSON, as runs-on takes it.
           LINUX_RUNNER: ${{ vars.LINUX_RUNNER || '"ubuntu-24.04"' }}
           MACOS_RUNNER: ${{ vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]' }}
@@ -194,6 +199,7 @@ jobs:
             echo "bun=$(pick "$BUN")"
             echo "repro=$(pick "$REPRO")"
             echo "go=$(pick "$GO")"
+            echo "specs=$(pick "$SPECS")"
             # Pull requests: the oldest supported Bun and Go, on Linux only
             # (the minimum must be verified; network-macos runs the latest).
             # Full runs: also the latest on Linux and the oldest on macOS.
@@ -415,6 +421,11 @@ jobs:
           go-version: oldstable
           cache-dependency-path: go/rutis/go.mod
       - name: cargo test (end-to-end scenarios)
+        env:
+          # S7's tenants created and closed (tests/e2e/tests/embedding.rs):
+          # 20 on pull requests, 3000 in full runs (nightly), about a
+          # minute more.
+          RUTIS_E2E_TENANT_CYCLES: ${{ github.event_name == 'pull_request' && '20' || '3000' }}
         run: cargo test -p rutis-e2e
       # The published releases meeting this code (#209). They come from
       # npm, PyPI and the Go proxy and change as releases are published,
@@ -1434,6 +1445,55 @@ jobs:
           path: ${{ runner.temp }}/hashes
       - run: cmp "$RUNNER_TEMP"/hashes/sdk-hash-a/sdk.sha "$RUNNER_TEMP"/hashes/sdk-hash-b/sdk.sha
 
+  # The TLA+ design models (specs/, quality standard §11.2): TLC runs every
+  # configuration of a model and compares each outcome with its
+  # expected.txt (run.sh). One job per model, in parallel. Pull requests that
+  # change specs/**; full runs (nightly, release gate).
+  specs:
+    needs: changes
+    if: needs.changes.outputs.specs == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        spec: [cross-runtime-sync, remote-lease]
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+        run: bash tools/ci-self-hosted.sh start
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      # The version the models' READMEs pin, checked against its digest.
+      - name: tla2tools.jar v1.7.4
+        run: |
+          curl -sSfLo "$RUNNER_TEMP/tla2tools.jar" \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $RUNNER_TEMP/tla2tools.jar" \
+            | sha256sum -c -
+      - name: TLC, specs/${{ matrix.spec }}
+        env:
+          TLA2TOOLS: ${{ runner.temp }}/tla2tools.jar
+          TLC_OUT: ${{ runner.temp }}/tlc
+        run: bash "specs/${{ matrix.spec }}/run.sh"
+      # The logs hold the counterexamples.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: tlc-${{ matrix.spec }}
+          path: ${{ runner.temp }}/tlc/*.log
+          retention-days: 14
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: bash tools/ci-self-hosted.sh end
+
   # The one check a merge waits for (Q12.5): it always runs, fails when a
   # selected job failed or was cancelled, and counts jobs the change did not
   # select (skipped) as passing.
@@ -1462,6 +1522,7 @@ jobs:
       - sdk-repro-macos
       - sdk-repro-compare
       - sdk-repro-macos-compare
+      - specs
     runs-on: ${{ fromJSON(vars.GATE_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     steps:
       - name: every selected job passed

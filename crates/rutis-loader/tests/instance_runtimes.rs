@@ -8,7 +8,7 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use common::runtimes::{active, repo, title, NoConfig, Probe, Title, Tools};
+use common::runtimes::{active, repo, title, NoConfig, Probe, Title, Tools, COLD};
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory, TypeKey};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, host_key_in, settle, HostDispatch, Value as RpcValue};
@@ -331,6 +331,38 @@ async fn a_removed_instance_leaves_nothing_behind() {
     // The runtimes forgot A's registrations: a new instance takes the same
     // names in them again.
     fixture.create("C").await;
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// Instances created and removed over and over leave no task behind in
+/// the application. Each language row's services are projected from a
+/// projection that watched its runtime's session in a task of its own,
+/// which lasted as long as the session: one task per row ever loaded
+/// (#191).
+/// guarantee: loader/instance-close-leaves-nothing
+#[tokio::test(flavor = "multi_thread")]
+async fn removed_instances_leave_no_tasks_behind() {
+    let fixture = fixture().await;
+    let metrics = tokio::runtime::Handle::current().metrics();
+    // What the first instance starts for good (a runtime's lazily started
+    // parts) is in the baseline.
+    let first = fixture.create("first").await;
+    fixture.loader.remove_instance(first.plugin).await.unwrap();
+    let baseline = metrics.num_alive_tasks();
+    for round in 0..20 {
+        let instance = fixture.create(&format!("round {round}")).await;
+        fixture
+            .loader
+            .remove_instance(instance.plugin)
+            .await
+            .unwrap();
+    }
+    COLD.eventually_with(
+        || (metrics.num_alive_tasks() <= baseline).then_some(()),
+        "live tasks back to the baseline",
+        || format!("{} live, baseline {baseline}", metrics.num_alive_tasks()),
+    )
+    .await;
     fixture.root.shutdown().await.unwrap();
 }
 

@@ -20,13 +20,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rutis::{BoxFuture, Ctx};
-use rutis_bridge::channel::{ConnectError, PeerId};
-use rutis_bridge::session::{Connection, Error, Value};
+use rutis_bridge::channel::{Channel, ConnectError, PeerId};
+use rutis_bridge::session::{Connection, Dispatch, Endpoint, Error, Format, Reply, Value};
 use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
 use rutis_bridge::{
     peer_key, protocol, Accept, Accepted, AccessEvent, AccessPointConfig, AccessPointPlugin,
     AdmissionPlugin, Credential, Dial, Identity, IdentityPlugin, LinkConfig, LinkPlugin, LinkState,
-    Peer, Release, Retry, Revocable, Revocations, SharedToken, StaticIdentity, Transport,
+    Peer, Registration, Release, Retry, Revocable, Revocations, SharedToken, StaticIdentity,
+    Transport,
 };
 use rutis_test_support::{eventually, within, HANG_GUARD};
 use serde_json::json;
@@ -521,4 +522,231 @@ async fn revoking_the_shared_token_closes_every_runtime_and_nothing_else() {
         peer(&main.root, "mac").unwrap().generation(),
         mac_at_main.generation()
     );
+}
+
+/// A raw dial of `address` with `token`: the channel, before any hello.
+async fn raw_channel(address: &str, token: &str) -> Channel {
+    let identity: Arc<dyn Identity> = Arc::new(
+        StaticIdentity::new(id("someone")).present(id("main"), Credential::Bearer(token.into())),
+    );
+    let dial = Dial::address(address.to_owned())
+        .peer(id("main"))
+        .identity(identity)
+        .protocol(protocol());
+    let client = WebSocketPlugin::new(Config::new()).unwrap();
+    let root = Ctx::root().unwrap();
+    (&root.plugin(client.clone())).await.unwrap();
+    client.transport().unwrap().dial(&dial).await.unwrap()
+}
+
+/// Answers nothing: a far end that only greets.
+struct Quiet;
+impl Dispatch for Quiet {
+    fn invoke(&self, _: &Connection, _: &str, _: &str, _: Value) -> Reply {
+        Ok(Value::Undefined)
+    }
+}
+
+/// Greet on `channel` as `name`, expecting `expected`.
+fn greet(channel: Channel, name: &str, expected: &str) -> Connection {
+    Connection::open_with(
+        channel,
+        Arc::new(Quiet),
+        Format::Endpoint(Endpoint::rust(id(name)).expect(id(expected))),
+    )
+    .unwrap()
+}
+
+/// Every state `states` takes from now on.
+fn record(mut states: watch::Receiver<LinkState>) -> Arc<Mutex<Vec<LinkState>>> {
+    let seen = Arc::new(Mutex::new(vec![states.borrow_and_update().clone()]));
+    let log = seen.clone();
+    tokio::spawn(async move {
+        while states.changed().await.is_ok() {
+            let state = states.borrow_and_update().clone();
+            log.lock().unwrap().push(state);
+        }
+    });
+    seen
+}
+
+/// A far end revoked after main dialed it, before it greeted: main's
+/// dialing link refuses it before providing the peer, and waits as after
+/// an authentication failure. Found by the TLA+ model of remote leases
+/// (`specs/remote-lease`, configuration `lease-before-fix`, #210): the
+/// link used to provide the peer first and cut the session after, so
+/// whatever depends on the peer could start on a revoked far end.
+/// guarantee: bridge/revocation-refuses-reconnects
+#[tokio::test(flavor = "multi_thread")]
+async fn a_far_end_revoked_while_it_greets_never_becomes_a_peer() {
+    // `far` listens; its registration hands each channel to the test.
+    let far = Ctx::root().unwrap();
+    let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
+        "public",
+        "127.0.0.1:0".parse().unwrap(),
+        id("far"),
+    )))
+    .unwrap();
+    let handle = websocket.clone();
+    (&far.plugin(websocket)).await.unwrap();
+    let transport = handle.transport().unwrap();
+    let address = format!("ws://{}/rutis", transport.local_addr("public").unwrap());
+    let (sender, mut channels) = tokio::sync::mpsc::unbounded_channel::<Channel>();
+    let _registered = transport
+        .register(Registration {
+            listener: "public".into(),
+            peer: id("main"),
+            identity: Arc::new(
+                StaticIdentity::new(id("far")).accept_token("main-token", id("main")),
+            ),
+            protocol: protocol(),
+            deliver: Box::new(move |channel| {
+                let _ = sender.send(channel);
+            }),
+        })
+        .unwrap();
+
+    // `main` dials it with an identity that can revoke it.
+    let main = Ctx::root().unwrap();
+    (&main.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
+        .await
+        .unwrap();
+    let revocations = Revocations::new();
+    (&main.plugin(IdentityPlugin::new(
+        "main",
+        Revocable::new(
+            StaticIdentity::new(id("main"))
+                .present(id("far"), Credential::Bearer("main-token".into())),
+            revocations.clone(),
+        ),
+    )))
+        .await
+        .unwrap();
+    let link = LinkPlugin::new(LinkConfig::dial(id("far"), "websocket", "main", &address));
+    let states = link.state();
+    let seen = record(link.state());
+    (&main.plugin(link)).await.unwrap();
+
+    let channel = within("main's dial", channels.recv()).await.unwrap();
+    revocations.revoke(&id("far"));
+    let session = greet(channel, "far", "main");
+    within("the session to end", session.closed()).await;
+    let waiting = state(&states, "main to wait", auth_rejected).await;
+    assert!(
+        matches!(&waiting, LinkState::Waiting { error, .. } if error == "far: identity revoked"),
+        "{waiting:?}"
+    );
+    assert!(peer(&main, "far").is_none());
+    let seen = seen.lock().unwrap().clone();
+    assert!(
+        !seen
+            .iter()
+            .any(|state| matches!(state, LinkState::Ready { .. })),
+        "the revoked far end never became ready: {seen:?}"
+    );
+}
+
+/// Records the ids it accepts; releasing the first connection waits for
+/// `gate`, after telling `releasing`.
+#[derive(Clone)]
+struct Gated {
+    accepted: Arc<Mutex<Vec<PeerId>>>,
+    releasing: tokio::sync::mpsc::UnboundedSender<()>,
+    gate: Arc<tokio::sync::Notify>,
+}
+
+impl Accept for Gated {
+    fn accept(&self, connection: Accepted) -> BoxFuture<'_, Result<Release, String>> {
+        Box::pin(async move {
+            let first = {
+                let mut accepted = self.accepted.lock().unwrap();
+                accepted.push(connection.id().clone());
+                accepted.len() == 1
+            };
+            let releasing = self.releasing.clone();
+            let gate = self.gate.clone();
+            let release: Release = Box::new(move || {
+                Box::pin(async move {
+                    if first {
+                        let _ = releasing.send(());
+                        gate.notified().await;
+                    }
+                })
+            });
+            Ok(release)
+        })
+    }
+}
+
+/// A runtime id revoked after its newer connection was admitted, while
+/// that connection waits for the old one's release (a takeover): the
+/// access point rejects it (4003) instead of accepting it, so nothing is
+/// set up for a revoked id. Found by the TLA+ model of the access point
+/// (`specs/remote-lease`, configuration `access-before-fix`, #210): the
+/// access point used to accept it first and cut it after.
+/// guarantee: bridge/revocation-refuses-reconnects
+#[tokio::test(flavor = "multi_thread")]
+async fn an_id_revoked_while_its_connection_takes_over_is_not_accepted() {
+    let root = Ctx::root().unwrap();
+    let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
+        "public",
+        "127.0.0.1:0".parse().unwrap(),
+        id("main"),
+    )))
+    .unwrap();
+    let handle = websocket.clone();
+    (&root.plugin(websocket)).await.unwrap();
+    let transport = handle.transport().unwrap();
+    let address = format!("ws://{}/rutis", transport.local_addr("public").unwrap());
+    let runtimes = Revocations::new();
+    (&root.plugin(AdmissionPlugin::new(
+        "phone",
+        Revocable::new(SharedToken::new(id("main"), "shared"), runtimes.clone()),
+    )))
+        .await
+        .unwrap();
+    let (releasing, mut released) = tokio::sync::mpsc::unbounded_channel();
+    let gated = Gated {
+        accepted: Arc::default(),
+        releasing,
+        gate: Arc::default(),
+    };
+    let access = AccessPointPlugin::new(
+        AccessPointConfig::new(id("phone"), "websocket", "phone", "public").handshake(HANG_GUARD),
+    )
+    .accept(gated.clone());
+    let mut events = access.events();
+    (&root.plugin(access)).await.unwrap();
+
+    let first = greet(raw_channel(&address, "shared").await, "pixel", "main");
+    within("pixel's first session", first.ready())
+        .await
+        .unwrap();
+    assert!(matches!(
+        within("pixel to connect", events.recv()).await.unwrap(),
+        AccessEvent::Connected { .. }
+    ));
+    // A newer connection of pixel takes over; the old one's release hangs.
+    let second = greet(raw_channel(&address, "shared").await, "pixel", "main");
+    within("the old connection's release", released.recv()).await;
+    runtimes.revoke(&id("pixel"));
+    gated.gate.notify_one();
+
+    within("the newer connection to end", second.closed()).await;
+    let event = loop {
+        match within("the newer connection's outcome", events.recv())
+            .await
+            .unwrap()
+        {
+            AccessEvent::Replaced { .. } => continue,
+            event => break event,
+        }
+    };
+    assert_eq!(
+        event,
+        AccessEvent::Rejected {
+            reason: "not accepted here".into()
+        }
+    );
+    assert_eq!(*gated.accepted.lock().unwrap(), [id("pixel")]);
 }

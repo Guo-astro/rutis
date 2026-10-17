@@ -1,0 +1,22 @@
+# configuration  expected TLC outcome (see README.md)
+lease-healthy ok
+lease-faults ok
+lease-before-fix violated:RevokedStaysOut
+lease-mut-start-before-clean violated:OneLease
+lease-mut-read-old violated:OldCommandsStayOld
+lease-mut-stop-keeps-retry violated:StoppedStaysDown
+lease-mut-late-hello violated:ReadyIsCurrent
+lease-mut-wait-for-old violated:liveness
+access-healthy-same ok
+access-healthy-distinct ok
+access-revoke-same ok
+access-revoke-distinct ok
+access-registration ok
+access-lose ok
+access-all ok
+access-before-fix violated:RevokedStaysOut
+access-mut-accept-before-release violated:OneInstancePerId
+access-mut-route-by-id violated:OldCallsStayOld
+access-mut-no-gen-check violated:NoStaleHandOver
+access-mut-revoke-cuts-all violated:RevocationScoped
+access-mut-stop-keeps-retry violated:StoppedStaysDown

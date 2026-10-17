@@ -43,6 +43,11 @@ struct State {
     /// withdrawals reported until then, and closes when it is done.
     closing: bool,
     slots: HashMap<String, Slot>,
+    /// Ends the task that watches the process's connection: dropped when
+    /// the projection closes (or goes), so the task does not outlive it.
+    /// Without it every row ever loaded left a task waiting for its
+    /// runtime's session to end (#191).
+    watching: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// Declared before launching, attached once the mounting plugin has a
@@ -128,6 +133,7 @@ impl Projection {
 
     /// Publish the current handles from the mounting plugin's own context.
     pub fn attach(&self, ctx: &Ctx, process: Arc<Process>) -> Result<(), CordisError> {
+        let (watching, closed) = tokio::sync::oneshot::channel::<()>();
         {
             let mut state = self.state.lock().unwrap();
             for (name, slot) in state.slots.iter_mut() {
@@ -135,13 +141,18 @@ impl Projection {
             }
             state.target = Some((ctx.clone(), process.clone()));
             state.runtime = Some(tokio::runtime::Handle::current());
+            state.watching = Some(watching);
         }
         // A Node process that goes away leaves every slot unavailable: the
         // services are withdrawn and native gating stops their consumers.
+        // The watch ends with the projection.
         let connection = process.connection().clone();
         let me = self.me.clone();
         tokio::spawn(async move {
-            connection.closed().await;
+            tokio::select! {
+                _ = connection.closed() => {}
+                _ = closed => return,
+            }
             if let Some(me) = me.upgrade() {
                 me.disconnected();
             }
@@ -179,6 +190,7 @@ impl Projection {
             {
                 let mut state = self.state.lock().unwrap();
                 if !state.applying {
+                    state.watching = None;
                     break (state.target.take(), std::mem::take(&mut state.slots));
                 }
             }
@@ -216,6 +228,7 @@ impl Projection {
                 return;
             }
             state.target = None;
+            state.watching = None;
             std::mem::take(&mut state.slots)
         };
         drop(slots);
@@ -267,6 +280,7 @@ impl Projection {
                     state.applying = false;
                     if std::mem::take(&mut state.closing) {
                         state.target = None;
+                        state.watching = None;
                         closed = std::mem::take(&mut state.slots);
                     }
                 }

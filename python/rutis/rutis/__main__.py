@@ -170,7 +170,9 @@ def give_up_after(seconds: float) -> None:
 async def serve(spec: str, endpoint: dict) -> None:
     """A runtime that stays up and listens: it serves one controller at a
     time, a newer connection taking over, and cleans each lease up when it
-    ends. A new session is greeted only once the old lease is gone."""
+    ends. A new session is greeted only once the old lease is gone. It
+    stops on SIGTERM and Ctrl-C: the rows go while the controller still
+    hears from this end, the connection and the listener close."""
     from . import websocket
     from .peer import ENDPOINT_PROTOCOL
 
@@ -182,11 +184,26 @@ async def serve(spec: str, endpoint: dict) -> None:
         os.environ.get("RUTIS_CERT"),
         os.environ.get("RUTIS_KEY"),
     )
+    stopping = asyncio.Event()
+    stop_on_signals(stopping)
+    stopped = asyncio.ensure_future(stopping.wait())
     current: Session | None = None
     accepting = asyncio.ensure_future(asyncio.to_thread(listener.accept))
     while True:
-        waiting = {accepting} | ({current.peer.closed} if current else set())
+        waiting = {accepting, stopped} | ({current.peer.closed} if current else set())
         done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+        if stopped in done:
+            if current is not None:
+                await current.stop()
+            # Closing the listener ends the thread blocked in accept(),
+            # which the event loop waits for before the process exits.
+            await asyncio.to_thread(listener.close)
+            try:
+                late = await accepting
+            except (ConnectionError, OSError):
+                return
+            late.close("the runtime stopped")
+            return
         if accepting in done:
             try:
                 channel = accepting.result()

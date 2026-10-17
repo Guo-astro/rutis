@@ -312,10 +312,43 @@ pub(crate) fn search_path(
 }
 
 impl Imports {
+    /// Stop following the slots `ids` (a row's, unloaded): their observers,
+    /// each with the service's name and the slot's last version, to tell
+    /// them the services are gone. The slots go too: ids in an instance's
+    /// scope are never exported again, and a row loaded again starts new
+    /// slots; without this, every row ever unloaded left its slots here
+    /// (#191).
+    fn forget(
+        &self,
+        ids: impl IntoIterator<Item = String>,
+    ) -> Vec<(String, Arc<dyn ServiceEvents>, u64)> {
+        let observers: Vec<_> = {
+            let mut exported = self.exported.lock().unwrap();
+            ids.into_iter()
+                .filter_map(|id| exported.remove(&id).map(|found| (id, found)))
+                .collect()
+        };
+        let mut slots = self.slots.lock().unwrap();
+        observers
+            .into_iter()
+            .map(|(id, (name, observer))| {
+                let version = slots.remove(&id).map_or(0, |(_, version)| version);
+                (name, observer, version)
+            })
+            .collect()
+    }
+
     /// The slot `id` now holds `handle`.
     fn update(&self, id: String, handle: Option<String>, version: u64) {
+        // A withdrawal of a slot nobody follows or knows: a row's service
+        // withdrawn after its row was forgotten (`forget_exports`), which
+        // must not leave an entry behind for every row unloaded (#191).
+        let followed = self.events.is_some() || self.exported.lock().unwrap().contains_key(&id);
         {
             let mut slots = self.slots.lock().unwrap();
+            if handle.is_none() && !followed && !slots.contains_key(&id) {
+                return;
+            }
             let entry = slots.entry(id.clone()).or_insert((None, 0));
             if version <= entry.1 {
                 return;
@@ -868,21 +901,7 @@ impl Process {
     /// finds no observer and the service stays projected.
     fn forget_exports(&self, key: &str) {
         let ids = self.exports.lock().unwrap().remove(key);
-        let observers: Vec<_> = {
-            let mut exported = self.imports.exported.lock().unwrap();
-            ids.into_iter()
-                .flatten()
-                .filter_map(|id| exported.remove(&id).map(|found| (id, found)))
-                .collect()
-        };
-        for (id, (name, observer)) in observers {
-            let version = self
-                .imports
-                .slots
-                .lock()
-                .unwrap()
-                .get(&id)
-                .map_or(0, |(_, version)| *version);
+        for (name, observer, version) in self.imports.forget(ids.into_iter().flatten()) {
             observer.changed(&name, None, version);
         }
     }
@@ -1184,5 +1203,75 @@ impl Drop for Process {
         if self.routed.is_none() {
             self.peer.close(Error::Transport("process dropped".into()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Ignore;
+
+    impl ServiceEvents for Ignore {
+        fn changed(&self, _: &str, _: Option<String>, _: u64) {}
+    }
+
+    fn empty() -> Imports {
+        Imports {
+            slots: Slots::default(),
+            events: None,
+            exported: Mutex::default(),
+            hosts: Mutex::default(),
+            forwarded: None,
+            ended: Mutex::default(),
+        }
+    }
+
+    /// A row's slots go when it is forgotten, and a withdrawal arriving
+    /// after that leaves nothing either: rows loaded and unloaded over and
+    /// over (instances created and closed) do not pile up slots (#191).
+    #[test]
+    fn forgotten_slots_leave_nothing_behind() {
+        let imports = empty();
+        for instance in 0..100 {
+            let label = format!("rutis-loader/instance/{instance}");
+            let id = scoped_id("greeter", Some(&label));
+            imports
+                .exported
+                .lock()
+                .unwrap()
+                .insert(id.clone(), ("greeter".into(), Arc::new(Ignore)));
+            imports.update(id.clone(), Some(format!("{id}#1")), 2 * instance + 1);
+            let forgotten = imports.forget([id.clone()]);
+            assert_eq!(forgotten.len(), 1);
+            assert_eq!(forgotten[0].2, 2 * instance + 1, "the slot's last version");
+            // The runtime's withdrawal, late.
+            imports.update(id, None, 2 * instance + 2);
+        }
+        assert!(imports.slots.lock().unwrap().is_empty());
+        assert!(imports.exported.lock().unwrap().is_empty());
+    }
+
+    /// A slot still followed keeps its withdrawal (and its version), and so
+    /// does a mount's, which an observer follows as a whole.
+    #[test]
+    fn followed_slots_keep_their_withdrawals() {
+        let imports = empty();
+        imports
+            .exported
+            .lock()
+            .unwrap()
+            .insert("greeter".into(), ("greeter".into(), Arc::new(Ignore)));
+        imports.update("greeter".into(), None, 3);
+        // An older publication arriving late does not win.
+        imports.update("greeter".into(), Some("greeter".into()), 2);
+        assert_eq!(imports.slots.lock().unwrap()["greeter"], (None, 3));
+
+        let mount = Imports {
+            events: Some(Arc::new(Ignore)),
+            ..empty()
+        };
+        mount.update("counter".into(), None, 1);
+        assert_eq!(mount.slots.lock().unwrap()["counter"], (None, 1));
     }
 }
