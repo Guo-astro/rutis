@@ -17,6 +17,10 @@
 //! share a listener as long as no credential is accepted by two of them
 //! (such a connection is refused as ambiguous, 403) and no linked peer
 //! there has the access point's name (the second registration fails).
+//!
+//! An admission that revokes ([`Revocable`](crate::Revocable)) closes the
+//! connection of a revoked id, or all of them when everything is revoked;
+//! it then rejects the id (close code 4003), or the credential (403).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -282,6 +286,13 @@ impl Identity for Routing {
     }
 }
 
+/// Why an accepted connection ends.
+enum Ending {
+    Closed,
+    Stopped,
+    Revoked,
+}
+
 /// The current connection of one id.
 struct Current {
     /// When it was delivered: of two connections of an id, the one that
@@ -438,9 +449,17 @@ impl Shared {
             generation,
         });
 
-        let stopped = tokio::select! {
-            _ = session.closed() => false,
-            _ = stopping.wait_for(|stopped| *stopped) => true,
+        // Revoking the id (or everything the admission accepts) closes this
+        // connection alone (#273); its later connections are refused by
+        // the admission.
+        let revoked: BoxFuture<'static, ()> = match self.admission.revocations() {
+            Some(revocations) => Box::pin(revocations.revoked(&id)),
+            None => Box::pin(std::future::pending()),
+        };
+        let ending = tokio::select! {
+            _ = session.closed() => Ending::Closed,
+            _ = stopping.wait_for(|stopped| *stopped) => Ending::Stopped,
+            () = revoked => Ending::Revoked,
         };
         let mut current = slot.lock().await;
         // Unless a newer connection took over, and released this one.
@@ -449,12 +468,18 @@ impl Shared {
             .is_some_and(|current| current.generation == generation)
         {
             let ended = current.take().expect("checked");
-            let reason = match stopped {
-                true => "the access point stopped".to_owned(),
-                false => session
+            let reason = match ending {
+                Ending::Stopped => "the access point stopped".to_owned(),
+                Ending::Revoked => format!("{id}: identity revoked"),
+                Ending::Closed => session
                     .close_reason()
                     .map_or_else(|| "the session ended".to_owned(), |error| error.to_string()),
             };
+            if let Ending::Revoked = ending {
+                // Closed before the release: calls in flight fail at once,
+                // as when the network drops.
+                session.close(Error::Transport(reason.clone()));
+            }
             ended.live.end(&reason).await;
             self.emit(AccessEvent::Disconnected {
                 id: id.clone(),

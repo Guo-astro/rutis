@@ -272,6 +272,8 @@ Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主�
 | `RUTIS_CA` | 额外信任的 CA 证书（PEM），用于 `wss://` 连接 |
 | `RUTIS_CERT` / `RUTIS_KEY` | 监听器的证书和私钥（`listen` 里没有写时） |
 
+环境变量在进程外改不了，所以这些 token 运行中不能吊销：要切断一个对端或连进来的运行时，换掉 token 后重启 `rutis-host`，重启会断开所有连接。运行中只切断一个身份要用身份层的吊销钩子，见 [连接节点](nodes.md#安全)。
+
 ## 部署
 
 把 `rutis.json`、Node 项目（装好插件和 `@arcships/rutis-runtime`）、Python 环境（装好 `rutis` 和插件）、Go 插件目录（对应平台的二进制）放在一起，用进程管理器（systemd 等）运行 `rutis-host run /srv/app/rutis.json`。`rutis-host` 结束时，它启动的运行时进程随之结束。
