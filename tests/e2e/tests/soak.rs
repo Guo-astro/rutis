@@ -297,14 +297,21 @@ impl Runtime {
     }
 
     /// Whether the process with this command line (Unix) or program
-    /// (Windows) is this runtime.
+    /// (Windows) is this runtime. Not the esbuild service the Node
+    /// runtime's TypeScript loader may run (its program is under
+    /// `node/rutis-runtime/node_modules`): it ends with the runtime, so
+    /// killing it too would race with that.
     fn runs(self, command: &str) -> bool {
         let command = command.to_lowercase();
         match self {
             Runtime::Py => command.contains("python"),
             Runtime::Bun => command.contains("bun"),
             Runtime::Node if cfg!(windows) => command.ends_with("node.exe"),
-            Runtime::Node => command.contains("rutis-runtime") && !command.contains("bun"),
+            Runtime::Node => {
+                command.contains("rutis-runtime")
+                    && !command.contains("bun")
+                    && !command.contains("esbuild")
+            }
         }
     }
 }
