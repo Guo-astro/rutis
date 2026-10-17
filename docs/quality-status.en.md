@@ -16,7 +16,7 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 | Clause | Content | Status | Current state and gaps |
 | --- | --- | --- | --- |
 | Q3.1 | Core guarantees verified at the highest level | Partly | "Nothing left behind" and "explicit failure on interruption" are now verified as a black box on all three platforms: E2E scenarios end with residue checks (#221, #277); S3, S5 and `fault_links.rs` verify that interrupted calls fail explicitly and are not retried (#317, #322, #285). Missing: `core/D22`, `core/D28` and `boundary/5.8` are "partly verified" in the register; on Unix a runtime whose event loop is not empty does not exit after its host is `kill -9`ed (B3); long runs are not verified (#192) |
-| Q3.1, Q8.3 | Core guarantees verified in two independent ways | Partly | The Python SDK's session tests now match Node's (release counting, grant rollback, protocol version, #288); cross-runtime synchronous calls have a TLA+ model (#222). Nobody has checked, guarantee by guarantee, that each core guarantee has two independent verifications (the register has a single "verification" column) |
+| Q3.1, Q8.3 | Core guarantees verified in two independent ways | Partly | The Python SDK's session tests now match Node's (release counting, grant rollback, protocol version, #288); cross-runtime synchronous calls (#222) and remote leases with revocation (#210) have TLA+ models. Nobody has checked, guarantee by guarantee, that each core guarantee has two independent verifications (the register has a single "verification" column) |
 | Q3.4 | Behavior explicitly not guaranteed is pinned | Partly | D29 (events not filtered by isolate) has a regression test (`event_order.rs`, #280); the limits on values are registered as not guaranteed and tested (`bridge/value-limits`, #296). D22 (no dependency cycle detection) is still not pinned by a test |
 | Q4.5 | Risk assessment recorded | Partly | §4 of this document is updated at the end of each step (this time 2026-10-12); design documents do not state risks (Q9.1.1) |
 | Q5.1.2 | Results are checked | Partly | The two known places are fixed: `typed_plugin.rs` asserts what the ErrorSink receives (#286); D24 in `contract.rs` asserts the arrival order and no longer sorts first (#280). Other tests have not been reviewed systematically |
@@ -52,7 +52,7 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 | Q6.10 | Loader editable layers, dsh profile files | Partly | Atomic writes and conflict replay implemented; the dsh user layer has samples per release (#284). Multi-writer tests not checked item by item (Q5.5.2) |
 | Q6.11 | Cordis binding generation | Partly | The generator has unit tests; real plugin baselines are compiled and called; new external releases are not checked regularly (F4, #190) |
 | Q6.12 | dylib loading | Met | Linux and macOS run on PRs that change dylib code and nightly; Windows (`dylib-windows.yml`) also runs on dylib changes and nightly (ci.md §2). Reconciling the check before loading is under Q5.3.6 |
-| Q6.13 | Node links, remote runtimes, leases | Partly | Library tests complete; two independent host processes verified over loopback (S5, `nodes.rs`, #322, #336): a call in flight during a network cut fails once, the link comes back, the far end restarted gives a new lease, a changed token is refused, a certificate for another name or an expired one is refused. Missing: real network conditions (E12, #341); revoking credentials while running (#273); the link's actual retry timing and the reset after 60 s stable (E3); model checking of leases and reconnection (E4, E5, #210) |
+| Q6.13 | Node links, remote runtimes, leases | Partly | Library tests complete; two independent host processes verified over loopback (S5, `nodes.rs`, #322, #336): a call in flight during a network cut fails once, the link comes back, the far end restarted gives a new lease, a changed token is refused, a certificate for another name or an expired one is refused. Missing: real network conditions (E12, #341); revoking credentials while running (#273); the link's actual retry timing and the reset after 60 s stable (E3). Leases, takeover, reconnection and revocation have TLA+ models (E4, E5, #210) |
 | Q6.14 | Cordis mounts and Cordis nodes | Partly | Differential verification against native Cordis; boundary rules 3, 4, 5, 7 have cross-process tests (`boundary_rules.rs` and others, #283), and the silent degradation they found now fails explicitly (#281, #282 → #337). Missing: a `serial` across the boundary running as serial on the far side needs a protocol change (#340); `boundary/5.8` partly verified |
 | Q6.15 | npm, PyPI, binaries, crates.io | Partly | `install.yml`: npm, PyPI and release binaries installed and run in a clean directory, on five platforms nightly, linux-x64 on PRs, five platforms before a release; after a release the guides' examples run with the registry packages (#193 → #254, #266 → #324). Missing: crates.io and the Go module have no installation check; marking the Python guide's examples (#266 (d), waits for #259) |
 | Q6.16 | `rutis-dev` dev channel | Partly | Local socket and `0600` implemented; "absent from production builds" not verified |
@@ -161,7 +161,7 @@ Added in 0.9 and 0.10 (as of `f8ce69b`):
 | `rutis-host` | 8 files under `tests/`: signals, configuration, `check`, common error output, project templates, persisted samples, link state, whole output lines | #216, #217, #284, #336, #339 |
 | Test tools and real runtimes | One expectations file, `weather.expected.json`: real runtimes through `session_matrix.rs`, one test each for the Node and Python test tools | #298 |
 | Persisted samples | `tests/fixtures/persisted/`: 0.8.0, 0.9.0, 0.9.1, `rejected/` | #284 |
-| TLA+ | `specs/cross-runtime-sync/`: cross-runtime synchronous calls and the deadlock policy, run by hand with `run.sh` | #222 |
+| TLA+ | `specs/cross-runtime-sync/`: cross-runtime synchronous calls and the deadlock policy; `specs/remote-lease/`: remote lease takeover, reconnection and revocation. CI's `specs` job runs them on pull requests that change `specs/**` and nightly | #222, #210 |
 | Guarantee register | [guarantees.en.md](guarantees.en.md): `core/`, `boundary/`, `instance/`, `bridge/`, `host/`, `dsh/`, `sdk/` families; about 100 `guarantee: <id>` test comments | #276, #310 |
 
 CI: `ci.yml` (PRs select jobs by change, nightly runs everything; full Linux run on the minimum versions, E2E, lint, platform-specific tests on macOS and Windows, Bun and Go runtimes, dylib, packaging, semver, MSRV, feature combinations, reproducibility); `install.yml` (installation smoke tests); `nightly.yml` (calls the three above and `stress.yml` every night, opens an issue on failure); `stress.yml` (nightly: core rounds, multi-process test rounds, two 600 s soaks); `dylib-windows.yml`; `deps.yml` and `ci-stats.yml` (weekly). Details in [ci.md](ci.en.md). CI has no fuzzing, model checking, actionlint, license checks, or versions meeting across releases.
@@ -341,8 +341,8 @@ Each scenario first says what it is, which parts it goes through and under what 
 | E1 | When the network drops, calls in flight report success, or are retried automatically so side effects run twice | Faults | High | Medium | P0 | FI (`fault::drop_and_close` after frame N, the far end counts side effects) | PR | Yes (`fault_links.rs` #285; between two processes in S5, #322) |
 | E2 | A half-open connection is not found within 30 s | Faults | Medium | Medium | P1 | FI (`half_open` with a paused clock) | PR | Yes |
 | E3 | Reconnection backoff differs from the docs (from 0.5 s, capped at 30 s, ±20%, reset after 60 s stable; 30 s after rejected credentials; stop on incompatibility) | Correctness | Medium | Medium | P1 | U (paused clock, exact intervals asserted) | PR | Partly: a unit test in `link.rs` covers the backoff sequence (from 0.5 s, 30 s cap, ±20%, reset); the link's actual retry timing, the reset after 60 s stable and the 30 s after rejected credentials are untested |
-| E4 | During takeover of a remote runtime, old and new leases coexist; late instructions of the old session act on the new lease | Correctness | High | Low | P1 | TLA (design); K (`leases.rs`) | Design, PR | Partly: no TLA (#210) |
-| E5 | Connections still possible after credentials are revoked; a registration revoked mid-handshake still lets the old handshake hand over | Security | High | Low | P1 | K (`link.rs`); TLA | PR | Partly: no TLA (#210); revoking while running has the identity layer's hook and library tests (#273, `bridge/revocation-closes-only-its-connections`, `bridge/revocation-refuses-reconnects`); rutis-host's environment tokens cannot be revoked while running, and S5 has no such step |
+| E4 | During takeover of a remote runtime, old and new leases coexist; late instructions of the old session act on the new lease | Correctness | High | Low | P1 | TLA (design); K (`leases.rs`) | Design, PR | Yes: TLA+ (`specs/remote-lease/`, #210) checks at most one lease during takeover, at most one instance per id at an access point, and that an old session's commands never act on a new lease; K (`leases.rs`) |
+| E5 | Connections still possible after credentials are revoked; a registration revoked mid-handshake still lets the old handshake hand over | Security | High | Low | P1 | K (`link.rs`); TLA | PR | Partly: TLA+ (#210) checks that an old handshake is not handed over after its registration is revoked, that a revoked identity never gets a session again and that revocation closes only its own connections; it found two places where revoking during a handshake still set a session up, fixed (`revocation.rs`); revoking while running has the identity layer's hook and library tests (#273, `bridge/revocation-closes-only-its-connections`, `bridge/revocation-refuses-reconnects`); rutis-host's environment tokens cannot be revoked while running, and S5 has no such step |
 | E6 | TLS check holes: still connects with an expired certificate, wrong CA, hostname mismatch | Security | High | Medium | P0 | U (three negative cases, Rust and Python each) | PR | Yes (#297; S5 step 6, #322) |
 | E7 | A malformed WebSocket upgrade request crashes the listener | Security, faults | High | Medium | P0 | FZ | Nightly | Yes: FZ `websocket_upgrade` (tungstenite's handshake and the listener's reading of path, bearer token and subprotocols), 20 minutes nightly (#179 → #425) |
 | E8 | Rejection categories differ between implementations (Python↔Rust) | Compatibility | Medium | Medium | P1 | K (a Python column in `websocket_cross.rs`) | PR | Yes (#288) |
@@ -483,7 +483,7 @@ The controls used by the P0 and P1 risks in §4, merged into what needs building
 | **X: nightly baseline with the latest Cordis plugins** | F4 | No | Nightly install of the latest versions, run the baseline, report only (#190) |
 | **FZ** | P2, E7, B5 | Yes: session frames, local line framing, WebSocket upgrade requests (`fuzz/`, nightly, #179 → #425) | Configuration files (B5, low priority) |
 | **SH** | K2 | Yes: the three places that failed before, TransitionTask lost wakeup, the `post_join` race, exactly-once concurrent dispose (small on PRs, large nightly, #179 → #425) | — |
-| **TLA** | P10, C6, E4, E5 | Spec 1 done (#222) | Spec 2 (#210); §7 |
+| **TLA** | P10, C6, E4, E5 | Spec 1 (#222) and Spec 2 (#210) done; CI's `specs` job | §7 |
 | **SK: host-level soak** | L1, L3, D3, A5, H4 | Bridge level only | Host-process soak with random operations, seeded (#192) |
 | **G: output snapshots** | A6, A7, B6, B9, E13, F7, H3 | Common `rutis-host` errors, `check`, link state (#217, #336) | Status output as a whole; SDK errors; H3 waits for design |
 | **J3: persisted format samples** | J3 | Yes (#284) | Add a sample with each release (`docs/release.md`) |
@@ -521,7 +521,13 @@ The scope as it was planned is kept below for the record.
 
 **Output**: the chosen policy written back into multilanguage design §9; counterexamples turned into tests in `rpc_callbacks.rs`.
 
-### 7.2 Spec 2: remote lease takeover, link reconnection and registration revocation (E4, E5) — step three (#210)
+### 7.2 Spec 2: remote lease takeover, link reconnection and registration revocation (E4, E5) — done
+
+**Result** (#210 → #PR, 2026-10-17): the models are in [`specs/remote-lease/`](../specs/remote-lease/README.en.md), two of them: `RemoteLease.tla` (a listening remote runtime and two dialing controller links) and `AccessPoint.tla` (the access point that landed after the issue: registration generations and hand-over, self-declared ids, takeover by the same id, the access point stopping and starting again, revoking one id or the shared token). Invariants checked: at most one active lease per runtime, at most one instance per id at an access point; commands (calls) of an old session never act on a new lease (instance); after a registration is revoked an old handshake never completes hand-over; a stopped link (dialer) never reconnects; a late handshake result never revives a session given up on; a revoked identity never gets a session again; revocation closes only that identity's connections. Liveness: without faults a controller eventually holds the lease, and someone still holds it at the end. Scale: 2 controllers (dialers), up to 3 reconnects each (2 in the access point's configurations with lost connections), unbounded message delay; the largest configuration has about 5 million states, all 21 configurations take about 2 minutes. Each property has a deliberately introduced bug (a mutation) for which TLC finds a counterexample: the model is not vacuous.
+
+TLC found two places where the implementation broke "a revoked identity never gets a session again", now fixed (a separate commit of #PR, tests in `rutis-bridge/tests/revocation.rs`): a controller link revoked during the handshake still had `start` provide the peer before cutting it; an access point whose id was revoked while a takeover waited still ran `Accept::accept` (creating the instance, mounting the runtime) before cutting it. Both now check before setting anything up and refuse a revoked identity as an authentication failure (4003). The §4.4 takeover order, the generation re-check, reading frames by connection and cancelling the retry on stop agree with the model. Two controllers configured for the same runtime (or two dialers with the same id) keep replacing each other, slowed by backoff (written in dial-out §6); liveness holds in the model because reconnects are bounded. CI: the `specs` job ([CI](ci.en.md) §4).
+
+What follows is the scope as planned, kept for the record.
 
 **Why**: remote design §4.4 defines the takeover order (authenticate → close the old session → clean up the old lease → answer the new hello); the network stack design defines registration generations, revocation during handshakes, and that late results are not handed over. The existing `leases.rs` and `link.rs` cover only the timings they can construct.
 
@@ -538,11 +544,11 @@ Revoking while running is the identity layer's hook (#273, `Revocations`, design
 
 ### 7.3 Practice
 
-- Specs live in `specs/<name>/`: `.tla`, `.cfg`, `expected.txt`, `run.sh` and a README (which design and section, what is simplified, which invariants are checked). Spec 1 follows this layout.
-- The plan was to run small TLC configurations nightly: not yet in CI; `run.sh` is run by hand. Larger configurations by hand when the design changes.
+- Specs live in `specs/<name>/`: `.tla`, `.cfg`, `expected.txt`, `run.sh` and a README (which design and section, what is simplified, which invariants are checked). Spec 1 and Spec 2 follow this layout.
+- CI's `specs` job (Linux, one entry per model) runs every configuration of each model and compares with `expected.txt`, on pull requests that change `specs/**` and in full runs (nightly, release gate) (#210). Larger configurations by hand when the design changes.
 - When a design change touches these two protocols, the spec is updated with it.
 - No trace validation (checking implementation logs against the spec); too costly for now.
-- Timing: Spec 1 was done before Bun; Spec 2 before the next major change to lease code.
+- Timing: Spec 1 was done before Bun; Spec 2 in 0.12.
 
 ---
 
@@ -665,7 +671,7 @@ Moved out or opened during step two: revoking while running (#273), changing `ru
 | S6 Cordis plugins; nightly baseline with the latest Cordis plugins | F8, F4 | #190 |
 | S7 Rust embedding and multiple tenants | D2, D3, D5 | #191 |
 | Previous release's runtime vs current host | J2, E13 | #209 |
-| TLA+ Spec 2 | E4, E5 | #210 |
+| TLA+ Spec 2 | E4, E5 | #210 → #PR. Done (0.12): two models, CI's `specs` job; found and fixed two places where revoking during a handshake still set a session up |
 | Bun runtime admitted under Q6.8 (B2, B3) | The Bun variant of C10 | #194 → #200; remote listening and dialing out #402; #236 → #261. Done |
 | S5 nightly: two containers, non-loopback + TLS, netem | E12 | #341 |
 | Values consistent across languages: Python `datetime` by reference, Go structs bypassing the checks, Python dicts dropping undefined keys | P7, A1 | #355 → #410, #412, #413. Done (0.11) |
@@ -691,7 +697,7 @@ Moved out or opened during step two: revoking while running (#273), changing `ru
 2. ~~Whether `rutis-host run` watches its configuration file~~: checked (2026-10-11): it does not. 0.10 leaves `run` as it is; S3 recovers by restarting the host, S4 uses a fixture host (step two plan Q1); whether `run` should support changing its configuration while running is #274.
 3. ~~Service contract test tool (G1)~~: decided (2026-10-11). Whether implementations of one service return the same data is up to the service's authors; rutis provides no contract tool (standard Q6.9.4). rutis only guarantees that the rules for converting values across languages hold in every runtime and test tool (P7, A1).
 4. **Isolation and permissions for agent-written plugins (H1, H2)**: design philosophy §8 "permissions" lists this as open.
-5. ~~Adopting TLA+~~: Spec 1 is done (#222). Spec 2 is in step three (#210). TLC is not in the nightly runs yet.
+5. ~~Adopting TLA+~~: Spec 1 is done (#222). Spec 2 is done (#210). CI's `specs` job runs TLC on pull requests (that change `specs/**`) and nightly.
 6. ~~Revoking the token in S5~~: decided (step two plan Q2): revoking while running is a requirement on remote, opened as #273; S5 in 0.10 tests "after a restart with another token, the reconnect is refused".
 7. ~~From which release the register's release gate applies~~: decided (plan Q3): 0.10 sets the baseline, Q9.4.4 applies from 0.11.
 8. ~~Whether persisted formats get a version field~~: decided (plan Q4): `rutis.json` gets a top-level `format`; dsh's `cordis.patch.yml` is Cordis's configuration format and gets none.
