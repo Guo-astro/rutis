@@ -15,7 +15,8 @@ serde_json = "1"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# Each host in a Job Object (#232); Ctrl-Break to its console group.
+# Each host in a Job Object (#232); Ctrl-Break to its console group; what
+# a process holds (the soak, #192).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
@@ -23,5 +24,6 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
+    "Win32_System_ProcessStatus",
     "Win32_System_Threading",
 ] }
