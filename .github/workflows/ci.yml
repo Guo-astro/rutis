@@ -326,6 +326,15 @@ jobs:
       - name: cargo test (workspace but rutis-bridge, rutis-loader and rutis-e2e)
         run: cargo test --workspace --exclude rutis-bridge --exclude rutis-loader --exclude rutis-e2e
 
+      # The shuttle models of the kernel (crates/rutis/src/fiber/shuttle_tests.rs,
+      # #179), 1000 iterations of each scheduler (well under a second); the
+      # nightly stress.yml runs a million. Built with --cfg rutis_shuttle in
+      # a target directory of its own, so the flag rebuilds nothing else.
+      - name: cargo test (rutis shuttle models)
+        env:
+          RUSTFLAGS: --cfg rutis_shuttle
+        run: cargo test -p rutis --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
+
       # Plugins of other languages and of other nodes as rutis-loader rows.
       - name: cargo test (rutis-loader, every row kind)
         run: cargo test -p rutis-loader --features node,python,go,peer
