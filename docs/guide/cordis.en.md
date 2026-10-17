@@ -5,7 +5,7 @@ rutis and Cordis (the Node plugin framework) interoperate in two ways:
 - **Use a Cordis application as a node:** connect an existing Cordis application to a rutis node so they can use each other's services, forward events, and let rutis run plugins inside it. Use `@arcships/rutis-runtime/bridge`.
 - **Mount Cordis plugins in a Rust application:** run published Cordis plugins in a real Cordis context without changing their source, and use Rust types generated at build time from their type declarations. Enable the `cordis` feature of `rutis-bridge`.
 
-A Cordis plugin can also run as a row in rutis-loader. Declare `rutis.provides` in its `package.json`; see [Write a TypeScript plugin](typescript-plugin.en.md#existing-cordis-plugins).
+A Cordis plugin can also run as a row in rutis-loader. Declare `rutis.provides` in its `package.json`; see [Write a TypeScript plugin](typescript-plugin.en.md#existing-cordis-plugins). Not yet in `rutis-host`: the services of a published package without `rutis.provides` reach no other row, not even another Cordis row in the same Node runtime ([#428](https://github.com/arcships/rutis/issues/428)); such a plugin that uses only services of the rutis side runs as a row.
 
 ## Use a Cordis application as a node
 
