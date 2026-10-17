@@ -520,6 +520,21 @@ impl FiberInner {
         })
     }
 
+    /// Whether `apply`'s error says a declared dependency was lost after
+    /// the gate, with this generation's failed strict read as evidence:
+    /// `InjectUnsatisfied`, or the strict read's own error returned as is.
+    fn reports_a_lost_dependency(&self, error: &CordisError) -> bool {
+        let claims = match error {
+            CordisError::InjectUnsatisfied(_) => true,
+            CordisError::ServiceRead(read) => {
+                matches!(read.reason, ServiceReadFailure::Unavailable(_))
+                    && self.declared_injects.contains(&read.key)
+            }
+            _ => false,
+        };
+        claims && self.read_a_lost_dependency()
+    }
+
     async fn refresh_deps(this: &Arc<Self>) {
         if this.closing.load(Ordering::SeqCst) || this.ctx.shared().closing.load(Ordering::SeqCst) {
             return;
@@ -653,8 +668,9 @@ impl FiberInner {
             // 提供者失活、check 拒绝)——门控之后依赖确实失效过,哪怕此刻已
             // 恢复。这一代视同被驱逐,回滚后回到 Pending(不进粘性 Failed);
             // 已恢复则立即重查装载。没有这样的读取时不认这个理由,按普通
-            // 失败处理,避免装载循环。
-            Err(CordisError::InjectUnsatisfied(_)) if this.read_a_lost_dependency() => {
+            // 失败处理,避免装载循环。apply 原样返回这次严格读取的错误
+            // (`require(..)?`)与 `InjectUnsatisfied` 同样处理(#438)。
+            Err(e) if this.reports_a_lost_dependency(&e) => {
                 Self::unload(this, NextState::Pending).await;
                 if this.resolve_deps().1.is_empty() {
                     this.post(Intent::RefreshDeps);

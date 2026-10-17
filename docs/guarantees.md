@@ -166,7 +166,7 @@ PR 模板中有对应的检查项。
 | `core/typed.lost-dependency-silent` | 这种情况下这一代的 `InjectUnsatisfied` 不进 ErrorSink | 契约行为 | 已验证 | `rutis/tests/typed_plugin.rs::a_lost_dependency_error_does_not_reach_the_error_sink` | |
 | `core/typed.lost-dependency-restart` | 落在这个窗口里的 `restart()` 返回 Ok，插件回到 Pending 或重新装载 | 契约行为 | 已验证 | `rutis/tests/typed_plugin.rs::a_restart_in_the_lost_dependency_window_returns_ok` | |
 | `core/typed.get-not-evidence` | 非 typed 插件用 `get` 读不到后返回 `InjectUnsatisfied`：不算证据，按普通失败进 Failed | 契约行为 | 已验证 | `rutis/tests/typed_plugin.rs::a_get_read_is_not_evidence_of_a_lost_dependency` | |
-| `core/typed.untyped-require` | 非 typed 插件用 `require` 读取失败后返回同一错误：回到 Pending，新提供者出现后装载 | 契约行为 | 已验证 | `rutis/tests/typed_plugin.rs::an_untyped_plugin_whose_require_fails_returns_to_pending` | |
+| `core/typed.untyped-require` | 非 typed 插件用 `require` 读取失败后返回同一错误，或原样返回这次读取的错误（`require(..)?`）：回到 Pending，新提供者出现后装载 | 契约行为 | 已验证 | `rutis/tests/typed_plugin.rs::an_untyped_plugin_whose_require_fails_returns_to_pending`、`::an_untyped_plugin_returning_its_failed_require_returns_to_pending`、`rutis-loader/src/peer.rs::tests::a_row_whose_peer_rows_go_before_its_apply_waits_and_loads_when_back` | #438 |
 
 ---
 

@@ -568,20 +568,30 @@ async fn a_restart_in_the_lost_dependency_window_returns_ok() {
     );
 }
 
+/// How [`UntypedLoss`] reads its `Llm` and reports it missing.
+#[derive(Clone, Copy)]
+enum Read {
+    /// `get`, then `InjectUnsatisfied`.
+    Get,
+    /// `require`, then `InjectUnsatisfied`.
+    Require,
+    /// `require(..)?`: the read's own error.
+    RequireAsIs,
+}
+
 /// An untyped plugin: its first generation waits until its `Llm` is
-/// withdrawn, then reads it with `require` (strict) or `get` (optional)
-/// and returns `InjectUnsatisfied` when it is not there.
+/// withdrawn, then reads it as [`Read`] says.
 struct UntypedLoss {
-    strict: bool,
+    read: Read,
     generations: AtomicUsize,
     seen: Seen,
     injects: Vec<TypeKey>,
 }
 
 impl UntypedLoss {
-    fn new(strict: bool, seen: Seen) -> Self {
+    fn new(read: Read, seen: Seen) -> Self {
         Self {
-            strict,
+            read,
             generations: AtomicUsize::new(0),
             seen,
             injects: vec![TypeKey::of::<Llm>()],
@@ -605,10 +615,10 @@ impl Plugin for UntypedLoss {
                 ctx.cancelled().await;
             }
             let lost = || CordisError::InjectUnsatisfied(vec!["Llm".into()]);
-            let llm = if self.strict {
-                ctx.require::<Llm>().map_err(|_| lost())?
-            } else {
-                ctx.get::<Llm>().ok_or_else(lost)?
+            let llm = match self.read {
+                Read::Get => ctx.get::<Llm>().ok_or_else(lost)?,
+                Read::Require => ctx.require::<Llm>().map_err(|_| lost())?,
+                Read::RequireAsIs => ctx.require::<Llm>()?,
             };
             self.seen.lock().unwrap().push(llm.0);
             Ok(Effect::Done)
@@ -636,14 +646,14 @@ impl Plugin for ProvidesLlm {
 
 /// Mounts an [`UntypedLoss`], withdraws its `Llm` while the first
 /// generation loads, and returns the settled outcome of that load.
-async fn untyped_loss(strict: bool) -> (Ctx, FiberView, Seen, Result<(), Arc<CordisError>>) {
+async fn untyped_loss(read: Read) -> (Ctx, FiberView, Seen, Result<(), Arc<CordisError>>) {
     let ctx = Ctx::root().unwrap();
     let provider = ctx.plugin(ProvidesLlm(1));
     within("the provider", (&provider).into_future())
         .await
         .unwrap();
     let seen = Seen::default();
-    let view = ctx.plugin(UntypedLoss::new(strict, seen.clone()));
+    let view = ctx.plugin(UntypedLoss::new(read, seen.clone()));
     reach(&view, FiberState::Loading).await;
     // Waits for the consumer, which is still loading.
     within("the withdrawal", provider.dispose()).await.unwrap();
@@ -658,7 +668,20 @@ async fn untyped_loss(strict: bool) -> (Ctx, FiberView, Seen, Result<(), Arc<Cor
 /// guarantee: core/typed.untyped-require
 #[tokio::test]
 async fn an_untyped_plugin_whose_require_fails_returns_to_pending() {
-    let (ctx, view, seen, settled) = untyped_loss(true).await;
+    returns_to_pending(Read::Require).await;
+}
+
+/// The same with the strict read's own error returned as is
+/// (`require(..)?`): it is the same evidence (#438).
+///
+/// guarantee: core/typed.untyped-require
+#[tokio::test]
+async fn an_untyped_plugin_returning_its_failed_require_returns_to_pending() {
+    returns_to_pending(Read::RequireAsIs).await;
+}
+
+async fn returns_to_pending(read: Read) {
+    let (ctx, view, seen, settled) = untyped_loss(read).await;
     settled.expect("Pending is not a failure");
     let state = view.state();
     assert_eq!(state.state, FiberState::Pending);
@@ -676,7 +699,7 @@ async fn an_untyped_plugin_whose_require_fails_returns_to_pending() {
 /// guarantee: core/typed.get-not-evidence
 #[tokio::test]
 async fn a_get_read_is_not_evidence_of_a_lost_dependency() {
-    let (_ctx, view, seen, settled) = untyped_loss(false).await;
+    let (_ctx, view, seen, settled) = untyped_loss(Read::Get).await;
     let error = settled.expect_err("a get read does not count");
     assert!(
         matches!(*error, CordisError::InjectUnsatisfied(_)),
