@@ -1,0 +1,527 @@
+//! Changing the configuration of a running host (#274): `Host::reload`,
+//! all or nothing, and what triggers it in `rutis-host run` (SIGUSR1 on
+//! Unix, `--watch-config` everywhere).
+//!
+//! guarantee: host/reload-config — rows added, removed and changed apply;
+//! a row that would fail, or fails, leaves the old rows running untouched
+//! (no cleanup ran: risk B4); what needs a restart is refused; a removed
+//! local runtime stops after its rows; a peer row a reload adds presents
+//! its token.
+
+// The tests hold the environment until they end, across their awaits: the
+// variables they set are for the hosts they start.
+#![allow(clippy::await_holding_lock)]
+
+mod common;
+
+use std::io::{BufRead, BufReader, Read};
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::time::Duration;
+
+use common::{environment, repo};
+use rutis_bridge::session::{settle, Value as CallValue};
+use rutis_bridge::LinkState;
+use rutis_host::config::HostConfig;
+use rutis_host::host::Host;
+use rutis_test_support::{Guard, HANG_GUARD};
+use serde_json::{json, Value};
+
+/// Twice HANG_GUARD: the Python runtime starts cold (#238).
+const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
+
+/// A Python plugin providing `service`, answering `<word>, <name>`; it
+/// records each cleanup in `<out>/<row>.cleanup`; with `fail`, its apply
+/// raises.
+const GREETER: &str = r#"
+import os
+
+provides = {"SERVICE": {"hello": "sync"}}
+
+
+class Greeter:
+    def __init__(self, word):
+        self.word = word
+
+    def hello(self, name):
+        return self.word + ", " + name
+
+
+def apply(ctx, config):
+    if config.get("fail"):
+        raise RuntimeError("told to fail")
+    ctx.provide("SERVICE", Greeter(config.get("word", "Hello")))
+
+    def cleanup():
+        with open(os.path.join(config["out"], config["row"] + ".cleanup"), "a") as f:
+            f.write("cleanup\n")
+
+    ctx.effect(cleanup)
+"#;
+
+/// The plugin modules in `dir`: `greeter`, `welcomer` and `spare`, each
+/// providing the service of its name.
+fn modules(dir: &Path) {
+    for service in ["greeter", "welcomer", "spare"] {
+        std::fs::write(
+            dir.join(format!("{service}.py")),
+            GREETER.replace("SERVICE", service),
+        )
+        .unwrap();
+    }
+}
+
+/// A configuration of `rows` on a Python runtime in `dir`, with `more`
+/// merged in at the top level.
+fn config(dir: &Path, rows: Value, more: Value) -> HostConfig {
+    let mut py = json!({ "project": dir });
+    if let Some(python) = std::env::var_os("RUTIS_PYTHON") {
+        py["python"] = json!(python.to_str().unwrap());
+    }
+    let mut value = json!({ "id": "reload-test", "runtimes": { "py": py }, "rows": rows });
+    for (key, field) in more.as_object().cloned().unwrap_or_default() {
+        value[key] = field;
+    }
+    serde_json::from_value(value).unwrap()
+}
+
+/// The row `id` running the module of its name with `config` (and where
+/// it records its cleanups).
+fn greeter(dir: &Path, id: &str, config: Value) -> Value {
+    let mut full = json!({ "out": dir, "row": id });
+    for (key, field) in config.as_object().cloned().unwrap_or_default() {
+        full[key] = field;
+    }
+    json!({ "id": id, "name": format!("py:{id}"), "config": full })
+}
+
+fn cleanups(dir: &Path, row: &str) -> usize {
+    std::fs::read_to_string(dir.join(format!("{row}.cleanup")))
+        .map(|text| text.lines().count())
+        .unwrap_or(0)
+}
+
+/// What the service `service` answers to `hello("Ada")`, once it is there.
+async fn hello(host: &Host, service: &str) -> String {
+    let found = COLD
+        .eventually(|| host.service(service), "the service")
+        .await;
+    let reply = found
+        .invoke("hello", CallValue::List(vec![json!("Ada").into()]))
+        .unwrap();
+    settle(reply)
+        .await
+        .unwrap()
+        .json()
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// A host running `config`, its rows loaded.
+async fn started(config: &HostConfig) -> Host {
+    std::env::set_var("RUTIS_PYTHON_PATH", repo().join("python/rutis"));
+    let host = Host::start(config).await.unwrap();
+    COLD.within("the Python runtime", host.runtimes_ready())
+        .await
+        .unwrap();
+    host.load(config.rows()).await.unwrap();
+    host
+}
+
+/// guarantee: host/reload-config
+#[tokio::test(flavor = "multi_thread")]
+async fn rows_added_removed_and_changed_apply() {
+    let _environment = environment();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    modules(d);
+    let rows = json!([
+        greeter(d, "greeter", json!({})),
+        greeter(d, "spare", json!({}))
+    ]);
+    let mut host = started(&config(d, rows, json!({}))).await;
+    assert_eq!(hello(&host, "greeter").await, "Hello, Ada");
+
+    let rows = json!([
+        greeter(d, "greeter", json!({ "word": "Welcome" })),
+        greeter(d, "welcomer", json!({ "word": "Hi" })),
+    ]);
+    let reloaded = host.reload(config(d, rows, json!({}))).await.unwrap();
+    assert_eq!(reloaded.to_string(), "3 rows changed");
+    assert_eq!(hello(&host, "greeter").await, "Welcome, Ada");
+    assert_eq!(hello(&host, "welcomer").await, "Hi, Ada");
+    assert!(host.service("spare").is_none());
+    // The changed row restarted, the removed one stopped: each cleanup once.
+    assert_eq!(cleanups(d, "greeter"), 1);
+    assert_eq!(cleanups(d, "spare"), 1);
+    assert_eq!(cleanups(d, "welcomer"), 0);
+    host.shut_down(HANG_GUARD).await.ok();
+}
+
+/// A row that does not resolve: refused before anything changes; no
+/// row restarted, no cleanup ran (B4).
+/// guarantee: host/reload-config
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_that_would_fail_changes_nothing() {
+    let _environment = environment();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    modules(d);
+    let rows = json!([greeter(d, "greeter", json!({}))]);
+    let mut host = started(&config(d, rows, json!({}))).await;
+    assert_eq!(hello(&host, "greeter").await, "Hello, Ada");
+
+    let rows = json!([
+        greeter(d, "greeter", json!({ "word": "Welcome" })),
+        { "id": "missing", "name": "py:no_such_module" }
+    ]);
+    let error = host.reload(config(d, rows, json!({}))).await.unwrap_err();
+    assert!(error.starts_with("row missing: "), "{error}");
+    assert_eq!(hello(&host, "greeter").await, "Hello, Ada");
+    assert_eq!(cleanups(d, "greeter"), 0);
+    assert!(host
+        .loader
+        .entries()
+        .iter()
+        .all(|entry| entry.id != "missing"));
+    assert_eq!(host.config().rows.len(), 1);
+    host.shut_down(HANG_GUARD).await.ok();
+}
+
+/// A row whose apply fails passes the check, fails once loaded: the old
+/// rows come back, the error says which row and why.
+/// guarantee: host/reload-config
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_failing_as_it_starts_brings_the_old_rows_back() {
+    let _environment = environment();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    modules(d);
+    let rows = json!([greeter(d, "greeter", json!({}))]);
+    let mut host = started(&config(d, rows.clone(), json!({}))).await;
+    assert_eq!(hello(&host, "greeter").await, "Hello, Ada");
+
+    let failing = json!([greeter(d, "greeter", json!({ "fail": true }))]);
+    let error = host
+        .reload(config(d, failing, json!({})))
+        .await
+        .unwrap_err();
+    assert!(
+        error.starts_with("row greeter: ") && error.contains("told to fail"),
+        "{error}"
+    );
+    assert_eq!(hello(&host, "greeter").await, "Hello, Ada");
+    assert_eq!(host.config().rows, rows.as_array().unwrap().clone());
+    // A reload that applies after it is counted from the old rows.
+    let reloaded = host.reload(config(d, rows, json!({}))).await.unwrap();
+    assert_eq!(reloaded.to_string(), "0 rows changed");
+    host.shut_down(HANG_GUARD).await.ok();
+}
+
+/// guarantee: host/reload-config
+#[tokio::test(flavor = "multi_thread")]
+async fn what_needs_a_restart_changes_nothing() {
+    let _environment = environment();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    modules(d);
+    let rows = json!([greeter(d, "greeter", json!({}))]);
+    let listen = |port: u16| json!({ "listen": [{ "name": "local", "address": format!("127.0.0.1:{port}") }] });
+    let mut host = started(&config(d, rows, listen(0))).await;
+    let rows = json!([greeter(d, "greeter", json!({ "word": "Welcome" }))]);
+    let error = host.reload(config(d, rows, listen(1))).await.unwrap_err();
+    assert_eq!(error, "listen changed: restart the host");
+    assert_eq!(hello(&host, "greeter").await, "Hello, Ada");
+    assert_eq!(cleanups(d, "greeter"), 0);
+    host.shut_down(HANG_GUARD).await.ok();
+}
+
+/// The configuration no longer has the Python runtime: its rows unload,
+/// then it stops, and its process has ended when the reload returns.
+/// guarantee: host/reload-config
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removed_runtime_stops_after_its_rows() {
+    let _environment = environment();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    modules(d);
+    let rows = json!([greeter(d, "greeter", json!({}))]);
+    let mut host = started(&config(d, rows, json!({}))).await;
+    assert_eq!(hello(&host, "greeter").await, "Hello, Ada");
+    let handle = host.runtimes[0].1.clone();
+
+    let empty: HostConfig = serde_json::from_value(json!({ "id": "reload-test" })).unwrap();
+    let reloaded = host.reload(empty).await.unwrap();
+    assert_eq!(reloaded.to_string(), "1 row changed, runtime py stopped");
+    assert!(reloaded.warnings.is_empty(), "{:?}", reloaded.warnings);
+    assert_eq!(cleanups(d, "greeter"), 1, "its row unloaded first");
+    assert!(host.runtimes.is_empty());
+    assert!(matches!(
+        handle.state(),
+        rutis_bridge::runtime::RuntimeState::Idle
+    ));
+    // Added back: a new runtime, which needs a restart.
+    let rows = json!([greeter(d, "greeter", json!({}))]);
+    let error = host.reload(config(d, rows, json!({}))).await.unwrap_err();
+    assert_eq!(error, "runtimes.py added: restart the host");
+    host.shut_down(HANG_GUARD).await.ok();
+}
+
+/// A peer row a reload adds dials with the token the environment has for
+/// its peer, and the far end accepts it; neither host had a peer row at
+/// first.
+/// guarantee: host/reload-config, host/credentials-from-env
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peer_row_a_reload_adds_presents_its_token() {
+    let _environment = environment();
+    std::env::set_var("RUTIS_TOKEN", "shared");
+    let office: HostConfig = serde_json::from_value(json!({
+        "id": "office",
+        "listen": [{ "name": "local", "address": "127.0.0.1:0" }],
+    }))
+    .unwrap();
+    let mut office_host = Host::start(&office).await.unwrap();
+    office_host.load(office.rows()).await.unwrap();
+    let address = office_host.listening[0].1;
+    let main: HostConfig = serde_json::from_value(json!({ "id": "main" })).unwrap();
+    let mut main_host = Host::start(&main).await.unwrap();
+    main_host.load(main.rows()).await.unwrap();
+
+    // The listening end first: its row names who may dial in.
+    let mut accepting = office.clone();
+    accepting.rows = vec![
+        json!({ "id": "main", "name": "rutis-bridge/peer", "config": { "peer": "main", "listen": "local" } }),
+    ];
+    office_host.reload(accepting).await.unwrap();
+    let mut dialing = main.clone();
+    dialing.rows = vec![
+        json!({ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": format!("ws://{address}/rutis") } }),
+    ];
+    main_host.reload(dialing).await.unwrap();
+
+    let connected = |host: &Host, row: &str| {
+        let entry = host
+            .loader
+            .entries()
+            .into_iter()
+            .find(|entry| entry.id == row)?;
+        let link = host.peers.link_state(entry.view?.instance())?;
+        let ready = matches!(*link.borrow(), LinkState::Ready { .. });
+        ready.then_some(())
+    };
+    COLD.eventually(|| connected(&main_host, "office"), "main's link to office")
+        .await;
+    COLD.eventually(
+        || connected(&office_host, "main"),
+        "office's link from main",
+    )
+    .await;
+    main_host.shut_down(HANG_GUARD).await.ok();
+    office_host.shut_down(HANG_GUARD).await.ok();
+}
+
+/// `rutis-host run --watch-config`, its output read line by line; ended
+/// by killing it (it runs no runtime).
+struct Running {
+    child: Child,
+    lines: Receiver<String>,
+    stderr: Receiver<String>,
+    seen: Vec<String>,
+}
+
+impl Running {
+    fn start(args: &[&str], dir: &Path) -> Self {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_rutis-host"))
+            .args(args)
+            .current_dir(dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the rutis-host binary");
+        let (send, lines) = mpsc::channel();
+        let stdout = child.stdout.take().unwrap();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if send.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let (send, stderr) = mpsc::channel();
+        let mut error = child.stderr.take().unwrap();
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = error.read_to_string(&mut text);
+            let _ = send.send(text);
+        });
+        Self {
+            child,
+            lines,
+            stderr,
+            seen: Vec::new(),
+        }
+    }
+
+    /// The first line, not read before, starting with `prefix`.
+    fn line(&mut self, prefix: &str) -> String {
+        loop {
+            match self.lines.recv_timeout(HANG_GUARD) {
+                Ok(line) => {
+                    self.seen.push(line.clone());
+                    if line.starts_with(prefix) {
+                        return line;
+                    }
+                }
+                Err(error) => {
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    let stderr = self.stderr.recv_timeout(HANG_GUARD).unwrap_or_default();
+                    panic!(
+                        "waiting for {prefix:?}: {error}; output: {:#?}; stderr: {stderr}",
+                        self.seen
+                    );
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// A file written broken, then fixed: rejected, then reloaded, the host
+/// the same process all along. Every platform (on Windows the only
+/// trigger).
+/// guarantee: host/reload-config
+#[test]
+fn a_watched_configuration_reloads_when_it_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("rutis.json");
+    let config = |rows: Value| {
+        json!({ "id": "watched", "listen": [{ "name": "local", "address": "127.0.0.1:0" }], "rows": rows })
+            .to_string()
+    };
+    std::fs::write(&file, config(json!([]))).unwrap();
+    let mut host = Running::start(
+        &["run", "--watch-config", file.to_str().unwrap()],
+        dir.path(),
+    );
+    host.line("rutis-host: listening on local ");
+
+    std::fs::write(&file, "{ \"rows\": [ ").unwrap();
+    let rejected = host.line("rutis-host: reload rejected: ");
+    assert!(rejected.ends_with("; nothing changed"), "{rejected}");
+    assert!(rejected.contains("rutis.json"), "{rejected}");
+
+    // A link to a port nothing listens on: a row that runs, its link down.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = closed.local_addr().unwrap();
+    drop(closed);
+    let rows = json!([{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": format!("ws://{address}/rutis") } }]);
+    std::fs::write(&file, config(rows)).unwrap();
+    let reloaded = host.line("rutis-host: reloaded ");
+    assert_eq!(
+        reloaded,
+        format!("rutis-host: reloaded {} (1 row changed)", file.display())
+    );
+    host.line("office: running");
+}
+
+/// The binary on Unix: SIGUSR1 reloads, the host runs on in the same
+/// process; a signal while a reload hangs still stops the host.
+#[cfg(unix)]
+mod sigusr1 {
+    use super::*;
+    use common::process::{alive, cleanups, run_project, signal, Host, HANGING_PLUGIN};
+
+    /// guarantee: host/reload-config
+    #[test]
+    fn sigusr1_reloads_and_the_host_runs_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = run_project(dir.path(), false);
+        let mut host = Host::start(&["run", file.to_str().unwrap()], dir.path());
+        let pids = host.started(&["py-row", "node-row"]);
+
+        // Broken: refused, nothing changed.
+        let text = std::fs::read_to_string(&file).unwrap();
+        std::fs::write(&file, "{").unwrap();
+        signal(&host, libc::SIGUSR1, false);
+        let rejected = host.wait_line(|line| {
+            line.starts_with("rutis-host: reload rejected: ")
+                .then(|| line.to_owned())
+        });
+        assert!(rejected.ends_with("; nothing changed"), "{rejected}");
+
+        // The Node row removed.
+        let mut config: Value = serde_json::from_str(&text).unwrap();
+        config["rows"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|row| row["id"] != "node-row");
+        std::fs::write(&file, config.to_string()).unwrap();
+        signal(&host, libc::SIGUSR1, false);
+        let expected = format!("rutis-host: reloaded {} (1 row changed)", file.display());
+        host.wait_line(|line| (line == expected).then_some(()));
+        host.wait_line(|line| (line == "node-row: removed").then_some(()));
+        assert_eq!(cleanups(dir.path(), "node-row"), 1);
+        assert!(host.child.try_wait().unwrap().is_none(), "the host exited");
+        assert!(pids.iter().all(|pid| alive(*pid)), "a runtime ended");
+
+        signal(&host, libc::SIGTERM, false);
+        let (status, stderr, output) = host.exit();
+        let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
+        assert_eq!(status.code(), Some(0), "{context}");
+        assert_eq!(cleanups(dir.path(), "py-row"), 1, "{context}");
+        assert_eq!(cleanups(dir.path(), "node-row"), 1, "{context}");
+    }
+
+    /// A reload adds a row whose apply never ends; Ctrl-C ends the host
+    /// all the same (past the deadline: 2), its runtimes with it.
+    /// guarantee: host/reload-config, host/stop-deadline
+    #[test]
+    fn a_signal_during_a_reload_stops_the_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = run_project(dir.path(), false);
+        std::fs::write(dir.path().join("hangs.py"), HANGING_PLUGIN).unwrap();
+        // clock: the deadline must pass, and does whatever its length: the
+        // apply never ends. 1 s only keeps the test short.
+        let mut host = Host::start(
+            &["run", "--shutdown-timeout", "1", file.to_str().unwrap()],
+            dir.path(),
+        );
+        let pids = host.started(&["py-row", "node-row"]);
+        let mut config: Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        config["rows"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "id": "hangs", "name": "py:hangs", "config": { "row": "hangs" } }));
+        std::fs::write(&file, config.to_string()).unwrap();
+        signal(&host, libc::SIGUSR1, false);
+        host.wait_line(|line| line.starts_with("plugin hangs hangs in ").then_some(()));
+        signal(&host, libc::SIGINT, true);
+        let (status, stderr, output) = host.exit();
+        let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
+        assert_eq!(status.code(), Some(2), "{context}");
+        assert!(
+            !output
+                .iter()
+                .any(|line| line.starts_with("rutis-host: reloaded")),
+            "{context}"
+        );
+        for pid in pids {
+            assert!(
+                !alive(pid),
+                "runtime process {pid} outlived the host; {context}"
+            );
+        }
+    }
+}

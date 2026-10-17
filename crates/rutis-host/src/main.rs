@@ -11,6 +11,7 @@
 use rutis_host::{config, errln, host, languages, new, outln, project, status};
 use rutis_loader::{RowStatus, Supply};
 
+mod reload;
 mod stop;
 
 use stop::Stopped;
@@ -30,6 +31,8 @@ usage:
     run and dev: --shutdown-timeout <seconds> how long cleanups may take after
                                               Ctrl-C or SIGTERM (default 10, or
                                               RUTIS_SHUTDOWN_TIMEOUT)
+    run: --watch-config                       read rutis.json again when it changes
+                                              (SIGUSR1 does too, on Unix)
   rutis-host check [rutis.json]               describe every row and Go binary; fail on what
                                               cannot run (in a plugin project without
                                               rutis.json: the project)
@@ -153,11 +156,16 @@ fn config_file(args: &[String]) -> std::path::PathBuf {
 
 async fn run(args: &[String]) -> Result<Stopped, String> {
     let (deadline, args) = stop::deadline(args)?;
+    let (watch, args) = reload::watch_flag(args);
     stop::pass_on(deadline);
     let mut signals = stop::Signals::listen()?;
-    let config = config::HostConfig::read(&config_file(&args))?;
+    let path = config_file(&args);
+    // From the start: SIGUSR1 before the host runs reloads once it does,
+    // instead of ending it.
+    let mut triggers = reload::Triggers::listen(&path, watch)?;
+    let config = config::HostConfig::read(&path)?;
     warn(&config);
-    let host = host::Host::start(&config).await?;
+    let mut host = host::Host::start(&config).await?;
     for line in status::listening(&host.listening) {
         outln!("{line}");
     }
@@ -168,7 +176,17 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     let signal = match start(&host, started, deadline, &mut signals).await {
         Started::Running => {
             status::follow(host.followed());
-            signals.next().await
+            loop {
+                tokio::select! {
+                    signal = signals.next() => break signal,
+                    _ = triggers.next() => {}
+                }
+                // A signal ends a reload half way: the host stops anyway.
+                tokio::select! {
+                    () = reload::reload(&mut host, &path, &mut triggers) => {}
+                    signal = signals.next() => break signal,
+                }
+            }
         }
         Started::Signal(signal) => signal,
         Started::Failed(stopped) => return Ok(stopped.failed()),

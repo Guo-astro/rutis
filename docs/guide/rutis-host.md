@@ -17,7 +17,7 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 
 | 命令 | 作用 |
 | --- | --- |
-| `rutis-host run [rutis.json]` | 按配置运行，打印每一行状态的变化、节点行 link 的状态和本机运行时的结束（见 [run 打印什么](#run-打印什么)）；Ctrl-C 结束（见 [停止与退出码](#停止与退出码)） |
+| `rutis-host run [rutis.json]` | 按配置运行（Unix 上 SIGUSR1 或加 `--watch-config` 时运行中重新读配置，见 [运行中改配置](#运行中改配置)），打印每一行状态的变化、节点行 link 的状态和本机运行时的结束（见 [run 打印什么](#run-打印什么)）；Ctrl-C 结束（见 [停止与退出码](#停止与退出码)） |
 | `rutis-host dev [目录]` | 在插件项目里运行这个插件（加上 `rutis.dev.json`），文件变化时重新加载；Go 项目重新构建，只重启它的运行时 |
 | `rutis-host check [rutis.json]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 二进制（运行时名、SDK、插件 API、插件）；有不能运行的行或二进制时以非零状态退出。在没有 rutis.json 的插件项目里检查这个项目 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go` | 创建插件项目 |
@@ -88,6 +88,35 @@ rutis-host: listening on <监听器名> <地址:端口>
 2 和 1 分开，是为了让进程管理器和脚本区分“配置有问题”和“停止时有插件的清理没完成”；它也不在 126 以上，那一段是 shell 用来表示“程序不能执行”和“被信号 n 结束”（128 + n）的。
 
 Unix 上，`rutis-host` 启动时就被忽略的信号（比如用 `nohup` 启动时的 SIGHUP）继续被忽略。运行时进程各在自己的进程组里，终端的 Ctrl-C 只发给 `rutis-host`，由它卸载各行。Windows 上运行时进程各在自己的控制台进程组里，不响应 Ctrl-C；但 Ctrl-Break 和关闭控制台仍会发给它们，这时它们的清理可能来不及执行，所以停止时用 Ctrl-C。关闭控制台时，Windows 还会在几秒后结束 `rutis-host`，不管截止时间多长。
+
+## 运行中改配置
+
+`run` 运行时可以改 `rutis.json`，不用重启宿主：
+
+- Unix 上给 `rutis-host` 发 SIGUSR1，它重新读一次文件。systemd 里写 `ExecReload=/bin/kill -USR1 $MAINPID`，`systemctl reload` 就会触发。SIGHUP 仍是终止信号（终端关闭时宿主随之停止），不用来重新读配置。
+- 加上 `--watch-config`（默认关闭），文件内容变了就重新读：在内容变化后、连续 500 毫秒不再变化时读一次，内容和上次读到的相同时不读，文件暂时不存在（编辑器先删后建）不算变化。Windows 上没有 SIGUSR1，这是唯一的方式；Kubernetes 更新 ConfigMap 时改的是挂载的文件，也用它。
+
+两种方式走同一个重新读取，全有或全无：
+
+1. 文件读不出来、不是有效的配置：拒绝。
+2. 运行中改不了的部分有变化：拒绝，提示重启宿主。它们是顶层的 `format`、`id`、`listen`、`runtimes.go`（任何变化）、`runtimes.remote`（增删条目，或改了条目的任何字段，包括 `listen`、`instances`），以及新增的或改了设置的本地运行时（`node`、`py`、`bun`）。
+3. 先检查新的行（同 `check`）：有行起不来（插件找不到、行的设置通不过加载前的检查），而它现在并没有在失败，就拒绝。等待服务的行不算起不来，和启动时一样。
+4. 再用新的行替换旧的：新增的行启动，删掉的行卸载，改了的行重启；没改的行不动（用到被重启的行所提供服务的行随它等待、恢复，和平时一样）。替换后有行失败（例如插件的 `apply` 抛错），而它之前没有失败，就换回旧的行（这时被换掉的行会重启一次），然后拒绝。
+5. 删掉的本地运行时：它的行先卸载，再停止运行时，它的进程退出后才算完成。
+
+`instanced` 分组里的行变化时，对已经存在的每个实例同样生效：新增的行在每个实例里启动，删掉的在每个实例里卸载，改了的在每个实例里重启；连接（实例）本身保留，实例里没改的行不动。之后新建的实例按新的行运行。
+
+结果打印一行：
+
+```
+rutis-host: reloaded <文件> (<n> rows changed)
+rutis-host: reloaded <文件> (1 row changed, runtime py stopped)
+rutis-host: reload rejected: <原因>; nothing changed
+```
+
+被拒绝时旧的配置继续运行，原因写明是哪一行、什么问题，或者哪一项要重启宿主。行的状态变化照常由状态行打印。重新读取进行中又收到 SIGUSR1、文件又变了，等这一次结束后再读一次；进行中收到终止信号，宿主照常停止。
+
+凭据在拨号和对端连进来时才从环境变量读（见 [凭据](#凭据)），所以重新读取新增的节点行也能连上。环境变量在进程运行期间不变，换 token 仍要重启宿主。
 
 ## 输出
 
@@ -207,7 +236,7 @@ Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主�
 
 ## 凭据
 
-凭据不写在文件里：
+凭据不写在文件里，在拨号和对端连进来时从环境变量读：
 
 | 环境变量 | 作用 |
 | --- | --- |
@@ -219,5 +248,7 @@ Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主�
 ## 部署
 
 把 `rutis.json`、Node 项目（装好插件和 `@arcships/rutis-runtime`）、Python 环境（装好 `rutis` 和插件）、Go 插件目录（对应平台的二进制）放在一起，用进程管理器（systemd 等）运行 `rutis-host run /srv/app/rutis.json`。`rutis-host` 结束时，它启动的运行时进程随之结束。
+
+改了 `rutis.json` 要生效时用 `systemctl reload`（`ExecReload=/bin/kill -USR1 $MAINPID`），或者用 `--watch-config` 运行，见 [运行中改配置](#运行中改配置)。
 
 停止时让进程管理器只给 `rutis-host` 发 SIGTERM，由它卸载各行：systemd 默认（`KillMode=control-group`）会同时给运行时进程发 SIGTERM，它们来不及执行清理，应设 `KillMode=mixed`，并让 `TimeoutStopSec` 大于清理截止时间。`rutis-host` 被强制结束（SIGKILL、Windows 上结束进程）时没有机会卸载各行：Windows 上运行时进程随之被结束；Unix 上运行时进程发现通道断开，自己卸载各行后退出。

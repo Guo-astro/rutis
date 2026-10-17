@@ -4,14 +4,17 @@
 //! moves from a Python row, to a plugin on another node, to Rust, while
 //! `planner`'s row stays the same and the host keeps running.
 //!
-//! Host A is the fixture Rust host (`tests/e2e/fixture-host`): `rutis-host
-//! run` does not watch its configuration, and only a Rust program has
-//! Rust rows (maintainer decision Q1 of the plan). It reads `rutis.json`
-//! with rutis-host's library, has the row `fixture/calendar` compiled in,
-//! and on the stdin command `reload` applies the file again as one loader
-//! edit. Node B is `rutis-host run`, listening on loopback (WebSocket, a
-//! token), with its own `calendar` row that it exports; A dials it through
-//! the harness's TCP proxy, whose connections show when A's link closes.
+//! Host A is the fixture Rust host (`tests/e2e/fixture-host`) where the
+//! Rust row is needed: only a Rust program has Rust rows (maintainer
+//! decision Q1 of the plan). It reads `rutis.json` with rutis-host's
+//! library, has the row `fixture/calendar` compiled in, and on the stdin
+//! command `reload` runs the file again as `rutis-host run` does on SIGUSR1
+//! (`Host::reload`, #274). Stages 1 and 2 also run with A as `rutis-host
+//! run` itself, told to read the file again with SIGUSR1 (on Windows, with
+//! `--watch-config`). Node B is `rutis-host run`, listening on loopback
+//! (WebSocket, a token), with its own `calendar` row that it exports; A
+//! dials it through the harness's TCP proxy, whose connections show when
+//! A's link closes.
 //!
 //! | stage | A's `calendar` | the result |
 //! | --- | --- | --- |
@@ -164,22 +167,75 @@ fn others(processes: &[(u32, String)]) -> Vec<(u32, String)> {
     others
 }
 
+/// Which program host A is, and how it is told to read `rutis.json` again.
+#[derive(Clone, Copy)]
+enum A {
+    /// The fixture Rust host: the stdin command `reload`.
+    Fixture,
+    /// `rutis-host run`: SIGUSR1; on Windows, which has none, the file
+    /// watched (`--watch-config`).
+    Run,
+}
+
+impl A {
+    fn start(self, s: &Scenario, token: &str) -> Host {
+        let env = [("RUTIS_TOKEN_B", token)];
+        match self {
+            A::Fixture => s.fixture_host(["rutis.json"], &env),
+            A::Run if cfg!(windows) => s.host_with(["run", "--watch-config", "rutis.json"], &env),
+            A::Run => s.host_with(["run", "rutis.json"], &env),
+        }
+    }
+
+    /// Tell A that `rutis.json` changed.
+    fn reload(self, a: &mut Host) {
+        match self {
+            A::Fixture => a.send_line("reload"),
+            #[cfg(unix)]
+            A::Run => a.signal(libc::SIGUSR1),
+            // The watch sees the file changed.
+            #[cfg(not(unix))]
+            A::Run => {}
+        }
+    }
+
+    fn applied(self, line: &str) -> bool {
+        match self {
+            A::Fixture => line == "applied",
+            A::Run => line.starts_with("rutis-host: reloaded rutis.json ("),
+        }
+    }
+
+    fn rejected(self, line: &str) -> bool {
+        match self {
+            A::Fixture => line.starts_with("rejected: "),
+            A::Run => line.starts_with("rutis-host: reload rejected: "),
+        }
+    }
+}
+
 /// What one call of `planner.plan` gave.
 fn plan(on: &str) -> Result<Value, String> {
     Ok(json!(format!("plan on {on}")))
 }
 
-/// Send `reload` to A and call `planner.plan` from `watch` one call after
-/// another until it answers from `to`; then wait for A's answer to the
-/// reload, which must be `applied`. Every call must end, either from
-/// `from`, from `to`, or failing with a message, and none from `from`
-/// once one came from `to`. Returns the outcomes.
+/// Tell A to read `rutis.json` again and call `planner.plan` from `watch`
+/// one call after another until it answers from `to`; then wait for A's
+/// answer to the reload, which must say it applied. Every call must end,
+/// either from `from`, from `to`, or failing with a message, and none from
+/// `from` once one came from `to`. Returns the outcomes.
 ///
 /// risk: G2 (a call in the switch's window hangs), G4 (a user keeps the
 /// old implementation)
-fn switch(a: &mut Host, watch: &Probe, from: &str, to: &str) -> Vec<Result<Value, String>> {
+fn switch(
+    host: A,
+    a: &mut Host,
+    watch: &Probe,
+    from: &str,
+    to: &str,
+) -> Vec<Result<Value, String>> {
     a.skip_written();
-    a.send_line("reload");
+    host.reload(a);
     let deadline = Instant::now() + hang_guard();
     let mut outcomes = Vec::new();
     loop {
@@ -190,10 +246,7 @@ fn switch(a: &mut Host, watch: &Probe, from: &str, to: &str) -> Vec<Result<Value
         if done {
             break;
         }
-        let rejected = a
-            .lines()
-            .into_iter()
-            .find(|line| line.text.starts_with("rejected: "));
+        let rejected = a.lines().into_iter().find(|line| host.rejected(&line.text));
         assert!(rejected.is_none(), "A refused the reload: {rejected:?}");
         assert!(
             Instant::now() < deadline,
@@ -202,9 +255,9 @@ fn switch(a: &mut Host, watch: &Probe, from: &str, to: &str) -> Vec<Result<Value
         );
     }
     let answer = a.wait_for("A's answer to reload", |line| {
-        line == "applied" || line.starts_with("rejected: ")
+        host.applied(line) || host.rejected(line)
     });
-    assert_eq!(answer, "applied");
+    assert!(host.applied(&answer), "{answer}");
     let first_new = outcomes.iter().position(|outcome| *outcome == plan(to));
     for (index, outcome) in outcomes.iter().enumerate() {
         match outcome {
@@ -223,12 +276,12 @@ fn switch(a: &mut Host, watch: &Probe, from: &str, to: &str) -> Vec<Result<Value
 /// Stage 1: A with `planner` and the Python `calendar`, every row running;
 /// a call answers from Python. Returns A, with its processes (a Python
 /// runtime among them).
-fn stage_1(s: &Scenario, watch: &Probe, token: &str) -> (Host, Vec<(u32, String)>) {
+fn stage_1(s: &Scenario, host: A, watch: &Probe, token: &str) -> (Host, Vec<(u32, String)>) {
     s.link_node_sdk();
     s.write("planner.ts", PLANNER);
     s.write("py_calendar.py", PY_CALENDAR);
     a_config(s, Calendar::Python, watch);
-    let mut a = s.fixture_host(["rutis.json"], &[("RUTIS_TOKEN_B", token)]);
+    let mut a = host.start(s, token);
     for row in ["calendar", "planner", "watch"] {
         a.expect(&format!("{row}: running"));
     }
@@ -259,7 +312,7 @@ fn python_gone(s: &Scenario, a: &Host, before: &[(u32, String)]) {
 /// The end: a few more calls answer from `on`; A is the process `pid`
 /// throughout (G5) and no row of it failed; A stops (every cleanup runs,
 /// exit 0).
-fn end_a(a: &mut Host, watch: &Probe, on: &str, pid: u32) {
+fn end_a(host: A, a: &mut Host, watch: &Probe, on: &str, pid: u32) {
     for _ in 0..3 {
         assert_eq!(watch.call(a, "planner", "plan", json!([])), plan(on));
     }
@@ -271,7 +324,10 @@ fn end_a(a: &mut Host, watch: &Probe, on: &str, pid: u32) {
         .filter(|line| line.contains(": failed"))
         .collect();
     assert!(failed.is_empty(), "rows failed: {failed:?}");
-    a.send_line("stop");
+    match host {
+        A::Fixture => a.send_line("stop"),
+        A::Run => a.ctrl_c(),
+    }
     let status = a.wait_exit();
     assert_eq!(status.code(), Some(0), "A after stop: {status}");
 }
@@ -298,7 +354,7 @@ fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
     let port = s.port();
 
     // 1. A: `planner` with the Python `calendar`.
-    let (mut a, before) = stage_1(&s, &watch, &token);
+    let (mut a, before) = stage_1(&s, A::Fixture, &watch, &token);
     let pid = a.pid();
 
     // 2. One edit: the Python row and runtime out, a link to B importing
@@ -308,7 +364,7 @@ fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
     let proxy = s.proxy(std::net::SocketAddr::from(([127, 0, 0, 1], port)));
     let dial = format!("ws://{}/rutis", proxy.addr());
     a_config(&s, Calendar::Node(&dial), &watch);
-    switch(&mut a, &watch, "python", "node B");
+    switch(A::Fixture, &mut a, &watch, "python", "node B");
     b.expect("calendar on B: today");
     python_gone(&s, &a, &before);
 
@@ -316,7 +372,7 @@ fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
     //    Rust; A's connection to B is closed (G3), and B runs no more
     //    calls.
     a_config(&s, Calendar::Rust, &watch);
-    switch(&mut a, &watch, "node B", "rust");
+    switch(A::Fixture, &mut a, &watch, "node B", "rust");
     proxy.wait_closed(1);
     let ran_on_b = b.count("calendar on B: today");
     python_gone(&s, &a, &before);
@@ -324,7 +380,7 @@ fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
     // Throughout: the same A process (G5), no row failed. Then B stops
     // (Ctrl-C); it ran nothing after the switch away from it. The residue
     // checks end it.
-    end_a(&mut a, &watch, "rust", pid);
+    end_a(A::Fixture, &mut a, &watch, "rust", pid);
     b.ctrl_c();
     let status = b.wait_exit();
     assert_eq!(status.code(), Some(0), "B after Ctrl-C: {status}");
@@ -352,13 +408,46 @@ fn an_implementation_moves_from_python_to_rust_while_the_host_runs() {
     let s = Scenario::new("migration-rust");
     let watch = s.probe("watch", Lang::Node, &[]);
     let token = s.secret();
-    let (mut a, before) = stage_1(&s, &watch, &token);
+    let (mut a, before) = stage_1(&s, A::Fixture, &watch, &token);
     let pid = a.pid();
 
     a_config(&s, Calendar::Rust, &watch);
-    switch(&mut a, &watch, "python", "rust");
+    switch(A::Fixture, &mut a, &watch, "python", "rust");
     python_gone(&s, &a, &before);
 
-    end_a(&mut a, &watch, "rust", pid);
+    end_a(A::Fixture, &mut a, &watch, "rust", pid);
+    s.finish();
+}
+
+/// Stages 1 and 2 with A as `rutis-host run`: one edit and SIGUSR1 (on
+/// Windows, the watched file) move `calendar` from the Python row to B's,
+/// over a link the reload adds, with the token the environment has for B.
+///
+/// risk: G2 (a call in the switch's window hangs), G3 (the Python runtime
+/// is left after the switch), G4 (a user keeps the old implementation), G5
+/// (the host has to restart for the switch)
+///
+/// guarantee: host/reload-config, core/D14 (`planner` follows the switch,
+/// its row untouched)
+#[test]
+fn an_implementation_moves_from_python_to_a_node_while_rutis_host_runs() {
+    let s = Scenario::new("migration-run");
+    let watch = s.probe("watch", Lang::Node, &[]);
+    let token = s.secret();
+    let port = s.port();
+    let (mut a, before) = stage_1(&s, A::Run, &watch, &token);
+    let pid = a.pid();
+
+    let mut b = node_b(&s, port, &token);
+    let dial = format!("ws://127.0.0.1:{port}/rutis");
+    a_config(&s, Calendar::Node(&dial), &watch);
+    switch(A::Run, &mut a, &watch, "python", "node B");
+    b.expect("calendar on B: today");
+    python_gone(&s, &a, &before);
+
+    end_a(A::Run, &mut a, &watch, "node B", pid);
+    b.ctrl_c();
+    let status = b.wait_exit();
+    assert_eq!(status.code(), Some(0), "B after Ctrl-C: {status}");
     s.finish();
 }
