@@ -753,8 +753,21 @@ struct Calls {
     cancelled: std::collections::HashSet<String>,
     /// Late replies discarded after a cancellation.
     orphans: u64,
+    /// The far end's last call id, without its prefix.
     received: u64,
     closed: Option<Error>,
+}
+impl Calls {
+    /// Take the far end's call `sequence` (its id without the far end's
+    /// prefix): ids only grow, so one already taken, by a call answered,
+    /// running or refused, is not a new call and closes the session.
+    fn admit(&mut self, sequence: Option<&str>) -> Result<(), Error> {
+        self.received = sequence
+            .and_then(|n| n.parse::<u64>().ok())
+            .filter(|n| *n > self.received && *n <= 9_007_199_254_740_991)
+            .ok_or_else(|| transport("invalid or repeated invocation identity"))?;
+        Ok(())
+    }
 }
 
 /// A call recorded in the wait graph ([`waits::forward`]) that leaves it
@@ -1871,6 +1884,15 @@ impl Connection {
                 if !id.starts_with(self.remote_prefix()) {
                     return Err(transport("invalid invocation identity/path"));
                 }
+                // Refused, it is still a call: its id is taken as a
+                // completed call's is, so sending it again does not run it.
+                {
+                    let mut calls = self.0.calls.lock().unwrap();
+                    if let Some(error) = &calls.closed {
+                        return Err(error.clone());
+                    }
+                    calls.admit(id.strip_prefix(self.remote_prefix()))?;
+                }
                 let _ = self.write(Frame::Throw {
                     id: id.to_owned(),
                     error: error.into(),
@@ -2058,13 +2080,7 @@ impl Connection {
             if let Some(error) = &calls.closed {
                 return Err(error.clone());
             }
-            let sequence = incoming
-                .id
-                .strip_prefix(self.remote_prefix())
-                .and_then(|n| n.parse::<u64>().ok())
-                .filter(|n| *n > calls.received && *n <= 9_007_199_254_740_991)
-                .ok_or_else(|| transport("invalid or repeated invocation identity"))?;
-            calls.received = sequence;
+            calls.admit(incoming.id.strip_prefix(self.remote_prefix()))?;
             let waiter = incoming
                 .path
                 .iter()

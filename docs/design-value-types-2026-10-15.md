@@ -89,7 +89,7 @@
 | JS | `Date` → `instant`（无效日期报错）；`Uint8Array`、`ArrayBuffer`、`DataView`、`Buffer` → `bytes`；`Map` → `map`；`Set` → `set`；`bigint` → `bigint`；SDK 构造函数 → `datetime` / `date` / `time` / `decimal` / `uuid` |
 | Python | 带时区 `datetime` → `instant`；无时区 `datetime` → `datetime`（V5）；`date` → `date`；`time`（带时区的拒绝）→ `time`；`bytes`、`bytearray`、`memoryview` → `bytes`；`set`、`frozenset` → `set`；非字符串键的 `dict`、收到的 Map（`dict` 子类）→ `map`；超出 ±(2^53−1) 的 `int`、收到的大整数 → `bigint`；`Decimal` → `decimal`；`UUID` → `uuid`。`datetime`、`Decimal`、`UUID` 不再按对象引用传（#355） |
 | Go | `time.Time` → `instant`；`rutis.DateTime` / `rutis.Date` / `rutis.TimeOfDay` → `datetime` / `date` / `time`；`[]byte` → `bytes`；非字符串键的 map → `map`；`*big.Int` / `big.Int` → `bigint`；`rutis.Decimal` / `rutis.UUID` → `decimal` / `uuid`。结构体字段、带类型的切片与 map 递归经同一编码器（V9），不再静默变成字符串或 base64 |
-| Rust | `Value` 的新变体（V11）；`Value::json()` 遇到新值报错（同引用）；Cordis 生成器把 `Uint8Array`、`Date`、`bigint`、`Map`、`Set` 映射到上面的 Rust 类型 |
+| Rust | `Value` 的新变体（V11）；`Value::json()` 遇到新值报错（同引用）；Cordis 生成器把 `Uint8Array`、`Date`、`bigint`、`Map`、`Set` 映射到上面的 Rust 类型（按 `rutis_bridge::session` 的路径识别：`use` 引入或写完整路径；插件自己同名的类型不算），Map 键值、Set 元素里的 NaN、无穷同字段一样报错 |
 | Kotlin、Swift | 按 §二 的类型；值层用 SDK 自己的编码器逐个检查，不依赖 `JSONEncoder` / kotlinx 的默认编码（它们会把日期编成数字、二进制编成 base64） |
 
 时间点精度（V7）：JS 毫秒、Python 微秒、Swift 约微秒（`Date` 是 `Double`）、Go / Rust / Kotlin 纳秒；收到更细的值时向负无穷截断。
