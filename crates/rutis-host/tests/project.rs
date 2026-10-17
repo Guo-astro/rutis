@@ -100,7 +100,7 @@ fn a_package_json_project_in_bun_or_node() {
         std::fs::remove_file(project.join(lock)).unwrap();
     }
     for field in ["dependencies", "devDependencies"] {
-        let manifest = json!({ "name": "greeter", field: { "@arcships/rutis-bun": "^0.10" } });
+        let manifest = json!({ "name": "greeter", field: { "@arcships/rutis-bun": "^0.11" } });
         write(project, &[("package.json", &manifest.to_string())]);
         assert!(in_bun(), "{field}");
     }
