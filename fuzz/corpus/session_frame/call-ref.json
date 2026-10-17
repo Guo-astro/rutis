@@ -1,0 +1,1 @@
+{"op":"call","id":"r3","path":["a"],"reference":7,"method":"run","args":{"type":"list","value":[{"type":"reference","value":{"id":3,"home":false,"kind":"function","origin":["node-a"]}},{"type":"signal"}]}}

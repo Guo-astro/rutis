@@ -2313,7 +2313,7 @@ fn fits(value: &Json, levels: usize) -> bool {
 
 /// Whether a JSON text nests arrays and objects deeper than `limit`,
 /// found without parsing it (so without recursing).
-fn deeper_than(text: &[u8], limit: usize) -> bool {
+pub(crate) fn deeper_than(text: &[u8], limit: usize) -> bool {
     let (mut depth, mut string, mut escaped) = (0usize, false, false);
     for &byte in text {
         if string {
@@ -2343,7 +2343,7 @@ fn deeper_than(text: &[u8], limit: usize) -> bool {
 
 /// Parse a frame, nested at most [`MAX_FRAME_DEPTH`] deep (checked before),
 /// past serde_json's own limit of 128.
-fn parse_frame(text: &[u8]) -> Result<Frame, Error> {
+pub(crate) fn parse_frame(text: &[u8]) -> Result<Frame, Error> {
     use serde::Deserialize;
     let mut deserializer = serde_json::Deserializer::from_slice(text);
     deserializer.disable_recursion_limit();

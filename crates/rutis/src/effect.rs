@@ -1,5 +1,5 @@
 use std::panic::AssertUnwindSafe;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 
 use tokio::sync::Notify;
 
@@ -76,7 +76,7 @@ impl Effect {
     }
 }
 
-enum Cleanup {
+pub(crate) enum Cleanup {
     Sync(Box<dyn FnOnce() -> Result<(), CordisError> + Send>),
     Async(Box<dyn FnOnce() -> BoxFuture<'static, Result<(), CordisError>> + Send>),
 }
@@ -86,7 +86,8 @@ enum Cleanup {
 /// 宿主 fiber(`owner`):清理进 Done 后从宿主 effects 列表自摘——长寿
 /// parent 下反复注册/清理的瞬态记录不残留(0.2.1 瞬态子插件释放)。
 pub(crate) struct EffectRecord {
-    st: Mutex<EffectState>,
+    /// `crate::sync`: a shuttle mutex in the shuttle models (#179).
+    st: crate::sync::Mutex<EffectState>,
     metadata: EffectMeta,
     notify: Notify,
     owner: Option<Weak<FiberInner>>,
@@ -103,7 +104,7 @@ impl EffectRecord {
         let mut cleanups = Vec::new();
         let metadata = effect.into_cleanups(label, &mut cleanups);
         Arc::new(Self {
-            st: Mutex::new(EffectState::Live(cleanups)),
+            st: crate::sync::Mutex::new(EffectState::Live(cleanups)),
             metadata,
             notify: Notify::new(),
             owner: Some(owner),
@@ -129,63 +130,72 @@ impl EffectRecord {
         self: &Arc<Self>,
         handle: &tokio::runtime::Handle,
     ) -> Result<(), Arc<CordisError>> {
-        let claimed = {
-            let mut st = self.st.lock().unwrap();
-            match &mut *st {
-                EffectState::Live(_) => {
-                    let live = std::mem::replace(&mut *st, EffectState::Draining);
-                    match live {
-                        EffectState::Live(cleanups) => Some(cleanups),
-                        _ => unreachable!(),
-                    }
-                }
-                EffectState::Draining | EffectState::Done(_) => None,
-            }
-        };
-
-        if let Some(mut cleanups) = claimed {
+        if let Some(mut cleanups) = self.claim() {
             let this = self.clone();
             let runner = handle.clone();
             handle.spawn(async move {
                 // 清理全程 panic 兜底(评审 #7/#11):任何 panic 转为
                 // PluginFailed 错误,任务必定写回 Done,不卡 Draining
                 let err = run_cleanups(&mut cleanups, &runner).await;
-                *this.st.lock().unwrap() = EffectState::Done(err.clone());
-                // 自摘与寄存(0.2.1)先于 notify:join 返回时宿主列表已无本记录。
-                // 仅当记录仍在宿主 effects 列表(提前 drain,收集者不是 fiber
-                // 级卸载)才寄存错误并自摘;drain_effects 整表收走的记录由其
-                // join 直接收集,不重复寄存。锁内判定与 mem::take 互斥,无竞态。
-                if let Some(owner) = this.owner.as_ref().and_then(Weak::upgrade) {
-                    let mut effects = owner.effects.lock().unwrap();
-                    let present = effects.iter().any(|r| Arc::ptr_eq(r, &this));
-                    if present {
-                        effects.retain(|r| !Arc::ptr_eq(r, &this));
-                        if effects.capacity() > 64 && effects.len() * 4 < effects.capacity() {
-                            effects.shrink_to_fit();
-                        }
-                        if let Some(e) = &err {
-                            // Keep the effects lock until the error is queued.
-                            // drain_effects takes the whole effects list under
-                            // this lock, then consumes drained_errors: it must
-                            // see either this record or its queued error.
-                            owner.drained_errors.lock().unwrap().push(e.clone());
-                        }
-                    }
-                    drop(effects);
-                    let weak = Arc::downgrade(&this);
-                    let mut index = owner.effect_index.lock().unwrap();
-                    index.retain(|entry| !Weak::ptr_eq(entry, &weak) && entry.strong_count() > 0);
-                    if index.capacity() > 64 && index.len() * 4 < index.capacity() {
-                        index.shrink_to_fit();
-                    }
-                }
-                this.notify.notify_waiters();
+                this.finish(err);
             });
         }
         self.join().await
     }
 
-    async fn join(&self) -> Result<(), Arc<CordisError>> {
+    /// The cleanups, to the one caller that finds the record live: checked
+    /// and taken under one lock, so concurrent drains run them once.
+    pub(crate) fn claim(&self) -> Option<Vec<Cleanup>> {
+        let mut st = self.st.lock().unwrap();
+        match &mut *st {
+            EffectState::Live(_) => {
+                let live = std::mem::replace(&mut *st, EffectState::Draining);
+                match live {
+                    EffectState::Live(cleanups) => Some(cleanups),
+                    _ => unreachable!(),
+                }
+            }
+            EffectState::Draining | EffectState::Done(_) => None,
+        }
+    }
+
+    /// Record the cleanups' result and wake every join.
+    pub(crate) fn finish(self: &Arc<Self>, err: Option<Arc<CordisError>>) {
+        *self.st.lock().unwrap() = EffectState::Done(err.clone());
+        // 自摘与寄存(0.2.1)先于 notify:join 返回时宿主列表已无本记录。
+        // 仅当记录仍在宿主 effects 列表(提前 drain,收集者不是 fiber
+        // 级卸载)才寄存错误并自摘;drain_effects 整表收走的记录由其
+        // join 直接收集,不重复寄存。锁内判定与 mem::take 互斥,无竞态。
+        if let Some(owner) = self.owner.as_ref().and_then(Weak::upgrade) {
+            let mut effects = owner.effects.lock().unwrap();
+            let present = effects.iter().any(|r| Arc::ptr_eq(r, self));
+            if present {
+                effects.retain(|r| !Arc::ptr_eq(r, self));
+                if effects.capacity() > 64 && effects.len() * 4 < effects.capacity() {
+                    effects.shrink_to_fit();
+                }
+                if let Some(e) = &err {
+                    // Keep the effects lock until the error is queued.
+                    // drain_effects takes the whole effects list under
+                    // this lock, then consumes drained_errors: it must
+                    // see either this record or its queued error.
+                    owner.drained_errors.lock().unwrap().push(e.clone());
+                }
+            }
+            drop(effects);
+            let weak = Arc::downgrade(self);
+            let mut index = owner.effect_index.lock().unwrap();
+            index.retain(|entry| !Weak::ptr_eq(entry, &weak) && entry.strong_count() > 0);
+            if index.capacity() > 64 && index.len() * 4 < index.capacity() {
+                index.shrink_to_fit();
+            }
+        }
+        self.notify.notify_waiters();
+    }
+
+    /// Wait for the cleanups' result. The wakeup is registered before the
+    /// state is read, so a `finish` between the two is not missed.
+    pub(crate) async fn join(&self) -> Result<(), Arc<CordisError>> {
         loop {
             let notified = self.notify.notified();
             {
@@ -197,6 +207,8 @@ impl EffectRecord {
                     };
                 }
             }
+            // The window `notified` covers: `finish` may run here.
+            crate::sync::switch_point();
             notified.await;
         }
     }
@@ -204,7 +216,7 @@ impl EffectRecord {
 
 /// 严格 LIFO 串行执行清理;闭包调用(`f()`)与 Future poll 两处 panic
 /// 边界都捕获为 `PluginFailed`(评审 #7),一个清理失败不阻止其余清理。
-async fn run_cleanups(
+pub(crate) async fn run_cleanups(
     cleanups: &mut Vec<Cleanup>,
     handle: &tokio::runtime::Handle,
 ) -> Option<Arc<CordisError>> {

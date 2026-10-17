@@ -18,7 +18,7 @@ pub const PROTOCOL: u32 = 2;
 pub const ENDPOINT_PROTOCOL: u32 = 3;
 
 mod objects;
-mod protocol;
+pub(crate) mod protocol;
 pub(crate) mod rpc;
 mod services;
 #[cfg(feature = "testing")]

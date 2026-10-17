@@ -20,6 +20,7 @@ mod intercept;
 mod key;
 mod plugin;
 mod registry;
+mod sync;
 mod typed;
 
 pub use bus::{DispatchAttempt, DispatchMode, EventBus, EventSubscription, ListenerKind};

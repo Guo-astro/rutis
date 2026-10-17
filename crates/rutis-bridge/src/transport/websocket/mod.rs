@@ -27,7 +27,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 mod config;
 mod connection;
 mod dial;
-mod listen;
+pub(crate) mod listen;
 mod pipe;
 mod tls;
 

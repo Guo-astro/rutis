@@ -131,6 +131,37 @@ impl Intent {
     }
 }
 
+/// [`FiberInner::post_join`] on a driver's `alive` flag and mailbox; apart
+/// from the fiber so the shuttle model of the driver's exit
+/// (`shuttle_tests.rs`, #179) runs this very code.
+pub(crate) fn post_join_to(
+    alive: &crate::sync::AtomicBool,
+    intents: &mpsc::UnboundedSender<Intent>,
+    task: Arc<TransitionTask>,
+    make: impl FnOnce(Arc<TransitionTask>) -> Intent,
+    stopped_error: impl Fn() -> Option<Arc<CordisError>>,
+) -> bool {
+    if !alive.load(Ordering::SeqCst) {
+        task.complete(stopped_error());
+        return false;
+    }
+    // The window the check after sending closes: the driver may stop and
+    // drain here.
+    crate::sync::switch_point();
+    match intents.send(make(task.clone())) {
+        Ok(()) => {
+            if !alive.load(Ordering::SeqCst) {
+                task.complete(stopped_error());
+            }
+            true
+        }
+        Err(_) => {
+            task.complete(stopped_error());
+            false
+        }
+    }
+}
+
 /// 意图携带的完成信号即刻完成(驱动不存在时防 join 永等)。
 fn complete_intent(intent: &Intent, err: Option<Arc<CordisError>>) {
     if let Some(task) = intent.task() {
@@ -197,7 +228,7 @@ pub(crate) struct FiberInner {
     pub intents_tx: mpsc::UnboundedSender<Intent>,
     /// 驱动存活标志:置 false 后 post 拒绝投递并即刻完成携带的任务
     ///(评审 #2/#3:驱动退出后的排队意图不得让 join 永等)。
-    pub alive: AtomicBool,
+    pub alive: crate::sync::AtomicBool,
     /// 本 fiber 提供的 (key, scope)。
     pub provided: Mutex<Vec<(TypeKey, Option<crate::key::ScopeId>)>>,
     /// 等值合并键:最近一次装载(含失败的一代)解析到的依赖四元组集
@@ -393,22 +424,9 @@ impl FiberInner {
         task: Arc<TransitionTask>,
         make: impl FnOnce(Arc<TransitionTask>) -> Intent,
     ) -> bool {
-        if !self.alive.load(Ordering::SeqCst) {
-            task.complete(self.stopped_error());
-            return false;
-        }
-        match self.intents_tx.send(make(task.clone())) {
-            Ok(()) => {
-                if !self.alive.load(Ordering::SeqCst) {
-                    task.complete(self.stopped_error());
-                }
-                true
-            }
-            Err(_) => {
-                task.complete(self.stopped_error());
-                false
-            }
-        }
+        post_join_to(&self.alive, &self.intents_tx, task, make, || {
+            self.stopped_error()
+        })
     }
 
     pub(crate) fn state(&self) -> FiberState {
@@ -1142,7 +1160,7 @@ fn spawn_fiber_inner(
             mount: Mutex::new(None),
             declared_injects,
             intents_tx: tx.clone(),
-            alive: AtomicBool::new(!closed),
+            alive: crate::sync::AtomicBool::new(!closed),
             provided: Mutex::new(Vec::new()),
             last_deps: Mutex::new(None),
             accesses: Mutex::new(Vec::new()),
@@ -1653,3 +1671,8 @@ pub(crate) mod test_hooks {
 
 #[cfg(test)]
 mod transient_tests;
+
+// The shuttle models (#179), built only with `--cfg rutis_shuttle`
+// (`crate::sync`; CONTRIBUTING.md says how to run them).
+#[cfg(all(test, rutis_shuttle))]
+mod shuttle_tests;

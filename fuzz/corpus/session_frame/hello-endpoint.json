@@ -1,0 +1,1 @@
+{"op":"hello","version":3,"endpoint":"node-a","implementation":{"name":"rutis-node","version":"0.11.0"},"capabilities":["sync-wait","value-instant","value-map","value-bytes"]}

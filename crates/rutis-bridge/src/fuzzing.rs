@@ -1,0 +1,326 @@
+//! Entry points of the fuzz targets in `fuzz/` (#179; standard Q6.4.2,
+//! risks P2, E7). Built only by cargo-fuzz (`--cfg fuzzing`); each runs
+//! the code that reads input from the far end and panics when one of its
+//! properties fails, which the fuzzer reports as a crash.
+
+use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
+
+use serde_json::Value as Json;
+
+use crate::channel::{ChannelError, ChannelInfo, Closer};
+use crate::session::protocol::{Frame, WireValue};
+use crate::session::rpc::{deeper_than, parse_frame, MAX_FRAME_DEPTH};
+use crate::session::values::{base64_decode, base64_encode, check_keys};
+use crate::session::{BigInt, Date, DateTime, Decimal, Instant, TimeOfDay, Uuid, Value};
+use crate::transport::local::lines;
+
+/// A frame as the session's reader takes it: the depth check, then the
+/// parse, then each value in it decoded as `Peer::decode` decodes it
+/// (references aside: they need a session). The decoder must never panic;
+/// what it reads back must write and read again unchanged:
+///
+/// - a frame: written again, read again and written once more, the two
+///   writes are the same text;
+/// - each tagged value (instant, datetime, date, time, bytes, map, set,
+///   bigint, decimal, uuid) whose text decodes: its text written from the
+///   decoded value decodes to the same value, and bytes, which take only
+///   canonical base64, write back the very text.
+pub fn session_frame(data: &[u8]) {
+    if deeper_than(data, MAX_FRAME_DEPTH) {
+        // The reader fails the frame's call without parsing the frame.
+        return;
+    }
+    let Ok(frame) = parse_frame(data) else {
+        return;
+    };
+    let written = serde_json::to_vec(&frame).expect("a frame read writes");
+    let again = parse_frame(&written)
+        .unwrap_or_else(|error| panic!("a frame written does not read back: {error}"));
+    let rewritten = serde_json::to_vec(&again).expect("a frame read writes");
+    assert_eq!(
+        String::from_utf8_lossy(&written),
+        String::from_utf8_lossy(&rewritten),
+        "a frame changed on its way back"
+    );
+    for value in values(frame) {
+        let _ = decode(value);
+    }
+}
+
+/// The values a frame carries.
+fn values(frame: Frame) -> Vec<WireValue> {
+    match frame {
+        Frame::Invoke { args, .. } | Frame::Call { args, .. } => vec![args],
+        Frame::Return { value, .. } => vec![value],
+        _ => Vec::new(),
+    }
+}
+
+/// `Peer::decode` (session/rpc.rs) without a session: every tagged value's
+/// text is checked as there, with the same parsers; a reference, which
+/// needs a session, decodes to a value no key may be, as a reference.
+fn decode(value: WireValue) -> Result<Value, crate::session::Error> {
+    Ok(match value {
+        WireValue::Instant(text) => Value::Instant(stable::<Instant>(&text)?),
+        WireValue::DateTime(text) => Value::DateTime(stable::<DateTime>(&text)?),
+        WireValue::Date(text) => Value::Date(stable::<Date>(&text)?),
+        WireValue::Time(text) => Value::Time(stable::<TimeOfDay>(&text)?),
+        WireValue::BigInt(text) => Value::BigInt(stable::<BigInt>(&text)?),
+        WireValue::Decimal(text) => Value::Decimal(stable::<Decimal>(&text)?),
+        WireValue::Uuid(text) => Value::Uuid(stable::<Uuid>(&text)?),
+        WireValue::Bytes(text) => {
+            let bytes = base64_decode(&text)?;
+            assert_eq!(
+                base64_encode(&bytes),
+                text,
+                "bytes changed on their way back"
+            );
+            Value::Bytes(bytes)
+        }
+        WireValue::Map(entries) => {
+            let mut decoded = Vec::new();
+            for (key, value) in entries {
+                let value = match decode(value)? {
+                    Value::Undefined => Value::Data(Json::Null),
+                    value => value,
+                };
+                decoded.push((decode(key)?, value));
+            }
+            check_keys(decoded.iter().map(|(key, _)| key), "map key")?;
+            Value::Map(decoded)
+        }
+        WireValue::Set(elements) => {
+            let elements = elements
+                .into_iter()
+                .map(decode)
+                .collect::<Result<Vec<_>, _>>()?;
+            check_keys(&elements, "set element")?;
+            Value::Set(elements)
+        }
+        WireValue::Undefined => Value::Undefined,
+        WireValue::Data(value) => Value::Data(value),
+        WireValue::List(values) => {
+            Value::List(values.into_iter().map(decode).collect::<Result<_, _>>()?)
+        }
+        WireValue::Record(fields) => Value::Record(
+            fields
+                .into_iter()
+                .map(|(key, value)| Ok((key, decode(value)?)))
+                .collect::<Result<_, crate::session::Error>>()?,
+        ),
+        WireValue::Signal | WireValue::Reference { .. } => Value::Signal,
+    })
+}
+
+/// `text` decoded as a `T`; if it decodes, the text written from it
+/// decodes to the same value, and writes the same text again.
+fn stable<T>(text: &str) -> Result<T, crate::session::Error>
+where
+    T: std::str::FromStr<Err = crate::session::Error>
+        + std::fmt::Display
+        + PartialEq
+        + std::fmt::Debug,
+{
+    let value: T = text.parse()?;
+    let written = value.to_string();
+    let again: T = written
+        .parse()
+        .unwrap_or_else(|error| panic!("{text:?} decodes, but {written:?} does not: {error}"));
+    assert_eq!(
+        value, again,
+        "{text:?} changed on its way back through {written:?}"
+    );
+    assert_eq!(again.to_string(), written, "{text:?} writes two ways");
+    Ok(value)
+}
+
+/// The local line framing (transport/local/lines.rs) reading a stream that
+/// arrives in pieces: the first byte picks the message limit (0–255 bytes,
+/// so the limit is reached), the second the size of each piece (1–16
+/// bytes), the rest is the stream. What the receiver yields must be what a
+/// plain split at newlines says, ending as it says; each message must send
+/// back as the same line.
+pub fn local_lines(data: &[u8]) {
+    let [limit, piece, stream @ ..] = data else {
+        return;
+    };
+    let (max, piece) = (usize::from(*limit), usize::from(piece % 16) + 1);
+    let written = Arc::new(Mutex::new(Vec::new()));
+    let mut channel = lines::limited(
+        Pieces {
+            data: stream.to_vec(),
+            at: 0,
+            piece,
+        },
+        Shared(written.clone()),
+        Arc::new(Nothing),
+        ChannelInfo::default(),
+        max,
+    );
+    let mut expected = expected_lines(stream, max).into_iter();
+    loop {
+        let got = channel.receiver.recv();
+        let want = expected.next().expect("the receiver went on past the end");
+        match (got, want) {
+            (Ok(Some(line)), Expected::Line(want)) => {
+                assert_eq!(line, want, "a message is not the line sent");
+                channel
+                    .sender
+                    .send(&line)
+                    .expect("a message received sends back");
+            }
+            (Ok(None), Expected::End) => break,
+            (Err(ChannelError::Closed { reason }), Expected::TooBig) => {
+                assert!(reason.contains("over the limit"), "{reason}");
+                break;
+            }
+            (Err(ChannelError::Closed { reason }), Expected::Truncated) => {
+                assert!(reason.contains("inside a message"), "{reason}");
+                break;
+            }
+            (got, want) => panic!("received {got:?}, expected {want:?}"),
+        }
+    }
+    // What was sent back is the stream up to the last complete line read.
+    let sent = written.lock().unwrap().clone();
+    assert!(
+        stream.starts_with(&sent),
+        "the lines sent back are not the stream"
+    );
+}
+
+#[derive(Debug)]
+enum Expected {
+    Line(Vec<u8>),
+    End,
+    TooBig,
+    Truncated,
+}
+
+/// What reading `stream` with messages of at most `max` bytes yields.
+fn expected_lines(stream: &[u8], max: usize) -> Vec<Expected> {
+    let mut out = Vec::new();
+    let mut rest = stream;
+    loop {
+        match rest.iter().position(|&byte| byte == b'\n') {
+            Some(end) if end > max => {
+                out.push(Expected::TooBig);
+                return out;
+            }
+            Some(end) => {
+                out.push(Expected::Line(rest[..end].to_vec()));
+                rest = &rest[end + 1..];
+            }
+            None if rest.is_empty() => {
+                out.push(Expected::End);
+                return out;
+            }
+            None if rest.len() > max => {
+                out.push(Expected::TooBig);
+                return out;
+            }
+            None => {
+                out.push(Expected::Truncated);
+                return out;
+            }
+        }
+    }
+}
+
+/// A stream that hands out at most `piece` bytes per read.
+struct Pieces {
+    data: Vec<u8>,
+    at: usize,
+    piece: usize,
+}
+
+impl Read for Pieces {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = buffer.len().min(self.piece).min(self.data.len() - self.at);
+        buffer[..count].copy_from_slice(&self.data[self.at..self.at + count]);
+        self.at += count;
+        Ok(count)
+    }
+}
+
+struct Shared(Arc<Mutex<Vec<u8>>>);
+
+impl Write for Shared {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+struct Nothing;
+
+impl Closer for Nothing {
+    fn close(&self, _: &str) {}
+}
+
+/// A WebSocket upgrade request as the listener reads it
+/// (transport/websocket/listen.rs): tungstenite's server handshake with
+/// the listener's limits, and in its callback the listener's own reading of
+/// the path, the bearer token and the offered session protocols, then its
+/// choice of protocol. Credentials stand in as accepted: checking them is
+/// the registrations' job. Must not panic, whatever the bytes.
+#[cfg(feature = "websocket")]
+pub fn websocket_upgrade(data: &[u8]) {
+    use crate::transport::websocket::listen::{agree_protocol, read_upgrade};
+    use crate::transport::websocket::{ws_config, Limits};
+    use tokio_tungstenite::tungstenite;
+    use tungstenite::handshake::server::{Request, Response};
+
+    const PROTOCOL: &str = "rutis.3";
+    #[allow(clippy::result_large_err)] // tungstenite fixes the signature
+    let check = |request: &Request, mut response: Response| {
+        let upgrade = read_upgrade(request, "/rutis")?;
+        // The registrations would look the token up; it is a part of the
+        // header, as received.
+        if let Some(token) = upgrade.bearer {
+            let header = request.headers()["Authorization"].as_bytes();
+            assert!(header.ends_with(token.as_bytes()));
+        }
+        let protocol = agree_protocol(PROTOCOL, &upgrade.offered)?;
+        assert_eq!(protocol, PROTOCOL);
+        response
+            .headers_mut()
+            .insert("Sec-WebSocket-Protocol", protocol);
+        Ok(response)
+    };
+    let stream = Duplex {
+        input: std::io::Cursor::new(data),
+        output: Vec::new(),
+    };
+    let _ = tungstenite::accept_hdr_with_config(stream, check, Some(ws_config(&Limits::default())));
+}
+
+/// The two directions of a connection: the dialer's bytes in, the
+/// listener's reply out.
+#[cfg(feature = "websocket")]
+struct Duplex<'a> {
+    input: std::io::Cursor<&'a [u8]>,
+    output: Vec<u8>,
+}
+
+#[cfg(feature = "websocket")]
+impl Read for Duplex<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.input.read(buffer)
+    }
+}
+
+#[cfg(feature = "websocket")]
+impl Write for Duplex<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.output.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}

@@ -12,6 +12,11 @@
 # The seed of a round drives both the order and `RUTIS_SEED`; a failing
 # round prints its output, its settings and a command that replays it.
 # A failure is never retried.
+#
+# Two more kinds of check run here at nightly scale (#179): the shuttle
+# models of the kernel, which pull requests run with 1000 iterations in
+# ci.yml's `rust` job, with many more; and the fuzz targets in fuzz/, each
+# for a fixed time.
 name: stress
 
 on:
@@ -23,6 +28,12 @@ on:
       soak_secs:
         description: How long each soak runs, in seconds
         default: "600"
+      shuttle_iterations:
+        description: Iterations of each shuttle scheduler, per model
+        default: "1000000"
+      fuzz_secs:
+        description: How long each fuzz target runs, in seconds
+        default: "1200"
   # nightly.yml, with the defaults.
   workflow_call:
     inputs:
@@ -32,6 +43,12 @@ on:
       soak_secs:
         type: string
         default: "600"
+      shuttle_iterations:
+        type: string
+        default: "1000000"
+      fuzz_secs:
+        type: string
+        default: "1200"
 
 permissions:
   contents: read
@@ -278,3 +295,110 @@ jobs:
           cargo test -q -p rutis-bridge --features websocket --test websocket_soak -- --ignored --nocapture 2>&1 | tee websocket.txt
           cargo test -q -p rutis-bridge --test local_soak -- --ignored --nocapture 2>&1 | tee local.txt
           grep -h '^soak:' websocket.txt local.txt >> "$GITHUB_STEP_SUMMARY"
+
+  # The shuttle models of the kernel (crates/rutis/src/fiber/shuttle_tests.rs:
+  # TransitionTask wakeup, post_join against the driver's exit, concurrent
+  # dispose), `shuttle_iterations` iterations of each scheduler per model.
+  # A failure prints the failing schedule and seed; the log is uploaded.
+  shuttle:
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Run the shuttle models
+        # bash -eo pipefail: a failing model fails the step through tee.
+        shell: bash
+        env:
+          RUSTFLAGS: --cfg rutis_shuttle
+          RUTIS_SHUTTLE_ITERATIONS: ${{ inputs.shuttle_iterations || '1000000' }}
+        run: |
+          case "$RUTIS_SHUTTLE_ITERATIONS" in ""|*[!0-9]*) echo "::error::shuttle_iterations must be a number"; exit 1;; esac
+          mkdir -p "$RUNNER_TEMP/shuttle"
+          cargo test -p rutis --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle 2>&1 | tee "$RUNNER_TEMP/shuttle/shuttle.txt"
+          echo "shuttle: $RUTIS_SHUTTLE_ITERATIONS iterations of each scheduler per model, passed" >> "$GITHUB_STEP_SUMMARY"
+      - name: Say how to replay
+        if: failure()
+        run: |
+          {
+            echo "### shuttle models failed"
+            echo
+            echo "The failing schedule is in the log (\`failing schedule: \"…\"\`) and in the \`shuttle-log\` artifact. Replay it:"
+            echo
+            echo "\`RUTIS_SHUTTLE_REPLAY=<schedule> RUSTFLAGS=\"--cfg rutis_shuttle\" cargo test -p rutis --lib --target-dir target/shuttle <failing test>\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: shuttle-log
+          path: ${{ runner.temp }}/shuttle
+          retention-days: 14
+
+  # The fuzz targets in fuzz/ (cargo-fuzz, nightly Rust), `fuzz_secs` each,
+  # in parallel: session frames, the local line framing, WebSocket upgrade
+  # requests. They start from the corpus checked in (fuzz/corpus/<target>);
+  # what they add to it is not kept. A crash or a property that fails stops
+  # the target; its input is uploaded with the log.
+  fuzz:
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [session_frame, local_lines, websocket_upgrade]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        # Outside the repository, whose rust-toolchain.toml would pick the
+        # stable toolchain.
+        working-directory: ${{ runner.temp }}
+        run: cargo install cargo-fuzz --locked --version 0.13.2
+      - name: Fuzz ${{ matrix.target }}
+        shell: bash
+        working-directory: fuzz
+        env:
+          TARGET: ${{ matrix.target }}
+          FUZZ_SECS: ${{ inputs.fuzz_secs || '1200' }}
+        run: |
+          case "$FUZZ_SECS" in ""|*[!0-9]*) echo "::error::fuzz_secs must be a number"; exit 1;; esac
+          mkdir -p "$RUNNER_TEMP/corpus" artifacts
+          cargo +nightly fuzz build "$TARGET"
+          # libFuzzer's progress goes to the log (uploaded on failure); its
+          # end is printed. One input running over 10 s counts as a hang.
+          status=0
+          cargo +nightly fuzz run "$TARGET" "$RUNNER_TEMP/corpus" "corpus/$TARGET" -- \
+            -max_total_time="$FUZZ_SECS" -timeout=10 -rss_limit_mb=2048 \
+            > "artifacts/$TARGET.log" 2>&1 || status=$?
+          tail -n 60 "artifacts/$TARGET.log"
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=fuzz $TARGET::the target failed (exit status $status), see the log above"
+            exit "$status"
+          fi
+          echo "fuzz $TARGET: $FUZZ_SECS s, $(grep -o 'Done [0-9]* runs' "artifacts/$TARGET.log" | tail -1), no failure" >> "$GITHUB_STEP_SUMMARY"
+      - name: Say how to reproduce
+        if: failure()
+        working-directory: fuzz
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          {
+            echo "### fuzz target $TARGET failed"
+            echo
+            echo "The input is in the \`fuzz-$TARGET\` artifact, with the log. Reproduce, in \`fuzz/\`:"
+            echo
+            for input in artifacts/"$TARGET"/*; do
+              [ -e "$input" ] || continue
+              echo "- \`cargo +nightly fuzz run $TARGET $input\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: fuzz/artifacts
+          retention-days: 14
