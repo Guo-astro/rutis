@@ -73,6 +73,7 @@ The first job of `ci.yml`, `changes`, looks at the files the pull request change
 | `bun` | `bun/**`, `node/rutis/**`, `crates/rutis-bridge`, `crates/rutis-loader`, `crates/rutis-host` |
 | `go` | `go/**`, `crates/rutis-bridge`, `crates/rutis-loader`, `crates/rutis-host` |
 | `repro` | `crates/rutis-sdk`, `crates/rutis-cli/build.rs`, `tools/test-dylib-repro.sh`, `tools/build-dylib-bundle.sh`, `tools/lib/**`. Kernel changes reach the SDK too, but its reproducibility check for them runs in full runs |
+| `specs` | `specs/**` (the TLA+ models, their configurations, expected outcomes, and the READMEs that record the results) |
 
 ## 4. Jobs
 
@@ -97,6 +98,7 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 | `dylib-macos` | macOS (self-hosted, §10) | `dylib` | The reproducible-build step | The same dylib tests, one after another in one job, sharing one bundle build; the reproducible-build step runs only when `repro` is on |
 | `release-dry-run` | macOS (self-hosted, §10) | `packaging` | The whole job | The release packages build (crates, npm packages, Python packages). `install.yml` builds and installs the binaries and wheels of each platform (§2): only Linux x64 on pull requests; the other platforms' packaging is checked nightly and before a release |
 | `sdk-repro`, `sdk-repro-macos`, and their comparisons | Linux, macOS (self-hosted, §10) | Only with `all` | The whole jobs | Builds the SDK on two machines and checks the results are identical (the comparisons run on the self-hosted macOS) |
+| `specs` | Linux | `specs` | — | The TLA+ design models (`specs/`, quality standard §11.2): one entry per model (a matrix); installs Java 21 and the pinned, sha256-checked `tla2tools.jar` (v1.7.4), runs the model directory's `run.sh`, and compares each configuration's outcome (ok, deadlock, an invariant or liveness violated) with `expected.txt`. On failure the TLC logs (with the counterexamples) are uploaded as artifact `tlc-<model>`. `cross-runtime-sync` takes about 1 minute, `remote-lease` about 2–3 (16 cores; an estimated 5–8 on GitHub's 4-core machines) |
 | `ci-ok` | macOS (self-hosted, §10) | Always | — | The summary (§5) |
 
 ### Tests that depend on the platform
