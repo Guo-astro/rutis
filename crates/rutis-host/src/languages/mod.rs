@@ -1,0 +1,332 @@
+//! The languages rutis-host runs on this machine: one [`Language`] each,
+//! listed in [`LANGUAGES`].
+//!
+//! Each knows its part of `rutis.json` (`runtimes.<key>`: making its paths
+//! relative to the file, merging a dev file), how its runtime is found and
+//! started, the names it takes as `runtimes.remote[].language` and how a
+//! remote runtime's rows are named, its `rutis-host new` template, and how
+//! `rutis-host dev` recognizes and runs a project of it.
+//!
+//! Adding a language: a file here implementing [`Language`], its line in
+//! [`LANGUAGES`] (and in [`REMOTE_LANGUAGES`] when it runs remotely), its
+//! field in [`crate::config::Runtimes`] (the `rutis.json` format), and its
+//! templates under `templates/<language>/`.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use rutis::{BoxFuture, Ctx, FiberView};
+use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle, Stdio};
+use rutis_loader::{Chain, Resolver, RuntimeResolver, ServiceCatalog};
+use serde_json::Value;
+
+use crate::config::{HostConfig, Runtimes};
+use crate::host::{Error, GoHost};
+
+mod bun;
+mod go;
+mod node;
+mod python;
+
+pub use go::GoDev;
+
+/// Every local language, in the order messages list them (`new --lang`)
+/// and `rutis-host dev` tries them on a project (Node before Bun: Node's
+/// recognizes a package.json project only when it is not Bun's).
+///
+/// The host starts them in the reverse order: their resolvers are tried in
+/// that order, and Node's, which takes bare npm names and `file:` URLs,
+/// comes last, after every prefixed one (`go:`, `py:`, `bun:`).
+pub static LANGUAGES: &[&dyn Language] = &[&node::Node, &bun::Bun, &python::Python, &go::Go];
+
+/// What a remote runtime's language may be, as its error lists them: kept
+/// as written before the registry (its order is not [`LANGUAGES`]'), and
+/// checked against it by a test.
+pub const REMOTE_LANGUAGES: &str = "python, go, node or bun";
+
+/// One local language.
+pub trait Language: Sync {
+    /// Its field under `runtimes` in `rutis.json`, and the name of the
+    /// runtime it starts (rows `<key>:<module>`; Node's take npm names).
+    fn key(&self) -> &'static str;
+
+    /// Whether `runtimes` configures it.
+    fn configured(&self, runtimes: &Runtimes) -> bool;
+
+    /// Make its relative paths absolute with `at`.
+    fn rebase(&self, runtimes: &mut Runtimes, at: &dyn Fn(&mut PathBuf));
+
+    /// Take `other`'s settings when `runtimes` has none.
+    fn merge(&self, runtimes: &mut Runtimes, other: &mut Runtimes);
+
+    /// When it is configured: why a remote runtime may not be named `name`
+    /// (its rows' prefix would be this language's), or `None`.
+    fn claims(&self, name: &str) -> Option<String> {
+        (name == self.key()).then(|| taken(name))
+    }
+
+    /// The names `runtimes.remote[].language` takes for it.
+    fn remote_names(&self) -> &'static [&'static str];
+
+    /// The resolver of the rows of its runtime `runtime`, local or remote:
+    /// by default `<runtime>:<module>`.
+    fn rows(&self, runtime: RuntimeHandle) -> RuntimeResolver {
+        RuntimeResolver::modules(runtime)
+    }
+
+    /// Its runtime as `runtimes` configures it, found (its package, its
+    /// interpreter) and ready to mount; `None` when it is not configured.
+    /// One runtime per language: a language with several overrides
+    /// [`Language::start`] instead.
+    fn runtime(&self, _runtimes: &Runtimes) -> Option<Result<LocalRuntime, Error>> {
+        None
+    }
+
+    /// Mount what `config` configures of it: by default its
+    /// [`Language::runtime`], its rows resolved by [`Language::rows`].
+    fn start(&self, config: &HostConfig, mount: &mut Mount<'_>) -> Result<(), Error> {
+        if let Some(runtime) = self.runtime(&config.runtimes) {
+            let runtime = runtime?;
+            mount.local(self.key(), runtime, |handle| self.rows(handle));
+        }
+        Ok(())
+    }
+
+    /// The `--lang` names `rutis-host new` takes for it, the first the one
+    /// messages show.
+    fn new_names(&self) -> &'static [&'static str];
+
+    /// The files of a new project: (path, text), with `__module__` and
+    /// `__name__` in paths and `{{name}}`, `{{id}}`, `{{module}}`,
+    /// `{{package}}`, `{{version}}` and `{{next}}` in texts filled in.
+    fn template(&self) -> &'static [(&'static str, &'static str)];
+
+    /// What to run in a new project, as `rutis-host new` says.
+    fn next_steps(&self) -> &'static str;
+
+    /// The file that marks a project of it, as the error of `rutis-host
+    /// dev` in a directory without one names it.
+    fn project_file(&self) -> &'static str;
+
+    /// Whether `dir` is a project of it.
+    fn is_project(&self, dir: &Path) -> bool;
+
+    /// The rows and runtime that run the project in `dir` (one of it).
+    fn dev(&self, dir: &Path) -> Result<(Vec<Value>, Runtimes), String>;
+
+    /// What `rutis.dev.json` (`dev`) says of the runtime the project
+    /// configures in `own`, when it should win over it; by default the
+    /// project's own settings stay.
+    fn dev_file(&self, _own: &mut Runtimes, _dev: &Runtimes) {}
+}
+
+/// The error of a remote runtime named `name` when another runtime has
+/// that name.
+pub(crate) fn taken(name: &str) -> String {
+    format!(
+        "remote runtime {name}: the name is already a runtime's; rows `{name}:<module>` must name one"
+    )
+}
+
+/// The language whose `--lang` name `rutis-host new` takes is `name`.
+pub fn by_new_name(name: &str) -> Option<&'static dyn Language> {
+    LANGUAGES
+        .iter()
+        .copied()
+        .find(|language| language.new_names().contains(&name))
+}
+
+/// The language `runtimes.remote[].language` names `name`.
+pub fn by_remote_name(name: &str) -> Option<&'static dyn Language> {
+    LANGUAGES
+        .iter()
+        .copied()
+        .find(|language| language.remote_names().contains(&name))
+}
+
+/// The language of the project in `dir`.
+pub fn of_project(dir: &Path) -> Option<&'static dyn Language> {
+    LANGUAGES
+        .iter()
+        .copied()
+        .find(|language| language.is_project(dir))
+}
+
+/// The `--lang` name of each language, as messages show them.
+pub fn new_names() -> Vec<&'static str> {
+    LANGUAGES
+        .iter()
+        .map(|language| language.new_names()[0])
+        .collect()
+}
+
+/// The files that mark a project, each once, as messages show them.
+pub fn project_files() -> Vec<&'static str> {
+    let mut files: Vec<&str> = Vec::new();
+    for language in LANGUAGES {
+        if !files.contains(&language.project_file()) {
+            files.push(language.project_file());
+        }
+    }
+    files
+}
+
+/// `a, b or c`.
+pub fn either(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
+/// What the languages mount as the host starts: what resolves their rows,
+/// their runtimes, and what starts once the loader runs.
+pub struct Mount<'a> {
+    pub root: &'a Ctx,
+    pub catalog: &'a ServiceCatalog,
+    /// The loader's resolvers, tried in order.
+    pub chain: Chain,
+    /// The local runtimes by name, to wait for until they run.
+    pub runtimes: Vec<(String, RuntimeHandle)>,
+    /// The runtimes' row resolvers, to invalidate after a change.
+    pub resolvers: Vec<Arc<RuntimeResolver>>,
+    /// The local runtimes' plugins by name, to stop one.
+    pub fibers: Vec<(String, FiberView)>,
+    /// What mounts once the loader runs (Go's runtimes, which start as
+    /// rows use them), and the [`GoHost`] it gives the host.
+    pub later: Vec<Later>,
+}
+
+/// A language's part of the start that waits for the loader.
+pub type Later = Box<dyn FnOnce(Ctx) -> BoxFuture<'static, Result<Option<GoHost>, Error>> + Send>;
+
+impl Mount<'_> {
+    /// Try `resolver` after the resolvers added before it.
+    pub fn resolve(&mut self, resolver: Arc<dyn Resolver>) {
+        self.chain = std::mem::take(&mut self.chain).with_shared(resolver);
+    }
+
+    /// Mount the local runtime `runtime` as `name`, its rows resolved by
+    /// the resolver `rows` makes, its output passed on a whole line at a
+    /// time: a line a plugin writes in pieces (a Python `print` writes its
+    /// newline separately) never has one of this host's lines, or another
+    /// runtime's, inside it (#332).
+    pub fn local(
+        &mut self,
+        name: &str,
+        runtime: LocalRuntime,
+        rows: impl FnOnce(RuntimeHandle) -> RuntimeResolver,
+    ) {
+        let runtime = runtime.stdout(Stdio::Lines).stderr(Stdio::Lines);
+        let handle = runtime.handle();
+        let rows = Arc::new(rows(handle.clone()).with_catalog(self.catalog));
+        self.fibers
+            .push((name.to_owned(), self.root.plugin(runtime)));
+        self.resolve(rows.clone());
+        self.runtimes.push((name.to_owned(), handle));
+        self.resolvers.push(rows);
+    }
+}
+
+/// Make `path` absolute with `at`, unless it is a bare program name, which
+/// is looked up on `PATH`, not under the base.
+pub(crate) fn rebase_program(path: &mut Option<PathBuf>, at: &dyn Fn(&mut PathBuf)) {
+    if let Some(program) = path {
+        if program.components().count() > 1 {
+            at(program);
+        }
+    }
+}
+
+/// The package's name and the source file of its plugin while developing:
+/// src/index.ts or .js, else what the package exports (Node and Bun).
+pub(crate) fn package_entry(dir: &Path) -> Result<(String, PathBuf), String> {
+    let manifest: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("package.json")).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("package.json: {error}"))?;
+    let name = manifest["name"].as_str().unwrap_or("plugin").to_owned();
+    let entry = [
+        "src/index.ts",
+        "src/index.mts",
+        "src/index.js",
+        "src/index.mjs",
+    ]
+    .iter()
+    .map(|path| dir.join(path))
+    .find(|path| path.exists())
+    .or_else(|| {
+        let exported = manifest["exports"]["."]["default"]
+            .as_str()
+            .or_else(|| manifest["exports"]["."].as_str())
+            .or_else(|| manifest["exports"].as_str())
+            .or_else(|| manifest["main"].as_str())?;
+        Some(dir.join(exported))
+    })
+    .ok_or("package.json names no entry, and there is no src/index.ts")?;
+    Ok((name, entry))
+}
+
+/// A row id from a package or module name.
+pub(crate) fn id_of(name: &str) -> String {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    base.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every language that runs remotely is in the list its error shows,
+    /// and nothing else is.
+    #[test]
+    fn the_remote_languages_error_lists_every_language() {
+        let mut listed: Vec<&str> = REMOTE_LANGUAGES
+            .split([',', ' '])
+            .filter(|word| !word.is_empty() && *word != "or")
+            .collect();
+        let mut registered: Vec<&str> = LANGUAGES
+            .iter()
+            .filter_map(|language| language.remote_names().first().copied())
+            .collect();
+        listed.sort();
+        registered.sort();
+        assert_eq!(listed, registered);
+    }
+
+    /// Each name a language is known by belongs to it alone.
+    #[test]
+    fn names_are_unique() {
+        for names in [
+            LANGUAGES.iter().map(|l| vec![l.key()]).collect::<Vec<_>>(),
+            LANGUAGES
+                .iter()
+                .map(|l| l.remote_names().to_vec())
+                .collect(),
+            LANGUAGES.iter().map(|l| l.new_names().to_vec()).collect(),
+        ] {
+            let mut all: Vec<&str> = names.concat();
+            let count = all.len();
+            all.sort();
+            all.dedup();
+            assert_eq!(all.len(), count, "{all:?}");
+        }
+    }
+
+    #[test]
+    fn messages_list_the_languages() {
+        let names: Vec<String> = new_names().iter().map(|n| n.to_string()).collect();
+        assert_eq!(either(&names), "node, bun, python or go");
+        let files: Vec<String> = project_files().iter().map(|f| f.to_string()).collect();
+        assert_eq!(either(&files), "package.json, pyproject.toml or go.mod");
+    }
+}

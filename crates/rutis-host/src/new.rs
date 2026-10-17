@@ -4,6 +4,8 @@
 
 use std::path::Path;
 
+use crate::languages;
+
 /// The release train this program belongs to: the projects depend on the
 /// SDK of the same version. Every train release tags the Go SDK
 /// (`go/rutis/v<version>`, release.yml), so a released rutis-host makes Go
@@ -11,112 +13,6 @@ use std::path::Path;
 /// version that has no tag yet (point the project's go.mod at a checkout
 /// with `replace` meanwhile).
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-const NODE: &[(&str, &str)] = &[
-    (
-        "package.json",
-        include_str!("../templates/node/package.json"),
-    ),
-    (
-        "tsconfig.json",
-        include_str!("../templates/node/tsconfig.json"),
-    ),
-    (
-        "src/index.ts",
-        include_str!("../templates/node/src/index.ts"),
-    ),
-    (
-        "test/index.test.ts",
-        include_str!("../templates/node/test/index.test.ts"),
-    ),
-    (
-        "rutis.dev.json",
-        include_str!("../templates/node/rutis.dev.json"),
-    ),
-    ("README.md", include_str!("../templates/node/README.md")),
-    (".gitignore", include_str!("../templates/node/gitignore")),
-    (
-        ".github/workflows/publish.yml",
-        include_str!("../templates/node/.github/workflows/publish.yml"),
-    ),
-];
-
-const BUN: &[(&str, &str)] = &[
-    (
-        "package.json",
-        include_str!("../templates/bun/package.json"),
-    ),
-    (
-        "tsconfig.json",
-        include_str!("../templates/bun/tsconfig.json"),
-    ),
-    (
-        "src/index.ts",
-        include_str!("../templates/bun/src/index.ts"),
-    ),
-    (
-        "test/index.test.ts",
-        include_str!("../templates/bun/test/index.test.ts"),
-    ),
-    (
-        "rutis.dev.json",
-        include_str!("../templates/bun/rutis.dev.json"),
-    ),
-    ("README.md", include_str!("../templates/bun/README.md")),
-    (".gitignore", include_str!("../templates/bun/gitignore")),
-    (
-        ".github/workflows/publish.yml",
-        include_str!("../templates/bun/.github/workflows/publish.yml"),
-    ),
-];
-
-const PYTHON: &[(&str, &str)] = &[
-    (
-        "pyproject.toml",
-        include_str!("../templates/python/pyproject.toml"),
-    ),
-    (
-        "src/__module__/__init__.py",
-        include_str!("../templates/python/src/__module__/__init__.py"),
-    ),
-    (
-        "tests/test_plugin.py",
-        include_str!("../templates/python/tests/test_plugin.py"),
-    ),
-    (
-        "rutis.dev.json",
-        include_str!("../templates/python/rutis.dev.json"),
-    ),
-    ("README.md", include_str!("../templates/python/README.md")),
-    (".gitignore", include_str!("../templates/python/gitignore")),
-    (
-        ".github/workflows/publish.yml",
-        include_str!("../templates/python/.github/workflows/publish.yml"),
-    ),
-];
-
-const GO: &[(&str, &str)] = &[
-    ("go.mod", include_str!("../templates/go/go.mod")),
-    ("plugin.go", include_str!("../templates/go/plugin.go")),
-    (
-        "plugin_test.go",
-        include_str!("../templates/go/plugin_test.go"),
-    ),
-    (
-        "cmd/__name__/main.go",
-        include_str!("../templates/go/cmd/__name__/main.go"),
-    ),
-    (
-        "rutis.dev.json",
-        include_str!("../templates/go/rutis.dev.json"),
-    ),
-    ("README.md", include_str!("../templates/go/README.md")),
-    (".gitignore", include_str!("../templates/go/gitignore")),
-    (
-        ".github/workflows/release.yml",
-        include_str!("../templates/go/.github/workflows/release.yml"),
-    ),
-];
 
 /// Create the project `name` in `parent`/`name`.
 pub fn create(parent: &Path, name: &str, lang: &str) -> Result<(), String> {
@@ -130,15 +26,17 @@ pub fn create(parent: &Path, name: &str, lang: &str) -> Result<(), String> {
             "{name:?}: a plugin name is lower case letters, digits and -, starting with a letter"
         ));
     }
-    let files = match lang {
-        "node" | "ts" | "typescript" | "js" => NODE,
-        "bun" => BUN,
-        "python" | "py" => PYTHON,
-        "go" | "golang" => GO,
-        other => {
+    let files = match languages::by_new_name(lang) {
+        Some(language) => language.template(),
+        None => {
+            let names: Vec<String> = languages::new_names()
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
             return Err(format!(
-                "{other:?}: the language is node, bun, python or go"
-            ))
+                "{lang:?}: the language is {}",
+                languages::either(&names)
+            ));
         }
     };
     let dir = parent.join(name);

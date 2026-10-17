@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod host;
+pub mod languages;
 pub mod new;
 pub mod project;
 pub mod status;
