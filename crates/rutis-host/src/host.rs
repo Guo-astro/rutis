@@ -424,6 +424,17 @@ impl Host {
         )
     }
 
+    /// What the status lines follow ([`crate::status::follow`]): the rows,
+    /// their links, and the runtimes.
+    pub fn followed(&self) -> crate::status::Followed {
+        crate::status::Followed {
+            loader: self.loader.clone(),
+            peers: self.peers.clone(),
+            runtimes: self.runtimes.clone(),
+            go: self.go.as_ref().map(|go| go.runtimes.clone()),
+        }
+    }
+
     /// Forget what the runtimes' resolvers cached, so changed plugins are
     /// described again.
     pub fn invalidate(&self) {

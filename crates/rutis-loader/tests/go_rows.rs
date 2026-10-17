@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use common::runtimes::{layer, row_state, COLD};
 use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, TypeKey};
+use rutis_bridge::runtime::RuntimeState;
 use rutis_bridge::session::{host_key, settle, HostDispatch};
 use rutis_loader::{
     Chain, EntryStatus, GoBinaries, GoResolver, GoRuntimeState, GoRuntimes, GoRuntimesHandle,
@@ -418,6 +419,25 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
         runtime_state(&fixture.runtimes, "go-netkit"),
         Some(GoRuntimeState::Stopped(_))
     ));
+    // What a status line reads: the crashed runtime, down; the other one
+    // running; the idle one, not there.
+    let states: Vec<(String, &str)> = fixture
+        .runtimes
+        .states()
+        .into_iter()
+        .map(|(name, state)| {
+            let state = match state {
+                RuntimeState::Down(_) => "down",
+                RuntimeState::Ready(_) => "ready",
+                _ => "other",
+            };
+            (name, state)
+        })
+        .collect();
+    assert_eq!(
+        states,
+        [("go-caller".into(), "ready"), ("go-netkit".into(), "down")]
+    );
     // A restart does.
     fixture.runtimes.restart("go-netkit").await.unwrap();
     COLD.until(
@@ -436,6 +456,11 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
             .unwrap(),
         json!("netkit pong back")
     );
+    assert!(fixture
+        .runtimes
+        .states()
+        .iter()
+        .all(|(_, state)| matches!(state, RuntimeState::Ready(_))));
     fixture.root.shutdown().await.unwrap();
 }
 

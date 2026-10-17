@@ -17,7 +17,7 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 
 | 命令 | 作用 |
 | --- | --- |
-| `rutis-host run [rutis.json]` | 按配置运行，打印每一行状态的变化和节点行 link 的状态（见 [run 打印什么](#run-打印什么)）；Ctrl-C 结束（见 [停止与退出码](#停止与退出码)） |
+| `rutis-host run [rutis.json]` | 按配置运行，打印每一行状态的变化、节点行 link 的状态和本机运行时的结束（见 [run 打印什么](#run-打印什么)）；Ctrl-C 结束（见 [停止与退出码](#停止与退出码)） |
 | `rutis-host dev [目录]` | 在插件项目里运行这个插件（加上 `rutis.dev.json`），文件变化时重新加载；Go 项目重新构建，只重启它的运行时 |
 | `rutis-host check [rutis.json]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 二进制（运行时名、SDK、插件 API、插件）；有不能运行的行或二进制时以非零状态退出。在没有 rutis.json 的插件项目里检查这个项目 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go` | 创建插件项目 |
@@ -34,6 +34,15 @@ rutis-host: listening on <监听器名> <地址:端口>
 ```
 
 之后每一行状态变化时打印一行 `<行 id>: <状态>`（`running`、`waiting for its services`、`starting`、`failed: …`、`disabled`、`removed` 等；实例里的副本写成 `<行 id> in PluginId(n)`）。
+
+本机的运行时（`node`、`py`、`bun`、Go 的 `go-<二进制>`）进程自己结束或起不来时打印一行，恢复运行时再打印一行；`rutis-host` 停止它们（停止宿主、Go 运行时空闲停下）时不打印：
+
+| 输出 | 含义 |
+| --- | --- |
+| `runtime <名字>: down (<原因>)` | 运行时进程结束了，原因写它怎样结束，例如 `exited with signal: 9 (SIGKILL)`、`exited with exit status: 1`；或者它没能启动、原因是启动失败的错误。它的行回到 `waiting for its services`，其他运行时和它们的行不受影响 |
+| `runtime <名字>: running` | 打印过 `down` 的运行时重新运行了（`dev` 里重新构建的 Go 运行时） |
+
+一个运行时停在 `down` 时只打印一次；括号里的原因是给人看的，不保证措辞。
 
 节点行（`rutis-bridge/peer`）的状态只说明这一行在运行；它的 link 连没连上另打一行，在 link 的状态变化时打印：
 

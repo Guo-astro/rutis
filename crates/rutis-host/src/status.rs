@@ -1,6 +1,6 @@
-//! What the host prints: each row's state as it changes, and the state
-//! of each peer row's link as it changes (`docs/guide/rutis-host.md`,
-//! "What `run` prints").
+//! What the host prints: each row's state as it changes, the state of
+//! each peer row's link as it changes, and a local runtime that went down
+//! or came back (`docs/guide/rutis-host.md`, "What `run` prints").
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -9,8 +9,9 @@ use std::time::Duration;
 use rutis::FiberState;
 
 use crate::outln;
+use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
 use rutis_bridge::{Failure, LinkState};
-use rutis_loader::{EntryStatus, Loader, PeerResolver};
+use rutis_loader::{EntryStatus, GoRuntimesHandle, Loader, PeerResolver};
 
 /// One line for a row's state.
 pub fn describe(status: &EntryStatus) -> String {
@@ -95,6 +96,74 @@ pub fn describe_link(state: &LinkState, was_ready: bool) -> Option<String> {
     })
 }
 
+/// A runtime's state, as far as its line goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Runtime<'a> {
+    Running,
+    /// Its process ended, or it could not start: why.
+    Down(&'a str),
+    /// Starting, or stopped by the host.
+    Other,
+}
+
+impl<'a> From<&'a RuntimeState> for Runtime<'a> {
+    fn from(state: &'a RuntimeState) -> Self {
+        match state {
+            RuntimeState::Ready(_) => Runtime::Running,
+            RuntimeState::Down(reason) => Runtime::Down(reason),
+            _ => Runtime::Other,
+        }
+    }
+}
+
+/// One line for a local runtime's state, after `was_down` (whether the
+/// line last printed for it was `down`); `None` for states not printed: a
+/// runtime starting, running as it has since the host started, or stopped
+/// by the host. The detail is how its process ended (`exited with signal:
+/// 9 (SIGKILL)`, `exited with exit status: 1`), or why it did not start.
+pub fn describe_runtime(state: Runtime<'_>, was_down: bool) -> Option<String> {
+    match state {
+        Runtime::Down(reason) => {
+            // How a runtime ended is said with what its plugin and its
+            // channel saw; the process's exit is the part worth a line.
+            let reason = ["runtime process ", "runtime ended: the process "]
+                .iter()
+                .find_map(|said| reason.strip_prefix(said))
+                .or_else(|| reason.strip_prefix("runtime ended: "))
+                .unwrap_or(reason);
+            Some(format!("down ({reason})"))
+        }
+        Runtime::Running if was_down => Some("running".into()),
+        _ => None,
+    }
+}
+
+/// What [`follow`] watches: the rows, their links and the runtimes.
+#[derive(Clone)]
+pub struct Followed {
+    pub loader: Loader,
+    pub peers: Arc<PeerResolver>,
+    /// The local runtimes (`node`, `py`, `bun`) by name.
+    pub runtimes: Vec<(String, RuntimeHandle)>,
+    /// The Go runtimes, when the configuration has them.
+    pub go: Option<GoRuntimesHandle>,
+}
+
+impl Followed {
+    /// Each local runtime's state by name, Go's among them.
+    fn runtime_states(&self) -> Vec<(String, RuntimeState)> {
+        let mut states: Vec<(String, RuntimeState)> = self
+            .runtimes
+            .iter()
+            .map(|(name, handle)| (name.clone(), handle.state()))
+            .collect();
+        if let Some(go) = &self.go {
+            states.extend(go.states());
+        }
+        states
+    }
+}
+
 /// What [`follow`] has printed, to print only changes.
 #[derive(Default)]
 pub struct Shown {
@@ -102,12 +171,39 @@ pub struct Shown {
     /// Per peer row: whether its link was last seen ready, and the last
     /// line printed for it.
     links: BTreeMap<String, (bool, Option<String>)>,
+    /// Per runtime: the last line printed for it.
+    runtimes: BTreeMap<String, String>,
 }
 
 impl Shown {
-    /// The lines for what changed since the last call: rows' states, then
-    /// links' states.
-    pub fn changes(&mut self, loader: &Loader, peers: &PeerResolver) -> Vec<String> {
+    /// The lines for what changed since the last call: runtimes' states,
+    /// then rows' states, then links' states.
+    pub fn changes(&mut self, followed: &Followed) -> Vec<String> {
+        let mut out = self.runtime_changes(&followed.runtime_states());
+        out.extend(self.row_changes(&followed.loader, &followed.peers));
+        out
+    }
+
+    /// The lines for the runtimes `states` whose state changed. A runtime
+    /// gone from `states` keeps its last line: one Go stops when idle, and
+    /// one the host stops goes on to `Idle`, neither printed.
+    pub fn runtime_changes(&mut self, states: &[(String, RuntimeState)]) -> Vec<String> {
+        let mut out = Vec::new();
+        for (name, state) in states {
+            let printed = self.runtimes.get(name);
+            let was_down = printed.is_some_and(|line| line.starts_with("down"));
+            match describe_runtime(state.into(), was_down) {
+                Some(line) if printed != Some(&line) => {
+                    out.push(format!("runtime {name}: {line}"));
+                    self.runtimes.insert(name.clone(), line);
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn row_changes(&mut self, loader: &Loader, peers: &PeerResolver) -> Vec<String> {
         let mut lines = Vec::new();
         let mut rows = BTreeMap::new();
         let mut links = BTreeMap::new();
@@ -152,14 +248,14 @@ impl Shown {
     }
 }
 
-/// Print every change of a row's state, and of a peer row's link, for as
-/// long as the host runs. Checked every 200 ms: a state that lasts less
-/// may not be printed.
-pub fn follow(loader: Loader, peers: Arc<PeerResolver>) {
+/// Print every change of a row's state, of a peer row's link, and of a
+/// runtime going down or coming back, for as long as the host runs.
+/// Checked every 200 ms: a state that lasts less may not be printed.
+pub fn follow(followed: Followed) {
     tokio::spawn(async move {
         let mut shown = Shown::default();
         loop {
-            for line in shown.changes(&loader, &peers) {
+            for line in shown.changes(&followed) {
                 outln!("{line}");
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -252,6 +348,77 @@ mod tests {
                 "{state:?}"
             );
         }
+    }
+
+    /// guarantee: host/runtime-state-lines
+    #[test]
+    fn a_runtime_has_a_line_when_it_goes_down_and_when_it_comes_back() {
+        let killed = "runtime process exited with signal: 9 (SIGKILL)";
+        let cases = [
+            (Runtime::Other, false, None),
+            (Runtime::Running, false, None),
+            (
+                Runtime::Down(killed),
+                false,
+                Some("down (exited with signal: 9 (SIGKILL))"),
+            ),
+            (
+                Runtime::Down("runtime ended: the process exited with exit status: 3"),
+                false,
+                Some("down (exited with exit status: 3)"),
+            ),
+            (
+                Runtime::Down("runtime ended: did not greet"),
+                false,
+                Some("down (did not greet)"),
+            ),
+            (
+                Runtime::Down("the py runtime lacks rows.v2"),
+                false,
+                Some("down (the py runtime lacks rows.v2)"),
+            ),
+            (Runtime::Other, true, None),
+            (Runtime::Running, true, Some("running")),
+        ];
+        for (state, was_down, line) in cases {
+            assert_eq!(
+                describe_runtime(state, was_down).as_deref(),
+                line,
+                "{state:?}"
+            );
+        }
+    }
+
+    /// Each change once: a runtime down stays one line however long it is,
+    /// a restart that has not run yet prints nothing, and a runtime the
+    /// host stops (idle) none.
+    /// guarantee: host/runtime-state-lines
+    #[test]
+    fn a_runtime_line_is_printed_once_per_change() {
+        let mut shown = Shown::default();
+        let state = |name: &str, state: RuntimeState| vec![(name.to_owned(), state)];
+        assert!(shown
+            .runtime_changes(&state("py", RuntimeState::Starting))
+            .is_empty());
+        let down = || RuntimeState::Down("runtime process exited with exit status: 1".into());
+        assert_eq!(
+            shown.runtime_changes(&state("py", down())),
+            ["runtime py: down (exited with exit status: 1)"]
+        );
+        assert!(shown.runtime_changes(&state("py", down())).is_empty());
+        assert!(shown
+            .runtime_changes(&state("py", RuntimeState::Starting))
+            .is_empty());
+        assert_eq!(
+            shown.runtime_changes(&state(
+                "py",
+                RuntimeState::Down("runtime process exited with signal: 9 (SIGKILL)".into())
+            )),
+            ["runtime py: down (exited with signal: 9 (SIGKILL))"]
+        );
+        assert!(shown
+            .runtime_changes(&state("node", RuntimeState::Idle))
+            .is_empty());
     }
 
     #[test]

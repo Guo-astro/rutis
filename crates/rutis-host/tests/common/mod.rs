@@ -6,6 +6,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
+#[cfg(unix)]
+pub mod process;
+
 /// The environment variables the host reads. A test that sets one, or
 /// starts a host, holds [`environment`] and starts from none of them set.
 pub const VARIABLES: &[&str] = &[

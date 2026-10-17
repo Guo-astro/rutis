@@ -249,7 +249,7 @@ PR 模板中有对应的检查项。
 
 ---
 
-## 13. 宿主的输出：`host/link-state-output`
+## 13. 宿主的输出：`host/link-state-output`、`host/runtime-state-lines`
 
 出处：用户文档 [rutis-host](guide/rutis-host.md) 的「run 打印什么」、[连接节点](guide/nodes.md) 的重连一段（#321）；[rutis-host](guide/rutis-host.md) 的“输出”一节（#332）。
 
@@ -257,6 +257,7 @@ PR 模板中有对应的检查项。
 | --- | --- | --- | --- | --- | --- |
 | `host/link-state-output` | `rutis-host run` 启动时为每个监听器打印一次实际绑定的地址（`rutis-host: listening on <名字> <地址>`）；节点行的 link 状态变化时各打印一行，与行状态行分开：`<行 id>: link connected`、`link down (<原因>); retrying in <时间>`、`link refused: auth-rejected (<原因>); retrying in 30s`、`link stopped: incompatible (<原因>)`；类别来自 link 对失败的分类（`Failure`），不靠错误文字；token 被拒、服务端证书名字不符或过期都报为 `auth-rejected`；输出里不出现 token | 契约行为 | 已验证 | `rutis-host/src/status.rs::tests::each_link_state_has_its_line`、`rutis-host/tests/links.rs::a_link_reports_connected_and_down`、`::an_unreachable_far_end_is_reported_as_down`、`::a_refused_token_is_reported_by_its_category_without_it`、`::an_incompatible_far_end_is_reported_as_stopped`；`tests/e2e/tests/nodes.rs::a_refused_reconnect_is_reported_by_its_category`、`::a_refused_certificate_is_reported_by_its_category` | 括号里的原因只给人看，措辞不保证；状态每 200 毫秒检查一次，只打印变化，持续更短的状态可能不打印 |
 | `host/output-lines-whole` | `rutis-host` 运行的运行时进程（Node、Bun、Python、Go）写到 stdout、stderr 的每一行，原样、整行地出现在 `rutis-host` 的同一个流上：`rutis-host` 自己的行和其他运行时的行不会落进它中间，插件把一行分几次写也一样；运行时结束时没有换行的最后一行作为单独一行写出，在 `rutis-host` 退出之前 | 契约行为 | 已验证 | `rutis-host/tests/output.rs::plugin_lines_written_in_pieces_come_out_whole`、`rutis-bridge/src/transport/local/output.rs::tests::a_line_written_in_pieces_is_passed_on_whole`；`tests/e2e` 的每个场景（harness 遇到被拆开的探针行即失败） | 同一个运行时进程里的两个插件各写半行，仍会拼在一起（一个进程只有一份输出）。超过 64 KiB 没有换行的行分段写出。黑盒测试只在 Unix 上跑（用 SIGTERM 结束宿主） |
+| `host/runtime-state-lines` | `rutis-host run`、`dev` 在本机运行时（`node`、`py`、`bun`、`go-<二进制>`）的进程自己结束或起不来时打印 `runtime <名字>: down (<原因>)`，原因写进程怎样结束（如 `exited with signal: 9 (SIGKILL)`）；打印过 `down` 的运行时重新运行时打印 `runtime <名字>: running`；宿主停止它们时不打印；其他运行时和它们的行不受影响 | 契约行为 | 已验证 | `rutis-host/src/status.rs::tests::a_runtime_has_a_line_when_it_goes_down_and_when_it_comes_back`、`::a_runtime_line_is_printed_once_per_change`、`rutis-host/tests/runtimes.rs::a_killed_runtime_is_reported_with_how_it_ended`；`tests/e2e/tests/runtime_crash.rs::a_killed_runtime_fails_its_calls_and_a_restart_recovers` | 括号里的原因只给人看，措辞不保证；Go 运行时的状态由 `rutis-loader/tests/go_rows.rs::a_crash_stops_only_its_runtimes_rows_and_is_not_restarted` 验证（`GoRuntimesHandle::states`） |
 
 ---
 
@@ -342,11 +343,11 @@ PR 模板中有对应的检查项。
 | `bridge/*` | 19 | 0 | 0 | 1 | 20 |
 | `host/*`、`dsh/*`（§11） | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*`（§12） | 1 | 1 | 0 | 0 | 2 |
-| `host/*`（§13） | 2 | 0 | 0 | 0 | 2 |
+| `host/*`（§13） | 3 | 0 | 0 | 0 | 3 |
 | `loader/*`（§14） | 31 | 5 | 0 | 0 | 36 |
 | `host/*`（§15） | 12 | 3 | 1 | 0 | 16 |
-| 合计 | 109 | 13 | 1 | 2 | 125 |
+| 合计 | 110 | 13 | 1 | 2 | 126 |
 
-核心承诺 30 条：已验证 25，部分验证 5（D22、D28、5.8、`loader/instance-edits-all-or-none`、`loader/instance-close-leaves-nothing`），未验证 0。契约行为 93 条：已验证 84，部分验证 8（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`），未验证 1（`host/go-add`）。
+核心承诺 30 条：已验证 25，部分验证 5（D22、D28、5.8、`loader/instance-edits-all-or-none`、`loader/instance-close-leaves-nothing`），未验证 0。契约行为 94 条：已验证 85，部分验证 8（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`），未验证 1（`host/go-add`）。
 
 **0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 1 条（`host/go-add`）。从 0.11 起，新登记的"未验证"条目会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。

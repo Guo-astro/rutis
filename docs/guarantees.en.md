@@ -249,7 +249,7 @@ Source: [plugin API](guide/plugin-api.en.md), quality standard Q6.7.
 
 ---
 
-## 13. Host output: `host/link-state-output`
+## 13. Host output: `host/link-state-output`, `host/runtime-state-lines`
 
 Source: "What `run` prints" in the user documentation [rutis-host](guide/rutis-host.en.md), and the reconnecting part of [Connect Nodes](guide/nodes.en.md) (#321); the "Output" section of [rutis-host](guide/rutis-host.en.md) (#332).
 
@@ -257,6 +257,7 @@ Source: "What `run` prints" in the user documentation [rutis-host](guide/rutis-h
 | --- | --- | --- | --- | --- | --- |
 | `host/link-state-output` | `rutis-host run` prints at start, once per listener, the address it is bound to (`rutis-host: listening on <name> <address>`); each change of a node row's link state prints one line, apart from the row's state lines: `<row id>: link connected`, `link down (<reason>); retrying in <time>`, `link refused: auth-rejected (<reason>); retrying in 30s`, `link stopped: incompatible (<reason>)`; the category comes from the link's classification of the failure (`Failure`), never from the error's text; a refused token and a server certificate for another name or expired are all reported as `auth-rejected`; no token appears in the output | Contract behaviour | Verified | `rutis-host/src/status.rs::tests::each_link_state_has_its_line`, `rutis-host/tests/links.rs::a_link_reports_connected_and_down`, `::an_unreachable_far_end_is_reported_as_down`, `::a_refused_token_is_reported_by_its_category_without_it`, `::an_incompatible_far_end_is_reported_as_stopped`; `tests/e2e/tests/nodes.rs::a_refused_reconnect_is_reported_by_its_category`, `::a_refused_certificate_is_reported_by_its_category` | The reason in parentheses is for people; its wording is not guaranteed. States are checked every 200 ms and only changes are printed; a shorter state may not be printed |
 | `host/output-lines-whole` | Every line a runtime process `rutis-host` runs (Node, Bun, Python, Go) writes to stdout or stderr comes out on the same stream of `rutis-host`, unchanged and whole: no line of `rutis-host`'s own or of another runtime's lands inside it, also when the plugin writes the line in pieces; a last line without a newline comes out as a line of its own when the runtime ends, before `rutis-host` exits | contract behaviour | verified | `rutis-host/tests/output.rs::plugin_lines_written_in_pieces_come_out_whole`, `rutis-bridge/src/transport/local/output.rs::tests::a_line_written_in_pieces_is_passed_on_whole`; every scenario in `tests/e2e` (the harness fails on a probe line that came out broken) | Two plugins in the same runtime process that each write half a line still run together (a process has one output). A line longer than 64 KiB without a newline comes out in pieces. The black-box test runs on Unix only (it ends the host with SIGTERM) |
+| `host/runtime-state-lines` | `rutis-host run` and `dev` print `runtime <name>: down (<reason>)` when a local runtime's (`node`, `py`, `bun`, `go-<binary>`) process ends on its own or the runtime cannot start, the reason saying how the process ended (such as `exited with signal: 9 (SIGKILL)`); a runtime that printed `down` prints `runtime <name>: running` when it runs again; nothing is printed when the host stops them; other runtimes and their rows go on | Contract behaviour | Verified | `rutis-host/src/status.rs::tests::a_runtime_has_a_line_when_it_goes_down_and_when_it_comes_back`, `::a_runtime_line_is_printed_once_per_change`, `rutis-host/tests/runtimes.rs::a_killed_runtime_is_reported_with_how_it_ended`; `tests/e2e/tests/runtime_crash.rs::a_killed_runtime_fails_its_calls_and_a_restart_recovers` | The reason in parentheses is for people; its wording is not guaranteed. The Go runtimes' states are verified by `rutis-loader/tests/go_rows.rs::a_crash_stops_only_its_runtimes_rows_and_is_not_restarted` (`GoRuntimesHandle::states`) |
 
 ---
 
@@ -342,11 +343,11 @@ Sources: the sections of the user documentation [rutis-host](guide/rutis-host.en
 | `bridge/*` | 19 | 0 | 0 | 1 | 20 |
 | `host/*`, `dsh/*` (§11) | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*` (§12) | 1 | 1 | 0 | 0 | 2 |
-| `host/*` (§13) | 2 | 0 | 0 | 0 | 2 |
+| `host/*` (§13) | 3 | 0 | 0 | 0 | 3 |
 | `loader/*` (§14) | 31 | 5 | 0 | 0 | 36 |
 | `host/*` (§15) | 12 | 3 | 1 | 0 | 16 |
-| Total | 109 | 13 | 1 | 2 | 125 |
+| Total | 110 | 13 | 1 | 2 | 126 |
 
-30 core promises: 25 verified, 5 partly verified (D22, D28, 5.8, `loader/instance-edits-all-or-none`, `loader/instance-close-leaves-nothing`), 0 not verified. 93 contract behaviours: 84 verified, 8 partly verified (D5, `sdk/testing-matches-runtime`, `loader/persist-queue`, `loader/saved-layers-restore`, `loader/go-runtimes`, `host/stop-deadline`, `host/exit-codes`, `host/row-state-lines`), 1 not verified (`host/go-add`).
+30 core promises: 25 verified, 5 partly verified (D22, D28, 5.8, `loader/instance-edits-all-or-none`, `loader/instance-close-leaves-nothing`), 0 not verified. 94 contract behaviours: 85 verified, 8 partly verified (D5, `sdk/testing-matches-runtime`, `loader/persist-queue`, `loader/saved-layers-restore`, `loader/go-runtimes`, `host/stop-deadline`, `host/exit-codes`, `host/row-state-lines`), 1 not verified (`host/go-add`).
 
 **0.10 baseline**: 0 unverified core promises, 1 unverified contract behaviour (`host/go-add`). From 0.11 on, a newly registered row that is "not verified" pushes the contract number above the baseline (Q9.4.4), so new rows should be registered together with their tests. The maintainer confirms which rows are core promises and may change them.
