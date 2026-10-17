@@ -141,5 +141,49 @@ asyncio.run(run())
         self.assertIn("ValueError: unhandled leaf event", result.stderr)
 
 
+class Inspect(background.TestCase):
+    """The test control method `inspect` (RUTIS_TEST_INSPECT): what the
+    runtime holds, and nothing of a row once it is unloaded."""
+
+    def test_inspect_reports_what_a_scoped_row_holds_until_it_unloads(self):
+        def apply(ctx, config):
+            ctx.provide("x", "private")
+            ctx.on("tick", lambda: None)
+
+        runtime = Runtime()
+        provider = module("inspect_provider", apply)
+        runner = sys.modules["rutis.runner"]
+        inspect = runner.INSPECT
+        runner.INSPECT = True
+        self.addCleanup(setattr, runner, "INSPECT", inspect)
+
+        async def run():
+            await runtime.load("p", provider, {}, {"x": {}}, {"x": "L"})
+            loaded = runtime._control("inspect", [])
+            await runtime.unload("p")
+            # rutis lets go of the object it held (its proxy dropped).
+            runtime._control("release", [scoped_id("x", "L")])
+            return loaded, runtime._control("inspect", [])
+
+        loaded, unloaded = asyncio.run(run())
+        self.assertEqual(loaded["rows"], ["p"])
+        self.assertEqual(loaded["services"], [scoped_id("x", "L")])
+        self.assertEqual(loaded["slots"], [scoped_id("x", "L")])
+        self.assertEqual(loaded["handles"], [scoped_id("x", "L")])
+        self.assertEqual(loaded["listeners"], 1)
+        self.assertEqual(
+            unloaded,
+            {"rows": [], "services": [], "hosts": [], "slots": [], "handles": [], "listeners": 0},
+        )
+
+    def test_without_the_setting_inspect_is_unknown(self):
+        runner = sys.modules["rutis.runner"]
+        inspect = runner.INSPECT
+        runner.INSPECT = False
+        self.addCleanup(setattr, runner, "INSPECT", inspect)
+        with self.assertRaises(ValueError):
+            Runtime()._control("inspect", [])
+
+
 if __name__ == "__main__":
     unittest.main()
