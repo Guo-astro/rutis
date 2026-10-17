@@ -27,7 +27,9 @@
 //!
 //! `RUTIS_SHUTTLE_ITERATIONS` sets the iterations of each scheduler: 1000
 //! by default, as on pull requests; the nightly run (`stress.yml`) uses a
-//! million.
+//! million. A failure prints its schedule (`failing schedule: "…"`);
+//! `RUTIS_SHUTTLE_REPLAY=<schedule>` replays it, with the failing test's
+//! name as the filter.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
@@ -51,11 +53,15 @@ fn iterations() -> usize {
 
 /// Explore `model` with shuttle's random scheduler and with PCT (which
 /// finds bugs that need a few preemptions at the right places with better
-/// odds than uniform choices).
+/// odds than uniform choices), or replay `RUTIS_SHUTTLE_REPLAY`.
 fn explore<F>(model: F)
 where
     F: Fn() + Send + Sync + 'static,
 {
+    if let Ok(schedule) = std::env::var("RUTIS_SHUTTLE_REPLAY") {
+        shuttle::replay(model, schedule.trim().trim_matches('"'));
+        return;
+    }
     let model = Arc::new(model);
     let iterations = iterations();
     let random = model.clone();
