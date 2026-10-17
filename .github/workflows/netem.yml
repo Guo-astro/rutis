@@ -2,7 +2,8 @@
 # node B in one Docker container listening on a non-loopback address with
 # TLS, host A in another dialing it, netem adding 200 ms delay and 5 % loss,
 # then a full outage and its recovery (tests/e2e/tests/netem.rs). Runs in
-# the nightly runs (nightly.yml calls it, report only) and on demand.
+# the nightly runs (nightly.yml calls it, report only), on pull requests
+# that change the scenario or this workflow, and on demand.
 #
 # GitHub's ubuntu-24.04, not LINUX_RUNNER: the self-hosted Linux runners
 # are containers without Docker (docs/ci.md §11).
@@ -14,6 +15,11 @@ name: netem
 
 on:
   workflow_dispatch:
+  # A pull request that changes the scenario or this workflow runs it.
+  pull_request:
+    paths:
+      - tests/e2e/tests/netem.rs
+      - .github/workflows/netem.yml
   # nightly.yml, with report-only: the job never fails the run.
   workflow_call:
     inputs:
