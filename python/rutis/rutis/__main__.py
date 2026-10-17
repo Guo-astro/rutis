@@ -151,12 +151,16 @@ def give_up_after(seconds: float) -> None:
     once the cleanups ran)."""
 
     def give_up() -> None:
-        print(
-            f"rutis: cleanups did not finish within {seconds:g} s after the session ended; exiting",
-            file=sys.stderr,
-            flush=True,
-        )
-        os._exit(1)
+        try:
+            print(
+                f"rutis: cleanups did not finish within {seconds:g} s after the session ended; exiting",
+                file=sys.stderr,
+                flush=True,
+            )
+        finally:
+            # Also when the line cannot be written: stderr is a pipe to a
+            # host that was killed, and the write fails (BrokenPipeError).
+            os._exit(1)
 
     timer = threading.Timer(seconds, give_up)
     timer.daemon = True

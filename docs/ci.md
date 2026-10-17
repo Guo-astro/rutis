@@ -22,7 +22,7 @@
 | `ci.yml` | 每个 PR；每晚由 `nightly.yml` 调用（`all=true`）；发布门里由 `release.yml` 调用（`all=true`）；手动（任何分支，`all` 默认打开） | 测试和检查（下文） |
 | `nightly.yml` | 每天 UTC 19:00，main 有新提交时；手动（`force`：没有新提交也跑） | 调用 `ci.yml`（全部任务）、`install.yml`（五个平台）、`dylib-windows.yml`、`stress.yml`；用最新已发布的 Cordis 插件跑一遍 Cordis 检查，只报告（`cordis-latest`，下文）；调用 `netem.yml`，只报告（`netem`，下文）；失败时开问题单（下文、§7） |
 | `dylib-windows.yml` | PR 改了 dylib 相关文件（与 `dylib` 开关相同）；每晚由 `nightly.yml` 调用；发布门里由 `release.yml` 调用（打 `v*` tag 不再单独触发）；手动 | Windows 上的 dylib 测试 |
-| `stress.yml` | 每晚由 `nightly.yml` 调用；手动 | 重复运行内核测试和多进程测试；网络长时间测试；大规模运行内核的 shuttle 模型，以及模糊测试（下文） |
+| `stress.yml` | 每晚由 `nightly.yml` 调用；手动 | 重复运行内核测试和多进程测试；网络长时间测试；大规模运行内核的 shuttle 模型，以及模糊测试；宿主长时间运行的 S8（三个平台）（下文） |
 | `netem.yml` | 每晚由 `nightly.yml` 调用（只报告）；PR 改了 `tests/e2e/tests/netem.rs` 或 `netem.yml`；手动 | S5 的容器版（风险 E12，#341）：两个 Docker 容器，非 loopback 地址 + TLS，netem 延迟、丢包、断网（下文） |
 | `ci-stats.yml` | 每周；手动 | 统计 CI 的耗时和失败 |
 | `deps.yml` | 每周；手动 | 依赖漏洞检查：`cargo deny check advisories`（不含示例项目）、`@arcships/rutis-runtime` 的 `npm audit`、Python 包的 `pip-audit`。不在 PR 上跑，不阻止合并；失败时 GitHub 通知维护者 |
@@ -44,7 +44,7 @@
 
 ### 每晚的 `stress.yml`
 
-只偶尔失败的测试，在 PR 上碰巧撞到时会挡住和它无关的人。`stress.yml` 每晚把这类测试重复跑很多轮，让偶发失败先在夜里出现。它不在 PR 上跑，不影响 PR 的时间。需要大量迭代或固定时长的检查也放在这里：内核的 shuttle 模型和模糊测试（#179）。五个任务同时运行：
+只偶尔失败的测试，在 PR 上碰巧撞到时会挡住和它无关的人。`stress.yml` 每晚把这类测试重复跑很多轮，让偶发失败先在夜里出现。它不在 PR 上跑，不影响 PR 的时间。需要大量迭代或固定时长的检查也放在这里：内核的 shuttle 模型和模糊测试（#179），宿主长时间运行的场景 S8（#192）。六个任务同时运行：
 
 | 任务 | 做什么 |
 | --- | --- |
@@ -53,13 +53,14 @@
 | `soak` | bridge 的 WebSocket 和本地通道长时间测试，各 `soak_secs` 秒（默认 600） |
 | `shuttle` | 内核的 shuttle 模型（`crates/rutis/src/fiber/shuttle_tests.rs`：TransitionTask 唤醒、`post_join` 与驱动退出、并发 dispose 只清理一次），每个模型每种调度器 `shuttle_iterations` 次迭代（默认 1,000,000；PR 上在 `rust` 里跑 1000 次）。失败时打印失败的调度和种子，日志作为 artifact `shuttle-log` 上传，作业摘要里写明怎样重放（`RUTIS_SHUTTLE_REPLAY`） |
 | `fuzz` | `fuzz/` 下的三个模糊测试目标（cargo-fuzz，nightly Rust），矩阵里每个目标一项，各 `fuzz_secs` 秒（默认 1200）：`session_frame`（会话帧和其中的带标签值）、`local_lines`（本地通道的行分帧及其长度上限）、`websocket_upgrade`（监听方读取升级请求）。都从仓库里的语料（`fuzz/corpus/<目标>`）开始，运行中新增的语料不保留。崩溃、卡住（单个输入超过 10 秒）或性质检查失败，该项失败：输入和日志作为 artifact `fuzz-<目标>` 上传，作业摘要里有复现命令。跑在 GitHub 的 Linux runner 上（`LINUX_RUNNER`，§11） |
+| `soak-host` | 端到端场景 S8（`tests/e2e/tests/soak.rs`），Linux、macOS、Windows 矩阵各一项：一个 `rutis-host run`（S3 的多语言配置，加一个经 TCP 代理连接的远程 Python 节点）运行 `host_soak_secs` 秒（默认 3600），期间按种子随机地增删改行并重新加载（SIGUSR1 或 `--watch-config`）、写入会被拒绝的配置、`kill -9` Node 和 Python 运行时（宿主按 `on-failure` 重启）、断开再恢复 link；采样宿主、运行时和节点的进程数、fd（句柄）、线程、内存，后段对前段的增长超过阈值即失败。然后每种结束方式各起一个宿主：Ctrl-C（Windows 上 Ctrl-Break）、SIGTERM（Unix）、`kill -9`（之前加入清理永不返回的行），每次检查宿主的进程在限定时间内全部退出、宿主的输出和做过的事一致；最后做残余检查。失败时作业摘要里有种子和重放命令（`RUTIS_S8_SEED`、`RUTIS_S8_OPS`），场景目录（`logs/` 里有操作序列、资源采样和每个宿主的输出）作为 artifact `soak-s8-<平台>` 上传。runner：Linux 按 `LINUX_RUNNER`（§11），macOS 按 `MACOS_RUNNER`（自托管，§10），Windows 按 `WINDOWS_RUNNER`（§11）；运行时版本同端到端场景（§9）。本地短跑：`cargo test -p rutis-e2e --test soak -- --ignored --nocapture`（默认 150 秒，`RUTIS_S8_SECS` 改时长）。不在 PR 上跑：PR 上的 `e2e` 只跑它的两个单元测试（操作只由种子决定、增长判定） |
 
-整个 workflow 的时间由最慢的任务决定：`soak` 约 21 分钟；`multiprocess` 估计 30–45 分钟（构建约 10 分钟，每轮约 1–1.5 分钟）；`fuzz` 每项约 25 分钟（安装 cargo-fuzz、构建，再跑 20 分钟）；`shuttle` 几分钟。
+整个 workflow 的时间由最慢的任务决定：`soak` 约 21 分钟；`multiprocess` 估计 30–45 分钟（构建约 10 分钟，每轮约 1–1.5 分钟）；`fuzz` 每项约 25 分钟（安装 cargo-fuzz、构建，再跑 20 分钟）；`shuttle` 几分钟；`soak-host` 最慢，约 75–90 分钟（构建，运行一小时，再加每种结束方式各一个宿主约 5 分钟），任务上限 150 分钟。
 
 - 失败不重试（规范 Q7.3）。
 - 每轮在日志里打印线程数和种子。作业摘要里有每一轮的结果表、失败的测试名和它失败的轮次，以及重放命令：用同样的种子、线程数和顺序重跑那个测试文件。
 - `multiprocess` 有失败时，每一轮每个测试文件的输出都作为 artifact `multiprocess-logs` 上传，保留 14 天。
-- 手动运行：Actions 页面选 `stress`，点 “Run workflow”，可以改 `rounds`、`soak_secs`、`shuttle_iterations` 和 `fuzz_secs`；或者 `gh workflow run stress.yml -f rounds=50 -f fuzz_secs=120`。五个任务都会运行。在本机运行 shuttle 模型和模糊测试目标的方法见 [CONTRIBUTING](../CONTRIBUTING.zh-CN.md)。
+- 手动运行：Actions 页面选 `stress`，点 “Run workflow”，可以改 `rounds`、`soak_secs`、`shuttle_iterations`、`fuzz_secs` 和 `host_soak_secs`；或者 `gh workflow run stress.yml -f rounds=50 -f fuzz_secs=120 -f host_soak_secs=300`。六个任务都会运行。在本机运行 shuttle 模型和模糊测试目标的方法见 [CONTRIBUTING](../CONTRIBUTING.zh-CN.md)。
 - 夜里出现的失败按 §7 处理：登记 issue，再想办法稳定复现。
 
 ## 3. PR 上怎么决定跑哪些任务
@@ -242,7 +243,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 
 规则：每种语言，Linux 任务用最低支持版本，macOS 和 Windows 任务用最新版本。最低版本在每个 PR 上都验证，最新版本在 macOS、Windows 上验证，不为版本单独加任务。
 
-| | 声明在哪 | Linux（`rust`、`e2e`、`js-py`、`checks`、`lint`、`runtimes-go`、`runtimes-bun`、`stress.yml` 的 `multiprocess`） | `network-macos`、`runtimes-windows` |
+| | 声明在哪 | Linux（`rust`、`e2e`、`js-py`、`checks`、`lint`、`runtimes-go`、`runtimes-bun`、`stress.yml` 的 `multiprocess` 和 `soak-host`） | `network-macos`、`runtimes-windows`、`stress.yml` 的 `soak-host` |
 | --- | --- | --- | --- |
 | Node | 各 npm 包 `package.json` 的 `engines.node` | 声明的最低主版本 | 最新的偶数主版本，手动升级 |
 | Python | `python/rutis/pyproject.toml` 的 `requires-python` | 声明的最低版本 | `3.x`，自动跟随；新版本让 PR 失败时，临时写死上一版并另开 PR 修 |
@@ -289,7 +290,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 
 ## 11. 自托管的 Linux runner
 
-`ci.yml` 的 Linux 任务（`rust`、`e2e`、`lint`、`runtimes-go`/`runtimes-bun` 的 Linux 矩阵项、`dylib-linux-*`、`sdk-repro`）由仓库变量 `LINUX_RUNNER`（`runs-on` 的 JSON 值）决定跑在哪里：没设置时是 GitHub 的 `"ubuntu-24.04"`，设成 `["self-hosted","Linux"]` 就跑在组织的自托管 Linux runner 上；删掉变量就回到 GitHub。`package.yml`（要 Docker 容器）、`install.yml`、`stress.yml` 等其他工作流不受影响，只有 `stress.yml` 的 `shuttle`、`fuzz` 两个任务也按这个变量。
+`ci.yml` 的 Linux 任务（`rust`、`e2e`、`lint`、`runtimes-go`/`runtimes-bun` 的 Linux 矩阵项、`dylib-linux-*`、`sdk-repro`）由仓库变量 `LINUX_RUNNER`（`runs-on` 的 JSON 值）决定跑在哪里：没设置时是 GitHub 的 `"ubuntu-24.04"`，设成 `["self-hosted","Linux"]` 就跑在组织的自托管 Linux runner 上；删掉变量就回到 GitHub。`package.yml`（要 Docker 容器）、`install.yml`、`stress.yml` 等其他工作流不受影响，只有 `stress.yml` 的 `shuttle`、`fuzz` 和 `soak-host` 的 Linux 项也按这个变量（`soak-host` 的 macOS 项按 `MACOS_RUNNER`，Windows 项按 `WINDOWS_RUNNER`）。
 
 这些 runner 是同一台机器（32 核、60 GB 内存）上的 4 个 Docker 容器，每个容器一个 runner，用户 `runner`，有免密 sudo，自带 Rust、Node、Go、Python，没有 `lsof`、Docker 和 Bun（Bun 由 `setup-bun` 装）。任务开头和结尾同样运行 `tools/ci-self-hosted.sh`（见上一节），区别是：
 

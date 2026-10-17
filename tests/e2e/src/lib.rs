@@ -50,6 +50,7 @@ mod job;
 pub mod previous;
 mod proxy;
 mod residue;
+pub mod usage;
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};

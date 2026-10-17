@@ -100,3 +100,80 @@ fn a_runtime_whose_host_was_killed_unloads_its_rows_and_exits() {
     // Nothing is left: no process, socket, port or temporary file.
     s.finish();
 }
+
+/// [`STRAY`] in Python: a cleanup that never finishes.
+const STRAY_PY: &str = r#"
+import asyncio
+
+provides = {"stray": {"ping": "sync"}}
+
+
+class Stray:
+    def ping(self):
+        return "pong"
+
+
+def apply(ctx, config):
+    ctx.provide("stray", Stray())
+
+    async def cleanup():
+        with open(config["marker"], "w") as marker:
+            marker.write("cleaned up")
+        await asyncio.Event().wait()
+
+    return cleanup
+"#;
+
+/// The Python runtime gives up the stuck cleanup at its deadline and exits,
+/// also when it cannot say so: its stderr was a pipe to the host, which is
+/// dead, so the line fails to be written (EPIPE). It stayed running for
+/// good, found by S8 (#192).
+///
+/// risk: B3 (runtimes outlive a killed host)
+/// guarantee: host/killed-host-leaves-no-runtimes
+#[test]
+fn a_python_runtime_whose_host_was_killed_gives_up_its_cleanup_and_exits() {
+    let s = Scenario::new("stray-python");
+    s.write("stray.py", STRAY_PY);
+    let marker = s.path("cleaned-up");
+    s.write_json(
+        "rutis.json",
+        &json!({
+            "runtimes": { "py": {} },
+            "rows": [
+                { "id": "stray", "name": "py:stray", "config": { "marker": marker } },
+            ],
+        }),
+    );
+    let mut host = s.host(["run", "--shutdown-timeout", "1", "rutis.json"]);
+    host.expect("stray: running");
+    let started = s.descendants(&host);
+    assert!(
+        started
+            .iter()
+            .any(|(_, command)| command.to_lowercase().contains("python")),
+        "the Python runtime is not among the host's processes: {started:?}"
+    );
+    host.kill();
+    host.wait_exit();
+
+    let guard = Instant::now() + Duration::from_secs(1) + hang_guard();
+    loop {
+        let left = s.descendants(&host);
+        if left.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < guard,
+            "the Python runtime still runs after its host was killed: {left:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    #[cfg(unix)]
+    assert_eq!(
+        std::fs::read_to_string(&marker).ok().as_deref(),
+        Some("cleaned up"),
+        "the stray row's cleanup did not run"
+    );
+    s.finish();
+}
