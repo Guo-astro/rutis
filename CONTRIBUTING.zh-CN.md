@@ -42,6 +42,24 @@ npm --prefix node/rutis-runtime ci && npm --prefix node/rutis-runtime test
 (cd bun/rutis-bun && bun install --frozen-lockfile && bun test)
 ```
 
+另有两类检查，分别针对并发和来自对端的输入：
+
+```bash
+# 内核的 shuttle 模型（crates/rutis/src/fiber/shuttle_tests.rs）：用单独的 cfg 构建，放在单独的编译目录里
+RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle shuttle
+# 增加迭代次数（默认 1000），或重放失败时打印的调度
+RUTIS_SHUTTLE_ITERATIONS=1000000 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle shuttle
+RUTIS_SHUTTLE_REPLAY=<调度> RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle <测试名>
+
+# 模糊测试目标（fuzz/，单独的 workspace）：需要 nightly Rust 和 cargo-fuzz
+cargo install cargo-fuzz
+cd fuzz
+cargo +nightly fuzz run session_frame -- -max_total_time=60   # 或 local_lines、websocket_upgrade
+cargo +nightly fuzz run session_frame artifacts/session_frame/crash-…   # 复现一次失败
+```
+
+`cargo fuzz run <目标>` 会把新发现的输入加进 `fuzz/corpus/<目标>`；仓库里的只是少量种子，值得保留的才提交（例如修好的崩溃的输入，它同时要变成单元测试）。
+
 只改了一部分时，跑相关的那几项即可。CI 在 PR 上运行受改动影响的检查，在 main 上运行全部检查；怎样选择、怎样修改 CI，见 [docs/ci.md](docs/ci.md)。
 
 ## 提交改动

@@ -42,6 +42,25 @@ npm --prefix node/rutis-runtime ci && npm --prefix node/rutis-runtime test
 (cd bun/rutis-bun && bun install --frozen-lockfile && bun test)
 ```
 
+Two more kinds of check, for concurrency and for input from the far end:
+
+```bash
+# The shuttle models of the core (crates/rutis/src/fiber/shuttle_tests.rs):
+# built with a cfg of their own, in a target directory of their own.
+RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle shuttle
+# More iterations (1000 by default), or replay the schedule a failure printed:
+RUTIS_SHUTTLE_ITERATIONS=1000000 RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle shuttle
+RUTIS_SHUTTLE_REPLAY=<schedule> RUSTFLAGS="--cfg rutis_shuttle" cargo test -p rutis --lib --target-dir target/shuttle <test name>
+
+# The fuzz targets (fuzz/, its own workspace): nightly Rust and cargo-fuzz.
+cargo install cargo-fuzz
+cd fuzz
+cargo +nightly fuzz run session_frame -- -max_total_time=60   # or local_lines, websocket_upgrade
+cargo +nightly fuzz run session_frame artifacts/session_frame/crash-…   # reproduce a failure
+```
+
+`cargo fuzz run <target>` adds what it finds to `fuzz/corpus/<target>`; the inputs checked in there are a small set of seeds, so commit a new one only when it is worth keeping (for example the input of a fixed crash, which also becomes a unit test).
+
 When you change one part, running the related tests is enough. CI runs the checks your change affects on the pull request, and every check on main; how it chooses them, and how to change CI, is in [docs/ci.en.md](docs/ci.en.md).
 
 ## Sending a change

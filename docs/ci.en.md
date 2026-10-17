@@ -22,7 +22,7 @@ This document describes how CI runs today and what to do when changing it. The r
 | `ci.yml` | Every pull request; nightly, called by `nightly.yml` (`all=true`); in the release gate, called by `release.yml` (`all=true`); by hand (any branch, `all` on by default) | Tests and checks (below) |
 | `nightly.yml` | Every day at 19:00 UTC, when main has new commits; by hand (`force`: run without new commits) | Calls `ci.yml` (every job), `install.yml` (five platforms), `dylib-windows.yml` and `stress.yml`; opens an issue on failure (below, §7) |
 | `dylib-windows.yml` | Pull requests touching dylib files (the same files as the `dylib` switch); nightly, called by `nightly.yml`; in the release gate, called by `release.yml` (no longer on `v*` tags of its own); by hand | Dylib tests on Windows |
-| `stress.yml` | Nightly, called by `nightly.yml`; by hand | Kernel tests and multi-process tests repeated; long network tests (below) |
+| `stress.yml` | Nightly, called by `nightly.yml`; by hand | Kernel tests and multi-process tests repeated; long network tests; the kernel's shuttle models at scale and the fuzz targets (below) |
 | `ci-stats.yml` | Weekly; by hand | CI timings and failures |
 | `deps.yml` | Weekly; by hand | Dependency vulnerability checks: `cargo deny check advisories` (without the example projects), `npm audit` of `@arcships/rutis-runtime`, `pip-audit` of the Python package. Not on pull requests and does not block merges; GitHub notifies the maintainer on failure |
 | `install.yml` | Nightly, called by `nightly.yml`; pull requests touching packaging, build configuration or the install tests (`package.yml`, `install.yml`, `tests/e2e/**`, the packages' `package.json` and `pyproject.toml`, `node/rutis-host/scripts/**`, `Cargo.toml`, `Cargo.lock` and others); called by `release.yml` on a release; by hand | Builds this commit's packages with `package.yml`, installs and runs them: npm, PyPI, the release binary. Five platforms nightly and before a release (linux-x64, linux-arm64, darwin-x64, darwin-arm64, win32-x64), only linux-x64 on pull requests, three by default when run by hand (linux-x64, darwin-arm64, win32-x64) |
@@ -41,20 +41,22 @@ A merge to main runs no checks: the pull request already ran the jobs its change
 
 ### The nightly `stress.yml`
 
-A test that fails only now and then, when it happens to fail on a pull request, blocks someone whose change has nothing to do with it. `stress.yml` runs such tests many times over every night, so that these failures show up at night first. It does not run on pull requests and does not add to their time. Three jobs run side by side:
+A test that fails only now and then, when it happens to fail on a pull request, blocks someone whose change has nothing to do with it. `stress.yml` runs such tests many times over every night, so that these failures show up at night first. It does not run on pull requests and does not add to their time. It also runs the checks that need many iterations or a fixed time: the shuttle models of the kernel and the fuzz targets (#179). Five jobs run side by side:
 
 | Job | What it does |
 | --- | --- |
 | `rutis` | The kernel tests, `rounds` times (default 20). Each round changes the number of test threads (1, 2, all cores), shuffles the order and takes a new seed; every fifth round is a release build. Stops at the first failure |
 | `multiprocess` | The bridge and loader tests that start processes, open local channels or start runtime processes: the test files pull requests run on macOS and Windows, every test file but the `PURE_TESTS_BRIDGE` and `PURE_TESTS_LOADER` lists of `ci.yml` (§4; a new test file runs here too). The same runtimes as the `rust` job (§9). The tests are built once, then run `rounds` times, each round with a different number of test threads, a shuffled order and a new seed. A failing round does not stop the others; the job fails at the end |
 | `soak` | The bridge's long WebSocket and local-channel tests, `soak_secs` seconds each (default 600) |
+| `shuttle` | The shuttle models of the kernel (`crates/rutis/src/fiber/shuttle_tests.rs`: TransitionTask wakeup, `post_join` against the driver's exit, concurrent dispose cleaning up once), `shuttle_iterations` iterations of each scheduler per model (default 1,000,000; pull requests run 1000 in `rust`). A failure prints the failing schedule and seed; the log is uploaded as `shuttle-log`, and the summary says how to replay it (`RUTIS_SHUTTLE_REPLAY`) |
+| `fuzz` | The three fuzz targets in `fuzz/` (cargo-fuzz, nightly Rust), one matrix entry each, `fuzz_secs` seconds each (default 1200): `session_frame` (session frames and the tagged values in them), `local_lines` (the local channels' line framing with its size limit), `websocket_upgrade` (the listener reading an upgrade request). Each starts from the corpus checked in (`fuzz/corpus/<target>`); what it adds is not kept. A crash, a hang (one input over 10 s), or a property that fails, fails the entry: the input and the log are uploaded as `fuzz-<target>`, and the summary has the command that reproduces it. On GitHub's Linux runners (`LINUX_RUNNER`, §11) |
 
-The slowest job sets the time of the workflow: `soak` takes about 21 minutes; `multiprocess` an estimated 30–45 minutes (about 10 minutes to build, 1–1.5 minutes a round).
+The slowest job sets the time of the workflow: `soak` takes about 21 minutes; `multiprocess` an estimated 30–45 minutes (about 10 minutes to build, 1–1.5 minutes a round); each `fuzz` entry about 25 minutes (cargo-fuzz install and build, then 20 minutes); `shuttle` a few minutes.
 
 - Failures are not retried (standard Q7.3).
 - Each round prints its thread count and seed in the log. The job summary has a table of every round's result, the failing tests and the rounds they failed in, and replay commands that rerun the test file with the same seed, thread count and order.
 - When `multiprocess` fails, the output of every test file in every round is uploaded as the `multiprocess-logs` artifact, kept for 14 days.
-- To run it by hand: on the Actions page pick `stress` and "Run workflow", where `rounds` and `soak_secs` can be changed; or `gh workflow run stress.yml -f rounds=50`. All three jobs run.
+- To run it by hand: on the Actions page pick `stress` and "Run workflow", where `rounds`, `soak_secs`, `shuttle_iterations` and `fuzz_secs` can be changed; or `gh workflow run stress.yml -f rounds=50 -f fuzz_secs=120`. All five jobs run. How to run the shuttle models and a fuzz target locally is in [CONTRIBUTING](../CONTRIBUTING.md).
 - A failure found at night is handled as in §7: open an issue, then find a way to reproduce it.
 
 ## 3. How a pull request picks its jobs
@@ -79,7 +81,7 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 | Job | Runner | Pull requests | Added in full runs | What it does |
 | --- | --- | --- | --- | --- |
 | `links` | macOS (self-hosted, §10) | `docs` | — | Checks relative links in Markdown |
-| `rust` | Linux | `code` | The rerun with runtimes started over loopback, on Linux | Every Rust test, once: the workspace (but bridge, loader and `rutis-e2e`), the loader with every row kind, the bridge with every feature. With the oldest supported versions (§9) |
+| `rust` | Linux | `code` | The rerun with runtimes started over loopback, on Linux | Every Rust test, once: the workspace (but bridge, loader and `rutis-e2e`), the loader with every row kind, the bridge with every feature; the kernel's shuttle models, 1000 iterations (built with `--cfg rutis_shuttle` in `target/shuttle`, well under a minute; `stress.yml` runs them at scale). With the oldest supported versions (§9) |
 | `e2e` | Linux | `code` | — | The end-to-end scenarios, `cargo test -p rutis-e2e` (`tests/e2e`: real rutis-host processes, project directories, probe plugins of every language), beside `rust`, with the oldest supported versions (§9). On failure it uploads `RUTIS_E2E_DIR` (the failed scenarios' directories and logs) as the `e2e-linux` artifact. The install scenarios run in `install.yml`, not here. The same scenarios run on macOS in `network-macos` and on Windows in `runtimes-windows` (only those not limited to Unix) |
 | `js-py` | macOS (self-hosted, §10) | `code` | — | `scripts/train.mjs`; the Node packages' tests (`node/rutis`, `rutis-runtime`, `rutis-host`) and rutis-dsh's dsh tests; the Python unit tests |
 | `lint` | Linux | `code` | — | `cargo fmt --check`; every name in `PURE_TESTS_*` has its test file (§4); `cargo clippy --workspace --all-targets --all-features -- -D warnings`. In parallel with the tests. No baseline: a warning is fixed in the PR that introduces it, and new lints from a toolchain upgrade in the upgrade PR |
@@ -282,7 +284,7 @@ A self-hosted machine keeps its state between jobs, and several instances run at
 
 ## 11. Self-hosted Linux runners
 
-Where `ci.yml`'s Linux jobs (`rust`, `e2e`, `lint`, the Linux entries of `runtimes-go`/`runtimes-bun`, `dylib-linux-*`, `sdk-repro`) run is the repository variable `LINUX_RUNNER` (the JSON value of `runs-on`): unset, GitHub's `"ubuntu-24.04"`; set to `["self-hosted","Linux"]`, the organization's self-hosted Linux runners; delete it to go back to GitHub. The other workflows (`package.yml`, which needs Docker containers, `install.yml`, `stress.yml` and the rest) are not affected.
+Where `ci.yml`'s Linux jobs (`rust`, `e2e`, `lint`, the Linux entries of `runtimes-go`/`runtimes-bun`, `dylib-linux-*`, `sdk-repro`) run is the repository variable `LINUX_RUNNER` (the JSON value of `runs-on`): unset, GitHub's `"ubuntu-24.04"`; set to `["self-hosted","Linux"]`, the organization's self-hosted Linux runners; delete it to go back to GitHub. The other workflows (`package.yml`, which needs Docker containers, `install.yml`, `stress.yml` and the rest) are not affected, but for the `shuttle` and `fuzz` jobs of `stress.yml`, which follow the variable too.
 
 These runners are 4 Docker containers on one machine (32 cores, 60 GB of memory), one runner each, user `runner` with passwordless sudo, with Rust, Node, Go and Python installed and no `lsof`, Docker or Bun (`setup-bun` installs Bun). The jobs run `tools/ci-self-hosted.sh` at their start and their end as well (previous section), with these differences:
 
