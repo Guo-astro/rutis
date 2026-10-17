@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use common::runtimes::id;
 use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, PluginFactory, TypeKey};
-use rutis_bridge::channel::PeerId;
 use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
     peer_key, Credential, Described, HostPlugin, IdentityPlugin, LinkConfig, LinkPlugin, Peer,
@@ -22,10 +22,6 @@ use rutis_loader::{
 };
 use rutis_test_support::eventually;
 use serde_json::{json, Value};
-
-fn id(s: &str) -> PeerId {
-    PeerId::new(s).unwrap()
-}
 
 /// Installed on mac: provides `Greeting` with its config's text (keyed by
 /// its config's `as`, if any, so two rows can run side by side); counts how

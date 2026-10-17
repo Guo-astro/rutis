@@ -8,7 +8,7 @@
 //! rutis-host go add <module>@<version> [rutis.json]
 //! ```
 
-use rutis_host::{config, errln, host, new, outln, project, status};
+use rutis_host::{config, errln, host, languages, new, outln, project, status};
 use rutis_loader::{RowStatus, Supply};
 
 mod stop;
@@ -112,17 +112,16 @@ fn new_project(args: &[String]) -> Result<(), String> {
             other => return Err(format!("unexpected argument {other}")),
         }
     }
-    let name = name.ok_or("usage: rutis-host new <name> --lang node|bun|python|go")?;
-    let lang = lang.ok_or("which language? --lang node, --lang bun, --lang python or --lang go")?;
+    let names = languages::new_names();
+    let name =
+        name.ok_or_else(|| format!("usage: rutis-host new <name> --lang {}", names.join("|")))?;
+    let lang = lang.ok_or_else(|| {
+        let options: Vec<String> = names.iter().map(|name| format!("--lang {name}")).collect();
+        format!("which language? {}", languages::either(&options))
+    })?;
     new::create(std::path::Path::new("."), &name, &lang)?;
-    let next = match lang.as_str() {
-        "python" | "py" => {
-            "uv sync && uv run python -m unittest discover -s tests && uv run rutis-host dev"
-        }
-        "bun" => "bun install && bun test && bunx --bun rutis-host dev",
-        "go" | "golang" => "go mod tidy && go test ./... && rutis-host dev",
-        _ => "npm install && npm test && npx rutis-host dev",
-    };
+    // Created: the language is one of them.
+    let next = languages::by_new_name(&lang).map_or("", |language| language.next_steps());
     outln!("created {name}/\nnext: cd {name} && {next}");
     Ok(())
 }
@@ -254,11 +253,11 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
     std::env::set_var("RUTIS_DEV", "1");
     let (config, id) = project::dev_config(&dir)?;
     warn(&config);
-    let go_project = match (
-        dir.join("package.json").exists(),
-        dir.join("pyproject.toml").exists(),
-    ) {
-        (false, false) => project::GoDev::of(&std::path::absolute(&dir).unwrap_or(dir.clone())),
+    // A Go project is rebuilt, not reloaded: the loop below does both.
+    let go_project = match languages::of_project(&dir) {
+        Some(language) if language.key() == "go" => {
+            project::GoDev::of(&std::path::absolute(&dir).unwrap_or(dir.clone()))
+        }
         _ => None,
     };
     let mut build = 1;

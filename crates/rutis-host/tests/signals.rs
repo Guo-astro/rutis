@@ -15,12 +15,15 @@
 //! the rutis-host tests on Windows; they are not covered here (#186 / S8).
 #![cfg(unix)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
+use common::repo;
 use rutis_test_support::HANG_GUARD;
 use serde_json::json;
 
@@ -29,10 +32,6 @@ use serde_json::json;
 /// a deadline and its runtimes' exits (`PROCESS_EXIT`, `KILLED_EXIT`): six
 /// times [`HANG_GUARD`], as before.
 const GUARD: Duration = Duration::from_secs(6 * HANG_GUARD.as_secs());
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
 
 fn file_url(path: &Path) -> String {
     url::Url::from_file_path(path).unwrap().to_string()

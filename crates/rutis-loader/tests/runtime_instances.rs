@@ -4,12 +4,14 @@
 //! Rust stand-ins speaking the row contract over the memory transport.
 #![cfg(feature = "runtimes")]
 
+mod common;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use common::runtimes::{id, NoConfig};
 use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, PluginFactory, TypeKey};
-use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{
     settle, Connection, Dispatch, Endpoint, Error, Format, HostDispatch, Reply, Value as RpcValue,
 };
@@ -23,14 +25,8 @@ use rutis_loader::{
     NewEntry, Patch, RuntimeConnection, RuntimeInstances, ServiceCatalog, Version,
 };
 use rutis_test_support::{eventually, within, HANG_GUARD};
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
-
-fn id(s: &str) -> PeerId {
-    PeerId::new(s).unwrap()
-}
 
 type Log = Arc<Mutex<Vec<String>>>;
 
@@ -153,9 +149,6 @@ async fn dial(main: &Main, name: &str, plugins: &[&'static str], lists: bool) ->
 }
 
 // ── A row using the connection's service ────────────────────────
-
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-struct NoConfig {}
 
 /// Calls `contacts.whoami()` in its instance and records what it heard.
 struct Reader {

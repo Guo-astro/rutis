@@ -1,0 +1,144 @@
+//! Node: `runtimes.node`, the `@arcships/rutis-runtime` package, rows named
+//! as npm packages or `file:` URLs.
+
+use std::path::{Path, PathBuf};
+
+use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle};
+use rutis_loader::RuntimeResolver;
+use serde_json::{json, Value};
+
+use super::{id_of, package_entry, Language};
+use crate::config::{file_url, NodeRuntime, Runtimes};
+use crate::host::Error;
+
+pub struct Node;
+
+impl Language for Node {
+    fn key(&self) -> &'static str {
+        "node"
+    }
+
+    fn configured(&self, runtimes: &Runtimes) -> bool {
+        runtimes.node.is_some()
+    }
+
+    fn rebase(&self, runtimes: &mut Runtimes, at: &dyn Fn(&mut PathBuf)) {
+        if let Some(node) = &mut runtimes.node {
+            at(&mut node.project);
+            if let Some(runtime) = &mut node.runtime {
+                at(runtime);
+            }
+        }
+    }
+
+    fn merge(&self, runtimes: &mut Runtimes, other: &mut Runtimes) {
+        if runtimes.node.is_none() {
+            runtimes.node = other.node.take();
+        }
+    }
+
+    fn remote_names(&self) -> &'static [&'static str] {
+        &["node"]
+    }
+
+    /// npm names, resolved where the runtime runs, and `file:` URLs.
+    fn rows(&self, runtime: RuntimeHandle) -> RuntimeResolver {
+        RuntimeResolver::node(runtime)
+    }
+
+    fn runtime(&self, runtimes: &Runtimes) -> Option<Result<LocalRuntime, Error>> {
+        runtimes.node.as_ref().map(runtime)
+    }
+
+    fn new_names(&self) -> &'static [&'static str] {
+        &["node", "ts", "typescript", "js"]
+    }
+
+    fn template(&self) -> &'static [(&'static str, &'static str)] {
+        TEMPLATE
+    }
+
+    fn next_steps(&self) -> &'static str {
+        "npm install && npm test && npx rutis-host dev"
+    }
+
+    fn project_file(&self) -> &'static str {
+        "package.json"
+    }
+
+    /// A package.json project, unless it runs in Bun.
+    fn is_project(&self, dir: &Path) -> bool {
+        dir.join("package.json").exists() && !super::bun::runs_in_bun(dir)
+    }
+
+    /// The package's source as the row.
+    fn dev(&self, dir: &Path) -> Result<(Vec<Value>, Runtimes), String> {
+        let (name, entry) = package_entry(dir)?;
+        let row = json!({ "id": id_of(&name), "name": file_url(&entry), "config": {} });
+        let runtimes = Runtimes {
+            node: Some(NodeRuntime {
+                project: dir.to_owned(),
+                runtime: None,
+            }),
+            ..Runtimes::default()
+        };
+        Ok((vec![row], runtimes))
+    }
+}
+
+/// The Node runtime of `node.project`, with the `@arcships/rutis-runtime`
+/// package installed there (or given, or next to this program).
+fn runtime(node: &NodeRuntime) -> Result<LocalRuntime, Error> {
+    let anchor = node.project.join("package.json");
+    if !anchor.exists() {
+        return Err(format!(
+            "the Node runtime needs a package.json in {}: run `npm init -y` there",
+            node.project.display()
+        ));
+    }
+    let candidates = [
+        node.runtime.clone(),
+        Some(node.project.join("node_modules/@arcships/rutis-runtime")),
+        std::env::var_os("RUTIS_NODE_RUNTIME").map(PathBuf::from),
+    ];
+    let package = candidates
+        .into_iter()
+        .flatten()
+        .find(|package| package.join("package.json").exists())
+        .ok_or_else(|| {
+            format!(
+                "the Node runtime is not installed in {}: run `npm install @arcships/rutis-runtime` there",
+                node.project.display()
+            )
+        })?;
+    Ok(LocalRuntime::node(package, anchor))
+}
+
+const TEMPLATE: &[(&str, &str)] = &[
+    (
+        "package.json",
+        include_str!("../../templates/node/package.json"),
+    ),
+    (
+        "tsconfig.json",
+        include_str!("../../templates/node/tsconfig.json"),
+    ),
+    (
+        "src/index.ts",
+        include_str!("../../templates/node/src/index.ts"),
+    ),
+    (
+        "test/index.test.ts",
+        include_str!("../../templates/node/test/index.test.ts"),
+    ),
+    (
+        "rutis.dev.json",
+        include_str!("../../templates/node/rutis.dev.json"),
+    ),
+    ("README.md", include_str!("../../templates/node/README.md")),
+    (".gitignore", include_str!("../../templates/node/gitignore")),
+    (
+        ".github/workflows/publish.yml",
+        include_str!("../../templates/node/.github/workflows/publish.yml"),
+    ),
+];

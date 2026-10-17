@@ -33,6 +33,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::languages::LANGUAGES;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostConfig {
@@ -326,41 +328,8 @@ impl HostConfig {
                 *path = base.join(&*path).components().collect();
             }
         };
-        if let Some(node) = &mut self.runtimes.node {
-            at(&mut node.project);
-            if let Some(runtime) = &mut node.runtime {
-                at(runtime);
-            }
-        }
-        if let Some(bun) = &mut self.runtimes.bun {
-            at(&mut bun.project);
-            if let Some(runtime) = &mut bun.runtime {
-                at(runtime);
-            }
-            // A bare program name is looked up on PATH, not under the base.
-            if let Some(program) = &mut bun.program {
-                if program.components().count() > 1 {
-                    at(program);
-                }
-            }
-        }
-        if let Some(py) = &mut self.runtimes.py {
-            at(&mut py.project);
-            // A bare program name is looked up on PATH, not under the base.
-            if let Some(python) = &mut py.python {
-                if python.components().count() > 1 {
-                    at(python);
-                }
-            }
-        }
-        if let Some(go) = &mut self.runtimes.go {
-            if let Some(dir) = &mut go.dir {
-                at(dir);
-            }
-            for binary in &mut go.binaries {
-                at(binary);
-            }
-            at(&mut go.project);
+        for language in LANGUAGES {
+            language.rebase(&mut self.runtimes, &at);
         }
         for listener in &mut self.listen {
             for path in [&mut listener.cert, &mut listener.key]
@@ -390,18 +359,9 @@ impl HostConfig {
     }
 
     /// Add `other`'s runtimes (where this has none), listeners and rows.
-    pub fn merge(&mut self, other: HostConfig) {
-        if self.runtimes.node.is_none() {
-            self.runtimes.node = other.runtimes.node;
-        }
-        if self.runtimes.py.is_none() {
-            self.runtimes.py = other.runtimes.py;
-        }
-        if self.runtimes.bun.is_none() {
-            self.runtimes.bun = other.runtimes.bun;
-        }
-        if self.runtimes.go.is_none() {
-            self.runtimes.go = other.runtimes.go;
+    pub fn merge(&mut self, mut other: HostConfig) {
+        for language in LANGUAGES {
+            language.merge(&mut self.runtimes, &mut other.runtimes);
         }
         self.runtimes.remote.extend(other.runtimes.remote);
         self.listen.extend(other.listen);
@@ -413,16 +373,7 @@ impl HostConfig {
     /// (`py:<module>`, `bun:<module>`, `<remote>:<module>`), names one
     /// runtime only.
     pub fn check_runtime_names(&self) -> Result<(), String> {
-        let local = [
-            ("node", self.runtimes.node.is_some()),
-            ("py", self.runtimes.py.is_some()),
-            ("bun", self.runtimes.bun.is_some()),
-        ];
-        let mut seen: Vec<&str> = local
-            .iter()
-            .filter(|(_, present)| *present)
-            .map(|(name, _)| *name)
-            .collect();
+        let mut seen: Vec<&str> = Vec::new();
         for remote in &self.runtimes.remote {
             let name = remote.name.as_str();
             if !rutis_loader::is_runtime_name(name) {
@@ -430,16 +381,16 @@ impl HostConfig {
                     "remote runtime {name:?}: a runtime name is two or more of a-z, 0-9 and -, and not file"
                 ));
             }
-            if seen.contains(&name) {
-                return Err(format!(
-                    "remote runtime {name}: the name is already a runtime's; rows `{name}:<module>` must name one"
-                ));
+            // A local language's own (`py`), or its rows' prefix (`go-<binary>`).
+            let local = LANGUAGES
+                .iter()
+                .filter(|language| language.configured(&self.runtimes))
+                .find_map(|language| language.claims(name));
+            if let Some(error) = local {
+                return Err(error);
             }
-            // `go:<plugin>` and `go-<binary>:<plugin>` are the Go runtimes' rows.
-            if self.runtimes.go.is_some() && (name == "go" || name.starts_with("go-")) {
-                return Err(format!(
-                    "remote runtime {name}: go and names starting with go- are the local Go runtimes'"
-                ));
+            if seen.contains(&name) {
+                return Err(crate::languages::taken(name));
             }
             seen.push(name);
         }

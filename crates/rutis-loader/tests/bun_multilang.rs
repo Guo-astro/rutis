@@ -5,23 +5,19 @@
 //! waits, so no two runtimes wait for each other for ever.
 #![cfg(all(unix, feature = "bun", feature = "node", feature = "python"))]
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+mod common;
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use common::runtimes::{layer, repo, row_state, Probe, COLD};
 use rutis::{Ctx, FiberState};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_bridge::session::{Reply, Value as RpcValue};
 use rutis_loader::{
-    Chain, EntryStatus, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver,
-    RuntimeRowsPlugin, ServiceCatalog,
+    Chain, Loader, LoaderOptions, LoaderPlugin, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
 };
-use rutis_test_support::{Guard, HANG_GUARD};
-use serde_json::{json, Value};
-
-/// Twice HANG_GUARD: the Bun, Node and Python runtimes start cold (#238).
-const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
+use serde_json::json;
 
 const BUN_PROVIDER: &str = r#"
 export const provides = { bun_weather: { today: 'sync', later: 'async' } }
@@ -110,43 +106,6 @@ provides = {"py_echo": Echo}
 def apply(ctx, config):
     ctx.provide("py_echo", Echo())
 "#;
-
-#[derive(Clone, Default)]
-struct Probe(Arc<Mutex<Vec<String>>>);
-
-impl HostDispatch for Probe {
-    fn invoke(&self, _method: &str, args: RpcValue) -> Reply {
-        let [line]: [String; 1] = rutis_bridge::session::decode_value(args)?;
-        self.0.lock().unwrap().push(line);
-        Ok(RpcValue::Undefined)
-    }
-
-    fn methods(&self) -> Option<Value> {
-        Some(json!({ "record": "sync" }))
-    }
-}
-
-impl Probe {
-    async fn wait_for(&self, line: &str) {
-        COLD.eventually_with(
-            || {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|l| l == line)
-                    .then_some(())
-            },
-            &format!("{line:?} recorded"),
-            || format!("{:?}", self.0.lock().unwrap()),
-        )
-        .await
-    }
-}
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
 
 struct Fixture {
     root: Ctx,
@@ -242,18 +201,6 @@ async fn fixture() -> Fixture {
     }
 }
 
-fn layer(rows: Vec<Value>) -> Vec<Layer> {
-    let patches: Vec<Patch> = serde_json::from_value(json!([{ "insert": rows }])).unwrap();
-    vec![Layer::new("rows", patches)]
-}
-
-fn state(loader: &Loader, id: &str) -> Option<FiberState> {
-    match loader.get(id)?.status {
-        EntryStatus::Running(snapshot) => Some(snapshot.state),
-        _ => None,
-    }
-}
-
 /// guarantee: loader/runtimes-do-not-wait-for-each-other
 #[tokio::test(flavor = "multi_thread")]
 async fn three_runtimes_start_cold_and_use_each_other() {
@@ -300,7 +247,7 @@ async fn three_runtimes_start_cold_and_use_each_other() {
         .unwrap();
     probe.wait_for("py consumer: bye").await;
     probe.wait_for("node consumer: bye").await;
-    assert_eq!(state(&fixture.loader, "bc"), Some(FiberState::Active));
+    assert_eq!(row_state(&fixture.loader, "bc"), Some(FiberState::Active));
     fixture.root.shutdown().await.unwrap();
 }
 
@@ -325,7 +272,7 @@ async fn a_synchronous_chain_crosses_bun_and_python_and_back() {
         .eventually(
             || {
                 let relay = fixture.root.get_as::<dyn HostDispatch>(host_key("relay"))?;
-                (state(&fixture.loader, "r") == Some(FiberState::Active)).then_some(relay)
+                (row_state(&fixture.loader, "r") == Some(FiberState::Active)).then_some(relay)
             },
             "the relay row and its service",
         )

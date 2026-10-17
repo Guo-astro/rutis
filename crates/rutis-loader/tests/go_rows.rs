@@ -4,6 +4,8 @@
 //! services through rutis.
 #![cfg(feature = "go")]
 
+mod common;
+
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -11,18 +13,15 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::task::Poll;
 use std::time::Duration;
 
+use common::runtimes::{layer, row_state, COLD};
 use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, TypeKey};
 use rutis_bridge::session::{host_key, settle, HostDispatch};
 use rutis_loader::{
     Chain, EntryStatus, GoBinaries, GoResolver, GoRuntimeState, GoRuntimes, GoRuntimesHandle,
-    Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch, RuntimeRows, ServiceCatalog,
+    Loader, LoaderError, LoaderOptions, LoaderPlugin, RuntimeRows, ServiceCatalog,
 };
-use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
-
-/// Twice HANG_GUARD: Go runtimes start cold, one per binary (#238).
-const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 /// The fixture binaries (`tests/fixtures/go/cmd/*`), built once.
 fn built() -> &'static Path {
@@ -104,20 +103,8 @@ async fn fixture(idle: Option<Duration>, binaries: &[(&str, &str)]) -> Fixture {
     }
 }
 
-fn layer(rows: Vec<Value>) -> Vec<Layer> {
-    let patches: Vec<Patch> = serde_json::from_value(json!([{ "insert": rows }])).unwrap();
-    vec![Layer::new("rows", patches)]
-}
-
 fn row(id: &str, name: &str) -> Value {
     json!({ "id": id, "name": name })
-}
-
-fn state(loader: &Loader, id: &str) -> Option<FiberState> {
-    match loader.get(id)?.status {
-        EntryStatus::Running(snapshot) => Some(snapshot.state),
-        _ => None,
-    }
 }
 
 /// The generation of the row's fiber while it is active: a later one has
@@ -238,8 +225,8 @@ async fn rows_find_their_binary_and_call_across_binaries() {
     let loader = fixture.loader.clone();
     COLD.until(
         || {
-            state(&loader, "ping") == Some(FiberState::Active)
-                && state(&loader, "caller") == Some(FiberState::Active)
+            row_state(&loader, "ping") == Some(FiberState::Active)
+                && row_state(&loader, "caller") == Some(FiberState::Active)
         },
         "both rows",
     )
@@ -318,7 +305,7 @@ async fn a_plugin_in_two_binaries_is_named_with_its_runtime() {
         .unwrap();
     let loader = fixture.loader.clone();
     COLD.until(
-        || state(&loader, "p") == Some(FiberState::Active),
+        || row_state(&loader, "p") == Some(FiberState::Active),
         "the qualified row",
     )
     .await;
@@ -362,7 +349,7 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
     COLD.until(
         || {
             ["ping", "caller", "spare"].iter().all(|id| {
-                state(&loader, id) == Some(FiberState::Active)
+                row_state(&loader, id) == Some(FiberState::Active)
                     && service(&fixture.root, id).is_some()
             })
         },
@@ -388,14 +375,14 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
     .await;
     COLD.until(
         || {
-            state(&loader, "ping") != Some(FiberState::Active)
-                && state(&loader, "caller") != Some(FiberState::Active)
+            row_state(&loader, "ping") != Some(FiberState::Active)
+                && row_state(&loader, "caller") != Some(FiberState::Active)
         },
         "its rows and their users stop",
     )
     .await;
     assert_eq!(
-        state(&loader, "spare"),
+        row_state(&loader, "spare"),
         Some(FiberState::Active),
         "another binary runs on"
     );
@@ -436,7 +423,7 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
     COLD.until(
         || {
             ["ping", "caller"].iter().all(|id| {
-                state(&loader, id) == Some(FiberState::Active)
+                row_state(&loader, id) == Some(FiberState::Active)
                     && service(&fixture.root, id).is_some()
             })
         },
@@ -471,8 +458,8 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
     let loader = fixture.loader.clone();
     COLD.until(
         || {
-            state(&loader, "ping") == Some(FiberState::Active)
-                && state(&loader, "spare") == Some(FiberState::Active)
+            row_state(&loader, "ping") == Some(FiberState::Active)
+                && row_state(&loader, "spare") == Some(FiberState::Active)
         },
         "the rows",
     )
@@ -527,7 +514,7 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
         .await
         .unwrap();
     COLD.until(
-        || state(&loader, "ping") == Some(FiberState::Active),
+        || row_state(&loader, "ping") == Some(FiberState::Active),
         "the row again",
     )
     .await;
@@ -554,7 +541,7 @@ async fn a_replaced_binary_takes_effect_when_its_runtime_restarts() {
         .unwrap();
     let loader = fixture.loader.clone();
     COLD.until(
-        || state(&loader, "ping") == Some(FiberState::Active),
+        || row_state(&loader, "ping") == Some(FiberState::Active),
         "the row",
     )
     .await;
@@ -592,8 +579,8 @@ async fn a_replaced_binary_takes_effect_when_its_runtime_restarts() {
     fixture.loader.reload("extra").await.unwrap();
     COLD.until(
         || {
-            state(&loader, "ping") == Some(FiberState::Active)
-                && state(&loader, "extra") == Some(FiberState::Active)
+            row_state(&loader, "ping") == Some(FiberState::Active)
+                && row_state(&loader, "extra") == Some(FiberState::Active)
         },
         "both rows on the new binary",
     )
@@ -625,7 +612,7 @@ async fn a_new_build_takes_effect_when_its_runtime_restarts() {
         .unwrap();
     let loader = fixture.loader.clone();
     COLD.until(
-        || state(&loader, "ping") == Some(FiberState::Active),
+        || row_state(&loader, "ping") == Some(FiberState::Active),
         "the row",
     )
     .await;

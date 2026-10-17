@@ -4,11 +4,12 @@ mod common;
 
 use std::sync::{Arc, Mutex};
 
+use common::runtimes::{active, title, Title};
 use common::{patches, MemStore};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, PluginFactory, TypeKey};
+use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory, TypeKey};
 use rutis_loader::{
-    Build, Builtins, Editable, EntryInfo, EntryStatus, ExprScope, Expressions, InstanceResult,
-    Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, ServiceCatalog,
+    Builtins, Editable, EntryInfo, EntryStatus, ExprScope, Expressions, InstanceResult, Layer,
+    Loader, LoaderError, LoaderOptions, LoaderPlugin, ServiceCatalog,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -20,9 +21,6 @@ type Log = Arc<Mutex<Vec<String>>>;
 /// it as its title.
 #[derive(Debug, serde::Serialize)]
 struct Tools(String);
-
-/// The instance's title, given with `with`.
-struct Title(String);
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 struct Cfg {
@@ -89,13 +87,6 @@ impl PluginFactory<Cfg> for ProbeFactory {
             log: self.log.clone(),
         }))
     }
-}
-
-fn title(build: &Build) -> String {
-    build
-        .value::<Title>()
-        .map(|t| t.0.clone())
-        .unwrap_or_default()
 }
 
 fn resolver(log: &Log) -> Builtins {
@@ -196,10 +187,6 @@ async fn setup(base: Value) -> (Setup, rutis_loader::ReconcileReport) {
         .await
         .unwrap();
     (Setup { root, loader, log }, report)
-}
-
-fn active(entry: &EntryInfo) -> bool {
-    matches!(&entry.status, EntryStatus::Running(s) if s.state == FiberState::Active)
 }
 
 /// guarantee: loader/instance-services

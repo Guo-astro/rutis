@@ -6,12 +6,14 @@
 //! (RUTIS_PYTHON, else python3; python on Windows).
 #![cfg(feature = "python")]
 
+mod common;
+
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use common::runtimes::{id, COLD};
 use rutis::Ctx;
-use rutis_bridge::channel::PeerId;
 use rutis_bridge::runtime::RuntimeAccessPlugin;
 use rutis_bridge::runtime::RuntimePlugin;
 use rutis_bridge::session::{host_key, HostDispatch};
@@ -21,12 +23,8 @@ use rutis_bridge::{Credential, IdentityPlugin, LinkConfig, LinkPlugin, StaticIde
 use rutis_loader::{
     Chain, Layer, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin,
 };
-use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
 use tokio::io::AsyncBufReadExt;
-
-/// Twice HANG_GUARD: the remote runtimes start cold (#238).
-const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 const WEATHER: &str = r#"
 inject = ["clock"]
@@ -60,10 +58,6 @@ impl HostDispatch for Clock {
     fn methods(&self) -> Option<Value> {
         Some(json!({ "now": "sync" }))
     }
-}
-
-fn id(s: &str) -> PeerId {
-    PeerId::new(s).unwrap()
 }
 
 /// Start the remote runtime: `gpu`, accepting `main` with a token.

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
-use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle, RuntimePlugin, RuntimeState, Stdio};
+use rutis_bridge::runtime::{RuntimeHandle, RuntimePlugin, RuntimeState};
 use rutis_bridge::transport::local::LocalPlugin;
 use rutis_bridge::transport::websocket::{
     Config, ListenerConfig, ServerTls, Trust, WebSocketPlugin,
@@ -17,16 +17,14 @@ use rutis_bridge::{
     SharedToken, StaticIdentity,
 };
 use rutis_loader::{
-    register_peer_node, Builtins, Chain, GoBinaries, GoResolver, GoRuntimes, GoRuntimesHandle,
-    Layer, Loader, LoaderOptions, LoaderPlugin, Patch, PeerResolver, RuntimeInstances,
-    RuntimeResolver, RuntimeRows, RuntimeRowsPlugin, ServiceCatalog,
+    register_peer_node, Builtins, Chain, GoResolver, GoRuntimesHandle, Layer, Loader,
+    LoaderOptions, LoaderPlugin, Patch, PeerResolver, RuntimeInstances, RuntimeResolver,
+    RuntimeRows, RuntimeRowsPlugin, ServiceCatalog,
 };
 
-use crate::config::{
-    token, venv_python, BunRuntime, GoRuntime, GoStart, HostConfig, NodeRuntime, PythonRuntime,
-    DEFAULT_PYTHON,
-};
+use crate::config::{token, HostConfig};
 use crate::errln;
+use crate::languages::{self, Mount, LANGUAGES};
 
 pub struct Host {
     /// The host runs while this lives.
@@ -162,82 +160,62 @@ impl Host {
             None => root.plugin(IdentityPlugin::new("host", identity(config)?)),
         };
 
-        let mut runtimes = Vec::new();
-        let mut resolvers = Vec::new();
-        let mut fibers = Vec::new();
         let peers = Arc::new(PeerResolver::new());
         let mut builtins = Builtins::new();
         register_peer_node(&mut builtins, peers.clone());
         if let Some(register) = embedding.builtins {
             register(&mut builtins);
         }
-        let mut chain = Chain::new().with(builtins).with_shared(peers.clone());
-        let go = match &config.runtimes.go {
-            Some(go) => {
-                let resolver = Arc::new(go_resolver(config, go, &catalog)?);
-                chain = chain.with_shared(resolver.clone());
-                Some((resolver, go))
-            }
-            None => None,
+        let mut mount = Mount {
+            root: &root,
+            catalog: &catalog,
+            chain: Chain::new().with(builtins).with_shared(peers.clone()),
+            runtimes: Vec::new(),
+            resolvers: Vec::new(),
+            fibers: Vec::new(),
+            later: Vec::new(),
         };
-        if let Some(py) = &config.runtimes.py {
-            let runtime = whole_lines(python(py)?);
-            let handle = runtime.handle();
-            let rows = Arc::new(RuntimeResolver::modules(handle.clone()).with_catalog(&catalog));
-            fibers.push(("py".to_owned(), root.plugin(runtime)));
-            chain = chain.with_shared(rows.clone());
-            runtimes.push(("py".to_owned(), handle));
-            resolvers.push(rows);
-        }
-        if let Some(bun) = &config.runtimes.bun {
-            let runtime = whole_lines(bun_runtime(bun)?);
-            let handle = runtime.handle();
-            let rows = Arc::new(RuntimeResolver::modules(handle.clone()).with_catalog(&catalog));
-            fibers.push(("bun".to_owned(), root.plugin(runtime)));
-            chain = chain.with_shared(rows.clone());
-            runtimes.push(("bun".to_owned(), handle));
-            resolvers.push(rows);
-        }
-        if let Some(node) = &config.runtimes.node {
-            let runtime = whole_lines(node_runtime(node)?);
-            let handle = runtime.handle();
-            let rows = Arc::new(RuntimeResolver::node(handle.clone()).with_catalog(&catalog));
-            fibers.push(("node".to_owned(), root.plugin(runtime)));
-            chain = chain.with_shared(rows.clone());
-            runtimes.push(("node".to_owned(), handle));
-            resolvers.push(rows);
+        // In reverse: Node's resolver, which takes bare npm names, last.
+        for language in LANGUAGES.iter().rev() {
+            language.start(config, &mut mount)?;
         }
 
         for remote in &config.runtimes.remote {
-            let node = match remote.language.as_str() {
-                "python" | "py" | "go" | "bun" => false,
-                "node" => true,
-                other => {
-                    return Err(format!(
-                        "remote runtime {}: the language is python, go, node or bun, not {other}",
-                        remote.name
-                    ))
-                }
-            };
+            let language = languages::by_remote_name(&remote.language).ok_or_else(|| {
+                let names: Vec<String> = languages::remote_names()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect();
+                format!(
+                    "remote runtime {}: the language is {}, not {}",
+                    remote.name,
+                    languages::either(&names),
+                    remote.language
+                )
+            })?;
             // Each connection an instance, its rows `<name>:<plugin>` on it.
             if let Some((listen, group)) = remote.dials_in()? {
                 let instances = RuntimeInstances::new(&remote.name, group, &catalog);
-                chain = chain.with(instances.clone());
+                mount.chain = std::mem::take(&mut mount.chain).with(instances.clone());
                 dialing.push((remote.name.clone(), listen.to_owned(), instances));
                 continue;
             }
             let runtime = RuntimePlugin::remote(&remote.name);
             let handle = runtime.handle();
-            let rows = match node {
-                false => RuntimeResolver::modules(handle.clone()),
-                true => RuntimeResolver::node(handle.clone()),
-            };
-            let rows = Arc::new(rows.with_catalog(&catalog));
+            let rows = Arc::new(language.rows(handle.clone()).with_catalog(&catalog));
             root.plugin(runtime);
-            chain = chain.with_shared(rows.clone());
-            resolvers.push(rows);
+            mount.resolve(rows.clone());
+            mount.resolvers.push(rows);
             // Not waited for at start: it runs when its link does.
         }
+        let Mount {
+            chain,
+            runtimes,
+            resolvers,
+            fibers,
+            later,
+            ..
+        } = mount;
 
         let plugin = LoaderPlugin::new(
             chain,
@@ -272,24 +250,11 @@ impl Host {
                 .await
                 .map_err(|error| format!("remote runtime {name}: {error}"))?;
         }
-        let go = match go {
-            Some((resolver, settings)) => {
-                let mut plugin = GoRuntimes::new(resolver.clone(), &settings.project)
-                    .output(Stdio::Lines, Stdio::Lines);
-                plugin = match settings.start {
-                    GoStart::Eager => plugin.eager(),
-                    GoStart::OnDemand => plugin.idle(Some(std::time::Duration::from_secs(
-                        settings.idle.unwrap_or(60),
-                    ))),
-                };
-                let runtimes = plugin.handle();
-                (&root.plugin(plugin))
-                    .await
-                    .map_err(|error| format!("the Go runtimes: {error}"))?;
-                Some(GoHost { resolver, runtimes })
-            }
-            None => None,
-        };
+        // What waits for the loader: Go's runtimes.
+        let mut go = None;
+        for later in later {
+            go = later(root.clone()).await?.or(go);
+        }
         Ok(Self {
             root,
             loader,
@@ -468,38 +433,6 @@ impl Host {
     }
 }
 
-/// The resolver of the Go binaries `go` names. A Go runtime may not take
-/// another runtime's name.
-fn go_resolver(
-    config: &HostConfig,
-    go: &GoRuntime,
-    catalog: &ServiceCatalog,
-) -> Result<GoResolver, Error> {
-    go.validate()?;
-    let mut binaries = GoBinaries::new();
-    if let Some(dir) = &go.dir {
-        binaries = binaries.dir(dir);
-    }
-    for binary in &go.binaries {
-        binaries = binaries.file(binary);
-    }
-    if let Some((binary, name)) = &go.dev {
-        binaries = binaries.file_named(binary, name);
-    }
-    let reserved = ["node".to_owned(), "py".to_owned(), "bun".to_owned()]
-        .into_iter()
-        .chain(
-            config
-                .runtimes
-                .remote
-                .iter()
-                .map(|remote| remote.name.clone()),
-        );
-    Ok(GoResolver::new(binaries)
-        .with_catalog(catalog)
-        .reserve(reserved))
-}
-
 fn websocket(config: &HostConfig) -> Result<Config, Error> {
     // A PEM file, and where it was named (a field, or an environment
     // variable).
@@ -596,109 +529,6 @@ fn identity(config: &HostConfig) -> Result<StaticIdentity, Error> {
         };
     }
     Ok(identity)
-}
-
-/// `runtime`, its output passed on a whole line at a time: a line a plugin
-/// writes in pieces (a Python `print` writes its newline separately) never
-/// has one of this host's lines, or another runtime's, inside it (#332).
-fn whole_lines(runtime: LocalRuntime) -> LocalRuntime {
-    runtime.stdout(Stdio::Lines).stderr(Stdio::Lines)
-}
-
-/// The Node runtime of `node.project`, with the `@arcships/rutis-runtime`
-/// package installed there (or given, or next to this program).
-fn node_runtime(node: &NodeRuntime) -> Result<LocalRuntime, Error> {
-    let anchor = node.project.join("package.json");
-    if !anchor.exists() {
-        return Err(format!(
-            "the Node runtime needs a package.json in {}: run `npm init -y` there",
-            node.project.display()
-        ));
-    }
-    let candidates = [
-        node.runtime.clone(),
-        Some(node.project.join("node_modules/@arcships/rutis-runtime")),
-        std::env::var_os("RUTIS_NODE_RUNTIME").map(PathBuf::from),
-    ];
-    let package = candidates
-        .into_iter()
-        .flatten()
-        .find(|package| package.join("package.json").exists())
-        .ok_or_else(|| {
-            format!(
-                "the Node runtime is not installed in {}: run `npm install @arcships/rutis-runtime` there",
-                node.project.display()
-            )
-        })?;
-    Ok(LocalRuntime::node(package, anchor))
-}
-
-/// The Bun runtime of `bun.project`, with the `@arcships/rutis-bun` package
-/// installed there (or given), run by a Bun that answers.
-fn bun_runtime(bun: &BunRuntime) -> Result<LocalRuntime, Error> {
-    let candidates = [
-        bun.runtime.clone(),
-        Some(bun.project.join("node_modules/@arcships/rutis-bun")),
-    ];
-    let package = candidates
-        .into_iter()
-        .flatten()
-        .find(|package| package.join("package.json").exists())
-        .ok_or_else(|| {
-            format!(
-                "the Bun runtime is not installed in {}: run `bun add -d @arcships/rutis-bun` there",
-                bun.project.display()
-            )
-        })?;
-    let program = bun.program.clone().unwrap_or_else(|| PathBuf::from("bun"));
-    let answers = std::process::Command::new(&program)
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success());
-    if !answers {
-        return Err(format!(
-            "the Bun runtime needs Bun: {} does not run (install it from https://bun.com, or set `program`)",
-            program.display()
-        ));
-    }
-    Ok(LocalRuntime::bun(package, &bun.project).interpreter(program))
-}
-
-/// The Python runtime of `py.project`, with an interpreter that has the
-/// `rutis` package.
-fn python(py: &PythonRuntime) -> Result<LocalRuntime, Error> {
-    let interpreter = py
-        .python
-        .clone()
-        .or_else(|| std::env::var_os("VIRTUAL_ENV").map(|venv| venv_python(Path::new(&venv))))
-        .or_else(|| Some(venv_python(&py.project.join(".venv"))).filter(|venv| venv.exists()))
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_PYTHON));
-    // A source checkout of the rutis package (tests, development of rutis).
-    let source = std::env::var_os("RUTIS_PYTHON_PATH");
-    let mut check = std::process::Command::new(&interpreter);
-    check.args(["-c", "import rutis"]);
-    if let Some(source) = &source {
-        check.env("PYTHONPATH", source);
-    }
-    let found = check.output().map_err(|error| {
-        format!(
-            "the Python runtime cannot run its interpreter {} ({error}): install Python, \
-             or set runtimes.py.python to an interpreter that has the rutis package",
-            interpreter.display()
-        )
-    })?;
-    if !found.status.success() {
-        return Err(format!(
-            "the Python runtime needs the rutis package in {}: run `{} -m pip install rutis` (or `uv add rutis`)",
-            interpreter.display(),
-            interpreter.display()
-        ));
-    }
-    let mut runtime = LocalRuntime::python(&py.project).interpreter(interpreter);
-    if let Some(source) = source {
-        runtime = runtime.python_path(source);
-    }
-    Ok(runtime)
 }
 
 /// Says once a runtime's rows may start: it injects what they wait for.

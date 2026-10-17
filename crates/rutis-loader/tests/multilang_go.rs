@@ -7,23 +7,19 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::path::PathBuf;
+use std::sync::Arc;
 
+use common::runtimes::{go_binary, layer, repo, row_state, Llm, Probe};
 use rutis::{Ctx, FiberState};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_bridge::session::{Reply, Value as RpcValue};
 use rutis_loader::{
-    Chain, EntryStatus, GoBinaries, GoResolver, GoRuntimes, Layer, Loader, LoaderOptions,
-    LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
+    Chain, GoBinaries, GoResolver, GoRuntimes, Loader, LoaderOptions, LoaderPlugin,
+    RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
 };
 use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
-
-/// Twice HANG_GUARD: the Node, Python and Go runtimes start cold (#238).
-const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 const PY_PROVIDER: &str = r#"
 class Weather:
@@ -87,80 +83,6 @@ export default definePlugin({
   },
 })
 "#;
-
-#[derive(Clone, Default)]
-struct Probe(Arc<Mutex<Vec<String>>>);
-
-impl HostDispatch for Probe {
-    fn invoke(&self, method: &str, args: RpcValue) -> Reply {
-        assert_eq!(method, "record");
-        let [line]: [String; 1] = rutis_bridge::session::decode_value(args)?;
-        self.0.lock().unwrap().push(line);
-        Ok(RpcValue::Undefined)
-    }
-
-    fn methods(&self) -> Option<Value> {
-        Some(json!({ "record": "sync" }))
-    }
-}
-
-impl Probe {
-    fn lines(&self) -> Vec<String> {
-        self.0.lock().unwrap().clone()
-    }
-
-    fn position(&self, line: &str) -> Option<usize> {
-        self.0.lock().unwrap().iter().position(|l| l == line)
-    }
-
-    async fn wait_for(&self, line: &str) {
-        COLD.eventually_with(
-            || self.position(line).map(|_| ()),
-            &format!("{line:?} recorded"),
-            || format!("{:?}", self.lines()),
-        )
-        .await
-    }
-}
-
-struct Llm;
-
-impl HostDispatch for Llm {
-    fn invoke(&self, method: &str, _args: RpcValue) -> Reply {
-        assert_eq!(method, "ask");
-        Ok(json!("42").into())
-    }
-
-    fn methods(&self) -> Option<Value> {
-        Some(json!({ "ask": "sync" }))
-    }
-}
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-/// The Go plugins' binary, built once.
-fn go_binary() -> &'static Path {
-    static BINARY: OnceLock<PathBuf> = OnceLock::new();
-    BINARY.get_or_init(|| {
-        let out = tempfile::tempdir().unwrap().keep();
-        let binary = out.join(if cfg!(windows) {
-            "multilang.exe"
-        } else {
-            "multilang"
-        });
-        let status = std::process::Command::new("go")
-            .args(["build", "-o"])
-            .arg(&binary)
-            .arg("./cmd/multilang")
-            .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/go"))
-            .status()
-            .expect("go is on PATH");
-        assert!(status.success(), "go build");
-        binary
-    })
-}
 
 struct Fixture {
     root: Ctx,
@@ -282,11 +204,6 @@ impl Fixture {
     }
 }
 
-fn layer(rows: Vec<Value>) -> Vec<Layer> {
-    let patches: Vec<Patch> = serde_json::from_value(json!([{ "insert": rows }])).unwrap();
-    vec![Layer::new("rows", patches)]
-}
-
 fn named(id: &str, name: &str) -> Value {
     json!({ "id": id, "name": name, "config": {} })
 }
@@ -308,13 +225,6 @@ fn all_rows(fixture: &Fixture) -> Vec<Value> {
         named("gc", "go:go_consumer"),
         named("gl", "go:go_local"),
     ]
-}
-
-fn row_state(loader: &Loader, id: &str) -> Option<FiberState> {
-    match loader.get(id)?.status {
-        EntryStatus::Running(snapshot) => Some(snapshot.state),
-        _ => None,
-    }
 }
 
 /// Three runtimes start cold with rows using each other's services: none

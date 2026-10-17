@@ -7,12 +7,14 @@
 //! Go toolchain; Bun (feature `bun`, Unix only) `bun` on PATH.
 #![cfg(all(feature = "node", feature = "python"))]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use common::runtimes::{id, repo, COLD};
 use rutis::{Ctx, FiberView};
-use rutis_bridge::channel::PeerId;
 use rutis_bridge::runtime::RuntimeAccessPlugin;
 use rutis_bridge::runtime::RuntimePlugin;
 use rutis_bridge::transport::websocket::{Config, WebSocketPlugin};
@@ -23,16 +25,8 @@ use rutis_bridge::{
 use rutis_loader::{
     Chain, Layer, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin,
 };
-use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::json;
 use tokio::io::AsyncBufReadExt;
-
-/// Twice HANG_GUARD: the remote runtimes (Python, Node, Go) start cold (#238).
-const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
-
-fn id(s: &str) -> PeerId {
-    PeerId::new(s).unwrap()
-}
 
 #[derive(Clone, Copy, Debug)]
 enum Language {
@@ -232,10 +226,6 @@ async fn remote_with_start_delay(language: Language, start_delay_ms: u64) -> Rem
         language,
         _project: project,
     }
-}
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 /// A controller: an application named `main` whose loader runs one row of

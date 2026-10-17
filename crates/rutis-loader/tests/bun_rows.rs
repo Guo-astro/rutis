@@ -5,57 +5,21 @@
 //! holding up the others.
 #![cfg(all(unix, feature = "bun"))]
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+mod common;
+
+use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use common::runtimes::{layer, repo, row_state, Probe, COLD};
 use rutis::{Ctx, FiberState, FiberView};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_bridge::session::{Reply, Value as RpcValue};
 use rutis_loader::{
-    Chain, EntryStatus, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch,
-    RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
+    Chain, EntryStatus, Loader, LoaderError, LoaderOptions, LoaderPlugin, RuntimeResolver,
+    RuntimeRowsPlugin, ServiceCatalog,
 };
-use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
-
-/// Twice HANG_GUARD: the Bun runtime starts cold (#238).
-const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
-
-#[derive(Clone, Default)]
-struct Probe(Arc<Mutex<Vec<String>>>);
-
-impl HostDispatch for Probe {
-    fn invoke(&self, _method: &str, args: RpcValue) -> Reply {
-        let [line]: [String; 1] = rutis_bridge::session::decode_value(args)?;
-        self.0.lock().unwrap().push(line);
-        Ok(RpcValue::Undefined)
-    }
-
-    fn methods(&self) -> Option<Value> {
-        Some(json!({ "record": "sync" }))
-    }
-}
-
-impl Probe {
-    fn position(&self, line: &str) -> Option<usize> {
-        self.0.lock().unwrap().iter().position(|l| l == line)
-    }
-
-    async fn wait_for(&self, line: &str) {
-        COLD.eventually_with(
-            || self.position(line).map(|_| ()),
-            &format!("{line:?} recorded"),
-            || format!("{:?}", self.0.lock().unwrap()),
-        )
-        .await
-    }
-}
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
 
 /// A plugin written with the SDK, imported from this checkout.
 fn sdk_plugin(body: &str) -> String {
@@ -156,20 +120,8 @@ async fn fixture_with(install: impl FnOnce(&Path)) -> Fixture {
     }
 }
 
-fn layer(rows: Vec<Value>) -> Vec<Layer> {
-    let patches: Vec<Patch> = serde_json::from_value(json!([{ "insert": rows }])).unwrap();
-    vec![Layer::new("rows", patches)]
-}
-
 fn row(id: &str, module: &str) -> Value {
     json!({ "id": id, "name": format!("bun:{module}"), "config": {} })
-}
-
-fn state(loader: &Loader, id: &str) -> Option<FiberState> {
-    match loader.get(id)?.status {
-        EntryStatus::Running(snapshot) => Some(snapshot.state),
-        _ => None,
-    }
 }
 
 /// A row waits for what it injects; within the process it gets the
@@ -194,11 +146,11 @@ async fn rows_gate_share_and_stop_with_their_provider() {
     loader.reconcile(layer(remaining), None).await.unwrap();
     fixture.probe.wait_for("provider: bye").await;
     COLD.until(
-        || state(loader, "u") == Some(FiberState::Pending),
+        || row_state(loader, "u") == Some(FiberState::Pending),
         "the user to wait",
     )
     .await;
-    assert_eq!(state(loader, "b"), Some(FiberState::Active));
+    assert_eq!(row_state(loader, "b"), Some(FiberState::Active));
     assert!(
         fixture.probe.position("user: bye").unwrap()
             < fixture.probe.position("provider: bye").unwrap(),
@@ -301,7 +253,7 @@ async fn a_dead_process_stops_the_rows_until_restart() {
         || {
             ["p", "u"]
                 .iter()
-                .all(|id| state(loader, id) == Some(FiberState::Pending))
+                .all(|id| row_state(loader, id) == Some(FiberState::Pending))
         },
         "rows waiting after the process ended",
     )
@@ -312,7 +264,7 @@ async fn a_dead_process_stops_the_rows_until_restart() {
     fixture.runtime.restart().await.unwrap();
     fixture.probe.wait_for("user: sunny (native)").await;
     COLD.until(
-        || state(loader, "u") == Some(FiberState::Active),
+        || row_state(loader, "u") == Some(FiberState::Active),
         "rows running again",
     )
     .await;
@@ -344,7 +296,7 @@ async fn a_runtime_that_cannot_start_does_not_block_resolution() {
         .await
         .unwrap();
     assert!(report.failures.is_empty(), "{report:?}");
-    assert_eq!(state(&loader, "b"), Some(FiberState::Pending));
+    assert_eq!(row_state(&loader, "b"), Some(FiberState::Pending));
     root.shutdown().await.unwrap();
 }
 
@@ -385,7 +337,7 @@ async fn a_broken_edit_keeps_the_previous_module_and_a_fix_reloads() {
         "a broken plugin fails the reload: {reload:?}"
     );
     assert_eq!(
-        state(&fixture.loader, "e"),
+        row_state(&fixture.loader, "e"),
         Some(FiberState::Active),
         "the row keeps running"
     );

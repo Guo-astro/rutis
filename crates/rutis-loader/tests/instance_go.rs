@@ -3,78 +3,20 @@
 //! share one Go process.
 #![cfg(feature = "go")]
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+mod common;
 
+use std::sync::Arc;
+
+use common::runtimes::{go_binary, title, NoConfig, Probe, Title, Tools};
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory, TypeKey};
-use rutis_bridge::session::{
-    host_key, host_key_in, settle, HostDispatch, Reply, Value as RpcValue,
-};
+use rutis_bridge::session::{host_key, host_key_in, settle, HostDispatch, Value as RpcValue};
 use rutis_loader::{
-    Build, Builtins, Chain, GoBinaries, GoResolver, GoRuntimes, Layer, Loader, LoaderOptions,
+    Builtins, Chain, GoBinaries, GoResolver, GoRuntimes, Layer, Loader, LoaderOptions,
     LoaderPlugin, Patch, ServiceCatalog,
 };
-use rutis_test_support::{Guard, HANG_GUARD};
-use schemars::JsonSchema;
-use serde::Deserialize;
-use serde_json::{json, Value};
-
-/// Twice HANG_GUARD: the Go runtime starts cold (#238).
-const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
+use serde_json::json;
 
 // ── Rust plugins ────────────────────────────────────────────────
-
-#[derive(Clone, Default)]
-struct Probe(Arc<Mutex<Vec<String>>>);
-
-impl HostDispatch for Probe {
-    fn invoke(&self, method: &str, args: RpcValue) -> Reply {
-        assert_eq!(method, "record");
-        let [line]: [String; 1] = rutis_bridge::session::decode_value(args)?;
-        self.0.lock().unwrap().push(line);
-        Ok(RpcValue::Undefined)
-    }
-
-    fn methods(&self) -> Option<Value> {
-        Some(json!({ "record": "sync" }))
-    }
-}
-
-impl Probe {
-    fn has(&self, line: &str) -> bool {
-        self.0.lock().unwrap().iter().any(|l| l == line)
-    }
-
-    async fn wait_for(&self, line: &str) {
-        COLD.eventually_with(
-            || self.has(line).then_some(()),
-            &format!("{line:?} recorded"),
-            || format!("{:?}", self.0.lock().unwrap()),
-        )
-        .await
-    }
-}
-
-/// The instance's `tools`: tells its instance's title.
-struct Tools(String);
-
-impl HostDispatch for Tools {
-    fn invoke(&self, method: &str, _: RpcValue) -> Reply {
-        assert_eq!(method, "title");
-        Ok(json!(self.0).into())
-    }
-
-    fn methods(&self) -> Option<Value> {
-        Some(json!({ "title": "sync" }))
-    }
-}
-
-/// The instance's title, given with `with`.
-struct Title(String);
-
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-struct NoConfig {}
 
 enum Job {
     /// Provide `Tools` at this key.
@@ -156,13 +98,6 @@ impl PluginFactory<NoConfig> for JobFactory {
     }
 }
 
-fn title(build: &Build) -> String {
-    build
-        .value::<Title>()
-        .map(|t| t.0.clone())
-        .unwrap_or_default()
-}
-
 fn builtins() -> Builtins {
     let mut builtins = Builtins::new();
     builtins.register_with::<NoConfig, _, _>("tools", |build| {
@@ -186,27 +121,6 @@ fn builtins() -> Builtins {
 }
 
 // ── Harness ─────────────────────────────────────────────────────
-
-fn go_binary() -> &'static Path {
-    static BINARY: OnceLock<PathBuf> = OnceLock::new();
-    BINARY.get_or_init(|| {
-        let out = tempfile::tempdir().unwrap().keep();
-        let binary = out.join(if cfg!(windows) {
-            "multilang.exe"
-        } else {
-            "multilang"
-        });
-        let status = std::process::Command::new("go")
-            .args(["build", "-o"])
-            .arg(&binary)
-            .arg("./cmd/multilang")
-            .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/go"))
-            .status()
-            .expect("go is on PATH");
-        assert!(status.success(), "go build");
-        binary
-    })
-}
 
 struct Fixture {
     root: Ctx,
