@@ -38,11 +38,13 @@
 //! `RUTIS_E2E_FIXTURE_HOST` (likewise, the fixture host), `RUTIS_E2E_DIR`
 //! (where scenario directories go), `RUTIS_E2E_TIMEOUT` (the hang guard,
 //! seconds), `RUTIS_E2E_BUILD_TIMEOUT` (the guard of builds and installs,
-//! seconds).
+//! seconds); for the cross-version scenarios, `RUTIS_E2E_PREVIOUS` and
+//! `RUTIS_E2E_CACHE` ([`previous`]).
 
 mod host;
 #[cfg(windows)]
 mod job;
+pub mod previous;
 mod proxy;
 mod residue;
 
