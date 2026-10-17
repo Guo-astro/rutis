@@ -28,9 +28,10 @@
 //! 3. A full outage (100 % loss both ways) while B runs a call: A says
 //!    `gpu: link down (<reason>)`, the call in progress fails on A (an
 //!    error, not a success), the row on A waits for its runtime and B
-//!    unloads the plugin (B's own heartbeat). A's redials during the
-//!    outage fail and back off within the rules (0.5 s doubling to 30 s,
-//!    ±20 %).
+//!    says `rutis: session ended (heartbeat timeout); waiting for a
+//!    controller` and unloads the plugin (B's own heartbeat). A's redials
+//!    during the outage fail and back off within the rules (0.5 s doubling
+//!    to 30 s, ±20 %).
 //! 4. Recovery: the link reconnects within the backoff bound (the longest
 //!    wait, 36 s, plus a handshake's 10 s), the row runs again, a new call
 //!    succeeds; the call cut off ran once on B, not again.
@@ -39,7 +40,8 @@
 //!    auth-rejected (…); retrying in 30s`; the row does not run again.
 //! 6. End: Ctrl-C to both. A exits with status 0; nothing of either is
 //!    left running in its container and nothing listens in B's; no output
-//!    contains a token; the scenario's residue checks pass.
+//!    contains a token, nor B's a traceback; the scenario's residue checks
+//!    pass.
 //!
 //! Revoking A's identity while it is connected (#273) has no trigger in
 //! `rutis-host` (its tokens come from the environment), so it is not a
@@ -580,7 +582,16 @@ fn two_containers_over_tls_through_delay_loss_and_an_outage() {
     eprintln!("S5 netem: the call cut off failed with: {error}");
     a.expect("infer: waiting for its services");
     probe.event(&mut a, "stopped");
-    // B's own heartbeat ends its session: it unloads the plugin.
+    // B's own heartbeat ends its session: one state line (#434), then it
+    // unloads the plugin.
+    let ended = b.wait_for("B's state line for the session's end", |line| {
+        line.starts_with("rutis: session ended (") && line.ends_with("); waiting for a controller")
+    });
+    eprintln!("S5 netem: B: {ended}");
+    assert_eq!(
+        ended, "rutis: session ended (heartbeat timeout); waiting for a controller",
+        "B says its heartbeat ended the session"
+    );
     b.expect("infer: unloaded");
     // A dial during the outage fails too (it times out), and is retried.
     let failed = a.wait_for("A's failed redial during the outage", |line| {
@@ -663,6 +674,14 @@ fn two_containers_over_tls_through_delay_loss_and_an_outage() {
         "the call cut off ran once on B, not again after the reconnect"
     );
     assert_eq!(b.count("infer: executing after"), 1);
+    // Network ends are state lines, not a library's traceback (#434).
+    for (name, node) in [("B", &b), ("B with another token", &b2)] {
+        assert_eq!(
+            node.count("Traceback") + node.count("keepalive ping failed"),
+            0,
+            "{name} printed a traceback"
+        );
+    }
     assert_eq!(b2.count("infer: executing"), 0);
     drop(net);
     s.finish();
