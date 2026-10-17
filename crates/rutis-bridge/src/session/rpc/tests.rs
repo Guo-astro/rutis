@@ -2067,3 +2067,55 @@ async fn received_tagged_values_are_checked_and_only_their_call_fails() {
     let _remote = remote.await.unwrap();
     assert!(peer.close_reason().is_none());
 }
+
+/// A call refused while decoding its arguments takes its id as any call
+/// does (#407): sent again, even with arguments this side takes, it is a
+/// repeated invocation identity and closes the session, not a new call.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_call_takes_its_id() {
+    let mut endpoint = Endpoint::rust(PeerId::new("main").unwrap());
+    endpoint.capabilities.retain(|c| c != "value-uuid");
+    let (local, far) = far_pair();
+    let peer =
+        Connection::open_with(local, Arc::new(EchoArgs), Format::Endpoint(endpoint)).unwrap();
+    let remote = tokio::task::spawn_blocking(move || {
+        let mut remote = Remote {
+            reader: far.try_clone().unwrap(),
+            writer: far,
+        };
+        assert!(matches!(remote.read(), Frame::Hello { .. }));
+        remote.send(Frame::Hello {
+            version: crate::session::ENDPOINT_PROTOCOL,
+            endpoint: Some("far".into()),
+            implementation: None,
+            capabilities: Some(VALUE_CAPABILITIES.map(String::from).to_vec()),
+        });
+        let invoke = |arg: Json| {
+            json!({
+                "op": "invoke", "id": "far:1", "path": [], "target": "t",
+                "method": "m", "args": { "type": "list", "value": [arg] },
+            })
+        };
+        remote.send_json(invoke(
+            json!({ "type": "uuid", "value": "0f8fad5b-d9cb-469f-a165-70867728950e" }),
+        ));
+        let reply = remote.read_json();
+        assert_eq!(reply["op"], "throw", "{reply}");
+        remote.send_json(invoke(json!({ "type": "data", "value": 1 })));
+        remote
+    });
+    peer.ready().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), peer.closed())
+        .await
+        .expect("the repeated id closes the session");
+    match peer.close_reason() {
+        Some(Error::Transport(message)) => {
+            assert!(
+                message.contains("repeated invocation identity"),
+                "{message}"
+            )
+        }
+        other => panic!("a transport error expected, got {other:?}"),
+    }
+    let _remote = remote.await.unwrap();
+}
