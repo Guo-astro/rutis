@@ -373,6 +373,36 @@ fn classify(error: &Error) -> Failure {
 }
 
 impl Link {
+    /// Whether the identity revoked the far end ([`Revocations`](crate::Revocations)).
+    fn is_revoked(&self) -> bool {
+        self.identity
+            .revocations()
+            .is_some_and(|revocations| revocations.is_revoked(&self.config.peer))
+    }
+
+    /// Resolves once the identity revokes the far end; never for an
+    /// identity that revokes nothing.
+    fn revoked(&self) -> BoxFuture<'static, ()> {
+        match self.identity.revocations() {
+            Some(revocations) => Box::pin(revocations.revoked(&self.config.peer)),
+            None => Box::pin(std::future::pending()),
+        }
+    }
+
+    fn revoked_reason(&self) -> String {
+        format!("{}: identity revoked", self.config.peer)
+    }
+
+    /// End a session whose far end was revoked: closed first, so calls in
+    /// flight fail at once as a transport failure (as when the network
+    /// drops) and the far end sees the connection end; then the peer is
+    /// withdrawn.
+    async fn cut(&self, live: Live) {
+        let reason = self.revoked_reason();
+        live.session.close(Error::Transport(reason.clone()));
+        live.end(&reason).await;
+    }
+
     async fn run(mut self) {
         match self.config.connect.clone() {
             Connect::Dial(address) => self.dialing(address).await,
@@ -432,6 +462,14 @@ impl Link {
         let retry = self.config.retry.clone();
         let mut backoff = Backoff::new(&retry);
         loop {
+            // A revoked far end is not dialed: an authentication failure,
+            // waited out as one.
+            if self.is_revoked() {
+                let error = self.revoked_reason();
+                self.wait(Failure::AuthRejected, error, retry.rejected)
+                    .await;
+                continue;
+            }
             self.state.send_replace(LinkState::Connecting);
             let (failure, error) = match self.transport.dial(&dial).await {
                 Err(error) => (
@@ -444,8 +482,15 @@ impl Link {
                 ),
                 Ok(channel) => match self.start(channel).await {
                     Err(error) => (classify(&error), error.to_string()),
-                    Ok(live) => {
-                        live.session.closed().await;
+                    Ok(live) => 'session: {
+                        let revoked = tokio::select! {
+                            () = live.session.closed() => false,
+                            () = self.revoked() => true,
+                        };
+                        if revoked {
+                            self.cut(live).await;
+                            break 'session (Failure::AuthRejected, self.revoked_reason());
+                        }
                         if live.since.elapsed() >= retry.stable {
                             backoff.reset();
                         }
@@ -505,6 +550,8 @@ impl Link {
         };
         self.state.send_replace(LinkState::Connecting);
         let mut current: Option<Live> = None;
+        // Revocations are not undone: once revoked, the far end stays so.
+        let mut revoked = false;
         loop {
             let ended = async {
                 match &current {
@@ -512,9 +559,17 @@ impl Link {
                     None => std::future::pending().await,
                 }
             };
+            let revocation = self.revoked();
             tokio::select! {
                 channel = accepted.recv() => {
                     let Some(channel) = channel else { return };
+                    // Handed over before the revocation reached this task:
+                    // refused as a wrong credential is, the current
+                    // session left to the revocation.
+                    if self.is_revoked() {
+                        channel.closer.rejected(crate::identity::NOT_ACCEPTED);
+                        continue;
+                    }
                     // A newer connection of the far end takes over: the old
                     // session ends, and its peer is withdrawn, first.
                     if let Some(old) = current.take() {
@@ -522,6 +577,8 @@ impl Link {
                         old.end("replaced by a new connection").await;
                     }
                     match self.start(channel).await {
+                        // Revoked while it greeted.
+                        Ok(live) if self.is_revoked() => self.cut(live).await,
                         Ok(live) => current = Some(live),
                         Err(error) => {
                             self.state.send_replace(LinkState::Waiting {
@@ -537,6 +594,19 @@ impl Link {
                         old.end("session ended").await;
                     }
                     self.state.send_replace(LinkState::Connecting);
+                }
+                // Only the far end's session closes; the registration
+                // stays and refuses its connections from now on.
+                () = revocation, if !revoked => {
+                    revoked = true;
+                    if let Some(live) = current.take() {
+                        self.cut(live).await;
+                    }
+                    self.state.send_replace(LinkState::Waiting {
+                        failure: Failure::AuthRejected,
+                        error: self.revoked_reason(),
+                        retry_in: Duration::ZERO,
+                    });
                 }
             }
         }

@@ -342,7 +342,7 @@ Each scenario first says what it is, which parts it goes through and under what 
 | E2 | A half-open connection is not found within 30 s | Faults | Medium | Medium | P1 | FI (`half_open` with a paused clock) | PR | Yes |
 | E3 | Reconnection backoff differs from the docs (from 0.5 s, capped at 30 s, ±20%, reset after 60 s stable; 30 s after rejected credentials; stop on incompatibility) | Correctness | Medium | Medium | P1 | U (paused clock, exact intervals asserted) | PR | Partly: a unit test in `link.rs` covers the backoff sequence (from 0.5 s, 30 s cap, ±20%, reset); the link's actual retry timing, the reset after 60 s stable and the 30 s after rejected credentials are untested |
 | E4 | During takeover of a remote runtime, old and new leases coexist; late instructions of the old session act on the new lease | Correctness | High | Low | P1 | TLA (design); K (`leases.rs`) | Design, PR | Partly: no TLA (#210) |
-| E5 | Connections still possible after credentials are revoked; a registration revoked mid-handshake still lets the old handshake hand over | Security | High | Low | P1 | K (`link.rs`); TLA | PR | Partly: no TLA (#210); no mechanism for revoking while running (#273) |
+| E5 | Connections still possible after credentials are revoked; a registration revoked mid-handshake still lets the old handshake hand over | Security | High | Low | P1 | K (`link.rs`); TLA | PR | Partly: no TLA (#210); revoking while running has the identity layer's hook and library tests (#273, `bridge/revocation-closes-only-its-connections`, `bridge/revocation-refuses-reconnects`); rutis-host's environment tokens cannot be revoked while running, and S5 has no such step |
 | E6 | TLS check holes: still connects with an expired certificate, wrong CA, hostname mismatch | Security | High | Medium | P0 | U (three negative cases, Rust and Python each) | PR | Yes (#297; S5 step 6, #322) |
 | E7 | A malformed WebSocket upgrade request crashes the listener | Security, faults | High | Medium | P0 | FZ | Nightly | No (#179) |
 | E8 | Rejection categories differ between implementations (Python↔Rust) | Compatibility | Medium | Medium | P1 | K (a Python column in `websocket_cross.rs`) | PR | Yes (#288) |
@@ -534,7 +534,7 @@ The scope as it was planned is kept below for the record.
 
 **Scale**: 2 controllers, up to 3 reconnects each, messages delayed by up to 2 steps.
 
-Revoking credentials while running has no mechanism yet (#273, waiting for design); "identity revocation" in the model has to match the design of #273.
+Revoking while running is the identity layer's hook (#273, `Revocations`, design in the dial-out document §5); "identity revocation" in the model follows it: after a revocation no handshake of that identity is handed over (re-checked at hand-over), and only the connections accepted as that identity close.
 
 ### 7.3 Practice
 
@@ -670,7 +670,7 @@ Moved out or opened during step two: revoking while running (#273), changing `ru
 | S5 nightly: two containers, non-loopback + TLS, netem | E12 | #341 |
 | Values consistent across languages: Python `datetime` by reference, Go structs bypassing the checks, Python dicts dropping undefined keys | P7, A1 | #355 → #410, #412, #413. Done (0.11) |
 | Passing dates and times, binary data, maps, sets, big integers, decimals and UUIDs across languages | P7, A1 | #308, #360 → designs #404, #414, implementation #406, #415, #410, #412, #413. Done (0.11) |
-| Revoking a peer's credentials while running, without restarting; S5 gains a step afterwards | E5 | #273. Decided: a revocation hook in the identity layer |
+| Revoking a peer's credentials while running, without restarting; S5 gains a step afterwards | E5 | #273. Mechanism done (0.12): the identity layer's revocation hook with library tests; rutis-host has no trigger, so the S5 step is left to #341 or the management service |
 | `rutis-host run` changing its configuration while running; restarting a crashed runtime | B4 | #274 → #421, #422, #423. Done (0.12): SIGUSR1 / `--watch-config` rereads the configuration, all or nothing (`host/reload-config`); automatic restart after a crash is opt-in, off by default (`host/runtime-restart`) |
 
 "CI changes §8.6 steps 3–4" (splitting the dylib jobs on Linux, CI measurements), formerly in step three, were done in #213.
