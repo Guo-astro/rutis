@@ -273,6 +273,48 @@ runpy.run_module("rutis", run_name="__main__")
         self.assertEqual(done.returncode, 1, done.stderr)
         self.assertIn("accepting a connection failed", done.stderr)
 
+    @unittest.skipIf(os.name == "nt", "sends POSIX signals to the child")
+    def test_a_listening_runtime_stops_on_ctrl_c_or_sigterm_while_connected(self):
+        # python -m rutis listen:… with its controller connected stops on
+        # Ctrl-C (SIGINT) and SIGTERM: the rows go, the connection closes,
+        # the process exits 0. It used to hang on Ctrl-C (its threads stayed
+        # blocked in accept and on the connection) and die at once on
+        # SIGTERM (#341).
+        import signal
+        import subprocess
+        import sys
+
+        from rutis.peer import ENDPOINT_PROTOCOL
+
+        package = os.path.dirname(os.path.dirname(os.path.abspath(websocket.__file__)))
+        for number in (signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signal=number.name):
+                child = subprocess.Popen(
+                    [sys.executable, "-m", "rutis", "listen:ws://127.0.0.1:0/rutis", "--id", "py", "--peer", "main", "."],
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env={**os.environ, "PYTHONPATH": package, "RUTIS_TOKEN": "secret"},
+                )
+                try:
+                    line = child.stderr.readline().strip()
+                    self.assertTrue(line.startswith("rutis: listening on "), line)
+                    client = dial(line[len("rutis: listening on "):], protocol=f"rutis.{ENDPOINT_PROTOCOL}")
+                    try:
+                        # The session is up: the runtime greets its controller.
+                        client.recv(timeout=HANG_GUARD)
+                        child.send_signal(number)
+                        with self.assertRaises(ConnectionClosed):
+                            while True:
+                                client.recv(timeout=HANG_GUARD)
+                        code = child.wait(timeout=HANG_GUARD)
+                    finally:
+                        client.close()
+                finally:
+                    child.kill()
+                    child.wait()
+                    child.stderr.close()
+                self.assertEqual(code, 0)
+
     def test_wrong_or_missing_credentials_and_protocols_are_refused(self):
         address, _ = listen()
         cases = [("guess", PROTOCOL, 403), (None, PROTOCOL, 401), ("secret", "rutis.99", 400)]

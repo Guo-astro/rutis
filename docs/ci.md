@@ -20,9 +20,10 @@
 | workflow | 什么时候运行 | 做什么 |
 | --- | --- | --- |
 | `ci.yml` | 每个 PR；每晚由 `nightly.yml` 调用（`all=true`）；发布门里由 `release.yml` 调用（`all=true`）；手动（任何分支，`all` 默认打开） | 测试和检查（下文） |
-| `nightly.yml` | 每天 UTC 19:00，main 有新提交时；手动（`force`：没有新提交也跑） | 调用 `ci.yml`（全部任务）、`install.yml`（五个平台）、`dylib-windows.yml`、`stress.yml`；用最新已发布的 Cordis 插件跑一遍 Cordis 检查，只报告（`cordis-latest`，下文）；失败时开问题单（下文、§7） |
+| `nightly.yml` | 每天 UTC 19:00，main 有新提交时；手动（`force`：没有新提交也跑） | 调用 `ci.yml`（全部任务）、`install.yml`（五个平台）、`dylib-windows.yml`、`stress.yml`；用最新已发布的 Cordis 插件跑一遍 Cordis 检查，只报告（`cordis-latest`，下文）；调用 `netem.yml`，只报告（`netem`，下文）；失败时开问题单（下文、§7） |
 | `dylib-windows.yml` | PR 改了 dylib 相关文件（与 `dylib` 开关相同）；每晚由 `nightly.yml` 调用；发布门里由 `release.yml` 调用（打 `v*` tag 不再单独触发）；手动 | Windows 上的 dylib 测试 |
 | `stress.yml` | 每晚由 `nightly.yml` 调用；手动 | 重复运行内核测试和多进程测试；网络长时间测试；大规模运行内核的 shuttle 模型，以及模糊测试（下文） |
+| `netem.yml` | 每晚由 `nightly.yml` 调用（只报告）；PR 改了 `tests/e2e/tests/netem.rs` 或 `netem.yml`；手动 | S5 的容器版（风险 E12，#341）：两个 Docker 容器，非 loopback 地址 + TLS，netem 延迟、丢包、断网（下文） |
 | `ci-stats.yml` | 每周；手动 | 统计 CI 的耗时和失败 |
 | `deps.yml` | 每周；手动 | 依赖漏洞检查：`cargo deny check advisories`（不含示例项目）、`@arcships/rutis-runtime` 的 `npm audit`、Python 包的 `pip-audit`。不在 PR 上跑，不阻止合并；失败时 GitHub 通知维护者 |
 | `install.yml` | 每晚由 `nightly.yml` 调用；PR 改了打包、构建配置或安装测试（`package.yml`、`install.yml`、`tests/e2e/**`、各包的 `package.json`、`pyproject.toml`、`node/rutis-host/scripts/**`、`Cargo.toml`、`Cargo.lock` 等）；发布时由 `release.yml` 调用；手动 | 用 `package.yml` 构建这次提交的包并安装运行：npm、PyPI、release 二进制。每晚和发布前五个平台（linux-x64、linux-arm64、darwin-x64、darwin-arm64、win32-x64），PR 上只有 linux-x64，手动运行默认三个平台（linux-x64、darwin-arm64、win32-x64） |
@@ -34,9 +35,10 @@
 合并到 main 不运行任何检查：PR 已经按改动跑过相关的任务。PR 上没测到的两类问题由每晚的运行补上：路径表漏了某个依赖，PR 上该跑的任务没跑（Q12.3.3）；两个 PR 各自通过，合在一起才出问题。
 
 - 时间：每天 UTC 19:00（北京时间凌晨 3 点）。第一个任务 `plan` 比较 main 当前的提交和上一次成功的每晚运行的提交，相同就跳过，后面的任务都不跑。
-- 内容：调用 `ci.yml`（`all=true`，全部任务）、`install.yml`（构建这次提交的包，五个平台安装运行；`darwin-arm64` 在自托管 macOS 上，其他格子用 GitHub 的干净机器）、`dylib-windows.yml`、`stress.yml`（默认轮数），以及任务 `cordis-latest`。五个同时开始。
+- 内容：调用 `ci.yml`（`all=true`，全部任务）、`install.yml`（构建这次提交的包，五个平台安装运行；`darwin-arm64` 在自托管 macOS 上，其他格子用 GitHub 的干净机器）、`dylib-windows.yml`、`stress.yml`（默认轮数）、`netem.yml`（任务 `netem`），以及任务 `cordis-latest`。六个同时开始。
 - 失败时 `report` 任务开问题单（§7）。
 - `cordis-latest`（风险 F4，规范 Q6.14.4）：把 `node/baseline` 的 Cordis 和 dsh 插件换成最新已发布的版本（每个包取 `latest` 与 `next` 两个 dist-tag 中较新的一个，`node/baseline/latest.mjs`；锁文件不改、不提交），再跑用到它们的检查：库级挂载与原生 Cordis 对照（`rutis-bridge` 的 `dsh_baseline`）、生成的绑定（`examples/dsh-baseline`，去掉挂载的版本固定）、S6（`tests/e2e/tests/cordis.rs`）。最新版本之间 peer 依赖冲突、装不到一起时，先报告，再用 `--legacy-peer-deps` 安装，检查照常跑。**只报告**：上游发新版不应让 main 的每晚运行失败，所以这个任务不会失败（`continue-on-error`），`report` 不等它，也不开问题单；作业摘要列出每个包锁定的和最新的版本、每项检查的结果，失败的检查在运行页面上显示为警告。维护者看到警告后判断：是 rutis 的问题就登记 issue 修复，是上游的不兼容就在升级锁文件时处理。
+- `netem`（风险 E12，#341）：调用 `netem.yml`，跑 `tests/e2e/tests/netem.rs`：两个 Docker 容器在自己的 bridge 网络上，B 是监听 `wss://0.0.0.0:7443` 的 Python 运行时（证书由测试时生成的 CA 签发），A 是 `rutis-host run`，拨号 B 并在 B 上运行一行；`tc qdisc … netem` 依次加上 200 ms 延迟 + 5% 丢包、双向断网，再恢复，最后 B 换 token 重启。断言与 S5 相同：进行中的调用显式失败且只执行一次、退避上限内重连、拒绝类别可读、两个容器内无残留。用 GitHub 的 `ubuntu-24.04`（要 Docker 和 `NET_ADMIN`；自托管 Linux 是没有 Docker 的容器，§11），release 构建 `rutis-host`，约 2 分钟。**只报告**，做法同 `cordis-latest`：`netem.yml` 的 `report-only` 输入让任务 `continue-on-error`，`report` 不等它、不开问题单；失败时运行页面显示警告，失败场景的目录（每个程序的输出）上传为 artifact `e2e-netem`。手动运行：`gh workflow run netem.yml --ref <分支>`（这时失败就是失败）；本机 Linux 有 Docker 时的命令写在 `netem.rs` 开头。
 - 手动运行：Actions 页面选 `nightly`，点 “Run workflow”；没有新提交也要跑时勾选 `force`，或者 `gh workflow run nightly.yml -f force=true`。在别的分支上手动运行时，比较的是那个分支上一次成功的每晚运行。
 - 只想跑一次全部 CI 任务（不要安装、dylib-windows、stress）：`gh workflow run ci.yml --ref <分支>`（`all` 默认打开）。
 
