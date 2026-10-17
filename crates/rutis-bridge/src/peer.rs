@@ -42,8 +42,8 @@ where
 pub struct Offers {
     pub families: BTreeSet<String>,
     pub version: u64,
-    /// When each family was registered (a version). An end that does not
-    /// say has every family at 0.
+    /// When each family was registered (its number in the end's sequence
+    /// of offers, from 1). An end that does not say has every family at 0.
     pub since: BTreeMap<String, u64>,
 }
 
@@ -66,14 +66,26 @@ pub fn family<'a>(target: &'a str, method: &'a str) -> &'a str {
     }
 }
 
+/// A family registered on a session: its handler, and which offer of the
+/// family it is.
+struct Family {
+    handler: Arc<dyn Handler>,
+    since: u64,
+}
+
 /// The handlers of one session; its [`Dispatch`].
 #[derive(Default)]
 pub(crate) struct Operations {
-    handlers: Mutex<HashMap<String, Arc<dyn Handler>>>,
+    /// Each family with its offer, kept together: an announcement never
+    /// sees a family without the offer it was registered as (#435).
+    handlers: Mutex<HashMap<String, Family>>,
     /// What the far end offers.
     remote: watch::Sender<Offers>,
-    /// What this end offers, and how often that changed.
-    local: Mutex<Offers>,
+    /// The version of the last announcement of what this end offers.
+    announced: Mutex<u64>,
+    /// How many offers of families were made: each registration is a new
+    /// one.
+    offered: std::sync::atomic::AtomicU64,
     session: Mutex<Option<Connection>>,
     announcing: Mutex<bool>,
     /// Versions of what features say about the session (services announced
@@ -97,6 +109,20 @@ impl Operations {
         self.handlers.lock().unwrap().clear();
     }
 
+    /// What this end offers now, as the announcement after `version`.
+    fn next_offers(&self, version: &mut u64) -> Offers {
+        *version += 1;
+        let handlers = self.handlers.lock().unwrap();
+        Offers {
+            families: handlers.keys().cloned().collect(),
+            version: *version,
+            since: handlers
+                .iter()
+                .map(|(name, family)| (name.clone(), family.since))
+                .collect(),
+        }
+    }
+
     /// Tell the far end what this end offers now. Fire and forget: a lost
     /// announcement is superseded by the next, and a closed session ends
     /// the question.
@@ -107,19 +133,12 @@ impl Operations {
         let Some(session) = self.session.lock().unwrap().clone() else {
             return;
         };
-        let offers = {
-            let mut local = self.local.lock().unwrap();
-            local.version += 1;
-            local.families = self.handlers.lock().unwrap().keys().cloned().collect();
-            local.clone()
-        };
-        let since: BTreeMap<&String, u64> = offers
-            .families
-            .iter()
-            .map(|family| (family, offers.since.get(family).copied().unwrap_or(0)))
-            .collect();
-        let args =
-            json!([{ "families": offers.families, "version": offers.version, "since": since }]);
+        let offers = self.next_offers(&mut self.announced.lock().unwrap());
+        let args = json!([{
+            "families": offers.families,
+            "version": offers.version,
+            "since": offers.since,
+        }]);
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
                 let _ = session.invoke_async("", "link.offers", args.into()).await;
@@ -158,7 +177,8 @@ impl Dispatch for Operations {
             return Ok(Value::Undefined);
         }
         let family = family(target, method);
-        let handler = self.handlers.lock().unwrap().get(family).cloned();
+        let handler =
+            (self.handlers.lock().unwrap().get(family)).map(|family| family.handler.clone());
         match handler {
             Some(handler) => handler.invoke(peer, target, method, args),
             None => Err(Error::Value(format!(
@@ -248,16 +268,11 @@ impl Peer {
             if handlers.contains_key(family) {
                 return Err(Error::Value(format!("{family} is already registered")));
             }
-            handlers.insert(family.to_owned(), handler);
-        }
-        {
-            // A new offer of the family, whatever was offered before. (The
-            // locks are taken one at a time: `announce` takes them in the
-            // other order.)
-            let mut local = self.operations.local.lock().unwrap();
-            local.version += 1;
-            let version = local.version;
-            local.since.insert(family.to_owned(), version);
+            // A new offer of the family, whatever was offered before,
+            // registered with its handler in one step.
+            let since =
+                (self.operations.offered).fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            handlers.insert(family.to_owned(), Family { handler, since });
         }
         self.operations.announce();
         Ok(Offered {
@@ -278,5 +293,56 @@ impl Peer {
     /// What the far end offers, as it announces it.
     pub fn offers(&self) -> watch::Receiver<Offers> {
         self.operations.remote.subscribe()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A family registered while an announcement is being made is in it
+    /// only with its offer. It was announced at first without one (epoch
+    /// 0), then with it: to the far end, two offers of the family, and a
+    /// follower restarted what it ran on it (#435).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_family_is_announced_only_with_its_offer() {
+        let (channel, _far) = crate::transport::memory::pair();
+        let operations = Arc::new(Operations::default());
+        let connection = Connection::open(channel, operations.clone()).unwrap();
+        let peer = Peer::new(
+            PeerId::new("mac").unwrap(),
+            connection,
+            1,
+            operations.clone(),
+        );
+        let peer = Arc::new(peer);
+
+        // An announcement in progress (another family's registration, on
+        // another thread), while "plugins" registers.
+        let mut announcing = operations.announced.lock().unwrap();
+        let registering = {
+            let peer = peer.clone();
+            std::thread::spawn(move || {
+                let handler =
+                    Arc::new(|_: &Connection, _: &str, _: &str, _: Value| Ok(Value::Undefined));
+                peer.register("plugins", handler).unwrap()
+            })
+        };
+        // Once the family can be seen (or is registered), what is announced
+        // carries its offer.
+        rutis_test_support::eventually_blocking(
+            || {
+                let visible = operations.handlers.lock().unwrap().contains_key("plugins");
+                (visible || registering.is_finished()).then_some(())
+            },
+            "plugins registering",
+        );
+        let offers = operations.next_offers(&mut announcing);
+        drop(announcing);
+        let _offered = registering.join().unwrap();
+        assert!(offers.families.contains("plugins"), "{offers:?}");
+        assert_ne!(offers.epoch("plugins"), Some(0), "{offers:?}");
+        let next = operations.next_offers(&mut operations.announced.lock().unwrap());
+        assert_eq!(next.epoch("plugins"), offers.epoch("plugins"), "one offer");
     }
 }
