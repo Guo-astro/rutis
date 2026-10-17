@@ -71,6 +71,10 @@ cordis = ["node", "dep:proc-macro2", "dep:quote", "dep:syn", "dep:toml"]
 # suites other implementations run.
 testing = []
 
+[lints.rust]
+# cargo-fuzz builds with `--cfg fuzzing` (src/fuzzing.rs).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
 [dev-dependencies]
 # Path only: cargo publish drops it.
 rutis-test-support = { path = "../rutis-test-support" }

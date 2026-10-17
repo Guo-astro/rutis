@@ -120,6 +120,55 @@ pub(crate) fn start(
     })
 }
 
+/// What a dialer's upgrade request presents, read from its headers.
+pub(crate) struct Upgrade<'a> {
+    /// The token of an `Authorization: Bearer <token>` header.
+    pub bearer: Option<&'a str>,
+    /// The session protocols offered: every `Sec-WebSocket-Protocol`
+    /// header, split at commas.
+    pub offered: Vec<&'a str>,
+}
+
+/// Read an upgrade request to `path`; one to another path is refused.
+#[allow(clippy::result_large_err)] // tungstenite's error response
+pub(crate) fn read_upgrade<'a>(
+    request: &'a Request,
+    path: &str,
+) -> Result<Upgrade<'a>, ErrorResponse> {
+    if request.uri().path() != path {
+        return Err(refuse(StatusCode::NOT_FOUND, "no rutis endpoint here"));
+    }
+    let bearer = request
+        .headers()
+        .get("Authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let offered = request
+        .headers()
+        .get_all("Sec-WebSocket-Protocol")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .collect();
+    Ok(Upgrade { bearer, offered })
+}
+
+/// The `Sec-WebSocket-Protocol` response header for this endpoint's session
+/// protocol `ours`, if the dialer offered it; else the refusal saying which
+/// end to upgrade.
+#[allow(clippy::result_large_err)] // tungstenite's error response
+pub(crate) fn agree_protocol(ours: &str, offered: &[&str]) -> Result<HeaderValue, ErrorResponse> {
+    if !offered.contains(&ours) {
+        return Err(refuse(
+            StatusCode::BAD_REQUEST,
+            &protocol_refusal(ours, offered),
+        ));
+    }
+    HeaderValue::from_str(ours)
+        .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, "invalid protocol"))
+}
+
 fn refuse(status: StatusCode, reason: &str) -> ErrorResponse {
     let mut response = ErrorResponse::new(Some(reason.to_owned()));
     *response.status_mut() = status;
@@ -185,15 +234,8 @@ async fn accept(
     // tungstenite fixes this callback's signature, error response included.
     #[allow(clippy::result_large_err)]
     let check = move |request: &Request, mut response: Response| {
-        if request.uri().path() != &*path {
-            return Err(refuse(StatusCode::NOT_FOUND, "no rutis endpoint here"));
-        }
-        let bearer = request
-            .headers()
-            .get("Authorization")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "));
-        let presented = match (bearer, &certificate) {
+        let upgrade = read_upgrade(request, &path)?;
+        let presented = match (upgrade.bearer, &certificate) {
             (Some(token), _) => Presented::Bearer(token),
             (None, Some(der)) => Presented::Certificate(der),
             (None, None) => {
@@ -216,22 +258,7 @@ async fn accept(
                 return Err(refuse(StatusCode::FORBIDDEN, "ambiguous credentials"));
             }
         };
-        let offered: Vec<&str> = request
-            .headers()
-            .get_all("Sec-WebSocket-Protocol")
-            .iter()
-            .filter_map(|value| value.to_str().ok())
-            .flat_map(|value| value.split(','))
-            .map(str::trim)
-            .collect();
-        if !offered.contains(&ticket.protocol.as_str()) {
-            return Err(refuse(
-                StatusCode::BAD_REQUEST,
-                &protocol_refusal(&ticket.protocol, &offered),
-            ));
-        }
-        let protocol = HeaderValue::from_str(&ticket.protocol)
-            .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, "invalid protocol"))?;
+        let protocol = agree_protocol(&ticket.protocol, &upgrade.offered)?;
         response
             .headers_mut()
             .insert("Sec-WebSocket-Protocol", protocol);

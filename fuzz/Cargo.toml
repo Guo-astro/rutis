@@ -1,0 +1,40 @@
+# The fuzz targets (#179; docs/ci.md, CONTRIBUTING.md): run with cargo-fuzz
+# on a nightly toolchain, `cargo +nightly fuzz run <target>` in this
+# directory. Its own workspace, not a member of the repository's: plain
+# `cargo build` and `cargo test` never build it.
+[package]
+name = "rutis-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+rutis-bridge = { path = "../crates/rutis-bridge", default-features = false, features = ["websocket"] }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "session_frame"
+path = "fuzz_targets/session_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "local_lines"
+path = "fuzz_targets/local_lines.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "websocket_upgrade"
+path = "fuzz_targets/websocket_upgrade.rs"
+test = false
+doc = false
+bench = false

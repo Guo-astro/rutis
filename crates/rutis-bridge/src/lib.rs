@@ -36,6 +36,12 @@ pub mod session;
 pub mod testing;
 pub mod transport;
 
+// The fuzz targets' entry points (`fuzz/`, #179): only in a build by
+// cargo-fuzz, which sets `--cfg fuzzing`.
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzzing;
+
 mod access_point;
 mod compose;
 mod events;
