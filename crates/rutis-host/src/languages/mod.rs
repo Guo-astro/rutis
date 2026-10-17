@@ -8,7 +8,7 @@
 //! `rutis-host dev` recognizes and runs a project of it.
 //!
 //! Adding a language: a file here implementing [`Language`], its line in
-//! [`LANGUAGES`] (and in [`REMOTE_LANGUAGES`] when it runs remotely), its
+//! [`LANGUAGES`], its
 //! field in [`crate::config::Runtimes`] (the `rutis.json` format), and its
 //! templates under `templates/<language>/`.
 
@@ -38,11 +38,6 @@ pub use go::GoDev;
 /// that order, and Node's, which takes bare npm names and `file:` URLs,
 /// comes last, after every prefixed one (`go:`, `py:`, `bun:`).
 pub static LANGUAGES: &[&dyn Language] = &[&node::Node, &bun::Bun, &python::Python, &go::Go];
-
-/// What a remote runtime's language may be, as its error lists them: kept
-/// as written before the registry (its order is not [`LANGUAGES`]'), and
-/// checked against it by a test.
-pub const REMOTE_LANGUAGES: &str = "python, go, node or bun";
 
 /// One local language.
 pub trait Language: Sync {
@@ -157,6 +152,14 @@ pub fn new_names() -> Vec<&'static str> {
     LANGUAGES
         .iter()
         .map(|language| language.new_names()[0])
+        .collect()
+}
+
+/// The name of each language that runs remotely, as messages show them.
+pub fn remote_names() -> Vec<&'static str> {
+    LANGUAGES
+        .iter()
+        .filter_map(|language| language.remote_names().first().copied())
         .collect()
 }
 
@@ -286,23 +289,6 @@ pub(crate) fn id_of(name: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Every language that runs remotely is in the list its error shows,
-    /// and nothing else is.
-    #[test]
-    fn the_remote_languages_error_lists_every_language() {
-        let mut listed: Vec<&str> = REMOTE_LANGUAGES
-            .split([',', ' '])
-            .filter(|word| !word.is_empty() && *word != "or")
-            .collect();
-        let mut registered: Vec<&str> = LANGUAGES
-            .iter()
-            .filter_map(|language| language.remote_names().first().copied())
-            .collect();
-        listed.sort();
-        registered.sort();
-        assert_eq!(listed, registered);
-    }
-
     /// Each name a language is known by belongs to it alone.
     #[test]
     fn names_are_unique() {
@@ -326,6 +312,8 @@ mod tests {
     fn messages_list_the_languages() {
         let names: Vec<String> = new_names().iter().map(|n| n.to_string()).collect();
         assert_eq!(either(&names), "node, bun, python or go");
+        let remote: Vec<String> = remote_names().iter().map(|n| n.to_string()).collect();
+        assert_eq!(either(&remote), "node, bun, python or go");
         let files: Vec<String> = project_files().iter().map(|f| f.to_string()).collect();
         assert_eq!(either(&files), "package.json, pyproject.toml or go.mod");
     }

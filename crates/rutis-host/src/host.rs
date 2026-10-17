@@ -24,7 +24,7 @@ use rutis_loader::{
 
 use crate::config::{token, HostConfig};
 use crate::errln;
-use crate::languages::{self, Mount, LANGUAGES, REMOTE_LANGUAGES};
+use crate::languages::{self, Mount, LANGUAGES};
 
 pub struct Host {
     /// The host runs while this lives.
@@ -182,9 +182,15 @@ impl Host {
 
         for remote in &config.runtimes.remote {
             let language = languages::by_remote_name(&remote.language).ok_or_else(|| {
+                let names: Vec<String> = languages::remote_names()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect();
                 format!(
-                    "remote runtime {}: the language is {REMOTE_LANGUAGES}, not {}",
-                    remote.name, remote.language
+                    "remote runtime {}: the language is {}, not {}",
+                    remote.name,
+                    languages::either(&names),
+                    remote.language
                 )
             })?;
             // Each connection an instance, its rows `<name>:<plugin>` on it.
