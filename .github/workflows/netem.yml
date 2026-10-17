@@ -1,0 +1,79 @@
+# S5 across two containers (#341, risk E12 of docs/quality-status.md):
+# node B in one Docker container listening on a non-loopback address with
+# TLS, host A in another dialing it, netem adding 200 ms delay and 5 % loss,
+# then a full outage and its recovery (tests/e2e/tests/netem.rs). Runs in
+# the nightly runs (nightly.yml calls it, report only) and on demand.
+#
+# GitHub's ubuntu-24.04, not LINUX_RUNNER: the self-hosted Linux runners
+# are containers without Docker (docs/ci.md §11).
+#
+# By hand: Actions → netem → Run workflow, or
+# `gh workflow run netem.yml --ref <branch>`; it fails when the scenario
+# fails. Locally on Linux with Docker: the command in netem.rs.
+name: netem
+
+on:
+  workflow_dispatch:
+  # nightly.yml, with report-only: the job never fails the run.
+  workflow_call:
+    inputs:
+      report-only:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  s5-netem:
+    runs-on: ubuntu-24.04
+    continue-on-error: ${{ inputs.report-only == true }}
+    timeout-minutes: 30
+    env:
+      # Short, for the Unix socket paths under it (tests/e2e/src/lib.rs).
+      RUTIS_E2E_DIR: /tmp/rutis-e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      # Host A's Node runtime and the SDK its probe imports (the image has
+      # Node 22, the oldest supported).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm --prefix node/rutis-runtime ci
+      - run: npm --prefix node/rutis ci
+      # The containers run this release build (ubuntu:24.04, the runner's
+      # glibc).
+      - run: cargo build --release -p rutis-host
+      - name: S5 across two containers (tests/e2e/tests/netem.rs)
+        id: s5
+        env:
+          RUTIS_E2E_HOST: ${{ github.workspace }}/target/release/rutis-host
+        run: cargo test -p rutis-e2e --test netem -- --ignored --nocapture
+      - name: report
+        if: always()
+        env:
+          S5: ${{ steps.s5.outcome }}
+        run: |
+          {
+            echo "### S5 across two containers, netem (E12)"
+            echo
+            echo "Result: ${S5:-skipped}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$S5" = success ] || echo "::warning::S5 across two containers (netem, #341): ${S5:-skipped}"
+      # A failed scenario keeps its directory, with every program's output
+      # in logs/.
+      - name: prune the scenario directories
+        if: failure()
+        run: |
+          [ -d "$RUTIS_E2E_DIR" ] || exit 0
+          find "$RUTIS_E2E_DIR" \( -type l -o -type s -o -type p \) -delete
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-netem
+          path: ${{ env.RUTIS_E2E_DIR }}
+          retention-days: 14

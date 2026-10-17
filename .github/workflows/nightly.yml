@@ -1,8 +1,9 @@
 # The nightly run (docs/ci.md §2, Q12.3, Q12.4): every job of ci.yml, the
 # install checks on every platform with this commit's packages
 # (install.yml), the Windows dylib tests (dylib-windows.yml), the stress
-# tests (stress.yml), and the Cordis checks on the newest published Cordis
-# plugins (`cordis-latest`, report only), on main's latest commit. A merge to main runs nothing,
+# tests (stress.yml), the Cordis checks on the newest published Cordis
+# plugins (`cordis-latest`, report only) and S5 across two containers with
+# netem (netem.yml, report only), on main's latest commit. A merge to main runs nothing,
 # so this run is what checks every commit merged since the last successful
 # nightly run: the paths a pull request skipped, and pull requests that pass
 # alone but fail together.
@@ -192,6 +193,18 @@ jobs:
           for check in "dsh_baseline:$BASELINE" "examples/dsh-baseline:$BINDINGS" "S6:$S6"; do
             [ "${check#*:}" = success ] || echo "::warning::${check%%:*} on the newest published Cordis plugins: ${check#*:} (F4)"
           done
+
+  # Risk E12 (docs/quality-status.md): S5 across two containers, TLS on a
+  # non-loopback address, netem delay, loss and an outage (netem.yml,
+  # #341). Report only, like `cordis-latest`: the job never fails the run,
+  # `report` does not wait for it; a failure shows as a warning and its
+  # logs are uploaded.
+  netem:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    uses: ./.github/workflows/netem.yml
+    with:
+      report-only: true
 
   # A failure opens an issue, or comments on the nightly issue still open (as
   # release.yml's `report`).
