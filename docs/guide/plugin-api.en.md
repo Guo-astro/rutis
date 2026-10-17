@@ -61,16 +61,17 @@ A plugin and the services it uses may run in different processes. Across process
 | `null` / `None`, booleans, numbers, strings | Copied |
 | Arrays / lists, plain objects / dictionaries with string keys | Recursively copied |
 | Python dataclasses | Copied as dictionaries |
+| Dates and times, binary data, maps, sets, big integers, decimals, UUIDs | Copied; each language receives its own types, see [the ten values](#the-ten-values) below |
 | `Error` / exceptions | Passed as a value: copied as data `{ name, message }` (in TypeScript also `stack`). Thrown: the other side receives an error with the same name and message (in TypeScript a built-in error class keeps its class, any other is an `Error`; in Python a `rutis.peer.RemoteError` whose `name` is the original class name); other attributes are not passed |
 | Functions, Promises / coroutines | Passed by reference: the other side calls or awaits the original |
 | Objects with methods, class instances | Passed by reference: the other side receives a proxy that calls the original object |
-| Symbols, bigints, Maps, Sets, TypeScript Dates, binary data, cyclic references, `NaN` / `Infinity` | Cannot cross processes (the call fails). Whether Maps, Sets, Dates, binary data and bigints should cross is decided in [#308](https://github.com/arcships/rutis/issues/308); until then both the real runtimes and the test tools refuse them |
-| `undefined` inside TypeScript data (holding no functions or objects with methods) | Becomes `null` |
-| Go structs, slices, `map[string]T` | Copied as JSON (by their `json` tags); a struct is always data, `rutis.Ref(v)` passes an object by reference. Integers beyond ±2^53−1, `[]byte`, channels and non-string map keys cannot cross |
-| Python `int` | Copied. An integer beyond ±(2^53−1) (absolute value above 9007199254740991) cannot cross processes: the side sending it refuses it before sending, failing only that call, with an error naming the limit (`integer beyond ±(2^53-1)`), and the session goes on; whether it is an argument or a result, at any nesting depth. The same limit as JavaScript's safe integers and Go. Pass larger integers as strings. `bool` is not affected. See [#356](https://github.com/arcships/rutis/issues/356) |
+| `undefined` inside data | Becomes `null` (`None` in Python) |
+| Go structs, slices, maps | Copied: struct fields and the items of slices and maps each follow the rules of this section, with field names by their `json` tags; a struct is always data, `rutis.Ref(v)` passes an object by reference. A `map[string]T` is an object, a map whose keys are not strings is a map, and a `map[K]struct{}` is a set |
+| Integers beyond ±(2^53−1) | Cross as big integers automatically, see [the ten values](#the-ten-values) |
+| Symbols, cyclic references, `NaN` / `Infinity`, other JS typed arrays (such as `Int16Array`), Python `time` with a time zone, Go channels | Cannot cross processes (the call fails) |
 | Values nested more than 64 levels deep | Cannot cross processes (the call fails, see below) |
 
-Nesting depth: a value nests at most **64 levels**. Each array / list / tuple, object / dictionary (dataclasses included), and Go slice, map or struct is a level, whether or not it holds references; an `Error` / exception passed as a value is a level too. A call's argument list is not a level: each argument may nest 64 levels; a result may nest 64 levels. The side that **would send** a deeper value refuses it before sending, failing only that call, with an error naming the limit (`value nested deeper than 64 levels`):
+Nesting depth: a value nests at most **64 levels**. Each array / list / tuple, object / dictionary (dataclasses included), map, set, and Go slice, map or struct is a level, whether or not it holds references; an `Error` / exception passed as a value is a level too. A call's argument list is not a level: each argument may nest 64 levels; a result may nest 64 levels. The side that **would send** a deeper value refuses it before sending, failing only that call, with an error naming the limit (`value nested deeper than 64 levels`):
 
 - as an argument: the caller's call fails (in Rust with `Error::Value`) and the far end does not run it;
 - as a result: the caller receives the error the callee throws;
@@ -80,15 +81,38 @@ All five runtimes (Rust, Node, Bun, Python, Go) and the test tool's strict mode 
 
 Numbers have the limits below. They describe current behaviour and are **not guaranteed** to stay this way (explicitly not guaranteed); a plugin that depends on them must handle them itself:
 
-- In JavaScript (Node, Bun) numbers are IEEE 754 doubles: an integer beyond ±(2^53−1) becomes the nearest double (2^53+1 arrives in JS as 2^53); `-0` becomes `0`; an integral float (Python's `2.0`) arrives in JS as `2` and leaves again as an integer. Pass large integers that must stay exact as strings.
-- Every integer Python sends is within ±(2^53−1) (larger ones cannot cross, see the table above); Python keeps `-0.0`.
+- In JavaScript (Node, Bun) numbers are IEEE 754 doubles: a JS `number` beyond ±(2^53−1) is already inexact and is sent as it is; use `bigint` to be exact. `-0` becomes `0`; an integral float (Python's `2.0`) arrives in JS as `2` and leaves again as an integer.
+- Python keeps `-0.0`.
 - NaN and ±Infinity cannot cross.
 
 Values are not copied within one process. Code that mutates an object after passing it may work in a unit test but fail across processes. The test tool's strict mode (enabled by default) applies the rules above to expose this early.
 
+### The ten values
+
+| Value | JS (Node, Bun) | Python | Go | Rust (`rutis-bridge`) |
+| --- | --- | --- | --- | --- |
+| Point in time | `Date` | `datetime` with a time zone (received in UTC) | `time.Time` (received in UTC) | `Instant` |
+| Local date and time | String `"2026-10-15T14:30:05"` | `datetime` without a time zone | `rutis.DateTime` | `DateTime` |
+| Date | String `"2026-10-15"` | `date` | `rutis.Date` | `Date` |
+| Time of day | String `"14:30:05"` | `time` without a time zone | `rutis.TimeOfDay` | `TimeOfDay` |
+| Binary data | `Uint8Array` (`Buffer`, `ArrayBuffer`, `DataView` can be sent too) | `bytes` (`bytearray`, `memoryview` can be sent too) | `[]byte` | `Vec<u8>` (`Bytes` in generated code) |
+| Map | `Map` | `dict` with a key that is not a string (received as a subclass of `dict`) | A map whose keys are not strings (`map[any]any` decoded into `any`) | `Vec<(Value, Value)>` (`ValueMap` in generated code) |
+| Set | `Set` | `set` (`frozenset` can be sent too) | `map[K]struct{}`, or a slice (a slice decoded into `any`) | `Vec<Value>` (`ValueSet` in generated code) |
+| Big integer | `bigint` | `int` (received as a subclass of `int`) | `*big.Int`, or an integer type that holds it | `BigInt`, or an integer type that holds it |
+| Decimal | String `"12.30"` | `Decimal` | `rutis.Decimal` | `Decimal` |
+| UUID | String (lowercase) | `UUID` | `rutis.UUID` | `Uuid` |
+
+- Plugins write their language's native code; rutis does the conversion. A received big integer or map is, in Python, a subclass of `int` or `dict`, used as usual; passed on as it is, it is still a big integer or map.
+- JS has no type for local date-times, dates, times of day, decimals or UUIDs: they arrive as plain strings, their content complete, and `===` works as usual. Passed on from JS as they are, such values lose their type (a `date` sent by Python comes back through JS as a `str`). To create one of these five values from nothing in JS, or to pass one on as its type, use the constructors of `@arcships/rutis`: `rutis.datetime('2026-10-15T14:30')`, `rutis.date('2026-10-15')`, `rutis.time('14:30')`, `rutis.decimal('1.10')`, `rutis.uuid('…')`; a plain string is still a string. Go can also decode these five values into a `string`.
+- Integers: an integer beyond ±(2^53−1) (absolute value above 9007199254740991; Python `int`, Go `int64` / `uint64`, Rust integers) crosses as a big integer automatically, with nothing special to write; JS receives it as a `bigint`, and within range still as a `number`. A received big integer decodes into a declared integer type that holds it; one that does not hold it fails the call. `bool` is not affected.
+- Times: years 0001–9999. A local date and time has no time zone and crosses as it is, with no zone guessed and no conversion to a point in time. A point in time is truncated toward negative infinity to the receiver's precision: milliseconds in JS, microseconds in Python, nanoseconds in Go and Rust; Python also truncates local date-times and times of day to the microsecond.
+- A decimal keeps its trailing zeros (`1.10` is not `1.1`) and uses no exponent; NaN and infinities cannot cross. Big integers and decimals have at most 4300 digits.
+- Map keys and set elements can only be strings, finite numbers, booleans, big integers, local date-times, dates, times of day, decimals and UUIDs; points in time, binary data, `null`, arrays, objects, maps, sets and references cannot, and the sender refuses them before sending. When two keys become equal after conversion on the receiving side (a JS `Map` with keys `1` and `true` arriving in Python, say), the call fails: an entry would be lost. A JS `Map` with string keys still crosses as a map; a plain Python `dict` with string keys crosses as an object.
+- Each value is sent only to a far end that declared it. When the far end does not take it (a runtime older than 0.11, say, integers beyond ±(2^53−1) included), only that call fails, with an error naming the value, and the session and other calls go on. Events forwarded between nodes do not carry these ten values; leaf events within one runtime process carry them as usual.
+
 ### Where the test tool differs from a real runtime
 
-The test tools (`@arcships/rutis/testing`, `rutis.testing`) and the real runtimes are checked against the same expectations file: the same calls on the same plugin (sync, async, callbacks, errors, the values in the table above) must give the same results ([`weather.expected.json`](../../crates/rutis-bridge/src/runtime/testing/weather.expected.json)). In strict mode, these are the only known differences:
+The test tools (`@arcships/rutis/testing`, `rutis.testing`, Go's `rutistest`) and the real runtimes are checked against the same expectations file: the same calls on the same plugin (sync, async, callbacks, errors, the values in the table above) must give the same results ([`weather.expected.json`](../../crates/rutis-bridge/src/runtime/testing/weather.expected.json)). In strict mode, these are the only known differences:
 
 | Difference | Why |
 | --- | --- |
@@ -100,7 +124,7 @@ The test tools (`@arcships/rutis/testing`, `rutis.testing`) and the real runtime
 | TypeScript / Python events: the plugin under test hears only what it emits with `ctx.emit` and what `t.emit` sends; on a real runtime the whole process shares one event bus, so it also hears other plugins in the process (and, on Node, Cordis plugins) | The test tool loads one plugin. `t.emit` accepts only names declared in `emits` at load, as `RuntimePlugin::emits`; both refuse `internal/*` |
 | The Python tool cancels and settles local asynchronous listeners at unload, preserving test-body or cleanup exceptions; the real runtime exits on an unhandled asynchronous failure | Keeps the test process running while failing the test explicitly |
 
-Maps, Sets, Dates, binary data and bigints are refused on both sides, so they are not a difference; whether they will cross later is [#308](https://github.com/arcships/rutis/issues/308). With strict mode off (`strict: false`), values skip the table above and other differences can appear. Go's `rutistest` is not yet checked against the full file; all four real runtimes are checked against its event expectations.
+The ten values cross by the same rules on both sides, so they are not a difference. With strict mode off (`strict: false`), values skip the table above and other differences can appear.
 
 ## Synchronous calls and reentrancy
 

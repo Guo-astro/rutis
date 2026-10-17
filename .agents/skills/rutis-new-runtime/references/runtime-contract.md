@@ -83,7 +83,16 @@ Adding fields to the `mount` reply (such as `engine` or `plugins`) is not a prot
 
 ## 5. Values
 
-As in the plugin API's "how values cross" (see `plugin-api.md`): JSON-compatible data is copied; functions, promises / coroutines and objects with methods go by reference; integers within ±(2^53−1); nesting at most 64 levels; NaN, ±Infinity, binary data and the like cannot cross. Values over a limit are refused by the **sender** before sending: only that call fails and the session continues. Errors cross with their name, message and whole error graph (causes, children of aggregate errors).
+As in the plugin API's "how values cross" (see `plugin-api.md`): JSON-compatible data is copied; functions, promises / coroutines and objects with methods go by reference; nesting at most 64 levels (a `list`, `record`, `map` or `set` is one level); NaN, ±Infinity, symbols and cyclic references cannot cross. Values over a limit are refused by the **sender** before sending: only that call fails and the session continues. Errors cross with their name, message and whole error graph (causes, children of aggregate errors).
+
+Ten tagged values cross beside `reference` and `signal`: `instant`, `datetime`, `date`, `time`, `bytes`, `map`, `set`, `bigint`, `decimal`, `uuid` (wire text and rules: protocol design §6.1, https://github.com/arcships/rutis/blob/main/docs/design-protocol-plugins-2026-09-25.en.md; per-language mapping: https://github.com/arcships/rutis/blob/main/docs/design-value-types-2026-10-15.en.md §2).
+
+- Each tag has a capability `value-<tag>`, declared in both handshake formats. Send a tag only to a far end that declared it; otherwise fail only that call, naming the value. A runtime may implement a subset and declare only that.
+- Map each value to the language's native type; where the language has none, use the closest type that loses nothing (JS receives `datetime`, `date`, `time`, `decimal`, `uuid` as plain strings). Plugin authors must not need rutis-specific types; SDK constructors are only for creating a value of a type the language lacks.
+- An integer beyond ±(2^53−1) is sent as a `bigint` automatically; a received `bigint` decodes into a declared integer type that holds it.
+- Map keys and set elements: strings, finite numbers, booleans, `bigint`, `datetime`, `date`, `time`, `decimal`, `uuid` only. Keys that become equal after conversion fail the call.
+- Points in time are truncated toward negative infinity to the receiver's precision. `undefined` inside data becomes `null`.
+- A malformed tagged value or key fails only that call; keep decoding the rest so every reference in it is imported and released. A frame not in the protocol's JSON shape still ends the session.
 
 ## 6. Extra rules for compiled-program runtimes (the Go model)
 

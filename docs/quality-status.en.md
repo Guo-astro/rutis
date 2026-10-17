@@ -616,6 +616,8 @@ From `node tools/ci-stats.mjs 40 ci.yml --since 2026-10-11`. Jobs were being mov
 
 Ordered by risk level, P0 first; within a level, infrastructure other work depends on first. Aligned with the current release plan. #183 tracks progress.
 
+Rescheduled (2026-10-17): 0.11 ships only what is already on main (leaf events #343, cross-language value types #308, remote runtimes dialing out #382–#384), released as soon as possible; step three moves to **0.12**, together with #230, #273 and #274. The former 0.12 (new runtimes) and 0.13 (app hosting) become 0.13 and 0.14.
+
 ### 9.1 Step one (0.8.1 → 0.9): infrastructure and P0s that already happened — done
 
 | Item | Risks covered | issue → PR |
@@ -654,9 +656,9 @@ Defects found by step two's tests and fixed: #279 (#338), #281 #282 (#337), #287
 
 Moved out or opened during step two: revoking while running (#273), changing `run`'s configuration while running (#274), Date / Map / Set / binary / big integers (#308) and emit carrying its dispatch mode (#340) went to "waiting for design"; S5 with containers + netem (#341) went to step three.
 
-### 9.3 Step three (0.11): long runs, fuzzing, concurrency models, undecided designs
+### 9.3 Step three (0.12; planned for 0.11, moved on 2026-10-17): long runs, fuzzing, concurrency models, undecided designs
 
-| Item | Risks covered | issue |
+| Item | Risks covered | issue → PR |
 | --- | --- | --- |
 | Three FZ targets; three SH models | P2, E7, K2 | #179 |
 | Host-level soak (S8) | L1, L3 | #192 |
@@ -664,8 +666,12 @@ Moved out or opened during step two: revoking while running (#273), changing `ru
 | S7 Rust embedding and multiple tenants | D2, D3, D5 | #191 |
 | Previous release's runtime vs current host | J2, E13 | #209 |
 | TLA+ Spec 2 | E4, E5 | #210 |
-| Bun runtime admitted under Q6.8 (B2, B3) | The Bun variant of C10 | #194 |
+| Bun runtime admitted under Q6.8 (B2, B3) | The Bun variant of C10 | #194 → #200; remote listening and dialing out #402; #236 → #261. Done |
 | S5 nightly: two containers, non-loopback + TLS, netem | E12 | #341 |
+| Values consistent across languages: Python `datetime` by reference, Go structs bypassing the checks, Python dicts dropping undefined keys | P7, A1 | #355 → #410, #412, #413. Done (0.11) |
+| Passing dates and times, binary data, maps, sets, big integers, decimals and UUIDs across languages | P7, A1 | #308, #360 → designs #404, #414, implementation #406, #415, #410, #412, #413. Done (0.11) |
+| Revoking a peer's credentials while running, without restarting; S5 gains a step afterwards | E5 | #273. Decided: a revocation hook in the identity layer |
+| `rutis-host run` changing its configuration while running; restarting a crashed runtime | B4 | #274. Decided: SIGUSR1 / `--watch-config` rereads the configuration, all or nothing; automatic restart after a crash is opt-in, off by default |
 
 "CI changes §8.6 steps 3–4" (splitting the dylib jobs on Linux, CI measurements), formerly in step three, were done in #213.
 
@@ -675,9 +681,6 @@ Moved out or opened during step two: revoking while running (#273), changing `ru
 | --- | --- |
 | All controls for scenario H (S1 #185) | A design for "plugin services as agent tools"; decisions on isolation and permissions for agent-written plugins |
 | Resource limits on references and calls | A design first (raised in #178) |
-| Revoking a peer's credentials while running, without restarting (#273) | The remote design; S5 gains a step afterwards |
-| Whether `rutis-host run` supports changing its configuration while running and restarting a crashed runtime (#274) | A design decision; affects B4, and whether S3 and S4 can use `rutis-host` |
-| Passing Date, Map, Set, binary and big integers across languages (#308) | A design for the value conversion rules; refused explicitly today |
 | emit carrying its dispatch mode, so a `serial` across the boundary runs as serial on the far side (#340) | A design for the protocol change (the conclusion of #281) |
 
 ---
