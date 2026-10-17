@@ -61,16 +61,17 @@ Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（�
 | `null` / `None`、布尔、数字、字符串 | 复制 |
 | 数组 / list、普通对象 / 字符串键的 dict | 递归复制 |
 | Python dataclass | 复制为 dict |
+| 日期时间、二进制、Map、Set、大整数、Decimal、UUID | 复制，各语言收到本语言的类型，见下面的[十种值](#十种值) |
 | `Error` / 异常 | 作为值传递时复制为数据 `{ name, message }`（TypeScript 另带 `stack`）；抛出时另一端得到同名、同消息的错误（TypeScript 中内置错误类保留类，其余是 `Error`；Python 中是 `rutis.peer.RemoteError`，`name` 是原来的类名），其他属性不传 |
 | 函数、Promise / 协程 | 按引用：另一端调用或 await 的是原来那个 |
 | 带方法的对象、类的实例 | 按引用：另一端拿到代理，调用的是原对象 |
-| symbol、bigint、Map、Set、TypeScript 的 Date、二进制、循环引用、`NaN` / `Infinity` | 不能跨进程（调用失败）。Map、Set、Date、二进制、bigint 是否改为可传递由 [#308](https://github.com/arcships/rutis/issues/308) 决定，在此之前真实运行时和测试工具都拒绝它们 |
-| TypeScript 数据（不含函数、带方法的对象）里的 `undefined` | 变成 `null` |
-| Go 的结构体、切片、`map[string]T` | 按 JSON 复制（遵循 `json` 标签）；结构体一律是数据，要按引用传对象写 `rutis.Ref(v)`。超出 ±2^53−1 的整数、`[]byte`、channel、非字符串键的 map 不能跨进程 |
-| Python 的 `int` | 复制。超出 ±(2^53−1)（即绝对值大于 9007199254740991）的整数不能跨进程：发送它的一方在发出前拒绝，只让这次调用失败，错误信息说明上限（`integer beyond ±(2^53-1)`），会话继续；不论它是参数还是返回值、嵌套在第几层。和 JavaScript 的安全整数、Go 的上限相同。需要更大的整数时用字符串传。`bool` 不受影响。见 [#356](https://github.com/arcships/rutis/issues/356) |
+| 数据里的 `undefined` | 变成 `null`（Python 收到 `None`） |
+| Go 的结构体、切片、map | 复制：结构体字段、切片和 map 的元素逐个按本节的规则传，字段名遵循 `json` 标签；结构体一律是数据，要按引用传对象写 `rutis.Ref(v)`。`map[string]T` 是对象，键不是字符串的 map 是 Map，`map[K]struct{}` 是 Set |
+| 超出 ±(2^53−1) 的整数 | 自动按大整数传，见[十种值](#十种值) |
+| symbol、循环引用、`NaN` / `Infinity`、JS 的其他类型化数组（如 `Int16Array`）、带时区的 Python `time`、Go 的 channel | 不能跨进程（调用失败） |
 | 嵌套超过 64 层的值 | 不能跨进程（这次调用失败，见下） |
 
-嵌套深度：一个值最多嵌套 **64 层**。数组 / list / tuple、对象 / dict（含 dataclass）、Go 的切片、map、结构体各算一层，里面有没有引用都一样；作为值传递的 `Error` / 异常也算一层。调用的参数列表本身不算一层：每个参数各自最多 64 层；返回值最多 64 层。更深的值由**要发送它的一方**在发出之前拒绝，只让这次调用失败，错误信息说明上限（`value nested deeper than 64 levels`）：
+嵌套深度：一个值最多嵌套 **64 层**。数组 / list / tuple、对象 / dict（含 dataclass）、Map、Set、Go 的切片、map、结构体各算一层，里面有没有引用都一样；作为值传递的 `Error` / 异常也算一层。调用的参数列表本身不算一层：每个参数各自最多 64 层；返回值最多 64 层。更深的值由**要发送它的一方**在发出之前拒绝，只让这次调用失败，错误信息说明上限（`value nested deeper than 64 levels`）：
 
 - 作为参数：调用方的这次调用失败（Rust 中是 `Error::Value`），对端不执行它；
 - 作为返回值：调用方收到被调方抛出的错误；
@@ -80,15 +81,38 @@ Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（�
 
 数字有下面这些边界。它们是现在的行为，**不保证**以后不变（明确不保证），依赖它们的插件需要自己处理：
 
-- JavaScript（Node、Bun）里数字是 IEEE 754 双精度：超出 ±(2^53−1) 的整数变成最接近的双精度值（2^53+1 到 JS 一端是 2^53）；`-0` 变成 `0`；整数值的浮点数（Python 的 `2.0`）到 JS 一端就是 `2`，再传出去是整数。需要精确的大整数时用字符串传。
-- Python 发出的整数都在 ±(2^53−1) 以内（更大的不能跨进程，见上表）；Python 保留 `-0.0`。
+- JavaScript（Node、Bun）里数字是 IEEE 754 双精度：JS 自己的 `number` 超出 ±(2^53−1) 时本来就不精确，照原样发出；要精确用 `bigint`。`-0` 变成 `0`；整数值的浮点数（Python 的 `2.0`）到 JS 一端就是 `2`，再传出去是整数。
+- Python 保留 `-0.0`。
 - NaN、±Infinity 不能跨进程。
 
 同一个进程里没有复制，所以"传过去之后改原对象，另一端也看到"这类写法在单元测试里可能成立、跨进程就不成立。测试工具的严格模式（默认）按上表传值，提前暴露这种问题。
 
+### 十种值
+
+| 值 | JS（Node、Bun） | Python | Go | Rust（`rutis-bridge`） |
+| --- | --- | --- | --- | --- |
+| 时间点 | `Date` | 带时区的 `datetime`（收到为 UTC） | `time.Time`（收到为 UTC） | `Instant` |
+| 本地日期时间 | 字符串 `"2026-10-15T14:30:05"` | 无时区的 `datetime` | `rutis.DateTime` | `DateTime` |
+| 日期 | 字符串 `"2026-10-15"` | `date` | `rutis.Date` | `Date` |
+| 时刻 | 字符串 `"14:30:05"` | 无时区的 `time` | `rutis.TimeOfDay` | `TimeOfDay` |
+| 二进制 | `Uint8Array`（也可发 `Buffer`、`ArrayBuffer`、`DataView`） | `bytes`（也可发 `bytearray`、`memoryview`） | `[]byte` | `Vec<u8>`（生成代码里是 `Bytes`） |
+| Map | `Map` | 键不是字符串的 `dict`（收到的是 `dict` 的子类） | 键不是字符串的 map（解码到 `any` 时是 `map[any]any`） | `Vec<(Value, Value)>`（生成代码里是 `ValueMap`） |
+| Set | `Set` | `set`（也可发 `frozenset`） | `map[K]struct{}`，或切片（解码到 `any` 时是切片） | `Vec<Value>`（生成代码里是 `ValueSet`） |
+| 大整数 | `bigint` | `int`（收到的是 `int` 的子类） | `*big.Int`，或放得下的整数类型 | `BigInt`，或放得下的整数类型 |
+| Decimal | 字符串 `"12.30"` | `Decimal` | `rutis.Decimal` | `Decimal` |
+| UUID | 字符串（小写） | `UUID` | `rutis.UUID` | `Uuid` |
+
+- 插件只写本语言原生的代码，转换由 rutis 做。收到的大整数、Map 在 Python 里是 `int`、`dict` 的子类，照常使用；原样转发时仍是大整数、Map。
+- JS 没有本地日期时间、日期、时刻、Decimal、UUID 的类型，收到的是普通字符串，内容完整，`===` 照常可用。这样的值经 JS 原样转发时类型不保留（Python 发出的 `date` 经 JS 转发回来是 `str`）。要在 JS 里凭空创建这五种值，或以原类型转发，用 `@arcships/rutis` 的构造函数：`rutis.datetime('2026-10-15T14:30')`、`rutis.date('2026-10-15')`、`rutis.time('14:30')`、`rutis.decimal('1.10')`、`rutis.uuid('…')`；普通字符串照旧是字符串。Go 也可以把这五种值解码进 `string`。
+- 整数：超出 ±(2^53−1)（即绝对值大于 9007199254740991）的整数（Python `int`、Go `int64` / `uint64`、Rust 整数）自动按大整数传，不需要特殊写法；JS 收到时是 `bigint`，范围内仍是 `number`。收到的大整数放得下时可以解码进声明的整数类型，放不下时这次调用失败。`bool` 不受影响。
+- 时间：年份 0001–9999。本地日期时间没有时区，原样传递，不猜时区，也不转成时间点。时间点按接收方的精度向负无穷截断：JS 到毫秒，Python 到微秒，Go、Rust 到纳秒；Python 的本地日期时间和时刻同样截断到微秒。
+- Decimal 保留末尾零（`1.10` 与 `1.1` 不同），不用指数；NaN、无穷不能跨进程。大整数、Decimal 至多 4300 位。
+- Map 的键、Set 的元素只能是字符串、有限数字、布尔、大整数、本地日期时间、日期、时刻、Decimal、UUID；时间点、二进制、`null`、数组、对象、Map、Set、引用不行，发送方在发出前拒绝。接收方转换后两个键相等时（例如 JS `Map` 的键 `1` 和 `true` 到 Python），这次调用失败：会丢条目。字符串键的 JS `Map` 仍按 Map 传，Python 普通的字符串键 `dict` 按对象传。
+- 每种值只发给声明了它的对端。对端不支持时（例如 0.11 之前的运行时，包括超出 ±(2^53−1) 的整数），只让这次调用失败，错误说明哪种值，会话继续，其他调用不受影响。节点之间转发的事件不承载这十种值；同一运行时进程内的叶子事件照常传递。
+
 ### 测试工具与真实运行时的差异
 
-测试工具（`@arcships/rutis/testing`、`rutis.testing`）和真实运行时对同一份期望文件比对：对同一个插件做同一组调用（同步、异步、回调、错误、上表的值），结果必须相同（[`weather.expected.json`](../../crates/rutis-bridge/src/runtime/testing/weather.expected.json)）。严格模式下已知的差异只有下面这些：
+测试工具（`@arcships/rutis/testing`、`rutis.testing`、Go 的 `rutistest`）和真实运行时对同一份期望文件比对：对同一个插件做同一组调用（同步、异步、回调、错误、上表的值），结果必须相同（[`weather.expected.json`](../../crates/rutis-bridge/src/runtime/testing/weather.expected.json)）。严格模式下已知的差异只有下面这些：
 
 | 差异 | 原因 |
 | --- | --- |
@@ -100,7 +124,7 @@ Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（�
 | TypeScript / Python 事件：被测插件只听到自己 `ctx.emit` 和 `t.emit` 发的事件；真实运行时整个进程共享一条事件总线，同进程其他插件（Node 上还有 Cordis 插件）发的事件也会听到 | 测试工具只加载一个插件。`t.emit` 只接受加载时 `emits` 声明的名字，与 `RuntimePlugin::emits` 相同；两边都拒绝 `internal/*` |
 | Python 工具在卸载时取消并收尾本地异步监听，测试体或清理异常优先；真实运行时在未处理的异步失败时退出进程 | 避免结束测试进程，同时让测试明确失败 |
 
-Map、Set、Date、二进制、bigint 两边都拒绝，这不是差异；它们以后是否可以传递见 [#308](https://github.com/arcships/rutis/issues/308)。关闭严格模式（`strict: false`）时值不经过上表，以上之外的差异都可能出现。Go 的 `rutistest` 尚未对整份期望文件比对；四种真实运行时都比对其中的事件期望。
+十种值在两边按同样的规则传递，这不是差异。关闭严格模式（`strict: false`）时值不经过上表，以上之外的差异都可能出现。
 
 ## 同步调用与可重入
 

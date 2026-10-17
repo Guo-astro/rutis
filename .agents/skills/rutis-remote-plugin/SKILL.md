@@ -44,7 +44,7 @@ Details in `references/plugin-api.md`. The essentials:
 
 - Write a leaf plugin with the language's SDK: declare `inject` (service names it uses), `provides` (service names it offers, each method `sync` or `async`) and a config schema; in `apply(ctx, config)` use `ctx.use` / `ctx.provide` / `ctx.effect`. The current plugin API version is 2 (adds leaf events, `ctx.on` / `ctx.emit`).
 - The plugin does **not** decide when it runs, does not reconnect, does not probe whether the other side is up: it is applied when all its services are ready, stops when any is withdrawn, and starts again when it returns. A remote disconnect is, to the plugin, an ordinary stop.
-- Values follow the cross-process rules: JSON-compatible data is copied, functions and objects go by reference, integers within ±(2^53−1), nesting at most 64 levels. Never assume the same process.
+- Values follow the cross-process rules: JSON-compatible data is copied; dates and times, binary data, maps, sets, big integers, decimals and UUIDs are copied and arrive as each language's own types (integers beyond ±(2^53−1) cross as big integers automatically); functions and objects go by reference; nesting at most 64 levels. Never assume the same process.
 - Do not hold locks while calling other services: your service may be called again in the middle of your own synchronous call. Prefer `async` methods for calls that cross runtimes and may cross each other.
 - Leaf events are dispatched only **within one runtime process**; do not use events to talk across machines — use services.
 - Dependency declarations contain only service names, never languages, machines or addresses.
@@ -124,7 +124,7 @@ Details in `references/rutis-json.md` and `references/nodes.md`.
 }
 ```
 
-- `language`: `python` / `py` / `go` / `node`.
+- `language`: `python` / `py` / `go` / `node` / `bun`.
 - The link row must have `"runtime": "<name>"`; without it the other side is not treated as a runtime and `<name>:*` rows never become ready.
 - Rows are named `<runtime name>:<plugin>`; the plugin is resolved on the remote machine.
 
