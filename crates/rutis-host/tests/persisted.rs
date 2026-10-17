@@ -21,7 +21,7 @@ mod common;
 use std::path::{Component, Path, PathBuf};
 
 use common::{normalize, repo};
-use rutis_host::config::{GoStart, HostConfig};
+use rutis_host::config::{GoStart, HostConfig, Restart};
 use serde_json::{json, Map, Value};
 
 /// The samples' directory, without `..` (which `file:` URLs would drop).
@@ -85,16 +85,25 @@ fn normalized(config: &HostConfig, dir: &Path) -> Value {
     out.insert("format".into(), json!(config.format));
     out.insert("id".into(), json!(config.id));
     let mut runtimes = Map::new();
+    // `restart` (0.12) only when it is not the default: files of earlier
+    // releases read as they did.
+    let restart = |restart: Restart, into: &mut Map<String, Value>| {
+        if restart != Restart::No {
+            into.insert("restart".into(), json!(restart.name()));
+        }
+    };
     if let Some(node) = &config.runtimes.node {
         let mut fields = Map::new();
         fields.insert("project".into(), path(&node.project, dir));
         paths(&[&node.runtime], &["runtime"], &mut fields);
+        restart(node.restart, &mut fields);
         runtimes.insert("node".into(), fields.into());
     }
     if let Some(py) = &config.runtimes.py {
         let mut fields = Map::new();
         fields.insert("project".into(), path(&py.project, dir));
         paths(&[&py.python], &["python"], &mut fields);
+        restart(py.restart, &mut fields);
         runtimes.insert("py".into(), fields.into());
     }
     if let Some(bun) = &config.runtimes.bun {
@@ -105,6 +114,7 @@ fn normalized(config: &HostConfig, dir: &Path) -> Value {
             &["runtime", "program"],
             &mut fields,
         );
+        restart(bun.restart, &mut fields);
         runtimes.insert("bun".into(), fields.into());
     }
     if let Some(go) = &config.runtimes.go {

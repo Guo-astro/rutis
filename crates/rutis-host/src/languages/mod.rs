@@ -20,7 +20,7 @@ use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle, Stdio};
 use rutis_loader::{Chain, Resolver, RuntimeResolver, ServiceCatalog};
 use serde_json::Value;
 
-use crate::config::{HostConfig, Runtimes};
+use crate::config::{HostConfig, Restart, Runtimes};
 use crate::host::{Error, GoHost};
 
 mod bun;
@@ -58,6 +58,13 @@ pub trait Language: Sync {
     /// removing it is refused like a change.
     fn stops_when_removed(&self) -> bool {
         true
+    }
+
+    /// What the host does when its runtime's process ends on its own
+    /// (`runtimes.<key>.restart`); a language without the setting (Go, for
+    /// now) leaves it down.
+    fn restart(&self, _runtimes: &Runtimes) -> Restart {
+        Restart::No
     }
 
     /// Make its relative paths absolute with `at`.
@@ -123,7 +130,8 @@ pub trait Language: Sync {
 
     /// What `rutis.dev.json` (`dev`) says of the runtime the project
     /// configures in `own`, when it should win over it; by default the
-    /// project's own settings stay.
+    /// project's own settings stay. A language with a `restart` setting
+    /// takes the dev file's: `dev` restarts as `run` does.
     fn dev_file(&self, _own: &mut Runtimes, _dev: &Runtimes) {}
 }
 

@@ -23,6 +23,12 @@ const FLAG: &str = "--shutdown-timeout";
 /// not run (126, 127) or one a signal ended (128 + n).
 pub const UNFINISHED: i32 = 2;
 
+/// The exit code when a local runtime whose `restart` is `exit` ended on
+/// its own, and the host stopped (every cleanup finished): for a process
+/// manager to restart the whole host. Distinct from 1 (it could not start
+/// or run) and 2 (stopping did not finish, which wins over it).
+pub const RUNTIME_ENDED: i32 = 3;
+
 /// How the host ended after a signal.
 pub enum Stopped {
     /// Every cleanup finished.
@@ -30,6 +36,9 @@ pub enum Stopped {
     /// It could not start (the error is printed), and every cleanup of
     /// what did start finished; the host exits with 1.
     Failed,
+    /// A runtime whose `restart` is `exit` ended, and every cleanup
+    /// finished; the host exits with [`RUNTIME_ENDED`].
+    RuntimeEnded,
     /// Cleanups did not finish; the host exits with [`UNFINISHED`].
     Unfinished,
 }
@@ -43,6 +52,14 @@ impl Stopped {
             other => other,
         }
     }
+}
+
+/// What ends `run` or `dev` once running.
+pub enum Ended {
+    /// A termination signal: its name.
+    Signal(&'static str),
+    /// A local runtime whose `restart` is `exit` ended: its name, and why.
+    Runtime(String, String),
 }
 
 /// Take `--shutdown-timeout <seconds>` out of `args`; the deadline it, or
@@ -183,6 +200,26 @@ pub(crate) async fn recv(signal: &mut Option<tokio::signal::unix::Signal>) {
             signal.recv().await;
         }
         None => std::future::pending().await,
+    }
+}
+
+/// After `ended`: shut the host down, waiting up to `deadline` for the
+/// cleanups, or until a signal ([`stop`]).
+pub async fn end(host: &Host, ended: Ended, deadline: Duration, signals: &mut Signals) -> Stopped {
+    match ended {
+        Ended::Signal(signal) => stop(host, signal, deadline, signals).await,
+        Ended::Runtime(name, why) => {
+            errln!(
+                "rutis-host: runtime {name} ended ({}), and its restart is \"exit\": stopping; \
+                 cleanups have {} (a signal to exit at once)",
+                rutis_host::status::how_it_ended(&why),
+                seconds(deadline)
+            );
+            match finish(host, deadline, signals).await {
+                Stopped::Done => Stopped::RuntimeEnded,
+                other => other,
+            }
+        }
     }
 }
 

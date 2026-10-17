@@ -123,19 +123,21 @@ impl<'a> From<&'a RuntimeState> for Runtime<'a> {
 /// 9 (SIGKILL)`, `exited with exit status: 1`), or why it did not start.
 pub fn describe_runtime(state: Runtime<'_>, was_down: bool) -> Option<String> {
     match state {
-        Runtime::Down(reason) => {
-            // How a runtime ended is said with what its plugin and its
-            // channel saw; the process's exit is the part worth a line.
-            let reason = ["runtime process ", "runtime ended: the process "]
-                .iter()
-                .find_map(|said| reason.strip_prefix(said))
-                .or_else(|| reason.strip_prefix("runtime ended: "))
-                .unwrap_or(reason);
-            Some(format!("down ({reason})"))
-        }
+        Runtime::Down(reason) => Some(format!("down ({})", how_it_ended(reason))),
         Runtime::Running if was_down => Some("running".into()),
         _ => None,
     }
+}
+
+/// How a runtime ended, from why it is down: what its plugin and its
+/// channel saw says it in more words, and the process's exit is the part
+/// worth a line (`exited with signal: 9 (SIGKILL)`).
+pub fn how_it_ended(reason: &str) -> &str {
+    ["runtime process ", "runtime ended: the process "]
+        .iter()
+        .find_map(|said| reason.strip_prefix(said))
+        .or_else(|| reason.strip_prefix("runtime ended: "))
+        .unwrap_or(reason)
 }
 
 /// What [`follow`] watches: the rows, their links and the runtimes.

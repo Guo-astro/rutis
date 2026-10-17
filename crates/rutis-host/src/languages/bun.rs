@@ -7,7 +7,7 @@ use rutis_bridge::runtime::LocalRuntime;
 use serde_json::{json, Value};
 
 use super::{id_of, package_entry, rebase_program, Language};
-use crate::config::{BunRuntime, Runtimes};
+use crate::config::{BunRuntime, Restart, Runtimes};
 use crate::host::Error;
 
 pub struct Bun;
@@ -23,6 +23,10 @@ impl Language for Bun {
 
     fn settings(&self, runtimes: &Runtimes) -> Option<String> {
         runtimes.bun.as_ref().map(|bun| format!("{bun:?}"))
+    }
+
+    fn restart(&self, runtimes: &Runtimes) -> Restart {
+        runtimes.bun.as_ref().map_or(Restart::No, |bun| bun.restart)
     }
 
     fn rebase(&self, runtimes: &mut Runtimes, at: &dyn Fn(&mut PathBuf)) {
@@ -76,6 +80,7 @@ impl Language for Bun {
             json!({ "id": id_of(&name), "name": format!("bun:{}", entry.display()), "config": {} });
         let runtimes = Runtimes {
             bun: Some(BunRuntime {
+                restart: Restart::No,
                 project: dir.to_owned(),
                 runtime: None,
                 program: None,

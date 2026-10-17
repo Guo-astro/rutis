@@ -6,7 +6,7 @@
 //!   "id": "main",
 //!   "runtimes": {
 //!     "node": { "project": "." },
-//!     "py": { "project": ".", "python": ".venv/bin/python" },
+//!     "py": { "project": ".", "python": ".venv/bin/python", "restart": "on-failure" },
 //!     "go": { "dir": "plugins/go", "start": "on-demand", "idle": 60 }
 //!   },
 //!   "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
@@ -168,6 +168,10 @@ pub struct NodeRuntime {
     /// The `@arcships/rutis-runtime` package; by default the project's.
     #[serde(default)]
     pub runtime: Option<PathBuf>,
+    /// What the host does when the runtime's process ends on its own
+    /// (`no`, the default; `on-failure`; `exit`).
+    #[serde(default)]
+    pub restart: Restart,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -183,6 +187,10 @@ pub struct BunRuntime {
     /// The Bun executable; by default `bun` on `PATH`.
     #[serde(default)]
     pub program: Option<PathBuf>,
+    /// What the host does when the runtime's process ends on its own
+    /// (`no`, the default; `on-failure`; `exit`).
+    #[serde(default)]
+    pub restart: Restart,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -196,6 +204,10 @@ pub struct PythonRuntime {
     /// `Scripts\python.exe` in those environments, then `python`).
     #[serde(default)]
     pub python: Option<PathBuf>,
+    /// What the host does when the runtime's process ends on its own
+    /// (`no`, the default; `on-failure`; `exit`).
+    #[serde(default)]
+    pub restart: Restart,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -221,6 +233,33 @@ pub struct GoRuntime {
     /// A development build and its runtime's name (`rutis-host dev`).
     #[serde(skip)]
     pub dev: Option<(PathBuf, String)>,
+}
+
+/// What the host does when a local runtime's process ends on its own
+/// (`runtimes.<node|py|bun>.restart`; `docs/guide/rutis-host.md`, "When a
+/// runtime ends").
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Restart {
+    /// Nothing: its rows wait, the host runs on.
+    #[default]
+    No,
+    /// Start it again after a backoff, up to a limit
+    /// ([`crate::restart::Backoff`]).
+    OnFailure,
+    /// Stop the host, which exits 3, for its process manager to restart.
+    Exit,
+}
+
+impl Restart {
+    /// As `rutis.json` writes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Restart::No => "no",
+            Restart::OnFailure => "on-failure",
+            Restart::Exit => "exit",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]

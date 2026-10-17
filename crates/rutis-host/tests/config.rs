@@ -6,7 +6,7 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::{environment, normalize, write};
-use rutis_host::config::{token, GoStart, HostConfig};
+use rutis_host::config::{token, GoStart, HostConfig, Restart};
 use serde_json::json;
 
 fn read(dir: &Path, text: &str) -> Result<HostConfig, String> {
@@ -26,9 +26,9 @@ fn every_field_is_read() {
         r#"{
           "id": "main",
           "runtimes": {
-            "node": { "project": "web", "runtime": "vendor/rutis-runtime" },
-            "py": { "project": "py", "python": "py/.venv/bin/python" },
-            "bun": { "project": "edge", "runtime": "vendor/rutis-bun", "program": "tools/bun" },
+            "node": { "project": "web", "runtime": "vendor/rutis-runtime", "restart": "on-failure" },
+            "py": { "project": "py", "python": "py/.venv/bin/python", "restart": "exit" },
+            "bun": { "project": "edge", "runtime": "vendor/rutis-bun", "program": "tools/bun", "restart": "no" },
             "go": { "dir": "plugins/go", "binaries": ["bin/netkit"], "start": "on-demand", "idle": 30, "project": "work" },
             "remote": [{ "name": "gpu", "language": "python" }]
           },
@@ -46,13 +46,16 @@ fn every_field_is_read() {
     let node = config.runtimes.node.unwrap();
     assert_eq!(node.project, base.join("web"));
     assert_eq!(node.runtime.unwrap(), base.join("vendor/rutis-runtime"));
+    assert_eq!(node.restart, Restart::OnFailure);
     let py = config.runtimes.py.unwrap();
     assert_eq!(py.project, base.join("py"));
     assert_eq!(py.python.unwrap(), base.join("py/.venv/bin/python"));
+    assert_eq!(py.restart, Restart::Exit);
     let bun = config.runtimes.bun.unwrap();
     assert_eq!(bun.project, base.join("edge"));
     assert_eq!(bun.runtime.unwrap(), base.join("vendor/rutis-bun"));
     assert_eq!(bun.program.unwrap(), base.join("tools/bun"));
+    assert_eq!(bun.restart, Restart::No);
     let go = config.runtimes.go.unwrap();
     assert_eq!(go.dir.as_deref(), Some(base.join("plugins/go").as_path()));
     assert_eq!(go.binaries, vec![base.join("bin/netkit")]);
@@ -103,11 +106,14 @@ fn absent_fields_take_their_defaults() {
     let runtimes = config.runtimes;
     // `project` is the file's directory; the others are found at start.
     assert_eq!(runtimes.node.as_ref().unwrap().project, dir.path());
+    assert_eq!(runtimes.node.as_ref().unwrap().restart, Restart::No);
     assert!(runtimes.node.unwrap().runtime.is_none());
     assert_eq!(runtimes.py.as_ref().unwrap().project, dir.path());
+    assert_eq!(runtimes.py.as_ref().unwrap().restart, Restart::No);
     assert!(runtimes.py.unwrap().python.is_none());
     let bun = runtimes.bun.unwrap();
     assert!(bun.runtime.is_none() && bun.program.is_none());
+    assert_eq!(bun.restart, Restart::No);
     let go = runtimes.go.unwrap();
     assert_eq!((go.start, go.idle), (GoStart::OnDemand, None));
     assert!(go.binaries.is_empty());
@@ -115,6 +121,31 @@ fn absent_fields_take_their_defaults() {
     let listener = &config.listen[0];
     assert_eq!(listener.address, "[::1]:7443".parse().unwrap());
     assert!(listener.cert.is_none() && listener.key.is_none());
+}
+
+/// `restart` takes `no`, `on-failure` or `exit`; Go runtimes have none
+/// yet.
+/// guarantee: host/runtime-restart
+#[test]
+fn restart_is_one_of_three() {
+    let dir = tempfile::tempdir().unwrap();
+    let error = read(
+        dir.path(),
+        r#"{ "runtimes": { "py": { "restart": "always" } } }"#,
+    )
+    .err()
+    .unwrap();
+    assert!(
+        error.contains("unknown variant `always`, expected one of `no`, `on-failure`, `exit`"),
+        "{error}"
+    );
+    let error = read(
+        dir.path(),
+        r#"{ "runtimes": { "go": { "dir": "g", "restart": "on-failure" } } }"#,
+    )
+    .err()
+    .unwrap();
+    assert!(error.contains("unknown field `restart`"), "{error}");
 }
 
 /// Relative paths are relative to the file's directory; bare program names
@@ -305,15 +336,15 @@ fn unknown_fields_are_refused() {
         ),
         (
             r#"{ "runtimes": { "node": { "projects": "." } } }"#,
-            "<dir>/rutis.json: unknown field `projects`, expected `project` or `runtime` at line 1 column 36",
+            "<dir>/rutis.json: unknown field `projects`, expected one of `project`, `runtime`, `restart` at line 1 column 36",
         ),
         (
             r#"{ "runtimes": { "py": { "pythn": "python3" } } }"#,
-            "<dir>/rutis.json: unknown field `pythn`, expected `project` or `python` at line 1 column 31",
+            "<dir>/rutis.json: unknown field `pythn`, expected one of `project`, `python`, `restart` at line 1 column 31",
         ),
         (
             r#"{ "runtimes": { "bun": { "bun": "bun" } } }"#,
-            "<dir>/rutis.json: unknown field `bun`, expected one of `project`, `runtime`, `program` at line 1 column 30",
+            "<dir>/rutis.json: unknown field `bun`, expected one of `project`, `runtime`, `program`, `restart` at line 1 column 30",
         ),
         (
             r#"{ "runtimes": { "go": { "dirs": "g" } } }"#,
