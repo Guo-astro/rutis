@@ -671,7 +671,7 @@ Moved out or opened during step two: revoking while running (#273), changing `ru
 | Values consistent across languages: Python `datetime` by reference, Go structs bypassing the checks, Python dicts dropping undefined keys | P7, A1 | #355 → #410, #412, #413. Done (0.11) |
 | Passing dates and times, binary data, maps, sets, big integers, decimals and UUIDs across languages | P7, A1 | #308, #360 → designs #404, #414, implementation #406, #415, #410, #412, #413. Done (0.11) |
 | Revoking a peer's credentials while running, without restarting; S5 gains a step afterwards | E5 | #273. Decided: a revocation hook in the identity layer |
-| `rutis-host run` changing its configuration while running; restarting a crashed runtime | B4 | #274 → #421, #422, P3. Done (0.12): SIGUSR1 / `--watch-config` rereads the configuration, all or nothing (`host/reload-config`); automatic restart after a crash is opt-in, off by default (`host/runtime-restart`) |
+| `rutis-host run` changing its configuration while running; restarting a crashed runtime | B4 | #274 → #421, #422, #423. Done (0.12): SIGUSR1 / `--watch-config` rereads the configuration, all or nothing (`host/reload-config`); automatic restart after a crash is opt-in, off by default (`host/runtime-restart`) |
 
 "CI changes §8.6 steps 3–4" (splitting the dylib jobs on Linux, CI measurements), formerly in step three, were done in #213.
 

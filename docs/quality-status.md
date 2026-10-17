@@ -671,7 +671,7 @@ E2E 发现并修复：#225、#226（#261、#217）。Node 最低版本降到 22�
 | 值的跨语言一致：Python `datetime` 按引用传、Go 结构体绕过检查、Python dict 删 undefined 键 | P7、A1 | #355 → #410、#412、#413。已完成（0.11） |
 | 跨语言传递日期时间、二进制、Map、Set、大整数、Decimal、UUID | P7、A1 | #308、#360 → 方案 #404、#414，实现 #406、#415、#410、#412、#413。已完成（0.11） |
 | 运行中吊销对端凭据，不重启进程；完成后 S5 加一步 | E5 | #273。方案已定：身份层的吊销钩子 |
-| `rutis-host run` 运行中改配置；运行时崩溃后重新拉起 | B4 | #274 → #421、#422、P3。已完成（0.12）：SIGUSR1 / `--watch-config` 重读配置，全有或全无（`host/reload-config`）；崩溃自动重启可选，默认关（`host/runtime-restart`） |
+| `rutis-host run` 运行中改配置；运行时崩溃后重新拉起 | B4 | #274 → #421、#422、#423。已完成（0.12）：SIGUSR1 / `--watch-config` 重读配置，全有或全无（`host/reload-config`）；崩溃自动重启可选，默认关（`host/runtime-restart`） |
 
 原第三步的"CI 改造 §8.6 第 3–4 步"（Linux 上拆分 dylib 任务、CI 度量）已在 #213 完成。
 
