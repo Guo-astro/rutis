@@ -412,6 +412,15 @@ jobs:
           cache-dependency-path: go/rutis/go.mod
       - name: cargo test (end-to-end scenarios)
         run: cargo test -p rutis-e2e
+      # The published releases meeting this code (#209). They come from
+      # npm, PyPI and the Go proxy and change as releases are published,
+      # so only full runs (nightly, release gate) run them (docs/ci.md §2).
+      # Installed outside target/: not into the Rust cache.
+      - name: cargo test (cross-version meetings)
+        if: needs.changes.outputs.all == 'true'
+        env:
+          RUTIS_E2E_CACHE: ${{ runner.temp }}/rutis-e2e-previous
+        run: cargo test -p rutis-e2e --test cross_version -- --ignored
       # A failed scenario keeps its directory, with every host's output and
       # the residue found in logs/.
       # The failed scenarios' directories, without what is not read for a
