@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use quote::ToTokens;
@@ -25,66 +25,216 @@ fn camel(name: &str) -> String {
     result
 }
 
-fn ts_type(ty: &Type) -> Result<String> {
-    match ty {
-        Type::Tuple(tuple) if tuple.elems.is_empty() => Ok("void".into()),
-        Type::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
-            let segment = &path.path.segments[0];
-            // The type arguments of `name<...>`, if it has `count`.
-            let arguments = |count: usize| match &segment.arguments {
-                PathArguments::AngleBracketed(args) if args.args.len() == count => args
-                    .args
-                    .iter()
-                    .map(|arg| match arg {
-                        GenericArgument::Type(inner) => Ok(inner),
-                        _ => Err(unsupported(ty, "unsupported type argument")),
-                    })
-                    .collect::<Result<Vec<_>>>(),
-                _ => Err(unsupported(ty, "unsupported type arguments")),
-            };
-            match segment.ident.to_string().as_str() {
-                "f64" => Ok("number".into()),
-                "bool" => Ok("boolean".into()),
-                "String" => Ok("string".into()),
-                // Tagged values (#308), as rutis_bridge::session names them.
-                "Instant" => Ok("Date".into()),
-                "BigInt" => Ok("bigint".into()),
-                "Bytes" => Ok("Uint8Array".into()),
-                "ValueMap" => {
-                    let types = arguments(2)?;
-                    Ok(format!(
-                        "Map<{}, {}>",
-                        ts_type(types[0])?,
-                        ts_type(types[1])?
-                    ))
-                }
-                "ValueSet" => Ok(format!("Set<{}>", ts_type(arguments(1)?[0])?)),
-                "Vec" => match &segment.arguments {
-                    PathArguments::AngleBracketed(args) if args.args.len() == 1 => {
-                        match &args.args[0] {
-                            GenericArgument::Type(inner) => Ok(format!("{}[]", ts_type(inner)?)),
-                            _ => Err(unsupported(ty, "unsupported Vec element")),
-                        }
-                    }
-                    _ => Err(unsupported(ty, "unsupported Vec type")),
-                },
-                _ => Err(unsupported(ty, "type binding not implemented")),
-            }
+/// A type the generator binds: its TypeScript type, and what is checked
+/// before a value of it crosses.
+enum Shape {
+    Void,
+    Number,
+    Boolean,
+    String,
+    Instant,
+    BigInt,
+    Bytes,
+    Map(Box<Shape>, Box<Shape>),
+    Set(Box<Shape>),
+    Array(Box<Shape>),
+}
+
+impl Shape {
+    fn ts(&self) -> String {
+        match self {
+            Self::Void => "void".into(),
+            Self::Number => "number".into(),
+            Self::Boolean => "boolean".into(),
+            Self::String => "string".into(),
+            Self::Instant => "Date".into(),
+            Self::BigInt => "bigint".into(),
+            Self::Bytes => "Uint8Array".into(),
+            Self::Map(key, value) => format!("Map<{}, {}>", key.ts(), value.ts()),
+            Self::Set(element) => format!("Set<{}>", element.ts()),
+            Self::Array(element) => format!("{}[]", element.ts()),
         }
-        _ => Err(unsupported(ty, "type binding not implemented")),
+    }
+
+    /// Statements refusing `value` where crossing would lose information:
+    /// a NaN or an infinity would become `null`, wherever it is nested,
+    /// map keys and values and set elements included (#409).
+    fn validate(&self, value: &str) -> String {
+        match self {
+            Self::Number => format!("if !{value}.is_finite() {{ return Err(::rutis_bridge::cordis::Error::Value(\"non-finite number\".into())); }}"),
+            Self::Array(element) | Self::Set(element) => {
+                let check = element.validate("item");
+                let items = if matches!(self, Self::Set(_)) { ".0" } else { "" };
+                if check.is_empty() {
+                    check
+                } else {
+                    format!("for item in {value}{items}.iter() {{ {check} }}")
+                }
+            }
+            Self::Map(key, item) => {
+                let (key, item) = (key.validate("key"), item.validate("item"));
+                if key.is_empty() && item.is_empty() {
+                    return String::new();
+                }
+                let bind = |check: &str, name| if check.is_empty() { "_" } else { name };
+                format!(
+                    "for ({}, {}) in {value}.0.iter() {{ {key} {item} }}",
+                    bind(&key, "key"),
+                    bind(&item, "item")
+                )
+            }
+            _ => String::new(),
+        }
     }
 }
 
-fn validate(value: &str, ty: &str) -> String {
-    if ty == "number" {
-        format!("if !{value}.is_finite() {{ return Err(::rutis_bridge::cordis::Error::Value(\"non-finite number\".into())); }}")
-    } else if let Some(inner) = ty.strip_suffix("[]") {
-        format!(
-            "for item in {value}.iter() {{ {} }}",
-            validate("item", inner)
-        )
-    } else {
-        String::new()
+/// The modules an entry source may name rutis' tagged value types (#308)
+/// in; `rutis_bridge::cordis::rpc` is `rutis_bridge::session`.
+const VALUE_MODULES: [&[&str]; 4] = [
+    &["rutis_bridge", "session"],
+    &["rutis_bridge", "session", "values"],
+    &["rutis_bridge", "cordis", "rpc"],
+    &["rutis_bridge", "cordis", "rpc", "values"],
+];
+
+/// The name of the tagged value type at `path`, a path from the crate root.
+fn tagged(path: &[String]) -> Option<&'static str> {
+    let (name, module) = path.split_last()?;
+    if !VALUE_MODULES.iter().any(|known| known.iter().eq(module)) {
+        return None;
+    }
+    // `values` has the scalar ones; `session` has them all.
+    let session = module.last().is_some_and(|last| last != "values");
+    match name.as_str() {
+        "Instant" => Some("Instant"),
+        "BigInt" => Some("BigInt"),
+        "Bytes" if session => Some("Bytes"),
+        "ValueMap" if session => Some("ValueMap"),
+        "ValueSet" if session => Some("ValueSet"),
+        _ => None,
+    }
+}
+
+/// What the names of an entry source stand for: its `use` items and its
+/// own declarations. Tagged value types are known by the rutis path a name
+/// resolves to, not by the name (#408): a user's own `type Instant = ...`
+/// is not rutis' `Instant`.
+#[derive(Default)]
+struct Names {
+    imported: HashMap<String, Vec<String>>,
+    globs: Vec<Vec<String>>,
+    declared: HashSet<String>,
+}
+
+impl Names {
+    fn of(file: &syn::File) -> Self {
+        let mut names = Self::default();
+        for item in &file.items {
+            let declared = match item {
+                Item::Use(item) => {
+                    names.import(Vec::new(), &item.tree);
+                    continue;
+                }
+                Item::Type(item) => &item.ident,
+                Item::Struct(item) => &item.ident,
+                Item::Enum(item) => &item.ident,
+                Item::Union(item) => &item.ident,
+                Item::Trait(item) => &item.ident,
+                _ => continue,
+            };
+            names.declared.insert(declared.to_string());
+        }
+        names
+    }
+
+    fn import(&mut self, mut prefix: Vec<String>, tree: &syn::UseTree) {
+        let (ident, alias) = match tree {
+            syn::UseTree::Path(path) => {
+                prefix.push(path.ident.to_string());
+                return self.import(prefix, &path.tree);
+            }
+            syn::UseTree::Glob(_) => return self.globs.push(prefix),
+            syn::UseTree::Group(group) => {
+                for tree in &group.items {
+                    self.import(prefix.clone(), tree);
+                }
+                return;
+            }
+            syn::UseTree::Name(item) => (&item.ident, None),
+            syn::UseTree::Rename(item) => (&item.ident, Some(&item.rename)),
+        };
+        if ident != "self" {
+            prefix.push(ident.to_string());
+        }
+        let name = alias.map_or_else(|| prefix.last().cloned(), |alias| Some(alias.to_string()));
+        if let Some(name) = name.filter(|name| name != "_") {
+            self.imported.insert(name, prefix);
+        }
+    }
+
+    /// The tagged value type `path` names, if it names one: written from
+    /// the crate root, or through what the source imports.
+    fn tagged(&self, path: &syn::Path) -> Option<&'static str> {
+        let segments: Vec<_> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+        let (first, rest) = segments.split_first()?;
+        if path.leading_colon.is_some() {
+            return tagged(&segments);
+        }
+        if let Some(imported) = self.imported.get(first) {
+            return tagged(&[imported.as_slice(), rest].concat());
+        }
+        if self.declared.contains(first) {
+            return None;
+        }
+        // From the crate root, or else through a glob import.
+        tagged(&segments).or_else(|| {
+            self.globs
+                .iter()
+                .find_map(|glob| tagged(&[glob.as_slice(), &segments].concat()))
+        })
+    }
+
+    fn shape(&self, ty: &Type) -> Result<Shape> {
+        let path = match ty {
+            Type::Tuple(tuple) if tuple.elems.is_empty() => return Ok(Shape::Void),
+            Type::Path(path) if path.qself.is_none() => &path.path,
+            _ => return Err(unsupported(ty, "type binding not implemented")),
+        };
+        let segment = path.segments.last().unwrap();
+        // The type arguments of `name<...>`, if it has `count`.
+        let arguments = |count: usize| match &segment.arguments {
+            PathArguments::AngleBracketed(args) if args.args.len() == count => args
+                .args
+                .iter()
+                .map(|arg| match arg {
+                    GenericArgument::Type(inner) => self.shape(inner).map(Box::new),
+                    _ => Err(unsupported(ty, "unsupported type argument")),
+                })
+                .collect::<Result<Vec<_>>>(),
+            _ => Err(unsupported(ty, "unsupported type arguments")),
+        };
+        if path.leading_colon.is_none() && path.segments.len() == 1 {
+            match segment.ident.to_string().as_str() {
+                "f64" => return Ok(Shape::Number),
+                "bool" => return Ok(Shape::Boolean),
+                "String" => return Ok(Shape::String),
+                "Vec" => return Ok(Shape::Array(arguments(1)?.remove(0))),
+                _ => {}
+            }
+        }
+        // Tagged values (#308), as rutis_bridge::session names them.
+        match self.tagged(path) {
+            Some("Instant") => Ok(Shape::Instant),
+            Some("BigInt") => Ok(Shape::BigInt),
+            Some("Bytes") => Ok(Shape::Bytes),
+            Some("ValueMap") => {
+                let mut types = arguments(2)?;
+                let value = types.remove(1);
+                Ok(Shape::Map(types.remove(0), value))
+            }
+            Some("ValueSet") => Ok(Shape::Set(arguments(1)?.remove(0))),
+            _ => Err(unsupported(ty, "type binding not implemented")),
+        }
     }
 }
 
@@ -126,6 +276,7 @@ fn generate(
     node_package: &Path,
 ) -> Result<(String, String, String)> {
     let file = syn::parse_file(source)?;
+    let types = Names::of(&file);
     for item in &file.items {
         if matches!(item, Item::Mod(_) | Item::Macro(_)) {
             return Err(unsupported(
@@ -186,10 +337,11 @@ fn generate(
                 "configuration construction requires public fields",
             ));
         }
-        let ty = ts_type(&field.ty)?;
+        let shape = types.shape(&field.ty)?;
+        let ty = shape.ts();
         let key = camel(&name.to_string());
         config_ts.push_str(&format!("{key}: {ty};\n"));
-        config_rust.push_str(&format!("let {name}: {} = ::rutis_bridge::cordis::decode(config.get({key:?}).cloned().ok_or_else(|| ::rutis_bridge::cordis::Error::Value({key:?}.into()))?)?; {}\n", field.ty.to_token_stream(), validate(&name.to_string(), &ty)));
+        config_rust.push_str(&format!("let {name}: {} = ::rutis_bridge::cordis::decode(config.get({key:?}).cloned().ok_or_else(|| ::rutis_bridge::cordis::Error::Value({key:?}.into()))?)?; {}\n", field.ty.to_token_stream(), shape.validate(&name.to_string())));
         config_fields.push(name.to_string());
     }
     let mut registrations = Registrations::default();
@@ -294,12 +446,13 @@ fn generate(
                     };
                     let name = &name.ident;
                     let js = camel(&name.to_string());
-                    let ty = ts_type(&arg.ty)?;
+                    let shape = types.shape(&arg.ty)?;
+                    let ty = shape.ts();
                     decode.push_str(&format!(
                         "let {name}: {} = ::rutis_bridge::cordis::decode_value(args[{}].clone())?; {}\n",
                         arg.ty.to_token_stream(),
                         args_rust.len(),
-                        validate(&name.to_string(), &ty)
+                        shape.validate(&name.to_string())
                     ));
                     args_rust.push(name.to_string());
                     args_js.push(js.clone());
@@ -326,7 +479,8 @@ fn generate(
                         }
                     }
                 }
-                let output_ts = ts_type(output)?;
+                let output_shape = types.shape(output)?;
+                let output_ts = output_shape.ts();
                 let wait = if sig.asyncness.is_some() {
                     ".await"
                 } else {
@@ -349,7 +503,7 @@ fn generate(
                     format!(
                         "let result: {} = {invoke}; {} ::rutis_bridge::cordis::arg(&result)",
                         output.to_token_stream(),
-                        validate("result", &output_ts)
+                        output_shape.validate("result")
                     )
                 };
                 let returned = if sig.asyncness.is_some() {
@@ -502,6 +656,9 @@ fn generate(
 /// Generate a native Cordis mount and a compiled dispatcher for a Rust entry source.
 /// This initial source adapter supports concrete public plugins and value methods;
 /// Cargo checks every generated call against the original crate's actual types.
+/// Tagged value types (`Instant`, `BigInt`, `Bytes`, `ValueMap`, `ValueSet`) are
+/// known by their `rutis_bridge::session` path: imported with `use`, or written
+/// in full; a type of the source's own with one of their names is not one.
 pub fn rutis_plugin(
     source: impl AsRef<Path>,
     crate_name: &str,
@@ -553,10 +710,10 @@ mod tests {
     /// `arg` / `decode_value`, not as JSON.
     #[test]
     fn tagged_value_types_become_their_typescript_types() {
-        let source = PLUGIN.replace(
-            "pub fn current(&self) -> f64",
-            "pub fn current(&self, at: Instant, raw: Bytes, tags: ValueSet<String>, \
-             counts: ValueMap<String, f64>, big: BigInt) -> f64",
+        let source = with_current(
+            "use rutis_bridge::session::{BigInt, Bytes, Instant, ValueMap, ValueSet};",
+            "at: Instant, raw: Bytes, tags: ValueSet<String>, \
+             counts: ValueMap<String, f64>, big: BigInt",
         );
         let (rust, _, dts) = generate(&source, "fixture", Path::new("/node")).unwrap();
         assert!(
@@ -576,6 +733,97 @@ mod tests {
             rust.contains("::rutis_bridge::cordis::arg(&result)"),
             "{rust}"
         );
+    }
+
+    /// The entry source with `import` added and `current` taking `params`.
+    fn with_current(import: &str, params: &str) -> String {
+        let source = PLUGIN.replace(
+            "pub fn current(&self) -> f64",
+            &format!("pub fn current(&self, {params}) -> f64"),
+        );
+        format!("{source}\n{import}")
+    }
+
+    /// The TypeScript signature of `current` generated for `source`.
+    fn current_ts(source: &str) -> Result<String> {
+        let (_, _, dts) = generate(source, "fixture", Path::new("/node"))?;
+        let start = dts.find("current(").unwrap();
+        Ok(dts[start..start + dts[start..].find(';').unwrap()].to_owned())
+    }
+
+    /// Tagged value types are known by the rutis path they resolve to (#408):
+    /// imported from either module rutis names them in, renamed, through a
+    /// glob or written in full.
+    #[test]
+    fn tagged_value_types_are_known_by_their_rutis_path() {
+        for (import, params) in [
+            ("use rutis_bridge::session::values::Instant;", "at: Instant"),
+            (
+                "use rutis_bridge::cordis::rpc::{self, Instant as When};",
+                "at: When",
+            ),
+            ("use rutis_bridge::cordis::rpc;", "at: rpc::Instant"),
+            ("use rutis_bridge::session::*;", "at: Instant"),
+            ("use rutis_bridge::*;", "at: session::Instant"),
+            ("", "at: rutis_bridge::session::Instant"),
+            ("", "at: ::rutis_bridge::cordis::rpc::values::Instant"),
+        ] {
+            let source = with_current(import, params);
+            assert_eq!(
+                current_ts(&source).unwrap(),
+                "current(at: Date): number",
+                "{import} {params}"
+            );
+        }
+    }
+
+    /// A user's own type named like a tagged value type is not one: it is
+    /// refused, not declared as the tagged value's TypeScript type (#408).
+    #[test]
+    fn a_users_own_instant_is_not_rutis_instant() {
+        for (import, params) in [
+            ("type Instant = String;", "at: Instant"),
+            ("use std::time::Instant;", "at: Instant"),
+            // A local declaration shadows a glob import.
+            (
+                "use rutis_bridge::session::*; type Instant = String;",
+                "at: Instant",
+            ),
+            ("", "at: Instant"),
+            ("use rutis_bridge::session::values::Bytes;", "raw: Bytes"),
+        ] {
+            let source = with_current(import, params);
+            let error = current_ts(&source).unwrap_err();
+            assert!(
+                error.to_string().contains("type binding not implemented"),
+                "{import} {params}: {error}"
+            );
+        }
+    }
+
+    /// NaN and the infinities in map keys and values and set elements are
+    /// refused as they are in fields, not turned into `null` (#409).
+    #[test]
+    fn numbers_in_maps_and_sets_are_checked() {
+        let source = with_current(
+            "use rutis_bridge::session::{ValueMap, ValueSet};",
+            "counts: ValueMap<String, f64>, keys: ValueMap<f64, Vec<ValueSet<f64>>>, \
+             names: ValueMap<String, String>, tags: ValueSet<f64>",
+        );
+        let (rust, _, _) = generate(&source, "fixture", Path::new("/node")).unwrap();
+        let refuse =
+            "{ return Err(::rutis_bridge::cordis::Error::Value(\"non-finite number\".into())); }";
+        for check in [
+            format!("for (_, item) in counts.0.iter() {{  if !item.is_finite() {refuse} }}"),
+            format!(
+                "for (key, item) in keys.0.iter() {{ if !key.is_finite() {refuse} \
+                 for item in item.iter() {{ for item in item.0.iter() {{ if !item.is_finite() {refuse} }} }} }}"
+            ),
+            format!("for item in tags.0.iter() {{ if !item.is_finite() {refuse} }}"),
+        ] {
+            assert!(rust.contains(&check), "{check}\n{rust}");
+        }
+        assert!(!rust.contains("names.0"), "{rust}");
     }
 
     #[test]
