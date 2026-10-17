@@ -18,12 +18,15 @@
 //! not run the rutis-host tests on Windows.
 #![cfg(unix)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
+use common::repo;
 use rutis_test_support::HANG_GUARD;
 use serde_json::json;
 
@@ -31,10 +34,6 @@ use serde_json::json;
 const GUARD: Duration = Duration::from_secs(6 * HANG_GUARD.as_secs());
 
 const ROWS: [&str; 2] = ["py-row", "node-row"];
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
 
 /// A Python plugin: `plugin <row> line` written as `print` writes it, the
 /// newline separately, and only once the gate file exists; the same on
