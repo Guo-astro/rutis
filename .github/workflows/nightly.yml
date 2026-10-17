@@ -1,7 +1,8 @@
 # The nightly run (docs/ci.md §2, Q12.3, Q12.4): every job of ci.yml, the
 # install checks on every platform with this commit's packages
-# (install.yml), the Windows dylib tests (dylib-windows.yml) and the stress
-# tests (stress.yml), on main's latest commit. A merge to main runs nothing,
+# (install.yml), the Windows dylib tests (dylib-windows.yml), the stress
+# tests (stress.yml), and the Cordis checks on the newest published Cordis
+# plugins (`cordis-latest`, report only), on main's latest commit. A merge to main runs nothing,
 # so this run is what checks every commit merged since the last successful
 # nightly run: the paths a pull request skipped, and pull requests that pass
 # alone but fail together.
@@ -95,6 +96,102 @@ jobs:
     needs: plan
     if: needs.plan.outputs.run == 'true'
     uses: ./.github/workflows/stress.yml
+
+  # Risk F4 (docs/quality-status.md, Q6.14.4): the newest published Cordis
+  # and dsh plugins, instead of node/baseline's lockfile, through the checks
+  # that use them: the library mount against native Cordis (rutis-bridge's
+  # dsh_baseline), the generated bindings (examples/dsh-baseline, without
+  # its version pins) and S6 (tests/e2e/tests/cordis.rs). Report only: a new
+  # upstream release must not fail main's nightly run, so the job never
+  # fails (`continue-on-error`), `report` does not wait for it and nothing
+  # is opened; its summary lists the versions and each check's result, and
+  # a check that failed shows as a warning on the run. Nothing is committed:
+  # the lockfile stays as it is.
+  cordis-latest:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+      - run: npm --prefix node/rutis-runtime ci
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: python3 -m pip install "websockets>=15"
+      # The newest of each package's `latest` and `next` dist-tags
+      # (node/baseline/latest.mjs). Releases that do not install together
+      # (peer dependencies) are reported, then installed without the peer
+      # check so the checks still run on them.
+      - name: the newest published plugins
+        id: newest
+        run: |
+          node node/baseline/latest.mjs > "$RUNNER_TEMP/versions.md"
+          cat "$RUNNER_TEMP/versions.md"
+          rm -rf node/baseline/node_modules node/baseline/package-lock.json
+          if npm --prefix node/baseline install --no-package-lock > "$RUNNER_TEMP/install.log" 2>&1; then
+            echo "install=together" >> "$GITHUB_OUTPUT"
+          else
+            cat "$RUNNER_TEMP/install.log"
+            echo "install=conflict" >> "$GITHUB_OUTPUT"
+            npm --prefix node/baseline install --no-package-lock --legacy-peer-deps
+          fi
+      - name: library mount against native Cordis (dsh_baseline)
+        id: baseline
+        continue-on-error: true
+        run: cargo test -p rutis-bridge --test dsh_baseline
+      - name: generated bindings (examples/dsh-baseline)
+        id: bindings
+        continue-on-error: true
+        # The mounts' `version` pins name the lockfile's versions; a newer
+        # one would fail the build by design. Dropped here, in this checkout.
+        run: |
+          awk '/^\[/ { mounts = /^\[package\.metadata\.rutis-cordis\.mounts\./ } !(mounts && /^version = /)' \
+            examples/dsh-baseline/Cargo.toml > "$RUNNER_TEMP/Cargo.toml"
+          cp "$RUNNER_TEMP/Cargo.toml" examples/dsh-baseline/Cargo.toml
+          cargo test -p dsh-baseline
+      - name: S6 (tests/e2e/tests/cordis.rs)
+        id: s6
+        continue-on-error: true
+        env:
+          RUTIS_E2E_DIR: /tmp/rutis-e2e
+        run: cargo test -p rutis-e2e --test cordis
+      - name: report
+        if: always()
+        env:
+          INSTALL: ${{ steps.newest.outputs.install }}
+          BASELINE: ${{ steps.baseline.outcome }}
+          BINDINGS: ${{ steps.bindings.outcome }}
+          S6: ${{ steps.s6.outcome }}
+        run: |
+          {
+            echo "### Newest published Cordis plugins (F4, report only)"
+            echo
+            cat "$RUNNER_TEMP/versions.md" 2>/dev/null || echo "(the versions could not be read)"
+            echo
+            case "$INSTALL" in
+              together) echo "The newest versions install together." ;;
+              conflict) echo "The newest versions do not install together (peer dependencies; the install log is in the step's output): installed with \`--legacy-peer-deps\`." ;;
+              *) echo "The newest versions could not be installed." ;;
+            esac
+            echo
+            echo "| check | result |"
+            echo "| --- | --- |"
+            echo "| library mount against native Cordis (dsh_baseline) | ${BASELINE:-skipped} |"
+            echo "| generated bindings (examples/dsh-baseline) | ${BINDINGS:-skipped} |"
+            echo "| S6 (tests/e2e/tests/cordis.rs) | ${S6:-skipped} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$INSTALL" = together ] || echo "::warning::the newest published Cordis plugins do not install together (F4)"
+          for check in "dsh_baseline:$BASELINE" "examples/dsh-baseline:$BINDINGS" "S6:$S6"; do
+            [ "${check#*:}" = success ] || echo "::warning::${check%%:*} on the newest published Cordis plugins: ${check#*:} (F4)"
+          done
 
   # A failure opens an issue, or comments on the nightly issue still open (as
   # release.yml's `report`).
