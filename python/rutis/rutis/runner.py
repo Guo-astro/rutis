@@ -38,6 +38,12 @@ from .events import Events, refused_emits
 from .peer import Peer, RemoteFuture
 
 FEATURES = ["rows.v2", "hosts", "leaf", "scopes", "events"]
+# Test support, not part of the protocol: with RUTIS_TEST_INSPECT set, the
+# control method `inspect` reports what this runtime holds (rows, services,
+# host proxies, export slots, object handles, event listeners), so a test
+# can check that nothing of the rows it unloaded is left in the process.
+# Without it the method is unknown.
+INSPECT = bool(os.environ.get("RUTIS_TEST_INSPECT"))
 
 
 def _unhandled_event(error):
@@ -397,6 +403,15 @@ class Runtime:
                 if not entry["current"]:
                     del self.handles[args[0]]
             return None
+        if method == "inspect" and INSPECT:
+            return {
+                "rows": list(self.rows),
+                "services": list(self.services),
+                "hosts": list(self.hosts),
+                "slots": list(self.slots),
+                "handles": list(self.handles),
+                "listeners": sum(len(listeners) for listeners in self.events.listeners.values()),
+            }
         if method == "get":
             handle, prop = args
             entry = self.handles.get(handle)

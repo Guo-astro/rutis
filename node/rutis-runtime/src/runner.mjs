@@ -64,6 +64,12 @@ const hosts = new Map()
 // What this runner supports beyond protocol 2, reported by `mount`.
 // events: leaf plugins receive what rutis emits (RuntimePlugin::emits).
 const FEATURES = ['rows.v2', 'hosts', 'leaf.js', 'scopes', 'events']
+// Test support, not part of the protocol: with RUTIS_TEST_INSPECT set, the
+// control method `inspect` reports what this runner holds (rows, host
+// proxies, export slots, object handles, Cordis plugins, fibers and
+// services), so a test can check that nothing of the rows it unloaded is
+// left in the process. Without it the method is unknown.
+const INSPECT = Boolean(process.env.RUTIS_TEST_INSPECT)
 
 // A service in a scope: rows isolating `name` with `label` share it, and the
 // same name in another scope (another instance, say) is another service.
@@ -545,6 +551,20 @@ function dispatch(target, method, args) {
         const withdraw = hosts.get(args?.[0])
         hosts.delete(args?.[0])
         return withdraw ? Promise.resolve(withdraw()).then(() => null) : null
+      }
+      case 'inspect': {
+        if (!INSPECT) throw new Error(`unknown control method ${method}`)
+        let live = 0
+        for (const runtime of ctx.registry.values()) live += runtime.fibers.length
+        return {
+          rows: [...rows.keys()],
+          hosts: [...hosts.keys()],
+          slots: [...slots.keys()],
+          handles: [...handles.keys()],
+          plugins: ctx.registry.size,
+          fibers: live,
+          services: Reflect.ownKeys(ctx.reflect.store).length,
+        }
       }
       case 'release': {
         const entry = handles.get(args?.[0])

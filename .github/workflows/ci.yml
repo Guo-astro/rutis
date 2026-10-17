@@ -415,6 +415,11 @@ jobs:
           go-version: oldstable
           cache-dependency-path: go/rutis/go.mod
       - name: cargo test (end-to-end scenarios)
+        env:
+          # S7's tenants created and closed (tests/e2e/tests/embedding.rs):
+          # 20 on pull requests, 3000 in full runs (nightly), about a
+          # minute more.
+          RUTIS_E2E_TENANT_CYCLES: ${{ github.event_name == 'pull_request' && '20' || '3000' }}
         run: cargo test -p rutis-e2e
       # The published releases meeting this code (#209). They come from
       # npm, PyPI and the Go proxy and change as releases are published,
