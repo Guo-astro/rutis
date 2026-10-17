@@ -389,10 +389,14 @@ jobs:
           cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: |
             node/rutis-runtime/package-lock.json
+            node/baseline/package-lock.json
             bun/rutis-bun/bun.lock
       - run: npm --prefix node/rutis-runtime ci
       # The SDK the Bun runtime's rows and the templates import.
       - run: npm --prefix node/rutis ci
+      # The published Cordis plugins S6 mounts (tests/e2e/tests/cordis.rs),
+      # at the lockfile's versions.
+      - run: npm --prefix node/baseline ci
       # The oldest Bun (engines.bun).
       - uses: oven-sh/setup-bun@v2
         with:
@@ -912,6 +916,10 @@ jobs:
           cargo test -p rutis-bridge --all-features $BRIDGE_TESTS
           cargo test -p rutis-loader --features node,python,go,peer,bun $LOADER_TESTS
           cargo test -p rutis-host
+      # The published Cordis plugins S6 mounts (tests/e2e/tests/cordis.rs),
+      # at the lockfile's versions.
+      - run: npm --prefix node/baseline ci
+        if: '!cancelled()'
       # The end-to-end scenarios on the latest versions (the `e2e` job runs
       # them on the oldest).
       - name: cargo test (end-to-end scenarios)
@@ -1272,6 +1280,10 @@ jobs:
         run: cargo test -p rutis-host --no-fail-fast
       # The E2E harness on Windows (#232): each host in a Job Object,
       # Ctrl-Break, the residue checks; the scenarios not limited to Unix.
+      # The published Cordis plugins S6 mounts (tests/e2e/tests/cordis.rs),
+      # at the lockfile's versions.
+      - run: npm --prefix node/baseline ci
+        if: '!cancelled()'
       - name: cargo test (rutis-e2e)
         if: '!cancelled()'
         run: cargo test -p rutis-e2e --no-fail-fast
