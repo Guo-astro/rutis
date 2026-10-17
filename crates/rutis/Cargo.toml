@@ -15,6 +15,14 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 thiserror = { workspace = true }
 
+# The shuttle models (src/shuttle_tests.rs, #179): built with
+# `RUSTFLAGS="--cfg rutis_shuttle"` only, never by a plain build.
+[target.'cfg(rutis_shuttle)'.dependencies]
+shuttle = "0.9.7"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rutis_shuttle)"] }
+
 [dev-dependencies]
 # Path only: cargo publish drops it.
 rutis-test-support = { path = "../rutis-test-support" }
