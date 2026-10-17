@@ -29,6 +29,16 @@ impl Language for Go {
         runtimes.go.is_some()
     }
 
+    fn settings(&self, runtimes: &Runtimes) -> Option<String> {
+        runtimes.go.as_ref().map(|go| format!("{go:?}"))
+    }
+
+    /// Its runtimes start as rows use them, from a resolver the loader was
+    /// built with: a running host does not take it away.
+    fn stops_when_removed(&self) -> bool {
+        false
+    }
+
     fn rebase(&self, runtimes: &mut Runtimes, at: &dyn Fn(&mut PathBuf)) {
         if let Some(go) = &mut runtimes.go {
             if let Some(dir) = &mut go.dir {

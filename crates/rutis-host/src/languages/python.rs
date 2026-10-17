@@ -21,6 +21,10 @@ impl Language for Python {
         runtimes.py.is_some()
     }
 
+    fn settings(&self, runtimes: &Runtimes) -> Option<String> {
+        runtimes.py.as_ref().map(|py| format!("{py:?}"))
+    }
+
     fn rebase(&self, runtimes: &mut Runtimes, at: &dyn Fn(&mut PathBuf)) {
         if let Some(py) = &mut runtimes.py {
             at(&mut py.project);

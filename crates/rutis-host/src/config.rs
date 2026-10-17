@@ -285,16 +285,14 @@ pub struct Listener {
 impl HostConfig {
     /// Read `path`; relative paths in it become relative to its directory.
     pub fn read(path: &Path) -> Result<Self, String> {
-        let text = std::fs::read_to_string(path).map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => format!(
-                "{}: {error}: name the configuration, as `rutis-host run path/to/rutis.json`",
-                path.display()
-            ),
-            _ => format!("{}: {error}", path.display()),
-        })?;
-        check_newer_format(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+        Self::parse(&read_text(path)?, path)
+    }
+
+    /// The configuration `text`, read from `path` ([`HostConfig::read`]).
+    pub fn parse(text: &str, path: &Path) -> Result<Self, String> {
+        check_newer_format(text).map_err(|error| format!("{}: {error}", path.display()))?;
         let mut config: Self =
-            serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+            serde_json::from_str(text).map_err(|error| format!("{}: {error}", path.display()))?;
         let mut ignored = Vec::new();
         check_rows(&config.rows, "rows", &mut ignored)
             .map_err(|error| format!("{}: {error}", path.display()))?;
@@ -466,6 +464,17 @@ impl HostConfig {
             })
             .collect()
     }
+}
+
+/// The text of the configuration file `path`.
+pub fn read_text(path: &Path) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => format!(
+            "{}: {error}: name the configuration, as `rutis-host run path/to/rutis.json`",
+            path.display()
+        ),
+        _ => format!("{}: {error}", path.display()),
+    })
 }
 
 /// The fields of a row (rutis-loader's; `config` holds a group's rows).

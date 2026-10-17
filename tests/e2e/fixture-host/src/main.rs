@@ -12,38 +12,33 @@
 //! (`today()` is `"rust"`). It prints each row's state as `rutis-host run`
 //! does, then reads commands from stdin, one per line:
 //!
-//! - `reload`: read `rutis.json` again and apply the rows as one loader
-//!   edit; a runtime (`node`, `py`, `bun`) the file no longer has is
-//!   stopped after that, and its process has ended before the answer.
-//!   Prints `applied`, or `rejected: <reason>` for what needs a restart
-//!   (another `id`, `listen`, an added or changed runtime) or failed.
+//! - `reload`: read `rutis.json` again and run it instead, all or nothing,
+//!   as `rutis-host run` does on SIGUSR1 (`Host::reload`): a runtime
+//!   (`node`, `py`, `bun`) the file no longer has is stopped after its
+//!   rows, and its process has ended before the answer. Prints `applied`,
+//!   or `rejected: <reason>` for what needs a restart (another `id`,
+//!   `listen`, an added or changed runtime) or would fail.
 //! - `stop`, or the end of stdin: shut down (every cleanup runs), then exit
 //!   0; 2 when the shutdown did not finish.
 //!
 //! Links present `RUTIS_TOKEN_<PEER>` (else `RUTIS_TOKEN`), read when they
-//! dial, so a link added by a reload has its credential too. It accepts no
-//! links: nothing here listens for one.
+//! dial, so a link added by a reload has its credential too.
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin};
 use rutis_bridge::session::{
     host_key, Error as CallError, HostDispatch, Reply, Value as CallValue,
 };
-use rutis_bridge::{Credential, Identity, IdentityPlugin, PeerId, Presented};
-use rutis_host::config::{token, HostConfig};
+use rutis_host::config::HostConfig;
 use rutis_host::host::{Embedding, Host, PROCESS_EXIT};
 use serde_json::json;
 
 /// How long cleanups may take when the host stops.
 const SHUTDOWN: Duration = Duration::from_secs(10);
-
-/// How long a stopped runtime's process may take to end: longer than the
-/// grace the local transport gives it before killing it.
-const RUNTIME_EXIT: Duration = Duration::from_secs(15);
 
 fn main() {
     let path = PathBuf::from(
@@ -62,17 +57,10 @@ fn main() {
 }
 
 async fn run(path: &Path) -> i32 {
-    let mut config = match HostConfig::read(path) {
+    let config = match HostConfig::read(path) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("fixture-host: {error}");
-            return 1;
-        }
-    };
-    let identity = match PeerId::new(config.id.clone()) {
-        Ok(local) => EnvIdentity { local },
-        Err(error) => {
-            eprintln!("fixture-host: id: {error}");
             return 1;
         }
     };
@@ -82,7 +70,7 @@ async fn run(path: &Path) -> i32 {
                 Ok(Box::new(RustCalendar))
             });
         })),
-        identity: Some(IdentityPlugin::new("host", identity)),
+        identity: None,
     };
     let mut host = match Host::start_with(&config, embedding).await {
         Ok(host) => host,
@@ -114,7 +102,7 @@ async fn run(path: &Path) -> i32 {
     });
     while let Some(command) = received.recv().await {
         match command.trim() {
-            "reload" => match reload(&mut host, &mut config, path).await {
+            "reload" => match reload(&mut host, path).await {
                 Ok(()) => println!("applied"),
                 Err(reason) => println!("rejected: {reason}"),
             },
@@ -141,79 +129,12 @@ async fn stop(host: &Host) -> i32 {
     0
 }
 
-/// Read `path` again and apply the difference to `config`: the rows in one
-/// loader edit, then stop the runtimes the file no longer has.
-async fn reload(host: &mut Host, config: &mut HostConfig, path: &Path) -> Result<(), String> {
-    let new = HostConfig::read(path)?;
-    if new.id != config.id {
-        return Err(format!(
-            "id {:?} is now {:?}: restart the host",
-            config.id, new.id
-        ));
-    }
-    if format!("{:?}", new.listen) != format!("{:?}", config.listen) {
-        return Err("listen changed: restart the host".into());
-    }
-    let (old, now) = (&config.runtimes, &new.runtimes);
-    if format!("{:?}{:?}", old.go, old.remote) != format!("{:?}{:?}", now.go, now.remote) {
-        return Err("runtimes.go or runtimes.remote changed: restart the host".into());
-    }
-    let mut stopped = Vec::new();
-    for (name, old, now) in [
-        ("node", format!("{:?}", old.node), format!("{:?}", now.node)),
-        ("py", format!("{:?}", old.py), format!("{:?}", now.py)),
-        ("bun", format!("{:?}", old.bun), format!("{:?}", now.bun)),
-    ] {
-        match (old == "None", now == "None") {
-            (false, true) => stopped.push(name),
-            _ if old == now => {}
-            _ => {
-                return Err(format!(
-                    "runtimes.{name} added or changed: restart the host"
-                ))
-            }
-        }
-    }
-    host.load(new.rows()).await?;
-    *config = new;
-    for name in stopped {
-        let before = rutis_bridge::transport::local::running_processes();
-        host.stop_runtime(name).await?;
-        // Its process ends once its channel closed: one of those running
-        // before (the others are other runtimes', which go on).
-        let deadline = Instant::now() + RUNTIME_EXIT;
-        loop {
-            let running = rutis_bridge::transport::local::running_processes();
-            if before.iter().any(|pid| !running.contains(pid)) {
-                break;
-            }
-            if Instant::now() >= deadline {
-                return Err(format!(
-                    "the {name} runtime's process did not end within {RUNTIME_EXIT:?}"
-                ));
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    }
-    Ok(())
-}
-
-/// Presents each peer's token from the environment when dialing it.
-struct EnvIdentity {
-    local: PeerId,
-}
-
-impl Identity for EnvIdentity {
-    fn local(&self) -> &PeerId {
-        &self.local
-    }
-
-    fn credential(&self, peer: &PeerId) -> Option<Credential> {
-        token(peer.as_str()).map(Credential::Bearer)
-    }
-
-    fn verify(&self, _presented: Presented<'_>) -> Option<PeerId> {
-        None
+/// Read `path` again and run it instead.
+async fn reload(host: &mut Host, path: &Path) -> Result<(), String> {
+    let reloaded = host.reload(HostConfig::read(path)?).await?;
+    match reloaded.warnings.is_empty() {
+        true => Ok(()),
+        false => Err(reloaded.warnings.join("; ")),
     }
 }
 

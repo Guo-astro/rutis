@@ -22,6 +22,10 @@ impl Language for Node {
         runtimes.node.is_some()
     }
 
+    fn settings(&self, runtimes: &Runtimes) -> Option<String> {
+        runtimes.node.as_ref().map(|node| format!("{node:?}"))
+    }
+
     fn rebase(&self, runtimes: &mut Runtimes, at: &dyn Fn(&mut PathBuf)) {
         if let Some(node) = &mut runtimes.node {
             at(&mut node.project);

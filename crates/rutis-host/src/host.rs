@@ -3,7 +3,7 @@
 //! loader that runs the rows.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
@@ -13,8 +13,8 @@ use rutis_bridge::transport::websocket::{
     Config, ListenerConfig, ServerTls, Trust, WebSocketPlugin,
 };
 use rutis_bridge::{
-    AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Credential, IdentityPlugin, PeerId,
-    SharedToken, StaticIdentity,
+    AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Credential, Identity, IdentityPlugin,
+    PeerId, Presented, SharedToken,
 };
 use rutis_loader::{
     register_peer_node, Builtins, Chain, GoResolver, GoRuntimesHandle, Layer, Loader,
@@ -44,6 +44,12 @@ pub struct Host {
     /// Each configured listener (`listen`) and the address it is bound to,
     /// in the configuration's order: with port 0, the port picked.
     pub listening: Vec<(String, std::net::SocketAddr)>,
+    /// The configuration it runs: as started, then as last reloaded
+    /// ([`Host::reload`]).
+    config: HostConfig,
+    /// The peers whose links this host's identity accepts (peer rows that
+    /// listen); none when an embedding brought its own identity.
+    accepted: Option<Accepted>,
 }
 
 /// Registers rows compiled into a program ([`Embedding::builtins`]).
@@ -55,8 +61,10 @@ pub type RegisterBuiltins = Box<dyn FnOnce(&mut Builtins) + Send>;
 pub struct Embedding {
     /// Rows compiled into the program, next to `rutis-bridge/peer`.
     pub builtins: Option<RegisterBuiltins>,
-    /// The identity links use instead of the one built from the
-    /// configuration's peer rows: for a program that adds links later.
+    /// The identity links use instead of the host's own, which presents
+    /// and accepts the tokens of the configuration's peer rows from the
+    /// environment. A host with one of its own does not change it on
+    /// [`Host::reload`].
     pub identity: Option<IdentityPlugin>,
 }
 
@@ -155,9 +163,17 @@ impl Host {
                 .collect(),
             None => Vec::new(),
         };
-        match embedding.identity {
-            Some(identity) => root.plugin(identity),
-            None => root.plugin(IdentityPlugin::new("host", identity(config)?)),
+        let accepted = match embedding.identity {
+            Some(identity) => {
+                root.plugin(identity);
+                None
+            }
+            None => {
+                let identity = EnvIdentity::new(config)?;
+                let accepted = identity.accepted.clone();
+                root.plugin(IdentityPlugin::new("host", identity));
+                Some(accepted)
+            }
         };
 
         let peers = Arc::new(PeerResolver::new());
@@ -264,6 +280,8 @@ impl Host {
             fibers,
             peers,
             listening,
+            config: config.clone(),
+            accepted,
         })
     }
 
@@ -333,13 +351,151 @@ impl Host {
 
     /// Load `rows` (replacing what was loaded before).
     pub async fn load(&self, rows: Vec<serde_json::Value>) -> Result<(), Error> {
-        let patches: Vec<Patch> = serde_json::from_value(serde_json::json!([{ "insert": rows }]))
-            .map_err(|error| format!("rows: {error}"))?;
         self.loader
-            .reconcile(vec![Layer::new("rutis.json", patches)], None)
+            .reconcile(vec![layer(rows)?], None)
             .await
             .map(|_| ())
             .map_err(|error| error.to_string())
+    }
+
+    /// Run `new` instead of the configuration this host runs, all or
+    /// nothing (`docs/guide/rutis-host.md`, "Changing the configuration
+    /// while it runs"):
+    ///
+    /// - What a running host cannot change refuses it, saying to restart
+    ///   the host: `format`, `id`, `listen`, `runtimes.remote`, and a local
+    ///   runtime added or changed (`runtimes.go` in any way).
+    /// - The new rows are checked first ([`Loader::check`]): a row that
+    ///   would fail, and does not fail now, refuses it.
+    /// - Then they replace the old ones in one reconcile; a row failing
+    ///   after it that did not before brings the old rows back, and refuses
+    ///   it.
+    /// - A local runtime `new` no longer has is stopped once its rows are
+    ///   gone, and its process has ended when this returns.
+    ///
+    /// Refused, nothing changed (rows brought back are restarted), and the
+    /// error says why. Credentials are read when links dial or are
+    /// dialed, so a peer row `new` adds presents its token.
+    pub async fn reload(&mut self, new: HostConfig) -> Result<Reloaded, Error> {
+        restart_needed(&self.config, &new)?;
+        new.check_runtime_names()?;
+        new.check_dialing_runtimes()?;
+        let removed: Vec<&'static str> = LANGUAGES
+            .iter()
+            .filter(|language| {
+                language.settings(&self.config.runtimes).is_some()
+                    && language.settings(&new.runtimes).is_none()
+            })
+            .map(|language| language.key())
+            .collect();
+
+        // Rows that would fail, unless they fail already.
+        let failing_now: std::collections::HashSet<String> = self
+            .loader
+            .entries()
+            .into_iter()
+            .filter(|entry| {
+                entry.rejected.is_some()
+                    || matches!(&entry.status, rutis_loader::EntryStatus::Unresolved(_))
+                    || matches!(&entry.status, rutis_loader::EntryStatus::Running(snapshot)
+                        if snapshot.state == rutis::FiberState::Failed)
+            })
+            .map(|entry| entry.id)
+            .collect();
+        let checked = self.loader.check(&[layer(new.rows())?]).await;
+        let failing: Vec<String> = checked
+            .rows
+            .iter()
+            .filter(|row| !failing_now.contains(&row.id))
+            .filter_map(|row| match &row.status {
+                rutis_loader::RowStatus::Failed(error) => Some(format!("row {}: {error}", row.id)),
+                _ => None,
+            })
+            .collect();
+        if !failing.is_empty() {
+            return Err(failing.join("; "));
+        }
+
+        let (accepted, accepted_before) = (listening_peers(&new)?, listening_peers(&self.config)?);
+        let old = std::mem::replace(&mut self.config, new);
+        self.accept(accepted);
+        let applied = self
+            .loader
+            .reconcile(vec![layer(self.config.rows())?], None)
+            .await
+            .map_err(|error| error.to_string());
+        let failed = match applied {
+            Ok(report) if report.new_failures.is_empty() => None,
+            Ok(report) => Some(
+                report
+                    .new_failures
+                    .iter()
+                    .map(|failure| format!("row {}: {}", failure.id, failure.error))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ),
+            Err(error) => Some(error),
+        };
+        if let Some(why) = failed {
+            // The old rows again: what failed was new.
+            self.config = old;
+            self.accept(accepted_before);
+            self.load(self.config.rows())
+                .await
+                .map_err(|error| format!("{why}; and the old rows did not load again: {error}"))?;
+            return Err(why);
+        }
+
+        let mut reloaded = Reloaded {
+            rows: changed_rows(&old.rows, &self.config.rows),
+            stopped: Vec::new(),
+            warnings: Vec::new(),
+        };
+        for name in removed {
+            match self.stop_runtime_process(name).await {
+                Ok(()) => reloaded.stopped.push(name.to_owned()),
+                Err(error) => reloaded.warnings.push(error),
+            }
+        }
+        Ok(reloaded)
+    }
+
+    /// [`Host::stop_runtime`], then wait (up to [`RUNTIME_EXIT`]) until its
+    /// process has ended.
+    async fn stop_runtime_process(&mut self, name: &str) -> Result<(), Error> {
+        let before = rutis_bridge::transport::local::running_processes();
+        self.stop_runtime(name).await?;
+        // Its process ends once its channel closed: one of those running
+        // before (the others are other runtimes', which go on).
+        let ended = async {
+            loop {
+                let running = rutis_bridge::transport::local::running_processes();
+                if before.iter().any(|pid| !running.contains(pid)) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(RUNTIME_EXIT, ended)
+            .await
+            .map_err(|_| {
+                format!(
+                    "the {name} runtime's process did not end within {}s",
+                    RUNTIME_EXIT.as_secs()
+                )
+            })
+    }
+
+    /// Accept the links of `peers` (those of the peer rows that listen).
+    fn accept(&self, peers: Vec<PeerId>) {
+        if let Some(accepted) = &self.accepted {
+            *accepted.write().unwrap() = peers;
+        }
+    }
+
+    /// The configuration this host runs.
+    pub fn config(&self) -> &HostConfig {
+        &self.config
     }
 
     /// Check `rows` without running them ([`rutis_loader::Loader::check`]).
@@ -528,18 +684,199 @@ impl Pem {
     }
 }
 
-fn identity(config: &HostConfig) -> Result<StaticIdentity, Error> {
-    let local = PeerId::new(config.id.clone()).map_err(|error| format!("id: {error}"))?;
-    let mut identity = StaticIdentity::new(local);
-    for (peer, dials) in config.peers() {
-        let Some(token) = token(&peer) else { continue };
-        let peer = PeerId::new(peer.clone()).map_err(|error| format!("peer {peer}: {error}"))?;
-        identity = match dials {
-            true => identity.present(peer, Credential::Bearer(token)),
-            false => identity.accept_token(token, peer),
-        };
+/// The rows of `rows` as the one layer the host runs.
+fn layer(rows: Vec<serde_json::Value>) -> Result<Layer, Error> {
+    let patches: Vec<Patch> = serde_json::from_value(serde_json::json!([{ "insert": rows }]))
+        .map_err(|error| format!("rows: {error}"))?;
+    Ok(Layer::new("rutis.json", patches))
+}
+
+/// How long a runtime a reload removed may take to end once stopped:
+/// longer than the grace the local transport gives it before killing it.
+pub const RUNTIME_EXIT: Duration = Duration::from_secs(15);
+
+/// What [`Host::reload`] changed.
+#[derive(Debug, Default)]
+pub struct Reloaded {
+    /// How many rows were added, removed or changed (a group's rows each
+    /// count, the group not).
+    pub rows: usize,
+    /// The local runtimes stopped: the configuration no longer has them.
+    pub stopped: Vec<String>,
+    /// What went wrong once the rows had changed (a runtime that did not
+    /// stop): the reload stands.
+    pub warnings: Vec<String>,
+}
+
+impl std::fmt::Display for Reloaded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.rows {
+            1 => write!(f, "1 row changed")?,
+            rows => write!(f, "{rows} rows changed")?,
+        }
+        for runtime in &self.stopped {
+            write!(f, ", runtime {runtime} stopped")?;
+        }
+        Ok(())
     }
-    Ok(identity)
+}
+
+/// Why `new` needs the host restarted to run instead of `old`: what a
+/// running host does not change.
+pub fn restart_needed(old: &HostConfig, new: &HostConfig) -> Result<(), Error> {
+    let restart = |what: String| Err(format!("{what}: restart the host"));
+    if new.format != old.format {
+        return restart(format!("format {} is now {}", old.format, new.format));
+    }
+    if new.id != old.id {
+        return restart(format!("id {:?} is now {:?}", old.id, new.id));
+    }
+    if format!("{:?}", new.listen) != format!("{:?}", old.listen) {
+        return restart("listen changed".into());
+    }
+    let names = |config: &HostConfig| -> Vec<String> {
+        config
+            .runtimes
+            .remote
+            .iter()
+            .map(|remote| remote.name.clone())
+            .collect()
+    };
+    for remote in &new.runtimes.remote {
+        let before = old.runtimes.remote.iter().find(|r| r.name == remote.name);
+        match before {
+            None => return restart(format!("runtimes.remote {} added", remote.name)),
+            Some(before) if format!("{before:?}") != format!("{remote:?}") => {
+                return restart(format!("runtimes.remote {} changed", remote.name))
+            }
+            _ => {}
+        }
+    }
+    if let Some(gone) = names(old)
+        .into_iter()
+        .find(|name| !names(new).contains(name))
+    {
+        return restart(format!("runtimes.remote {gone} removed"));
+    }
+    for language in LANGUAGES {
+        let key = language.key();
+        match (
+            language.settings(&old.runtimes),
+            language.settings(&new.runtimes),
+        ) {
+            (None, Some(_)) => return restart(format!("runtimes.{key} added")),
+            (Some(_), None) if !language.stops_when_removed() => {
+                return restart(format!("runtimes.{key} removed"))
+            }
+            (Some(before), Some(now)) if before != now => {
+                return restart(format!("runtimes.{key} changed"))
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// How many rows differ between `old` and `new`, by id: added, removed or
+/// changed. A group's rows are counted, the group itself is not.
+fn changed_rows(old: &[serde_json::Value], new: &[serde_json::Value]) -> usize {
+    fn flat(
+        rows: &[serde_json::Value],
+        into: &mut std::collections::BTreeMap<String, serde_json::Value>,
+    ) {
+        for row in rows {
+            let id = row["id"].as_str().unwrap_or_default().to_owned();
+            if row["group"] == true {
+                let mut own = row.clone();
+                own["config"] = serde_json::Value::Null;
+                into.insert(id, own);
+                if let Some(children) = row["config"].as_array() {
+                    flat(children, into);
+                }
+            } else {
+                into.insert(id, row.clone());
+            }
+        }
+    }
+    let (mut before, mut after) = Default::default();
+    flat(old, &mut before);
+    flat(new, &mut after);
+    let groups = |rows: &std::collections::BTreeMap<String, serde_json::Value>, id: &str| {
+        rows.get(id).is_some_and(|row| row["group"] == true)
+    };
+    before
+        .keys()
+        .chain(after.keys().filter(|id| !before.contains_key(*id)))
+        .filter(|id| !groups(&before, id) && !groups(&after, id))
+        .filter(|id| before.get(*id) != after.get(*id))
+        .count()
+}
+
+/// The peers of `config`'s peer rows that listen: their links are
+/// accepted with their tokens.
+fn listening_peers(config: &HostConfig) -> Result<Vec<PeerId>, Error> {
+    config
+        .peers()
+        .into_iter()
+        .filter(|(_, dials)| !dials)
+        .map(|(peer, _)| PeerId::new(peer.clone()).map_err(|error| format!("peer {peer}: {error}")))
+        .collect()
+}
+
+/// The peers whose links an [`EnvIdentity`] accepts.
+type Accepted = Arc<RwLock<Vec<PeerId>>>;
+
+/// This host's identity. Each peer's token comes from the environment
+/// ([`token`]: `RUTIS_TOKEN_<PEER>`, else `RUTIS_TOKEN`) when a link dials
+/// it, or when a peer that a listening peer row names dials in: a peer row
+/// a reload adds has its token too.
+struct EnvIdentity {
+    local: PeerId,
+    accepted: Accepted,
+}
+
+impl EnvIdentity {
+    fn new(config: &HostConfig) -> Result<Self, Error> {
+        Ok(Self {
+            local: PeerId::new(config.id.clone()).map_err(|error| format!("id: {error}"))?,
+            accepted: Arc::new(RwLock::new(listening_peers(config)?)),
+        })
+    }
+}
+
+impl Identity for EnvIdentity {
+    fn local(&self) -> &PeerId {
+        &self.local
+    }
+
+    fn credential(&self, peer: &PeerId) -> Option<Credential> {
+        token(peer.as_str()).map(Credential::Bearer)
+    }
+
+    fn verify(&self, presented: Presented<'_>) -> Option<PeerId> {
+        let Presented::Bearer(presented) = presented else {
+            return None;
+        };
+        // Every peer is compared, each in constant time, so timing tells
+        // nothing about which token came close; the last one matching wins.
+        let mut found = None;
+        for peer in self.accepted.read().unwrap().iter() {
+            let Some(token) = token(peer.as_str()) else {
+                continue;
+            };
+            if constant_time_eq(token.as_bytes(), presented.as_bytes()) {
+                found = Some(peer.clone());
+            }
+        }
+        found
+    }
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
 }
 
 /// Says once a runtime's rows may start: it injects what they wait for.
@@ -947,6 +1284,168 @@ mod tests {
         host.load(config.rows()).await.unwrap();
         assert_eq!(greeting(&host).await, "Bun, Ada");
         child.start_kill().unwrap();
+    }
+
+    fn parsed(value: serde_json::Value) -> HostConfig {
+        serde_json::from_value(value).unwrap()
+    }
+
+    /// What a running host cannot change is refused, saying to restart it;
+    /// rows, and a local runtime removed, are not.
+    /// guarantee: host/reload-config
+    #[test]
+    fn what_needs_a_restart_is_refused() {
+        let base = json!({
+            "id": "main",
+            "listen": [{ "name": "public", "address": "127.0.0.1:7443" }],
+            "runtimes": {
+                "node": {}, "py": {}, "go": { "dir": "plugins" },
+                "remote": [
+                    { "name": "gpu", "language": "python" },
+                    { "name": "phone", "language": "python", "listen": "public", "instances": "phone" }
+                ]
+            },
+            "rows": [{ "id": "a", "name": "py:a" }]
+        });
+        let old = parsed(base.clone());
+        let changed = |change: &dyn Fn(&mut serde_json::Value)| {
+            let mut new = base.clone();
+            change(&mut new);
+            restart_needed(&old, &parsed(new)).err()
+        };
+        let refused = [
+            (
+                changed(&|c| c["id"] = json!("other")),
+                "id \"main\" is now \"other\"",
+            ),
+            (
+                changed(&|c| c["listen"][0]["address"] = json!("127.0.0.1:7444")),
+                "listen changed",
+            ),
+            (
+                changed(&|c| c["runtimes"]["remote"][0]["language"] = json!("go")),
+                "runtimes.remote gpu changed",
+            ),
+            (
+                changed(&|c| c["runtimes"]["remote"][1]["instances"] = json!("tablet")),
+                "runtimes.remote phone changed",
+            ),
+            (
+                changed(&|c| c["runtimes"]["remote"][1]["listen"] = json!("other")),
+                "runtimes.remote phone changed",
+            ),
+            (
+                changed(&|c| {
+                    c["runtimes"]["remote"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!({ "name": "edge", "language": "bun" }))
+                }),
+                "runtimes.remote edge added",
+            ),
+            (
+                changed(&|c| {
+                    c["runtimes"]["remote"].as_array_mut().unwrap().remove(0);
+                }),
+                "runtimes.remote gpu removed",
+            ),
+            (
+                changed(&|c| c["runtimes"]["go"]["idle"] = json!(30)),
+                "runtimes.go changed",
+            ),
+            (
+                changed(&|c| {
+                    c["runtimes"].as_object_mut().unwrap().remove("go");
+                }),
+                "runtimes.go removed",
+            ),
+            (
+                changed(&|c| c["runtimes"]["node"]["project"] = json!("other")),
+                "runtimes.node changed",
+            ),
+            (
+                changed(&|c| c["runtimes"]["bun"] = json!({})),
+                "runtimes.bun added",
+            ),
+        ];
+        for (error, why) in refused {
+            assert_eq!(error, Some(format!("{why}: restart the host")));
+        }
+        assert_eq!(
+            changed(&|c| c["rows"] = json!([{ "id": "b", "name": "py:b" }])),
+            None
+        );
+        assert_eq!(
+            changed(&|c| {
+                c["runtimes"].as_object_mut().unwrap().remove("py");
+            }),
+            None
+        );
+    }
+
+    /// Rows are told apart by id: added, removed or changed, a group's rows
+    /// each, the group not.
+    #[test]
+    fn changed_rows_are_counted_by_id() {
+        let old = [
+            json!({ "id": "a", "name": "py:a" }),
+            json!({ "id": "b", "name": "py:b", "config": { "x": 1 } }),
+            json!({ "id": "g", "group": true, "config": [{ "id": "c", "name": "py:c" }] }),
+        ];
+        assert_eq!(changed_rows(&old, &old), 0);
+        let new = [
+            json!({ "id": "b", "name": "py:b", "config": { "x": 2 } }),
+            json!({ "id": "g", "group": true, "config": [{ "id": "c", "name": "py:c" }, { "id": "d", "name": "py:d" }] }),
+            json!({ "id": "e", "name": "py:e" }),
+        ];
+        // a removed, b changed, d and e added.
+        assert_eq!(changed_rows(&old, &new), 4);
+        let reloaded = |rows| Reloaded {
+            rows,
+            stopped: vec!["py".into()],
+            warnings: Vec::new(),
+        };
+        assert_eq!(reloaded(1).to_string(), "1 row changed, runtime py stopped");
+        assert_eq!(
+            reloaded(0).to_string(),
+            "0 rows changed, runtime py stopped"
+        );
+    }
+
+    /// A peer's token is read when its link dials, or when it dials in: one
+    /// set after the host started counts, and a peer that a listening row
+    /// names is accepted with its own token once a reload adds the row.
+    /// guarantee: host/credentials-from-env
+    #[test]
+    fn tokens_are_read_when_links_need_them() {
+        let config = parsed(json!({ "id": "main" }));
+        let identity = EnvIdentity::new(&config).unwrap();
+        let peer = PeerId::new("reload-dial-test").unwrap();
+        assert!(identity.credential(&peer).is_none());
+        std::env::set_var("RUTIS_TOKEN_RELOAD_DIAL_TEST", "dial-secret");
+        assert!(matches!(
+            identity.credential(&peer),
+            Some(Credential::Bearer(token)) if token == "dial-secret"
+        ));
+        std::env::remove_var("RUTIS_TOKEN_RELOAD_DIAL_TEST");
+
+        std::env::set_var("RUTIS_TOKEN_RELOAD_LISTEN_TEST", "listen-secret");
+        assert_eq!(identity.verify(Presented::Bearer("listen-secret")), None);
+        let reloaded = parsed(json!({
+            "id": "main",
+            "rows": [{ "id": "in", "name": "rutis-bridge/peer", "config": { "peer": "reload-listen-test", "listen": "public" } }]
+        }));
+        *identity.accepted.write().unwrap() = listening_peers(&reloaded).unwrap();
+        assert_eq!(
+            identity.verify(Presented::Bearer("listen-secret")),
+            Some(PeerId::new("reload-listen-test").unwrap())
+        );
+        assert_eq!(identity.verify(Presented::Bearer("listen-secre")), None);
+        assert_eq!(
+            identity.verify(Presented::Certificate(b"listen-secret")),
+            None
+        );
+        std::env::remove_var("RUTIS_TOKEN_RELOAD_LISTEN_TEST");
     }
 
     /// Go binaries in a directory: a row names a plugin, and its binary's
