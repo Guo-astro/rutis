@@ -106,10 +106,11 @@ ctx.plugin_with(TypedFactory::with_keys(factory, keys), config);
 - 这一代的 `InjectUnsatisfied` 本身不进 ErrorSink（与驱逐一样静默）。落在这个窗口里的
   `restart()` 返回 Ok，fiber 回到 Pending 或重新装载。
 - **非 typed 插件**：用 `require` / `require_as` 读取，再返回这个错误，可以得到同样的效果；
-  用 `get` 读取不算证据。rutis-agent 的 driver 和 tui 都用 `get_as`，仍按普通失败处理，
+  原样返回这次读取自己的错误（`require(..)?`，即 `ServiceRead`，原因为 `Unavailable`）
+  也一样（#438）。用 `get` 读取不算证据。rutis-agent 的 driver 和 tui 都用 `get_as`，仍按普通失败处理，
   行为与改动前一致。
 - **与 Cordis 的差异**：Cordis 在此窗口内 `apply` 抛错会进 FAILED（依赖回来时重试）；
-  rutis 只对这个明确的错误变体、且有失败读取为证时放宽，其它错误仍是粘性 Failed。
+  rutis 只对这个明确的错误变体（或严格读取原样返回的错误）、且有失败读取为证时放宽，其它错误仍是粘性 Failed。
 
 ## 宣称边界
 

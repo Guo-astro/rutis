@@ -759,3 +759,208 @@ impl Plugin for Node {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use rutis::{FiberState, PluginFactory};
+    use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
+    use rutis_bridge::{
+        Credential, Described, HostPlugin, IdentityPlugin, LinkConfig, LinkPlugin, Retry,
+        StaticCatalog, StaticIdentity,
+    };
+    use rutis_test_support::eventually;
+
+    use super::*;
+
+    fn id(name: &str) -> PeerId {
+        PeerId::new(name).unwrap()
+    }
+
+    /// Installed on mac: provides `GreetingService`.
+    struct Greeter;
+    impl PluginFactory<Value> for Greeter {
+        fn build(&self, _: &Value) -> Result<Box<dyn Plugin>, CordisError> {
+            Ok(Box::new(Greeting))
+        }
+    }
+    struct Greeting;
+    impl Plugin for Greeting {
+        fn name(&self) -> &str {
+            "greeter"
+        }
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+            Box::pin(async move {
+                ctx.provide(GreetingService)?;
+                Ok(Effect::Done)
+            })
+        }
+    }
+    struct GreetingService;
+
+    /// Provides `PeerRows` the way [`follow`] does: from its context, with
+    /// the disposer kept to withdraw it.
+    struct ProvidesRows {
+        peer: Arc<Peer>,
+        ctx: Arc<Mutex<Option<Ctx>>>,
+        provided: Arc<Mutex<Option<Disposer>>>,
+    }
+    impl ProvidesRows {
+        fn provide(ctx: &Ctx, peer: &Arc<Peer>) -> Disposer {
+            ctx.provide_as(
+                PeerRows::key(&id("mac")),
+                Arc::new(PeerRows { peer: peer.clone() }),
+            )
+            .unwrap()
+        }
+    }
+    impl Plugin for ProvidesRows {
+        fn name(&self) -> &str {
+            "provides-rows"
+        }
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+            Box::pin(async move {
+                *self.provided.lock().unwrap() = Some(Self::provide(ctx, &self.peer));
+                *self.ctx.lock().unwrap() = Some(ctx.clone());
+                Ok(Effect::Done)
+            })
+        }
+    }
+
+    type Withdrawal = Mutex<Option<std::thread::JoinHandle<Result<(), Arc<CordisError>>>>>;
+
+    /// A hosted row whose first generation sees `PeerRows` withdrawn after
+    /// its gate opened, before its apply runs.
+    struct WithdrawnBeforeApply {
+        row: PeerRow,
+        main: Ctx,
+        provided: Arc<Mutex<Option<Disposer>>>,
+        withdrawal: Arc<Withdrawal>,
+    }
+    impl Plugin for WithdrawnBeforeApply {
+        fn name(&self) -> &str {
+            self.row.name()
+        }
+        fn injects(&self) -> &[TypeKey] {
+            self.row.injects()
+        }
+        fn validate(&self) -> Result<(), CordisError> {
+            if let Some(disposer) = self.provided.lock().unwrap().take() {
+                // From another thread: this worker is blocked here.
+                let runtime = tokio::runtime::Handle::current();
+                let withdrawal = std::thread::spawn(move || runtime.block_on(disposer.dispose()));
+                *self.withdrawal.lock().unwrap() = Some(withdrawal);
+                // The removal is marked as soon as the withdrawal starts.
+                let start = std::time::Instant::now();
+                while self
+                    .main
+                    .get_as::<PeerRows>(PeerRows::key(&id("mac")))
+                    .is_some()
+                {
+                    assert!(start.elapsed() < Duration::from_secs(10), "never withdrawn");
+                    std::thread::yield_now();
+                }
+            }
+            Ok(())
+        }
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+            self.row.apply(ctx)
+        }
+    }
+
+    /// `PeerRows` withdrawn after a row's apply was scheduled and before it
+    /// ran: the row waits for it again instead of failing, and loads when it
+    /// is provided again (#438).
+    ///
+    /// guarantee: core/typed.untyped-require
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_row_whose_peer_rows_go_before_its_apply_waits_and_loads_when_back() {
+        let transport = Arc::new(MemoryTransport::default());
+        transport.endpoint("main-in", id("main"));
+        let quick = Retry {
+            initial: Duration::from_millis(20),
+            max: Duration::from_millis(200),
+            jitter: 0.0,
+            ..Retry::default()
+        };
+        let main = Ctx::root().unwrap();
+        (&main.plugin(MemoryPlugin::with_transport(transport.clone())))
+            .await
+            .unwrap();
+        main.plugin(IdentityPlugin::new(
+            "main",
+            StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
+        ));
+        main.plugin(LinkPlugin::new(
+            LinkConfig::listen(id("mac"), "memory", "main", "main-in").retry(quick.clone()),
+        ));
+        let mac = Ctx::root().unwrap();
+        (&mac.plugin(MemoryPlugin::with_transport(transport)))
+            .await
+            .unwrap();
+        mac.plugin(IdentityPlugin::new(
+            "mac",
+            StaticIdentity::new(id("mac"))
+                .present(id("main"), Credential::Bearer("mac-token".into())),
+        ));
+        mac.plugin(LinkPlugin::new(
+            LinkConfig::dial(id("main"), "memory", "mac", "main-in").retry(quick),
+        ));
+        let catalog = StaticCatalog::new().with("greeter", Described::default(), Greeter);
+        mac.plugin(HostPlugin::new(id("main"), Arc::new(catalog)));
+
+        let peer = eventually(
+            || {
+                let peer = main.get_as::<Peer>(peer_key(&id("mac")))?;
+                let hosting = peer.offers().borrow().families.contains("plugins");
+                hosting.then_some(peer)
+            },
+            "the host offered",
+        )
+        .await;
+        let rows_ctx = Arc::new(Mutex::new(None));
+        let provided = Arc::new(Mutex::new(None));
+        (&main.plugin(ProvidesRows {
+            peer: peer.clone(),
+            ctx: rows_ctx.clone(),
+            provided: provided.clone(),
+        }))
+            .await
+            .unwrap();
+
+        let withdrawal = Arc::new(Withdrawal::default());
+        let factory = PeerFactory::new("peer:mac/greeter", id("mac"), "greeter");
+        let row = main.plugin(WithdrawnBeforeApply {
+            row: PeerRow {
+                name: factory.name.clone(),
+                plugin: factory.plugin.clone(),
+                config: json!({}),
+                injects: factory.injects.clone(),
+            },
+            main: main.clone(),
+            provided,
+            withdrawal: withdrawal.clone(),
+        });
+        let withdrawn = eventually(|| withdrawal.lock().unwrap().take(), "the withdrawal").await;
+        tokio::task::spawn_blocking(move || withdrawn.join().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let waiting = (&row).await;
+        assert!(waiting.is_ok(), "{waiting:?}");
+        let state = row.state();
+        assert_eq!(state.state, FiberState::Pending, "{:?}", state.error);
+        assert!(mac.get::<GreetingService>().is_none());
+
+        // Provided again, as `follow` does: the row loads.
+        let rows_ctx = rows_ctx.lock().unwrap().clone().unwrap();
+        let _provided = ProvidesRows::provide(&rows_ctx, &peer);
+        eventually(|| mac.get::<GreetingService>(), "the hosted row").await;
+        eventually(
+            || (row.state().state == FiberState::Active).then_some(()),
+            "the row active",
+        )
+        .await;
+    }
+}

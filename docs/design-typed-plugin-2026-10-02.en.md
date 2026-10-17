@@ -86,8 +86,8 @@ If a required dependency becomes unavailable after gating but before `apply` rea
   A failed strict read is a fact recorded by the core itself; it proves the dependency became unavailable after gating, independent of timing or snapshots. Causes include removal, inactive provider, or rejected `check`.
 - **Avoid loops:** without such a read in this generation, do not accept this reason; treat it as an ordinary failure and enter `Failed`.
 - This generation's `InjectUnsatisfied` is not sent to ErrorSink (silent like eviction). A `restart()` in this window returns `Ok`; the fiber returns to `Pending` or reloads.
-- **Untyped plugins:** calling `require` / `require_as` and returning this error has the same effect; `get` does not count as evidence. `rutis-agent` driver and TUI use `get_as`, so they remain ordinary failures as before.
-- **Difference from Cordis:** Cordis treats an `apply` exception in this window as `FAILED` (and retries when the dependency returns). rutis relaxes only this explicit error variant with proof of a failed read; other errors remain sticky `Failed`.
+- **Untyped plugins:** calling `require` / `require_as` and returning this error has the same effect, as does returning that read's own error as is (`require(..)?`: `ServiceRead` with reason `Unavailable`, #438); `get` does not count as evidence. `rutis-agent` driver and TUI use `get_as`, so they remain ordinary failures as before.
+- **Difference from Cordis:** Cordis treats an `apply` exception in this window as `FAILED` (and retries when the dependency returns). rutis relaxes only this explicit error variant (or the strict read's own error returned as is) with proof of a failed read; other errors remain sticky `Failed`.
 
 ## Claim boundary
 

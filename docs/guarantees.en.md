@@ -166,7 +166,7 @@ Sources: `core/features.errors` in [core-features](core-features.en.md) "Errors 
 | `core/typed.lost-dependency-silent` | In that case the generation's `InjectUnsatisfied` does not reach the ErrorSink | contract behaviour | verified | `rutis/tests/typed_plugin.rs::a_lost_dependency_error_does_not_reach_the_error_sink` | |
 | `core/typed.lost-dependency-restart` | A `restart()` falling in that window returns Ok, and the plugin goes back to Pending or loads again | contract behaviour | verified | `rutis/tests/typed_plugin.rs::a_restart_in_the_lost_dependency_window_returns_ok` | |
 | `core/typed.get-not-evidence` | An untyped plugin that returns `InjectUnsatisfied` after a failed `get` gives no evidence: a plain failure, Failed | contract behaviour | verified | `rutis/tests/typed_plugin.rs::a_get_read_is_not_evidence_of_a_lost_dependency` | |
-| `core/typed.untyped-require` | An untyped plugin that returns the error of a failed `require` returns to Pending and loads when a new provider appears | contract behaviour | verified | `rutis/tests/typed_plugin.rs::an_untyped_plugin_whose_require_fails_returns_to_pending` | |
+| `core/typed.untyped-require` | An untyped plugin that returns the error of a failed `require`, or that read's own error as is (`require(..)?`), returns to Pending and loads when a new provider appears | contract behaviour | verified | `rutis/tests/typed_plugin.rs::an_untyped_plugin_whose_require_fails_returns_to_pending`, `::an_untyped_plugin_returning_its_failed_require_returns_to_pending`, `rutis-loader/src/peer.rs::tests::a_row_whose_peer_rows_go_before_its_apply_waits_and_loads_when_back` | #438 |
 
 ---
 
