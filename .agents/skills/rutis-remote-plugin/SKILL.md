@@ -124,7 +124,7 @@ Details in `references/rutis-json.md` and `references/nodes.md`.
 }
 ```
 
-- `language`: `python` / `py` / `go` / `node`.
+- `language`: `python` / `py` / `go` / `node` / `bun`.
 - The link row must have `"runtime": "<name>"`; without it the other side is not treated as a runtime and `<name>:*` rows never become ready.
 - Rows are named `<runtime name>:<plugin>`; the plugin is resolved on the remote machine.
 
