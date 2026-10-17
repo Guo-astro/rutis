@@ -1,0 +1,20 @@
+[package]
+name = "rutis-e2e-fixture-tenants"
+description = "The Rust application of E2E scenario S7 (#191): rutis embedded as a multi-tenant service, one instance subtree per tenant, admin edits persisted"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+# The system under test, not the harness: the harness (tests/e2e) only runs
+# this program (quality standard Q7.6). It is assembled from the crates as
+# docs/guide/rust-host.md says, not from rutis-host.
+[dependencies]
+rutis = { path = "../../../crates/rutis" }
+rutis-bridge = { path = "../../../crates/rutis-bridge", default-features = false, features = ["node", "python"] }
+rutis-loader = { path = "../../../crates/rutis-loader", default-features = false, features = ["node", "python"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { workspace = true }

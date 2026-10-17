@@ -34,8 +34,10 @@
 //! newer; the checkout's `python/rutis` is used), then
 //! `cargo test -p rutis-e2e`, which builds `rutis-host` first (and the
 //! fixture Rust host, `tests/e2e/fixture-host`, for the scenarios that run
-//! it). Settings: `RUTIS_E2E_HOST` (the program to test instead),
-//! `RUTIS_E2E_FIXTURE_HOST` (likewise, the fixture host), `RUTIS_E2E_DIR`
+//! it, and the fixture Rust application `tests/e2e/fixture-tenants` for
+//! S7). Settings: `RUTIS_E2E_HOST` (the program to test instead),
+//! `RUTIS_E2E_FIXTURE_HOST`, `RUTIS_E2E_FIXTURE_TENANTS` (likewise, the
+//! fixture programs), `RUTIS_E2E_DIR`
 //! (where scenario directories go), `RUTIS_E2E_TIMEOUT` (the hang guard,
 //! seconds), `RUTIS_E2E_BUILD_TIMEOUT` (the guard of builds and installs,
 //! seconds); for the cross-version scenarios, `RUTIS_E2E_PREVIOUS` and
@@ -133,6 +135,21 @@ pub fn fixture_host_program() -> PathBuf {
         .get_or_init(|| match std::env::var_os("RUTIS_E2E_FIXTURE_HOST") {
             Some(program) => PathBuf::from(program),
             None => build("rutis-e2e-fixture-host"),
+        })
+        .clone()
+}
+
+/// The fixture Rust application of S7 (`tests/e2e/fixture-tenants`, #191):
+/// rutis embedded from its crates as a multi-tenant service.
+/// `RUTIS_E2E_FIXTURE_TENANTS`, else the one `cargo build -p
+/// rutis-e2e-fixture-tenants` builds from this checkout (once per run). It
+/// is on the side under test: the harness only runs it.
+pub fn fixture_tenants_program() -> PathBuf {
+    static PROGRAM: OnceLock<PathBuf> = OnceLock::new();
+    PROGRAM
+        .get_or_init(|| match std::env::var_os("RUTIS_E2E_FIXTURE_TENANTS") {
+            Some(program) => PathBuf::from(program),
+            None => build("rutis-e2e-fixture-tenants"),
         })
         .clone()
 }
@@ -517,6 +534,16 @@ impl Scenario {
         S: AsRef<std::ffi::OsStr>,
     {
         self.start_with_input(fixture_host_program(), "", args, env, true)
+    }
+
+    /// Start the fixture Rust application of S7
+    /// ([`fixture_tenants_program`]) like [`Scenario::fixture_host`].
+    pub fn fixture_tenants<I, S>(&self, args: I, env: &[(&str, &str)]) -> Host
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.start_with_input(fixture_tenants_program(), "", args, env, true)
     }
 
     /// Start `rutis-host <args>` in the project's subdirectory `dir` (as a
