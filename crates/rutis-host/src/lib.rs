@@ -9,6 +9,7 @@ pub mod host;
 pub mod languages;
 pub mod new;
 pub mod project;
+pub mod restart;
 pub mod status;
 
 /// Print a line on stdout in one write, under the locks the runtimes'

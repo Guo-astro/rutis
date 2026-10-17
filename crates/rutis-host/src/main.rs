@@ -14,7 +14,7 @@ use rutis_loader::{RowStatus, Supply};
 mod reload;
 mod stop;
 
-use stop::Stopped;
+use stop::{Ended, Stopped};
 
 /// The plugin API of Go binaries this host runs (their manifests); Node, Bun
 /// and Python runtimes check their own plugins against their own API. One
@@ -49,7 +49,8 @@ RUTIS_CERT and RUTIS_KEY.
 Exit status: 0 when it ends normally (also on Ctrl-C or SIGTERM once every
 cleanup ran), 1 when it cannot start or run (configuration, loading, a row
 check fails), 2 when stopping did not finish (past the deadline, a second
-Ctrl-C, or runtime processes that did not exit).";
+Ctrl-C, or runtime processes that did not exit), 3 when a runtime whose
+restart is \"exit\" ended and the host stopped.";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -72,6 +73,7 @@ fn main() {
     match result {
         Ok(Stopped::Done) => {}
         Ok(Stopped::Failed) => std::process::exit(1),
+        Ok(Stopped::RuntimeEnded) => std::process::exit(stop::RUNTIME_ENDED),
         Ok(Stopped::Unfinished) => std::process::exit(stop::UNFINISHED),
         Err(error) => {
             errln!("rutis-host: {error}");
@@ -173,25 +175,27 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
         host.runtimes_ready().await?;
         host.load(config.rows()).await
     };
-    let signal = match start(&host, started, deadline, &mut signals).await {
+    let ended = match start(&host, started, deadline, &mut signals).await {
         Started::Running => {
             status::follow(host.followed());
+            let mut exits = host.supervise();
             loop {
                 tokio::select! {
-                    signal = signals.next() => break signal,
+                    signal = signals.next() => break Ended::Signal(signal),
+                    (runtime, why) = exits.next() => break Ended::Runtime(runtime, why),
                     _ = triggers.next() => {}
                 }
                 // A signal ends a reload half way: the host stops anyway.
                 tokio::select! {
                     () = reload::reload(&mut host, &path, &mut triggers) => {}
-                    signal = signals.next() => break signal,
+                    signal = signals.next() => break Ended::Signal(signal),
                 }
             }
         }
-        Started::Signal(signal) => signal,
+        Started::Signal(signal) => Ended::Signal(signal),
         Started::Failed(stopped) => return Ok(stopped.failed()),
     };
-    Ok(stop::stop(&host, signal, deadline, &mut signals).await)
+    Ok(stop::end(&host, ended, deadline, &mut signals).await)
 }
 
 /// `rutis-host go add <module>@<version> [rutis.json]`: `go install` the
@@ -298,11 +302,16 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
     let mut seen = project::sources(&dir);
     outln!("rutis-host dev: running {id}; changes reload it (Ctrl-C ends)");
     status::follow(host.followed());
+    let mut exits = host.supervise();
     loop {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(400)) => {}
             signal = signals.next() => {
                 return Ok(stop::stop(&host, signal, deadline, &mut signals).await);
+            }
+            (runtime, why) = exits.next() => {
+                let ended = Ended::Runtime(runtime, why);
+                return Ok(stop::end(&host, ended, deadline, &mut signals).await);
             }
         }
         let now = project::sources(&dir);

@@ -7,7 +7,7 @@ use rutis_bridge::runtime::LocalRuntime;
 use serde_json::{json, Value};
 
 use super::{id_of, rebase_program, Language};
-use crate::config::{venv_python, PythonRuntime, Runtimes, DEFAULT_PYTHON};
+use crate::config::{venv_python, PythonRuntime, Restart, Runtimes, DEFAULT_PYTHON};
 use crate::host::Error;
 
 pub struct Python;
@@ -23,6 +23,17 @@ impl Language for Python {
 
     fn settings(&self, runtimes: &Runtimes) -> Option<String> {
         runtimes.py.as_ref().map(|py| format!("{py:?}"))
+    }
+
+    fn restart(&self, runtimes: &Runtimes) -> Restart {
+        runtimes.py.as_ref().map_or(Restart::No, |py| py.restart)
+    }
+
+    /// The dev file's `restart`; the project's other settings stay.
+    fn dev_file(&self, own: &mut Runtimes, dev: &Runtimes) {
+        if let (Some(own), Some(dev)) = (&mut own.py, &dev.py) {
+            own.restart = dev.restart;
+        }
     }
 
     fn rebase(&self, runtimes: &mut Runtimes, at: &dyn Fn(&mut PathBuf)) {
@@ -83,6 +94,7 @@ impl Language for Python {
         };
         let runtimes = Runtimes {
             py: Some(PythonRuntime {
+                restart: Restart::No,
                 project,
                 python: Some(venv_python(&dir.join(".venv"))).filter(|venv| venv.exists()),
             }),

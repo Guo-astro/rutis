@@ -84,8 +84,9 @@ rutis-host: listening on <监听器名> <地址:端口>
 | 0 | 正常结束，包括收到信号后所有清理都完成 |
 | 1 | 不能启动或运行：参数或配置错误、运行时启动失败、行加载失败；`check` 有不能运行的行 |
 | 2 | 停止没有完成：超过截止时间，或停止时再次收到信号；或者清理都完成了，但运行时进程没有按时退出（截止时间剩余的时间，至少 3 秒）。这些情况下 `rutis-host` 会结束运行时进程及它们启动的进程 |
+| 3 | `restart` 为 `"exit"` 的本机运行时自己结束了，宿主已经停止（清理都完成）；见 [运行时结束时](#运行时结束时)。停止没有完成时是 2 |
 
-2 和 1 分开，是为了让进程管理器和脚本区分“配置有问题”和“停止时有插件的清理没完成”；它也不在 126 以上，那一段是 shell 用来表示“程序不能执行”和“被信号 n 结束”（128 + n）的。
+2 和 1 分开，是为了让进程管理器和脚本区分“配置有问题”和“停止时有插件的清理没完成”；3 让它们知道是一个运行时崩溃了、应当重启宿主；它也不在 126 以上，那一段是 shell 用来表示“程序不能执行”和“被信号 n 结束”（128 + n）的。
 
 Unix 上，`rutis-host` 启动时就被忽略的信号（比如用 `nohup` 启动时的 SIGHUP）继续被忽略。运行时进程各在自己的进程组里，终端的 Ctrl-C 只发给 `rutis-host`，由它卸载各行。Windows 上运行时进程各在自己的控制台进程组里，不响应 Ctrl-C；但 Ctrl-Break 和关闭控制台仍会发给它们，这时它们的清理可能来不及执行，所以停止时用 Ctrl-C。关闭控制台时，Windows 还会在几秒后结束 `rutis-host`，不管截止时间多长。
 
@@ -117,6 +118,30 @@ rutis-host: reload rejected: <原因>; nothing changed
 被拒绝时旧的配置继续运行，原因写明是哪一行、什么问题，或者哪一项要重启宿主。行的状态变化照常由状态行打印。重新读取进行中又收到 SIGUSR1、文件又变了，等这一次结束后再读一次；进行中收到终止信号，宿主照常停止。
 
 凭据在拨号和对端连进来时才从环境变量读（见 [凭据](#凭据)），所以重新读取新增的节点行也能连上。环境变量在进程运行期间不变，换 token 仍要重启宿主。
+
+## 运行时结束时
+
+本机运行时（`node`、`py`、`bun`）的进程自己结束（崩溃、被 `kill -9`、插件让进程退出）时，`rutis-host` 按这个运行时的 `restart` 处理：
+
+| `restart` | 做法 |
+| --- | --- |
+| `"no"`（默认） | 不处理：它的行回到 `waiting for its services`，其他运行时和它们的行照常运行；要让它回来，重启宿主 |
+| `"on-failure"` | 等一会儿后重新启动它，它的行随之恢复运行（重新加载，插件的 `apply` 再执行一次）；打印 `runtime <名字>: restarting`，起来后打印 `runtime <名字>: running` |
+| `"exit"` | 卸载其他所有行（每个清理执行一次）后以 3 退出，由 systemd、Kubernetes 等重启整个宿主；stderr 打印 `rutis-host: runtime <名字> ended (<原因>), and its restart is "exit": stopping; …` |
+
+`on-failure` 的等待和上限是固定的，不能配置：
+
+- 第一次重启前等 1 秒，之后每次翻倍，最多 30 秒；
+- 运行满 60 秒后才结束的，下一次重新从 1 秒开始；
+- 5 分钟内已经重启过 5 次又结束时不再重启，打印 `runtime <名字>: gave up after 5 restarts within 5 minutes`，它留在 `down`，和 `"no"` 一样（启动即崩溃的插件因此最多重启 5 次）。
+
+其他说明：
+
+- 进程内存里的状态随崩溃丢失，重启不会多丢；正在进行的调用已经显式失败，不会自动重试。会再执行一次的是插件启动时做的事（`apply`），和手动重启宿主一样。
+- 宿主停止时（收到终止信号、`exit` 策略）不再重启任何运行时；[运行中改配置](#运行中改配置)删掉的运行时也不会重启。
+- `restart` 是运行时的设置，运行中改它要重启宿主。
+- `dev` 用同样的规则和默认值；在 `rutis.dev.json` 里写 `"runtimes": { "py": { "restart": "on-failure" } }`（项目自己的那个运行时只取 `restart`）。
+- Go 运行时还没有这个设置（崩溃后留在 `down`，换了二进制后有行用到时再启动）；远程运行时和节点行的 link 自己重连，不受它影响。
 
 ## 输出
 
@@ -178,13 +203,15 @@ rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-
 
 | 键 | 字段 | 作用 |
 | --- | --- | --- |
-| `node` | `project`（默认 `.`）、`runtime` | 启动 Node 运行时。插件包从 `project` 的 `package.json` 解析；`@arcships/rutis-runtime` 装在这里（或由 `runtime` 指定，或用 npm 版 rutis-host 自带的） |
-| `bun` | `project`（默认 `.`）、`runtime`、`program` | 启动 Bun 运行时，行名 `bun:<模块>`。模块从 `project` 解析（`node_modules` 里的包、`./相对路径`）；`@arcships/rutis-bun` 装在这里（或由 `runtime` 指定）；`program` 是 Bun 可执行文件，默认 `PATH` 上的 `bun`。见 [写一个 Bun 插件](bun-plugin.md) |
-| `py` | `project`（默认 `.`）、`python` | 启动 Python 运行时。解释器默认依次为 `$VIRTUAL_ENV/bin/python`、`<project>/.venv/bin/python`、`python3`（Windows 上为 `Scripts\python.exe` 和 `python`），它的环境里要装 `rutis` 和插件 |
+| `node` | `project`（默认 `.`）、`runtime`、`restart` | 启动 Node 运行时。插件包从 `project` 的 `package.json` 解析；`@arcships/rutis-runtime` 装在这里（或由 `runtime` 指定，或用 npm 版 rutis-host 自带的） |
+| `bun` | `project`（默认 `.`）、`runtime`、`program`、`restart` | 启动 Bun 运行时，行名 `bun:<模块>`。模块从 `project` 解析（`node_modules` 里的包、`./相对路径`）；`@arcships/rutis-bun` 装在这里（或由 `runtime` 指定）；`program` 是 Bun 可执行文件，默认 `PATH` 上的 `bun`。见 [写一个 Bun 插件](bun-plugin.md) |
+| `py` | `project`（默认 `.`）、`python`、`restart` | 启动 Python 运行时。解释器默认依次为 `$VIRTUAL_ENV/bin/python`、`<project>/.venv/bin/python`、`python3`（Windows 上为 `Scripts\python.exe` 和 `python`），它的环境里要装 `rutis` 和插件 |
 | `go` | `dir`、`binaries`、`start`（`on-demand` 默认 / `eager`）、`idle`（秒，默认 60）、`project`（默认 `.`） | Go 插件：一个二进制一个运行时进程。`dir` 里含 Go SDK 标记的可执行文件都算（整个目录被视为受信任，应是专用目录），`binaries` 列出单个文件。运行时名由文件名得出（`netkit` → `go-netkit`）。按需启动的运行时在第一次有行用到时启动、空闲 `idle` 秒后停下；`eager` 全部启动并一直运行（不能同时写 `idle`）。换了二进制，重启宿主后生效 |
 | `remote` | `name`、`language`、`listen`、`instances` | 别的机器上的运行时：经 `rows` 里 `"runtime": "<name>"` 的节点行连接，见 [连接节点](nodes.md)；或写 `listen` 与 `instances`，由运行时连进来，见下 |
 
 缺少运行时包时，启动失败并给出安装命令。
+
+`node`、`py`、`bun` 的 `restart`（`"no"` 默认、`"on-failure"`、`"exit"`）决定运行时进程自己结束时怎么办，见 [运行时结束时](#运行时结束时)。
 
 #### 连进来的运行时
 

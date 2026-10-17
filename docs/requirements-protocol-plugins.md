@@ -90,7 +90,8 @@ ctx.plugin(生成的挂载插件)       <- 构建时由原 TS 插件自动生成
 
 - 修改 rutis 内核或 Cordis。
 - 为追求与原生无差别而建设的机制：共享内存版本页、跨框架统一事件队列、分布式 GC。
-- 部署平台、插件市场、自动重启、重连恢复、操作系统沙箱。
+- 部署平台、插件市场、操作系统沙箱。
+- rutis 库本身不自动重启进程、不重放调用。后来在这之外补上的：节点行和远程运行时的 link 断开后自己重连（[连接节点](guide/nodes.md)）；`rutis-host` 的本机运行时可按配置在崩溃后重启（`restart`，默认不重启，#274，见 [rutis-host](guide/rutis-host.md#运行时结束时)）。
 - 其他语言的接入。2026-10-03 调研后定为**不在 rutis 内做**：rutis 只做与同范式的 Cordis 之间的挂载（rutis 为宿主，反方向保持冻结）。PowerShell、Bash、AppleScript 等没有 Cordis 范式的语言，以及 min_cordis（Python），确有需求时在 rutis 之外以普通插件实现，只用 rutis / rutis-interop 的公开 API。理由见[决策记录](decision-multilang-2026-10-03.md)。
 
 历史需求与方案见 [#66](https://github.com/arcships/rutis/issues/66)—[#70](https://github.com/arcships/rutis/issues/70)、[旧设计](design-protocol-plugins-2026-09-25.md)，以及 [#74](https://github.com/arcships/rutis/pull/74)（内核事件队列，已停止推进）；它们不作为本需求的依据。

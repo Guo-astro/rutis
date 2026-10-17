@@ -4,9 +4,10 @@
 //! `audit` uses `report`, a TS probe uses both. The Python runtime is
 //! killed (`kill -9`) while a call into it is in progress; then the host is
 //! stopped and started again with the same configuration, which is how a
-//! killed runtime comes back: `rutis-host run` does not start a runtime
-//! again, nor watch rutis.json (maintainer decision Q1 of the plan). The
-//! residue checks end it (Q5.4.2).
+//! killed runtime comes back by default (maintainer decision Q1 of the
+//! plan). With `"restart": "on-failure"` (#274) the host starts it again
+//! itself, and its rows come back while the host runs. The residue checks
+//! end each (Q5.4.2).
 //!
 //! Windows: no Bun row. Bun is not declared on Windows (Bun design §10,
 //! phase B3) and no Windows CI job installs it.
@@ -95,6 +96,11 @@ struct Project {
 }
 
 fn project(s: &Scenario) -> Project {
+    project_with(s, json!({}))
+}
+
+/// [`project`], with `py` as the Python runtime's settings.
+fn project_with(s: &Scenario, py: serde_json::Value) -> Project {
     s.link_node_sdk();
     s.write("store.py", STORE);
     s.write("report.ts", REPORT);
@@ -102,7 +108,7 @@ fn project(s: &Scenario) -> Project {
         json!({ "id": "store", "name": "py:store" }),
         json!({ "id": "report", "name": "./report.ts" }),
     ];
-    let mut runtimes = json!({ "node": {}, "py": {} });
+    let mut runtimes = json!({ "node": {}, "py": py });
     let mut uses = vec!["report"];
     if BUN {
         s.link(
@@ -293,6 +299,53 @@ fn a_killed_runtime_fails_its_calls_and_a_restart_recovers() {
     );
 
     // 4. Stopped; nothing is left (the residue checks).
+    stop(&mut host);
+    s.finish();
+}
+
+/// `"restart": "on-failure"`: the killed Python runtime is started again
+/// by the host, which keeps running; the rows that waited for it run
+/// again, calls through every row work again, and the other runtimes are
+/// the same processes.
+///
+/// risk: C3 (a runtime's crash stops other runtimes or unrelated rows)
+///
+/// guarantee: host/runtime-restart, host/runtime-state-lines
+#[test]
+fn a_killed_runtime_restarted_on_failure_brings_its_rows_back() {
+    let s = Scenario::new("runtime-restart");
+    let project = project_with(&s, json!({ "restart": "on-failure" }));
+    let mut host = start(&s, &project);
+    calls_work(&mut host, &project);
+    let pid = host.pid();
+
+    let before = s.descendants(&host);
+    let killed = python(&before);
+    assert!(
+        !killed.is_empty(),
+        "no Python runtime among the host's processes: {before:?}"
+    );
+    host.skip_written();
+    for pid in &killed {
+        s.kill(&host, *pid);
+    }
+    host.expect("runtime py: down (");
+    host.expect("runtime py: restarting");
+    host.expect("runtime py: running");
+    for row in rows().into_iter().chain(["probe"]) {
+        host.expect(&format!("{row}: running"));
+    }
+    project.probe.started(&mut host);
+    calls_work(&mut host, &project);
+    let after = s.descendants(&host);
+    assert_eq!(others(&after), others(&before), "the other runtimes");
+    let restarted = python(&after);
+    assert!(
+        !restarted.is_empty() && restarted.iter().all(|pid| !killed.contains(pid)),
+        "the Python runtime after the restart: {after:?}"
+    );
+    assert_eq!(host.pid(), pid, "the host is the same process");
+
     stop(&mut host);
     s.finish();
 }

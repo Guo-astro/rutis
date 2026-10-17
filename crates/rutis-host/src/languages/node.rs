@@ -8,7 +8,7 @@ use rutis_loader::RuntimeResolver;
 use serde_json::{json, Value};
 
 use super::{id_of, package_entry, Language};
-use crate::config::{file_url, NodeRuntime, Runtimes};
+use crate::config::{file_url, NodeRuntime, Restart, Runtimes};
 use crate::host::Error;
 
 pub struct Node;
@@ -24,6 +24,20 @@ impl Language for Node {
 
     fn settings(&self, runtimes: &Runtimes) -> Option<String> {
         runtimes.node.as_ref().map(|node| format!("{node:?}"))
+    }
+
+    fn restart(&self, runtimes: &Runtimes) -> Restart {
+        runtimes
+            .node
+            .as_ref()
+            .map_or(Restart::No, |node| node.restart)
+    }
+
+    /// The dev file's `restart`; the project's other settings stay.
+    fn dev_file(&self, own: &mut Runtimes, dev: &Runtimes) {
+        if let (Some(own), Some(dev)) = (&mut own.node, &dev.node) {
+            own.restart = dev.restart;
+        }
     }
 
     fn rebase(&self, runtimes: &mut Runtimes, at: &dyn Fn(&mut PathBuf)) {
@@ -81,6 +95,7 @@ impl Language for Node {
         let row = json!({ "id": id_of(&name), "name": file_url(&entry), "config": {} });
         let runtimes = Runtimes {
             node: Some(NodeRuntime {
+                restart: Restart::No,
                 project: dir.to_owned(),
                 runtime: None,
             }),

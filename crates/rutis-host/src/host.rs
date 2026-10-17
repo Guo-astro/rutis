@@ -3,7 +3,7 @@
 //! loader that runs the rows.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
@@ -22,7 +22,7 @@ use rutis_loader::{
     RuntimeRows, RuntimeRowsPlugin, ServiceCatalog,
 };
 
-use crate::config::{token, HostConfig};
+use crate::config::{token, HostConfig, Restart};
 use crate::errln;
 use crate::languages::{self, Mount, LANGUAGES};
 
@@ -50,6 +50,25 @@ pub struct Host {
     /// The peers whose links this host's identity accepts (peer rows that
     /// listen); none when an embedding brought its own identity.
     accepted: Option<Accepted>,
+    /// What each local runtime's `restart` says, by name.
+    restarts: Vec<(String, Restart)>,
+    /// The tasks watching the local runtimes ([`Host::supervise`]), by
+    /// name.
+    supervisors: Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
+}
+
+/// The local runtimes whose `restart` is `exit` that ended
+/// ([`Host::supervise`]).
+pub struct Exits(tokio::sync::mpsc::UnboundedReceiver<(String, String)>);
+
+impl Exits {
+    /// The next runtime that ended, and why; never, when none can.
+    pub async fn next(&mut self) -> (String, String) {
+        match self.0.recv().await {
+            Some(ended) => ended,
+            None => std::future::pending().await,
+        }
+    }
 }
 
 /// Registers rows compiled into a program ([`Embedding::builtins`]).
@@ -266,6 +285,16 @@ impl Host {
                 .await
                 .map_err(|error| format!("remote runtime {name}: {error}"))?;
         }
+        let restarts = LANGUAGES
+            .iter()
+            .filter(|language| fibers.iter().any(|(name, _)| name == language.key()))
+            .map(|language| {
+                (
+                    language.key().to_owned(),
+                    language.restart(&config.runtimes),
+                )
+            })
+            .collect();
         // What waits for the loader: Go's runtimes.
         let mut go = None;
         for later in later {
@@ -282,7 +311,54 @@ impl Host {
             listening,
             config: config.clone(),
             accepted,
+            restarts,
+            supervisors: Mutex::default(),
         })
+    }
+
+    /// Watch each local runtime as its `restart` says, from now on
+    /// ([`crate::restart::supervise`]): `on-failure` starts it again when
+    /// its process ends on its own; one whose `restart` is `exit` comes out
+    /// of the [`Exits`] returned when it ends, for the host to stop.
+    pub fn supervise(&self) -> Exits {
+        let (send, exits) = tokio::sync::mpsc::unbounded_channel();
+        let mut supervisors = self.supervisors.lock().unwrap();
+        for (name, restart) in &self.restarts {
+            let fiber = self.fibers.iter().find(|(runtime, _)| runtime == name);
+            let handle = self.runtimes.iter().find(|(runtime, _)| runtime == name);
+            let (Some((_, fiber)), Some((_, handle)), Restart::OnFailure | Restart::Exit) =
+                (fiber, handle, restart)
+            else {
+                continue;
+            };
+            let (name, fiber, handle, restart) =
+                (name.clone(), fiber.clone(), handle.clone(), *restart);
+            let send = send.clone();
+            let task = tokio::spawn({
+                let name = name.clone();
+                async move {
+                    let supervised =
+                        crate::restart::supervise(&name, &handle, &fiber, restart).await;
+                    if let crate::restart::Supervised::Exit(why) = supervised {
+                        let _ = send.send((name, why));
+                    }
+                }
+            });
+            supervisors.push((name, task));
+        }
+        Exits(exits)
+    }
+
+    /// Stop watching the runtime `name`, or every runtime: the host is
+    /// about to stop it.
+    fn unsupervise(&self, name: Option<&str>) {
+        self.supervisors.lock().unwrap().retain(|(runtime, task)| {
+            let stop = name.is_none_or(|name| name == runtime);
+            if stop {
+                task.abort();
+            }
+            !stop
+        });
     }
 
     /// Stop the local runtime `name` (`node`, `py`, `bun`): its plugin
@@ -294,6 +370,7 @@ impl Host {
             .iter()
             .position(|(runtime, _)| runtime == name)
             .ok_or_else(|| format!("no {name} runtime runs"))?;
+        self.unsupervise(Some(name));
         let (_, fiber) = self.fibers.remove(index);
         self.runtimes.retain(|(runtime, _)| runtime != name);
         fiber
@@ -515,6 +592,8 @@ impl Host {
     /// running once. Waits up to `deadline` for the cleanups; after it,
     /// the shutdown goes on and the error says so.
     pub async fn shut_down(&self, deadline: Duration) -> Result<(), Unfinished> {
+        // A runtime ending now is not restarted, nor does it end the host.
+        self.unsupervise(None);
         self.root
             .shutdown_with_timeout(deadline)
             .await
@@ -981,6 +1060,7 @@ mod tests {
             id: "test".into(),
             runtimes: Runtimes {
                 node: Some(NodeRuntime {
+                    restart: crate::config::Restart::No,
                     project: dir.path().to_owned(),
                     runtime: Some(repo().join("node/rutis-runtime")),
                 }),
@@ -1020,6 +1100,7 @@ mod tests {
             id: "test".into(),
             runtimes: Runtimes {
                 py: Some(PythonRuntime {
+                    restart: crate::config::Restart::No,
                     project: dir.path().to_owned(),
                     python: std::env::var_os("RUTIS_PYTHON").map(PathBuf::from),
                 }),
@@ -1058,6 +1139,7 @@ mod tests {
             id: "test".into(),
             runtimes: Runtimes {
                 py: Some(PythonRuntime {
+                    restart: crate::config::Restart::No,
                     project: dir.path().to_owned(),
                     python: std::env::var_os("RUTIS_PYTHON").map(PathBuf::from),
                 }),
@@ -1106,6 +1188,7 @@ mod tests {
             id: "test".into(),
             runtimes: Runtimes {
                 bun: Some(BunRuntime {
+                    restart: crate::config::Restart::No,
                     project: dir.path().to_owned(),
                     runtime: Some(repo().join("bun/rutis-bun")),
                     program: None,
@@ -1133,6 +1216,7 @@ mod tests {
             id: "test".into(),
             runtimes: Runtimes {
                 bun: Some(BunRuntime {
+                    restart: crate::config::Restart::No,
                     project: PathBuf::from("."),
                     runtime: None,
                     program: None,
