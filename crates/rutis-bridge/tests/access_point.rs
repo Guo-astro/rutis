@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use rutis::{BoxFuture, Ctx, FiberView};
+use rutis::{BoxFuture, Ctx, FiberView, Plugin};
 use rutis_bridge::channel::{Channel, PeerId};
 use rutis_bridge::session::{Connection, Dispatch, Endpoint, Format, Reply, Value};
 use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
@@ -386,15 +386,49 @@ async fn a_static_link_and_an_access_point_share_a_listener() {
     assert!(stopped.contains("already registered"), "{stopped}");
 }
 
+/// A listening link is registered once its apply returns, not later in the
+/// task it spawns: a far end dialing right after is routed to it, not
+/// refused as unknown (and kept waiting as rejected) because only the
+/// access point was registered on the listener yet (#411). On the
+/// current-thread runtime, with the apply called directly, nothing the
+/// link spawned has run before the dial.
+#[tokio::test]
+async fn a_listening_link_is_registered_once_applied() {
+    let main = main().await;
+    (&main.root.plugin(IdentityPlugin::new(
+        "main",
+        StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
+    )))
+        .await
+        .unwrap();
+    let link = LinkPlugin::new(LinkConfig::listen(id("mac"), "memory", "main", "main-in"));
+    let state = link.state();
+    link.apply(&main.root).await.unwrap();
+    assert_eq!(*state.borrow(), LinkState::Connecting);
+    let identity: Arc<dyn Identity> = Arc::new(
+        StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
+    );
+    let dialed = main
+        .transport
+        .dial(
+            &Dial::address("main-in")
+                .peer(id("main"))
+                .identity(identity)
+                .protocol(protocol()),
+        )
+        .await;
+    assert!(dialed.is_ok(), "{:?}", dialed.err());
+}
+
 /// Of two connections of one id, the one that arrived later is current,
 /// even if the earlier one greets after it: a stale connection whose hello
 /// was held up does not take over.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_earlier_connection_greeting_late_does_not_take_over() {
     let mut main = main().await;
+    // Delivered before the fresh one, and so counted, however the tasks of
+    // the two connections are scheduled: no wait between them.
     let stale = dial_channel(&main.transport, "shared").await.unwrap();
-    // Delivered and counted before the fresh one arrives.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let _fresh = runtime(&main.transport, "pixel", "shared").await;
     assert!(matches!(
         next(&mut main.events).await,

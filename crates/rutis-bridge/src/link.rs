@@ -18,7 +18,9 @@ use tokio::sync::{mpsc, watch};
 
 use crate::access_point::Release;
 use crate::peer::{Operations, Peer};
-use crate::{identity_key, peer_key, transport_key, Dial, Identity, Registration, Transport};
+use crate::{
+    identity_key, peer_key, transport_key, Dial, Identity, Registered, Registration, Transport,
+};
 
 /// The session protocol links speak, as a transport subprotocol.
 pub fn protocol() -> String {
@@ -223,7 +225,17 @@ impl Plugin for LinkPlugin {
                 state: self.state.clone(),
                 generation: 0,
             };
-            let task = tokio::spawn(link.run());
+            // A listening link registers before its apply returns: once it
+            // is applied, its far end is routed to it, also on a listener an
+            // access point already registered on, where an unknown
+            // credential is refused, not retried (#411).
+            let task = match self.config.connect.clone() {
+                Connect::Dial(address) => tokio::spawn(link.dialing(address)),
+                Connect::Listen(listener) => match link.register(listener) {
+                    Some(listening) => tokio::spawn(link.listening(listening)),
+                    None => tokio::spawn(async {}),
+                },
+            };
             let state = self.state.clone();
             ctx.effect(move || {
                 Effect::Disposer(Box::new(move || {
@@ -403,13 +415,6 @@ impl Link {
         live.end(&reason).await;
     }
 
-    async fn run(mut self) {
-        match self.config.connect.clone() {
-            Connect::Dial(address) => self.dialing(address).await,
-            Connect::Listen(listener) => self.listening(listener).await,
-        }
-    }
-
     /// Open a session on `channel` and, once the far end greeted as the
     /// expected endpoint, provide the peer.
     async fn start(&mut self, channel: Channel) -> Result<Live, Error> {
@@ -454,7 +459,7 @@ impl Link {
         tokio::time::sleep(retry_in).await;
     }
 
-    async fn dialing(&mut self, address: String) {
+    async fn dialing(mut self, address: String) {
         let dial = Dial::address(address)
             .peer(self.config.peer.clone())
             .identity(self.identity.clone())
@@ -525,8 +530,10 @@ impl Link {
         }
     }
 
-    async fn listening(&mut self, listener: String) {
-        let (sender, mut accepted) = mpsc::unbounded_channel::<Channel>();
+    /// Register on `listener` for the far end. If the listener refuses,
+    /// the link is stopped (as `Incompatible`) and there is nothing to run.
+    fn register(&self, listener: String) -> Option<Listening> {
+        let (sender, accepted) = mpsc::unbounded_channel::<Channel>();
         let registered = self.transport.register(Registration {
             listener,
             peer: self.config.peer.clone(),
@@ -538,17 +545,32 @@ impl Link {
                 }
             }),
         });
-        let _registered = match registered {
-            Ok(registered) => registered,
+        match registered {
+            Ok(registered) => {
+                self.state.send_replace(LinkState::Connecting);
+                Some(Listening {
+                    _registered: registered,
+                    accepted,
+                })
+            }
             Err(error) => {
                 self.state.send_replace(LinkState::Stopped {
                     failure: Failure::Incompatible,
                     error: error.to_string(),
                 });
-                return;
+                None
             }
-        };
-        self.state.send_replace(LinkState::Connecting);
+        }
+    }
+
+    /// Accept the far end's connections delivered to the registration, a
+    /// newer one taking over, until the link is stopped (the task aborted,
+    /// which revokes the registration).
+    async fn listening(mut self, listening: Listening) {
+        let Listening {
+            _registered,
+            mut accepted,
+        } = listening;
         let mut current: Option<Live> = None;
         // Revocations are not undone: once revoked, the far end stays so.
         let mut revoked = false;
@@ -611,6 +633,13 @@ impl Link {
             }
         }
     }
+}
+
+/// A listening link's registration and the connections handed over to it.
+struct Listening {
+    /// Revoked when dropped.
+    _registered: Registered,
+    accepted: mpsc::UnboundedReceiver<Channel>,
 }
 
 /// Exponential backoff with jitter.
