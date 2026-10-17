@@ -1085,6 +1085,20 @@ impl GoRuntimesHandle {
             })
             .collect()
     }
+
+    /// The state of each Go runtime started and not stopped since (a
+    /// crashed one included), by name. Unlike [`GoRuntimesHandle::runtimes`]
+    /// it reads no binary: for a status checked often.
+    pub fn states(&self) -> Vec<(String, RuntimeState)> {
+        let slots = self.inner.slots.lock().unwrap();
+        let mut states: Vec<(String, RuntimeState)> = slots
+            .running
+            .iter()
+            .map(|(name, slot)| (name.clone(), slot.handle.state()))
+            .collect();
+        states.sort_by(|a, b| a.0.cmp(&b.0));
+        states
+    }
 }
 
 impl Inner {

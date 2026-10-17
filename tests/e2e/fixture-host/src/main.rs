@@ -100,7 +100,7 @@ async fn run(path: &Path) -> i32 {
         stop(&host).await;
         return 1;
     }
-    rutis_host::status::follow(host.loader.clone(), host.peers.clone());
+    rutis_host::status::follow(host.followed());
 
     // Commands from stdin; the channel closes with it.
     let (commands, mut received) = tokio::sync::mpsc::unbounded_channel();

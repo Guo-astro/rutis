@@ -17,7 +17,7 @@ The npm distribution includes the Node runtime (`@arcships/rutis-runtime`), and 
 
 | Command | Purpose |
 | --- | --- |
-| `rutis-host run [rutis.json]` | Runs the configuration and prints each row's status changes and the state of node rows' links (see [What `run` prints](#what-run-prints)). Press Ctrl-C to stop (see [Stopping and exit status](#stopping-and-exit-status)). |
+| `rutis-host run [rutis.json]` | Runs the configuration and prints each row's status changes, the state of node rows' links and local runtimes that end (see [What `run` prints](#what-run-prints)). Press Ctrl-C to stop (see [Stopping and exit status](#stopping-and-exit-status)). |
 | `rutis-host dev [directory]` | Runs a plugin project with its `rutis.dev.json` file and reloads it when files change; a Go project is rebuilt, restarting only its runtime. |
 | `rutis-host check [rutis.json]` | Without running any plugin, checks that each row can run (see [Checking a configuration](#checking-a-configuration)) and prints its version, dependencies, provided services, and configuration schema, and lists every Go binary (runtime name, SDK, plugin API, plugins). Exits with a nonzero status if a row or binary cannot run. Without `rutis.json`, checks the plugin project in the current directory. |
 | `rutis-host new <name> --lang node\|bun\|python\|go` | Creates a plugin project. |
@@ -34,6 +34,15 @@ rutis-host: listening on <listener name> <address:port>
 ```
 
 Then each change of a row's state prints `<row id>: <state>` (`running`, `waiting for its services`, `starting`, `failed: …`, `disabled`, `removed`, and so on; a copy inside an instance is `<row id> in PluginId(n)`).
+
+A local runtime (`node`, `py`, `bun`, Go's `go-<binary>`) whose process ends on its own, or that cannot start, prints a line, and another when it runs again; one that `rutis-host` stops (the host stopping, a Go runtime stopping when idle) prints none:
+
+| Output | Meaning |
+| --- | --- |
+| `runtime <name>: down (<reason>)` | The runtime process ended; the reason says how, such as `exited with signal: 9 (SIGKILL)` or `exited with exit status: 1`; or it could not start, and the reason is the error. Its rows go back to `waiting for its services`; other runtimes and their rows go on. |
+| `runtime <name>: running` | A runtime that printed `down` runs again (a Go runtime rebuilt by `dev`). |
+
+A runtime that stays down prints once; the reason in parentheses is for people, and its wording is not guaranteed.
 
 A node row's (`rutis-bridge/peer`) state only says that the row runs; whether its link is connected is printed on a line of its own, when the link's state changes:
 

@@ -206,7 +206,7 @@ fn stop(host: &mut Host) {
 /// call in progress when its runtime's session ends fails explicitly, not
 /// a hang; here the session ends with the killed Python runtime; a runtime
 /// process that ends takes its services with it).
-/// guarantee: host/row-state-lines
+/// guarantee: host/row-state-lines, host/runtime-state-lines
 #[test]
 fn a_killed_runtime_fails_its_calls_and_a_restart_recovers() {
     let s = Scenario::new("runtime-crash");
@@ -249,6 +249,9 @@ fn a_killed_runtime_fails_its_calls_and_a_restart_recovers() {
     // The call in progress fails, naming why (C4).
     let error = probe.answer(&mut host, held).unwrap_err();
     assert!(error.contains("exited"), "the call in progress: {error}");
+    // The host says which runtime went down, and how its process ended.
+    let down = host.expect("runtime py: down (");
+    assert!(down.contains("exited with"), "{down}");
     // `store` is withdrawn: the rows that use it, and what uses those,
     // wait for it; nothing failed.
     let waiting: Vec<&str> = rows().into_iter().chain(["probe"]).collect();

@@ -167,7 +167,7 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     };
     let signal = match start(&host, started, deadline, &mut signals).await {
         Started::Running => {
-            status::follow(host.loader.clone(), host.peers.clone());
+            status::follow(host.followed());
             signals.next().await
         }
         Started::Signal(signal) => signal,
@@ -279,7 +279,7 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
     // Before saying it runs: a change made once it says so is a change.
     let mut seen = project::sources(&dir);
     outln!("rutis-host dev: running {id}; changes reload it (Ctrl-C ends)");
-    status::follow(host.loader.clone(), host.peers.clone());
+    status::follow(host.followed());
     loop {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(400)) => {}
