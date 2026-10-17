@@ -4,12 +4,12 @@
 //! cross both ways. The Cordis side reports on stdout.
 #![cfg(feature = "peer")]
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+mod common;
 
+use std::sync::{Arc, Mutex};
+
+use common::runtimes::{id, repo, row_state, COLD};
 use rutis::{BoxFuture, CordisError, Ctx, FiberState, Listener};
-use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value as RpcValue};
 use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
@@ -18,38 +18,19 @@ use rutis_bridge::{
     NodeEvent, StaticIdentity,
 };
 use rutis_loader::{
-    Chain, EntryStatus, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, PeerResolver,
-    PeerRowsPlugin,
+    Chain, Layer, LoaderOptions, LoaderPlugin, Patch, PeerResolver, PeerRowsPlugin,
 };
-use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
 use tokio::io::AsyncBufReadExt;
 
-fn id(s: &str) -> PeerId {
-    PeerId::new(s).unwrap()
-}
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
 struct Clock;
 
-/// Twice HANG_GUARD: a Node process starts cold, as a full node (#238).
-const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 impl HostDispatch for Clock {
     fn invoke(&self, _: &str, _: RpcValue) -> Reply {
         Ok(json!(42).into())
     }
     fn methods(&self) -> Option<Value> {
         Some(json!({ "now": "sync" }))
-    }
-}
-
-fn row_state(loader: &Loader, id: &str) -> Option<FiberState> {
-    match loader.get(id)?.status {
-        EntryStatus::Running(snapshot) => Some(snapshot.state),
-        _ => None,
     }
 }
 

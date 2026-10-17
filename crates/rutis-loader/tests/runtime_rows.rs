@@ -9,6 +9,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use common::runtimes::{layer, row_state, Probe};
 use rutis::{BoxFuture, CordisError, Ctx, EventKey, FiberState, FiberView, Listener};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
@@ -17,7 +18,7 @@ use rutis_loader::{
     Chain, EntryStatus, Layer, Loader, LoaderChanged, LoaderError, LoaderOptions, LoaderPlugin,
     Patch, RuntimeResolver, RuntimeRows, RuntimeRowsPlugin, ServiceCatalog,
 };
-use rutis_test_support::{eventually_with, until, within};
+use rutis_test_support::{until, within};
 use serde_json::{json, Value};
 
 const PROVIDER: &str = r#"
@@ -49,40 +50,6 @@ const FLAG: &str = r#"
 export const name = 'flag'
 export function apply(ctx) { ctx.provide('late', { on: true }) }
 "#;
-
-#[derive(Clone, Default)]
-struct Probe(Arc<Mutex<Vec<String>>>);
-
-impl HostDispatch for Probe {
-    fn invoke(&self, method: &str, args: RpcValue) -> Reply {
-        assert_eq!(method, "record");
-        let [line]: [String; 1] = rutis_bridge::session::decode_value(args)?;
-        self.0.lock().unwrap().push(line);
-        Ok(RpcValue::Undefined)
-    }
-}
-
-impl Probe {
-    fn take(&self) -> Vec<String> {
-        std::mem::take(&mut *self.0.lock().unwrap())
-    }
-
-    async fn wait_for(&self, line: &str) {
-        eventually_with(
-            || {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|l| l == line)
-                    .then_some(())
-            },
-            &format!("{line:?} recorded"),
-            || format!("{:?}", self.0.lock().unwrap()),
-        )
-        .await
-    }
-}
 
 fn node_package() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime")
@@ -439,18 +406,6 @@ export const name = 'exit'
 export function apply() { setTimeout(() => process.exit(17), 200) }
 "#;
 
-fn rows(rows: Vec<Value>) -> Vec<Layer> {
-    let patches: Vec<Patch> = serde_json::from_value(json!([{ "insert": rows }])).unwrap();
-    vec![Layer::new("rows", patches)]
-}
-
-fn row_state(loader: &Loader, id: &str) -> Option<FiberState> {
-    match loader.get(id)?.status {
-        EntryStatus::Running(snapshot) => Some(snapshot.state),
-        _ => None,
-    }
-}
-
 fn write_plugins(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let write = |name: &str, text: &str| {
         let path = dir.join(name);
@@ -475,7 +430,7 @@ async fn rows_unload_before_the_runtime() {
         row("p", &provider, json!({ "who": "rust" }), json!(null)),
         row("c", &consumer, json!({ "tag": "c" }), json!(null)),
     ];
-    loader.reconcile(rows(base), None).await.unwrap();
+    loader.reconcile(layer(base), None).await.unwrap();
     probe.wait_for("c: hello rust").await;
 
     // The row's own cleanup still reaches Cordis: the process outlives it.
@@ -504,13 +459,13 @@ async fn a_dead_process_stops_the_rows_until_restart() {
         row("p", &provider, json!({ "who": "rust" }), json!(null)),
         row("c", &consumer, json!({ "tag": "c" }), json!(null)),
     ];
-    loader.reconcile(rows(base.clone()), None).await.unwrap();
+    loader.reconcile(layer(base.clone()), None).await.unwrap();
     probe.wait_for("c: hello rust").await;
     probe.take();
 
     let mut dying = base.clone();
     dying.push(row("x", &exit, json!({}), json!(null)));
-    loader.reconcile(rows(dying), None).await.unwrap();
+    loader.reconcile(layer(dying), None).await.unwrap();
     // The runtime withdraws its service; rows wait instead of holding a
     // dead process, and the runtime itself stays up for a restart.
     until(
@@ -537,7 +492,7 @@ async fn a_dead_process_stops_the_rows_until_restart() {
         waiting.injects
     );
 
-    loader.reconcile(rows(base), None).await.unwrap();
+    loader.reconcile(layer(base), None).await.unwrap();
     runtime.restart().await.unwrap();
     probe.wait_for("c: hello rust").await;
     until(
@@ -563,7 +518,7 @@ async fn rows_wait_for_their_hosts_not_the_runtime() {
         row("p", &provider, json!({ "who": "rust" }), json!(null)),
         row("c", &consumer, json!({ "tag": "c" }), json!(null)),
     ];
-    let report = loader.reconcile(rows(base), None).await.unwrap();
+    let report = loader.reconcile(layer(base), None).await.unwrap();
     assert!(report.failures.is_empty(), "{report:?}");
     // The consumer injects `probe`, which nobody provides yet: only it waits.
     until(
@@ -635,7 +590,7 @@ async fn rows_resolved_offline_wait_for_what_they_inject() {
 
     // No runtime yet: the row resolves without its declarations.
     let base = vec![row("c", &consumer, json!({ "tag": "c" }), json!(null))];
-    loader.reconcile(rows(base), None).await.unwrap();
+    loader.reconcile(layer(base), None).await.unwrap();
     assert!(loader.get("c").unwrap().meta["schema"].is_string());
     let offline = loader.get("c").unwrap().plugin.unwrap();
 
@@ -701,7 +656,7 @@ async fn a_runtime_that_cannot_start_does_not_block_resolution() {
     let report = within(
         "resolution, which does not wait for a failed runtime",
         loader.reconcile(
-            rows(vec![row("p", &provider, json!({}), json!(null))]),
+            layer(vec![row("p", &provider, json!({}), json!(null))]),
             None,
         ),
     )
@@ -885,7 +840,7 @@ async fn row_services_are_shared_by_name() {
         row("w", &weather, json!({}), json!(null)),
         row("f", &forecaster, json!({}), json!(null)),
     ];
-    let report = loader.reconcile(rows(base.clone()), None).await.unwrap();
+    let report = loader.reconcile(layer(base.clone()), None).await.unwrap();
     assert!(report.failures.is_empty(), "{report:?}");
     // Rust injects the row's service by name and calls it.
     probe.wait_for("rust: sunny").await;
@@ -898,7 +853,7 @@ async fn row_services_are_shared_by_name() {
 
     // The provider goes: its users stop.
     let remaining: Vec<Value> = base.into_iter().filter(|r| r["id"] != "w").collect();
-    loader.reconcile(rows(remaining), None).await.unwrap();
+    loader.reconcile(layer(remaining), None).await.unwrap();
     probe.wait_for("rust: bye").await;
     until(
         || row_state(&loader, "f") == Some(FiberState::Pending),
@@ -937,7 +892,7 @@ async fn a_row_restarted_while_loading_is_unloaded_in_the_runtime() {
         let slow = slow.clone();
         tokio::spawn(async move {
             loader
-                .reconcile(rows(vec![row("s", &slow, json!({}), json!(null))]), None)
+                .reconcile(layer(vec![row("s", &slow, json!({}), json!(null))]), None)
                 .await
         })
     };
@@ -956,7 +911,7 @@ async fn a_row_restarted_while_loading_is_unloaded_in_the_runtime() {
         "the new generation to run",
     )
     .await;
-    loader.reconcile(rows(Vec::new()), None).await.unwrap();
+    loader.reconcile(layer(Vec::new()), None).await.unwrap();
     until(
         || {
             probe
@@ -1014,7 +969,7 @@ async fn a_row_that_fails_to_load_releases_its_leases() {
     (&runtime).await.unwrap();
     loader
         .reconcile(
-            rows(vec![
+            layer(vec![
                 row("i", &inspector, json!({}), json!(null)),
                 row("b", &broken, json!({}), json!(null)),
             ]),
@@ -1107,7 +1062,7 @@ async fn a_plugin_that_disposes_itself_ends_its_row() {
     );
     let report = loader
         .reconcile(
-            rows(vec![
+            layer(vec![
                 row(
                     "a",
                     &quit,
@@ -1164,7 +1119,7 @@ async fn a_plugin_that_disposes_itself_ends_its_row() {
     let w = loader.get("w").unwrap().plugin;
     let flag_row = row("f", &flag, json!({}), json!(null));
     loader
-        .reconcile(rows(vec![gated.clone()]), None)
+        .reconcile(layer(vec![gated.clone()]), None)
         .await
         .unwrap();
     probe.wait_for("w: bye").await;
@@ -1174,7 +1129,7 @@ async fn a_plugin_that_disposes_itself_ends_its_row() {
     // the gate, so the plugin would not start again; or rutis would have
     // disposed the row's fiber, and it would run as a new one.
     loader
-        .reconcile(rows(vec![gated.clone(), flag_row]), None)
+        .reconcile(layer(vec![gated.clone(), flag_row]), None)
         .await
         .unwrap();
     until(
@@ -1196,7 +1151,7 @@ async fn a_plugin_that_disposes_itself_ends_its_row() {
         json!(null),
     );
     loader
-        .reconcile(rows(vec![gated, failing]), None)
+        .reconcile(layer(vec![gated, failing]), None)
         .await
         .unwrap();
     // Failed is the whole answer, nothing comes after it: the runner never

@@ -1,55 +1,20 @@
 //! Python rows alone: no Node runtime is compiled or started.
 #![cfg(feature = "python")]
 
+mod common;
+
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use common::runtimes::Probe;
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_bridge::session::{Reply, Value as RpcValue};
 use rutis_loader::{
     Chain, Layer, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin,
 };
-use rutis_test_support::{Guard, HANG_GUARD};
-use serde_json::{json, Value};
-
-/// Twice HANG_GUARD: the Python runtime starts cold (#238).
-const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
-
-#[derive(Clone, Default)]
-struct Probe(Arc<Mutex<Vec<String>>>);
-
-impl HostDispatch for Probe {
-    fn invoke(&self, _method: &str, args: RpcValue) -> Reply {
-        let [line]: [String; 1] = rutis_bridge::session::decode_value(args)?;
-        self.0.lock().unwrap().push(line);
-        Ok(RpcValue::Undefined)
-    }
-
-    fn methods(&self) -> Option<Value> {
-        Some(json!({ "record": "sync" }))
-    }
-}
-
-impl Probe {
-    async fn wait_for(&self, line: &str) {
-        COLD.eventually_with(
-            || {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|l| l == line)
-                    .then_some(())
-            },
-            &format!("{line:?} recorded"),
-            || format!("{:?}", self.0.lock().unwrap()),
-        )
-        .await
-    }
-}
+use serde_json::json;
 
 fn plugin(version: &str) -> String {
     format!(

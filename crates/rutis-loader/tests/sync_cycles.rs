@@ -5,10 +5,12 @@
 //! the test opens, fixes the order of the calls: no sleeps.
 #![cfg(all(feature = "node", feature = "python"))]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::time::Duration;
 
+use common::runtimes::{repo, COLD};
 use rutis::{Ctx, FiberState};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
@@ -17,11 +19,8 @@ use rutis_loader::{
     Chain, EntryStatus, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver,
     RuntimeRowsPlugin, ServiceCatalog,
 };
-use rutis_test_support::{recv_within, Guard, HANG_GUARD};
+use rutis_test_support::recv_within;
 use serde_json::{json, Value};
-
-/// Twice HANG_GUARD: several Node and Python runtimes start cold (#238).
-const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 // Every wait has a hang guard (Q7.1): a cycle the host misses
 // hangs. The gate and each synchronous forward hold a worker of the test's
@@ -227,10 +226,6 @@ impl HostDispatch for Gate {
     fn methods(&self) -> Option<Value> {
         Some(json!({ "arrive": "sync" }))
     }
-}
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 fn plugin_url() -> String {

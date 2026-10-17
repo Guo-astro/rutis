@@ -3,10 +3,12 @@
 //! transport.
 #![cfg(feature = "peer")]
 
+mod common;
+
 use std::sync::Arc;
 
+use common::runtimes::{id, NoConfig, Title};
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory, TypeKey};
-use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{host_key, host_key_in, HostDispatch, Reply, Value as RpcValue};
 use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{Credential, IdentityPlugin, StaticIdentity};
@@ -15,13 +17,7 @@ use rutis_loader::{
     LoaderOptions, LoaderPlugin, Patch, PeerResolver, ServiceCatalog,
 };
 use rutis_test_support::eventually;
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{json, Value};
-
-fn id(s: &str) -> PeerId {
-    PeerId::new(s).unwrap()
-}
 
 /// A service answering `get` with a fixed value.
 struct Fixed(Value);
@@ -43,12 +39,6 @@ fn get(service: &Arc<dyn HostDispatch>) -> Value {
         .json()
         .unwrap()
 }
-
-/// The instance's title, given with `with`.
-struct Title(String);
-
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-struct NoConfig {}
 
 /// Provides the instance's `tools`, which tells the instance's title.
 struct Tools {

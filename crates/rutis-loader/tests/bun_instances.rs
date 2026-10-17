@@ -3,26 +3,19 @@
 //! rows share one Bun process; a removed instance leaves nothing in it.
 #![cfg(all(unix, feature = "bun"))]
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+mod common;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, PluginFactory, TypeKey};
+use std::sync::Arc;
+
+use common::runtimes::{active, repo, title, NoConfig, Probe, Title, Tools};
+use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory, TypeKey};
 use rutis_bridge::runtime::LocalRuntime;
-use rutis_bridge::session::{
-    host_key, host_key_in, settle, HostDispatch, Reply, Value as RpcValue,
-};
+use rutis_bridge::session::{host_key, host_key_in, settle, HostDispatch, Value as RpcValue};
 use rutis_loader::{
-    Build, Builtins, Chain, EntryInfo, EntryStatus, Instance, InstanceResult, Layer, Loader,
-    LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
+    Builtins, Chain, EntryInfo, Instance, InstanceResult, Layer, Loader, LoaderOptions,
+    LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
 };
-use rutis_test_support::{Guard, HANG_GUARD};
-use schemars::JsonSchema;
-use serde::Deserialize;
-use serde_json::{json, Value};
-
-/// Twice HANG_GUARD: the Bun, Node and Python runtimes start cold (#238).
-const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
+use serde_json::json;
 
 // ── The language row ────────────────────────────────────────────
 
@@ -38,57 +31,6 @@ export function apply(ctx) {
 "#;
 
 // ── Rust plugins ────────────────────────────────────────────────
-
-#[derive(Clone, Default)]
-struct Probe(Arc<Mutex<Vec<String>>>);
-
-impl HostDispatch for Probe {
-    fn invoke(&self, method: &str, args: RpcValue) -> Reply {
-        assert_eq!(method, "record");
-        let [line]: [String; 1] = rutis_bridge::session::decode_value(args)?;
-        self.0.lock().unwrap().push(line);
-        Ok(RpcValue::Undefined)
-    }
-
-    fn methods(&self) -> Option<Value> {
-        Some(json!({ "record": "sync" }))
-    }
-}
-
-impl Probe {
-    fn has(&self, line: &str) -> bool {
-        self.0.lock().unwrap().iter().any(|l| l == line)
-    }
-
-    async fn wait_for(&self, line: &str) {
-        COLD.eventually_with(
-            || self.has(line).then_some(()),
-            &format!("{line:?} recorded"),
-            || format!("{:?}", self.0.lock().unwrap()),
-        )
-        .await
-    }
-}
-
-/// The instance's `tools`: tells its instance's title.
-struct Tools(String);
-
-impl HostDispatch for Tools {
-    fn invoke(&self, method: &str, _: RpcValue) -> Reply {
-        assert_eq!(method, "title");
-        Ok(json!(self.0).into())
-    }
-
-    fn methods(&self) -> Option<Value> {
-        Some(json!({ "title": "sync" }))
-    }
-}
-
-/// The instance's title, given with `with`.
-struct Title(String);
-
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-struct NoConfig {}
 
 enum Job {
     /// Provide `Tools` at this key.
@@ -170,13 +112,6 @@ impl PluginFactory<NoConfig> for JobFactory {
     }
 }
 
-fn title(build: &Build) -> String {
-    build
-        .value::<Title>()
-        .map(|t| t.0.clone())
-        .unwrap_or_default()
-}
-
 fn builtins() -> Builtins {
     let mut builtins = Builtins::new();
     builtins.register_with::<NoConfig, _, _>("tools", |build| {
@@ -200,10 +135,6 @@ fn builtins() -> Builtins {
 }
 
 // ── Harness ─────────────────────────────────────────────────────
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
 
 struct Fixture {
     root: Ctx,
@@ -285,10 +216,6 @@ impl Fixture {
             .filter(|e| e.id == id && e.instance.is_some())
             .collect()
     }
-}
-
-fn active(entry: &EntryInfo) -> bool {
-    matches!(&entry.status, EntryStatus::Running(s) if s.state == FiberState::Active)
 }
 
 // ── The suite ───────────────────────────────────────────────────

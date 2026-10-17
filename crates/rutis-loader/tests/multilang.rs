@@ -7,22 +7,16 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
 
+use common::runtimes::{layer, repo, row_state, Llm, Probe, COLD};
 use rutis::{Ctx, FiberState, FiberView};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_bridge::session::{Reply, Value as RpcValue};
 use rutis_loader::{
-    Chain, EntryStatus, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver,
-    RuntimeRowsPlugin, ServiceCatalog,
+    Chain, Loader, LoaderOptions, LoaderPlugin, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
 };
-use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
-
-/// Twice HANG_GUARD: the Node and Python runtimes start cold (#238).
-const COLD: Guard = Guard(Duration::from_secs(HANG_GUARD.as_secs() * 2));
 
 // ── The plugins, once per language ──────────────────────────────
 
@@ -162,58 +156,6 @@ export default definePlugin({
 
 // ── Harness ─────────────────────────────────────────────────────
 
-#[derive(Clone, Default)]
-struct Probe(Arc<Mutex<Vec<String>>>);
-
-impl HostDispatch for Probe {
-    fn invoke(&self, method: &str, args: RpcValue) -> Reply {
-        assert_eq!(method, "record");
-        let [line]: [String; 1] = rutis_bridge::session::decode_value(args)?;
-        self.0.lock().unwrap().push(line);
-        Ok(RpcValue::Undefined)
-    }
-
-    fn methods(&self) -> Option<Value> {
-        Some(json!({ "record": "sync" }))
-    }
-}
-
-impl Probe {
-    fn lines(&self) -> Vec<String> {
-        self.0.lock().unwrap().clone()
-    }
-
-    fn position(&self, line: &str) -> Option<usize> {
-        self.0.lock().unwrap().iter().position(|l| l == line)
-    }
-
-    async fn wait_for(&self, line: &str) {
-        COLD.eventually_with(
-            || self.position(line).map(|_| ()),
-            &format!("{line:?} recorded"),
-            || format!("{:?}", self.lines()),
-        )
-        .await
-    }
-}
-
-struct Llm;
-
-impl HostDispatch for Llm {
-    fn invoke(&self, method: &str, _args: RpcValue) -> Reply {
-        assert_eq!(method, "ask");
-        Ok(json!("42").into())
-    }
-
-    fn methods(&self) -> Option<Value> {
-        Some(json!({ "ask": "sync" }))
-    }
-}
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
 /// Plugin files: Python modules in `py/`, JavaScript in `js/`.
 fn write_plugins(dir: &Path) -> (PathBuf, PathBuf) {
     let py = dir.join("py");
@@ -306,11 +248,6 @@ async fn fixture() -> Fixture {
     }
 }
 
-fn rows(rows: Vec<Value>) -> Vec<Layer> {
-    let patches: Vec<Patch> = serde_json::from_value(json!([{ "insert": rows }])).unwrap();
-    vec![Layer::new("rows", patches)]
-}
-
 fn py_row(id: &str, module: &str) -> Value {
     json!({ "id": id, "name": format!("py:{module}"), "config": {} })
 }
@@ -318,13 +255,6 @@ fn py_row(id: &str, module: &str) -> Value {
 fn js_row(fixture: &Fixture, id: &str, file: &str) -> Value {
     let path = fixture.js.join(format!("{file}.mjs"));
     json!({ "id": id, "name": path.to_string_lossy(), "config": {} })
-}
-
-fn row_state(loader: &Loader, id: &str) -> Option<FiberState> {
-    match loader.get(id)?.status {
-        EntryStatus::Running(snapshot) => Some(snapshot.state),
-        _ => None,
-    }
 }
 
 fn all_rows(fixture: &Fixture) -> Vec<Value> {
@@ -348,7 +278,7 @@ async fn both_runtimes_start_cold_and_use_each_other() {
     let fixture = fixture().await;
     let report = fixture
         .loader
-        .reconcile(rows(all_rows(&fixture)), None)
+        .reconcile(layer(all_rows(&fixture)), None)
         .await
         .unwrap();
     assert!(report.failures.is_empty(), "{report:?}");
@@ -374,7 +304,7 @@ async fn python_awaits_node_that_awaits_python() {
     let report = fixture
         .loader
         .reconcile(
-            rows(vec![
+            layer(vec![
                 py_row("pp", "py_provider"),
                 js_row(&fixture, "relay", "js_relay"),
                 py_row("rt", "py_round_trip"),
@@ -404,7 +334,7 @@ async fn a_provider_that_goes_stops_only_its_users() {
         let fixture = fixture().await;
         let loader = &fixture.loader;
         let all = all_rows(&fixture);
-        loader.reconcile(rows(all.clone()), None).await.unwrap();
+        loader.reconcile(layer(all.clone()), None).await.unwrap();
         COLD.until(
             || {
                 ["pp", "pc", "pl", "jp", "jc", "jl"]
@@ -416,7 +346,7 @@ async fn a_provider_that_goes_stops_only_its_users() {
         .await;
 
         let remaining: Vec<Value> = all.into_iter().filter(|r| r["id"] != provider).collect();
-        loader.reconcile(rows(remaining), None).await.unwrap();
+        loader.reconcile(layer(remaining), None).await.unwrap();
         let (language, prefix) = if provider == "pp" {
             ("py", "py")
         } else {
@@ -471,7 +401,7 @@ async fn injected_services_gate_the_plugin() {
     let transitions = common::Transitions::on(&fixture.root);
     loader
         .reconcile(
-            rows(vec![
+            layer(vec![
                 py_row("pg", "py_gated"),
                 js_row(&fixture, "jg", "js_gated"),
             ]),
@@ -553,11 +483,11 @@ async fn a_dead_python_process_stops_only_its_rows() {
     )
     .unwrap();
     let mut all = all_rows(&fixture);
-    loader.reconcile(rows(all.clone()), None).await.unwrap();
+    loader.reconcile(layer(all.clone()), None).await.unwrap();
     fixture.probe.wait_for("js local: native").await;
     fixture.probe.wait_for("py local: native").await;
     all.push(py_row("px", "py_exit"));
-    loader.reconcile(rows(all), None).await.unwrap();
+    loader.reconcile(layer(all), None).await.unwrap();
     COLD.until(
         || {
             ["pp", "pc", "pl", "jc"]
