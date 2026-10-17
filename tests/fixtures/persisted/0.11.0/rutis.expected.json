@@ -1,0 +1,209 @@
+{
+  "format": 1,
+  "id": "edge-host",
+  "runtimes": {
+    "node": {
+      "project": "<dir>"
+    },
+    "py": {
+      "project": "<dir>",
+      "python": "<dir>/.venv/bin/python"
+    },
+    "bun": {
+      "project": "<dir>/edge"
+    },
+    "go": {
+      "binaries": [
+        "<dir>/bin/netkit",
+        "<dir>/bin/dns"
+      ],
+      "start": "eager",
+      "project": "<dir>"
+    },
+    "remote": [
+      {
+        "name": "gpu",
+        "language": "python"
+      },
+      {
+        "name": "office-node",
+        "language": "node"
+      },
+      {
+        "name": "edge-bun",
+        "language": "bun"
+      },
+      {
+        "name": "phone",
+        "language": "python",
+        "listen": "public",
+        "instances": "phones"
+      },
+      {
+        "name": "kiosk",
+        "language": "bun",
+        "listen": "public",
+        "instances": "kiosks"
+      }
+    ]
+  },
+  "listen": [
+    {
+      "name": "public",
+      "address": "[::]:7443",
+      "cert": "<dir>/../tls/server.pem",
+      "key": "<dir>/../tls/server.key"
+    }
+  ],
+  "rows": [
+    {
+      "id": "weather",
+      "name": "weather-plugin",
+      "config": {
+        "city": "Oslo",
+        "units": [
+          "metric"
+        ]
+      },
+      "inject": [
+        "llm",
+        "cache"
+      ]
+    },
+    {
+      "id": "llm",
+      "name": "py:llm_gateway",
+      "isolate": {
+        "http": true
+      }
+    },
+    {
+      "id": "edge-fn",
+      "name": "bun:./fn/edge.ts"
+    },
+    {
+      "id": "dns",
+      "name": "go-dns:resolver"
+    },
+    {
+      "id": "probe",
+      "name": "go:probe",
+      "disabled": true
+    },
+    {
+      "id": "local-tool",
+      "name": "file://<dir>/tools/tool.ts"
+    },
+    {
+      "id": "tools",
+      "group": true,
+      "config": [
+        {
+          "id": "tool-a",
+          "name": "./tools/a.ts"
+        },
+        {
+          "id": "nested",
+          "group": true,
+          "config": [
+            {
+              "id": "tool-c",
+              "name": "../shared/c.mjs"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "per-session",
+      "group": true,
+      "instanced": true,
+      "config": [
+        {
+          "id": "session-state",
+          "name": "session-state-plugin"
+        }
+      ]
+    },
+    {
+      "id": "office",
+      "name": "rutis-bridge/peer",
+      "config": {
+        "peer": "office",
+        "dial": "wss://office.example.com/rutis",
+        "export": [
+          "weather"
+        ],
+        "runtime": "office-node",
+        "transport": "websocket",
+        "identity": "host"
+      }
+    },
+    {
+      "id": "branch",
+      "name": "rutis-bridge/peer",
+      "config": {
+        "peer": "branch",
+        "listen": "public",
+        "transport": "websocket",
+        "identity": "edge"
+      }
+    },
+    {
+      "id": "gpu",
+      "name": "rutis-bridge/peer",
+      "config": {
+        "peer": "gpu",
+        "dial": "wss://gpu.example.com/rutis",
+        "runtime": "gpu",
+        "transport": "websocket",
+        "identity": "host"
+      }
+    },
+    {
+      "id": "embedder",
+      "name": "gpu:embedder"
+    },
+    {
+      "id": "clock",
+      "name": "peer:office/clock"
+    },
+    {
+      "id": "edge-bun",
+      "name": "rutis-bridge/peer",
+      "config": {
+        "peer": "edge-bun",
+        "dial": "wss://edge.example.com/rutis",
+        "runtime": "edge-bun",
+        "transport": "websocket",
+        "identity": "host"
+      }
+    },
+    {
+      "id": "render",
+      "name": "edge-bun:render"
+    },
+    {
+      "id": "phones",
+      "group": true,
+      "instanced": true,
+      "config": [
+        {
+          "id": "camera",
+          "name": "phone:camera"
+        }
+      ]
+    },
+    {
+      "id": "kiosks",
+      "group": true,
+      "instanced": true,
+      "config": [
+        {
+          "id": "screen",
+          "name": "kiosk:screen"
+        }
+      ]
+    }
+  ]
+}

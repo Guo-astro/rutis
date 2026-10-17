@@ -11,7 +11,7 @@ Plugins say what they need and what they provide; rutis decides when they start,
 
 ```toml
 [dependencies]
-rutis = "0.10"
+rutis = "0.11"
 ```
 
 ```rust

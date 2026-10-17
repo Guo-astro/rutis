@@ -61,6 +61,10 @@ Expected behavior: the dialer prints `clock: <n>` every second. After a network 
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
 
+## 0.11.0
+
+Released early so that leaf plugin events (#343) are available sooner. The persisted `rutis.json` sample gains the remote runtime fields added after 0.10: `listen` and `instances` on `runtimes.remote[]` (a runtime that connects in, with a top-level `instanced` group) and `"language": "bun"`; `format` stays 1. From this release the persisted test's expectations also record a remote runtime's `listen` and `instances` (when given), and it checks the runtime names and the configuration of runtimes that connect in; the older samples' expectations are unchanged.
+
 ## 0.10.0
 
 The first release that saves its persisted samples in the release PR (the samples of 0.8.0–0.9.1 were added afterwards in #284), and the first in which `rutis.json` has a top-level `format`: an older file without `format` reads as 1, so the 0.10.0 expectations equal 0.9.1's and only the sample gains `"format": 1`. From this release the examples of [Write a Python plugin](guide/python-plugin.en.md) are followed by the check after publishing (#259) instead of by hand.

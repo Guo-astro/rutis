@@ -230,7 +230,7 @@ The [design philosophy](docs/design-philosophy.en.md) explains these choices, an
 
 Go plugins use the module [`github.com/arcships/rutis/go/rutis`](go/rutis): the SDK, and the runtime each plugin binary carries.
 
-All of these form a release train: released together at one version, currently 0.10. Use the same version for every rutis package.
+All of these form a release train: released together at one version, currently 0.11. Use the same version for every rutis package.
 
 ## Built with rutis
 

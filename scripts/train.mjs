@@ -1,6 +1,6 @@
 // The release train: the packages released together at one version.
 //   node scripts/train.mjs            print the version; fail on a mismatch
-//   node scripts/train.mjs v0.10.0     also fail unless the version is 0.10.0
+//   node scripts/train.mjs v0.11.0     also fail unless the version is 0.11.0
 //   node scripts/train.mjs --crates   the crates, in publishing order
 import { readFileSync } from 'node:fs'
 

@@ -61,6 +61,10 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 每晚的 stress 工作流还跑两个浸泡测试（link 反复断开重连、进程反复拉起结束），检查文件描述符、线程数不增长、进程都被回收。
 
+## 0.11.0
+
+为了让 leaf 插件事件（#343）早点可用而提前发布的一版。持久化样本的 `rutis.json` 加上 0.10 之后新增的远程运行时字段：`runtimes.remote[]` 的 `listen` 与 `instances`（连进来的运行时，配一个顶层 `instanced` 分组）和 `"language": "bun"`；`format` 仍是 1。persisted 测试的期望从这一版起也记下远程运行时的 `listen` 与 `instances`（写了才有），并检查运行时名字和连进来的运行时的配置，旧样本的期望不变。
+
 ## 0.10.0
 
 第一次在发布 PR 里保存持久化样本（0.8.0–0.9.1 的样本是 #284 事后补的），也是 `rutis.json` 第一次有顶层 `format`：没写 `format` 的旧文件按 1 读，所以 0.10.0 的期望与 0.9.1 相同，只是样本多了 `"format": 1`。[写一个 Python 插件](guide/python-plugin.md) 的示例从这一版起由发布后验证照着走（#259），不再人工走。
