@@ -428,6 +428,18 @@ impl Link {
             timeout: self.config.retry.handshake,
         };
         let (session, operations) = greet.open(channel).await?;
+        // Revoked while it greeted: refused before anything is set up for
+        // it (#210). A listening link tells the dialer so (4003), as the
+        // hand-over does for a revocation before it.
+        if self.is_revoked() {
+            let reason = self.revoked_reason();
+            if let Connect::Listen(_) = self.config.connect {
+                closer.rejected(crate::identity::NOT_ACCEPTED);
+            }
+            session.close(Error::Transport(reason.clone()));
+            operations.detach();
+            return Err(Error::Transport(reason));
+        }
         self.generation += 1;
         let peer = Peer::new(
             self.config.peer.clone(),
@@ -486,6 +498,8 @@ impl Link {
                     error.to_string(),
                 ),
                 Ok(channel) => match self.start(channel).await {
+                    // Revoked while it greeted.
+                    Err(_) if self.is_revoked() => (Failure::AuthRejected, self.revoked_reason()),
                     Err(error) => (classify(&error), error.to_string()),
                     Ok(live) => 'session: {
                         let revoked = tokio::select! {
@@ -599,9 +613,10 @@ impl Link {
                         old.end("replaced by a new connection").await;
                     }
                     match self.start(channel).await {
-                        // Revoked while it greeted.
-                        Ok(live) if self.is_revoked() => self.cut(live).await,
                         Ok(live) => current = Some(live),
+                        // Revoked while it greeted: the revocation, next,
+                        // sets the state.
+                        Err(_) if self.is_revoked() => {}
                         Err(error) => {
                             self.state.send_replace(LinkState::Waiting {
                                 failure: classify(&error),

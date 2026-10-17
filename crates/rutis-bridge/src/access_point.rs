@@ -418,6 +418,23 @@ impl Shared {
                 generation: old.generation,
             });
         }
+        // Revoked since its hello was admitted (while it waited for the
+        // slot or for the old connection's release): rejected before
+        // anything is set up for it (#210).
+        let revoked = self
+            .admission
+            .revocations()
+            .is_some_and(|revocations| revocations.is_revoked(&id));
+        if revoked {
+            drop(current);
+            closer.rejected(crate::identity::NOT_ACCEPTED);
+            session.close(Error::Transport(format!("{id}: identity revoked")));
+            operations.detach();
+            self.forget(&id, slot);
+            return self.emit(AccessEvent::Rejected {
+                reason: crate::identity::NOT_ACCEPTED.into(),
+            });
+        }
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let peer = Arc::new(Peer::new(
             id.clone(),

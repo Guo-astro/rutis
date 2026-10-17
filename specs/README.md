@@ -10,11 +10,12 @@
 - `run.sh`：跑全部或部分配置，并和预期比较；
 - `README.md` / `README.en.md`：对应哪份设计、做了哪些简化、检查哪些不变式、结果和结论（规范 Q11.2.3）。
 
-设计改了，模型一起改。`tla2tools.jar` 不提交，按各模型 README 里固定的版本下载。
+设计改了，模型一起改。`tla2tools.jar` 不提交，按各模型 README 里固定的版本下载。CI 的 `specs` 任务在改了 `specs/**` 的 PR 和每晚的完整运行里跑每个模型的 `run.sh`（[CI](../docs/ci.md) §4）；新加一个模型时把目录名加进这个任务的矩阵。
 
 | 目录 | 内容 |
 | --- | --- |
 | [`cross-runtime-sync/`](cross-runtime-sync/README.md) | 跨运行时同步调用与死锁策略（多语言设计 §五、§九） |
+| [`remote-lease/`](remote-lease/README.md) | 远端租约接管、link 重连、注册撤销与身份吊销，含接入点（远程插件 §3.2、§4.4；拨出稿 §五、§六） |
 
 ---
 
@@ -22,8 +23,9 @@
 
 Design-stage model checking (quality standard §11.2): protocols with several participants, delayed and interleaved messages, and errors that show up only under particular timings are checked exhaustively with TLA+ before they are settled or changed.
 
-One model per directory, each with the `.tla` model, `.cfg` configurations (one per behaviour or candidate design), `expected.txt` (expected outcome per configuration), `run.sh` (runs them and compares), and a README stating the design it corresponds to, the simplifications, the invariants, the results and the conclusion (standard Q11.2.3). Change the model with the design. Do not commit `tla2tools.jar`; download the version pinned in each README.
+One model per directory, each with the `.tla` model, `.cfg` configurations (one per behaviour or candidate design), `expected.txt` (expected outcome per configuration), `run.sh` (runs them and compares), and a README stating the design it corresponds to, the simplifications, the invariants, the results and the conclusion (standard Q11.2.3). Change the model with the design. Do not commit `tla2tools.jar`; download the version pinned in each README. CI's `specs` job runs each model's `run.sh` on pull requests that change `specs/**` and in the nightly full run ([CI](../docs/ci.en.md) §4); a new model's directory goes into that job's matrix.
 
 | Directory | Subject |
 | --- | --- |
 | [`cross-runtime-sync/`](cross-runtime-sync/README.en.md) | Cross-runtime synchronous calls and the deadlock policy (multi-language design §5, §9) |
+| [`remote-lease/`](remote-lease/README.en.md) | Remote lease takeover, link reconnection, registration and identity revocation, the access point included (remote plugins §3.2, §4.4; dial-out §5, §6) |
