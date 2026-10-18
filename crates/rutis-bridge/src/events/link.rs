@@ -25,6 +25,7 @@ use super::args::{from_wire, result_from_wire, result_to_wire, SessionTranscoder
 use super::errors::{binding, to_cordis, to_session};
 use super::hub::{dispose_now, next_origin, WireEntry};
 use crate::channel::PeerId;
+use crate::session::rpc::with_caller;
 use crate::session::{settle, Connection, Error, Reference, Reply, Value, WeakConnection};
 use crate::{peer_key, Offered, Peer};
 
@@ -345,7 +346,10 @@ impl Link {
     }
 
     /// The peer calls one of this node's entries it accepted.
-    fn call(&self, request: Value) -> Reply {
+    /// The peer's call of one of this bus's entries, on `source` (the
+    /// link's session): what it calls in other sessions is forwarded from
+    /// it, its chain rebased; it stops when the peer gives it up (§5.7).
+    fn call(&self, source: &Connection, request: Value) -> Reply {
         let mut fields = match request {
             Value::Record(fields) => fields,
             Value::Data(Json::Object(fields)) => fields
@@ -410,14 +414,17 @@ impl Link {
                 .map_err(mapped)?;
             return result_to_wire(result);
         }
-        Ok(Value::future(async move {
-            let result = ctx
-                .events()
-                .invoke_entry(&ctx, id, call)
-                .await
-                .map_err(mapped)?;
-            result_to_wire(result)
-        }))
+        Ok(Value::cancellable_future(with_caller(
+            source.clone(),
+            async move {
+                let result = ctx
+                    .events()
+                    .invoke_entry(&ctx, id, call)
+                    .await
+                    .map_err(mapped)?;
+                result_to_wire(result)
+            },
+        )))
     }
 }
 
@@ -454,7 +461,7 @@ fn next_terminal(next: Reference, mode: Mode) -> RawTerminal {
 struct Handler(Weak<Link>);
 
 impl crate::Handler for Handler {
-    fn invoke(&self, _: &Connection, _: &str, method: &str, args: Value) -> Reply {
+    fn invoke(&self, connection: &Connection, _: &str, method: &str, args: Value) -> Reply {
         let link = self
             .0
             .upgrade()
@@ -463,7 +470,7 @@ impl crate::Handler for Handler {
         match method {
             "events.on" => link.accept(first),
             "events.off" => link.forget(first),
-            "events.call" => link.call(first),
+            "events.call" => link.call(connection, first),
             _ => Err(binding(format!("{method} is not offered here"))),
         }
     }

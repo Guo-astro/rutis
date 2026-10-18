@@ -2047,7 +2047,10 @@ impl Connection {
             Ok(args) => Ok(Some(args)),
             Err(error @ Error::Value(_)) => {
                 if !id.starts_with(self.remote_prefix()) {
-                    return Err(transport("invalid invocation identity/path"));
+                    {
+                        eprintln!("DBGPATH2 {} id={id}", self.0.tag);
+                        return Err(transport("invalid invocation identity/path"));
+                    }
                 }
                 // Refused, it is still a call: its id is taken as a
                 // completed call's is, so sending it again does not run it.
@@ -2205,7 +2208,14 @@ impl Connection {
             Frame::Hello { .. } => unreachable!(),
         };
         if !id.starts_with(self.remote_prefix()) || path.contains(&id) {
-            return Err(transport("invalid invocation identity/path"));
+            {
+                eprintln!(
+                    "DBGPATH {} remote={} id={id} path={path:?}",
+                    self.0.tag,
+                    self.remote_prefix()
+                );
+                return Err(transport("invalid invocation identity/path"));
+            }
         }
         path.push(id.clone());
         let business = match &call {

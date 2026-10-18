@@ -74,7 +74,7 @@ export function apply(ctx: any, participant: any) {
   const body = (args: any[]) => {
     record(args)
     const next = waterfall || typeof args.at(-1) === 'function' ? args.at(-1) : undefined
-    return perform(ctx, log, label, does, args, next)
+    return perform(ctx, log, label, does, args, next, kind === 'sync')
   }
   const listener = kind === 'async' ? async (...args: any[]) => body(args) : (...args: any[]) => body(args)
   ctx.on(name, listener, options)
@@ -82,11 +82,16 @@ export function apply(ctx: any, participant: any) {
 
 const isThenable = (item: any) => item !== null && typeof item?.then === 'function'
 
-function perform(ctx: any, log: Log, label: string, does: any, args: any[], next: any): any {
+function perform(ctx: any, log: Log, label: string, does: any, args: any[], next: any, sync = false): any {
   if ('returns' in does) return made(does.returns)
   if (does.returnsNothing) return undefined
   if (does.echo) return args[0]
   if (does.throws) throw Object.assign(new Error(does.throws.message), { name: does.throws.name })
+  // A synchronous listener (`kind: sync`) blocks the thread instead.
+  if ('after' in does && sync) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, does.after)
+    return perform(ctx, log, label, does.then, args, next, sync)
+  }
   if ('after' in does) return sleep(does.after).then(() => perform(ctx, log, label, does.then, args, next))
   if ('next' in does) {
     const rest = next()

@@ -655,10 +655,9 @@ impl Host {
     async fn restart_y(&self) -> Result<(), String> {
         let name = self.y_runtime();
         let runtime = &self.runtimes[&name];
-        runtime
-            .view
-            .restart()
+        tokio::time::timeout(COLD.0, runtime.view.restart())
             .await
+            .map_err(|_| format!("restart {name}: did not finish within {:?}", COLD.0))?
             .map_err(|e| format!("restart {name}: {e}"))?;
         let rows: Vec<Row> = self
             .state
@@ -758,7 +757,36 @@ impl World for Host {
         Box::pin(async move {
             match target {
                 Location::Y => self.kill_y().await?,
-                Location::Node => self.node.kill().await?,
+                Location::Node => {
+                    // The node's listeners leave the host's bus when the
+                    // link's session ends, just after its calls in flight
+                    // failed: wait for that, as for a runtime's rows.
+                    let remote = || {
+                        self.root
+                            .events()
+                            .subscriptions()
+                            .iter()
+                            .filter(|entry| entry.remote)
+                            .count()
+                    };
+                    let on_node = self
+                        .state
+                        .lock()
+                        .unwrap()
+                        .rows
+                        .iter()
+                        .filter(|(row, _)| {
+                            row.at == Location::Node && row.config.get("name").is_some()
+                        })
+                        .count();
+                    let before = remote();
+                    self.node.kill().await?;
+                    until(
+                        || remote() + on_node <= before,
+                        "the node's listeners to leave the bus",
+                    )
+                    .await?;
+                }
                 at => return Err(format!("{} cannot be killed", at.as_str())),
             }
             self.state.lock().unwrap().killed.insert(target);
@@ -893,6 +921,7 @@ async fn conformance(x: &str) {
         .iter()
         .filter(|c| only.split(',').any(|prefix| c.case.starts_with(prefix)))
     {
+        let started = std::time::Instant::now();
         for combo in events::placements(case, x, &ys, coverage).unwrap() {
             host.state.lock().unwrap().y = combo.y.clone();
             let result = events::run_keeping(&host, &log, case, &combo).await;
@@ -908,6 +937,10 @@ async fn conformance(x: &str) {
                 panic!("the world could not be reset after {}: {why}", case.case);
             }
             tally.record(case, &combo, &result);
+        }
+        // Where the time goes: the cases that wait.
+        if started.elapsed() > Duration::from_secs(5) {
+            eprintln!("X={x}: {} took {:?}", case.case, started.elapsed());
         }
     }
     println!("events conformance, X={x}:\n{tally}");
