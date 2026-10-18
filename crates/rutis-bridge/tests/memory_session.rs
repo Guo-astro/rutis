@@ -31,16 +31,16 @@ async fn a_session_runs_on_a_memory_channel() {
     let (local, mut remote) = rutis_bridge::transport::memory::pair();
     let session = Connection::open(local, Arc::new(Echo)).unwrap();
     let far = std::thread::spawn(move || {
-        // Older far ends ignore the capabilities of a compat handshake.
+        // A 0.13 far end declares events-v2 (events protocol §2.1).
         assert_eq!(
             read(&mut remote),
             json!({ "op": "hello", "version": PROTOCOL, "capabilities": [
-                "sync-wait", "value-instant", "value-datetime", "value-date", "value-time",
+                "sync-wait", "events-v2", "value-instant", "value-datetime", "value-date", "value-time",
                 "value-bytes", "value-map", "value-set", "value-bigint", "value-decimal",
                 "value-uuid",
             ] })
         );
-        send(&mut remote, json!({ "op": "hello", "version": PROTOCOL }));
+        send(&mut remote, json!({ "op": "hello", "version": PROTOCOL, "capabilities": ["events-v2"] }));
         // A call from here reaches the far end.
         let call = read(&mut remote);
         assert_eq!(
@@ -83,7 +83,7 @@ async fn the_far_end_closing_ends_the_session() {
     let (local, mut remote) = rutis_bridge::transport::memory::pair();
     let session = Connection::open(local, Arc::new(Echo)).unwrap();
     read(&mut remote);
-    send(&mut remote, json!({ "op": "hello", "version": PROTOCOL }));
+    send(&mut remote, json!({ "op": "hello", "version": PROTOCOL, "capabilities": ["events-v2"] }));
     session.ready().await.unwrap();
     remote.closer.close("bye");
     session.closed().await;

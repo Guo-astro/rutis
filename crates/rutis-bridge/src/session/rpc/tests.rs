@@ -1145,8 +1145,8 @@ mod endpoint_format {
             }
             .unwrap();
             match session.ready().await {
-                Err(Error::Handshake(Handshake::Incompatible(reason))) => assert_eq!(
-                    reason,
+                Err(error @ Error::Handshake(Handshake::Incompatible(_))) => assert_eq!(
+                    error.to_string(),
                     format!(
                         "incompatible session: the far end ({named}) does not declare events-v2 \
                          (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later"

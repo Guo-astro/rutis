@@ -8,6 +8,7 @@
 mod catalog;
 mod edit;
 mod error;
+mod framework;
 mod loader;
 mod patch;
 #[cfg(feature = "peer")]
@@ -21,6 +22,7 @@ mod volatile;
 pub use catalog::{ExprScope, Expressions, ServiceCatalog};
 pub use edit::{apply_edit, Edit};
 pub use error::{Failure, LoaderError, PersistError, Unavailable};
+pub use framework::{RowEvent, RowState};
 pub use loader::{
     CheckReport, CreateInstance, Editable, EntryInfo, EntryStatus, Instance, InstanceInfo,
     InstanceResult, Isolate, Loader, LoaderChanged, LoaderOptions, LoaderPlugin, NewEntry,

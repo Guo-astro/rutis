@@ -21,6 +21,9 @@ pub(super) struct EntryConfig {
 pub(super) struct EntryFactory {
     pub(super) name: String,
     pub(super) injects: Vec<TypeKey>,
+    /// The row's id: its fiber is marked with it, so its listeners'
+    /// descriptors name it (events protocol §4.2).
+    pub(super) row: String,
 }
 
 impl PluginFactory<EntryConfig> for EntryFactory {
@@ -37,7 +40,37 @@ impl PluginFactory<EntryConfig> for EntryFactory {
     }
 
     fn build(&self, config: &EntryConfig) -> Result<Box<dyn Plugin>, CordisError> {
-        config.factory.build(&config.value)
+        Ok(Box::new(RowPlugin {
+            row: self.row.clone(),
+            inner: config.factory.build(&config.value)?,
+        }))
+    }
+}
+
+/// A row's plugin, its fiber marked as the row (`Ctx::mark_row`).
+struct RowPlugin {
+    row: String,
+    inner: Box<dyn Plugin>,
+}
+
+impl Plugin for RowPlugin {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn injects(&self) -> &[TypeKey] {
+        self.inner.injects()
+    }
+
+    fn validate(&self) -> Result<(), CordisError> {
+        self.inner.validate()
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        Box::pin(async move {
+            ctx.mark_row(&self.row)?;
+            self.inner.apply(ctx).await
+        })
     }
 }
 
@@ -67,6 +100,11 @@ impl Plugin for GroupPlugin {
                 return Ok(Effect::Done);
             };
             let token = self.token;
+            // An instance is a scope of the logical bus (events protocol
+            // §3): its rows' listeners hear what is emitted in it.
+            if self.slot.scope.is_some() {
+                ctx.mark_scope(&self.slot.row)?;
+            }
             // An instance serves its group's exported Rust services.
             #[cfg(any(feature = "runtimes", feature = "peer"))]
             {

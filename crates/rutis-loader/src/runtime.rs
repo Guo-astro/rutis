@@ -856,6 +856,7 @@ impl JsRow {
                 &inject,
                 &self.provides,
                 projection.clone(),
+                &ctx.scope(),
             )
             .await
         {

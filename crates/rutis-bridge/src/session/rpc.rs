@@ -916,8 +916,8 @@ fn version_mismatch(far: u32, local: u32, implementation: Option<&Implementation
 /// (`docs/design-events-protocol-2026-10-18.md` §2.2): `far` names it.
 fn without_events(far: &str) -> String {
     format!(
-        "incompatible session: the far end ({far}) does not declare events-v2 (the event \
-         protocol of rutis 0.13): upgrade it to rutis 0.13 or later"
+        "the far end ({far}) does not declare events-v2 (the event protocol of rutis 0.13): \
+         upgrade it to rutis 0.13 or later"
     )
 }
 

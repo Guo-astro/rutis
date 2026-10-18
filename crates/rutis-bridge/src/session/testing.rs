@@ -198,7 +198,7 @@ pub fn malformed(open: impl Fn() -> crate::channel::Channel) {
         "version": crate::session::ENDPOINT_PROTOCOL,
         "endpoint": "main",
         "implementation": { "name": "conformance", "version": "0" },
-        "capabilities": [],
+        "capabilities": ["events-v2"],
     }))
     .unwrap();
     for (case, message) in MALFORMED {
