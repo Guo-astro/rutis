@@ -191,8 +191,22 @@ async fn a_row_that_would_fail_changes_nothing() {
     host.shut_down(HANG_GUARD).await.ok();
 }
 
+/// The running copy of the row `id`: its plugin and that plugin's
+/// generation (a restart changes either).
+fn copy(host: &Host, id: &str) -> (Option<rutis::PluginId>, Option<u64>) {
+    let entry = host
+        .loader
+        .entries()
+        .into_iter()
+        .find(|entry| entry.id == id)
+        .unwrap_or_else(|| panic!("no row {id}"));
+    let generation = entry.view.as_ref().map(|view| view.state().generation);
+    (entry.plugin, generation)
+}
+
 /// A row whose apply fails passes the check, fails once loaded: the old
-/// rows come back, the error says which row and why.
+/// rows come back, the error says which row and why. A row the reload
+/// does not change is not restarted.
 /// guarantee: host/reload-config
 #[tokio::test(flavor = "multi_thread")]
 async fn a_row_failing_as_it_starts_brings_the_old_rows_back() {
@@ -200,11 +214,20 @@ async fn a_row_failing_as_it_starts_brings_the_old_rows_back() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     modules(d);
-    let rows = json!([greeter(d, "greeter", json!({}))]);
+    let rows = json!([
+        greeter(d, "greeter", json!({})),
+        greeter(d, "spare", json!({}))
+    ]);
     let mut host = started(&config(d, rows.clone(), json!({}))).await;
     assert_eq!(hello(&host, "greeter").await, "Hello, Ada");
+    assert_eq!(hello(&host, "spare").await, "Hello, Ada");
+    let spare = copy(&host, "spare");
+    assert!(spare.0.is_some() && spare.1.is_some(), "{spare:?}");
 
-    let failing = json!([greeter(d, "greeter", json!({ "fail": true }))]);
+    let failing = json!([
+        greeter(d, "greeter", json!({ "fail": true })),
+        greeter(d, "spare", json!({}))
+    ]);
     let error = host
         .reload(config(d, failing, json!({})))
         .await
@@ -215,6 +238,12 @@ async fn a_row_failing_as_it_starts_brings_the_old_rows_back() {
     );
     assert_eq!(hello(&host, "greeter").await, "Hello, Ada");
     assert_eq!(host.config().rows, rows.as_array().unwrap().clone());
+    // The replaced row stopped once (for the copy that failed); the
+    // unchanged one ran on, the same copy, no cleanup.
+    assert_eq!(cleanups(d, "greeter"), 1);
+    assert_eq!(cleanups(d, "spare"), 0);
+    assert_eq!(copy(&host, "spare"), spare, "the unchanged row restarted");
+    assert_eq!(hello(&host, "spare").await, "Hello, Ada");
     // A reload that applies after it is counted from the old rows.
     let reloaded = host.reload(config(d, rows, json!({}))).await.unwrap();
     assert_eq!(reloaded.to_string(), "0 rows changed");

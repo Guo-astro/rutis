@@ -196,4 +196,28 @@ mod tests {
                 .is_err()
         );
     }
+
+    /// A file that is not there is no change, however long it stays away;
+    /// back with the content seen, still none.
+    /// guarantee: host/reload-config
+    #[tokio::test(start_paused = true)]
+    async fn a_missing_file_is_not_a_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rutis.json");
+        std::fs::write(&path, "one").unwrap();
+        let mut watch = Watch::new(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), watch.changed())
+                .await
+                .is_err()
+        );
+        assert_eq!(watch.settling, None);
+        std::fs::write(&path, "one").unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), watch.changed())
+                .await
+                .is_err()
+        );
+    }
 }
