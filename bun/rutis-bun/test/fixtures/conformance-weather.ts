@@ -26,6 +26,16 @@ const samples: Record<string, () => unknown> = {
   'node/value-typed-array': () => new Int16Array([1, 2]),
 }
 
+// `undeclared` in the expectations: a service no `provides` declares, with
+// a method of its own, an inherited one and a field.
+class Days {
+  week(n: number) { return ['mon', 'tue', 'wed'].slice(0, n) }
+}
+class Forecast extends Days {
+  constructor(readonly city: string) { super() }
+  tomorrow() { return `${this.city} tomorrow` }
+}
+
 export const inject = ['clock']
 export const provides = { weather: { today: 'sync', later: 'async', each: 'sync', echo: 'sync', crash: 'sync', samples: 'sync', sample: 'sync' } }
 export function apply(ctx: { use(name: string): any, provide(name: string, value: unknown): void, on(name: string, listener: (...args: any[]) => unknown): () => void }) {
@@ -42,4 +52,5 @@ export function apply(ctx: { use(name: string): any, provide(name: string, value
     samples() { return Object.keys(samples) },
     sample(name: string) { return samples[name]() },
   })
+  ctx.provide('forecast', new Forecast('Oslo'))
 }

@@ -35,7 +35,7 @@ test('greets', async () => {
 })
 ```
 
-Without the SDK, a module can also export `apply(ctx, config)` directly, with `inject`, `provides` (each method `'sync'` or `'async'`) and `config` (a JSON Schema).
+Without the SDK, a module can also export `apply(ctx, config)` directly, with `inject`, `provides` (optional, each method `'sync'` or `'async'`) and `config` (a JSON Schema). `provides` may be left out: what `ctx.provide` provides reaches rutis by itself, its methods the object's functions, called as `async`, by the same rules as on Node (see [Plugin API](plugin-api.en.md)).
 
 ## 3. Run it in a host
 

@@ -8,7 +8,8 @@
     "`events` (after `calls` and `samples`): the host emits `emit` with `args` (JSON) as Process::emit does, the runtime mounted with `emits`; then `then` is a call as in `calls`, or the emission `throws`. The session matrix requires these checks on Node, Bun, Python and Go; the Node and Python testing tools also check them.",
     "`allowed`: the testing tool does not do what this entry says, and why (a bounded, written-down difference, also in docs/guide/plugin-api.md). Every other entry holds for both.",
     "Tagged values (#308, docs/design-value-types-2026-10-15.md) are written {\"$<tag>\": <the value's wire text>}: {\"$instant\": \"2026-10-15T03:22:15.123Z\"}, {\"$bytes\": \"aGVsbG8=\"} (base64), {\"$map\": [[key, value], ...]}, {\"$set\": [element, ...]}, and so for datetime, date, time, bigint, decimal and uuid. No plain value is written so.",
-    "`pending`: no runtime's plugin names this sample yet; a runtime names it in its `samples()` once it sends that value (#308 phase 3), and the entry then holds for it like any other. Until then it is not checked."
+    "`pending`: no runtime's plugin names this sample yet; a runtime names it in its `samples()` once it sends that value (#308 phase 3), and the entry then holds for it like any other. Until then it is not checked.",
+    "`undeclared` (#442): the plugin also provides `service` without declaring it in `provides`. rutis sees `methods`, the methods inferred from the object (JavaScript: its own and inherited functions, not `constructor`; Python: its public callables; Go: its exported methods), every one `async`; its fields are not methods. Then `calls`, as above. A runtime announces it to a host that asks (rows.announce); a testing tool shows it the same way."
   ],
   "service": "weather",
   "methods": { "today": "sync", "later": "async", "each": "sync", "echo": "sync", "crash": "sync" },
@@ -38,6 +39,14 @@
       "allowed": "the testing tool runs the plugin in the test's own process, so a plugin that ends its process ends the test: the tool cannot show this, and tests do not call it"
     }
   ],
+  "undeclared": {
+    "service": "forecast",
+    "methods": { "tomorrow": "async", "week": "async" },
+    "calls": [
+      { "call": "tomorrow", "args": [], "returns": "Oslo tomorrow", "why": "a service the plugin provides without declaring it is used by name, its method called async" },
+      { "call": "week", "args": [2], "returns": ["mon", "tue"], "why": "an inherited method (a prototype's in JavaScript, a base class's in Python, an embedded type's in Go) is one of its methods" }
+    ]
+  },
   "emits": ["weather/city"],
   "events": [
     {

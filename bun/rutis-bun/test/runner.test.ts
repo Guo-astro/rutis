@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { FEATURES, handleOf, Runtime, scopedId } from '../src/runner.ts'
+import { FEATURES, handleOf, methodsOf, Runtime, scopedId } from '../src/runner.ts'
 import type { Context } from '../../../node/rutis/src/index.d.ts'
 
 function project(files: Record<string, string>) {
@@ -88,8 +88,24 @@ test('rows.schema reports what a module declares', async () => {
   const dir = project({ 'scoped.ts': SCOPED })
   const runtime = new Runtime(dir)
   expect(await runtime.dispatch('', 'rows.schema', ['./scoped.ts'])).toEqual({
-    config: null, inject: [], provides: { tools: { title: 'sync' } }, version: null,
+    config: null, inject: [], provides: { tools: { title: 'sync' } }, announces: false, version: null,
   })
+  // Without `provides`, what it provides is announced when it runs (#442).
+  const undeclared = project({ 'plain.ts': 'export function apply(ctx) { ctx.provide("tools", { title() {} }) }' })
+  expect(await new Runtime(undeclared).dispatch('', 'rows.schema', ['./plain.ts'])).toEqual({
+    config: null, inject: [], provides: {}, announces: true, version: null,
+  })
+})
+
+test('the methods of an undeclared service are its functions, own and inherited', () => {
+  class Base { week() {} }
+  class Forecast extends Base {
+    city = 'Oslo'
+    tomorrow() {}
+  }
+  expect([...methodsOf(new Forecast())].sort()).toEqual(['tomorrow', 'week'])
+  expect([...methodsOf({ a: () => 1, b: 2 })]).toEqual(['a'])
+  expect([...methodsOf(null)]).toEqual([])
 })
 
 async function eventRows(run: (runtime: Runtime, a: Context, b: Context) => Promise<void>) {

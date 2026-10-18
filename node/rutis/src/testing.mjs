@@ -7,7 +7,9 @@
 //
 // It checks what a host would: the plugin uses only the services it declares
 // in `inject`, provides what it declares in `provides` with every declared
-// method, and runs its cleanups on unload. With `strict` (the default),
+// method, and runs its cleanups on unload. A service `provides` does not
+// declare is used as rutis uses it: its methods are the object's functions
+// (own and inherited, not `constructor`), all async. With `strict` (the default),
 // values cross between the plugin and the test as they would between
 // processes: data is copied, functions and objects with behaviour pass by
 // reference, sync methods return values and async ones promises; a Date,
@@ -189,6 +191,24 @@ function reference(target, where) {
   })
 }
 
+// The methods of a service no declaration describes, as the runtimes infer
+// them: its own and inherited functions, up to Object's, not the
+// constructor; a property that is not a function hides an inherited
+// function of the same name. All async.
+function inferred(object) {
+  const shape = {}
+  if (object === null || (typeof object !== 'object' && typeof object !== 'function')) return shape
+  const seen = new Set()
+  for (let level = object; level != null && level !== Object.prototype && level !== Function.prototype; level = Object.getPrototypeOf(level)) {
+    for (const name of Object.getOwnPropertyNames(level)) {
+      if (seen.has(name)) continue
+      seen.add(name)
+      if (name !== 'constructor' && typeof Object.getOwnPropertyDescriptor(level, name)?.value === 'function') shape[name] = 'async'
+    }
+  }
+  return shape
+}
+
 // A service seen through its declared shape: only declared methods, sync
 // ones returning values, async ones promises.
 function shaped(name, object, shape, strict) {
@@ -297,14 +317,18 @@ export async function load(plugin, { config = {}, services = {}, strict = true, 
     cleanups.push(returned)
   }
   return {
-    /** The service `name` the plugin provides, as rutis sees it: its declared methods only. */
+    /** The service `name` the plugin provides, as rutis sees it: its declared methods, or, undeclared, the object's methods, all async. */
     service(name) {
       if (unloaded) throw new PluginTestError('the plugin is unloaded')
-      const shape = plugin.provides[name]
-      if (!shape) throw new PluginTestError(`${name} is not declared in provides, so rutis cannot use it`)
       const entry = provided.get(name)
       if (!entry) throw new PluginTestError(`the plugin does not provide ${name} (now)`)
-      return shaped(name, entry.value, shape, strict)
+      return shaped(name, entry.value, plugin.provides[name] ?? inferred(entry.value), strict)
+    },
+    /** The methods rutis sees on the service `name`: `{ method: 'sync' | 'async' }`. */
+    methods(name) {
+      const entry = provided.get(name)
+      if (!entry) throw new PluginTestError(`the plugin does not provide ${name} (now)`)
+      return { ...(plugin.provides[name] ?? inferred(entry.value)) }
     },
     /** The names of the services the plugin provides now. */
     provided: () => [...provided.keys()],

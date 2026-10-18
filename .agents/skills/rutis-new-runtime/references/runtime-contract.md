@@ -61,7 +61,7 @@ The first control operation from rutis. Reply:
 | `leaf` | Leaf runtime: rutis gates every `inject` of its plugins |
 | `scopes` | Service ids may carry an instance label: `name`, or `name` + NUL + `label` |
 | `events` | Leaf events (plugin API 2): `ctx.on` / `ctx.emit`, and events sent from the host to the runtime; mounting fails if the host configured `emits` and the runtime lacks `events` |
-| `rows.announce` | Services a row provides without declaring them are announced to the host with their methods (see `service` below); only to a host whose `mount` arguments carry `announce: true` (rutis 0.12 and later). The Node runtime does it for Cordis rows (0.12) |
+| `rows.announce` | Services a row provides without declaring them are announced to the host with their methods (see `service` below); only to a host whose `mount` arguments carry `announce: true` (rutis 0.12 and later). Every runtime of the repository does it (Node for Cordis and leaf rows, Bun, Python, Go) |
 
 Adding fields to the `mount` reply (such as `engine` or `plugins`) is not a protocol change.
 
@@ -80,6 +80,7 @@ Adding fields to the `mount` reply (such as `engine` or `plugins`) is not a prot
 
 - Call ids this side originates in the session are prefixed `node:` (the same for every leaf runtime); the call chain `path` is rewritten across sessions on the Rust side.
 - Export slots: each `ctx.provide` gets a new handle (`name` for the first generation, then `name#N`).
+- Inferring methods: the language's public methods of the object (JavaScript: own and prototype-chain functions up to `Object.prototype`, not `constructor`; Python: callable attributes not starting with `_`, properties not read; Go: exported methods, by wire name), every one `async`; fields are not methods. `rows.schema` answers `announces: true` for a plugin that declares no `provides`.
 - `service(id, handle, version)` reports a declared slot. With `rows.announce`, to a host that asked (`announce: true`), a service the row did not declare is reported as `service(id, handle, version, { row: <row key>, methods: { <method>: "async" } })`, the methods inferred from each new object (the language's public methods); the host publishes it, or releases the handle when it does not follow it. Await the host's reply to these before answering `rows.load`, so a name clash fails the load. An older host never gets the fourth argument.
 - When the session ends (rutis is gone): unload every row; cleanup is bounded by `RUTIS_SHUTDOWN_TIMEOUT` (default 10 seconds); past it, write a line to stderr and exit with status 1.
 
@@ -118,4 +119,4 @@ The Rust tests in the rutis repository start your runtime and check it item by i
 | `rutis-bridge/tests/session_matrix.rs` | The runtime contract over every channel |
 | `rutis-loader/tests/multilang*.rs` | Cross-language cold starts and calls, withdrawing a provider stops only its users, `inject` gating, crossing synchronous calls do not deadlock |
 | `rutis-bridge/tests/websocket_conformance.rs` | Remote listening |
-| Test-tool expectations `crates/rutis-bridge/src/runtime/testing/weather.expected.json` | The SDK's host-free test tool and the real runtime give the same results |
+| Test-tool expectations `crates/rutis-bridge/src/runtime/testing/weather.expected.json` | The SDK's host-free test tool and the real runtime give the same results, an undeclared service (`undeclared`: inferred methods, all `async`) included |

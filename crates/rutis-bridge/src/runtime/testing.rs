@@ -55,7 +55,7 @@ pub async fn runtime(
     entry: &std::path::Path,
     started_here: bool,
 ) {
-    use crate::runtime::row_projection;
+    use crate::runtime::row_projection_of;
     use crate::session::{host_key, HostDispatch};
     use serde_json::Value as Json;
     use std::sync::atomic::AtomicUsize;
@@ -231,7 +231,8 @@ pub async fn runtime(
         .await
         .expect("hosts.provide");
     let ctx = rutis::Ctx::root().unwrap();
-    let projection = row_projection(&provides);
+    // The declared service, and the ones the row announces (`undeclared`).
+    let projection = row_projection_of("row w", &provides, host_key, |_| false);
     projection.attach(&ctx, process.clone()).unwrap();
     let load = || {
         process.load_row_exporting(
@@ -316,6 +317,40 @@ pub async fn runtime(
             None => check(&what, entry, emitted.map(|()| Value::Data(Json::Null))),
         }
     }
+
+    // A service the plugin provides without declaring it (#442): announced
+    // with the methods its object has, all async.
+    let undeclared = &expected["undeclared"];
+    let name = undeclared["service"].as_str().unwrap();
+    assert!(
+        !described.provides.contains_key(name),
+        "the plugin does not declare {name}"
+    );
+    assert!(
+        process.supports("rows.announce"),
+        "{}: the runtime must report the `rows.announce` feature",
+        entry.display()
+    );
+    let announced = host_key(name);
+    eventually(
+        || ctx.get_as::<dyn HostDispatch>(announced.clone()).is_some(),
+        "the undeclared service",
+    )
+    .await;
+    let forecast = ctx.get_as::<dyn HostDispatch>(announced.clone()).unwrap();
+    assert_eq!(
+        forecast.methods().as_ref(),
+        Some(&undeclared["methods"]),
+        "{}: the methods of {name}, inferred from its object",
+        entry.display()
+    );
+    for (i, entry) in undeclared["calls"].as_array().unwrap().iter().enumerate() {
+        let method = entry["call"].as_str().unwrap();
+        let args = entry["args"].as_array().unwrap().iter().map(argument);
+        let reply = call(&forecast, method, "async", Value::List(args.collect())).await;
+        check(&format!("undeclared.calls[{i}] {method}"), entry, reply);
+    }
+    drop(forecast);
     drop(weather);
 
     process.unload_row("w").await.expect("rows.unload");

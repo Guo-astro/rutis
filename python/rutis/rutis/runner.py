@@ -9,7 +9,9 @@ restarts and configuration. This process only runs what it is told:
   services, provided services and their method kinds);
 - `hosts.provide` / `hosts.withdraw` register rutis services by name;
 - the services a row exports are reported with `service(id, handle,
-  version)` notifications, and calls to a handle reach the object.
+  version)` notifications, and calls to a handle reach the object; one it
+  provides without declaring it is announced to a host that asks, with the
+  methods its object has (`rows.announce`).
 
 Within the process, `ctx.use(name)` returns the object itself when another
 row here provides it, so those calls never leave the process.
@@ -37,7 +39,9 @@ from . import plugin as sdk
 from .events import Events, refused_emits
 from .peer import Peer, RemoteFuture
 
-FEATURES = ["rows.v2", "hosts", "leaf", "scopes", "events"]
+# rows.announce: services rows provide without declaring them are announced
+# with their methods, to a host whose mount says `announce`.
+FEATURES = ["rows.v2", "hosts", "leaf", "scopes", "events", "rows.announce"]
 # Test support, not part of the protocol: with RUTIS_TEST_INSPECT set, the
 # control method `inspect` reports what this runtime holds (rows, services,
 # host proxies, export slots, object handles, event listeners), so a test
@@ -117,6 +121,8 @@ class Slot:
     object: Any = None
     handle: str | None = None
     generation: int = 0
+    # Not declared: announced, with the methods of each object.
+    announced: bool = False
 
 
 @dataclass
@@ -131,6 +137,10 @@ class Row:
     listeners: list = field(default_factory=list)
     # Ids of the services it provided.
     provided: list = field(default_factory=list)
+    # Ids of the slots of services it announced.
+    announced: list = field(default_factory=list)
+    # Announcements the host has yet to answer, while the row loads.
+    pending: list | None = field(default_factory=list)
 
     def id(self, name: str) -> str:
         """The id of `name` as this row sees it."""
@@ -170,6 +180,8 @@ class Runtime:
         self.handles: dict[str, dict] = {}
         self.version = 0
         self.closing = False
+        # The host takes announced services (mount `announce`).
+        self.announce = False
         self.events = Events(_unhandled_event)
         self.emits = set()
         # The source file of each plugin module when it was imported.
@@ -190,6 +202,10 @@ class Runtime:
             raise ValueError(f"service {id} is already provided by row {self.services[id][0]}")
         self.services[id] = (row.key, value)
         row.provided.append(id)
+        # Not declared: announced, with the methods it has.
+        if self.announce and id not in self.slots and "#" not in name:
+            self.slots[id] = Slot(row.key, set(), name, announced=True)
+            row.announced.append(id)
         self._refresh(id)
 
         def withdraw() -> None:
@@ -218,9 +234,31 @@ class Runtime:
             slot.generation += 1
             slot.handle = handle_of(id, slot.generation)
             self.handles[slot.handle] = {"name": id, "object": current, "current": True, "released": False}
+            if slot.announced:
+                slot.methods = sdk.methods_of(current)
         self.version += 1
-        if self.peer is not None and not self.closing:
+        if self.peer is None or self.closing:
+            return
+        if not slot.announced:
             self.peer.notify("", "service", [id, slot.handle, self.version])
+            return
+        # An announced service says whose it is and what it offers, and a
+        # row loading answers once rutis has heard it.
+        methods = {method: "async" for method in sorted(slot.methods)}
+        args = [id, slot.handle, self.version, {"row": slot.row, "methods": methods}]
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not self.peer.loop:
+            # Provided from another thread: sent from the session's own.
+            self.peer.notify("", "service", args)
+            return
+        sent = asyncio.ensure_future(self.peer.call_async("", "service", args))
+        sent.add_done_callback(_ignore)
+        row = self.rows.get(slot.row)
+        if row is not None and row.pending is not None:
+            row.pending.append(sent)
 
     def _retire(self, handle: str) -> None:
         entry = self.handles.get(handle)
@@ -265,6 +303,10 @@ class Runtime:
                 row.cleanups.append(cleanup)
             for name in exports:
                 self._refresh(row.id(name))
+            # rutis has published the announced services (or refused one,
+            # which fails the row there) before it hears that the row loaded.
+            pending, row.pending = row.pending or [], None
+            await asyncio.gather(*pending, return_exceptions=True)
         except BaseException:
             try:
                 await self.unload(key)
@@ -284,10 +326,14 @@ class Runtime:
                 del self.services[id]
                 self._refresh(id)
         row.provided.clear()
-        for name in row.exports:
-            slot = self.slots.pop(row.id(name), None)
-            if slot is not None and slot.handle is not None:
+        for id in [row.id(name) for name in row.exports] + row.announced:
+            slot = self.slots.get(id)
+            if slot is None or slot.row != key:
+                continue
+            del self.slots[id]
+            if slot.handle is not None:
                 self._retire(slot.handle)
+        row.announced.clear()
         errors = []
         cleanups = row.cleanups[::-1]
         row.cleanups.clear()
@@ -330,6 +376,7 @@ class Runtime:
             "config": plugin.config,
             "inject": plugin.inject,
             "provides": plugin.provides,
+            "announces": plugin.announces,
             "version": _entry_point(module)[1],
         }
 
@@ -365,6 +412,7 @@ class Runtime:
             if refused is not None:
                 raise ValueError(refused)
             self.emits = set(names)
+            self.announce = args.get("announce") is True
             return {"services": {}, "features": FEATURES}
         if method == "emit":
             name, values = args
@@ -423,6 +471,13 @@ class Runtime:
     async def _dispose_and_drain(self) -> None:
         await self.dispose()
         await self.peer.drain()
+
+
+def _ignore(sent: asyncio.Future) -> None:
+    """An announcement nobody awaits: its failure (the session ended) is
+    not an error of anything here."""
+    if not sent.cancelled():
+        sent.exception()
 
 
 def _entry_point(name: str) -> tuple[str, str | None]:

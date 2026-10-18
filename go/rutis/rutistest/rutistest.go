@@ -16,7 +16,9 @@
 // objects pass by reference), so what works only in one process fails here
 // too; the test side takes every tagged value, as a host does. It checks what a host would: the plugin uses only the services it
 // declares in Inject, provides what Provides declares with the declared
-// types, and its cleanups succeed.
+// types, and its cleanups succeed. A service Provides does not declare is
+// used as rutis uses it: its methods are the value's exported ones, all
+// asynchronous.
 package rutistest
 
 import (
@@ -46,9 +48,11 @@ type Loaded struct {
 
 	mu      sync.Mutex
 	handles map[string]string
-	changed chan struct{}
-	done    chan error
-	unload  sync.Once
+	// The methods of each service announced without a declaration.
+	announced map[string]map[string]string
+	changed   chan struct{}
+	done      chan error
+	unload    sync.Once
 }
 
 // Load loads `plugin` with `config` (a value of its config type, or nil)
@@ -65,12 +69,13 @@ func Load(t testing.TB, plugin *rutis.Definition, config any, services map[strin
 	}
 	runtimeSide, hostSide := net.Pipe()
 	loaded := &Loaded{
-		t:        t,
-		conn:     hostSide,
-		provides: declared.Provides,
-		handles:  map[string]string{},
-		changed:  make(chan struct{}, 1),
-		done:     make(chan error, 1),
+		t:         t,
+		conn:      hostSide,
+		provides:  declared.Provides,
+		handles:   map[string]string{},
+		announced: map[string]map[string]string{},
+		changed:   make(chan struct{}, 1),
+		done:      make(chan error, 1),
 	}
 	go func() { loaded.done <- rutis.ServeConn(runtimeSide, plugin) }()
 	session, err := peer.New(peer.NewLines(hostSide), peer.Options{
@@ -89,7 +94,8 @@ func Load(t testing.TB, plugin *rutis.Definition, config any, services map[strin
 	testwait.Within(t, "rutistest: the handshake", session.Ready())
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := session.Call(ctx, "", "mount", []any{map[string]any{"emits": emits}}, false); err != nil {
+	// As a host does: services the plugin does not declare are announced.
+	if _, err := session.Call(ctx, "", "mount", []any{map[string]any{"emits": emits, "announce": true}}, false); err != nil {
 		t.Fatalf("rutistest: mount: %v", err)
 	}
 	for _, name := range declared.Inject {
@@ -141,13 +147,18 @@ func describe(t testing.TB, plugin *rutis.Definition) declaration {
 func (l *Loaded) dispatch(ctx context.Context, services map[string]any, target, method string, args []any) (any, error) {
 	if target == "" && method == "service" {
 		var id, handle string
+		var announced struct{ Methods map[string]string }
 		_ = convert.Decode(index(args, 0), &id)
 		_ = convert.Decode(index(args, 1), &handle)
+		_ = convert.Decode(index(args, 3), &announced)
 		l.mu.Lock()
 		if handle == "" {
 			delete(l.handles, id)
 		} else {
 			l.handles[id] = handle
+			if announced.Methods != nil {
+				l.announced[id] = announced.Methods
+			}
 		}
 		l.mu.Unlock()
 		select {
@@ -209,14 +220,10 @@ func (l *Loaded) Provided() []string {
 }
 
 // Service is the service `name` the plugin provides, as rutis sees it:
-// only its declared methods. The test fails if the plugin does not
-// declare it or does not provide it.
+// its declared methods, or, undeclared, the value's exported methods, all
+// asynchronous. The test fails if the plugin does not provide it.
 func (l *Loaded) Service(name string) *Service {
 	l.t.Helper()
-	kinds, declared := l.provides[name]
-	if !declared {
-		l.t.Fatalf("rutistest: %s is not declared in Provides, so rutis cannot use it", name)
-	}
 	// The notification may still be on its way when the load returned. A
 	// notification signals l.changed after it changed l.handles, and the
 	// signal is kept until taken: looking, then waiting, misses none.
@@ -236,6 +243,12 @@ func (l *Loaded) Service(name string) *Service {
 		case <-deadline.C:
 			l.t.Fatalf("rutistest: the plugin does not provide %s (now)", name)
 		}
+	}
+	kinds, declared := l.provides[name]
+	if !declared {
+		l.mu.Lock()
+		kinds = l.announced[name]
+		l.mu.Unlock()
 	}
 	return &Service{session: l.session, handle: handle, name: name, kinds: kinds}
 }

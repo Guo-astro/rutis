@@ -29,6 +29,16 @@ const samples = {
   'node/value-typed-array': () => new Int16Array([1, 2]),
 }
 
+// `undeclared` in the expectations: a service no `provides` declares, with
+// a method of its own, an inherited one and a field.
+class Days {
+  week(n) { return ['mon', 'tue', 'wed'].slice(0, n) }
+}
+class Forecast extends Days {
+  constructor(city) { super(); this.city = city }
+  tomorrow() { return `${this.city} tomorrow` }
+}
+
 export default definePlugin({
   inject: ['clock'],
   provides: {
@@ -48,5 +58,6 @@ export default definePlugin({
       samples() { return Object.keys(samples) },
       sample(name) { return samples[name]() },
     })
+    ctx.provide('forecast', new Forecast('Oslo'))
   },
 })
