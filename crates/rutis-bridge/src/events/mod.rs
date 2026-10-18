@@ -22,6 +22,7 @@ mod hub;
 mod link;
 
 pub use args::{ArgValue, Args};
+pub use errors::report_line;
 pub use framework::{RuntimeEvent, RuntimeEventState, ServiceEvent};
 pub use link::LinkEventsPlugin;
 

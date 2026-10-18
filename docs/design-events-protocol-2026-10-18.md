@@ -65,7 +65,7 @@
 
 - **线上的作用域链**：JSON 数组，元素是 `{ "id": <字符串>, "group": <字符串> }`，最外层在前。根是 `[]`。`id` 是不透明的字符串，在宿主现在和过去的全部实例中唯一（Rust：组 fiber 的 `InstanceId` 的十进制）；`group` 是加载器组的名字。例：`[{"id":"17","group":"tenant"},{"id":"42","group":"session"}]`。
 - **规则**：作用域链为 `L` 的条目收到在链 `E` 发出的分发，当且仅当 `L` 是 `E` 的前缀（按 `id` 比较）。根上的条目收到全部；租户 `t1` 里的条目收不到 `t2` 的。
-- **进程怎样知道作用域链**：宿主告诉每一行它的链。`rows.load` 增加第七个参数 `{ "scope": <链> }`（0.13 宿主总是发七个参数；行不导出服务时 `exports` 是 `{}`）。经 `mount` 的 `plugins` 列表加载的插件，得到 `mount` 参数 `scope`（挂载它的插件的链）。Rust 插件用 `Ctx::scope()`（§12.1）。
+- **进程怎样知道作用域链**：宿主告诉每一行它的链。`rows.load` 增加第七个参数 `{ "scope": <链> }`（0.13 宿主总是发七个参数；行不导出服务时 `exports` 是 `{}`）。经 `mount` 的 `plugins` 列表加载的插件，得到 `mount` 参数 `scope`（挂载它的插件的链）。Rust 插件用 `Ctx::scope()`（§12.1）。`mount` 还带 `runtime`，即描述里给出的运行时名字（§4.2）：运行时在快速路径上给自己的条目写描述时用它，与经宿主时的描述一致。
 - **发出方的作用域从不由发出方自报**：运行时的 `events.dispatch` 写明发出的 `row`，宿主用这一行的链；这一行没有加载在这个会话上时拒绝（`BindingError`，`row <key> is not loaded in this runtime`）。挂载方式加载的插件写 `row: null`，用挂载的链。
 - 叶子插件的 `isolate` 标签（服务作用域、U+0001 的租约）与事件作用域无关。
 
@@ -273,7 +273,7 @@
 
 | `name` | 何时 | 信息（确切；`<…>` 填入） |
 | --- | --- | --- |
-| `AggregateError` | `parallel` 有失败 | `<n> listeners of <name> failed`；子错误按登记顺序 |
+| `AggregateError` | `parallel` 有失败 | `<n> listeners of <name> failed`；子错误按登记顺序：线上，错误图的根是名为 `AggregateError` 的 `error` 节点，其 `errors` 引用各子错误的节点（每个子错误自己的图并入其中），与 JavaScript 编码 `AggregateError` 的方式相同 |
 | `AsyncListener` | `bail` / `waterfall-sync` 遇到异步监听器 | `listener of <name> in row <row> is asynchronous and cannot run in a synchronous <bail\|waterfall-sync>` |
 | `WaterfallNext` | `next` 调用两次 / 结束后 / 取消后 / 不在 waterfall 中（Rust）/ Rust 同步监听器在异步 waterfall 中 | `next of <name> was already called` · `next of <name> was called after its waterfall ended` · `next is available only in a waterfall (this is <mode>)` · `a synchronous listener cannot call next in an asynchronous waterfall; register it with on` |
 | `ReservedEvent` | 发出 `rutis/*`（任何方式、任何语言，由发出的 API 同步拒绝） | `rutis/* events are emitted by rutis only: <name>` |
@@ -786,7 +786,7 @@ impl Ctx {
 | 现有 | 变化 |
 | --- | --- |
 | `hello.capabilities` | + `events-v2`（必需，§2.1） |
-| `mount` | − `events`，− `emits`；+ `scope`（第三节）；回复的特性 `events` 删除 |
+| `mount` | − `events`，− `emits`；+ `scope`、+ `runtime`（第三节）；回复的特性 `events` 删除 |
 | `rows.load` | 第七个参数 `{ scope }`（第三节） |
 | `rows.unload`、`rows.ended`、会话结束 | 撤下这一行 / 这个会话的条目（第七节） |
 | 运行时 → 宿主的 `event`、宿主 → 运行时的 `emit` | 删除；由 `events.dispatch`、`events.call` 取代 |
@@ -824,3 +824,12 @@ impl Ctx {
 25. **Node / Bun 对每次分发在每个执行其监听器的进程里触发一次 Cordis `internal/dispatch`**，另加发出方自己的 Cordis 分发中的那一次。
 26. **测试工具**在一个进程里提供作用域、过滤、卸载等待与取消，不提供 `rutis/*`；期望文件以 `tool: false` 标出它们跳过的用例。
 27. **`prepend` 与 `global`** 只在今天已有的地方存在（Cordis、Rust）；Python、Go 与 Node 叶子的监听器发 `false`。
+
+实现宿主侧时（#464，`events/host`）定下的：
+
+28. **`mount` 写明运行时的名字**（`runtime`），快速路径上的描述与宿主的相同。
+29. **宿主按顺序处理一个会话的 `emit` 分发，而不阻塞它的读线程**：能马上开始的 `emit`（没有待回的过滤选择器）在读下一帧之前就答 `undefined`；不能马上开始的（它的选择器调用要从同一个会话回来），连同这个会话之后的每个 `emit`，进入队列，各自在调用都开始后作答（这时答的是一个运行时去等待的 future）。两种情况下 §5.5 的保证都成立。
+30. **宿主在会话读线程上按帧序处理 `events.on`、`events.off`、`events.elsewhere`，以及 `emit` 方式的 `events.dispatch` / `events.call`**（会话层内联执行这些控制操作）；其余事件操作与任何调用一样作为任务执行。
+31. **节点按自己的条目每匹配一个 `import` 项就宣告一次**（按 §9 收窄），每次宣告有自己的 id；对端宣告的条目同样按每匹配一个 `export` 项接受一次。宣告在对端提供 `events` 这一族时开始，对端每次重新提供时从头再来。
+32. **线上的 `AggregateError`** 在错误图里带着子错误（§11），各语言都按登记顺序还原子错误。
+33. **`rutis/row`**：加载器生成该行时发 `pending`，之后按加载器看到的 fiber 状态的每次变化发（`loading` 算作 `pending`；`unloading` 与销毁算作 `stopped`）；组行也是行（`plugin` 为 `group`）。**`rutis/service`** 针对运行时行提供给 rutis 的服务（宿主投影它们时）发出，位于该行的作用域，带该行的 id。

@@ -56,6 +56,45 @@ pub(crate) fn to_session(error: &CordisError) -> Error {
     }
 }
 
+/// `<ErrorName>: <message>` of an error, as a far end would read it.
+fn named(error: &CordisError) -> String {
+    match to_session(error) {
+        Error::Remote { name, message, .. } => format!("{name}: {message}"),
+        Error::SyncWaitCycle(message) => format!("SyncWaitCycle: {message}"),
+        other => format!("BindingError: {other}"),
+    }
+}
+
+/// The line a host prints for an event failure its error sink receives
+/// (events protocol §5.6): `rutis: listener of <name> in <where> failed:
+/// <ErrorName>: <message>`, and the same for a filter; `None` for any other
+/// error.
+pub fn report_line(error: &CordisError) -> Option<String> {
+    match error {
+        CordisError::ListenerFailed {
+            name,
+            listener,
+            error,
+        } => Some(format!(
+            "rutis: listener of {name} in {listener} failed: {}",
+            named(error)
+        )),
+        CordisError::FilterFailed {
+            name,
+            emitter,
+            error,
+        } => Some(format!(
+            "rutis: filter of {name} from {emitter} failed: {}",
+            named(error)
+        )),
+        CordisError::PluginFailed(source) => {
+            let line = source.to_string();
+            line.starts_with("filter of ").then(|| format!("rutis: {line}"))
+        }
+        _ => None,
+    }
+}
+
 /// `AggregateError`: `<n> listeners of <name> failed`, its graph's root an
 /// error node whose `errors` are the children's (as JavaScript encodes an
 /// `AggregateError`).
