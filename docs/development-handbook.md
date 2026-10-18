@@ -10,6 +10,7 @@
 [dependencies]
 rutis = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
 ```
 
 下面用一个提供方和一个消费者演示服务注册与依赖声明。示例中，Backend 提供服务，Indexer 声明并使用这个服务。
@@ -241,23 +242,24 @@ ctx.effect(move || {
 
 ### 定义事件和监听器
 
-定义事件类型时，实现 `Event`，指定用于诊断的名称和处理结果类型。处理逻辑通过 `Listener` 实现。下面以携带文档名称的 `DocumentIndexed` 为例：
+定义事件类型时，实现 `Event`，指定事件名称和处理结果类型；事件和结果类型实现 serde 的 `Serialize` 与 `Deserialize`（依赖中加入 `serde = { version = "1", features = ["derive"] }`）。处理逻辑通过 `Listener` 实现。下面以携带文档名称的 `DocumentIndexed` 为例：
 
 ```rust
 use std::sync::Arc;
-use rutis::{BoxFuture, CordisError, Ctx, Event, EventKey, Listener};
+use rutis::{BoxFuture, Call, CordisError, Ctx, Event, EventKey, Listener};
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct DocumentIndexed(String);
 
 impl Event for DocumentIndexed {
-    const NAME: &'static str = "app::DocumentIndexed";
+    const NAME: &'static str = "app/document-indexed";
     type Value = ();
 }
 
 struct Progress;
 
 impl Listener<DocumentIndexed> for Progress {
-    fn call<'a>(&'a self, _sender: &'a Ctx, event: &'a DocumentIndexed)
+    fn call<'a>(&'a self, _ctx: &'a Ctx, event: &'a DocumentIndexed, _call: Call<'a, ()>)
         -> BoxFuture<'a, Result<Option<()>, CordisError>>
     {
         Box::pin(async move {
@@ -275,30 +277,35 @@ fn index(ctx: &Ctx, path: String) -> Result<(), CordisError> {
 }
 ```
 
-在这个例子中，`EventKey::<DocumentIndexed>::of()` 是这类事件的通道，`on` 在该通道上注册监听器，`emit` 向该通道提交事件；两者都返回 `Result`，失败时（例如上下文已经关闭）不会注册或投递。
+在这个例子中，`EventKey::<DocumentIndexed>::of()` 指向名为 `DocumentIndexed::NAME` 的事件，`on` 为这个名称注册监听器，`emit` 发送这个名称的事件；两者都返回 `Result`，失败时（例如上下文已经关闭）不会注册或投递。
 
-事件按类型和通道匹配，`NAME` 用于诊断。同一事件类型可以用 `EventKey::named("…")`（运行时生成的名称用 `EventKey::dynamic`）划分多个通道。监听器属于注册时传入的 `Ctx`；回调收到的 `Ctx` 来自发送方。回调需要创建属于监听插件的资源时，应捕获注册方的 `Ctx`。可运行代码见 [上下文归属示例](../crates/rutis/examples/listener_ctx_ownership.rs)。
+事件按名称匹配。`EventKey::named("…")`（运行时生成的名称用 `EventKey::dynamic`）给同一事件类型换一个名称；前缀监听用 `on_pattern` 和 `EventPattern::prefix("…")`。不同 Rust 类型使用同一名称时听到同一批事件，框架经 serde 转换，所以不相关的事件类型应使用不同名称。以 `rutis/` 开头的名称留给框架事件，插件只能监听。
+
+监听器属于注册时传入的 `Ctx`，回调收到的也是这个 `Ctx`，而不是发送方的。回调通过它注册的资源因此属于监听插件，`ctx.cancelled()` 就是它所在插件的卸载信号。插件开始卸载后，它的监听器不再被调用，卸载会等待它们正在运行的调用结束。可运行代码见 [上下文归属示例](../crates/rutis/examples/listener_ctx_ownership.rs)。
 
 ### 选择分发方式
 
+监听器只注册一次，每种分发方式都会调用它；由发送方选择分发方式，回调可以用 `call.mode()` 查看本次是哪一种。
+
 | API | 执行方式 | 返回与错误处理 |
 |---|---|---|
-| `emit` | 在后台依次调用监听器，同键事件依次分发 | 立即返回；错误交给 ErrorSink |
-| `parallel` | 并发调用监听器，等待全部完成 | 成功返回 `()`，失败汇总错误 |
-| `serial` | 按注册顺序调用，遇到 `Some(value)` 或错误时结束 | 返回首个值；全部返回 `None` 时结果为 `None` |
-| `waterfall` | 监听器通过 `next` 调用后续处理，并可处理其返回结果 | 返回整条调用链的结果 |
+| `emit` | 在后台按注册顺序启动各监听器的调用，同名事件按发送顺序启动，调用之间并发执行 | 立即返回；每个失败以 `ListenerFailed` 交给 ErrorSink，不影响其他监听器 |
+| `parallel` | 并发调用监听器，等待全部完成 | 成功返回 `()`；失败汇总为 `ListenersFailed`（只有一个失败时也是），按注册顺序排列 |
+| `serial` | 按注册顺序逐个调用，遇到结果或错误时结束 | 返回首个结果；`None` 和 `Some(false)` 视为没有结果 |
+| `waterfall` | 监听器通过 `call.next()` 调用后续处理，并可处理其返回结果 | 返回最外层监听器的结果 |
+| `bail_sync` / `waterfall_sync` | 与 `serial` / `waterfall` 相同，但在调用方线程内同步执行 | 监听器需用 `on_sync` 注册；遇到异步监听器返回 `AsyncListener` 错误 |
 
-普通监听器的返回类型为 `Result<Option<E::Value>, CordisError>`。例如，事件定义 `type Value = String`，serial 监听器就用 `Ok(Some(title))` 返回标题，用 `Ok(None)` 交给下一位处理者。
+监听器的返回类型为 `Result<Option<E::Value>, CordisError>`。例如，事件定义 `type Value = String`，serial 监听器就用 `Ok(Some(title))` 返回标题，用 `Ok(None)` 交给下一位处理者。
 
-emit、parallel 和 serial 使用 `on` 注册的普通监听器；waterfall 使用 `on_waterfall` 注册监听器。waterfall 监听器调用 `next.call().await` 执行后续流程，并可以处理返回结果；直接返回则结束当前流程。调用方通过 `terminal` 提供链末的处理函数。事件参数在整条链中保持相同，结果通过返回值传递。
+在 waterfall 中，监听器调用 `call.next().await` 执行后续流程，并可以处理返回结果；直接返回则结束当前流程。其他分发方式中调用 `next` 得到 `WaterfallNext` 错误。调用方通过 `terminal` 提供链末的处理函数（`()` 表示没有）。事件参数在整条链中保持相同，结果通过返回值传递。
 
 emit 和 parallel 忽略监听器返回的 `Some(value)`；serial 用它决定何时结束调用。选择分发方式时，应明确是否等待完成、是否需要返回值，以及处理函数之间的顺序要求。
 
-同键 `emit` 的后续分发会等待前一次完成。`ctx.diagnostics().event_backlogs` 列出各事件键已接收未完成的 emit 数量和最早一个的等待时长，可据此发现慢监听器。高频数据流可以使用有界队列，结合批处理或合并控制积压；需要重放的数据另行持久化。处理错误通过 `Result` 表达，waterfall 中的 panic 由调用方处理。
+慢监听器不会挡住同名事件的其他调用，但每次 emit 会一直留在积压中，直到它启动的调用全部结束。`ctx.diagnostics().event_backlogs` 列出各事件名已接收未完成的 emit 数量和最早一个的等待时长，可据此发现慢监听器。高频数据流可以使用有界队列，结合批处理或合并控制积压；需要重放的数据另行持久化。处理错误通过 `Result` 表达，waterfall 中的 panic 由调用方处理。
 
 ## 实例子树
 
-实例子树把一个插件及其后代组织成共同管理的范围。实例服务键限制服务的访问范围，实例事件通道限制监听器的注册和事件发送范围，`FiberView::shutdown()` 负责关闭整棵子树。
+实例子树把一个插件及其后代组织成共同管理的范围。实例服务键限制服务的访问范围，事件作用域限制事件的到达范围，`FiberView::shutdown()` 负责关闭整棵子树。
 
 这种组织方式可以用于管理多个生命周期独立的运行实例。下面以工作区为例演示服务与事件的关联方式。
 
@@ -321,10 +328,13 @@ Indexer 将传入的键用于 `injects` 和 `get_as`。该服务的访问范围�
 
 ### 示例：实例内的事件分发
 
-工作区 ID 也作为参数传给 Progress 和 Indexer。它们使用自己的上下文，以及同一个工作区 ID：
+工作区插件把自己标记为一个作用域，Progress 和 Indexer 作为它的子插件，各自使用自己的上下文：
 
 ```rust,ignore
-let key = EventKey::<DocumentIndexed>::of().instance(workspace);
+// 在 WorkspacePlugin::apply 中：这个插件的子树成为一个作用域。
+ctx.mark_scope("workspace")?;
+
+let key = EventKey::<DocumentIndexed>::of();
 
 // 在 Progress 子插件中注册。
 progress_ctx.events().on(progress_ctx, &key, Progress)?;
@@ -333,9 +343,9 @@ progress_ctx.events().on(progress_ctx, &key, Progress)?;
 indexer_ctx.events().emit(indexer_ctx, &key, Arc::new(DocumentIndexed(path)))?;
 ```
 
-实例通道允许对应工作区及其子插件注册和发送事件。关闭相关子树时，框架等待已经接纳的实例事件处理完成，再完成资源清理。回调中产生的额外后台任务，按前面的任务管理方式登记。
+作用域内发送的事件到达这个作用域及其外层作用域（直到 root）的监听器；兄弟工作区听不到，作用域外发送的事件也到达不了作用域内的监听器。root 上的监听器听到所有事件。关闭子树时，框架等待其中监听器正在运行的调用结束，再完成资源清理。回调中产生的额外后台任务，按前面的任务管理方式登记。
 
-普通事件用于 root 内共享通知，命名通道（`EventKey::named`）用名称区分通道，实例事件用于子树内通知。三类通道分别匹配；`.instance(id)` 也可以加在命名通道上。isolate 的服务作用域独立于事件通道。当前实例事件支持 emit、parallel 和 serial。旧的 `on_instance` / `emit_instance` / `on_keyed` / `emit_keyed` 自 0.5.0 起弃用，新代码统一使用 `EventKey`。
+isolate 的服务作用域独立于事件作用域。
 
 关闭操作由宿主协调。实例回调若需要关闭工作区，可向宿主发送请求并返回，由宿主等待关闭完成。这样，关闭过程可以正常等待当前回调结束。
 
@@ -427,7 +437,7 @@ async fn try_shutdown(view: &FiberView, limit: Duration)
 
 返回 `true` 表示关闭完成；`false` 表示本次等待超时。宿主保留该 view，稍后再次调用 `view.shutdown().await` 取得结果。关闭操作一旦发起，就独立于等待方继续执行。
 
-实例事件的在途处理由框架跟踪；普通和 named 事件中已经开始的回调可以继续运行。应用需要等待的其他工作，通过任务句柄和清理函数明确管理。
+插件卸载时，框架等待它的监听器正在运行的调用结束（它们看到 `ctx.cancelled()`）。应用需要等待的其他工作，通过任务句柄和清理函数明确管理。
 
 ## 诊断与验证
 
@@ -441,13 +451,13 @@ async fn try_shutdown(view: &FiberView, limit: Duration)
 | 服务读取返回 None | 注册与读取的类型、限定名、实例 ID，以及提供方是否 Active |
 | 更新后仍使用旧服务 | 依赖声明是否完整，使用方是否取得新一代对象 |
 | 插件进入 Failed | `view.state().error` 中的具体原因 |
-| 关闭持续等待 | 初始化是否结束，任务是否响应取消，清理和实例回调是否完成 |
+| 关闭持续等待 | 初始化是否结束，任务是否响应取消，清理和监听器回调是否完成 |
 
 `diagnostics()` 读取已有状态。使用健康谓词的服务在条件变化后调用 `refresh()`，再观察检查结果。
 
 ### 处理错误
 
-生命周期操作和等待型事件的错误通过返回值处理。emit 错误以及重载期间的清理错误进入 ErrorSink；默认输出到 stderr，宿主可用 `Ctx::root_with_sink` 接入自己的日志。
+生命周期操作和等待型事件的错误通过返回值处理。emit 中监听器的错误（以 `ListenerFailed` 包装）以及重载期间的清理错误进入 ErrorSink；默认输出到 stderr，宿主可用 `Ctx::root_with_sink` 接入自己的日志。
 
 提前释放 effect 时，先处理 `Disposer::dispose()` 的结果。长寿命插件还可定期调用 `take_cleanup_errors()`，取走并处理已完成的历史清理错误。后台任务的错误由任务所有者观察和报告。
 

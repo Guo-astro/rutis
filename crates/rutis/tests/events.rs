@@ -963,9 +963,9 @@ async fn filters_see_descriptors_and_global_entries_skip_them() {
         ["filter:plugin-a", "filter:plugin-b", "a", "g"],
         "the tenant's listener is out of scope; g skips the filter"
     );
-    let seen = seen.lock().unwrap();
+    let first = seen.lock().unwrap()[0].clone();
     assert_eq!(
-        seen[0],
+        first,
         ListenerInfo {
             name: "t/ping".into(),
             prefix: false,
