@@ -63,7 +63,7 @@ fn said(loader: &Loader, id: &str) -> String {
 
 /// §2.4: the old `events: { out, in }` of a link is refused, saying what
 /// replaces it.
-/// guarantee: events/old-config-refused
+/// guarantee: events/node-config
 #[tokio::test(flavor = "multi_thread")]
 async fn the_old_events_config_of_a_link_is_refused() {
     let transport = Arc::new(MemoryTransport::default());
