@@ -63,7 +63,7 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 ## 0.12.0
 
-持久化样本的 `rutis.json` 加上 0.11 之后新增的 `restart`：`runtimes.node` 为 `"on-failure"`，`runtimes.py` 为 `"exit"`，`runtimes.bun` 为 `"no"`（默认值）；`format` 仍是 1。persisted 测试的期望记下不是默认值的 `restart`，所以 `"no"` 不出现在期望里，旧样本的期望不变。dsh 的用户层自 0.11.0 以来没有变化，`cordis.patch.yml` 原样复制。这也是第一次在发布门里跑跨版本相遇（#426，CI 的 `e2e` 任务）：打 tag 时 0.12.0 还没发布，相遇的是 0.11.0。
+持久化样本的 `rutis.json` 加上 0.11 之后新增的 `restart`：`runtimes.node` 为 `"on-failure"`，`runtimes.py` 为 `"exit"`，`runtimes.bun` 为 `"no"`（默认值）；`format` 仍是 1。persisted 测试的期望记下不是默认值的 `restart`，所以 `"no"` 不出现在期望里，旧样本的期望不变。dsh 的用户层自 0.11.0 以来没有变化，`cordis.patch.yml` 原样复制。这也是第一次在发布门里跑跨版本相遇（#426，CI 的 `e2e` 任务）：发布门设了 `RUTIS_E2E_ONLY_OLDER=1`，只和更早的发布版本对接，这一版是 0.11.0。
 
 ## 0.11.0
 

@@ -63,7 +63,7 @@ The nightly stress workflow also runs two soak tests (repeated link disconnect/r
 
 ## 0.12.0
 
-The persisted `rutis.json` sample gains `restart`, added after 0.11: `"on-failure"` on `runtimes.node`, `"exit"` on `runtimes.py` and `"no"` (the default) on `runtimes.bun`; `format` stays 1. The persisted test's expectations record `restart` when it is not the default, so `"no"` does not appear in them and the older samples' expectations are unchanged. dsh's user layer has not changed since 0.11.0, so `cordis.patch.yml` is copied as is. This is also the first release whose gate runs the cross-version meetings (#426, CI's `e2e` job): when the tag is pushed 0.12.0 is not published yet, so they meet 0.11.0.
+The persisted `rutis.json` sample gains `restart`, added after 0.11: `"on-failure"` on `runtimes.node`, `"exit"` on `runtimes.py` and `"no"` (the default) on `runtimes.bun`; `format` stays 1. The persisted test's expectations record `restart` when it is not the default, so `"no"` does not appear in them and the older samples' expectations are unchanged. dsh's user layer has not changed since 0.11.0, so `cordis.patch.yml` is copied as is. This is also the first release whose gate runs the cross-version meetings (#426, CI's `e2e` job): the gate sets `RUTIS_E2E_ONLY_OLDER=1`, so they meet only earlier releases, here 0.11.0.
 
 ## 0.11.0
 
