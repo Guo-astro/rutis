@@ -15,12 +15,16 @@ import { fileURLToPath } from 'node:url'
 // refused, naming both.
 // 2: ctx.on and ctx.emit (leaf events). A runtime that supports only 1
 // refuses such a plugin at load instead of failing in apply.
-export const PLUGIN_API = 2
+// 3: the unified events of rutis 0.13 (#464): ctx.parallel, serial,
+// waterfall, bail and filter, and ctx.signal. Plugins of API 2 still load.
+export const PLUGIN_API = 3
 // What `definePlugin` marks its plugins with, across copies of the SDK.
 const PLUGIN = Symbol.for('rutis.leaf-plugin')
 
 export type Kind = 'sync' | 'async'
 export interface Plugin {
+  // Its name, for listener descriptors; null when it gives none.
+  name: string | null
   apply(ctx: unknown, config: unknown): unknown
   inject: string[]
   provides: Record<string, Record<string, Kind>>
@@ -85,7 +89,7 @@ function check(plugin: any, entry: string): Plugin {
   // An SDK's plugin says (0.12 on); a module's own exports may always
   // provide more than they declare.
   const announces = typeof plugin.announces === 'boolean' ? plugin.announces : true
-  return { apply: plugin.apply, inject: [...inject], provides, announces, config: plugin.config ?? null, api }
+  return { name: typeof plugin.name === 'string' ? plugin.name : null, apply: plugin.apply, inject: [...inject], provides, announces, config: plugin.config ?? null, api }
 }
 
 // The plugin a module declares.

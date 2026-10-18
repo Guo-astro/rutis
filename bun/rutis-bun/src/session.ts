@@ -9,9 +9,12 @@ import { VALUE_CAPABILITIES, ValueError, base64Decode, base64Encode, bytesOf, ch
 // references. Built-in value types are not objects of this kind, nor are
 // the values the SDK constructors make (`rutis.date(…)`, ...).
 const builtins = [Date, RegExp, Map, Set, WeakMap, WeakSet, ArrayBuffer, DataView, Error, Promise]
+// A plain object marked as a record crosses field by field even when it
+// holds functions: a protocol message such as `events.dispatch` (#464).
+export const RECORD = Symbol.for('rutis.session.record')
 function isLive(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value) || ArrayBuffer.isView(value)) return false
-  if (builtins.some(type => value instanceof type) || constructedTag(value)) return false
+  if (builtins.some(type => value instanceof type) || constructedTag(value) || value[RECORD] === true) return false
   const prototype = Object.getPrototypeOf(value)
   if (prototype !== Object.prototype && prototype !== null) return true
   return Object.values(value).some(item => typeof item === 'function')
@@ -55,10 +58,17 @@ export function versionMismatch(far, local, implementation) {
 // check; `sync-stack`: calls run while it waits are stacked on its one
 // thread. `value-<tag>`: it takes all ten tagged values (#308,
 // ./values.ts).
-export const CAPABILITIES = ['signals', 'reentrant-sync', 'sync-wait', 'sync-stack', ...VALUE_CAPABILITIES]
+export const CAPABILITIES = ['signals', 'reentrant-sync', 'sync-wait', 'sync-stack', ...VALUE_CAPABILITIES, 'events-v2']
 // What it declares in the compat format, where older hosts ignore it.
-const COMPAT_CAPABILITIES = ['reentrant-sync', 'sync-wait', 'sync-stack', ...VALUE_CAPABILITIES]
+const COMPAT_CAPABILITIES = ['reentrant-sync', 'sync-wait', 'sync-stack', ...VALUE_CAPABILITIES, 'events-v2']
 export const ENDPOINT_ID = /^[a-z0-9-]+$/
+// `events-v2` (#464): the event protocol of rutis 0.13, declared in both
+// formats. A runtime requires it of its host (`requires`) and ends the
+// session right after the handshake without it (protocol §2.1).
+export const EVENTS_V2_REFUSAL = 'this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later'
+function required(capabilities, requires) {
+  if (requires?.includes('events-v2') && !capabilities.includes('events-v2')) throw Object.assign(new Error(EVENTS_V2_REFUSAL), { category: 'incompatible' })
+}
 
 // What a far end's endpoint-format hello says of it, or why it is refused:
 // an error whose `category` says what it means for a link or a dialer
@@ -73,7 +83,9 @@ export function greetingOf(frame, endpoint) {
     if (expected !== undefined && expected !== far) throw fail('auth-rejected', `endpoint mismatch: the far end greeted as ${far}, but ${expected} is the ${whose} endpoint`)
   }
   if (far === endpoint.local) throw fail('auth-rejected', `endpoint mismatch: the far end greeted as this endpoint (${far})`)
-  return { endpoint: far, implementation: frame.implementation, capabilities: Array.isArray(frame.capabilities) ? frame.capabilities : [] }
+  const capabilities = Array.isArray(frame.capabilities) ? frame.capabilities : []
+  required(capabilities, endpoint.requires)
+  return { endpoint: far, implementation: frame.implementation, capabilities }
 }
 
 // How deep a value crossing a session may nest (#279): each array or
@@ -118,7 +130,7 @@ class RemotePromise extends Promise {
 // plugin is itself inside a synchronous call: do not hold a lock across a
 // call into rutis.
 export class Session {
-  #send; #pump; #dispatch; #abort; #settled
+  #send; #pump; #dispatch; #abort; #settled; #inline; #requires
   #next = 0; #received = 0; #ref = 0; #pending = new Map(); #exports = new Map(); #identities = new WeakMap()
   #imports = new Map(); #proxies = new WeakMap(); #finalizer
   #closed; #handshake = false; #resolveReady; #rejectReady
@@ -136,8 +148,13 @@ export class Session {
   // `endpoint` ({ local, expected?, verified?, declare? }) selects the
   // endpoint format (`declare`: capabilities beyond the session's, such as
   // the contract); without it the session speaks the compat protocol.
-  constructor({ send, pump, dispatch, abort, settled, endpoint }) {
+  constructor({ send, pump, dispatch, abort, settled, endpoint, inline, requires }) {
     this.#send = send; this.#pump = pump; this.#dispatch = dispatch; this.#abort = abort; this.#settled = settled
+    // `inline`: control methods (empty target) run as their frame arrives,
+    // in frame order, before the next frame is read, also while a
+    // synchronous call waits (`events.on`, `events.off`, `events.elsewhere`).
+    // `requires`: capabilities the far end must declare (`events-v2`).
+    this.#inline = new Set(inline ?? []); this.#requires = requires ?? endpoint?.requires
     if (endpoint) {
       if (!ENDPOINT_ID.test(endpoint.local)) throw new Error(`invalid endpoint id ${endpoint.local}`)
       this.#endpoint = endpoint; this.#local = `${endpoint.local}:`; this.#remote = undefined
@@ -161,13 +178,16 @@ export class Session {
     if (!this.#endpoint) {
       if (frame.version !== PROTOCOL || frame.endpoint !== undefined) throw fail('incompatible', `incompatible session: ${versionMismatch(frame.version, PROTOCOL, frame.implementation)}`)
       if (Array.isArray(frame.capabilities)) this.#declared = frame.capabilities
+      required(this.#declared, this.#requires)
       return
     }
-    this.greeting = greetingOf(frame, this.#endpoint)
+    this.greeting = greetingOf(frame, { ...this.#endpoint, requires: this.#requires })
     this.#remote = `${this.greeting.endpoint}:`
     this.#declared = this.greeting.capabilities
   }
   supports(capability) { return this.greeting?.capabilities.includes(capability) ?? false }
+  // Whether the far end declared `capability` (either format).
+  declares(capability) { return this.#declared.includes(capability) }
   close(error = new Error('session closed')) {
     if (this.#closed) return
     this.#closed = error; this.#rejectReady(error)
@@ -413,6 +433,14 @@ export class Session {
   // Promise assimilation here is intentional: this is the generated async
   // method API. Synchronous invoke returns the Promise reference itself.
   invokeAsync(target, method, args) { return this.#requestAsync('invoke', { target, method }, args) }
+  // Call an imported function asynchronously (a waterfall's `next`, #464);
+  // calling the function itself waits synchronously.
+  callFunctionAsync(proxy, args) {
+    const record = this.#proxies.get(proxy)
+    if (!record || record.kind !== 'function') return Promise.reject(new TypeError('not an imported function'))
+    if (record.released) return Promise.reject(new Error('reference released'))
+    return this.#requestAsync('call', { reference: record.id }, args)
+  }
   drain() { return this.#active ? new Promise(resolve => this.#draining.push(resolve)) : Promise.resolve() }
   #finish() { if (--this.#active === 0) for (const resolve of this.#draining.splice(0)) resolve() }
   receive(frame) {
@@ -469,6 +497,11 @@ export class Session {
       if (business) this.#active++
       const job = { frame, args, entry, business }
       this.#queued.add(job)
+      if (frame.op === 'invoke' && frame.target === '' && this.#inline.has(frame.method)) {
+        this.#queued.delete(job)
+        this.#execute(frame, args, entry, business)
+        return
+      }
       if (this.#waiting.length) this.#run(job)
       else queueMicrotask(() => this.#run(job))
     } catch (error) { this.#fault(error) }
