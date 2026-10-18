@@ -14,7 +14,7 @@
 //! | Go SDK (a binary built against the tagged module) | rutis-host, Python runtime | its plugins run; new values to it fail that call only |
 //! | rutis-host | the current runtimes (Node, Python, Go SDK) | the runtimes' plugins run; a Go binary of plugin API 2 is refused naming the host; new values towards the old host fail that call only |
 //! | rutis-host (a node) | rutis-host (a node), both dialing and listening | services both ways over the link; new values to the old node fail that call only; a JS error with `code` and `data` reaches the old node as a failed call, and the session goes on |
-//! | `@arcships/rutis-runtime`, or rutis-host | the current host, or the current Node runtime | a service a plugin of the current SDK provides without declaring it stays in its runtime, unknown to the host: the rows injecting it wait, nothing fails |
+//! | `@arcships/rutis-runtime`, or rutis-host | the current host, or the current Node runtime | a service a plugin of the current SDK provides without declaring it stays in its runtime, unknown to the host: the rows injecting it wait, nothing fails; the current `check` warns, the current runtime under an old host says so once |
 //! | `@arcships/rutis-runtime`, PyPI `rutis` | a Rust application (`fixture-host`) | each row's calls to a Rust service name that row (`caller_row`, its lease in a scope of its own, U+0001 in the label) |
 //!
 //! "New values" are the tagged values of 0.11 (#308: a `Date`, an integer
@@ -793,7 +793,9 @@ enum Old {
 /// for it. With `old` of `release`, nothing announces it: the service
 /// stays in its runtime, unknown to the host, and every row injecting it,
 /// in that runtime (`near`) or another (`far`), waits for it; nothing
-/// fails, and the row providing it runs on.
+/// fails, and the row providing it runs on. What says so: the current
+/// host's `check` (that nothing declares `quiet`); under an old host, the
+/// current runtime, once, that the host does not take the service.
 fn undeclared(release: &Release, s: Scenario, old: Old) {
     link_sdk(&s, "", &repo().join("node/rutis"));
     s.write("quiet.ts", QUIET_TS);
@@ -814,11 +816,33 @@ fn undeclared(release: &Release, s: Scenario, old: Old) {
             ],
         }),
     );
+    if let Old::Runtime = old {
+        // What the current host's `check` says of it (#446): a warning for
+        // the row of the same runtime, which some row may provide `quiet`
+        // to; the Python row cannot run.
+        let mut check = s.host(["check", "rutis.json"]);
+        let status = check.wait_exit();
+        let printed: Vec<String> = check.lines().into_iter().map(|line| line.text).collect();
+        let has = |text: &str| printed.iter().any(|line| line.contains(text));
+        assert!(!status.success(), "check: {status}\n{printed:#?}");
+        assert!(
+            has("rutis-host: warning: near: nothing declares quiet; it may be provided at runtime by"),
+            "check warns for near: {printed:#?}"
+        );
+        assert!(
+            has("far (py:far): cannot run: nothing provides quiet"),
+            "check, far: {printed:#?}"
+        );
+    }
     let mut host = match old {
         Old::Runtime => s.host(["run", "rutis.json"]),
         Old::Host => s.program("", release.host(), ["run", "rutis.json"], &[]),
     };
     host.expect("quiet: running");
+    let told = "rutis: service quiet is not declared in provides, and this host (older than 0.12) does not take undeclared services";
+    if let Old::Host = old {
+        host.expect(told);
+    }
     host.expect("near: waiting for its services");
     host.expect("far: waiting for its services");
     // Nothing is to come; a while for an announcement to have arrived if
@@ -831,6 +855,11 @@ fn undeclared(release: &Release, s: Scenario, old: Old) {
             "quiet reached {row}"
         );
     }
+    let expected = match old {
+        Old::Runtime => 0,
+        Old::Host => 1,
+    };
+    assert_eq!(host.count(told), expected, "the old host told once");
     let failed: Vec<String> = host
         .lines()
         .into_iter()
