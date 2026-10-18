@@ -27,6 +27,7 @@ import asyncio
 import contextvars
 import inspect
 import sys
+import threading
 from typing import Any, Callable
 
 from . import _eager
@@ -168,6 +169,9 @@ class Entry:
         self.prepend = prepend
         self.global_ = global_
         self.alive = True
+        # The runtime its descriptor names, when not the bus's (the testing
+        # tool's `runtime=`).
+        self.runtime: str | None = None
 
     def descriptor(self, runtime: str | None, row: str | None = None) -> dict:
         """What a filter sees of it (§4.2); `row` is its row's id (its key
@@ -177,7 +181,7 @@ class Entry:
             "prefix": False,
             "plugin": self.plugin,
             "row": self.row if row is None else row,
-            "runtime": runtime,
+            "runtime": runtime if self.runtime is None else self.runtime,
             "node": None,
             "scope": [dict(item) for item in self.scope],
             "global": self.global_,
@@ -188,11 +192,15 @@ class Bus:
     """The listeners of this process's rows, in registration order, and the
     invocations of them still running, by row (which unload cancels and
     waits for). `report(kind, name, row, error)` gets the failures nobody
-    receives (`failed_line`)."""
+    receives (`failed_line`). The table may change from any thread (a
+    plugin's own threads register and withdraw); invocations run on the
+    loop only."""
 
     def __init__(self, report: Callable = print_report, runtime: str | None = None):
         self.entries: list[Entry] = []
         self.by_id: dict[str, Entry] = {}
+        # Guards `entries`, `by_id` and the ids.
+        self._lock = threading.Lock()
         self.running: dict[str, set] = {}
         # Invocations still in their eager start, by row: each a future set
         # once the start returned. A listener can be inside its first step
@@ -221,34 +229,53 @@ class Bus:
     ) -> Entry:
         if not callable(listener):
             raise TypeError("on needs a listener function")
-        self._ids += 1
-        entry = Entry(str(self._ids), name, row, plugin, listener, list(scope), bool(prepend), bool(global_))
-        if entry.prepend:
-            self.entries.insert(0, entry)
-        else:
-            self.entries.append(entry)
-        self.by_id[entry.id] = entry
+        with self._lock:
+            self._ids += 1
+            entry = Entry(str(self._ids), name, row, plugin, listener, list(scope), bool(prepend), bool(global_))
+            if entry.prepend:
+                self.entries.insert(0, entry)
+            else:
+                self.entries.append(entry)
+            self.by_id[entry.id] = entry
         return entry
 
     def withdraw(self, entry: Entry) -> bool:
         """Take `entry` off the table: it starts no invocation any more.
         False when it was off already."""
-        if not entry.alive:
-            return False
-        entry.alive = False
-        self.entries.remove(entry)
-        del self.by_id[entry.id]
-        return True
+        with self._lock:
+            if not entry.alive:
+                return False
+            entry.alive = False
+            self.entries.remove(entry)
+            del self.by_id[entry.id]
+            return True
+
+    def withdraw_row(self, row: str) -> list[str]:
+        """Take the row's listeners off the table; their ids."""
+        with self._lock:
+            mine = [entry for entry in self.entries if entry.row == row]
+            for entry in mine:
+                entry.alive = False
+                self.entries.remove(entry)
+                del self.by_id[entry.id]
+        return [entry.id for entry in mine]
 
     def clear(self) -> None:
-        for entry in self.entries:
-            entry.alive = False
-        self.entries.clear()
-        self.by_id.clear()
+        with self._lock:
+            for entry in self.entries:
+                entry.alive = False
+            self.entries.clear()
+            self.by_id.clear()
+
+    def listener(self, id: str) -> Entry | None:
+        """The listener `id`, while it is on the table."""
+        with self._lock:
+            return self.by_id.get(id)
 
     def snapshot(self, name: str, scope: list) -> list[Entry]:
         """The listeners an emission of `name` at `scope` reaches, in order."""
-        return [entry for entry in self.entries if entry.name == name and within(entry.scope, scope)]
+        with self._lock:
+            return [entry for entry in self.entries if entry.name == name and within(entry.scope, scope)]
 
     def select(self, entries: list[Entry], keep: Callable | None) -> list[Entry]:
         """`entries` the filter keeps, asked once for each non-`global` one,
@@ -303,7 +330,13 @@ class Bus:
         starts = set(self.starting.get(row, ()))
         if starts:
             # Out of their first step, they are tracked: cancelled below.
-            await asyncio.wait(starts, timeout=seconds)
+            _done, stuck = await asyncio.wait(starts, timeout=seconds)
+            starting = self.starting.get(row)
+            if stuck and starting is not None:
+                # Given up: a reload of the same key does not wait for them.
+                starting.difference_update(stuck)
+                if not starting:
+                    del self.starting[row]
         current = asyncio.current_task()
         tasks = {task for task in self.running.get(row, ()) if task is not current}
         if not tasks:
@@ -315,6 +348,12 @@ class Bus:
         if pending:
             line = f"rutis: listeners of row {self.row_id(row)} still running after {seconds:g}s; unloading anyway"
             (say or _say)(line)
+            # Abandoned: a reload of the same key does not wait for them.
+            running = self.running.get(row)
+            if running is not None:
+                running.difference_update(pending)
+                if not running:
+                    del self.running[row]
 
     # ── The five modes, here ─────────────────────────────────────
 
@@ -392,7 +431,9 @@ class Bus:
                 if called:
                     raise WaterfallNext(f"next of {name} was already called")
                 called = True
-                return run(i + 1)
+                # Started now, as in JavaScript and Go: the rest of the
+                # chain runs whether or not it is awaited at once.
+                return start(run(i + 1))
 
             task, value = self.call(entries[i], [*args, next])
             return plain(value if task is None else await task)
@@ -433,15 +474,24 @@ class Bus:
             return None
         if mode == "bail":
             return self.bail(name, self.select(self.snapshot(name, scope), keep), args)
-        return self._dispatch(mode, name, scope, args, keep, terminal)
+        # The snapshot and the filter are taken now, not once awaited: a
+        # listener registered in between is not in it.
+        try:
+            entries = self.select(self.snapshot(name, scope), keep)
+        except Exception as error:  # noqa: BLE001 - raised when awaited
+            return _raise(error)
+        return self._dispatch(mode, name, entries, args, terminal)
 
-    async def _dispatch(self, mode, name, scope, args, keep, terminal) -> Any:
-        entries = self.select(self.snapshot(name, scope), keep)
+    async def _dispatch(self, mode, name, entries, args, terminal) -> Any:
         if mode == "parallel":
             return await self.parallel(name, entries, args)
         if mode == "serial":
             return await self.serial(name, entries, args)
         return await self.waterfall(name, entries, args, terminal)
+
+
+async def _raise(error: BaseException) -> Any:
+    raise error
 
 
 def _say(line: str) -> None:
@@ -478,9 +528,10 @@ class Emitter:
 
     def waterfall(self, name: str, *args: Any, terminal: Callable | None = None):
         """Await it: the outermost listener's return value, as is. Each
-        listener gets `next` as its last argument: `await next()` runs the
-        rest of the chain, ending with `terminal(*args)` (None without one);
-        a listener that does not call it vetoes the rest."""
+        listener gets `next` as its last argument: `next()` starts the rest
+        of the chain at once and returns an awaitable of its result, ending
+        with `terminal(*args)` (None without one); a listener that does not
+        call it vetoes the rest."""
         reserved(name)
         if terminal is not None and not callable(terminal):
             raise TypeError("terminal must be a function")

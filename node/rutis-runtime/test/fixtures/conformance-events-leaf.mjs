@@ -108,10 +108,10 @@ function dispatch(ctx, log, spec) {
     case 'parallel': return from.parallel(name, ...args).then(() => null)
     case 'serial': return from.serial(name, ...args)
     case 'waterfall': {
-      const terminal = typeof spec.terminal === 'string'
-        ? () => { log.add('terminal'); return spec.terminal }
-        : () => undefined
-      return from.waterfall(name, ...args, terminal)
+      // A text it returns, or `{ echo: true }`: its first argument.
+      if (spec.terminal?.echo) return from.waterfall.with(first => { log.add('terminal'); return first })(name, ...args)
+      if (typeof spec.terminal !== 'string') return from.waterfall(name, ...args)
+      return from.waterfall.with(() => { log.add('terminal'); return spec.terminal })(name, ...args)
     }
     case 'bail': return from.bail(name, ...args)
     default: throw new Error(`unknown mode ${spec.mode}`)

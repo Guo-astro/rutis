@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rutis::events::{
-    Dispatch, EntryCall, FilterAnswer, Payload, RawTerminal, RemoteCall, RemoteEntry,
+    Candidate, Dispatch, EntryCall, FilterAnswer, Payload, RawTerminal, RemoteCall, RemoteEntry,
     RemoteListener, RemoteSyncCall, TableChange, Value,
 };
 use rutis::{
@@ -1163,6 +1163,9 @@ impl RemoteListener for Remote {
     fn kind(&self) -> ListenerKind {
         self.kind
     }
+    fn id(&self) -> Option<&str> {
+        Some(self.label)
+    }
     fn call<'a>(
         &'a self,
         call: RemoteCall<'a>,
@@ -1533,8 +1536,21 @@ async fn raw_dispatch_and_entry_calls() {
         )
         .unwrap();
     let mut dispatch = Dispatch::new("t/ping", Mode::Waterfall, Payload::new(Arc::new(Ping(9))));
-    dispatch.filter = Some(Box::new(|infos: Vec<ListenerInfo>| {
-        FilterAnswer::Ready(Ok(infos.iter().map(|i| i.runtime.is_none()).collect()))
+    // A batch filter knows which entry of which session each candidate is
+    // (its origin and the id it was registered with), also when two have
+    // equal descriptors.
+    type Asked = Vec<(Option<u64>, Option<String>)>;
+    let asked: Arc<Mutex<Asked>> = Arc::default();
+    let seen = asked.clone();
+    dispatch.filter = Some(Box::new(move |candidates: Vec<Candidate>| {
+        *seen.lock().unwrap() = candidates
+            .iter()
+            .map(|c| (c.origin, c.id.clone()))
+            .collect();
+        FilterAnswer::Ready(Ok(candidates
+            .iter()
+            .map(|c| c.info.runtime.is_none())
+            .collect()))
     }));
     dispatch.terminal = Some(RawTerminal::Async(Box::new(|event| {
         let n = event.downcast::<Ping>().unwrap().0;
@@ -1549,6 +1565,10 @@ async fn raw_dispatch_and_entry_calls() {
     assert_eq!(
         out.downcast_ref::<String>().map(String::as_str),
         Some("at9")
+    );
+    assert_eq!(
+        *asked.lock().unwrap(),
+        [(None, None), (Some(7), Some("r".to_owned()))]
     );
 
     order.lock().unwrap().clear();

@@ -14,8 +14,8 @@ use crate::ctx::Ctx;
 use crate::error::{join_panic_error, panic_error, CordisError, NextMisuse};
 use crate::events::remote::{SyncNextFn, SyncNextState};
 use crate::events::{
-    CatchUnwind, FilterAnswer, ListenerInfo, ListenerKind, Mode, Payload, PayloadRef, RawTerminal,
-    RemoteCall, RemoteNext, RemoteSyncCall, RemoteSyncNext, Value,
+    Candidate, CatchUnwind, FilterAnswer, ListenerInfo, ListenerKind, Mode, Payload, PayloadRef,
+    RawTerminal, RemoteCall, RemoteNext, RemoteSyncCall, RemoteSyncNext, Value,
 };
 use crate::BoxFuture;
 
@@ -88,11 +88,18 @@ pub(crate) fn filter_each(
     Ok(out)
 }
 
-fn candidates(entries: &[Arc<Entry>]) -> Vec<ListenerInfo> {
+fn candidates(entries: &[Arc<Entry>]) -> Vec<Candidate> {
     entries
         .iter()
         .filter(|e| !e.info.global)
-        .map(|e| (*e.info).clone())
+        .map(|e| Candidate {
+            info: (*e.info).clone(),
+            origin: e.origin,
+            id: match &e.body {
+                Body::Remote(remote) => remote.id().map(str::to_owned),
+                _ => None,
+            },
+        })
         .collect()
 }
 

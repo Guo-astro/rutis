@@ -217,7 +217,7 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 
 ## 六、过滤
 
-- **在哪里执行**：总是在发出方的进程里。快速路径上，运行时对每个候选条目直接调用插件的过滤函数。经宿主时，`events.dispatch` 带 `filter`：运行时包在插件过滤函数外面的一个**选择器**的函数引用。宿主每次分发调用它一次，在快照（§5.1）之后，参数只有一个：非 `global` 候选条目的描述列表，按登记顺序。选择器在发出方的进程里按顺序对每个描述调用插件的过滤函数，返回等长的布尔值列表（`true` = 送达），真假按本语言自己的规则 / `bool`。`bail` 分发中宿主同步调用它，其余异步。长度不对或不是布尔值时这次分发失败（`BindingError`，`filter of <name> returned <n> answers for <m> listeners`）。
+- **在哪里执行**：总是在发出方的进程里。快速路径上，运行时对每个候选条目直接调用插件的过滤函数。经宿主时，`events.dispatch` 带 `filter`：运行时包在插件过滤函数外面的一个**选择器**的函数引用。宿主每次分发调用它一次，在快照（§5.1）之后，参数只有一个：非 `global` 候选条目的描述列表，按登记顺序。选择器在发出方的进程里按顺序对每个描述调用插件的过滤函数，返回等长的布尔值列表（`true` = 送达），真假按本语言自己的规则 / `bool`。`bail` 分发中宿主同步调用它，其余异步。长度不对或不是布尔值时这次分发失败（`BindingError`，`filter of <name> returned <n> answers for <m> listeners`）。发出方自己会话里的条目，其描述还带 `listener`：该条目的 `events.on` id（2026-10-19 修订）。运行时凭它找到自己的监听器，绝不凭描述的其他字段（同一行在两个实例里的两份副本，或一个 Cordis 插件从两个 Context 监听，描述完全相同），并在调用插件的过滤函数前去掉它，使过滤函数在两条路径上看到的描述相同。
 - **错误**：过滤函数抛出时，整次分发以这个错误失败，不开始任何调用（`emit`：§5.6）。Go 的过滤函数返回 `(bool, error)`：它返回的错误（连同名字）就是这次失败，panic 也是。Rust 的 `try_filter` 接受返回 `Result<bool, CordisError>` 的函数，它返回的错误原样就是这次失败；`filter` 接受只返回 `bool` 的函数，只能以 panic 失败。
 - **默认**：先应用作用域规则，并且总是应用；过滤只在其上再筛。`global` 条目不经过滤。
 - **Cordis**（`Context.filter`）：`ctx.emit(thisArg, name, …)` 以及其余四种，`thisArg` 的 `[Context.filter]` 是函数时，用它作过滤。对本进程的监听器传入条目自己的 Cordis `Context`，对其他每个条目传入 `{ rutis: <描述> }`。rutis 的 Node / Bun 运行时里每个 Context 都有只读的 `ctx.rutis`，值为它的描述，所以 `c => c.rutis.row === 'chat'` 对两者都有效。
@@ -453,7 +453,7 @@ impl EventBus {
 | `emit` | `ctx.emit([thisArg,] name, ...args): void` | `ctx.emit(name, ...args): void` | `ctx.emit(name, *args) -> None` | `ctx.Emit(ctx context.Context, name string, args ...any) error`（只报拒绝） |
 | `parallel` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` |
 | `serial` | `await ctx.serial([thisArg,] name, ...args)` | `await ctx.serial(name, ...args)` | `await ctx.serial(name, *args)` | `ctx.Serial(ctx, name, args...) (any, error)` |
-| `waterfall` | `ctx.waterfall([thisArg,] name, ...args, terminal)`（Cordis：最后一个参数是终态） | `ctx.waterfall(name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name string, terminal rutis.Next, args ...any) (any, error)`（`terminal` 可为 nil） |
+| `waterfall` | `ctx.waterfall([thisArg,] name, ...args, terminal)`（Cordis：最后一个参数是终态） | `ctx.waterfall(name, ...args)`；有终态时 `ctx.waterfall.with(terminal)(name, ...args)`（2026-10-19 修订：参数都是事件的） | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name string, terminal rutis.Terminal, args ...any) (any, error)`（`rutis.Terminal` = `func(context.Context, ...any) (any, error)`，以事件参数调用；可为 nil） |
 | `bail` | `ctx.bail([thisArg,] name, ...args)`（同步） | `ctx.bail(name, ...args)` | `ctx.bail(name, *args)`（同步） | `ctx.Bail(ctx, name, args...) (any, error)` |
 | 过滤 | `thisArg[Context.filter] = c => boolean`；`c.rutis` 是描述 | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `ctx.filter(lambda d: bool)` → 带这五个方法的对象 | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter`（五个方法；返回的错误或 panic 即过滤失败） |
 | 卸载信号 | `ctx.signal`（这一行的；每个 Cordis Context 上也有） | `ctx.signal` | 任务取消 | 监听器的 `ctx` |
@@ -501,7 +501,7 @@ impl EventBus {
   | `{ "calls": 0 }` | 以 `"x"` 调用 `args[0]`（一个函数），返回它的结果 |
   | `{ "emits": spec }` | 从自己这一行发出 `spec`（见下），返回结果 |
 
-- **发出说明**（spec）：`from`（位置）、`row`（发出方 label，默认 `e`）、`scope`（默认 `root`）、`mode`、`name`（默认用例的）、`args`（值；值标记写作 `{"$<tag>": …}`，同 `weather.expected.json`；`{"$callback":"upper"}` 是把参数转成大写的函数）、`filter`（`{ "keep": [labels] }`：送达 `row` 在列表中的条目；探针对它被调用时的每个描述记 `filter:<row>`）、`via`（`"thisArg"`：Cordis 的 `Context.filter`，只用于 Node / Bun 的 Cordis 发出方）、`terminal`（文字：记 `terminal` 并返回这段文字的终态）、`cancel`（`{ "when": "<label>" }`：那个监听器记下开始后，发出方取消这次分发）。
+- **发出说明**（spec）：`from`（位置）、`row`（发出方 label，默认 `e`）、`scope`（默认 `root`）、`mode`、`name`（默认用例的）、`args`（值；值标记写作 `{"$<tag>": …}`，同 `weather.expected.json`；`{"$callback":"upper"}` 是把参数转成大写的函数）、`filter`（`{ "keep": [labels] }`：送达 `row` 在列表中的条目；探针对它被调用时的每个描述记 `filter:<row>`）、`via`（`"thisArg"`：Cordis 的 `Context.filter`，只用于 Node / Bun 的 Cordis 发出方）、`terminal`（文字：记 `terminal` 并返回这段文字的终态；`{ "echo": true }`：记 `terminal` 并返回它的第一个参数，即事件的第一个参数）、`cancel`（`{ "when": "<label>" }`：那个监听器记下开始后，发出方取消这次分发）。
 - **发出方的行**：运行器在 spec 的 `from` 位置与 `scope` 创建它写明的发出方（`row`，默认 `e`）；监听器的 `emits` 从监听器自己的行发出。
 - **步骤**，按顺序：`{ "emit": spec, "expect": … }`（`"background": true`：这一步不等分发结束；下一个 `unload` / `kill` 步骤的 `expect` 说的是这次分发的结果与日志）、`{ "load": listener }`（新的一行；`provides`：它另外提供一个这个名字的空服务）、`{ "unload": label }`、`{ "kill": "Y" | "node" }`（结束那个进程 / 那条连接；在 `restart` 步骤之前不恢复）、`{ "restart": "Y" }`、`{ "concurrent": [steps], "hold": true }`（`hold`：宿主的测试钩子扣住这些分发直到全部到达；之后 `expect` 适用于每一个，`throws` 表示至少一个）。`unload` 与 `kill` 可带 `"when": "<label>"`：先等那个监听器开始。
 - **期望**：`returns`（值；`null` = 没有结果）、`throws`（`{}` 任意错误，或 `name`、`message`（子串）、`errors`（按顺序的子错误，每个为 `{}` / `name` / `message`））、`log`（确切顺序）、`logUnordered`、`logContains`（按此顺序出现，中间可有其他）、`reported`（`[{ "label", "name" }]`，§5.6）、`filterSees`（过滤函数被调用时的行，按顺序；运行器按每个参与者实际所在核对描述的 `runtime`、`node` 与 `scope`）、`viaHost`（是否有 `events.dispatch` 到达宿主）、`settles`（`true`：这一步在 5 秒内结束，无论成败）、`logLacks`（日志里不得出现的条目）。日志在整个用例中累积；每个日志期望说的都是到此为止的全部日志。运行器最多等 5 秒让日志完整。
@@ -867,7 +867,7 @@ impl EventBus {
 9. **先快照，每次开始前再检查存活**：已撤下的条目静默跳过；已经发出的调用以 `BindingError`（`listener <id> of <name> is withdrawn`）或传输错误失败一次。
 10. **监听器种类** `sync` / `async` / `any`：`bail` / `waterfall-sync` 从不调用已声明为异步的条目；`any` 条目看它的返回值判断。
 11. **`parallel` 总是抛出 `AggregateError`**，只有一个失败也如此（同 Cordis）。
-12. **`waterfall` 原样返回最外层的值**；没有条目时为终态的值或没有结果；`next` 不带参数；终态收到事件参数；JavaScript 的终态是 Cordis 必需的最后一个参数，其他语言可选。
+12. **`waterfall` 原样返回最外层的值**；没有条目时为终态的值或没有结果；`next` 不带参数；终态收到事件参数；Cordis 插件的终态是 Cordis 必需的最后一个参数；叶子插件用 `waterfall.with(terminal)` 给出（2026-10-19 修订：它的参数可以是函数，最后一个分不清），其他语言可选。
 13. **过滤在快照（已按作用域筛过）上、在任何调用之前执行**；`global` 条目不经过滤（仍受作用域规则）；过滤函数抛出时整次分发失败（`emit` 中报告）。
 14. **Cordis 过滤收到的上下文**：本进程的监听器为真实的 `Context`，其他条目为 `{ rutis: 描述 }`，每个 Context 上有 `ctx.rutis`；其他语言用 `filter(predicate)` 返回发出器。
 15. **作用域是加载器的组实例**，链为 `[{id, group}]`，根为 `[]`，经 `rows.load` 第七个参数与 `mount` 字段下发；宿主按行确定发出方作用域，从不采信自报；Rust 增加 `Ctx::scope` / `Ctx::mark_scope`。

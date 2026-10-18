@@ -38,6 +38,8 @@ export async function fakeHost(command, { hello, env } = {}) {
   const host = {
     entries: [], // { id, name, row, plugin, kind, prepend, global }
     dispatches: [],
+    // Names whose `events.on` the host refuses (BindingError).
+    refused: new Set(),
     log: [],
     services: new Map(), // id -> handle
     get stderr() { return stderr },
@@ -45,10 +47,16 @@ export async function fakeHost(command, { hello, env } = {}) {
     child,
   }
   let dispatchId = 0
+  // The rows loaded, by key: their id and scope chain (rows.load's seventh
+  // argument), for descriptors and the scope rule.
+  const rows = new Map()
+  const placed = row => rows.get(row) ?? { id: row, scope: [] }
+  const inScope = (listener, emitter) => listener.length <= emitter.length && listener.every((scope, index) => scope.id === emitter[index]?.id)
   const control = (method, args) => {
     const [fields] = args ?? []
     switch (method) {
       case 'events.on':
+        if (host.refused.has(fields.name)) throw Object.assign(new Error(`listening to ${fields.name} is refused here`), { name: 'BindingError' })
         if (fields.prepend) host.entries.unshift(fields); else host.entries.push(fields)
         return undefined
       case 'events.off':
@@ -69,10 +77,13 @@ export async function fakeHost(command, { hello, env } = {}) {
   async function dispatch(fields) {
     const id = `d${++dispatchId}`
     host.dispatches.push({ ...fields, id })
-    let entries = host.entries.filter(entry => entry.name === fields.name)
+    const emitter = placed(fields.row).scope
+    let entries = host.entries.filter(entry => entry.name === fields.name && inScope(placed(entry.row).scope, emitter))
     if (fields.filter) {
       const candidates = entries.filter(entry => !entry.global)
-      const answers = await session.callFunctionAsync(fields.filter, [candidates.map(entry => ({ name: entry.name, prefix: false, plugin: entry.plugin, row: entry.row, runtime: 'rt', node: null, scope: [], global: false }))])
+      // The runtime's own entries carry their id (`listener`), as the
+      // Rust host sends them.
+      const answers = await session.callFunctionAsync(fields.filter, [candidates.map(entry => ({ name: entry.name, prefix: false, plugin: entry.plugin, row: placed(entry.row).id, runtime: 'rt', node: null, scope: placed(entry.row).scope, global: false, listener: entry.id }))])
       const dropped = new Set(candidates.filter((_, i) => !answers[i]))
       entries = entries.filter(entry => !dropped.has(entry))
     }
@@ -119,7 +130,13 @@ export async function fakeHost(command, { hello, env } = {}) {
   else session.start()
   host.ready = hello ? Promise.resolve() : session.ready
   host.session = session
-  host.call = (method, args) => session.invokeAsync('', method, args)
+  host.call = (method, args) => {
+    if (method === 'rows.load') {
+      const [key, , , , , , place] = args
+      rows.set(key, { id: place?.id ?? key, scope: place?.scope ?? [] })
+    }
+    return session.invokeAsync('', method, args)
+  }
   host.elsewhere = change => session.invokeAsync('', 'events.elsewhere', [change])
   host.end = async () => {
     channel.end()

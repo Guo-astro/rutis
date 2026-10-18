@@ -142,6 +142,12 @@ test('rows share the bus; listeners dispose independently and leave with their r
   await runtime.unload('b')
   a.emit('changed', 10)
   expect(received).toEqual([7, 7, 7, 8, 8, 9, 10])
+  // A plugin keeping its context past its row emits nothing (protocol §3),
+  // also once a new row took its key.
+  expect(() => b.emit('changed', 11)).toThrow('row b is not loaded in this runtime')
+  await runtime.load('b', './events.ts', 'b2', null, null)
+  expect(() => b.serial('changed')).toThrow('row b is not loaded in this runtime')
+  expect(received).toEqual([7, 7, 7, 8, 8, 9, 10])
   expect(() => a.on('internal/dispatch', () => {})).toThrow('event internal/dispatch is internal to the runtime')
   expect(() => a.emit('internal/service')).toThrow('event internal/service is internal to the runtime')
   expect(() => (a as any).on(null, () => {})).toThrow(TypeError)
@@ -182,7 +188,7 @@ test('the five modes, prepend, global and filter', () => eventRows(async (runtim
   expect(await a.serial('s')).toBe(0)
   a.on('w', (x: string, next: () => unknown) => `a${next()}${x}`)
   b.on('w', () => 'b', { prepend: true })
-  expect(a.waterfall('w', '!', () => 't')).toBe('b')
+  expect(a.waterfall.with(() => 't')('w', '!')).toBe('b')
   b.on('b', async () => 'x')
   expect(() => a.bail('b')).toThrow('listener of b in row b is asynchronous and cannot run in a synchronous bail')
   b.on('g', () => 'global', { global: true })
@@ -242,6 +248,34 @@ test('the host registers, dispatches and calls back through the session', async 
     expect(() => runtime.dispatch('', 'events.call', [{ listener: registration.id, dispatch: 'd2', name: 't/x', mode: 'serial', args: [] }]))
       .toThrow(`listener ${registration.id} of t/x is withdrawn`)
   } finally {
+    await runtime.dispose()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// A listener the host refuses while its row loads fails the load and is
+// not reported; one registered later is reported (protocol §11).
+test('a refused registration fails the load; a later one is reported', async () => {
+  const dir = project({ 'events.ts': 'export function apply(ctx, name) { ctx.on(name, () => {}); ctx.provide("me-" + name, ctx) }' })
+  const runtime = new Runtime(dir)
+  const refused = Object.assign(new Error('refused here'), { name: 'BindingError' })
+  runtime.attach({
+    call: () => undefined,
+    callAsync: (_t: string, method: string, args: any) => method === 'events.on' && args[0].name.startsWith('t/no') ? Promise.reject(refused) : Promise.resolve(undefined),
+    callFunctionAsync: () => Promise.resolve(),
+  } as any)
+  const write = process.stderr.write
+  const written: string[] = []
+  process.stderr.write = ((text: string) => { written.push(String(text)); return true }) as typeof write
+  try {
+    runtime.dispatch('', 'mount', { announce: true })
+    await expect(runtime.dispatch('', 'rows.load', ['r', './events.ts', 't/no', [], [], {}, { scope: [] }])).rejects.toThrow('refused here')
+    await runtime.dispatch('', 'rows.load', ['ok', './events.ts', 't/yes', [], [], {}, { scope: [] }])
+    ;(runtime.lookup('me-t/yes') as Context).on('t/nope', () => {})
+    await Bun.sleep(1)
+    expect(written).toEqual(['rutis: registration of listener of t/nope in row ok failed: BindingError: refused here\n'])
+  } finally {
+    process.stderr.write = write
     await runtime.dispose()
     rmSync(dir, { recursive: true, force: true })
   }

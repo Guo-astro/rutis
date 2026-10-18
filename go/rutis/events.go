@@ -35,9 +35,12 @@ type Listener = events.Listener
 type Scope = events.Scope
 
 // Next is the rest of a waterfall: a waterfall listener gets it as its last
-// argument, and calls it at most once. A waterfall's terminal has this type
-// too.
+// argument, and calls it at most once.
 type Next = events.Next
+
+// Terminal is a waterfall's innermost step: `next` of the last listener
+// calls it with the event's arguments; its result is that `next`'s.
+type Terminal = events.Terminal
 
 // The names of the event model's errors, for errors.Is: they match an
 // error of that name made here or received from another process.
@@ -84,7 +87,8 @@ func (l *listener) Info() Listener {
 	l.rt.mu.Lock()
 	runtime := l.rt.runtimeName
 	l.rt.mu.Unlock()
-	return Listener{Name: l.name, Plugin: l.row.def.name, Row: l.row.name, Runtime: runtime, Scope: l.row.scope, Global: l.global}
+	// A copy of the scope: a filter changing it changes nothing else.
+	return Listener{Name: l.name, Plugin: l.row.def.name, Row: l.row.name, Runtime: runtime, Scope: slices.Clone(l.row.scope), Global: l.global}
 }
 
 // live reports whether invocations may start; rt.mu is held.
@@ -183,8 +187,8 @@ func (c *Ctx) On(name string, fn func(ctx context.Context, args ...any) (any, er
 	}
 	rt := c.rt
 	rt.mu.Lock()
-	defer rt.mu.Unlock()
 	if rt.rows[c.row.key] != c.row {
+		rt.mu.Unlock()
 		panic(fmt.Sprintf("rutis: row %s is not active", c.row.key))
 	}
 	rt.listenerSeq++
@@ -202,28 +206,44 @@ func (c *Ctx) On(name string, fn func(ctx context.Context, args ...any) (any, er
 	rt.listeners[name] = list
 	rt.byID[l.id] = l
 	// The host hears of it before any emission this process makes after
-	// it; a row loading answers once the host has it.
+	// it (queued in order, sent before On returns); a row loading answers
+	// once the host has it, and fails when the host refuses it (§4.4).
+	// Refused outside a load, it is reported (§11).
 	if rt.session != nil && !rt.closing {
-		row, id := c.row.key, c.row.name
-		answered := rt.session.AnnounceReporting("", "events.on", []any{map[string]any{
-			"id": l.id, "name": name, "row": row, "plugin": c.row.def.name,
+		session, id, loading := rt.session, c.row.name, c.row.loading
+		registration := []any{map[string]any{
+			"id": l.id, "name": name, "row": c.row.key, "plugin": c.row.def.name,
 			"kind": "sync", "prepend": o.Prepend, "global": o.Global,
-		}}, func(err error) {
-			events.Report(fmt.Sprintf("rutis: registration of listener of %s in row %s failed: %s", name, id, events.Failure(err)))
+		}}
+		answered := make(chan struct{})
+		// Set before answered closes.
+		var refused error
+		rt.post(func() {
+			relay(session.AnnounceReporting("", "events.on", registration, func(err error) {
+				if loading {
+					refused = err
+					return
+				}
+				events.Report(fmt.Sprintf("rutis: registration of listener of %s in row %s failed: %s", name, id, events.Failure(err)))
+			}), answered)
 		})
-		if c.row.loading {
-			c.row.pending = append(c.row.pending, answered)
+		if loading {
+			c.row.pending = append(c.row.pending, func() error { <-answered; return refused })
 		}
 	}
+	rt.mu.Unlock()
+	rt.flush()
 	return func() {
 		rt.mu.Lock()
-		defer rt.mu.Unlock()
 		if !l.withdrawn {
 			rt.withdraw(l)
 			if rt.session != nil && !rt.closing {
-				rt.session.Notify("", "events.off", []any{[]any{l.id}})
+				session := rt.session
+				rt.post(func() { session.Notify("", "events.off", []any{[]any{l.id}}) })
 			}
 		}
+		rt.mu.Unlock()
+		rt.flush()
 	}
 }
 
@@ -240,7 +260,7 @@ func (rt *runtimeState) withdraw(l *listener) {
 }
 
 // forgetListeners withdraws a row's listeners, before its context is
-// cancelled; rt.mu is held. A dispatch in progress keeps its snapshot but
+// cancelled; rt.mu is held, and events.off is queued (post). A dispatch in progress keeps its snapshot but
 // starts none of them; those running see cancellation, and unload waits
 // for them. The host, which withdraws them itself on rows.unload, hears of
 // it for the other unloads (a failed load, an update).
@@ -255,7 +275,8 @@ func (rt *runtimeState) forgetListeners(r *row) {
 		rt.withdraw(rt.byID[id.(string)])
 	}
 	if len(ids) != 0 && rt.session != nil && !rt.closing {
-		rt.session.Notify("", "events.off", []any{ids})
+		session := rt.session
+		rt.post(func() { session.Notify("", "events.off", []any{ids}) })
 	}
 }
 
@@ -308,9 +329,10 @@ func (c *Ctx) Serial(ctx context.Context, name string, args ...any) (any, error)
 
 // Waterfall calls the outermost listener of `name`, which gets `next`
 // (a Next) as its last argument: `next` runs the rest of the chain, the
-// innermost `terminal` (nil: no result). It returns the outermost
-// listener's value as it is. A listener not calling `next` vetoes the rest.
-func (c *Ctx) Waterfall(ctx context.Context, name string, terminal Next, args ...any) (any, error) {
+// innermost `terminal`, called with `args` (nil: no result). It returns
+// the outermost listener's value as it is. A listener not calling `next`
+// vetoes the rest.
+func (c *Ctx) Waterfall(ctx context.Context, name string, terminal Terminal, args ...any) (any, error) {
 	return (&Emitter{c: c}).Waterfall(ctx, name, terminal, args...)
 }
 
@@ -339,7 +361,7 @@ func (e *Emitter) Serial(ctx context.Context, name string, args ...any) (any, er
 }
 
 // Waterfall is Ctx.Waterfall, filtered.
-func (e *Emitter) Waterfall(ctx context.Context, name string, terminal Next, args ...any) (any, error) {
+func (e *Emitter) Waterfall(ctx context.Context, name string, terminal Terminal, args ...any) (any, error) {
 	return e.dispatch(ctx, name, events.ModeWaterfall, args, terminal)
 }
 
@@ -363,7 +385,7 @@ func keepOf(keep func(Listener) (bool, error)) func(Listener) (bool, error) {
 	}
 }
 
-func (e *Emitter) dispatch(ctx context.Context, name string, mode events.Mode, args []any, terminal Next) (any, error) {
+func (e *Emitter) dispatch(ctx context.Context, name string, mode events.Mode, args []any, terminal Terminal) (any, error) {
 	if ctx == nil {
 		panic("rutis: a nil context: pass the context.Context your caller gave you")
 	}
@@ -424,7 +446,9 @@ func (rt *runtimeState) viaHost(name string, mode events.Mode) bool {
 }
 
 // dispatchViaHost sends `events.dispatch`; rt.mu is held, and released.
-func (rt *runtimeState) dispatchViaHost(ctx context.Context, r *row, name string, mode events.Mode, args []any, terminal Next, keep func(Listener) (bool, error)) (any, error) {
+// The frame is queued under rt.mu (post), behind this process's earlier
+// frames, such as the events.on of a listener registered before (§4.4).
+func (rt *runtimeState) dispatchViaHost(ctx context.Context, r *row, name string, mode events.Mode, args []any, terminal Terminal, keep func(Listener) (bool, error)) (any, error) {
 	session := rt.session
 	converted, err := convert.ToPeerArgs(args)
 	if err != nil {
@@ -436,27 +460,40 @@ func (rt *runtimeState) dispatchViaHost(ctx context.Context, r *row, name string
 		record["filter"] = selector(keepOf(keep))
 	}
 	if terminal != nil && mode == events.ModeWaterfall {
-		record["terminal"] = peer.Func(func(ctx context.Context, _ []any) (any, error) {
-			value, err := terminal(ctx)
+		// The host calls it with the event's arguments.
+		record["terminal"] = peer.Func(func(ctx context.Context, args []any) (any, error) {
+			plain := make([]any, len(args))
+			for i, arg := range args {
+				var err error
+				if plain[i], err = convert.Plain(arg); err != nil {
+					return nil, err
+				}
+			}
+			value, err := terminal(ctx, plain...)
 			if err != nil {
 				return nil, err
 			}
 			return convert.ToPeer(value)
 		})
 	}
+	type sent struct {
+		wait func() (any, error)
+		err  error
+	}
+	result := make(chan sent, 1)
 	if mode == events.ModeEmit {
-		// Sent now, in order with this process's other frames; its later
+		// Queued now, in order with this process's other frames; its later
 		// emits of `name` follow it through the host until it is answered
 		// (§5.5). The emitter does not wait, nor cancel it.
-		wait, err := session.Send(context.WithoutCancel(ctx), "", "events.dispatch", []any{record}, false)
-		if err != nil {
-			rt.mu.Unlock()
-			return nil, err
-		}
 		rt.hostEmits[name]++
+		rt.post(func() {
+			wait, err := session.Send(context.WithoutCancel(ctx), "", "events.dispatch", []any{record}, false)
+			result <- sent{wait, err}
+		})
 		rt.mu.Unlock()
-		go func() {
-			_, err := wait()
+		rt.flush()
+		s := <-result
+		answered := func(err error) {
 			rt.mu.Lock()
 			if rt.hostEmits[name]--; rt.hostEmits[name] <= 0 {
 				delete(rt.hostEmits, name)
@@ -465,11 +502,25 @@ func (rt *runtimeState) dispatchViaHost(ctx context.Context, r *row, name string
 			if err != nil {
 				events.Report(fmt.Sprintf("rutis: emit of %s from row %s failed: %s", name, r.name, events.Failure(err)))
 			}
+		}
+		if s.err != nil {
+			answered(nil)
+			return nil, s.err
+		}
+		go func() {
+			_, err := s.wait()
+			answered(err)
 		}()
 		return nil, nil
 	}
-	wait, err := session.Send(ctx, "", "events.dispatch", []any{record}, mode == events.ModeBail)
+	rt.post(func() {
+		wait, err := session.Send(ctx, "", "events.dispatch", []any{record}, mode == events.ModeBail)
+		result <- sent{wait, err}
+	})
 	rt.mu.Unlock()
+	rt.flush()
+	s := <-result
+	wait, err := s.wait, s.err
 	if err != nil {
 		return nil, err
 	}

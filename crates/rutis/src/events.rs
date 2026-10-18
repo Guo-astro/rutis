@@ -27,8 +27,9 @@ pub(crate) mod remote;
 pub(crate) mod wire;
 
 pub use remote::{
-    BatchFilter, Dispatch, EntryCall, FilterAnswer, RawTerminal, RemoteCall, RemoteEntry,
-    RemoteListener, RemoteNext, RemoteSyncCall, RemoteSyncNext, TableChange, TableEntry,
+    BatchFilter, Candidate, Dispatch, EntryCall, FilterAnswer, RawTerminal, RemoteCall,
+    RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall, RemoteSyncNext, TableChange,
+    TableEntry,
 };
 pub use wire::{Codec, JsonTranscoder, Payload, PayloadRef, Transcoder, Value};
 

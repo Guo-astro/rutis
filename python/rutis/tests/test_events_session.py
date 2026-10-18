@@ -249,9 +249,9 @@ class Registration(Session):
         self.assertEqual(
             registered,
             [
-                {"id": "1", "name": "session/created", "row": "chat", "plugin": "events_session_chat",
+                {"id": "1", "name": "session/created", "row": "chat", "plugin": "chat",
                  "kind": "async", "prepend": False, "global": False},
-                {"id": "2", "name": "session/closed", "row": "chat", "plugin": "events_session_chat",
+                {"id": "2", "name": "session/closed", "row": "chat", "plugin": "chat",
                  "kind": "any", "prepend": True, "global": True},
             ],
         )
@@ -502,6 +502,123 @@ class CalledByTheHost(Session):
         self.assertEqual(await self.host.outcome(unload), ("return", None))
         self.assertEqual(log, ["b:cancelled"])
         self.assertEqual(await self.host.outcome(running), ("return", None))
+
+
+class Review(Session):
+    """Rules settled across languages after #464's review."""
+
+    async def test_the_selector_hides_the_hosts_listener_field(self):
+        # The host marks the emitter's own session's entries with their
+        # `listener` id; the plugin's filter sees the fast path's shape.
+        await self.mount({"add": ["t/f"]})
+        await self.load("a")
+        seen = []
+        dispatch = asyncio.ensure_future(self.contexts["a"].filter(lambda d: seen.append(d) or True).serial("t/f"))
+        frame = await self.host.request("events.dispatch")
+        selector = frame["value"][0]["filter"]
+        call = self.host.call(selector["$ref"], [[{"row": "a", "listener": "3"}, {"row": "b"}]])
+        self.assertEqual(await self.host.outcome(call), ("return", [True, True]))
+        self.assertEqual(seen, [{"row": "a"}, {"row": "b"}])
+        self.host.answer(frame)
+        await within("the dispatch", dispatch)
+
+    async def test_a_refused_registration_fails_the_load_and_is_not_reported(self):
+        # §4.4 rule 2, §11: the load fails with the host's error and the
+        # row is unloaded; no registration line for it.
+        await self.mount()
+        entry = module("events_session_refused", lambda ctx, config: ctx.on("t/r", lambda: None))
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            call = self.host.invoke("rows.load", data(["r", entry, {}, [], [], {}, {"scope": []}]))
+            frame = await self.host.request("events.on")
+            self.host.fail(frame, {"name": "BindingError", "message": "row r is not loaded in this runtime"})
+            outcome, error = await self.host.outcome(call)
+            await asyncio.sleep(0.05)
+        self.assertEqual((outcome, error["name"], error["message"]), ("throw", "BindingError", "row r is not loaded in this runtime"))
+        self.assertNotIn("r", self.host.runtime.rows)
+        self.assertEqual(self.host.runtime.bus.entries, [])
+        self.assertEqual(stderr.getvalue(), "")
+
+    async def test_a_refused_registration_of_a_running_row_is_reported(self):
+        await self.mount()
+        await self.load("a")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.contexts["a"].on("t/late", lambda: None)
+            frame = await self.host.request("events.on")
+            self.host.fail(frame, {"name": "BindingError", "message": "refused"})
+            await eventually("the report", stderr.getvalue)
+        self.assertEqual(
+            stderr.getvalue(), "rutis: registration of listener of t/late in row a failed: BindingError: refused\n"
+        )
+
+    async def test_the_registration_names_the_declared_plugin_else_the_rows_id(self):
+        # §4.2.
+        from rutis import define_plugin
+
+        await self.mount()
+        named = types.ModuleType("events_session_named")
+        named.plugin = define_plugin(lambda ctx, config: ctx.on("t/n", lambda: None), name="chat-ui")
+        sys.modules["events_session_named"] = named
+        anonymous = module("events_session_anonymous", lambda ctx, config: ctx.on("t/n", lambda: None))
+        registered = []
+        for key, entry in (("k1", "events_session_named"), ("k2", anonymous)):
+            call = self.host.invoke("rows.load", data([key, entry, {}, [], [], {}, {"scope": [], "id": f"id-{key}"}]))
+            frame = await self.host.request("events.on")
+            registered.append((frame["value"][0]["row"], frame["value"][0]["plugin"]))
+            self.host.answer(frame)
+            self.assertEqual(await self.host.outcome(call), ("return", None))
+        self.assertEqual(registered, [("k1", "chat-ui"), ("k2", "id-k2")])
+
+    async def test_next_through_the_host_starts_at_once(self):
+        # §5.4: next() sends its call before it is awaited.
+        await self.mount()
+        gate = asyncio.Event()
+
+        async def outer(next):
+            rest = next()
+            await gate.wait()
+            return "outer:" + await rest
+
+        await self.load("a", lambda ctx, config: ctx.on("t/x", outer), registrations=1)
+        call = self.host.invoke("events.call", {"type": "list", "value": [{"type": "record", "value": {
+            "listener": data("1"), "dispatch": data("d1"), "own": data(False), "name": data("t/x"),
+            "mode": data("waterfall"), "args": data([]),
+            "next": {"type": "reference", "value": {"id": 7, "kind": "function", "home": False, "origin": []}},
+        }}]})
+        frame = await self.host.next(lambda f: f["op"] == "call")
+        self.assertFalse(gate.is_set(), "sent while the listener had not awaited it")
+        self.host.answer(frame, "inner")
+        gate.set()
+        self.assertEqual(await self.host.outcome(call), ("return", "outer:inner"))
+
+    async def test_a_threads_registration_goes_out_before_its_emission(self):
+        # §4.4 rule 1 from a plugin's own thread: both marshalled onto the
+        # loop, in call order.
+        await self.mount({"add": ["t/th"]})
+        await self.load("a")
+        ctx = self.contexts["a"]
+
+        def plugin_thread():
+            ctx.on("t/th", lambda: None)
+            ctx.emit("t/th")
+
+        await within("the thread", asyncio.to_thread(plugin_thread))
+        methods = ("events.on", "events.dispatch")
+        first = await self.host.next(lambda f: f["op"] == "invoke" and f.get("method") in methods)
+        second = await self.host.next(lambda f: f["op"] == "invoke" and f.get("method") in methods)
+        self.assertEqual([first["method"], second["method"]], list(methods))
+        self.host.answer(first)
+        self.host.answer(second)
+
+    async def test_a_dispatch_through_the_host_is_sent_when_called(self):
+        # §5.1 as on the fast path: the frame goes out at the call.
+        await self.mount({"add": ["t/now"]})
+        await self.load("a")
+        dispatch = self.contexts["a"].serial("t/now")
+        frame = await self.host.request("events.dispatch")
+        self.host.answer(frame, "R")
+        self.assertEqual(await within("the dispatch", dispatch), "R")
 
 
 class NoAsyncListenerKind(unittest.TestCase):

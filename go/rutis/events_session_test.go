@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -102,7 +103,7 @@ func (e *emitting) Run(ctx context.Context, mode, name string, keep string) (any
 		Emit      func(context.Context, string, ...any) error
 		Parallel  func(context.Context, string, ...any) error
 		Serial    func(context.Context, string, ...any) (any, error)
-		Waterfall func(context.Context, string, rutis.Next, ...any) (any, error)
+		Waterfall func(context.Context, string, rutis.Terminal, ...any) (any, error)
 		Bail      func(context.Context, string, ...any) (any, error)
 	}{e.c.Emit, e.c.Parallel, e.c.Serial, e.c.Waterfall, e.c.Bail}
 	if keep != "" {
@@ -122,7 +123,12 @@ func (e *emitting) Run(ctx context.Context, mode, name string, keep string) (any
 	case "bail":
 		return emitter.Bail(ctx, name)
 	case "waterfall":
-		return emitter.Waterfall(ctx, name, func(context.Context) (any, error) { e.add("terminal"); return "z", nil })
+		return emitter.Waterfall(ctx, name, func(context.Context, ...any) (any, error) { e.add("terminal"); return "z", nil })
+	case "waterfall-args":
+		// The terminal gets the event's arguments, also called by the host.
+		return emitter.Waterfall(ctx, name, func(_ context.Context, args ...any) (any, error) {
+			return fmt.Sprintf("%d:%v|%v", len(args), args[0], args[1]), nil
+		}, "p", 2)
 	}
 	return nil, fmt.Errorf("mode %s", mode)
 }
@@ -188,6 +194,14 @@ func TestPluginEmissionsGoThroughTheHostWhenListenedElsewhere(t *testing.T) {
 	loaded.On("t/wf", linking("t"))
 	if value, err := run("waterfall", "t/wf", ""); err != nil || value != "atz" {
 		t.Fatalf("waterfall through the host: %v %v", value, err)
+	}
+	if value, err := run("waterfall-args", "t/wf", ""); err != nil || value != "at2:p|2" {
+		t.Fatalf("the host calls the terminal with the event's arguments: %v %v", value, err)
+	}
+	if value, err := loaded.Waterfall(ctx, "t/wf", func(_ context.Context, args ...any) (any, error) {
+		return fmt.Sprint(args...), nil
+	}, "q"); err != nil || value != "atq" {
+		t.Fatalf("the testing tool's terminal gets the event's arguments: %v %v", value, err)
 	}
 	loaded.On("t/par", func(context.Context, ...any) (any, error) {
 		return nil, &rutis.RemoteError{Name: "TestErr", Message: "t"}
@@ -364,6 +378,48 @@ func TestUnloadingARowCancelsItsRunningListener(t *testing.T) {
 	testwait.Within(t, "the dispatch settles", done)
 	if value, err := loaded.Serial(context.Background(), "t/unload"); err != nil || value != nil {
 		t.Fatalf("an unloaded row's listener ran: %v %v", value, err)
+	}
+}
+
+// guarantee: events/tool (the testing tool names the runtime "go" in
+// descriptors unless told, waits for running listeners up to
+// RUTIS_SHUTDOWN_TIMEOUT, and gives filters copies of scopes)
+func TestTheTestingToolsRuntimeNameDeadlineAndScopes(t *testing.T) {
+	t.Setenv("RUTIS_SHUTDOWN_TIMEOUT", "0.05")
+	started := make(chan struct{}, 1)
+	stuck := make(chan struct{})
+	defer close(stuck)
+	plugin := rutis.Define(rutis.Plugin[rutis.NoConfig]{
+		Name: "stuck",
+		Apply: func(c *rutis.Ctx, _ rutis.NoConfig) error {
+			c.On("t/stuck", func(context.Context, ...any) (any, error) { started <- struct{}{}; <-stuck; return nil, nil })
+			return nil
+		},
+	})
+	loaded := rutistest.Load(t, plugin, nil, nil, rutistest.RuntimeName("go-alt"), rutistest.InScope("t1", "tenant"))
+	ctx := context.Background()
+	var seen []string
+	keep := func(l rutis.Listener) (bool, error) {
+		seen = append(seen, l.Runtime+"/"+l.Plugin+"/"+l.Row+"/"+l.Scope[0].ID)
+		l.Scope[0].ID = "changed"
+		return false, nil
+	}
+	for range 2 {
+		if _, err := loaded.Filter(keep).Serial(ctx, "t/stuck"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fmt.Sprint(seen) != "[go-alt/stuck/test/t1 go-alt/stuck/test/t1]" || loaded.Scope()[0].ID != "t1" {
+		t.Fatalf("descriptors %v, scope %v", seen, loaded.Scope())
+	}
+	if err := loaded.Emit(ctx, "t/stuck"); err != nil {
+		t.Fatal(err)
+	}
+	testwait.Within(t, "the listener starts", started)
+	loaded.Unload()
+	want := "rutis: listeners of row test still running after 0.05s; unloading anyway"
+	if got := loaded.Reported(); !slices.Contains(got, want) {
+		t.Fatalf("reported %q", got)
 	}
 }
 

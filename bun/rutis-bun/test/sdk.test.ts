@@ -29,7 +29,7 @@ test('the SDK testing tool runs events under Bun', async () => {
     },
   }))
   expect(await t.serial('ask', 'Oslo')).toBe('sunny in Oslo')
-  expect(await t.waterfall('wrap', () => 'x')).toBe('<x>')
+  expect(await t.waterfall.with(() => 'x')('wrap')).toBe('<x>')
   expect(() => t.emit('rutis/row')).toThrow('rutis/* events are emitted by rutis only: rutis/row')
   await h.unload()
 })

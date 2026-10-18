@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"os"
 	goruntime "runtime"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/arcships/rutis/go/rutis/internal/events"
 	"github.com/arcships/rutis/go/rutis/internal/peer"
 )
 
@@ -20,22 +20,11 @@ import (
 // presents first on a `tcp:` channel.
 const channelToken = "RUTIS_CHANNEL_TOKEN"
 
-// deadlineVariable sets how long cleanups may take, in total, once the
-// session ended and nobody waits for them (the host went away), in
-// seconds; rutis-host passes its own shutdown deadline on.
-const deadlineVariable = "RUTIS_SHUTDOWN_TIMEOUT"
-
-// defaultDeadline is that time when deadlineVariable does not say.
-const defaultDeadline = 10 * time.Second
-
-// endedBudget is how long cleanups may take once the session ended.
-func endedBudget() time.Duration {
-	seconds, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv(deadlineVariable)), 64)
-	if err != nil || !(seconds > 0) || math.IsInf(seconds, 1) {
-		return defaultDeadline
-	}
-	return time.Duration(seconds * float64(time.Second))
-}
+// endedBudget is how long cleanups may take, in total, once the session
+// ended and nobody waits for them (the host went away), and how long an
+// unload waits for running listeners: RUTIS_SHUTDOWN_TIMEOUT seconds
+// (rutis-host passes its own shutdown deadline on), default 10 s.
+func endedBudget() time.Duration { return events.ShutdownTimeout() }
 
 const usage = "usage: <binary> --rutis-manifest | <channel> [--id <endpoint>] [--peer <endpoint>] <project>"
 
