@@ -302,6 +302,16 @@ impl Ctx {
         current.0.fiber.upgrade().map(FiberView::from_inner)
     }
 
+    /// The root fiber's context of this context's tree: what lives as long
+    /// as the root (and its event bus).
+    pub fn root_ctx(&self) -> Ctx {
+        let mut current = self.clone();
+        while let Some(parent) = current.0.parent.clone() {
+            current = parent;
+        }
+        current
+    }
+
     /// The live fiber with this id anywhere under this context's root, for
     /// hosts that track plugins by [`PluginId`] (from diagnostics or events)
     /// and need to act on one.

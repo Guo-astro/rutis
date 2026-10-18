@@ -167,10 +167,15 @@ async fn issue_234_root_dispose_before_shutdown_shares_one_cleanup() {
     assert_eq!(cleanups.load(Ordering::SeqCst), 1);
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct ProbeEvent;
 impl Event for ProbeEvent {
     const NAME: &'static str = "rutis-test-instance-churn";
     type Value = ();
+}
+
+fn own_key(ctx: &Ctx) -> crate::EventKey<ProbeEvent> {
+    crate::EventKey::dynamic(format!("rutis-test-instance-churn/{}", ctx.instance()))
 }
 
 struct IdleListener;
@@ -179,6 +184,7 @@ impl Listener<ProbeEvent> for IdleListener {
         &'a self,
         _ctx: &'a Ctx,
         _event: &'a ProbeEvent,
+        _: crate::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async { Ok(None) })
     }
@@ -195,11 +201,7 @@ impl Plugin for ChurnPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
         Box::pin(async move {
             ctx.provide_as(TypeKey::instance::<u64>(ctx.instance()), Arc::new(1u64))?;
-            ctx.events().on(
-                ctx,
-                &crate::EventKey::of().instance(ctx.instance()),
-                IdleListener,
-            )?;
+            ctx.events().on(ctx, &own_key(ctx), IdleListener)?;
             Ok(Effect::Done)
         })
     }
@@ -242,7 +244,7 @@ impl Plugin for EmittingChurnPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
         Box::pin(async move {
             ctx.provide_as(TypeKey::instance::<u64>(ctx.instance()), Arc::new(1u64))?;
-            let key = crate::EventKey::of().instance(ctx.instance());
+            let key = own_key(ctx);
             ctx.events().on(ctx, &key, IdleListener)?;
             ctx.events().on(ctx, &crate::EventKey::of(), IdleListener)?;
             ctx.events().emit(ctx, &key, Arc::new(ProbeEvent))?;
@@ -259,15 +261,15 @@ const SPARSE_LIMIT: usize = 64;
 /// Allocated slots of the tables a parent keeps per child, by name.
 fn root_side_capacities(ctx: &Ctx, root: &Arc<FiberInner>) -> Vec<(&'static str, usize)> {
     let (bindings, injects) = ctx.shared().registry.table_capacities();
-    let (hooks, wf_hooks, tails) = ctx.events().table_capacities();
+    let (names, entries, tails) = ctx.events().table_capacities();
     vec![
         ("children", root.children.lock().unwrap().capacity()),
         ("effects", root.effects.lock().unwrap().capacity()),
         ("effect_index", root.effect_index.lock().unwrap().capacity()),
         ("bindings", bindings),
         ("inject_index", injects),
-        ("hooks", hooks),
-        ("wf_hooks", wf_hooks),
+        ("event_names", names),
+        ("event_entries", entries),
         ("dispatch_tail", tails),
         // One key's list: the consumers of the shared service, the
         // listeners of the shared event key (#291).
@@ -318,7 +320,13 @@ async fn parent_tables_shrink_back_after_every_batch_of_subtrees() {
         for (table, capacity) in &peak {
             if matches!(
                 *table,
-                "children" | "effects" | "bindings" | "hooks" | "inject_list" | "listener_list"
+                "children"
+                    | "effects"
+                    | "bindings"
+                    | "event_names"
+                    | "event_entries"
+                    | "inject_list"
+                    | "listener_list"
             ) {
                 assert!(
                     *capacity >= BATCH,

@@ -227,16 +227,22 @@ impl Table {
     }
 
     #[cfg(test)]
-    pub fn capacities(&self) -> (usize, usize, usize) {
-        (
-            self.exact.capacity(),
-            self.by_id.capacity(),
-            self.exact
-                .values()
-                .map(Vec::capacity)
-                .chain([self.prefixes.capacity()])
-                .max()
-                .unwrap_or(0),
-        )
+    pub fn names(&self) -> usize {
+        self.exact.len()
+    }
+
+    #[cfg(test)]
+    pub fn capacities(&self) -> (usize, usize) {
+        (self.exact.capacity(), self.by_id.capacity())
+    }
+
+    #[cfg(test)]
+    pub fn max_list_capacity(&self) -> usize {
+        self.exact
+            .values()
+            .map(Vec::capacity)
+            .chain([self.prefixes.capacity()])
+            .max()
+            .unwrap_or(0)
     }
 }
