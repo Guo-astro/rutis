@@ -43,10 +43,18 @@ ENDPOINT_PROTOCOL = 3
 # but cannot receive them, so it does not declare `objects`. `sync-wait`: its
 # synchronous calls say so (`sync: true`), for the host's wait-cycle check;
 # `sync-stack`: calls run while it waits are stacked on its one thread;
-# `value-<tag>`: it takes every tagged value (#308, `rutis._values`).
-CAPABILITIES = ["signals", "reentrant-sync", "sync-wait", "sync-stack", *_values.CAPABILITIES]
-# What it declares in the compat format, where older hosts ignore it.
-COMPAT_CAPABILITIES = ["reentrant-sync", "sync-wait", "sync-stack", *_values.CAPABILITIES]
+# `value-<tag>`: it takes every tagged value (#308, `rutis._values`);
+# `events-v2`: it speaks the event protocol of rutis 0.13 (#464), which the
+# runtime requires of its host too (`require`).
+CAPABILITIES = ["signals", "reentrant-sync", "sync-wait", "sync-stack", "events-v2", *_values.CAPABILITIES]
+# What it declares in the compat format.
+COMPAT_CAPABILITIES = ["reentrant-sync", "sync-wait", "sync-stack", "events-v2", *_values.CAPABILITIES]
+# Why a runtime ends a session with a host that does not declare
+# `events-v2` (docs/design-events-protocol-2026-10-18.md §2.2).
+EVENTS_REFUSAL = (
+    "this host does not declare events-v2 (the event protocol of rutis 0.13): "
+    "upgrade rutis-host to 0.13 or later"
+)
 IMPLEMENTATION = {"name": "rutis", "version": "0.12.1"}
 
 
@@ -196,17 +204,70 @@ class SyncWaitCycle(RemoteError):
         super().__init__("SyncWaitCycle", message)
 
 
-class AggregateError(Exception):
-    """Ordered listener failures, also on Python 3.10 (no ExceptionGroup).
-    It crosses as Cordis's AggregateError (an empty message, the failures
-    in `errors`); str() reads as Rust's CordisError::Aggregate."""
+class Incompatible(ValueError):
+    """The far end greeted, but this side cannot work with it: it lacks a
+    capability this side requires (`events-v2`). Retrying cannot fix it."""
 
-    def __init__(self, errors):
-        super().__init__("")
-        self.errors = list(errors)
+
+class _Named(RemoteError):
+    """An error of rutis's own with a fixed name, raised on either side of
+    a session and decoded back into its class."""
+
+    NAME = ""
+
+    def __init__(self, message: str, graph: Any = None):
+        super().__init__(self.NAME, message, graph)
 
     def __str__(self) -> str:
-        return f"multiple errors: {self.errors!r}"
+        # The class says what it is.
+        return self.message
+
+
+class BindingError(_Named):
+    """A call that cannot reach what it calls: a withdrawn listener, a
+    refused frame, a transport failure."""
+
+    NAME = "BindingError"
+
+
+class AsyncListener(_Named):
+    """A synchronous `bail` met an asynchronous listener: an `async def`,
+    or a function that returned an awaitable."""
+
+    NAME = "AsyncListener"
+
+
+class WaterfallNext(_Named):
+    """A waterfall's `next` called twice, or after its waterfall ended."""
+
+    NAME = "WaterfallNext"
+
+
+class ReservedEvent(_Named):
+    """A plugin emitted a `rutis/*` event: only rutis emits those."""
+
+    NAME = "ReservedEvent"
+
+
+_NAMED = {named.NAME: named for named in (BindingError, AsyncListener, WaterfallNext, ReservedEvent)}
+
+
+class AggregateError(Exception):
+    """Ordered listener failures, also on Python 3.10 (no ExceptionGroup):
+    what `parallel` raises when any listener failed, with the failures in
+    `errors` in registration order (also when just one failed). It crosses
+    as Cordis's AggregateError, its children in `errors`; one decoded from
+    the far end is an AggregateError again, its children RemoteErrors."""
+
+    name = "AggregateError"
+
+    def __init__(self, errors, message: str = ""):
+        super().__init__(message)
+        self.errors = list(errors)
+        self.message = message
+
+    def __str__(self) -> str:
+        return self.message or f"multiple errors: {self.errors!r}"
 
 
 class Signal:
@@ -226,8 +287,7 @@ class Signal:
 
 
 def _message(error: BaseException) -> str:
-    # An AggregateError crosses with no message, as Cordis's does.
-    return "" if isinstance(error, AggregateError) else str(error)
+    return error.message if isinstance(error, AggregateError) else str(error)
 
 
 def encode_error(thrown: BaseException) -> dict:
@@ -294,12 +354,38 @@ def encode_error(thrown: BaseException) -> dict:
     }
 
 
-def decode_error(failure: dict) -> RemoteError:
+def decode_error(failure: dict, depth: int = 0) -> Exception:
+    """The error the far end threw: a RemoteError (rutis's own named errors
+    as their classes), or an AggregateError with its children."""
     name = str(failure.get("name", "Error"))
     message = str(failure.get("message", ""))
-    if name == "SyncWaitCycle" and failure.get("graph") is None:
+    graph = failure.get("graph")
+    if name == "SyncWaitCycle" and graph is None:
         return SyncWaitCycle(message)
-    return RemoteError(name, message, failure.get("graph"))
+    if name == "AggregateError":
+        return AggregateError(_children(graph, depth), message)
+    if name in _NAMED:
+        return _NAMED[name](message, graph)
+    return RemoteError(name, message, graph)
+
+
+def _children(graph: Any, depth: int) -> list:
+    """The errors of the aggregate a graph's root is, each with the graph
+    rooted at it; none when the graph does not say."""
+    if depth > MAX_DEPTH:
+        return []
+    try:
+        nodes = graph["nodes"]
+        references = nodes[graph["root"]["value"]].get("errors") or []
+        children = []
+        for reference in references:
+            node = nodes[reference["value"]]
+            failure = {"name": node.get("name", "Error"), "message": node.get("message", "")}
+            failure["graph"] = {"root": reference, "nodes": nodes}
+            children.append(decode_error(failure, depth + 1))
+        return children
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return []
 
 
 def dumps(frame: dict) -> bytes:
@@ -513,11 +599,16 @@ class Peer:
         settled: Callable | None = None,
         reentrant: bool = True,
         endpoint: dict | None = None,
+        require: dict | None = None,
     ):
         """`endpoint` ({"local", "expected"?, "verified"?, "declare"?}) selects
         the endpoint format (`declare`: capabilities beyond the session's, such
-        as the contract); without it the session speaks the compat protocol."""
+        as the contract); without it the session speaks the compat protocol.
+        `require` ({capability: why}): the session ends right after the
+        handshake, with `Incompatible(why)`, when the far end does not declare
+        one of them (the runtime requires `events-v2`)."""
         self._reentrant = reentrant
+        self._require = dict(require or {})
         self.loop = asyncio.get_running_loop()
         self._thread = threading.get_ident()
         # A socket is a newline-framed channel.
@@ -609,6 +700,7 @@ class Peer:
                 raise ValueError(f"incompatible session: {version_mismatch(version, PROTOCOL, frame.get('implementation'))}")
             capabilities = frame.get("capabilities")
             self._declared = capabilities if isinstance(capabilities, list) else []
+            self._required()
             return
         if version != ENDPOINT_PROTOCOL:
             raise ValueError(
@@ -633,6 +725,12 @@ class Peer:
             "capabilities": capabilities if isinstance(capabilities, list) else [],
         }
         self._declared = self.greeting["capabilities"]
+        self._required()
+
+    def _required(self) -> None:
+        for capability, why in self._require.items():
+            if capability not in self._declared:
+                raise Incompatible(why)
 
     def _read(self) -> None:
         try:
@@ -1095,6 +1193,27 @@ class Peer:
         if isinstance(result, RemoteFuture):
             result = await result
         return result
+
+    def request(self, target: str, method: str, args: list):
+        """Send a call now, before this returns, so it goes out ahead of
+        anything sent later; the future of its reply. From another thread
+        it is sent from the session's loop, and the future is a
+        `concurrent.futures.Future`."""
+        if threading.get_ident() != self._thread:
+            return asyncio.run_coroutine_threadsafe(self.call_async(target, method, args), self.loop)
+        future = self.loop.create_future()
+
+        def finish(result: tuple) -> None:
+            if future.done():
+                return
+            ok, value = result
+            if ok:
+                future.set_result(value)
+            else:
+                future.set_exception(value)
+
+        self._request("invoke", {"target": target, "method": method}, args, finish)
+        return future
 
     def notify(self, target: str, method: str, args: list) -> None:
         """Fire and forget: a call whose result nobody awaits. It is sent
