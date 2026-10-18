@@ -6,7 +6,7 @@ const Version = "0.12.1"
 
 // PluginAPI is the plugin API this SDK writes plugins against and its
 // runtime supports.
-const PluginAPI = 2
+const PluginAPI = 3
 
 // Implementation is the name the runtime reports itself by: the module it
 // is published as.

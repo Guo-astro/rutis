@@ -36,7 +36,7 @@ func TestAnUndeclaredServiceUnderAnOlderHostIsToldOncePerName(t *testing.T) {
 		}
 		exports := map[string]map[string]string{"declared": {"Get": "sync"}}
 		for _, key := range []string{"a", "b"} {
-			if err := rt.load(ctx, key, "old-host", nil, exports, nil); err != nil {
+			if err := rt.load(ctx, key, "old-host", nil, exports, nil, nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := rt.unload(ctx, key); err != nil {
