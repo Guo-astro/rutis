@@ -3144,6 +3144,8 @@ name = "rutis"
 version = "0.12.1"
 dependencies = [
  "rutis-test-support",
+ "serde",
+ "serde_json",
  "shuttle",
  "thiserror 2.0.20",
  "tokio",
