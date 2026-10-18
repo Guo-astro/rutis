@@ -34,7 +34,8 @@
 //! `filter(description)` (sync: logs `filter:<row>` and keeps the
 //! description) and `wait(entry)` (async: resolves once `entry` is logged).
 //! A spec given to `dispatch` has `mode`, `name`, `args`, and optionally
-//! `filter` (`{keep}` or `{throws}`), `via`, `terminal` and `cancel`.
+//! `filter` (`{keep}` or `{throws}`), `via`, `terminal` (a text it returns,
+//! or `{echo: true}`: it returns its first argument) and `cancel`.
 //! Logged values: strings as they are, numbers and booleans as JSON.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -189,7 +190,9 @@ pub struct Spec {
     pub args: Vec<Json>,
     pub filter: Option<Json>,
     pub via: Option<String>,
-    pub terminal: Option<String>,
+    /// A text (the terminal returns it) or `{ "echo": true }` (it returns
+    /// its first argument, the event's first argument); logs `terminal`.
+    pub terminal: Option<Json>,
     pub cancel: Option<String>,
 }
 
@@ -238,7 +241,16 @@ impl Spec {
                 .clone(),
             filter,
             via: raw["via"].as_str().map(str::to_owned),
-            terminal: raw["terminal"].as_str().map(str::to_owned),
+            terminal: match raw.get("terminal") {
+                None | Some(Json::Null) => None,
+                Some(text @ Json::String(_)) => Some(text.clone()),
+                Some(echo) if *echo == json!({ "echo": true }) => Some(echo.clone()),
+                Some(other) => {
+                    return Err(format!(
+                        "a terminal is a text or {{\"echo\": true}}: {other}"
+                    ))
+                }
+            },
             cancel: raw
                 .get("cancel")
                 .map(|cancel| {
@@ -270,7 +282,7 @@ impl Spec {
             record.insert("via".to_owned(), Value::Data(json!(via)));
         }
         if let Some(terminal) = &self.terminal {
-            record.insert("terminal".to_owned(), Value::Data(json!(terminal)));
+            record.insert("terminal".to_owned(), Value::Data(terminal.clone()));
         }
         if let Some(when) = &self.cancel {
             record.insert("cancel".to_owned(), Value::Data(json!({ "when": when })));
