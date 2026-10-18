@@ -50,8 +50,12 @@ var (
 // it. `sync-wait`: its synchronous calls say so (`sync: true`), for the
 // host's wait-cycle check (#228). Not `sync-stack`: every incoming call runs
 // on a goroutine of its own. `value-<tag>`: it takes every tagged value
-// (#308).
-var compatCapabilities = append([]string{"reentrant-sync", "sync-wait"}, ValueCapabilities...)
+// (#308). `events-v2`: the event protocol of rutis 0.13 (#464).
+var compatCapabilities = append([]string{"reentrant-sync", "sync-wait", EventsCapability}, ValueCapabilities...)
+
+// EventsCapability is the event protocol of rutis 0.13 (#464), which both
+// ends of every 0.13 session declare.
+const EventsCapability = "events-v2"
 
 // UndefinedType is the wire's `undefined`: an omitted argument or field.
 type UndefinedType struct{}
@@ -104,7 +108,25 @@ type Options struct {
 	// Host makes this side the host of a compat session (call ids `rust:`),
 	// for tests that drive a runtime.
 	Host bool
+	// Require lists capabilities the far end must declare: the session ends
+	// right after its handshake when it does not, with a *RefusedError
+	// whose reason Refuse gives (both formats).
+	Require []string
+	Refuse  func(capability string) string
+	// Arrive sees each incoming control call (`invoke` with an empty
+	// target) on the reading goroutine, before the next frame is read: the
+	// calls a protocol needs handled in frame order. It returns the rest of
+	// the call, run on a goroutine of its own as Dispatch would be, or nil
+	// to have Dispatch serve the call.
+	Arrive func(ctx context.Context, method string, args []any) func() (any, error)
 }
+
+// RefusedError ends a session whose far end lacks a capability Require
+// lists. It matches ErrIncompatible; its text is the reason alone.
+type RefusedError struct{ Reason string }
+
+func (e *RefusedError) Error() string        { return e.Reason }
+func (e *RefusedError) Is(target error) bool { return target == ErrIncompatible }
 
 // Greeting is what the far end said of itself (endpoint format).
 type Greeting struct {
@@ -934,6 +956,35 @@ func (p *Peer) waiting(fields map[string]any, sync bool) map[string]any {
 	return fields
 }
 
+// Send sends a call now, as Call does, and returns the wait for its
+// result: frames sent by successive Sends go out in that order. The wait
+// ends with the reply, the session's end, or ctx's cancellation (an
+// asynchronous call then hears so).
+func (p *Peer) Send(ctx context.Context, target, method string, args []any, sync bool) (func() (any, error), error) {
+	if ctx == nil {
+		panic("rutis: a nil context: pass the context.Context your caller gave you")
+	}
+	id, waiter, err := p.request(ctx, "invoke", p.waiting(map[string]any{"target": target, "method": method}, sync), args, true, nil)
+	if err != nil {
+		return nil, err
+	}
+	return func() (any, error) {
+		select {
+		case done := <-waiter:
+			return done.value, done.err
+		case <-ctx.Done():
+			p.mu.Lock()
+			_, waiting := p.pending[id]
+			delete(p.pending, id)
+			p.mu.Unlock()
+			if waiting && !sync {
+				_ = p.send(map[string]any{"op": "cancel", "id": id})
+			}
+			return nil, ctx.Err()
+		}
+	}, nil
+}
+
 // Notify sends a call whose result nobody awaits. It is sent before Notify
 // returns, so it goes out ahead of anything sent later.
 func (p *Peer) Notify(target, method string, args []any) {
@@ -1211,6 +1262,13 @@ func (p *Peer) receive(f *frame) error {
 		return err
 	}
 	p.mu.Unlock()
+	if p.opts.Arrive != nil && job.op == "invoke" && job.target == "" && job.refused == nil {
+		ctx := WithChain(job.ctx, append(append([]string{}, job.path...), job.id))
+		method, args := *job.method, job.args
+		if _, err := protect(func() (any, error) { job.then = p.opts.Arrive(ctx, method, args); return nil, nil }); err != nil {
+			job.then = func() (any, error) { return nil, err }
+		}
+	}
 	go p.execute(job)
 	return nil
 }
@@ -1259,7 +1317,7 @@ func (p *Peer) greet(f *frame) error {
 			return fmt.Errorf("%w: %s", ErrIncompatible, versionMismatch(f, Protocol))
 		}
 		_ = json.Unmarshal(f.Capabilities, &p.declared)
-		return nil
+		return p.required()
 	}
 	if version != EndpointProtocol {
 		return fmt.Errorf("%w: %s", ErrIncompatible, versionMismatch(f, EndpointProtocol))
@@ -1279,6 +1337,21 @@ func (p *Peer) greet(f *frame) error {
 	_ = json.Unmarshal(f.Capabilities, &capabilities)
 	p.greeting = &Greeting{Endpoint: endpoint, Implementation: f.Implementation, Capabilities: capabilities}
 	p.declared = capabilities
+	return p.required()
+}
+
+// required refuses a far end lacking a capability Require lists; p.mu is
+// held.
+func (p *Peer) required() error {
+	for _, capability := range p.opts.Require {
+		if !p.supports(capability) {
+			reason := "the far end does not declare " + capability
+			if p.opts.Refuse != nil {
+				reason = p.opts.Refuse(capability)
+			}
+			return &RefusedError{Reason: reason}
+		}
+	}
 	return nil
 }
 
@@ -1296,6 +1369,8 @@ type job struct {
 	fresh    []*imported
 	ctx      context.Context
 	cancel   context.CancelFunc
+	// The rest of a control call Arrive took.
+	then func() (any, error)
 }
 
 // invocation validates an incoming call; p.mu is held.
@@ -1414,6 +1489,8 @@ func (p *Peer) execute(j *job) {
 	}
 	value, err := protect(func() (any, error) {
 		switch {
+		case j.then != nil:
+			return j.then()
 		case j.op == "invoke":
 			if p.opts.Dispatch == nil {
 				return nil, fmt.Errorf("no target %s", j.target)

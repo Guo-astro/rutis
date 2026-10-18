@@ -125,6 +125,9 @@ func listen(spec string, endpoint *peer.Endpoint, defs []*Definition) error {
 			}
 		case <-closed:
 			current.end(nil)
+			if refused := refusal(current.peer.Err()); refused != nil {
+				return refused
+			}
 			current, currentConn = nil, nil
 		}
 	}
