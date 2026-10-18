@@ -161,7 +161,6 @@ fn perform<'a>(
 
 /// `does`, synchronously (`kind: sync`).
 fn perform_sync(
-    log: &Arc<EventsLog>,
     does: &Json,
     args: &Args,
     call: SyncCall<'_, ArgValue>,
@@ -180,7 +179,7 @@ fn perform_sync(
     }
     if let Some(ms) = does.get("after").and_then(Json::as_u64) {
         std::thread::sleep(Duration::from_millis(ms));
-        return perform_sync(log, &does["then"], args, call);
+        return perform_sync(&does["then"], args, call);
     }
     if let Some(prefix) = does.get("next").and_then(Json::as_str) {
         let rest = call.next()?;
@@ -277,7 +276,7 @@ impl rutis::SyncListener<Args> for SyncListener {
         call: SyncCall<'_, ArgValue>,
     ) -> Result<Option<ArgValue>, CordisError> {
         self.0.add(&first_json(args));
-        perform_sync(&self.0.log, &self.0.config["does"], args, call)
+        perform_sync(&self.0.config["does"], args, call)
     }
 }
 
