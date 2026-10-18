@@ -534,6 +534,17 @@ impl Host {
                 }
                 _ => {}
             }
+            // A runtime that refused the host (or failed) loads nothing:
+            // say so at once rather than at the deadline.
+            if matches!(row.at, Location::X | Location::Y) {
+                let name = runtime_name(row.at, &self.state.lock().unwrap().y);
+                if let Some(runtime) = self.runtimes.get(&name) {
+                    let state = runtime.view.state();
+                    if state.state == FiberState::Failed {
+                        return Err(format!("runtime {name} failed: {:?}", state.error));
+                    }
+                }
+            }
             if tokio::time::Instant::now() > deadline {
                 return Err(format!("row {} did not start: {state:?}", row.label));
             }
