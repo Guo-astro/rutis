@@ -260,6 +260,10 @@ func (s *session) end(reason error) error {
 func serveChannel(channel peer.Channel, endpoint *peer.Endpoint, defs []*Definition) error {
 	s, err := startSession(channel, endpoint, defs)
 	if err != nil {
+		// Refused during the handshake Start already finished.
+		if refused := refusal(err); refused != nil {
+			return refused
+		}
 		return err
 	}
 	<-s.peer.Closed()
