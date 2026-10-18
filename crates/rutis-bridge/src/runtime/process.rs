@@ -13,6 +13,17 @@ use std::sync::{Arc, Mutex};
 /// changes, so an older notification must not override a newer one.
 pub trait ServiceEvents: Send + Sync + 'static {
     fn changed(&self, name: &str, handle: Option<String>, version: u64);
+
+    /// A row of this observer's announces the service `name`, which it did
+    /// not declare, with the methods it has (`{ method: "async" }`, see
+    /// [`Process::load_row_exporting`]). Called before each change of it
+    /// that names a handle, since a new object may have other methods.
+    /// Whether the observer follows it: one that does not leaves the
+    /// service unexported (the default).
+    fn announced(&self, name: &str, methods: &Value) -> bool {
+        let _ = (name, methods);
+        false
+    }
 }
 
 /// One host-provided service: its Cordis name, the bound methods as
@@ -57,6 +68,18 @@ fn check_scoped(name: &str, label: Option<&str>) -> Result<(), Error> {
 /// A service a row exports: its name, and who follows its changes.
 type Exported = (String, Arc<dyn ServiceEvents>);
 
+/// A loaded row's exports: who follows them, and their ids (declared, then
+/// announced).
+struct RowExports {
+    observer: Arc<dyn ServiceEvents>,
+    ids: Vec<String>,
+}
+
+/// The service name of a slot id ([`scoped_id`]).
+fn name_of(id: &str) -> &str {
+    id.split_once('\0').map_or(id, |(name, _)| name)
+}
+
 /// The label `isolate` gives `name`, if it isolates it.
 fn label_of<'a>(isolate: &'a [(String, String)], name: &str) -> Option<&'a str> {
     isolate
@@ -80,6 +103,8 @@ struct Imports {
     /// Observers of the services rows export, by id ([`scoped_id`]), with
     /// the service's name.
     exported: Mutex<HashMap<String, Exported>>,
+    /// The exports of each row loaded with an observer, by row key.
+    rows: Mutex<HashMap<String, RowExports>>,
     hosts: Mutex<HashMap<String, HostEntry>>,
     forwarded: Option<Arc<dyn EventSink>>,
     /// What to do when a row's plugin ends on its own (`rows.ended`), by
@@ -338,6 +363,39 @@ impl Imports {
             .collect()
     }
 
+    /// Row `row` announces the slot `id`, which it did not declare, with
+    /// `methods`: whether its observer follows it from now on.
+    fn announce(&self, row: &str, id: &str, methods: &Value) -> bool {
+        let observer = {
+            let rows = self.rows.lock().unwrap();
+            match rows.get(row) {
+                Some(exports) => exports.observer.clone(),
+                // Not loaded with an observer, or unloaded meanwhile.
+                None => return false,
+            }
+        };
+        if let Some((_, current)) = self.exported.lock().unwrap().get(id) {
+            // Another row's: the runtime exports a slot once.
+            if !Arc::ptr_eq(current, &observer) {
+                return false;
+            }
+        }
+        let name = name_of(id);
+        if !observer.announced(name, methods) {
+            return false;
+        }
+        let mut rows = self.rows.lock().unwrap();
+        let Some(exports) = rows.get_mut(row) else {
+            return false;
+        };
+        let mut exported = self.exported.lock().unwrap();
+        if !exported.contains_key(id) {
+            exported.insert(id.to_owned(), (name.to_owned(), observer));
+            exports.ids.push(id.to_owned());
+        }
+        true
+    }
+
     /// The slot `id` now holds `handle`.
     fn update(&self, id: String, handle: Option<String>, version: u64) {
         // A withdrawal of a slot nobody follows or knows: a row's service
@@ -365,7 +423,7 @@ impl Imports {
     }
 }
 impl Dispatch for Imports {
-    fn invoke(&self, _: &Connection, target: &str, method: &str, args: RpcValue) -> Reply {
+    fn invoke(&self, connection: &Connection, target: &str, method: &str, args: RpcValue) -> Reply {
         if let Some(name) = target.strip_prefix("host:") {
             let host = self
                 .hosts
@@ -399,11 +457,44 @@ impl Dispatch for Imports {
                 "application has no exported service target".into(),
             ));
         }
+        // `[id, handle, version]`, and for a service the row did not
+        // declare, which a runtime announces only to a host whose mount
+        // asked (`announce`), `{ row, methods }` after them.
+        let mut args: Vec<Value> = crate::runtime::decode(args.json()?)?;
+        let announced: Option<Announced> = match args.len() > 3 {
+            true => Some(crate::runtime::decode(args.split_off(3).swap_remove(0))?),
+            false => None,
+        };
         let (name, handle, version): (String, Option<String>, u64) =
-            crate::runtime::decode(args.json()?)?;
+            crate::runtime::decode(Value::Array(args))?;
+        if let (Some(announced), Some(object)) = (announced, &handle) {
+            // Not followed (a service the row keeps to its own scope):
+            // nothing here holds the object, so it goes back at once.
+            if !self.announce(&announced.row, &name, &announced.methods) {
+                let (connection, object) = (connection.clone(), object.clone());
+                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                    runtime.spawn(async move {
+                        let _ = connection
+                            .invoke_async("", "release", json!([object]).into())
+                            .await;
+                    });
+                }
+                return Ok(RpcValue::Undefined);
+            }
+        }
         self.update(name, handle, version);
         Ok(RpcValue::Undefined)
     }
+}
+
+/// What a runtime says of a service a row provides without declaring it.
+#[derive(serde::Deserialize)]
+struct Announced {
+    /// The row's key.
+    row: String,
+    /// `{ method: "sync" | "async" }`.
+    #[serde(default)]
+    methods: Value,
 }
 
 /// A mount carrying a Cordis `internal/*` event either way fails before
@@ -513,9 +604,6 @@ pub struct Process {
     /// The plugins the runtime said it has when mounted, if it said (see
     /// [`Process::plugins`]).
     plugins: std::sync::OnceLock<Option<HashMap<String, RowSchema>>>,
-    /// The services each loaded row exports, by row key (ids, see
-    /// [`scoped_id`]).
-    exports: Mutex<HashMap<String, Vec<String>>>,
     /// Serializes `hosts.provide` / `hosts.withdraw`, so a lease returns only
     /// once its service is registered on the Node side, and a withdrawal
     /// never overtakes the registration it undoes.
@@ -542,6 +630,12 @@ pub struct RowSchema {
     /// a module version, a VCS revision).
     #[serde(default)]
     pub version: Option<String>,
+    /// The plugin may provide services `provides` does not list: the
+    /// runtime announces them when they are provided (`rows.announce`), so
+    /// what it provides is complete only once it runs. A Cordis plugin
+    /// whose package declares nothing (a published one), say.
+    #[serde(default)]
+    pub announces: bool,
 }
 
 /// One row's use of a host service (see [`Process::lease_host`]). Give it
@@ -696,6 +790,7 @@ impl Process {
             slots: Slots::default(),
             events,
             exported: Mutex::default(),
+            rows: Mutex::default(),
             hosts: Mutex::new(hosts),
             forwarded,
             ended: Mutex::default(),
@@ -755,7 +850,6 @@ impl Process {
             features: std::sync::OnceLock::new(),
             about: std::sync::OnceLock::new(),
             plugins: std::sync::OnceLock::new(),
-            exports: Mutex::default(),
             host_changes: tokio::sync::Mutex::new(()),
             _directory: directory,
             routed,
@@ -764,7 +858,9 @@ impl Process {
             .call_async(
                 "",
                 "mount",
-                json!({ "plugins": plugins, "services": services, "provided": provided, "events": forwarded_names, "emits": emits }),
+                // `announce`: this side takes the services rows provide without
+                // declaring them (`service` with `{ row, methods }`).
+                json!({ "plugins": plugins, "services": services, "provided": provided, "events": forwarded_names, "emits": emits, "announce": true }),
             )
             .await?;
         let slots: HashMap<String, (Option<String>, u64)> =
@@ -823,6 +919,11 @@ impl Process {
     /// until the row is unloaded. A service another row exports in the same
     /// scope is refused; a name the row isolates is exported in the scope
     /// of its label ([`scoped_id`]), which needs the runtime's `scopes`.
+    ///
+    /// A runtime with `rows.announce` also announces the services the row
+    /// provides without declaring them, with the methods each has:
+    /// `observer` follows each one it accepts
+    /// ([`ServiceEvents::announced`]) like a declared one.
     #[allow(clippy::too_many_arguments)]
     pub async fn load_row_exporting(
         &self,
@@ -880,7 +981,11 @@ impl Process {
             }
         }
         let ids = scoped.into_iter().map(|(id, _)| id).collect();
-        self.exports.lock().unwrap().insert(key.to_owned(), ids);
+        self.imports
+            .rows
+            .lock()
+            .unwrap()
+            .insert(key.to_owned(), RowExports { observer, ids });
         let loaded = self
             .call_async(
                 "",
@@ -900,8 +1005,9 @@ impl Process {
     /// observer only after this: without the withdrawal here, a late one
     /// finds no observer and the service stays projected.
     fn forget_exports(&self, key: &str) {
-        let ids = self.exports.lock().unwrap().remove(key);
-        for (name, observer, version) in self.imports.forget(ids.into_iter().flatten()) {
+        let ids = self.imports.rows.lock().unwrap().remove(key);
+        let ids = ids.into_iter().flat_map(|exports| exports.ids);
+        for (name, observer, version) in self.imports.forget(ids) {
             observer.changed(&name, None, version);
         }
     }
@@ -1221,6 +1327,7 @@ mod tests {
             slots: Slots::default(),
             events: None,
             exported: Mutex::default(),
+            rows: Mutex::default(),
             hosts: Mutex::default(),
             forwarded: None,
             ended: Mutex::default(),
@@ -1249,6 +1356,66 @@ mod tests {
             imports.update(id, None, 2 * instance + 2);
         }
         assert!(imports.slots.lock().unwrap().is_empty());
+        assert!(imports.exported.lock().unwrap().is_empty());
+    }
+
+    /// Accepts the announcements of `name` only, and records each.
+    struct Announcements {
+        name: &'static str,
+        heard: Mutex<Vec<(String, Value)>>,
+    }
+
+    impl ServiceEvents for Announcements {
+        fn changed(&self, _: &str, _: Option<String>, _: u64) {}
+
+        fn announced(&self, name: &str, methods: &Value) -> bool {
+            self.heard
+                .lock()
+                .unwrap()
+                .push((name.to_owned(), methods.clone()));
+            name == self.name
+        }
+    }
+
+    /// A service a row announces is followed once its observer accepts it,
+    /// and is forgotten with the row; one it declines, or one of a row
+    /// loaded without an observer, is not followed at all.
+    #[test]
+    fn announced_slots_are_followed_when_accepted() {
+        let imports = empty();
+        let observer = Arc::new(Announcements {
+            name: "store",
+            heard: Mutex::default(),
+        });
+        imports.rows.lock().unwrap().insert(
+            "row".into(),
+            RowExports {
+                observer: observer.clone(),
+                ids: Vec::new(),
+            },
+        );
+        let methods = json!({ "get": "async" });
+        let scoped = scoped_id("store", Some("box"));
+        assert!(imports.announce("row", &scoped, &methods));
+        assert!(!imports.announce("row", "kept", &methods));
+        assert!(!imports.announce("other", "store", &methods));
+        assert_eq!(
+            observer.heard.lock().unwrap()[..],
+            [
+                ("store".to_owned(), methods.clone()),
+                ("kept".to_owned(), methods.clone())
+            ]
+        );
+        assert_eq!(imports.exported.lock().unwrap()[&scoped].0, "store");
+        assert_eq!(
+            imports.rows.lock().unwrap()["row"].ids,
+            std::slice::from_ref(&scoped)
+        );
+        // A new object of it is announced again: followed once.
+        assert!(imports.announce("row", &scoped, &json!({ "get": "async", "set": "async" })));
+        assert_eq!(imports.rows.lock().unwrap()["row"].ids.len(), 1);
+        let ids = imports.rows.lock().unwrap().remove("row").unwrap().ids;
+        assert_eq!(imports.forget(ids).len(), 1);
         assert!(imports.exported.lock().unwrap().is_empty());
     }
 

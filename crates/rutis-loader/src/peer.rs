@@ -657,6 +657,7 @@ pub fn register_peer_node(builtins: &mut crate::Builtins, resolver: Arc<PeerReso
             Ok(crate::Declared {
                 requires: Vec::new(),
                 provides,
+                announces: false,
             })
         }),
     );

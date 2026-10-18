@@ -5,7 +5,8 @@
 //! `dyn HostDispatch`, the same key a Rust-provided host service uses, so a
 //! consumer finds it by name whichever side provides it.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
 
@@ -18,6 +19,7 @@ pub struct RowService {
     process: Arc<Process>,
     handle: String,
     methods: Value,
+    provider: Option<String>,
 }
 
 impl RowService {
@@ -26,7 +28,15 @@ impl RowService {
             process,
             handle,
             methods,
+            provider: None,
         }
+    }
+
+    /// Who provides it, for messages ("row storage"; see
+    /// [`HostDispatch::provider`]).
+    pub fn provided_by(mut self, provider: impl Into<String>) -> Self {
+        self.provider = Some(provider.into());
+        self
     }
 }
 
@@ -71,6 +81,10 @@ impl HostDispatch for RowService {
     fn origin(&self) -> Option<&str> {
         Some(self.process.connection().tag())
     }
+
+    fn provider(&self) -> Option<String> {
+        self.provider.clone()
+    }
 }
 
 impl Drop for RowService {
@@ -101,4 +115,71 @@ pub fn row_projection_with(
         });
     }
     projection
+}
+
+/// [`row_projection_with`] for the row `provider` names ("row storage"):
+/// it also publishes, under `key(name)`, each service the row announces
+/// without declaring it, with the methods its current object has, except
+/// those `private` says the row keeps to a scope of its own (a name its
+/// config isolates). A service another provider has already is refused as
+/// the later one, naming both ([`Projection::take_refused`]).
+pub fn row_projection_of(
+    provider: &str,
+    provides: &Map<String, Value>,
+    key: impl Fn(&str) -> rutis::TypeKey + Send + 'static,
+    private: impl Fn(&str) -> bool + Send + 'static,
+) -> Arc<Projection> {
+    let projection = Projection::new();
+    for (name, methods) in provides {
+        let methods = Arc::new(Mutex::new(methods.clone()));
+        row_slot(&projection, provider, name, key(name), methods);
+    }
+    // The announced ones: their methods follow what each new object has.
+    let mut announced: HashMap<String, Arc<Mutex<Value>>> = HashMap::new();
+    let provider = provider.to_owned();
+    projection.on_announced(move |projection, name, methods| {
+        if let Some(current) = announced.get(name) {
+            *current.lock().unwrap() = methods.clone();
+            return true;
+        }
+        // Declared: the declaration says what it offers.
+        if private(name) || projection.has_service(name) {
+            return false;
+        }
+        let current = Arc::new(Mutex::new(methods.clone()));
+        announced.insert(name.to_owned(), current.clone());
+        row_slot(projection, &provider, name, key(name), current);
+        true
+    });
+    projection
+}
+
+/// Declare the slot of the row service `name`, with the methods in
+/// `methods` when each object is published.
+fn row_slot(
+    projection: &Projection,
+    provider: &str,
+    name: &str,
+    key: rutis::TypeKey,
+    methods: Arc<Mutex<Value>>,
+) {
+    let named = provider.to_owned();
+    let holder = key.clone();
+    projection.service_keyed_occupied::<dyn HostDispatch>(
+        name,
+        key,
+        move |process, handle| {
+            let methods = methods.lock().unwrap().clone();
+            Arc::new(RowService::new(process, handle, methods).provided_by(named.clone()))
+        },
+        provider.to_owned(),
+        move |ctx| {
+            let holder = ctx.get_as::<dyn HostDispatch>(holder.clone())?;
+            Some(
+                holder
+                    .provider()
+                    .unwrap_or_else(|| "the application".to_owned()),
+            )
+        },
+    );
 }

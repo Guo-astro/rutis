@@ -142,10 +142,16 @@ npm install greeter
 
 ## 已有的 Cordis 插件
 
-不用改写。在插件包的 `package.json` 里声明要提供给 rutis 的服务即可：
+不用改写，也不用改包：`rutis.json` 的行里写包名（已发布的包也一样）：
 
 ```json
-"rutis": { "provides": { "weather": { "today": "async" } } }
+{ "id": "storage", "name": "@deepseek-ai/dsh-storage" }
 ```
 
-它在 Node 运行时的 Cordis Context 里运行，和叶子插件在同一个进程，互相用服务时直接拿到对象本身。
+它在 Node 运行时的 Cordis Context 里运行，和叶子插件、其他 Cordis 行在同一个进程：同一个运行时里的行按 Cordis 的原生规则互相使用服务，拿到对象本身。它提供的服务自动投到 rutis，别的运行时和 Rust 按名字使用，方法取服务对象上的函数，按 `async` 调用。要把某些方法标成 `sync`，或者让 `rutis-host check` 在运行前就知道它提供什么，在包的 `package.json` 里声明（声明了就按声明）：
+
+```json
+"rutis": { "provides": { "weather": { "today": "sync" } } }
+```
+
+重名的规则、`check` 怎样报告见 [Cordis](cordis.md)。
