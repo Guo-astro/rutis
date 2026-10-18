@@ -1,7 +1,7 @@
 use crate::runtime::events::EventSink;
 use crate::runtime::rpc::{Connection, Dispatch, Reply, Value as RpcValue};
 use crate::runtime::Error;
-use crate::runtime::{HostDispatch, RuntimeSession};
+use crate::runtime::{CallerRow, HostDispatch, RuntimeSession};
 use crate::transport::local::Stdio;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -39,6 +39,14 @@ pub fn scoped_id(name: &str, label: Option<&str>) -> String {
     }
 }
 
+/// The scope label of row `key`'s own use of a service it would otherwise
+/// use in the scope `label` ([`Process::lease_host_for`]). U+0001 sets it
+/// apart from the labels rows are configured with; it is neither NUL nor
+/// empty, so [`scoped_id`] takes it.
+fn row_label(label: Option<&str>, key: &str) -> String {
+    format!("{}\u{1}row:{key}", label.unwrap_or_default())
+}
+
 /// Refuse a name or label [`scoped_id`] cannot keep apart.
 fn check_scoped(name: &str, label: Option<&str>) -> Result<(), Error> {
     if name.contains('\0') || label.is_some_and(|label| label.contains('\0')) {
@@ -70,6 +78,9 @@ fn label_of<'a>(isolate: &'a [(String, String)], name: &str) -> Option<&'a str> 
 struct HostEntry {
     dispatch: Arc<dyn HostDispatch>,
     leases: usize,
+    /// The row it was leased for alone ([`Process::lease_host_for`]), which
+    /// its calls come from.
+    row: Option<CallerRow>,
 }
 
 /// Records the newest handle per slot and forwards newer changes; serves
@@ -367,14 +378,14 @@ impl Imports {
 impl Dispatch for Imports {
     fn invoke(&self, _: &Connection, target: &str, method: &str, args: RpcValue) -> Reply {
         if let Some(name) = target.strip_prefix("host:") {
-            let host = self
+            let (host, row) = self
                 .hosts
                 .lock()
                 .unwrap()
                 .get(name)
-                .map(|entry| entry.dispatch.clone())
+                .map(|entry| (entry.dispatch.clone(), entry.row.clone()))
                 .ok_or_else(|| Error::Value(format!("no host service {name}")))?;
-            return host.invoke(method, args);
+            return crate::session::with_caller_row(row, || host.invoke(method, args));
         }
         if target.is_empty() && method == "event" {
             let mut args = args.list()?.into_iter();
@@ -478,6 +489,7 @@ impl Started {
                 let entry = HostEntry {
                     dispatch: host.dispatch,
                     leases: 1,
+                    row: None,
                 };
                 (host.name, entry)
             })
@@ -552,9 +564,18 @@ pub struct HostLease {
     process: Arc<Process>,
     /// See [`scoped_id`].
     id: String,
+    /// The scope label it was registered in.
+    label: Option<String>,
 }
 
 impl HostLease {
+    /// The scope label the service is registered in: a row using it
+    /// isolates its name under this label when loaded. For a lease of one
+    /// row's own ([`Process::lease_host_for`]) it is that row's alone.
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
     /// Give the lease back; the last one withdraws the service from Cordis.
     pub async fn release(self) -> Result<(), Error> {
         self.process.release_host(&self.id).await
@@ -1011,6 +1032,44 @@ impl Process {
         dispatch: Arc<dyn HostDispatch>,
         methods: Option<Value>,
     ) -> Result<HostLease, Error> {
+        self.lease(name, label, dispatch, methods, None).await
+    }
+
+    /// [`Process::lease_host_in`] for `row` alone: while the lease lasts,
+    /// [`caller_row`](crate::session::caller_row) reports `row` (in the
+    /// scope `label`) for the calls it makes to the service. The service
+    /// is registered in a scope of the row's own, whose label
+    /// ([`HostLease::label`]) the row isolates `name` under when it is
+    /// loaded, instead of `label`. This needs the runtime's `scopes`
+    /// (every runtime rutis ships has it): in a runtime without it, the
+    /// lease is [`Process::lease_host_in`]'s, shared, and its calls name
+    /// no row.
+    pub async fn lease_host_for(
+        self: &Arc<Self>,
+        name: &str,
+        label: Option<&str>,
+        row: &CallerRow,
+        dispatch: Arc<dyn HostDispatch>,
+        methods: Option<Value>,
+    ) -> Result<HostLease, Error> {
+        if !self.supports("scopes") {
+            return self.lease_host_in(name, label, dispatch, methods).await;
+        }
+        check_scoped(name, label)?;
+        let own = row_label(label, row.key());
+        let row = row.in_scope(label);
+        self.lease(name, Some(&own), dispatch, methods, Some(row))
+            .await
+    }
+
+    async fn lease(
+        self: &Arc<Self>,
+        name: &str,
+        label: Option<&str>,
+        dispatch: Arc<dyn HostDispatch>,
+        methods: Option<Value>,
+        row: Option<CallerRow>,
+    ) -> Result<HostLease, Error> {
         self.require("hosts")?;
         if label.is_some() {
             self.require("scopes")?;
@@ -1027,6 +1086,7 @@ impl Process {
                         .checked_add(1)
                         .ok_or_else(|| Error::Value(format!("host lease overflow for {id}")))?;
                     entry.dispatch = dispatch.clone();
+                    entry.row = row;
                     false
                 }
                 None => {
@@ -1035,6 +1095,7 @@ impl Process {
                         HostEntry {
                             dispatch: dispatch.clone(),
                             leases: 1,
+                            row,
                         },
                     );
                     true
@@ -1057,6 +1118,7 @@ impl Process {
         Ok(HostLease {
             process: self.clone(),
             id,
+            label: label.map(str::to_owned),
         })
     }
 

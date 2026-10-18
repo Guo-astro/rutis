@@ -170,3 +170,24 @@ var Row = rutis.Define(rutis.Plugin[rutis.NoConfig]{
 		return nil
 	},
 })
+
+// RegistrantConfig names what a registrant registers.
+type RegistrantConfig struct {
+	Name string `json:"name"`
+}
+
+// Registrant registers its config's name with the host's `ledger`,
+// which sees the row that calls it (crates/rutis-loader/tests/caller_rows.rs).
+var Registrant = rutis.Define(rutis.Plugin[RegistrantConfig]{
+	Name:   "go_registrant",
+	Inject: []string{"ledger"},
+	Apply: func(ctx *rutis.Ctx, config RegistrantConfig) error {
+		var ledger struct {
+			Register func(ctx context.Context, name string) error
+		}
+		if err := ctx.Use("ledger", &ledger); err != nil {
+			return err
+		}
+		return ledger.Register(ctx, config.Name)
+	},
+})

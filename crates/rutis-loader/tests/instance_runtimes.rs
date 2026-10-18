@@ -8,7 +8,7 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use common::runtimes::{active, repo, title, NoConfig, Probe, Title, Tools, COLD};
+use common::runtimes::{active, repo, title, tool_callers, NoConfig, Probe, Title, Tools, COLD};
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory, TypeKey};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, host_key_in, settle, HostDispatch, Value as RpcValue};
@@ -300,6 +300,22 @@ async fn each_instance_sees_its_own_services_across_languages() {
         );
     }
     assert!(!fixture.probe.has("rust in A reads py B / js B"));
+    // `tools` sees which row asks, in which instance's scope (#441).
+    let scope = |title: &str, id: &str| {
+        let callers = tool_callers(title);
+        let scope = callers
+            .iter()
+            .find(|(caller, _)| caller == id)
+            .and_then(|(_, scope)| scope.clone());
+        scope.unwrap_or_else(|| panic!("{id} in {title} asked as a row: {callers:?}"))
+    };
+    for title in ["A", "B"] {
+        for id in ["py", "js"] {
+            assert!(scope(title, id).starts_with("rutis-loader/instance/"));
+        }
+        assert_eq!(scope(title, "py"), scope(title, "js"), "one instance");
+    }
+    assert_ne!(scope("A", "js"), scope("B", "js"), "two instances");
     fixture.root.shutdown().await.unwrap();
 }
 

@@ -48,6 +48,37 @@ root.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Clock))?;
 
 插件提供的服务同样以 `host_key(名字)` 出现在 rutis 里，Rust 插件可以按名字使用它们。
 
+### 调用方的行
+
+替插件登记东西（工具、路由、监听）或按插件授权的服务，需要知道是哪一行在调用。`invoke` 期间 `session::caller_row()` 返回调用方的行；把登记挂在这一行的 `Ctx` 上，这一行卸载或重启时它就撤掉，运行时照常运行：
+
+```rust
+use rutis::Effect;
+use rutis_bridge::session::{caller_row, native_error, HostDispatch, Reply, Value};
+
+impl HostDispatch for Tools {
+    fn invoke(&self, method: &str, args: Value) -> Reply {
+        let [name]: [String; 1] = rutis_bridge::session::decode_value(args)?;
+        if let Some(row) = caller_row() {
+            // row.id()：loader 的行 id；row.key()：它在运行时里的 key（每次重启一个新的）；
+            // row.scope()：它隔离这个服务所用的标签（在实例里是实例的），不在作用域里为 None。
+            self.add(row.id(), &name);
+            let (tools, id) = (self.clone(), row.id().to_owned());
+            row.ctx()
+                .effect(move || Effect::Disposer(Box::new(move || Ok(tools.remove(&id, &name)))))
+                .map_err(native_error)?;
+        }
+        Ok(Value::Undefined)
+    }
+    // methods …
+}
+```
+
+- 同一个运行时里的两行是两个调用方，`key()` 和 `instance()` 各不相同。
+- 来自 Rust 的调用、来自对端节点的调用（包括 `peer:` 行，它们的调用经节点之间的服务到达）、运行时里不属于任何行的调用（`Mount::hosts` 提供的服务）都是 `None`。
+- 只在 `invoke` 本身里读它：`invoke` 返回的 future 之后在别处运行，读不到。
+- 它来自 rutis-loader 的行租用服务的方式（`Process::lease_host_for`）：每一行把它租用的服务注册在自己的作用域里，所以线上格式不变，Node、Bun、Python、Go 的运行时都可以用，0.11 的也可以。自己用 `Process` 加载行时，用 `lease_host_for` 并按 `HostLease::label()` 隔离这个名字；`lease_host` / `lease_host_in` 的调用是 `None`。
+
 宿主事件的 `emits` 声明通过下述 Rust API 配置；`rutis-host` 的 JSON 配置暂未提供这个入口。同进程插件的本地事件不需要该声明。
 
 ## 运行时与加载器

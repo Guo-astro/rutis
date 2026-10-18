@@ -29,7 +29,8 @@ pub use objects::{
     arg, decode_value, Bytes, JsError, ObjectRef, RemoteFunction, ValueMap, ValueSet,
 };
 pub use rpc::*;
-pub use services::{host_key, host_key_in, HostDispatch};
+pub(crate) use services::with_caller_row;
+pub use services::{caller_row, host_key, host_key_in, CallerRow, HostDispatch};
 pub use values::{BigInt, Date, DateTime, Decimal, Instant, TimeOfDay, Uuid};
 
 /// What [`Error`] says about a session that ended or a call that failed.
