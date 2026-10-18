@@ -44,3 +44,191 @@ impl Event for Joined { const NAME: &'static str = "room/joined"; type Value = S
 **作用域取代实例通道。** 加载器对每个组实例调用 `Ctx::mark_scope(group)`；`Ctx::scope()` 是从根起的链。监听器收到自己作用域及其下各作用域发出的事件。要进一步挑选监听器，`ctx.events().filter(|info| ..)` 给出按每个监听器的 `ListenerInfo` 过滤的同样的发出方法。
 
 **诊断。** `EventSubscription`、`EventBacklog` 与 `DispatchAttempt` 带事件的 `name`，不再带 `TypeKey`；`DispatchMode` 改为 `rutis::Mode`；`ReentrantEvent` 带 `name`。
+
+**没有逐个类型的选择。** 每个事件类型都能跨进程，不需要也没有 `WIRE` 之类的开关（只在方案草稿里出现过，没有发布）。
+
+## 先升级哪些
+
+- **所有端一起升级到 0.13**：rutis-host（或嵌入的 `rutis-bridge` / `rutis-loader`）、每个运行时包（`@arcships/rutis-runtime`、`@arcships/rutis-bun`、Python 的 `rutis`、Go 模块 `github.com/arcships/rutis/go/rutis`）和每个相连的节点。事件协议没有旧路径：0.12 及更早的运行时或节点连进 0.13 的宿主时，在加载任何东西之前就被拒绝，信息写明升级哪一端：
+
+  ```text
+  incompatible session: the far end (<name> <version>) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later
+  ```
+
+  对端不报实现时（本地运行时的 compat 格式），括号里是 `a runtime older than rutis 0.13`。节点连接以 `link stopped: incompatible (…)` 停下，不重试。反过来，0.13 的运行时遇到旧宿主时以状态 1 退出，stderr：`rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping`。
+- **插件 API 3**：0.13 的 SDK 写的插件标记为 API 3（多了 `parallel`、`serial`、`waterfall`、`bail` 与 `filter`），旧运行时以现有的信息拒绝它；0.13 的运行时仍加载 API 2 的插件。只用 `on` / `emit` 的插件不用改代码，但 `emit` 的行为变了（见下）。
+- **`rutis.json` 里什么都不用声明**：监听器自动登记，宿主一侧也不再配置事件名。
+
+## 叶子插件（Node、Bun、Python、Go）
+
+`ctx.on` 的监听器现在收到在本插件作用域及其内发出的事件，不论发出方在哪个进程、哪种语言、哪个节点；以前只收到同一个运行时进程里的。
+
+**`emit` 不再等待，也不再抛出。** 它按登记顺序开始每个监听器后立即返回；监听器的失败在它所在的一侧写一行 `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>`，不影响发出方、不影响其他监听器，也不再结束运行时进程。要等监听器结束、要拿到它们的错误，改用 `parallel`：
+
+```ts
+// 以前：同步抛错会停止后续监听器；未处理的异步失败结束进程
+ctx.emit('session/created', id)
+// 现在：等全部完成，失败为 AggregateError（按登记顺序）
+await ctx.parallel('session/created', id)
+```
+
+要监听器的返回值，用 `serial`（第一个结果）、`waterfall`（中间件）或同步的 `bail`。以前手写的"一个监听器出错不影响别人"的循环可以直接换成 `emit`。
+
+**Go。** 监听器多了返回值，`Emit` 不再等待：
+
+```go
+// 以前
+ctx.On("session/created", func(ctx context.Context, args ...any) error { return nil })
+err := ctx.Emit(callerCtx, "session/created", id) // 同步执行，返回第一个错误
+
+// 现在
+ctx.On("session/created", func(ctx context.Context, args ...any) (any, error) { return nil, nil })
+err := ctx.Emit(callerCtx, "session/created", id)     // 立即返回；err 只报拒绝
+err = ctx.Parallel(callerCtx, "session/created", id)  // 等全部；*rutis.AggregateError
+```
+
+监听器的 `ctx` 现在带着发出方的调用链，发出方放弃或这一行卸载时取消。
+
+**卸载等待正在运行的监听器**（各语言一致）：这一行的监听器先撤下，正在运行的收到取消信号（JavaScript `ctx.signal`、Python 任务取消、Go 的 `ctx`），最多等 `RUTIS_SHUTDOWN_TIMEOUT`，然后才运行清理。
+
+**名字。** `internal/*` 仍不能监听或发出；`rutis/*` 现在是保留的框架事件（`rutis/service`、`rutis/row`、`rutis/runtime`）：可以监听，发出以 `ReservedEvent` 失败。插件自己的事件如果用了 `rutis/` 前缀，要改名。
+
+## 测试工具
+
+加载时声明宿主事件的写法删除：监听器自己登记，测试直接用五种方式发出。
+
+| 以前 | 现在 |
+| --- | --- |
+| Node / Bun：`load(plugin, { emits: ['tick'] })`，`await t.emit('tick', 1)` 等待监听器 | `load(plugin)`；`t.emit('tick', 1)` 立即返回，`await t.parallel('tick', 1)` 等待；还有 `serial`、`waterfall`、`bail`、`filter`。几个插件共享一条总线：`const h = host(); await h.load(a); await h.load(b, { scope: 't1' })` |
+| Python：`load(plugin, emits=["tick"])`，`await t.emit("tick", 1)` | `load(plugin)`；`t.emit("tick", 1)` 立即返回，`await t.parallel("tick", 1)` 等待。共享总线：`bus = Bus(); load(a, bus=bus)`、`load(b, bus=bus, scope="t1")` |
+| Go：`rutistest.Load(t, plugin, config, services, "tick")`，`loaded.Emit(ctx, "tick", 1)` 等待监听器 | `rutistest.Load(t, plugin, config, services)`（之后是 `rutistest.InScope`、`rutistest.Row` 等选项）；`loaded.Emit` 立即返回，`loaded.Parallel` 等待；`loaded.On` 像宿主一样监听 |
+
+还写着 `emits` 时：Node / Bun 报 `the config field emits was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)`，Python 报 `the load option emits was removed in rutis 0.13: …`，Go 编译不过（参数类型变了）。`emit` 监听器的失败不再抛出，在 `t.reported`（Python `t.reported`，Go `loaded.Reported()`）里查看。
+
+## 嵌入 rutis 的 Rust 应用（`rutis-bridge`、`rutis-loader`）
+
+宿主到运行时、运行时到宿主不再需要声明，也没有单独的发送入口：宿主里的 Rust 插件和运行时里的插件在同一个逻辑总线上。
+
+| 删除 | 改用 |
+| --- | --- |
+| `LocalRuntime::emits`、`RuntimePlugin::emits` | 不写：运行时里的监听器自动登记 |
+| `Mount.emits`、`Mount.events`（`EventSink`） | 不写；Rust 一侧用 `ctx.events().on(..)` 监听运行时发出的事件 |
+| `Process::emit(name, args)` | `ctx.events()` 上的五种方式；`Process::emit` 等全部监听器，对应 `parallel` |
+| `runtime::events::{Events, EmitToCordis, EventSink}`（`rutis_bridge::cordis` 也再导出过） | 同上 |
+| 节点：`EventsPlugin`、`NodeEvent`、`node_event(name)`、`Features { outbound, inbound }` | `Features { export, import }`（事件与服务共用，见下面的[节点连接](#节点连接)）；`PeerPlugin` 自己启动 `LinkEventsPlugin`；按名字收发用 `EventKey::<rutis_bridge::events::Args>::dynamic(name)` |
+
+以前：
+
+```rust
+let node = LocalRuntime::node(runtime_dir, "app/package.json")
+    .emits(["file-changed"]);
+// …
+process.emit("file-changed", vec![json!("a.txt").into()]).await?;
+```
+
+现在，按名字带任意参数：
+
+```rust
+use rutis::EventKey;
+use rutis_bridge::events::Args;
+use rutis_bridge::session::Value;
+
+let node = LocalRuntime::node(runtime_dir, "app/package.json");
+// …
+let key = EventKey::<Args>::dynamic("file-changed");
+ctx.events().parallel(&ctx, &key, Arc::new(Args(vec![Value::Data(json!("a.txt"))]))).await?;
+```
+
+或者用类型化事件（一个字段的元组结构体是一个参数）：
+
+```rust
+#[derive(Serialize, Deserialize)]
+struct FileChanged(String);
+impl Event for FileChanged { const NAME: &'static str = "file-changed"; type Value = (); }
+
+ctx.events().parallel(&ctx, &EventKey::of(), Arc::new(FileChanged("a.txt".into()))).await?;
+```
+
+运行时里的插件 `ctx.emit("file-changed", …)` 时，宿主里用同样的键 `on` 的 Rust 监听器也收到；以前这个方向不存在。
+
+## Cordis 挂载（`rutis-bridge` 的 `cordis` feature）
+
+挂载清单与生成器的 `events`、`emits` 删除，生成器不再为事件生成类型：
+
+```toml
+[package.metadata.rutis-cordis.mounts.credentials]
+plugin = "@deepseek-ai/dsh-credentials-local"
+events = ["credentials/record-updated"]   # 删除
+emits = ["file-changed"]                  # 删除
+```
+
+还写着时构建失败：`mount credentials: the config field events was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)`。`rutis_bridge::cordis::build` 的 `.event(name)`、`.emit(name)` 同样删除。
+
+Rust 一侧自己定义事件类型（名字就是 Cordis 的事件名），或用 `Args` 按名字收：
+
+```rust
+#[derive(Serialize, Deserialize)]
+struct RecordUpdated(serde_json::Value);  // Cordis 插件发出的那个参数
+impl Event for RecordUpdated { const NAME: &'static str = "credentials/record-updated"; type Value = (); }
+
+ctx.events().on(&ctx, &EventKey::<RecordUpdated>::of(), listener)?;
+```
+
+挂载里的 Cordis 插件用 Cordis 自己的 `ctx.emit` / `parallel` / `serial` / `waterfall` / `bail`，Rust 的监听器按 Cordis 的语义被调用；Rust 发出的事件到达 Cordis 的监听器。以前只能转发没有返回值的事件，`waterfall` 变成一段异步，现在五种方式处处同义。
+
+## Cordis 插件
+
+不用改代码。变化：
+
+- 事件跨进程：一个 Cordis 插件的 `ctx.on` 收到别的运行时、宿主和节点（按作用域）发出的事件，它的 `ctx.emit` 等也到达它们。
+- 同步的 `ctx.bail` 遇到异步监听器（`async` 函数，或返回 Promise 的函数）以 `AsyncListener` 失败；以前 Cordis 把 Promise 当作结果。
+- `parallel` 的失败总是 `AggregateError`，按登记顺序，只有一个失败也如此。
+- `Context.filter` 对别处的监听器传入 `{ rutis: 描述 }`；每个 Context 上新增只读的 `ctx.rutis`。
+
+**Cordis 应用作为节点**（`@arcships/rutis-runtime/bridge`）：`Events` 的 `out` / `in` 改为 `export` / `import`：
+
+```js
+// 以前
+ctx.plugin(Events, { peer: 'main', out: ['tock'], in: ['tick'] })
+// 现在
+ctx.plugin(Events, { peer: 'main', export: ['tock'], import: ['tick'] })
+```
+
+还写着 `out` / `in` 时报 `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (docs/migration-0.13.md)`。
+
+## 节点连接
+
+节点行的 `events: { out, in }` 删除，事件与服务共用 `export` / `import`：
+
+以前：
+
+```json
+{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["clock"], "events": { "out": ["tick"], "in": ["tock"] } } }
+```
+
+现在：
+
+```json
+{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["clock", "tick"], "import": ["tock"] } }
+```
+
+还写着时报 `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (docs/migration-0.13.md)`。
+
+- 一项是名字，或以 `*` 结尾的前缀（`session/*`；单独的 `*` 是所有名字）；前缀只用于事件。`export` 里的名字既导出这个服务，也让本节点发出的这个事件到达对端，所以一个名字同时是服务和事件时两者一起共享。
+- 节点之间的事件现在是对端监听器在本节点总线上的条目：五种方式、作用域、过滤、所有值类型都与本机相同（以前一律当作 `parallel`、只能 JSON、断线时静默丢弃）。连接断开时它们离开总线，进行中的调用失败一次。事件只走一跳：引进来的不再往外共享。
+- 对端的监听器位于节点行所在的作用域；以前实例之间的事件会串台，现在按作用域规则不会。
+
+## 行为变化一览
+
+| 变化 | 涉及 |
+| --- | --- |
+| `emit` 的监听器出错不再结束进程、不再中断其他监听器、不再抛给发出方，在监听器所在处报告一行 | Node、Bun、Python、Go、Rust |
+| Go 的 `Emit` 不再等待监听器，错误只报拒绝 | Go |
+| `parallel` 的失败总是 `AggregateError`，子错误按登记顺序，只有一个失败也如此 | 所有语言 |
+| `false` 是没有结果，Rust 的 `Some(false)` 也是 | `serial`、`bail` |
+| 同步 `bail` / `waterfall_sync` 遇到异步监听器（或返回 Promise / 协程的函数）以 `AsyncListener` 失败 | 所有语言；Cordis 以前把 Promise 当结果 |
+| Rust 监听器以登记它的 `ctx` 被调用，不再是发出方的 | Rust |
+| 卸载等正在运行的监听器（最多 `RUTIS_SHUTDOWN_TIMEOUT`）并发出取消信号 | 所有语言 |
+| 实例里的监听器收不到别的实例的事件 | 作用域 |
+| `rutis/*` 是保留名字：只能监听 | 所有语言 |
+| 插件 API 3；与 0.12 及更早的运行时、节点混用被拒绝 | 所有端 |

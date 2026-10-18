@@ -9,6 +9,7 @@ Choose a guide based on what you want to do:
 | Write a plugin in Python | [Write a Python plugin](python-plugin.en.md) |
 | Write a plugin in Go | [Write a Go plugin](go-plugin.en.md) |
 | Look up the plugin API and value passing rules | [Plugin API](plugin-api.en.md) |
+| Send and receive events between plugins (any language, process or node) | [Plugin API: events](plugin-api.en.md#events) |
 | Run plugins without writing Rust | [rutis-host and rutis.json](rutis-host.en.md) |
 | Connect machines and run plugins remotely | [Connect nodes](nodes.en.md) |
 | Load plugins in my Rust application | [Embed in a Rust application](rust-host.en.md) |
@@ -24,7 +25,7 @@ Choose a guide based on what you want to do:
 
 All of these packages, the `rutis` core and the dylib toolchain included, are released together with matching version numbers (a release train, currently 0.12). Use the same version for every rutis package.
 
-Upgrading from 0.8: see [0.8 → 0.9](../migration-0.8-to-0.9.en.md); from 0.7: [0.7 → 0.8](../migration-0.7-to-0.8.en.md). Projects that used `rutis-interop`: see the [migration guide](../migration-interop-to-0.7.en.md).
+Upgrading from 0.12: see [migrating to 0.13](../migration-0.13.en.md) (unified events; no mixing with 0.12). Upgrading from 0.8: see [0.8 → 0.9](../migration-0.8-to-0.9.en.md); from 0.7: [0.7 → 0.8](../migration-0.7-to-0.8.en.md). Projects that used `rutis-interop`: see the [migration guide](../migration-interop-to-0.7.en.md).
 
 ## Requirements
 

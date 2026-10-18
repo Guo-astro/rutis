@@ -108,11 +108,70 @@ value, err = ctx.Waterfall(callerCtx, "chat/reply", terminal, msg) // terminal �
 value, err = ctx.Filter(func(l rutis.Listener) bool { return l.Row == "chat" }).Serial(callerCtx, "config/resolve", key)
 ```
 
+一个完整的例子：插件回答 `greeting/pick`、在 `greeting/format` 的 waterfall 里加一环，它提供的服务用 `Serial` 取第一个结果、用 `Waterfall` 让别的插件（任何语言）改写问候语、用 `Emit` 通知：
+
+```go
+package greeter
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/arcships/rutis/go/rutis"
+)
+
+type Greeter struct{ ctx *rutis.Ctx }
+
+func (g *Greeter) Hello(ctx context.Context, name, lang string) (string, error) {
+	word, err := g.ctx.Serial(ctx, "greeting/pick", lang) // 第一个结果；nil 表示没有
+	if err != nil {
+		return "", err
+	}
+	if word == nil {
+		word = "Hello"
+	}
+	text, err := g.ctx.Waterfall(ctx, "greeting/format", func(context.Context) (any, error) {
+		return fmt.Sprintf("%v, %s", word, name), nil // 终态：链的最里面
+	})
+	if err != nil {
+		return "", err
+	}
+	if err := g.ctx.Emit(ctx, "greeting/said", name); err != nil { // 立即返回
+		return "", err
+	}
+	return text.(string), nil
+}
+
+var Plugin = rutis.Define(rutis.Plugin[struct{}]{
+	Name: "greeter",
+	Apply: func(ctx *rutis.Ctx, _ struct{}) error {
+		ctx.On("greeting/pick", func(_ context.Context, args ...any) (any, error) {
+			if args[0] == "sv" {
+				return "Hej", nil
+			}
+			return nil, nil // 没有结果：下一个监听器接着来
+		})
+		ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
+			next := args[len(args)-1].(rutis.Next) // waterfall：最后一个参数是 next
+			inner, err := next(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return fmt.Sprintf("%v!", inner), nil
+		})
+		ctx.Provide("greeter", &Greeter{ctx: ctx})
+		return nil
+	},
+})
+```
+
+Python、TypeScript 插件或宿主里的 Rust 代码监听同样的名字，就加入同一条链；写法见 [插件 API：事件](plugin-api.md#事件)。
+
 | 事项 | 规则 |
 | --- | --- |
 | Waterfall | 监听器的最后一个参数是 `next`（`rutis.Next`，即 `func(context.Context) (any, error)`）；调用它执行链上其余部分，不调用就否决其余；第二次调用以 `WaterfallNext` 失败。返回最外层的值，原样 |
 | 失败 | `Emit` 的监听器失败不影响发出方和其他监听器，在监听器所在处报告（stderr：`rutis: listener of <name> in row <row> failed: …`）。`Parallel` 全部跑完，返回 `*rutis.AggregateError`（只有一个失败也是）；`Serial`、`Bail`、`Waterfall` 遇到第一个错误停止并返回它 |
-| 作用域 | 一行收到在自己的作用域（`ctx.Scope()`，它外面的加载器实例）及其内的所有作用域里发出的事件，收不到旁边的 |
+| 作用域 | 一行收到在自己的作用域（`ctx.Scope()`，它外面的加载器实例）及其内的所有作用域里发出的事件，收不到旁边和外面的 |
 | 过滤 | `Filter(keep)` 在任何监听器执行之前，按登记顺序对每个监听器调用一次 `keep`，传入它的 `rutis.Listener`（`Name`、`Plugin`、`Row`、`Runtime`、`Node`、`Scope`、`Global`）；用 `rutis.Global()` 登记的监听器不经过滤 |
 | Context | 监听器的 `ctx` 来自发出方（带调用链），发出方放弃或这一行卸载时取消。卸载等正在运行的监听器结束，最多 `RUTIS_SHUTDOWN_TIMEOUT` |
 | 名字 | `internal/*` 是运行时自己的；`rutis/*`（`rutis/service`、`rutis/row`、`rutis/runtime`）可以监听，不能发出（`ReservedEvent`） |
@@ -139,7 +198,29 @@ go test ./...
 
 `Provides` 可以不写：`ctx.Provide` 提供的服务自动对外，方法取值的导出方法，都按 `async` 调用。写了就按声明（`Sync` 标出同步方法、`Rename` 改名），`rutis-host check` 也能在运行前知道插件提供什么。
 
-测试里的事件：测试一侧就是总线的宿主。`loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail` 和 `Filter` 从这一行的作用域发出；`loaded.On(name, fn)` 像宿主一样监听（插件发出这个名字的事件随后经测试一侧，就像经 rutis）；`loaded.Load(config, rutistest.InScope("t1/s1"))` 在一个作用域里再加载一行；`loaded.Reported()` 是运行时报告的 `Emit` 监听器失败。
+测试里的事件：测试一侧就是总线的宿主。`loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail` 和 `Filter` 从这一行的作用域发出；`loaded.On(name, fn)` 像宿主一样监听（插件发出这个名字的事件随后经测试一侧，就像经 rutis）；`loaded.Load(config, rutistest.InScope("t1/s1"))` 在一个作用域里再加载一行；`loaded.Reported()` 是运行时报告的 `Emit` 监听器失败。上面的 `greeter` 的测试：
+
+```go
+func TestEvents(t *testing.T) {
+	loaded := rutistest.Load(t, Plugin, struct{}{}, nil)
+	said := make(chan any, 1)
+	loaded.On("greeting/said", func(_ context.Context, args ...any) (any, error) {
+		said <- args[0] // 测试一侧像宿主一样监听
+		return nil, nil
+	})
+	var text string
+	if err := loaded.Service("greeter").Call(context.Background(), "hello", &text, "Ada", "sv"); err != nil {
+		t.Fatal(err)
+	}
+	if text != "Hej, Ada!" || <-said != "Ada" {
+		t.Fatalf("got %q", text)
+	}
+	word, err := loaded.Serial(context.Background(), "greeting/pick", "en") // 测试自己发出
+	if err != nil || word != nil {
+		t.Fatalf("got %v, %v", word, err)
+	}
+}
+```
 
 `Load` 会检查宿主会检查的事：插件只用 `Inject` 里声明的服务；提供的服务是 `Provides` 声明的类型（没有声明的服务，像 rutis 一样按导出方法、都按 async 调用）；卸载时清理都成功。只在同一个进程里才成立的写法（例如把结构体当对象传、靠共享内存）在这里就会失败。
 

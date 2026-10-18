@@ -57,7 +57,21 @@
 
 `export` / `import` 的一项是名字，或以 `*` 结尾的前缀（`session/*`；单独的 `*` 是所有名字）；前缀只选事件，服务仍按确切名字。同一个名字可以双向共享。对端的 `import` 和本节点的 `export` 对上时，对端的监听器就是本节点事件总线上的条目，规则和本机一样：五种方式（`emit`、`parallel`、`serial`、`waterfall`、`bail`）、作用域规则、过滤、所有值类型；连接断开时它们离开总线（进行中的调用失败一次）。事件只走一跳：一个节点导入的东西不再往外共享。对端的监听器位于这个节点行所在的作用域（实例之外的连接就是根）。完整模型见 [统一事件](../design-events-2026-10-18.md)。
 
-`events: { "out": […], "in": […] }` 在 rutis 0.13 删除，写了会报错：`out` 写进 `export`，`in` 写进 `import`。
+例：`main` 上发出的 `session/…` 事件到达 `office` 上任何语言的监听器，`office` 上发出的 `audit/flagged` 到达 `main` 的监听器：
+
+```json
+{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["session/*"], "import": ["audit/flagged"] } }
+```
+
+```json
+{ "id": "main", "name": "rutis-bridge/peer", "config": { "peer": "main", "listen": "public", "import": ["session/*"], "export": ["audit/flagged"] } }
+```
+
+一个名字要在发出的一端 `export`、在监听的一端 `import`，两边都写了才共享。`main` 上的 `await ctx.serial("session/quota", user)` 会按登记顺序逐个问 `main` 和 `office` 上的监听器，返回第一个结果；`office` 断开时，它的监听器离开总线，之后的分发只问 `main` 上的。
+
+运行时（本机的、[别的机器上的](#别的机器上的语言运行时)、[连进来的](#连进来的运行时)）不是节点连接：它们的监听器直接在宿主的总线上，不需要 `export` / `import`。
+
+`events: { "out": […], "in": […] }` 在 rutis 0.13 删除，写了会报错：`out` 写进 `export`，`in` 写进 `import`。0.12 及更早的节点连进来时被拒绝（`link stopped: incompatible (…)`），见 [迁移到 0.13](../migration-0.13.md)。
 
 ## 在别的节点上运行插件
 
@@ -159,4 +173,4 @@ Node、Bun 的每个会话由一个子进程运行：断开时子进程卸载全
 - 每个对端一个 token（`RUTIS_TOKEN_<节点>`），只在需要的节点上设置。
 - `rutis-host` 的 token 来自环境变量，运行中不能吊销：要切断一个对端或连进来的运行时，换掉 token 后重启 `rutis-host`（重启会断开所有连接）。运行中只切断一个身份是身份层的吊销钩子（rutis-bridge 的 `Revocations`，[设计](../design-remote-runtime-dial-2026-10-14.md#五身份层)），给将来的管理服务和嵌入 rutis 的 Rust 程序用：只断开以这个身份接受的连接，进行中的调用以传输错误失败，之后的连接与 token 不对时一样被拒（403，或关闭码 4003），每 30 秒重试。
 - `host: true` 让对端能在本节点运行这里装着的任何插件，只对可信的对端打开；它只能加载已安装的插件，不能加载文件路径。
-- 节点只按名字共享 `export` 里列出的服务。
+- 节点只按名字共享 `export` 里列出的服务和事件；事件还要对端在 `import` 里列出。

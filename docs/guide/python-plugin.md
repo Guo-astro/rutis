@@ -88,6 +88,117 @@ uv run python -m unittest discover -s tests
 
 `load` 会检查宿主会检查的事：插件只用 `inject` 里声明的服务；提供的服务带着 `provides` 里声明的每个方法（没有声明的服务，像 rutis 一样按对象的公开方法、都按 async 调用；`t.methods(name)` 返回 rutis 看到的方法）；退出 `async with` 时清理函数都运行了。默认的严格模式下，值按跨进程的规则传递：数据被复制（dataclass 变成 dict），函数和带方法的对象按引用传递，`sync` 方法不能返回协程。只在同一进程里才成立的写法，在这里就会失败。
 
+### 事件
+
+`ctx.on(name, listener)` 监听事件；`ctx.emit`、`await ctx.parallel`、`await ctx.serial`、`await ctx.waterfall`、`ctx.bail` 是发出的五种方式。监听器自动登记给宿主，什么都不用声明：发出方在同一个进程、另一种语言的运行时、宿主里还是相连的节点上，结果都一样。完整的规则见 [插件 API：事件](plugin-api.md#事件)。
+
+下面两个插件在同一个 `Bus` 上：`greeter` 用 `serial` 取第一个结果、用 `waterfall` 让别的插件改写问候语、用 `emit` 通知；`shout` 是 waterfall 的一环，并监听通知。
+
+<!-- example: python file=weather/tests/test_events.py order=2 -->
+```python
+import asyncio
+import unittest
+
+from rutis import define_plugin
+from rutis.testing import Bus, load
+
+
+def greeter_apply(ctx, config):
+    # 返回 None 或 False 是"没有结果"，serial 接着问下一个监听器
+    ctx.on("greeting/pick", lambda lang: "Hej" if lang == "sv" else None)
+
+    class Greeter:
+        async def hello(self, name, lang):
+            word = await ctx.serial("greeting/pick", lang) or "Hello"
+            # terminal：链的最里面，收到事件参数
+            text = await ctx.waterfall("greeting/format", f"{word}, {name}", terminal=lambda text: text)
+            ctx.emit("greeting/said", name)      # 立即返回，不等监听器
+            return text
+
+    ctx.provide("greeter", Greeter())
+
+
+greeter = define_plugin(greeter_apply)
+said = []
+
+
+def shout_apply(ctx, config):
+    async def exclaim(text, next):           # waterfall 的监听器最后一个参数是 next
+        return f"{await next()}!"
+
+    ctx.on("greeting/format", exclaim)
+    ctx.on("greeting/said", said.append)
+
+
+shout = define_plugin(shout_apply)
+
+
+class Events(unittest.TestCase):
+    def test_plugins_hear_each_other(self):
+        async def go():
+            bus = Bus()                          # 同一个 bus 上的插件互相听得到
+            async with load(greeter, bus=bus, row="greeter") as t, load(shout, bus=bus, row="shout"):
+                self.assertEqual(await t.service("greeter").hello("Ada", "sv"), "Hej, Ada!")
+                self.assertEqual(await t.service("greeter").hello("Bo", "en"), "Hello, Bo!")
+                self.assertEqual(said, ["Ada", "Bo"])
+                self.assertEqual(await t.serial("greeting/pick", "sv"), "Hej")  # 测试自己也能发出
+
+        asyncio.run(go())
+```
+
+- `emit` 立即返回；监听器出错不影响发出方和别的监听器，在监听器所在处报告一行（测试里在 `t.reported`）。要等全部监听器、拿到它们的错误，用 `await ctx.parallel(...)`：失败是 `rutis.AggregateError`，`errors` 按登记顺序。
+- `bail` 是同步的 `serial`：遇到 `async def` 监听器（或返回协程的函数）以 `rutis.AsyncListener` 失败。
+- `ctx.filter(lambda d: d["row"] == "audit")` 返回带这五个方法的对象，只送达过滤函数留下的监听器；`ctx.on(name, fn, prepend=True)` 排到最前，`global_=True` 不受过滤。
+- 作用域：`load(plugin, bus=bus, scope="t1/s1")` 把插件加载到一个实例里（`Bus(scopes={"t1": "tenant"})` 给出组名）；监听器只收到自己作用域及其内发出的事件。
+- 卸载时正在运行的监听器的任务被取消并被等待（最多 `RUTIS_SHUTDOWN_TIMEOUT`），然后才运行清理。发出方放弃时（它的任务被取消），进行中的监听器同样被取消。
+
+**跨语言**：TypeScript 插件发出、Python 插件监听，什么都不用改。宿主的 `rutis.json`：
+
+```json
+{
+  "runtimes": { "node": { "project": "web" }, "py": { "project": "plugins" } },
+  "rows": [
+    { "id": "sessions", "name": "sessions" },
+    { "id": "audit", "name": "py:audit" }
+  ]
+}
+```
+
+`web/` 里的 TypeScript 插件 `sessions` 发出事件，并用 `serial` 问别人要配额：
+
+```ts
+ctx.provide('sessions', {
+  async create(user: string) {
+    const quota = (await ctx.serial<number>('session/quota', user)) ?? 1
+    const id = crypto.randomUUID()
+    await ctx.parallel('session/created', id, user, quota)   // 等每个监听器，不论在哪种语言
+    return id
+  },
+})
+```
+
+`plugins/audit.py` 回答配额、记录创建：
+
+```python
+import sys
+
+from rutis import define_plugin
+
+
+def apply(ctx, config):
+    ctx.on("session/quota", lambda user: 10 if user == "ada" else None)
+
+    async def created(session_id, user, quota):
+        print(f"session {session_id} for {user}, quota {quota}", file=sys.stderr)
+
+    ctx.on("session/created", created)
+
+
+plugin = define_plugin(apply)
+```
+
+参数按[值怎样传递](plugin-api.md#值怎样传递)跨进程；Python 监听器抛出的错误在 TypeScript 一侧是同名的错误（`parallel` 里是 `AggregateError` 的子错误）。
+
 ## 4. 在本地宿主里运行
 
 <!-- example: python run until="weather: running" order=99 -->
