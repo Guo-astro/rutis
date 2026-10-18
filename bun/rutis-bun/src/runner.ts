@@ -15,25 +15,25 @@
 //
 // Within the process, `ctx.use(name)` returns the object itself when another
 // row here provides it, so those calls never leave the process.
-// Rows also share an event bus, Cordis's own as on the Node runtime: each row
-// owns a Cordis fiber, so `ctx.on` listens until the row unloads, `ctx.emit`
-// is Cordis's `emit` and a host `emit` is its `parallel`, which waits for
-// every listener. Host `emit` calls may use only the names declared by
-// `mount.emits`.
+// Events (#464, ./events.mjs, the same file as the Node runtime's): every
+// listener a row registers is on the host's logical bus; an emission runs
+// here when every listener of the name is here, else through the host,
+// with the five modes, scopes (each row's chain, from `rows.load`), filters
+// and unload waiting (the row's `ctx.signal`).
 //
 // A row's `isolate` gives some names a scope label: rows isolating a name
 // with the same label share it, and the same name under another label
 // (another instance, say) is another service. Services, host proxies and
 // export slots are registered by id (`scopes`): the name outside any scope,
 // the name, a NUL and the label inside one.
-import { Context, type Fiber } from '@deepseek-ai/cordis'
 import type { Client } from './client.ts'
+import { Bus, refuseRemoved, refuseReserved } from './events.mjs'
 import { declared, locate, Modules, versionOf, type Kind } from './plugin.ts'
 import { MANIFEST } from './session.ts'
 
 // internal/* names Cordis's own events on Node; no leaf plugin listens to or
-// emits them, and a mount cannot declare them for emission (boundary rule 5).
-// The wording matches the Node side (`node/rutis-runtime/src/leaf.mjs`).
+// emits them (internal/* stays in each runtime). The wording matches the
+// Node side (`node/rutis-runtime/src/leaf.mjs`).
 const internalMessage = (name: unknown) => `event ${name} is internal to the runtime`
 
 // A name is a string: Cordis's `emit` takes an object, null or function first
@@ -44,17 +44,24 @@ function reserved(name: unknown): asserts name is string {
   if (name.startsWith('internal/')) throw new Error(internalMessage(name))
 }
 
-// Refuse an `emits` declaration listing internal events, with the sentence of
-// rutis's own check (`Process::mount`, #337), naming every one.
-function refuseEmits(names: unknown): void {
-  const internal = ((names ?? []) as unknown[]).map(String).filter(name => name.startsWith('internal/'))
-  if (internal.length) throw new Error(`framework-internal events do not cross the boundary (mount emits): ${internal.join(', ')}`)
-}
-
-// events: leaf plugins receive what rutis emits (RuntimePlugin::emits).
 // rows.announce: services rows provide without declaring them are announced
 // with their methods, to a host whose mount says `announce`.
-export const FEATURES = ['rows.v2', 'hosts', 'leaf', 'scopes', 'events', 'rows.announce']
+export const FEATURES = ['rows.v2', 'hosts', 'leaf', 'scopes', 'rows.announce']
+
+// How long an unloading row's listeners are waited for: RUTIS_SHUTDOWN_TIMEOUT
+// seconds, 10 by default; in ms (protocol §7.1).
+function shutdownDeadline(): number {
+  const seconds = Number(process.env.RUTIS_SHUTDOWN_TIMEOUT)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 10_000
+}
+
+interface Scope { id: string, group: string }
+// A scope chain as rows.load gives it: [{ id, group }], the root [].
+function chainOf(scope: unknown): Scope[] {
+  if (scope === undefined || scope === null) return []
+  if (!Array.isArray(scope) || scope.some(item => typeof item?.id !== 'string' || typeof item?.group !== 'string')) throw new TypeError('a scope is a list of { id, group }')
+  return scope.map(({ id, group }) => ({ id, group }))
+}
 
 // The methods of a service no declaration describes: its own and inherited
 // functions, up to Object's, not the constructor; a property that is not a
@@ -99,8 +106,9 @@ interface Row {
   exports: Record<string, Record<string, Kind>>
   isolate: Map<string, string>
   cleanups: Array<() => unknown>
-  // Owns the row's event listeners; disposed first on unload.
-  events?: Fiber
+  // Its scope chain, and the signal its unload aborts.
+  chain: Scope[]
+  abort: AbortController
   provided: string[]
   // Ids of the slots of services it announced.
   announced: string[]
@@ -116,6 +124,8 @@ type Listener = (...args: any[]) => unknown
 export class Runtime {
   client?: Client
   closing = false
+  #bus = new Bus()
+  #deadline = shutdownDeadline()
   #project: string
   #modules = new Modules()
   #rows = new Map<string, Row>()
@@ -123,8 +133,6 @@ export class Runtime {
   #hosts = new Map<string, unknown>()
   #slots = new Map<string, Slot>()
   #handles = new Map<string, Handle>()
-  #events = new Context()
-  #emits = new Set<string>()
   #version = 0
   // The host takes announced services (mount `announce`).
   #announce = false
@@ -134,6 +142,19 @@ export class Runtime {
   #told = new Set<string>()
 
   constructor(project: string) { this.#project = project }
+
+  // Connected: the bus registers and dispatches through the host.
+  attach(client: Client) {
+    this.client = client
+    this.#bus.peer = {
+      call: (target: string, method: string, args: unknown) => client.call(target, method, args),
+      callAsync: (target: string, method: string, args: unknown) => client.callAsync(target, method, args),
+      callFunctionAsync: (fn: unknown, args: unknown[]) => client.callFunctionAsync(fn, args),
+    }
+  }
+
+  // The session ended: nothing is elsewhere any more.
+  ended() { this.#bus.ended() }
 
   // ── Services ──────────────────────────────────────────────────
 
@@ -208,19 +229,28 @@ export class Runtime {
 
   // ── Events ────────────────────────────────────────────────────
 
-  // The row's Cordis context: listeners registered there leave with the row.
-  async #fiber(row: Row): Promise<Context> {
-    let context!: Context
-    row.events = this.#events.plugin({ name: `row:${row.key}`, apply: (ctx: Context) => { context = ctx } })
-    await row.events.await()
-    return context
+  // The five ways to emit from `row`, filtered by `keep` when given
+  // (`waterfall`'s last argument is its terminal).
+  #emitters(row: Row, keep?: (descriptor: unknown) => unknown) {
+    const dispatch = (mode: string, name: string, values: unknown[], terminal?: unknown) => {
+      reserved(name)
+      refuseReserved(name)
+      return this.#bus.dispatch(mode, name, values, { row: row.key, scope: row.chain, keep, terminal })
+    }
+    return {
+      emit: (name: string, ...values: unknown[]) => { dispatch('emit', name, values) },
+      parallel: (name: string, ...values: unknown[]) => dispatch('parallel', name, values),
+      serial: (name: string, ...values: unknown[]) => dispatch('serial', name, values),
+      waterfall: (name: string, ...values: unknown[]) => { const terminal = values.pop(); return dispatch('waterfall', name, values, terminal) },
+      bail: (name: string, ...values: unknown[]) => dispatch('bail', name, values),
+    }
   }
 
   // ── Rows ──────────────────────────────────────────────────────
 
-  async load(key: string, entry: string, config: unknown, isolate: Array<[string, string]> | null, exports: Row['exports'] | null) {
+  async load(key: string, entry: string, config: unknown, isolate: Array<[string, string]> | null, exports: Row['exports'] | null, scope?: unknown) {
     if (this.#rows.has(key)) throw new Error(`row ${key} is already loaded`)
-    const row: Row = { key, entry, config, exports: exports ?? {}, isolate: new Map(), cleanups: [], provided: [], announced: [], pending: [] }
+    const row: Row = { key, entry, config, exports: exports ?? {}, isolate: new Map(), cleanups: [], chain: chainOf(scope), abort: new AbortController(), provided: [], announced: [], pending: [] }
     for (const [name, label] of isolate ?? []) { scopedId(name, label); row.isolate.set(name, label) }
     for (const name of Object.keys(row.exports)) {
       if (name.includes('#')) throw new Error(`service name ${name} cannot be projected`)
@@ -232,7 +262,6 @@ export class Runtime {
     for (const [name, methods] of Object.entries(row.exports)) {
       this.#slots.set(idIn(row, name), { row: key, methods: new Set(Object.keys(methods ?? {})), object: undefined, handle: null, generation: 0 })
     }
-    const events = await this.#fiber(row)
     const ctx = {
       use: (name: string) => this.lookup(idIn(row, name)),
       provide: (name: string, value: unknown) => this.provide(row, name, value),
@@ -240,12 +269,22 @@ export class Runtime {
         if (typeof cleanup !== 'function') throw new TypeError('effect needs a cleanup function')
         row.cleanups.push(cleanup)
       },
-      on: (name: string, callback: Listener) => {
+      // Aborted when the row unloads, while its listeners are waited for.
+      get signal() { return row.abort.signal },
+      // On the host's bus until the row unloads, or the returned function
+      // is called. `prepend` and `global` as Cordis's.
+      on: (name: string, callback: Listener, options?: { prepend?: boolean, global?: boolean }) => {
         reserved(name)
         if (this.#rows.get(row.key) !== row) throw new Error(`row ${row.key} is not active`)
-        return events.on(name, callback)
+        if (typeof callback !== 'function') throw new TypeError('a listener is a function')
+        const listener = this.#bus.on({ name, callback, prepend: options?.prepend, global: options?.global, row: row.key, plugin: plugin.name ?? key, scope: row.chain })
+        return () => { this.#bus.off(listener) }
       },
-      emit: (name: string, ...args: any[]) => { reserved(name); events.emit(name, ...args) },
+      ...this.#emitters(row),
+      filter: (predicate: (descriptor: unknown) => unknown) => {
+        if (typeof predicate !== 'function') throw new TypeError('filter needs a predicate function')
+        return this.#emitters(row, predicate)
+      },
     }
     try {
       const cleanup = await plugin.apply(ctx, config)
@@ -255,8 +294,10 @@ export class Runtime {
       }
       for (const name of Object.keys(row.exports)) this.#refresh(idIn(row, name))
       // rutis has published the announced services (or refused one, which
-      // fails the row there) before it hears that the row loaded.
+      // fails the row there) before it hears that the row loaded; so are
+      // the listeners it registered (protocol §4.4).
       await Promise.all(row.pending ?? [])
+      await Promise.all(this.#bus.registrations(key))
       row.pending = null
     } catch (error) {
       await this.unload(key).catch(() => {})
@@ -269,7 +310,8 @@ export class Runtime {
     const row = this.#rows.get(key)
     if (!row) return null
     this.#rows.delete(key)
-    await row.events?.dispose()
+    // Its listeners are off the bus at once (protocol §7.1).
+    this.#bus.withdraw(key)
     // Withdrawals first: rutis hears them before the plugin goes away.
     for (const id of row.provided) {
       if (this.#services.get(id)?.row === key) { this.#services.delete(id); this.#refresh(id) }
@@ -282,6 +324,10 @@ export class Runtime {
       if (slot.handle) this.#retire(slot.handle)
     }
     row.announced = []
+    // Its running listeners are signalled and waited for, at most the
+    // shutdown deadline; then its cleanups run.
+    row.abort.abort(new DOMException('the row is unloading', 'AbortError'))
+    await this.#bus.settle(key, this.#deadline)
     const errors: unknown[] = []
     for (const cleanup of row.cleanups.splice(0).reverse()) {
       try { await cleanup() } catch (error) { errors.push(error) }
@@ -295,7 +341,7 @@ export class Runtime {
     const row = this.#rows.get(key)
     if (!row) throw new Error(`row ${key} is not loaded`)
     await this.unload(key)
-    return this.load(key, row.entry, config, [...row.isolate], row.exports)
+    return this.load(key, row.entry, config, [...row.isolate], row.exports, row.chain)
   }
 
   async #plugin(entry: string) {
@@ -332,8 +378,10 @@ export class Runtime {
   #control(method: string, args: any): unknown {
     switch (method) {
       case 'mount':
-        refuseEmits(args.emits)
-        this.#emits = new Set(args.emits ?? [])
+        // Listeners register themselves (#464): the static forwarding is gone.
+        refuseRemoved(args)
+        // This runtime's name on the host, for descriptors, when it says.
+        if (typeof args.runtime === 'string') this.#bus.runtime = args.runtime
         this.#announce = args.announce === true
         this.#mounted = true
         return {
@@ -345,14 +393,13 @@ export class Runtime {
       case 'dispose':
         this.closing = true
         return (async () => { await this.dispose(); await this.client?.drain(); return null })()
-      case 'emit': {
-        const [name, values] = args
-        if (!this.#emits.has(name)) throw new Error(`event ${name} is not declared for emission from rutis`)
-        return this.#events.parallel(name, ...(values ?? []))
-      }
+      // The logical bus: `events.elsewhere` runs as its frame arrives (the
+      // session's `inline`); `events.call` runs a listener here.
+      case 'events.elsewhere': this.#bus.elsewhere(args[0] ?? {}); return undefined
+      case 'events.call': return this.#bus.call(args[0] ?? {})
       case 'rows.load': {
-        const [key, entry, config, isolate, _inject, exports] = args
-        return this.load(key, String(entry), config, isolate, exports)
+        const [key, entry, config, isolate, _inject, exports, place] = args
+        return this.load(key, String(entry), config, isolate, exports, place?.scope)
       }
       case 'rows.update': return this.update(args[0], args[1])
       case 'rows.unload': return this.unload(args[0])

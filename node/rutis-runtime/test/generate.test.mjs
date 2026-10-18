@@ -358,21 +358,20 @@ test('callback parameters take Rust closures and returned functions stay remote'
   })
 })
 
-test('the removed event options are refused, naming what replaces them', async () => {
+// #464: Cordis listeners register themselves on the logical bus; the
+// static forwarding options are refused, naming the replacement.
+test('the removed events and emits options are refused', async () => {
   await fixture(`import type { Context } from '@deepseek-ai/cordis'
-    declare module '@deepseek-ai/cordis' {
-      interface Events {
-        'store/changed'(key: string, size?: number): void
-      }
-    }
     export function apply(ctx: Context) { ctx.provide('store', { ping(): number { return 1 } }) }
   `, file => {
     for (const field of ['events', 'emits']) {
-      assert.throws(() => generate(file, root, { [field]: ['store/changed'] }), new RegExp(`the config field ${field} was removed in rutis 0\\.13: listeners register themselves; emit with ctx\\.emit / parallel / serial / waterfall / bail \\(docs/migration-0\\.13\\.md\\)`))
+      assert.throws(() => generate(file, root, { [field]: ['store/changed'] }), {
+        message: `the config field ${field} was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)`,
+      })
     }
-    // The mount's listeners join the mounting context's bus instead.
     const { rust } = generate(file, root)
+    assert.doesNotMatch(rust, /events|emits|EmitToCordis/)
+    // The mount's listeners join the mounting context's bus instead.
     assert.match(rust, /ctx: Some\(ctx\.clone\(\)\),/)
-    assert.doesNotMatch(rust, /EmitToCordis|events\.forward|emits:/)
   })
 })

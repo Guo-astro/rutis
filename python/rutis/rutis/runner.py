@@ -21,6 +21,17 @@ the same label share it, and the same name under another label (another
 instance, say) is another service. Services, host proxies and export slots
 are registered by id (`scopes`): the name outside any scope, the name, a
 NUL and the label inside one.
+
+Events (#464, docs/design-events-protocol-2026-10-18.md): every `ctx.on`
+registers with the host (`events.on` / `events.off`; `rows.load` answers
+once the host answered them). The host tells which names and prefixes have
+listeners outside this process (`events.elsewhere`); an emission of any
+other name is dispatched here (`rutis.events`), the rest through the host
+(`events.dispatch`), which calls this process's listeners back with
+`events.call`. A row's scope chain is the seventh `rows.load` argument.
+Unloading a row withdraws its listeners, then cancels its running ones and
+waits for them, at most RUTIS_SHUTDOWN_TIMEOUT. The session requires the
+host to declare `events-v2`.
 """
 
 from __future__ import annotations
@@ -33,17 +44,17 @@ import inspect
 import os
 import sys
 import threading
-import traceback
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import plugin as sdk
-from .events import Events, refused_emits
-from .peer import Peer, RemoteFuture
+from .events import Bus, Emitter, check_scope, discard, plain, reserved
+from .peer import UNDEFINED, AsyncListener, BindingError, Peer, RemoteFuture
 
 # rows.announce: services rows provide without declaring them are announced
-# with their methods, to a host whose mount says `announce`.
-FEATURES = ["rows.v2", "hosts", "leaf", "scopes", "events", "rows.announce"]
+# with their methods, to a host whose mount says `announce`. Events are not
+# a feature any more: from rutis 0.13 they are the `events-v2` capability.
+FEATURES = ["rows.v2", "hosts", "leaf", "scopes", "rows.announce"]
 # Test support, not part of the protocol: with RUTIS_TEST_INSPECT set, the
 # control method `inspect` reports what this runtime holds (rows, services,
 # host proxies, export slots, object handles, event listeners), so a test
@@ -52,10 +63,26 @@ FEATURES = ["rows.v2", "hosts", "leaf", "scopes", "events", "rows.announce"]
 INSPECT = bool(os.environ.get("RUTIS_TEST_INSPECT"))
 
 
-def _unhandled_event(error):
-    traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
-    sys.stderr.flush()
-    os._exit(1)
+DEADLINE = "RUTIS_SHUTDOWN_TIMEOUT"
+
+
+def shutdown_deadline() -> float:
+    """How long cleanups, and a row's running listeners on unload, may
+    take, in seconds: RUTIS_SHUTDOWN_TIMEOUT (rutis-host passes its own
+    deadline on), 10 by default."""
+    try:
+        seconds = float(os.environ.get(DEADLINE, ""))
+    except ValueError:
+        return 10.0
+    return seconds if 0 < seconds < float("inf") else 10.0
+
+
+def removed(field: str) -> str:
+    """What a mount still carrying the 0.12 event declarations is told."""
+    return (
+        f"the mount argument {field} was removed in rutis 0.13: listeners register themselves; "
+        "emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)"
+    )
 
 
 def old_host(name: str) -> str:
@@ -145,8 +172,10 @@ class Row:
     exports: dict
     # Service name -> scope label.
     isolate: dict = field(default_factory=dict)
+    # Its scope chain, `[{id, group}, ...]` (`[]`: the root): its listeners
+    # hear what is emitted there and inside, its emissions come from there.
+    scope: list = field(default_factory=list)
     cleanups: list = field(default_factory=list)
-    listeners: list = field(default_factory=list)
     # Ids of the services it provided.
     provided: list = field(default_factory=list)
     # Ids of the slots of services it announced.
@@ -172,6 +201,7 @@ class Context(sdk.Context):
     def __init__(self, runtime: "Runtime", row: Row):
         self._runtime = runtime
         self._row = row
+        self._emitter = Emitter(lambda *request: runtime.send(row, *request))
 
     def use(self, name: str) -> Any:
         return self._runtime.lookup(self._row.id(name))
@@ -182,13 +212,28 @@ class Context(sdk.Context):
     def effect(self, cleanup: Callable) -> None:
         self._row.cleanups.append(cleanup)
 
-    def on(self, name: str, listener: Callable) -> Callable[[], None]:
+    def on(self, name: str, listener: Callable, *, prepend: bool = False, global_: bool = False) -> Callable[[], None]:
         if self._runtime.rows.get(self._row.key) is not self._row:
             raise RuntimeError(f"row {self._row.key} is not active")
-        return self._runtime.events.on(name, listener, self._row.listeners)
+        return self._runtime.listen(self._row, name, listener, prepend, global_)
 
     def emit(self, name: str, *args: Any) -> None:
-        self._runtime.events.emit(name, *args)
+        self._emitter.emit(name, *args)
+
+    def parallel(self, name: str, *args: Any):
+        return self._emitter.parallel(name, *args)
+
+    def serial(self, name: str, *args: Any):
+        return self._emitter.serial(name, *args)
+
+    def waterfall(self, name: str, *args: Any, terminal: Callable | None = None):
+        return self._emitter.waterfall(name, *args, terminal=terminal)
+
+    def bail(self, name: str, *args: Any) -> Any:
+        return self._emitter.bail(name, *args)
+
+    def filter(self, predicate: Callable[[dict], Any]) -> Emitter:
+        return self._emitter.filter(predicate)
 
 
 class Runtime:
@@ -207,8 +252,17 @@ class Runtime:
         self.mounted = False
         # The undeclared names a plugin was told such a host does not take.
         self.told: set = set()
-        self.events = Events(_unhandled_event)
-        self.emits = set()
+        # This process's listeners; a failure nobody receives (an `emit`
+        # listener's) is a line on stderr, never the end of the process.
+        self.bus = Bus()
+        # Names and prefixes with listeners outside this process (the host
+        # keeps them up to date, `events.elsewhere`): emitting them goes
+        # through the host.
+        self.elsewhere: set = set()
+        self.prefixes: set = set()
+        # Emits of each name sent through the host and not answered yet:
+        # later ones follow them there, so they start in order.
+        self.unanswered: dict[str, int] = {}
         # The source file of each plugin module when it was imported.
         self.stamps: dict[str, tuple | None] = {}
 
@@ -313,11 +367,12 @@ class Runtime:
         config: Any,
         exports: dict | None,
         isolate: dict | None = None,
+        scope: list | None = None,
     ) -> None:
         if key in self.rows:
             raise ValueError(f"row {key} is already loaded")
         exports = exports or {}
-        row = Row(key, module, config, exports, dict(isolate or {}))
+        row = Row(key, module, config, exports, dict(isolate or {}), check_scope(scope))
         for name, label in row.isolate.items():
             scoped_id(name, label)
         for name in exports:
@@ -340,8 +395,9 @@ class Runtime:
             for name in exports:
                 self._refresh(row.id(name))
             # rutis has published the announced services (or refused one,
-            # which fails the row there) before it hears that the row loaded:
-            # those its threads provide while it waits too.
+            # which fails the row there) and registered its listeners before
+            # it hears that the row loaded: those its threads provide while
+            # it waits too.
             while True:
                 with row.lock:
                     pending = row.pending or []
@@ -360,8 +416,10 @@ class Runtime:
         row = self.rows.pop(key, None)
         if row is None:
             return
-        for off in row.listeners[:]:
-            off()
+        # Its listeners start nothing any more; an `events.call` for one of
+        # them is refused (the host withdrew them already: telling it again
+        # does no harm).
+        self._withdrawn([entry.id for entry in list(self.bus.entries) if entry.row == key and self.bus.withdraw(entry)])
         # Withdrawals first: rutis hears them before the plugin goes away.
         for id in list(row.provided):
             if self.services.get(id, (None,))[0] == key:
@@ -376,6 +434,9 @@ class Runtime:
             if slot.handle is not None:
                 self._retire(slot.handle)
         row.announced.clear()
+        # Its running listeners are cancelled and waited for, at most the
+        # shutdown deadline (§7.1 step 4), before its cleanups run.
+        await self.bus.stop(key, shutdown_deadline())
         errors = []
         cleanups = row.cleanups[::-1]
         row.cleanups.clear()
@@ -393,7 +454,7 @@ class Runtime:
         if row is None:
             raise ValueError(f"row {key} is not loaded")
         await self.unload(key)
-        await self.load(key, row.module, config, row.exports, row.isolate)
+        await self.load(key, row.module, config, row.exports, row.isolate, row.scope)
 
     def module(self, name: str):
         """The plugin module, imported again when its source file changed
@@ -428,7 +489,174 @@ class Runtime:
                 await self.unload(key)
             except Exception:  # noqa: BLE001 - disposal goes on
                 pass
-        self.events.clear()
+        self.bus.clear()
+
+    # ── Events ───────────────────────────────────────────────────
+
+    def _live(self) -> bool:
+        """A session with the host is on: listeners register with it, and
+        emissions of names listened to elsewhere go through it. Without
+        one, elsewhere is empty and everything stays here."""
+        return self.peer is not None and self.peer.closed_error is None
+
+    def listen(self, row: Row, name: str, listener: Callable, prepend: bool, global_: bool) -> Callable[[], None]:
+        """Add a listener of the row here and register it with the host,
+        which answers before the row is said to have loaded (§4.4)."""
+        reserved(name, listening=True)
+        entry = self.bus.add(name, row.key, row.module, listener, row.scope, prepend, global_)
+
+        def off() -> None:
+            if self.bus.withdraw(entry):
+                self._withdrawn([entry.id])
+
+        if self._live():
+            registration = {
+                "id": entry.id,
+                "name": name,
+                "row": row.key,
+                "plugin": row.module,
+                "kind": entry.kind,
+                "prepend": entry.prepend,
+                "global": entry.global_,
+            }
+            try:
+                sent = self.peer.request("", "events.on", [registration])
+            except Exception as error:  # noqa: BLE001 - the session ended meanwhile
+                if self._live():
+                    self.bus.report("registration", name, row.key, error)
+            else:
+                sent.add_done_callback(lambda done: self._registered(done, name, row.key))
+                row.pend(sent)
+        return off
+
+    def _registered(self, done, name: str, row: str) -> None:
+        if done.cancelled() or done.exception() is None or not self._live():
+            return
+        self.bus.report("registration", name, row, done.exception())
+
+    def _withdrawn(self, ids: list) -> None:
+        if ids and self._live():
+            self.peer.notify("", "events.off", [ids])
+
+    def _via_host(self, name: str, mode: str) -> bool:
+        """Whether an emission goes through the host (§5.2): a listener of
+        the name may be elsewhere, or (`emit`) an earlier emit of it there
+        is not answered yet."""
+        if not self._live():
+            return False
+        if name in self.elsewhere or any(name.startswith(prefix) for prefix in self.prefixes):
+            return True
+        return mode == "emit" and self.unanswered.get(name, 0) > 0
+
+    def send(self, row: Row, mode: str, name: str, args: list, terminal: Callable | None, keep: Callable | None) -> Any:
+        """An emission of the row: here (the fast path), or through the host,
+        which dispatches over every listener and calls this process's own
+        back. Same results either way."""
+        if not self._via_host(name, mode):
+            return self.bus.dispatch(mode, name, row.scope, args, keep, terminal, row.key)
+        request = {"row": row.key, "name": name, "mode": mode, "args": args}
+        if keep is not None:
+            request["filter"] = _selector(keep)
+        if terminal is not None:
+            request["terminal"] = terminal
+        if mode == "emit":
+            self._emit_via_host(row.key, name, request)
+            return None
+        if mode == "bail":
+            return plain(self.peer.call("", "events.dispatch", [request]))
+        return self._dispatch_via_host(request)
+
+    async def _dispatch_via_host(self, request: dict) -> Any:
+        return plain(await _settle(await self.peer.call_async("", "events.dispatch", [request])))
+
+    def _emit_via_host(self, row: str, name: str, request: dict) -> None:
+        self.unanswered[name] = self.unanswered.get(name, 0) + 1
+        try:
+            sent = self.peer.request("", "events.dispatch", [request])
+        except Exception as error:  # noqa: BLE001 - contained and reported
+            self._answered(name)
+            self.bus.report("emit", name, row, error)
+            return
+
+        def answered(done) -> None:
+            self._answered(name)
+            if not done.cancelled() and done.exception() is not None:
+                self.bus.report("emit", name, row, done.exception())
+
+        sent.add_done_callback(answered)
+
+    def _answered(self, name: str) -> None:
+        left = self.unanswered.get(name, 1) - 1
+        if left > 0:
+            self.unanswered[name] = left
+        else:
+            self.unanswered.pop(name, None)
+
+    def _elsewhere(self, change: Any) -> None:
+        """The names and prefixes listened to outside this process changed."""
+        if not isinstance(change, dict):
+            raise ValueError("invalid events.elsewhere")
+        lists = {}
+        for part in ("add", "remove", "addPrefixes", "removePrefixes"):
+            items = change.get(part, [])
+            if items is None or items is UNDEFINED:
+                items = []
+            if not isinstance(items, list) or not all(isinstance(item, str) for item in items):
+                raise ValueError(f"invalid events.elsewhere {part}")
+            lists[part] = items
+        self.elsewhere.difference_update(lists["remove"])
+        self.elsewhere.update(lists["add"])
+        self.prefixes.difference_update(lists["removePrefixes"])
+        self.prefixes.update(lists["addPrefixes"])
+
+    def _call_listener(self, request: Any) -> Any:
+        """`events.call`: run one listener of this process for a dispatch
+        the host runs. Its return value goes back as is; in `emit` mode,
+        undefined once it finished, its failure reported here."""
+        if not isinstance(request, dict):
+            raise ValueError("invalid events.call")
+        id, name, mode = request.get("listener"), request.get("name"), request.get("mode")
+        entry = self.bus.by_id.get(id) if isinstance(id, str) else None
+        if entry is None:
+            raise BindingError(f"listener {id} of {name} is withdrawn")
+        name = entry.name
+        args = request.get("args")
+        args = [plain(arg) for arg in args] if isinstance(args, list) else []
+        if mode in ("bail", "waterfall-sync"):
+            if mode == "waterfall-sync":
+                following = request.get("next")
+                args.append(lambda: plain(following()))
+            refused = AsyncListener(
+                f"listener of {name} in row {entry.row} is asynchronous and cannot run in a synchronous {mode}"
+            )
+            if entry.kind == "async":
+                raise refused
+            value = entry.listener(*args)
+            if inspect.isawaitable(value):
+                discard(value)
+                raise refused
+            return value
+        if mode == "waterfall":
+            following = request.get("next")
+            args.append(lambda: _next(following))
+        elif mode not in ("emit", "parallel", "serial"):
+            raise ValueError(f"unknown event mode {mode}")
+        return self._invocation(entry, name, mode, args)
+
+    async def _invocation(self, entry, name: str, mode: str, args: list) -> Any:
+        # Started at once (the peer starts it eagerly): an `emit` listener
+        # runs to its first await before the next frame is read (§5.5).
+        task = asyncio.current_task()
+        if task is not None:
+            self.bus.track(entry.row, task)
+        try:
+            value = await _settle(entry.listener(*args))
+        except Exception as error:
+            if mode != "emit":
+                raise
+            self.bus.report("listener", name, entry.row, error)
+            return UNDEFINED
+        return UNDEFINED if mode == "emit" else value
 
     # ── Dispatch ─────────────────────────────────────────────────
 
@@ -448,27 +676,31 @@ class Runtime:
         return getattr(entry["object"], method)(*args)
 
     def _control(self, method: str, args: Any) -> Any:
+        if method == "events.call":
+            return self._call_listener(args[0] if args else None)
+        if method == "events.elsewhere":
+            self._elsewhere(args[0] if args else None)
+            return None
         if method == "mount":
-            names = args.get("emits", [])
-            refused = refused_emits(names)
-            if refused is not None:
-                raise ValueError(refused)
-            self.emits = set(names)
+            for removed_field in ("emits", "events"):
+                if removed_field in args:
+                    raise ValueError(removed(removed_field))
+            # The runtime's name, which filters see in this process's
+            # listeners' descriptors.
+            runtime = args.get("runtime")
+            self.bus.runtime = runtime if isinstance(runtime, str) else None
             self.announce = args.get("announce") is True
             self.mounted = True
             return {"services": {}, "features": FEATURES}
-        if method == "emit":
-            name, values = args
-            if name not in self.emits:
-                raise ValueError(f"event {name} is not declared for emission from rutis")
-            return self.events.parallel(name, *(values or []))
         if method == "dispose":
             self.closing = True
             return self._dispose_and_drain()
         if method == "rows.load":
-            key, module, config, isolate, _inject, *rest = list(args) + [None] * (6 - len(args))
+            # From rutis 0.13 the seventh argument is `{ scope }`.
+            key, module, config, isolate, _inject, exports, row = (list(args) + [None] * 7)[:7]
             labels = {name: label for name, label in (isolate or [])}
-            return self.load(key, str(module), config, rest[0] if rest else None, labels)
+            scope = row.get("scope") if isinstance(row, dict) else None
+            return self.load(key, str(module), config, exports, labels, scope)
         if method == "rows.update":
             key, config = args
             return self.update(key, config)
@@ -501,7 +733,7 @@ class Runtime:
                 "hosts": list(self.hosts),
                 "slots": list(self.slots),
                 "handles": list(self.handles),
-                "listeners": sum(len(listeners) for listeners in self.events.listeners.values()),
+                "listeners": len(self.bus.entries),
             }
         if method == "get":
             handle, prop = args
@@ -561,3 +793,20 @@ async def _settle(value: Any) -> Any:
     while inspect.isawaitable(value) or isinstance(value, RemoteFuture):
         value = await value
     return value
+
+
+def _selector(keep: Callable) -> Callable:
+    """What the host calls once per dispatch with the descriptors of the
+    candidates (non-`global`, in order): the plugin's filter asked of each,
+    here, in order; a boolean each (§6)."""
+
+    def select(descriptors: list) -> list:
+        return [bool(keep(descriptor)) for descriptor in descriptors]
+
+    return select
+
+
+async def _next(following: Any) -> Any:
+    """A waterfall listener's `next` when the host runs the waterfall: the
+    rest of the chain, which the host's function reference runs."""
+    return plain(await _settle(await following.call_async()))

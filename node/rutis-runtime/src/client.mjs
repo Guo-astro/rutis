@@ -8,7 +8,7 @@ export class Process {
   #exited
   #session
 
-  constructor(executable, { channel, dispatch, settled, endpoint } = {}) {
+  constructor(executable, { channel, dispatch, settled, endpoint, inline, requires } = {}) {
     const { port1, port2 } = new MessageChannel()
     this.#port = port1
     this.#session = new Session({
@@ -17,6 +17,8 @@ export class Process {
       dispatch: dispatch ?? (() => { throw new Error('application has no exported service target') }),
       settled,
       endpoint,
+      inline,
+      requires,
       pump: done => {
         const sequence = Atomics.load(this.#signal, 0)
         let packet
@@ -52,9 +54,10 @@ export class Process {
       throw error
     }
   }
-  // `endpoint` ({ local, expected? }) selects the endpoint format.
-  static async connect(channel, dispatch, settled, endpoint) {
-    const process = new Process(undefined, { channel, dispatch, settled, endpoint })
+  // `endpoint` ({ local, expected? }) selects the endpoint format;
+  // `options`: the session's `inline` and `requires`.
+  static async connect(channel, dispatch, settled, endpoint, options = {}) {
+    const process = new Process(undefined, { channel, dispatch, settled, endpoint, ...options })
     try { await process.#session.ready; return process }
     catch (error) { process.#port.postMessage({ abort: true }); await process.#exited; throw error }
   }
@@ -63,6 +66,8 @@ export class Process {
   get fault() { return this.#session.fault }
   call(target, method, args) { return this.#session.invoke(target, method, args) }
   callAsync(target, method, args) { return this.#session.invokeAsync(target, method, args) }
+  callFunctionAsync(fn, args) { return this.#session.callFunctionAsync(fn, args) }
+  declares(capability) { return this.#session.declares(capability) }
   release(value) { this.#session.release(value) }
   references() { return this.#session.references() }
   drain() { return this.#session.drain() }

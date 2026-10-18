@@ -9,9 +9,15 @@
 //     config: { type: 'object', properties: { city: { type: 'string' } } },
 //     apply(ctx, config) {
 //       ctx.provide('weather', new Weather(ctx.use('llm'), config.city))
+//       ctx.on('weather/ask', city => city === config.city ? 'sunny' : undefined)
 //       return () => {}
 //     },
 //   })
+//
+// Events cross every process and language on the host (#464): `ctx.on`
+// listens wherever the event is emitted (in its scope or below), and
+// `ctx.emit` / `parallel` / `serial` / `waterfall` / `bail` reach every
+// listener, wherever it runs, as if all were in this process.
 //
 // What `ctx.provide` provides reaches rutis by itself: its methods are the
 // object's functions (its own and its prototype chain's, not `constructor`),
@@ -23,7 +29,10 @@
 // that needs a newer one, naming both.
 // 2: ctx.on and ctx.emit (leaf events). A runtime that supports only 1
 // refuses such a plugin at load instead of failing in apply.
-export const PLUGIN_API = 2
+// 3: the unified events of rutis 0.13 (#464): ctx.parallel, serial,
+// waterfall, bail and filter, ctx.signal, and `prepend` / `global` on
+// ctx.on. A runtime of 0.12 or older refuses such a plugin at load.
+export const PLUGIN_API = 3
 
 // Marks what definePlugin returns, across copies of this package.
 export const PLUGIN = Symbol.for('rutis.leaf-plugin')

@@ -85,7 +85,7 @@ function check(what, entry, { returns, thrown }, args = []) {
 }
 
 test('the testing tool returns what the real runtime does (weather.expected.json)', async t => {
-  const plugin = await load(weather, { services: { clock: clock() }, emits: expected.emits })
+  const plugin = await load(weather, { services: { clock: clock() } })
   const service = plugin.service(expected.service)
   for (const [method, kind] of Object.entries(expected.methods)) {
     assert.equal(weather.provides[expected.service][method], kind, `the plugin declares ${method} as ${kind}`)
@@ -112,9 +112,15 @@ test('the testing tool returns what the real runtime does (weather.expected.json
     const done = await outcome(() => service.sample(name))
     await t.test(`sample ${name}`, () => check(`sample ${name}`, entry, done))
   }
-  for (const [i, entry] of expected.events.entries()) {
+  for (const [i, entry] of (expected.events ?? []).entries()) {
     const what = `events[${i}] ${entry.emit}`
-    const emitted = await outcome(() => plugin.emit(entry.emit, ...entry.args))
+    // 0.13 (#464): an event needs no declaration to be emitted; the host
+    // emits as any emitter does, here with parallel.
+    if (/not declared for emission/.test(entry.throws?.message ?? '')) {
+      t.diagnostic(`${what}: not checked, the rule was removed in rutis 0.13 (#464)`)
+      continue
+    }
+    const emitted = await outcome(() => plugin.parallel(entry.emit, ...entry.args))
     if (entry.then) {
       await t.test(`${what} emitted`, () => assert.equal(emitted.thrown, undefined, `${what}: ${emitted.thrown?.stack}`))
       const done = await outcome(() => service[entry.then.call](...entry.then.args.map(argument)))
