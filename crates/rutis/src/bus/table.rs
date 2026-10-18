@@ -81,9 +81,7 @@ impl Entry {
     /// then check it is still live. `None`: skip it, as if it had never been
     /// selected (§5.1 step 3).
     pub fn start(&self) -> Option<CallFlight> {
-        let owner = self.owner.upgrade()?;
-        owner.begin_event();
-        let flight = CallFlight(owner);
+        let flight = CallFlight::begin(self.owner.upgrade()?);
         if !self.live() {
             return None;
         }
@@ -94,6 +92,14 @@ impl Entry {
 
 /// One running call, counted on its owner fiber.
 pub(crate) struct CallFlight(Arc<FiberInner>);
+
+impl CallFlight {
+    /// Count a call on `owner`; check its liveness after this.
+    pub fn begin(owner: Arc<FiberInner>) -> Self {
+        owner.begin_event();
+        Self(owner)
+    }
+}
 
 impl Drop for CallFlight {
     fn drop(&mut self) {
