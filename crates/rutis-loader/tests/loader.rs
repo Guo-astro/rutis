@@ -638,6 +638,7 @@ impl rutis::Listener<rutis_loader::PendingEditDropped> for Dropped {
         &'a self,
         _ctx: &'a rutis::Ctx,
         e: &'a rutis_loader::PendingEditDropped,
+        _: rutis::Call<'a, ()>,
     ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
         self.0.lock().unwrap().push(e.edit.clone());
         Box::pin(async { Ok(None) })

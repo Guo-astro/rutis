@@ -9,13 +9,13 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::runtimes::{id, repo, row_state, COLD};
-use rutis::{BoxFuture, CordisError, Ctx, FiberState, Listener};
+use rutis::{BoxFuture, Call, CordisError, Ctx, EventKey, FiberState, Listener};
+use rutis_bridge::events::{ArgValue, Args, LinkEventsPlugin};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value as RpcValue};
 use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
 use rutis_bridge::{
-    node_event, EventsPlugin, ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin,
-    NodeEvent, StaticIdentity,
+    ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin, StaticIdentity,
 };
 use rutis_loader::{
     Chain, Layer, LoaderOptions, LoaderPlugin, Patch, PeerResolver, PeerRowsPlugin,
@@ -34,29 +34,34 @@ impl HostDispatch for Clock {
     }
 }
 
-/// Forward `tick` to Cordis, with `what`, and wait for its `tock`.
+fn node_event(name: &str) -> EventKey<Args> {
+    EventKey::dynamic(name.to_owned())
+}
+
+/// Emit `tick` with `what`: Cordis's listener is on this bus, and it
+/// answers with `tock` before `parallel` ends.
 async fn tick(main: &Ctx, what: &str) {
     main.events()
         .parallel(
             main,
             &node_event("tick"),
-            Arc::new(NodeEvent {
-                args: json!([what]),
-            }),
+            Arc::new(Args(vec![RpcValue::Data(json!(what))])),
         )
         .await
         .unwrap();
 }
 
 struct Record(Arc<Mutex<Vec<Value>>>);
-impl Listener<NodeEvent> for Record {
+impl Listener<Args> for Record {
     fn call<'a>(
         &'a self,
         _: &'a Ctx,
-        event: &'a NodeEvent,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
+        event: &'a Args,
+        _: Call<'a, ArgValue>,
+    ) -> BoxFuture<'a, Result<Option<ArgValue>, CordisError>> {
         Box::pin(async move {
-            self.0.lock().unwrap().push(event.args.clone());
+            let args = RpcValue::List(event.0.clone()).json().unwrap_or(Value::Null);
+            self.0.lock().unwrap().push(args);
             Ok(None)
         })
     }
@@ -107,7 +112,7 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
     ));
     main.plugin(ImportPlugin::new(id("mac"), ["calendar"]));
     main.plugin(ExportPlugin::new(id("mac"), ["clock"]));
-    main.plugin(EventsPlugin::new(id("mac"), ["tick"], ["tock"]).unwrap());
+    main.plugin(LinkEventsPlugin::new(id("mac"), ["tick"], ["tock"]));
     let tocks = Arc::new(Mutex::new(Vec::new()));
     main.events()
         .on(&main, &node_event("tock"), Record(tocks.clone()))

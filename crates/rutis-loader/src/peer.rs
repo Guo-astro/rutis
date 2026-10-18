@@ -683,6 +683,7 @@ impl rutis::Listener<crate::VolatileUpdate> for Reconfigure {
         &'a self,
         _: &'a Ctx,
         update: &'a crate::VolatileUpdate,
+        _: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async move {
             let config = NodeConfig::parse(&update.config)?;
