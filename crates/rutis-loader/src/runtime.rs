@@ -525,7 +525,50 @@ struct JsFactory {
 }
 
 /// See [`JsFactory::refused`].
-type Refused = Arc<Mutex<HashMap<rutis::InstanceId, String>>>;
+type Refused = Arc<Refusals>;
+
+/// Why rows were refused a service they provided after loading, by fiber.
+/// A refusal is for the one restart it causes: only the apply that restart
+/// runs fails with it. One recorded while another restart was already on
+/// its way, or left once its restart has run (one that waited for a
+/// dependency instead of applying), fails no later generation, which may
+/// run when the clash is long gone; that one is refused again if it
+/// provides the name while the clash is still there.
+#[derive(Default)]
+struct Refusals(Mutex<HashMap<rutis::InstanceId, (String, bool)>>);
+
+impl Refusals {
+    /// Record why `instance` was refused, unless it was already.
+    fn record(&self, instance: rutis::InstanceId, why: String) {
+        self.0
+            .lock()
+            .unwrap()
+            .entry(instance)
+            .or_insert((why, false));
+    }
+
+    /// The restart for `instance`'s refusal is about to run: its apply
+    /// fails with it.
+    fn arm(&self, instance: rutis::InstanceId) {
+        if let Some((_, armed)) = self.0.lock().unwrap().get_mut(&instance) {
+            *armed = true;
+        }
+    }
+
+    /// Why this apply of `instance` fails: the refusal whose restart runs it.
+    fn take(&self, instance: rutis::InstanceId) -> Option<String> {
+        let mut refusals = self.0.lock().unwrap();
+        match refusals.get(&instance) {
+            Some((_, true)) => refusals.remove(&instance).map(|(why, _)| why),
+            _ => None,
+        }
+    }
+
+    /// The refusal's restart has run, or will not: it fails nothing more.
+    fn forget(&self, instance: rutis::InstanceId) {
+        self.0.lock().unwrap().remove(&instance);
+    }
+}
 
 impl JsFactory {
     /// The factory of a copy outside instances.
@@ -654,7 +697,7 @@ impl Plugin for JsRow {
         Box::pin(async move {
             // Restarted because it provided a service another provider has:
             // it fails as it would have had it provided it while loading.
-            if let Some(refused) = self.refused.lock().unwrap().remove(&ctx.instance()) {
+            if let Some(refused) = self.refused.take(ctx.instance()) {
                 return Err(failed(refused));
             }
             let (process, runtime) = match &self.runtime {
@@ -851,11 +894,7 @@ impl JsRow {
             if generation.is_cancelled() {
                 return; // already unloading or restarted
             }
-            refused
-                .lock()
-                .unwrap()
-                .entry(restarting.instance())
-                .or_insert(why);
+            refused.record(restarting.instance(), why);
             let ctx = restarting.clone();
             let refused = refused.clone();
             tasks.spawn(async move {
@@ -866,15 +905,12 @@ impl JsRow {
                     .into_iter()
                     .find(|plugin| plugin.instance == instance)
                     .and_then(|plugin| ctx.view(plugin.id));
-                match view {
-                    Some(view) if !generation.is_cancelled() => {
-                        let _ = view.restart().await;
-                    }
-                    // Gone or restarting anyway: nothing to fail.
-                    _ => {
-                        refused.lock().unwrap().remove(&instance);
-                    }
+                // Gone or restarting anyway: nothing to fail.
+                if let Some(view) = view.filter(|_| !generation.is_cancelled()) {
+                    refused.arm(instance);
+                    let _ = view.restart().await;
                 }
+                refused.forget(instance);
             });
         });
         Ok((key, projection))
@@ -930,6 +966,33 @@ fn package_version(entry: &Path) -> Option<Value> {
 #[cfg(test)]
 mod stale_tests {
     use super::*;
+
+    /// A refusal fails the apply of the restart it causes, and no other:
+    /// not one already on its way when it was recorded, nor any after its
+    /// restart has run.
+    #[tokio::test]
+    async fn a_refusal_fails_only_the_generation_its_restart_runs() {
+        let root = rutis::Ctx::root().unwrap();
+        let instance = root.instance();
+        let refusals = Refusals::default();
+
+        refusals.record(instance, "clash".into());
+        assert_eq!(
+            refusals.take(instance),
+            None,
+            "a restart already on its way"
+        );
+        refusals.arm(instance);
+        assert_eq!(refusals.take(instance).as_deref(), Some("clash"));
+        assert_eq!(refusals.take(instance), None, "taken once");
+
+        // Its restart ran without applying (it waited for a dependency):
+        // the generation that applies later, the clash gone, runs.
+        refusals.record(instance, "clash".into());
+        refusals.arm(instance);
+        refusals.forget(instance);
+        assert_eq!(refusals.take(instance), None);
+    }
 
     /// A remote Node runtime takes npm names, not another runtime's rows.
     #[cfg(feature = "node")]
