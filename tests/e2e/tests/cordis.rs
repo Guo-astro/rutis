@@ -193,8 +193,8 @@ fn output(host: &Host) -> Vec<String> {
 /// than mounted by a library, or than in Cordis)
 ///
 /// guarantee: boundary/5.8 (an error a Cordis plugin leaves uncaught ends
-/// the Node runtime, its services are withdrawn, the call in progress
-/// fails), host/row-state-lines, host/runtime-state-lines
+/// the Node runtime, its services are withdrawn), host/row-state-lines,
+/// host/runtime-state-lines
 #[test]
 fn published_cordis_plugins_run_from_rutis_json_as_in_native_cordis() {
     let s = Scenario::new("cordis");
@@ -355,8 +355,9 @@ fn published_cordis_plugins_run_from_rutis_json_as_in_native_cordis() {
     //    ends the Node runtime. The error reaches the host's stderr, the
     //    host says the runtime is down and how it ended, the Node rows and
     //    the probe using `crasher` wait; nothing is quietly degraded. The
-    //    Python rows go on. (The call in progress ends with the probe that
-    //    made it, which stops as its service goes.)
+    //    Python rows go on. (The call in progress is not observed: the
+    //    probe that made it stops as its service goes, and whether its
+    //    call fails before that is not fixed.)
     host.skip_written();
     let _crash = breaker.send("crasher", "crash", json!(["uncaught in crasher"]));
     host.expect("Error: uncaught in crasher");
@@ -424,6 +425,7 @@ fn published_cordis_services_resolve_and_answer_as_in_native_cordis() {
     let native = node(&s, "native.mjs", &[&root_text]);
     let targets = node(&s, "scenarios.mjs", &[&root_text]);
     let targets = targets.as_array().expect("the scenarios");
+    assert!(!targets.is_empty(), "scenarios.mjs gives no target");
 
     // Every plugin of every target a row; a TS probe in the same Node
     // runtime uses every target's service.
@@ -482,6 +484,7 @@ fn published_cordis_services_resolve_and_answer_as_in_native_cordis() {
                 capture: call["capture"].as_str().map(str::to_owned),
             })
             .collect();
+        assert!(!calls.is_empty(), "target {name} makes no call");
         let mut captured = Map::new();
         let mut results = Vec::new();
         for call in calls {

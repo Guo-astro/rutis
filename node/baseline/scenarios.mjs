@@ -18,7 +18,10 @@ export const targets = [
     package: '@deepseek-ai/dsh-invariants',
     service: 'invariants',
     config: () => ({}),
-    calls: [],
+    // Data only: whether a package's checks would run (no filter: yes).
+    calls: [
+      ['selected', ['@deepseek-ai/dsh-fs-local']],
+    ],
   },
   {
     name: 'credentials',
@@ -69,7 +72,11 @@ export const targets = [
     package: '@deepseek-ai/dsh-commands',
     service: 'commands',
     config: () => ({}),
-    calls: [],
+    // Data only: what an agent's commands are (none registered).
+    calls: [
+      ['list', ['main']],
+      ['find', ['main', 'help']],
+    ],
   },
   {
     // dsh-workspace needs storageDomain and sessionPersistence: mount it as a
