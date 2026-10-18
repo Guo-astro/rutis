@@ -1026,9 +1026,17 @@ jobs:
       # others' verification (macos-4 failed on `rutis_loader::PLUGIN_API`
       # this way). So the train crates' own artifacts go first: `cargo clean
       # -p` removes every build of a crate, the registry copy included.
+      # Cargo also unpacks each tarball of that registry into
+      # $CARGO_HOME/registry/src/-<hash>/<crate>-<version> and, finding the
+      # directory there, never unpacks a newer tarball of the same version:
+      # the verification then built a train crate from an earlier run's
+      # source (rutis-host against a rutis-loader without
+      # `Supply::Announced`). Those directories (named `-<hash>`, unlike the
+      # registries' own) go too.
       - name: cargo package
         run: |
           crates=$(node scripts/train.mjs --crates | sed 's/[^ ]*/-p &/g')
+          rm -rf "${CARGO_HOME:-$HOME/.cargo}"/registry/src/-*
           cargo clean $crates
           cargo package --locked $crates
       - name: npm pack

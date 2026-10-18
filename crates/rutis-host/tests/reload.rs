@@ -299,6 +299,234 @@ async fn a_removed_runtime_stops_after_its_rows() {
     host.shut_down(HANG_GUARD).await.ok();
 }
 
+/// A removed runtime's process: written down by its row, killed, and
+/// waited for (Unix: kill(2)).
+#[cfg(unix)]
+mod removed_process {
+    use super::*;
+    use common::process::{alive, file_url};
+    use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
+
+    /// A plugin writing its process's id to `<out>/<row>.pid`, and
+    /// `<out>/<row>.cleanup` as it cleans up; with `linger`, its cleanup leaves a second of work to the loop's
+    /// executor, which the runtime finishes before its process ends.
+    const PID: &str = r#"
+import asyncio
+import os
+import time
+
+
+def apply(ctx, config):
+    with open(os.path.join(config["out"], config["row"] + ".pid"), "w") as f:
+        f.write(str(os.getpid()))
+
+    def cleanup():
+        with open(os.path.join(config["out"], config["row"] + ".cleanup"), "w") as f:
+            f.write("cleanup\n")
+        if config.get("linger"):
+            asyncio.get_running_loop().run_in_executor(None, time.sleep, 1.0)
+
+    ctx.effect(cleanup)
+"#;
+
+    /// The same in JavaScript, without `linger`.
+    fn node_pid() -> String {
+        let sdk = repo()
+            .join("node/rutis/src/index.mjs")
+            .canonicalize()
+            .unwrap();
+        format!(
+            "import {{ definePlugin }} from '{}'\n\
+             import {{ writeFileSync }} from 'node:fs'\n\
+             import {{ join }} from 'node:path'\n\
+             export default definePlugin({{ apply(ctx, config) {{\n\
+               writeFileSync(join(config.out, config.row + '.pid'), String(process.pid))\n\
+             }} }})\n",
+            file_url(&sdk)
+        )
+    }
+
+    fn py(dir: &Path, restart: &str) -> Value {
+        let mut py = json!({ "project": dir, "restart": restart });
+        if let Some(python) = std::env::var_os("RUTIS_PYTHON") {
+            py["python"] = json!(python.to_str().unwrap());
+        }
+        py
+    }
+
+    fn row(dir: &Path, id: &str, name: &str, linger: bool) -> Value {
+        json!({
+            "id": id,
+            "name": name,
+            "config": { "out": dir, "row": id, "linger": linger },
+        })
+    }
+
+    fn host_config(value: Value) -> HostConfig {
+        let mut value = value;
+        value["id"] = json!("reload-test");
+        serde_json::from_value(value).unwrap()
+    }
+
+    /// The process id the row `row` wrote, once it has.
+    async fn pid_of(dir: &Path, row: &str) -> i32 {
+        let file = dir.join(format!("{row}.pid"));
+        COLD.eventually(
+            || {
+                std::fs::read_to_string(&file)
+                    .ok()
+                    .and_then(|text| text.trim().parse().ok())
+            },
+            "the row's process id",
+        )
+        .await
+    }
+
+    fn kill(pid: i32) {
+        // SAFETY: plain kill(2).
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0, "kill");
+    }
+
+    /// Wait until `state` says what `want` looks for.
+    async fn until(handle: &RuntimeHandle, what: &str, want: fn(&RuntimeState) -> bool) {
+        COLD.within(what, async {
+            while !want(&handle.state()) {
+                handle.changed().await;
+            }
+        })
+        .await;
+    }
+
+    /// The Python runtime removed after its process ended (`restart: "no"`):
+    /// nothing to wait for, so the reload says it stopped, at once.
+    /// guarantee: host/reload-config
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_removed_runtime_that_was_down_stops_at_once() {
+        let _environment = environment();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::fs::write(d.join("pid.py"), PID).unwrap();
+        let mut host = started(&host_config(json!({
+            "runtimes": { "py": py(d, "no") },
+            "rows": [row(d, "py-row", "py:pid", false)],
+        })))
+        .await;
+        let handle = host.runtimes[0].1.clone();
+        kill(pid_of(d, "py-row").await);
+        until(&handle, "the runtime going down", |state| {
+            matches!(state, RuntimeState::Down(_))
+        })
+        .await;
+
+        let begun = std::time::Instant::now();
+        let reloaded = host.reload(host_config(json!({}))).await.unwrap();
+        assert!(
+            begun.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            begun.elapsed()
+        );
+        assert_eq!(reloaded.stopped, ["py"]);
+        assert!(reloaded.warnings.is_empty(), "{:?}", reloaded.warnings);
+        host.shut_down(HANG_GUARD).await.ok();
+    }
+
+    /// The Python runtime removed while its supervisor starts it again
+    /// (`on-failure`): the process that restart started is waited for too,
+    /// and has ended when the reload returns.
+    /// guarantee: host/reload-config
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_removed_runtime_being_restarted_stops_with_its_new_process() {
+        let _environment = environment();
+        // Processes earlier tests started are left listed, their tests'
+        // async runtimes gone: only those may be there at the end.
+        let earlier = rutis_bridge::transport::local::running_processes();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::fs::write(d.join("pid.py"), PID).unwrap();
+        let mut host = started(&host_config(json!({
+            "runtimes": { "py": py(d, "on-failure") },
+            "rows": [row(d, "py-row", "py:pid", false)],
+        })))
+        .await;
+        let _exits = host.supervise();
+        let handle = host.runtimes[0].1.clone();
+        kill(pid_of(d, "py-row").await);
+        until(&handle, "the runtime going down", |state| {
+            matches!(state, RuntimeState::Down(_))
+        })
+        .await;
+        // The supervisor starts it again after its backoff (a second).
+        until(&handle, "the restart", |state| {
+            matches!(state, RuntimeState::Starting | RuntimeState::Ready(_))
+        })
+        .await;
+
+        let begun = std::time::Instant::now();
+        let reloaded = host.reload(host_config(json!({}))).await.unwrap();
+        assert!(
+            begun.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            begun.elapsed()
+        );
+        assert_eq!(reloaded.stopped, ["py"]);
+        assert!(reloaded.warnings.is_empty(), "{:?}", reloaded.warnings);
+        let running = rutis_bridge::transport::local::running_processes();
+        assert!(
+            running.iter().all(|pid| earlier.contains(pid)),
+            "a runtime process runs on: {running:?}"
+        );
+        host.shut_down(HANG_GUARD).await.ok();
+    }
+
+    /// Another runtime's process ending while the removed one's is still
+    /// finishing: the reload waits for the removed runtime's own process,
+    /// not for whichever ends first.
+    /// guarantee: host/reload-config
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_removed_runtime_is_waited_for_while_another_one_ends() {
+        let _environment = environment();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::fs::write(d.join("pid.py"), PID).unwrap();
+        std::fs::write(d.join("pid.mjs"), node_pid()).unwrap();
+        std::fs::write(
+            d.join("package.json"),
+            r#"{ "name": "reload", "type": "module" }"#,
+        )
+        .unwrap();
+        let node = json!({ "project": d, "runtime": repo().join("node/rutis-runtime") });
+        let node_row = row(d, "node-row", d.join("pid.mjs").to_str().unwrap(), false);
+        let mut host = started(&host_config(json!({
+            "runtimes": { "py": py(d, "no"), "node": node },
+            "rows": [row(d, "py-row", "py:pid", true), node_row],
+        })))
+        .await;
+        let (python, node_pid) = (pid_of(d, "py-row").await, pid_of(d, "node-row").await);
+
+        // While the Python process finishes the second its row's cleanup
+        // left, the Node one is killed.
+        let cleaned = d.join("py-row.cleanup");
+        let killer = std::thread::spawn(move || {
+            while !cleaned.exists() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            kill(node_pid);
+        });
+        let reloaded = host
+            .reload(host_config(json!({
+                "runtimes": { "node": node },
+                "rows": [node_row],
+            })))
+            .await
+            .unwrap();
+        killer.join().unwrap();
+        assert_eq!(reloaded.stopped, ["py"]);
+        assert!(reloaded.warnings.is_empty(), "{:?}", reloaded.warnings);
+        assert!(!alive(python), "the Python runtime's process runs on");
+        host.shut_down(HANG_GUARD).await.ok();
+    }
+}
+
 /// A peer row a reload adds dials with the token the environment has for
 /// its peer, and the far end accepts it; neither host had a peer row at
 /// first.
@@ -552,5 +780,94 @@ mod sigusr1 {
                 "runtime process {pid} outlived the host; {context}"
             );
         }
+    }
+}
+
+/// A row a reload adds providing, from a thread of its own while it loads,
+/// a name another row provides (Unix: [`common::process::file_url`]).
+#[cfg(unix)]
+mod thread_announced {
+    use super::*;
+    use common::process::file_url;
+
+    /// Provides `weather` from a worker thread, which `apply` waits for.
+    const THIEF: &str = r#"
+import threading
+
+
+class Weather:
+    def hello(self, name):
+        return "Rain, " + name
+
+
+def apply(ctx, config):
+    worker = threading.Thread(target=lambda: ctx.provide("weather", Weather()))
+    worker.start()
+    worker.join()
+"#;
+
+    /// The refusal of a name provided from a thread reaches the reload
+    /// before the row is said to have loaded: the reload is refused, and
+    /// the old rows run on.
+    /// guarantee: host/reload-config, loader/announced-services
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_name_a_thread_provides_twice_refuses_the_reload() {
+        let _environment = environment();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::fs::write(d.join("thief.py"), THIEF).unwrap();
+        let sdk = repo()
+            .join("node/rutis/src/index.mjs")
+            .canonicalize()
+            .unwrap();
+        std::fs::write(
+            d.join("weather.mjs"),
+            format!(
+                "import {{ definePlugin }} from '{}'\n\
+                 class Weather {{ hello(name) {{ return `Sun, ${{name}}` }} }}\n\
+                 export default definePlugin({{ apply(ctx) {{\n\
+                   ctx.provide('weather', new Weather())\n\
+                 }} }})\n",
+                file_url(&sdk)
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("package.json"),
+            r#"{ "name": "reload", "type": "module" }"#,
+        )
+        .unwrap();
+        let mut py = json!({ "project": d });
+        if let Some(python) = std::env::var_os("RUTIS_PYTHON") {
+            py["python"] = json!(python.to_str().unwrap());
+        }
+        let runtimes = json!({
+            "py": py,
+            "node": { "project": d, "runtime": repo().join("node/rutis-runtime") },
+        });
+        let weather = json!({ "id": "weather", "name": d.join("weather.mjs").to_str().unwrap() });
+        let first: HostConfig = serde_json::from_value(json!({
+            "id": "reload-test",
+            "runtimes": runtimes,
+            "rows": [weather],
+        }))
+        .unwrap();
+        let mut host = started(&first).await;
+        assert_eq!(hello(&host, "weather").await, "Sun, Ada");
+
+        let both: HostConfig = serde_json::from_value(json!({
+            "id": "reload-test",
+            "runtimes": runtimes,
+            "rows": [weather, { "id": "thief", "name": "py:thief" }],
+        }))
+        .unwrap();
+        let error = host.reload(both).await.unwrap_err();
+        assert!(
+            error.contains("row thief") && error.contains("already provided"),
+            "{error}"
+        );
+        assert!(host.loader.get("thief").is_none(), "the new row stays out");
+        assert_eq!(hello(&host, "weather").await, "Sun, Ada");
+        host.shut_down(HANG_GUARD).await.ok();
     }
 }

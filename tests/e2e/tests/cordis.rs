@@ -452,9 +452,9 @@ fn published_cordis_services_resolve_and_answer_as_in_native_cordis() {
         &json!({ "runtimes": { "node": {} }, "rows": rows }),
     );
 
-    // `check` passes: what the rows inject, other rows of the runtime may
-    // provide once they run (nothing declares it), and in Cordis it
-    // resolves natively.
+    // `check` passes, warning: what the rows inject, other rows of the
+    // runtime may provide once they run (nothing declares it), and in
+    // Cordis it resolves natively.
     let mut check = s.host(["check", "rutis.json"]);
     let status = check.wait_exit();
     let printed = output(&check).join("\n");
@@ -463,9 +463,10 @@ fn published_cordis_services_resolve_and_answer_as_in_native_cordis() {
         !printed.contains("nothing provides"),
         "check, dependencies between rows:\n{printed}"
     );
-    let workspace = printed.split("workspace-4 (").nth(1).unwrap();
     assert!(
-        workspace.contains("storageDomain: may be provided at runtime by "),
+        printed.contains(
+            "rutis-host: warning: workspace-4: nothing declares storageDomain; it may be provided at runtime by "
+        ),
         "check, what workspace uses:\n{printed}"
     );
 

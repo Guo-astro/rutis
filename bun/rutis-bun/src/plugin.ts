@@ -24,7 +24,8 @@ export interface Plugin {
   apply(ctx: unknown, config: unknown): unknown
   inject: string[]
   provides: Record<string, Record<string, Kind>>
-  // It declares no `provides`: what it provides is known once it runs.
+  // What it provides beyond `provides` reaches rutis by itself, known once
+  // it runs: every plugin of a 0.12 SDK, and every module.
   announces: boolean
   config: unknown
   api: number
@@ -81,8 +82,9 @@ function check(plugin: any, entry: string): Plugin {
   if (api > PLUGIN_API) {
     throw new Error(`plugin ${entry} needs plugin API ${api}; this runtime supports ${PLUGIN_API}: upgrade @arcships/rutis-bun where the host runs`)
   }
-  // An SDK's plugin says (0.12 on); a module's own exports, by having none.
-  const announces = typeof plugin.announces === 'boolean' ? plugin.announces : plugin.provides === undefined
+  // An SDK's plugin says (0.12 on); a module's own exports may always
+  // provide more than they declare.
+  const announces = typeof plugin.announces === 'boolean' ? plugin.announces : true
   return { apply: plugin.apply, inject: [...inject], provides, announces, config: plugin.config ?? null, api }
 }
 

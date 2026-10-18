@@ -75,6 +75,12 @@ export function methodsOf(object: unknown): Set<string> {
 
 // How the service `name` is identified in the scope `label`. Neither may
 // contain NUL and a label may not be empty, so no two pairs share an id.
+// What a plugin providing the undeclared service `name` is told when the
+// host, older than 0.12, mounted without `announce`: such a host does not
+// take the service, which stays in this process.
+export const oldHost = (name: string) =>
+  `rutis: service ${name} is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host`
+
 export function scopedId(name: string, label?: string | null): string {
   if (name.includes('\0') || label?.includes('\0')) throw new Error(`service ${JSON.stringify(name)} or its scope label contains NUL`)
   if (label === '') throw new Error(`service ${JSON.stringify(name)} has an empty scope label`)
@@ -122,6 +128,10 @@ export class Runtime {
   #version = 0
   // The host takes announced services (mount `announce`).
   #announce = false
+  // Mounted by a host; one without `announce` is older than 0.12.
+  #mounted = false
+  // The undeclared names a plugin was told such a host does not take.
+  #told = new Set<string>()
 
   constructor(project: string) { this.#project = project }
 
@@ -140,10 +150,16 @@ export class Runtime {
     if (current) throw new Error(`service ${id} is already provided by row ${current.row}`)
     this.#services.set(id, { row: row.key, value })
     row.provided.push(id)
-    // Not declared: announced, with the methods it has.
-    if (this.#announce && !this.#slots.has(id) && !name.includes('#')) {
-      this.#slots.set(id, { row: row.key, methods: new Set(), object: undefined, handle: null, generation: 0, announced: true })
-      row.announced.push(id)
+    // Not declared: announced, with the methods it has; a host older than
+    // 0.12 does not take it, and the plugin is told, once per name.
+    if (!this.#slots.has(id) && !name.includes('#')) {
+      if (this.#announce) {
+        this.#slots.set(id, { row: row.key, methods: new Set(), object: undefined, handle: null, generation: 0, announced: true })
+        row.announced.push(id)
+      } else if (this.#mounted && !this.#told.has(name)) {
+        this.#told.add(name)
+        process.stderr.write(`${oldHost(name)}\n`)
+      }
     }
     this.#refresh(id)
     return () => {
@@ -319,6 +335,7 @@ export class Runtime {
         refuseEmits(args.emits)
         this.#emits = new Set(args.emits ?? [])
         this.#announce = args.announce === true
+        this.#mounted = true
         return {
           services: {},
           features: FEATURES,

@@ -30,7 +30,7 @@ use crate::{
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin};
 use serde_json::Value;
 
-use crate::transport::local::{Handover, LocalTransport, Spawn};
+use crate::transport::local::{Handover, LocalTransport, Processes, Spawn};
 
 /// Set to report every message crossing a runtime channel (direction and
 /// length, never content) on stderr, as for runtimes `Process` starts.
@@ -45,6 +45,8 @@ pub struct LocalRuntime {
     launcher: Launcher,
     anchor: PathBuf,
     runtime: RuntimePlugin,
+    /// The processes it started, every generation's.
+    processes: Processes,
 }
 
 impl LocalRuntime {
@@ -125,6 +127,7 @@ impl LocalRuntime {
             launcher,
             runtime: RuntimePlugin::session(name, anchor.clone()),
             anchor,
+            processes: Processes::default(),
         }
     }
 
@@ -208,6 +211,13 @@ impl LocalRuntime {
     pub fn handle(&self) -> RuntimeHandle {
         self.runtime.handle()
     }
+
+    /// The processes it started, every generation's: once it is stopped,
+    /// [`Processes::running`] says whether its own process has ended yet,
+    /// whatever other runtimes' processes do.
+    pub fn processes(&self) -> Processes {
+        self.processes.clone()
+    }
 }
 
 impl Plugin for LocalRuntime {
@@ -227,6 +237,7 @@ impl Plugin for LocalRuntime {
                 label: format!("{kind} carrier"),
                 kind: kind.clone(),
                 spawn,
+                processes: self.processes.clone(),
             });
             let link = LinkPlugin::new(
                 LinkConfig::dial(peer.clone(), &kind, &kind, "spawn:runtime").local_runtime(),
@@ -272,6 +283,7 @@ struct Carrier {
     label: String,
     kind: String,
     spawn: Spawn,
+    processes: Processes,
 }
 
 impl Plugin for Carrier {
@@ -281,7 +293,7 @@ impl Plugin for Carrier {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
         Box::pin(async move {
-            let transport = Arc::new(LocalTransport::default());
+            let transport = Arc::new(LocalTransport::sharing(self.processes.clone()));
             transport.spawner("runtime", self.spawn.clone());
             if std::env::var_os(TRACE_VARIABLE).is_some() {
                 transport.trace(Arc::new(|line: &str| eprintln!("rutis trace: {line}")));

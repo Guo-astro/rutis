@@ -10,7 +10,7 @@ A Cordis plugin can also run as a row in rutis-loader: name its package in `ruti
 - Cordis rows in the same Node runtime use each other's services by Cordis's native rules, getting the objects themselves.
 - The services a row provides reach rutis by themselves: rows of other runtimes, other nodes and Rust plugins use them by name. The methods are the functions of the service object (its own and its prototype chain's, not `constructor`), all called as `async`. When the package's `package.json` declares `rutis.provides`, that declaration applies (to mark some methods `sync`, say).
 - When a service of the same name already has another provider (a row of another runtime, a Rust plugin, an import from a node), the row providing it later fails, also when it provides it after loading, and the error names both, for example `service storage is already provided by row prompts: row storage cannot provide it too`.
-- `rutis-host check` runs no plugin, so it does not see undeclared services: a service a row depends on that only such rows may provide is reported as `may be provided at runtime by …`, not as a failure.
+- `rutis-host check` runs no plugin, so it does not see undeclared services: a service a row depends on that only such rows may provide is a warning, `nothing declares <service>; it may be provided at runtime by …`, not a failure (with `check --strict`, one).
 
 ## Use a Cordis application as a node
 

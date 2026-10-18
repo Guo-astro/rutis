@@ -5,7 +5,7 @@ import { statSync } from 'node:fs'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { Process } from './client.mjs'
 import { toJsonSchema } from './schema.mjs'
-import { isLeaf, refuseInternal, supported, toCordis } from './leaf.mjs'
+import { isLeaf, oncePerName, refuseInternal, supported, toCordis } from './leaf.mjs'
 
 // `<channel> [--id <endpoint>] [--peer <endpoint>] [--format endpoint] <first plugin or anchor>`.
 // Local channels (`fd:3`, a socket path) speak the compat protocol unless
@@ -313,10 +313,18 @@ function located(entry) {
   }
 }
 
+// A leaf plugin providing a service it does not declare, under a host that
+// mounted without `announce` (one older than 0.12): it is told, once per
+// name, that the host does not take it.
+const tellOldHost = oncePerName(text => process.stderr.write(text))
+const undeclared = name => {
+  if (fibers && !announce) tellOldHost(name)
+}
+
 async function pluginOf(entry) {
   entry = located(entry)
   const declared = await declaredOf(entry)
-  return isLeaf(declared) ? toCordis(declared) : declared
+  return isLeaf(declared) ? toCordis(declared, undeclared) : declared
 }
 
 // The module's plugin as written: a leaf plugin (`definePlugin`), or a

@@ -35,9 +35,10 @@ usage:
                                               RUTIS_SHUTDOWN_TIMEOUT)
     run: --watch-config                       read rutis.json again when it changes
                                               (SIGUSR1 does too, on Unix)
-  rutis-host check [rutis.json]               describe every row and Go binary; fail on what
+  rutis-host check [rutis.json] [--strict]    describe every row and Go binary; fail on what
                                               cannot run (in a plugin project without
-                                              rutis.json: the project)
+                                              rutis.json: the project); warn of a service
+                                              no row declares, which --strict fails
   rutis-host new <name> --lang node|bun|python|go
                                               create a plugin project
   rutis-host go add <module>@<version> [rutis.json]
@@ -385,6 +386,14 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
 }
 
 async fn check(args: &[String]) -> Result<(), String> {
+    // `--strict`: a service no row declares fails too.
+    let strict = args.iter().any(|arg| arg == "--strict");
+    let args: Vec<String> = args
+        .iter()
+        .filter(|arg| *arg != "--strict")
+        .cloned()
+        .collect();
+    let args = args.as_slice();
     let path = config_file(args);
     let config = match (args.first(), path.exists()) {
         (None, false) => project::dev_config(std::path::Path::new("."))?.0,
@@ -441,12 +450,45 @@ async fn check(args: &[String]) -> Result<(), String> {
                     .filter(|requirement| matches!(requirement.supply, Supply::Missing { .. }))
                     .map(|requirement| requirement.service.as_str())
                     .collect();
-                match missing.is_empty() {
-                    true => outln!("{id} ({name}): ok"),
-                    false => outln!(
+                // Names no row declares, which undeclared services may
+                // provide once the rows run: a warning, an error with
+                // `--strict`.
+                let undeclared: Vec<(&str, &[String])> = requires
+                    .iter()
+                    .filter_map(|requirement| match &requirement.supply {
+                        Supply::Announced(rows) => {
+                            Some((requirement.service.as_str(), rows.as_slice()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                match (missing.is_empty(), strict && !undeclared.is_empty()) {
+                    (true, false) => outln!("{id} ({name}): ok"),
+                    (true, true) => {
+                        failed += 1;
+                        let names: Vec<&str> =
+                            undeclared.iter().map(|(service, _)| *service).collect();
+                        outln!(
+                            "{id} ({name}): cannot run with --strict: nothing declares {}",
+                            names.join(", ")
+                        )
+                    }
+                    (false, _) => outln!(
                         "{id} ({name}): cannot run: nothing provides {}",
                         missing.join(", ")
                     ),
+                }
+                for (service, rows) in &undeclared {
+                    let between_cordis_rows = cordis.contains(id.as_str())
+                        && rows.iter().any(|row| cordis.contains(row.as_str()));
+                    errln!(
+                        "rutis-host: {}: {}",
+                        match strict {
+                            true => "error",
+                            false => "warning",
+                        },
+                        undeclared_line(id, service, rows, between_cordis_rows)
+                    );
                 }
                 // A plugin needing a newer plugin API does not resolve: its
                 // runtime refuses it, saying what to upgrade.
@@ -460,14 +502,7 @@ async fn check(args: &[String]) -> Result<(), String> {
                     outln!("  config: {schema}");
                 }
                 for requirement in requires {
-                    let between_cordis_rows = cordis.contains(id.as_str())
-                        && matches!(&requirement.supply, Supply::Announced(rows)
-                            if rows.iter().any(|row| cordis.contains(row.as_str())));
-                    if let Some(line) = supply_line(
-                        &requirement.service,
-                        &requirement.supply,
-                        between_cordis_rows,
-                    ) {
+                    if let Some(line) = supply_line(&requirement.service, &requirement.supply) {
                         outln!("  {line}");
                     }
                 }
@@ -529,11 +564,25 @@ async fn check(args: &[String]) -> Result<(), String> {
     }
 }
 
+/// `check`'s warning for the row `row` waiting for `service`, which no row
+/// declares and `rows` may provide once they run. `between_cordis_rows`:
+/// the row and one of those are Cordis rows, where the dependency resolves
+/// in Cordis.
+fn undeclared_line(row: &str, service: &str, rows: &[String], between_cordis_rows: bool) -> String {
+    format!(
+        "{row}: nothing declares {service}; it may be provided at runtime by {}{}",
+        some_of(rows),
+        match between_cordis_rows {
+            true => "; between Cordis rows of one runtime it resolves in Cordis",
+            false => "",
+        }
+    )
+}
+
 /// `check`'s line for a service a row waits for: what to do when nothing
-/// provides it, what may when that is not known; none when it is provided.
-/// `between_cordis_rows`: the row and one of those that may provide it are
-/// Cordis rows, where the dependency resolves in Cordis.
-fn supply_line(service: &str, supply: &Supply, between_cordis_rows: bool) -> Option<String> {
+/// provides it, what may when that is not known; none when it is provided
+/// (or no row declares it: [`undeclared_line`] says so).
+fn supply_line(service: &str, supply: &Supply) -> Option<String> {
     match supply {
         Supply::Missing { disabled } if !disabled.is_empty() => Some(format!(
             "{service}: only disabled rows provide it ({}): enable one, or add a row that provides it",
@@ -541,14 +590,6 @@ fn supply_line(service: &str, supply: &Supply, between_cordis_rows: bool) -> Opt
         )),
         Supply::Missing { .. } => Some(format!(
             "{service}: add a row that provides it, or import it from a peer (import: [\"{service}\"])"
-        )),
-        Supply::Announced(rows) => Some(format!(
-            "{service}: may be provided at runtime by rows that do not declare all they provide ({}){}",
-            some_of(rows),
-            match between_cordis_rows {
-                true => "; between Cordis rows of one runtime it resolves in Cordis",
-                false => "",
-            }
         )),
         Supply::Unknown(sources) => Some(format!(
             "{service}: not known to be provided; it may come from {}",

@@ -37,9 +37,9 @@ export function definePlugin(spec) {
       if (kind !== 'sync' && kind !== 'async') throw new TypeError(`${name}.${method}: kind must be 'sync' or 'async'`)
     }
   }
-  // `announces`: it does not say all it provides; what it does is known
-  // once it runs.
-  return Object.freeze({ ...spec, inject, provides: spec.provides ?? {}, announces: spec.provides === undefined, api: PLUGIN_API, [PLUGIN]: true })
+  // `announces`: what it provides beyond `provides` (all of it, without
+  // one) reaches rutis by itself, and is known once it runs.
+  return Object.freeze({ ...spec, inject, provides: spec.provides ?? {}, announces: true, api: PLUGIN_API, [PLUGIN]: true })
 }
 
 // Whether `value` is a plugin definePlugin made.
