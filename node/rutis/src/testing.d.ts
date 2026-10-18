@@ -3,8 +3,10 @@ import type { Plugin } from './index.js'
 export declare class PluginTestError extends Error {}
 
 export interface Loaded {
-  /** The service `name` the plugin provides, as rutis sees it: its declared methods only. */
+  /** The service `name` the plugin provides, as rutis sees it: its declared methods, or, undeclared, the object's methods, all async. */
   service<T = any>(name: string): T
+  /** The methods rutis sees on the service `name`, with their kinds. */
+  methods(name: string): Record<string, 'sync' | 'async'>
   /** The names of the services the plugin provides now. */
   provided(): string[]
   /** Emit as the host would with `Process::emit`: arguments cross in strict mode; waits for every listener and rejects with AggregateError if any fail. */

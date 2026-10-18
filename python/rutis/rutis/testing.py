@@ -9,7 +9,9 @@ services it provides, unload it::
 
 It checks what a host would: the plugin uses only the services it declares
 in `inject`, provides what it declares in `provides` with every declared
-method, and runs its cleanups on unload. With `strict` (the default), values
+method, and runs its cleanups on unload. A service `provides` does not
+declare is used as rutis uses it: its methods are the object's public
+callables, all async. With `strict` (the default), values
 cross between the plugin and the test as they would between processes: data
 is copied (a dataclass arrives as a dict; a datetime, Decimal, UUID, set,
 bytes or an int beyond ±(2^53−1) as the runtime sends and receives it,
@@ -248,15 +250,25 @@ class Loaded:
 
     def service(self, name: str) -> Any:
         """The service `name` the plugin provides, as rutis sees it: its
-        declared methods only."""
+        declared methods, or, undeclared, the object's public methods, all
+        async."""
         if self._unloaded:
             raise PluginTestError("the plugin is unloaded")
+        return _shaped(name, self._provided_object(name), self.methods(name), self._strict)
+
+    def methods(self, name: str) -> dict:
+        """The methods rutis sees on the service `name`: `{ method: "sync" |
+        "async" }`."""
+        value = self._provided_object(name)
         shape = self._plugin.provides.get(name)
         if shape is None:
-            raise PluginTestError(f"{name} is not declared in provides, so rutis cannot use it")
+            shape = {method: "async" for method in sorted(sdk.methods_of(value))}
+        return dict(shape)
+
+    def _provided_object(self, name: str) -> Any:
         if name not in self._provided:
             raise PluginTestError(f"the plugin does not provide {name} (now)")
-        return _shaped(name, self._provided[name][0], shape, self._strict)
+        return self._provided[name][0]
 
     def provided(self) -> list[str]:
         """The names of the services the plugin provides now."""

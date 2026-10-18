@@ -3,7 +3,7 @@ export type MethodKind = 'sync' | 'async'
 export interface Context {
   /** The service `name`, which the plugin declares in `inject`: the object itself when a plugin in the same process provides it, else a proxy whose methods are sync or async as declared. */
   use<T = any>(name: string): T
-  /** Provide `value` as the service `name` until the plugin unloads, or until the returned function is called. */
+  /** Provide `value` as the service `name` until the plugin unloads, or until the returned function is called. It reaches rutis by itself: its methods are the object's functions (own and inherited, not `constructor`), `async` unless `provides` marks them `sync`. */
   provide(name: string, value: unknown): () => unknown
   /** Run `cleanup` when the plugin unloads. */
   effect(cleanup: () => unknown): void
@@ -17,7 +17,7 @@ export interface PluginSpec<C = any> {
   name?: string
   /** Services the plugin uses: rutis starts it once they are all available, and stops it when one goes. */
   inject?: string[]
-  /** Services it provides to rutis, with each method's kind. */
+  /** Optional: services it provides, with the kind of methods to call `sync` (the others are `async`). Without it, what `ctx.provide` provides still reaches rutis; with it, `rutis-host check` knows before the plugin runs. */
   provides?: Record<string, Record<string, MethodKind>>
   /** The JSON Schema of its config. */
   config?: object
@@ -27,6 +27,8 @@ export interface PluginSpec<C = any> {
 export interface Plugin<C = any> extends Readonly<Required<Pick<PluginSpec<C>, 'inject' | 'provides'>>>, Readonly<Omit<PluginSpec<C>, 'inject' | 'provides'>> {
   /** The plugin API it was written against. */
   readonly api: number
+  /** It declares no `provides`: what it provides is known once it runs. */
+  readonly announces: boolean
 }
 
 /** The plugin API this SDK writes plugins against. */

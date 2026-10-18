@@ -520,6 +520,10 @@ fn supply_line(service: &str, supply: &Supply) -> Option<String> {
         Supply::Missing { .. } => Some(format!(
             "{service}: add a row that provides it, or import it from a peer (import: [\"{service}\"])"
         )),
+        Supply::Announced(rows) => Some(format!(
+            "{service}: may be provided at runtime by rows that do not declare all they provide ({}); between Cordis rows of one runtime it resolves in Cordis",
+            some_of(rows)
+        )),
         Supply::Unknown(sources) => Some(format!(
             "{service}: not known to be provided; it may come from {}",
             sources
@@ -529,6 +533,14 @@ fn supply_line(service: &str, supply: &Supply) -> Option<String> {
                 .join(", ")
         )),
         _ => None,
+    }
+}
+
+/// The first three of `rows`, and how many more there are.
+fn some_of(rows: &[String]) -> String {
+    match rows.len() {
+        0..=3 => rows.join(", "),
+        n => format!("{} and {} more", rows[..3].join(", "), n - 3),
     }
 }
 
@@ -574,5 +586,16 @@ mod tests {
             Some("runtime py: rutis")
         );
         assert_eq!(runtime_line("node", &serde_json::Value::Null), None);
+    }
+
+    /// The rows that may provide a service at runtime: three named, then a
+    /// count (a project of published Cordis packages has many).
+    /// guarantee: host/check
+    #[test]
+    fn check_names_a_few_rows_that_may_provide_a_service() {
+        let rows = |n: usize| (0..n).map(|i| format!("r{i}")).collect::<Vec<_>>();
+        assert_eq!(super::some_of(&rows(2)), "r0, r1");
+        assert_eq!(super::some_of(&rows(3)), "r0, r1, r2");
+        assert_eq!(super::some_of(&rows(9)), "r0, r1, r2 and 6 more");
     }
 }

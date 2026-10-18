@@ -44,6 +44,10 @@ pub struct Declared {
     pub requires: Vec<String>,
     /// Provided in rutis while the row runs.
     pub provides: Vec<String>,
+    /// It may provide services `provides` does not list, announced when
+    /// they are provided (a Cordis plugin whose package declares nothing):
+    /// what it provides is known only once it runs.
+    pub announces: bool,
 }
 
 /// A row's [`Declared`] from its config (the raw config, expressions

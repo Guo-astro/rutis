@@ -45,7 +45,6 @@ class Weather {
 
 export default definePlugin<Config>({
   inject: ['llm'],                                 // 用到的服务：都就绪才启动，任何一个撤销就停下
-  provides: { weather: { today: 'async' } },       // 提供的服务，每个方法是 sync 还是 async
   config: { type: 'object', properties: { city: { type: 'string' } } },  // 配置的 JSON Schema
   apply(ctx, config) {
     ctx.provide('weather', new Weather(ctx.use<Llm>('llm'), config.city ?? 'Oslo'))
@@ -55,6 +54,8 @@ export default definePlugin<Config>({
 ```
 
 插件只依赖 `@arcships/rutis`。它不认识宿主是谁、`llm` 由哪种语言或哪台机器提供，也不管自己什么时候启动和停止：这些由宿主决定。能做什么、值怎样传递，见 [插件 API](plugin-api.md)。
+
+`weather` 不用声明：`ctx.provide` 提供的服务自动对外，方法取对象上的函数（这里是 `today`），按 `async` 调用。要把某个方法标成 `sync`，或让 `rutis-host check` 在运行前知道插件提供什么，再写 `provides`，例如 `provides: { weather: { unit: 'sync' } }`（写了的服务按声明，只有声明的方法能调用）。
 
 ## 3. 测试
 
@@ -82,7 +83,7 @@ test('reports the weather of the configured city', async () => {
 npm test
 ```
 
-`load` 会检查宿主会检查的事：插件只用 `inject` 里声明的服务；提供的服务带着 `provides` 里声明的每个方法；卸载时清理函数都运行了。默认的严格模式下，值按跨进程的规则传递：数据被复制，函数和带方法的对象按引用传递，声明为 `sync` 的方法不能返回 Promise。只在同一进程里才成立的写法，在这里就会失败。
+`load` 会检查宿主会检查的事：插件只用 `inject` 里声明的服务；提供的服务带着 `provides` 里声明的每个方法（没有声明的服务，像 rutis 一样按对象上的方法、都按 async 调用；`t.methods(name)` 返回 rutis 看到的方法）；卸载时清理函数都运行了。默认的严格模式下，值按跨进程的规则传递：数据被复制，函数和带方法的对象按引用传递，声明为 `sync` 的方法不能返回 Promise。只在同一进程里才成立的写法，在这里就会失败。
 
 ## 4. 在本地宿主里运行
 
@@ -142,10 +143,16 @@ npm install greeter
 
 ## 已有的 Cordis 插件
 
-不用改写。在插件包的 `package.json` 里声明要提供给 rutis 的服务即可：
+不用改写，也不用改包：`rutis.json` 的行里写包名（已发布的包也一样）：
 
 ```json
-"rutis": { "provides": { "weather": { "today": "async" } } }
+{ "id": "storage", "name": "@deepseek-ai/dsh-storage" }
 ```
 
-它在 Node 运行时的 Cordis Context 里运行，和叶子插件在同一个进程，互相用服务时直接拿到对象本身。
+它在 Node 运行时的 Cordis Context 里运行，和叶子插件、其他 Cordis 行在同一个进程：同一个运行时里的行按 Cordis 的原生规则互相使用服务，拿到对象本身。它提供的服务自动投到 rutis，别的运行时和 Rust 按名字使用，方法取服务对象上的函数，按 `async` 调用。要把某些方法标成 `sync`，或者让 `rutis-host check` 在运行前就知道它提供什么，在包的 `package.json` 里声明（声明了就按声明）：
+
+```json
+"rutis": { "provides": { "weather": { "today": "sync" } } }
+```
+
+重名的规则、`check` 怎样报告见 [Cordis](cordis.md)。

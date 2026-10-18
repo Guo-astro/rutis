@@ -35,7 +35,7 @@ test('greets', async () => {
 })
 ```
 
-不用 SDK 时，模块也可以直接导出 `apply(ctx, config)`，以及 `inject`、`provides`（每个方法写明 `'sync'` 或 `'async'`）、`config`（JSON Schema）。
+不用 SDK 时，模块也可以直接导出 `apply(ctx, config)`，以及 `inject`、`provides`（可选，每个方法写明 `'sync'` 或 `'async'`）、`config`（JSON Schema）。`provides` 不写也行：`ctx.provide` 提供的服务自动对外，方法取对象上的函数，按 `async` 调用，规则和 Node 相同（见 [插件 API](plugin-api.md)）。
 
 ## 3. 在宿主里运行
 

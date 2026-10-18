@@ -344,6 +344,73 @@ async fn check_fails_on_a_service_nothing_provides() {
     assert_eq!(checked.status, 1);
 }
 
+/// Cordis rows that declare nothing (published packages): what one injects
+/// another may provide once they run, resolved in Cordis, so check names
+/// those rows and passes; a declared provider is named as usual (#428).
+/// risk: A6, F8
+/// guarantee: host/check
+#[tokio::test(flavor = "multi_thread")]
+async fn check_passes_what_cordis_rows_may_provide_at_runtime() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        &[
+            ("package.json", r#"{ "name": "app", "type": "module" }"#),
+            (
+                "storage.mjs",
+                "export const name = 'storage'\nexport function apply(ctx) { ctx.provide('storage', { get() {} }) }\n",
+            ),
+            (
+                "domain.mjs",
+                "export const name = 'domain'\nexport const inject = ['storage']\nexport function apply(ctx) { ctx.provide('storageDomain', { open() {} }) }\n",
+            ),
+            (
+                "workspace.mjs",
+                "export const name = 'workspace'\nexport const inject = ['storageDomain']\nexport function apply() {}\n",
+            ),
+            (
+                "rutis.json",
+                &configuration(serde_json::json!([
+                    { "id": "storage", "name": "./storage.mjs" },
+                    { "id": "domain", "name": "./domain.mjs" },
+                    { "id": "workspace", "name": "./workspace.mjs" }
+                ])),
+            ),
+        ],
+    );
+    let python = repo().join("python/rutis");
+    let checked = check(
+        dir.path(),
+        &["rutis.json"],
+        &[("RUTIS_PYTHON_PATH", &python)],
+    )
+    .await;
+    let stdout: Vec<&str> = checked
+        .stdout
+        .lines()
+        .filter(|line| !line.starts_with("  config: "))
+        .collect();
+    assert_eq!(
+        stdout,
+        [
+            "plugin API for Go binaries: 2 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
+            "storage (file://<dir>/storage.mjs): ok",
+            "  inject: []",
+            "  provides: {}",
+            "domain (file://<dir>/domain.mjs): ok",
+            "  inject: [\"storage\"]",
+            "  provides: {}",
+            "  storage: may be provided at runtime by rows that do not declare all they provide (storage, workspace); between Cordis rows of one runtime it resolves in Cordis",
+            "workspace (file://<dir>/workspace.mjs): ok",
+            "  inject: [\"storageDomain\"]",
+            "  provides: {}",
+            "  storageDomain: may be provided at runtime by rows that do not declare all they provide (storage, domain); between Cordis rows of one runtime it resolves in Cordis",
+        ]
+    );
+    assert_eq!(checked.stderr, "");
+    assert_eq!(checked.status, 0);
+}
+
 /// A service only a row whose declarations are not known may provide (a
 /// remote runtime's, not connected during the check) is not known to be
 /// missing: check says so and passes.

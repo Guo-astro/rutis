@@ -5,7 +5,12 @@ rutis and Cordis (the Node plugin framework) interoperate in two ways:
 - **Use a Cordis application as a node:** connect an existing Cordis application to a rutis node so they can use each other's services, forward events, and let rutis run plugins inside it. Use `@arcships/rutis-runtime/bridge`.
 - **Mount Cordis plugins in a Rust application:** run published Cordis plugins in a real Cordis context without changing their source, and use Rust types generated at build time from their type declarations. Enable the `cordis` feature of `rutis-bridge`.
 
-A Cordis plugin can also run as a row in rutis-loader. Declare `rutis.provides` in its `package.json`; see [Write a TypeScript plugin](typescript-plugin.en.md#existing-cordis-plugins). Not yet in `rutis-host`: the services of a published package without `rutis.provides` reach no other row, not even another Cordis row in the same Node runtime ([#428](https://github.com/arcships/rutis/issues/428)); such a plugin that uses only services of the rutis side runs as a row.
+A Cordis plugin can also run as a row in rutis-loader: name its package in `rutis.json`, with the package unchanged; see [Write a TypeScript plugin](typescript-plugin.en.md#existing-cordis-plugins):
+
+- Cordis rows in the same Node runtime use each other's services by Cordis's native rules, getting the objects themselves.
+- The services a row provides reach rutis by themselves: rows of other runtimes, other nodes and Rust plugins use them by name. The methods are the functions of the service object (its own and its prototype chain's, not `constructor`), all called as `async`. When the package's `package.json` declares `rutis.provides`, that declaration applies (to mark some methods `sync`, say).
+- When a service of the same name already has another provider (a row of another runtime, a Rust plugin, an import from a node), the row providing it later fails, and the error names both, for example `service storage is already provided by row prompts: row storage cannot provide it too`.
+- `rutis-host check` runs no plugin, so it does not see undeclared services: a service a row depends on that only such rows may provide is reported as `may be provided at runtime by …`, not as a failure.
 
 ## Use a Cordis application as a node
 

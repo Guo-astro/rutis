@@ -9,6 +9,7 @@ side. Entries marked `allowed` are the written-down differences
 """
 
 import asyncio
+import inspect
 import json
 import unittest
 from pathlib import Path
@@ -154,6 +155,19 @@ class Conformance(background.TestCase):
                             emitted()
                             call = entry["then"]
                             self.check("after event", call, lambda: getattr(service, call["call"])(*call["args"]))
+                # A service the plugin does not declare: its methods
+                # inferred, all async.
+                undeclared = EXPECTED["undeclared"]
+                self.assertNotIn(undeclared["service"], sdk.load(conformance_weather).provides)
+                self.assertEqual(t.methods(undeclared["service"]), undeclared["methods"])
+                forecast = t.service(undeclared["service"])
+                for i, entry in enumerate(undeclared["calls"]):
+                    what = f"undeclared.calls[{i}] {entry['call']}"
+                    call = getattr(forecast, entry["call"])(*entry["args"])
+                    self.assertTrue(inspect.isawaitable(call), f"{what}: async")
+                    made = await _settled(call)
+                    with self.subTest(what):
+                        self.check(what, entry, made)
 
         asyncio.run(go())
 

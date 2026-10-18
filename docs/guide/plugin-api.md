@@ -7,7 +7,7 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 | 声明 | TypeScript（`definePlugin({...})`） | Python（`define_plugin(apply, ...)` 或模块变量） | Go（`rutis.Define(rutis.Plugin[C]{...})`） | 含义 |
 | --- | --- | --- | --- | --- |
 | 用到的服务 | `inject: ['llm']` | `inject=["llm"]` | `Inject: []string{"llm"}` | 都就绪才启动；任何一个撤销，插件停下，等它回来再启动 |
-| 提供的服务 | `provides: { weather: { today: 'async' } }` | `provides={"weather": Weather}` 或 `{"weather": {"today": "async"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}`（导出方法，除 `Sync` 列出的外都是 `async`） | 名字和每个方法的种类（`sync` / `async`）。只有声明过的方法能被别的插件调用 |
+| 提供的服务（可选） | `provides: { weather: { today: 'sync' } }` | `provides={"weather": Weather}` 或 `{"weather": {"today": "sync"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}`（导出方法，除 `Sync` 列出的外都是 `async`） | 不写也行：`ctx.provide` 提供的服务自动对外（见下）。写了就按声明：把方法标成 `sync`，并让 `rutis-host check` 在运行前就知道谁提供什么；声明过的服务只能调用声明过的方法 |
 | 配置 | `config: { type: 'object', ... }` | `config={...}`（模块变量写 `Config`） | 类型 `C`（Schema 由它生成），或 `Schema` | JSON Schema；宿主据此校验和展示配置 |
 | 启动 | `apply(ctx, config)` | `apply(ctx, config)` | `Apply: func(ctx *rutis.Ctx, config C) error` | 可以是 async；返回清理函数或不返回（Go：返回错误即装载失败） |
 
@@ -16,7 +16,7 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 | 方法 | 作用 |
 | --- | --- |
 | `ctx.use(name)` | `inject` 里声明的服务。同一个运行时进程里的插件提供的，是对象本身；其他进程、其他语言、其他机器提供的，是代理 |
-| `ctx.provide(name, value)` | 提供服务，直到插件卸载，或调用返回的函数 |
+| `ctx.provide(name, value)` | 提供服务，直到插件卸载，或调用返回的函数。服务自动对外，别的语言、别的进程按名字使用；`provides` 没有声明它时，方法取 `value` 上的公开方法（JavaScript：自身和原型链上的函数，不含 `constructor`；Python：不以 `_` 开头的可调用属性；Go：导出方法），都按 `async` 调用，字段不算方法 |
 | `ctx.effect(cleanup)` | 插件卸载时运行 `cleanup`（可以是 async） |
 | `ctx.on(name, listener)` | 监听运行时进程共享事件总线上的事件：宿主发进来的（运行时的 `emits` 声明名字，见[在 Rust 应用里嵌入](rust-host.md)），以及进程里插件 `ctx.emit` 的。监听随插件卸载注销；返回的函数立即注销 |
 | `ctx.emit(name, ...args)` | 向本运行时进程的事件总线分发事件，供本插件和同进程的其他插件监听；同步调用监听器，不等待它们返回的 Promise / 协程（Go 的接口见下） |
@@ -47,6 +47,8 @@ Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（�
 - 插件提供的服务被撤销时，用到它的插件先停下，提供者后停。
 
 所以 `apply` 里拿到的服务在插件运行期间一直有效，不需要处理"服务中途消失"。
+
+一个服务名在 rutis 里只有一个提供者：别的插件（任何语言、任何节点）已经提供同名服务时，后提供的插件装载失败，错误写明双方，例如 `service weather is already provided by row forecast: row weather cannot provide it too`。没有声明的服务在插件运行后才出现，依赖它的插件照常等它出现；`rutis-host check` 对这类依赖报 `may be provided at runtime by …`，不算失败。
 
 宿主停止时卸载所有插件，每个清理执行一次，然后运行时进程退出。宿主没有卸载就没了（被强制结束、崩溃）时，运行时发现和宿主的连接断开，自己卸载所有插件，然后退出进程；插件留下的定时器、套接字、线程、goroutine 不会让它继续运行。
 

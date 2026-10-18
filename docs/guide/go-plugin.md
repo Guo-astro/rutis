@@ -63,7 +63,7 @@ func (w *Weather) Unit() string { return "celsius" }
 var Plugin = rutis.Define(rutis.Plugin[Config]{
 	Name:     "weather",
 	Inject:   []string{"llm"},                                                       // 都就绪才启动，任何一个撤销就停下
-	Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}, // 方法默认 async
+	Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}, // 可选：把 Unit 标成 sync；方法默认 async
 	Apply: func(ctx *rutis.Ctx, config Config) error {
 		var llm LLM
 		if err := ctx.Use("llm", &llm); err != nil {
@@ -109,7 +109,9 @@ func TestToday(t *testing.T) {
 go test ./...
 ```
 
-`Load` 会检查宿主会检查的事：插件只用 `Inject` 里声明的服务；提供的服务是 `Provides` 声明的类型；卸载时清理都成功。只在同一个进程里才成立的写法（例如把结构体当对象传、靠共享内存）在这里就会失败。
+`Provides` 可以不写：`ctx.Provide` 提供的服务自动对外，方法取值的导出方法，都按 `async` 调用。写了就按声明（`Sync` 标出同步方法、`Rename` 改名），`rutis-host check` 也能在运行前知道插件提供什么。
+
+`Load` 会检查宿主会检查的事：插件只用 `Inject` 里声明的服务；提供的服务是 `Provides` 声明的类型（没有声明的服务，像 rutis 一样按导出方法、都按 async 调用）；卸载时清理都成功。只在同一个进程里才成立的写法（例如把结构体当对象传、靠共享内存）在这里就会失败。
 
 ## 4. 在本地宿主里运行
 

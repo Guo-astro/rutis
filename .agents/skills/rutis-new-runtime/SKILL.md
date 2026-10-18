@@ -36,7 +36,7 @@ Using the criteria in `references/principles.md`:
 
 | Constraint | Meaning |
 | --- | --- |
-| Leaf plugins | The SDK offers only `define` (`inject`, `provides` with method shapes, config schema, `apply`), `ctx.use` / `ctx.provide` / `ctx.effect` / `ctx.on` / `ctx.emit`, cancellation and errors. No child plugins, event trees or local dependency graphs |
+| Leaf plugins | The SDK offers only `define` (`inject`, optional `provides` with method shapes, config schema, `apply`; an undeclared `ctx.provide` is announced with its public methods, all `async`: `rows.announce` in the contract), `ctx.use` / `ctx.provide` / `ctx.effect` / `ctx.on` / `ctx.emit`, cancellation and errors. No child plugins, event trees or local dependency graphs |
 | rutis drives | The runtime does not decide whether dependencies are met, start order or restart policy; every `inject` is gated by rutis (feature `leaf`) |
 | One plugin API | Matches `references/plugin-api.md`: declarations, ctx, lifecycle, cleanup order, deadline, value rules, plugin API version (currently 2) |
 | Platform-language implementation | The runtime and SDK are written entirely in that language, **with no Rust dependency** (no FFI or native extension bridging to rutis) |

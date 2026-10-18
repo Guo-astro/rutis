@@ -30,9 +30,8 @@ type Config struct {
 }
 
 var Plugin = rutis.Define(rutis.Plugin[Config]{
-	Name:     "weather",
-	Inject:   []string{"llm"},
-	Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather]()},
+	Name:   "weather",
+	Inject: []string{"llm"},
 	Apply: func(ctx *rutis.Ctx, config Config) error {
 		var llm LLM
 		if err := ctx.Use("llm", &llm); err != nil {
@@ -43,6 +42,8 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 	},
 })
 ```
+
+What `ctx.Provide` provides reaches rutis by itself, its methods the value's exported ones, called as `async`. `Provides` is optional: `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}` marks methods synchronous and tells `rutis-host check` what the plugin provides before it runs.
 
 A binary serves one or more plugins, and is what a host runs:
 

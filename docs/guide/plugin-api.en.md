@@ -7,7 +7,7 @@ TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) an
 | Declaration | TypeScript (`definePlugin({...})`) | Python (`define_plugin(apply, ...)` or module variable) | Go (`rutis.Define(rutis.Plugin[C]{...})`) | Meaning |
 | --- | --- | --- | --- | --- |
 | Services used | `inject: ['llm']` | `inject=["llm"]` | `Inject: []string{"llm"}` | The plugin starts when all are ready. If any is revoked, the plugin stops and waits for it to return. |
-| Services provided | `provides: { weather: { today: 'async' } }` | `provides={"weather": Weather}` or `{"weather": {"today": "async"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}` (exported methods, `async` unless `Sync` names them) | Declares the service name and each method kind (`sync` / `async`). Other plugins can call only declared methods. |
+| Services provided (optional) | `provides: { weather: { today: 'sync' } }` | `provides={"weather": Weather}` or `{"weather": {"today": "sync"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}` (exported methods, `async` unless `Sync` names them) | Not needed: what `ctx.provide` provides reaches rutis by itself (see below). When present it applies: it marks methods `sync` and lets `rutis-host check` know before running who provides what; a declared service offers only its declared methods. |
 | Configuration | `config: { type: 'object', ... }` | `config={...}` (module variable: `Config`) | the type `C` (schema derived from it), or `Schema` | JSON Schema used by the host to validate and display configuration. |
 | Startup | `apply(ctx, config)` | `apply(ctx, config)` | `Apply: func(ctx *rutis.Ctx, config C) error` | May be async; returns a cleanup function or nothing (Go: an error fails the load). |
 
@@ -16,7 +16,7 @@ TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) an
 | Method | Purpose |
 | --- | --- |
 | `ctx.use(name)` | Gets a service declared in `inject`. A service provided by a plugin in the same runtime process is the object itself; services from other processes, languages, or machines are proxies. |
-| `ctx.provide(name, value)` | Provides a service until the plugin is unloaded or the returned function is called. |
+| `ctx.provide(name, value)` | Provides a service until the plugin is unloaded or the returned function is called. It reaches rutis by itself, used by name from other languages and processes; when `provides` does not declare it, its methods are the public methods of `value` (JavaScript: its own and its prototype chain's functions, not `constructor`; Python: callable attributes not starting with `_`; Go: exported methods), all called as `async`; fields are not methods. |
 | `ctx.effect(cleanup)` | Runs `cleanup` when the plugin is unloaded. It may be async. |
 | `ctx.on(name, listener)` | Listens on the runtime process's shared event bus: events the host emits into it (names declared with the runtime's `emits`, see [Embedding in a Rust application](rust-host.en.md)) and events plugins in the process emit with `ctx.emit`. The listener is unregistered when the plugin unloads; the returned function unregisters it at once. |
 | `ctx.emit(name, ...args)` | Dispatches on this runtime process's event bus to listeners in this plugin and other plugins in the same process; calls listeners synchronously without awaiting returned promises/coroutines (for Go and listener errors, see below). |
@@ -47,6 +47,8 @@ The host controls when a plugin runs:
 - When a provided service is revoked, plugins that use it stop first, followed by its provider.
 
 Services obtained in `apply` remain valid while the plugin is running, so the plugin does not need to handle a service disappearing midway through its work.
+
+A service name has one provider in rutis: when another plugin (any language, any node) already provides a service of that name, the plugin providing it later fails to load, and the error names both, for example `service weather is already provided by row forecast: row weather cannot provide it too`. An undeclared service appears only once its plugin runs; plugins depending on it wait for it as usual, and `rutis-host check` reports such a dependency as `may be provided at runtime by …`, not as a failure.
 
 When the host stops, it unloads every plugin, each cleanup runs once, and then the runtime process exits. When the host goes away without unloading them (it was killed, or crashed), the runtime sees its connection to the host close, unloads every plugin itself, and exits; timers, sockets, threads or goroutines a plugin left behind do not keep it running.
 

@@ -45,7 +45,6 @@ class Weather {
 
 export default definePlugin<Config>({
   inject: ['llm'],                                 // Services used: start when all are ready; stop if any is revoked
-  provides: { weather: { today: 'async' } },       // Services provided, with each method marked sync or async
   config: { type: 'object', properties: { city: { type: 'string' } } },  // Configuration JSON Schema
   apply(ctx, config) {
     ctx.provide('weather', new Weather(ctx.use<Llm>('llm'), config.city ?? 'Oslo'))
@@ -55,6 +54,8 @@ export default definePlugin<Config>({
 ```
 
 The plugin depends only on `@arcships/rutis`. It does not need to know which host runs it, which language or machine provides `llm`, or when it starts and stops; the host decides those things. See [Plugin API](plugin-api.en.md) for capabilities and value passing rules.
+
+`weather` needs no declaration: what `ctx.provide` provides reaches rutis by itself, its methods the object's functions (here `today`), called as `async`. To mark a method `sync`, or to let `rutis-host check` know before running what the plugin provides, add `provides`, such as `provides: { weather: { unit: 'sync' } }` (a declared service offers only its declared methods).
 
 ## 3. Test
 
@@ -82,7 +83,7 @@ test('reports the weather of the configured city', async () => {
 npm test
 ```
 
-`load` checks the same things as the host: the plugin uses only services declared in `inject`; its provided service has every method declared in `provides`; and all cleanup functions run when it unloads. In strict mode (the default), values follow cross-process rules: data is copied, functions and objects with methods are passed by reference, and a method declared `sync` cannot return a Promise. Code that works only within one process fails here.
+`load` checks the same things as the host: the plugin uses only services declared in `inject`; its provided service has every method declared in `provides` (an undeclared service is called as rutis calls it, by the object's methods, all async; `t.methods(name)` returns the methods rutis sees); and all cleanup functions run when it unloads. In strict mode (the default), values follow cross-process rules: data is copied, functions and objects with methods are passed by reference, and a method declared `sync` cannot return a Promise. Code that works only within one process fails here.
 
 ## 4. Run in a local host
 
@@ -142,10 +143,16 @@ See [rutis-host and rutis.json](rutis-host.en.md), or [Embed in a Rust applicati
 
 ## Existing Cordis plugins
 
-No rewrite is needed. Declare the services rutis should expose in the plugin package's `package.json`:
+No rewrite is needed, and no change to the package: name the package in a row of `rutis.json` (a published package as well):
 
 ```json
-"rutis": { "provides": { "weather": { "today": "async" } } }
+{ "id": "storage", "name": "@deepseek-ai/dsh-storage" }
 ```
 
-The plugin runs in the Node runtime's Cordis Context, in the same process as leaf plugins. They receive the actual objects when using each other's services.
+The plugin runs in the Node runtime's Cordis Context, in the same process as leaf plugins and other Cordis rows: rows of the same runtime use each other's services by Cordis's native rules and receive the objects themselves. The services it provides reach rutis by themselves, and other runtimes and Rust use them by name; the methods are the functions of the service object, called as `async`. To mark some methods `sync`, or to let `rutis-host check` know before running what it provides, declare them in the package's `package.json` (a declaration applies when present):
+
+```json
+"rutis": { "provides": { "weather": { "today": "sync" } } }
+```
+
+For name clashes and what `check` reports, see [Cordis](cordis.en.md).
