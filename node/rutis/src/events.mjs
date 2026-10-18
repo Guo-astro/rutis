@@ -91,6 +91,10 @@ export class Bus {
   #seen = new Set()
   // Invocations still running, by row (§7.1).
   #running = new Map()
+  // Listeners still inside their synchronous start, by row: a synchronous
+  // call there can let this process run the row's unload (a reentrant
+  // runtime), which waits for them to come out and be counted.
+  #starting = new Map()
   // Who follows the table (`watch`).
   #watchers = new Set()
   // The id each row's configuration gives it, by row key (`nameRow`).
@@ -200,19 +204,21 @@ export class Bus {
 
   // Wait for `row`'s running listeners, at most `deadline` ms (§7.1 4).
   async settle(row, deadline) {
-    const running = this.#running.get(row)
-    if (!running?.size) return true
+    if (!this.#running.get(row)?.size && !this.#starting.has(row)) return true
     let timer
     const late = new Promise(resolve => { timer = setTimeout(() => resolve(false), deadline) })
     const done = (async () => {
-      while (running.size) await Promise.allSettled([...running])
+      const start = this.#starting.get(row)
+      if (start) await (start.out ??= new Promise(resolve => { start.resolve = resolve }))
+      const running = this.#running.get(row)
+      while (running?.size) await Promise.allSettled([...running])
       return true
     })()
     const finished = await Promise.race([done, late])
     clearTimeout(timer)
     if (!finished) {
       this.report(`rutis: listeners of row ${this.rowId(row)} still running after ${deadline / 1000}s; unloading anyway`)
-      running.clear()
+      this.#running.get(row)?.clear()
     }
     return finished
   }
@@ -312,14 +318,24 @@ export class Bus {
   // Run one listener here, counted as running for its row until it settles;
   // a remote entry's call goes to its node, in `mode`, for `name`.
   #invoke(entry, args, thisArg, mode, name) {
-    const result = entry.remote ? entry.invoke(mode, name ?? entry.name, args) : Reflect.apply(entry.callback, thisArg, args)
-    if (isThenable(result)) {
-      let running = this.#running.get(entry.row)
-      if (!running) this.#running.set(entry.row, running = new Set())
-      const settled = Promise.resolve(result).then(() => {}, () => {}).then(() => { running.delete(settled) })
-      running.add(settled)
+    let start = this.#starting.get(entry.row)
+    if (!start) this.#starting.set(entry.row, start = { count: 0, out: null, resolve: null })
+    start.count++
+    try {
+      const result = entry.remote ? entry.invoke(mode, name ?? entry.name, args) : Reflect.apply(entry.callback, thisArg, args)
+      if (isThenable(result)) {
+        let running = this.#running.get(entry.row)
+        if (!running) this.#running.set(entry.row, running = new Set())
+        const settled = Promise.resolve(result).then(() => {}, () => {}).then(() => { running.delete(settled) })
+        running.add(settled)
+      }
+      return result
+    } finally {
+      if (--start.count === 0) {
+        this.#starting.delete(entry.row)
+        start.resolve?.()
+      }
     }
-    return result
   }
 
   // emit: the listener's failure is reported here and goes no further (§5.6).

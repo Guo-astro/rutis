@@ -194,6 +194,11 @@ class Bus:
         self.entries: list[Entry] = []
         self.by_id: dict[str, Entry] = {}
         self.running: dict[str, set] = {}
+        # Invocations still in their eager start, by row: each a future set
+        # once the start returned. A listener can be inside its first step
+        # when its row unloads (a synchronous call there lets this process
+        # run the unload), so the unload waits for it to come out.
+        self.starting: dict[str, set] = {}
         self._report = report
         self.runtime = runtime
         self._ids = 0
@@ -278,20 +283,35 @@ class Bus:
         value = entry.listener(*args)
         if not inspect.isawaitable(value):
             return None, value
-        task = start(value)
-        self.track(entry.row, task)
+        started = asyncio.get_running_loop().create_future()
+        starting = self.starting.setdefault(entry.row, set())
+        starting.add(started)
+        try:
+            task = start(value)
+            self.track(entry.row, task)
+        finally:
+            starting.discard(started)
+            if not starting and self.starting.get(entry.row) is starting:
+                del self.starting[entry.row]
+            started.set_result(None)
         return task, None
 
     async def stop(self, row: str, seconds: float, say=None) -> None:
         """Cancel the row's running invocations and wait for them, at most
         `seconds`; then say so and go on (§7.1 step 4)."""
+        deadline = asyncio.get_running_loop().time() + seconds
+        starts = set(self.starting.get(row, ()))
+        if starts:
+            # Out of their first step, they are tracked: cancelled below.
+            await asyncio.wait(starts, timeout=seconds)
         current = asyncio.current_task()
         tasks = {task for task in self.running.get(row, ()) if task is not current}
         if not tasks:
             return
         for task in tasks:
             task.cancel()
-        _done, pending = await asyncio.wait(tasks, timeout=seconds)
+        remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+        _done, pending = await asyncio.wait(tasks, timeout=remaining)
         if pending:
             line = f"rutis: listeners of row {self.row_id(row)} still running after {seconds:g}s; unloading anyway"
             (say or _say)(line)
