@@ -127,7 +127,7 @@ Full specification: https://github.com/arcships/rutis/blob/main/docs/design-even
 
 "No result" is `undefined` / `null` / `None` / `nil` / `false`; anything else is a result. Start `emit` invocations in arrival order (one execution unit per call: queue them per listener and run them one after another). Refuse emitting `rutis/*` synchronously with `ReservedEvent` (`rutis/* events are emitted by rutis only: <name>`); `rutis/*` can be listened to.
 
-**Scope**: each row's chain arrives as the seventh `rows.load` argument `{ scope: [{ id, group }, …] }` (root `[]`); mount-mode plugins get `mount`'s `scope`. Your emissions name their `row`; the host never takes a scope from you.
+**Scope**: each row's chain arrives as the seventh `rows.load` argument `{ scope: [{ id, group }, …], id }` (root `[]`); mount-mode plugins get `mount`'s `scope`. Your emissions name their `row` (the key); the host never takes a scope from you. `id` is the row's id in the configuration: descriptors (`row`) and every reported line call the row by it, never by its key (the key without an `id`).
 
 **Filter API**: Cordis plugins use `thisArg[Context.filter]`, called with the real `Context` for listeners in your process and `{ rutis: descriptor }` for others; give every Context a read-only `ctx.rutis` (its descriptor). Other plugins: `ctx.filter(predicate)` returns an emitter with the five methods. A descriptor is `{ name, prefix, plugin, row, runtime, node, scope, global }`.
 

@@ -65,7 +65,7 @@ A **scope** is a loader group instance (a copy of a `group`, such as one tenant 
 
 - **Scope chain** on the wire: a JSON array of `{ "id": <string>, "group": <string> }`, outermost first. The root is `[]`. `id` is opaque, unique among the host's live and past instances (Rust: the group fiber's `InstanceId` in decimal); `group` is the loader group's name. Example: `[{"id":"17","group":"tenant"},{"id":"42","group":"session"}]`.
 - **Rule**: an entry with chain `L` hears a dispatch emitted at chain `E` when `L` is a prefix of `E` (compared by `id`). Root entries hear everything; an entry in tenant `t1` does not hear `t2`.
-- **Where a process learns chains**: the host gives each row its chain. `rows.load` takes a seventh argument `{ "scope": <chain> }` (0.13 hosts always send seven arguments; `exports` is `{}` when the row exports nothing). Plugins loaded by `mount`'s `plugins` list get the mount argument `scope` (the mounting plugin's chain). Rust plugins read `Ctx::scope()` (§12.1). `mount` also carries `runtime`, the runtime's name as descriptors give it (§4.2): a runtime uses it for its own entries' descriptors on the fast path, so they are the same as through the host.
+- **Where a process learns chains**: the host gives each row its chain. `rows.load` takes a seventh argument `{ "scope": <chain>, "id": <the row's id> }` (0.13 hosts always send seven arguments; `exports` is `{}` when the row exports nothing). `id` is the id the configuration gives the row (the loader's row id; the copies a group's instances make share it), not the row key, which is unique on the session: descriptors (§4.2) and every reported message (§5.6, §11) call the row by it, while protocol messages keep using the key. Without `id`, the key. Plugins loaded by `mount`'s `plugins` list get the mount argument `scope` (the mounting plugin's chain). Rust plugins read `Ctx::scope()` (§12.1). `mount` also carries `runtime`, the runtime's name as descriptors give it (§4.2): a runtime uses it for its own entries' descriptors on the fast path, so they are the same as through the host.
 - **The emitter's scope is never self-reported**: a runtime's `events.dispatch` names the emitting `row`; the host uses that row's chain and refuses a row that is not loaded on that session (`BindingError`, `row <key> is not loaded in this runtime`). Mount-mode plugins name `row: null` and get the mount's chain.
 - Leaf `isolate` labels (service scopes, U+0001 leases) are unrelated to event scopes.
 
@@ -93,7 +93,7 @@ Registration (runtime → host):
 | --- | --- |
 | `id` | String chosen by the runtime, unique within the session for the session's life, never reused |
 | `name` | The event name. `internal/*` is refused (`BindingError`, `event <name> is internal to its runtime`). `rutis/*` may be listened to |
-| `row` | The registering row's key; `null` for a mount-mode plugin. The host refuses a row not loaded on the session |
+| `row` | The registering row's key; `null` for a mount-mode plugin. The host refuses a row not loaded on the session. A descriptor's `row` is not this but the row's id (§3) |
 | `plugin` | Name of the registering plugin (the Cordis plugin's name, which may be a child plugin of the row; the leaf plugin's name) |
 | `kind` | `"sync"`: known synchronous (every Go listener); `"async"`: known asynchronous (JavaScript `AsyncFunction`, Python `async def`); `"any"`: known only from what it returns (other JavaScript and Python functions) |
 | `prepend` | The listener option `prepend` (every language, §12; Cordis's own option on Node / Bun) |
@@ -107,7 +107,7 @@ The **descriptor** the bus keeps and the filter sees (JSON; Rust `ListenerInfo`,
 { "name": "session/created", "prefix": false, "plugin": "chat-ui", "row": "chat", "runtime": "py", "node": null, "scope": [{"id":"17","group":"tenant"}], "global": false }
 ```
 
-`runtime` is the runtime's name (`null` for the host's own Rust plugins); `node` is the peer id of an entry imported over a node link (`null` otherwise); `scope` is the entry's chain, set by the host from the row (for an imported entry: the link's scope, §9).
+`row` is the row's id (`rows.load`'s `id`; for a Rust row the row `Ctx::mark_row` marked, the loader's row id), not the row key, so a filter selects by the name in the configuration, the same for a row of any language in any process; `runtime` is the runtime's name (`null` for the host's own Rust plugins); `node` is the peer id of an entry imported over a node link (`null` otherwise); `scope` is the entry's chain, set by the host from the row (for an imported entry: the link's scope, §9).
 
 ### 4.3 Order
 
@@ -840,7 +840,7 @@ Also checked outside the file (Rust tests): the handshake refusals of §2.2 agai
 | --- | --- |
 | `hello.capabilities` | + `events-v2` (mandatory, §2.1) |
 | `mount` | − `events`, − `emits`; + `scope`, + `runtime` (§3); reply feature `events` removed |
-| `rows.load` | seventh argument `{ scope }` (§3) |
+| `rows.load` | seventh argument `{ scope, id }` (§3) |
 | `rows.unload`, `rows.ended`, session end | withdraw the row's / session's entries (§7) |
 | runtime → host `event`, host → runtime `emit` | removed; replaced by `events.dispatch`, `events.call` |
 | node link `events.forward` | removed; replaced by link `events.on` / `events.off` / `events.call` (§9) |

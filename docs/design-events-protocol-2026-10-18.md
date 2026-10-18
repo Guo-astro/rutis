@@ -65,7 +65,7 @@
 
 - **线上的作用域链**：JSON 数组，元素是 `{ "id": <字符串>, "group": <字符串> }`，最外层在前。根是 `[]`。`id` 是不透明的字符串，在宿主现在和过去的全部实例中唯一（Rust：组 fiber 的 `InstanceId` 的十进制）；`group` 是加载器组的名字。例：`[{"id":"17","group":"tenant"},{"id":"42","group":"session"}]`。
 - **规则**：作用域链为 `L` 的条目收到在链 `E` 发出的分发，当且仅当 `L` 是 `E` 的前缀（按 `id` 比较）。根上的条目收到全部；租户 `t1` 里的条目收不到 `t2` 的。
-- **进程怎样知道作用域链**：宿主告诉每一行它的链。`rows.load` 增加第七个参数 `{ "scope": <链> }`（0.13 宿主总是发七个参数；行不导出服务时 `exports` 是 `{}`）。经 `mount` 的 `plugins` 列表加载的插件，得到 `mount` 参数 `scope`（挂载它的插件的链）。Rust 插件用 `Ctx::scope()`（§12.1）。`mount` 还带 `runtime`，即描述里给出的运行时名字（§4.2）：运行时在快速路径上给自己的条目写描述时用它，与经宿主时的描述一致。
+- **进程怎样知道作用域链**：宿主告诉每一行它的链。`rows.load` 增加第七个参数 `{ "scope": <链>, "id": <行的 id> }`（0.13 宿主总是发七个参数；行不导出服务时 `exports` 是 `{}`）。`id` 是配置给这一行的 id（加载器的行 id；同一组的各实例复制的行 id 相同），与会话内唯一的行键不同：描述（§4.2）与报告的各条信息（§5.6、第十一节）用它称呼这一行，协议消息仍用行键。没有 `id` 时用行键。经 `mount` 的 `plugins` 列表加载的插件，得到 `mount` 参数 `scope`（挂载它的插件的链）。Rust 插件用 `Ctx::scope()`（§12.1）。`mount` 还带 `runtime`，即描述里给出的运行时名字（§4.2）：运行时在快速路径上给自己的条目写描述时用它，与经宿主时的描述一致。
 - **发出方的作用域从不由发出方自报**：运行时的 `events.dispatch` 写明发出的 `row`，宿主用这一行的链；这一行没有加载在这个会话上时拒绝（`BindingError`，`row <key> is not loaded in this runtime`）。挂载方式加载的插件写 `row: null`，用挂载的链。
 - 叶子插件的 `isolate` 标签（服务作用域、U+0001 的租约）与事件作用域无关。
 
@@ -93,7 +93,7 @@
 | --- | --- |
 | `id` | 运行时选定的字符串，在会话存续期间唯一，从不复用 |
 | `name` | 事件名。`internal/*` 被拒绝（`BindingError`，`event <name> is internal to its runtime`）。`rutis/*` 可以监听 |
-| `row` | 登记它的行的键；挂载方式加载的插件为 `null`。不是这个会话上加载的行时宿主拒绝 |
+| `row` | 登记它的行的键；挂载方式加载的插件为 `null`。不是这个会话上加载的行时宿主拒绝。描述里的 `row` 不是它，而是这一行的 id（§3） |
 | `plugin` | 登记它的插件的名字（Cordis 插件的名字，可以是这一行的子插件；叶子插件的名字） |
 | `kind` | `"sync"`：已知同步（Go 的每个监听器）；`"async"`：已知异步（JavaScript 的 `AsyncFunction`、Python 的 `async def`）；`"any"`：要看它返回什么才知道（其余 JavaScript 和 Python 函数） |
 | `prepend` | 监听器选项 `prepend`（所有语言，第十二节；Node / Bun 上就是 Cordis 自己的选项） |
@@ -107,7 +107,7 @@
 { "name": "session/created", "prefix": false, "plugin": "chat-ui", "row": "chat", "runtime": "py", "node": null, "scope": [{"id":"17","group":"tenant"}], "global": false }
 ```
 
-`runtime` 是运行时的名字（宿主自己的 Rust 插件为 `null`）；`node` 是经节点连接引进的条目所在对端的 id（其余为 `null`）；`scope` 是条目的链，由宿主按行设定（引进的条目：连接的作用域，第九节）。
+`row` 是行的 id（`rows.load` 的 `id`，Rust 行为 `Ctx::mark_row` 标记的行，即加载器的行 id），不是行键，所以过滤函数可以按配置里的名字选择，同一行无论在哪种语言、哪个进程都一样；`runtime` 是运行时的名字（宿主自己的 Rust 插件为 `null`）；`node` 是经节点连接引进的条目所在对端的 id（其余为 `null`）；`scope` 是条目的链，由宿主按行设定（引进的条目：连接的作用域，第九节）。
 
 ### 4.3 顺序
 
@@ -840,7 +840,7 @@ impl EventBus {
 | --- | --- |
 | `hello.capabilities` | + `events-v2`（必需，§2.1） |
 | `mount` | − `events`，− `emits`；+ `scope`、+ `runtime`（第三节）；回复的特性 `events` 删除 |
-| `rows.load` | 第七个参数 `{ scope }`（第三节） |
+| `rows.load` | 第七个参数 `{ scope, id }`（第三节） |
 | `rows.unload`、`rows.ended`、会话结束 | 撤下这一行 / 这个会话的条目（第七节） |
 | 运行时 → 宿主的 `event`、宿主 → 运行时的 `emit` | 删除；由 `events.dispatch`、`events.call` 取代 |
 | 节点连接的 `events.forward` | 删除；由连接上的 `events.on` / `events.off` / `events.call` 取代（第九节） |
