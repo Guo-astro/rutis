@@ -56,7 +56,7 @@ export default definePlugin({
     await calendar.subscribe(async (change: Change) => {
       await delay(50)
       if (change.type === 'removed' && change.id === 13) throw new Error('handler refused')
-      probe.record(change.type === 'added' ? `handled added ${change.entry.title}` : `handled removed ${change.id}`)
+      await probe.record(change.type === 'added' ? `handled added ${change.entry.title}` : `handled removed ${change.id}`)
     })
     probe.record('subscribed')
   },
