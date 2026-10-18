@@ -151,7 +151,10 @@ fn node_project(s: &Scenario) {
 /// Run `node <script> <args>` from `node/baseline` and read the JSON it
 /// prints.
 fn node(s: &Scenario, script: &str, args: &[&str]) -> Value {
-    let script = baseline().join(script);
+    // Without the `\\?\` of a canonical Windows path: `scenarios.mjs`
+    // prints only when `process.argv[1]` is its own path.
+    let script = baseline().join(script).display().to_string();
+    let script = PathBuf::from(script.strip_prefix(r"\\?\").unwrap_or(&script));
     let mut program = s.program(
         "",
         "node",
