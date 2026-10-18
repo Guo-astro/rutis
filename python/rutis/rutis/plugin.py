@@ -74,8 +74,9 @@ class Plugin:
     config: dict | None = None
     # The plugin API it was written against.
     api: int = PLUGIN_API
-    # It declares no `provides`: what it provides is known once it runs.
-    announces: bool = False
+    # What it provides beyond `provides` reaches rutis by itself, known once
+    # it runs: true of every plugin of this SDK.
+    announces: bool = True
 
 
 def define_plugin(
@@ -85,7 +86,7 @@ def define_plugin(
     provides: dict | None = None,
     config: dict | None = None,
 ) -> Plugin:
-    return Plugin(apply, list(inject), shapes(provides or {}), config, announces=provides is None)
+    return Plugin(apply, list(inject), shapes(provides or {}), config)
 
 
 def shapes(provides: dict) -> dict:
@@ -142,5 +143,4 @@ def load(module: ModuleType) -> Plugin:
         list(inject),
         shapes(getattr(module, "provides", {})),
         getattr(module, "Config", None),
-        announces=not hasattr(module, "provides"),
     )

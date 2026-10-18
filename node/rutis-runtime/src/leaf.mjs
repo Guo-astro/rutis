@@ -52,7 +52,25 @@ export function refuseInternal(field, names) {
 
 // The Cordis plugin that runs a leaf plugin. Events share Cordis's process
 // bus; `context.on` owns listener cleanup through the plugin's fiber.
-export function toCordis(spec) {
+// What a leaf plugin providing a service its `provides` does not declare
+// is told when the host, older than 0.12, mounted the runtime without
+// `announce`: such a host does not take the service, which stays in this
+// process.
+export const OLD_HOST = name => `rutis: service ${name} is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host`
+
+// A function telling OLD_HOST once per name, with `write`.
+export function oncePerName(write) {
+  const told = new Set()
+  return name => {
+    if (told.has(name)) return
+    told.add(name)
+    write(`${OLD_HOST(name)}\n`)
+  }
+}
+
+// `undeclared(name)`: the plugin provides `name`, which its `provides` does
+// not declare.
+export function toCordis(spec, undeclared) {
   return {
     name: spec.name ?? 'leaf',
     inject: spec.inject,
@@ -63,7 +81,11 @@ export function toCordis(spec) {
           if (value === undefined) throw new Error(`service ${name} is not available`)
           return value
         },
-        provide: (name, value) => context.provide(name, value),
+        provide: (name, value) => {
+          // A keyed name (`#`) is never announced, by any host.
+          if (undeclared && !name.includes('#') && !Object.hasOwn(spec.provides ?? {}, name)) undeclared(name)
+          return context.provide(name, value)
+        },
         effect: cleanup => { context.effect(() => cleanup) },
         on: (name, handler) => context.on(reserved(name), handler),
         emit: (name, ...args) => context.emit(reserved(name), ...args),

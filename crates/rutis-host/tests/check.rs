@@ -275,35 +275,37 @@ fn injecting(inject: &str, provides: &str) -> String {
     )
 }
 
-/// A row that waits for a service no row provides cannot run: check says
-/// which and what to do, and fails. One provided only by a disabled row
-/// says so; one a link imports is provided. It passed before (#258).
+/// A row that waits for a service no row provides, and no row may provide
+/// at runtime either, cannot run: check says which and what to do, and
+/// fails. One provided only by a disabled row says so; one a link imports
+/// is provided. It passed before (#258). With another row that may provide
+/// services it does not declare (every plugin of a 0.12 SDK), they are
+/// warnings, and check passes.
 /// risk: A6
 /// guarantee: host/check
 #[tokio::test(flavor = "multi_thread")]
 async fn check_fails_on_a_service_nothing_provides() {
     let dir = tempfile::tempdir().unwrap();
+    let rows = |more: &[serde_json::Value]| {
+        let mut rows = vec![
+            serde_json::json!({ "id": "chat", "name": "./chat.mjs" }),
+            serde_json::json!({ "id": "indexer", "name": "./indexer.mjs", "disabled": true }),
+            serde_json::json!({ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "import": ["calendar"] } }),
+        ];
+        rows.extend_from_slice(more);
+        configuration(serde_json::Value::Array(rows))
+    };
     write(
         dir.path(),
         &[
             ("package.json", r#"{ "name": "app", "type": "module" }"#),
-            ("chat.mjs", &injecting("['llm']", "{}")),
-            ("search.mjs", &injecting("['index']", "{}")),
+            ("chat.mjs", &injecting("['llm', 'index', 'calendar']", "{}")),
             (
                 "indexer.mjs",
                 &injecting("[]", "{ index: { find: 'sync' } }"),
             ),
-            ("notes.mjs", &injecting("['calendar']", "{}")),
-            (
-                "rutis.json",
-                &configuration(serde_json::json!([
-                    { "id": "chat", "name": "./chat.mjs" },
-                    { "id": "search", "name": "./search.mjs" },
-                    { "id": "indexer", "name": "./indexer.mjs", "disabled": true },
-                    { "id": "notes", "name": "./notes.mjs" },
-                    { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "import": ["calendar"] } }
-                ])),
-            ),
+            ("notes.mjs", &injecting("[]", "{}")),
+            ("rutis.json", &rows(&[])),
         ],
     );
     let python = repo().join("python/rutis");
@@ -322,33 +324,67 @@ async fn check_fails_on_a_service_nothing_provides() {
         stdout,
         [
             "plugin API for Go binaries: 2 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
-            "chat (file://<dir>/chat.mjs): cannot run: nothing provides llm",
-            "  inject: [\"llm\"]",
-            "  provides: {}",
-            "  llm: add a row that provides it, or import it from a peer (import: [\"llm\"])",
-            "search (file://<dir>/search.mjs): cannot run: nothing provides index",
-            "  inject: [\"index\"]",
+            "chat (file://<dir>/chat.mjs): cannot run: nothing provides index, llm",
+            "  inject: [\"llm\",\"index\",\"calendar\"]",
             "  provides: {}",
             "  index: only disabled rows provide it (indexer): enable one, or add a row that provides it",
+            "  llm: add a row that provides it, or import it from a peer (import: [\"llm\"])",
             "indexer (file://<dir>/indexer.mjs): disabled",
-            "notes (file://<dir>/notes.mjs): ok",
-            "  inject: [\"calendar\"]",
-            "  provides: {}",
             "office (rutis-bridge/peer): ok",
         ]
     );
     assert_eq!(
         checked.stderr,
-        "rutis-host: 2 row(s) or binaries cannot run\n"
+        "rutis-host: 1 row(s) or binaries cannot run\n"
     );
     assert_eq!(checked.status, 1);
+
+    // A row that may provide them once it runs: warnings, not failures.
+    write(
+        dir.path(),
+        &[(
+            "rutis.json",
+            &rows(&[serde_json::json!({ "id": "notes", "name": "./notes.mjs" })]),
+        )],
+    );
+    let checked = check(
+        dir.path(),
+        &["rutis.json"],
+        &[("RUTIS_PYTHON_PATH", &python)],
+    )
+    .await;
+    let stdout: Vec<&str> = checked
+        .stdout
+        .lines()
+        .filter(|line| !line.starts_with("  config: "))
+        .collect();
+    assert_eq!(
+        stdout,
+        [
+            "plugin API for Go binaries: 2 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
+            "chat (file://<dir>/chat.mjs): ok",
+            "  inject: [\"llm\",\"index\",\"calendar\"]",
+            "  provides: {}",
+            "indexer (file://<dir>/indexer.mjs): disabled",
+            "office (rutis-bridge/peer): ok",
+            "notes (file://<dir>/notes.mjs): ok",
+            "  inject: []",
+            "  provides: {}",
+        ]
+    );
+    assert_eq!(
+        checked.stderr,
+        "rutis-host: warning: chat: nothing declares index; it may be provided at runtime by notes\n\
+         rutis-host: warning: chat: nothing declares llm; it may be provided at runtime by notes\n"
+    );
+    assert_eq!(checked.status, 0);
 }
 
 /// Cordis rows that declare nothing (published packages): what one injects
-/// another may provide once they run, resolved in Cordis, so check names
-/// those rows and passes; a declared provider is named as usual (#428).
-/// Between leaf plugins (`definePlugin` without `provides`) the same,
-/// without the words about Cordis (#446).
+/// another may provide once they run, resolved in Cordis, so check warns,
+/// naming those rows, and passes; a declared provider is named as usual
+/// (#428). Between leaf plugins the same, without the words about Cordis
+/// (#446). With `--strict` the warnings are errors, and check fails.
 /// risk: A6, F8
 /// guarantee: host/check
 #[tokio::test(flavor = "multi_thread")]
@@ -418,22 +454,61 @@ async fn check_passes_what_cordis_rows_may_provide_at_runtime() {
             "domain (file://<dir>/domain.mjs): ok",
             "  inject: [\"storage\"]",
             "  provides: {}",
-            "  storage: may be provided at runtime by rows that do not declare all they provide (storage, workspace, forecast and 1 more); between Cordis rows of one runtime it resolves in Cordis",
             "workspace (file://<dir>/workspace.mjs): ok",
             "  inject: [\"storageDomain\"]",
             "  provides: {}",
-            "  storageDomain: may be provided at runtime by rows that do not declare all they provide (storage, domain, forecast and 1 more); between Cordis rows of one runtime it resolves in Cordis",
             "forecast (file://<dir>/forecast.mjs): ok",
             "  inject: []",
             "  provides: {}",
             "planner (file://<dir>/planner.mjs): ok",
             "  inject: [\"forecast\"]",
             "  provides: {}",
-            "  forecast: may be provided at runtime by rows that do not declare all they provide (storage, domain, workspace and 1 more)",
         ]
     );
-    assert_eq!(checked.stderr, "");
+    let warnings = "\
+        domain: nothing declares storage; it may be provided at runtime by storage, workspace, forecast and 1 more; between Cordis rows of one runtime it resolves in Cordis\n\
+        workspace: nothing declares storageDomain; it may be provided at runtime by storage, domain, forecast and 1 more; between Cordis rows of one runtime it resolves in Cordis\n\
+        planner: nothing declares forecast; it may be provided at runtime by storage, domain, workspace and 1 more\n";
+    let prefixed = |level: &str| {
+        warnings
+            .lines()
+            .map(|line| format!("rutis-host: {level}: {line}\n"))
+            .collect::<String>()
+    };
+    assert_eq!(checked.stderr, prefixed("warning"));
     assert_eq!(checked.status, 0);
+
+    // `--strict`: those are errors, and the rows waiting for them cannot run.
+    let checked = check(
+        dir.path(),
+        &["rutis.json", "--strict"],
+        &[("RUTIS_PYTHON_PATH", &python)],
+    )
+    .await;
+    let stdout: Vec<&str> = checked
+        .stdout
+        .lines()
+        .filter(|line| !line.starts_with("  "))
+        .collect();
+    assert_eq!(
+        stdout,
+        [
+            "plugin API for Go binaries: 2 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
+            "storage (file://<dir>/storage.mjs): ok",
+            "domain (file://<dir>/domain.mjs): cannot run with --strict: nothing declares storage",
+            "workspace (file://<dir>/workspace.mjs): cannot run with --strict: nothing declares storageDomain",
+            "forecast (file://<dir>/forecast.mjs): ok",
+            "planner (file://<dir>/planner.mjs): cannot run with --strict: nothing declares forecast",
+        ]
+    );
+    assert_eq!(
+        checked.stderr,
+        format!(
+            "{}rutis-host: 3 row(s) or binaries cannot run\n",
+            prefixed("error")
+        )
+    );
+    assert_eq!(checked.status, 1);
 }
 
 /// A service only a row whose declarations are not known may provide (a

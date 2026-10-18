@@ -241,8 +241,8 @@ fn build_gopher(s: &Scenario) {
 /// Plugins of the four languages that declare no `provides` are called
 /// from another language by name, their methods those of the objects they
 /// provide (an inherited one too); a method `provides` marks `sync` still
-/// is. `check` says what the probes use may be provided at runtime, and
-/// passes. (Bun is not declared for Windows, Bun design §10: there the
+/// is. `check` warns that what the probes use may be provided at runtime,
+/// and passes. (Bun is not declared for Windows, Bun design §10: there the
 /// Bun row is left out.)
 ///
 /// risk: C (cross-language composition), A6
@@ -285,9 +285,7 @@ fn services_no_declaration_describes_cross_languages() {
     assert!(status.success(), "check: {status}\n{printed}");
     assert!(!printed.contains("nothing provides"), "{printed}");
     for service in used.iter().filter(|service| **service != "counter") {
-        let line = format!(
-            "  {service}: may be provided at runtime by rows that do not declare all they provide ("
-        );
+        let line = format!("nothing declares {service}; it may be provided at runtime by ");
         assert!(printed.contains(&line), "check, {service}:\n{printed}");
     }
     // Leaf plugins, no Cordis rows: nothing about resolving in Cordis (#446).

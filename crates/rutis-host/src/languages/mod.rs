@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use rutis::{BoxFuture, Ctx, FiberView};
 use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle, Stdio};
+use rutis_bridge::transport::local::Processes;
 use rutis_loader::{Chain, Resolver, RuntimeResolver, ServiceCatalog};
 use serde_json::Value;
 
@@ -216,6 +217,8 @@ pub struct Mount<'a> {
     pub resolvers: Vec<Arc<RuntimeResolver>>,
     /// The local runtimes' plugins by name, to stop one.
     pub fibers: Vec<(String, FiberView)>,
+    /// The processes each local runtime started, by name.
+    pub processes: Vec<(String, Processes)>,
     /// What mounts once the loader runs (Go's runtimes, which start as
     /// rows use them), and the [`GoHost`] it gives the host.
     pub later: Vec<Later>,
@@ -244,6 +247,7 @@ impl Mount<'_> {
         let runtime = runtime.stdout(Stdio::Lines).stderr(Stdio::Lines);
         let handle = runtime.handle();
         let rows = Arc::new(rows(handle.clone()).with_catalog(self.catalog));
+        self.processes.push((name.to_owned(), runtime.processes()));
         self.fibers
             .push((name.to_owned(), self.root.plugin(runtime)));
         self.resolve(rows.clone());

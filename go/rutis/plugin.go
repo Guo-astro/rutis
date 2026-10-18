@@ -164,8 +164,10 @@ func (d *Definition) describe() map[string]any {
 		"inject":   inject,
 		"provides": provides,
 		"version":  version,
-		// No Provides: what it provides is known once it runs.
-		"announces": d.provides == nil,
+		// Every plugin of this SDK may provide services Provides does not
+		// list: they reach rutis by themselves. Declared ones still count
+		// as provided for `check`.
+		"announces": true,
 	}
 }
 
