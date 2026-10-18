@@ -408,6 +408,9 @@ def apply(ctx, config):
     #[tokio::test(flavor = "multi_thread")]
     async fn a_removed_runtime_being_restarted_stops_with_its_new_process() {
         let _environment = environment();
+        // Processes earlier tests started are left listed, their tests'
+        // async runtimes gone: only those may be there at the end.
+        let earlier = rutis_bridge::transport::local::running_processes();
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path();
         std::fs::write(d.join("pid.py"), PID).unwrap();
@@ -438,9 +441,10 @@ def apply(ctx, config):
         );
         assert_eq!(reloaded.stopped, ["py"]);
         assert!(reloaded.warnings.is_empty(), "{:?}", reloaded.warnings);
+        let running = rutis_bridge::transport::local::running_processes();
         assert!(
-            rutis_bridge::transport::local::running_processes().is_empty(),
-            "a runtime process runs on"
+            running.iter().all(|pid| earlier.contains(pid)),
+            "a runtime process runs on: {running:?}"
         );
         host.shut_down(HANG_GUARD).await.ok();
     }
