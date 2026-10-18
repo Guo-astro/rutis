@@ -19,7 +19,7 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 | --- | --- |
 | `rutis-host run [rutis.json]` | 按配置运行（Unix 上 SIGUSR1 或加 `--watch-config` 时运行中重新读配置，见 [运行中改配置](#运行中改配置)），打印每一行状态的变化、节点行 link 的状态和本机运行时的结束（见 [run 打印什么](#run-打印什么)）；Ctrl-C 结束（见 [停止与退出码](#停止与退出码)） |
 | `rutis-host dev [目录]` | 在插件项目里运行这个插件（加上 `rutis.dev.json`），文件变化时重新加载；Go 项目重新构建，只重启它的运行时 |
-| `rutis-host check [rutis.json]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 二进制（运行时名、SDK、插件 API、插件）；有不能运行的行或二进制时以非零状态退出。在没有 rutis.json 的插件项目里检查这个项目 |
+| `rutis-host check [rutis.json] [--strict]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 二进制（运行时名、SDK、插件 API、插件）；有不能运行的行或二进制时以非零状态退出。没有行声明、只可能在运行时由别的行提供的依赖是告警，加 `--strict` 时算错误。在没有 rutis.json 的插件项目里检查这个项目 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go` | 创建插件项目 |
 | `rutis-host go add <模块>@<版本> [rutis.json]` | 用本机的 Go 工具链把插件二进制 `go install` 到 `runtimes.go.dir` |
 
@@ -67,7 +67,17 @@ rutis-host: listening on <监听器名> <地址:端口>
 - 行的设置能通过加载前的检查（作用域、内置插件如节点行的配置）；
 - 它等待的每个服务（插件的 `inject`，加上行自己的 `inject`）有别的行提供：按插件声明的 `provides`，节点行提供它 `import` 的服务。
 
-一个服务没有任何行提供时，这一行永远停在等待依赖：`check` 写明缺哪个服务、怎么处理，并以 1 退出；只有被禁用的行提供它时会指出是哪些行。有的行提供什么在检查时还不知道——别的机器上的运行时（检查时不连接）、`peer:` 行——这时缺的服务只提示可能来自它们，不算失败。没有声明 `rutis.provides` 的 Cordis 行、没有声明 `provides` 的插件提供的服务运行时才知道（它们自动投到 rutis）：只有这类行可能提供时写 `<服务>: may be provided at runtime by <行>, …`，也不算失败；这一行和可能提供它的行里有 Cordis 行时，后面再加 `; between Cordis rows of one runtime it resolves in Cordis`——同一个 Node 运行时里的 Cordis 行之间的依赖在 Cordis 里解析。
+一个服务没有任何行提供、也没有行可能在运行时提供时，这一行永远停在等待依赖：`check` 写明缺哪个服务、怎么处理，并以 1 退出；只有被禁用的行提供它时会指出是哪些行。有的行提供什么在检查时还不知道——别的机器上的运行时（检查时不连接）、`peer:` 行——这时缺的服务只提示可能来自它们，不算失败。
+
+插件 `ctx.provide` 的服务不用声明就投到 rutis（0.12 起四种 SDK 写的插件都是，声明了 `provides` 的也可以多提供；没有声明 `rutis.provides` 的 Cordis 行也是），这些服务运行时才知道。一个服务没有行声明、但有这样的行时，`check` 在 stderr 写一条告警，仍以 0 退出：
+
+```
+rutis-host: warning: <行>: nothing declares <服务>; it may be provided at runtime by <行>, …
+```
+
+最多列三行，多的写成 `and N more`；这一行和可能提供它的行里有 Cordis 行时，后面再加 `; between Cordis rows of one runtime it resolves in Cordis`——同一个 Node 运行时里的 Cordis 行之间的依赖在 Cordis 里解析。声明了的名字照常算作提供者。
+
+`check --strict` 把这些告警当作错误：stderr 写 `rutis-host: error: …`，这一行写 `cannot run with --strict: nothing declares <服务>`，以 1 退出。想在部署前确认每个依赖都有声明的提供者时用它（CI 里，比如）。
 
 插件自己的配置由它的运行时在加载时校验，`check` 只打印它的 Schema。
 
