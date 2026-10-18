@@ -218,7 +218,7 @@ A failing filter in an `emit` dispatch delivers to no listener and is reported b
 ## 6. Filter
 
 - **Where it runs**: always in the emitter's process. On the fast path the runtime calls the plugin's filter function directly for each candidate. Through the host, `events.dispatch` carries `filter`: a function reference to a **selector** the runtime makes around the plugin's filter. The host calls it once per dispatch, after the snapshot (§5.1), with one argument: the list of descriptors of the non-`global` candidates in registration order. The selector calls the plugin's filter on each, in order, in the emitter's process, and returns a list of booleans of the same length (`true` = deliver), using the language's own truthiness / `bool`. The host calls it synchronously in `bail` dispatches, asynchronously otherwise. A wrong length or non-booleans fail the dispatch (`BindingError`, `filter of <name> returned <n> answers for <m> listeners`).
-- **Errors**: a throwing filter fails the whole dispatch with that error before any invocation (in `emit`: §5.6). In Go the filter returns `(bool, error)`: the error it returns, with its name, is the failure, and so is a panic.
+- **Errors**: a throwing filter fails the whole dispatch with that error before any invocation (in `emit`: §5.6). In Go the filter returns `(bool, error)`: the error it returns, with its name, is the failure, and so is a panic. In Rust, `try_filter` takes a predicate returning `Result<bool, CordisError>`, whose error is the failure as it is; `filter` takes a plain `bool` predicate, which fails only by panicking.
 - **Default**: the scope rule is applied first and always; the filter only narrows it. `global` entries skip the filter.
 - **Cordis** (`Context.filter`): `ctx.emit(thisArg, name, …)` and the other four with a `thisArg` whose `[Context.filter]` is a function use it as the filter. It is called with the entry's own Cordis `Context` for listeners in the process, and with `{ rutis: <descriptor> }` for every other entry. Every Context in a rutis Node / Bun runtime has a read-only `ctx.rutis` with its descriptor, so `c => c.rutis.row === 'chat'` works for both.
 - **Other languages**: `filter(predicate)` returns an emitter with the same five methods (§12); the predicate receives the descriptor (Node / Bun leaf and Python: a plain object / `dict` with the JSON fields; Go: `rutis.Listener`; Rust: `&ListenerInfo`).
@@ -357,6 +357,8 @@ impl EventBus {   // ctx.events()
 
     /// The same six emitting methods, filtered (§6).
     pub fn filter(&self, keep: impl Fn(&ListenerInfo) -> bool + Send + Sync + 'static) -> Filtered<'_>;
+    /// `filter` with a predicate that can fail: its error fails the dispatch (§6).
+    pub fn try_filter(&self, keep: impl Fn(&ListenerInfo) -> Result<bool, CordisError> + Send + Sync + 'static) -> Filtered<'_>;
 }
 
 pub struct ListenerInfo {

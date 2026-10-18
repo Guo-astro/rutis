@@ -925,17 +925,24 @@ impl RemoteListener for WireEntry {
             Ok(connection) => connection,
             Err(error) => return Box::pin(std::future::ready(Err(error))),
         };
-        let request = self.request(Invocation {
-            name: call.name(),
-            mode,
-            dispatch: call.dispatch(),
-            own,
-            event: call.event(),
-            next: call.next().map(next_function),
-        });
-        // The call, and the wait for what it answers, go out with the
-        // chain of the session whose dispatch this is, rebased.
+        // The call, the `next` it hands over, and the wait for what it
+        // answers go out with the chain of the session whose dispatch this
+        // is, rebased: a function made here records the chain it is made in.
         let source = caller_of(&connection);
+        let build = || {
+            self.request(Invocation {
+                name: call.name(),
+                mode,
+                dispatch: call.dispatch(),
+                own,
+                event: call.event(),
+                next: call.next().map(next_function),
+            })
+        };
+        let request = match &source {
+            Some(source) => connection.forward(source, build),
+            None => build(),
+        };
         let target = connection.clone();
         let run = async move {
             let started = target
@@ -958,18 +965,19 @@ impl RemoteListener for WireEntry {
         let mode = call.mode();
         let own = self.own(call.origin());
         let connection = self.connection()?;
-        let request = self.request(Invocation {
-            name: call.name(),
-            mode,
-            dispatch: call.dispatch(),
-            own,
-            event: call.event(),
-            next: call.next().map(sync_next_function),
-        })?;
         let reply = forwarded(&connection, || {
-            connection.invoke("", "events.call", request)
-        })
-        .map_err(to_cordis)?;
+            let request = self.request(Invocation {
+                name: call.name(),
+                mode,
+                dispatch: call.dispatch(),
+                own,
+                event: call.event(),
+                next: call.next().map(sync_next_function),
+            })?;
+            connection
+                .invoke("", "events.call", request)
+                .map_err(to_cordis)
+        })?;
         Ok(result_from_wire(reply, mode))
     }
 }

@@ -136,6 +136,10 @@ func (l *listener) Emit(ctx context.Context, args []any) bool {
 // failed reports an `emit` invocation's failure where the listener is
 // (§5.6).
 func (l *listener) failed(err error) {
+	// Cancelled because its row unloads (§7.1): not a failure.
+	if errors.Is(err, context.Canceled) && l.row.ctx.Err() != nil {
+		return
+	}
 	events.Report(fmt.Sprintf("rutis: listener of %s in row %s failed: %s", l.name, l.row.name, events.Failure(err)))
 }
 

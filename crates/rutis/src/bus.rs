@@ -1161,6 +1161,16 @@ impl EventBus {
         &self,
         keep: impl Fn(&ListenerInfo) -> bool + Send + Sync + 'static,
     ) -> Filtered<'_> {
+        self.try_filter(move |info| Ok(keep(info)))
+    }
+
+    /// [`EventBus::filter`] with a predicate that can fail: its error fails
+    /// the dispatch before any call, as a throwing filter does in the other
+    /// languages (in `emit`: reported, nothing delivered).
+    pub fn try_filter(
+        &self,
+        keep: impl Fn(&ListenerInfo) -> Result<bool, CordisError> + Send + Sync + 'static,
+    ) -> Filtered<'_> {
         Filtered {
             bus: self,
             keep: Arc::new(keep),
@@ -1384,7 +1394,7 @@ fn report_filter(ctx: &Ctx, name: &str, error: CordisError) {
 /// The emitting methods of [`EventBus`], with a filter (§6).
 pub struct Filtered<'b> {
     bus: &'b EventBus,
-    keep: Arc<dyn Fn(&ListenerInfo) -> bool + Send + Sync>,
+    keep: Arc<run::Keep>,
 }
 
 impl Filtered<'_> {

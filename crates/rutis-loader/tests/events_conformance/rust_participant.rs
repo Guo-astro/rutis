@@ -161,7 +161,7 @@ fn perform<'a>(
             return Ok(Some(ArgValue(settle(result).await.map_err(CordisError::from)?)));
         }
         if let Some(spec) = does.get("emits") {
-            let result = dispatch(ctx, log, spec).await.map_err(CordisError::from)?;
+            let result = dispatch(ctx, log, spec, None).await.map_err(CordisError::from)?;
             return Ok(Some(ArgValue(result)));
         }
         Err(thrown(&json!({ "name": "Unknown", "message": format!("does {does}") })))
@@ -170,10 +170,27 @@ fn perform<'a>(
 
 /// `does`, synchronously (`kind: sync`).
 fn perform_sync(
+    ctx: &Ctx,
+    log: &Arc<EventsLog>,
     does: &Json,
     args: &Args,
     call: SyncCall<'_, ArgValue>,
 ) -> Result<Option<ArgValue>, CordisError> {
+    if let Some(spec) = does.get("emits") {
+        // A synchronous dispatch (`bail`, `waterfall-sync`) from here: it
+        // runs to its end inline, never waiting.
+        let mut dispatched = std::pin::pin!(dispatch(ctx, log, spec, None));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        return match std::future::Future::poll(dispatched.as_mut(), &mut context) {
+            std::task::Poll::Ready(result) => {
+                Ok(Some(ArgValue(result.map_err(CordisError::from)?)))
+            }
+            std::task::Poll::Pending => Err(thrown(&json!({
+                "name": "Unknown",
+                "message": "a synchronous listener emits only bail or waterfall-sync",
+            }))),
+        };
+    }
     if let Some(v) = does.get("returns").or_else(|| does.get("veto")) {
         return Ok(Some(data(v)));
     }
@@ -188,7 +205,7 @@ fn perform_sync(
     }
     if let Some(ms) = does.get("after").and_then(Json::as_u64) {
         std::thread::sleep(Duration::from_millis(ms));
-        return perform_sync(&does["then"], args, call);
+        return perform_sync(ctx, log, &does["then"], args, call);
     }
     if let Some(prefix) = does.get("next").and_then(Json::as_str) {
         let rest = call.next()?;
@@ -284,12 +301,12 @@ struct SyncListener(Record);
 impl rutis::SyncListener<Args> for SyncListener {
     fn call(
         &self,
-        _: &Ctx,
+        ctx: &Ctx,
         args: &Args,
         call: SyncCall<'_, ArgValue>,
     ) -> Result<Option<ArgValue>, CordisError> {
         self.0.add(&first_json(args));
-        perform_sync(&self.0.config["does"], args, call)
+        perform_sync(ctx, &self.0.log, &self.0.config["does"], args, call)
     }
 }
 
@@ -333,26 +350,28 @@ fn listen(
 // ── Emitting ────────────────────────────────────────────────────
 
 /// Emit `spec` from `ctx` with the Rust API and return the result.
-async fn dispatch(ctx: &Ctx, log: &Arc<EventsLog>, spec: &Json) -> Reply {
+/// `args`: the arguments as they came (functions included), else the
+/// spec's written ones.
+async fn dispatch(ctx: &Ctx, log: &Arc<EventsLog>, spec: &Json, args: Option<Vec<Value>>) -> Reply {
     let name = spec["name"].as_str().unwrap_or_default().to_owned();
     let key = EventKey::<Args>::dynamic(name);
-    let args = Args(
+    let args = Args(args.unwrap_or_else(|| {
         spec["args"]
             .as_array()
             .map(|args| args.iter().map(rutis_bridge::runtime::testing::events::argument).collect())
-            .unwrap_or_default(),
-    );
+            .unwrap_or_default()
+    }));
     let filter = spec.get("filter").cloned();
     let log2 = log.clone();
     let bus = ctx.events();
     let filtered = filter.map(|filter| {
-        bus.filter(move |info| {
-            if filter.get("throws").is_some() {
-                panic!("a Rust filter cannot throw");
+        bus.try_filter(move |info| {
+            if let Some(spec) = filter.get("throws") {
+                return Err(thrown(spec));
             }
             log2.filter_description(serde_json::to_value(info).unwrap());
             let row = info.row.clone().unwrap_or_default();
-            filter["keep"].as_array().into_iter().flatten().any(|k| k.as_str() == Some(&row))
+            Ok(filter["keep"].as_array().into_iter().flatten().any(|k| k.as_str() == Some(&row)))
         })
     });
     let terminal = spec["terminal"].as_str().map(str::to_owned);
@@ -414,12 +433,22 @@ struct Emitter {
 
 impl HostDispatch for Emitter {
     fn invoke(&self, method: &str, args: Value) -> Reply {
-        let spec = args.list()?.into_iter().next().unwrap_or(Value::Undefined);
+        let mut spec = args.list()?.into_iter().next().unwrap_or(Value::Undefined);
+        // The arguments stay as they came: a function among them is one.
+        let arguments = match &mut spec {
+            Value::Record(fields) => match fields.remove("args") {
+                Some(Value::List(arguments)) => Some(arguments),
+                _ => None,
+            },
+            _ => None,
+        };
         let spec = rutis_bridge::runtime::testing::events::written(spec)?;
         let (ctx, log) = (self.ctx.clone(), self.log.clone());
         match method {
-            "dispatch" => Ok(Value::future(async move { dispatch(&ctx, &log, &spec).await })),
-            _ => tokio::runtime::Handle::current().block_on(dispatch(&ctx, &log, &spec)),
+            "dispatch" => Ok(Value::future(async move {
+                dispatch(&ctx, &log, &spec, arguments).await
+            })),
+            _ => tokio::runtime::Handle::current().block_on(dispatch(&ctx, &log, &spec, arguments)),
         }
     }
 
