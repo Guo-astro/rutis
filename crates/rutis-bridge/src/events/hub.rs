@@ -943,12 +943,21 @@ impl RemoteListener for WireEntry {
             Some(source) => connection.forward(source, build),
             None => build(),
         };
-        let target = connection.clone();
+        // Sent now, so calls started one after another arrive in that
+        // order (an `emit`'s calls, §5.5); only the answer is awaited.
+        let send = || {
+            request.and_then(|request| {
+                connection
+                    .invoke_started("", "events.call", request)
+                    .map_err(to_cordis)
+            })
+        };
+        let started = match &source {
+            Some(source) => connection.forward(source, send),
+            None => send(),
+        };
         let run = async move {
-            let started = target
-                .invoke_started("", "events.call", request?)
-                .map_err(to_cordis)?;
-            let reply = started.await.map_err(to_cordis)?;
+            let reply = started?.await.map_err(to_cordis)?;
             let value = settle(reply).await.map_err(to_cordis)?;
             Ok(result_from_wire(value, mode))
         };

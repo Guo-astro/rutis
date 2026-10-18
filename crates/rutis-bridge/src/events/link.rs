@@ -427,17 +427,34 @@ impl Link {
                 .map_err(mapped)?;
             return result_to_wire(result);
         }
-        Ok(Value::cancellable_future(with_caller(
-            source.clone(),
-            async move {
-                let result = ctx
-                    .events()
-                    .invoke_entry(&ctx, id, call)
-                    .await
-                    .map_err(mapped)?;
-                result_to_wire(result)
-            },
-        )))
+        let run = with_caller(source.clone(), async move {
+            let result = ctx
+                .events()
+                .invoke_entry(&ctx, id, call)
+                .await
+                .map_err(mapped)?;
+            result_to_wire(result)
+        });
+        if mode != Mode::Emit {
+            return Ok(Value::cancellable_future(run));
+        }
+        // `emit` invocations start in arrival order (§5.5): this one starts
+        // here, as its frame is handled, before the next frame is read; the
+        // rest runs on a task.
+        let mut run: rutis::BoxFuture<'static, Reply> = Box::pin(run);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        if let std::task::Poll::Ready(reply) = run.as_mut().poll(&mut context) {
+            return reply;
+        }
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = answer.send(run.await);
+        });
+        Ok(Value::future(async move {
+            answered
+                .await
+                .unwrap_or_else(|_| Err(binding("the emit was dropped")))
+        }))
     }
 }
 
