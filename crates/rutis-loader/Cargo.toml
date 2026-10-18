@@ -45,3 +45,8 @@ url = "2"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 rutis-bridge = { path = "../rutis-bridge", features = ["node", "python", "websocket", "testing"] }
+
+[lints.rust]
+# crates/rutis-loader/tests/events_conformance.rs: the parts that need the
+# events-v2 Rust API (#464), until it is on the branch.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rutis_events_v2)"] }

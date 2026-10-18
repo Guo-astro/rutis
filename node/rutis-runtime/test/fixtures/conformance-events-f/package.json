@@ -1,0 +1,11 @@
+{
+  "name": "conformance-events-f",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.mjs",
+  "rutis": {
+    "provides": {
+      "emitter-f": { "dispatch": "async", "dispatch_sync": "sync" }
+    }
+  }
+}

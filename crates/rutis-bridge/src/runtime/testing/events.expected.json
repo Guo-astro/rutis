@@ -1,328 +1,812 @@
 {
   "about": [
-    "Unified events conformance (#464): one list both the real runtimes and the SDK testing tools are checked against. Format: docs/design-events-protocol-2026-10-18.en.md §13."
+    "Unified events conformance (#464): one list both the real runtimes and the SDK testing tools are checked against. Format: docs/design-events-protocol-2026-10-18.en.md §13; the cases of §13.3 come first, then the ones added to cover every rule.",
+    "Real runtimes: crates/rutis-loader/tests/events_conformance.rs (rows of one rutis host, its runtimes, and a second node). Testing tools, the cases without `tool: false`: node/rutis/test/events-conformance.test.mjs, python/rutis/tests/test_events_conformance.py, go/rutis/rutistest/events_conformance_test.go. The file is checked for shape by crates/rutis-bridge/tests/events_expected.rs.",
+    "Languages (`only` / `except`): rust (the host's Rust plugin), node (a Cordis plugin in the Node runtime), node-leaf (a leaf plugin in the Node runtime), bun, python, go. Fixtures: node/rutis-runtime/test/fixtures/conformance-events{,-e,-f}/ (Cordis) and conformance-events-leaf{,-e,-f}.mjs, bun/rutis-bun/test/fixtures/conformance-events{,-e,-f}.ts, python/rutis/tests/fixtures/conformance_events{,_e,_f}.py, go/rutis/internal/fixtures/plugins/conformance (served by go/rutis/internal/fixtures/runtime; one plugin provides every emitter undeclared, its sync method on the wire `dispatchSync`), and the Rust plugin of crates/rutis-loader/tests/events_conformance.",
+    "Scopes: each scope path is one instance of its group, created once; t2's group is `team`, not `tenant`, so that rows placed in t1 are not copied into t2 (a loader instance copies its group's rows). The rule compares ids, so the group names do not matter to it.",
+    "Additions to the format of §13.2: a listener's `fails` ({name, message}: its row's apply throws that error, after registering nothing); `typed: \"unit\"` (a Rust unit struct event); `observesDispatch` (a Cordis listener row that also logs `<label>:dispatch:<mode>` from its internal/dispatch for each dispatch of the case's name); the filter `{\"throws\": {name, message}}` (the predicate throws); the step `{\"update\": label}` (the row's config changes, so it registers again); and `expect` on a `load` step. Rust events cross by serde without a declaration, so there is no NoWire case.",
+    "The rows: plugin `conformance-events`, one row per participant, keyed by its label; its config is the participant as resolved by the runner (name, kind and log filled in). It injects `events-log`, a host service: add(entry) sync; filter(description) sync (logs `filter:<row>` and keeps the description for `filterSees`); wait(entry) async (resolves once entry is logged, for `cancel`). Emitter rows (labelled e or f) load the plugin `conformance-events-e` or `conformance-events-f` (Python `conformance_events_e` / `_f`): the same plugin, declaring only its own `emitter-<label>` (a declared service is exported whether the row provides it or not), with dispatch(spec) async and dispatch_sync(spec) sync (for bail and waterfall-sync). `conformance-events` itself declares nothing."
   ],
   "plugin": "conformance-events",
-  "scopes": { "t1": "tenant", "t1/s1": "session", "t2": "tenant" },
+  "languages": ["rust", "node", "node-leaf", "bun", "python", "go"],
+  "scopes": {"t1": "tenant", "t1/s1": "session", "t2": "team"},
   "locations": ["X", "Y", "host", "node"],
   "cases": [
-    { "case": "emit/reaches-all", "rule": "5.4 emit", "name": "t/emit",
+    { "case": "emit/reaches-all", "rule": "5.4 emit", "name": "t/emit", "vary": ["a", "b", "c", "e"],
       "listeners": [
-        { "label": "a", "at": "X", "does": { "after": 100, "then": { "returns": "A" } } },
-        { "label": "b", "at": "host", "does": { "returns": null } },
-        { "label": "c", "at": "Y", "does": { "returns": "C" } } ],
-      "vary": ["a", "b", "c", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "emit", "args": [1] }, "expect": { "returns": null, "logUnordered": ["a", "b", "c"] } } ] },
-
-    { "case": "emit/order-per-listener", "rule": "5.5", "name": "t/order",
-      "listeners": [ { "label": "c", "at": "Y", "log": "arg", "does": { "returns": null } } ],
-      "vary": ["c", "e"],
+        {"label": "a", "at": "X", "does": {"after": 100, "then": {"returns": "A"}}},
+        {"label": "b", "at": "host", "does": {"returns": null}},
+        {"label": "c", "at": "Y", "does": {"returns": "C"}}
+      ],
       "steps": [
-        { "emit": { "from": "X", "mode": "emit", "args": [1] } },
-        { "emit": { "from": "X", "mode": "emit", "args": [2] } },
-        { "emit": { "from": "X", "mode": "emit", "args": [3] }, "expect": { "log": ["c:1", "c:2", "c:3"] } } ] },
+        {"emit": {"from": "X", "mode": "emit", "args": [1]}, "expect": {"returns": null, "logUnordered": ["a", "b", "c"]}}
+      ] },
+
+    { "case": "emit/order-per-listener", "rule": "5.5", "name": "t/order", "vary": ["c", "e"],
+      "listeners": [
+        {"label": "c", "at": "Y", "log": "arg", "does": {"returns": null}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "emit", "args": [1]}},
+        {"emit": {"from": "X", "mode": "emit", "args": [2]}},
+        {"emit": {"from": "X", "mode": "emit", "args": [3]}, "expect": {"log": ["c:1", "c:2", "c:3"]}}
+      ] },
 
     { "case": "emit/order-across-fast-path", "rule": "5.2, 5.5", "name": "t/switch", "tool": false,
       "listeners": [
-        { "label": "a", "at": "X", "log": "arg", "does": { "returns": null } },
-        { "label": "b", "at": "Y", "log": false, "does": { "returns": null } } ],
+        {"label": "a", "at": "X", "log": "arg", "does": {"returns": null}},
+        {"label": "b", "at": "Y", "log": false, "does": {"returns": null}}
+      ],
       "steps": [
-        { "emit": { "from": "X", "mode": "emit", "args": [1] }, "expect": { "viaHost": true } },
-        { "unload": "b" },
-        { "emit": { "from": "X", "mode": "emit", "args": [2] }, "expect": { "log": ["a:1", "a:2"], "viaHost": false } } ] },
+        {"emit": {"from": "X", "mode": "emit", "args": [1]}, "expect": {"viaHost": true}},
+        {"unload": "b"},
+        {"emit": {"from": "X", "mode": "emit", "args": [2]}, "expect": {"log": ["a:1", "a:2"], "viaHost": false}}
+      ] },
 
-    { "case": "emit/error-isolated", "rule": "5.6", "name": "t/emit-error",
+    { "case": "emit/error-isolated", "rule": "5.6", "name": "t/emit-error", "vary": ["a", "b", "e"],
       "listeners": [
-        { "label": "a", "at": "Y", "does": { "throws": { "name": "Boom", "message": "a failed" } } },
-        { "label": "b", "at": "X", "does": { "returns": null } } ],
-      "vary": ["a", "b", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "emit", "args": [] },
-        "expect": { "returns": null, "logUnordered": ["a", "b"], "reported": [ { "label": "a", "name": "Boom" } ] } } ] },
-
-    { "case": "parallel/all-ok", "rule": "5.4 parallel", "name": "t/par",
-      "listeners": [
-        { "label": "a", "at": "X", "does": { "returns": "A" } },
-        { "label": "b", "at": "host", "does": { "returns": null } },
-        { "label": "c", "at": "node", "does": { "returns": "C" } } ],
-      "vary": ["a", "b", "c", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "parallel", "args": [] }, "expect": { "returns": null, "logUnordered": ["a", "b", "c"] } } ] },
-
-    { "case": "parallel/errors-in-registration-order", "rule": "5.4 parallel", "name": "t/par-errors",
-      "listeners": [
-        { "label": "a", "at": "Y", "does": { "after": 300, "then": { "throws": { "name": "AErr", "message": "a" } } } },
-        { "label": "b", "at": "X", "does": { "throws": { "name": "BErr", "message": "b" } } },
-        { "label": "c", "at": "host", "does": { "returns": null } } ],
-      "vary": ["a", "b", "c", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "parallel", "args": [] },
-        "expect": { "throws": { "name": "AggregateError", "errors": [ { "name": "AErr" }, { "name": "BErr" } ] }, "logUnordered": ["a", "b", "c"] } } ] },
-
-    { "case": "parallel/one-error-is-aggregated", "rule": "5.4 parallel", "name": "t/par-one",
-      "listeners": [ { "label": "a", "at": "Y", "does": { "throws": { "name": "AErr", "message": "a" } } } ],
-      "vary": ["a", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "parallel", "args": [] }, "expect": { "throws": { "name": "AggregateError", "errors": [ { "name": "AErr" } ] } } } ] },
-
-    { "case": "serial/first-result", "rule": "1 no result, 5.4 serial", "name": "t/serial",
-      "listeners": [
-        { "label": "a", "at": "X", "does": { "returns": null } },
-        { "label": "b", "at": "Y", "does": { "returns": false } },
-        { "label": "c", "at": "host", "does": { "returns": "C" } },
-        { "label": "d", "at": "node", "does": { "returns": "D" } } ],
-      "vary": ["a", "b", "c", "d", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "serial", "args": ["x"] }, "expect": { "returns": "C", "log": ["a", "b", "c"] } } ] },
-
-    { "case": "serial/no-result", "rule": "1 no result", "name": "t/serial-none",
-      "listeners": [
-        { "label": "a", "at": "X", "does": { "returnsNothing": true } },
-        { "label": "b", "at": "Y", "does": { "returns": false } },
-        { "label": "c", "at": "host", "does": { "returns": null } } ],
-      "vary": ["a", "b", "c", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "returns": null, "log": ["a", "b", "c"] } } ] },
-
-    { "case": "serial/zero-is-a-result", "rule": "1 no result", "name": "t/serial-zero",
-      "listeners": [ { "label": "a", "at": "Y", "does": { "returns": 0 } }, { "label": "b", "at": "X", "does": { "returns": 1 } } ],
-      "vary": ["a", "b", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "returns": 0, "log": ["a"] } } ] },
-
-    { "case": "serial/error-stops", "rule": "5.4 serial", "name": "t/serial-error",
-      "listeners": [
-        { "label": "a", "at": "Y", "does": { "throws": { "name": "AErr", "message": "a" } } },
-        { "label": "b", "at": "X", "does": { "returns": "B" } } ],
-      "vary": ["a", "b", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "throws": { "name": "AErr", "message": "a" }, "log": ["a"] } } ] },
-
-    { "case": "waterfall/chain", "rule": "5.4 waterfall", "name": "t/wf",
-      "listeners": [
-        { "label": "a", "at": "X", "does": { "next": "a" } },
-        { "label": "b", "at": "Y", "does": { "next": "b" } },
-        { "label": "c", "at": "host", "does": { "veto": "c" } } ],
-      "vary": ["a", "b", "c", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "waterfall", "args": [] }, "expect": { "returns": "abc", "log": ["a", "b", "c"] } } ] },
-
-    { "case": "waterfall/veto", "rule": "5.4 waterfall", "name": "t/wf-veto",
-      "listeners": [
-        { "label": "a", "at": "X", "does": { "next": "a" } },
-        { "label": "b", "at": "Y", "does": { "veto": "v" } },
-        { "label": "c", "at": "node", "does": { "veto": "c" } } ],
-      "vary": ["a", "b", "c", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "waterfall", "args": [] }, "expect": { "returns": "av", "log": ["a", "b"] } } ] },
-
-    { "case": "waterfall/terminal", "rule": "5.4 waterfall", "name": "t/wf-terminal",
-      "listeners": [ { "label": "a", "at": "Y", "does": { "next": "a" } }, { "label": "b", "at": "host", "does": { "next": "b" } } ],
-      "vary": ["a", "b", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "waterfall", "args": [], "terminal": "t" }, "expect": { "returns": "abt", "log": ["a", "b", "terminal"] } } ] },
-
-    { "case": "waterfall/no-listeners", "rule": "5.4 waterfall", "name": "t/wf-empty", "listeners": [],
-      "vary": ["e"],
+        {"label": "a", "at": "Y", "does": {"throws": {"name": "Boom", "message": "a failed"}}},
+        {"label": "b", "at": "X", "does": {"returns": null}}
+      ],
       "steps": [
-        { "emit": { "from": "X", "mode": "waterfall", "args": [], "terminal": "t" }, "expect": { "returns": "t", "log": ["terminal"] } },
-        { "emit": { "from": "X", "mode": "waterfall", "args": [] }, "expect": { "returns": null, "log": ["terminal"] } } ] },
+        {"emit": {"from": "X", "mode": "emit", "args": []}, "expect": {"returns": null, "logUnordered": ["a", "b"], "reported": [{"label": "a", "name": "Boom"}]}}
+      ] },
 
-    { "case": "waterfall/end-without-terminal", "rule": "5.4 waterfall", "name": "t/wf-end",
-      "listeners": [ { "label": "a", "at": "Y", "does": { "next": "a" } } ],
-      "vary": ["a", "e"],
-      "except": [ { "e": ["node", "bun"], "why": "a Cordis waterfall always has a terminal (its last argument); the probe passes one returning undefined, which is the same" } ],
-      "steps": [ { "emit": { "from": "X", "mode": "waterfall", "args": [] }, "expect": { "returns": "a", "log": ["a"] } } ] },
-
-    { "case": "waterfall/next-twice", "rule": "5.4 next", "name": "t/wf-twice",
-      "listeners": [ { "label": "a", "at": "Y", "does": { "nextTwice": true } }, { "label": "b", "at": "X", "does": { "veto": "b" } } ],
-      "vary": ["a", "b", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "waterfall", "args": [] }, "expect": { "throws": { "name": "WaterfallNext" }, "log": ["a", "b"] } } ] },
-
-    { "case": "waterfall/error", "rule": "5.4 waterfall", "name": "t/wf-error",
-      "listeners": [ { "label": "a", "at": "X", "does": { "next": "a" } }, { "label": "b", "at": "Y", "does": { "throws": { "name": "BErr", "message": "b" } } } ],
-      "vary": ["a", "b", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "waterfall", "args": [] }, "expect": { "throws": { "name": "BErr" }, "log": ["a", "b"] } } ] },
-
-    { "case": "waterfall-sync/chain", "rule": "5.4 waterfall-sync", "name": "t/wfs", "tool": false,
-      "listeners": [ { "label": "a", "at": "X", "does": { "next": "a" } }, { "label": "b", "at": "Y", "does": { "next": "b" } } ],
-      "vary": ["a", "b"],
-      "steps": [ { "emit": { "from": "host", "mode": "waterfall-sync", "args": [], "terminal": "t" }, "expect": { "returns": "abt", "log": ["a", "b", "terminal"] } } ] },
-
-    { "case": "bail/first-result", "rule": "5.4 bail", "name": "t/bail",
+    { "case": "parallel/all-ok", "rule": "5.4 parallel", "name": "t/par", "vary": ["a", "b", "c", "e"],
       "listeners": [
-        { "label": "a", "at": "Y", "does": { "returns": null } },
-        { "label": "b", "at": "host", "does": { "returns": "B" } },
-        { "label": "c", "at": "X", "does": { "returns": "C" } } ],
-      "vary": ["a", "b", "c", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "bail", "args": [] }, "expect": { "returns": "B", "log": ["a", "b"] } } ] },
-
-    { "case": "bail/async-listener", "rule": "5.4 kinds", "name": "t/bail-async",
-      "listeners": [ { "label": "a", "at": "Y", "kind": "async", "does": { "returns": "A" } } ],
-      "vary": ["a", "e"],
-      "except": [ { "a": ["go"], "why": "Go listeners are synchronous" } ],
-      "steps": [ { "emit": { "from": "X", "mode": "bail", "args": [] }, "expect": { "throws": { "name": "AsyncListener" }, "log": [] } } ] },
-
-    { "case": "bail/awaitable-from-plain-function", "rule": "5.4 kinds", "name": "t/bail-any",
-      "listeners": [ { "label": "a", "at": "Y", "kind": "any", "does": { "after": 10, "then": { "returns": "A" } } } ],
-      "vary": ["a", "e"],
-      "only": [ { "a": ["node", "bun", "python"], "why": "only JavaScript and Python functions can return an awaitable unannounced" } ],
-      "steps": [ { "emit": { "from": "X", "mode": "bail", "args": [] }, "expect": { "throws": { "name": "AsyncListener" }, "log": ["a"] } } ] },
-
-    { "case": "bail/call-back-into-waiting-emitter", "rule": "5.4 bail, sync-wait", "name": "t/bail-out", "tool": false,
-      "listeners": [
-        { "label": "p", "at": "Y", "does": { "emits": { "from": "Y", "row": "p", "mode": "bail", "name": "t/bail-back", "args": [] } } },
-        { "label": "q", "at": "X", "name": "t/bail-back", "does": { "returns": "Q" } } ],
-      "vary": ["p", "q"],
-      "steps": [ { "emit": { "from": "X", "mode": "bail", "args": [] }, "expect": { "returns": "Q", "log": ["p", "q"] } } ] },
-
-    { "case": "bail/wait-cycle", "rule": "5.4 bail, SyncWaitCycle", "name": "t/c1", "tool": false,
-      "listeners": [ { "label": "p", "at": "Y", "does": { "returns": "P" } }, { "label": "q", "at": "X", "name": "t/c2", "does": { "returns": "Q" } } ],
-      "only": [ { "X": ["node"], "Y": ["node"], "why": "a cycle needs two runtimes that do not declare reentrant-sync" } ],
-      "steps": [ { "concurrent": [
-          { "emit": { "from": "X", "mode": "bail", "args": [] } },
-          { "emit": { "from": "Y", "row": "f", "mode": "bail", "name": "t/c2", "args": [] } } ], "hold": true,
-        "expect": { "settles": true, "throws": { "name": "SyncWaitCycle" } } } ] },
-
-    { "case": "scope/up-not-down", "rule": "3", "name": "t/scope",
-      "listeners": [
-        { "label": "r", "at": "host", "scope": "root", "does": { "returns": null } },
-        { "label": "u", "at": "X", "scope": "t1", "does": { "returns": null } },
-        { "label": "s", "at": "Y", "scope": "t1/s1", "does": { "returns": null } },
-        { "label": "v", "at": "X", "scope": "t2", "does": { "returns": null } } ],
-      "vary": ["r", "u", "s", "v", "e"],
+        {"label": "a", "at": "X", "does": {"returns": "A"}},
+        {"label": "b", "at": "host", "does": {"returns": null}},
+        {"label": "c", "at": "node", "does": {"returns": "C"}}
+      ],
       "steps": [
-        { "emit": { "from": "X", "scope": "t1/s1", "mode": "parallel", "args": [] }, "expect": { "logUnordered": ["r", "u", "s"] } },
-        { "emit": { "from": "X", "scope": "t1", "mode": "parallel", "args": [] }, "expect": { "logUnordered": ["r", "u", "s", "r", "u"] } },
-        { "emit": { "from": "X", "scope": "t2", "mode": "parallel", "args": [] }, "expect": { "logUnordered": ["r", "u", "s", "r", "u", "r", "v"] } },
-        { "emit": { "from": "X", "scope": "root", "mode": "parallel", "args": [] }, "expect": { "logUnordered": ["r", "u", "s", "r", "u", "r", "v", "r"] } } ] },
+        {"emit": {"from": "X", "mode": "parallel", "args": []}, "expect": {"returns": null, "logUnordered": ["a", "b", "c"]}}
+      ] },
 
-    { "case": "filter/keeps-and-sees", "rule": "6", "name": "t/filter",
+    { "case": "parallel/errors-in-registration-order", "rule": "5.4 parallel", "name": "t/par-errors", "vary": ["a", "b", "c", "e"],
       "listeners": [
-        { "label": "a", "at": "X", "does": { "returns": null } },
-        { "label": "b", "at": "host", "does": { "returns": null } },
-        { "label": "c", "at": "Y", "does": { "returns": null } },
-        { "label": "d", "at": "X", "scope": "t2", "does": { "returns": null } } ],
-      "vary": ["a", "b", "c", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "serial", "args": [], "filter": { "keep": ["a", "c"] } },
-        "expect": { "returns": null, "log": ["filter:a", "filter:b", "filter:c", "a", "c"],
-          "filterSees": ["a", "b", "c"] } } ] },
-
-    { "case": "filter/cordis-this-arg", "rule": "6 Cordis", "name": "t/filter-cordis",
-      "listeners": [ { "label": "a", "at": "Y", "does": { "returns": null } }, { "label": "b", "at": "X", "does": { "returns": null } } ],
-      "vary": ["a", "b"],
-      "only": [ { "e": ["node", "bun"], "why": "Context.filter is Cordis's" } ],
-      "steps": [ { "emit": { "from": "X", "mode": "parallel", "args": [], "via": "thisArg", "filter": { "keep": ["b"] } }, "expect": { "logUnordered": ["filter:a", "filter:b", "b"] } } ] },
-
-    { "case": "filter/global-skips-filter", "rule": "4.2 global, 6", "name": "t/filter-global",
-      "listeners": [ { "label": "g", "at": "Y", "options": { "global": true }, "does": { "returns": null } } ],
-      "only": [ { "g": ["node", "bun", "rust"], "why": "only Cordis and Rust have global listeners" } ],
-      "vary": ["g", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "parallel", "args": [], "filter": { "keep": [] } }, "expect": { "log": ["g"] } } ] },
-
-    { "case": "order/prepend", "rule": "4.3", "name": "t/prepend",
-      "listeners": [ { "label": "b", "at": "X", "does": { "returns": null } }, { "label": "a", "at": "Y", "options": { "prepend": true }, "does": { "returns": null } } ],
-      "only": [ { "a": ["node", "bun", "rust"], "why": "prepend is Cordis's and Rust's" } ],
-      "vary": ["a", "b", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "log": ["a", "b"] } } ] },
-
-    { "case": "values/every-tag", "rule": "10", "name": "t/values",
-      "listeners": [ { "label": "a", "at": "Y", "does": { "echo": true } } ],
-      "vary": ["a", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "serial", "args": [ [
-          { "$instant": "2026-10-15T03:22:15.123Z" }, { "$datetime": "2026-10-15T14:30:05.25" }, { "$date": "2026-10-15" },
-          { "$time": "14:30:05.25" }, { "$bytes": "aGVsbG8=" }, { "$map": [[1, "a"]] }, { "$set": ["a"] },
-          { "$bigint": "-123456789012345678901" }, { "$decimal": "1.10" }, { "$uuid": "0f8fad5b-d9cb-469f-a165-70867728950e" } ] ] },
-        "expect": { "returns": [
-          { "$instant": "2026-10-15T03:22:15.123Z" }, { "$datetime": "2026-10-15T14:30:05.25" }, { "$date": "2026-10-15" },
-          { "$time": "14:30:05.25" }, { "$bytes": "aGVsbG8=" }, { "$map": [[1, "a"]] }, { "$set": ["a"] },
-          { "$bigint": "-123456789012345678901" }, { "$decimal": "1.10" }, { "$uuid": "0f8fad5b-d9cb-469f-a165-70867728950e" } ] } } ] },
-
-    { "case": "values/function-argument", "rule": "10", "name": "t/callback",
-      "listeners": [ { "label": "a", "at": "Y", "does": { "calls": 0 } } ],
-      "vary": ["a", "e"],
-      "steps": [ { "emit": { "from": "X", "mode": "serial", "args": [ { "$callback": "upper" } ] }, "expect": { "returns": "X" } } ] },
-
-    { "case": "unload/waits-and-cancels", "rule": "7.1", "name": "t/unload",
-      "listeners": [ { "label": "b", "at": "Y", "does": { "waits": true } } ],
-      "vary": ["b", "e"],
+        {"label": "a", "at": "Y", "does": {"after": 300, "then": {"throws": {"name": "AErr", "message": "a"}}}},
+        {"label": "b", "at": "X", "does": {"throws": {"name": "BErr", "message": "b"}}},
+        {"label": "c", "at": "host", "does": {"returns": null}}
+      ],
       "steps": [
-        { "emit": { "from": "X", "mode": "parallel", "args": [] }, "background": true },
-        { "unload": "b", "when": "b", "expect": { "settles": true, "log": ["b", "b:cancelled"] } } ] },
+        {"emit": {"from": "X", "mode": "parallel", "args": []}, "expect": {"throws": {"name": "AggregateError", "errors": [{"name": "AErr"}, {"name": "BErr"}]}, "logUnordered": ["a", "b", "c"]}}
+      ] },
 
-    { "case": "unload/not-called-after", "rule": "7.1", "name": "t/unloaded",
-      "listeners": [ { "label": "a", "at": "X", "does": { "returns": null } }, { "label": "b", "at": "Y", "does": { "returns": "B" } } ],
-      "vary": ["a", "b", "e"],
-      "steps": [ { "unload": "b" }, { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "returns": null, "log": ["a"] } } ] },
+    { "case": "parallel/one-error-is-aggregated", "rule": "5.4 parallel", "name": "t/par-one", "vary": ["a", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"throws": {"name": "AErr", "message": "a"}}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "parallel", "args": []}, "expect": {"throws": {"name": "AggregateError", "errors": [{"name": "AErr"}]}}}
+      ] },
+
+    { "case": "serial/first-result", "rule": "1 no result, 5.4 serial", "name": "t/serial", "vary": ["a", "b", "c", "d", "e"],
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"returns": null}},
+        {"label": "b", "at": "Y", "does": {"returns": false}},
+        {"label": "c", "at": "host", "does": {"returns": "C"}},
+        {"label": "d", "at": "node", "does": {"returns": "D"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": ["x"]}, "expect": {"returns": "C", "log": ["a", "b", "c"]}}
+      ] },
+
+    { "case": "serial/no-result", "rule": "1 no result", "name": "t/serial-none", "vary": ["a", "b", "c", "e"],
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"returnsNothing": true}},
+        {"label": "b", "at": "Y", "does": {"returns": false}},
+        {"label": "c", "at": "host", "does": {"returns": null}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": null, "log": ["a", "b", "c"]}}
+      ] },
+
+    { "case": "serial/zero-is-a-result", "rule": "1 no result", "name": "t/serial-zero", "vary": ["a", "b", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"returns": 0}},
+        {"label": "b", "at": "X", "does": {"returns": 1}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": 0, "log": ["a"]}}
+      ] },
+
+    { "case": "serial/error-stops", "rule": "5.4 serial", "name": "t/serial-error", "vary": ["a", "b", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"throws": {"name": "AErr", "message": "a"}}},
+        {"label": "b", "at": "X", "does": {"returns": "B"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"throws": {"name": "AErr", "message": "a"}, "log": ["a"]}}
+      ] },
+
+    { "case": "waterfall/chain", "rule": "5.4 waterfall", "name": "t/wf", "vary": ["a", "b", "c", "e"],
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"next": "a"}},
+        {"label": "b", "at": "Y", "does": {"next": "b"}},
+        {"label": "c", "at": "host", "does": {"veto": "c"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"returns": "abc", "log": ["a", "b", "c"]}}
+      ] },
+
+    { "case": "waterfall/veto", "rule": "5.4 waterfall", "name": "t/wf-veto", "vary": ["a", "b", "c", "e"],
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"next": "a"}},
+        {"label": "b", "at": "Y", "does": {"veto": "v"}},
+        {"label": "c", "at": "node", "does": {"veto": "c"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"returns": "av", "log": ["a", "b"]}}
+      ] },
+
+    { "case": "waterfall/terminal", "rule": "5.4 waterfall", "name": "t/wf-terminal", "vary": ["a", "b", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"next": "a"}},
+        {"label": "b", "at": "host", "does": {"next": "b"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "waterfall", "args": [], "terminal": "t"}, "expect": {"returns": "abt", "log": ["a", "b", "terminal"]}}
+      ] },
+
+    { "case": "waterfall/no-listeners", "rule": "5.4 waterfall", "name": "t/wf-empty", "vary": ["e"],
+      "listeners": [],
+      "steps": [
+        {"emit": {"from": "X", "mode": "waterfall", "args": [], "terminal": "t"}, "expect": {"returns": "t", "log": ["terminal"]}},
+        {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"returns": null, "log": ["terminal"]}}
+      ] },
+
+    { "case": "waterfall/end-without-terminal", "rule": "5.4 waterfall", "name": "t/wf-end", "vary": ["a", "e"], "except": [{"e": ["node", "node-leaf", "bun"], "why": "a JavaScript waterfall always has a terminal (its last argument); the probe passes one returning undefined, which is the same"}],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"next": "a"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"returns": "a", "log": ["a"]}}
+      ] },
+
+    { "case": "waterfall/next-twice", "rule": "5.4 next", "name": "t/wf-twice", "vary": ["a", "b", "e"], "except": [{"a": ["rust"], "why": "Rust's Call::next takes the call: a second next does not compile"}],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"nextTwice": true}},
+        {"label": "b", "at": "X", "does": {"veto": "b"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"throws": {"name": "WaterfallNext"}, "log": ["a", "b"]}}
+      ] },
+
+    { "case": "waterfall/error", "rule": "5.4 waterfall", "name": "t/wf-error", "vary": ["a", "b", "e"],
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"next": "a"}},
+        {"label": "b", "at": "Y", "does": {"throws": {"name": "BErr", "message": "b"}}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"throws": {"name": "BErr"}, "log": ["a", "b"]}}
+      ] },
+
+    { "case": "waterfall-sync/chain", "rule": "5.4 waterfall-sync", "name": "t/wfs", "tool": false, "vary": ["a", "b"],
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"next": "a"}},
+        {"label": "b", "at": "Y", "does": {"next": "b"}}
+      ],
+      "steps": [
+        {"emit": {"from": "host", "mode": "waterfall-sync", "args": [], "terminal": "t"}, "expect": {"returns": "abt", "log": ["a", "b", "terminal"]}}
+      ] },
+
+    { "case": "bail/first-result", "rule": "5.4 bail", "name": "t/bail", "vary": ["a", "b", "c", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"returns": null}},
+        {"label": "b", "at": "host", "does": {"returns": "B"}},
+        {"label": "c", "at": "X", "does": {"returns": "C"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "bail", "args": []}, "expect": {"returns": "B", "log": ["a", "b"]}}
+      ] },
+
+    { "case": "bail/async-listener", "rule": "5.4 kinds", "name": "t/bail-async", "vary": ["a", "e"], "except": [{"a": ["go"], "why": "Go listeners are synchronous"}],
+      "listeners": [
+        {"label": "a", "at": "Y", "kind": "async", "does": {"returns": "A"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "bail", "args": []}, "expect": {"throws": {"name": "AsyncListener"}, "log": []}}
+      ] },
+
+    { "case": "bail/awaitable-from-plain-function", "rule": "5.4 kinds", "name": "t/bail-any", "vary": ["a", "e"], "only": [{"a": ["node", "node-leaf", "bun", "python"], "why": "only JavaScript and Python functions can return an awaitable unannounced"}],
+      "listeners": [
+        {"label": "a", "at": "Y", "kind": "any", "does": {"after": 10, "then": {"returns": "A"}}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "bail", "args": []}, "expect": {"throws": {"name": "AsyncListener"}, "log": ["a"]}}
+      ] },
+
+    { "case": "bail/call-back-into-waiting-emitter", "rule": "5.4 bail, sync-wait", "name": "t/bail-out", "tool": false, "vary": ["p", "q"],
+      "listeners": [
+        {"label": "p", "at": "Y", "does": {"emits": {"from": "Y", "row": "p", "mode": "bail", "name": "t/bail-back", "args": []}}},
+        {"label": "q", "at": "X", "name": "t/bail-back", "does": {"returns": "Q"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "bail", "args": []}, "expect": {"returns": "Q", "log": ["p", "q"]}}
+      ] },
+
+    { "case": "bail/wait-cycle", "rule": "5.4 bail, SyncWaitCycle", "name": "t/c1", "tool": false, "only": [{"X": ["node"], "Y": ["node"], "why": "a cycle needs two runtimes that do not declare reentrant-sync"}],
+      "listeners": [
+        {"label": "p", "at": "Y", "does": {"returns": "P"}},
+        {"label": "q", "at": "X", "name": "t/c2", "does": {"returns": "Q"}}
+      ],
+      "steps": [
+        {"concurrent": [{"emit": {"from": "X", "mode": "bail", "args": []}}, {"emit": {"from": "Y", "row": "f", "mode": "bail", "name": "t/c2", "args": []}}], "hold": true, "expect": {"settles": true, "throws": {"name": "SyncWaitCycle"}}}
+      ] },
+
+    { "case": "scope/up-not-down", "rule": "3", "name": "t/scope", "vary": ["r", "u", "s", "v", "e"],
+      "listeners": [
+        {"label": "r", "at": "host", "scope": "root", "does": {"returns": null}},
+        {"label": "u", "at": "X", "scope": "t1", "does": {"returns": null}},
+        {"label": "s", "at": "Y", "scope": "t1/s1", "does": {"returns": null}},
+        {"label": "v", "at": "X", "scope": "t2", "does": {"returns": null}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "scope": "t1/s1", "mode": "parallel", "args": []}, "expect": {"logUnordered": ["r", "u", "s"]}},
+        {"emit": {"from": "X", "scope": "t1", "mode": "parallel", "args": []}, "expect": {"logUnordered": ["r", "u", "s", "r", "u"]}},
+        {"emit": {"from": "X", "scope": "t2", "mode": "parallel", "args": []}, "expect": {"logUnordered": ["r", "u", "s", "r", "u", "r", "v"]}},
+        {"emit": {"from": "X", "scope": "root", "mode": "parallel", "args": []}, "expect": {"logUnordered": ["r", "u", "s", "r", "u", "r", "v", "r"]}}
+      ] },
+
+    { "case": "filter/keeps-and-sees", "rule": "6", "name": "t/filter", "vary": ["a", "b", "c", "e"],
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"returns": null}},
+        {"label": "b", "at": "host", "does": {"returns": null}},
+        {"label": "c", "at": "Y", "does": {"returns": null}},
+        {"label": "d", "at": "X", "scope": "t2", "does": {"returns": null}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": [], "filter": {"keep": ["a", "c"]}}, "expect": {"returns": null, "log": ["filter:a", "filter:b", "filter:c", "a", "c"], "filterSees": ["a", "b", "c"]}}
+      ] },
+
+    { "case": "filter/cordis-this-arg", "rule": "6 Cordis", "name": "t/filter-cordis", "vary": ["a", "b"], "only": [{"e": ["node"], "why": "Context.filter (thisArg) is Cordis's; leaf plugins filter with ctx.filter"}],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"returns": null}},
+        {"label": "b", "at": "X", "does": {"returns": null}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "parallel", "args": [], "via": "thisArg", "filter": {"keep": ["b"]}}, "expect": {"logUnordered": ["filter:a", "filter:b", "b"]}}
+      ] },
+
+    { "case": "filter/global-skips-filter", "rule": "4.2 global, 6", "name": "t/filter-global", "vary": ["g", "e"],
+      "listeners": [
+        {"label": "g", "at": "Y", "options": {"global": true}, "does": {"returns": null}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "parallel", "args": [], "filter": {"keep": []}}, "expect": {"log": ["g"]}}
+      ] },
+
+    { "case": "order/prepend", "rule": "4.3", "name": "t/prepend", "vary": ["a", "b", "e"],
+      "listeners": [
+        {"label": "b", "at": "X", "does": {"returns": null}},
+        {"label": "a", "at": "Y", "options": {"prepend": true}, "does": {"returns": null}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"log": ["a", "b"]}}
+      ] },
+
+    { "case": "values/every-tag", "rule": "10", "name": "t/values", "vary": ["a", "e"], "except": [{"a": ["go"], "why": "Go receives a set as `any` as a slice (value rules), so its echo is a list"}, {"e": ["go"], "why": "Go receives a set as `any` as a slice (value rules), so the result it returns is a list"}],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"echo": true}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": [[{"$instant": "2026-10-15T03:22:15.123Z"}, {"$datetime": "2026-10-15T14:30:05.25"}, {"$date": "2026-10-15"}, {"$time": "14:30:05.25"}, {"$bytes": "aGVsbG8="}, {"$map": [[1, "a"]]}, {"$set": ["a"]}, {"$bigint": "-123456789012345678901"}, {"$decimal": "1.10"}, {"$uuid": "0f8fad5b-d9cb-469f-a165-70867728950e"}]]}, "expect": {"returns": [{"$instant": "2026-10-15T03:22:15.123Z"}, {"$datetime": "2026-10-15T14:30:05.25"}, {"$date": "2026-10-15"}, {"$time": "14:30:05.25"}, {"$bytes": "aGVsbG8="}, {"$map": [[1, "a"]]}, {"$set": ["a"]}, {"$bigint": "-123456789012345678901"}, {"$decimal": "1.10"}, {"$uuid": "0f8fad5b-d9cb-469f-a165-70867728950e"}]}}
+      ] },
+
+    { "case": "values/function-argument", "rule": "10", "name": "t/callback", "vary": ["a", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"calls": 0}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": [{"$callback": "upper"}]}, "expect": {"returns": "X"}}
+      ] },
+
+    { "case": "unload/waits-and-cancels", "rule": "7.1", "name": "t/unload", "vary": ["b", "e"],
+      "listeners": [
+        {"label": "b", "at": "Y", "does": {"waits": true}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "parallel", "args": []}, "background": true},
+        {"unload": "b", "when": "b", "expect": {"settles": true, "log": ["b", "b:cancelled"]}}
+      ] },
+
+    { "case": "unload/not-called-after", "rule": "7.1", "name": "t/unloaded", "vary": ["a", "b", "e"],
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"returns": null}},
+        {"label": "b", "at": "Y", "does": {"returns": "B"}}
+      ],
+      "steps": [
+        {"unload": "b"},
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": null, "log": ["a"]}}
+      ] },
 
     { "case": "registration/loaded-row-hears", "rule": "4.4", "name": "t/late", "tool": false,
       "listeners": [],
       "steps": [
-        { "load": { "label": "z", "at": "Y", "does": { "returns": "Z" } } },
-        { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "returns": "Z", "log": ["z"] } } ] },
+        {"load": {"label": "z", "at": "Y", "does": {"returns": "Z"}}},
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": "Z", "log": ["z"]}}
+      ] },
 
-    { "case": "cancel/emitter-gives-up", "rule": "5.7", "name": "t/cancel", "tool": false,
-      "listeners": [ { "label": "b", "at": "Y", "does": { "waits": true } } ],
-      "vary": ["b", "e"],
-      "except": [ { "e": ["node", "bun"], "why": "JavaScript cannot cancel a dispatch" }, { "b": ["node", "bun"], "why": "JavaScript listeners have no per-invocation signal" } ],
-      "steps": [ { "emit": { "from": "X", "mode": "parallel", "args": [], "cancel": { "when": "b" } }, "expect": { "throws": {}, "log": ["b", "b:cancelled"] } } ] },
+    { "case": "cancel/emitter-gives-up", "rule": "5.7", "name": "t/cancel", "tool": false, "vary": ["b", "e"], "except": [{"e": ["node", "node-leaf", "bun"], "why": "JavaScript cannot cancel a dispatch"}, {"b": ["node", "node-leaf", "bun"], "why": "JavaScript listeners have no per-invocation signal"}],
+      "listeners": [
+        {"label": "b", "at": "Y", "does": {"waits": true}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "parallel", "args": [], "cancel": {"when": "b"}}, "expect": {"throws": {}, "log": ["b", "b:cancelled"]}}
+      ] },
 
     { "case": "disconnect/in-flight-fails-once", "rule": "7.2", "name": "t/gone", "tool": false,
-      "listeners": [ { "label": "a", "at": "X", "does": { "returns": null } }, { "label": "b", "at": "Y", "does": { "waits": true } } ],
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"returns": null}},
+        {"label": "b", "at": "Y", "does": {"waits": true}}
+      ],
       "steps": [
-        { "emit": { "from": "X", "mode": "serial", "args": [] }, "background": true },
-        { "kill": "Y", "when": "b", "expect": { "throws": { "name": "BindingError" } } },
-        { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "returns": null, "log": ["a", "b", "a"] } } ] },
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "background": true},
+        {"kill": "Y", "when": "b", "expect": {"throws": {"name": "BindingError"}}},
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": null, "log": ["a", "b", "a"]}}
+      ] },
 
     { "case": "disconnect/emit-reported", "rule": "7.2, 5.6", "name": "t/gone-emit", "tool": false,
-      "listeners": [ { "label": "b", "at": "Y", "does": { "waits": true } } ],
+      "listeners": [
+        {"label": "b", "at": "Y", "does": {"waits": true}}
+      ],
       "steps": [
-        { "emit": { "from": "X", "mode": "emit", "args": [] } },
-        { "kill": "Y", "when": "b", "expect": { "reported": [ { "label": "b", "name": "BindingError" } ] } } ] },
+        {"emit": {"from": "X", "mode": "emit", "args": []}},
+        {"kill": "Y", "when": "b", "expect": {"reported": [{"label": "b", "name": "BindingError"}]}}
+      ] },
 
     { "case": "disconnect/node-link", "rule": "7.2, 9", "name": "t/gone-node", "tool": false,
-      "listeners": [ { "label": "n", "at": "node", "does": { "waits": true } }, { "label": "a", "at": "X", "does": { "returns": "A" } } ],
+      "listeners": [
+        {"label": "n", "at": "node", "does": {"waits": true}},
+        {"label": "a", "at": "X", "does": {"returns": "A"}}
+      ],
       "steps": [
-        { "emit": { "from": "X", "mode": "serial", "args": [] }, "background": true },
-        { "kill": "node", "when": "n", "expect": { "throws": { "name": "BindingError" } } },
-        { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "returns": "A", "log": ["n", "a"] } } ] },
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "background": true},
+        {"kill": "node", "when": "n", "expect": {"throws": {"name": "BindingError"}}},
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": "A", "log": ["n", "a"]}}
+      ] },
 
     { "case": "node/not-shared", "rule": "9", "name": "n/private", "tool": false,
-      "listeners": [ { "label": "n", "at": "node", "does": { "returns": "N" } } ],
-      "steps": [ { "emit": { "from": "host", "mode": "serial", "args": [] }, "expect": { "returns": null, "log": [] } } ] },
+      "listeners": [
+        {"label": "n", "at": "node", "does": {"returns": "N"}}
+      ],
+      "steps": [
+        {"emit": {"from": "host", "mode": "serial", "args": []}, "expect": {"returns": null, "log": []}}
+      ] },
 
     { "case": "rutis/row", "rule": "8", "name": "rutis/row", "tool": false,
       "listeners": [
-        { "label": "w", "at": "X", "scope": "root", "log": ["row", "state"], "does": { "returns": null } },
-        { "label": "o", "at": "X", "scope": "t1", "log": ["row", "state"], "does": { "returns": null } } ],
+        {"label": "w", "at": "X", "scope": "root", "log": ["row", "state"], "does": {"returns": null}},
+        {"label": "o", "at": "X", "scope": "t1", "log": ["row", "state"], "does": {"returns": null}}
+      ],
       "steps": [
-        { "load": { "label": "z", "at": "Y", "scope": "t2", "name": "t/unused", "does": { "returns": null } } },
-        { "unload": "z", "expect": { "logContains": ["w:z,running", "w:z,stopped"], "logLacks": ["o:z,running", "o:z,stopped"] } } ] },
+        {"load": {"label": "z", "at": "Y", "scope": "t2", "name": "t/unused", "does": {"returns": null}}},
+        {"unload": "z", "expect": {"logContains": ["w:z,running", "w:z,stopped"], "logLacks": ["o:z,running", "o:z,stopped"]}}
+      ] },
 
     { "case": "rutis/service", "rule": "8", "name": "rutis/service", "tool": false,
-      "listeners": [ { "label": "w", "at": "X", "log": ["name", "available"], "does": { "returns": null } } ],
+      "listeners": [
+        {"label": "w", "at": "X", "log": ["name", "available"], "does": {"returns": null}}
+      ],
       "steps": [
-        { "load": { "label": "z", "at": "Y", "provides": "zsvc", "name": "t/unused", "does": { "returns": null } } },
-        { "unload": "z", "expect": { "logContains": ["w:zsvc,true", "w:zsvc,false"] } } ] },
+        {"load": {"label": "z", "at": "Y", "provides": "zsvc", "name": "t/unused", "does": {"returns": null}}},
+        {"unload": "z", "expect": {"logContains": ["w:zsvc,true", "w:zsvc,false"]}}
+      ] },
 
     { "case": "rutis/runtime", "rule": "8", "name": "rutis/runtime", "tool": false,
-      "listeners": [ { "label": "w", "at": "X", "log": ["state"], "does": { "returns": null } } ],
-      "steps": [ { "kill": "Y" }, { "restart": "Y", "expect": { "logContains": ["w:down", "w:running"] } } ] },
-
-    { "case": "reserved/rutis-emit", "rule": "8, 11", "name": "rutis/fake", "listeners": [],
-      "vary": ["e"],
+      "listeners": [
+        {"label": "w", "at": "X", "log": ["state"], "does": {"returns": null}}
+      ],
       "steps": [
-        { "emit": { "from": "X", "mode": "emit", "args": [] }, "expect": { "throws": { "name": "ReservedEvent" } } },
-        { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "throws": { "name": "ReservedEvent" } } } ] },
+        {"kill": "Y"},
+        {"restart": "Y", "expect": {"logContains": ["w:down", "w:running"]}}
+      ] },
+
+    { "case": "reserved/rutis-emit", "rule": "8, 11", "name": "rutis/fake", "vary": ["e"],
+      "listeners": [],
+      "steps": [
+        {"emit": {"from": "X", "mode": "emit", "args": []}, "expect": {"throws": {"name": "ReservedEvent"}}},
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"throws": {"name": "ReservedEvent"}}}
+      ] },
 
     { "case": "fast-path/local-only", "rule": "5.2", "name": "t/local", "tool": false,
-      "listeners": [ { "label": "a", "at": "X", "does": { "returns": "A" } } ],
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"returns": "A"}}
+      ],
       "steps": [
-        { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "returns": "A", "viaHost": false } },
-        { "load": { "label": "b", "at": "Y", "does": { "returns": "B" } } },
-        { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "returns": "A", "viaHost": true } } ] },
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": "A", "viaHost": false}},
+        {"load": {"label": "b", "at": "Y", "does": {"returns": "B"}}},
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": "A", "viaHost": true}}
+      ] },
 
     { "case": "rust/typed-args", "rule": "12.1", "name": "t/typed", "tool": false,
-      "listeners": [ { "label": "h", "at": "host", "typed": "struct", "does": { "echo": true } }, { "label": "k", "at": "host", "name": "t/typed-pair", "typed": "tuple", "does": { "echo": true } } ],
+      "listeners": [
+        {"label": "h", "at": "host", "typed": "struct", "does": {"echo": true}},
+        {"label": "k", "at": "host", "name": "t/typed-pair", "typed": "tuple", "does": {"echo": true}}
+      ],
       "steps": [
-        { "emit": { "from": "X", "mode": "serial", "args": [ { "city": "Oslo" } ] }, "expect": { "returns": { "city": "Oslo" } } },
-        { "emit": { "from": "X", "mode": "serial", "name": "t/typed-pair", "args": ["x", 2] }, "expect": { "returns": ["x", 2] } } ] },
+        {"emit": {"from": "X", "mode": "serial", "args": [{"city": "Oslo"}]}, "expect": {"returns": {"city": "Oslo"}}},
+        {"emit": {"from": "X", "mode": "serial", "name": "t/typed-pair", "args": ["x", 2]}, "expect": {"returns": ["x", 2]}}
+      ] },
 
-    { "case": "rust/no-wire", "rule": "11 NoWire", "name": "t/local-type", "tool": false,
-      "listeners": [ { "label": "h", "at": "host", "typed": "local", "does": { "returns": "H" } } ],
-      "steps": [ { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "throws": { "name": "NoWire" } } } ] },
+    { "case": "rust/unit-event", "rule": "12.1", "name": "t/typed-unit", "tool": false,
+      "listeners": [
+        {"label": "h", "at": "host", "typed": "unit", "does": {"returns": "H"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": "H", "log": ["h"]}}
+      ] },
 
     { "case": "rust/next-outside-waterfall", "rule": "11 WaterfallNext", "name": "t/rust-next", "tool": false,
-      "listeners": [ { "label": "h", "at": "host", "does": { "next": "h" } } ],
-      "steps": [ { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "throws": { "name": "WaterfallNext" } } } ] }
+      "listeners": [
+        {"label": "h", "at": "host", "does": {"next": "h"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"throws": {"name": "WaterfallNext"}}}
+      ] },
+
+    { "case": "emit/does-not-wait", "rule": "5.4 emit", "name": "t/emit-nowait", "vary": ["a", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"waits": true}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "emit", "args": []}, "expect": {"returns": null, "settles": true}},
+        {"unload": "a", "when": "a", "expect": {"settles": true, "log": ["a", "a:cancelled"]}}
+      ] },
+
+    { "case": "emit/error-keeps-process", "rule": "5.6", "name": "t/emit-alive", "vary": ["a", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"throws": {"name": "Boom", "message": "a failed"}}},
+        {"label": "b", "at": "Y", "name": "t/emit-alive-after", "does": {"returns": "B"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "emit", "args": []}, "expect": {"reported": [{"label": "a", "name": "Boom"}]}},
+        {"emit": {"from": "X", "mode": "serial", "name": "t/emit-alive-after", "args": []}, "expect": {"returns": "B", "log": ["a", "b"]}}
+      ] },
+
+    { "case": "modes/no-listeners", "rule": "5.4", "name": "t/nobody", "vary": ["e"],
+      "listeners": [],
+      "steps": [
+        {"emit": {"from": "X", "mode": "emit", "args": [1]}, "expect": {"returns": null}},
+        {"emit": {"from": "X", "mode": "parallel", "args": [1]}, "expect": {"returns": null}},
+        {"emit": {"from": "X", "mode": "serial", "args": [1]}, "expect": {"returns": null}},
+        {"emit": {"from": "X", "mode": "bail", "args": [1]}, "expect": {"returns": null, "log": []}}
+      ] },
+
+    { "case": "kinds/sync-listener-every-mode", "rule": "3.3, 5.4 kinds", "name": "t/sync-any-mode", "vary": ["a", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "kind": "sync", "does": {"returns": "A"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": "A"}},
+        {"emit": {"from": "X", "mode": "parallel", "args": []}, "expect": {"returns": null}},
+        {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"returns": "A"}},
+        {"emit": {"from": "X", "mode": "bail", "args": []}, "expect": {"returns": "A", "log": ["a", "a", "a", "a"]}}
+      ] },
+
+    { "case": "bail/plain-function-plain-value", "rule": "5.4 kinds", "name": "t/bail-plain", "vary": ["a", "e"], "only": [{"a": ["node", "node-leaf", "bun", "python"], "why": "only JavaScript and Python listeners are of kind any"}],
+      "listeners": [
+        {"label": "a", "at": "Y", "kind": "any", "does": {"returns": "A"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "bail", "args": []}, "expect": {"returns": "A", "log": ["a"]}}
+      ] },
+
+    { "case": "bail/no-result", "rule": "1 no result, 5.4 bail", "name": "t/bail-none", "vary": ["a", "b", "c", "e"],
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"returns": false}},
+        {"label": "b", "at": "Y", "does": {"returnsNothing": true}},
+        {"label": "c", "at": "host", "does": {"returns": null}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "bail", "args": []}, "expect": {"returns": null, "log": ["a", "b", "c"]}}
+      ] },
+
+    { "case": "bail/error-stops", "rule": "5.4 bail", "name": "t/bail-error", "vary": ["a", "b", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"throws": {"name": "AErr", "message": "a"}}},
+        {"label": "b", "at": "X", "does": {"returns": "B"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "bail", "args": []}, "expect": {"throws": {"name": "AErr", "message": "a"}, "log": ["a"]}}
+      ] },
+
+    { "case": "serial/argument-reaches", "rule": "3.2, 10", "name": "t/arg", "vary": ["a", "b", "e"],
+      "listeners": [
+        {"label": "a", "at": "X", "log": "arg", "does": {"returns": null}},
+        {"label": "b", "at": "Y", "log": "arg", "does": {"echo": true}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": ["hi"]}, "expect": {"returns": "hi", "log": ["a:hi", "b:hi"]}}
+      ] },
+
+    { "case": "waterfall/false-stays-false", "rule": "5.4 waterfall", "name": "t/wf-false", "vary": ["a", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"veto": false}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "waterfall", "args": [], "terminal": "t"}, "expect": {"returns": false, "log": ["a"]}}
+      ] },
+
+    { "case": "waterfall/next-twice-in-sync", "rule": "5.4 next", "name": "t/wfs-twice", "tool": false, "vary": ["a"], "except": [{"a": ["rust"], "why": "Rust's Call::next takes the call: a second next does not compile"}],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"nextTwice": true}}
+      ],
+      "steps": [
+        {"emit": {"from": "host", "mode": "waterfall-sync", "args": [], "terminal": "t"}, "expect": {"throws": {"name": "WaterfallNext", "message": "was already called"}}}
+      ] },
+
+    { "case": "waterfall-sync/async-listener", "rule": "5.4 kinds", "name": "t/wfs-async", "tool": false, "vary": ["a"], "except": [{"a": ["go"], "why": "Go listeners are synchronous"}],
+      "listeners": [
+        {"label": "a", "at": "Y", "kind": "async", "does": {"next": "a"}}
+      ],
+      "steps": [
+        {"emit": {"from": "host", "mode": "waterfall-sync", "args": []}, "expect": {"throws": {"name": "AsyncListener", "message": "cannot run in a synchronous waterfall-sync"}, "log": []}}
+      ] },
+
+    { "case": "rust/sync-next-in-async-waterfall", "rule": "11 WaterfallNext", "name": "t/rust-sync-next", "tool": false,
+      "listeners": [
+        {"label": "h", "at": "host", "kind": "sync", "does": {"next": "h"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"throws": {"name": "WaterfallNext", "message": "a synchronous listener cannot call next in an asynchronous waterfall"}}}
+      ] },
+
+    { "case": "rust/bail-async-listener", "rule": "5.4 kinds", "name": "t/rust-bail-async", "tool": false, "vary": ["e"],
+      "listeners": [
+        {"label": "h", "at": "host", "kind": "async", "does": {"returns": "H"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "bail", "args": []}, "expect": {"throws": {"name": "AsyncListener"}, "log": []}}
+      ] },
+
+    { "case": "rust/some-false-is-no-result", "rule": "1 no result", "name": "t/rust-false", "tool": false,
+      "listeners": [
+        {"label": "h", "at": "host", "does": {"returns": false}},
+        {"label": "a", "at": "X", "does": {"returns": "A"}}
+      ],
+      "steps": [
+        {"emit": {"from": "host", "mode": "serial", "args": []}, "expect": {"returns": "A", "log": ["h", "a"]}}
+      ] },
+
+    { "case": "scope/sibling-not-heard", "rule": "3", "name": "t/scope-sibling", "vary": ["u", "v", "e"],
+      "listeners": [
+        {"label": "u", "at": "X", "scope": "t1", "does": {"returns": "U"}},
+        {"label": "v", "at": "Y", "scope": "t2", "does": {"returns": "V"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "scope": "t2", "mode": "serial", "args": []}, "expect": {"returns": "V", "log": ["v"]}},
+        {"emit": {"from": "X", "scope": "t1/s1", "mode": "serial", "args": []}, "expect": {"returns": "U", "log": ["v", "u"]}}
+      ] },
+
+    { "case": "scope/bail-and-waterfall", "rule": "3", "name": "t/scope-modes", "vary": ["r", "v", "e"],
+      "listeners": [
+        {"label": "r", "at": "Y", "scope": "root", "does": {"next": "r"}},
+        {"label": "v", "at": "X", "scope": "t2", "does": {"next": "v"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "scope": "t1", "mode": "waterfall", "args": [], "terminal": "t"}, "expect": {"returns": "rt", "log": ["r", "terminal"]}}
+      ] },
+
+    { "case": "filter/throws", "rule": "6", "name": "t/filter-throws", "vary": ["a", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"returns": "A"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": [], "filter": {"throws": {"name": "FErr", "message": "no"}}}, "expect": {"throws": {"name": "FErr", "message": "no"}, "log": []}}
+      ] },
+
+    { "case": "filter/after-scope", "rule": "6", "name": "t/filter-scope", "vary": ["a", "b", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "scope": "t1", "does": {"returns": null}},
+        {"label": "b", "at": "X", "scope": "t2", "does": {"returns": null}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "scope": "t1", "mode": "parallel", "args": [], "filter": {"keep": ["a", "b"]}}, "expect": {"log": ["filter:a", "a"], "filterSees": ["a"]}}
+      ] },
+
+    { "case": "filter/global-still-scoped", "rule": "4.2 global, 3", "name": "t/global-scope", "vary": ["g", "h", "e"],
+      "listeners": [
+        {"label": "g", "at": "Y", "scope": "t2", "options": {"global": true}, "does": {"returns": null}},
+        {"label": "h", "at": "X", "options": {"global": true}, "does": {"returns": null}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "scope": "t1", "mode": "parallel", "args": [], "filter": {"keep": []}}, "expect": {"log": ["h"]}}
+      ] },
+
+    { "case": "filter/bail", "rule": "6", "name": "t/filter-bail", "vary": ["a", "b", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"returns": "A"}},
+        {"label": "b", "at": "X", "does": {"returns": "B"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "bail", "args": [], "filter": {"keep": ["b"]}}, "expect": {"returns": "B", "log": ["filter:a", "filter:b", "b"]}}
+      ] },
+
+    { "case": "order/registration", "rule": "4.3", "name": "t/order-reg", "vary": ["a", "b", "c", "d", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"returns": null}},
+        {"label": "b", "at": "host", "does": {"returns": null}},
+        {"label": "c", "at": "X", "does": {"returns": null}},
+        {"label": "d", "at": "Y", "does": {"returns": null}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"log": ["a", "b", "c", "d"]}}
+      ] },
+
+    { "case": "order/update-registers-again", "rule": "4.3 rows.update", "name": "t/order-update", "vary": ["a", "b", "e"],
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"returns": null}},
+        {"label": "b", "at": "Y", "does": {"returns": null}}
+      ],
+      "steps": [
+        {"update": "a"},
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"log": ["b", "a"]}}
+      ] },
+
+    { "case": "registration/unloaded-row-silent", "rule": "4.4, 7.1", "name": "t/late-gone", "tool": false,
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"returns": "A"}}
+      ],
+      "steps": [
+        {"load": {"label": "z", "at": "Y", "options": {"prepend": true}, "does": {"returns": "Z"}}},
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": "Z", "log": ["z"]}},
+        {"unload": "z"},
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": "A", "log": ["z", "a"]}}
+      ] },
+
+    { "case": "disconnect/parallel-aggregates", "rule": "7.2", "name": "t/gone-par", "tool": false,
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"returns": null}},
+        {"label": "b", "at": "Y", "does": {"waits": true}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "parallel", "args": []}, "background": true},
+        {"kill": "Y", "when": "b", "expect": {"throws": {"name": "AggregateError", "errors": [{"name": "BindingError"}]}}}
+      ] },
+
+    { "case": "disconnect/bail-in-flight", "rule": "7.2, 4", "name": "t/gone-bail", "tool": false,
+      "listeners": [
+        {"label": "b", "at": "Y", "kind": "sync", "does": {"after": 3000, "then": {"returns": "late"}}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "bail", "args": []}, "background": true},
+        {"kill": "Y", "when": "b", "expect": {"throws": {"name": "BindingError"}}}
+      ] },
+
+    { "case": "disconnect/restart-hears-again", "rule": "7.2", "name": "t/back", "tool": false,
+      "listeners": [
+        {"label": "b", "at": "Y", "does": {"returns": "B"}}
+      ],
+      "steps": [
+        {"kill": "Y"},
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": null, "log": []}},
+        {"restart": "Y"},
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": "B", "log": ["b"]}}
+      ] },
+
+    { "case": "disconnect/emitter-gone-listener-stays", "rule": "7.2", "name": "t/emitter-gone", "tool": false,
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"returns": "A"}}
+      ],
+      "steps": [
+        {"emit": {"from": "Y", "row": "f", "mode": "serial", "args": []}, "expect": {"returns": "A"}},
+        {"kill": "Y"},
+        {"emit": {"from": "host", "mode": "serial", "args": []}, "expect": {"returns": "A", "log": ["a", "a"]}}
+      ] },
+
+    { "case": "unload/in-flight-emit", "rule": "7.1", "name": "t/unload-emit", "vary": ["b", "e"],
+      "listeners": [
+        {"label": "b", "at": "Y", "does": {"waits": true}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "emit", "args": []}},
+        {"unload": "b", "when": "b", "expect": {"settles": true, "log": ["b", "b:cancelled"]}}
+      ] },
+
+    { "case": "rutis/row-failed", "rule": "8", "name": "rutis/row", "tool": false,
+      "listeners": [
+        {"label": "w", "at": "X", "log": ["row", "state"], "does": {"returns": null}}
+      ],
+      "steps": [
+        {"load": {"label": "z", "at": "Y", "name": "t/unused", "fails": {"name": "ZErr", "message": "z cannot start"}, "does": {"returns": null}}, "expect": {"logContains": ["w:z,failed"]}}
+      ] },
+
+    { "case": "rutis/row-host-row", "rule": "8", "name": "rutis/row", "tool": false,
+      "listeners": [
+        {"label": "w", "at": "Y", "log": ["row", "state"], "does": {"returns": null}}
+      ],
+      "steps": [
+        {"load": {"label": "z", "at": "host", "name": "t/unused", "does": {"returns": null}}},
+        {"unload": "z", "expect": {"logContains": ["w:z,running", "w:z,stopped"]}}
+      ] },
+
+    { "case": "rutis/service-scoped", "rule": "8, 3", "name": "rutis/service", "tool": false,
+      "listeners": [
+        {"label": "w", "at": "X", "scope": "t2", "log": ["name", "available"], "does": {"returns": null}},
+        {"label": "r", "at": "Y", "log": ["name", "available"], "does": {"returns": null}}
+      ],
+      "steps": [
+        {"load": {"label": "z", "at": "Y", "scope": "t1", "provides": "zsvc", "name": "t/unused", "does": {"returns": null}}},
+        {"unload": "z", "expect": {"logContains": ["r:zsvc,true", "r:zsvc,false"], "logLacks": ["w:zsvc,true", "w:zsvc,false"]}}
+      ] },
+
+    { "case": "rutis/runtime-down-reason", "rule": "8", "name": "rutis/runtime", "tool": false,
+      "listeners": [
+        {"label": "w", "at": "host", "log": ["state"], "does": {"returns": null}}
+      ],
+      "steps": [
+        {"kill": "Y", "expect": {"logContains": ["w:down"]}},
+        {"restart": "Y", "expect": {"logContains": ["w:down", "w:running"]}}
+      ] },
+
+    { "case": "reserved/every-mode", "rule": "8, 11", "name": "rutis/row", "vary": ["e"],
+      "listeners": [],
+      "steps": [
+        {"emit": {"from": "X", "mode": "parallel", "args": []}, "expect": {"throws": {"name": "ReservedEvent", "message": "rutis/* events are emitted by rutis only: rutis/row"}}},
+        {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"throws": {"name": "ReservedEvent"}}},
+        {"emit": {"from": "X", "mode": "bail", "args": []}, "expect": {"throws": {"name": "ReservedEvent"}}}
+      ] },
+
+    { "case": "node/shared-both-ways", "rule": "9", "name": "t/both", "tool": false,
+      "listeners": [
+        {"label": "n", "at": "node", "does": {"emits": {"from": "node", "row": "n", "mode": "serial", "name": "t/both-back", "args": []}}},
+        {"label": "a", "at": "X", "name": "t/both-back", "does": {"returns": "A"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": "A", "log": ["n", "a"]}}
+      ] },
+
+    { "case": "node/root-hears-instances", "rule": "9, 3", "name": "t/node-scope", "tool": false, "vary": ["e"],
+      "listeners": [
+        {"label": "n", "at": "node", "does": {"returns": "N"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "scope": "t1/s1", "mode": "serial", "args": []}, "expect": {"returns": "N", "log": ["n"]}}
+      ] },
+
+    { "case": "node/values", "rule": "9, 10", "name": "t/node-values", "tool": false, "vary": ["e"],
+      "listeners": [
+        {"label": "n", "at": "node", "does": {"echo": true}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": [[{"$bytes": "aGVsbG8="}, {"$bigint": "12345678901234567890"}]]}, "expect": {"returns": [{"$bytes": "aGVsbG8="}, {"$bigint": "12345678901234567890"}]}}
+      ] },
+
+    { "case": "node/function-argument", "rule": "9, 10", "name": "t/node-callback", "tool": false, "vary": ["e"],
+      "listeners": [
+        {"label": "n", "at": "node", "does": {"calls": 0}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": [{"$callback": "upper"}]}, "expect": {"returns": "X"}}
+      ] },
+
+    { "case": "node/rutis-events", "rule": "9, 8", "name": "rutis/row", "tool": false,
+      "listeners": [
+        {"label": "n", "at": "node", "log": ["row", "state"], "does": {"returns": null}}
+      ],
+      "steps": [
+        {"load": {"label": "z", "at": "Y", "name": "t/unused", "does": {"returns": null}}},
+        {"unload": "z", "expect": {"logContains": ["n:z,running", "n:z,stopped"]}}
+      ] },
+
+    { "case": "fast-path/elsewhere-follows", "rule": "4.5, 5.2", "name": "t/elsewhere", "tool": false,
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"returns": "A"}}
+      ],
+      "steps": [
+        {"load": {"label": "b", "at": "host", "does": {"returns": null}}},
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": "A", "viaHost": true}},
+        {"unload": "b"},
+        {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": "A", "viaHost": false}}
+      ] },
+
+    { "case": "cordis/internal-dispatch", "rule": "5.3 internal/dispatch", "name": "t/dispatch", "tool": false, "only": [{"a": ["node"], "why": "internal/dispatch is Cordis's"}], "vary": ["f"],
+      "listeners": [
+        {"label": "a", "at": "X", "observesDispatch": true, "does": {"returns": null}}
+      ],
+      "steps": [
+        {"emit": {"from": "Y", "row": "f", "mode": "parallel", "args": []}, "expect": {"log": ["a:dispatch:parallel", "a"]}}
+      ] }
   ]
 }
