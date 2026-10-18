@@ -24,7 +24,7 @@
 //! - **loop 关键节点走 waterfall**(设计 §四.1):`agent/pre-step`
 //!   (改写/拒绝进入这步的 messages)+ 工具三段 `tools/pre-execute`
 //!   (门控)/ 执行 / `tools/post-execute`(结果决策,失败也到这);
-//!   默认行为即原行为,插件挂 `on_waterfall` 中间件可改写、可 veto
+//!   默认行为即原行为,插件挂 `on` 监听器(被 `waterfall` 调用)可改写、可 veto
 //!   ——框架自己吃狗粮。
 //! - **[`TuiPlugin`]**:ratatui+crossterm 前端,`agent/*` 事件监听器,
 //!   不是 loop 的一部分。
@@ -50,7 +50,8 @@
 //! // 观察方:订阅 agent/* 事件,过程增量逐块到达
 //! # struct L;
 //! # impl rutis::Listener<AgentTextDelta> for L {
-//! #     fn call<'a>(&'a self, _c: &'a rutis::Ctx, e: &'a AgentTextDelta)
+//! #     fn call<'a>(&'a self, _c: &'a rutis::Ctx, e: &'a AgentTextDelta,
+//! #         _call: rutis::Call<'a, ()>)
 //! #         -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
 //! #         print!("{}", e.delta); Box::pin(async { Ok(None) })
 //! #     }

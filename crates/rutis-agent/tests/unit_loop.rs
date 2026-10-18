@@ -52,6 +52,7 @@ impl Listener<AgentTextDelta> for TextL {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a AgentTextDelta,
+        _call: rutis::Call<'a, ()>,
     ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
         let text = self.0.clone();
         let d = e.delta.clone();
@@ -69,6 +70,7 @@ impl Listener<AgentTextDelta> for CountL {
         &'a self,
         _ctx: &'a Ctx,
         _e: &'a AgentTextDelta,
+        _call: rutis::Call<'a, ()>,
     ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
         let n = self.0.clone();
         Box::pin(async move {
@@ -85,6 +87,7 @@ impl Listener<AgentTextDelta> for DeltaTxL {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a AgentTextDelta,
+        _call: rutis::Call<'a, ()>,
     ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
         let tx = self.0.clone();
         let d = e.delta.clone();
@@ -102,6 +105,7 @@ impl Listener<AgentTurnEnd> for TurnEndTxL {
         &'a self,
         _ctx: &'a Ctx,
         _e: &'a AgentTurnEnd,
+        _call: rutis::Call<'a, ()>,
     ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
         let tx = self.0.clone();
         Box::pin(async move {
@@ -368,6 +372,7 @@ async fn multiple_tool_calls_run_in_order() {
             &'a self,
             _ctx: &'a Ctx,
             e: &'a AgentToolCall,
+            _call: rutis::Call<'a, ()>,
         ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
             let tx = self.0.clone();
             let name = e.name.clone();
@@ -383,6 +388,7 @@ async fn multiple_tool_calls_run_in_order() {
             &'a self,
             _ctx: &'a Ctx,
             e: &'a AgentToolResult,
+            _call: rutis::Call<'a, ()>,
         ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
             let tx = self.0.clone();
             let (ok, output) = (e.ok, e.output.clone());
@@ -806,21 +812,32 @@ async fn status_transitions_and_session_grows() {
         entered: tokio::sync::mpsc::Sender<()>,
         gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     }
-    impl rutis::WaterfallListener<rutis_agent::AgentPreStep> for HoldL {
+    impl rutis::Listener<rutis_agent::AgentPreStep> for HoldL {
         fn call<'a>(
             &'a self,
             _ctx: &'a Ctx,
             _e: &'a rutis_agent::AgentPreStep,
-            next: rutis::Next<'a, rutis_agent::AgentPreStep>,
-        ) -> rutis::BoxFuture<
-            'a,
-            Result<
+            call: rutis::Call<
+                'a,
                 Result<
                     (
                         Vec<aimux_core::language_model_message::LanguageModelPromptMessage>,
                         Vec<aimux_core::options::Tool>,
                     ),
                     String,
+                >,
+            >,
+        ) -> rutis::BoxFuture<
+            'a,
+            Result<
+                Option<
+                    Result<
+                        (
+                            Vec<aimux_core::language_model_message::LanguageModelPromptMessage>,
+                            Vec<aimux_core::options::Tool>,
+                        ),
+                        String,
+                    >,
                 >,
                 rutis::CordisError,
             >,
@@ -832,7 +849,7 @@ async fn status_transitions_and_session_grows() {
                 if let Some(gate) = gate {
                     let _ = gate.await; // 挂起:turn 停在 Running
                 }
-                next.call().await
+                call.next().await
             })
         }
     }
@@ -844,7 +861,7 @@ async fn status_transitions_and_session_grows() {
     let hold_slot = Mutex::new(Some(hold));
     let (_ov, octx) = observer(&root, move |ctx| {
         ctx.events()
-            .on_waterfall(
+            .on(
                 ctx,
                 &rutis::EventKey::of(),
                 hold_slot.lock().unwrap().take().unwrap(),

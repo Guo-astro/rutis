@@ -83,20 +83,20 @@ pub struct AgentDriver {
 fn pre_execute_default<'a>(
     _ctx: &'a Ctx,
     _e: &'a ToolPreExecute,
-) -> BoxFuture<'a, Result<Option<String>, CordisError>> {
-    Box::pin(async { Ok(None) })
+) -> BoxFuture<'a, Result<Option<Option<String>>, CordisError>> {
+    Box::pin(async { Ok(Some(None)) })
 }
 
 /// `tools/post-execute` 终态续延:原样 accept。
 fn post_execute_default<'a>(
     _ctx: &'a Ctx,
     e: &'a ToolPostExecute,
-) -> BoxFuture<'a, Result<ToolOutput, CordisError>> {
+) -> BoxFuture<'a, Result<Option<ToolOutput>, CordisError>> {
     Box::pin(async {
-        Ok(ToolOutput {
+        Ok(Some(ToolOutput {
             ok: e.ok,
             output: e.output.clone(),
-        })
+        }))
     })
 }
 
@@ -104,8 +104,8 @@ fn post_execute_default<'a>(
 fn pre_step_default<'a>(
     _ctx: &'a Ctx,
     e: &'a AgentPreStep,
-) -> BoxFuture<'a, Result<PreStepDecision, CordisError>> {
-    Box::pin(async { Ok(Ok((e.prompt.clone(), e.tools.clone()))) })
+) -> BoxFuture<'a, Result<Option<PreStepDecision>, CordisError>> {
+    Box::pin(async { Ok(Some(Ok((e.prompt.clone(), e.tools.clone())))) })
 }
 
 impl AgentDriver {
@@ -250,13 +250,14 @@ impl AgentDriver {
                 pre_execute_default,
             )
             .await
+            .map(Option::flatten)
             .unwrap_or_else(|e| Some(e.to_string()));
         if let Some(reason) = gate {
             return ToolOutput::err(format!("error: tool execution rejected: {reason}"));
         }
 
         // ② 执行:ToolRegistry 内置 panic 任务边界与取消(评审 #13/P2)
-        let out = self.tools.execute(call, token).await;
+        let original = self.tools.execute(call, token).await;
 
         // ③ tools/post-execute:结果决策(accept/replace;失败也到这,
         //    默认原样 accept)
@@ -269,12 +270,14 @@ impl AgentDriver {
                 &ToolPostExecute {
                     session,
                     call: call.clone(),
-                    ok: out.ok,
-                    output: out.output,
+                    ok: original.ok,
+                    output: original.output.clone(),
                 },
                 post_execute_default,
             )
             .await
+            // 无结果(None)= 无人改写,原样 accept
+            .map(|v| v.unwrap_or_else(|| original.clone()))
             .unwrap_or_else(|e| ToolOutput::err(format!("error: {e}")));
 
         self.emit_tool_result(session, &call.tool_name, &out);
@@ -380,6 +383,8 @@ impl AgentDriver {
                     )
                     .await
                     .map_err(|e| AgentError::Pipeline(e.to_string()))?
+                    // 无结果(None)= 无人改写,原样放行
+                    .unwrap_or_else(|| Ok((prompt.clone(), tools.clone())))
                     .map_err(AgentError::Pipeline)?;
 
                 match self
