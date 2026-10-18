@@ -257,8 +257,6 @@ mod tests {
     struct Unit;
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
     struct Single(i64);
-    #[derive(Serialize, Deserialize, Debug, PartialEq)]
-    struct OneTuple((i64,));
 
     fn args<T: Serialize>(value: &T) -> Vec<Json> {
         value.serialize(ArgsSerializer).unwrap()

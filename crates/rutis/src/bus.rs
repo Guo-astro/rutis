@@ -582,19 +582,24 @@ impl EventBus {
             .collect()
     }
 
+    /// (entries, exact names, emit chains).
     #[cfg(test)]
-    pub(crate) fn table_len(&self) -> usize {
-        self.core.state.lock().unwrap().table.len()
+    pub(crate) fn table_counts(&self) -> (usize, usize, usize) {
+        let state = self.core.state.lock().unwrap();
+        (state.table.len(), state.table.names(), state.tails.len())
     }
 
-    #[cfg(test)]
-    pub(crate) fn tail_count(&self) -> usize {
-        self.core.state.lock().unwrap().tails.len()
-    }
-
+    /// Allocated slots: (exact names, entries by id, emit chains).
     #[cfg(test)]
     pub(crate) fn table_capacities(&self) -> (usize, usize, usize) {
-        self.core.state.lock().unwrap().table.capacities()
+        let state = self.core.state.lock().unwrap();
+        let (names, ids) = state.table.capacities();
+        (names, ids, state.tails.capacity())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn max_list_capacity(&self) -> usize {
+        self.core.state.lock().unwrap().table.max_list_capacity()
     }
 
     #[cfg(test)]
