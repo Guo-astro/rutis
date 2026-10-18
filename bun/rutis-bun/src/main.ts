@@ -53,6 +53,9 @@ for (const event of ['uncaughtException', 'unhandledRejection'] as const) {
     process.exit(1)
   })
 }
+// What was written to stderr, written out: a pipe takes it asynchronously,
+// and exiting at once can lose the last lines (a refusal, say).
+const flushed = () => new Promise<void>(resolve => { process.stderr.write('', () => resolve()) })
 const [channel, ...rest] = process.argv.slice(2)
 const flags: Record<string, string> = {}
 while (rest[0]?.startsWith('--')) {
@@ -71,6 +74,7 @@ if (channel.startsWith('listen:')) {
 }
 if (channel.startsWith('dial:')) {
   const code = await dialOut(channel.slice('dial:'.length), { id: flags.id, peer: flags.peer, project })
+  await flushed()
   process.exit(code)
 }
 // A runner is a runtime: the controller manages its rows.
@@ -93,6 +97,7 @@ try {
 } catch (error: any) {
   if (error?.message === NO_EVENTS_V2) {
     process.stderr.write(`rutis: refused: incompatible (${NO_EVENTS_V2}); stopping\n`)
+    await flushed()
     process.exit(1)
   }
   // The supervisor ended the session before it greeted, and said why.
