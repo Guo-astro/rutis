@@ -749,3 +749,92 @@ mod sigusr1 {
         }
     }
 }
+
+/// A row a reload adds providing, from a thread of its own while it loads,
+/// a name another row provides (Unix: [`common::process::file_url`]).
+#[cfg(unix)]
+mod thread_announced {
+    use super::*;
+    use common::process::file_url;
+
+    /// Provides `weather` from a worker thread, which `apply` waits for.
+    const THIEF: &str = r#"
+import threading
+
+
+class Weather:
+    def hello(self, name):
+        return "Rain, " + name
+
+
+def apply(ctx, config):
+    worker = threading.Thread(target=lambda: ctx.provide("weather", Weather()))
+    worker.start()
+    worker.join()
+"#;
+
+    /// The refusal of a name provided from a thread reaches the reload
+    /// before the row is said to have loaded: the reload is refused, and
+    /// the old rows run on.
+    /// guarantee: host/reload-config, loader/announced-services
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_name_a_thread_provides_twice_refuses_the_reload() {
+        let _environment = environment();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::fs::write(d.join("thief.py"), THIEF).unwrap();
+        let sdk = repo()
+            .join("node/rutis/src/index.mjs")
+            .canonicalize()
+            .unwrap();
+        std::fs::write(
+            d.join("weather.mjs"),
+            format!(
+                "import {{ definePlugin }} from '{}'\n\
+                 class Weather {{ hello(name) {{ return `Sun, ${{name}}` }} }}\n\
+                 export default definePlugin({{ apply(ctx) {{\n\
+                   ctx.provide('weather', new Weather())\n\
+                 }} }})\n",
+                file_url(&sdk)
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("package.json"),
+            r#"{ "name": "reload", "type": "module" }"#,
+        )
+        .unwrap();
+        let mut py = json!({ "project": d });
+        if let Some(python) = std::env::var_os("RUTIS_PYTHON") {
+            py["python"] = json!(python.to_str().unwrap());
+        }
+        let runtimes = json!({
+            "py": py,
+            "node": { "project": d, "runtime": repo().join("node/rutis-runtime") },
+        });
+        let weather = json!({ "id": "weather", "name": d.join("weather.mjs").to_str().unwrap() });
+        let first: HostConfig = serde_json::from_value(json!({
+            "id": "reload-test",
+            "runtimes": runtimes,
+            "rows": [weather],
+        }))
+        .unwrap();
+        let mut host = started(&first).await;
+        assert_eq!(hello(&host, "weather").await, "Sun, Ada");
+
+        let both: HostConfig = serde_json::from_value(json!({
+            "id": "reload-test",
+            "runtimes": runtimes,
+            "rows": [weather, { "id": "thief", "name": "py:thief" }],
+        }))
+        .unwrap();
+        let error = host.reload(both).await.unwrap_err();
+        assert!(
+            error.contains("row thief") && error.contains("already provided"),
+            "{error}"
+        );
+        assert!(host.loader.get("thief").is_none(), "the new row stays out");
+        assert_eq!(hello(&host, "weather").await, "Sun, Ada");
+        host.shut_down(HANG_GUARD).await.ok();
+    }
+}
