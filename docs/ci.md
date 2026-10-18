@@ -259,7 +259,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 
 **改了声明，要在同一个 PR 里改 CI 的版本**：改 `engines`、`requires-python`、websockets 下限或 `rust-version` 的 PR，同时改上表里对应任务的版本；否则声明的最低版本没有经过验证（Q10.3）。
 
-**包的依赖**：三个 npm 包各有自己的 lockfile，任务在用到它之前安装：启动 Node 运行时的任务先 `npm --prefix node/rutis-runtime ci`；SDK（`node/rutis`）没有依赖，加载它或它的测试工具的任务不必为它安装什么（SDK 自己的测试仍先 `npm --prefix node/rutis ci`，顺带检查 lockfile）；启动 Bun 运行时的任务（它引入 Cordis；`rutis-bridge/tests/bun_runtime.rs` 检查 `node_modules` 存在）在 `bun/rutis-bun` 里 `bun install --frozen-lockfile`。本地同样（[CONTRIBUTING](../CONTRIBUTING.zh-CN.md)）。
+**包的依赖**：两个 npm 包各有自己的 lockfile，任务在用到它之前安装：启动 Node 运行时的任务先 `npm --prefix node/rutis-runtime ci`；SDK（`node/rutis`）没有依赖，加载它或它的测试工具的任务不必为它安装什么（SDK 自己的测试仍先 `npm --prefix node/rutis ci`，顺带检查 lockfile）；Bun 运行时（`bun/rutis-bun`）同样没有依赖，启动它的任务不必安装什么。本地同样（[CONTRIBUTING](../CONTRIBUTING.zh-CN.md)）。
 
 ## 10. 自托管的 macOS runner
 
