@@ -117,6 +117,7 @@ async fn python_rows_follow_the_row_contract() {
             &[],
             &described.provides,
             projection.clone(),
+            &[],
         )
         .await
         .unwrap();
@@ -239,6 +240,7 @@ async fn unloading_a_row_withdraws_its_services_without_waiting_for_the_runtime(
             &[],
             &described.provides,
             projection.clone(),
+            &[],
         )
         .await
         .unwrap();

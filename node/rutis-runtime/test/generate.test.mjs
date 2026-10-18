@@ -371,5 +371,7 @@ test('the removed events and emits options are refused', async () => {
     }
     const { rust } = generate(file, root)
     assert.doesNotMatch(rust, /events|emits|EmitToCordis/)
+    // The mount's listeners join the mounting context's bus instead.
+    assert.match(rust, /ctx: Some\(ctx\.clone\(\)\),/)
   })
 })

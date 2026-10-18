@@ -18,19 +18,6 @@ pub mod events;
 /// `about` says how to read it.
 pub const WEATHER_EXPECTED: &str = include_str!("testing/weather.expected.json");
 
-/// The events a runtime under [`runtime`] is mounted to receive
-/// (`emits` in [`WEATHER_EXPECTED`]); mount with these as `Mount::emits`.
-pub fn weather_emits() -> Vec<String> {
-    let expected: serde_json::Value =
-        serde_json::from_str(WEATHER_EXPECTED).expect("weather.expected.json");
-    expected["emits"]
-        .as_array()
-        .expect("emits")
-        .iter()
-        .map(|name| name.as_str().expect("an event name").to_owned())
-        .collect()
-}
-
 /// **Runtime** ([`runtime`]): a runtime loads, as a row, a plugin `entry`
 /// that injects `clock` (a rutis host service with `now`, sync, returning
 /// 0, 1, 2, ...) and provides `weather`:
@@ -52,7 +39,11 @@ pub fn weather_emits() -> Vec<String> {
 /// guarantee: sdk/testing-matches-runtime (risk A1, Q6.7.2), the runtime
 /// side; the testing tools' side is `node/rutis/test/conformance.test.mjs`
 /// and `python/rutis/tests/test_conformance.py`.
+///
+/// `ctx` is the context whose bus the process joined (`Mount::ctx`): the
+/// `events` checks emit there.
 pub async fn runtime(
+    ctx: &rutis::Ctx,
     process: Arc<crate::runtime::Process>,
     entry: &std::path::Path,
     started_here: bool,
@@ -232,10 +223,9 @@ pub async fn runtime(
         .lease_host("clock", Arc::new(Clock(AtomicUsize::new(0))), None)
         .await
         .expect("hosts.provide");
-    let ctx = rutis::Ctx::root().unwrap();
     // The declared service, and the ones the row announces (`undeclared`).
     let projection = row_projection_of("row w", &provides, host_key, |_| false);
-    projection.attach(&ctx, process.clone()).unwrap();
+    projection.attach(ctx, process.clone()).unwrap();
     let load = || {
         process.load_row_exporting(
             "w",
@@ -245,6 +235,7 @@ pub async fn runtime(
             &[],
             &provides,
             projection.clone(),
+            &[],
         )
     };
     load().await.expect("rows.load");
@@ -289,12 +280,8 @@ pub async fn runtime(
         );
     }
 
-    // The shared conformance plugin requires leaf events on every runtime.
-    assert!(
-        process.supports("events"),
-        "{}: the runtime must report the `events` feature",
-        entry.display()
-    );
+    // The plugin's listeners are on the host's bus: `parallel` there waits
+    // for them.
     for (i, entry) in expected["events"].as_array().unwrap().iter().enumerate() {
         let name = entry["emit"].as_str().unwrap();
         let what = format!("events[{i}] {name}");
@@ -304,7 +291,15 @@ pub async fn runtime(
             .iter()
             .map(argument)
             .collect();
-        let emitted = process.emit(name, args).await;
+        let emitted = ctx
+            .events()
+            .parallel(
+                ctx,
+                &rutis::EventKey::<crate::events::Args>::dynamic(name.to_owned()),
+                Arc::new(crate::events::Args(args)),
+            )
+            .await
+            .map_err(|error| crate::events::to_session_error(&error));
         match entry.get("then") {
             Some(then) => {
                 emitted.unwrap_or_else(|error| panic!("{what}: {error}"));

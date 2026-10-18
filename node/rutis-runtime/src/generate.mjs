@@ -34,6 +34,7 @@ function locate(pluginPath) {
   return { analysed: pluginPath, entry: pluginPath, packageDir: dirname(pluginPath) }
 }
 
+
 // `plugins` is one plugin path, or a group [{ name, path }] mounted together
 // in one Cordis Context (dependencies between them resolve natively). Group
 // members get one `Config` field each, named by `name`.
@@ -997,6 +998,8 @@ export function generate(plugins, nodePackage, options = {}) {
             services: ::rutis_bridge::cordis::serde_json::json!(${JSON.stringify(manifest)}),
             observer: Some(projection.clone()),
             hosts,
+            // The plugins' listeners join this context's logical bus, at its scope.
+            ctx: Some(ctx.clone()),
             // Fields added later keep their defaults in already generated code.
             ..::core::default::Default::default()
           },
@@ -1028,7 +1031,7 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
     const removed = rest.find(arg => /^--(event|emit)=/.test(arg))
     if (removed) refuseRemoved({ [removed.startsWith('--event=') ? 'events' : 'emits']: true })
     const root = rest.find(arg => arg.startsWith('--root='))?.slice('--root='.length)
-    const members = rest.filter(arg => !/^--(provide|event|emit|root)=/.test(arg))
+    const members = rest.filter(arg => !/^--(provide|root)=/.test(arg))
     const plugins = members.length === 1 && !members[0].includes('=')
       ? resolve(members[0])
       : members.map(member => { const at = member.indexOf('='); return { name: member.slice(0, at), path: resolve(member.slice(at + 1)) } })

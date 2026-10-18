@@ -1,13 +1,15 @@
 // A Cordis application linked to a rutis node as a full node: it exports
 // `calendar`, imports `clock`, hosts the npm plugins under `anchor`, and
-// forwards events (`tick` in, `tock` out). What happens is printed on
+// shares events (`tick` in, `tock` out). What happens is printed on
 // stdout, one line each, for the test driving it.
 import { Context } from '@deepseek-ai/cordis'
-import { Link, Export, Import, Host, Events } from '../../src/bridge/index.mjs'
+import { Link, Export, Import, Host, Events, bus } from '../../src/bridge/index.mjs'
 
 const [address, anchor] = process.argv.slice(2)
 const say = line => process.stdout.write(`${line}\n`)
 const ctx = new Context()
+// The application's events go through the logical bus, linked nodes' too.
+bus(ctx)
 ctx.provide('calendar', { today() { return 'monday' }, async later() { return 'tuesday' } })
 // `listen:<address>` listens for main instead of dialing it.
 const where = address.startsWith('listen:') ? { listen: address.slice('listen:'.length) } : { dial: address }
@@ -29,7 +31,7 @@ process.stdin.on('data', async text => {
 })
 ctx.plugin(Import, { peer: 'main', services: ['clock'] })
 ctx.plugin(Host, { peer: 'main', anchor })
-ctx.plugin(Events, { peer: 'main', out: ['tock'], in: ['tick'] })
+ctx.plugin(Events, { peer: 'main', export: ['tock'], import: ['tick'] })
 ctx.plugin({ name: 'clock-user', inject: ['clock'], apply(scope) { say(`clock: ${scope.clock.now()}`) } })
 ctx.on('tick', async (...args) => {
   say(`tick: ${JSON.stringify(args)}`)

@@ -14,7 +14,6 @@
 pub(crate) use crate::session::*;
 
 mod access;
-mod events;
 mod local;
 mod plugin;
 mod process;
@@ -31,7 +30,6 @@ pub(crate) mod unix;
 pub use crate::transport::local::Stdio;
 pub(crate) use access::peer_session;
 pub use access::RuntimeAccessPlugin;
-pub use events::{EmitToCordis, EventSink, Events};
 pub use local::LocalRuntime;
 pub use plugin::{Runtime, RuntimeHandle, RuntimePlugin, RuntimeState};
 pub use process::{scoped_id, Host, HostLease, Launcher, Mount, Process, RowSchema, ServiceEvents};
@@ -49,7 +47,7 @@ pub trait RuntimeSession: Send + Sync + 'static {
     fn connection(&self) -> Connection;
 
     /// Route the runtime's calls into rutis (`host:<name>`, `service`,
-    /// `event`) to `dispatch` while the returned guard lives.
+    /// `events.*`, `rows.ended`) to `dispatch` while the returned guard lives.
     fn route(
         &self,
         dispatch: Arc<dyn Dispatch>,

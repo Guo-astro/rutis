@@ -19,15 +19,20 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::channel::PeerId;
+use crate::events::{ArgValue, Args};
 use crate::session::rpc::{settle, Reply, Value};
 use crate::session::{host_key, Error, HostDispatch};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Listener, Plugin, PluginFactory};
+use rutis::{BoxFuture, Call, CordisError, Ctx, Effect, EventKey, Listener, Plugin, PluginFactory};
 use serde_json::{json, Value as Json};
 
 use crate::{
-    node_event, peer_key, Described, EventsPlugin, ExportPlugin, ImportPlugin, NodeEvent, Peer,
-    StaticCatalog,
+    peer_key, Described, ExportPlugin, ImportPlugin, LinkEventsPlugin, Peer, StaticCatalog,
 };
+
+/// The node event `name`, its arguments as they come.
+fn node_event(name: &str) -> EventKey<Args> {
+    EventKey::dynamic(name.to_owned())
+}
 
 /// What `main` hears through `probe`.
 #[derive(Clone, Default)]
@@ -44,14 +49,16 @@ impl HostDispatch for Probe {
 }
 
 struct Tocks(Arc<Mutex<Vec<Json>>>);
-impl Listener<NodeEvent> for Tocks {
+impl Listener<Args> for Tocks {
     fn call<'a>(
         &'a self,
         _: &'a Ctx,
-        event: &'a NodeEvent,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
+        event: &'a Args,
+        _: Call<'a, ArgValue>,
+    ) -> BoxFuture<'a, Result<Option<ArgValue>, CordisError>> {
         Box::pin(async move {
-            self.0.lock().unwrap().push(event.args.clone());
+            let args = Value::List(event.0.clone()).json().unwrap_or(Json::Null);
+            self.0.lock().unwrap().push(args);
             Ok(None)
         })
     }
@@ -86,7 +93,8 @@ pub async fn node(root: &Ctx, peer: PeerId) {
         .expect("probe provided");
     root.plugin(ImportPlugin::new(peer.clone(), ["calendar"]));
     root.plugin(ExportPlugin::new(peer.clone(), ["probe"]));
-    root.plugin(EventsPlugin::new(peer.clone(), ["tick"], ["tock"]).expect("events"));
+    // This node's `tick` reaches the peer; the peer's `tock` reaches here.
+    root.plugin(LinkEventsPlugin::new(peer.clone(), ["tick"], ["tock"]));
     let tocks = Arc::new(Mutex::new(Vec::new()));
     root.events()
         .on(root, &node_event("tock"), Tocks(tocks.clone()))
@@ -176,17 +184,27 @@ pub async fn node(root: &Ctx, peer: PeerId) {
     )
     .await;
 
-    // Events: tick there; tock back before tick's parallel ends.
-    root.events()
-        .parallel(
-            root,
-            &node_event("tick"),
-            Arc::new(NodeEvent {
-                args: json!(["ping"]),
-            }),
-        )
-        .await
-        .expect("tick forwarded");
+    // Events: tick there; tock back before tick's parallel ends. The
+    // peer's listener reaches this bus once the link announced it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        root.events()
+            .parallel(
+                root,
+                &node_event("tick"),
+                Arc::new(Args(vec![Value::Data(json!("ping"))])),
+            )
+            .await
+            .expect("tick dispatched");
+        if !tocks.lock().unwrap().is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for the peer's tick listener"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     assert_eq!(
         *tocks.lock().unwrap(),
         vec![json!(["pong", 1])],
@@ -238,22 +256,24 @@ async fn record(probe: Arc<dyn HostDispatch>, line: String) {
 
 /// On `tick`, forward `tock` back.
 struct TickTock(Ctx);
-impl Listener<NodeEvent> for TickTock {
+impl Listener<Args> for TickTock {
     fn call<'a>(
         &'a self,
         _: &'a Ctx,
-        event: &'a NodeEvent,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
+        event: &'a Args,
+        _: Call<'a, ArgValue>,
+    ) -> BoxFuture<'a, Result<Option<ArgValue>, CordisError>> {
         Box::pin(async move {
-            let count = event.args.as_array().map_or(0, Vec::len);
+            let count = event.0.len();
             self.0
                 .events()
                 .parallel(
                     &self.0,
                     &node_event("tock"),
-                    Arc::new(NodeEvent {
-                        args: json!(["pong", count]),
-                    }),
+                    Arc::new(Args(vec![
+                        Value::Data(json!("pong")),
+                        Value::Data(json!(count)),
+                    ])),
                 )
                 .await?;
             Ok(None)
@@ -295,7 +315,7 @@ pub fn fixture(root: &Ctx, main: PeerId) {
         Greeter([host_key("probe")]),
     );
     root.plugin(crate::HostPlugin::new(main.clone(), Arc::new(catalog)));
-    root.plugin(EventsPlugin::new(main, ["tock"], ["tick"]).expect("events"));
+    root.plugin(LinkEventsPlugin::new(main, ["tock"], ["tick"]));
     root.events()
         .on(root, &node_event("tick"), TickTock(root.clone()))
         .expect("tick listener");

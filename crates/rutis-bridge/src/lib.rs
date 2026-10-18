@@ -6,7 +6,8 @@
 //!   rows.
 //! - Links between rutis nodes ([`LinkPlugin`]) and what runs on them:
 //!   services exported and imported, plugins hosted for a peer, events
-//!   forwarded ([`PeerPlugin`] composes them).
+//!   shared ([`PeerPlugin`] composes them).
+//! - [`events`]: the logical event bus across runtimes and nodes.
 //! - Access points ([`AccessPointPlugin`]): one listener admitting many
 //!   runtimes that dial out to rutis, each by the id it greets with, as an
 //!   [`Admission`] decides.
@@ -32,6 +33,7 @@ pub mod build;
 pub mod channel;
 #[cfg(feature = "cordis")]
 pub mod cordis;
+pub mod events;
 pub mod exports;
 pub mod runtime;
 pub mod session;
@@ -47,7 +49,6 @@ pub mod fuzzing;
 
 mod access_point;
 mod compose;
-mod events;
 mod host;
 mod identity;
 mod link;
@@ -60,7 +61,7 @@ pub use access_point::{
 };
 pub use channel::{Channel, ConnectError, PeerId};
 pub use compose::{Features, PeerHandle, PeerPlugin};
-pub use events::{node_event, EventsPlugin, NodeEvent};
+pub use events::LinkEventsPlugin;
 pub use host::{Described, HostPlugin, Installed, PluginCatalog, ServiceKeys, StaticCatalog};
 pub use identity::{
     admission_key, fingerprint, identity_key, Admission, AdmissionPlugin, Credential, Identity,

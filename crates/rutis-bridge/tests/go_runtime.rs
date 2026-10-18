@@ -89,6 +89,7 @@ async fn service(
             &[],
             &described.provides,
             projection,
+            &[],
         )
         .await
         .unwrap();

@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use rutis::Ctx;
 use rutis_bridge::runtime::{Launcher, Mount, Process};
 use serde_json::{json, Value};
 
@@ -41,20 +42,23 @@ enum Via {
     WebSocket,
 }
 
-/// The mount every conformance cell uses: the runtime receives the events
-/// `weather.expected.json` says the host emits.
-fn weather_mount<'a>(anchor: &'a Path, launcher: &'a Launcher) -> Mount<'a> {
+/// The mount every conformance cell uses: the runtime's listeners join
+/// `ctx`'s bus, where the host emits what `weather.expected.json` says.
+fn weather_mount<'a>(anchor: &'a Path, launcher: &'a Launcher, ctx: &Ctx) -> Mount<'a> {
     Mount {
         anchor: Some(anchor),
         launcher: Some(launcher),
-        emits: rutis_bridge::runtime::testing::weather_emits(),
+        ctx: Some(ctx.clone()),
         ..Mount::default()
     }
 }
 
-/// The same events, for a mount built by hand (`Process::attach`).
-fn weather_emits_only() -> Vec<String> {
-    rutis_bridge::runtime::testing::weather_emits()
+/// The same bus, for a mount built by hand (`Process::attach`).
+fn on_bus<'a>(ctx: &Ctx) -> Mount<'a> {
+    Mount {
+        ctx: Some(ctx.clone()),
+        ..Mount::default()
+    }
 }
 
 /// The Python interpreter: one with `websockets` for WebSocket channels
@@ -66,7 +70,7 @@ fn python() -> String {
 }
 
 /// Start `runtime` on a fresh project, connected as `via` says.
-async fn start(runtime: Runtime, via: Via, dir: &Path) -> (Arc<Process>, PathBuf) {
+async fn start(runtime: Runtime, via: Via, dir: &Path, ctx: &Ctx) -> (Arc<Process>, PathBuf) {
     let (launcher, anchor, entry) = match runtime {
         Runtime::Node => {
             let package = repo().join("node/rutis-runtime");
@@ -117,8 +121,8 @@ async fn start(runtime: Runtime, via: Via, dir: &Path) -> (Arc<Process>, PathBuf
         }
     };
     match via {
-        Via::WebSocket => return (listening(launcher, &anchor).await, entry),
-        Via::Loopback => return (handed_over(launcher, &anchor).await, entry),
+        Via::WebSocket => return (listening(launcher, &anchor, ctx).await, entry),
+        Via::Loopback => return (handed_over(launcher, &anchor, ctx).await, entry),
         _ => {}
     }
     let launcher = match via {
@@ -127,7 +131,7 @@ async fn start(runtime: Runtime, via: Via, dir: &Path) -> (Arc<Process>, PathBuf
     };
     let process = Process::mount(
         &repo().join("node/rutis-runtime"),
-        weather_mount(&anchor, &launcher),
+        weather_mount(&anchor, &launcher, ctx),
     )
     .await
     .unwrap_or_else(|error| panic!("{runtime:?} ({via:?}) failed to start: {error}"));
@@ -136,7 +140,7 @@ async fn start(runtime: Runtime, via: Via, dir: &Path) -> (Arc<Process>, PathBuf
 
 /// Start the runtime with `Handover::Loopback` through the local transport,
 /// on every platform, and attach.
-async fn handed_over(launcher: Launcher, anchor: &Path) -> Arc<Process> {
+async fn handed_over(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Process> {
     use rutis_bridge::channel::PeerId;
     use rutis_bridge::transport::local::{Handover, LocalTransport, Spawn};
     use rutis_bridge::{Dial, Transport};
@@ -155,23 +159,14 @@ async fn handed_over(launcher: Launcher, anchor: &Path) -> Arc<Process> {
         .unwrap();
     assert_eq!(channel.info.transport, "tcp", "a loopback channel");
     let format = rutis_bridge::session::Format::Compat;
-    let process = Process::attach(
-        channel,
-        Mount {
-            emits: weather_emits_only(),
-            ..Mount::default()
-        },
-        format,
-    )
-    .await
-    .unwrap();
+    let process = Process::attach(channel, on_bus(ctx), format).await.unwrap();
     // The transport ends its processes when dropped: keep it for the test.
     std::mem::forget(transport);
     process
 }
 
 /// Start the runtime listening on a loopback WebSocket, dial it, attach.
-async fn listening(launcher: Launcher, anchor: &Path) -> Arc<Process> {
+async fn listening(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Process> {
     use rutis_bridge::channel::PeerId;
     use rutis_bridge::{Credential, Dial, Identity, StaticIdentity, Transport};
     use tokio::io::AsyncBufReadExt;
@@ -234,16 +229,7 @@ async fn listening(launcher: Launcher, anchor: &Path) -> Arc<Process> {
         rutis_bridge::session::Endpoint::rust(PeerId::new("main").unwrap())
             .expect(PeerId::new("runtime").unwrap()),
     );
-    let process = Process::attach(
-        channel,
-        Mount {
-            emits: weather_emits_only(),
-            ..Mount::default()
-        },
-        format,
-    )
-    .await
-    .unwrap();
+    let process = Process::attach(channel, on_bus(ctx), format).await.unwrap();
     assert!(
         process.connection().supports("runtime"),
         "a runner declares its contract"
@@ -253,11 +239,12 @@ async fn listening(launcher: Launcher, anchor: &Path) -> Arc<Process> {
 
 async fn semantics(runtime: Runtime, via: Via) {
     let dir = tempfile::tempdir().unwrap();
-    let (process, entry) = start(runtime, via, dir.path()).await;
+    let ctx = Ctx::root().unwrap();
+    let (process, entry) = start(runtime, via, dir.path(), &ctx).await;
     // Only the `Process` facade starts the process itself and reports its
     // exit; the other columns attach to a channel.
     let started_here = matches!(via, Via::Inherit | Via::DialBack);
-    rutis_bridge::runtime::testing::runtime(process, &entry, started_here).await;
+    rutis_bridge::runtime::testing::runtime(&ctx, process, &entry, started_here).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -1,4 +1,3 @@
-use crate::runtime::events::EventSink;
 use crate::runtime::rpc::{Connection, Dispatch, Reply, Value as RpcValue};
 use crate::runtime::Error;
 use crate::runtime::{CallerRow, HostDispatch, RuntimeSession};
@@ -117,7 +116,9 @@ struct Imports {
     /// The exports of each row loaded with an observer, by row key.
     rows: Mutex<HashMap<String, RowExports>>,
     hosts: Mutex<HashMap<String, HostEntry>>,
-    forwarded: Option<Arc<dyn EventSink>>,
+    /// The session's side of the logical event bus (`events.*`), set once
+    /// the session is up, before `mount`.
+    bus: std::sync::OnceLock<Arc<crate::events::SessionEvents>>,
     /// What to do when a row's plugin ends on its own (`rows.ended`), by
     /// row key (see [`Process::on_row_ended`]).
     ended: Mutex<HashMap<String, RowEnded>>,
@@ -138,10 +139,14 @@ pub struct Mount<'a> {
     pub observer: Option<Arc<dyn ServiceEvents>>,
     /// rutis services the plugins may depend on.
     pub hosts: Vec<Host>,
-    /// Cordis events forwarded to the rutis side, and where they go.
-    pub events: Option<(Vec<String>, Arc<dyn EventSink>)>,
-    /// Events the rutis side may emit into the runtime (see `Process::emit`).
-    pub emits: Vec<String>,
+    /// The context the runtime's listeners join the logical event bus
+    /// through (`docs/design-events-2026-10-18.md`): its bus, and, for the
+    /// plugins of `plugins`, its scope. Without one the runtime's events
+    /// stay in its process.
+    pub ctx: Option<rutis::Ctx>,
+    /// The runtime's name, as listener descriptors give it (`runtime`);
+    /// `"runtime"` when not set.
+    pub runtime: Option<String>,
     /// With no `plugins`: start an empty Context whose Cordis resolves from
     /// this file (a `package.json`), and load plugins later one by one with
     /// [`Process::load_row`].
@@ -445,18 +450,20 @@ impl Dispatch for Imports {
                 .ok_or_else(|| Error::Value(format!("no host service {name}")))?;
             return crate::session::with_caller_row(row, || host.invoke(method, args));
         }
-        if target.is_empty() && method == "event" {
-            let mut args = args.list()?.into_iter();
-            let name: String =
-                crate::runtime::decode(args.next().unwrap_or(RpcValue::Undefined).json()?)?;
-            let values = args.next().unwrap_or(RpcValue::List(Vec::new())).list()?;
-            return match &self.forwarded {
-                Some(sink) => sink.event(&name, values),
-                None => Ok(RpcValue::Undefined),
+        if target.is_empty() && method.starts_with("events.") {
+            return match self.bus.get() {
+                Some(events) => events.invoke(connection, method, args),
+                None => Err(Error::Value(format!(
+                    "{method}: the session's events are not set up yet"
+                ))),
             };
         }
         if target.is_empty() && method == "rows.ended" {
             let (key,): (String,) = crate::runtime::decode(args.json()?)?;
+            // Its listeners leave the bus at once (events protocol §7.1).
+            if let Some(events) = self.bus.get() {
+                events.row_ended(&key);
+            }
             let ended = self.ended.lock().unwrap().remove(&key);
             if let Some(ended) = ended {
                 ended();
@@ -508,37 +515,13 @@ struct Announced {
     methods: Value,
 }
 
-/// A mount carrying a Cordis `internal/*` event either way fails before
-/// anything starts (boundary rule 5: framework-internal events do not cross
-/// the boundary).
-fn check_events(mount: &Mount<'_>) -> Result<(), Error> {
-    let forwarded = mount.events.as_ref().map(|(names, _)| names.as_slice());
-    for (field, names) in [
-        ("events", forwarded.unwrap_or_default()),
-        ("emits", &mount.emits),
-    ] {
-        let internal: Vec<&str> = names
-            .iter()
-            .map(String::as_str)
-            .filter(|name| name.starts_with("internal/"))
-            .collect();
-        if !internal.is_empty() {
-            return Err(Error::Value(format!(
-                "framework-internal events do not cross the boundary (mount {field}): {}",
-                internal.join(", ")
-            )));
-        }
-    }
-    Ok(())
-}
-
 /// What the `mount` call sends.
 struct MountRest {
     plugins: Vec<Value>,
     services: Value,
-    forwarded_names: Vec<String>,
-    emits: Vec<String>,
     provided: serde_json::Map<String, Value>,
+    ctx: Option<rutis::Ctx>,
+    runtime: Option<String>,
 }
 
 /// A mount's parts, once split from where the process comes from.
@@ -547,10 +530,9 @@ struct Started {
     services: Value,
     events: Option<Arc<dyn ServiceEvents>>,
     hosts: HashMap<String, HostEntry>,
-    forwarded: Option<Arc<dyn EventSink>>,
-    forwarded_names: Vec<String>,
-    emits: Vec<String>,
     provided: serde_json::Map<String, Value>,
+    ctx: Option<rutis::Ctx>,
+    runtime: Option<String>,
 }
 
 impl Started {
@@ -561,15 +543,11 @@ impl Started {
             services,
             observer: events,
             hosts,
-            events: forwarded,
-            emits,
+            ctx,
+            runtime,
             anchor: _,
             launcher: _,
         } = mount;
-        let (forwarded_names, forwarded) = match forwarded {
-            Some((names, sink)) => (names, Some(sink)),
-            None => (Vec::new(), None),
-        };
         let provided = hosts
             .iter()
             .map(|host| (host.name.clone(), host.methods.clone()))
@@ -593,10 +571,9 @@ impl Started {
             services,
             events,
             hosts,
-            forwarded,
-            forwarded_names,
-            emits,
             provided,
+            ctx,
+            runtime,
         };
         (started, plugins)
     }
@@ -738,8 +715,8 @@ impl Process {
                 services,
                 observer: events,
                 hosts,
-                events: None,
-                emits: Vec::new(),
+                ctx: None,
+                runtime: None,
                 anchor: None,
                 launcher: None,
             },
@@ -750,7 +727,6 @@ impl Process {
     /// Launch a mount: see [`Mount`].
     pub async fn mount(node_package: &Path, mount: Mount<'_>) -> Result<Arc<Self>, Error> {
         let (anchor, launcher) = (mount.anchor, mount.launcher);
-        check_events(&mount)?;
         let (started, plugins) = Started::from(mount);
         let plugin = match (plugins.first(), anchor) {
             (Some((plugin, _)), _) => *plugin,
@@ -785,7 +761,6 @@ impl Process {
         mount: Mount<'_>,
         format: crate::runtime::rpc::Format,
     ) -> Result<Arc<Self>, Error> {
-        check_events(&mount)?;
         let (started, _) = Started::from(mount);
         Self::start(channel, None, None, started, format).await
     }
@@ -810,10 +785,9 @@ impl Process {
             services,
             events,
             hosts,
-            forwarded,
-            forwarded_names,
-            emits,
             provided,
+            ctx,
+            runtime,
         } = started;
         let plugins: Vec<Value> = plugins
             .iter()
@@ -825,15 +799,15 @@ impl Process {
             exported: Mutex::default(),
             rows: Mutex::default(),
             hosts: Mutex::new(hosts),
-            forwarded,
+            bus: std::sync::OnceLock::new(),
             ended: Mutex::default(),
         });
         let rest = MountRest {
             plugins,
             services,
-            forwarded_names,
-            emits,
             provided,
+            ctx,
+            runtime,
         };
         (imports, rest)
     }
@@ -845,7 +819,6 @@ impl Process {
         session: Arc<dyn RuntimeSession>,
         mount: Mount<'_>,
     ) -> Result<Arc<Self>, Error> {
-        check_events(&mount)?;
         let (started, _) = Started::from(mount);
         let (imports, rest) = Self::imports(started);
         let routed = session.route(imports.clone())?;
@@ -871,9 +844,9 @@ impl Process {
         let MountRest {
             plugins,
             services,
-            forwarded_names,
-            emits,
             provided,
+            ctx,
+            runtime,
         } = rest;
         let process = Arc::new(Self {
             peer,
@@ -887,13 +860,27 @@ impl Process {
             _directory: directory,
             routed,
         });
+        // The session joins the logical bus before anything is mounted: the
+        // runtime learns which names have listeners elsewhere first
+        // (events protocol §4.5).
+        let scope = ctx.as_ref().map(rutis::Ctx::scope).unwrap_or_default();
+        let runtime = runtime.unwrap_or_else(|| "runtime".to_owned());
+        let events = crate::events::SessionEvents::join(
+            ctx.as_ref(),
+            process.peer.clone(),
+            runtime.clone(),
+            scope.clone(),
+        )?;
+        let _ = process.imports.bus.set(events);
         let mounted = process
             .call_async(
                 "",
                 "mount",
                 // `announce`: this side takes the services rows provide without
-                // declaring them (`service` with `{ row, methods }`).
-                json!({ "plugins": plugins, "services": services, "provided": provided, "events": forwarded_names, "emits": emits, "announce": true }),
+                // declaring them (`service` with `{ row, methods }`). `scope`:
+                // the chain of the plugins of `plugins` (events protocol §3);
+                // `runtime`: its name, as listener descriptors give it.
+                json!({ "plugins": plugins, "services": services, "provided": provided, "announce": true, "scope": scope, "runtime": runtime }),
             )
             .await?;
         let slots: HashMap<String, (Option<String>, u64)> =
@@ -923,7 +910,11 @@ impl Process {
     /// Load one plugin into the Context as row `key` (rows mode, see
     /// [`Mount::anchor`]). `isolate` gives (service, label) pairs: rows
     /// naming the same label share that service's scope; `inject` lists
-    /// extra services the row waits for. Resolves once the plugin settled.
+    /// extra services the row waits for. `scope` is the row's scope chain
+    /// (`[]` at the root, [`rutis::Ctx::scope`] of the context that loads
+    /// it): its listeners hear the events emitted there and below, and its
+    /// emissions are emitted there (events protocol §3). Resolves once the
+    /// plugin settled, its listeners on the bus.
     pub async fn load_row(
         &self,
         key: &str,
@@ -931,19 +922,38 @@ impl Process {
         config: Value,
         isolate: &[(String, String)],
         inject: &[String],
+        scope: &[rutis::Scope],
     ) -> Result<(), Error> {
+        self.row_loading(key, scope);
         let loaded = self
             .call_async(
                 "",
                 "rows.load",
-                json!([key, entry, config, isolate, inject]),
+                json!([key, entry, config, isolate, inject, {}, { "scope": scope }]),
             )
             .await;
         if loaded.is_err() {
             // Never loaded, so it cannot end.
             self.imports.ended.lock().unwrap().remove(key);
+            self.row_gone(key);
         }
         loaded.map(|_| ())
+    }
+
+    /// Row `key` is being loaded in `scope`: its listeners may register
+    /// from now on.
+    fn row_loading(&self, key: &str, scope: &[rutis::Scope]) {
+        if let Some(events) = self.imports.bus.get() {
+            events.row_loading(key, scope.to_vec());
+        }
+    }
+
+    /// Row `key` is gone: its listeners leave the bus (events protocol
+    /// §7.1).
+    fn row_gone(&self, key: &str) {
+        if let Some(events) = self.imports.bus.get() {
+            events.row_ended(key);
+        }
     }
 
     /// Load row `key` like [`Process::load_row`], exporting the services in
@@ -967,13 +977,17 @@ impl Process {
         inject: &[String],
         exports: &serde_json::Map<String, Value>,
         observer: Arc<dyn ServiceEvents>,
+        scope: &[rutis::Scope],
     ) -> Result<(), Error> {
         let loaded = self
-            .load_exporting(key, entry, config, isolate, inject, exports, observer)
+            .load_exporting(
+                key, entry, config, isolate, inject, exports, observer, scope,
+            )
             .await;
         if loaded.is_err() {
             // Never loaded, so it cannot end.
             self.imports.ended.lock().unwrap().remove(key);
+            self.row_gone(key);
         }
         loaded
     }
@@ -988,6 +1002,7 @@ impl Process {
         inject: &[String],
         exports: &serde_json::Map<String, Value>,
         observer: Arc<dyn ServiceEvents>,
+        scope: &[rutis::Scope],
     ) -> Result<(), Error> {
         if !exports.is_empty() {
             self.require("rows.v2")?;
@@ -1019,11 +1034,12 @@ impl Process {
             .lock()
             .unwrap()
             .insert(key.to_owned(), RowExports { observer, ids });
+        self.row_loading(key, scope);
         let loaded = self
             .call_async(
                 "",
                 "rows.load",
-                json!([key, entry, config, isolate, inject, exports]),
+                json!([key, entry, config, isolate, inject, exports, { "scope": scope }]),
             )
             .await;
         if loaded.is_err() {
@@ -1057,6 +1073,8 @@ impl Process {
 
     /// Dispose row `key`.
     pub async fn unload_row(&self, key: &str) -> Result<(), Error> {
+        // Withdrawn when `rows.unload` is sent (events protocol §7.1).
+        self.row_gone(key);
         let unloaded = self.call_async("", "rows.unload", json!([key])).await;
         // After the call: the withdrawals of the row's services arrive
         // before its reply.
@@ -1321,14 +1339,6 @@ impl Process {
         self.peer.invoke(handle, method, RpcValue::List(args))
     }
 
-    /// Emit a declared event in the runtime; resolves once all listeners
-    /// have finished, reporting their failures together.
-    pub async fn emit(&self, event: &str, args: Vec<RpcValue>) -> Result<(), Error> {
-        let args = RpcValue::List(vec![json!(event).into(), RpcValue::List(args)]);
-        crate::runtime::rpc::settle(self.peer.invoke_async("", "emit", args).await?).await?;
-        Ok(())
-    }
-
     /// Read a declared property of the service object `handle` (live).
     pub fn get(&self, handle: &str, property: &str) -> Result<RpcValue, Error> {
         self.peer
@@ -1420,7 +1430,7 @@ mod tests {
             exported: Mutex::default(),
             rows: Mutex::default(),
             hosts: Mutex::default(),
-            forwarded: None,
+            bus: std::sync::OnceLock::new(),
             ended: Mutex::default(),
         }
     }

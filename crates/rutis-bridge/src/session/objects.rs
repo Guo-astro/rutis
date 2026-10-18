@@ -1065,6 +1065,208 @@ fn unmarked(json: Json, keys: &Keys, references: &[Reference], tagged: &[Tagged]
     }
 }
 
+/// The session value of what `produce` serializes: run inside an encode,
+/// so the [`ObjectRef`]s, [`RemoteFunction`]s, tagged values and
+/// [`Dynamic`]s it serializes cross as themselves, as in [`arg`]. For
+/// serializations done elsewhere (an event's type-erased codec).
+pub(crate) fn encode_with(produce: impl FnOnce() -> Result<Json, String>) -> Result<Value, Error> {
+    let keys = Keys::new(NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let previous = ENCODING.with(|current| current.replace(Some(Vec::new())));
+    let previous_tagged = ENCODING_TAGGED.with(|current| current.replace(Some(Vec::new())));
+    let json = with_keys(&keys, produce);
+    let references = ENCODING
+        .with(|current| current.replace(previous))
+        .unwrap_or_default();
+    let tagged = ENCODING_TAGGED
+        .with(|current| current.replace(previous_tagged))
+        .unwrap_or_default();
+    let json = json.map_err(Error::Value)?;
+    if references.is_empty() && tagged.is_empty() {
+        return Ok(Value::Data(json));
+    }
+    Ok(unmarked(json, &keys, &references, &tagged))
+}
+
+/// Decode `value` with `consume`, which deserializes from the JSON it is
+/// given: run inside a decode, so references and tagged values reach the
+/// types that take them ([`decode_value`] without its holder check, for
+/// deserializations done elsewhere).
+pub(crate) fn decode_with<R>(
+    value: Value,
+    consume: impl FnOnce(Json) -> Result<R, String>,
+) -> Result<R, Error> {
+    let mut taken = std::collections::HashSet::new();
+    value_keys(&value, &mut taken);
+    let keys = Keys::avoiding(&taken);
+    let mut references = Vec::new();
+    let mut tagged = Vec::new();
+    let json = marked(value, &keys, &mut references, &mut tagged);
+    decoding(&keys, references, tagged, || consume(json)).map_err(Error::Value)
+}
+
+/// Run `operation` as a decode with `keys` and these tables.
+fn decoding<R>(
+    keys: &Keys,
+    references: Vec<Reference>,
+    tagged: Vec<Tagged>,
+    operation: impl FnOnce() -> R,
+) -> R {
+    let previous = DECODING.with(|current| current.replace(references));
+    let previous_tagged = DECODING_TAGGED.with(|current| current.replace(tagged));
+    let result = with_keys(keys, operation);
+    DECODING.with(|current| current.replace(previous));
+    DECODING_TAGGED.with(|current| current.replace(previous_tagged));
+    result
+}
+
+/// What `consume` makes of what `produce` serializes, as if it had crossed
+/// a session: references and tagged values pass from one to the other as
+/// themselves. For converting one event type into another (the logical
+/// bus's transcoder).
+pub(crate) fn transcode_with<R>(
+    produce: impl FnOnce() -> Result<Json, String>,
+    consume: impl FnOnce(Json) -> Result<R, String>,
+) -> Result<R, String> {
+    let keys = Keys::new(NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let previous = ENCODING.with(|current| current.replace(Some(Vec::new())));
+    let previous_tagged = ENCODING_TAGGED.with(|current| current.replace(Some(Vec::new())));
+    let json = with_keys(&keys, produce);
+    let references = ENCODING
+        .with(|current| current.replace(previous))
+        .unwrap_or_default();
+    let tagged = ENCODING_TAGGED
+        .with(|current| current.replace(previous_tagged))
+        .unwrap_or_default();
+    let json = json?;
+    decoding(&keys, references, tagged, || consume(json))
+}
+
+/// Any session value inside serde data, kept as it is: in an encode (or a
+/// transcode) its references and tagged values become markers of it, in a
+/// decode they are read back from them. Outside both only plain data
+/// serializes, and anything deserializes as data. Dynamic events
+/// (`rutis_bridge::events::Args`) carry their arguments as these.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dynamic(pub Value);
+
+impl Serialize for Dynamic {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let Some(keys) = current_keys().filter(|_| ENCODING.with(|e| e.borrow().is_some())) else {
+            return self
+                .0
+                .clone()
+                .json()
+                .map_err(ser::Error::custom)?
+                .serialize(serializer);
+        };
+        if matches!(self.0, Value::Signal) {
+            return Err(ser::Error::custom("a signal cannot be passed as data"));
+        }
+        let mut references = Vec::new();
+        let mut tagged = Vec::new();
+        // Recorded with indices after what this encode recorded already.
+        let (base, base_tagged) = (
+            ENCODING.with(|e| e.borrow().as_ref().map_or(0, Vec::len)),
+            ENCODING_TAGGED.with(|e| e.borrow().as_ref().map_or(0, Vec::len)),
+        );
+        let json = marked_from(
+            self.0.clone(),
+            &keys,
+            &mut references,
+            &mut tagged,
+            (base, base_tagged),
+        );
+        ENCODING.with(|e| {
+            if let Some(list) = e.borrow_mut().as_mut() {
+                list.extend(references);
+            }
+        });
+        ENCODING_TAGGED.with(|e| {
+            if let Some(list) = e.borrow_mut().as_mut() {
+                list.extend(tagged);
+            }
+        });
+        json.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Dynamic {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let json = Json::deserialize(deserializer)?;
+        let Some(keys) = current_keys() else {
+            return Ok(Self(Value::Data(json)));
+        };
+        let references = DECODING.with(|current| current.borrow().clone());
+        let tagged = DECODING_TAGGED.with(|current| current.borrow().clone());
+        Ok(Self(unmarked(json, &keys, &references, &tagged)))
+    }
+}
+
+/// [`marked`] into tables that continue others: indices start at `base`
+/// (references, tagged values).
+fn marked_from(
+    value: Value,
+    keys: &Keys,
+    references: &mut Vec<Reference>,
+    tagged: &mut Vec<Tagged>,
+    base: (usize, usize),
+) -> Json {
+    let mut local_references = Vec::new();
+    let mut local_tagged = Vec::new();
+    let json = marked(value, keys, &mut local_references, &mut local_tagged);
+    let json = shift_markers(json, keys, base);
+    let local_tagged = local_tagged
+        .into_iter()
+        .map(|entry| match entry {
+            Tagged::Leaf(value) => Tagged::Leaf(value),
+            Tagged::Map(entries) => Tagged::Map(
+                entries
+                    .into_iter()
+                    .map(|(k, v)| (shift_markers(k, keys, base), shift_markers(v, keys, base)))
+                    .collect(),
+            ),
+            Tagged::Set(elements) => Tagged::Set(
+                elements
+                    .into_iter()
+                    .map(|json| shift_markers(json, keys, base))
+                    .collect(),
+            ),
+        })
+        .collect::<Vec<_>>();
+    references.extend(local_references);
+    tagged.extend(local_tagged);
+    json
+}
+
+/// `json` with each marker of `keys` moved up by `base`.
+fn shift_markers(json: Json, keys: &Keys, base: (usize, usize)) -> Json {
+    match json {
+        Json::Object(fields) => {
+            if fields.len() == 1 {
+                if let Some(index) = fields.get(&keys.reference).and_then(Json::as_u64) {
+                    return keys.reference_marker(index as usize + base.0);
+                }
+                if let Some(index) = fields.get(&keys.value).and_then(Json::as_u64) {
+                    return keys.value_marker(index as usize + base.1);
+                }
+            }
+            Json::Object(
+                fields
+                    .into_iter()
+                    .map(|(key, value)| (key, shift_markers(value, keys, base)))
+                    .collect(),
+            )
+        }
+        Json::Array(items) => Json::Array(
+            items
+                .into_iter()
+                .map(|item| shift_markers(item, keys, base))
+                .collect(),
+        ),
+        json => json,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

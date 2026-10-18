@@ -307,3 +307,25 @@ test('the bus is one file in the Node runtime, the Bun runtime and the testing t
   assert.equal(read('../../rutis/src/events.mjs'), mine, 'node/rutis/src/events.mjs')
   assert.equal(read('../../../bun/rutis-bun/src/events.mjs'), mine, 'bun/rutis-bun/src/events.mjs')
 })
+
+// A Cordis application linked to other nodes (§9): a linked node's listener
+// is a remote entry of its bus, called with the dispatch's mode; prefix
+// entries match by prefix; the table is followed for announcements.
+test('remote entries take part in every mode, and the table can be followed', async () => {
+  const { bus } = local()
+  const changes = []
+  const unwatch = bus.watch(change => changes.push(change.added ? `+${change.added.name}` : `-${change.removed.name}`))
+  const calls = []
+  const remote = bus.onRemote({
+    name: 't/', prefix: true, kind: 'any', node: 'mac', plugin: 'far',
+    invoke(mode, name, args) { calls.push([mode, name, args.length]); return mode === 'serial' ? `far ${name}` : undefined },
+  })
+  bus.on({ name: 't/x', callback: () => undefined, row: 'r' })
+  assert.equal(await bus.dispatch('serial', 't/x', [1]), 'far t/x')
+  await bus.dispatch('parallel', 't/y', [])
+  assert.deepEqual(calls, [['serial', 't/x', 1], ['parallel', 't/y', 0]])
+  assert.deepEqual(bus.describe(remote), { name: 't/', prefix: true, plugin: 'far', row: null, runtime: null, node: 'mac', scope: [], global: false })
+  bus.off(remote)
+  assert.deepEqual(changes, ['+t/', '+t/x', '-t/'])
+  unwatch()
+})

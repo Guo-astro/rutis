@@ -323,6 +323,7 @@ impl Inner {
                 token,
             });
             self.monitor(slot.clone(), view.clone());
+            crate::framework::follow(&row_ctx, &view, &slot.row, "group");
             state.running.insert(
                 slot,
                 Running {
@@ -376,6 +377,7 @@ impl Inner {
             EntryFactory {
                 name: name.clone(),
                 injects: injects.clone(),
+                row: slot.row.clone(),
             },
             EntryConfig {
                 resolved: resolved.clone(),
@@ -384,6 +386,7 @@ impl Inner {
             },
         );
         self.monitor(slot.clone(), view.clone());
+        crate::framework::follow(&row_ctx, &view, &slot.row, &name);
         state.running.insert(
             slot,
             Running {

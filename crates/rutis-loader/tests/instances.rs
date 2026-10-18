@@ -282,6 +282,7 @@ impl Listener<LoaderChanged> for Changes {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a LoaderChanged,
+        _: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         self.0.lock().unwrap().push(e.clone());
         Box::pin(async { Ok(None) })

@@ -326,6 +326,7 @@ impl<E: Event> Listener<E> for Forward<E> {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a E,
+        _: rutis::Call<'a, E::Value>,
     ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
         let _ = self.send.send((self.render)(e));
         Box::pin(async { Ok(None) })

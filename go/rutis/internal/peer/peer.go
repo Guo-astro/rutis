@@ -1000,15 +1000,27 @@ func (p *Peer) Notify(target, method string, args []any) {
 // Announce sends a call as Notify does, and returns a channel closed once
 // the far end answered it (whatever the answer) or the session ended.
 func (p *Peer) Announce(target, method string, args []any) <-chan struct{} {
+	return p.AnnounceReporting(target, method, args, nil)
+}
+
+// AnnounceReporting is Announce, with `failed` told why when the far end
+// refuses the call or it cannot be sent (not when the session ends first).
+func (p *Peer) AnnounceReporting(target, method string, args []any, failed func(error)) <-chan struct{} {
 	done := make(chan struct{})
 	_, waiter, err := p.request(context.Background(), "invoke", map[string]any{"target": target, "method": method}, args, true, nil)
 	if err != nil {
+		if failed != nil {
+			failed(err)
+		}
 		close(done)
 		return done
 	}
 	go func() {
 		select {
-		case <-waiter:
+		case answer := <-waiter:
+			if answer.err != nil && failed != nil {
+				failed(answer.err)
+			}
 		case <-p.closed:
 		}
 		close(done)

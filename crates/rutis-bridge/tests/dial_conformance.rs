@@ -189,14 +189,14 @@ impl Accept for Rows {
             let session = connection.runtime_session().connection();
             let config = format!("{} {}", connection.id(), connection.peer().generation());
             session
-                .invoke_async("", "mount", Value::Data(json!({ "emits": [] })))
+                .invoke_async("", "mount", Value::Data(json!({})))
                 .await
                 .map_err(|error| format!("mount: {error}"))?;
             session
                 .invoke_async(
                     "",
                     "rows.load",
-                    Value::Data(json!(["marker", "marker", config, [], []])),
+                    Value::Data(json!(["marker", "marker", config, [], [], {}, { "scope": [] }])),
                 )
                 .await
                 .map_err(|error| format!("rows.load: {error}"))?;

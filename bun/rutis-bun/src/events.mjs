@@ -16,6 +16,11 @@
 // runs it without a host (always the fast path); a test checks the copies
 // are equal. It knows nothing of Cordis or of the session: the runtime
 // passes in what it needs.
+//
+// A Cordis application linked to other nodes (node/rutis-runtime/src/
+// bridge) is a host of its own: its bus has no host above it, and holds,
+// besides its own listeners, remote entries (`onRemote`) for the listeners
+// of linked nodes, called through `invoke` with the dispatch's mode (§9).
 
 export const MODES = ['emit', 'parallel', 'serial', 'waterfall', 'bail']
 
@@ -68,6 +73,10 @@ const errorText = error => `${error?.name ?? 'Error'}: ${error?.message ?? Strin
 // `internal/dispatch` for (§5.3); the oldest are forgotten.
 const SEEN = 4096
 
+// Whether `entry` hears an emission of `name` (a remote entry may be a
+// prefix entry, §4.3).
+const matches = (entry, name) => entry.prefix ? name.startsWith(entry.name) : entry.name === name
+
 export class Bus {
   // Entries of this process in registration order (§4.3).
   #entries = []
@@ -82,6 +91,8 @@ export class Bus {
   #seen = new Set()
   // Invocations still running, by row (§7.1).
   #running = new Map()
+  // Who follows the table (`watch`).
+  #watchers = new Set()
 
   // `runtime`: this runtime's name, for descriptors (null when unknown).
   // `peer`: { callAsync, call, callFunctionAsync } to the host, or none
@@ -105,9 +116,10 @@ export class Bus {
     const entry = { id: String(++this.#next), name, callback, kind, prepend: Boolean(prepend), global: Boolean(global), row, plugin, scope, owner, live: true, registered: undefined }
     if (entry.prepend) this.#entries.unshift(entry); else this.#entries.push(entry)
     this.#byId.set(entry.id, entry)
+    this.#changed({ added: entry })
     if (this.peer) {
       entry.registered = this.peer.callAsync('', 'events.on', [{ id: entry.id, name, row, plugin, kind, prepend: entry.prepend, global: entry.global }])
-      entry.registered.catch(error => this.report(`rutis: listener of ${name} in row ${this.#where(entry)} was not registered: ${errorText(error)}`))
+      entry.registered.catch(error => this.report(`rutis: registration of listener of ${name} in row ${this.#where(entry)} failed: ${errorText(error)}`))
     }
     return entry
   }
@@ -125,7 +137,37 @@ export class Bus {
     this.#byId.delete(entry.id)
     const index = this.#entries.indexOf(entry)
     if (index >= 0) this.#entries.splice(index, 1)
+    this.#changed({ removed: entry })
     return true
+  }
+
+  // A remote entry (§9): a linked node's listener of `name` (a prefix when
+  // `prefix`), called with `invoke(mode, name, args)` (in a waterfall the
+  // last argument is `next`). Withdrawn with `off`.
+  onRemote({ name, prefix = false, kind = 'any', global = false, plugin = 'plugin', row = null, runtime = null, node = null, scope = [], invoke }) {
+    const entry = { id: String(++this.#next), name, prefix: Boolean(prefix), kind, prepend: false, global: Boolean(global), row, plugin, runtime, node, scope, remote: true, invoke, live: true }
+    this.#entries.push(entry)
+    this.#byId.set(entry.id, entry)
+    this.#changed({ added: entry })
+    return entry
+  }
+
+  // Follow the table: `watcher({ added })` / `watcher({ removed })` for each
+  // entry from now on. Returns the unsubscription.
+  watch(watcher) {
+    this.#watchers.add(watcher)
+    return () => this.#watchers.delete(watcher)
+  }
+
+  // The live entries, in registration order.
+  entries() {
+    return [...this.#entries]
+  }
+
+  #changed(change) {
+    for (const watcher of this.#watchers) {
+      try { watcher(change) } catch (error) { this.report(`rutis: event table watcher failed: ${errorText(error)}`) }
+    }
   }
 
   // The registrations of `row`'s listeners still unanswered (§4.4 2).
@@ -159,6 +201,7 @@ export class Bus {
   }
 
   describe(entry) {
+    if (entry.remote) return { name: entry.name, prefix: entry.prefix, plugin: entry.plugin, row: entry.row, runtime: entry.runtime, node: entry.node, scope: entry.scope, global: entry.global }
     return { name: entry.name, prefix: false, plugin: entry.plugin, row: entry.row, runtime: this.runtime, node: null, scope: entry.scope, global: entry.global }
   }
 
@@ -209,7 +252,7 @@ export class Bus {
       throw new TypeError(`the last argument of waterfall is its terminal, a function: ${typeof terminal}`)
     }
     if (!this.local(mode, name)) return this.#viaHost(mode, name, args, { row, keep, terminal })
-    let snapshot = this.#entries.filter(entry => entry.name === name && inScope(entry.scope, scope))
+    let snapshot = this.#entries.filter(entry => matches(entry, name) && inScope(entry.scope, scope))
     if (keep) {
       try {
         snapshot = snapshot.filter(entry => entry.global || this.#keeps(keep, entry))
@@ -224,10 +267,10 @@ export class Bus {
     }
     switch (mode) {
       case 'emit':
-        for (const entry of snapshot) if (entry.live) this.#emitTo(entry, args, thisArg)
+        for (const entry of snapshot) if (entry.live) this.#emitTo(entry, args, thisArg, name)
         return undefined
       case 'parallel': return this.#parallel(name, snapshot, args, thisArg)
-      case 'serial': return this.#serial(snapshot, args, thisArg)
+      case 'serial': return this.#serial(name, snapshot, args, thisArg)
       case 'waterfall': return this.#waterfall(name, snapshot, args, thisArg, terminal)
       case 'bail': return this.#bail(name, snapshot, args, thisArg)
     }
@@ -249,9 +292,10 @@ export class Bus {
     return this.#entries.find(entry => entry.name === descriptor.name && entry.row === descriptor.row && entry.plugin === descriptor.plugin && entry.global === Boolean(descriptor.global))
   }
 
-  // Run one listener here, counted as running for its row until it settles.
-  #invoke(entry, args, thisArg) {
-    const result = Reflect.apply(entry.callback, thisArg, args)
+  // Run one listener here, counted as running for its row until it settles;
+  // a remote entry's call goes to its node, in `mode`, for `name`.
+  #invoke(entry, args, thisArg, mode, name) {
+    const result = entry.remote ? entry.invoke(mode, name ?? entry.name, args) : Reflect.apply(entry.callback, thisArg, args)
     if (isThenable(result)) {
       let running = this.#running.get(entry.row)
       if (!running) this.#running.set(entry.row, running = new Set())
@@ -262,10 +306,11 @@ export class Bus {
   }
 
   // emit: the listener's failure is reported here and goes no further (§5.6).
-  #emitTo(entry, args, thisArg) {
-    const failed = error => this.report(`rutis: listener of ${entry.name} in row ${this.#where(entry)} failed: ${errorText(error)}`, { event: entry.name, row: entry.row, plugin: entry.plugin, error })
+  #emitTo(entry, args, thisArg, name) {
+    const where = entry.remote ? `node ${entry.node}` : `row ${this.#where(entry)}`
+    const failed = error => this.report(`rutis: listener of ${name ?? entry.name} in ${where} failed: ${errorText(error)}`, { event: entry.name, row: entry.row, plugin: entry.plugin, error })
     let result
-    try { result = this.#invoke(entry, args, thisArg) } catch (error) { failed(error); return undefined }
+    try { result = this.#invoke(entry, args, thisArg, 'emit', name) } catch (error) { failed(error); return undefined }
     if (isThenable(result)) return Promise.resolve(result).then(() => undefined, error => { failed(error) })
     return undefined
   }
@@ -274,17 +319,17 @@ export class Bus {
     const started = []
     for (const entry of snapshot) {
       if (!entry.live) continue
-      started.push(new Promise(resolve => resolve(this.#invoke(entry, args, thisArg))))
+      started.push(new Promise(resolve => resolve(this.#invoke(entry, args, thisArg, 'parallel', name))))
     }
     const settled = await Promise.allSettled(started)
     const errors = settled.filter(result => result.status === 'rejected').map(result => result.reason)
     if (errors.length) throw named('AggregateError', `${errors.length} listeners of ${name} failed`, errors)
   }
 
-  async #serial(snapshot, args, thisArg) {
+  async #serial(name, snapshot, args, thisArg) {
     for (const entry of snapshot) {
       if (!entry.live) continue
-      const result = await this.#invoke(entry, args, thisArg)
+      const result = await this.#invoke(entry, args, thisArg, 'serial', name)
       if (isResult(result)) return result
     }
     return undefined
@@ -302,7 +347,7 @@ export class Bus {
         called = true
         return from(index + 1)
       }
-      return this.#invoke(snapshot[index], [...args, next], thisArg)
+      return this.#invoke(snapshot[index], [...args, next], thisArg, 'waterfall', name)
     }
     let result
     try { result = from(0) } catch (error) { ended = true; throw error }
@@ -314,7 +359,7 @@ export class Bus {
     for (const entry of snapshot) {
       if (!entry.live) continue
       if (entry.kind === 'async') throw this.#asynchronous(entry, 'bail')
-      const result = this.#invoke(entry, args, thisArg)
+      const result = this.#invoke(entry, args, thisArg, 'bail', name)
       if (isThenable(result)) {
         Promise.resolve(result).catch(() => {})
         throw this.#asynchronous(entry, 'bail')
@@ -387,6 +432,8 @@ export class Bus {
         const onward = () => {
           if (called) throw named('WaterfallNext', `next of ${entry.name} was already called`)
           called = true
+          // A linked node's `next`, to a bus with no host above it (§9).
+          if (!this.peer && typeof next === 'function') return next()
           return this.peer ? this.peer.callFunctionAsync(next, []) : Promise.reject(named('BindingError', 'the session ended'))
         }
         return this.#invoke(entry, [...values, onward], null)

@@ -65,7 +65,7 @@ A **scope** is a loader group instance (a copy of a `group`, such as one tenant 
 
 - **Scope chain** on the wire: a JSON array of `{ "id": <string>, "group": <string> }`, outermost first. The root is `[]`. `id` is opaque, unique among the host's live and past instances (Rust: the group fiber's `InstanceId` in decimal); `group` is the loader group's name. Example: `[{"id":"17","group":"tenant"},{"id":"42","group":"session"}]`.
 - **Rule**: an entry with chain `L` hears a dispatch emitted at chain `E` when `L` is a prefix of `E` (compared by `id`). Root entries hear everything; an entry in tenant `t1` does not hear `t2`.
-- **Where a process learns chains**: the host gives each row its chain. `rows.load` takes a seventh argument `{ "scope": <chain> }` (0.13 hosts always send seven arguments; `exports` is `{}` when the row exports nothing). Plugins loaded by `mount`'s `plugins` list get the mount argument `scope` (the mounting plugin's chain). Rust plugins read `Ctx::scope()` (§12.1).
+- **Where a process learns chains**: the host gives each row its chain. `rows.load` takes a seventh argument `{ "scope": <chain> }` (0.13 hosts always send seven arguments; `exports` is `{}` when the row exports nothing). Plugins loaded by `mount`'s `plugins` list get the mount argument `scope` (the mounting plugin's chain). Rust plugins read `Ctx::scope()` (§12.1). `mount` also carries `runtime`, the runtime's name as descriptors give it (§4.2): a runtime uses it for its own entries' descriptors on the fast path, so they are the same as through the host.
 - **The emitter's scope is never self-reported**: a runtime's `events.dispatch` names the emitting `row`; the host uses that row's chain and refuses a row that is not loaded on that session (`BindingError`, `row <key> is not loaded in this runtime`). Mount-mode plugins name `row: null` and get the mount's chain.
 - Leaf `isolate` labels (service scopes, U+0001 leases) are unrelated to event scopes.
 
@@ -273,7 +273,7 @@ Event arguments, results, `next` / terminal results and filter descriptors are s
 
 | `name` | When | Message (exact; `<…>` filled in) |
 | --- | --- | --- |
-| `AggregateError` | `parallel` with failures | `<n> listeners of <name> failed`; children in registration order |
+| `AggregateError` | `parallel` with failures | `<n> listeners of <name> failed`; children in registration order: on the wire the error graph's root is an `error` node named `AggregateError` whose `errors` refer to the children's nodes (each child's own graph grafted in), as JavaScript encodes an `AggregateError` |
 | `AsyncListener` | async listener in `bail` / `waterfall-sync` | `listener of <name> in row <row> is asynchronous and cannot run in a synchronous <bail\|waterfall-sync>` |
 | `WaterfallNext` | `next` twice / after the end / after cancellation / outside a waterfall (Rust) / Rust sync listener in an async waterfall | `next of <name> was already called` · `next of <name> was called after its waterfall ended` · `next is available only in a waterfall (this is <mode>)` · `a synchronous listener cannot call next in an asynchronous waterfall; register it with on` |
 | `ReservedEvent` | emitting `rutis/*` (any mode, any language, refused synchronously by the emit API) | `rutis/* events are emitted by rutis only: <name>` |
@@ -281,6 +281,13 @@ Event arguments, results, `next` / terminal results and filter descriptors are s
 | `BindingError` | transport errors, withdrawn listeners, refused frames | the transport's message, or as given in §3, §4.2, §5.3, §6 |
 
 A listener's own error crosses with its name, message and graph, as any call's error.
+
+Failures nobody waits for are reported on the side they happen, one stderr line each, in every runtime (besides §5.6's listener and filter lines):
+
+| When | Line (exact; `<…>` filled in) |
+| --- | --- |
+| an `emit` sent through the host is refused or not answered | `rutis: emit of <name> from row <row> failed: <ErrorName>: <message>` |
+| the host refuses a listener's `events.on` (outside a row load, which fails instead) | `rutis: registration of listener of <name> in row <row> failed: <ErrorName>: <message>` |
 
 ## 12. APIs
 
@@ -832,7 +839,7 @@ Also checked outside the file (Rust tests): the handshake refusals of §2.2 agai
 | Existing | Change |
 | --- | --- |
 | `hello.capabilities` | + `events-v2` (mandatory, §2.1) |
-| `mount` | − `events`, − `emits`; + `scope` (§3); reply feature `events` removed |
+| `mount` | − `events`, − `emits`; + `scope`, + `runtime` (§3); reply feature `events` removed |
 | `rows.load` | seventh argument `{ scope }` (§3) |
 | `rows.unload`, `rows.ended`, session end | withdraw the row's / session's entries (§7) |
 | runtime → host `event`, host → runtime `emit` | removed; replaced by `events.dispatch`, `events.call` |
@@ -870,3 +877,12 @@ Where the design was silent, this specification chose:
 25. **Node / Bun fire Cordis `internal/dispatch` once per dispatch** in each process that runs a listener of it, besides the emitter's own Cordis dispatch.
 26. **Testing tools** run in one process with scopes, filter, unload waiting and cancellation, without `rutis/*`; the expectation file marks cases they skip with `tool: false`.
 27. **`prepend` and `global` exist in every language** (amended 2026-10-18): Cordis's own options on Node / Bun Cordis plugins, `ctx.on(name, fn, { prepend, global })` for Node / Bun leaves, `ctx.on(name, fn, prepend=…, global_=…)` in Python, `rutis.Prepend()` / `rutis.Global()` in Go, `EventOptions` in Rust (§12).
+
+Decided while implementing the host side (#464, `events/host`):
+
+28. **`mount` names the runtime** (`runtime`), so fast-path descriptors equal the host's.
+29. **The host keeps a session's `emit` dispatches in order** without blocking its reader: an `emit` it can start at once (no pending filter selector) is answered `undefined` before the next frame is read; one that cannot (its selector call must come back over the same session) and every later `emit` of that session wait in a queue, each answered once its invocations started (the answer is then a future the runtime awaits). §5.5's guarantees hold either way.
+30. **The host handles `events.on`, `events.off`, `events.elsewhere`, and `emit`-mode `events.dispatch` / `events.call` on the session reader**, in frame order (the session layer runs these control operations inline); every other event operation runs as a task, like any call.
+31. **A node announces each own entry once per `import` item it matches** (narrowed as §9 says), each announcement with an id of its own; an entry another node announced is accepted once per `export` item it matches, the same way. Announcements start when the peer offers the `events` family and start over at each new offer of it.
+32. **`AggregateError` on the wire** carries its children in its error graph (§11), so every language rebuilds the children in registration order.
+33. **`rutis/row`**: `pending` is emitted when the loader spawns the row, then each change of its fiber's state as the loader sees it (`loading` counts as `pending`; `unloading` and disposal as `stopped`); a group row is a row too (`plugin` `group`). **`rutis/service`** is emitted for the services a runtime row provides to rutis (as the host projects them), at the row's scope, with the row's id.

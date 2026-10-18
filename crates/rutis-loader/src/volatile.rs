@@ -14,7 +14,7 @@ use serde_json::Value;
 pub const MARKER: &str = "x-volatile";
 
 /// Sent to one plugin instance after a volatile-only config change.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VolatileUpdate {
     /// The changed volatile paths, as object keys from the config root.
     pub paths: Vec<Vec<String>>,

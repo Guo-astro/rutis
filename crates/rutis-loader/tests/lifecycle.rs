@@ -47,6 +47,7 @@ impl Listener<VolatileUpdate> for Updates {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a VolatileUpdate,
+        _: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         self.0
             .lock()
@@ -144,6 +145,7 @@ impl Listener<LoaderChanged> for Changes {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a LoaderChanged,
+        _: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         self.0.lock().unwrap().push(e.clone());
         Box::pin(async { Ok(None) })
@@ -210,6 +212,7 @@ impl Listener<LoaderChanged> for SelfDisposals {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a LoaderChanged,
+        _: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         if let LoaderChanged::SelfDisposed { id, .. } = e {
             let _ = self.0.send(id.clone());

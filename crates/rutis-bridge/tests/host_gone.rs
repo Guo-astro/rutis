@@ -165,6 +165,7 @@ async fn host_goes_away(runtime: Runtime, hang: bool, deadline: &str) -> String 
             json!({ "marker": marker, "hang": hang }),
             &[],
             &[],
+            &[],
         )
         .await
         .unwrap_or_else(|error| panic!("{runtime:?}: rows.load: {error}"));

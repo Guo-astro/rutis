@@ -437,7 +437,7 @@ async fn an_earlier_connection_greeting_late_does_not_take_over() {
     let read = tokio::task::spawn_blocking(move || {
         greet_raw(
             stale,
-            json!({ "op": "hello", "version": 3, "endpoint": "pixel" }),
+            json!({ "op": "hello", "version": 3, "endpoint": "pixel", "capabilities": ["events-v2"] }),
         )
     })
     .await

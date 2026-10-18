@@ -39,6 +39,7 @@
 | `loader/` | `loader/<名字>` | rutis-loader 的设计与用户文档：[design-rutis-loader-2026-10-02](design-rutis-loader-2026-10-02.md)、[实例](design-loader-instance-mounts-and-services-2026-10-07.md)、[实例服务](design-instance-services-2026-10-08.md) 中 loader 的行为、[多语言运行时](design-multilang-runtimes-2026-10-03.md)、[连接节点](guide/nodes.md) | 已登记（§14） |
 | `host/` | `host/<名字>` | rutis-host 的用户文档 [rutis-host](guide/rutis-host.md)、[S2 端到端设计](design-e2e-dev-loop-2026-10-11.md) | 已登记（§11、§13、§15） |
 | `dsh/` | `dsh/<名字>` | rutis-dsh 设计与文档 | 预留；`dsh/user-layer-format` 已登记（#207） |
+| `events/` | `events/<name>` | [统一事件](design-events-2026-10-18.md) 及其[协议](design-events-protocol-2026-10-18.md)（#464） | 宿主侧已登记（§8a） |
 | `sdk/` | `sdk/<名字>` | 插件 SDK 与测试工具：[插件 API](guide/plugin-api.md)、质量规范 Q6.7 | `sdk/testing-matches-runtime`（#206）、`sdk/leaf-events`（#366）已登记 |
 
 各族的 `<名字>` 规则：
@@ -190,15 +191,32 @@ PR 模板中有对应的检查项。
 | 编号 | 内容 | 级别 | 状态 | 验证 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `boundary/5.1` | 服务：`ctx.provide` / 属性赋值发布和换值；直接 `ctx.set` 换值不产生通知，rutis 侧在下一次调用该服务后切换到新对象 | 契约行为 | 已验证 | `rutis-bridge/tests/service_projection.rs::projected_service_follows_replacement_and_withdrawal`、`rutis-bridge/tests/projection_lifecycle.rs::a_throwing_method_still_refreshes_the_slot`、`::a_call_on_an_exported_object_refreshes_the_slots`、`::withdrawal_and_immediate_reregistration_keep_the_service` | |
-| `boundary/5.2` | 跨边界事件：`emit` 只是通知，返回时不保证 rutis 侧已执行；需要等待或结果时用 `parallel` / `serial`（同步 `bail` 见 5.4） | 契约行为 | 已验证 | `rutis-bridge/tests/event_forwarding.rs::cordis_events_reach_rutis_listeners`、`::rutis_events_reach_cordis_listeners`、`rutis-bridge/tests/boundary_rules.rs::a_cordis_serial_chain_takes_the_rutis_side_as_one_link`、`::a_cordis_bail_across_the_boundary_fails` | `emit`、`parallel` 与 Cordis 侧 `serial` 已验证；同步 `bail` 明确报错（#281） |
-| `boundary/5.3` | 事件顺序：只在同一侧内保证原生顺序；另一侧的监听作为一组在固定位置执行，组内总是按该侧的 `parallel` 调度；不支持依赖跨侧交错顺序 | 契约行为 | 已验证 | `rutis-bridge/tests/boundary_rules.rs::cordis_events_reach_rutis_listeners_as_one_group`、`::rutis_events_reach_cordis_listeners_as_one_group`、`::a_rutis_serial_runs_the_cordis_group_as_a_cordis_parallel` | rutis `serial` 到达 Cordis 时 Cordis 一组按 `parallel` 执行，写进规则 3（#281）；按发起方的调度方式执行需要在协议里带上调度方式，见 #340 |
-| `boundary/5.4` | 中间件链：waterfall / bail 链不跨侧交错；对方一组作为一个整体环节参与；Cordis 同步 `bail` 到达转发的事件时报错；waterfall 中 rutis 一组是调用一次 `next` 的异步环节 | 契约行为 | 已验证 | `rutis-bridge/tests/boundary_rules.rs::a_cordis_serial_chain_takes_the_rutis_side_as_one_link`、`::a_rutis_serial_chain_takes_the_cordis_side_as_one_link`、`::a_cordis_bail_across_the_boundary_fails`、`::a_cordis_waterfall_takes_the_rutis_side_as_one_async_link`、`::an_async_cordis_waterfall_across_the_boundary_behaves_natively` | 全同步的 waterfall 跨边界后返回 Promise（值与原生相同），写进规则 4（#281）；同步 `bail` 之前的监听器以相同参数再次分发同一事件时，这次 `bail` 仍拿到 Promise 而不报错，写进规则 2，见 #340 |
-| `boundary/5.5` | 框架内部事件 `internal/*` 不跨边界 | 契约行为 | 已验证 | `rutis-bridge/tests/boundary_rules.rs::internal_events_stay_on_the_cordis_side`、`::a_mount_listing_an_internal_event_fails`、`node/rutis-runtime/test/generate.test.mjs`（`internal events are not forwarded in either direction`） | 绑定生成器、`Process::mount` 与 Node 运行时都拒绝列出 `internal/*` 的挂载（#282） |
+| `boundary/5.2` | 跨边界事件：`emit` 只是通知，返回时不保证 rutis 侧已执行；需要等待或结果时用 `parallel` / `serial`（同步 `bail` 见 5.4） | 契约行为 | 已撤回（0.13） | — | 由统一事件模型取代（[设计](design-events-2026-10-18.md)，#464）：规则 2–5 删除；见 `events/*`（§8a） |
+| `boundary/5.3` | 事件顺序：只在同一侧内保证原生顺序；另一侧的监听作为一组在固定位置执行，组内总是按该侧的 `parallel` 调度；不支持依赖跨侧交错顺序 | 契约行为 | 已撤回（0.13） | — | 由统一事件模型取代（[设计](design-events-2026-10-18.md)，#464）：规则 2–5 删除；见 `events/*`（§8a） |
+| `boundary/5.4` | 中间件链：waterfall / bail 链不跨侧交错；对方一组作为一个整体环节参与；Cordis 同步 `bail` 到达转发的事件时报错；waterfall 中 rutis 一组是调用一次 `next` 的异步环节 | 契约行为 | 已撤回（0.13） | — | 由统一事件模型取代（[设计](design-events-2026-10-18.md)，#464）：规则 2–5 删除；见 `events/*`（§8a） |
+| `boundary/5.5` | 框架内部事件 `internal/*` 不跨边界 | 契约行为 | 已撤回（0.13） | — | 由统一事件模型取代（[设计](design-events-2026-10-18.md)，#464）：规则 2–5 删除；见 `events/*`（§8a） |
 | `boundary/5.6` | 同步等待：同步方法在执行中等待需要 Node 事件循环推进的结果（定时器、Promise）时返回 `SyncWaitCycle` 错误，不卡死 | 核心承诺 | 已验证 | `rutis-bridge/tests/rpc_callbacks.rs::node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle`（夹具 `node/rutis-runtime/test/fixtures/rpc-client.mjs` 断言 `SyncWaitCycle`）、`::sync_await_reports_known_executor_cycle_but_allows_ready_future`、`::sync_wait_detects_an_async_callback_already_running_on_its_runtime` | 跨边界做不到的事显式报错（Q3.1） |
 | `boundary/5.7` | 宿主提供的服务在 Cordis 侧是按接口生成的代理：按接口调用与原生一致，`instanceof` 不成立 | 契约行为 | 已验证 | `rutis-bridge/tests/boundary_rules.rs::a_host_service_is_a_proxy_not_an_instance_of_the_declared_class` | |
 | `boundary/5.8` | 事件循环：插件不得长期阻塞；兼容层不为调用加超时，rutis 侧需要超时时用异步方法并自行设置（超时即取消），卸载的等待时间由应用决定；未捕获的异常 / 拒绝结束整个 Node 进程，同一挂载的服务随之撤销 | 核心承诺 | 部分验证 | `rutis-bridge/tests/projection_lifecycle.rs::a_crashed_process_withdraws_its_services`、`rutis-bridge/tests/bun_runtime.rs::an_uncaught_error_ends_the_runtime`、`tests/e2e/tests/runtime_crash.rs::a_killed_runtime_fails_its_calls_and_a_restart_recovers`、`tests/e2e/tests/cordis.rs::published_cordis_plugins_run_from_rutis_json_as_in_native_cordis` | 进程退出后撤销服务已验证（Node 用 `process.exit`；Python 运行时被 `kill -9` 时经 rutis-host 二进制验证，S3）；未捕获异常结束进程在 Bun 运行时验证，Node 运行时经 rutis-host 二进制验证（S6：Cordis 插件的异常结束 Node 运行时，宿主报告，它的行等待，其他运行时照常）；"不加超时"没有断言 |
 
 ---
+
+## 8a. 事件，宿主侧：`events/*`
+
+| 编号 | 内容 | 级别 | 状态 | 验证 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| `events/v2-required` | 没有声明 `events-v2` 的对端（运行时、节点）在握手之后立即被拒绝，消息即协议 §2.2 的原文，两种格式都是；什么都不挂载 | 核心承诺 | 已验证 | `rutis-bridge/src/session/rpc/tests.rs::a_far_end_without_events_v2_is_refused`、`rutis-bridge/tests/event_hub.rs::a_runtime_without_events_v2_is_refused` | 运行时一侧（拒绝旧宿主）归各运行时 |
+| `events/presence` | 运行时在 `mount` 之前得知所有在它之外有监听器的名字和前缀，之后得知每次变化，按顺序，且在引起变化的登记返回之前；它自己的条目不算 | 契约行为 | 已验证 | `rutis-bridge/tests/event_hub.rs::a_runtime_hears_what_is_elsewhere` | |
+| `events/hub-dispatch` | 宿主发出的事件以一个 `events.call` 到达运行时的监听器（有类型的事件按参数）；运行时经宿主的分发按登记顺序到达宿主的与它自己的（`own`）监听器，得到该方式的结果 | 核心承诺 | 已验证 | `rutis-bridge/tests/event_hub.rs::dispatches_cross_between_host_and_runtime` | |
+| `events/hub-scope` | 运行时的分发在它那一行的作用域发出（从不用它自报的）；监听器听到自己作用域及其下的；会话上未加载的行被拒绝 | 核心承诺 | 已验证 | `rutis-bridge/tests/event_hub.rs::rows_dispatch_and_hear_at_their_scopes` | |
+| `events/hub-filter` | 分发的过滤函数在发出方进程里运行，按作用域选出候选后带着全部描述调用一次；答案个数不对则分发失败 | 契约行为 | 已验证 | `rutis-bridge/tests/event_hub.rs::the_filter_runs_in_the_emitters_process` | |
+| `events/hub-lifecycle` | 行卸载时它的条目离开总线，会话结束时会话的全部条目离开 | 核心承诺 | 已验证 | `rutis-bridge/tests/event_hub.rs::entries_leave_with_their_row_and_their_session` | |
+| `events/hub-bail` | `bail` 处处同步：已知异步的运行时监听器使其失败（`AsyncListener`），同步的给出答案，运行时经宿主的 `bail` 得到宿主监听器的答案 | 核心承诺 | 已验证 | `rutis-bridge/tests/event_hub.rs::bail_is_synchronous_everywhere` | 等待环检测归会话（`bridge/sync-wait-cycle-refused`） |
+| `events/hub-errors` | `parallel` 按登记顺序汇总失败（`AggregateError`）；对端不接受的值只让那一次调用失败 | 核心承诺 | 已验证 | `rutis-bridge/tests/event_hub.rs::parallel_failures_are_aggregated_in_registration_order`、`rutis-bridge/src/events/errors.rs::tests::aggregates_carry_their_children_in_order` | |
+| `events/reserved` | 运行时不能发出 `rutis/*`（`ReservedEvent`），不能登记 `internal/*` | 契约行为 | 已验证 | `rutis-bridge/tests/event_hub.rs::reserved_and_internal_names_are_refused` | |
+| `events/node-links` | 按 `export` / `import` 所选，一个节点的监听器是另一个节点总线上的条目：方式、结果、带标签的值；不共享的名字留在原节点；连接断开时条目离开 | 核心承诺 | 已验证 | `rutis-bridge/tests/node.rs::node_listeners_are_entries_of_the_other_bus`、`rutis-bridge/src/events/link.rs::tests::items_narrow_entries` | 只走一跳 |
+| `events/node-config` | 节点行里的 `events: { out, in }` 被拒绝并说明替代写法；`export` / `import` 支持 `*` 前缀 | 契约行为 | 已验证 | `rutis-loader/src/peer.rs::tests::link_config_shares_events_through_export_and_import` | |
+| `events/framework` | `rutis/row` 在行的每次状态变化时于其作用域发出；`rutis/runtime` 的 `running` / `down` | 契约行为 | 部分验证 | `rutis-loader/tests/row_events.rs::rows_announce_their_states_at_their_scopes`、`rutis-bridge/tests/local_runtime.rs::a_runtime_announces_running_and_down` | `rutis/service` 还没有自己的测试 |
 
 ## 9. 实例：`instance/*`
 

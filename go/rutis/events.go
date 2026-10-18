@@ -200,10 +200,13 @@ func (c *Ctx) On(name string, fn func(ctx context.Context, args ...any) (any, er
 	// The host hears of it before any emission this process makes after
 	// it; a row loading answers once the host has it.
 	if rt.session != nil && !rt.closing {
-		answered := rt.session.Announce("", "events.on", []any{map[string]any{
-			"id": l.id, "name": name, "row": c.row.key, "plugin": c.row.def.name,
+		row := c.row.key
+		answered := rt.session.AnnounceReporting("", "events.on", []any{map[string]any{
+			"id": l.id, "name": name, "row": row, "plugin": c.row.def.name,
 			"kind": "sync", "prepend": o.Prepend, "global": o.Global,
-		}})
+		}}, func(err error) {
+			events.Report(fmt.Sprintf("rutis: registration of listener of %s in row %s failed: %s", name, row, events.Failure(err)))
+		})
 		if c.row.loading {
 			c.row.pending = append(c.row.pending, answered)
 		}

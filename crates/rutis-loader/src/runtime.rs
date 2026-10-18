@@ -856,6 +856,7 @@ impl JsRow {
                 &inject,
                 &self.provides,
                 projection.clone(),
+                &ctx.scope(),
             )
             .await
         {
@@ -936,6 +937,7 @@ impl Listener<VolatileUpdate> for Forward {
         &'a self,
         _ctx: &'a Ctx,
         update: &'a VolatileUpdate,
+        _: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async move {
             self.process
