@@ -27,7 +27,7 @@ pub(crate) fn to_cordis(error: Error) -> CordisError {
 /// The session error a far end gets for `error`: an error that came over a
 /// session as it came, the kernel's event errors under their names
 /// (`AggregateError` with its children in registration order).
-pub(crate) fn to_session(error: &CordisError) -> Error {
+pub fn to_session(error: &CordisError) -> Error {
     if let CordisError::PluginFailed(source) = error {
         if let Some(error) = source.downcast_ref::<Error>() {
             return error.clone();

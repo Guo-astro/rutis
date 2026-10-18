@@ -162,8 +162,12 @@ impl Link {
         let Some(connection) = self.connection.upgrade() else {
             return;
         };
+        // A table change of this node, whichever call made it: it carries no
+        // chain of that call.
         if let (Ok(answer), Ok(runtime)) = (
-            connection.invoke_started("", method, Value::List(vec![Value::Data(argument)])),
+            crate::session::rpc::unchained(|| {
+                connection.invoke_started("", method, Value::List(vec![Value::Data(argument)]))
+            }),
             tokio::runtime::Handle::try_current(),
         ) {
             runtime.spawn(async move {

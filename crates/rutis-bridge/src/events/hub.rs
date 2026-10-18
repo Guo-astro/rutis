@@ -20,6 +20,7 @@ use serde_json::{json, Value as Json};
 
 use super::args::{from_wire, result_from_wire, result_to_wire, to_wire, SessionTranscoder};
 use super::errors::{binding, to_cordis, to_session};
+use crate::session::rpc::with_caller;
 use crate::session::{settle, Connection, Error, Reply, Value, WeakConnection};
 
 /// A table entry's key for presence: its name (or prefix) and whether it is
@@ -33,6 +34,11 @@ pub(crate) struct Hub {
     ctx: Ctx,
     state: Mutex<HubState>,
     watching: Mutex<Option<Disposer>>,
+    /// The listener turning `ServiceChanged` into `rutis/service`.
+    services: Mutex<Option<Disposer>>,
+    /// The test hooks of the bus, when tapped.
+    #[cfg(feature = "testing")]
+    tap: Mutex<Option<Arc<super::testing::TapState>>>,
 }
 
 #[derive(Default)]
@@ -80,6 +86,9 @@ impl Hub {
             ctx: ctx.clone(),
             state: Mutex::default(),
             watching: Mutex::new(None),
+            services: Mutex::new(None),
+            #[cfg(feature = "testing")]
+            tap: Mutex::new(None),
         });
         ctx.events().set_transcoder(Arc::new(SessionTranscoder));
         let weak = Arc::downgrade(&hub);
@@ -92,6 +101,15 @@ impl Hub {
             })
             .map_err(|error| to_session(&error))?;
         *hub.watching.lock().unwrap() = Some(watching);
+        let services = ctx
+            .events()
+            .on(
+                ctx,
+                &rutis::EventKey::<rutis::ServiceChanged>::of(),
+                super::framework::ServiceEvents,
+            )
+            .map_err(|error| to_session(&error))?;
+        *hub.services.lock().unwrap() = Some(services);
         {
             let mut state = hub.state.lock().unwrap();
             for entry in &snapshot {
@@ -154,6 +172,11 @@ impl Hub {
 
     fn leave(&self, origin: u64) {
         self.state.lock().unwrap().sessions.remove(&origin);
+    }
+
+    #[cfg(feature = "testing")]
+    pub(crate) fn tap(&self, tap: Arc<super::testing::TapState>) {
+        *self.tap.lock().unwrap() = Some(tap);
     }
 }
 
@@ -257,8 +280,9 @@ pub(crate) struct SessionEvents {
     runtime: String,
     /// The scope of the mount's own plugins (`row: null`).
     mount_scope: Vec<Scope>,
-    /// The scope chain of each row loaded on the session.
-    rows: Mutex<HashMap<String, Vec<Scope>>>,
+    /// The scope chain and the id of each row loaded on the session, by
+    /// key.
+    rows: Mutex<HashMap<String, (Vec<Scope>, String)>>,
     /// The session's entries, by the runtime's id.
     entries: Mutex<HashMap<String, Registered>>,
     /// `emit` dispatches waiting for those before them to start (§5.5).
@@ -335,11 +359,15 @@ impl SessionEvents {
         let Some(connection) = self.connection.upgrade() else {
             return;
         };
-        let sent = connection.invoke_started(
-            "",
-            "events.elsewhere",
-            Value::List(vec![Value::Data(presence.argument())]),
-        );
+        // A notification: whatever call changed the table, it is not part
+        // of it (another session's chain must not reach this one).
+        let sent = crate::session::rpc::unchained(|| {
+            connection.invoke_started(
+                "",
+                "events.elsewhere",
+                Value::List(vec![Value::Data(presence.argument())]),
+            )
+        });
         if let (Ok(answer), Ok(runtime)) = (sent, tokio::runtime::Handle::try_current()) {
             runtime.spawn(async move {
                 let _ = answer.await;
@@ -366,8 +394,11 @@ impl SessionEvents {
     }
 
     /// Row `key` is being loaded in `scope`.
-    pub(crate) fn row_loading(&self, key: &str, scope: Vec<Scope>) {
-        self.rows.lock().unwrap().insert(key.to_owned(), scope);
+    pub(crate) fn row_loading(&self, key: &str, scope: Vec<Scope>, id: String) {
+        self.rows
+            .lock()
+            .unwrap()
+            .insert(key.to_owned(), (scope, id));
     }
 
     /// Row `key` is unloading or ended: its entries leave the table now
@@ -391,27 +422,43 @@ impl SessionEvents {
     }
 
     /// The `events.*` operations a runtime sends.
-    pub(crate) fn invoke(self: &Arc<Self>, _: &Connection, method: &str, args: Value) -> Reply {
+    pub(crate) fn invoke(
+        self: &Arc<Self>,
+        connection: &Connection,
+        method: &str,
+        args: Value,
+    ) -> Reply {
         let first = args.list()?.into_iter().next().unwrap_or(Value::Undefined);
         match method {
             "events.on" => self.on(first),
             "events.off" => self.off(first),
-            "events.dispatch" => self.dispatch(first),
+            "events.dispatch" => {
+                #[cfg(feature = "testing")]
+                if let Some(tap) = self
+                    .hub
+                    .as_ref()
+                    .and_then(|hub| hub.tap.lock().unwrap().clone())
+                {
+                    tap.arrived();
+                }
+                self.dispatch(connection, first)
+            }
             _ => Err(binding(format!("{method} is not offered here"))),
         }
     }
 
-    /// The scope of `row` on this session, or of the mount for none.
-    fn scope_of(&self, row: Option<&str>) -> Result<Vec<Scope>, Error> {
-        match row {
-            None => Ok(self.mount_scope.clone()),
-            Some(row) => self
+    /// The scope and the id of row `key` on this session, or the mount's
+    /// scope for none.
+    fn row_of(&self, key: Option<&str>) -> Result<(Vec<Scope>, Option<String>), Error> {
+        match key {
+            None => Ok((self.mount_scope.clone(), None)),
+            Some(key) => self
                 .rows
                 .lock()
                 .unwrap()
-                .get(row)
-                .cloned()
-                .ok_or_else(|| binding(format!("row {row} is not loaded in this runtime"))),
+                .get(key)
+                .map(|(scope, id)| (scope.clone(), Some(id.clone())))
+                .ok_or_else(|| binding(format!("row {key} is not loaded in this runtime"))),
         }
     }
 
@@ -423,7 +470,7 @@ impl SessionEvents {
                 registration.name
             )));
         }
-        let scope = self.scope_of(registration.row.as_deref())?;
+        let (scope, id) = self.row_of(registration.row.as_deref())?;
         let Some(ctx) = &self.ctx else {
             return Ok(Value::Undefined);
         };
@@ -437,7 +484,7 @@ impl SessionEvents {
             name: registration.name.clone(),
             prefix: false,
             plugin: registration.plugin,
-            row: registration.row.clone(),
+            row: id,
             runtime: Some(self.runtime.clone()),
             node: None,
             scope,
@@ -484,7 +531,10 @@ impl SessionEvents {
         Ok(Value::Undefined)
     }
 
-    fn dispatch(self: &Arc<Self>, request: Value) -> Reply {
+    /// A dispatch from the runtime on `source`: what it calls in other
+    /// sessions is forwarded from `source` (§5.3), so their call chains
+    /// stay apart.
+    fn dispatch(self: &Arc<Self>, source: &Connection, request: Value) -> Reply {
         let mut fields = record(request)?;
         let name = text(&mut fields, "name")?;
         let mode = match text(&mut fields, "mode")?.as_str() {
@@ -509,7 +559,7 @@ impl SessionEvents {
         if name.starts_with("internal/") {
             return Err(binding(format!("event {name} is internal to its runtime")));
         }
-        let scope = self.scope_of(row.as_deref())?;
+        let (scope, row) = self.row_of(row.as_deref())?;
         let args = match fields.remove("args") {
             None | Some(Value::Undefined) => Vec::new(),
             Some(args) => args.list()?,
@@ -538,13 +588,14 @@ impl SessionEvents {
                 let reporter = ctx.clone();
                 let (started, answered) = tokio::sync::oneshot::channel();
                 let row = row.clone();
-                let run: BoxFuture<'static, ()> = Box::pin(async move {
-                    let dispatched = ctx.events().dispatch(&ctx, dispatch).await;
-                    if let Err(error) = dispatched {
-                        report_filter(&reporter, &name, row.as_deref(), &error);
-                    }
-                    let _ = started.send(());
-                });
+                let run: BoxFuture<'static, ()> =
+                    Box::pin(with_caller(source.clone(), async move {
+                        let dispatched = ctx.events().dispatch(&ctx, dispatch).await;
+                        if let Err(error) = dispatched {
+                            report_filter(&reporter, &name, row.as_deref(), &error);
+                        }
+                        let _ = started.send(());
+                    }));
                 match self.run_emit(run) {
                     true => Ok(Value::Undefined),
                     false => Ok(Value::future(async move {
@@ -553,14 +604,19 @@ impl SessionEvents {
                     })),
                 }
             }
-            _ => Ok(Value::future(async move {
-                let result = ctx
-                    .events()
-                    .dispatch(&ctx, dispatch)
-                    .await
-                    .map_err(|error| to_session(&error))?;
-                result_to_wire(result)
-            })),
+            // Cancelled when the emitter gives up (§5.7): the dispatch stops
+            // and cancels its calls under way.
+            _ => Ok(Value::cancellable_future(with_caller(
+                source.clone(),
+                async move {
+                    let result = ctx
+                        .events()
+                        .dispatch(&ctx, dispatch)
+                        .await
+                        .map_err(|error| to_session(&error))?;
+                    result_to_wire(result)
+                },
+            ))),
         }
     }
 
@@ -606,6 +662,35 @@ impl SessionEvents {
             Err(_) => self.emits.lock().unwrap().busy = false,
         }
         false
+    }
+}
+
+/// The logical bus of a context's tree, held while this lives
+/// ([`join_bus`]).
+pub struct BusHandle(#[allow(dead_code)] Arc<Hub>);
+
+/// Keep the logical bus of `ctx`'s tree (its root's) for as long as the
+/// handle lives: the framework events rutis-bridge emits (`rutis/service`
+/// for every host service, Rust or not) follow its table from now on. A
+/// runtime session or node link holds it too; a host whose services are
+/// all Rust holds it with this.
+pub fn join_bus(ctx: &Ctx) -> Result<BusHandle, Error> {
+    Hub::of(ctx).map(BusHandle)
+}
+
+impl Drop for Hub {
+    /// Its listeners leave the bus with it: a later hub of the same bus
+    /// registers its own.
+    fn drop(&mut self) {
+        for disposer in [
+            self.watching.get_mut().unwrap().take(),
+            self.services.get_mut().unwrap().take(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            dispose_now(disposer);
+        }
     }
 }
 
@@ -775,15 +860,35 @@ impl WireEntry {
     }
 }
 
+/// The session whose dispatch a call into `connection` serves, if that is
+/// another one ([`crate::session::caller`]).
+fn caller_of(connection: &Connection) -> Option<Connection> {
+    crate::session::caller().filter(|source| source.tag() != connection.tag())
+}
+
+/// Run `call`, a call into `connection`, forwarded from the session whose
+/// dispatch it serves ([`caller_of`]).
+fn forwarded<R>(connection: &Connection, call: impl FnOnce() -> R) -> R {
+    match caller_of(connection) {
+        Some(source) => connection.forward(&source, call),
+        None => call(),
+    }
+}
+
 /// `next` as the far end gets it: a function taking no arguments,
 /// returning the rest of the chain.
 pub(crate) fn next_function(next: RemoteNext) -> Value {
     Value::callback(move |_| {
         let next = next.clone();
-        Ok(Value::future(async move {
+        let rest = async move {
             let rest = next.call().await.map_err(|error| to_session(&error))?;
             result_to_wire(rest)
-        }))
+        };
+        // The rest of the chain runs on behalf of the session calling it.
+        Ok(match crate::session::caller() {
+            Some(source) => Value::future(with_caller(source, rest)),
+            None => Value::future(rest),
+        })
     })
 }
 
@@ -806,24 +911,34 @@ impl RemoteListener for WireEntry {
     ) -> BoxFuture<'a, Result<Option<rutis::events::Value>, CordisError>> {
         let mode = call.mode();
         let own = self.own(call.origin());
-        let started = self.connection().and_then(|connection| {
-            let request = self.request(Invocation {
-                name: call.name(),
-                mode,
-                dispatch: call.dispatch(),
-                own,
-                event: call.event(),
-                next: call.next().map(next_function),
-            })?;
-            connection
-                .invoke_started("", "events.call", request)
-                .map_err(to_cordis)
+        let connection = match self.connection() {
+            Ok(connection) => connection,
+            Err(error) => return Box::pin(std::future::ready(Err(error))),
+        };
+        let request = self.request(Invocation {
+            name: call.name(),
+            mode,
+            dispatch: call.dispatch(),
+            own,
+            event: call.event(),
+            next: call.next().map(next_function),
         });
-        Box::pin(async move {
-            let reply = started?.await.map_err(to_cordis)?;
+        // The call, and the wait for what it answers, go out with the
+        // chain of the session whose dispatch this is, rebased.
+        let source = caller_of(&connection);
+        let target = connection.clone();
+        let run = async move {
+            let started = target
+                .invoke_started("", "events.call", request?)
+                .map_err(to_cordis)?;
+            let reply = started.await.map_err(to_cordis)?;
             let value = settle(reply).await.map_err(to_cordis)?;
             Ok(result_from_wire(value, mode))
-        })
+        };
+        match source {
+            Some(source) => Box::pin(connection.forward_async(&source, run)),
+            None => Box::pin(run),
+        }
     }
 
     fn call_sync(
@@ -841,9 +956,10 @@ impl RemoteListener for WireEntry {
             event: call.event(),
             next: call.next().map(sync_next_function),
         })?;
-        let reply = connection
-            .invoke("", "events.call", request)
-            .map_err(to_cordis)?;
+        let reply = forwarded(&connection, || {
+            connection.invoke("", "events.call", request)
+        })
+        .map_err(to_cordis)?;
         Ok(result_from_wire(reply, mode))
     }
 }

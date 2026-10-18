@@ -122,6 +122,9 @@ struct Imports {
     /// What to do when a row's plugin ends on its own (`rows.ended`), by
     /// row key (see [`Process::on_row_ended`]).
     ended: Mutex<HashMap<String, RowEnded>>,
+    /// The id of each row as its configuration names it, by row key
+    /// ([`Process::name_row`]); a row not named is called by its key.
+    names: Mutex<HashMap<String, String>>,
 }
 
 /// Run once when a row's plugin ends on its own.
@@ -800,6 +803,7 @@ impl Process {
             rows: Mutex::default(),
             hosts: Mutex::new(hosts),
             bus: std::sync::OnceLock::new(),
+            names: Mutex::default(),
             ended: Mutex::default(),
         });
         let rest = MountRest {
@@ -924,12 +928,12 @@ impl Process {
         inject: &[String],
         scope: &[rutis::Scope],
     ) -> Result<(), Error> {
-        self.row_loading(key, scope);
+        let id = self.row_loading(key, scope);
         let loaded = self
             .call_async(
                 "",
                 "rows.load",
-                json!([key, entry, config, isolate, inject, {}, { "scope": scope }]),
+                json!([key, entry, config, isolate, inject, {}, { "scope": scope, "id": id }]),
             )
             .await;
         if loaded.is_err() {
@@ -940,17 +944,40 @@ impl Process {
         loaded.map(|_| ())
     }
 
+    /// Name row `key` `id`, the id its configuration gives it, before it
+    /// is loaded: listener descriptions and the lines that report its
+    /// failures call it so (events protocol §4.2). Keys are unique on the
+    /// session; ids need not be (a group's instances copy its rows). A row
+    /// not named is called by its key.
+    pub fn name_row(&self, key: &str, id: &str) {
+        self.imports
+            .names
+            .lock()
+            .unwrap()
+            .insert(key.to_owned(), id.to_owned());
+    }
+
     /// Row `key` is being loaded in `scope`: its listeners may register
-    /// from now on.
-    fn row_loading(&self, key: &str, scope: &[rutis::Scope]) {
+    /// from now on. Its id (`rows.load`'s `id`).
+    fn row_loading(&self, key: &str, scope: &[rutis::Scope]) -> String {
+        let id = self
+            .imports
+            .names
+            .lock()
+            .unwrap()
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| key.to_owned());
         if let Some(events) = self.imports.bus.get() {
-            events.row_loading(key, scope.to_vec());
+            events.row_loading(key, scope.to_vec(), id.clone());
         }
+        id
     }
 
     /// Row `key` is gone: its listeners leave the bus (events protocol
     /// §7.1).
     fn row_gone(&self, key: &str) {
+        self.imports.names.lock().unwrap().remove(key);
         if let Some(events) = self.imports.bus.get() {
             events.row_ended(key);
         }
@@ -1034,12 +1061,12 @@ impl Process {
             .lock()
             .unwrap()
             .insert(key.to_owned(), RowExports { observer, ids });
-        self.row_loading(key, scope);
+        let id = self.row_loading(key, scope);
         let loaded = self
             .call_async(
                 "",
                 "rows.load",
-                json!([key, entry, config, isolate, inject, exports, { "scope": scope }]),
+                json!([key, entry, config, isolate, inject, exports, { "scope": scope, "id": id }]),
             )
             .await;
         if loaded.is_err() {
@@ -1431,6 +1458,7 @@ mod tests {
             rows: Mutex::default(),
             hosts: Mutex::default(),
             bus: std::sync::OnceLock::new(),
+            names: Mutex::default(),
             ended: Mutex::default(),
         }
     }
