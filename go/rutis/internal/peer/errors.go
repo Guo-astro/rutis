@@ -32,9 +32,37 @@ func (e *RemoteError) Error() string {
 	return e.Name + ": " + e.Message
 }
 
-// Is makes errors.Is(err, ErrSyncWaitCycle) hold for a received cycle.
+// Is makes errors.Is(err, ErrSyncWaitCycle) hold for a received cycle,
+// and errors.Is(err, sentinel) for a Sentinel of its name.
 func (e *RemoteError) Is(target error) bool {
+	if sentinel, ok := target.(*Sentinel); ok {
+		return sentinel.name == e.Name
+	}
 	return target == ErrSyncWaitCycle && e.Name == "SyncWaitCycle"
+}
+
+// Sentinel matches (errors.Is) every error of one cross-language name,
+// made in this process (an *Error) or received (a *RemoteError).
+type Sentinel struct{ name string }
+
+// NewSentinel is the sentinel of the error name `name`.
+func NewSentinel(name string) *Sentinel { return &Sentinel{name} }
+
+func (s *Sentinel) Error() string { return s.name }
+
+// Error is an error with a cross-language name, made in this process.
+type Error struct{ name, message string }
+
+// Errorf makes an *Error named `name`.
+func Errorf(name, format string, args ...any) error {
+	return &Error{name: name, message: fmt.Sprintf(format, args...)}
+}
+
+func (e *Error) Error() string { return e.message }
+func (e *Error) Name() string  { return e.name }
+func (e *Error) Is(target error) bool {
+	sentinel, ok := target.(*Sentinel)
+	return ok && sentinel.name == e.name
 }
 
 // ErrIncompatible is what a session ends with when the far end greeted in
@@ -50,9 +78,14 @@ var ErrEndpointMismatch = errors.New("endpoint mismatch")
 var ErrSyncWaitCycle = errors.New("SyncWaitCycle")
 
 // AggregateError holds every failed event listener in registration order.
-// It crosses as Cordis's AggregateError (an empty message, the failures in
-// `errors`); Error reads as Rust's CordisError::Aggregate.
-type AggregateError struct{ Errors []error }
+// It crosses as Cordis's AggregateError (its Message, the failures in
+// `errors`).
+type AggregateError struct {
+	// Message is what it crosses with: `<n> listeners of <name> failed`
+	// for a parallel dispatch.
+	Message string
+	Errors  []error
+}
 
 func (e *AggregateError) Error() string {
 	messages := make([]string, 0, len(e.Errors))
@@ -60,6 +93,9 @@ func (e *AggregateError) Error() string {
 		if err != nil {
 			messages = append(messages, err.Error())
 		}
+	}
+	if e.Message != "" {
+		return e.Message + ": [" + strings.Join(messages, "; ") + "]"
 	}
 	return "multiple errors: [" + strings.Join(messages, "; ") + "]"
 }
@@ -190,15 +226,67 @@ func encodeError(err error) map[string]any {
 }
 
 // wireMessage is the message an error crosses with: the far end's own for a
-// RemoteError, none for an AggregateError (as Cordis's), else Error().
+// RemoteError, its Message for an AggregateError, else Error().
 func wireMessage(err error) string {
 	switch err := err.(type) {
 	case *RemoteError:
 		return err.Message
 	case *AggregateError:
-		return ""
+		return err.Message
 	}
 	return err.Error()
+}
+
+// Message is the message an error crosses with.
+func Message(err error) string { return wireMessage(err) }
+
+// Aggregated is a received AggregateError as an *AggregateError whose
+// failures are the graph's children in order (each a *RemoteError carrying
+// the graph from it on); any other error is returned as it is.
+func Aggregated(err error) error {
+	remote, ok := err.(*RemoteError)
+	if !ok || remote.Name != "AggregateError" || len(remote.Graph) == 0 {
+		return err
+	}
+	var graph struct {
+		Root  graphValue                   `json:"root"`
+		Nodes []map[string]json.RawMessage `json:"nodes"`
+	}
+	if json.Unmarshal(remote.Graph, &graph) != nil || graph.Root.Type != "reference" {
+		return err
+	}
+	var id int
+	if json.Unmarshal(graph.Root.Value, &id) != nil || id < 0 || id >= len(graph.Nodes) {
+		return err
+	}
+	var children []graphValue
+	if json.Unmarshal(graph.Nodes[id]["errors"], &children) != nil {
+		return err
+	}
+	nodes, marshalErr := json.Marshal(graph.Nodes)
+	if marshalErr != nil {
+		return err
+	}
+	out := &AggregateError{Message: remote.Message}
+	for _, child := range children {
+		var childID int
+		if child.Type != "reference" || json.Unmarshal(child.Value, &childID) != nil || childID < 0 || childID >= len(graph.Nodes) {
+			out.Errors = append(out.Errors, &RemoteError{Name: "Error", Message: "malformed error"})
+			continue
+		}
+		node := graph.Nodes[childID]
+		var name, message string
+		_ = json.Unmarshal(node["name"], &name)
+		_ = json.Unmarshal(node["message"], &message)
+		if name == "" {
+			name = "Error"
+		}
+		sub, _ := json.Marshal(map[string]any{"root": map[string]any{"type": "reference", "value": childID}, "nodes": json.RawMessage(nodes)})
+		failure := &RemoteError{Name: name, Message: message, Graph: sub}
+		failure.Code, failure.Data = codeAndData(sub)
+		out.Errors = append(out.Errors, failure)
+	}
+	return out
 }
 
 func decodeError(raw json.RawMessage) error {

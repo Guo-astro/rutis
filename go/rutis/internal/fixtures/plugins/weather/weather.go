@@ -155,18 +155,18 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 		w := &Weather{clock: clock, city: city}
 		ctx.Provide("weather", w)
 		ctx.Provide("forecast", &Forecast{City: "Oslo"})
-		ctx.On("weather/city", func(_ context.Context, args ...any) error {
+		ctx.On("weather/city", func(_ context.Context, args ...any) (any, error) {
 			if len(args) != 1 {
-				return fmt.Errorf("weather/city needs one city")
+				return nil, fmt.Errorf("weather/city needs one city")
 			}
 			city, ok := args[0].(string)
 			if !ok {
-				return fmt.Errorf("weather/city needs a string")
+				return nil, fmt.Errorf("weather/city needs a string")
 			}
 			w.mu.Lock()
 			w.city = city
 			w.mu.Unlock()
-			return nil
+			return nil, nil
 		})
 		ctx.Effect(func(context.Context) error {
 			fmt.Println("weather: bye")
