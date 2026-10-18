@@ -14,7 +14,7 @@
 //! | Go SDK (a binary built against the tagged module) | rutis-host, Python runtime | its plugins run; new values to it fail that call only |
 //! | rutis-host | the current runtimes (Node, Python, Go SDK) | the runtimes' plugins run; a Go binary of plugin API 2 is refused naming the host; new values towards the old host fail that call only |
 //! | rutis-host (a node) | rutis-host (a node), both dialing and listening | services both ways over the link; new values to the old node fail that call only; a JS error with `code` and `data` reaches the old node as a failed call, and the session goes on |
-//! | `@arcships/rutis-runtime`, or rutis-host | the current host, or the current Node runtime | a service a plugin of the current SDK provides without declaring it stays in its runtime, unknown to the host: the rows injecting it wait, nothing fails; the current `check` warns, the current runtime under an old host says so once |
+//! | `@arcships/rutis-runtime`, or rutis-host | the current host, or the current Node runtime | a service a plugin of the current SDK provides without declaring it: before 0.12 it stays in its runtime, unknown to the host, the rows injecting it wait, nothing fails, the current runtime under an old host says so once; from 0.12 on it is announced and reaches rows of either runtime; the current `check` warns |
 //! | `@arcships/rutis-runtime`, PyPI `rutis` | a Rust application (`fixture-host`) | each row's calls to a Rust service name that row (`caller_row`, its lease in a scope of its own, U+0001 in the label) |
 //!
 //! "New values" are the tagged values of 0.11 (#308: a `Date`, an integer
@@ -42,6 +42,10 @@ use serde_json::{json, Value};
 
 /// The first release with the tagged values and plugin API 2.
 const TAGGED: &str = "0.11.0";
+
+/// The first release whose runtimes announce undeclared services and whose
+/// host asks for them (`rows.announce`).
+const ANNOUNCE: &str = "0.12.0";
 
 /// A greeter in TypeScript, for the SDK of either version: `hello` names
 /// the runtime it runs in, `back` returns what it got.
@@ -790,12 +794,15 @@ enum Old {
 
 /// A service a row provides without declaring it reaches rutis only when
 /// its runtime announces it (`rows.announce`, 0.12) to a host that asks
-/// for it. With `old` of `release`, nothing announces it: the service
-/// stays in its runtime, unknown to the host, and every row injecting it,
-/// in that runtime (`near`) or another (`far`), waits for it; nothing
-/// fails, and the row providing it runs on. What says so: the current
-/// host's `check` (that nothing declares `quiet`); under an old host, the
-/// current runtime, once, that the host does not take the service.
+/// for it. With `old` of a `release` before 0.12, nothing announces it:
+/// the service stays in its runtime, unknown to the host, and every row
+/// injecting it, in that runtime (`near`) or another (`far`), waits for
+/// it; nothing fails, and the row providing it runs on. What says so: the
+/// current host's `check` (that nothing declares `quiet`); under an old
+/// host, the current runtime, once, that the host does not take the
+/// service. With a `release` from 0.12 on, both sides announce: `near`
+/// and `far` run and `far` calls `quiet` across the host; the current
+/// runtime says nothing of an older host.
 fn undeclared(release: &Release, s: Scenario, old: Old) {
     link_sdk(&s, "", &repo().join("node/rutis"));
     s.write("quiet.ts", QUIET_TS);
@@ -819,20 +826,29 @@ fn undeclared(release: &Release, s: Scenario, old: Old) {
     if let Old::Runtime = old {
         // What the current host's `check` says of it (#446): a warning for
         // the row of the same runtime, which some row may provide `quiet`
-        // to; the Python row cannot run.
+        // to; the Python row cannot run before 0.12 (the old runtime
+        // announces nothing), and from 0.12 on gets the same warning.
         let mut check = s.host(["check", "rutis.json"]);
         let status = check.wait_exit();
         let printed: Vec<String> = check.lines().into_iter().map(|line| line.text).collect();
         let has = |text: &str| printed.iter().any(|line| line.contains(text));
-        assert!(!status.success(), "check: {status}\n{printed:#?}");
         assert!(
             has("rutis-host: warning: near: nothing declares quiet; it may be provided at runtime by"),
             "check warns for near: {printed:#?}"
         );
-        assert!(
-            has("far (py:far): cannot run: nothing provides quiet"),
-            "check, far: {printed:#?}"
-        );
+        if release.older_than(ANNOUNCE) {
+            assert!(!status.success(), "check: {status}\n{printed:#?}");
+            assert!(
+                has("far (py:far): cannot run: nothing provides quiet"),
+                "check, far: {printed:#?}"
+            );
+        } else {
+            assert!(status.success(), "check: {status}\n{printed:#?}");
+            assert!(
+                has("rutis-host: warning: far: nothing declares quiet; it may be provided at runtime by"),
+                "check warns for far: {printed:#?}"
+            );
+        }
     }
     let mut host = match old {
         Old::Runtime => s.host(["run", "rutis.json"]),
@@ -840,6 +856,18 @@ fn undeclared(release: &Release, s: Scenario, old: Old) {
     };
     host.expect("quiet: running");
     let told = "rutis: service quiet is not declared in provides, and this host (older than 0.12) does not take undeclared services";
+    if !release.older_than(ANNOUNCE) {
+        far.started(&mut host);
+        assert_eq!(
+            far.call(&mut host, "quiet", "hello", json!(["Ada"])),
+            Ok(json!("Hello, Ada (quiet)"))
+        );
+        host.expect("near: running");
+        assert_eq!(host.count(told), 0, "an older host was named");
+        stop(host);
+        s.finish();
+        return;
+    }
     if let Old::Host = old {
         host.expect(told);
     }
@@ -873,7 +901,8 @@ fn undeclared(release: &Release, s: Scenario, old: Old) {
 
 /// The previous `@arcships/rutis-runtime` under the current host: a
 /// service a current-SDK plugin provides without declaring it stays in the
-/// runtime (it announces nothing). Before plugin API 2 the plugin does not
+/// runtime before 0.12 (it announces nothing), and reaches the other rows
+/// from 0.12 on. Before plugin API 2 the plugin does not
 /// load at all ([`a_previous_node_runtime_under_the_current_host`]).
 ///
 /// risk: J2, F8
@@ -894,8 +923,9 @@ fn an_undeclared_service_of_a_previous_runtime_stays_in_it() {
     });
 }
 
-/// The current Node runtime under the previous rutis-host: the host does
-/// not ask for announcements, so the same service stays in the runtime.
+/// The current Node runtime under the previous rutis-host: a host before
+/// 0.12 does not ask for announcements, so the same service stays in the
+/// runtime; from 0.12 on it asks, and the service reaches the other rows.
 ///
 /// risk: J2, F8
 /// guarantee: bridge/cross-version-meetings, loader/announced-services
