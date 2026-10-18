@@ -257,7 +257,7 @@ impl<'a> AsyncNext<'a> {
         Box::pin(async move {
             for (index, entry) in self.chain.iter().enumerate() {
                 // Withdrawn since the snapshot: skipped, as if never selected.
-                let Some(flight) = entry.start() else {
+                let Some(flight) = self.inv.bus.start(entry) else {
                     continue;
                 };
                 let next = AsyncNext {
@@ -388,7 +388,7 @@ pub(crate) struct SyncNext<'a> {
 impl SyncNext<'_> {
     pub fn invoke(self) -> Result<Option<Value>, CordisError> {
         for (index, entry) in self.chain.iter().enumerate() {
-            let Some(flight) = entry.start() else {
+            let Some(flight) = self.inv.bus.start(entry) else {
                 continue;
             };
             let next = SyncNext {
@@ -519,7 +519,7 @@ pub(crate) async fn run_parallel(
     let mut results: Vec<(usize, Result<Option<Value>, CordisError>)> = Vec::new();
     let mut set = tokio::task::JoinSet::new();
     for (index, entry) in entries.into_iter().enumerate() {
-        let Some(flight) = entry.start() else {
+        let Some(flight) = owned.bus.start(&entry) else {
             continue;
         };
         let owned = owned.clone();
@@ -561,7 +561,7 @@ pub(crate) async fn run_serial(
     entries: &[Arc<Entry>],
 ) -> Result<Option<Value>, CordisError> {
     for entry in entries {
-        let Some(flight) = entry.start() else {
+        let Some(flight) = inv.bus.start(entry) else {
             continue;
         };
         let out = call_async(entry, inv, None).await;
@@ -579,7 +579,7 @@ pub(crate) fn run_bail(
     entries: &[Arc<Entry>],
 ) -> Result<Option<Value>, CordisError> {
     for entry in entries {
-        let Some(flight) = entry.start() else {
+        let Some(flight) = inv.bus.start(entry) else {
             continue;
         };
         let out = call_sync(entry, inv, None);

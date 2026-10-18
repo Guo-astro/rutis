@@ -40,6 +40,11 @@ pub const RESERVED_PREFIX: &str = "rutis/";
 /// ([`EventKey::of`](crate::EventKey::of) dispatches under it). The event and
 /// its `Value` are serde, so it crosses to listeners of other types and to
 /// other processes automatically (derive `Serialize` and `Deserialize`).
+///
+/// An empty `NAME` says the type has no name of its own (a dynamic event,
+/// `rutis_bridge::events::Args`): only keys that give one
+/// ([`EventKey::dynamic`](crate::EventKey::dynamic), `named`) register or
+/// dispatch it; `EventKey::of()` fails with `EventNeedsName`.
 pub trait Event: Serialize + DeserializeOwned + Send + Sync + 'static {
     const NAME: &'static str;
     /// The result type: what `serial`, `bail_sync` and a waterfall return.

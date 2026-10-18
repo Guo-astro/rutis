@@ -91,6 +91,9 @@ struct BusState {
 
 struct BusCore {
     state: Mutex<BusState>,
+    /// Taken while `state` is held, never the other way round.
+    notices: Mutex<Notices>,
+    delivered: std::sync::Condvar,
     transcoder: RwLock<Arc<dyn Transcoder>>,
     next_dispatch: AtomicU64,
 }
@@ -114,9 +117,11 @@ pub(crate) struct EmitTicket {
 std::thread_local! {
     /// This thread holds the bus state while it spawns an emit's task: a
     /// runtime shutting down drops the task's future inside `spawn`, and its
-    /// guards must not take the state again (a deadlock). What they would
-    /// clean up is not recorded yet, or goes with the runtime.
+    /// guards must not take the state again (a deadlock). They say so in
+    /// [`DROPPED_INLINE`]; the spawner, still holding the state, cleans up.
     static SPAWNING_EMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The emit task's future was dropped inside `spawn`.
+    static DROPPED_INLINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 impl Drop for EmitTicket {
@@ -143,6 +148,7 @@ struct TailCleanup {
 impl Drop for TailCleanup {
     fn drop(&mut self) {
         if SPAWNING_EMIT.with(std::cell::Cell::get) {
+            DROPPED_INLINE.with(|dropped| dropped.set(true));
             return;
         }
         let mut state = self.bus.core.state.lock().unwrap();
@@ -169,33 +175,23 @@ pub(crate) struct Opts {
 }
 
 thread_local! {
-    static ACTIVE_SYNC: RefCell<Vec<(usize, Arc<str>)>> = const { RefCell::new(Vec::new()) };
+    /// The buses whose table changes this thread is delivering: a change a
+    /// watcher makes is delivered after the one it is hearing, by the same
+    /// delivery, so it does not wait for itself.
+    static DELIVERING: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
-struct ReentryGuard;
-
-impl ReentryGuard {
-    fn enter(bus: &EventBus, name: &Arc<str>) -> Result<Self, CordisError> {
-        let identity = Arc::as_ptr(&bus.core) as usize;
-        ACTIVE_SYNC.with(|active| {
-            let mut active = active.borrow_mut();
-            if active.iter().any(|(bus, n)| *bus == identity && n == name) {
-                return Err(CordisError::ReentrantEvent {
-                    name: name.to_string(),
-                });
-            }
-            active.push((identity, name.clone()));
-            Ok(Self)
-        })
-    }
-}
-
-impl Drop for ReentryGuard {
-    fn drop(&mut self) {
-        ACTIVE_SYNC.with(|active| {
-            active.borrow_mut().pop();
-        });
-    }
+/// Table changes not yet heard by their watchers, in the order they were
+/// made (protocol spec §4.4): one delivery at a time, so a watcher never
+/// hears a removal before the addition it follows.
+#[derive(Default)]
+struct Notices {
+    queue: std::collections::VecDeque<(u64, Vec<Watcher>, Vec<TableChange>)>,
+    /// The sequence number of the last change queued.
+    queued: u64,
+    /// The sequence number of the last change delivered.
+    delivered: u64,
+    delivering: bool,
 }
 
 struct TypedTerminal<E, T>(Mutex<Option<T>>, PhantomData<fn(E) -> E>);
@@ -246,6 +242,8 @@ impl EventBus {
         Self {
             core: Arc::new(BusCore {
                 state: Mutex::new(BusState::default()),
+                notices: Mutex::default(),
+                delivered: std::sync::Condvar::new(),
                 transcoder: RwLock::new(Arc::new(JsonTranscoder)),
                 next_dispatch: AtomicU64::new(1),
             }),
@@ -274,20 +272,68 @@ impl EventBus {
 
     // ── registration ─────────────────────────────────────────────
 
-    /// Change the table under its lock; the watchers hear the changes after.
+    /// Change the table under its lock; the watchers hear the changes after,
+    /// in the order the changes were made, before this returns.
     fn change<R>(&self, f: impl FnOnce(&mut Table) -> (R, Vec<TableChange>)) -> R {
-        let (out, changes, watchers) = {
+        let (out, seq) = {
             let mut state = self.core.state.lock().unwrap();
             let (out, changes) = f(&mut state.table);
-            let watchers: Vec<Watcher> = if changes.is_empty() {
-                Vec::new()
-            } else {
-                state.watchers.iter().map(|(_, w)| w.clone()).collect()
-            };
-            (out, changes, watchers)
+            let seq = self.enqueue(&state, changes);
+            (out, seq)
         };
-        notify(&watchers, &changes);
+        if let Some(seq) = seq {
+            self.deliver(seq);
+        }
         out
+    }
+
+    /// Queue `changes` for the current watchers, under the state's lock
+    /// (`state`), so their order is the table's. `None` for no changes.
+    fn enqueue(&self, state: &BusState, changes: Vec<TableChange>) -> Option<u64> {
+        if changes.is_empty() {
+            return None;
+        }
+        let watchers: Vec<Watcher> = state.watchers.iter().map(|(_, w)| w.clone()).collect();
+        let mut notices = self.core.notices.lock().unwrap();
+        notices.queued += 1;
+        let seq = notices.queued;
+        notices.queue.push_back((seq, watchers, changes));
+        Some(seq)
+    }
+
+    /// Return once change `seq` and those before it were heard: delivered
+    /// here, one at a time and in order, or by the thread delivering now. A
+    /// change made by a watcher while it hears one is delivered right after
+    /// by the same delivery.
+    fn deliver(&self, seq: u64) {
+        let identity = Arc::as_ptr(&self.core) as usize;
+        if DELIVERING.with(|buses| buses.borrow().contains(&identity)) {
+            return;
+        }
+        let mut notices = self.core.notices.lock().unwrap();
+        loop {
+            if !notices.delivering {
+                let Some((at, watchers, changes)) = notices.queue.pop_front() else {
+                    return;
+                };
+                notices.delivering = true;
+                drop(notices);
+                DELIVERING.with(|buses| buses.borrow_mut().push(identity));
+                notify(&watchers, &changes);
+                DELIVERING.with(|buses| {
+                    buses.borrow_mut().retain(|bus| *bus != identity);
+                });
+                notices = self.core.notices.lock().unwrap();
+                notices.delivered = at;
+                notices.delivering = false;
+                self.core.delivered.notify_all();
+                continue;
+            }
+            if notices.delivered >= seq {
+                return;
+            }
+            notices = self.core.delivered.wait(notices).unwrap();
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -332,9 +378,9 @@ impl EventBus {
         let label = format!("{label}: {}{name}", if prefix { "prefix " } else { "" });
         let bus = self.clone();
         let owner_ctx = ctx.clone();
-        let mut added: Option<(Vec<Watcher>, TableChange)> = None;
+        let mut added: Option<u64> = None;
         let pending = &mut added;
-        let disposer = ctx.register_internal_effect_named(label, move |fiber, generation, _| {
+        let registered = ctx.register_internal_effect_named(label, move |fiber, generation, _| {
             let mut state = bus.core.state.lock().unwrap();
             let id = state.table.next_id();
             let position = state.table.position(opts.prepend);
@@ -352,13 +398,11 @@ impl EventBus {
                 owner: Arc::downgrade(fiber),
                 generation,
                 withdrawn: Default::default(),
+                claimed: Default::default(),
                 calls: AtomicU64::new(0),
             });
             state.table.insert(entry.clone());
-            *pending = Some((
-                state.watchers.iter().map(|(_, w)| w.clone()).collect(),
-                TableChange::Added(entry.table_entry()),
-            ));
+            *pending = bus.enqueue(&state, vec![TableChange::Added(entry.table_entry())]);
             drop(state);
             let bus = bus.clone();
             Ok(Effect::Disposer(Box::new(move || {
@@ -374,12 +418,12 @@ impl EventBus {
                 });
                 Ok(())
             })))
-        })?;
+        });
         // The entry is in the table; its watchers hear it before `on` returns.
-        if let Some((watchers, change)) = added {
-            notify(&watchers, std::slice::from_ref(&change));
+        if let Some(seq) = added {
+            self.deliver(seq);
         }
-        Ok(disposer)
+        registered
     }
 
     /// Register an async listener of `key`'s name.
@@ -402,7 +446,7 @@ impl EventBus {
         let body = Body::Async(Arc::new(AsyncAdapter(listener, PhantomData)));
         self.register(
             ctx,
-            key.name_arc(),
+            key.checked_name()?,
             false,
             body,
             opts,
@@ -441,7 +485,7 @@ impl EventBus {
         let body = Body::Sync(Arc::new(SyncAdapter(listener, PhantomData)));
         self.register(
             ctx,
-            key.name_arc(),
+            key.checked_name()?,
             false,
             body,
             opts,
@@ -762,15 +806,30 @@ impl EventBus {
         }
         self.observe(ctx, name, mode, event);
         let scope = opts.scope.take().unwrap_or_else(|| ctx.scope());
-        Ok(self.change(|table| {
-            let mut claimed = Vec::new();
-            let entries = table.select(name, &scope, &mut claimed);
-            let changes = claimed
-                .iter()
-                .map(|entry| TableChange::Removed(entry.table_entry()))
-                .collect();
-            (entries, changes)
-        }))
+        Ok(self.core.state.lock().unwrap().table.select(name, &scope))
+    }
+
+    /// Begin a call of `entry` (§5.1 step 3): `None` skips it. A `once`
+    /// entry is claimed here, by the first call that starts, not when a
+    /// dispatch selects it: one a filter dropped, or a `serial` / `bail`
+    /// ended before, stays for the next dispatch.
+    pub(crate) fn start(&self, entry: &Arc<Entry>) -> Option<table::CallFlight> {
+        let flight = entry.start()?;
+        if entry.once {
+            if entry.claimed.swap(true, Ordering::SeqCst) {
+                return None;
+            }
+            entry.withdrawn.store(true, Ordering::SeqCst);
+            self.change(|table| {
+                let changes = match table.remove(entry) {
+                    true => vec![TableChange::Removed(entry.table_entry())],
+                    false => Vec::new(),
+                };
+                ((), changes)
+            });
+        }
+        entry.calls.fetch_add(1, Ordering::Relaxed);
+        Some(flight)
     }
 
     fn dispatch_id(&self) -> u64 {
@@ -858,7 +917,7 @@ impl EventBus {
                 entries
             };
             for entry in entries {
-                let Some(flight) = entry.start() else {
+                let Some(flight) = owned.bus.start(&entry) else {
                     continue;
                 };
                 let call = run::emit_call(owned.clone(), entry, flight, Some(ticket.clone()));
@@ -870,6 +929,17 @@ impl EventBus {
             let _ = started.send(());
         });
         SPAWNING_EMIT.with(|spawning| spawning.set(false));
+        if DROPPED_INLINE.with(|dropped| dropped.replace(false)) {
+            // The runtime is shutting down: the task never runs. Its
+            // guards left the backlog record and the chain to this frame.
+            if let Some(list) = state.backlog.get_mut(&name) {
+                list.remove(&seq);
+                if list.is_empty() {
+                    state.backlog.remove(&name);
+                }
+            }
+            return Ok(receiver);
+        }
         state.tails.insert(name, Tail { generation, task });
         Ok(receiver)
     }
@@ -964,7 +1034,6 @@ impl EventBus {
         mut opts: Opts,
     ) -> Result<Option<Value>, CordisError> {
         ctx.registration_preflight()?;
-        let _reentry = ReentryGuard::enter(self, &name)?;
         let entries = self.snapshot(ctx, &name, Mode::Bail, event.as_any(), &mut opts)?;
         let entries = filter_sync(&name, entries, opts.filter.take())?;
         let inv = Inv {
@@ -988,7 +1057,6 @@ impl EventBus {
         mut opts: Opts,
     ) -> Result<Option<Value>, CordisError> {
         ctx.registration_preflight()?;
-        let _reentry = ReentryGuard::enter(self, &name)?;
         let entries = self.snapshot(ctx, &name, Mode::WaterfallSync, event.as_any(), &mut opts)?;
         let entries = filter_sync(&name, entries, opts.filter.take())?;
         let inv = Inv {
@@ -1021,8 +1089,13 @@ impl EventBus {
         key: &EventKey<E>,
         event: Arc<E>,
     ) -> Result<(), CordisError> {
-        self.emit_erased(ctx, key.name_arc(), Payload::new(event), Opts::default())
-            .map(drop)
+        self.emit_erased(
+            ctx,
+            key.checked_name()?,
+            Payload::new(event),
+            Opts::default(),
+        )
+        .map(drop)
     }
 
     /// `emit` of a framework event: only rutis emits `rutis/*`.
@@ -1036,7 +1109,7 @@ impl EventBus {
             framework: true,
             ..Opts::default()
         };
-        self.emit_erased(ctx, key.name_arc(), Payload::new(event), opts)
+        self.emit_erased(ctx, key.checked_name()?, Payload::new(event), opts)
             .map(drop)
     }
 
@@ -1049,7 +1122,10 @@ impl EventBus {
         key: &EventKey<E>,
         event: Arc<E>,
     ) -> BoxFuture<'a, Result<(), CordisError>> {
-        self.parallel_erased(ctx, key.name_arc(), Payload::new(event), Opts::default())
+        match key.checked_name() {
+            Ok(name) => self.parallel_erased(ctx, name, Payload::new(event), Opts::default()),
+            Err(error) => Box::pin(std::future::ready(Err(error))),
+        }
     }
 
     /// `serial`: one call at a time; the first result that is not "no
@@ -1071,7 +1147,11 @@ impl EventBus {
         opts: Opts,
     ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
         let bus = self.clone();
-        let run = self.serial_erased(ctx, key.name_arc(), Payload::new(event), opts);
+        let name = match key.checked_name() {
+            Ok(name) => name,
+            Err(error) => return Box::pin(std::future::ready(Err(error))),
+        };
+        let run = self.serial_erased(ctx, name, Payload::new(event), opts);
         Box::pin(async move { typed_value(&bus, run.await?) })
     }
 
@@ -1098,22 +1178,27 @@ impl EventBus {
         opts: Opts,
     ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
         let bus = self.clone();
+        let name = match key.checked_name() {
+            Ok(name) => name,
+            Err(error) => return Box::pin(std::future::ready(Err(error))),
+        };
         let terminal = Box::new(TypedTerminal::<E, T>(
             Mutex::new(Some(terminal)),
             PhantomData,
         ));
-        let run = self.waterfall_erased(
-            ctx,
-            key.name_arc(),
-            PayloadRef::borrowed(event),
-            terminal,
-            opts,
-        );
+        let run = self.waterfall_erased(ctx, name, PayloadRef::borrowed(event), terminal, opts);
         Box::pin(async move { typed_value(&bus, run.await?) })
     }
 
     /// `bail`, synchronously: as `serial`, inline. An async listener is an
     /// `AsyncListener` error.
+    ///
+    /// A listener may dispatch the same name again, synchronously, from
+    /// inside its call (as Cordis allows): the inner dispatch runs on the
+    /// same stack. Nothing bounds that recursion; a listener that always
+    /// dispatches its own name again overflows the stack like any unbounded
+    /// recursion. Only a wait that would form a cycle across processes
+    /// fails (`SyncWaitCycle`, as for a synchronous service call).
     pub fn bail_sync<E: Event>(
         &self,
         ctx: &Ctx,
@@ -1130,7 +1215,7 @@ impl EventBus {
         event: &E,
         opts: Opts,
     ) -> Result<Option<E::Value>, CordisError> {
-        let out = self.bail_erased(ctx, key.name_arc(), PayloadRef::borrowed(event), opts)?;
+        let out = self.bail_erased(ctx, key.checked_name()?, PayloadRef::borrowed(event), opts)?;
         typed_value(self, out)
     }
 
@@ -1163,7 +1248,7 @@ impl EventBus {
         let terminal = TypedSyncTerminal::<E, F>(RefCell::new(Some(terminal)), PhantomData);
         let out = self.waterfall_sync_erased(
             ctx,
-            key.name_arc(),
+            key.checked_name()?,
             PayloadRef::borrowed(event),
             &terminal,
             opts,
@@ -1274,8 +1359,14 @@ impl EventBus {
 
     fn live_entry(&self, id: u64, name: &str) -> Result<Arc<Entry>, CordisError> {
         let entry = self.core.state.lock().unwrap().table.get(id);
+        // An id the far end kept from before (its link restarted, this
+        // entry's id reused) must not reach an entry of another name.
+        let named = |e: &Arc<Entry>| match e.prefix {
+            true => name.starts_with(&*e.name),
+            false => *e.name == *name,
+        };
         entry
-            .filter(|e| e.live())
+            .filter(|e| named(e) && e.live())
             .ok_or_else(|| CordisError::ListenerWithdrawn {
                 id,
                 name: name.to_owned(),
@@ -1295,7 +1386,7 @@ impl EventBus {
         let bus = self.clone();
         Box::pin(async move {
             let entry = bus.live_entry(id, &call.name)?;
-            let Some(flight) = entry.start() else {
+            let Some(flight) = bus.start(&entry) else {
                 return Err(CordisError::ListenerWithdrawn {
                     id,
                     name: call.name,
@@ -1350,7 +1441,7 @@ impl EventBus {
         call: EntryCall,
     ) -> Result<Option<Value>, CordisError> {
         let entry = self.live_entry(id, &call.name)?;
-        let Some(flight) = entry.start() else {
+        let Some(flight) = self.start(&entry) else {
             return Err(CordisError::ListenerWithdrawn {
                 id,
                 name: call.name,
@@ -1428,7 +1519,7 @@ impl Filtered<'_> {
         event: Arc<E>,
     ) -> Result<(), CordisError> {
         self.bus
-            .emit_erased(ctx, key.name_arc(), Payload::new(event), self.opts())
+            .emit_erased(ctx, key.checked_name()?, Payload::new(event), self.opts())
             .map(drop)
     }
 
@@ -1438,8 +1529,12 @@ impl Filtered<'_> {
         key: &EventKey<E>,
         event: Arc<E>,
     ) -> BoxFuture<'a, Result<(), CordisError>> {
-        self.bus
-            .parallel_erased(ctx, key.name_arc(), Payload::new(event), self.opts())
+        match key.checked_name() {
+            Ok(name) => self
+                .bus
+                .parallel_erased(ctx, name, Payload::new(event), self.opts()),
+            Err(error) => Box::pin(std::future::ready(Err(error))),
+        }
     }
 
     pub fn serial<'a, E: Event>(
