@@ -180,7 +180,9 @@ mod dispatch {
     }
 
     /// a — b — c: b imports `t/*` from both; c's listener of `t/x` reaches
-    /// b, never a (§9: imported entries are not announced again).
+    /// b, never a (§9: imported entries are not announced again). A
+    /// listener b registers after hearing c does reach a, so the a — b link
+    /// carries a's emissions, and b would have passed c's entry on before it.
     /// guarantee: events/no-multi-hop
     #[tokio::test(flavor = "multi_thread")]
     async fn an_imported_listener_is_not_passed_on() {
@@ -216,6 +218,8 @@ mod dispatch {
         .await;
         answer(&c, "t/x", "from c");
         assert_eq!(serial(&b, "t/x").await, Some(json!("from c")), "b hears c");
+        answer(&b, "t/y", "from b");
+        assert_eq!(serial(&a, "t/y").await, Some(json!("from b")), "a hears b");
         let key = EventKey::<Args>::dynamic("t/x".to_owned());
         let from_a = a
             .events()
@@ -229,7 +233,8 @@ mod dispatch {
     }
 
     /// `import: ["t/s/*"]` on the listening side narrows what it announces:
-    /// a listener of `t/other` is not reached.
+    /// a listener of `t/other` is not reached. It is registered first, so it
+    /// would have been announced before `t/s/hello` is heard.
     /// guarantee: events/link-export-import
     #[tokio::test(flavor = "multi_thread")]
     async fn import_narrows_what_is_announced() {
@@ -261,8 +266,8 @@ mod dispatch {
             ),]),
         )
         .await;
-        answer(&mac, "t/s/hello", "inside");
         answer(&mac, "t/other", "outside");
+        answer(&mac, "t/s/hello", "inside");
         assert_eq!(serial(&main, "t/s/hello").await, Some(json!("inside")));
         let key = EventKey::<Args>::dynamic("t/other".to_owned());
         assert!(main
