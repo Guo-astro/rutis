@@ -1,0 +1,330 @@
+//! A host service sees the row that calls it (`session::caller_row`, #441):
+//! two rows of one plugin in one runtime are two callers, an effect the
+//! service registers on a caller's `Ctx` goes when that row unloads while
+//! the runtime keeps running, and a call from Rust names no row. The same
+//! in every runtime: Node, Python, Go and Bun.
+#![cfg(any(feature = "node", feature = "python", feature = "go", feature = "bun"))]
+
+mod common;
+
+use std::sync::{Arc, Mutex};
+
+use common::runtimes::{layer, COLD};
+use rutis::{Ctx, Effect, FiberState};
+use rutis_bridge::session::{caller_row, host_key, native_error, HostDispatch, Reply, Value};
+use rutis_loader::{EntryStatus, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
+use serde_json::json;
+
+/// A calling row: its id, key, fiber identity and scope.
+type Caller = (String, String, String, Option<String>);
+
+/// What `ledger` heard: who registered each name, and which
+/// registrations went with their row.
+#[derive(Default)]
+struct Heard {
+    /// `(name, (row id, row key, fiber identity, scope))`, `None` for no row.
+    registered: Vec<(String, Option<Caller>)>,
+    removed: Vec<String>,
+}
+
+/// The host service `ledger`: `register(name)` keeps `name` for the
+/// calling row, until that row goes.
+#[derive(Clone, Default)]
+struct Ledger(Arc<Mutex<Heard>>);
+
+impl HostDispatch for Ledger {
+    fn invoke(&self, method: &str, args: Value) -> Reply {
+        assert_eq!(method, "register");
+        let [name]: [String; 1] = rutis_bridge::session::decode_value(args)?;
+        let row = caller_row();
+        if let Some(row) = &row {
+            let (heard, removed) = (self.0.clone(), name.clone());
+            row.ctx()
+                .effect(move || {
+                    Effect::Disposer(Box::new(move || {
+                        heard.lock().unwrap().removed.push(removed);
+                        Ok(())
+                    }))
+                })
+                .map_err(native_error)?;
+        }
+        let row = row.map(|row| {
+            (
+                row.id().to_owned(),
+                row.key().to_owned(),
+                row.instance().to_string(),
+                row.scope().map(str::to_owned),
+            )
+        });
+        self.0.lock().unwrap().registered.push((name, row));
+        Ok(Value::Undefined)
+    }
+
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({ "register": "sync" }))
+    }
+}
+
+impl Ledger {
+    fn registered(&self, name: &str) -> Option<Option<Caller>> {
+        let heard = self.0.lock().unwrap();
+        heard
+            .registered
+            .iter()
+            .find(|(registered, _)| registered == name)
+            .map(|(_, row)| row.clone())
+    }
+
+    fn removed(&self) -> Vec<String> {
+        self.0.lock().unwrap().removed.clone()
+    }
+}
+
+/// A root with `ledger`, and a loader whose chain `chain` builds from the
+/// catalog (registering the runtime it needs on `root`).
+async fn loader(
+    ledger: &Ledger,
+    chain: impl FnOnce(&Ctx, &ServiceCatalog) -> rutis_loader::Chain,
+) -> (Ctx, Loader) {
+    loader_on(Ctx::root().unwrap(), ledger, chain).await
+}
+
+/// [`loader`] on `root`.
+async fn loader_on(
+    root: Ctx,
+    ledger: &Ledger,
+    chain: impl FnOnce(&Ctx, &ServiceCatalog) -> rutis_loader::Chain,
+) -> (Ctx, Loader) {
+    root.provide_as::<dyn HostDispatch>(host_key("ledger"), Arc::new(ledger.clone()))
+        .unwrap();
+    let mut catalog = ServiceCatalog::new();
+    catalog.register_shared("ledger");
+    let chain = chain(&root, &catalog);
+    let plugin = LoaderPlugin::new(
+        chain,
+        LoaderOptions {
+            catalog,
+            ..LoaderOptions::default()
+        },
+    );
+    let loader = plugin.handle();
+    root.plugin(plugin).await.unwrap();
+    (root, loader)
+}
+
+fn active(loader: &Loader, id: &str) -> Option<u64> {
+    match loader.get(id)?.status {
+        EntryStatus::Running(snapshot) if snapshot.state == FiberState::Active => {
+            Some(snapshot.generation)
+        }
+        _ => None,
+    }
+}
+
+/// The suite, for rows of the plugin `name` in a runtime whose state
+/// `running` reports.
+async fn rows_are_callers(
+    root: &Ctx,
+    loader: &Loader,
+    ledger: &Ledger,
+    name: &str,
+    running: impl Fn() -> bool,
+) {
+    let row = |id: &str| json!({ "id": id, "name": name, "config": { "name": id } });
+    let report = loader
+        .reconcile(layer(vec![row("a"), row("b")]), None)
+        .await
+        .unwrap();
+    assert!(report.failures.is_empty(), "{report:?}");
+    COLD.eventually_with(
+        || (ledger.registered("a").is_some() && ledger.registered("b").is_some()).then_some(()),
+        "both rows registered",
+        || format!("{:?}", loader.entries()),
+    )
+    .await;
+
+    // Two rows of one plugin in one runtime are two callers.
+    let a = ledger.registered("a").unwrap().expect("a names its row");
+    let b = ledger.registered("b").unwrap().expect("b names its row");
+    assert_eq!((a.0.as_str(), b.0.as_str()), ("a", "b"));
+    assert_ne!(a.1, b.1, "the rows' keys");
+    assert_ne!(a.2, b.2, "the rows' fibers");
+    assert_eq!((a.3, b.3), (None, None), "outside any scope");
+    let b_generation = active(loader, "b").expect("b runs");
+
+    // Row a goes while the runtime keeps running: so does what it
+    // registered, and only that.
+    loader.reconcile(layer(vec![row("b")]), None).await.unwrap();
+    COLD.eventually_with(
+        || (ledger.removed() == ["a"]).then_some(()),
+        "a's registration removed",
+        || format!("{:?}", ledger.removed()),
+    )
+    .await;
+    assert!(running(), "the runtime keeps running");
+    assert_eq!(active(loader, "b"), Some(b_generation), "b runs on");
+    assert_eq!(ledger.removed(), ["a"]);
+
+    // A call from Rust names no row.
+    let service = root.get_as::<dyn HostDispatch>(host_key("ledger")).unwrap();
+    service.invoke("register", json!(["rust"]).into()).unwrap();
+    assert_eq!(ledger.registered("rust"), Some(None));
+
+    root.shutdown().await.unwrap();
+    assert_eq!(ledger.removed(), ["a", "b"]);
+}
+
+/// A leaf plugin written with the SDK, imported from this checkout.
+#[cfg(any(feature = "node", feature = "bun"))]
+fn sdk_plugin() -> String {
+    let sdk = common::runtimes::repo()
+        .join("node/rutis/src/index.mjs")
+        .canonicalize()
+        .unwrap();
+    // A file URL: an absolute Windows path is no module specifier.
+    let sdk = url::Url::from_file_path(&sdk).unwrap().to_string();
+    let sdk = sdk.as_str();
+    format!(
+        "import {{ definePlugin }} from {sdk:?}
+export default definePlugin({{
+  inject: ['ledger'],
+  apply(ctx, config) {{ ctx.use('ledger').register(config.name) }},
+}})
+"
+    )
+}
+
+/// guarantee: bridge/caller-row
+#[cfg(feature = "node")]
+#[tokio::test(flavor = "multi_thread")]
+async fn node_rows_are_callers() {
+    use rutis_bridge::runtime::LocalRuntime;
+    use rutis_loader::{Chain, RuntimeResolver, RuntimeRowsPlugin};
+
+    let dir = tempfile::tempdir().unwrap();
+    let entry = dir.path().join("registrant.mjs");
+    std::fs::write(&entry, sdk_plugin()).unwrap();
+    // Cordis-style too: the service read from `ctx`, as Cordis plugins do.
+    let cordis = dir.path().join("cordis.mjs");
+    std::fs::write(
+        &cordis,
+        "export const inject = ['ledger']\nexport function apply(ctx, config) { ctx.ledger.register(config.name) }\n",
+    )
+    .unwrap();
+    for entry in [entry, cordis] {
+        let ledger = Ledger::default();
+        let mut runtime = None;
+        let mut resolver = None;
+        let (root, loader) = loader(&ledger, |root, catalog| {
+            let node = LocalRuntime::node(
+                common::runtimes::repo().join("node/rutis-runtime"),
+                common::runtimes::repo().join("node/rutis-runtime/package.json"),
+            );
+            let rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(catalog));
+            runtime = Some(root.plugin(node));
+            resolver = Some(rows.clone());
+            Chain::new().with_shared(rows)
+        })
+        .await;
+        root.plugin(RuntimeRowsPlugin::new(resolver.unwrap()));
+        let runtime = runtime.unwrap();
+        rows_are_callers(&root, &loader, &ledger, &entry.to_string_lossy(), || {
+            runtime.state().state == FiberState::Active
+        })
+        .await;
+    }
+}
+
+/// guarantee: bridge/caller-row
+#[cfg(feature = "python")]
+#[tokio::test(flavor = "multi_thread")]
+async fn python_rows_are_callers() {
+    use rutis_bridge::runtime::LocalRuntime;
+    use rutis_loader::{Chain, RuntimeResolver, RuntimeRowsPlugin};
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("registrant.py"),
+        "inject = [\"ledger\"]\n\n\ndef apply(ctx, config):\n    ctx.use(\"ledger\").register(config[\"name\"])\n",
+    )
+    .unwrap();
+    let ledger = Ledger::default();
+    let mut runtime = None;
+    let mut resolver = None;
+    let (root, loader) = loader(&ledger, |root, catalog| {
+        let python = LocalRuntime::python(dir.path())
+            .python_path(common::runtimes::repo().join("python/rutis"));
+        let rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(catalog));
+        runtime = Some(root.plugin(python));
+        resolver = Some(rows.clone());
+        Chain::new().with_shared(rows)
+    })
+    .await;
+    root.plugin(RuntimeRowsPlugin::new(resolver.unwrap()));
+    let runtime = runtime.unwrap();
+    rows_are_callers(&root, &loader, &ledger, "py:registrant", || {
+        runtime.state().state == FiberState::Active
+    })
+    .await;
+}
+
+/// guarantee: bridge/caller-row
+#[cfg(feature = "go")]
+#[tokio::test(flavor = "multi_thread")]
+async fn go_rows_are_callers() {
+    use rutis_loader::{Chain, GoBinaries, GoResolver, GoRuntimeState, GoRuntimes};
+
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::default();
+    let mut resolver = None;
+    let (root, loader) = loader(&ledger, |_, catalog| {
+        let go = Arc::new(
+            GoResolver::new(GoBinaries::new().file(common::runtimes::go_binary()))
+                .with_catalog(catalog),
+        );
+        resolver = Some(go.clone());
+        Chain::new().with_shared(go)
+    })
+    .await;
+    let runtimes = GoRuntimes::new(resolver.unwrap(), dir.path()).idle(None);
+    let go = runtimes.handle();
+    root.plugin(runtimes).await.unwrap();
+    rows_are_callers(&root, &loader, &ledger, "go:go_registrant", || {
+        go.runtimes()
+            .iter()
+            .any(|runtime| runtime.state == GoRuntimeState::Running)
+    })
+    .await;
+}
+
+/// guarantee: bridge/caller-row
+#[cfg(all(unix, feature = "bun"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn bun_rows_are_callers() {
+    use rutis_bridge::runtime::LocalRuntime;
+    use rutis_loader::{Chain, RuntimeResolver, RuntimeRowsPlugin};
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+    std::fs::write(dir.path().join("registrant.ts"), sdk_plugin()).unwrap();
+    let ledger = Ledger::default();
+    // Started first, as in bun_rows.rs: rows resolve from the plugins it
+    // reports once mounted.
+    let root = Ctx::root().unwrap();
+    let bun = LocalRuntime::bun(common::runtimes::repo().join("bun/rutis-bun"), dir.path());
+    let handle = bun.handle();
+    let runtime = root.plugin(bun);
+    (&runtime).await.unwrap();
+    let mut resolver = None;
+    let (root, loader) = loader_on(root, &ledger, |_, catalog| {
+        let rows = Arc::new(RuntimeResolver::modules(handle).with_catalog(catalog));
+        resolver = Some(rows.clone());
+        Chain::new().with_shared(rows)
+    })
+    .await;
+    root.plugin(RuntimeRowsPlugin::new(resolver.unwrap()));
+    rows_are_callers(&root, &loader, &ledger, "bun:./registrant.ts", || {
+        runtime.state().state == FiberState::Active
+    })
+    .await;
+}

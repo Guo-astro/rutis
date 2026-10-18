@@ -59,7 +59,7 @@ The first control operation from rutis. Reply:
 | `rows.v2` | Supports the row operations below |
 | `hosts` | Supports `hosts.provide` / `hosts.withdraw` |
 | `leaf` | Leaf runtime: rutis gates every `inject` of its plugins |
-| `scopes` | Service ids may carry an instance label: `name`, or `name` + NUL + `label` |
+| `scopes` | Service ids may carry a scope label: `name`, or `name` + NUL + `label` |
 | `events` | Leaf events (plugin API 2): `ctx.on` / `ctx.emit`, and events sent from the host to the runtime; mounting fails if the host configured `emits` and the runtime lacks `events` |
 | `rows.announce` | Services a row provides without declaring them are announced to the host with their methods (see `service` below); only to a host whose `mount` arguments carry `announce: true` (rutis 0.12 and later). Every runtime of the repository does it (Node for Cordis and leaf rows, Bun, Python, Go) |
 
@@ -78,6 +78,7 @@ Adding fields to the `mount` reply (such as `engine` or `plugins`) is not a prot
 | `release` / `get` | Return an exported object / read a field of one |
 | `dispose` | Unload every row and let calls in flight drain |
 
+- Scope labels are opaque strings (any text without NUL, not empty): an instance's, a row's configured `isolate` label, or one the host makes for a single row. The host leases each row's services into a scope of that row's own (a label with U+0001 in it), so that the calls to `host:<id>` tell it which row calls (`session::caller_row`, #441). A row therefore reaches a host service only through the id its own `isolate` gives the name, never another row's, and a call from a plugin's code targets the id of the row it runs in.
 - Call ids this side originates in the session are prefixed `node:` (the same for every leaf runtime); the call chain `path` is rewritten across sessions on the Rust side.
 - Export slots: each `ctx.provide` gets a new handle (`name` for the first generation, then `name#N`).
 - Inferring methods: the language's public methods of the object (JavaScript: own and prototype-chain functions up to `Object.prototype`, not `constructor`; Python: callable attributes not starting with `_`, properties not read; Go: exported methods, by wire name), every one `async`; fields are not methods. `rows.schema` answers `announces: true` for a plugin that declares no `provides`.

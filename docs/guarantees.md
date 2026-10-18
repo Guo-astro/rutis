@@ -229,6 +229,7 @@ PR 模板中有对应的检查项。
 | `bridge/revocation-refuses-reconnects` | [远程运行时拨出](design-remote-runtime-dial-2026-10-14.md) §五（吊销钩子，#273） | 被吊销的身份不能再连上，得到的回应与凭据错误完全相同：吊销前已路由、还没移交的握手在移交时被拒（关闭码 4003）；已移交、还在握手或等待接管时被吊销的，在提供 Peer、创建实例之前被拒（拨号的 link 按认证失败等待，监听的 link 与接入点以 4003 关闭），不为它建立任何东西；之后的连接在升级时得到 403 "not accepted here"（被吊销的静态对端、被吊销的共享 token），或在 hello 之后得到关闭码 4003（接入点里被吊销的 id）；拨号方归为 `AuthRejected`，每 30 秒重试。吊销不保存：重启后这个身份重新被接受 | 契约行为 | 已验证 | `rutis-bridge/src/registration.rs::tests::a_ticket_from_before_an_identity_revocation_cannot_hand_over_after_it`、`rutis-bridge/src/identity.rs::tests::a_revoked_peer_no_longer_proves_itself_and_is_presented_nothing`、`::a_revoked_id_is_rejected_and_a_revoked_shared_token_refused`、`rutis-bridge/tests/revocation.rs::revoking_a_peer_closes_only_its_session_and_its_calls_fail_once`、`::revoking_one_runtime_id_closes_only_that_connection`、`::revoking_the_shared_token_closes_every_runtime_and_nothing_else`、`::a_far_end_revoked_while_it_greets_never_becomes_a_peer`、`::an_id_revoked_while_its_connection_takes_over_is_not_accepted`；TLA+ 模型 `specs/remote-lease/`（`RevokedStaysOut`、`NoStaleHandOver`） | 自报 id 不经核实（设计 §五）：持有共享 token 的一方可以换个 id 连进来，只有 `revoke_all()` 能切断它。迟到的握手在注册表一级验证：承载在路由后立即移交，WebSocket 测试无法把吊销放在两者之间 |
 | `bridge/exported-services` | [Cordis](guide/cordis.md)"把 Rust 服务导出给行"；[design-protocol-plugin-mount](design-protocol-plugin-mount.md) §11 | 应用导出的 Rust 服务（`build.rs` 里的 `Exports`、`ServiceCatalog::export`），包括依赖 crate 里的类型，Node 和 Python 行不用手写 `HostDispatch` 就能按名字使用：serde 结构体作参数和返回值、异步方法、可选和借用的参数、超出 ±(2^53−1) 的整数作为 bigint；`Err(e)` 作为带 `name`、`code`、`message`、`data` 的错误抛出；按引用传的函数由原生一侧调用，它返回的 Promise settle 之后原生一侧才继续，它抛错即原生调用失败；取 `&Ctx` 的方法拿到调用方那一行的上下文，在上面登记的东西随该行卸载而移除；实例组内的导出让每个实例的行拿到本实例的服务；生成的声明通过 `tsc --strict` | 契约行为 | 已验证 | `examples/rust-services/tests/rows.rs::a_node_row_calls_a_rust_service_from_a_dependency_crate`、`::a_node_rows_handler_settles_before_the_native_side_goes_on`、`::a_subscription_goes_when_its_row_unloads`、`::each_instance_rows_get_their_own_instances_service`、`::a_python_row_calls_the_same_service`、`::the_declarations_pass_tsc_strict`；`rutis-bridge/src/cordis/build/exports.rs` 的单元测试（再导出、别名、`cfg` feature、serde 属性、跳过并警告的方法） | #440 |
 | `bridge/error-code-and-data` | [插件 API](guide/plugin-api.md)"传值" | 带 `code` 和 `data` 的错误（Rust 服务的 `Err(e)`、带字符串 `code` 的 JavaScript 错误）连同它们一起传：Node 和 Bun 放在 `Error` 上，Python 为 `RemoteError.code` / `.data`，Go 为 `Code` / `Data`（大整数为 `*big.Int`），Rust 用 `Error::code()` / `data()` 读；再次抛出时继续传；错误图装不下的 data 被略去，错误的其余部分照常传 | 契约行为 | 已验证 | `node/rutis-runtime/test/errors.test.mjs`、`bun/rutis-bun/test/errors.test.ts`（`a Rust service error decodes with its code and data, and crosses on with them (#440)`）、`python/rutis/tests/test_peer.py::ErrorGraphTests::test_a_rust_service_error_has_its_code_and_data`、`go/rutis/internal/peer/peer_test.go::TestARustServiceErrorHasItsCodeAndData`、`rutis-bridge/src/exports.rs::tests::errors_carry_their_code_message_and_data` | 放在错误图里传：协议不变，不认识它们的运行时拿到名字和消息 |
+| `bridge/caller-row` | [在 Rust 应用里嵌入](guide/rust-host.md)「调用方的行」（#441） | `HostDispatch::invoke` 期间，`session::caller_row()` 给出发起调用的运行时行：loader 的行 id、它在运行时里的 key、它使用这个服务所在的作用域标签（在实例里是实例的）和它的 fiber 的 `Ctx`。同一个运行时的两行是两个调用方；注册在调用方 `Ctx` 上的效应在这一行卸载时撤掉，运行时照常运行；来自 Rust、来自对端节点、运行时里不属于任何行的调用（共享的租用、mount 的 hosts）或行里没声明就使用该服务的代码的调用不给出行。Node（leaf 与 Cordis 插件）、Bun、Python、Go 的行；线上格式不变（每一行的租用在它自己的作用域里，`scopes`），没有 `scopes` 的运行时共享租用、不给出行 | 契约行为 | 已验证 | `rutis-loader/tests/caller_rows.rs::node_rows_are_callers`、`::python_rows_are_callers`、`::go_rows_are_callers`、`::bun_rows_are_callers`、`rutis-loader/tests/instance_runtimes.rs::each_instance_sees_its_own_services_across_languages`、`rutis-bridge/tests/caller_rows.rs::a_lease_for_a_row_names_it_and_a_shared_one_does_not`、`::a_runtime_without_scopes_shares_the_lease_and_names_no_row` | 只在 `invoke` 本身里，不在它返回的 future 里；`peer:` 行不给出行 |
 
 ---
 
@@ -349,14 +350,14 @@ PR 模板中有对应的检查项。
 | `core/features.*`、`core/typed.*` | 7 | 0 | 0 | 0 | 7 |
 | `boundary/5.*` | 7 | 1 | 0 | 0 | 8 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
-| `bridge/*` | 24 | 0 | 0 | 1 | 25 |
+| `bridge/*` | 25 | 0 | 0 | 1 | 26 |
 | `host/*`、`dsh/*`（§11） | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*`（§12） | 1 | 1 | 0 | 0 | 2 |
 | `host/*`（§13） | 3 | 0 | 0 | 0 | 3 |
 | `loader/*`（§14） | 31 | 5 | 0 | 0 | 36 |
 | `host/*`（§15） | 14 | 3 | 1 | 1 | 19 |
-| 合计 | 117 | 13 | 1 | 3 | 134 |
+| 合计 | 118 | 13 | 1 | 3 | 135 |
 
-核心承诺 31 条：已验证 27，部分验证 4（D22、D28、5.8、`loader/instance-edits-all-or-none`），未验证 0。契约行为 100 条：已验证 91，部分验证 8（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`），未验证 1（`host/go-add`）。
+核心承诺 31 条：已验证 27，部分验证 4（D22、D28、5.8、`loader/instance-edits-all-or-none`），未验证 0。契约行为 101 条：已验证 92，部分验证 8（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`），未验证 1（`host/go-add`）。
 
 **0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 1 条（`host/go-add`）。从 0.11 起，新登记的"未验证"条目会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。

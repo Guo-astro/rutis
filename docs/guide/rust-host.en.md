@@ -111,6 +111,37 @@ root.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Clock))?;
 
 Services provided by plugins also appear in rutis under `host_key(name)`, so Rust plugins can use them by name.
 
+### Which row calls
+
+A service that registers things for plugins (tools, routes, listeners) or grants things per plugin needs to know which row calls it. During `invoke`, `session::caller_row()` returns the calling row; tie a registration to that row's `Ctx`, and it goes when the row unloads or restarts, while the runtime keeps running:
+
+```rust
+use rutis::Effect;
+use rutis_bridge::session::{caller_row, native_error, HostDispatch, Reply, Value};
+
+impl HostDispatch for Tools {
+    fn invoke(&self, method: &str, args: Value) -> Reply {
+        let [name]: [String; 1] = rutis_bridge::session::decode_value(args)?;
+        if let Some(row) = caller_row() {
+            // row.id(): the loader's row id; row.key(): its key in its runtime (a new one per restart);
+            // row.scope(): the label it isolates this service under (an instance's inside instances), None outside any.
+            self.add(row.id(), &name);
+            let (tools, id) = (self.clone(), row.id().to_owned());
+            row.ctx()
+                .effect(move || Effect::Disposer(Box::new(move || Ok(tools.remove(&id, &name)))))
+                .map_err(native_error)?;
+        }
+        Ok(Value::Undefined)
+    }
+    // methods …
+}
+```
+
+- Two rows of one runtime are two callers, with different `key()` and `instance()`.
+- A call from Rust, from a peer node (including `peer:` rows, whose calls arrive through the services between nodes), from a runtime outside any row (a service from `Mount::hosts`), or from code of a row that uses the service without declaring it (a Cordis `ctx.get`, which finds the registration shared by all rows) is `None`.
+- Read it in `invoke` itself: a future that `invoke` returns runs later, elsewhere, and does not see it.
+- It comes from how rutis-loader's rows lease services (`Process::lease_host_for`): each row has the services it leases registered in a scope of its own (besides the registration shared by all rows, as before), so the wire is unchanged and it works with Node, Bun, Python and Go runtimes, 0.11 ones included. When you load rows with `Process` yourself, lease with `lease_host_for` and isolate the name under `HostLease::label()`; calls through `lease_host` / `lease_host_in` are `None`.
+
 Declare host events through `emits` on the Rust API below; `rutis-host` JSON configuration does not yet expose this setting. Local events between plugins in one process do not need it.
 
 ## Runtime and loader
