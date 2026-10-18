@@ -26,6 +26,7 @@ pub use errors::report_line;
 pub use framework::{RuntimeEvent, RuntimeEventState, ServiceEvent};
 pub use link::LinkEventsPlugin;
 
+#[cfg(feature = "testing")]
 pub(crate) use errors::to_session as to_session_error;
 pub(crate) use framework::{runtime as emit_runtime, service as emit_service};
 pub(crate) use hub::SessionEvents;

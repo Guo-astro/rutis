@@ -357,6 +357,15 @@ fn check_runtime(runtime: &Path, install: &str) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+/// Why the mount config field `field` (`events`, `emits`) is refused (events
+/// protocol §2.4).
+pub(crate) fn removed_field(field: &str) -> String {
+    format!(
+        "the config field {field} was removed in rutis 0.13: listeners register themselves; \
+         emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)"
+    )
+}
+
 #[cfg(test)]
 mod manifest_tests {
     use super::from_manifest;
@@ -423,13 +432,4 @@ mod manifest_tests {
             "{error}"
         );
     }
-}
-
-/// Why the mount config field `field` (`events`, `emits`) is refused (events
-/// protocol §2.4).
-pub(crate) fn removed_field(field: &str) -> String {
-    format!(
-        "the config field {field} was removed in rutis 0.13: listeners register themselves; \
-         emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)"
-    )
 }
