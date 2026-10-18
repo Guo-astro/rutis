@@ -10,9 +10,9 @@ use serde_json::Value as Json;
 
 use crate::channel::{ChannelError, ChannelInfo, Closer};
 use crate::session::protocol::{Frame, WireValue};
-use crate::session::rpc::{deeper_than, parse_frame, MAX_FRAME_DEPTH};
-use crate::session::values::{base64_decode, base64_encode, check_keys};
-use crate::session::{BigInt, Date, DateTime, Decimal, Instant, TimeOfDay, Uuid, Value};
+use crate::session::rpc::{decode_text, deeper_than, parse_frame, MAX_FRAME_DEPTH};
+use crate::session::values::{base64_encode, check_keys};
+use crate::session::Value;
 use crate::transport::local::lines;
 
 /// A frame as the session's reader takes it: the depth check, then the
@@ -58,26 +58,31 @@ fn values(frame: Frame) -> Vec<WireValue> {
 }
 
 /// `Peer::decode` (session/rpc.rs) without a session: every tagged value's
-/// text is checked as there, with the same parsers; a reference, which
-/// needs a session, decodes to a value no key may be, as a reference.
+/// text is decoded by the session's own code (`decode_text`), then written
+/// back and checked; a reference, which needs a session, decodes to a
+/// value no key may be, as a reference.
 fn decode(value: WireValue) -> Result<Value, crate::session::Error> {
-    Ok(match value {
-        WireValue::Instant(text) => Value::Instant(stable::<Instant>(&text)?),
-        WireValue::DateTime(text) => Value::DateTime(stable::<DateTime>(&text)?),
-        WireValue::Date(text) => Value::Date(stable::<Date>(&text)?),
-        WireValue::Time(text) => Value::Time(stable::<TimeOfDay>(&text)?),
-        WireValue::BigInt(text) => Value::BigInt(stable::<BigInt>(&text)?),
-        WireValue::Decimal(text) => Value::Decimal(stable::<Decimal>(&text)?),
-        WireValue::Uuid(text) => Value::Uuid(stable::<Uuid>(&text)?),
-        WireValue::Bytes(text) => {
-            let bytes = base64_decode(&text)?;
-            assert_eq!(
-                base64_encode(&bytes),
-                text,
-                "bytes changed on their way back"
-            );
-            Value::Bytes(bytes)
+    let bytes_text = match &value {
+        WireValue::Bytes(text) => Some(text.clone()),
+        _ => None,
+    };
+    let value = match decode_text(value) {
+        Ok(decoded) => {
+            let decoded = decoded?;
+            written_back(&decoded, bytes_text.as_deref());
+            return Ok(decoded);
         }
+        Err(value) => value,
+    };
+    Ok(match value {
+        WireValue::Instant(_)
+        | WireValue::DateTime(_)
+        | WireValue::Date(_)
+        | WireValue::Time(_)
+        | WireValue::Bytes(_)
+        | WireValue::BigInt(_)
+        | WireValue::Decimal(_)
+        | WireValue::Uuid(_) => unreachable!("decode_text decodes the tagged texts"),
         WireValue::Map(entries) => {
             let mut decoded = Vec::new();
             for (key, value) in entries {
@@ -113,26 +118,45 @@ fn decode(value: WireValue) -> Result<Value, crate::session::Error> {
     })
 }
 
-/// `text` decoded as a `T`; if it decodes, the text written from it
-/// decodes to the same value, and writes the same text again.
-fn stable<T>(text: &str) -> Result<T, crate::session::Error>
+/// A tagged value `decode_text` gave, written back: it decodes to the same
+/// value and writes the same text again; bytes, which take only canonical
+/// base64, write back the very text they came as (`bytes_text`).
+fn written_back(value: &Value, bytes_text: Option<&str>) {
+    match value {
+        Value::Instant(value) => stable(value),
+        Value::DateTime(value) => stable(value),
+        Value::Date(value) => stable(value),
+        Value::Time(value) => stable(value),
+        Value::BigInt(value) => stable(value),
+        Value::Decimal(value) => stable(value),
+        Value::Uuid(value) => stable(value),
+        Value::Bytes(bytes) => assert_eq!(
+            Some(base64_encode(bytes).as_str()),
+            bytes_text,
+            "bytes changed on their way back"
+        ),
+        other => unreachable!("decode_text gave {other:?}"),
+    }
+}
+
+/// The text written from `value` decodes to the same value, and writes the
+/// same text again.
+fn stable<T>(value: &T)
 where
     T: std::str::FromStr<Err = crate::session::Error>
         + std::fmt::Display
         + PartialEq
         + std::fmt::Debug,
 {
-    let value: T = text.parse()?;
     let written = value.to_string();
-    let again: T = written
-        .parse()
-        .unwrap_or_else(|error| panic!("{text:?} decodes, but {written:?} does not: {error}"));
+    let again: T = written.parse().unwrap_or_else(|error| {
+        panic!("{value:?} writes {written:?}, which does not decode: {error}")
+    });
     assert_eq!(
-        value, again,
-        "{text:?} changed on its way back through {written:?}"
+        *value, again,
+        "{value:?} changed on its way back through {written:?}"
     );
-    assert_eq!(again.to_string(), written, "{text:?} writes two ways");
-    Ok(value)
+    assert_eq!(again.to_string(), written, "{value:?} writes two ways");
 }
 
 /// The local line framing (transport/local/lines.rs) reading a stream that

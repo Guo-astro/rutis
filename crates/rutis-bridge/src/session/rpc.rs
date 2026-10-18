@@ -1636,15 +1636,19 @@ impl Connection {
             (Some(error), _) => return Err(error),
             (None, value) => value,
         };
+        let value = match decode_text(value) {
+            Ok(decoded) => return decoded,
+            Err(value) => value,
+        };
         Ok(match value {
-            WireValue::Instant(text) => Value::Instant(text.parse()?),
-            WireValue::DateTime(text) => Value::DateTime(text.parse()?),
-            WireValue::Date(text) => Value::Date(text.parse()?),
-            WireValue::Time(text) => Value::Time(text.parse()?),
-            WireValue::Bytes(text) => Value::Bytes(base64_decode(&text)?),
-            WireValue::BigInt(text) => Value::BigInt(text.parse()?),
-            WireValue::Decimal(text) => Value::Decimal(text.parse()?),
-            WireValue::Uuid(text) => Value::Uuid(text.parse()?),
+            WireValue::Instant(_)
+            | WireValue::DateTime(_)
+            | WireValue::Date(_)
+            | WireValue::Time(_)
+            | WireValue::Bytes(_)
+            | WireValue::BigInt(_)
+            | WireValue::Decimal(_)
+            | WireValue::Uuid(_) => unreachable!("decode_text decodes the tagged texts"),
             WireValue::Map(entries) => {
                 let mut decoded = self
                     .decode_each(entries.into_iter().flat_map(|(key, value)| [key, value]))?
@@ -2317,6 +2321,24 @@ fn fits(value: &Json, levels: usize) -> bool {
 
 /// Whether a JSON text nests arrays and objects deeper than `limit`,
 /// found without parsing it (so without recursing).
+/// A tagged value carried as text (instant, datetime, date, time, bytes,
+/// bigint, decimal, uuid) decoded from it: `Ok` with what decoding gave,
+/// or the value back when it is of another kind. The fuzz target
+/// `session_frame` decodes them with this too (`fuzzing.rs`).
+pub(crate) fn decode_text(value: WireValue) -> Result<Reply, WireValue> {
+    Ok(match value {
+        WireValue::Instant(text) => text.parse().map(Value::Instant),
+        WireValue::DateTime(text) => text.parse().map(Value::DateTime),
+        WireValue::Date(text) => text.parse().map(Value::Date),
+        WireValue::Time(text) => text.parse().map(Value::Time),
+        WireValue::Bytes(text) => base64_decode(&text).map(Value::Bytes),
+        WireValue::BigInt(text) => text.parse().map(Value::BigInt),
+        WireValue::Decimal(text) => text.parse().map(Value::Decimal),
+        WireValue::Uuid(text) => text.parse().map(Value::Uuid),
+        other => return Err(other),
+    })
+}
+
 pub(crate) fn deeper_than(text: &[u8], limit: usize) -> bool {
     let (mut depth, mut string, mut escaped) = (0usize, false, false);
     for &byte in text {

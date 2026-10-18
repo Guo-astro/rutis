@@ -72,6 +72,7 @@ fn a_runtime_whose_host_was_killed_unloads_its_rows_and_exits() {
             .any(|(_, command)| command.to_lowercase().contains(runtime)),
         "the Node runtime is not among the host's processes: {started:?}"
     );
+    let killed = Instant::now();
     host.kill();
     host.wait_exit();
 
@@ -90,6 +91,14 @@ fn a_runtime_whose_host_was_killed_unloads_its_rows_and_exits() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    // Unix: not before the deadline gave the cleanup up (1 s; half of it
+    // for a coarse clock).
+    #[cfg(unix)]
+    assert!(
+        killed.elapsed() >= Duration::from_millis(500),
+        "the Node runtime exited {:?} after its host was killed, before its cleanup's deadline",
+        killed.elapsed()
+    );
     // Unix: it unloaded the rows itself (Windows: the job ended it first).
     #[cfg(unix)]
     assert_eq!(
@@ -154,6 +163,7 @@ fn a_python_runtime_whose_host_was_killed_gives_up_its_cleanup_and_exits() {
             .any(|(_, command)| command.to_lowercase().contains("python")),
         "the Python runtime is not among the host's processes: {started:?}"
     );
+    let killed = Instant::now();
     host.kill();
     host.wait_exit();
 
@@ -169,6 +179,14 @@ fn a_python_runtime_whose_host_was_killed_gives_up_its_cleanup_and_exits() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    // Unix: not before the deadline gave the cleanup up (1 s; half of it
+    // for a coarse clock).
+    #[cfg(unix)]
+    assert!(
+        killed.elapsed() >= Duration::from_millis(500),
+        "the Python runtime exited {:?} after its host was killed, before its cleanup's deadline",
+        killed.elapsed()
+    );
     #[cfg(unix)]
     assert_eq!(
         std::fs::read_to_string(&marker).ok().as_deref(),

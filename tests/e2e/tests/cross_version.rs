@@ -13,7 +13,9 @@
 //! | PyPI `rutis` (`listen:`, remote runtime) | rutis-host dialing it | the same over the link |
 //! | Go SDK (a binary built against the tagged module) | rutis-host, Python runtime | its plugins run; new values to it fail that call only |
 //! | rutis-host | the current runtimes (Node, Python, Go SDK) | the runtimes' plugins run; a Go binary of plugin API 2 is refused naming the host; new values towards the old host fail that call only |
-//! | rutis-host (a node) | rutis-host (a node), both dialing and listening | services both ways over the link; new values to the old node fail that call only |
+//! | rutis-host (a node) | rutis-host (a node), both dialing and listening | services both ways over the link; new values to the old node fail that call only; a JS error with `code` and `data` reaches the old node as a failed call, and the session goes on |
+//! | `@arcships/rutis-runtime`, or rutis-host | the current host, or the current Node runtime | a service a plugin of the current SDK provides without declaring it stays in its runtime, unknown to the host: the rows injecting it wait, nothing fails; the current `check` warns, the current runtime under an old host says so once |
+//! | `@arcships/rutis-runtime`, PyPI `rutis` | a Rust application (`fixture-host`) | each row's calls to a Rust service name that row (`caller_row`, its lease in a scope of its own, U+0001 in the label) |
 //!
 //! "New values" are the tagged values of 0.11 (#308: a `Date`, an integer
 //! beyond ±(2^53−1), …): a side that does not declare `value-<tag>` gets
@@ -29,6 +31,8 @@
 //! Needs, besides the e2e scenarios' own (Node, Python with pip, Bun, Go):
 //! the npm registry, PyPI and the Go module proxy. Offline they pass
 //! without running, saying so, except in CI.
+//!
+//! Unix only (Linux, macOS): on Windows the file compiles to nothing.
 
 #![cfg(unix)]
 
@@ -179,6 +183,25 @@ var plugin = rutis.Define(rutis.Plugin[struct{}]{
 })
 
 func main() { rutis.Serve(plugin) }
+"#;
+
+/// `thrower` in TypeScript (current SDK): `fail` throws an error with a
+/// `code` and `data`.
+const THROWER_TS: &str = r#"import { definePlugin } from '@arcships/rutis'
+
+export default definePlugin({
+  provides: { thrower: { fail: 'async' } },
+  apply(ctx) {
+    ctx.provide('thrower', {
+      async fail() {
+        throw Object.assign(new Error('refused by thrower'), {
+          code: 'E_REFUSED',
+          data: { at: [1, 2], why: 'a test' },
+        })
+      },
+    })
+  },
+})
 "#;
 
 /// What `sender.date` answers when the value made the round trip.
@@ -600,8 +623,8 @@ fn nodes(release: &Release, s: Scenario, old_listens: bool) {
     let token = s.secret();
     let port = s.port();
     let url = format!("ws://127.0.0.1:{port}/rutis");
-    let link = |peer: &str, listens: bool, export: &str, import: &str| {
-        let mut config = json!({ "peer": peer, "export": [export], "import": [import] });
+    let link = |peer: &str, listens: bool, export: &[&str], import: &[&str]| {
+        let mut config = json!({ "peer": peer, "export": export, "import": import });
         match listens {
             true => config["listen"] = json!("local"),
             false => config["dial"] = json!(url),
@@ -611,13 +634,13 @@ fn nodes(release: &Release, s: Scenario, old_listens: bool) {
     let listener = json!([{ "name": "local", "address": format!("127.0.0.1:{port}") }]);
 
     s.write("old/echo.py", echo_py("echo"));
-    let old_probe = s.probe_in("old", "probe-old", Lang::Python, &["greeter"]);
+    let old_probe = s.probe_in("old", "probe-old", Lang::Python, &["greeter", "thrower"]);
     let mut config = json!({
         "id": "old",
         "runtimes": { "py": {} },
             "rows": [
                 { "id": "echo", "name": "py:echo" },
-                link("current", old_listens, "echo", "greeter"),
+                link("current", old_listens, &["echo"], &["greeter", "thrower"]),
             old_probe.row(),
         ],
     });
@@ -633,6 +656,7 @@ fn nodes(release: &Release, s: Scenario, old_listens: bool) {
     );
     s.write("current/greeter.py", echo_py("greeter"));
     s.write("current/sender.ts", SENDER_TS.replace("TARGET", "echo"));
+    s.write("current/thrower.ts", THROWER_TS);
     let probe = s.probe_in("current", "probe", Lang::Node, &["echo", "sender"]);
     let mut config = json!({
         "id": "current",
@@ -640,7 +664,8 @@ fn nodes(release: &Release, s: Scenario, old_listens: bool) {
             "rows": [
                 { "id": "greeter", "name": "py:greeter" },
                 { "id": "sender", "name": "./sender.ts" },
-                link("old", !old_listens, "greeter", "echo"),
+                { "id": "thrower", "name": "./thrower.ts" },
+                link("old", !old_listens, &["greeter", "thrower"], &["echo"]),
             probe.row(),
         ],
     });
@@ -681,6 +706,27 @@ fn nodes(release: &Release, s: Scenario, old_listens: bool) {
         old_probe.call(&mut old, "greeter", "hello", json!(["Ada"])),
         Ok(json!("Hello, Ada (python)"))
     );
+    // A JS error with `code` and `data` (what 0.12 lets an error carry)
+    // reaches the old node as that call's failure; the session goes on.
+    let mark = old.lines().len();
+    for _ in 0..2 {
+        let failed = old_probe
+            .call(&mut old, "thrower", "fail", json!([]))
+            .expect_err("the thrown error fails the call");
+        assert!(failed.contains("refused by thrower"), "{failed}");
+        assert_eq!(
+            old_probe.call(&mut old, "greeter", "hello", json!(["Ada"])),
+            Ok(json!("Hello, Ada (python)"))
+        );
+    }
+    let down: Vec<String> = old
+        .lines()
+        .into_iter()
+        .skip(mark)
+        .map(|line| line.text)
+        .filter(|line| line.starts_with("current: link down"))
+        .collect();
+    assert!(down.is_empty(), "the link went down: {down:?}");
     new_values(&mut current, &probe, release);
     stop(current);
     stop(old);
@@ -705,4 +751,213 @@ fn a_previous_node_listens_and_the_current_node_dials() {
 #[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
 fn the_current_node_listens_and_a_previous_node_dials() {
     each("prev-node-dials", |release, s| nodes(release, s, false));
+}
+
+/// A plugin of the current SDK that provides `quiet` without declaring
+/// it (`provides` left out, as the 0.12 templates do), and a row of the
+/// same runtime that uses it and offers `near` (declared).
+const QUIET_TS: &str = r#"import { definePlugin } from '@arcships/rutis'
+
+export default definePlugin({
+  apply(ctx) {
+    ctx.provide('quiet', { hello: (name: string) => `Hello, ${name} (quiet)` })
+  },
+})
+"#;
+
+const NEAR_TS: &str = r#"import { definePlugin } from '@arcships/rutis'
+
+type Quiet = { hello(name: string): string }
+
+export default definePlugin({
+  inject: ['quiet'],
+  provides: { near: { hello: 'async' } },
+  apply(ctx) {
+    const quiet = ctx.use<Quiet>('quiet')
+    ctx.provide('near', { hello: async (name: string) => await quiet.hello(name) })
+  },
+})
+"#;
+
+/// Which side of [`undeclared`] is the previous release.
+#[derive(Clone, Copy)]
+enum Old {
+    /// `@arcships/rutis-runtime`, under the current host.
+    Runtime,
+    /// rutis-host, with the current Node runtime.
+    Host,
+}
+
+/// A service a row provides without declaring it reaches rutis only when
+/// its runtime announces it (`rows.announce`, 0.12) to a host that asks
+/// for it. With `old` of `release`, nothing announces it: the service
+/// stays in its runtime, unknown to the host, and every row injecting it,
+/// in that runtime (`near`) or another (`far`), waits for it; nothing
+/// fails, and the row providing it runs on. What says so: the current
+/// host's `check` (that nothing declares `quiet`); under an old host, the
+/// current runtime, once, that the host does not take the service.
+fn undeclared(release: &Release, s: Scenario, old: Old) {
+    link_sdk(&s, "", &repo().join("node/rutis"));
+    s.write("quiet.ts", QUIET_TS);
+    s.write("near.ts", NEAR_TS);
+    let far = s.probe("far", Lang::Python, &["quiet"]);
+    let node = match old {
+        Old::Runtime => json!({ "runtime": release.node_runtime() }),
+        Old::Host => json!({}),
+    };
+    s.write_json(
+        "rutis.json",
+        &json!({
+            "runtimes": { "node": node, "py": {} },
+            "rows": [
+                { "id": "quiet", "name": "./quiet.ts" },
+                { "id": "near", "name": "./near.ts" },
+                far.row(),
+            ],
+        }),
+    );
+    if let Old::Runtime = old {
+        // What the current host's `check` says of it (#446): a warning for
+        // the row of the same runtime, which some row may provide `quiet`
+        // to; the Python row cannot run.
+        let mut check = s.host(["check", "rutis.json"]);
+        let status = check.wait_exit();
+        let printed: Vec<String> = check.lines().into_iter().map(|line| line.text).collect();
+        let has = |text: &str| printed.iter().any(|line| line.contains(text));
+        assert!(!status.success(), "check: {status}\n{printed:#?}");
+        assert!(
+            has("rutis-host: warning: near: nothing declares quiet; it may be provided at runtime by"),
+            "check warns for near: {printed:#?}"
+        );
+        assert!(
+            has("far (py:far): cannot run: nothing provides quiet"),
+            "check, far: {printed:#?}"
+        );
+    }
+    let mut host = match old {
+        Old::Runtime => s.host(["run", "rutis.json"]),
+        Old::Host => s.program("", release.host(), ["run", "rutis.json"], &[]),
+    };
+    host.expect("quiet: running");
+    let told = "rutis: service quiet is not declared in provides, and this host (older than 0.12) does not take undeclared services";
+    if let Old::Host = old {
+        host.expect(told);
+    }
+    host.expect("near: waiting for its services");
+    host.expect("far: waiting for its services");
+    // Nothing is to come; a while for an announcement to have arrived if
+    // there were one (the current runtime sends it as the row loads).
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    for row in ["near", "far"] {
+        assert_eq!(
+            host.count(&format!("{row}: running")),
+            0,
+            "quiet reached {row}"
+        );
+    }
+    let expected = match old {
+        Old::Runtime => 0,
+        Old::Host => 1,
+    };
+    assert_eq!(host.count(told), expected, "the old host told once");
+    let failed: Vec<String> = host
+        .lines()
+        .into_iter()
+        .map(|line| line.text)
+        .filter(|line| line.contains(": failed") || line.contains(": unresolved"))
+        .collect();
+    assert!(failed.is_empty(), "rows failed: {failed:?}");
+    stop(host);
+    s.finish();
+}
+
+/// The previous `@arcships/rutis-runtime` under the current host: a
+/// service a current-SDK plugin provides without declaring it stays in the
+/// runtime (it announces nothing). Before plugin API 2 the plugin does not
+/// load at all ([`a_previous_node_runtime_under_the_current_host`]).
+///
+/// risk: J2, F8
+/// guarantee: bridge/cross-version-meetings, loader/announced-services
+#[test]
+#[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
+fn an_undeclared_service_of_a_previous_runtime_stays_in_it() {
+    each("undeclared-runtime", |release, s| {
+        if release.older_than(TAGGED) {
+            eprintln!(
+                "cross-version undeclared-runtime: {} has no plugin API 2, nothing to meet",
+                release.version
+            );
+            s.finish();
+            return;
+        }
+        undeclared(release, s, Old::Runtime);
+    });
+}
+
+/// The current Node runtime under the previous rutis-host: the host does
+/// not ask for announcements, so the same service stays in the runtime.
+///
+/// risk: J2, F8
+/// guarantee: bridge/cross-version-meetings, loader/announced-services
+#[test]
+#[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
+fn an_undeclared_service_under_a_previous_host_stays_in_its_runtime() {
+    each("undeclared-host", |release, s| {
+        undeclared(release, s, Old::Host)
+    });
+}
+
+/// Previous runtimes (Node and Python) under a current Rust application
+/// (`fixture-host`) whose Rust service `calendar` tells who calls it
+/// (`caller()`, `session::caller_row`). Two rows of one plugin in each
+/// runtime: each row's calls name that row, through a lease in a scope
+/// of its own (a label with U+0001 in it, which the previous runtimes
+/// take as any label).
+///
+/// risk: J2, P8
+/// guarantee: bridge/cross-version-meetings, bridge/caller-row
+#[test]
+#[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
+fn previous_runtimes_lease_per_row_and_name_the_calling_row() {
+    each("prev-caller-row", |release, s| {
+        link_sdk(&s, "", &release.node_sdk());
+        let probes = [
+            s.probe("node-a", Lang::Node, &["calendar"]),
+            s.probe("node-b", Lang::Node, &["calendar"]),
+            s.probe("py-a", Lang::Python, &["calendar"]),
+            s.probe("py-b", Lang::Python, &["calendar"]),
+        ];
+        let mut rows = vec![json!({ "id": "calendar", "name": "fixture/calendar" })];
+        rows.extend(probes.iter().map(Probe::row));
+        s.write_json(
+            "rutis.json",
+            &json!({
+                "runtimes": { "node": { "runtime": release.node_runtime() }, "py": {} },
+                "rows": rows,
+            }),
+        );
+        let old = release.python_path().display().to_string();
+        let mut host = s.fixture_host(["rutis.json"], &[("RUTIS_PYTHON_PATH", &old)]);
+        for probe in &probes {
+            probe.started(&mut host);
+        }
+        let mut keys = std::collections::BTreeSet::new();
+        for (probe, id) in probes.iter().zip(["node-a", "node-b", "py-a", "py-b"]) {
+            for _ in 0..2 {
+                let caller = probe
+                    .call(&mut host, "calendar", "caller", json!([]))
+                    .unwrap_or_else(|error| panic!("{id}: {error}"));
+                assert_eq!(caller["id"], id, "{id}'s call names it: {caller}");
+                // No `isolate` of its own: the label the service is used
+                // under is none (the lease's own label stays inside rutis).
+                assert_eq!(caller["scope"], Value::Null, "{id}: {caller}");
+                keys.insert(caller["key"].as_str().unwrap_or_default().to_owned());
+            }
+        }
+        // One key per row: four rows, four callers.
+        assert_eq!(keys.len(), 4, "{keys:?}");
+        host.send_line("stop");
+        assert!(host.wait_exit().success(), "the application stopped");
+        s.finish();
+    });
 }

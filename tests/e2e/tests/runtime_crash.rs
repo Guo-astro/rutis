@@ -329,7 +329,8 @@ fn a_killed_runtime_restarted_on_failure_brings_its_rows_back() {
     for pid in &killed {
         s.kill(&host, *pid);
     }
-    host.expect("runtime py: down (");
+    let down = host.expect("runtime py: down (");
+    assert!(down.contains("exited with"), "how it ended: {down}");
     host.expect("runtime py: restarting");
     host.expect("runtime py: running");
     for row in rows().into_iter().chain(["probe"]) {
@@ -337,6 +338,11 @@ fn a_killed_runtime_restarted_on_failure_brings_its_rows_back() {
     }
     project.probe.started(&mut host);
     calls_work(&mut host, &project);
+    assert_eq!(
+        host.count("runtime py: restarting"),
+        1,
+        "one kill, one restart"
+    );
     let after = s.descendants(&host);
     assert_eq!(others(&after), others(&before), "the other runtimes");
     let restarted = python(&after);
