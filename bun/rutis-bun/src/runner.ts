@@ -9,7 +9,9 @@
 //   services, provided services and their method kinds, package version);
 // - `hosts.provide` / `hosts.withdraw` register rutis services by name;
 // - the services a row exports are reported with `service(id, handle,
-//   version)` notifications, and calls to a handle reach the object.
+//   version)` notifications, and calls to a handle reach the object; one it
+//   provides without declaring it is announced to a host that asks, with
+//   the methods its object has (`rows.announce`).
 //
 // Within the process, `ctx.use(name)` returns the object itself when another
 // row here provides it, so those calls never leave the process.
@@ -50,7 +52,26 @@ function refuseEmits(names: unknown): void {
 }
 
 // events: leaf plugins receive what rutis emits (RuntimePlugin::emits).
-export const FEATURES = ['rows.v2', 'hosts', 'leaf', 'scopes', 'events']
+// rows.announce: services rows provide without declaring them are announced
+// with their methods, to a host whose mount says `announce`.
+export const FEATURES = ['rows.v2', 'hosts', 'leaf', 'scopes', 'events', 'rows.announce']
+
+// The methods of a service no declaration describes: its own and inherited
+// functions, up to Object's, not the constructor; a property that is not a
+// function hides an inherited function of the same name. All async.
+export function methodsOf(object: unknown): Set<string> {
+  const methods = new Set<string>()
+  if (object === null || (typeof object !== 'object' && typeof object !== 'function')) return methods
+  const seen = new Set<string>()
+  for (let level: any = object; level != null && level !== Object.prototype && level !== Function.prototype; level = Object.getPrototypeOf(level)) {
+    for (const name of Object.getOwnPropertyNames(level)) {
+      if (seen.has(name)) continue
+      seen.add(name)
+      if (name !== 'constructor' && typeof Object.getOwnPropertyDescriptor(level, name)?.value === 'function') methods.add(name)
+    }
+  }
+  return methods
+}
 
 // How the service `name` is identified in the scope `label`. Neither may
 // contain NUL and a label may not be empty, so no two pairs share an id.
@@ -75,10 +96,14 @@ interface Row {
   // Owns the row's event listeners; disposed first on unload.
   events?: Fiber
   provided: string[]
+  // Ids of the slots of services it announced.
+  announced: string[]
+  // Announcements the host has yet to answer, while the row loads.
+  pending: Array<Promise<unknown>> | null
 }
 const idIn = (row: Row, name: string) => scopedId(name, row.isolate.get(name))
 
-interface Slot { row: string, methods: Set<string>, object: unknown, handle: string | null, generation: number }
+interface Slot { row: string, methods: Set<string>, object: unknown, handle: string | null, generation: number, announced?: boolean }
 interface Handle { name: string, object: any, current: boolean, released: boolean }
 type Listener = (...args: any[]) => unknown
 
@@ -95,6 +120,8 @@ export class Runtime {
   #events = new Context()
   #emits = new Set<string>()
   #version = 0
+  // The host takes announced services (mount `announce`).
+  #announce = false
 
   constructor(project: string) { this.#project = project }
 
@@ -113,6 +140,11 @@ export class Runtime {
     if (current) throw new Error(`service ${id} is already provided by row ${current.row}`)
     this.#services.set(id, { row: row.key, value })
     row.provided.push(id)
+    // Not declared: announced, with the methods it has.
+    if (this.#announce && !this.#slots.has(id) && !name.includes('#')) {
+      this.#slots.set(id, { row: row.key, methods: new Set(), object: undefined, handle: null, generation: 0, announced: true })
+      row.announced.push(id)
+    }
     this.#refresh(id)
     return () => {
       if (this.#services.get(id)?.value !== value) return
@@ -136,11 +168,19 @@ export class Runtime {
       slot.generation++
       slot.handle = handleOf(id, slot.generation)
       this.#handles.set(slot.handle, { name: id, object: current, current: true, released: false })
+      if (slot.announced) slot.methods = methodsOf(current)
     }
     this.#version++
     // A notification: sent before this returns, so it goes out ahead of the
-    // reply of the call that caused it.
-    if (this.client && !this.closing) this.client.callAsync('', 'service', [id, slot.handle, this.#version]).catch(() => {})
+    // reply of the call that caused it. An announced service says whose it
+    // is and what it offers, and a row loading answers once rutis heard it.
+    if (this.client && !this.closing) {
+      const args = slot.announced
+        ? [id, slot.handle, this.#version, { row: slot.row, methods: Object.fromEntries([...slot.methods].map(method => [method, 'async'])) }]
+        : [id, slot.handle, this.#version]
+      const sent = this.client.callAsync('', 'service', args).catch(() => {})
+      if (slot.announced) this.#rows.get(slot.row)?.pending?.push(sent)
+    }
   }
 
   #retire(handle: string) {
@@ -164,7 +204,7 @@ export class Runtime {
 
   async load(key: string, entry: string, config: unknown, isolate: Array<[string, string]> | null, exports: Row['exports'] | null) {
     if (this.#rows.has(key)) throw new Error(`row ${key} is already loaded`)
-    const row: Row = { key, entry, config, exports: exports ?? {}, isolate: new Map(), cleanups: [], provided: [] }
+    const row: Row = { key, entry, config, exports: exports ?? {}, isolate: new Map(), cleanups: [], provided: [], announced: [], pending: [] }
     for (const [name, label] of isolate ?? []) { scopedId(name, label); row.isolate.set(name, label) }
     for (const name of Object.keys(row.exports)) {
       if (name.includes('#')) throw new Error(`service name ${name} cannot be projected`)
@@ -198,6 +238,10 @@ export class Runtime {
         row.cleanups.push(cleanup as () => unknown)
       }
       for (const name of Object.keys(row.exports)) this.#refresh(idIn(row, name))
+      // rutis has published the announced services (or refused one, which
+      // fails the row there) before it hears that the row loaded.
+      await Promise.all(row.pending ?? [])
+      row.pending = null
     } catch (error) {
       await this.unload(key).catch(() => {})
       throw error
@@ -215,12 +259,13 @@ export class Runtime {
       if (this.#services.get(id)?.row === key) { this.#services.delete(id); this.#refresh(id) }
     }
     row.provided = []
-    for (const name of Object.keys(row.exports)) {
-      const id = idIn(row, name)
+    for (const id of [...Object.keys(row.exports).map(name => idIn(row, name)), ...row.announced]) {
       const slot = this.#slots.get(id)
+      if (slot?.row !== key) continue
       this.#slots.delete(id)
-      if (slot?.handle) this.#retire(slot.handle)
+      if (slot.handle) this.#retire(slot.handle)
     }
+    row.announced = []
     const errors: unknown[] = []
     for (const cleanup of row.cleanups.splice(0).reverse()) {
       try { await cleanup() } catch (error) { errors.push(error) }
@@ -244,7 +289,7 @@ export class Runtime {
   async describe(entry: string) {
     const file = locate(entry, this.#project)
     const plugin = declared(await this.#modules.import(file), entry)
-    return { config: plugin.config, inject: plugin.inject, provides: plugin.provides, version: versionOf(entry, file) }
+    return { config: plugin.config, inject: plugin.inject, provides: plugin.provides, announces: plugin.announces, version: versionOf(entry, file) }
   }
 
   async dispose() {
@@ -273,6 +318,7 @@ export class Runtime {
       case 'mount':
         refuseEmits(args.emits)
         this.#emits = new Set(args.emits ?? [])
+        this.#announce = args.announce === true
         return {
           services: {},
           features: FEATURES,

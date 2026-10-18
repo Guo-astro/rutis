@@ -1,19 +1,23 @@
 // Write a rutis plugin in JavaScript or TypeScript. A plugin declares the
-// services it uses (`inject`) and provides (`provides`), and `apply(ctx,
-// config)` uses and provides them through `ctx`; rutis decides when it
-// starts, stops and restarts. The runtime that runs it is installed by the
-// host (`@arcships/rutis-runtime` in Node, `@arcships/rutis-bun` in Bun), not
-// by the plugin.
+// services it uses (`inject`), and `apply(ctx, config)` uses and provides
+// them through `ctx`; rutis decides when it starts, stops and restarts. The
+// runtime that runs it is installed by the host (`@arcships/rutis-runtime`
+// in Node, `@arcships/rutis-bun` in Bun), not by the plugin.
 //
 //   export default definePlugin({
 //     inject: ['llm'],
-//     provides: { weather: { today: 'async' } },
 //     config: { type: 'object', properties: { city: { type: 'string' } } },
 //     apply(ctx, config) {
 //       ctx.provide('weather', new Weather(ctx.use('llm'), config.city))
 //       return () => {}
 //     },
 //   })
+//
+// What `ctx.provide` provides reaches rutis by itself: its methods are the
+// object's functions (its own and its prototype chain's, not `constructor`),
+// called as `async`. `provides` is optional: `{ weather: { unit: 'sync' } }`
+// marks methods `sync` and tells `rutis-host check` what the plugin
+// provides before it runs.
 
 // The plugin API this SDK writes plugins against. A runtime refuses a plugin
 // that needs a newer one, naming both.
@@ -33,7 +37,9 @@ export function definePlugin(spec) {
       if (kind !== 'sync' && kind !== 'async') throw new TypeError(`${name}.${method}: kind must be 'sync' or 'async'`)
     }
   }
-  return Object.freeze({ ...spec, inject, provides: spec.provides ?? {}, api: PLUGIN_API, [PLUGIN]: true })
+  // `announces`: it does not say all it provides; what it does is known
+  // once it runs.
+  return Object.freeze({ ...spec, inject, provides: spec.provides ?? {}, announces: spec.provides === undefined, api: PLUGIN_API, [PLUGIN]: true })
 }
 
 // Whether `value` is a plugin definePlugin made.

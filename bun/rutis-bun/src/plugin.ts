@@ -3,8 +3,9 @@
 // A plugin module either exports the plugin `definePlugin` (from
 // `@arcships/rutis`) made as its default export, or declares one with its own
 // exports: `apply(ctx, config)`, and optionally `inject`, `provides` and
-// `config` (a JSON Schema). `provides` gives each method's kind:
-// `{ weather: { today: 'sync', later: 'async' } }`.
+// `config` (a JSON Schema). `provides` is optional and gives each method's
+// kind: `{ weather: { today: 'sync', later: 'async' } }`; what a plugin
+// provides without declaring it reaches rutis all the same (`announces`).
 import { realpathSync, readFileSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
@@ -23,6 +24,8 @@ export interface Plugin {
   apply(ctx: unknown, config: unknown): unknown
   inject: string[]
   provides: Record<string, Record<string, Kind>>
+  // It declares no `provides`: what it provides is known once it runs.
+  announces: boolean
   config: unknown
   api: number
 }
@@ -78,7 +81,9 @@ function check(plugin: any, entry: string): Plugin {
   if (api > PLUGIN_API) {
     throw new Error(`plugin ${entry} needs plugin API ${api}; this runtime supports ${PLUGIN_API}: upgrade @arcships/rutis-bun where the host runs`)
   }
-  return { apply: plugin.apply, inject: [...inject], provides, config: plugin.config ?? null, api }
+  // An SDK's plugin says (0.12 on); a module's own exports, by having none.
+  const announces = typeof plugin.announces === 'boolean' ? plugin.announces : plugin.provides === undefined
+  return { apply: plugin.apply, inject: [...inject], provides, announces, config: plugin.config ?? null, api }
 }
 
 // The plugin a module declares.

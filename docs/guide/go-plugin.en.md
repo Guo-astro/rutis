@@ -63,7 +63,7 @@ func (w *Weather) Unit() string { return "celsius" }
 var Plugin = rutis.Define(rutis.Plugin[Config]{
 	Name:     "weather",
 	Inject:   []string{"llm"},                                                       // runs only while all are there
-	Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}, // methods are async by default
+	Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}, // optional: marks Unit sync; methods are async by default
 	Apply: func(ctx *rutis.Ctx, config Config) error {
 		var llm LLM
 		if err := ctx.Use("llm", &llm); err != nil {
@@ -109,7 +109,9 @@ func TestToday(t *testing.T) {
 go test ./...
 ```
 
-`Load` checks what a host would: the plugin uses only the services `Inject` declares; provided services are of the type `Provides` declares; cleanups succeed on unload. What works only within one process (passing a struct as an object, relying on shared memory) fails here.
+`Provides` is optional: what `ctx.Provide` provides reaches rutis by itself, its methods the value's exported ones, all called as `async`. When present it applies (`Sync` marks synchronous methods, `Rename` renames them), and `rutis-host check` knows before running what the plugin provides.
+
+`Load` checks what a host would: the plugin uses only the services `Inject` declares; provided services are of the type `Provides` declares (an undeclared service is called as rutis calls it, by its exported methods, all async); cleanups succeed on unload. What works only within one process (passing a struct as an object, relying on shared memory) fails here.
 
 ## 4. Run it in a local host
 

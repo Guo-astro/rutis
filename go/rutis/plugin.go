@@ -5,9 +5,8 @@
 // its configuration, and has an Apply function:
 //
 //	var Plugin = rutis.Define(rutis.Plugin[Config]{
-//		Name:     "weather",
-//		Inject:   []string{"llm"},
-//		Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))},
+//		Name:   "weather",
+//		Inject: []string{"llm"},
 //		Apply: func(ctx *rutis.Ctx, config Config) error {
 //			var llm LLM
 //			if err := ctx.Use("llm", &llm); err != nil {
@@ -17,6 +16,12 @@
 //			return nil
 //		},
 //	})
+//
+// What Ctx.Provide provides reaches rutis: its methods are the value's
+// exported ones, all asynchronous. Provides is optional; it marks methods
+// synchronous, `Provides: rutis.Provides{"weather":
+// rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}`, and tells `rutis-host
+// check` what the plugin provides before it runs.
 //
 // A binary serves one or more plugins: `func main() { rutis.Serve(weather.Plugin) }`.
 // rutis decides when a plugin runs: Apply runs once every injected service
@@ -38,7 +43,11 @@ type Plugin[C any] struct {
 	Name string
 	// Inject lists the services it uses: it runs only while all are there.
 	Inject []string
-	// Provides declares the services it provides to rutis and their methods.
+	// Provides declares the services it provides and their methods
+	// (optional). What Ctx.Provide provides reaches rutis without it, its
+	// methods the value's exported ones, all asynchronous; Provides marks
+	// methods synchronous (Sync) or renames them, and tells `rutis-host
+	// check` what the plugin provides before it runs.
 	Provides Provides
 	// Schema is the JSON Schema of the configuration; without it, one is
 	// derived from C.
@@ -155,6 +164,8 @@ func (d *Definition) describe() map[string]any {
 		"inject":   inject,
 		"provides": provides,
 		"version":  version,
+		// No Provides: what it provides is known once it runs.
+		"announces": d.provides == nil,
 	}
 }
 

@@ -17,7 +17,9 @@ import (
 )
 
 // features are what this runtime supports of the runtime contract.
-var features = []string{"rows.v2", "hosts", "leaf", "scopes", "events"}
+// rows.announce: services rows provide without declaring them are announced
+// with their methods, to a host whose mount says `announce`.
+var features = []string{"rows.v2", "hosts", "leaf", "scopes", "events", "rows.announce"}
 
 // Future is an asynchronous result of another process.
 type Future = convert.Future
@@ -77,6 +79,8 @@ type slot struct {
 	present    bool
 	handle     string
 	generation int
+	// Not declared: announced, with the methods of each object.
+	announced bool
 }
 
 type handleEntry struct {
@@ -101,6 +105,12 @@ type row struct {
 	provided []string
 	tasks    sync.WaitGroup
 	order    int64
+	// Ids of the slots of services it announced.
+	announced []string
+	// Announcements the host has yet to answer, while the row loads; nil
+	// once it loaded.
+	pending []<-chan struct{}
+	loading bool
 }
 
 func (r *row) id(name string) string {
@@ -128,6 +138,8 @@ type runtimeState struct {
 	closing  bool
 	events   map[string][]*listener
 	emits    map[string]bool
+	// The host takes announced services (mount `announce`).
+	announce bool
 }
 
 func newRuntime(defs []*Definition) *runtimeState {
@@ -206,6 +218,12 @@ func (rt *runtimeState) refresh(id string) {
 		if r := rt.rows[s.row]; r != nil {
 			shape = r.def.provides[s.name]
 		}
+		if s.announced {
+			s.methods = map[string]bool{}
+			for wire := range convert.Methods(reflect.TypeOf(current)) {
+				s.methods[wire] = true
+			}
+		}
 		rt.handles[s.handle] = &handleEntry{id: id, object: current, shape: shape, methods: s.methods, current: true}
 	}
 	rt.version++
@@ -214,7 +232,20 @@ func (rt *runtimeState) refresh(id string) {
 		if s.handle != "" {
 			handle = s.handle
 		}
-		rt.session.Notify("", "service", []any{id, handle, rt.version})
+		if !s.announced {
+			rt.session.Notify("", "service", []any{id, handle, rt.version})
+			return
+		}
+		// An announced service says whose it is and what it offers, and a
+		// row loading answers once rutis has heard it.
+		methods := map[string]any{}
+		for wire := range s.methods {
+			methods[wire] = "async"
+		}
+		answered := rt.session.Announce("", "service", []any{id, handle, rt.version, map[string]any{"row": s.row, "methods": methods}})
+		if r := rt.rows[s.row]; r != nil && r.loading {
+			r.pending = append(r.pending, answered)
+		}
 	}
 }
 
@@ -235,10 +266,8 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 	if value == nil {
 		panic(fmt.Sprintf("rutis: provide %s: a nil service", name))
 	}
-	if shape == nil {
-		panic(fmt.Sprintf("rutis: provide %s: Provides does not declare it", name))
-	}
-	if !reflect.TypeOf(value).AssignableTo(shape.typ) {
+	// Not declared: its methods are its exported ones, all async.
+	if shape != nil && !reflect.TypeOf(value).AssignableTo(shape.typ) {
 		panic(fmt.Sprintf("rutis: provide %s: %T is not the %s Provides declares", name, value, shape.typ))
 	}
 	rt.mu.Lock()
@@ -248,6 +277,10 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 	}
 	rt.services[id] = providedService{row: r.key, value: value, shape: shape}
 	r.provided = append(r.provided, id)
+	if rt.announce && rt.slots[id] == nil && !strings.Contains(name, "#") {
+		rt.slots[id] = &slot{row: r.key, name: name, announced: true}
+		r.announced = append(r.announced, id)
+	}
 	rt.refresh(id)
 	return func() {
 		rt.mu.Lock()
@@ -274,7 +307,7 @@ func (rt *runtimeState) load(ctx context.Context, key, entry string, config any,
 	if err != nil {
 		return err
 	}
-	r := &row{key: key, entry: entry, def: def, config: config, exports: exports, isolate: isolate}
+	r := &row{key: key, entry: entry, def: def, config: config, exports: exports, isolate: isolate, loading: true}
 	rt.mu.Lock()
 	if _, loaded := rt.rows[key]; loaded {
 		rt.mu.Unlock()
@@ -322,7 +355,14 @@ func (rt *runtimeState) load(ctx context.Context, key, entry string, config any,
 	for name := range exports {
 		rt.refresh(r.id(name))
 	}
+	pending := r.pending
+	r.pending, r.loading = nil, false
 	rt.mu.Unlock()
+	// rutis has published the announced services (or refused one, which
+	// fails the row there) before it hears that the row loaded.
+	for _, answered := range pending {
+		<-answered
+	}
 	return nil
 }
 
@@ -343,15 +383,19 @@ func (rt *runtimeState) unload(ctx context.Context, key string) error {
 		}
 	}
 	r.provided = nil
+	ids := append([]string{}, r.announced...)
 	for name := range r.exports {
-		id := r.id(name)
-		if s := rt.slots[id]; s != nil {
+		ids = append(ids, r.id(name))
+	}
+	for _, id := range ids {
+		if s := rt.slots[id]; s != nil && s.row == key {
 			delete(rt.slots, id)
 			if s.handle != "" {
 				rt.retire(s.handle)
 			}
 		}
 	}
+	r.announced = nil
 	rt.mu.Unlock()
 	r.cancel()
 	r.tasks.Wait()
@@ -445,7 +489,10 @@ func argument[T any](args []any, i int) (T, error) {
 func (rt *runtimeState) control(ctx context.Context, method string, args []any) (any, error) {
 	switch method {
 	case "mount":
-		mount, err := argument[struct{ Emits []string }](args, 0)
+		mount, err := argument[struct {
+			Emits    []string
+			Announce bool
+		}](args, 0)
 		if err != nil {
 			return nil, fmt.Errorf("mount: %w", err)
 		}
@@ -463,6 +510,7 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 		}
 		rt.mu.Lock()
 		rt.emits = emits
+		rt.announce = mount.Announce
 		rt.mu.Unlock()
 		return map[string]any{
 			"services":       map[string]any{},
@@ -748,7 +796,8 @@ func localService(name string, local providedService) *Service {
 	value := reflect.ValueOf(local.value)
 	methods := map[string]string{}
 	for wire := range local.shape.wires(value) {
-		kind := "sync"
+		// Not declared: async, as rutis sees it.
+		kind := "async"
 		if local.shape != nil {
 			kind = local.shape.methods[wire].kind
 		}

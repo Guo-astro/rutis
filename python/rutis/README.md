@@ -18,8 +18,10 @@ def apply(ctx, config):
     ctx.provide("weather", Weather(ctx.use("llm"), config["city"]))
 
 
-plugin = define_plugin(apply, inject=["llm"], provides={"weather": Weather})
+plugin = define_plugin(apply, inject=["llm"])
 ```
+
+What `ctx.provide` provides reaches rutis by itself, its methods the object's public callables, called as `async`. `provides` is optional: `provides={"weather": Weather}` (or `{"weather": {"unit": "sync"}}`) marks methods `sync` and tells `rutis-host check` what the plugin provides before it runs.
 
 Test it without a host:
 
