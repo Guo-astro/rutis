@@ -270,6 +270,26 @@ class Waterfall(Rows):
         with self.assertRaisesRegex(WaterfallNext, "^next of t/wf-late was called after its waterfall ended$"):
             kept[0]()
 
+    async def test_next_after_the_emitter_gave_up_fails(self):
+        # §5.7: a cancelled dispatch fails any later next with WaterfallNext.
+        ctx = await self.row("a")
+        kept, started = [], asyncio.Event()
+
+        async def holds(next):
+            kept.append(next)
+            started.set()
+            await asyncio.Event().wait()
+
+        ctx.on("t/wf-cancel", holds)
+        ctx.on("t/wf-cancel", lambda next: "never")
+        dispatch = asyncio.ensure_future(ctx.waterfall("t/wf-cancel"))
+        await within("the listener starts", started.wait())
+        dispatch.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await dispatch
+        with self.assertRaisesRegex(WaterfallNext, "^next of t/wf-cancel was called after its waterfall ended$"):
+            kept[0]()
+
     async def test_an_inner_error_reaches_the_emitter(self):
         ctx = await self.row("a")
 

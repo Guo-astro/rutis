@@ -4,6 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { definePlugin } from '../src/index.mjs'
+import { Bus } from '../src/events.mjs'
 import { host, load } from '../src/testing.mjs'
 
 const listener = (name, reply, options) => definePlugin({
@@ -77,6 +78,38 @@ test('unload aborts ctx.signal and waits for running listeners, at most the dead
   stuck.emit('work')
   await stuck.unload()
   assert.deepEqual(stuck.reported.map(report => report.line), [`rutis: listeners of row ${stuck.row} still running after 0.03s; unloading anyway`])
+})
+
+test('next called twice or after the waterfall ended fails with WaterfallNext', async () => {
+  let kept
+  const t = await load(definePlugin({
+    apply(ctx) {
+      ctx.on('twice', async next => { await next(); return next() })
+      ctx.on('late', next => { kept = next; return 'early' })
+    },
+  }))
+  await assert.rejects(t.waterfall('twice'), { name: 'WaterfallNext', message: 'next of twice was already called' })
+  assert.equal(await t.waterfall('late'), 'early')
+  assert.throws(() => kept(), { name: 'WaterfallNext', message: 'next of late was called after its waterfall ended' })
+  await t.unload()
+})
+
+// The testing tool has no host, but its bus is the runtime's (one file):
+// the lines of §11 for an emit or a registration the host refuses.
+test('the bus reports an emit and a registration the host refuses', async () => {
+  const reported = []
+  const refusing = {
+    callAsync(target, method) { return Promise.reject(Object.assign(new Error(`${method} refused`), { name: 'BindingError' })) },
+  }
+  const bus = new Bus({ peer: refusing, report: line => reported.push(line) })
+  bus.on({ name: 't/on', callback: () => {}, row: 'chat', plugin: 'p' })
+  bus.elsewhere({ add: ['t/e'] })
+  bus.dispatch('emit', 't/e', [], { row: 'chat' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(reported, [
+    'rutis: registration of listener of t/on in row chat failed: BindingError: events.on refused',
+    'rutis: emit of t/e from row chat failed: BindingError: events.dispatch refused',
+  ])
 })
 
 test('a row uses another row\'s service as the object itself', async () => {
