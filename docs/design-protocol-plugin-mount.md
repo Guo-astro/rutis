@@ -248,7 +248,7 @@ Node 侧为每个导出的服务槽位维护一串**对象句柄**：
 
 **方法都是 `async`。** 对调用方每个方法都是 `async`，慢方法不会阻塞运行时的线程，也不会形成同步等待环；Rust 的 `async fn` 作为调用的 future 运行（与所有调用一样，可被调用方的 `AbortSignal` 或丢弃 future 取消）。
 
-**错误是带 code 的抛出错误。** `Err(e)` 变成会话的失败，错误图的根节点在 `name`、`message` 之外带 `code` 和 `data`。协议不变：错误图本来就是错误的数据，不认识这两个字段的解码方仍拿到名字和消息；Node、Bun、Python、Go 现在会读出它们（`error.code`/`error.data`、`RemoteError.code`/`.data`、`Code`/`Data`）；JavaScript 也会发送字符串 `code` 和它的 `data`，所以再次抛出的错误保留它们。`E` 有 serde 时 code 取 serde 写出的变体名（与 `data` 一致），否则取 `Debug` 里的 Rust 变体名，再否则取类型名。声明里写明错误类型（`<Name>Thrown`，写在 `@throws`）。
+**错误是带 code 的抛出错误。** `Err(e)` 变成会话的失败，错误图的根节点在 `name`、`message` 之外带 `code` 和 `data`。协议不变：错误图本来就是错误的数据，不认识这两个字段的解码方仍拿到名字和消息；Node、Bun、Python、Go 现在会读出它们（`error.code`/`error.data`、`RemoteError.code`/`.data`、`Code`/`Data`）；每个运行时也会发送它们（JavaScript 的 `code`/`data` 属性、Python 的属性、Go 的 `Code()`/`Data()`），所以错误可以从任何语言出发，再次抛出的错误也保留它们。`E` 有 serde 时 code 取 serde 写出的变体名（与 `data` 一致），否则取 `Debug` 里的 Rust 变体名，再否则取类型名。声明里写明错误类型（`<Name>Thrown`，写在 `@throws`）。
 
 **默认按名字共享。** `ServiceCatalog::new()` 现在按名字共享所有名字，与 rutis-host 相同；有了 #428，只有 rutis 一侧有提供者的名字才由 rutis 门控行，Cordis 行提供的服务自动投到 rutis，所以默认共享不再让 Cordis 行互相等待。`share_registered_only()` 是原来的行为。
 

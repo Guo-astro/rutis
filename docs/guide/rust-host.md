@@ -15,7 +15,7 @@ rutis-bridge = { version = "0.11", features = ["python", "websocket"] }   # node
 | --- | --- |
 | `rutis` | 内核：插件、依赖、服务 |
 | `rutis-loader` | 按数据（行）加载插件。`node` / `python` / `go`：这几种语言的行；`peer`：节点行和 `peer:` 行 |
-| `rutis-bridge` | 连接其他进程、语言、机器。`node`（默认）、`python`、`go`：本机运行时；`websocket`：WebSocket 承载；`cordis`：挂载 Cordis 插件并生成 Rust 绑定（见 [Cordis](cordis.md)）；`testing`：一致性测试 |
+| `rutis-bridge` | 连接其他进程、语言、机器。`node`（默认）、`python`、`go`：本机运行时；`websocket`：WebSocket 承载；`cordis`：挂载 Cordis 插件并生成 Rust 绑定（见 [Cordis](cordis.md)）；`exports`（放在 `[build-dependencies]`）：为[导出的 Rust 服务](#导出已有的-rust-服务)生成 dispatcher；`testing`：一致性测试 |
 
 只用其中一种语言时只开那一个 feature，应用只编译、只启动它用到的部分。
 
@@ -30,13 +30,13 @@ rutis-bridge = { version = "0.11", features = ["python", "websocket"] }   # node
 rutis-bridge = "0.12"
 
 [build-dependencies]
-rutis-bridge = { version = "0.12", features = ["cordis"] }
+rutis-bridge = { version = "0.12", features = ["exports"] }
 ```
 
 ```rust
 // build.rs
 fn main() {
-    rutis_bridge::cordis::build::Exports::new()
+    rutis_bridge::build::Exports::new()
         // 依赖 crate 里的类型，按应用自己的写法写路径。
         .service("calendar", "calendar_services::Calendar")
         // 在实例组 `session` 的每个实例里：每个实例的行拿到自己的那一份。
@@ -80,7 +80,7 @@ export default definePlugin({
 
 - 原生服务在时，加载器就提供这个导出：`inject` 这个名字的行等它出现、随它撤下而停止，与其他服务相同。实例内的导出按 `register_shared_instance` 的规则解析：行拿到离它最近的那个组实例的服务。不用加载器时，自己挂上 `exports::calendar().plugin(None)`。
 - 每个公开的 `&self` 方法都会导出，对调用方是 `async`（JavaScript 里是 Promise，Python 里是 awaitable）；Python 和 Go 的行调用同一个 dispatcher。`&Ctx` 参数是调用方那一行的上下文，不是给调用方的参数：方法在上面登记的东西随该行卸载而移除。生成器绑定不了的方法会被跳过，构建警告写明位置和原因。
-- `Err(e)` 在调用方语言里作为错误抛出，带 `name`（`e` 的类型）、`code`（变体）、`message`（`Display`）和 `data`（serde 值）。能传什么、依赖 crate 的源码怎么找、有哪些限制：见 [Cordis](cordis.md#把-rust-服务导出给行)。完整示例：[`examples/rust-services`](../../examples/rust-services)。
+- `Err(e)` 在调用方语言里作为错误抛出，带 `name`（`e` 的类型）、`code`（变体）、`message`（`Display`）和 `data`（serde 值）。能传什么、依赖 crate 的源码怎么找、有哪些限制：见 [Cordis](#导出服务参考)。完整示例：[`examples/rust-services`](../../examples/rust-services)。
 
 ### 手写 `HostDispatch`
 
@@ -108,6 +108,8 @@ impl HostDispatch for Clock {
 
 root.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Clock))?;
 ```
+
+要让错误像导出服务的 `Err(e)` 那样带 code 和 data，返回 `rutis_bridge::exports::failure(name, code, message, data)`：调用方语言里抛出名为 `name`、消息为 `message` 的错误，附带 `code` 和 `data`（`serde_json::Value` 或 `None`）。
 
 插件提供的服务同样以 `host_key(名字)` 出现在 rutis 里，Rust 插件可以按名字使用它们。
 
@@ -244,3 +246,72 @@ root.plugin(PeerPlugin::new(
 ```
 
 用 rutis-loader 配置时，`rutis_loader::register_peer_node` 注册 `rutis-bridge/peer` 行（与 rutis.json 相同），`PeerResolver` 解析 `peer:` 行。远程运行时：`RuntimePlugin::remote(名字)` 加一个 `runtime` 设为同名的节点行，行名由 `RuntimeResolver::modules(handle)` 解析为 `<名字>:<模块>`。概念与安全见 [连接节点](nodes.md)。
+
+## 导出服务：参考
+
+已有的 Rust 服务，由各语言的行（TypeScript、JavaScript、Python、Go）按名字使用；dispatcher 和 TypeScript 声明在构建时从 Rust 定义生成。`build.rs` 用 `rutis_bridge::build::Exports` 列出类型（构建依赖开 `exports` feature）；应用用 `rutis_bridge::include_exports!()` 声明生成的模块，再用 `ServiceCatalog::export_all` 登记 `exports::all()`。用法见[上文](#导出已有的-rust-服务)；完整示例：[`examples/rust-services`](../../examples/rust-services)。
+
+| `Exports` | 作用 |
+| --- | --- |
+| `.service(name, path)` | 把 `path` 处的 struct 或 enum 导出为服务 `name`，在实例之外 |
+| `.service_in(name, path, group)` | 导出在实例组 `group` 的每个实例里（同 `register_shared_instance`） |
+| `.declared(path, typescript)` | 生成器推不出时，`path` 处 Rust 类型对应的 TypeScript 类型 |
+| `.typescript(file)` | 声明再写一份到 `file`（相对 `Cargo.toml`），内容变了才写 |
+| `.generate()` | 写出 `OUT_DIR/rutis_exports.rs` 和 `rutis_exports.d.ts`；`exports::TYPESCRIPT` 是声明的内容 |
+
+### 源码从哪来
+
+`path` 按应用自己的写法写：自己的类型写 `crate::…`，依赖的类型写依赖的 crate 名（按 `Cargo.toml` 里的名字，含改名）。构建脚本运行 `cargo metadata`（只取正在构建的目标平台，先离线），得到每个 crate 的入口文件和 Cargo 解析出的 feature，再用 syn 读模块树：`mod` 文件（含 `#[path]`）、`use`、glob 和 `pub use` 再导出（从私有模块再导出的类型也能找到）、类型别名（含泛型别名）。方法是该类型在其 crate 内任意位置的固有 `impl` 块里的公开 `&self` 方法。`#[cfg]` 会求值：`feature = "…"` 按 Cargo 解析出的 feature，目标平台的 `cfg` 按 `CARGO_CFG_*`，`test` 和 `doc` 视为关闭。只用稳定版 Rust：不为此编译或展开任何东西。
+
+### 能传什么
+
+| Rust | TypeScript | |
+| --- | --- | --- |
+| `bool`、`String`、`&str`、`char`、`PathBuf`、`&Path` | `boolean`、`string` | |
+| `f32`、`f64`、`u8`–`u32`、`i8`–`i32` | `number` | |
+| `u64`、`i64`、`usize`、`isize`、`u128`、`i128` | `number \| bigint` | 超出 ±(2^53−1) 时以 bigint 传（0.11 的值规则）；两种都接受 |
+| `Option<T>` | `T \| null` | 末尾的 `Option` 参数可以不传；`Option` 字段是可选的 |
+| `Vec<T>`、`&[T]`、集合、`VecDeque<T>`、`[T; N]` / 元组 | `T[]` / `[A, B]` | |
+| `HashMap<K, V>`、`BTreeMap<K, V>` | `Record<string, V>` | |
+| `Box<T>`、`Arc<T>`、`Rc<T>`、`Cow<T>` | `T` | |
+| `serde_json::Value` | `unknown` | |
+| `rutis_bridge::session::{Instant, Bytes, BigInt, ValueMap, ValueSet}` | `Date`、`Uint8Array`、`bigint`、`Map`、`Set` | 带标签的值 |
+| derive 了 `Serialize` / `Deserialize` 的 struct 或 enum | `interface` 或联合类型，按 serde 写出的样子 | `rename`、`rename_all`、`rename_all_fields`、`tag`、`content`、`untagged`、`transparent`、`flatten`、`skip`、`default`、`skip_serializing_if`；泛型类型在 TypeScript 里也是泛型；文档注释变成 JSDoc |
+| `impl Fn(A, ..) -> BoxFuture<'static, Result<X, E>>`、泛型 `F: Fn(..)`、`Arc<dyn Fn .. + Send + Sync>`、`Box<dyn Fn .. + Send>`（含别名） | `(arg0: A, ..) => X \| Promise<X>` | 按引用传的函数；最多四个参数，按值取 |
+| `async fn`，或返回 `BoxFuture<'_, T>`、`Pin<Box<dyn Future<Output = T> ..>>`、`impl Future<Output = T>` | `Promise<T>` | 对调用方而言每个方法都返回 `Promise` |
+
+参数用 serde 解码（任意 `Deserialize`），结果用 serde 编码（任意 `Serialize`）；Cargo 按真实签名检查每个生成的调用。
+
+**按引用传的函数：** Rust 一侧拿到的函数会调用调用方的函数：它的 future 在函数返回、且返回的 Promise settle 之后才完成，所以订阅者处理完事件，原生一侧才继续；抛错或 reject 是这个 future 的 `Err`（要求 `E: From<rutis_bridge::session::Error>`，`CordisError`、`anyhow::Error`、装箱的错误都满足），走原生的失败路径。Rust 期望 `()` 时，函数返回的值被忽略。
+
+**取消：** 调用方不再等待的调用（`AbortSignal`、丢弃 future）会在 Rust 一侧丢弃方法的 future，与所有调用相同。
+
+**调用方行的上下文：** `&rutis::Ctx`（或 `Ctx`）参数在 TypeScript 里不是参数：它是发起调用的那一行的上下文（`rutis_bridge::session::caller_row()`），方法在上面登记的东西（`ctx.effect`、监听）属于那一行，随该行卸载或重启而移除，例如订阅。不在任何行里调用时（从 Rust、从对端节点），这样的方法失败，错误写明它需要调用方行的上下文。
+
+### 错误
+
+返回 `Result<T, E>` 的方法（`std::result::Result`、它的别名、`anyhow::Result`、`io::Result`）把 `Err(e)` 作为调用方语言里抛出的错误：JavaScript 的 `Error`、Python 的 `rutis.RemoteError`、Go 的 `*rutis.RemoteError`。它不是未分类的调用错误：
+
+| `E` | `name` | `code` | `data` |
+| --- | --- | --- | --- |
+| 有 serde 的枚举 | 类型名 | serde 写出的变体：序列化成的字符串、外部标签变体的唯一键、内部或相邻标签变体的 `tag` 字段 | serde 值 |
+| 没有 serde（或 `untagged`）的枚举 | 类型名 | 变体的 Rust 名（取自 derive 的 `Debug`） | 有 serde 时为 serde 值 |
+| 有 serde 的结构体 | 类型名 | 序列化成的字符串，否则为类型名 | serde 值 |
+| `String` | `Error` | `Error`（字符串是 `message`） | — |
+| `rutis::CordisError` | `CordisError` | 变体名 | — |
+| `rutis_bridge::session::Error` | 原样抛出（转发的调用保留远端的错误） | | |
+| 其他（`anyhow::Error`、`io::Error`） | 类型名 | 类型名 | — |
+
+`message` 总是 `e` 的 `Display`。JavaScript 读 `error.code`、`error.data`；Python 读 `error.code`、`error.data`；Go 读 `remote.Code`、`remote.Data`（大整数为 `*big.Int`）；Rust 用 `Error::code()`、`Error::data()`。它们放在错误图里传，不认识它们的运行时仍拿到名字和消息。声明里每个错误类型有一个 `<Name>Thrown` 类型 `RustError<'Name', 'Code1' | 'Code2', Data>`，写在方法的 JSDoc 里（`@throws {CalendarErrorThrown}`）。
+
+### 声明
+
+`rutis_exports.d.ts` 包含每个服务类型的接口、它用到的数据类型、`RustError`、各 `<Name>Thrown` 类型，以及按名字列出服务的 `Services`：`ctx.use<Services['calendar']>('calendar')`。它能通过 `tsc --strict`（`examples/rust-services` 会检查）。`.typescript(…)` 写出的那份要提交：Rust 一侧变了，构建会改写它。
+
+### 限制
+
+- 宏写出的东西看不到：宏（derive 除外）写出的类型、`impl` 块或方法找不到。服务类型必须是具体的 struct 或 enum（不能是泛型，不能是 trait 对象）。
+- 取 `&mut self`、返回借用、函数参数取引用（`Fn(&A)`）、除函数以外的泛型参数、除 `Fn` 以外的 `impl Trait`、不返回 `Result` 的 future 的函数参数，这样的方法会被跳过并给出警告。
+- 数据类型需要生成器能读懂的 serde derive：手写的 `Serialize`、`#[serde(with / serialize_with / into / remote)]`，或者不读源码的 crate 的类型（`std`、`serde_json`、`chrono`、`uuid`、`url` 和带标签的值除外）需要 `.declared(path, typescript)`；在那之前用到它的方法被跳过，警告里写明类型。
+- `#[cfg]` 按上面的规则求值；构建脚本看不到的 `cfg` 视为关闭。
+- 方法的 future 必须是 `Send`（否则编译失败）。

@@ -2,7 +2,7 @@
 //! without a hand-written [`HostDispatch`].
 //!
 //! The application's `build.rs` lists the types to export
-//! ([`cordis::build::Exports`](crate::cordis::build::Exports), feature
+//! ([`build::Exports`](crate::build::Exports), feature
 //! `cordis` of the build dependency); the generator reads their source,
 //! including from dependency crates, and generates a dispatcher for each
 //! and TypeScript declarations. [`include_exports!`](crate::include_exports)
@@ -297,7 +297,7 @@ from_callback!(A0, A1);
 from_callback!(A0, A1, A2);
 from_callback!(A0, A1, A2, A3);
 
-/// Declare the module [`cordis::build::Exports`](crate::cordis::build::Exports)
+/// Declare the module [`build::Exports`](crate::build::Exports)
 /// generated, `exports` by default (`include_exports!(pub(crate) mod
 /// services)` names it): `exports::all()` lists the [`Export`]s, one
 /// function per export returns its own, and `exports::TYPESCRIPT` holds the
@@ -426,11 +426,11 @@ pub fn display_failure<E: std::fmt::Display + ?Sized>(name: &str, error: &E) -> 
     failure(name, name, error.to_string(), None)
 }
 
-/// `Err(message)` of a `String`: `code`, `message` and `data` are the
-/// string.
+/// `Err(message)` of a `String`: named and coded `Error`, the string its
+/// message, no data.
 #[doc(hidden)]
 pub fn string_failure(error: &str) -> Error {
-    failure("Error", error, error.to_owned(), Some(json!(error)))
+    failure("Error", "Error", error.to_owned(), None)
 }
 
 #[cfg(test)]
@@ -480,7 +480,9 @@ mod tests {
 
         let error = variant_failure("Problem", &Problem::Invalid { field: "x".into() }, None);
         assert_eq!((error.code(), error.data()), (Some("Invalid"), None));
-        assert_eq!(string_failure("no").code(), Some("no"));
+        let error = string_failure("no");
+        assert_eq!((error.code(), error.data()), (Some("Error"), None));
+        assert_eq!(error.to_string(), "Error: no");
     }
 
     #[test]

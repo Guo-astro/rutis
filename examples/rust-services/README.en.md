@@ -22,4 +22,4 @@ python3 -m pip install "websockets==15.*"
 cargo test -p rust-services-example
 ```
 
-Usage: [Embed rutis in a Rust application](../../docs/guide/rust-host.en.md#export-an-existing-rust-service); what crosses and the limits: [Cordis](../../docs/guide/cordis.en.md#export-rust-services-to-rows).
+Usage: [Embed rutis in a Rust application](../../docs/guide/rust-host.en.md#export-an-existing-rust-service); what crosses and the limits: [Cordis](../../docs/guide/rust-host.en.md#exported-services-reference).

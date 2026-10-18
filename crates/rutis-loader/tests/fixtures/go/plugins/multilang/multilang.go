@@ -34,6 +34,16 @@ func (Weather) Each(ctx context.Context, days []string, callback func(ctx contex
 	return out, nil
 }
 
+// Fail fails with an error that has a code and data (#440).
+func (Weather) Fail(ctx context.Context) error { return stormy{} }
+
+type stormy struct{}
+
+func (stormy) Error() string { return "too windy" }
+func (stormy) Name() string  { return "WeatherError" }
+func (stormy) Code() string  { return "Stormy" }
+func (stormy) Data() any     { return map[string]any{"wind": uint64(1) << 60} }
+
 func probe(ctx *rutis.Ctx) (Probe, error) {
 	var p Probe
 	err := ctx.Use("probe", &p)

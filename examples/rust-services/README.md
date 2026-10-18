@@ -22,4 +22,4 @@ python3 -m pip install "websockets==15.*"
 cargo test -p rust-services-example
 ```
 
-用法：[在 Rust 应用里嵌入](../../docs/guide/rust-host.md#导出已有的-rust-服务)；能传什么、有哪些限制：[Cordis](../../docs/guide/cordis.md#把-rust-服务导出给行)。
+用法：[在 Rust 应用里嵌入](../../docs/guide/rust-host.md#导出已有的-rust-服务)；能传什么、有哪些限制：[Cordis](../../docs/guide/rust-host.md#导出服务参考)。

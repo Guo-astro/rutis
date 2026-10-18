@@ -677,6 +677,31 @@ class ErrorGraphTests(unittest.TestCase):
         self.assertEqual(error.data, {"NotFound": 18446744073709551615})
         self.assertEqual((decode_error(self.FAR).code, decode_error(self.FAR).data), (None, None))
         self.assertIsNone(decode_error({"name": "Error", "message": "plain"}).code)
+        # Data that cannot be read leaves the code; tagged values decode.
+        def with_data(data):
+            return decode_error({"name": "E", "message": "m", "graph": {
+                "root": {"type": "reference", "value": 0},
+                "nodes": [{"type": "error", "name": "E", "message": "m", "code": "C", "data": data}]}})
+        broken = with_data({"type": "nonsense"})
+        self.assertEqual((broken.code, broken.data), ("C", None))
+        self.assertEqual(with_data({"type": "bytes", "value": "aGk="}).data, b"hi")
+        self.assertEqual(with_data({"type": "number", "value": "Infinity"}).data, float("inf"))
+
+    def test_an_exception_with_code_and_data_crosses_with_them(self):
+        class Stormy(Exception):
+            code = "Stormy"
+            data = {"wind": 2**60, "gusts": [1, 2]}
+
+        error = decode_error(encode_error(Stormy("too windy")))
+        self.assertEqual((error.name, error.code, error.data), ("Stormy", "Stormy", {"wind": 2**60, "gusts": [1, 2]}))
+
+        class Unsendable(Exception):
+            code = "U"
+            data = object()
+
+        wire = encode_error(Unsendable("x"))
+        self.assertEqual(len(wire["graph"]["nodes"]), 1)
+        self.assertEqual((decode_error(wire).code, decode_error(wire).data), ("U", None))
 
     def test_a_remote_error_thrown_on_crosses_with_its_whole_graph(self):
         # Alone, not only inside an AggregateError: as Node's decoded Error re-encodes.

@@ -12,7 +12,7 @@ rutis = { path = "../../crates/rutis" }
 rutis-bridge = { path = "../../crates/rutis-bridge" }
 
 [build-dependencies]
-rutis-bridge = { path = "../../crates/rutis-bridge", features = ["cordis"] }
+rutis-bridge = { path = "../../crates/rutis-bridge", features = ["exports"] }
 
 [dev-dependencies]
 rutis-loader = { path = "../../crates/rutis-loader", features = ["node", "python"] }

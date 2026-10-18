@@ -285,7 +285,7 @@ impl ServiceCatalog {
     }
 
     /// Export an existing Rust service by name, with the dispatcher
-    /// generated for it (`rutis_bridge::cordis::build::Exports`): the name
+    /// generated for it (`rutis_bridge::build::Exports`): the name
     /// is shared (inside the instances of the export's group, if it has
     /// one), and the loader serves it while the native service is there,
     /// from its own context or, for a group, from each of the group's
