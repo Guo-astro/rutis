@@ -11,7 +11,7 @@ rutis (https://github.com/arcships/rutis) is a plugin host with a Rust core that
 | --- | --- |
 | `references/plugin-api.md` | The plugin API: declarations, ctx, events, lifecycle, how values cross, sync calls and reentrancy, cancellation, versions |
 | `references/nodes.md` | Links, running plugins on another node, remote language runtimes, security |
-| `references/rutis-json.md` | `rutis.json`: `runtimes`, `listen`, `rows`, credentials, deployment |
+| `references/rutis-json.md` | `rutis.json`: `runtimes` (`restart`, `listen` / `instances`), `listen`, `rows`; exit status, live reload, when a runtime ends, credentials, deployment |
 
 Keep one sentence in mind: **rutis has no such thing as a "remote plugin" — only an ordinary plugin plus a runtime or node that runs somewhere else.** The plugin code is exactly what it would be locally; what changes is where its runtime runs and how rutis reaches it. Do not write a separate plugin API, protocol or lifecycle for remote use.
 
