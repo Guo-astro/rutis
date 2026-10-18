@@ -11,11 +11,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/arcships/rutis/go/rutis/internal/peer"
 )
@@ -83,8 +86,12 @@ func (l *Listener) UnmarshalJSON(data []byte) error {
 // ListenOptions are a listener's registration options (§4.2).
 type ListenOptions struct{ Prepend, Global bool }
 
-// Next is the rest of a waterfall, and a waterfall's terminal.
+// Next is the rest of a waterfall.
 type Next = func(context.Context) (any, error)
+
+// Terminal is a waterfall's innermost step: `next` of the last listener
+// calls it with the event's arguments (§5.4).
+type Terminal = func(ctx context.Context, args ...any) (any, error)
 
 // Mode is how a dispatch runs its listeners.
 type Mode string
@@ -186,6 +193,23 @@ func HasResult(v any) bool {
 		return !value.IsNil()
 	}
 	return true
+}
+
+// ShutdownVariable sets, in seconds, how long an unload waits for its
+// row's running listeners (§7.1) and how long cleanups may take once the
+// session ended; rutis-host passes its own shutdown deadline on.
+const ShutdownVariable = "RUTIS_SHUTDOWN_TIMEOUT"
+
+// DefaultShutdown is that time when ShutdownVariable does not say.
+const DefaultShutdown = 10 * time.Second
+
+// ShutdownTimeout is the deadline ShutdownVariable sets.
+func ShutdownTimeout() time.Duration {
+	seconds, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv(ShutdownVariable)), 64)
+	if err != nil || !(seconds > 0) || math.IsInf(seconds, 1) {
+		return DefaultShutdown
+	}
+	return time.Duration(seconds * float64(time.Second))
 }
 
 // report writes the lines of §5.6; tests replace it.
@@ -334,10 +358,10 @@ func (d *Dispatch) Serial(ctx context.Context, mode Mode, args []any) (any, erro
 }
 
 // Waterfall calls the outermost entry with `next`, each `next` calling
-// the entry after it and the last one `terminal` (nil: no result), and
-// returns the outermost value as it is. `mode` is waterfall or
-// waterfall-sync.
-func (d *Dispatch) Waterfall(ctx context.Context, mode Mode, args []any, terminal Next) (any, error) {
+// the entry after it and the last one `terminal` with the event's
+// arguments (nil: no result), and returns the outermost value as it is.
+// `mode` is waterfall or waterfall-sync.
+func (d *Dispatch) Waterfall(ctx context.Context, mode Mode, args []any, terminal Terminal) (any, error) {
 	entries, err := d.selected()
 	if err != nil {
 		return nil, err
@@ -369,7 +393,7 @@ func (d *Dispatch) Waterfall(ctx context.Context, mode Mode, args []any, termina
 			return call(ctx, mode, args, next(i+1))
 		}
 		if terminal != nil {
-			return terminal(ctx)
+			return terminal(ctx, append([]any(nil), args...)...)
 		}
 		return nil, nil
 	}

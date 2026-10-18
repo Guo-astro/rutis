@@ -14,7 +14,9 @@ import { eventually, within } from './support.mjs'
 const runner = fileURLToPath(new URL('../src/runner.mjs', import.meta.url))
 const conformance = fileURLToPath(new URL('./fixtures/conformance-events.mjs', import.meta.url))
 const cordis = fileURLToPath(new URL('./fixtures/events-cordis.mjs', import.meta.url))
+const scopeFilter = fileURLToPath(new URL('./fixtures/events-scope-filter.mjs', import.meta.url))
 const T1 = { id: '17', group: 'tenant' }
+const T2 = { id: '18', group: 'tenant' }
 
 async function started() {
   const host = await fakeHost([process.execPath, runner, conformance])
@@ -142,4 +144,75 @@ test('a host that does not declare events-v2 is refused', async () => {
   assert.equal(code, 1)
   assert.match(host.stderr, /^rutis: refused: incompatible \(this host does not declare events-v2 \(the event protocol of rutis 0\.13\): upgrade rutis-host to 0\.13 or later\); stopping$/m)
   await host.end()
+})
+
+// Two copies of one row (a group's two instances) in one process share the
+// row's id and plugin: the filter is asked about the copy the host means,
+// by the id the host gives, and sees that copy's descriptor (its scope).
+test('through the host, the filter judges the very copy the host asks about', async () => {
+  const { host } = await started()
+  try {
+    const load = (key, config, scope, exports = {}) => host.call('rows.load', [key, scopeFilter, config, [], [], exports, { scope, id: key.split('#')[0] }])
+    await load('c#t2', { listen: 't/copies' }, [T2])
+    await load('c#t1', { listen: 't/copies' }, [T1])
+    await load('e', { probe: 'e' }, [T1], { 'probe-e': { filtered: 'async', emitKept: 'async' } })
+    const probe = (method, args) => host.session.invokeAsync(host.services.get('probe-e'), method, args)
+    // Here: the t1 copy alone hears an emission in t1.
+    assert.deepEqual(await probe('filtered', ['t/copies', '17']), ['17'])
+    // Through the host: the same.
+    await host.elsewhere({ add: ['t/copies'] })
+    assert.deepEqual(await probe('filtered', ['t/copies', '17']), ['17'])
+    assert.equal(host.dispatches.length, 1)
+  } finally {
+    await host.end()
+  }
+})
+
+test('a plugin keeping its context past its row emits nothing', async () => {
+  const { host } = await started()
+  try {
+    await host.call('rows.load', ['old', scopeFilter, { keep: true }, [], [], {}, { scope: [] }])
+    await host.call('rows.load', ['p', scopeFilter, { probe: 'p' }, [], [], { 'probe-p': { filtered: 'async', emitKept: 'async' } }, { scope: [] }])
+    await host.call('rows.unload', ['old'])
+    const probe = method => host.session.invokeAsync(host.services.get('probe-p'), method, ['t/late'])
+    assert.equal(await probe('emitKept'), 'BindingError: row old is not loaded in this runtime')
+  } finally {
+    await host.end()
+  }
+})
+
+test('a listener the host refuses fails the row\'s load, and is not reported', async () => {
+  const { host, rows } = await started()
+  try {
+    host.refused.add('t/refused')
+    await assert.rejects(rows.listener('r', { label: 'r', name: 't/refused', does: { returns: null } }), { message: 'listening to t/refused is refused here' })
+    await assert.rejects(host.call('events.call', [{ listener: '1', dispatch: 'd', own: false, name: 't/refused', mode: 'serial', args: [] }]), { name: 'BindingError' })
+  } finally {
+    await host.end()
+  }
+  assert.doesNotMatch(host.stderr, /registration of listener/)
+})
+
+// rows.update restarts the row as an unload and a load: its running
+// listeners are signalled and waited for, its listeners leave and register
+// again, and the update is answered once they are registered.
+test('rows.update unloads (signalled, waited for) and loads the row again', async () => {
+  const { host, rows } = await started()
+  try {
+    await rows.listener('b', { label: 'b', name: 't/update', does: { waits: true } })
+    const [before] = host.entries.filter(entry => entry.row === 'b')
+    const emit = await rows.emitter('e')
+    await host.elsewhere({ add: ['t/update'] })
+    const running = emit({ mode: 'parallel', name: 't/update', args: [] })
+    await eventually('b started', () => host.log.includes('b'))
+    await within('the update', host.call('rows.update', ['b', { label: 'b', name: 't/update', does: { returns: 'again' } }]))
+    assert.deepEqual(host.log, ['b', 'b:cancelled'])
+    assert.equal(await running, null)
+    const after = host.entries.filter(entry => entry.row === 'b')
+    assert.equal(after.length, 1)
+    assert.notEqual(after[0].id, before.id)
+    assert.equal(await emit({ mode: 'serial', name: 't/update', args: [] }), 'again')
+  } finally {
+    await host.end()
+  }
 })

@@ -104,7 +104,7 @@ err := ctx.Emit(callerCtx, "session/created", id)          // returns at once; e
 err = ctx.Parallel(callerCtx, "session/created", id)        // waits for all; *rutis.AggregateError in registration order
 value, err := ctx.Serial(callerCtx, "config/resolve", key)   // the first result
 value, err = ctx.Bail(callerCtx, "config/resolve", key)      // Serial as a synchronous call
-value, err = ctx.Waterfall(callerCtx, "chat/reply", terminal, msg) // terminal may be nil
+value, err = ctx.Waterfall(callerCtx, "chat/reply", terminal, msg) // terminal may be nil; terminal is a rutis.Terminal, func(ctx context.Context, args ...any) (any, error), called with the event's arguments
 value, err = ctx.Filter(func(l rutis.Listener) (bool, error) { return l.Row == "chat", nil }).Serial(callerCtx, "config/resolve", key)
 ```
 
@@ -130,9 +130,9 @@ func (g *Greeter) Hello(ctx context.Context, name, lang string) (string, error) 
 	if word == nil {
 		word = "Hello"
 	}
-	text, err := g.ctx.Waterfall(ctx, "greeting/format", func(context.Context) (any, error) {
-		return fmt.Sprintf("%v, %s", word, name), nil // the terminal: the innermost end of the chain
-	})
+	text, err := g.ctx.Waterfall(ctx, "greeting/format", func(_ context.Context, args ...any) (any, error) {
+		return args[0], nil // the terminal: the innermost end of the chain
+	}, fmt.Sprintf("%v, %s", word, name))
 	if err != nil {
 		return "", err
 	}

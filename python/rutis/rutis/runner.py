@@ -48,7 +48,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import plugin as sdk
-from .events import Bus, Emitter, check_scope, discard, plain, reserved
+from .events import Bus, Emitter, check_scope, discard, plain, reserved, start
 from .peer import UNDEFINED, AsyncListener, BindingError, Peer, RemoteFuture
 
 # rows.announce: services rows provide without declaring them are announced
@@ -175,22 +175,28 @@ class Row:
     # Its scope chain, `[{id, group}, ...]` (`[]`: the root): its listeners
     # hear what is emitted there and inside, its emissions come from there.
     scope: list = field(default_factory=list)
+    # The plugin's declared name (`define_plugin(name=)`); None: the row's id.
+    plugin: str | None = None
     cleanups: list = field(default_factory=list)
     # Ids of the services it provided.
     provided: list = field(default_factory=list)
     # Ids of the slots of services it announced.
     announced: list = field(default_factory=list)
-    # Announcements the host has yet to answer, while the row loads: those
-    # sent from the session's loop, and from other threads.
+    # Announcements and registrations the host has yet to answer, while
+    # the row loads: those sent from the session's loop, and from other
+    # threads; (sent, whether it is a registration).
     pending: list | None = field(default_factory=list)
     # Guards `pending`, which other threads add to.
     lock: Any = field(default_factory=threading.Lock)
 
-    def pend(self, sent) -> None:
-        """Await `sent` before saying the row loaded, while it loads."""
+    def pend(self, sent, registration: bool = False) -> bool:
+        """Await `sent` before saying the row loaded, while it loads (a
+        refused registration fails the load); False once it loaded."""
         with self.lock:
-            if self.pending is not None:
-                self.pending.append(sent)
+            if self.pending is None:
+                return False
+            self.pending.append((sent, registration))
+            return True
 
     def id(self, name: str) -> str:
         """The id of `name` as this row sees it."""
@@ -255,6 +261,9 @@ class Runtime:
         # This process's listeners; a failure nobody receives (an `emit`
         # listener's) is a line on stderr, never the end of the process.
         self.bus = Bus()
+        # The session's loop, where listeners run and emissions dispatch;
+        # other threads' are marshalled onto it.
+        self.loop: asyncio.AbstractEventLoop | None = None
         # Names and prefixes with listeners outside this process (the host
         # keeps them up to date, `events.elsewhere`): emitting them goes
         # through the host.
@@ -372,6 +381,8 @@ class Runtime:
     ) -> None:
         if key in self.rows:
             raise ValueError(f"row {key} is already loaded")
+        if self.loop is None:
+            self.loop = asyncio.get_running_loop()
         # Descriptors and reported lines call the row by its id (§4.2).
         self.bus.row_ids[key] = id if isinstance(id, str) else key
         exports = exports or {}
@@ -386,6 +397,7 @@ class Runtime:
                     f"service {row.id(name)} is already exported by row {self.slots[row.id(name)].row}"
                 )
         plugin = _supported(sdk.load(self.module(module)), module)
+        row.plugin = plugin.name
         self.rows[key] = row
         for name, methods in exports.items():
             self.slots[row.id(name)] = Slot(key, set(methods), name)
@@ -400,14 +412,17 @@ class Runtime:
             # rutis has published the announced services (or refused one,
             # which fails the row there) and registered its listeners before
             # it hears that the row loaded: those its threads provide while
-            # it waits too.
+            # it waits too. A refused registration fails the load (§4.4).
             while True:
                 with row.lock:
                     pending = row.pending or []
                     row.pending = [] if pending else None
                 if not pending:
                     break
-                await asyncio.gather(*map(_awaitable, pending), return_exceptions=True)
+                outcomes = await asyncio.gather(*(_awaitable(sent) for sent, _ in pending), return_exceptions=True)
+                for (_sent, registration), outcome in zip(pending, outcomes):
+                    if registration and isinstance(outcome, Exception):
+                        raise outcome
         except BaseException:
             try:
                 await self.unload(key)
@@ -422,7 +437,7 @@ class Runtime:
         # Its listeners start nothing any more; an `events.call` for one of
         # them is refused (the host withdrew them already: telling it again
         # does no harm).
-        self._withdrawn([entry.id for entry in list(self.bus.entries) if entry.row == key and self.bus.withdraw(entry)])
+        self._withdrawn(self.bus.withdraw_row(key))
         # Withdrawals first: rutis hears them before the plugin goes away.
         for id in list(row.provided):
             if self.services.get(id, (None,))[0] == key:
@@ -504,11 +519,21 @@ class Runtime:
         one, elsewhere is empty and everything stays here."""
         return self.peer is not None and self.peer.closed_error is None
 
+    def _here(self) -> bool:
+        """Whether this runs on the session's loop (not another thread)."""
+        try:
+            return asyncio.get_running_loop() is self.loop
+        except RuntimeError:
+            return self.loop is None
+
     def listen(self, row: Row, name: str, listener: Callable, prepend: bool, global_: bool) -> Callable[[], None]:
         """Add a listener of the row here and register it with the host,
-        which answers before the row is said to have loaded (§4.4)."""
+        which answers before the row is said to have loaded (§4.4); one it
+        refuses then fails the load. From any thread: the frame goes out
+        from the loop, in call order with that thread's emissions."""
         reserved(name, listening=True)
-        entry = self.bus.add(name, row.key, row.module, listener, row.scope, prepend, global_)
+        plugin = row.plugin or self.bus.row_id(row.key)
+        entry = self.bus.add(name, row.key, plugin, listener, row.scope, prepend, global_)
 
         def off() -> None:
             if self.bus.withdraw(entry):
@@ -519,20 +544,41 @@ class Runtime:
                 "id": entry.id,
                 "name": name,
                 "row": row.key,
-                "plugin": row.module,
+                "plugin": plugin,
                 "kind": entry.kind,
                 "prepend": entry.prepend,
                 "global": entry.global_,
             }
             try:
-                sent = self.peer.request("", "events.on", [registration])
+                sent = self._request("events.on", [registration])
             except Exception as error:  # noqa: BLE001 - the session ended meanwhile
                 if self._live():
                     self.bus.report("registration", name, row.key, error)
             else:
-                sent.add_done_callback(lambda done: self._registered(done, name, row.key))
-                row.pend(sent)
+                # Awaited by the row's load, which it fails; reported only
+                # when the row was running already.
+                if not row.pend(sent, registration=True):
+                    sent.add_done_callback(lambda done: self._registered(done, name, row.key))
         return off
+
+    def _request(self, method: str, args: list):
+        """`peer.request`, from any thread: from another, sent from the
+        loop in call order with what that thread marshals there next (a
+        `concurrent.futures.Future` of the reply)."""
+        if self._here():
+            return self.peer.request("", method, args)
+        reply = concurrent.futures.Future()
+
+        def send() -> None:
+            try:
+                sent = self.peer.request("", method, args)
+            except BaseException as error:  # noqa: BLE001 - the reply's
+                reply.set_exception(error)
+            else:
+                _chain(sent, reply)
+
+        self.loop.call_soon_threadsafe(send)
+        return reply
 
     def _registered(self, done, name: str, row: str) -> None:
         if done.cancelled() or done.exception() is None or not self._live():
@@ -556,7 +602,12 @@ class Runtime:
     def send(self, row: Row, mode: str, name: str, args: list, terminal: Callable | None, keep: Callable | None) -> Any:
         """An emission of the row: here (the fast path), or through the host,
         which dispatches over every listener and calls this process's own
-        back. Same results either way."""
+        back. Same results either way. A row that unloaded emits nothing
+        (BindingError, refused at once like a reserved name)."""
+        if self.rows.get(row.key) is not row:
+            raise BindingError(f"row {row.key} is not loaded in this runtime")
+        if not self._here():
+            return self._send_from_thread(row, mode, name, args, terminal, keep)
         if not self._via_host(name, mode):
             return self.bus.dispatch(mode, name, row.scope, args, keep, terminal, row.key)
         request = {"row": row.key, "name": name, "mode": mode, "args": args}
@@ -569,7 +620,40 @@ class Runtime:
             return None
         if mode == "bail":
             return plain(self.peer.call("", "events.dispatch", [request]))
-        return self._dispatch_via_host(request)
+        # Sent now, as the fast path takes its snapshot now.
+        return start(self._dispatch_via_host(request))
+
+    def _send_from_thread(self, row: Row, mode: str, name: str, args: list, terminal, keep) -> Any:
+        """An emission from another thread, made on the loop in call order:
+        `emit` returns at once, `bail` blocks this thread for the result,
+        the others return an awaitable for this thread's running loop (a
+        `concurrent.futures.Future` without one)."""
+        result = concurrent.futures.Future()
+
+        def here() -> None:
+            try:
+                sent = self.send(row, mode, name, args, terminal, keep)
+            except BaseException as error:  # noqa: BLE001 - the emitter's
+                if mode == "emit":
+                    self.bus.report("emit", name, row.key, error)
+                else:
+                    result.set_exception(error)
+                return
+            if mode in ("emit", "bail"):
+                result.set_result(sent)
+            else:
+                _chain(start(sent), result)
+
+        self.loop.call_soon_threadsafe(here)
+        if mode == "emit":
+            return None
+        if mode == "bail":
+            return result.result()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return result
+        return asyncio.wrap_future(result)
 
     async def _dispatch_via_host(self, request: dict) -> Any:
         return plain(await _settle(await self.peer.call_async("", "events.dispatch", [request])))
@@ -621,7 +705,7 @@ class Runtime:
         if not isinstance(request, dict):
             raise ValueError("invalid events.call")
         id, name, mode = request.get("listener"), request.get("name"), request.get("mode")
-        entry = self.bus.by_id.get(id) if isinstance(id, str) else None
+        entry = self.bus.listener(id) if isinstance(id, str) else None
         if entry is None:
             raise BindingError(f"listener {id} of {name} is withdrawn")
         name = entry.name
@@ -643,7 +727,8 @@ class Runtime:
             return value
         if mode == "waterfall":
             following = request.get("next")
-            args.append(lambda: _next(following))
+            # Started at once, as on the fast path.
+            args.append(lambda: start(_next(following)))
         elif mode not in ("emit", "parallel", "serial"):
             raise ValueError(f"unknown event mode {mode}")
         return self._invocation(entry, name, mode, args)
@@ -813,9 +898,33 @@ def _selector(keep: Callable) -> Callable:
     here, in order; a boolean each (§6)."""
 
     def select(descriptors: list) -> list:
-        return [bool(keep(descriptor)) for descriptor in descriptors]
+        # The host marks the emitter's own session's entries with their
+        # `listener` id; the plugin sees descriptors as on the fast path.
+        return [bool(keep(_descriptor(descriptor))) for descriptor in descriptors]
 
     return select
+
+
+def _descriptor(descriptor: Any) -> Any:
+    if isinstance(descriptor, dict) and "listener" in descriptor:
+        return {key: value for key, value in descriptor.items() if key != "listener"}
+    return descriptor
+
+
+def _chain(source: asyncio.Future, target: concurrent.futures.Future) -> None:
+    """Settle `target` (another thread's) as `source` settles."""
+
+    def settle(done: asyncio.Future) -> None:
+        if target.done():
+            return
+        if done.cancelled():
+            target.cancel()
+        elif done.exception() is not None:
+            target.set_exception(done.exception())
+        else:
+            target.set_result(done.result())
+
+    source.add_done_callback(settle)
 
 
 async def _next(following: Any) -> Any:

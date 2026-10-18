@@ -155,7 +155,7 @@
         {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"returns": null, "log": ["terminal"]}}
       ] },
 
-    { "case": "waterfall/end-without-terminal", "rule": "5.4 waterfall", "name": "t/wf-end", "vary": ["a", "e"], "except": [{"e": ["node", "node-leaf", "bun"], "why": "a JavaScript waterfall always has a terminal (its last argument); the probe passes one returning undefined, which is the same"}],
+    { "case": "waterfall/end-without-terminal", "rule": "5.4 waterfall", "name": "t/wf-end", "vary": ["a", "e"], "except": [{"e": ["node"], "why": "a Cordis waterfall always has a terminal (its last argument); the probe passes one returning undefined, which is the same"}],
       "listeners": [
         {"label": "a", "at": "Y", "does": {"next": "a"}}
       ],
@@ -824,6 +824,32 @@
       ],
       "steps": [
         {"emit": {"from": "Y", "row": "f", "mode": "parallel", "args": []}, "expect": {"log": ["a:dispatch:parallel", "a"]}}
+      ] },
+
+    { "case": "filter/own-listeners-in-scopes", "rule": "6, 3", "name": "t/filter-own", "vary": ["a", "b", "c", "e"],
+      "listeners": [
+        {"label": "a", "at": "X", "does": {"returns": "A"}},
+        {"label": "b", "at": "X", "scope": "t1", "does": {"returns": "B"}},
+        {"label": "c", "at": "Y", "scope": "t1", "does": {"returns": "C"}},
+        {"label": "d", "at": "X", "scope": "t2", "does": {"returns": "D"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "scope": "t1", "mode": "serial", "args": [], "filter": {"keep": ["b"]}}, "expect": {"returns": "B", "log": ["filter:a", "filter:b", "filter:c", "b"], "filterSees": ["a", "b", "c"]}}
+      ] },
+
+    { "case": "waterfall/terminal-gets-args", "rule": "5.4 waterfall", "name": "t/wf-terminal-args", "vary": ["a", "b", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"next": "a"}},
+        {"label": "b", "at": "host", "does": {"next": "b"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "waterfall", "args": ["x"], "terminal": {"echo": true}}, "expect": {"returns": "abx", "log": ["a", "b", "terminal"]}}
+      ] },
+
+    { "case": "waterfall/terminal-gets-args-no-listeners", "rule": "5.4 waterfall", "name": "t/wf-terminal-args-empty", "vary": ["e"],
+      "listeners": [],
+      "steps": [
+        {"emit": {"from": "X", "mode": "waterfall", "args": ["x"], "terminal": {"echo": true}}, "expect": {"returns": "x", "log": ["terminal"]}}
       ] }
   ]
 }

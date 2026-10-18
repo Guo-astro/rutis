@@ -23,8 +23,11 @@ Events work as on the runtime, all in the test's process (always its fast
 path): the five ways to emit, `filter`, scopes, and unload waiting for
 running listeners and cancelling them. The loaded plugin's `emit`,
 `parallel`, `serial`, `waterfall`, `bail` and `filter` emit as its row
-does (values crossing with `strict`). Plugins loaded with one `Bus` hear
-each other, each in its scope::
+does (values crossing with `strict`). The plugin's own `ctx` emitters pass
+values as they are, as the runtime's fast path does, but with `strict` the
+errors reaching them arrive as from another process (`RemoteError`, matched
+by `name`). Descriptors give `runtime` "python". Plugins loaded with one
+`Bus` hear each other, each in its scope::
 
     bus = Bus(scopes={"t1": "tenant"})
     async with load(audit, bus=bus) as root, load(chat, bus=bus, scope="t1") as tenant:
@@ -53,6 +56,7 @@ from .peer import (
     MAX_DEPTH,
     UNDEFINED,
     AggregateError,
+    BindingError,
     RemoteError,
     _beyond_data,
     _is_live,
@@ -145,13 +149,13 @@ def _cross_tagged(tag: str, value: Any, where: str, depth: int) -> Any:
 
 def _crossed_error(error: Exception) -> Exception:
     """An exception as the other process receives it: a `RemoteError` with
-    its name and message; its class and other attributes stay behind. The
-    testing tool's own errors are not crossed."""
+    its name, message, `code` and `data` (rutis's own named errors as their
+    classes; an AggregateError with its children crossed, in order); its
+    class and other attributes stay behind. The testing tool's own errors
+    are not crossed."""
     if isinstance(error, PluginTestError):
         return error
-    if isinstance(error, (AggregateError, RemoteError)):
-        return decode_error(encode_error(error))
-    return RemoteError(type(error).__name__, str(error))
+    return decode_error(encode_error(error))
 
 
 async def _awaited(value: Any, where: str) -> Any:
@@ -254,7 +258,7 @@ class Bus:
         # The failures nobody receives, in order: each is also printed, as
         # the runtime prints it.
         self.reported: list[Reported] = []
-        self._bus = events.Bus(report=self._report)
+        self._bus = events.Bus(report=self._report, runtime="python")
         self._rows: set = set()
 
     def _report(self, kind: str, name: str, row: str | None, error: BaseException) -> None:
@@ -278,7 +282,11 @@ class Bus:
 
     def listeners(self, name: str | None = None) -> list[dict]:
         """What a filter sees of each listener (of `name`), in order."""
-        return [entry.descriptor(None) for entry in self._bus.entries if name is None or entry.name == name]
+        return [
+            entry.descriptor(self._bus.runtime)
+            for entry in list(self._bus.entries)
+            if name is None or entry.name == name
+        ]
 
     def emitter(self, scope: str | None = "root", *, row: str = "test", strict: bool = True) -> Emitter:
         """Emit as a row `row` at `scope` would: `emit`, `parallel`,
@@ -314,7 +322,17 @@ def _send(bus: events.Bus, row: str, scope: list, strict: bool) -> Callable:
 
 
 class Loaded:
-    def __init__(self, plugin: sdk.Plugin, strict: bool, bus: Bus, row: str, scope: list, name: str) -> None:
+    def __init__(
+        self,
+        plugin: sdk.Plugin,
+        strict: bool,
+        bus: Bus,
+        row: str,
+        scope: list,
+        name: str,
+        runtime: str | None = "python",
+        deadline: float | None = None,
+    ) -> None:
         self._plugin = plugin
         self._strict = strict
         self._provided: dict[str, list] = {}
@@ -325,6 +343,9 @@ class Loaded:
         self.row = row
         self.scope = scope
         self.name = name
+        # What its listeners' descriptors give as `runtime`.
+        self.runtime = runtime
+        self._deadline = deadline
         self._emitter = Emitter(_send(bus._bus, row, scope, strict))
 
     # ── Events, as the plugin's row emits them ───────────────────
@@ -414,18 +435,18 @@ class Loaded:
 
     async def unload(self) -> None:
         """Unload as the runtime does: the plugin's listeners hear nothing
-        more and its services are withdrawn; its running listeners are
-        cancelled and waited for (at most RUTIS_SHUTDOWN_TIMEOUT, then a
-        line says so); then its cleanups run, latest first."""
+        more and its services are withdrawn, and its emitters refuse
+        (BindingError); its running listeners are cancelled and waited for
+        (at most `deadline`, or RUTIS_SHUTDOWN_TIMEOUT, then a line says
+        so); then its cleanups run, latest first."""
         if self._unloaded:
             return
         self._unloaded = True
         bus = self.bus._bus
-        for entry in [entry for entry in bus.entries if entry.row == self.row]:
-            bus.withdraw(entry)
+        bus.withdraw_row(self.row)
         self._provided.clear()
         try:
-            await bus.stop(self.row, shutdown_deadline())
+            await bus.stop(self.row, shutdown_deadline() if self._deadline is None else self._deadline)
             cleanups = self._cleanups[::-1]
             self._cleanups.clear()
             for cleanup in cleanups:
@@ -440,14 +461,9 @@ class _Context(sdk.Context):
     def __init__(self, loaded: Loaded, services: dict) -> None:
         self._loaded = loaded
         self._services = services
-        bus = loaded.bus._bus
-        # Between plugins of one process nothing crosses: as the runtime's
-        # fast path.
-        self._emitter = Emitter(
-            lambda mode, name, args, terminal, keep: bus.dispatch(
-                mode, name, loaded.scope, args, keep, terminal, loaded.row
-            )
-        )
+        # Between plugins of one process values do not cross, as on the
+        # runtime's fast path; errors do, as from another process.
+        self._emitter = Emitter(_own(loaded))
 
     def use(self, name: str) -> Any:
         plugin = self._loaded._plugin
@@ -481,7 +497,9 @@ class _Context(sdk.Context):
             raise PluginTestError("the plugin is unloaded")
         reserved(name, listening=True)
         bus = loaded.bus._bus
-        entry = bus.add(name, loaded.row, loaded.name, listener, loaded.scope, prepend, global_)
+        plugin = loaded._plugin.name or loaded.row
+        entry = bus.add(name, loaded.row, plugin, listener, loaded.scope, prepend, global_)
+        entry.runtime = loaded.runtime
 
         def off() -> None:
             bus.withdraw(entry)
@@ -507,6 +525,39 @@ class _Context(sdk.Context):
         return self._emitter.filter(predicate)
 
 
+def _own(loaded: Loaded) -> Callable:
+    """How the loaded plugin's row emits: refused once it unloaded; with
+    `strict`, the errors reaching it arrive as from another process (a
+    `RemoteError` matched by `name`, an AggregateError's children too),
+    since a listener may be in one."""
+    bus = loaded.bus._bus
+
+    def send(mode: str, name: str, args: list, terminal, keep) -> Any:
+        if loaded._unloaded:
+            raise BindingError(f"row {loaded.row} is not loaded in this runtime")
+        if mode == "emit":
+            bus.dispatch(mode, name, loaded.scope, args, keep, terminal, loaded.row)
+            return None
+        try:
+            dispatched = bus.dispatch(mode, name, loaded.scope, args, keep, terminal, loaded.row)
+        except Exception as error:
+            if not loaded._strict:
+                raise
+            raise _crossed_error(error) from error
+        if mode == "bail" or not loaded._strict:
+            return dispatched
+        return _errors_crossed(dispatched)
+
+    return send
+
+
+async def _errors_crossed(awaitable: Any) -> Any:
+    try:
+        return await awaitable
+    except Exception as error:
+        raise _crossed_error(error) from error
+
+
 @asynccontextmanager
 async def load(
     plugin: sdk.Plugin | ModuleType,
@@ -518,13 +569,20 @@ async def load(
     scope: str | None = "root",
     row: str | None = None,
     emits: Any = None,
+    runtime: str | None = "python",
+    deadline: float | None = None,
 ) -> AsyncIterator[Loaded]:
     """Load `plugin` (a module with `apply`, or what `define_plugin` returns)
     with `config` and the services in `services`; unload it on exit.
 
     `bus`: share events with the other plugins loaded with it (default: a
     bus of its own). `scope`: the scope path it is loaded in (`t1/s1`;
-    default the root). `row`: its row key on the bus (default its name)."""
+    default the root). `row`: its row key and id on the bus (default the
+    plugin's declared name, else its module's); its listeners' descriptors
+    give the declared name as `plugin`, else the row. `runtime`: what they
+    give as `runtime` (default "python"). `deadline`: how long unload
+    waits for running listeners, in seconds (default
+    RUTIS_SHUTDOWN_TIMEOUT, 10)."""
     if emits is not None:
         raise PluginTestError(
             "the load option emits was removed in rutis 0.13: listeners register themselves; "
@@ -537,7 +595,7 @@ async def load(
         raise PluginTestError("load needs a plugin module or what define_plugin returns")
     if plugin.api > sdk.PLUGIN_API:
         raise PluginTestError(f"the plugin needs plugin API {plugin.api}; this SDK supports {sdk.PLUGIN_API}")
-    name = name or getattr(plugin.apply, "__module__", None) or "plugin"
+    name = plugin.name or name or getattr(plugin.apply, "__module__", None) or "plugin"
     services = services or {}
     for injected in plugin.inject:
         if injected not in services:
@@ -548,7 +606,9 @@ async def load(
     row = row or name
     if row in bus._rows:
         raise PluginTestError(f"row {row} is already loaded on this bus: give it another row=")
-    loaded = Loaded(plugin, strict, bus, row, bus.chain(scope), name)
+    if deadline is not None and not (isinstance(deadline, (int, float)) and 0 <= deadline < math.inf):
+        raise PluginTestError(f"deadline is a number of seconds, not {deadline!r}")
+    loaded = Loaded(plugin, strict, bus, row, bus.chain(scope), name, runtime, deadline)
     bus._rows.add(row)
     ctx = _Context(loaded, services)
     loaded._ctx = ctx

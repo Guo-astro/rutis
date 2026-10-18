@@ -42,6 +42,12 @@ pub trait RemoteListener: Send + Sync + 'static {
 
     /// One call by `bail` or `waterfall-sync`, on the dispatching thread.
     fn call_sync(&self, call: RemoteSyncCall<'_>) -> Result<Option<Value>, CordisError>;
+
+    /// The id its session knows it by (a runtime's `events.on` id), which a
+    /// batch filter gets with its descriptor ([`Candidate::id`]).
+    fn id(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// One async call of a remote entry.
@@ -239,9 +245,22 @@ pub enum FilterAnswer {
     Pending(BoxFuture<'static, Result<Vec<bool>, CordisError>>),
 }
 
-/// A filter called once per dispatch with the descriptors of the non-global
-/// candidates, in registration order (protocol spec §6).
-pub type BatchFilter = Box<dyn FnOnce(Vec<ListenerInfo>) -> FilterAnswer + Send>;
+/// One listener a batch filter is asked about.
+#[derive(Debug, Clone)]
+pub struct Candidate {
+    /// Its descriptor.
+    pub info: ListenerInfo,
+    /// The [`RemoteEntry::origin`] of a remote entry; `None` for a Rust
+    /// listener of this host.
+    pub origin: Option<u64>,
+    /// A remote entry's [`RemoteListener::id`]: with `origin`, which entry of
+    /// its session it is, also when two entries have equal descriptors.
+    pub id: Option<String>,
+}
+
+/// A filter called once per dispatch with the non-global candidates, in
+/// registration order (protocol spec §6).
+pub type BatchFilter = Box<dyn FnOnce(Vec<Candidate>) -> FilterAnswer + Send>;
 
 /// A waterfall's terminal, or a remote entry's `next` (then the payload is
 /// that call's event).

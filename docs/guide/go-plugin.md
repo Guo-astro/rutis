@@ -104,7 +104,7 @@ err := ctx.Emit(callerCtx, "session/created", id)          // 立即返回；err
 err = ctx.Parallel(callerCtx, "session/created", id)        // 等全部；*rutis.AggregateError，按登记顺序
 value, err := ctx.Serial(callerCtx, "config/resolve", key)   // 第一个结果
 value, err = ctx.Bail(callerCtx, "config/resolve", key)      // 同步调用的 Serial
-value, err = ctx.Waterfall(callerCtx, "chat/reply", terminal, msg) // terminal 可为 nil
+value, err = ctx.Waterfall(callerCtx, "chat/reply", terminal, msg) // terminal 可为 nil；terminal 是 rutis.Terminal，即 func(ctx context.Context, args ...any) (any, error)，以事件参数调用
 value, err = ctx.Filter(func(l rutis.Listener) (bool, error) { return l.Row == "chat", nil }).Serial(callerCtx, "config/resolve", key)
 ```
 
@@ -130,9 +130,9 @@ func (g *Greeter) Hello(ctx context.Context, name, lang string) (string, error) 
 	if word == nil {
 		word = "Hello"
 	}
-	text, err := g.ctx.Waterfall(ctx, "greeting/format", func(context.Context) (any, error) {
-		return fmt.Sprintf("%v, %s", word, name), nil // 终态：链的最里面
-	})
+	text, err := g.ctx.Waterfall(ctx, "greeting/format", func(_ context.Context, args ...any) (any, error) {
+		return args[0], nil // 终态：链的最里面
+	}, fmt.Sprintf("%v, %s", word, name))
 	if err != nil {
 		return "", err
 	}
