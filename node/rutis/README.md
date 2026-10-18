@@ -27,6 +27,6 @@ assert.equal(await t.service('weather').today(), 'sunny in Oslo')
 await t.unload()
 ```
 
-This package depends on `@deepseek-ai/cordis`: its testing tool runs the plugin on Cordis's own event bus, the one the Node and Bun runtimes use, so `ctx.on`, `ctx.emit` and host emission behave in a test as they do on the runtime. The host installs the runtime that runs the plugin (`@arcships/rutis-runtime` for Node, `@arcships/rutis-bun` for Bun). Start a project with `npx @arcships/rutis-host new <name> --lang node` (or `--lang bun`).
+Events (`ctx.on`, and `ctx.emit` / `parallel` / `serial` / `waterfall` / `bail` / `filter`) are one bus across every plugin, runtime and linked node; the testing tool runs them as a runtime does with every listener in its process (`host()` puts several plugins on one bus, each in its scope), so they behave in a test as on the runtime. The host installs the runtime that runs the plugin (`@arcships/rutis-runtime` for Node, `@arcships/rutis-bun` for Bun). Start a project with `npx @arcships/rutis-host new <name> --lang node` (or `--lang bun`).
 
 Guide (Chinese): [docs/guide/typescript-plugin.md](https://github.com/arcships/rutis/blob/main/docs/guide/typescript-plugin.md).
