@@ -64,7 +64,7 @@ A plugin and the services it uses may run in different processes. Across process
 | Arrays / lists, plain objects / dictionaries with string keys | Recursively copied |
 | Python dataclasses | Copied as dictionaries |
 | Dates and times, binary data, maps, sets, big integers, decimals, UUIDs | Copied; each language receives its own types, see [the ten values](#the-ten-values) below |
-| `Error` / exceptions | Passed as a value: copied as data `{ name, message }` (in TypeScript also `stack`). Thrown: the other side receives an error with the same name and message (in TypeScript a built-in error class keeps its class, any other is an `Error`; in Python a `rutis.peer.RemoteError` whose `name` is the original class name); other attributes are not passed |
+| `Error` / exceptions | Passed as a value: copied as data `{ name, message }` (in TypeScript also `stack`). Thrown: the other side receives an error with the same name and message (in TypeScript a built-in error class keeps its class, any other is an `Error`; in Python a `rutis.peer.RemoteError` whose `name` is the original class name); a string `code` and the `data` beside it on an error thrown in JavaScript or by a Rust service pass too (and on again from every runtime), as `code` and `data` of the error received (in Go `Code` and `Data`): what the `Err(e)` of an [exported Rust service](cordis.en.md#export-rust-services-to-rows) carries. Other attributes are not passed |
 | Functions, Promises / coroutines | Passed by reference: the other side calls or awaits the original |
 | Objects with methods, class instances | Passed by reference: the other side receives a proxy that calls the original object |
 | `undefined` inside data | Becomes `null` (`None` in Python) |

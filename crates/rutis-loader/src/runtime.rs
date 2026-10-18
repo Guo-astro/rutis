@@ -34,8 +34,9 @@
 //!
 //! - a service the plugin injects gates the row in rutis, and the row leases
 //!   it into its runtime while it runs. In a leaf runtime (Python) every
-//!   injected name does; in Cordis only the names the catalog registers as
-//!   shared ([`ServiceCatalog::register_shared`]), the others are left to
+//!   injected name does; in Cordis the names the catalog shares, which are
+//!   all of them unless it shares only those registered as shared
+//!   ([`ServiceCatalog::share_registered_only`]), the others then left to
 //!   Cordis;
 //! - the services the plugin declares it provides are published from the
 //!   row's own fiber, so Rust plugins and other runtimes' rows can inject

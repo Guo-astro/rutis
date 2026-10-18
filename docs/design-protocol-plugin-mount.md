@@ -233,3 +233,23 @@ Node 侧为每个导出的服务槽位维护一串**对象句柄**：
 | Rust 侧对象以引用交给 Cordis | Rust 侧不导出对象引用 | 暂不支持；宿主服务可以返回从 Cordis 取得的对象 |
 
 以下不再建设：共享内存版本页、提交边界审计、跨框架统一事件队列（[#74](https://github.com/arcships/rutis/pull/74)，已停止推进）、从 Rust 源码自动提取完整接口的 rustdoc / 编译器方案、分布式 GC。
+
+## 11. 已有的 Rust 服务给其他语言的行使用（#440）
+
+0.12 之前，要让 TypeScript 或 Python 行使用 Rust 服务，唯一的形式是在 `host_key(name)` 下手写 `dyn HostDispatch`：解析参数、调用原生方法、序列化结果、映射错误。每个应用都要再写一遍（dim 的 `settings`、`sessions`、C4 的工具绑定、C5 的树绑定）。这层绑定应当对开发者无感：行在 `inject` 里写一个 Rust 服务名，就拿到它的方法。
+
+**声明。** 应用的 `build.rs` 列出要导出的东西：`Exports::new().service(name, path)` / `.service_in(name, path, group)`，别的什么都不写。路径按应用自己的写法写，可以是依赖 crate 的类型。
+
+**读源码（稳定版 Rust）。** 构建脚本用 `cargo metadata --offline` 得到每个 crate 的入口文件和解析出的 feature，再用 syn 读模块树，在需要的范围内按 rustc 的规则解析名字：`mod` 文件、`use`、glob、`pub use` 再导出、类型别名、extern prelude 和标准 prelude、按解析出的 feature 和 `CARGO_CFG_*` 求值的 `#[cfg]`。没有采用的：nightly 的 rustdoc JSON（不稳定）；在类型上加过程宏（要改依赖 crate，而类型不是应用自己的）；编译器（构建脚本问不到类型）。代价是看不到宏写出的条目，作为限制写进文档。
+
+**生成的代码不写它写不对的名字。** 参数类型的公开路径可能和定义处不同（从私有模块再导出），所以生成的 dispatcher 从不写参数、结果或错误的类型：它调用 `<Service>::method(&*service, a0, ..)`，每个参数用泛型的 `decode` 解码，由类型推断按真实签名定类型。借用的参数在推断定不了的地方写出拥有所有权的类型（`&str` → `String`、`&Path` → `PathBuf`、`&[T]` → `Vec<_>`）。按引用传的函数同样处理：`impl Fn` / 泛型参数用闭包（签名来自约束），`Arc<dyn Fn>` / `Box<dyn Fn>` 用 `FromCallback`（按参数类型选实现）。Cargo 按真实签名检查每个调用，所以读错源码是编译错误，而不是调错。
+
+**提供。** `exports::all()` 是一组 `rutis_bridge::exports::Export`：原生服务的键（`TypeKey::of::<T>()`）、名字、实例组、生成的 dispatcher。`ServiceCatalog::export` 把名字登记为共享（有组时在实例内），加载器用一个小插件提供它：注入原生服务，在 `host_key(name)` 下提供 dispatcher；实例之外从加载器的上下文，有组时从每个实例的组 fiber（`host_key_in(name, instance)`，和 `TypeKey::instance::<T>(id)` 在同一实例）。所以导出的生命周期就是原生服务的：行按内核自己的规则等它、跟随替换、随它撤下而停止。导出是普通的 `host_key` 服务：节点、Rust 插件和行的 `check` 都把它当作应用自己的服务。
+
+**方法都是 `async`。** 对调用方每个方法都是 `async`，慢方法不会阻塞运行时的线程，也不会形成同步等待环；Rust 的 `async fn` 作为调用的 future 运行（与所有调用一样，可被调用方的 `AbortSignal` 或丢弃 future 取消）。
+
+**错误是带 code 的抛出错误。** `Err(e)` 变成会话的失败，错误图的根节点在 `name`、`message` 之外带 `code` 和 `data`。协议不变：错误图本来就是错误的数据，不认识这两个字段的解码方仍拿到名字和消息；Node、Bun、Python、Go 现在会读出它们（`error.code`/`error.data`、`RemoteError.code`/`.data`、`Code`/`Data`）；JavaScript 也会发送字符串 `code` 和它的 `data`，所以再次抛出的错误保留它们。`E` 有 serde 时 code 取 serde 写出的变体名（与 `data` 一致），否则取 `Debug` 里的 Rust 变体名，再否则取类型名。声明里写明错误类型（`<Name>Thrown`，写在 `@throws`）。
+
+**默认按名字共享。** `ServiceCatalog::new()` 现在按名字共享所有名字，与 rutis-host 相同；有了 #428，只有 rutis 一侧有提供者的名字才由 rutis 门控行，Cordis 行提供的服务自动投到 rutis，所以默认共享不再让 Cordis 行互相等待。`share_registered_only()` 是原来的行为。
+
+**调用方行的 `Ctx`**（取 `&Ctx` 的方法）使用 #441 的机制，在它之后实现。

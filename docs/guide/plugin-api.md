@@ -64,7 +64,7 @@ Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（�
 | 数组 / list、普通对象 / 字符串键的 dict | 递归复制 |
 | Python dataclass | 复制为 dict |
 | 日期时间、二进制、Map、Set、大整数、Decimal、UUID | 复制，各语言收到本语言的类型，见下面的[十种值](#十种值) |
-| `Error` / 异常 | 作为值传递时复制为数据 `{ name, message }`（TypeScript 另带 `stack`）；抛出时另一端得到同名、同消息的错误（TypeScript 中内置错误类保留类，其余是 `Error`；Python 中是 `rutis.peer.RemoteError`，`name` 是原来的类名），其他属性不传 |
+| `Error` / 异常 | 作为值传递时复制为数据 `{ name, message }`（TypeScript 另带 `stack`）；抛出时另一端得到同名、同消息的错误（TypeScript 中内置错误类保留类，其余是 `Error`；Python 中是 `rutis.peer.RemoteError`，`name` 是原来的类名）；JavaScript 或 Rust 服务抛出的错误上的字符串 `code` 和与它一起的 `data` 也会传过去（各运行时再抛出时继续传），即收到的错误的 `code` 和 `data`（Go 中为 `Code`、`Data`），[导出的 Rust 服务](cordis.md#把-rust-服务导出给行)的 `Err(e)` 就带着它们。其他属性不传 |
 | 函数、Promise / 协程 | 按引用：另一端调用或 await 的是原来那个 |
 | 带方法的对象、类的实例 | 按引用：另一端拿到代理，调用的是原对象 |
 | 数据里的 `undefined` | 变成 `null`（Python 收到 `None`） |

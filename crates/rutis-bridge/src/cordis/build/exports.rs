@@ -594,10 +594,27 @@ impl Generator<'_> {
     }
 
     /// The TypeScript name of a struct or enum, declaring it on first use.
+    /// A type that cannot be declared leaves nothing behind, nor do the
+    /// types first declared for it.
     fn declare(&mut self, module: usize, index: usize) -> Result<String> {
         if let Some(name) = self.named.get(&(module, index)) {
             return Ok(name.clone());
         }
+        let snapshot = (
+            self.declarations.len(),
+            self.named.clone(),
+            self.names.clone(),
+        );
+        let declared = self.declare_new(module, index);
+        if declared.is_err() {
+            self.declarations.truncate(snapshot.0);
+            self.named = snapshot.1;
+            self.names = snapshot.2;
+        }
+        declared
+    }
+
+    fn declare_new(&mut self, module: usize, index: usize) -> Result<String> {
         let item = self.sources.item(module, index).clone();
         let (ident, attrs, generics) = match &item {
             Item::Struct(item) => (
@@ -2258,7 +2275,13 @@ mod tests {
     /// TypeScript declared; declared, it is used as given.
     #[test]
     fn a_type_without_a_serde_derive_needs_its_typescript_declared() {
-        let inner = INNER.replace("pub struct Store;", "pub struct Store;\n pub struct Opaque;\n impl Store { pub fn opaque(&self) -> Opaque { Opaque } }");
+        let inner = INNER.replace(
+            "pub struct Store;",
+            "pub struct Store;\n pub struct Opaque;\n \
+             #[derive(serde::Serialize)] pub struct Wrapper { pub inner: Opaque, pub other: Other }\n \
+             #[derive(serde::Serialize)] pub struct Other { pub back: Option<Box<Wrapper>> }\n \
+             impl Store { pub fn opaque(&self) -> Opaque { Opaque } pub fn wrapped(&self) -> Wrapper { todo!() } }",
+        );
         let files = [
             ("lib.rs", LIB),
             ("inner.rs", inner.as_str()),
@@ -2266,14 +2289,20 @@ mod tests {
         ];
         let generated =
             generate(Exports::new().service("store", "dep_crate::Store"), &files).unwrap();
-        assert!(
-            generated
-                .warnings
-                .iter()
-                .any(|w| w.contains("Store::opaque") && w.contains("Exports::declared")),
-            "{:?}",
-            generated.warnings
-        );
+        for method in ["Store::opaque", "Store::wrapped"] {
+            assert!(
+                generated
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains(method) && w.contains("Exports::declared")),
+                "{method}: {:?}",
+                generated.warnings
+            );
+        }
+        // Nothing of what could not be declared is left in the declarations.
+        for absent in ["Wrapper", "Other"] {
+            assert!(!generated.typescript.contains(absent), "{}", generated.typescript);
+        }
         let generated = generate(
             Exports::new()
                 .service("store", "dep_crate::Store")

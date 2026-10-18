@@ -21,7 +21,70 @@ Enable only the language features you use so the application compiles and starts
 
 ## Provide Rust services to plugins
 
-In Rust, a service used by name from a plugin is a `dyn HostDispatch` registered under `host_key(name)`:
+### Export an existing Rust service
+
+A Rust service you already have (including one from a dependency crate) can be used by name from the rows of every language without writing any binding: `build.rs` names its type, and the build generates its dispatcher and TypeScript declarations from the Rust definitions ([#440](https://github.com/arcships/rutis/issues/440)).
+
+```toml
+[dependencies]
+rutis-bridge = "0.12"
+
+[build-dependencies]
+rutis-bridge = { version = "0.12", features = ["cordis"] }
+```
+
+```rust
+// build.rs
+fn main() {
+    rutis_bridge::cordis::build::Exports::new()
+        // A type of a dependency crate, by its path as the application writes it.
+        .service("calendar", "calendar_services::Calendar")
+        // Inside each instance of the instanced group `session`: each instance's rows get their own.
+        .service_in("notes", "calendar_services::Notes", "session")
+        // A copy of the declarations where the rows' TypeScript imports them (optional).
+        .typescript("rows/services.d.ts")
+        .generate()
+        .expect("generate the exported services");
+}
+```
+
+```rust
+rutis_bridge::include_exports!();          // the generated module `exports`
+
+let mut catalog = ServiceCatalog::new();
+catalog.export_all(exports::all());         // the names, served by the loader
+// The native service, provided as usual: at TypeKey::of::<Calendar>().
+root.provide(Calendar::new())?;
+// An instance's Notes: from a row inside the group, at TypeKey::instance::<Notes>(build.instance("session")?).
+```
+
+```ts
+import { definePlugin } from '@arcships/rutis'
+import type { CalendarErrorThrown, Services } from './services.js'
+
+export default definePlugin({
+  inject: ['calendar'],
+  async apply(ctx) {
+    const calendar = ctx.use<Services['calendar']>('calendar')
+    const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
+    try {
+      await calendar.get(99_999)
+    } catch (error) {
+      const thrown = error as CalendarErrorThrown   // name 'CalendarError', code 'NotFound', data { NotFound: { id: 99999 } }
+    }
+    // A function passed by reference: the Rust side's future resolves once the returned Promise settled.
+    await calendar.subscribe(async change => { /* ... */ })
+  },
+})
+```
+
+- The loader serves an export while its native service is there: rows that inject the name wait for it and stop when it goes, as with any service. An instance export resolves as `register_shared_instance` does: a row gets the nearest enclosing instance of the group. Without the loader, mount `exports::calendar().plugin(None)` yourself.
+- Every public `&self` method is exported and is `async` for the caller (a Promise in JavaScript, an awaitable in Python); Python and Go rows call the same dispatcher. A method the generator cannot bind is left out with a build warning saying where and why.
+- `Err(e)` is thrown in the caller's language with `name` (the type of `e`), `code` (its variant), `message` (its `Display`) and `data` (its serde value). What crosses, how the source of a dependency crate is found, and the limits: [Cordis](cordis.en.md#export-rust-services-to-rows). A complete example: [`examples/rust-services`](../../examples/rust-services).
+
+### Write a `HostDispatch` by hand
+
+In Rust, a service used by name from a plugin is a `dyn HostDispatch` registered under `host_key(name)`; the exports above generate one. For a service whose dispatch is its own business (such as one that hands each row its own object), write it by hand:
 
 ```rust
 use std::sync::Arc;
@@ -59,10 +122,9 @@ use rutis_loader::{
     Chain, Layer, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
 };
 
-// Share every service name across languages, as rutis-host does. You can also register only selected names:
-// catalog.register_shared("clock").
+// Every service name is shared across languages by name, as in rutis-host. To share only the names
+// registered as shared (register_shared, export), call catalog.share_registered_only().
 let mut catalog = ServiceCatalog::new();
-catalog.share_by_name();
 
 // Local Node runtime: the directory containing @arcships/rutis-runtime and the package.json used for resolution.
 // `emits` names the events the host may emit into the runtime (`Process::emit`):

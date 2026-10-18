@@ -21,7 +21,70 @@ rutis-bridge = { version = "0.11", features = ["python", "websocket"] }   # node
 
 ## 给插件提供 Rust 服务
 
-插件按名字使用的服务，在 Rust 里是 `host_key(名字)` 下的 `dyn HostDispatch`：
+### 导出已有的 Rust 服务
+
+已有的 Rust 服务（包括依赖 crate 里的）可以直接由各语言的行按名字使用，不用写任何绑定：在 `build.rs` 里写出它的类型，构建时从 Rust 定义生成它的 dispatcher 和 TypeScript 声明（[#440](https://github.com/arcships/rutis/issues/440)）。
+
+```toml
+[dependencies]
+rutis-bridge = "0.12"
+
+[build-dependencies]
+rutis-bridge = { version = "0.12", features = ["cordis"] }
+```
+
+```rust
+// build.rs
+fn main() {
+    rutis_bridge::cordis::build::Exports::new()
+        // 依赖 crate 里的类型，按应用自己的写法写路径。
+        .service("calendar", "calendar_services::Calendar")
+        // 在实例组 `session` 的每个实例里：每个实例的行拿到自己的那一份。
+        .service_in("notes", "calendar_services::Notes", "session")
+        // 把声明再写一份到行的 TypeScript 引用它的地方（可选）。
+        .typescript("rows/services.d.ts")
+        .generate()
+        .expect("generate the exported services");
+}
+```
+
+```rust
+rutis_bridge::include_exports!();          // 生成的模块 `exports`
+
+let mut catalog = ServiceCatalog::new();
+catalog.export_all(exports::all());         // 这些名字由加载器提供
+// 原生服务照常提供：在 TypeKey::of::<Calendar>() 下。
+root.provide(Calendar::new())?;
+// 实例的 Notes：由组内的行提供，在 TypeKey::instance::<Notes>(build.instance("session")?) 下。
+```
+
+```ts
+import { definePlugin } from '@arcships/rutis'
+import type { CalendarErrorThrown, Services } from './services.js'
+
+export default definePlugin({
+  inject: ['calendar'],
+  async apply(ctx) {
+    const calendar = ctx.use<Services['calendar']>('calendar')
+    const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
+    try {
+      await calendar.get(99_999)
+    } catch (error) {
+      const thrown = error as CalendarErrorThrown   // name 'CalendarError'，code 'NotFound'，data { NotFound: { id: 99999 } }
+    }
+    // 按引用传的函数：返回的 Promise settle 之后，Rust 一侧的 future 才完成。
+    await calendar.subscribe(async change => { /* ... */ })
+  },
+})
+```
+
+- 原生服务在时，加载器就提供这个导出：`inject` 这个名字的行等它出现、随它撤下而停止，与其他服务相同。实例内的导出按 `register_shared_instance` 的规则解析：行拿到离它最近的那个组实例的服务。不用加载器时，自己挂上 `exports::calendar().plugin(None)`。
+- 每个公开的 `&self` 方法都会导出，对调用方是 `async`（JavaScript 里是 Promise，Python 里是 awaitable）；Python 和 Go 的行调用同一个 dispatcher。生成器绑定不了的方法会被跳过，构建警告写明位置和原因。
+- `Err(e)` 在调用方语言里作为错误抛出，带 `name`（`e` 的类型）、`code`（变体）、`message`（`Display`）和 `data`（serde 值）。能传什么、依赖 crate 的源码怎么找、有哪些限制：见 [Cordis](cordis.md#把-rust-服务导出给行)。完整示例：[`examples/rust-services`](../../examples/rust-services)。
+
+### 手写 `HostDispatch`
+
+插件按名字使用的服务，在 Rust 里是 `host_key(名字)` 下的 `dyn HostDispatch`；上面的导出就是生成它。分发方式由服务自己决定的（例如给每一行一个自己的对象），手写：
 
 ```rust
 use std::sync::Arc;
@@ -59,10 +122,9 @@ use rutis_loader::{
     Chain, Layer, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
 };
 
-// 服务名到键：所有名字都按名字跨语言共享（rutis-host 的做法）；
-// 也可以只登记需要的：catalog.register_shared("clock")。
+// 服务名到键：所有名字都按名字跨语言共享，与 rutis-host 相同。只共享登记为共享的名字
+// （register_shared、export）时调用 catalog.share_registered_only()。
 let mut catalog = ServiceCatalog::new();
-catalog.share_by_name();
 
 // 本机的 Node 运行时：@arcships/rutis-runtime 所在的目录，和插件解析所用的 package.json。
 // `emits` 声明宿主会向该运行时发哪些事件（`Process::emit`）：运行时拒绝未声明的事件，
