@@ -358,45 +358,18 @@ test('callback parameters take Rust closures and returned functions stay remote'
   })
 })
 
-test('selected notification events become rutis event types', async () => {
+// #464: Cordis listeners register themselves on the logical bus; the
+// static forwarding options are refused, naming the replacement.
+test('the removed events and emits options are refused', async () => {
   await fixture(`import type { Context } from '@deepseek-ai/cordis'
-    declare module '@deepseek-ai/cordis' {
-      interface Events {
-        'store/changed'(key: string, size?: number): void
-        'store/decide'(key: string): boolean
-      }
-    }
     export function apply(ctx: Context) { ctx.provide('store', { ping(): number { return 1 } }) }
   `, file => {
-    const { rust } = generate(file, root, { events: ['store/changed'] })
-    assert.match(rust, /pub struct StoreChanged \{ pub key: String, pub size: Option<f64>, \}/)
-    assert.match(rust, /impl ::rutis::Event for StoreChanged \{ const NAME: &'static str = "store\/changed"; type Value = \(\); \}/)
-    assert.match(rust, /events\.forward::<StoreChanged>\("store\/changed", StoreChanged::from_args\);/)
-    assert.throws(() => generate(file, root, { events: ['store/decide'] }), /event store\/decide is not a notification/)
-    // rutis -> Cordis: the same event type gains to_args and a listener.
-    const outward = generate(file, root, { emits: ['store/changed'] }).rust
-    assert.match(outward, /pub fn to_args\(&self\) -> Result<Vec<::rutis_bridge::cordis::rpc::Value>, ::rutis_bridge::cordis::Error> \{\s*Ok\(vec!\[::rutis_bridge::cordis::arg\(&self\.key\)\?, ::rutis_bridge::cordis::optional\(self\.size\.as_ref\(\)\)\?\]\)/)
-    assert.match(outward, /EmitToCordis::new\(process\.clone\(\), "store\/changed", StoreChanged::to_args\)/)
-    assert.match(outward, /emits: vec!\["store\/changed"\.into\(\)\]/)
-    assert.throws(() => generate(file, root, { events: ['store/changed'], emits: ['store/changed'] }), /selected in both directions/)
-    assert.throws(() => generate(file, root, { events: ['store/missing'] }), /no Cordis Events declaration found/)
-  })
-})
-
-// guarantee: boundary/5.5 — internal/* events do not cross the boundary:
-// the bindings refuse to forward a notification under that prefix either
-// way, even one the plugin declares itself.
-test('internal events are not forwarded in either direction', async () => {
-  await fixture(`import type { Context } from '@deepseek-ai/cordis'
-    declare module '@deepseek-ai/cordis' {
-      interface Events {
-        'internal/mine'(key: string): void
-      }
+    for (const field of ['events', 'emits']) {
+      assert.throws(() => generate(file, root, { [field]: ['store/changed'] }), {
+        message: `the config field ${field} was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)`,
+      })
     }
-    export function apply(ctx: Context) { ctx.provide('store', { ping(): number { return 1 } }) }
-  `, file => {
-    const refused = /internal Cordis event internal\/mine is not forwarded/
-    assert.throws(() => generate(file, root, { events: ['internal/mine'] }), refused)
-    assert.throws(() => generate(file, root, { emits: ['internal/mine'] }), refused)
+    const { rust } = generate(file, root)
+    assert.doesNotMatch(rust, /events|emits|EmitToCordis/)
   })
 })

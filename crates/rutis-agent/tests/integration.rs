@@ -18,7 +18,7 @@ use aimux_core::recording::{
     ResponseRecord, TimingRecord, RECORDING_SCHEMA,
 };
 use aimux_core::replay::MockReplayModel;
-use rutis::{Ctx, FiberState, FiberView, Listener, Next, Plugin, WaterfallListener};
+use rutis::{Call, Ctx, FiberState, FiberView, Listener, Plugin};
 use rutis_agent::{
     agent_key, llm_key, tool_call, Agent, AgentDriverPlugin, AgentError, AgentStepEvent,
     AgentTextDelta, AgentToolResult, LlmResponse, ScriptedLlm, ToolDef, ToolPostExecute,
@@ -55,6 +55,7 @@ impl Listener<AgentTextDelta> for TextL {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a AgentTextDelta,
+        _call: rutis::Call<'a, ()>,
     ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
         let text = self.0.clone();
         let d = e.delta.clone();
@@ -341,6 +342,7 @@ async fn events_observed_and_listeners_unload_with_fiber() {
             &'a self,
             _c: &'a Ctx,
             e: &'a AgentStepEvent,
+            _call: rutis::Call<'a, ()>,
         ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
             let ev = self.0.clone();
             let e = e.clone();
@@ -358,6 +360,7 @@ async fn events_observed_and_listeners_unload_with_fiber() {
             &'a self,
             _c: &'a Ctx,
             e: &'a AgentToolResult,
+            _call: rutis::Call<'a, ()>,
         ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
             let ev = self.0.clone();
             let (name, ok) = (e.name.clone(), e.ok);
@@ -498,17 +501,17 @@ async fn pre_execute_gate_can_block_specific_tool() {
 
     // 门控:拒绝 bash(matcher = 按 tool_name)
     struct BashGate;
-    impl WaterfallListener<ToolPreExecute> for BashGate {
+    impl Listener<ToolPreExecute> for BashGate {
         fn call<'a>(
             &'a self,
             _ctx: &'a Ctx,
             e: &'a ToolPreExecute,
-            _next: Next<'a, ToolPreExecute>,
-        ) -> rutis::BoxFuture<'a, Result<Option<String>, rutis::CordisError>> {
+            _call: Call<'a, Option<String>>,
+        ) -> rutis::BoxFuture<'a, Result<Option<Option<String>>, rutis::CordisError>> {
             if e.call.tool_name == "bash" {
-                Box::pin(async move { Ok(Some("blocked: audit forbids bash".to_string())) })
+                Box::pin(async move { Ok(Some(Some("blocked: audit forbids bash".to_string()))) })
             } else {
-                Box::pin(async move { Ok(None) })
+                Box::pin(async move { Ok(Some(None)) })
             }
         }
     }
@@ -522,8 +525,7 @@ async fn pre_execute_gate_can_block_specific_tool() {
             ctx: &'a Ctx,
         ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
             Box::pin(async move {
-                ctx.events()
-                    .on_waterfall(ctx, &rutis::EventKey::of(), BashGate)?;
+                ctx.events().on(ctx, &rutis::EventKey::of(), BashGate)?;
                 Ok(rutis::Effect::Done)
             })
         }
@@ -596,19 +598,20 @@ async fn post_execute_can_rewrite_result() {
 
     // 改写:get_weather 的结果 → 脱敏
     struct RedactResult;
-    impl WaterfallListener<ToolPostExecute> for RedactResult {
+    impl Listener<ToolPostExecute> for RedactResult {
         fn call<'a>(
             &'a self,
             _ctx: &'a Ctx,
             e: &'a ToolPostExecute,
-            _next: Next<'a, ToolPostExecute>,
-        ) -> rutis::BoxFuture<'a, Result<rutis_agent::ToolOutput, rutis::CordisError>> {
+            _call: Call<'a, rutis_agent::ToolOutput>,
+        ) -> rutis::BoxFuture<'a, Result<Option<rutis_agent::ToolOutput>, rutis::CordisError>>
+        {
             if e.call.tool_name == "get_weather" {
                 Box::pin(async move {
-                    Ok(rutis_agent::ToolOutput {
+                    Ok(Some(rutis_agent::ToolOutput {
                         ok: true,
                         output: "REDACTED".to_string(),
-                    })
+                    }))
                 })
             } else {
                 Box::pin(async move {
@@ -628,8 +631,7 @@ async fn post_execute_can_rewrite_result() {
             ctx: &'a Ctx,
         ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
             Box::pin(async move {
-                ctx.events()
-                    .on_waterfall(ctx, &rutis::EventKey::of(), RedactResult)?;
+                ctx.events().on(ctx, &rutis::EventKey::of(), RedactResult)?;
                 Ok(rutis::Effect::Done)
             })
         }

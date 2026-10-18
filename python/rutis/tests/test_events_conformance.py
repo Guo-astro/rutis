@@ -1,311 +1,265 @@
-"""The testing tool against the unified events expectations (#464 step 7):
-every case of crates/rutis-bridge/src/runtime/testing/events.expected.json
-without `tool: false`, every participant at X (the language `python` for
-`only` / `except`), with the plugin tests/fixtures/conformance_events.py.
-The real runtimes are checked against the same file by
-crates/rutis-loader/tests/events_conformance.rs.
+"""The event expectations (#464, docs/design-events-protocol-2026-10-18.md
+§13) against the testing tool: every case the tool runs (not `tool:
+false`, not limited to other languages), with every participant in this
+process, through the plugin conformance-events, as the real runtimes are
+checked against the same list.
 
-The rows of a case share one `rutis.testing.Bus` (the file's `scopes`):
-listener rows of tests/fixtures/conformance_events.py, emitter rows of
-conformance_events_e.py / conformance_events_f.py (each declaring only its
-own `emitter-<label>`), each loaded with `rutis.testing.load(..., bus=, scope=, row=<label>)`; the
-host service `events-log` is EventsLog below. `viaHost` and `reported` are
-about the host and real processes and do not apply here.
+Until crates/rutis-bridge/src/runtime/testing/events.expected.json is in
+the checkout, its starting cases are read from the specification, whose
+§13.3 is the file's first content.
+
+`prepend` and `global` exist in every language (a maintainer's decision
+after the specification): a case limited to other languages only because
+of a listener's `options` runs here too.
 """
 
 import asyncio
+import inspect
 import json
-import re
-import sys
+import time
 import unittest
-from collections import Counter
 from contextlib import AsyncExitStack
 from pathlib import Path
 
 import background
-import test_conformance as weather  # `same`: tagged-value equality
+import conformance_events
+from test_conformance import same
 
 from rutis import _values
-from rutis.peer import AggregateError, RemoteError
 from rutis.testing import Bus, load
 
-sys.path.insert(0, str(Path(__file__).parent / "fixtures"))
-# The fixture directory is the runtime's project: listener rows load
-# conformance_events, emitter rows conformance_events_<label>.
-import conformance_events  # noqa: E402
-import conformance_events_e  # noqa: E402
-import conformance_events_f  # noqa: E402
-
-EMITTERS = {"e": conformance_events_e, "f": conformance_events_f}
-
-EXPECTED = json.loads(
-    (Path(__file__).parents[3] / "crates/rutis-bridge/src/runtime/testing/events.expected.json").read_text("utf-8")
-)
-LANGUAGE = "python"
-# `settles` and the wait for logs to be complete (§13.2).
+ROOT = Path(__file__).parents[3]
+FILE = ROOT / "crates/rutis-bridge/src/runtime/testing/events.expected.json"
+SPEC = ROOT / "docs/design-events-protocol-2026-10-18.md"
+# How long the log may take to be complete (§13.2).
 SETTLE = 5.0
-# Any other step: long enough never to cut a passing one short.
-LIMIT = 30.0
 
 
-class EventsLog:
-    """The host service `events-log`: every row logs here."""
+def expectations() -> dict:
+    if FILE.exists():
+        return json.loads(FILE.read_text("utf-8"))
+    text = SPEC.read_text("utf-8")
+    text = text[text.index("### 13.3"):]
+    start = text.index("```json\n") + len("```json\n")
+    return json.loads(text[start:text.index("\n```", start)])
+
+
+def for_python(case: dict) -> str | None:
+    """Why the tool skips `case`, or None."""
+    if case.get("tool") is False:
+        return "tool: false"
+    optioned = {listener["label"] for listener in case.get("listeners", []) if listener.get("options")}
+    for item in case.get("only", []):
+        for key, languages in item.items():
+            if key == "why" or "python" in languages:
+                continue
+            if key in optioned:
+                continue
+            return f"only {key}: {languages}"
+    for item in case.get("except", []):
+        for key, languages in item.items():
+            if key != "why" and "python" in languages:
+                return f"except {key}: {item.get('why')}"
+    return None
+
+
+def decode(value):
+    """A value as the expectations write it: tagged values, callbacks."""
+    if isinstance(value, list):
+        return [decode(item) for item in value]
+    if isinstance(value, dict):
+        if len(value) == 1:
+            (key, item), = value.items()
+            if key == "$callback":
+                if item == "upper":
+                    return lambda text: text.upper()
+                raise ValueError(f"unknown callback {item}")
+            if key == "$map":
+                return _values.received_map([decode(k) for k, _ in item], [decode(v) for _, v in item])
+            if key == "$set":
+                return {decode(element) for element in item}
+            if key.startswith("$") and key[1:] in _values.TAGS:
+                return _values.read(key[1:], item)
+        return {key: decode(item) for key, item in value.items()}
+    return value
+
+
+class Log:
+    """The host's service events-log."""
 
     def __init__(self):
         self.entries = []
-        self.seen = []
 
     def add(self, entry):
         self.entries.append(entry)
 
-    def filter(self, description):
-        self.entries.append(f"filter:{description['row']}")
-        self.seen.append(description)
 
-    async def wait(self, entry):
-        while entry not in self.entries:
-            await asyncio.sleep(0.005)
+def error_name(error) -> str:
+    return getattr(error, "name", type(error).__name__)
 
 
-def decode(value):
-    """A value as the expectations write it ({"$<tag>": text},
-    {"$callback": "upper"}) as Python has it."""
-    if isinstance(value, list):
-        return [decode(item) for item in value]
-    if not isinstance(value, dict):
-        return value
-    if len(value) == 1 and next(iter(value)).startswith("$"):
-        ((tag, text),) = value.items()
-        tag = tag[1:]
-        if tag == "callback":
-            if text != "upper":
-                raise ValueError(f"no callback {text!r}")
-            return lambda text: text.upper()
-        if tag == "map":
-            return _values.received_map([decode(key) for key, _ in text], [decode(item) for _, item in text])
-        if tag == "set":
-            return _values.received_set([decode(item) for item in text])
-        return _values.read(tag, text)
-    return {key: decode(item) for key, item in value.items()}
+def error_message(error) -> str:
+    return getattr(error, "message", str(error))
 
 
-def name_of(error):
-    return error.name if isinstance(error, (RemoteError, AggregateError)) else type(error).__name__
-
-
-def message_of(error):
-    return error.message if isinstance(error, (RemoteError, AggregateError)) else str(error)
-
-
-def contains(log, wanted):
-    """Whether `wanted` is in `log` in this order, others between."""
-    rest = iter(log)
-    return all(any(entry == item for entry in rest) for item in wanted)
-
-
-def excluded(case):
-    """Why Python does not take part in `case`, or None."""
-    for rule in case.get("only", []):
-        if any(key != "why" and LANGUAGE not in languages for key, languages in rule.items()):
-            return rule["why"]
-    for rule in case.get("except", []):
-        if any(key != "why" and LANGUAGE in languages for key, languages in rule.items()):
-            return rule["why"]
-    return None
-
-
-def emits_of(steps):
-    for step in steps:
-        if "emit" in step:
-            yield step["emit"]
-        yield from emits_of(step.get("concurrent", []))
-
-
-class Run:
-    """One case: its rows on one bus, its steps in order."""
-
-    def __init__(self, test, case):
+class Case:
+    def __init__(self, test, case, doc):
         self.test = test
         self.case = case
-        self.log = EventsLog()
-        self.bus = Bus(scopes=EXPECTED["scopes"])
-        # label -> (loaded row, its exit stack, scope, config)
+        self.bus = Bus(scopes=doc["scopes"])
+        self.log = Log()
         self.rows = {}
+        self.emitters = {}
         self.background = None
-        # A listener's default kind (§13.2).
-        sync = all(spec["mode"] in ("bail", "waterfall-sync") for spec in emits_of(case["steps"]))
-        self.kind = "sync" if sync and any(True for _ in emits_of(case["steps"])) else "async"
+        modes = [step["emit"]["mode"] for step in case["steps"] if "emit" in step]
+        self.kind = "sync" if modes and all(mode in ("bail", "waterfall-sync") for mode in modes) else "async"
+
+    async def load(self, stack, participant: dict):
+        config = dict(participant)
+        config.setdefault("name", self.case["name"])
+        config.setdefault("kind", self.kind)
+        label = participant["label"]
+        self.rows[label] = await stack.enter_async_context(
+            load(conformance_events, config=config, services={"events-log": self.log}, bus=self.bus,
+                 row=label, scope=participant.get("scope", "root"))
+        )
+
+    async def emitter(self, stack, spec: dict):
+        label, scope = spec.get("row", "e"), spec.get("scope", "root")
+        key = (label, scope)
+        if key not in self.emitters:
+            row = label if not any(known == label for known, _ in self.emitters) else f"{label}@{scope}"
+            self.emitters[key] = await stack.enter_async_context(
+                load(conformance_events, config={"label": label, "emitter": True}, services={"events-log": self.log},
+                     bus=self.bus, row=row, scope=scope)
+            )
+        return self.emitters[key].service(f"emitter-{label}")
+
+    async def dispatch(self, stack, spec: dict):
+        spec = dict(spec)
+        spec.setdefault("name", self.case["name"])
+        spec["args"] = decode(spec.get("args", []))
+        service = await self.emitter(stack, spec)
+        try:
+            if spec["mode"] == "bail":
+                # Run at the call, synchronously; an undeclared service's
+                # method answers through an awaitable all the same.
+                result = service.dispatch_sync(spec)
+                return "return", await result if inspect.isawaitable(result) else result
+            return "return", await service.dispatch(spec)
+        except Exception as error:  # noqa: BLE001 - what the dispatch raised is the outcome
+            return "throw", error
 
     async def run(self):
-        try:
-            for listener in self.case["listeners"]:
-                await self.load(listener)
+        async with AsyncExitStack() as stack:
+            for participant in self.case.get("listeners", []):
+                await self.load(stack, participant)
             for i, step in enumerate(self.case["steps"]):
-                with self.test.subTest(step=i):
-                    await self.step(f"{self.case['case']} step {i}", step)
-        finally:
-            if self.background is not None and not self.background.done():
-                self.background.cancel()
-                await asyncio.gather(self.background, return_exceptions=True)
-            for label in list(self.rows)[::-1]:
-                await self.unload(label)
+                with self.test.subTest(case=self.case["case"], step=i):
+                    await self.step(stack, step)
+            if self.background is not None:
+                await asyncio.wait_for(self.background, SETTLE)
 
-    async def add(self, label, config, scope):
-        module = EMITTERS[label] if config.get("emitter") else conformance_events
-        stack = AsyncExitStack()
-        try:
-            row = await stack.enter_async_context(
-                load(module, config=config, services={"events-log": self.log}, bus=self.bus, scope=scope, row=label)
-            )
-        except BaseException:
-            await stack.aclose()
-            raise
-        self.rows[label] = (row, stack, scope, config)
-        return row
-
-    async def unload(self, label):
-        _row, stack, _scope, _config = self.rows.pop(label)
-        await stack.aclose()
-
-    async def load(self, listener):
-        config = {
-            "label": listener["label"],
-            "name": listener.get("name", self.case["name"]),
-            "kind": listener.get("kind", self.kind),
-            "log": listener.get("log", "label"),
-            "does": listener.get("does", {"returns": None}),
-        }
-        for key in ("options", "provides", "fails"):
-            if key in listener:
-                config[key] = listener[key]
-        scope = listener.get("scope", "root")
-        return await self.add(listener["label"], config, None if scope == "root" else scope)
-
-    async def emitter(self, label, scope):
-        """The service of emitter row `label` at `scope`, loaded (again)
-        when it is not there yet."""
-        held = self.rows.get(label)
-        if held is not None and held[2] != scope:
-            await self.unload(label)
-            held = None
-        row = held[0] if held is not None else await self.add(label, {"label": label, "emitter": True}, scope)
-        return row.service(f"emitter-{label}")
-
-    async def dispatch(self, spec):
-        scope = spec.get("scope", "root")
-        service = await self.emitter(spec.get("row", "e"), None if scope == "root" else scope)
-        sent = {
-            "mode": spec["mode"],
-            "name": spec.get("name", self.case["name"]),
-            "args": [decode(arg) for arg in spec.get("args", [])],
-        }
-        for key in ("filter", "terminal", "cancel", "via"):
-            if key in spec:
-                sent[key] = spec[key]
-        if spec["mode"] == "bail":
-            return service.dispatch_sync(sent)
-        return await service.dispatch(sent)
-
-    async def settle(self, what, awaitable, expect):
-        """(True, value) or (False, error): how `awaitable` ended."""
-        limit = SETTLE if expect.get("settles") else LIMIT
-        try:
-            return True, await asyncio.wait_for(awaitable, limit)
-        except asyncio.TimeoutError:
-            self.test.fail(f"{what}: did not settle within {limit:g} s")
-        except (Exception, asyncio.CancelledError) as error:  # noqa: BLE001 - what it raised is the outcome
-            return False, error
-
-    async def step(self, what, step):
-        expect = step.get("expect", {})
+    async def step(self, stack, step):
         outcome = None
+        started = time.monotonic()
         if "emit" in step:
+            dispatched = asyncio.ensure_future(self.dispatch(stack, step["emit"]))
             if step.get("background"):
-                self.background = asyncio.ensure_future(self.dispatch(step["emit"]))
+                self.background = dispatched
                 return
-            outcome = await self.settle(what, self.dispatch(step["emit"]), expect)
+            outcome = await asyncio.wait_for(dispatched, SETTLE)
         elif "load" in step:
-            outcome = await self.settle(what, self.load(step["load"]), expect)
+            await self.load(stack, step["load"])
         elif "unload" in step:
             if "when" in step:
-                await self.settle(f"{what}: waiting for {step['when']}", self.log.wait(step["when"]), {"settles": True})
-            outcome = await self.settle(what, self.unload(step["unload"]), expect)
+                await self.until(lambda: step["when"] in self.log.entries, f"{step['when']} started")
+            await asyncio.wait_for(self.rows[step["unload"]].unload(), SETTLE)
             if self.background is not None:
-                outcome = await self.settle(f"{what} (the background dispatch)", self.background, expect)
+                outcome = await asyncio.wait_for(self.background, SETTLE)
                 self.background = None
-        elif "update" in step:
-            # The row's config changes: it registers again, last.
-            label = step["update"]
-            _row, _stack, scope, config = self.rows[label]
-            await self.unload(label)
-            await self.add(label, dict(config, update=True), scope)
         else:
-            self.test.fail(f"{what}: {sorted(step)} is not a step the testing tool runs")
-        await self.check(what, expect, outcome)
+            raise unittest.SkipTest(f"step {step} is not the testing tool's")
+        expect = step.get("expect")
+        if expect:
+            await self.check(expect, outcome, time.monotonic() - started)
 
-    async def check(self, what, expect, outcome):
-        test = self.test
-        if "returns" in expect:
-            ok, value = outcome
-            test.assertTrue(ok, f"{what}: expected {expect['returns']!r}, raised {value!r}")
-            test.assertTrue(weather.same(value, expect["returns"]), f"{what}: expected {expect['returns']!r}, got {value!r}")
-        if "throws" in expect:
-            ok, value = outcome
-            test.assertFalse(ok, f"{what}: expected an error, got {value!r}")
-            self.error(what, value, expect["throws"])
+    async def until(self, check, what):
+        deadline = time.monotonic() + SETTLE
+        while not check():
+            if time.monotonic() > deadline:
+                self.test.fail(f"{self.case['case']}: {what} within {SETTLE}s; log {self.log.entries}")
+            await asyncio.sleep(0.005)
+
+    async def check(self, expect, outcome, took):
+        t, case = self.test, self.case["case"]
         log = self.log.entries
-        checks = {
-            "log": lambda wanted: log == wanted,
-            "logUnordered": lambda wanted: Counter(log) == Counter(wanted),
-            "logContains": lambda wanted: contains(log, wanted),
-        }
-        for key, holds in checks.items():
-            if key in expect:
-                await self.until(lambda: holds(expect[key]))
-                test.assertTrue(holds(expect[key]), f"{what}: {key} {expect[key]!r}, the log is {log!r}")
-        for entry in expect.get("logLacks", []):
-            test.assertNotIn(entry, log, f"{what}: the log is {log!r}")
+        if "settles" in expect:
+            t.assertLess(took, SETTLE, case)
+        if "returns" in expect:
+            t.assertIsNotNone(outcome, case)
+            t.assertEqual(outcome[0], "return", f"{case}: {outcome}")
+            t.assertTrue(same(outcome[1], expect["returns"]), f"{case}: returned {outcome[1]!r}, expected {expect['returns']!r}")
+        if "throws" in expect:
+            t.assertIsNotNone(outcome, case)
+            t.assertEqual(outcome[0], "throw", f"{case}: {outcome}")
+            error, thrown = outcome[1], expect["throws"]
+            if "name" in thrown:
+                t.assertEqual(error_name(error), thrown["name"], f"{case}: {error!r}")
+            if "message" in thrown:
+                t.assertIn(thrown["message"], error_message(error), case)
+            if "errors" in thrown:
+                children = getattr(error, "errors", [])
+                t.assertEqual(len(children), len(thrown["errors"]), f"{case}: {children}")
+                for child, wanted in zip(children, thrown["errors"]):
+                    if "name" in wanted:
+                        t.assertEqual(error_name(child), wanted["name"], case)
+                    if "message" in wanted:
+                        t.assertIn(wanted["message"], error_message(child), case)
+        if "log" in expect:
+            await self.until(lambda: len(log) >= len(expect["log"]), f"the log {expect['log']}")
+            t.assertEqual(log, expect["log"], case)
+        if "logUnordered" in expect:
+            await self.until(lambda: len(log) >= len(expect["logUnordered"]), f"the log {expect['logUnordered']}")
+            t.assertEqual(sorted(log), sorted(expect["logUnordered"]), case)
+        if "logContains" in expect:
+            def contains():
+                it = iter(log)
+                return all(any(entry == wanted for entry in it) for wanted in expect["logContains"])
+
+            await self.until(contains, f"the log containing {expect['logContains']}")
+        if "logLacks" in expect:
+            for entry in expect["logLacks"]:
+                t.assertNotIn(entry, log, case)
         if "filterSees" in expect:
-            test.assertEqual([seen["row"] for seen in self.log.seen], expect["filterSees"], f"{what}: filterSees")
+            seen = [entry[len("filter:"):] for entry in log if entry.startswith("filter:")]
+            t.assertEqual(seen, expect["filterSees"], case)
+        if "reported" in expect:
+            wanted = [(item["label"], item["name"]) for item in expect["reported"]]
 
-    def error(self, what, error, spec):
-        test = self.test
-        if "name" in spec:
-            test.assertEqual(name_of(error), spec["name"], f"{what}: the error's name ({error!r})")
-        if "message" in spec:
-            test.assertIn(spec["message"], message_of(error), f"{what}: the error's message")
-        if "errors" in spec:
-            children = getattr(error, "errors", None)
-            test.assertIsInstance(children, list, f"{what}: an AggregateError's children")
-            test.assertEqual(len(children), len(spec["errors"]), f"{what}: the children {children!r}")
-            for i, (child, wanted) in enumerate(zip(children, spec["errors"])):
-                self.error(f"{what} errors[{i}]", child, wanted)
+            def reported():
+                got = [(report.row, error_name(report.error)) for report in self.bus.reported]
+                return all(item in got for item in wanted)
 
-    async def until(self, holds):
-        """Wait up to SETTLE for the log to be complete."""
-        deadline = asyncio.get_running_loop().time() + SETTLE
-        while not holds() and asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(0.02)
+            await self.until(reported, f"the reports {wanted}")
 
 
-class EventsConformance(background.TestCase):
-    """One test per case the testing tool runs."""
-
-
-def _case_test(case):
-    def test(self):
-        why = excluded(case)
-        if why is not None:
-            self.skipTest(f"not for {LANGUAGE}: {why}")
-        asyncio.run(Run(self, case).run())
-
-    test.__doc__ = f"{case['case']} (§{case['rule']})"
-    return test
-
-
-for _case in EXPECTED["cases"]:
-    if _case.get("tool", True) is not False:
-        setattr(EventsConformance, "test_" + re.sub(r"\W", "_", _case["case"]), _case_test(_case))
+class EventExpectations(background.TestCase):
+    def test_the_testing_tool_meets_the_event_expectations(self):
+        doc = expectations()
+        self.assertEqual(doc["plugin"], "conformance-events")
+        ran = []
+        for case in doc["cases"]:
+            why = for_python(case)
+            if why is not None:
+                print(f"{case['case']}: not run by the testing tool ({why})")
+                continue
+            with self.subTest(case=case["case"]):
+                conformance_events._logged.clear()
+                asyncio.run(Case(self, case, doc).run())
+                ran.append(case["case"])
+        self.assertIn("parallel/errors-in-registration-order", ran)
+        self.assertIn("unload/waits-and-cancels", ran)
 
 
 if __name__ == "__main__":

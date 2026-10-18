@@ -475,6 +475,7 @@ async fn minimal_turn_edits_file_and_runs_command() {
             &'a self,
             _ctx: &'a Ctx,
             e: &'a AgentToolResult,
+            _call: rutis::Call<'a, ()>,
         ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
             let rs = self.0.clone();
             let (name, ok, output) = (e.name.clone(), e.ok, e.output.clone());

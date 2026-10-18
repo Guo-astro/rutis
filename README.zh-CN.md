@@ -208,7 +208,7 @@ stateDiagram-v2
     Disposed --> [*]
 ```
 
-服务在 Rust 里以类型为键，跨语言时按名字。事件总线提供 emit、parallel、serial、waterfall 四种分发方式。`rutis-loader` 用分层配置描述要运行的插件，并持续把运行中的系统调和到这个状态。宿主之间通过 WebSocket 与 TLS 互联：共享服务、在另一台机器上运行插件、转发事件、断线后重连。
+服务在 Rust 里以类型为键，跨语言时按名字。事件总线提供 emit、parallel、serial、waterfall 与同步 bail 五种分发方式。`rutis-loader` 用分层配置描述要运行的插件，并持续把运行中的系统调和到这个状态。宿主之间通过 WebSocket 与 TLS 互联：共享服务、在另一台机器上运行插件、转发事件、断线后重连。
 
 ## 代价
 

@@ -208,7 +208,7 @@ stateDiagram-v2
     Disposed --> [*]
 ```
 
-Services are registered by type in Rust and by name across languages. The event bus dispatches in four ways: emit, parallel, serial and waterfall. `rutis-loader` describes the plugins to run as layered configuration and keeps reconciling the running system toward it. Hosts link over WebSocket and TLS to share services, run plugins on another machine, forward events and reconnect after a drop.
+Services are registered by type in Rust and by name across languages. The event bus dispatches in five ways: emit, parallel, serial, waterfall and synchronous bail. `rutis-loader` describes the plugins to run as layered configuration and keeps reconciling the running system toward it. Hosts link over WebSocket and TLS to share services, run plugins on another machine, forward events and reconnect after a drop.
 
 ## Trade-offs
 

@@ -177,17 +177,6 @@ impl Ctx {
         false
     }
 
-    pub(crate) fn instance_owner(&self, id: InstanceId) -> Option<Arc<FiberInner>> {
-        let mut current = self.0.fiber.upgrade();
-        while let Some(fiber) = current {
-            if fiber.instance == id {
-                return Some(fiber);
-            }
-            current = fiber.parent_fiber.as_ref().and_then(Weak::upgrade);
-        }
-        None
-    }
-
     pub(crate) fn check_instance(&self, key: &TypeKey) -> Result<(), CordisError> {
         if let Some(id) = key.instance_id() {
             if !self.in_instance(id) {
@@ -311,6 +300,16 @@ impl Ctx {
             current = parent;
         }
         current.0.fiber.upgrade().map(FiberView::from_inner)
+    }
+
+    /// The root fiber's context of this context's tree: what lives as long
+    /// as the root (and its event bus).
+    pub fn root_ctx(&self) -> Ctx {
+        let mut current = self.clone();
+        while let Some(parent) = current.0.parent.clone() {
+            current = parent;
+        }
+        current
     }
 
     /// The live fiber with this id anywhere under this context's root, for
@@ -486,6 +485,82 @@ impl Ctx {
     /// 事件总线(全局唯一;事件分发不跨 isolate 过滤,D29)。
     pub fn events(&self) -> &EventBus {
         &self.0.shared.bus
+    }
+
+    /// The chain of loader instances around this context, outermost first;
+    /// `[]` at the root (protocol spec §3). An event emitted here reaches
+    /// the listeners of this scope and of every scope containing it.
+    pub fn scope(&self) -> Vec<crate::Scope> {
+        let mut chain = Vec::new();
+        let mut current = self.0.fiber.upgrade();
+        while let Some(fiber) = current {
+            if let Some(group) = fiber.scope_group.get() {
+                chain.push(crate::Scope {
+                    id: fiber.instance.to_string(),
+                    group: group.to_string(),
+                });
+            }
+            current = fiber.parent_fiber.as_ref().and_then(Weak::upgrade);
+        }
+        chain.reverse();
+        chain
+    }
+
+    /// Make this context's fiber a scope of `group`: the loader calls it
+    /// for each group instance before its rows start. Its id is the fiber's
+    /// [`InstanceId`]. Marking it again with the same group is a no-op.
+    pub fn mark_scope(&self, group: &str) -> Result<(), CordisError> {
+        let fiber = self.0.fiber.upgrade().ok_or(CordisError::InactiveEffect)?;
+        if fiber.is_root {
+            return Err(CordisError::Validation {
+                issues: vec!["the root is not a scope of a group".into()],
+            });
+        }
+        let marked = fiber.scope_group.get_or_init(|| Arc::from(group));
+        if &**marked != group {
+            return Err(CordisError::Validation {
+                issues: vec![format!(
+                    "this fiber is already a scope of group {marked}, not {group}"
+                )],
+            });
+        }
+        Ok(())
+    }
+
+    /// Make this context's fiber the row `key`: the descriptors
+    /// ([`ListenerInfo::row`](crate::ListenerInfo)) of listeners registered
+    /// in it and below it name the row. Marking it again with the same key
+    /// is a no-op.
+    pub fn mark_row(&self, key: &str) -> Result<(), CordisError> {
+        let fiber = self.0.fiber.upgrade().ok_or(CordisError::InactiveEffect)?;
+        let marked = fiber.row.get_or_init(|| Arc::from(key));
+        if &**marked != key {
+            return Err(CordisError::Validation {
+                issues: vec![format!("this fiber is already the row {marked}, not {key}")],
+            });
+        }
+        Ok(())
+    }
+
+    /// The nearest marked row of this context's fiber or its ancestors.
+    pub fn row(&self) -> Option<String> {
+        let mut current = self.0.fiber.upgrade();
+        while let Some(fiber) = current {
+            if let Some(row) = fiber.row.get() {
+                return Some(row.to_string());
+            }
+            current = fiber.parent_fiber.as_ref().and_then(Weak::upgrade);
+        }
+        None
+    }
+
+    /// The name of the plugin owning this context.
+    pub(crate) fn plugin_name(&self) -> String {
+        self.0
+            .fiber
+            .upgrade()
+            .map(|fiber| fiber.name.clone())
+            .unwrap_or_default()
     }
 
     /// scope 解析:沿 Ctx 父链回溯,取该键最近的 isolate 覆盖(§四:保留父链查找)。

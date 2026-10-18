@@ -7,12 +7,12 @@ use std::time::Duration;
 
 use rutis::{
     BoxFuture, CordisError, Ctx, DisposeWaitError, Effect, Event, FiberState, FiberStatusChanged,
-    FiberView, Listener, Next, Plugin, Terminal, TypeKey, WaterfallListener,
+    FiberView, Listener, Plugin, Terminal, TypeKey,
 };
 
 // ── 测试助手 ─────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Ping {
     value: u32,
 }
@@ -59,6 +59,7 @@ impl Listener<Ping> for Rec {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a Ping,
+        _call: rutis::Call<'a, u32>,
     ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
         let hits = self.hits.clone();
         let value = e.value;
@@ -299,8 +300,9 @@ async fn auto_ownership() {
 
 // ── lifecycle ────────────────────────────────────────────────────
 
-/// 状态事件按提交顺序到达(D24):断言到达顺序本身,不先排序。第一条
-/// 事件的监听器最慢,派发若不按提交顺序串行,后面的事件会超车。
+/// 状态事件按提交顺序投递(D24):各次调用按提交顺序开始,断言开始顺序
+/// 本身,不先排序。第一条事件的监听器最慢:统一事件模型下慢监听器不再
+/// 挡住后面的调用,它们可以先完成(完成顺序不作契约),但开始顺序不变。
 ///
 /// guarantee: core/D24
 #[tokio::test]
@@ -314,14 +316,16 @@ async fn state_transitions() {
             &'a self,
             _ctx: &'a Ctx,
             e: &'a FiberStatusChanged,
+            _call: rutis::Call<'a, ()>,
         ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
             let seen = self.0.clone();
             let ev = e.clone();
             Box::pin(async move {
+                // Recorded when the call starts.
+                seen.lock().unwrap().push(ev.clone());
                 if ev.seq == 1 {
                     turns(16).await;
                 }
-                seen.lock().unwrap().push(ev);
                 Ok(None)
             })
         }
@@ -339,7 +343,7 @@ async fn state_transitions() {
 
     let events: Vec<FiberStatusChanged> = seen.lock().unwrap().clone();
     let seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
-    assert_eq!(seqs, vec![1, 2, 3, 4], "到达顺序不是提交顺序");
+    assert_eq!(seqs, vec![1, 2, 3, 4], "开始顺序不是提交顺序");
     let path: Vec<(FiberState, FiberState)> = events.into_iter().map(|e| (e.from, e.to)).collect();
     assert_eq!(
         path,
@@ -749,6 +753,7 @@ async fn emit_async_safe() {
             &'a self,
             _c: &'a Ctx,
             e: &'a Ping,
+            _call: rutis::Call<'a, u32>,
         ) -> rutis::BoxFuture<'a, Result<Option<u32>, CordisError>> {
             let seen = self.0.clone();
             let v = e.value;
@@ -764,6 +769,7 @@ async fn emit_async_safe() {
     fn ok_ping<'a>(
         _ctx: &'a Ctx,
         e: &'a Ping,
+        _call: rutis::Call<'a, u32>,
     ) -> rutis::BoxFuture<'a, Result<Option<u32>, CordisError>> {
         Box::pin(async move { Ok(Some(e.value)) })
     }
@@ -814,6 +820,7 @@ async fn emit_error_sink() {
             &'a self,
             _c: &'a Ctx,
             _e: &'a Ping,
+            _call: rutis::Call<'a, u32>,
         ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
             Box::pin(async { panic!("listener boom") })
         }
@@ -835,12 +842,27 @@ async fn emit_error_sink() {
     ctx.events()
         .emit(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
         .expect("default event dispatch");
-    // Err 与 panic 都进 ErrorSink(D30),各一次
+    // Err 与 panic 都进 ErrorSink(D30),各一次,包成 ListenerFailed。两个
+    // 调用并发执行,到达 sink 的先后不作契约。
     drained(&ctx).await;
     let got = collected.lock().unwrap();
     assert_eq!(got.len(), 2);
-    assert!(matches!(*got[0], CordisError::ServiceNotFound(_)));
-    assert!(matches!(*got[1], CordisError::PluginFailed(_))); // panic 包装
+    let inner: Vec<&CordisError> = got
+        .iter()
+        .map(|error| match &**error {
+            CordisError::ListenerFailed { name, error, .. } => {
+                assert_eq!(name, Ping::NAME);
+                &**error
+            }
+            other => panic!("expected ListenerFailed, got {other:?}"),
+        })
+        .collect();
+    assert!(inner
+        .iter()
+        .any(|e| matches!(e, CordisError::ServiceNotFound(_))));
+    assert!(inner
+        .iter()
+        .any(|e| matches!(e, CordisError::PluginFailed(_)))); // panic 包装
 }
 
 #[tokio::test]
@@ -879,10 +901,13 @@ async fn parallel_aggregates() {
         .await
         .expect_err("aggregates");
     match err {
-        CordisError::Aggregate { errors } => assert_eq!(errors.len(), 2),
-        other => panic!("expected aggregate, got {other:?}"),
+        CordisError::ListenersFailed { name, errors } => {
+            assert_eq!(name, Ping::NAME);
+            assert_eq!(errors.len(), 2);
+        }
+        other => panic!("expected ListenersFailed, got {other:?}"),
     }
-    // 单错原样(§八)
+    // 单错也聚合(统一事件模型:parallel 总是 ListenersFailed,原为单错原样)
     let ctx2 = Ctx::root().unwrap();
     ctx2.events()
         .on(
@@ -902,7 +927,13 @@ async fn parallel_aggregates() {
         .parallel(&ctx2, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
         .await
         .expect_err("single");
-    assert!(matches!(single, CordisError::ServiceNotFound(_)));
+    match single {
+        CordisError::ListenersFailed { errors, .. } => {
+            assert_eq!(errors.len(), 1);
+            assert!(matches!(*errors[0], CordisError::ServiceNotFound(_)));
+        }
+        other => panic!("expected ListenersFailed, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -937,7 +968,7 @@ async fn serial_bails() {
         .unwrap();
     let out = ctx
         .events()
-        .serial(&ctx, &rutis::EventKey::of(), &Ping { value: 1 })
+        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
         .await
         .unwrap();
     assert_eq!(out, Some(8)); // 短路值 = bail + e.value
@@ -973,7 +1004,7 @@ async fn serial_bails() {
         .unwrap();
     let out2 = ctx2
         .events()
-        .serial(&ctx2, &rutis::EventKey::of(), &Ping { value: 0 })
+        .serial(&ctx2, &rutis::EventKey::of(), Arc::new(Ping { value: 0 }))
         .await
         .unwrap();
     assert_eq!(out2, Some(1));
@@ -987,22 +1018,22 @@ async fn waterfall_veto_around() {
         order: Order,
         veto: bool,
     }
-    impl WaterfallListener<Ping> for Wf {
+    impl Listener<Ping> for Wf {
         fn call<'a>(
             &'a self,
             _ctx: &'a Ctx,
             e: &'a Ping,
-            next: Next<'a, Ping>,
-        ) -> BoxFuture<'a, Result<u32, CordisError>> {
+            call: rutis::Call<'a, u32>,
+        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
             let order = self.order.clone();
             let base = e.value;
             Box::pin(async move {
                 order.lock().unwrap().push(self.name);
                 if self.veto {
-                    return Ok(base + 100); // veto:不调 next
+                    return Ok(Some(base + 100)); // veto:不调 next
                 }
-                let inner = next.call().await?;
-                Ok(inner + 10) // 包裹:改写内层结果
+                let inner = call.next().await?.unwrap_or(0);
+                Ok(Some(inner + 10)) // 包裹:改写内层结果
             })
         }
     }
@@ -1012,8 +1043,8 @@ async fn waterfall_veto_around() {
             &'a self,
             _ctx: &'a Ctx,
             e: &'a Ping,
-        ) -> BoxFuture<'a, Result<u32, CordisError>> {
-            Box::pin(async move { Ok(e.value) })
+        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
+            Box::pin(async move { Ok(Some(e.value)) })
         }
     }
 
@@ -1021,7 +1052,7 @@ async fn waterfall_veto_around() {
     let ctx = Ctx::root().unwrap();
     let ord = order();
     ctx.events()
-        .on_waterfall(
+        .on(
             &ctx,
             &rutis::EventKey::of(),
             Wf {
@@ -1032,7 +1063,7 @@ async fn waterfall_veto_around() {
         )
         .unwrap();
     ctx.events()
-        .on_waterfall(
+        .on(
             &ctx,
             &rutis::EventKey::of(),
             Wf {
@@ -1047,14 +1078,14 @@ async fn waterfall_veto_around() {
         .waterfall(&ctx, &rutis::EventKey::of(), &Ping { value: 1 }, BaseTerm)
         .await
         .unwrap();
-    assert_eq!(out, 21); // 最外层返回
+    assert_eq!(out, Some(21)); // 最外层返回
     assert_eq!(*ord.lock().unwrap(), vec!["outer", "inner"]);
 
     // veto:后续监听器与终态都不执行
     let ctx2 = Ctx::root().unwrap();
     let ord2 = order();
     ctx2.events()
-        .on_waterfall(
+        .on(
             &ctx2,
             &rutis::EventKey::of(),
             Wf {
@@ -1065,7 +1096,7 @@ async fn waterfall_veto_around() {
         )
         .unwrap();
     ctx2.events()
-        .on_waterfall(
+        .on(
             &ctx2,
             &rutis::EventKey::of(),
             Wf {
@@ -1080,7 +1111,7 @@ async fn waterfall_veto_around() {
         .waterfall(&ctx2, &rutis::EventKey::of(), &Ping { value: 1 }, BaseTerm)
         .await
         .unwrap();
-    assert_eq!(out2, 101);
+    assert_eq!(out2, Some(101));
     assert_eq!(*ord2.lock().unwrap(), vec!["outer"]);
 }
 
@@ -1094,6 +1125,7 @@ async fn prepend_order() {
             &'a self,
             _c: &'a Ctx,
             _e: &'a Ping,
+            _call: rutis::Call<'a, u32>,
         ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
             let o = self.1.clone();
             let n = self.0;
@@ -1119,7 +1151,7 @@ async fn prepend_order() {
         )
         .unwrap();
     ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), &Ping { value: 0 })
+        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 0 }))
         .await
         .unwrap();
     assert_eq!(*ord.lock().unwrap(), vec!["prepended", "first-registered"]);
@@ -1188,7 +1220,7 @@ async fn once_keeps_position() {
         .unwrap();
     let out = ctx
         .events()
-        .serial(&ctx, &rutis::EventKey::of(), &Ping { value: 0 })
+        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 0 }))
         .await
         .unwrap();
     assert_eq!(out, Some(1)); // once 的短路值先到(位置在前)
@@ -1196,7 +1228,7 @@ async fn once_keeps_position() {
                                                 // 第二次:once 已消耗,轮到 regular
     let out2 = ctx
         .events()
-        .serial(&ctx, &rutis::EventKey::of(), &Ping { value: 0 })
+        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 0 }))
         .await
         .unwrap();
     assert_eq!(out2, None);
@@ -1215,9 +1247,10 @@ async fn listener_unload_race() {
             &'a self,
             ctx: &'a Ctx,
             e: &'a Ping,
+            call: rutis::Call<'a, u32>,
         ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
             self.0.notify_one();
-            self.1.call(ctx, e)
+            self.1.call(ctx, e, call)
         }
     }
     let gate = Arc::new(tokio::sync::Notify::new());
@@ -1251,17 +1284,25 @@ async fn listener_unload_race() {
     let ctx2 = ctx.clone();
     let dispatch = tokio::spawn(async move {
         ctx2.events()
-            .serial(&ctx2, &rutis::EventKey::of(), &Ping { value: 1 })
+            .serial(&ctx2, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
             .await
     });
     soon(entered.notified()).await; // 监听器已在 gate 上
-    view.dispose().await.unwrap(); // 与进行中分发竞争
+                                    // 与进行中分发竞争:卸载等待监听器正在运行的调用(统一事件模型;
+                                    // 原为卸载先完成)
+    let disposing = {
+        let view = view.clone();
+        tokio::spawn(async move { view.dispose().await })
+    };
+    turns(32).await;
+    assert!(!disposing.is_finished(), "卸载没有等待运行中的调用");
     gate.notify_one(); // 放行
+    soon(disposing).await.unwrap().unwrap();
     dispatch.await.unwrap().unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 1);
     // 卸载后:不再分发
     ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), &Ping { value: 1 })
+        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
         .await
         .unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 1);
@@ -2223,6 +2264,7 @@ async fn serial_register_order_adversarial() {
             &'a self,
             _c: &'a Ctx,
             e: &'a Ping,
+            _call: rutis::Call<'a, u32>,
         ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
             let hits = self.hits.clone();
             let bail = self.value;
@@ -2261,7 +2303,7 @@ async fn serial_register_order_adversarial() {
         .unwrap();
     let out = soon(
         ctx.events()
-            .serial(&ctx, &rutis::EventKey::of(), &Ping { value: 0 }),
+            .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 0 })),
     )
     .await
     .unwrap();
@@ -2364,6 +2406,7 @@ async fn parallel_waits_all() {
             &'a self,
             _c: &'a Ctx,
             _e: &'a Ping,
+            _call: rutis::Call<'a, u32>,
         ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
             let hits = self.hits.clone();
             let err = self.err;
@@ -2410,7 +2453,12 @@ async fn parallel_waits_all() {
     ))
     .await
     .unwrap_err();
-    assert!(matches!(err, CordisError::ServiceNotFound(_))); // 单错原样
+    // 单错也聚合为 ListenersFailed(统一事件模型)
+    assert!(matches!(
+        &err,
+        CordisError::ListenersFailed { errors, .. }
+            if errors.len() == 1 && matches!(*errors[0], CordisError::ServiceNotFound(_))
+    ));
     assert_eq!(hits.load(Ordering::SeqCst), 2); // 慢者也已全部完成
 }
 
@@ -2423,6 +2471,7 @@ async fn serial_panic_contained() {
             &'a self,
             _c: &'a Ctx,
             _e: &'a Ping,
+            _call: rutis::Call<'a, u32>,
         ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
             Box::pin(async { panic!("serial boom") })
         }
@@ -2447,7 +2496,7 @@ async fn serial_panic_contained() {
         .unwrap();
     let err = soon(
         ctx.events()
-            .serial(&ctx, &rutis::EventKey::of(), &Ping { value: 1 }),
+            .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 })),
     )
     .await
     .unwrap_err();
