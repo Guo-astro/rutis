@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"math/big"
 	"net"
 	goruntime "runtime"
 	"strings"
@@ -469,6 +471,60 @@ func TestAFarEndOfAnotherProtocolVersionIsRefusedSayingWhichEndToUpgrade(t *test
 		if err := p.greet(&f); err == nil || err.Error() != want {
 			t.Errorf("%s: got %v, want %q", c.far, err, want)
 		}
+	}
+}
+
+// A Rust service's error decodes with its code and data (#440), a big
+// integer in the data as a *big.Int.
+func TestARustServiceErrorHasItsCodeAndData(t *testing.T) {
+	err := decodeError(json.RawMessage(`{"name":"CalendarError","message":"no entry 7","graph":{
+		"root":{"type":"reference","value":0},
+		"nodes":[{"type":"error","name":"CalendarError","message":"no entry 7","code":"NotFound","data":{"type":"reference","value":1}},
+		         {"type":"object","values":[["NotFound",{"type":"bigint","value":"18446744073709551615"}],["at",{"type":"data","value":[1,"x"]}]]}]}}`))
+	var remote *RemoteError
+	if !errors.As(err, &remote) || remote.Name != "CalendarError" || remote.Code != "NotFound" {
+		t.Fatalf("decoded as %#v", err)
+	}
+	data := remote.Data.(map[string]any)
+	if data["NotFound"].(*big.Int).String() != "18446744073709551615" || fmt.Sprint(data["at"]) != "[1 x]" {
+		t.Fatalf("data: %#v", remote.Data)
+	}
+	plain := decodeError(json.RawMessage(`{"name":"Error","message":"plain"}`)).(*RemoteError)
+	if plain.Code != "" || plain.Data != nil {
+		t.Fatalf("a plain error: %#v", plain)
+	}
+}
+
+type stormy struct{}
+
+func (stormy) Error() string { return "too windy" }
+func (stormy) Code() string  { return "Stormy" }
+func (stormy) Data() any     { return map[string]any{"wind": uint64(1) << 60, "gusts": []int{1, 2}} }
+
+// An error with Code() and Data() crosses with them; data that cannot be
+// read (or sent) leaves the code; numbers and tagged values decode.
+func TestAnErrorWithACodeAndDataCrossesWithThem(t *testing.T) {
+	wire, err := json.Marshal(encodeError(stormy{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := decodeError(wire).(*RemoteError)
+	data := remote.Data.(map[string]any)
+	if remote.Code != "Stormy" || data["wind"].(*big.Int).String() != "1152921504606846976" || fmt.Sprint(data["gusts"]) != "[1 2]" {
+		t.Fatalf("decoded as %#v", remote)
+	}
+	withData := func(data string) *RemoteError {
+		return decodeError(json.RawMessage(`{"name":"E","message":"m","graph":{"root":{"type":"reference","value":0},
+			"nodes":[{"type":"error","name":"E","message":"m","code":"C","data":` + data + `}]}}`)).(*RemoteError)
+	}
+	if broken := withData(`{"type":"nonsense"}`); broken.Code != "C" || broken.Data != nil {
+		t.Fatalf("broken data: %#v", broken)
+	}
+	if inf := withData(`{"type":"number","value":"Infinity"}`); !math.IsInf(inf.Data.(float64), 1) {
+		t.Fatalf("number: %#v", inf.Data)
+	}
+	if raw := withData(`{"type":"bytes","value":"aGk="}`); fmt.Sprint(raw.Data) != "[104 105]" {
+		t.Fatalf("bytes: %#v", raw.Data)
 	}
 }
 

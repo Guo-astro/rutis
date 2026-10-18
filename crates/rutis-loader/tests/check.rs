@@ -96,7 +96,10 @@ async fn loader(applied: &Arc<AtomicUsize>) -> (Ctx, Loader) {
         "remote",
         Arc::new(|_: &Value| Err("it runs on gpu, which is not connected".to_owned())),
     );
+    // Only the names registered are shared; the others a foreign row
+    // injects are its runtime's.
     let mut catalog = ServiceCatalog::new();
+    catalog.share_registered_only();
     catalog.register::<String>("clock");
     let foreign = Foreign(Arc::new(
         Resolved::new(Arc::new(CountedFactory(applied.clone())))
