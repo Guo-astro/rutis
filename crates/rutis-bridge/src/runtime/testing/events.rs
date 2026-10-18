@@ -1305,9 +1305,14 @@ async fn dispatch(emitter: Arc<dyn HostDispatch>, spec: Spec, case: Case) -> Out
             Some(methods) if methods.get("dispatchSync").is_some() => "dispatchSync",
             _ => "dispatch_sync",
         };
-        tokio::task::spawn_blocking(move || emitter.invoke(method, args))
+        let reply = tokio::task::spawn_blocking(move || emitter.invoke(method, args))
             .await
-            .map_err(|error| format!("dispatch_sync panicked: {error}"))
+            .map_err(|error| format!("dispatch_sync panicked: {error}"))?;
+        // Go's is announced, so async on the wire: its answer is a future.
+        Ok(match reply {
+            Ok(value) => settle(value).await,
+            Err(error) => Err(error),
+        })
     } else {
         Ok(match emitter.invoke("dispatch", args) {
             Ok(value) => settle(value).await,

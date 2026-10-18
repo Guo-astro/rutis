@@ -1,20 +1,19 @@
 // The Rust participant of the events conformance suite: the plugin
 // `conformance-events` of the host (location `host`) and of the second
-// node (`node`), the host's test hooks, and the node. Written against the
-// events-v2 Rust API (docs/design-events-protocol-2026-10-18.md §12.1:
+// node (`node`), the host's test hooks, and the node. Written with the
+// Rust events API (docs/design-events-protocol-2026-10-18.md §12.1:
 // `ctx.events()`, `Call`, `SyncCall`, `EventOptions`, `rutis_bridge::events::Args`)
-// and the host's test hooks; built with `--cfg rutis_events_v2` until both
-// are on the branch. The hooks it assumes of rutis-bridge (events/host):
-// `rutis_bridge::events::testing::Tap` on the host's root context, with
-// `dispatches() -> u64` (events.dispatch received), `hold(n)` (keep the next
-// n dispatches until all arrived) and `reported() -> Vec<String>` (the §5.6
-// lines of the host's error sink).
+// and the host bus's test hooks, `rutis_bridge::events::testing::Tap`:
+// `dispatches()` (events.dispatch received), `hold(n)` (keep the next n
+// dispatches until all arrived) and `reported()` (the §5.6 lines of the
+// host's error sink).
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use rutis::events::{Call, EventOptions, SyncCall};
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Event, EventKey, Plugin, PluginFactory};
+use rutis_bridge::events::testing::Tap;
 use rutis_bridge::events::{ArgValue, Args};
 use rutis_bridge::runtime::testing::events::{EventsLog, Row};
 use rutis_bridge::session::{host_key, settle, Error, HostDispatch, Reply, Value};
@@ -144,7 +143,9 @@ fn perform<'a>(
             std::future::pending::<()>().await;
         }
         if does.get("calls").is_some() {
-            let function = args.0.first().cloned().ok_or_else(|| thrown(&json!({"name": "TypeError"})))?;
+            let Some(Value::Reference(function)) = args.0.first().cloned() else {
+                return Err(thrown(&json!({"name": "TypeError", "message": "not a function"})));
+            };
             let result = function
                 .call(Value::List(vec![json!("x").into()]))
                 .map_err(CordisError::from)?;
@@ -193,69 +194,119 @@ fn first_json(args: &Args) -> Json {
     args.0.first().cloned().and_then(|v| v.json().ok()).unwrap_or(Json::Null)
 }
 
+/// Logs the line of a call (`log`).
+#[derive(Clone)]
+struct Record {
+    log: Arc<EventsLog>,
+    config: Arc<Json>,
+}
+
+impl Record {
+    fn add(&self, first: &Json) {
+        if let Some(entry) = line(&self.config, first) {
+            self.log.add(entry);
+        }
+    }
+}
+
+/// A typed listener (`typed`): echoes its event, or returns `does.returns`
+/// for the unit event.
+struct TypedListener(Record);
+
+impl rutis::Listener<City> for TypedListener {
+    fn call<'a>(
+        &'a self,
+        _: &'a Ctx,
+        event: &'a City,
+        _: Call<'a, City>,
+    ) -> BoxFuture<'a, Result<Option<City>, CordisError>> {
+        self.0.add(&json!(event.city));
+        Box::pin(std::future::ready(Ok(Some(event.clone()))))
+    }
+}
+
+impl rutis::Listener<Pair> for TypedListener {
+    fn call<'a>(
+        &'a self,
+        _: &'a Ctx,
+        event: &'a Pair,
+        _: Call<'a, Pair>,
+    ) -> BoxFuture<'a, Result<Option<Pair>, CordisError>> {
+        self.0.add(&json!(event.0));
+        Box::pin(std::future::ready(Ok(Some(event.clone()))))
+    }
+}
+
+impl rutis::Listener<Unit> for TypedListener {
+    fn call<'a>(
+        &'a self,
+        _: &'a Ctx,
+        _: &'a Unit,
+        _: Call<'a, String>,
+    ) -> BoxFuture<'a, Result<Option<String>, CordisError>> {
+        self.0.add(&Json::Null);
+        let returns = self.0.config["does"]["returns"].as_str().map(str::to_owned);
+        Box::pin(std::future::ready(Ok(returns)))
+    }
+}
+
+/// An async listener of the case's name.
+struct AsyncListener(Record);
+
+impl rutis::Listener<Args> for AsyncListener {
+    fn call<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+        args: &'a Args,
+        call: Call<'a, ArgValue>,
+    ) -> BoxFuture<'a, Result<Option<ArgValue>, CordisError>> {
+        self.0.add(&first_json(args));
+        let Record { log, config } = &self.0;
+        perform(ctx, log, config, &config["does"], args, call)
+    }
+}
+
+/// A synchronous listener (`kind: sync`).
+struct SyncListener(Record);
+
+impl rutis::SyncListener<Args> for SyncListener {
+    fn call(
+        &self,
+        _: &Ctx,
+        args: &Args,
+        call: SyncCall<'_, ArgValue>,
+    ) -> Result<Option<ArgValue>, CordisError> {
+        self.0.add(&first_json(args));
+        perform_sync(&self.0.log, &self.0.config["does"], args, call)
+    }
+}
+
 /// Register the listener of `config` on `ctx`'s bus.
 fn listen(ctx: &Ctx, log: &Arc<EventsLog>, config: &Json) -> Result<(), CordisError> {
     let options = EventOptions::default()
         .prepend(config["options"]["prepend"].as_bool().unwrap_or(false))
         .global(config["options"]["global"].as_bool().unwrap_or(false));
     let name = config["name"].as_str().unwrap_or_default().to_owned();
-    let record = {
-        let (log, config) = (log.clone(), config.clone());
-        move |first: &Json| {
-            if let Some(entry) = line(&config, first) {
-                log.add(entry);
-            }
-        }
+    let record = Record {
+        log: log.clone(),
+        config: Arc::new(config.clone()),
     };
+    let bus = ctx.events();
     match config["typed"].as_str() {
-        Some(typed) => {
-            // A typed listener echoes its event (`does: echo`) or returns
-            // what `does` says, as its type.
-            let returns = config["does"]["returns"].clone();
-            match typed {
-                "struct" => ctx.events().on(ctx, &EventKey::<City>::of(), move |_: &Ctx, e: &City, _| {
-                    record(&json!(e.city));
-                    let e = e.clone();
-                    Box::pin(async move { Ok(Some(e)) })
-                })?,
-                "tuple" => ctx.events().on(ctx, &EventKey::<Pair>::of(), move |_: &Ctx, e: &Pair, _| {
-                    record(&json!(e.0));
-                    let e = e.clone();
-                    Box::pin(async move { Ok(Some(e)) })
-                })?,
-                _ => ctx.events().on(ctx, &EventKey::<Unit>::of(), move |_: &Ctx, _: &Unit, _| {
-                    record(&Json::Null);
-                    let returns = returns.as_str().map(str::to_owned);
-                    Box::pin(async move { Ok(returns) })
-                })?,
-            };
+        Some("struct") => {
+            bus.on_opt(ctx, &EventKey::<City>::of(), TypedListener(record), options)?;
+        }
+        Some("tuple") => {
+            bus.on_opt(ctx, &EventKey::<Pair>::of(), TypedListener(record), options)?;
+        }
+        Some(_) => {
+            bus.on_opt(ctx, &EventKey::<Unit>::of(), TypedListener(record), options)?;
         }
         None if config["kind"] == "sync" => {
-            let (log, does) = (log.clone(), config["does"].clone());
-            ctx.events().on_sync_opt(
-                ctx,
-                &EventKey::<Args>::dynamic(name),
-                move |_: &Ctx, args: &Args, call: SyncCall<'_, ArgValue>| {
-                    record(&first_json(args));
-                    perform_sync(&log, &does, args, call)
-                },
-                options,
-            )?;
+            bus.on_sync_opt(ctx, &EventKey::<Args>::dynamic(name), SyncListener(record), options)?;
         }
         None => {
-            let (log, config) = (log.clone(), Arc::new(config.clone()));
-            ctx.events().on_opt(
-                ctx,
-                &EventKey::<Args>::dynamic(name),
-                move |ctx: &Ctx, args: &Args, call: Call<'_, ArgValue>| {
-                    record(&first_json(args));
-                    let (log, config) = (log.clone(), config.clone());
-                    Box::pin(async move {
-                        perform(ctx, &log, &config, &config["does"], args, call).await
-                    })
-                },
-                options,
-            )?;
+            bus.on_opt(ctx, &EventKey::<Args>::dynamic(name), AsyncListener(record), options)?;
         }
     }
     Ok(())
@@ -296,16 +347,9 @@ async fn dispatch(ctx: &Ctx, log: &Arc<EventsLog>, spec: &Json) -> Reply {
         ("serial", None) => bus.serial(ctx, &key, Arc::new(args)).await.map(value),
         ("serial", Some(f)) => f.serial(ctx, &key, Arc::new(args)).await.map(value),
         ("waterfall", _) => {
-            let log = log.clone();
-            let terminal = move |_: &Ctx, _: &Args| -> BoxFuture<'_, Result<Option<ArgValue>, CordisError>> {
-                let terminal = terminal.clone();
-                let log = log.clone();
-                Box::pin(async move {
-                    Ok(terminal.map(|t| {
-                        log.add("terminal");
-                        ArgValue(json!(t).into())
-                    }))
-                })
+            let terminal = TerminalOf {
+                log: log.clone(),
+                terminal,
             };
             bus.waterfall(ctx, &key, &args, terminal).await.map(value)
         }
@@ -321,11 +365,27 @@ async fn dispatch(ctx: &Ctx, log: &Arc<EventsLog>, spec: &Json) -> Reply {
             .map(value),
         (mode, _) => return Err(Error::Value(format!("unknown mode {mode}"))),
     };
-    result.map_err(|e| Error::Remote {
-        name: e.name().to_owned(),
-        message: e.to_string(),
-        graph: None,
-    })
+    result.map_err(|e| rutis_bridge::events::to_session_error(&e))
+}
+
+/// The end of a waterfall (`terminal`), logged when reached.
+struct TerminalOf {
+    log: Arc<EventsLog>,
+    terminal: Option<String>,
+}
+
+impl rutis::events::Terminal<Args> for TerminalOf {
+    fn call<'a>(
+        &'a self,
+        _: &'a Ctx,
+        _: &'a Args,
+    ) -> BoxFuture<'a, Result<Option<ArgValue>, CordisError>> {
+        let result = self.terminal.as_ref().map(|t| {
+            self.log.add("terminal");
+            ArgValue(json!(t).into())
+        });
+        Box::pin(std::future::ready(Ok(result)))
+    }
 }
 
 /// The service `emitter-<label>`.
@@ -355,6 +415,8 @@ impl HostDispatch for Emitter {
 struct Participant {
     config: Json,
     log: Arc<EventsLog>,
+    /// The row its fiber is, on the node (the host's loader marks its rows).
+    row: Option<String>,
 }
 
 impl Plugin for Participant {
@@ -364,6 +426,9 @@ impl Plugin for Participant {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
         Box::pin(async move {
+            if let Some(row) = &self.row {
+                ctx.mark_row(row)?;
+            }
             if let Some(fails) = self.config.get("fails") {
                 return Err(thrown(fails));
             }
@@ -398,14 +463,14 @@ impl PluginFactory<Json> for Factory {
         "conformance-events"
     }
     fn build(&self, config: &Json) -> Result<Box<dyn Plugin>, CordisError> {
-        Ok(Box::new(Participant { config: config.clone(), log: self.0.clone() }))
+        Ok(Box::new(Participant { config: config.clone(), log: self.0.clone(), row: None }))
     }
 }
 
 // ── The host's hooks ────────────────────────────────────────────
 
-/// The host's test hooks of its bus (events/host).
-pub struct Hooks(rutis_bridge::events::testing::Tap);
+/// The host's test hooks of its bus.
+pub struct Hooks(Tap);
 
 impl Hooks {
     pub fn dispatches(&self) -> u64 {
@@ -420,10 +485,11 @@ impl Hooks {
     }
 }
 
-/// Register the Rust `conformance-events` with the host's builtins.
-pub fn register(builtins: &mut Builtins, log: Arc<EventsLog>) -> Hooks {
+/// Register the Rust `conformance-events` with the host's builtins; `tap`
+/// is the host bus's.
+pub fn register(builtins: &mut Builtins, log: Arc<EventsLog>, tap: Tap) -> Hooks {
     builtins.register::<Json, _>("conformance-events", Factory(log));
-    Hooks(rutis_bridge::events::testing::Tap::new())
+    Hooks(tap)
 }
 
 // ── The second node ─────────────────────────────────────────────
@@ -485,8 +551,11 @@ impl Node {
 
     pub async fn load(&self, row: &Row) -> Result<(), String> {
         let ctx = self.ctx()?;
-        ctx.mark_row(&row.label).map_err(|e| e.to_string())?;
-        let view = ctx.plugin(Participant { config: row.config.clone(), log: self.log.clone() });
+        let view = ctx.plugin(Participant {
+            config: row.config.clone(),
+            log: self.log.clone(),
+            row: Some(row.label.clone()),
+        });
         (&view).await.map_err(|e| e.to_string())?;
         self.rows.lock().unwrap().insert(row.label.clone(), view);
         Ok(())

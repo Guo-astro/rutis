@@ -3,10 +3,6 @@
 //! `rutis-bridge/peer` rows over the memory transport. The cases of the
 //! expectation file with a `node` participant run in
 //! `events_conformance.rs`; these are the rules of the link itself.
-//!
-//! The configuration checks run now; the ones that dispatch need the
-//! events-v2 Rust API and are built with `--cfg rutis_events_v2` until it is
-//! on the branch.
 #![cfg(feature = "peer")]
 
 mod common;
@@ -120,7 +116,6 @@ async fn event_prefixes_are_accepted_in_export_and_import() {
     main.shutdown().await.unwrap();
 }
 
-#[cfg(rutis_events_v2)]
 mod dispatch {
     //! The link carries the five modes; an imported entry is never passed
     //! on (no multi-hop); a node announces only what the other imports.
@@ -141,15 +136,27 @@ mod dispatch {
         json!({ "id": format!("link-{peer}"), "name": "rutis-bridge/peer", "config": config })
     }
 
+    struct Answer(&'static str);
+
+    impl rutis::Listener<Args> for Answer {
+        fn call<'a>(
+            &'a self,
+            _: &'a Ctx,
+            _: &'a Args,
+            _: Call<'a, ArgValue>,
+        ) -> rutis::BoxFuture<'a, Result<Option<ArgValue>, rutis::CordisError>> {
+            let answer = ArgValue(RpcValue::Data(json!(self.0)));
+            Box::pin(std::future::ready(Ok(Some(answer))))
+        }
+    }
+
     /// Listen to `name` on `ctx`, answering `answer`.
     fn answer(ctx: &Ctx, name: &str, answer: &'static str) {
         ctx.events()
             .on(
                 ctx,
                 &EventKey::<Args>::dynamic(name.to_owned()),
-                move |_: &Ctx, _: &Args, _: Call<'_, ArgValue>| {
-                    Box::pin(async move { Ok(Some(ArgValue(RpcValue::Data(json!(answer))))) })
-                },
+                Answer(answer),
             )
             .unwrap();
     }
