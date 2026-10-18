@@ -210,7 +210,7 @@ class Handshake(Session):
             self.assertEqual(
                 error["message"],
                 f"the mount argument {field} was removed in rutis 0.13: listeners register themselves; "
-                "emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)",
+                "emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)",
             )
 
 

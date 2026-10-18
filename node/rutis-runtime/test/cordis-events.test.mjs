@@ -266,7 +266,7 @@ test('events.dispatch dispatches on the bus, here or through the host', async ()
 test('the Events plugin refuses the options removed in rutis 0.13', async () => {
   const { Events } = await import('../src/bridge/features.mjs')
   assert.throws(() => Events.apply({}, { peer: 'main', out: ['tock'] }), {
-    message: 'the Events options out / in were removed in rutis 0.13: use export / import (docs/migration-0.13.md)',
+    message: 'the Events options out / in were removed in rutis 0.13: use export / import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)',
   })
   assert.throws(() => Events.apply({}, { peer: 'main', in: ['tick'] }), { message: /the Events options out \/ in were removed/ })
   assert.throws(() => Events.apply({}, { peer: 'main', events: { out: ['tock'] } }), { message: /the peer config field events was removed/ })

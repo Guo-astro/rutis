@@ -53,7 +53,7 @@ export function refuseReserved(name) {
 }
 
 // The config fields a 0.13 runtime refuses (§2.4).
-export const REMOVED_FIELD = field => `the config field ${field} was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)`
+export const REMOVED_FIELD = field => `the config field ${field} was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`
 export function refuseRemoved(config) {
   for (const field of ['events', 'emits']) {
     if (config !== null && typeof config === 'object' && Object.hasOwn(config, field)) throw new Error(REMOVED_FIELD(field))

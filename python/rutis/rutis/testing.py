@@ -586,7 +586,7 @@ async def load(
     if emits is not None:
         raise PluginTestError(
             "the load option emits was removed in rutis 0.13: listeners register themselves; "
-            "emit with t.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)"
+            "emit with t.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)"
         )
     name = plugin.__name__ if isinstance(plugin, ModuleType) else None
     if isinstance(plugin, ModuleType):

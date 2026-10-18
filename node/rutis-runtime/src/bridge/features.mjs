@@ -234,8 +234,8 @@ function selected(name, prefix, items) {
   return out.filter(([n, p]) => p || !prefixes.some(prefix => n.startsWith(prefix)))
 }
 
-const REMOVED_EVENTS = 'the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (docs/migration-0.13.md)'
-const REMOVED_OUT_IN = 'the Events options out / in were removed in rutis 0.13: use export / import (docs/migration-0.13.md)'
+const REMOVED_EVENTS = 'the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)'
+const REMOVED_OUT_IN = 'the Events options out / in were removed in rutis 0.13: use export / import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)'
 
 // events: { peer, export: [item], import: [item] } (§9)
 // This application's emissions of what `export` names reach the peer's
