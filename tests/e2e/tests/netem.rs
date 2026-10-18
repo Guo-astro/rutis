@@ -126,6 +126,7 @@ class Infer:
 
 async def ring(n):
     if n == "gated":
+        print("infer: ringing gated", flush=True)
         while not os.path.exists(GATE[0]):
             await asyncio.sleep(0.05)
     print(f"infer: rang {n}", flush=True)
@@ -479,10 +480,14 @@ fn node(s: &Scenario, net: &Net, token: &str) -> Host {
 }
 
 /// Start host A in its container, dialing B with `token` and trusting the
-/// scenario's CA; returns once `infer` runs on B and the probe started.
-fn main_host(s: &Scenario, net: &Net, token: &str) -> (Host, Probe) {
+/// scenario's CA; returns once `infer` runs on B and the probes started:
+/// `probe` (injecting `infer` and `bell`) and `ringer` (only `bell`, so it
+/// keeps running while `infer` is gone). A probe makes one call at a time,
+/// so a call in flight through the outage needs a probe of its own.
+fn main_host(s: &Scenario, net: &Net, token: &str) -> (Host, Probe, Probe) {
     s.link_node_sdk();
     let probe = s.probe("probe", Lang::Node, &["infer", "bell"]);
+    let ringer = s.probe("ringer", Lang::Node, &["bell"]);
     s.write("bell.mjs", BELL);
     s.write_json(
         "rutis.json",
@@ -509,6 +514,7 @@ fn main_host(s: &Scenario, net: &Net, token: &str) -> (Host, Probe) {
                 },
                 { "id": "bell", "name": "./bell.mjs" },
                 probe.row(),
+                ringer.row(),
             ],
         }),
     );
@@ -525,7 +531,8 @@ fn main_host(s: &Scenario, net: &Net, token: &str) -> (Host, Probe) {
     a.expect("gpu: link connected");
     a.expect("infer: running");
     probe.started(&mut a);
-    (a, probe)
+    ringer.started(&mut a);
+    (a, probe, ringer)
 }
 
 /// The step of the backoff a wait comes from: 0.5 s doubling up to 30 s,
@@ -588,7 +595,7 @@ fn two_containers_over_tls_through_delay_loss_and_an_outage() {
 
     // 1. Baseline.
     let mut b = node(&s, &net, &token);
-    let (mut a, probe) = main_host(&s, &net, &token);
+    let (mut a, probe, ringer) = main_host(&s, &net, &token);
     assert_eq!(
         probe.call(&mut a, "infer", "run", json!(["first"])),
         Ok(json!("inferred first"))
@@ -652,8 +659,10 @@ fn two_containers_over_tls_through_delay_loss_and_an_outage() {
     let outage = a.lines().len();
     let gated = probe.send("infer", "run", json!(["gated"]));
     b.expect("infer: executing gated");
-    // An event to B's gated listener, in flight through the outage.
-    let rung = probe.send("bell", "all", json!(["gated"]));
+    // An event to B's gated listener, in flight through the outage (from
+    // the other probe: `probe` waits for its call).
+    let rung = ringer.send("bell", "all", json!(["gated"]));
+    b.expect("infer: ringing gated");
     net.netem(&net.a, Some("loss 100%"));
     net.netem(&net.b, Some("loss 100%"));
     let down = a.wait_for("A reporting the link down", |line| {
@@ -671,12 +680,13 @@ fn two_containers_over_tls_through_delay_loss_and_an_outage() {
     eprintln!("S5 netem: the call cut off failed with: {error}");
     // §7.2: the parallel to B's listener fails once, as a transport error
     // in its AggregateError; B's listener is off A's bus meanwhile.
-    let error = probe
+    let error = ringer
         .answer(&mut a, rung)
         .expect_err("a parallel to a listener cut off by the outage fails");
-    assert!(error.contains("AggregateError"), "{error}");
+    // The AggregateError's message (a probe reports messages only).
+    assert_eq!(error, "1 listeners of t/ring failed");
     assert_eq!(
-        probe.call(&mut a, "bell", "ring", json!(["meanwhile"])),
+        ringer.call(&mut a, "bell", "ring", json!(["meanwhile"])),
         Ok(json!(null)),
         "B's listener is withdrawn while the link is down"
     );
