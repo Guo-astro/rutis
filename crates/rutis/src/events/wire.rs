@@ -289,8 +289,9 @@ impl Value {
             .map_err(|_| wrong_type(codec.type_name))
     }
 
-    /// "No result" (protocol spec §1): `false`, or JSON `null` / `false`.
-    /// A `None` never becomes a `Value`.
+    /// "No result" (protocol spec §1): `false`, or JSON `null` / `false`;
+    /// a value of another type when it serializes to one of them (a unit,
+    /// a session value holding `null`). A `None` never becomes a `Value`.
     pub fn is_no_result(&self) -> bool {
         if let Some(value) = self.value.downcast_ref::<bool>() {
             return !*value;
@@ -298,7 +299,9 @@ impl Value {
         if let Some(json) = self.value.downcast_ref::<Json>() {
             return matches!(json, Json::Null | Json::Bool(false));
         }
-        false
+        // A value that does not serialize (a reference, say) is a result.
+        self.to_json()
+            .is_ok_and(|json| matches!(json, Json::Null | Json::Bool(false)))
     }
 }
 
