@@ -47,7 +47,7 @@ A value type that is not serde (a handle, a channel) does not belong in an event
 
 **Scopes replace instance channels.** The loader marks each group instance with `Ctx::mark_scope(group)`; `Ctx::scope()` is the chain from the root. A listener hears events emitted in its scope and below it. To pick listeners further, `ctx.events().filter(|info| ..)` gives the same emitting methods filtered by each listener's `ListenerInfo`.
 
-**Diagnostics.** `EventSubscription` drops `key` (`TypeKey`), `prefixes`, `selected` and `invoked`, and has `name` (the event name, or the prefix of a prefix entry), `prefix`, `remote` (a listener elsewhere), `global` and `calls` (calls started so far); `owner` is an `Option<PluginId>` (`None` once the fiber that registered it is gone). `ListenerKind` has only `Sync`, `Async` and `Any` (`Any` only for listeners elsewhere): `AsyncWaterfall` and `SyncWaterfall` are gone, so code matching on them changes. `EventBacklog` and `DispatchAttempt` carry the event `name` instead of `key` (a `TypeKey`); `DispatchMode` is `rutis::Mode`; the `key` of `CordisError::ReentrantEvent` is now `name`.
+**Diagnostics.** `EventSubscription` drops `key` (`TypeKey`), `prefixes`, `selected` and `invoked`, and has `name` (the event name, or the prefix of a prefix entry), `prefix`, `remote` (a listener elsewhere), `global` and `calls` (calls started so far); `owner` is an `Option<PluginId>` (`None` once the fiber that registered it is gone). `ListenerKind` has only `Sync`, `Async` and `Any` (`Any` only for listeners elsewhere): `AsyncWaterfall` and `SyncWaterfall` are gone, so code matching on them changes. `EventBacklog` and `DispatchAttempt` carry the event `name` instead of `key` (a `TypeKey`); `DispatchMode` is `rutis::Mode`; `CordisError::ReentrantEvent` is removed: a synchronous dispatch of a name may re-enter it (as in Cordis), and only a real wait cycle fails, with `SyncWaitCycle`.
 
 **No per-type opt-in.** Every event type crosses processes; there is no `WIRE` switch or the like (it appeared only in a draft of the design and was never released).
 
@@ -107,7 +107,7 @@ Declaring host events at load is gone: listeners register themselves and a test 
 | Python: `load(plugin, emits=["tick"])`, `await t.emit("tick", 1)` | `load(plugin)`; `t.emit("tick", 1)` returns at once, `await t.parallel("tick", 1)` waits. A shared bus: `bus = Bus(); load(a, bus=bus)`, `load(b, bus=bus, scope="t1")` |
 | Go: `rutistest.Load(t, plugin, config, services, "tick")`, `loaded.Emit(ctx, "tick", 1)` waiting for listeners | `rutistest.Load(t, plugin, config, services)` (then options such as `rutistest.InScope`, `rutistest.Row`); `loaded.Emit` returns at once, `loaded.Parallel` waits; `loaded.On` listens as the host does |
 
-Still passing `emits`: Node / Bun say `the config field emits was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)`, Python says `the load option emits was removed in rutis 0.13: …`, Go does not compile (the parameter type changed). Failures of `emit` listeners are no longer thrown: find them in `t.reported` (Python `t.reported`, Go `loaded.Reported()`). Python's `t.emit` now returns `None`, so an old `await t.emit(...)` fails with `TypeError`: write `await t.parallel(...)`.
+Still passing `emits`: Node / Bun say `the config field emits was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`, Python says `the load option emits was removed in rutis 0.13: …`, Go does not compile (the parameter type changed). Failures of `emit` listeners are no longer thrown: find them in `t.reported` (Python `t.reported`, Go `loaded.Reported()`). Python's `t.emit` now returns `None`, so an old `await t.emit(...)` fails with `TypeError`: write `await t.parallel(...)`.
 
 ## Rust applications embedding rutis (`rutis-bridge`, `rutis-loader`)
 
@@ -170,7 +170,7 @@ events = ["credentials/record-updated"]   # remove
 emits = ["file-changed"]                  # remove
 ```
 
-Still there, the build fails: `mount credentials: the config field events was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)`. `.event(name)` and `.emit(name)` of `rutis_bridge::cordis::build` are removed as well.
+Still there, the build fails: `mount credentials: the config field events was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`. `.event(name)` and `.emit(name)` of `rutis_bridge::cordis::build` are removed as well.
 
 On the Rust side define the event type yourself (named by the Cordis event's name), or receive it by name with `Args`:
 
@@ -203,7 +203,7 @@ ctx.plugin(Events, { peer: 'main', out: ['tock'], in: ['tick'] })
 ctx.plugin(Events, { peer: 'main', export: ['tock'], import: ['tick'] })
 ```
 
-Still writing `out` / `in` gives `the Events options out / in were removed in rutis 0.13: use export / import (docs/migration-0.13.md)`; writing `events` gives the node row's message (below).
+Still writing `out` / `in` gives `the Events options out / in were removed in rutis 0.13: use export / import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`; writing `events` gives the node row's message (below).
 
 ## Node links
 
@@ -221,7 +221,7 @@ Now:
 { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["clock", "tick"], "import": ["tock"] } }
 ```
 
-Still there, it gives `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (docs/migration-0.13.md)`.
+Still there, it gives `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`.
 
 - An item is a name, or a prefix ending in `*` (`session/*`; `*` alone is every name); prefixes apply to events only. A name in `export` exports that service and also lets this node's events of that name reach the far end, so a name that is both a service and an event shares both.
 - Events between nodes are now the far listeners as entries on this node's bus: the five modes, scopes, filters and every value type as on one machine (before: always `parallel`, JSON only, silently dropped on a disconnect). When the link goes away they leave the bus, and calls in progress fail once. Events travel one hop: what a node imports is not shared further.

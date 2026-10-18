@@ -47,7 +47,7 @@ impl Event for Joined { const NAME: &'static str = "room/joined"; type Value = S
 
 **作用域取代实例通道。** 加载器对每个组实例调用 `Ctx::mark_scope(group)`；`Ctx::scope()` 是从根起的链。监听器收到自己作用域及其下各作用域发出的事件。要进一步挑选监听器，`ctx.events().filter(|info| ..)` 给出按每个监听器的 `ListenerInfo` 过滤的同样的发出方法。
 
-**诊断。** `EventSubscription` 删除 `key`（`TypeKey`）、`prefixes`、`selected`、`invoked`，改为 `name`（事件名，前缀条目为前缀）、`prefix`、`remote`（别处的监听器）、`global`、`calls`（已开始的调用数）；`owner` 改为 `Option<PluginId>`（登记它的 fiber 已不在时为 `None`）。`ListenerKind` 只有 `Sync`、`Async`、`Any`（`Any` 只来自别处的监听器）：`AsyncWaterfall`、`SyncWaterfall` 删除，按值匹配的代码要改。`EventBacklog` 与 `DispatchAttempt` 带事件的 `name`，不再带 `key`（`TypeKey`）；`DispatchMode` 改为 `rutis::Mode`；`CordisError::ReentrantEvent` 的 `key` 改为 `name`。
+**诊断。** `EventSubscription` 删除 `key`（`TypeKey`）、`prefixes`、`selected`、`invoked`，改为 `name`（事件名，前缀条目为前缀）、`prefix`、`remote`（别处的监听器）、`global`、`calls`（已开始的调用数）；`owner` 改为 `Option<PluginId>`（登记它的 fiber 已不在时为 `None`）。`ListenerKind` 只有 `Sync`、`Async`、`Any`（`Any` 只来自别处的监听器）：`AsyncWaterfall`、`SyncWaterfall` 删除，按值匹配的代码要改。`EventBacklog` 与 `DispatchAttempt` 带事件的 `name`，不再带 `key`（`TypeKey`）；`DispatchMode` 改为 `rutis::Mode`；`CordisError::ReentrantEvent` 删除：同名的同步分发可以重入（与 Cordis 相同），只有真正的等待环以 `SyncWaitCycle` 失败。
 
 **没有逐个类型的选择。** 每个事件类型都能跨进程，不需要也没有 `WIRE` 之类的开关（只在方案草稿里出现过，没有发布）。
 
@@ -107,7 +107,7 @@ err = ctx.Parallel(callerCtx, "session/created", id)  // 等全部；*rutis.Aggr
 | Python：`load(plugin, emits=["tick"])`，`await t.emit("tick", 1)` | `load(plugin)`；`t.emit("tick", 1)` 立即返回，`await t.parallel("tick", 1)` 等待。共享总线：`bus = Bus(); load(a, bus=bus)`、`load(b, bus=bus, scope="t1")` |
 | Go：`rutistest.Load(t, plugin, config, services, "tick")`，`loaded.Emit(ctx, "tick", 1)` 等待监听器 | `rutistest.Load(t, plugin, config, services)`（之后是 `rutistest.InScope`、`rutistest.Row` 等选项）；`loaded.Emit` 立即返回，`loaded.Parallel` 等待；`loaded.On` 像宿主一样监听 |
 
-还写着 `emits` 时：Node / Bun 报 `the config field emits was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)`，Python 报 `the load option emits was removed in rutis 0.13: …`，Go 编译不过（参数类型变了）。`emit` 监听器的失败不再抛出，在 `t.reported`（Python `t.reported`，Go `loaded.Reported()`）里查看。Python 的 `t.emit` 现在返回 `None`，原来的 `await t.emit(...)` 以 `TypeError` 失败：改为 `await t.parallel(...)`。
+还写着 `emits` 时：Node / Bun 报 `the config field emits was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`，Python 报 `the load option emits was removed in rutis 0.13: …`，Go 编译不过（参数类型变了）。`emit` 监听器的失败不再抛出，在 `t.reported`（Python `t.reported`，Go `loaded.Reported()`）里查看。Python 的 `t.emit` 现在返回 `None`，原来的 `await t.emit(...)` 以 `TypeError` 失败：改为 `await t.parallel(...)`。
 
 ## 嵌入 rutis 的 Rust 应用（`rutis-bridge`、`rutis-loader`）
 
@@ -170,7 +170,7 @@ events = ["credentials/record-updated"]   # 删除
 emits = ["file-changed"]                  # 删除
 ```
 
-还写着时构建失败：`mount credentials: the config field events was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)`。`rutis_bridge::cordis::build` 的 `.event(name)`、`.emit(name)` 同样删除。
+还写着时构建失败：`mount credentials: the config field events was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`。`rutis_bridge::cordis::build` 的 `.event(name)`、`.emit(name)` 同样删除。
 
 Rust 一侧自己定义事件类型（名字就是 Cordis 的事件名），或用 `Args` 按名字收：
 
@@ -203,7 +203,7 @@ ctx.plugin(Events, { peer: 'main', out: ['tock'], in: ['tick'] })
 ctx.plugin(Events, { peer: 'main', export: ['tock'], import: ['tick'] })
 ```
 
-还写着 `out` / `in` 时报 `the Events options out / in were removed in rutis 0.13: use export / import (docs/migration-0.13.md)`；写着 `events` 时报节点行的那条信息（见下）。
+还写着 `out` / `in` 时报 `the Events options out / in were removed in rutis 0.13: use export / import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`；写着 `events` 时报节点行的那条信息（见下）。
 
 ## 节点连接
 
@@ -221,7 +221,7 @@ ctx.plugin(Events, { peer: 'main', export: ['tock'], import: ['tick'] })
 { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["clock", "tick"], "import": ["tock"] } }
 ```
 
-还写着时报 `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (docs/migration-0.13.md)`。
+还写着时报 `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`。
 
 - 一项是名字，或以 `*` 结尾的前缀（`session/*`；单独的 `*` 是所有名字）；前缀只用于事件。`export` 里的名字既导出这个服务，也让本节点发出的这个事件到达对端，所以一个名字同时是服务和事件时两者一起共享。
 - 节点之间的事件现在是对端监听器在本节点总线上的条目：五种方式、作用域、过滤、所有值类型都与本机相同（以前一律当作 `parallel`、只能 JSON、断线时静默丢弃）。连接断开时它们离开总线，进行中的调用失败一次。事件只走一跳：引进来的不再往外共享。

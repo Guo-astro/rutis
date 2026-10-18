@@ -376,14 +376,60 @@ impl FiberInner {
         let _ = self.event_flights_tx.send(*count);
     }
 
+    /// Wait for the event calls counted on this fiber (listener calls,
+    /// observer calls) to finish, at most the shutdown deadline
+    /// (`RUTIS_SHUTDOWN_TIMEOUT`, protocol spec §7.1): past it, the
+    /// `listeners of … still running after <s>s; unloading anyway` error
+    /// goes to the error sink and the unload goes on without them.
     pub(crate) async fn wait_events(&self) {
         let mut rx = self.event_flights_tx.subscribe();
-        loop {
-            if *rx.borrow_and_update() == 0 {
-                return;
+        if *rx.borrow_and_update() == 0 {
+            return;
+        }
+        let settled = async move {
+            loop {
+                if *rx.borrow_and_update() == 0 {
+                    return;
+                }
+                if rx.changed().await.is_err() {
+                    return;
+                }
             }
-            if rx.changed().await.is_err() {
-                return;
+        };
+        let limit = shutdown_deadline();
+        // A thread keeps the time, not the runtime's timer: the kernel runs
+        // on whatever runtime it is given, timers enabled or not. It ends as
+        // soon as the calls finish (`done` dropped).
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        let (late, past) = tokio::sync::oneshot::channel::<()>();
+        let timer = std::thread::Builder::new()
+            .name("rutis-unload-deadline".into())
+            .spawn(move || {
+                if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                    finished.recv_timeout(limit)
+                {
+                    let _ = late.send(());
+                }
+            });
+        if timer.is_err() {
+            settled.await;
+            return;
+        }
+        tokio::select! {
+            () = settled => drop(done),
+            Ok(()) = past => {
+                let listeners = match self.ctx.row() {
+                    Some(row) => format!("row {row}"),
+                    None => format!("plugin {}", self.ctx.plugin_name()),
+                };
+                let error = CordisError::ListenersStillRunning {
+                    listeners,
+                    seconds: limit.as_secs_f64(),
+                };
+                let sink = self.ctx.error_sink();
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    sink(Arc::new(error))
+                }));
             }
         }
     }
@@ -797,6 +843,19 @@ impl FiberInner {
         }
         this.flush_status();
     }
+}
+
+/// How long an unload waits for the event calls still running on a fiber
+/// (protocol spec §7.1): `RUTIS_SHUTDOWN_TIMEOUT` in seconds (fractions
+/// allowed, above 0; rutis-host sets it from `--shutdown-timeout`), 10 s
+/// otherwise.
+pub(crate) fn shutdown_deadline() -> Duration {
+    std::env::var("RUTIS_SHUTDOWN_TIMEOUT")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
+        .unwrap_or(Duration::from_secs(10))
 }
 
 /// fiber 驱动任务:意图串行处理(Loading→Unloading→Loading 不丢唤醒;

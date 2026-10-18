@@ -480,7 +480,23 @@ impl SessionEvents {
                 registration.name
             )));
         }
-        let (scope, id) = self.row_of(registration.row.as_deref())?;
+        // Held until the entry is recorded: a row unloading meanwhile
+        // (`row_ended`, on another thread) waits, then withdraws it too,
+        // instead of missing an entry registered after its look.
+        let rows = self.rows.lock().unwrap();
+        let (scope, id) = match registration.row.as_deref() {
+            None => (self.mount_scope.clone(), None),
+            Some(key) => rows
+                .get(key)
+                .map(|(scope, id)| (scope.clone(), Some(id.clone())))
+                .ok_or_else(|| binding(format!("row {key} is not loaded in this runtime")))?,
+        };
+        #[cfg(test)]
+        tests::REGISTERING.with(|hook| {
+            if let Some(hook) = hook.borrow().as_ref() {
+                hook();
+            }
+        });
         let Some(ctx) = &self.ctx else {
             return Ok(Value::Undefined);
         };
@@ -514,6 +530,7 @@ impl SessionEvents {
             id: registration.id.clone(),
             kind: registration.kind,
             origin: self.origin,
+            owner: ctx.clone(),
         });
         let disposer = ctx
             .events()
@@ -526,6 +543,7 @@ impl SessionEvents {
                 disposer,
             },
         );
+        drop(rows);
         Ok(Value::Undefined)
     }
 
@@ -846,6 +864,11 @@ pub(crate) struct WireEntry {
     pub(crate) kind: ListenerKind,
     /// The origin of the session it came over.
     pub(crate) origin: u64,
+    /// The context that owns the entry (the runtime plugin's, the link's):
+    /// once it is cancelled (its unload began), a call still waiting for
+    /// its answer fails with the session's end instead of holding the
+    /// unload, which ends that session only after its wait (§7.1, §7.2).
+    pub(crate) owner: Ctx,
 }
 
 /// What an `events.call` carries.
@@ -980,11 +1003,22 @@ impl RemoteListener for WireEntry {
             Some(source) => connection.forward(source, send),
             None => send(),
         };
+        let unloading = self.owner.cancelled();
         let run = async move {
             // Until the listener's answer settles: given up before, the
             // call is cancelled where it runs (§5.7).
-            let value = started?.await.map_err(to_cordis)?;
-            Ok(result_from_wire(value, mode))
+            let answer = async move {
+                let value = started?.await.map_err(to_cordis)?;
+                Ok(result_from_wire(value, mode))
+            };
+            // The owner's unload waits for its calls before it ends the
+            // session: a call still unanswered then fails once, as when
+            // the session ends (§7.2), and is cancelled where it runs.
+            tokio::select! {
+                biased;
+                out = answer => out,
+                () = unloading => Err(to_cordis(Error::Transport("session closed".into()))),
+            }
         };
         match source {
             Some(source) => Box::pin(connection.forward_async(&source, run)),
@@ -1036,5 +1070,103 @@ struct Unpark(std::thread::Thread);
 impl std::task::Wake for Unpark {
     fn wake(self: Arc<Self>) {
         self.0.unpark();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    use super::*;
+
+    /// Answers every call with nothing.
+    struct Quiet;
+    impl crate::session::Dispatch for Quiet {
+        fn invoke(&self, _: &Connection, _: &str, _: &str, _: Value) -> Reply {
+            Ok(Value::Undefined)
+        }
+    }
+
+    thread_local! {
+        /// Runs in `events.on` between the row's check and the entry's
+        /// record.
+        pub(super) static REGISTERING: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+    }
+
+    /// A row that unloads while one of its listeners registers (on the
+    /// session's thread, the unload on another) takes that listener with
+    /// it: none stays on the bus after its row (events protocol §7.1).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_row_unloading_while_a_listener_registers_withdraws_it() {
+        let root = Ctx::root().unwrap();
+        let (near, far) = crate::transport::memory::pair();
+        // The far end says nothing: the session stays open, and what the
+        // hub tells it waits.
+        let near = Connection::open(near, Arc::new(Quiet)).unwrap();
+        let session =
+            SessionEvents::join(Some(&root), near.clone(), "rt".into(), Vec::new()).unwrap();
+        session.row_loading("chat", Vec::new(), "chat".into());
+        let ended = Arc::new(AtomicBool::new(false));
+        let unloading = {
+            let (session, ended) = (session.clone(), ended.clone());
+            move || {
+                let (session, done) = (session.clone(), ended.clone());
+                let unload = std::thread::spawn(move || {
+                    session.row_ended("chat");
+                    done.store(true, Ordering::SeqCst);
+                });
+                // Before the fix the unload ran to its end here, before the
+                // entry was recorded; now it waits for it.
+                for _ in 0..40 {
+                    if ended.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                std::mem::forget(unload);
+            }
+        };
+        let registered = tokio::task::spawn_blocking(move || {
+            REGISTERING.with(|hook| *hook.borrow_mut() = Some(Box::new(unloading)));
+            let out = session.on(Value::Data(json!({
+                "id": "1", "name": "t/x", "row": "chat", "plugin": "p", "kind": "any",
+            })));
+            REGISTERING.with(|hook| hook.borrow_mut().take());
+            (out, session)
+        });
+        let (out, session) = registered.await.unwrap();
+        out.unwrap();
+        for _ in 0..200 {
+            if ended.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(ended.load(Ordering::SeqCst));
+        assert!(
+            session.entries.lock().unwrap().is_empty(),
+            "the entry left with its row"
+        );
+        for _ in 0..200 {
+            if root
+                .events()
+                .subscriptions()
+                .iter()
+                .all(|entry| !entry.remote)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            root.events()
+                .subscriptions()
+                .iter()
+                .all(|entry| !entry.remote),
+            "no remote entry is left on the bus"
+        );
+        drop((far, near));
     }
 }

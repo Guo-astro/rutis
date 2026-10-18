@@ -362,7 +362,7 @@ fn check_runtime(runtime: &Path, install: &str) -> Result<(), Box<dyn std::error
 pub(crate) fn removed_field(field: &str) -> String {
     format!(
         "the config field {field} was removed in rutis 0.13: listeners register themselves; \
-         emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)"
+         emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)"
     )
 }
 

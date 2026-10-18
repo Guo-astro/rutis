@@ -1632,3 +1632,271 @@ async fn raw_dispatch_and_entry_calls() {
     assert_eq!(error.to_string(), "listener 999999 of t/ping is withdrawn");
     root.shutdown().await.unwrap();
 }
+
+// ── review of #464 ──────────────────────────────────────────────
+
+/// A `once` listener is claimed when its call starts, not when a dispatch
+/// selects it: one a filter dropped, or a `serial` that ended before it,
+/// is still there for the next dispatch, and is called once.
+#[tokio::test]
+async fn a_once_listener_is_used_up_only_by_a_call() {
+    let root = Ctx::root().unwrap();
+    let order = log();
+    root.events()
+        .on(
+            &root,
+            &PING,
+            returns::<Ping>(&order, "first", Some("1".into())),
+        )
+        .unwrap();
+    root.events()
+        .on_opt(
+            &root,
+            &PING,
+            returns::<Ping>(&order, "once", Some("2".into())),
+            EventOptions::default().once(true),
+        )
+        .unwrap();
+    // The filter drops it before any call.
+    let filtered = root
+        .events()
+        .filter(|info| info.plugin.is_empty())
+        .parallel(&root, &PING, Arc::new(Ping(0)));
+    filtered.await.unwrap();
+    assert!(entries(&order).is_empty(), "{:?}", entries(&order));
+    // `serial` ends at the first result.
+    let first = root.events().serial(&root, &PING, Arc::new(Ping(0))).await;
+    assert_eq!(first.unwrap().as_deref(), Some("1"));
+    assert_eq!(entries(&order), ["first"]);
+    assert_eq!(
+        root.events().subscriptions().len(),
+        2,
+        "the once listener stays"
+    );
+    // Reached now: called, then gone.
+    root.events()
+        .parallel(&root, &PING, Arc::new(Ping(0)))
+        .await
+        .unwrap();
+    assert_eq!(entries(&order), ["first", "first", "once"]);
+    root.events()
+        .parallel(&root, &PING, Arc::new(Ping(0)))
+        .await
+        .unwrap();
+    assert_eq!(entries(&order), ["first", "first", "once", "first"]);
+    assert_eq!(root.events().subscriptions().len(), 1);
+    root.shutdown().await.unwrap();
+}
+
+/// Watchers hear the table's changes in the order they were made, also
+/// when two threads change it at once: a change made while an earlier one
+/// is still being heard waits for it (a watcher never hears a removal or
+/// a later entry before the change before it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn table_changes_are_heard_in_the_order_they_were_made() {
+    let root = Ctx::root().unwrap();
+    let first_heard = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let heard: Log = log();
+    {
+        // Blocks in its first change until released.
+        let (first_heard, release) = (first_heard.clone(), release.clone());
+        let blocked = std::sync::atomic::AtomicBool::new(false);
+        root.events()
+            .watch_table(&root, move |_| {
+                if !blocked.swap(true, Ordering::SeqCst) {
+                    *first_heard.0.lock().unwrap() = true;
+                    first_heard.1.notify_all();
+                    let mut released = release.0.lock().unwrap();
+                    while !*released {
+                        released = release.1.wait(released).unwrap();
+                    }
+                }
+            })
+            .map(|(_, watching)| std::mem::forget(watching))
+            .unwrap();
+    }
+    let into = heard.clone();
+    root.events()
+        .watch_table(&root, move |change| {
+            let TableChange::Added(entry) = change else {
+                return;
+            };
+            push(&into, entry.name.clone());
+        })
+        .map(|(_, watching)| std::mem::forget(watching))
+        .unwrap();
+    let ctx = root.clone();
+    let a = std::thread::spawn(move || {
+        ctx.events()
+            .on(
+                &ctx,
+                &EventKey::<Ping>::named("t/a"),
+                returns::<Ping>(&log(), "a", None),
+            )
+            .map(std::mem::forget)
+            .unwrap();
+    });
+    {
+        let mut heard = first_heard.0.lock().unwrap();
+        while !*heard {
+            heard = first_heard.1.wait(heard).unwrap();
+        }
+    }
+    // `t/a` is in the table, its change half heard: `t/b` comes after it.
+    let ctx = root.clone();
+    let b = std::thread::spawn(move || {
+        ctx.events()
+            .on(
+                &ctx,
+                &EventKey::<Ping>::named("t/b"),
+                returns::<Ping>(&log(), "b", None),
+            )
+            .map(std::mem::forget)
+            .unwrap();
+    });
+    for _ in 0..500 {
+        if root.events().subscriptions().len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert_eq!(root.events().subscriptions().len(), 2);
+    // Give a delivery out of order its chance.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    *release.0.lock().unwrap() = true;
+    release.1.notify_all();
+    a.join().unwrap();
+    b.join().unwrap();
+    assert_eq!(entries(&heard), ["t/a", "t/b"]);
+    drop(root);
+}
+
+/// An event type with no name of its own (an empty `NAME`, as
+/// `rutis_bridge::events::Args`) cannot be used with `EventKey::of()`:
+/// registering and dispatching fail clearly (events protocol §12.1).
+#[tokio::test]
+async fn an_event_without_a_name_needs_one() {
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    struct Unnamed;
+    impl Event for Unnamed {
+        const NAME: &'static str = "";
+        type Value = ();
+    }
+    let root = Ctx::root().unwrap();
+    let key = EventKey::<Unnamed>::of();
+    let message = "Unnamed events need a name: EventKey::dynamic(name)";
+    let refused = root
+        .events()
+        .on(
+            &root,
+            &key,
+            on::<Unnamed, _>(|_, _, _| Box::pin(async { Ok(None) })),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(refused.to_string(), message);
+    assert_eq!(
+        root.events()
+            .emit(&root, &key, Arc::new(Unnamed))
+            .unwrap_err()
+            .to_string(),
+        message
+    );
+    assert_eq!(
+        root.events()
+            .serial(&root, &key, Arc::new(Unnamed))
+            .await
+            .unwrap_err()
+            .to_string(),
+        message
+    );
+    assert_eq!(
+        root.events()
+            .bail_sync(&root, &key, &Unnamed)
+            .unwrap_err()
+            .to_string(),
+        message
+    );
+    // Given a name, it is an event like any.
+    let named = EventKey::<Unnamed>::dynamic("t/named");
+    root.events()
+        .on_sync(
+            &root,
+            &named,
+            |_: &Ctx, _: &Unnamed, _: SyncCall<'_, ()>| Ok(Some(())),
+        )
+        .unwrap();
+    assert_eq!(
+        root.events().bail_sync(&root, &named, &Unnamed).unwrap(),
+        Some(())
+    );
+    root.shutdown().await.unwrap();
+}
+
+/// An entry called by id (a node running the other node's `events.call`)
+/// is called only under its own name: an id the far end kept from before
+/// that now names an entry of another name is withdrawn.
+#[tokio::test]
+async fn an_entry_called_by_id_must_have_the_name() {
+    let root = Ctx::root().unwrap();
+    let order = log();
+    root.events()
+        .on(
+            &root,
+            &PING,
+            returns::<Ping>(&order, "ping", Some("p".into())),
+        )
+        .unwrap();
+    root.events()
+        .on_pattern(
+            &root,
+            &EventPattern::<Ping>::prefix("t/room/"),
+            on_prefix::<Ping, _>(|_, _, _, _| Box::pin(async { Ok(Some("room".to_string())) })),
+        )
+        .unwrap();
+    let (snapshot, _watch) = root.events().watch_table(&root, |_| {}).unwrap();
+    let exact = snapshot.iter().find(|e| !e.prefix).unwrap().id;
+    let prefix = snapshot.iter().find(|e| e.prefix).unwrap().id;
+    let call = |name: &str| EntryCall {
+        name: name.into(),
+        mode: Mode::Serial,
+        payload: Payload::new(Arc::new(Ping(0))),
+        next: None,
+        dispatch: 1,
+        origin: None,
+    };
+    let wrong = root
+        .events()
+        .invoke_entry(&root, exact, call("t/other"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        wrong.to_string(),
+        format!("listener {exact} of t/other is withdrawn")
+    );
+    assert!(root
+        .events()
+        .invoke_entry(&root, prefix, call("t/ping"))
+        .await
+        .is_err());
+    assert!(entries(&order).is_empty(), "no listener ran");
+    let room = root
+        .events()
+        .invoke_entry(&root, prefix, call("t/room/1"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        room.downcast_ref::<String>().map(String::as_str),
+        Some("room")
+    );
+    let ping = root
+        .events()
+        .invoke_entry(&root, exact, call("t/ping"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ping.downcast_ref::<String>().map(String::as_str), Some("p"));
+    root.shutdown().await.unwrap();
+}

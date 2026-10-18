@@ -55,8 +55,8 @@ The plugin API version becomes **3** (Node `PLUGIN_API`, Python `PLUGIN_API`, Go
 | `mount` arguments `events`, `emits`; `mount` feature `events`; runtime→host `event`; host→runtime `emit` | protocol | — (unreachable: §2.1 refuses the peer first) |
 | `node events.forward`, `NodeEvent`, `EventsPlugin` | rutis-bridge | — (removed from the API) |
 | `RuntimePlugin::emits`, `LocalRuntime::emits`, `Mount.emits`, `Mount.events`, `Process::emit`, `runtime::events::{Events, EmitToCordis}` | Rust API | removed; compile error |
-| Cordis mount / generator config `events`, `emits` | `rutis-bridge` generator config | `the config field <events\|emits> was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)` |
-| Node link config `events: { out, in }` | `rutis-bridge/peer` row config | `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (docs/migration-0.13.md)` |
+| Cordis mount / generator config `events`, `emits` | `rutis-bridge` generator config | `the config field <events\|emits> was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)` |
+| Node link config `events: { out, in }` | `rutis-bridge/peer` row config | `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)` |
 | `on_waterfall*`, `on_waterfall_sync*`, `*_instance`, `*_keyed`, `EventKey::instance`, `SyncEvent` | rutis core | removed; compile error (§12.1 gives the replacements) |
 
 ## 3. Scopes
@@ -248,7 +248,7 @@ Emitted by the host only, in `emit` mode, each with one argument (a record). Plu
 | Name | Argument | Fired | Emitter scope |
 | --- | --- | --- | --- |
 | `rutis/service` | `{ "name": <service name>, "scope": <chain>, "available": <bool>, "row": <providing row or null> }` | When a service name gets a provider in a scope (`available: true`), when the provider is replaced (`true` again, new `row`), when it is withdrawn with none left (`false`, `row` of the last provider) | The service's scope |
-| `rutis/row` | `{ "row": <the row's id (§3)>, "plugin": <name>, "scope": <chain>, "state": "pending" \| "running" \| "failed" \| "stopped", "error": <message or null> }` | On every state change of a configured row (any language, Rust rows included); `error` set with `failed` | The row's scope |
+| `rutis/row` | `{ "row": <the row's id>, "plugin": <name>, "scope": <chain>, "state": "pending" \| "running" \| "failed" \| "stopped", "error": <message or null> }` | On every state change of a configured row (any language, Rust rows included); `error` set with `failed`. `row` is the id configured for the row (the loader's row id, as the descriptor's `row`, §4.2), not the row key of a session | The row's scope |
 | `rutis/runtime` | `{ "runtime": <name>, "state": "running" \| "down", "reason": <text or null> }` | `running` when a runtime's mount succeeded (also after each reconnect); `down` when its session ended or its mount failed, `reason` saying why (exit status, transport error, refusal message) | Root |
 
 `internal/*` stays inside each runtime and is never registered with or sent to the host.
@@ -890,7 +890,7 @@ Decided while implementing the host side (#464, `events/host`):
 
 28. **`mount` names the runtime** (`runtime`), so fast-path descriptors equal the host's.
 29. **The host keeps a session's `emit` dispatches in order** without blocking its reader: an `emit` it can start at once (no pending filter selector) is answered `undefined` before the next frame is read; one that cannot (its selector call must come back over the same session) and every later `emit` of that session wait in a queue, each answered once its invocations started (the answer is then a future the runtime awaits). §5.5's guarantees hold either way.
-30. **The host handles `events.on`, `events.off`, `events.elsewhere`, and `emit`-mode `events.dispatch` / `events.call` on the session reader**, in frame order (the session layer runs these control operations inline); every other event operation runs as a task, like any call.
+30. **The host handles a session's event operations in frame order, but not on its reader**: the session layer hands each `events.*` it receives, in turn, to one ordered task of the session; `events.on`, `events.off`, `events.elsewhere` and `emit`-mode `events.dispatch` / `events.call` run there in their turn, every other event operation starts there in its turn as a task of its own. A reader never runs plugin code (listeners, dispatch observers): it could call the same session synchronously, and only that reader reads the answer.
 31. **A node announces each own entry once per `import` item it matches** (narrowed as §9 says), each announcement with an id of its own; an entry another node announced is accepted once per `export` item it matches, the same way. Announcements start when the peer offers the `events` family and start over at each new offer of it.
 32. **`AggregateError` on the wire** carries its children in its error graph (§11), so every language rebuilds the children in registration order.
 33. **`rutis/row`**: `pending` is emitted when the loader spawns the row, then each change of its fiber's state as the loader sees it (`loading` counts as `pending`; `unloading` and disposal as `stopped`); a group row is a row too (`plugin` `group`). **`rutis/service`** is emitted for every host service, whether a Rust plugin, a runtime's row or a node import provides it, at the provider's scope, with the providing row's id.

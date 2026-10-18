@@ -79,7 +79,7 @@ async fn the_old_events_config_of_a_link_is_refused() {
         } }]),
     )
     .await;
-    let expected = "the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (docs/migration-0.13.md)";
+    let expected = "the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)";
     rutis_test_support::eventually(
         || said(&loader, "link").contains(expected).then_some(()),
         "the refusal",
