@@ -3,12 +3,13 @@ use crate::channel::Receiver;
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+/// A compat-format greeting of a 0.13 far end (`events-v2`, §2.1).
 fn hello(version: u32) -> Frame {
     Frame::Hello {
         version,
         endpoint: None,
         implementation: None,
-        capabilities: None,
+        capabilities: Some(vec![EVENTS_CAPABILITY.into()]),
     }
 }
 
@@ -1044,7 +1045,7 @@ mod endpoint_format {
                 version,
                 endpoint: endpoint.then(|| "far".into()),
                 implementation,
-                capabilities: endpoint.then(Vec::new),
+                capabilities: endpoint.then(|| vec![EVENTS_CAPABILITY.into()]),
             },
         );
         let session = match format {
@@ -1102,6 +1103,58 @@ mod endpoint_format {
             refusal(None, 1, None).await,
             format!("the far end speaks protocol 1, this side {VERSION}: upgrade the far end")
         );
+    }
+
+    /// guarantee: events/v2-required
+    ///
+    /// A far end of the right version that does not declare `events-v2` is
+    /// refused right after the handshake (events protocol §2.2), in both
+    /// formats: the endpoint format names it, the compat format cannot.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_far_end_without_events_v2_is_refused() {
+        for (format, implementation, named) in [
+            (None, None, "a runtime older than rutis 0.13".to_owned()),
+            (
+                Some(Endpoint::rust(id("main"))),
+                Some(Implementation {
+                    name: "rutis-runtime".into(),
+                    version: "0.12.1".into(),
+                }),
+                "rutis-runtime 0.12.1".to_owned(),
+            ),
+        ] {
+            let (local, mut far) = far_pair();
+            let endpoint = format.is_some();
+            send(
+                &mut far,
+                Frame::Hello {
+                    version: match endpoint {
+                        true => crate::session::ENDPOINT_PROTOCOL,
+                        false => VERSION,
+                    },
+                    endpoint: endpoint.then(|| "far".into()),
+                    implementation,
+                    capabilities: Some(vec!["sync-wait".into()]),
+                },
+            );
+            let session = match format {
+                Some(format) => {
+                    Connection::open_with(local, Arc::new(NoExports), Format::Endpoint(format))
+                }
+                None => Connection::open(local, Arc::new(NoExports)),
+            }
+            .unwrap();
+            match session.ready().await {
+                Err(Error::Handshake(Handshake::Incompatible(reason))) => assert_eq!(
+                    reason,
+                    format!(
+                        "incompatible session: the far end ({named}) does not declare events-v2 \
+                         (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later"
+                    )
+                ),
+                other => panic!("expected the refusal: {other:?}"),
+            }
+        }
     }
 }
 
@@ -1473,7 +1526,13 @@ impl Remote {
             version: VERSION,
             endpoint: None,
             implementation: None,
-            capabilities: Some(capabilities.iter().map(|c| c.to_string()).collect()),
+            capabilities: Some(
+                capabilities
+                    .iter()
+                    .chain([&EVENTS_CAPABILITY])
+                    .map(|c| c.to_string())
+                    .collect(),
+            ),
         });
         remote
     }
@@ -1981,7 +2040,13 @@ async fn received_tagged_values_are_checked_and_only_their_call_fails() {
             version: crate::session::ENDPOINT_PROTOCOL,
             endpoint: Some("far".into()),
             implementation: None,
-            capabilities: Some(VALUE_CAPABILITIES.map(String::from).to_vec()),
+            capabilities: Some(
+                VALUE_CAPABILITIES
+                    .iter()
+                    .chain([&EVENTS_CAPABILITY])
+                    .map(|c| c.to_string())
+                    .collect(),
+            ),
         });
         let data = |value: Json| json!({ "type": "data", "value": value });
         let refusals = [
@@ -2088,7 +2153,13 @@ async fn a_refused_call_takes_its_id() {
             version: crate::session::ENDPOINT_PROTOCOL,
             endpoint: Some("far".into()),
             implementation: None,
-            capabilities: Some(VALUE_CAPABILITIES.map(String::from).to_vec()),
+            capabilities: Some(
+                VALUE_CAPABILITIES
+                    .iter()
+                    .chain([&EVENTS_CAPABILITY])
+                    .map(|c| c.to_string())
+                    .collect(),
+            ),
         });
         let invoke = |arg: Json| {
             json!({

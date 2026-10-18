@@ -161,11 +161,6 @@ mod tests {
         let second = &nodes[children[1]["value"].as_u64().unwrap() as usize];
         assert_eq!(second["code"], "Busy");
         // The child's data moved with it.
-        let data = &second["data"];
-        assert_eq!(data["type"], "reference");
-        assert_eq!(
-            nodes[data["value"].as_u64().unwrap() as usize]["type"],
-            "array"
-        );
+        assert_eq!(second["data"], json!({ "type": "data", "value": [1] }));
     }
 }
