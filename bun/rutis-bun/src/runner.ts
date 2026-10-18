@@ -124,7 +124,9 @@ type Listener = (...args: any[]) => unknown
 export class Runtime {
   client?: Client
   closing = false
-  #bus = new Bus()
+  // A row's listener the host refuses while the row loads fails the load
+  // (protocol §11).
+  #bus = new Bus({ loading: (key: string) => Array.isArray(this.#rows.get(key)?.pending) })
   #deadline = shutdownDeadline()
   #project: string
   #modules = new Modules()
@@ -229,19 +231,27 @@ export class Runtime {
 
   // ── Events ────────────────────────────────────────────────────
 
-  // The five ways to emit from `row`, filtered by `keep` when given
-  // (`waterfall`'s last argument is its terminal).
+  // The five ways to emit from `row`, filtered by `keep` when given. Every
+  // argument of `waterfall` is the event's; a terminal is given with
+  // `waterfall.with(terminal)(name, ...args)`. A row unloaded (its key
+  // perhaps taken by a new row since) emits nothing (protocol §3).
   #emitters(row: Row, keep?: (descriptor: unknown) => unknown) {
     const dispatch = (mode: string, name: string, values: unknown[], terminal?: unknown) => {
       reserved(name)
       refuseReserved(name)
-      return this.#bus.dispatch(mode, name, values, { row: row.key, scope: row.chain, keep, terminal })
+      return this.#bus.dispatch(mode, name, values, { row: row.key, scope: row.chain, keep, terminal, gone: this.#rows.get(row.key) !== row })
     }
+    const waterfall = (terminal?: unknown) => (name: string, ...values: unknown[]) => dispatch('waterfall', name, values, terminal)
     return {
       emit: (name: string, ...values: unknown[]) => { dispatch('emit', name, values) },
       parallel: (name: string, ...values: unknown[]) => dispatch('parallel', name, values),
       serial: (name: string, ...values: unknown[]) => dispatch('serial', name, values),
-      waterfall: (name: string, ...values: unknown[]) => { const terminal = values.pop(); return dispatch('waterfall', name, values, terminal) },
+      waterfall: Object.assign(waterfall(), {
+        with: (terminal: (...args: any[]) => unknown) => {
+          if (typeof terminal !== 'function') throw new TypeError('waterfall.with needs a terminal function')
+          return waterfall(terminal)
+        },
+      }),
       bail: (name: string, ...values: unknown[]) => dispatch('bail', name, values),
     }
   }
@@ -279,7 +289,7 @@ export class Runtime {
         reserved(name)
         if (this.#rows.get(row.key) !== row) throw new Error(`row ${row.key} is not active`)
         if (typeof callback !== 'function') throw new TypeError('a listener is a function')
-        const listener = this.#bus.on({ name, callback, prepend: options?.prepend, global: options?.global, row: row.key, plugin: plugin.name ?? key, scope: row.chain })
+        const listener = this.#bus.on({ name, callback, prepend: options?.prepend, global: options?.global, row: row.key, plugin: plugin.name ?? this.#bus.rowId(key), scope: row.chain })
         return () => { this.#bus.off(listener) }
       },
       ...this.#emitters(row),

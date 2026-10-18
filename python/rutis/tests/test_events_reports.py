@@ -36,8 +36,5 @@ class Refused(Session):
             frame = await self.host.request("events.on")
             self.host.fail(frame, {"name": "BindingError", "message": "the host refused it"})
             outcome, _ = await self.host.outcome(call)
-        if outcome != "throw" or stderr.getvalue():
-            self.skipTest(
-                f"known failing: rows.load answered {outcome!r} and stderr was {stderr.getvalue()!r}; "
-                "§11 wants the load to fail with the refusal and no line"
-            )
+        # §11: the load fails with the refusal, and no line is written.
+        self.assertEqual((outcome, stderr.getvalue()), ("throw", ""))

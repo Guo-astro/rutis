@@ -136,8 +136,9 @@ test('duplicate listeners dispose independently and failed unload clears listene
   assert.equal(context.emit('tick', 2), undefined)
   assert.deepEqual(received, [1, 1, 2], 'the other registration remains active')
   await assert.rejects(t.unload(), /cleanup failed/)
-  context.emit('tick', 3)
-  context.emit('early', 4)
+  // Unloaded, the row emits nothing, as on the real runtimes.
+  assert.throws(() => context.emit('tick', 3), { name: 'BindingError', message: 'row row1 is not loaded in this runtime' })
+  await t.host.parallel('early', 4)
   assert.deepEqual(received, [1, 1, 2], 'even the listener before the failed cleanup is removed')
   assert.deepEqual(cleaned, ['last', 'middle', 'first'], 'manual off skips no cleanup')
 })

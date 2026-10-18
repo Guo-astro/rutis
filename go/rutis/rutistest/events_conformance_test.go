@@ -335,7 +335,7 @@ type emitSpec struct {
 	Name     string            `json:"name"`
 	Args     []json.RawMessage `json:"args"`
 	Filter   json.RawMessage   `json:"filter"`
-	Terminal *string           `json:"terminal"`
+	Terminal json.RawMessage   `json:"terminal"`
 	Cancel   json.RawMessage   `json:"cancel"`
 	Via      string            `json:"via"`
 }
@@ -361,7 +361,11 @@ func (r *eventRun) emit(raw json.RawMessage) outcome {
 		request["filter"] = spec.Filter
 	}
 	if spec.Terminal != nil {
-		request["terminal"] = *spec.Terminal
+		var terminal any
+		if err := json.Unmarshal(spec.Terminal, &terminal); err != nil {
+			r.t.Fatal(err)
+		}
+		request["terminal"] = terminal
 	}
 	if spec.Cancel != nil {
 		request["cancel"] = spec.Cancel

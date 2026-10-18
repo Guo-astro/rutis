@@ -1059,11 +1059,9 @@ impl World for Host {
         Some(json!({
             "name": row.config["name"],
             "prefix": false,
-            // The plugin's own name: a Python plugin is named by its module.
-            "plugin": match row.language.as_str() {
-                "python" => "conformance_events",
-                _ => "conformance-events",
-            },
+            // The plugin's own name, the same in every language (the
+            // Python fixture declares it).
+            "plugin": "conformance-events",
             "row": label,
             "runtime": runtime,
             "node": node,

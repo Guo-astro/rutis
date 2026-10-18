@@ -2,9 +2,11 @@ package rutis
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -282,7 +284,7 @@ func TestWaterfallChainsThroughNext(t *testing.T) {
 	}
 	a.On("t/wf", link("a"))
 	a.On("t/wf", link("b"))
-	terminal := func(context.Context) (any, error) { return "t", nil }
+	terminal := func(context.Context, ...any) (any, error) { return "t", nil }
 	if value, err := a.Waterfall(ctx, "t/wf", terminal); err != nil || value != "abt" {
 		t.Fatalf("chain: %v %v", value, err)
 	}
@@ -652,7 +654,7 @@ func TestARegistrationRefusedDuringTheLoadFailsIt(t *testing.T) {
 	refusingHost(t, rt, false)
 	err := rt.load(context.Background(), "r0", "events", nil, nil, nil, nil)
 	if err == nil || len(reports.list()) != 0 {
-		t.Skipf("known failing: the load gave %v and reported %q; §11 wants the load to fail with the refusal and no line", err, reports.list())
+		t.Fatalf("the load gave %v and reported %q; §11 wants the load to fail with the refusal and no line", err, reports.list())
 	}
 }
 
@@ -675,4 +677,129 @@ func TestAnUnansweredEmitIsReportedWhenTheSessionEnds(t *testing.T) {
 		got := reports.list()
 		return len(got) == 1 && got[0] == want
 	}, func() string { return fmt.Sprint(reports.list()) })
+}
+
+// guarantee: events/filter (a host descriptor may carry more fields, such
+// as the emitter's own `listener` id: the selector ignores them)
+func TestTheSelectorIgnoresExtraDescriptorFields(t *testing.T) {
+	var seen []Listener
+	sel := selector(keepOf(func(l Listener) (bool, error) { seen = append(seen, l); return l.Row == "chat", nil }))
+	descriptor := `{"name":"t/n","prefix":false,"plugin":"chat-ui","row":"chat","runtime":"go","node":null,"scope":[{"id":"17","group":"tenant"}],"global":false,"listener":"7"}`
+	for _, arg := range []any{
+		json.RawMessage("[" + descriptor + `,{"name":"t/n","plugin":"other","row":null,"runtime":null,"node":null,"scope":[],"global":false}]`),
+		[]any{json.RawMessage(descriptor)},
+	} {
+		seen = nil
+		answers, err := sel(context.Background(), []any{arg})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := Listener{Name: "t/n", Plugin: "chat-ui", Row: "chat", Runtime: "go", Scope: []Scope{{ID: "17", Group: "tenant"}}}
+		if len(seen) == 0 || !reflect.DeepEqual(seen[0], want) || answers.([]any)[0] != true {
+			t.Fatalf("descriptor %+v, answers %v", seen, answers)
+		}
+	}
+}
+
+// guarantee: events/filter (a filter gets a copy of the scope: changing it
+// changes neither the entry nor the row)
+func TestAFilterGetsACopyOfTheScope(t *testing.T) {
+	_, rows := eventRows(t, "t1")
+	a := rows[0]
+	ctx := context.Background()
+	j := &journal{}
+	a.On("t/scope", returns(j, "a", nil))
+	var seen []string
+	keep := func(l Listener) (bool, error) {
+		seen = append(seen, l.Scope[0].ID)
+		l.Scope[0].ID = "changed"
+		return true, nil
+	}
+	for range 2 {
+		if _, err := a.Filter(keep).Serial(ctx, "t/scope"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fmt.Sprint(seen) != "[t1 t1]" || a.Scope()[0].ID != "t1" || fmt.Sprint(j.list()) != "[a a]" {
+		t.Fatalf("seen %v, scope %v, ran %v", seen, a.Scope(), j.list())
+	}
+}
+
+// guarantee: events/waterfall (the terminal gets the event's arguments,
+// §5.4)
+func TestTheTerminalGetsTheEventArguments(t *testing.T) {
+	_, rows := eventRows(t, "")
+	a := rows[0]
+	ctx := context.Background()
+	terminal := func(_ context.Context, args ...any) (any, error) { return fmt.Sprint(len(args), args), nil }
+	a.On("t/wf-args", func(ctx context.Context, args ...any) (any, error) {
+		rest, err := args[len(args)-1].(Next)(ctx)
+		return fmt.Sprint("a:", rest), err
+	})
+	if value, err := a.Waterfall(ctx, "t/wf-args", terminal, "x", 2); err != nil || value != "a:2 [x 2]" {
+		t.Fatalf("through a listener: %v %v", value, err)
+	}
+	if value, err := a.Waterfall(ctx, "t/none", terminal, "x"); err != nil || value != "1 [x]" {
+		t.Fatalf("no listeners: %v %v", value, err)
+	}
+}
+
+// guarantee: events/next (next runs the rest of the chain when called,
+// before it returns)
+func TestNextRunsTheRestWhenCalled(t *testing.T) {
+	_, rows := eventRows(t, "")
+	a := rows[0]
+	ctx := context.Background()
+	j := &journal{}
+	a.On("t/eager", func(ctx context.Context, args ...any) (any, error) {
+		j.add("a:before")
+		rest, err := args[len(args)-1].(Next)(ctx)
+		j.add("a:after")
+		return rest, err
+	})
+	a.On("t/eager", returns(j, "b", "B"))
+	if value, err := a.Waterfall(ctx, "t/eager", nil); err != nil || value != "B" {
+		t.Fatalf("waterfall: %v %v", value, err)
+	}
+	if got := fmt.Sprint(j.list()); got != "[a:before b a:after]" {
+		t.Fatalf("ran %s", got)
+	}
+}
+
+// guarantee: events/unload (a listener its row's unload stops is not a
+// failure: no report; emitting from an unloaded row is refused)
+func TestAListenerStoppedByItsUnloadIsNotReported(t *testing.T) {
+	rt, rows := eventRows(t, "", "")
+	a, b := rows[0], rows[1]
+	ctx := context.Background()
+	reports := captureReports(t)
+	started := make(chan struct{}, 2)
+	b.On("t/stop", func(ctx context.Context, _ ...any) (any, error) {
+		started <- struct{}{}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	b.On("t/stop", func(ctx context.Context, _ ...any) (any, error) {
+		started <- struct{}{}
+		<-ctx.Done()
+		return nil, fmt.Errorf("stopping: %w", ctx.Err())
+	})
+	if err := a.Emit(ctx, "t/stop"); err != nil {
+		t.Fatal(err)
+	}
+	testwait.Within(t, "the first listener starts", started)
+	testwait.Within(t, "the second listener starts", started)
+	if err := rt.unload(ctx, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := reports.list(); len(got) != 0 {
+		t.Fatalf("stopped listeners were reported: %q", got)
+	}
+	err := b.Emit(ctx, "t/stop")
+	if !errors.Is(err, ErrBinding) || peer.ErrorName(err) != "BindingError" || err.Error() != "row r1 is not loaded in this runtime" {
+		t.Fatalf("an unloaded row emitted: %v", err)
+	}
+	if _, err := b.Filter(func(Listener) (bool, error) { return true, nil }).Serial(ctx, "t/stop"); err == nil || err.Error() != "row r1 is not loaded in this runtime" {
+		t.Fatalf("an unloaded row's filtered emitter emitted: %v", err)
+	}
 }

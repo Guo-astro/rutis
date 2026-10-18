@@ -138,6 +138,8 @@ type Greeting struct {
 type result struct {
 	value any
 	err   error
+	// The session ended before an answer came.
+	ended bool
 }
 
 type export struct {
@@ -382,7 +384,7 @@ func (p *Peer) Close(err error) {
 	}
 	p.mu.Unlock()
 	for _, waiter := range pending {
-		waiter <- result{err: err}
+		waiter <- result{err: err, ended: true}
 	}
 	for _, waiter := range draining {
 		close(waiter)
@@ -457,7 +459,7 @@ func (f *RemoteFuture) Await(ctx context.Context) (any, error) {
 		return nil, err
 	}
 	f.mu.Lock()
-	f.done, f.result = true, result{value, err}
+	f.done, f.result = true, result{value: value, err: err}
 	f.mu.Unlock()
 	return value, err
 }
@@ -1018,7 +1020,9 @@ func (p *Peer) AnnounceReporting(target, method string, args []any, failed func(
 	go func() {
 		select {
 		case answer := <-waiter:
-			if answer.err != nil && failed != nil {
+			// The session's end fails pending calls with its error: not a
+			// refusal.
+			if answer.err != nil && failed != nil && !answer.ended {
 				failed(answer.err)
 			}
 		case <-p.closed:

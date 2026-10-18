@@ -397,7 +397,14 @@ async fn dispatch_now(
             Ok(filter["keep"].as_array().into_iter().flatten().any(|k| k.as_str() == Some(&row)))
         })
     });
-    let terminal = spec["terminal"].as_str().map(str::to_owned);
+    // A text the terminal returns, or `{echo: true}`: its first argument.
+    let terminal = match &spec["terminal"] {
+        Json::String(text) => Some(TerminalDoes::Text(text.clone())),
+        Json::Object(echo) if echo.get("echo") == Some(&Json::Bool(true)) => {
+            Some(TerminalDoes::Echo)
+        }
+        _ => None,
+    };
     let value = |v: Option<ArgValue>| v.map(|v| v.0).unwrap_or(Value::Undefined);
     let result: Result<Value, CordisError> = match (spec["mode"].as_str().unwrap_or_default(), &filtered) {
         // As `emit` returns in the other languages: once every call started
@@ -425,10 +432,10 @@ async fn dispatch_now(
         ("bail", None) => bus.bail_sync(ctx, &key, &args).map(value),
         ("bail", Some(f)) => f.bail_sync(ctx, &key, &args).map(value),
         ("waterfall-sync", _) => bus
-            .waterfall_sync(ctx, &key, &args, |_, _| {
+            .waterfall_sync(ctx, &key, &args, |_, event| {
                 Ok(terminal.map(|t| {
                     log.add("terminal");
-                    ArgValue(json!(t).into())
+                    t.result(event)
                 }))
             })
             .map(value),
@@ -440,18 +447,33 @@ async fn dispatch_now(
 /// The end of a waterfall (`terminal`), logged when reached.
 struct TerminalOf {
     log: Arc<EventsLog>,
-    terminal: Option<String>,
+    terminal: Option<TerminalDoes>,
+}
+
+/// What a terminal returns: its text, or its first argument (`echo`).
+enum TerminalDoes {
+    Text(String),
+    Echo,
+}
+
+impl TerminalDoes {
+    fn result(&self, event: &Args) -> ArgValue {
+        match self {
+            Self::Text(text) => ArgValue(json!(text).into()),
+            Self::Echo => ArgValue(event.0.first().cloned().unwrap_or(Value::Undefined)),
+        }
+    }
 }
 
 impl rutis::events::Terminal<Args> for TerminalOf {
     fn call<'a>(
         &'a self,
         _: &'a Ctx,
-        _: &'a Args,
+        event: &'a Args,
     ) -> BoxFuture<'a, Result<Option<ArgValue>, CordisError>> {
         let result = self.terminal.as_ref().map(|t| {
             self.log.add("terminal");
-            ArgValue(json!(t).into())
+            t.result(event)
         });
         Box::pin(std::future::ready(Ok(result)))
     }

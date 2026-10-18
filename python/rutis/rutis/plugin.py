@@ -122,6 +122,9 @@ class Plugin:
     # What it provides beyond `provides` reaches rutis by itself, known once
     # it runs: true of every plugin of this SDK.
     announces: bool = True
+    # Its declared name: what descriptors and registrations call it
+    # (`plugin`); None: its row's id.
+    name: str | None = None
 
 
 def define_plugin(
@@ -130,8 +133,15 @@ def define_plugin(
     inject: list | tuple = (),
     provides: dict | None = None,
     config: dict | None = None,
+    name: str | None = None,
 ) -> Plugin:
-    return Plugin(apply, list(inject), shapes(provides or {}), config)
+    """The plugin `apply(ctx, config)`. `inject`, `provides`, `config`: as
+    the module attributes above. `name`: what the event descriptors filters
+    see, and the host, call the plugin (`plugin`); without it, the id of
+    the row it runs in (the row's name in the configuration)."""
+    if name is not None and (not isinstance(name, str) or not name):
+        raise TypeError("a plugin name is a non-empty string")
+    return Plugin(apply, list(inject), shapes(provides or {}), config, name=name)
 
 
 def shapes(provides: dict) -> dict:

@@ -22,6 +22,8 @@ import inspect
 import json
 import time
 
+from rutis import define_plugin
+
 inject = ["events-log"]
 
 # The shape of `emitter-<label>`. This module declares no `provides` (a
@@ -85,6 +87,11 @@ def dispatch(ctx, log, spec):
         def terminal(*_args):
             log.add("terminal")
             return spec["terminal"]
+    elif isinstance(spec.get("terminal"), dict) and spec["terminal"].get("echo"):
+        # {"echo": true}: it returns its first argument.
+        def terminal(*args):
+            log.add("terminal")
+            return args[0]
 
     async def run():
         if mode == "parallel":
@@ -240,3 +247,9 @@ def apply(ctx, config):
             prepend=bool(options.get("prepend")),
             global_=bool(options.get("global")),
         )
+
+
+# Declared with its name, as the other languages name it: the descriptors
+# filters see call it `conformance-events` (without a name, a Python
+# plugin is called by its row's id).
+plugin = define_plugin(apply, inject=inject, name="conformance-events")

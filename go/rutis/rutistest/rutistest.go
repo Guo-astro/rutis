@@ -51,20 +51,27 @@ import (
 
 const (
 	firstRow = "test"
-	// What the test side calls the runtime, in descriptors.
-	runtimeName = "go"
+	// What the test side calls the runtime, in descriptors, unless
+	// RuntimeName says.
+	defaultRuntime = "go"
 )
 
 // Option adjusts Load and Loaded.Load.
 type Option func(*options)
 
 type options struct {
-	row   string
-	scope []rutis.Scope
+	row     string
+	scope   []rutis.Scope
+	runtime string
 }
 
 // Row names the row (by default "test", then "test-2", "test-3", ...).
 func Row(key string) Option { return func(o *options) { o.row = key } }
+
+// RuntimeName is the runtime's name in descriptors (Listener.Runtime), "go"
+// by default, as a host names the runtime it mounts. Only Load's counts:
+// every row is in the one runtime.
+func RuntimeName(name string) Option { return func(o *options) { o.runtime = name } }
 
 // InScope loads the row into the scope `path` ("t1/s1"): one loader
 // instance per segment, each instance's id the path up to it and its group
@@ -108,6 +115,8 @@ type harness struct {
 	conn     net.Conn
 	session  *peer.Peer
 	done     chan error
+	// The runtime's name in descriptors (mount `runtime`).
+	runtime string
 
 	mu      sync.Mutex
 	handles map[string]string
@@ -168,7 +177,7 @@ func hook() {
 // Load loads `plugin` with `config` (a value of its config type, or nil)
 // and the services in `services` (Go values whose exported methods are the
 // service's methods). The plugin is unloaded when the test ends.
-func Load(t testing.TB, plugin *rutis.Definition, config any, services map[string]any, options ...Option) *Loaded {
+func Load(t testing.TB, plugin *rutis.Definition, config any, services map[string]any, opts ...Option) *Loaded {
 	t.Helper()
 	declared := describe(t, plugin)
 	for _, name := range declared.Inject {
@@ -177,8 +186,13 @@ func Load(t testing.TB, plugin *rutis.Definition, config any, services map[strin
 		}
 	}
 	hook()
+	o := options{runtime: defaultRuntime}
+	for _, option := range opts {
+		option(&o)
+	}
 	runtimeSide, hostSide := net.Pipe()
 	h := &harness{
+		runtime:   o.runtime,
 		t:         t,
 		plugin:    plugin,
 		declared:  declared,
@@ -214,7 +228,7 @@ func Load(t testing.TB, plugin *rutis.Definition, config any, services map[strin
 	if _, err := session.Call(ctx, "", "events.elsewhere", []any{map[string]any{"add": []any{}}}, false); err != nil {
 		t.Fatalf("rutistest: events.elsewhere: %v", err)
 	}
-	if _, err := session.Call(ctx, "", "mount", []any{map[string]any{"announce": true, "runtime": runtimeName}}, false); err != nil {
+	if _, err := session.Call(ctx, "", "mount", []any{map[string]any{"announce": true, "runtime": h.runtime}}, false); err != nil {
 		t.Fatalf("rutistest: mount: %v", err)
 	}
 	for _, name := range declared.Inject {
@@ -226,7 +240,7 @@ func Load(t testing.TB, plugin *rutis.Definition, config any, services map[strin
 			t.Fatalf("rutistest: provide %s: %v", name, err)
 		}
 	}
-	loaded := h.load(config, options)
+	loaded := h.load(config, opts)
 	t.Cleanup(h.close)
 	return loaded
 }
@@ -442,9 +456,10 @@ func (e *busEntry) Info() rutis.Listener {
 		return rutis.Listener{Name: e.name, Plugin: "rutistest", Global: e.global}
 	}
 	e.h.mu.Lock()
-	scope := e.h.scope[e.row]
+	// A copy: a filter changing it changes nothing else.
+	scope := slices.Clone(e.h.scope[e.row])
 	e.h.mu.Unlock()
-	return rutis.Listener{Name: e.name, Plugin: e.plugin, Row: e.row, Runtime: runtimeName, Scope: scope, Global: e.global}
+	return rutis.Listener{Name: e.name, Plugin: e.plugin, Row: e.row, Runtime: e.h.runtime, Scope: scope, Global: e.global}
 }
 
 func (e *busEntry) live() bool {
@@ -530,7 +545,7 @@ func (i *invocation) Emit(ctx context.Context, args []any) bool {
 	// Sent now, in order: the runtime starts them in arrival order.
 	wait, err := i.h.session.Send(ctx, "", "events.call", []any{i.record(events.ModeEmit, args, nil)}, false)
 	report := func(err error) {
-		events.Report(fmt.Sprintf("rutis: listener of %s in runtime %s failed: %s", i.name, runtimeName, events.Failure(err)))
+		events.Report(fmt.Sprintf("rutis: listener of %s in runtime %s failed: %s", i.name, i.h.runtime, events.Failure(err)))
 	}
 	if err != nil {
 		report(err)
@@ -567,7 +582,7 @@ func (h *harness) snapshot(name string, scope []rutis.Scope, own bool) *events.D
 }
 
 // run runs a dispatch in `mode`.
-func run(ctx context.Context, d *events.Dispatch, mode events.Mode, args []any, terminal events.Next) (any, error) {
+func run(ctx context.Context, d *events.Dispatch, mode events.Mode, args []any, terminal events.Terminal) (any, error) {
 	switch mode {
 	case events.ModeEmit:
 		return nil, d.Emit(ctx, args)
@@ -667,10 +682,11 @@ func (h *harness) dispatchFromRuntime(ctx context.Context, args []any) (any, err
 			return keep, nil
 		}
 	}
-	var terminal events.Next
+	var terminal events.Terminal
 	if remote, ok := record["terminal"].(*peer.RemoteFunction); ok {
-		terminal = func(ctx context.Context) (any, error) {
-			value, err := remote.Call(ctx, values, false)
+		// Called with the event's arguments (§5.4).
+		terminal = func(ctx context.Context, args ...any) (any, error) {
+			value, err := remote.Call(ctx, args, false)
 			if err != nil {
 				return nil, err
 			}
@@ -784,8 +800,8 @@ func (l *Loaded) Serial(ctx context.Context, name string, args ...any) (any, err
 }
 
 // Waterfall runs the listeners of `name` outermost first, each with
-// `next`, the innermost `terminal` (nil: no result).
-func (l *Loaded) Waterfall(ctx context.Context, name string, terminal rutis.Next, args ...any) (any, error) {
+// `next`, the innermost `terminal`, called with `args` (nil: no result).
+func (l *Loaded) Waterfall(ctx context.Context, name string, terminal rutis.Terminal, args ...any) (any, error) {
 	return l.emit(ctx, nil, name, events.ModeWaterfall, args, terminal)
 }
 
@@ -824,7 +840,7 @@ func (e *Emitter) Serial(ctx context.Context, name string, args ...any) (any, er
 }
 
 // Waterfall is Loaded.Waterfall, filtered.
-func (e *Emitter) Waterfall(ctx context.Context, name string, terminal rutis.Next, args ...any) (any, error) {
+func (e *Emitter) Waterfall(ctx context.Context, name string, terminal rutis.Terminal, args ...any) (any, error) {
 	return e.l.emit(ctx, e.keep, name, events.ModeWaterfall, args, terminal)
 }
 
@@ -833,7 +849,7 @@ func (e *Emitter) Bail(ctx context.Context, name string, args ...any) (any, erro
 	return e.l.emit(ctx, e.keep, name, events.ModeBail, args, nil)
 }
 
-func (l *Loaded) emit(ctx context.Context, keep func(rutis.Listener) (bool, error), name string, mode events.Mode, args []any, terminal rutis.Next) (any, error) {
+func (l *Loaded) emit(ctx context.Context, keep func(rutis.Listener) (bool, error), name string, mode events.Mode, args []any, terminal rutis.Terminal) (any, error) {
 	if err := events.CheckEmit(name); err != nil {
 		return nil, err
 	}
@@ -854,7 +870,21 @@ func (l *Loaded) emit(ctx context.Context, keep func(rutis.Listener) (bool, erro
 	if mode == events.ModeEmit {
 		ctx = context.WithoutCancel(ctx)
 	}
-	value, err := run(ctx, d, mode, values, terminal)
+	var last events.Terminal
+	if terminal != nil {
+		// With the arguments as a listener gets them.
+		last = func(ctx context.Context, args ...any) (any, error) {
+			plain := make([]any, len(args))
+			for i, arg := range args {
+				var err error
+				if plain[i], err = convert.Plain(arg); err != nil {
+					return nil, err
+				}
+			}
+			return terminal(ctx, plain...)
+		}
+	}
+	value, err := run(ctx, d, mode, values, last)
 	if err != nil {
 		return nil, err
 	}
@@ -921,9 +951,16 @@ func (l *Loaded) Service(name string) *Service {
 	return &Service{session: h.session, handle: handle, name: name, kinds: kinds}
 }
 
+// unloadWait is how long the test side waits for an unload: the runtime
+// waits for running listeners up to RUTIS_SHUTDOWN_TIMEOUT (seconds,
+// default 10), as under a host, then runs the cleanups.
+func unloadWait() time.Duration { return events.ShutdownTimeout() + 30*time.Second }
+
 // Unload unloads the row, failing the test if a cleanup failed. The
-// runtime cancels its running listeners and waits for them first. It runs
-// when the test ends; calling it earlier is allowed.
+// runtime cancels its running listeners and waits for them first, up to
+// RUTIS_SHUTDOWN_TIMEOUT seconds (default 10), as under a host; past it,
+// it reports so (Reported) and unloads anyway. It runs when the test
+// ends; calling it earlier is allowed.
 func (l *Loaded) Unload() {
 	l.unload.Do(func() {
 		h := l.h
@@ -935,7 +972,7 @@ func (l *Loaded) Unload() {
 		if closed {
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), unloadWait())
 		defer cancel()
 		if _, err := h.session.Call(ctx, "", "rows.unload", []any{l.row}, false); err != nil {
 			h.t.Errorf("rutistest: unload: %v", err)
@@ -976,7 +1013,7 @@ func (l *Loaded) Update(config any) {
 	}
 	h.withdrawRow(l.row)
 	h.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), unloadWait())
 	defer cancel()
 	if _, err := h.session.Call(ctx, "", "rows.update", []any{l.row, configValue}, false); err != nil {
 		h.t.Fatalf("rutistest: update %s: %v", l.row, err)

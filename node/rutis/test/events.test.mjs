@@ -41,7 +41,7 @@ test('a plugin emits to the others with the five methods and filters on descript
   assert.deepEqual(seen.map(d => [d.row, d.plugin, d.scope]), [['a', 'listens-ask', []], ['b', 'listens-ask', [{ id: 't1', group: 'tenant' }]]])
   assert.equal(emitter.bail('ask', 'Oslo'), 'sunny in Oslo')
   await h.load(listener('wrap', (_ctx, x, next) => `<${next()}>`, { prepend: true }), { row: 'w' })
-  assert.equal(emitter.waterfall('wrap', 1, x => `t${x}`), '<t1>')
+  assert.equal(emitter.waterfall.with(x => `t${x}`)('wrap', 1), '<t1>')
   await h.unload()
 })
 
@@ -121,4 +121,56 @@ test('a row uses another row\'s service as the object itself', async () => {
   assert.equal(used, store)
   await assert.rejects(h.load(definePlugin({ inject: ['missing'], apply() {} })), /give the test a service missing/)
   await h.unload()
+})
+
+// Across processes a listener's error arrives by name, not by class: the
+// tool gives a plugin's own emitters the crossed form, so a plugin
+// matching by class fails in its tests as it would on a real host.
+test('errors reach a plugin\'s own emitters as from another process', async () => {
+  class Custom extends Error { name = 'Custom' }
+  const h = host()
+  let emitter
+  await h.load(definePlugin({ apply(ctx) { emitter = ctx } }), { row: 'e' })
+  await h.load(listener('fail', () => { throw new Custom('custom') }), { row: 'a' })
+  await h.load(listener('type', () => { throw new TypeError('typed') }), { row: 't' })
+  const serial = await emitter.serial('fail').catch(error => error)
+  assert.ok(!(serial instanceof Custom))
+  assert.equal(serial.name, 'Custom')
+  assert.equal(serial.message, 'custom')
+  assert.throws(() => emitter.bail('fail'), error => !(error instanceof Custom) && error.name === 'Custom')
+  const parallel = await emitter.parallel('fail').catch(error => error)
+  assert.equal(parallel.name, 'AggregateError')
+  assert.ok(!(parallel.errors[0] instanceof Custom))
+  assert.equal(parallel.errors[0].name, 'Custom')
+  // A built-in class crosses as itself.
+  assert.ok(await emitter.serial('type').catch(error => error) instanceof TypeError)
+  await h.unload()
+})
+
+test('descriptors call the runtime as the language; the deadline is RUTIS_SHUTDOWN_TIMEOUT', async () => {
+  const seen = []
+  const h = host()
+  let emitter
+  await h.load(definePlugin({ apply(ctx) { emitter = ctx } }), { row: 'e' })
+  await h.load(definePlugin({ apply(ctx) { ctx.on('d', () => {}) } }), { row: 'anonymous' })
+  await emitter.filter(descriptor => { seen.push(descriptor); return true }).parallel('d')
+  assert.deepEqual(seen.map(({ runtime, plugin, row }) => ({ runtime, plugin, row })), [{ runtime: 'node', plugin: 'anonymous', row: 'anonymous' }])
+  await h.unload()
+  const named = host({ runtime: 'js' })
+  await named.load(definePlugin({ apply(ctx) { ctx.on('d', () => {}) } }))
+  const descriptors = []
+  await named.filter(descriptor => { descriptors.push(descriptor.runtime); return true }).parallel('d')
+  assert.deepEqual(descriptors, ['js'])
+  await named.unload()
+  const before = process.env.RUTIS_SHUTDOWN_TIMEOUT
+  process.env.RUTIS_SHUTDOWN_TIMEOUT = '0.02'
+  try {
+    const stuck = await load(definePlugin({ apply(ctx) { ctx.on('work', () => new Promise(() => {})) } }))
+    stuck.emit('work')
+    await stuck.unload()
+    assert.deepEqual(stuck.reported.map(report => report.line), [`rutis: listeners of row ${stuck.row} still running after 0.02s; unloading anyway`])
+  } finally {
+    if (before === undefined) delete process.env.RUTIS_SHUTDOWN_TIMEOUT
+    else process.env.RUTIS_SHUTDOWN_TIMEOUT = before
+  }
 })

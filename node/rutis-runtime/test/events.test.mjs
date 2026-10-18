@@ -108,7 +108,11 @@ test('next called twice or after the waterfall ended fails with WaterfallNext', 
   let kept
   listen(bus, 'late', next => { kept = next; return 'x' })
   assert.equal(bus.dispatch('waterfall', 'late', []), 'x')
-  assert.throws(() => kept(), { name: 'WaterfallNext', message: 'next of late was called after its waterfall ended' })
+  // As through the host, a failing next is a rejected Promise, not a throw.
+  await assert.rejects(kept(), { name: 'WaterfallNext', message: 'next of late was called after its waterfall ended' })
+  listen(bus, 'sync-twice', next => { next(); return next() })
+  listen(bus, 'sync-twice', () => 'b')
+  await assert.rejects(Promise.resolve(bus.dispatch('waterfall', 'sync-twice', [])), { name: 'WaterfallNext', message: 'next of sync-twice was already called' })
 })
 
 test('bail is synchronous; an async listener is refused, one returning a Promise fails', () => {
@@ -277,11 +281,108 @@ test('through the host, the filter is a selector over descriptors and the termin
   bus.dispatch('parallel', 'f', [], { row: 'e', keep: (descriptor, entry) => { owners.push(entry?.owner ?? null); return descriptor.row === 'chat' } })
   const [, [fields]] = host.sent.at(-1)
   const descriptor = row => ({ name: 'f', prefix: false, plugin: row === 'chat' ? 'chat-ui' : 'x', row, runtime: row === 'chat' ? 'node' : 'py', node: null, scope: [], global: false })
-  assert.deepEqual(fields.filter([descriptor('chat'), descriptor('other')]), [true, false])
+  // The host marks this process's own listeners with their id.
+  assert.deepEqual(fields.filter([{ ...descriptor('chat'), listener: own.id }, descriptor('other')]), [true, false])
   assert.deepEqual(owners, ['ctx', null])
   bus.dispatch('waterfall', 'f', [7], { terminal: x => x * 2 })
   assert.equal(host.sent.at(-1)[1][0].terminal(7), 14)
   assert.ok(own.live)
+})
+
+// The selector finds this process's own listener by the id the host gives
+// (`listener`), never by what the descriptor says: two copies of one row
+// in two instances, or one plugin in two Cordis Contexts, have equal rows
+// and plugins; the filter sees the host's descriptor (the copy's own
+// scope), without the id.
+test('through the host, the filter judges the very listener the host asks about', async () => {
+  const host = peer()
+  const bus = new Bus({ runtime: 'node', peer: host, report: () => {} })
+  bus.nameRow('c#2', 'c')
+  bus.nameRow('c#1', 'c')
+  const t2 = bus.on({ name: 'f', callback: () => {}, row: 'c#2', plugin: 'p', scope: [T2], owner: 'ctx-t2' })
+  const t1 = bus.on({ name: 'f', callback: () => {}, row: 'c#1', plugin: 'p', scope: [T1], owner: 'ctx-t1' })
+  bus.elsewhere({ add: ['f'] })
+  const seen = []
+  bus.dispatch('parallel', 'f', [], { row: 'e', scope: [T1], keep: (descriptor, entry) => { seen.push([descriptor, entry?.owner]); return descriptor.scope[0]?.id === T1.id } })
+  const [, [fields]] = host.sent.at(-1)
+  const at = scope => ({ name: 'f', prefix: false, plugin: 'p', row: 'c', runtime: 'node', node: null, scope, global: false })
+  // Only the t1 copy hears an emission in t1; the host asks about it alone.
+  assert.deepEqual(fields.filter([{ ...at([T1]), listener: t1.id }]), [true])
+  assert.deepEqual(seen, [[at([T1]), 'ctx-t1']])
+  // The same descriptor from another runtime or node is not this process's.
+  seen.length = 0
+  assert.deepEqual(fields.filter([{ ...at([T1]), runtime: 'py' }]), [true])
+  assert.deepEqual(seen, [[{ ...at([T1]), runtime: 'py' }, undefined]])
+  assert.ok(t2.live)
+})
+
+test('a filter gets a copy of the scope; an unloaded row cannot emit', () => {
+  const { bus } = local()
+  const chain = [T1]
+  bus.on({ name: 's', callback: () => 'x', row: 'r', scope: chain })
+  bus.dispatch('bail', 's', [], { scope: [T1], keep: descriptor => { descriptor.scope[0].id = 'changed'; descriptor.scope.push(S1); return true } })
+  assert.deepEqual(chain, [T1])
+  assert.equal(T1.id, '17')
+  bus.nameRow('r', 'r')
+  bus.withdraw('r')
+  for (const mode of ['emit', 'parallel', 'serial', 'waterfall', 'bail']) {
+    assert.throws(() => bus.dispatch(mode, 's', [], { row: 'r' }), { name: 'BindingError', message: 'row r is not loaded in this runtime' }, mode)
+  }
+  // Loaded again under the same key: it may.
+  bus.nameRow('r', 'r')
+  assert.equal(bus.dispatch('bail', 's', [], { row: 'r' }), undefined)
+  // A context of the old row still cannot.
+  assert.throws(() => bus.dispatch('emit', 's', [], { row: 'r', gone: true }), { name: 'BindingError' })
+})
+
+test('a listener its row\'s unload stops is not reported; a mount emitter is "the mount"', async () => {
+  const host = peer(method => method === 'events.dispatch' ? Promise.reject(Object.assign(new Error('no'), { name: 'BindingError' })) : undefined)
+  const reported = []
+  const bus = new Bus({ runtime: 'node', peer: host, report: line => reported.push(line) })
+  const abort = new AbortController()
+  bus.on({ name: 'u', callback: () => new Promise((_, reject) => abort.signal.addEventListener('abort', () => reject(abort.signal.reason))), row: 'r' })
+  bus.on({ name: 'u', callback: async () => { throw new Error('plain') }, row: 'r' })
+  bus.dispatch('emit', 'u', [])
+  await new Promise(resolve => setImmediate(resolve))
+  bus.withdraw('r')
+  abort.abort(new DOMException('the row is unloading', 'AbortError'))
+  await bus.settle('r', 1_000)
+  assert.deepEqual(reported, ['rutis: listener of u in row r failed: Error: plain'])
+  reported.length = 0
+  bus.elsewhere({ add: ['m'] })
+  bus.dispatch('emit', 'm', [])
+  bus.dispatch('emit', 'm', [], { row: null, keep: () => { throw new Error('bad filter') } })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(reported, ['rutis: emit of m from the mount failed: BindingError: no', 'rutis: emit of m from the mount failed: BindingError: no'])
+  bus.ended()
+  bus.on({ name: 'k', callback: () => {} })
+  bus.dispatch('emit', 'k', [], { keep: () => { throw new Error('bad filter') } })
+  assert.deepEqual(reported.at(-1), 'rutis: filter of k from the mount failed: Error: bad filter')
+})
+
+test('a registration the host refuses while its row loads fails the load, later it is reported', async () => {
+  const refuse = Object.assign(new Error('refused'), { name: 'BindingError' })
+  const host = peer(method => method === 'events.on' ? Promise.reject(refuse) : undefined)
+  const reported = []
+  let loading = true
+  const bus = new Bus({ peer: host, report: line => reported.push(line), loading: () => loading })
+  bus.on({ name: 'n', callback: () => {}, row: 'r' })
+  await assert.rejects(Promise.all(bus.registrations('r')), { message: 'refused' })
+  loading = false
+  bus.on({ name: 'later', callback: () => {}, row: 'r' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(reported, ['rutis: registration of listener of later in row r failed: BindingError: refused'])
+})
+
+test('a restart withdraws the row\'s listeners here and on the host, and keeps it loaded', () => {
+  const host = peer()
+  const bus = new Bus({ peer: host, report: () => {} })
+  const a = bus.on({ name: 'n', callback: () => {}, row: 'r' })
+  host.sent.length = 0
+  bus.withdraw('r', { restart: true })
+  assert.deepEqual(host.sent, [['events.off', [[a.id]]]])
+  assert.ok(!a.live)
+  assert.equal(bus.dispatch('bail', 'n', [], { row: 'r' }), undefined)
 })
 
 test('events.call runs a listener here by mode; withdrawn ones fail', async () => {

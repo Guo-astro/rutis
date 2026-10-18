@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll};
 
 use rutis::events::{
-    BatchFilter, Dispatch, EventOptions, FilterAnswer, ListenerInfo, ListenerKind, Mode,
+    BatchFilter, Candidate, Dispatch, EventOptions, FilterAnswer, ListenerInfo, ListenerKind, Mode,
     PayloadRef, RawTerminal, RemoteCall, RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall,
     RemoteSyncNext, Scope, TableChange, TableEntry,
 };
@@ -583,7 +583,8 @@ impl SessionEvents {
         let mut dispatch = Dispatch::new(name.clone(), mode, from_wire(args));
         dispatch.scope = Some(scope);
         dispatch.origin = Some(self.origin);
-        dispatch.filter = filter.map(|filter| selector(filter, name.clone(), mode.is_sync()));
+        dispatch.filter =
+            filter.map(|filter| selector(filter, name.clone(), mode.is_sync(), self.origin));
         dispatch.terminal = terminal.map(terminal_of);
 
         match mode {
@@ -758,17 +759,36 @@ fn reference(
     }
 }
 
-/// A listener's descriptor as a session value (events protocol §4.2).
-pub(crate) fn descriptor(info: &ListenerInfo) -> Value {
-    Value::Data(serde_json::to_value(info).unwrap_or(Json::Null))
-}
-
 /// The batch filter that calls the emitter's selector (events protocol §6):
-/// once, with every candidate's descriptor; synchronously in `bail`.
-fn selector(selector: crate::session::Reference, name: String, sync: bool) -> BatchFilter {
-    Box::new(move |infos: Vec<ListenerInfo>| {
-        let wanted = infos.len();
-        let argument = Value::List(vec![Value::List(infos.iter().map(descriptor).collect())]);
+/// once, with every candidate's descriptor; synchronously in `bail`. The
+/// descriptor of an entry of the emitter's own session (`origin`) also
+/// carries `listener`, its `events.on` id: the runtime finds its own
+/// listener by it (two copies of a row in two instances, or two Cordis
+/// contexts of one plugin, have equal descriptors) and does not show it to
+/// the plugin's filter.
+fn selector(
+    selector: crate::session::Reference,
+    name: String,
+    sync: bool,
+    origin: u64,
+) -> BatchFilter {
+    Box::new(move |candidates: Vec<Candidate>| {
+        let wanted = candidates.len();
+        let described = candidates
+            .iter()
+            .map(|candidate| {
+                let mut described = serde_json::to_value(&candidate.info).unwrap_or(Json::Null);
+                if let (Some(id), Some(true), Json::Object(fields)) = (
+                    &candidate.id,
+                    candidate.origin.map(|from| from == origin),
+                    &mut described,
+                ) {
+                    fields.insert("listener".into(), Json::String(id.clone()));
+                }
+                Value::Data(described)
+            })
+            .collect();
+        let argument = Value::List(vec![Value::List(described)]);
         let answers = move |reply: Value| -> Result<Vec<bool>, CordisError> {
             let wrong = |got: usize| {
                 to_cordis(binding(format!(
@@ -913,6 +933,10 @@ pub(crate) fn sync_next_function(next: RemoteSyncNext) -> Value {
 impl RemoteListener for WireEntry {
     fn kind(&self) -> ListenerKind {
         self.kind
+    }
+
+    fn id(&self) -> Option<&str> {
+        Some(&self.id)
     }
 
     fn call<'a>(

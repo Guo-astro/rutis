@@ -8,13 +8,14 @@ import contextlib
 import io
 import os
 import sys
+import threading
 import types
 import unittest
 
 import background
-from support import within
+from support import HANG_GUARD, within
 
-from rutis import AggregateError, AsyncListener, ReservedEvent, WaterfallNext
+from rutis import AggregateError, AsyncListener, BindingError, ReservedEvent, WaterfallNext, define_plugin
 from rutis.events import Bus, no_result, within as hears
 from rutis.runner import Runtime
 
@@ -400,7 +401,7 @@ class Filter(Rows):
             {
                 "name": "t/filter",
                 "prefix": False,
-                "plugin": "events_row_a",
+                "plugin": "a",  # no declared name: the row's id
                 "row": "a",
                 "runtime": None,
                 "node": None,
@@ -589,6 +590,173 @@ class Unload(Rows):
         contexts[1].emit("tick", 1)
         # The updated row registered again: after b.
         self.assertEqual(seen, [["other", 1], ["updated", 1]])
+
+
+class Review(Rows):
+    """Rules settled across languages after #464's review."""
+
+    async def test_an_unloaded_row_emits_nothing_refused_at_once(self):
+        # §3: `row <key> is not loaded in this runtime`, synchronously in
+        # every mode, as a reserved name is refused; filtered emitters too.
+        ctx = await self.row("gone")
+        filtered = ctx.filter(lambda d: True)
+        await self.runtime.unload("gone")
+        for emitter in (ctx, filtered):
+            for mode in ("emit", "parallel", "serial", "waterfall", "bail"):
+                with self.assertRaisesRegex(BindingError, "^row gone is not loaded in this runtime$"):
+                    getattr(emitter, mode)("t/gone")
+
+    async def test_next_starts_the_rest_of_the_chain_at_once(self):
+        # §5.4: as in JavaScript and Go, next() starts the rest eagerly.
+        ctx = await self.row("a")
+        log = []
+
+        async def outer(next):
+            rest = next()
+            log.append("outer after next")
+            return "outer:" + await rest
+
+        async def inner(next):
+            log.append("inner")
+            return "inner"
+
+        ctx.on("t/wf-eager", outer)
+        ctx.on("t/wf-eager", inner)
+        self.assertEqual(await ctx.waterfall("t/wf-eager"), "outer:inner")
+        self.assertEqual(log, ["inner", "outer after next"])
+
+    async def test_the_snapshot_and_the_filter_are_taken_when_called(self):
+        # §5.1: not when the awaitable is first awaited.
+        ctx = await self.row("a")
+        log, asked = [], []
+        ctx.on("t/snap", lambda *next: log.append("early"))
+        dispatches = [
+            ctx.filter(lambda d: asked.append(mode) or True).__getattribute__(mode)("t/snap")
+            for mode in ("parallel", "serial", "waterfall")
+        ]
+        self.assertEqual(asked, ["parallel", "serial", "waterfall"], "the filter ran at the call")
+        ctx.on("t/snap", lambda *next: log.append("late"))
+        for dispatch in dispatches:
+            await dispatch
+        self.assertEqual(log, ["early", "early", "early"])
+
+    async def test_a_listener_cancelled_by_its_rows_unload_is_not_reported(self):
+        # §5.6, §7.1: cancellation by the unload is not a failure.
+        emitter = await self.row("e")
+        listener = await self.row("b")
+        started = asyncio.Event()
+
+        async def waits():
+            started.set()
+            await asyncio.Event().wait()
+
+        listener.on("t/cancelled", waits)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            emitter.emit("t/cancelled")
+            await within("the listener", started.wait())
+            await within("the unload", self.runtime.unload("b"))
+            await asyncio.sleep(0)
+        self.assertEqual(stderr.getvalue(), "")
+
+    async def test_listeners_given_up_on_are_dropped_from_the_row(self):
+        # §7.1 step 4: a reload of the same key does not wait for them.
+        emitter = await self.row("e")
+        listener = await self.row("b")
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def stubborn():
+            started.set()
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    pass
+
+        listener.on("t/stubborn", stubborn)
+        emitter.emit("t/stubborn")
+        await within("the listener", started.wait())
+        previous = os.environ.get("RUTIS_SHUTDOWN_TIMEOUT")
+        os.environ["RUTIS_SHUTDOWN_TIMEOUT"] = "0.05"
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                await within("the unload", self.runtime.unload("b"))
+            self.assertNotIn("b", self.runtime.bus.running)
+            await self.row("b")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                await within("the second unload", self.runtime.unload("b"))
+            self.assertEqual(stderr.getvalue(), "", "nothing left to wait for")
+        finally:
+            if previous is None:
+                del os.environ["RUTIS_SHUTDOWN_TIMEOUT"]
+            else:
+                os.environ["RUTIS_SHUTDOWN_TIMEOUT"] = previous
+            release.set()
+
+    async def test_the_declared_name_is_the_descriptors_plugin(self):
+        # §4.2: `plugin` is define_plugin's name, else the row's id.
+        def apply(ctx, config):
+            ctx.on("t/named", lambda: None)
+
+        plugin = types.ModuleType("events_named_plugin")
+        plugin.plugin = define_plugin(apply, name="chat-ui")
+        sys.modules["events_named_plugin"] = plugin
+        await self.runtime.load("named", "events_named_plugin", {}, None, None, [], "chat")
+        await self.runtime.load("anon", module("events_anon_plugin", apply), {}, None, None, [], "audit")
+        emitter = await self.row("e")
+        seen = []
+        await emitter.filter(lambda d: seen.append((d["plugin"], d["row"]))).parallel("t/named")
+        self.assertEqual(seen, [("chat-ui", "chat"), ("audit", "audit")])
+        with self.assertRaises(TypeError):
+            define_plugin(apply, name="")
+
+
+class Threads(Rows):
+    async def test_a_plugins_threads_listen_emit_and_withdraw_on_the_loop(self):
+        # A plugin's own threads: marshalled onto the session's loop, in
+        # call order; the table is safe to change from any of them.
+        ctx = await self.row("a")
+        loop_thread = threading.get_ident()
+        log = []
+
+        def listener(value):
+            log.append((value, threading.get_ident() == loop_thread))
+            return value
+
+        def plugin_thread():
+            offs = [ctx.on("t/thread", listener) for _ in range(50)]
+            ctx.emit("t/thread", "emitted")
+            serial = ctx.serial("t/thread", "serial")
+            bailed = ctx.bail("t/thread", "bail")
+            for off in offs[1:]:
+                off()
+            return serial.result(HANG_GUARD), bailed
+
+        serial, bailed = await within("the thread", asyncio.to_thread(plugin_thread))
+        self.assertEqual((serial, bailed), ("serial", "bail"))
+        self.assertTrue(all(on_loop for _value, on_loop in log), "listeners ran on the loop")
+        self.assertEqual([value for value, _ in log], ["emitted"] * 50 + ["serial", "bail"])
+        self.assertEqual(len(self.runtime.bus.entries), 1)
+
+        async def from_a_loop_of_its_own():
+            return await ctx.parallel("t/thread", "own loop")
+
+        self.assertIsNone(await within("the thread", asyncio.to_thread(asyncio.run, from_a_loop_of_its_own())))
+        self.assertEqual(log[-1], ("own loop", True))
+
+    async def test_concurrent_registrations_keep_the_table_whole(self):
+        ctx = await self.row("a")
+
+        def register():
+            for _ in range(200):
+                ctx.on("t/many", lambda: None)()
+
+        threads = [threading.Thread(target=register) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        await within("the threads", asyncio.to_thread(lambda: [thread.join() for thread in threads]))
+        self.assertEqual((self.runtime.bus.entries, self.runtime.bus.by_id), ([], {}))
 
 
 class BusAlone(unittest.TestCase):
