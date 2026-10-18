@@ -660,6 +660,9 @@ pub struct HostLease {
     id: String,
     /// The scope label it was registered in.
     label: Option<String>,
+    /// The shared registration a lease of one row's own takes too
+    /// ([`Process::lease_host_for`]).
+    shared: Option<Box<HostLease>>,
 }
 
 impl HostLease {
@@ -672,7 +675,11 @@ impl HostLease {
 
     /// Give the lease back; the last one withdraws the service from Cordis.
     pub async fn release(self) -> Result<(), Error> {
-        self.process.release_host(&self.id).await
+        let released = self.process.release_host(&self.id).await;
+        if let Some(shared) = self.shared {
+            Box::pin(shared.release()).await?;
+        }
+        released
     }
 }
 
@@ -1146,10 +1153,13 @@ impl Process {
     /// scope `label`) for the calls it makes to the service. The service
     /// is registered in a scope of the row's own, whose label
     /// ([`HostLease::label`]) the row isolates `name` under when it is
-    /// loaded, instead of `label`. This needs the runtime's `scopes`
-    /// (every runtime rutis ships has it): in a runtime without it, the
-    /// lease is [`Process::lease_host_in`]'s, shared, and its calls name
-    /// no row.
+    /// loaded, instead of `label`. The lease also takes
+    /// [`Process::lease_host_in`]'s shared registration in `label`, as
+    /// before: code of other rows that looks the name up without declaring
+    /// it (a Cordis `ctx.get`) still finds it there, and those calls name
+    /// no row. This needs the runtime's `scopes` (every runtime rutis
+    /// ships has it): in a runtime without it, the lease is only the
+    /// shared one, and its calls name no row.
     pub async fn lease_host_for(
         self: &Arc<Self>,
         name: &str,
@@ -1158,14 +1168,27 @@ impl Process {
         dispatch: Arc<dyn HostDispatch>,
         methods: Option<Value>,
     ) -> Result<HostLease, Error> {
+        let shared = self
+            .lease_host_in(name, label, dispatch.clone(), methods.clone())
+            .await?;
         if !self.supports("scopes") {
-            return self.lease_host_in(name, label, dispatch, methods).await;
+            return Ok(shared);
         }
-        check_scoped(name, label)?;
         let own = row_label(label, row.key());
         let row = row.in_scope(label);
-        self.lease(name, Some(&own), dispatch, methods, Some(row))
+        match self
+            .lease(name, Some(&own), dispatch, methods, Some(row))
             .await
+        {
+            Ok(mut lease) => {
+                lease.shared = Some(Box::new(shared));
+                Ok(lease)
+            }
+            Err(error) => {
+                let _ = shared.release().await;
+                Err(error)
+            }
+        }
     }
 
     async fn lease(
@@ -1225,6 +1248,7 @@ impl Process {
             process: self.clone(),
             id,
             label: label.map(str::to_owned),
+            shared: None,
         })
     }
 

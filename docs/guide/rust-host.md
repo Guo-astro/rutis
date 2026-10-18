@@ -75,9 +75,9 @@ impl HostDispatch for Tools {
 ```
 
 - 同一个运行时里的两行是两个调用方，`key()` 和 `instance()` 各不相同。
-- 来自 Rust 的调用、来自对端节点的调用（包括 `peer:` 行，它们的调用经节点之间的服务到达）、运行时里不属于任何行的调用（`Mount::hosts` 提供的服务）都是 `None`。
+- 来自 Rust 的调用、来自对端节点的调用（包括 `peer:` 行，它们的调用经节点之间的服务到达）、运行时里不属于任何行的调用（`Mount::hosts` 提供的服务）、行里没有声明就使用这个服务的代码的调用（Cordis 的 `ctx.get`，找到的是所有行共享的那份注册）都是 `None`。
 - 只在 `invoke` 本身里读它：`invoke` 返回的 future 之后在别处运行，读不到。
-- 它来自 rutis-loader 的行租用服务的方式（`Process::lease_host_for`）：每一行把它租用的服务注册在自己的作用域里，所以线上格式不变，Node、Bun、Python、Go 的运行时都可以用，0.11 的也可以。自己用 `Process` 加载行时，用 `lease_host_for` 并按 `HostLease::label()` 隔离这个名字；`lease_host` / `lease_host_in` 的调用是 `None`。
+- 它来自 rutis-loader 的行租用服务的方式（`Process::lease_host_for`）：每一行把它租用的服务注册在自己的作用域里（另有与以前一样、所有行共享的那份注册），所以线上格式不变，Node、Bun、Python、Go 的运行时都可以用，0.11 的也可以。自己用 `Process` 加载行时，用 `lease_host_for` 并按 `HostLease::label()` 隔离这个名字；`lease_host` / `lease_host_in` 的调用是 `None`。
 
 宿主事件的 `emits` 声明通过下述 Rust API 配置；`rutis-host` 的 JSON 配置暂未提供这个入口。同进程插件的本地事件不需要该声明。
 

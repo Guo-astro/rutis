@@ -75,9 +75,9 @@ impl HostDispatch for Tools {
 ```
 
 - Two rows of one runtime are two callers, with different `key()` and `instance()`.
-- A call from Rust, from a peer node (including `peer:` rows, whose calls arrive through the services between nodes), or from a runtime outside any row (a service from `Mount::hosts`) is `None`.
+- A call from Rust, from a peer node (including `peer:` rows, whose calls arrive through the services between nodes), from a runtime outside any row (a service from `Mount::hosts`), or from code of a row that uses the service without declaring it (a Cordis `ctx.get`, which finds the registration shared by all rows) is `None`.
 - Read it in `invoke` itself: a future that `invoke` returns runs later, elsewhere, and does not see it.
-- It comes from how rutis-loader's rows lease services (`Process::lease_host_for`): each row has the services it leases registered in a scope of its own, so the wire is unchanged and it works with Node, Bun, Python and Go runtimes, 0.11 ones included. When you load rows with `Process` yourself, lease with `lease_host_for` and isolate the name under `HostLease::label()`; calls through `lease_host` / `lease_host_in` are `None`.
+- It comes from how rutis-loader's rows lease services (`Process::lease_host_for`): each row has the services it leases registered in a scope of its own (besides the registration shared by all rows, as before), so the wire is unchanged and it works with Node, Bun, Python and Go runtimes, 0.11 ones included. When you load rows with `Process` yourself, lease with `lease_host_for` and isolate the name under `HostLease::label()`; calls through `lease_host` / `lease_host_in` are `None`.
 
 Declare host events through `emits` on the Rust API below; `rutis-host` JSON configuration does not yet expose this setting. Local events between plugins in one process do not need it.
 
