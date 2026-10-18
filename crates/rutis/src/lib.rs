@@ -31,8 +31,8 @@ pub use diagnostics::{
 };
 pub use effect::{Disposer, Effect, EffectMeta, EffectPhase};
 pub use error::{
-    CordisError, ErrorSink, NextMisuse, ServiceReadError, ServiceReadFailure, ServiceWriteError,
-    ServiceWriteFailure,
+    default_sink, CordisError, ErrorSink, NextMisuse, ServiceReadError, ServiceReadFailure,
+    ServiceWriteError, ServiceWriteFailure,
 };
 pub use events::{
     Call, Event, EventOptions, Listener, ListenerInfo, ListenerKind, Mode, PatternListener, Scope,

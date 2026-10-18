@@ -253,7 +253,9 @@ impl CordisError {
 /// (D25),而 `CordisError` 刻意不 Clone(D11),见 §八 实现记录。
 pub type ErrorSink = Arc<dyn Fn(Arc<CordisError>) + Send + Sync>;
 
-pub(crate) fn default_sink() -> ErrorSink {
+/// The sink `Ctx::root` / `Ctx::root_with` install: one `[rutis] ...` line on
+/// stderr per error. A host installing its own sink can delegate to it.
+pub fn default_sink() -> ErrorSink {
     Arc::new(|e: Arc<CordisError>| eprintln!("[rutis] {}", format_for_sink(&e)))
 }
 
