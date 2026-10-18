@@ -2,7 +2,10 @@
 
 use std::path::Path;
 
+mod crates;
+mod exports;
 mod rust;
+pub use exports::Exports;
 pub use rust::rutis_plugin;
 
 /// Generate Rust bindings for a Cordis plugin into `OUT_DIR/cordis.rs`.

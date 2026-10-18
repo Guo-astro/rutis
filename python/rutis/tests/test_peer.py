@@ -660,6 +660,24 @@ class ErrorGraphTests(unittest.TestCase):
         },
     }
 
+    def test_a_rust_service_error_has_its_code_and_data(self):
+        # As rutis-bridge's `exports::failure` sends it (#440): a bigint in data.
+        error = decode_error({
+            "name": "CalendarError",
+            "message": "no entry 7",
+            "graph": {
+                "root": {"type": "reference", "value": 0},
+                "nodes": [
+                    {"type": "error", "name": "CalendarError", "message": "no entry 7", "code": "NotFound", "data": {"type": "reference", "value": 1}},
+                    {"type": "object", "values": [["NotFound", {"type": "bigint", "value": "18446744073709551615"}]]},
+                ],
+            },
+        })
+        self.assertEqual((error.name, error.message, error.code), ("CalendarError", "no entry 7", "NotFound"))
+        self.assertEqual(error.data, {"NotFound": 18446744073709551615})
+        self.assertEqual((decode_error(self.FAR).code, decode_error(self.FAR).data), (None, None))
+        self.assertIsNone(decode_error({"name": "Error", "message": "plain"}).code)
+
     def test_a_remote_error_thrown_on_crosses_with_its_whole_graph(self):
         # Alone, not only inside an AggregateError: as Node's decoded Error re-encodes.
         wire = encode_error(decode_error(self.FAR))

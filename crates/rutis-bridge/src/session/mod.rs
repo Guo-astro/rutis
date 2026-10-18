@@ -25,6 +25,7 @@ mod services;
 pub mod testing;
 pub mod values;
 
+pub(crate) use objects::decode_data;
 pub use objects::{
     arg, decode_value, Bytes, JsError, ObjectRef, RemoteFunction, ValueMap, ValueSet,
 };
@@ -50,6 +51,92 @@ pub enum Error {
     /// The session could not be established: see [`Handshake`].
     #[error("{0}")]
     Handshake(Handshake),
+}
+
+impl Error {
+    /// The `code` an error carries: one a Rust service method returned as
+    /// `Err(e)` ([`crate::exports`]), or any error whose graph names one
+    /// (a JavaScript error with a string `code`). `None` for others.
+    pub fn code(&self) -> Option<&str> {
+        let Self::Remote { graph, .. } = self else {
+            return None;
+        };
+        graph_root(graph.as_ref()?)?.get("code")?.as_str()
+    }
+
+    /// The `data` an error carries, as [`Error::code`]: the serde value of
+    /// the `E` a Rust service method returned.
+    pub fn data(&self) -> Option<serde_json::Value> {
+        let Self::Remote { graph, .. } = self else {
+            return None;
+        };
+        let graph = graph.as_ref()?;
+        let data = graph_root(graph)?.get("data")?;
+        graph_value(graph, data, 0)
+    }
+}
+
+/// The node a graph's root refers to.
+fn graph_root(graph: &serde_json::Value) -> Option<&serde_json::Map<String, serde_json::Value>> {
+    let root = graph.get("root")?;
+    if root.get("type")?.as_str()? != "reference" {
+        return None;
+    }
+    graph
+        .get("nodes")?
+        .get(root.get("value")?.as_u64()? as usize)?
+        .as_object()
+}
+
+/// A value of an error graph as JSON: data, a bigint (as the number, or
+/// its text beyond 64 bits), and the arrays and objects of its nodes.
+fn graph_value(
+    graph: &serde_json::Value,
+    value: &serde_json::Value,
+    depth: usize,
+) -> Option<serde_json::Value> {
+    use serde_json::Value as Json;
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    match value.get("type")?.as_str()? {
+        "undefined" => Some(Json::Null),
+        "data" => value.get("value").cloned(),
+        "bigint" | "number" => {
+            let text = value.get("value")?.as_str()?;
+            Some(
+                text.parse::<serde_json::Number>()
+                    .map(Json::Number)
+                    .unwrap_or_else(|_| Json::String(text.to_owned())),
+            )
+        }
+        "reference" => {
+            let node = graph
+                .get("nodes")?
+                .get(value.get("value")?.as_u64()? as usize)?;
+            match node.get("type")?.as_str()? {
+                "array" => node
+                    .get("values")?
+                    .as_array()?
+                    .iter()
+                    .map(|item| graph_value(graph, item, depth + 1))
+                    .collect::<Option<Vec<_>>>()
+                    .map(Json::Array),
+                "object" => node
+                    .get("values")?
+                    .as_array()?
+                    .iter()
+                    .map(|entry| {
+                        let key = entry.get(0)?.as_str()?.to_owned();
+                        Some((key, graph_value(graph, entry.get(1)?, depth + 1)?))
+                    })
+                    .collect::<Option<serde_json::Map<_, _>>>()
+                    .map(Json::Object),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Why a session handshake failed. A link stops retrying an incompatible

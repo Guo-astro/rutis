@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	goruntime "runtime"
 	"strings"
@@ -469,6 +470,27 @@ func TestAFarEndOfAnotherProtocolVersionIsRefusedSayingWhichEndToUpgrade(t *test
 		if err := p.greet(&f); err == nil || err.Error() != want {
 			t.Errorf("%s: got %v, want %q", c.far, err, want)
 		}
+	}
+}
+
+// A Rust service's error decodes with its code and data (#440), a big
+// integer in the data as a *big.Int.
+func TestARustServiceErrorHasItsCodeAndData(t *testing.T) {
+	err := decodeError(json.RawMessage(`{"name":"CalendarError","message":"no entry 7","graph":{
+		"root":{"type":"reference","value":0},
+		"nodes":[{"type":"error","name":"CalendarError","message":"no entry 7","code":"NotFound","data":{"type":"reference","value":1}},
+		         {"type":"object","values":[["NotFound",{"type":"bigint","value":"18446744073709551615"}],["at",{"type":"data","value":[1,"x"]}]]}]}}`))
+	var remote *RemoteError
+	if !errors.As(err, &remote) || remote.Name != "CalendarError" || remote.Code != "NotFound" {
+		t.Fatalf("decoded as %#v", err)
+	}
+	data := remote.Data.(map[string]any)
+	if data["NotFound"].(*big.Int).String() != "18446744073709551615" || fmt.Sprint(data["at"]) != "[1 x]" {
+		t.Fatalf("data: %#v", remote.Data)
+	}
+	plain := decodeError(json.RawMessage(`{"name":"Error","message":"plain"}`)).(*RemoteError)
+	if plain.Code != "" || plain.Data != nil {
+		t.Fatalf("a plain error: %#v", plain)
 	}
 }
 

@@ -24,7 +24,7 @@ export interface PluginSpec<C = any> {
   apply(ctx: Context, config: C): void | (() => unknown) | Promise<void | (() => unknown)>
 }
 
-export interface Plugin<C = any> extends Readonly<Required<Pick<PluginSpec<C>, 'inject' | 'provides'>>>, Readonly<PluginSpec<C>> {
+export interface Plugin<C = any> extends Readonly<Required<Pick<PluginSpec<C>, 'inject' | 'provides'>>>, Readonly<Omit<PluginSpec<C>, 'inject' | 'provides'>> {
   /** The plugin API it was written against. */
   readonly api: number
 }

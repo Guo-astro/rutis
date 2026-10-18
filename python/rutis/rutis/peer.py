@@ -107,9 +107,46 @@ class RemoteError(Exception):
         self.name = name
         self.message = message
         self.graph = graph
+        # What a Rust service's `Err(e)` carries (#440): its code (the
+        # variant's name) and data (`e`'s serde value); None otherwise.
+        self.code, self.data = _code_and_data(graph)
 
     def __str__(self) -> str:
         return f"{self.name}: {self.message}"
+
+
+def _code_and_data(graph: Any) -> tuple:
+    """The `code` and `data` of the error a graph's root refers to."""
+    try:
+        nodes = graph["nodes"]
+        root = nodes[graph["root"]["value"]]
+        if root.get("type") != "error":
+            return None, None
+        code = root.get("code")
+
+        def read(value, depth=0):
+            if depth > 64:
+                raise ValueError("error data nested too deep")
+            kind = value["type"]
+            if kind == "data":
+                return value["value"]
+            if kind == "undefined":
+                return None
+            if kind == "bigint":
+                return int(value["value"])
+            if kind == "number":
+                return float(value["value"])
+            node = nodes[value["value"]]
+            if node["type"] == "array":
+                return [read(item, depth + 1) for item in node["values"]]
+            if node["type"] == "object":
+                return {key: read(item, depth + 1) for key, item in node["values"]}
+            raise ValueError("unexpected error data")
+
+        data = read(root["data"]) if "data" in root else None
+        return (code if isinstance(code, str) else None), data
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+        return None, None
 
 
 class SyncWaitCycle(RemoteError):
