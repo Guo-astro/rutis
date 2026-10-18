@@ -21,6 +21,17 @@ the same label share it, and the same name under another label (another
 instance, say) is another service. Services, host proxies and export slots
 are registered by id (`scopes`): the name outside any scope, the name, a
 NUL and the label inside one.
+
+Events (#464, docs/design-events-protocol-2026-10-18.md): every `ctx.on`
+registers with the host (`events.on` / `events.off`; `rows.load` answers
+once the host answered them). The host tells which names and prefixes have
+listeners outside this process (`events.elsewhere`); an emission of any
+other name is dispatched here (`rutis.events`), the rest through the host
+(`events.dispatch`), which calls this process's listeners back with
+`events.call`. A row's scope chain is the seventh `rows.load` argument.
+Unloading a row withdraws its listeners, then cancels its running ones and
+waits for them, at most RUTIS_SHUTDOWN_TIMEOUT. The session requires the
+host to declare `events-v2`.
 """
 
 from __future__ import annotations
