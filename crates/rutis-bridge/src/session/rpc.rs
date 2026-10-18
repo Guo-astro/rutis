@@ -1361,6 +1361,36 @@ impl Connection {
             result?
         })
     }
+    /// [`Connection::invoke_started`], settled: a future the far end answers
+    /// with is awaited too. Dropped before that, the call is cancelled,
+    /// also after the far end answered with its future (it is still
+    /// running it).
+    pub fn invoke_settled(
+        &self,
+        target: &str,
+        method: &str,
+        args: Value,
+    ) -> Result<impl Future<Output = Reply> + Send + 'static, Error> {
+        let (sender, receiver) = oneshot::channel();
+        let id = self.send(
+            Operation::Invoke(target.into(), method.into(), args),
+            Waiting::Async(sender),
+        )?;
+        let guard = CancelOnDrop {
+            peer: Arc::downgrade(&self.0),
+            id,
+            done: false,
+        };
+        Ok(async move {
+            let mut guard = guard;
+            let settled = match receiver.await.map_err(transport) {
+                Ok(Ok(value)) => settle(value).await,
+                Ok(Err(error)) | Err(error) => Err(error),
+            };
+            guard.done = true;
+            settled
+        })
+    }
     pub async fn drain(&self) {
         loop {
             let changed = self.0.activity.changed.notified();

@@ -400,7 +400,16 @@ async fn dispatch_now(
     let terminal = spec["terminal"].as_str().map(str::to_owned);
     let value = |v: Option<ArgValue>| v.map(|v| v.0).unwrap_or(Value::Undefined);
     let result: Result<Value, CordisError> = match (spec["mode"].as_str().unwrap_or_default(), &filtered) {
-        ("emit", None) => bus.emit(ctx, &key, Arc::new(args)).map(|()| Value::Undefined),
+        // As `emit` returns in the other languages: once every call started
+        // (the erased dispatch says when; `EventBus::emit` returns before).
+        ("emit", None) => {
+            let dispatch = rutis::events::Dispatch::new(
+                key.name(),
+                rutis::events::Mode::Emit,
+                rutis::events::Payload::new(Arc::new(args)),
+            );
+            bus.dispatch(ctx, dispatch).await.map(|_| Value::Undefined)
+        }
         ("emit", Some(f)) => f.emit(ctx, &key, Arc::new(args)).map(|()| Value::Undefined),
         ("parallel", None) => bus.parallel(ctx, &key, Arc::new(args)).await.map(|()| Value::Undefined),
         ("parallel", Some(f)) => f.parallel(ctx, &key, Arc::new(args)).await.map(|()| Value::Undefined),

@@ -948,7 +948,7 @@ impl RemoteListener for WireEntry {
         let send = || {
             request.and_then(|request| {
                 connection
-                    .invoke_started("", "events.call", request)
+                    .invoke_settled("", "events.call", request)
                     .map_err(to_cordis)
             })
         };
@@ -957,8 +957,9 @@ impl RemoteListener for WireEntry {
             None => send(),
         };
         let run = async move {
-            let reply = started?.await.map_err(to_cordis)?;
-            let value = settle(reply).await.map_err(to_cordis)?;
+            // Until the listener's answer settles: given up before, the
+            // call is cancelled where it runs (§5.7).
+            let value = started?.await.map_err(to_cordis)?;
             Ok(result_from_wire(value, mode))
         };
         match source {
