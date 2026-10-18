@@ -85,6 +85,11 @@ def dispatch(ctx, log, spec):
         def terminal(*_args):
             log.add("terminal")
             return spec["terminal"]
+    elif isinstance(spec.get("terminal"), dict) and spec["terminal"].get("echo"):
+        # {"echo": true}: it returns its first argument.
+        def terminal(*args):
+            log.add("terminal")
+            return args[0]
 
     async def run():
         if mode == "parallel":

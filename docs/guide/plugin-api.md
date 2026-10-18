@@ -68,7 +68,7 @@ Rust 另有 `waterfall_sync`：同步的 `waterfall`，规则与 `bail` 相同�
 | `emit` | `emit(ctx, &key, Arc<E>) -> Result<()>` | `ctx.emit(name, ...args): void` | `ctx.emit([thisArg,] name, ...args)` | `ctx.emit(name, *args) -> None` | `ctx.Emit(ctx, name, args...) error`（只报拒绝） |
 | `parallel` | `parallel(ctx, &key, Arc<E>).await` | `await ctx.parallel(name, ...args)` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` |
 | `serial` | `serial(ctx, &key, Arc<E>).await -> Option<E::Value>` | `await ctx.serial(name, ...args)` | `await ctx.serial([thisArg,] name, ...args)` | `await ctx.serial(name, *args)` | `ctx.Serial(ctx, name, args...) (any, error)` |
-| `waterfall` | `waterfall(ctx, &key, &e, terminal).await`（`()` 表示没有终态） | `ctx.waterfall(name, ...args, terminal)`：最后一个参数是终态 | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)`（`terminal` 可为 `nil`） |
+| `waterfall` | `waterfall(ctx, &key, &e, terminal).await`（`()` 表示没有终态） | `ctx.waterfall(name, ...args)`；有终态时 `ctx.waterfall.with(terminal)(name, ...args)`（参数都是事件的，函数也是） | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)`（`terminal` 是 `rutis.Terminal`，即 `func(ctx, args ...any) (any, error)`，或 `nil`） |
 | `bail` | `bail_sync(ctx, &key, &e)`；`waterfall_sync(ctx, &key, &e, terminal)` | `ctx.bail(name, ...args)` | `ctx.bail([thisArg,] name, ...args)` | `ctx.bail(name, *args)` | `ctx.Bail(ctx, name, args...) (any, error)` |
 | 过滤 | `ctx.events().filter(\|info\| ..)`，之后同样的六个方法 | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`，`c.rutis` 是描述 | `ctx.filter(lambda d: ...)` → 带这五个方法的对象 | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter` |
 | 作用域 | `ctx.scope()` | 描述的 `scope` | `ctx.rutis.scope` | 描述的 `scope` | `ctx.Scope()` |
@@ -136,8 +136,8 @@ ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
 | --- | --- |
 | `name` | 事件名（Rust 前缀监听器为前缀） |
 | `prefix` | 是不是 Rust 的前缀监听器 |
-| `plugin` | 登记它的插件 |
-| `row` | 它的行；挂载方式加载的插件为 `null` |
+| `plugin` | 登记它的插件：插件声明的名字（`definePlugin({ name })`、`define_plugin(name=)`、Go 插件的名字、Cordis 插件的名字），没有声明时是它所在行的 id |
+| `row` | 它所在行的 id，即配置给这一行起的名字（组的各个实例复制出的副本共用它）；挂载方式加载的插件为 `null` |
 | `runtime` | 它所在的运行时；宿主自己的 Rust 插件为 `null` |
 | `node` | 经节点连接引进来的，是对端节点的 id；其余为 `null` |
 | `scope` | 它的作用域链，`[{ id, group }]`，最外层在前，根是 `[]` |
@@ -206,6 +206,8 @@ Rust 的类型化事件以 `Event::NAME` 作为跨语言的名字，参数按 se
 | `BindingError` | 传输错误、已撤下的监听器、被拒绝的帧 | Python `rutis.BindingError`；Go `rutis.ErrBinding`；Rust `CordisError::ListenerWithdrawn` 或传输错误 |
 
 Go 用 `errors.Is(err, rutis.ErrWaterfallNext)` 等判断，任何进程里同名的错误都匹配。监听器自己抛出的错误带着名字、信息与错误图跨边界，与任何调用的错误相同。
+
+**按名字匹配监听器的错误，不按类。** 收到的是什么取决于监听器在哪里运行：来自别的进程时，它是本语言的远端错误（TypeScript：同一内置类的 `Error`，或带那个 `name` 的普通 `Error`；Python：`rutis.RemoteError`，rutis 自己的名字是对应的类；Go：`*rutis.RemoteError`，先 `errors.As` 再看 `Name`），带着它的 `name`、`message` 和 `code`；所有监听器都在发出方进程里时（快速路径），可能收到监听器自己的错误对象。测试工具让插件自己的发出方法收到跨进程后的形式（严格模式下），所以按类匹配会在测试里失败；快速路径保留原对象这一点不作保证。
 
 ### 与 0.12 及更早的端混用
 
@@ -304,6 +306,7 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 | 不重启：配置变化、注入的服务撤销都不会让插件停下再启动 | `load` 只启动一次，生命周期由宿主决定（见上） |
 | 同步调用不阻塞，不会出现 `SyncWaitCycle`；没有取消（`AbortSignal`、协程取消） | 插件与测试在同一个事件循环里 |
 | Python：跨过边界的异常是 `RemoteError`，它的 `__cause__` 是原来的异常 | 方便调试；真实运行时的 `RemoteError` 没有 `__cause__` |
+| 描述里的 `runtime` 是语言名（`node`、`bun`、`python`、`go`；宿主用配置里给的名字）；卸载最多等 `RUTIS_SHUTDOWN_TIMEOUT`，与运行时相同，或用工具自己的选项：TypeScript `host({ deadline })` / `load(…, { deadline, runtime })`（毫秒），Python `load(…, deadline=, runtime=)`（秒），Go `rutistest.RuntimeName` 等选项 | 各工具的选项按各自语言的习惯 |
 | TypeScript：只能加载 `definePlugin` 写的插件，不能加载 Cordis 插件 | 测试工具没有 Cordis 的插件模型、服务与依赖门控 |
 | 事件：全部监听器都在测试的进程里（总是本地分发），没有别的进程、节点，也不发出 `rutis/*` | 测试工具在一个进程里运行插件。五种方式、过滤、作用域（TypeScript `host()` 的 `scope`、Python `Bus` 与 `scope=`、Go `rutistest.InScope`）、卸载等待与取消、`emit` 失败的报告（`reported`）与真实运行时相同，对同一份[事件期望文件](../../crates/rutis-bridge/src/runtime/testing/events.expected.json)比对 |
 

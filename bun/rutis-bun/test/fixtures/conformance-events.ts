@@ -134,8 +134,10 @@ function emit(ctx: any, log: Log, spec: any): any {
     case 'parallel': return emitter.parallel(spec.name, ...args).then(() => null)
     case 'serial': return emitter.serial(spec.name, ...args)
     case 'waterfall': {
-      const terminal = typeof spec.terminal === 'string' ? () => { log('terminal'); return spec.terminal } : undefined
-      return emitter.waterfall(spec.name, ...args, terminal)
+      // A text it returns, or `{ echo: true }`: its first argument.
+      const terminal = typeof spec.terminal === 'string' ? () => { log('terminal'); return spec.terminal }
+        : spec.terminal?.echo ? (first: unknown) => { log('terminal'); return first } : undefined
+      return (terminal ? emitter.waterfall.with(terminal) : emitter.waterfall)(spec.name, ...args)
     }
     case 'bail': return emitter.bail(spec.name, ...args)
     default: throw new Error(`a JavaScript plugin cannot emit in mode ${spec.mode}`)

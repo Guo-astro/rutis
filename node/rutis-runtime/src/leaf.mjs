@@ -7,7 +7,7 @@
 // `parallel`, `serial`, `waterfall`, `bail`), with `ctx.filter`.
 // The runtime does not import the SDK: it recognises its plugins by the
 // symbol the SDK marks them with.
-import { KEEP } from './cordis-events.mjs'
+import { KEEP, LEAF_NAME } from './cordis-events.mjs'
 import { refuseReserved } from './events.mjs'
 
 // The plugin APIs this runtime runs: a plugin written against a newer one
@@ -94,9 +94,10 @@ export function toCordis(spec, undeclared) {
         },
         effect: cleanup => { context.effect(() => cleanup) },
         // The listener leaves with the plugin, or when the returned function
-        // is called. `prepend` and `global` as Cordis's.
+        // is called. `prepend` and `global` as Cordis's. Descriptors name the
+        // plugin by its declared name, else by its row's id.
         on: (name, listener, options) => {
-          const off = context.on(reserved(name), listener, { prepend: Boolean(options?.prepend), global: Boolean(options?.global) })
+          const off = context.on(reserved(name), listener, { prepend: Boolean(options?.prepend), global: Boolean(options?.global), [LEAF_NAME]: spec.name ?? null })
           return () => { off() }
         },
         ...emitters(context, null),
@@ -117,14 +118,21 @@ export function toCordis(spec, undeclared) {
 }
 
 // The five ways to emit, from `context`, with `thisArg` (a filter) when
-// given. `waterfall`'s last argument is its terminal.
+// given. Every argument of `waterfall` is the event's: a terminal is given
+// with `waterfall.with(terminal)(name, ...args)` (Cordis's own waterfall
+// takes it as its last argument, which a leaf plugin, whose arguments may
+// be functions, cannot tell apart).
 function emitters(context, thisArg) {
   const args = (name, values) => thisArg ? [thisArg, emittable(name), ...values] : [emittable(name), ...values]
+  const waterfall = terminal => (name, ...values) => context.waterfall(...args(name, values), terminal)
   return {
     emit: (name, ...values) => { context.emit(...args(name, values)) },
     parallel: (name, ...values) => context.parallel(...args(name, values)),
     serial: (name, ...values) => context.serial(...args(name, values)),
-    waterfall: (name, ...values) => context.waterfall(...args(name, values)),
+    waterfall: Object.assign(waterfall(undefined), { with: terminal => {
+      if (typeof terminal !== 'function') throw new TypeError('waterfall.with needs a terminal function')
+      return waterfall(terminal)
+    } }),
     bail: (name, ...values) => context.bail(...args(name, values)),
   }
 }

@@ -278,14 +278,20 @@ function chainOf(path, groups) {
 
 // The five ways to emit and `filter`, on `bus`, from `row` in `scope`.
 // `crossing`: values cross between the emitter and the listeners (the test
-// emitting, strict), as from another process.
-function emitters(bus, row, scope, crossing, keep) {
+// emitting, strict), as from another process. `errors`: what the
+// listeners throw crosses (a plugin emitting, strict): a listener may be
+// in another process, where an error arrives as an Error of a built-in
+// class or a plain Error with the thrower's `name` (not its class), so a
+// plugin matching errors by class fails here as it would there.
+function emitters(bus, row, scope, crossing, keep, errors = crossing) {
   const where = name => `event ${name}`
   const inbound = (name, values) => crossing ? values.map((value, i) => cross(value, `${where(name)} argument ${i}`)) : values
   const outbound = (name, value) => {
-    if (!crossing) return value
-    if (value instanceof Promise) return value.then(result => cross(result, where(name)), thrown => { throw crossThrown(thrown, where(name)) })
-    return cross(value, where(name))
+    if (value instanceof Promise) {
+      if (crossing) return value.then(result => cross(result, where(name)), thrown => { throw crossThrown(thrown, where(name)) })
+      return errors ? value.catch(thrown => { throw crossThrown(thrown, where(name)) }) : value
+    }
+    return crossing ? cross(value, where(name)) : value
   }
   const dispatch = (mode, name, values, terminal) => {
     internal(name)
@@ -293,22 +299,27 @@ function emitters(bus, row, scope, crossing, keep) {
     try {
       result = bus.dispatch(mode, name, inbound(name, values), { row, scope, keep, terminal: crossing && terminal ? cross(terminal, `${where(name)} terminal`) : terminal })
     } catch (thrown) {
-      throw crossing ? crossThrown(thrown, where(name)) : thrown
+      throw errors ? crossThrown(thrown, where(name)) : thrown
     }
     return outbound(name, result)
   }
+  // Every argument of `waterfall` is the event's; a terminal is given with
+  // `waterfall.with(terminal)(name, ...args)`.
+  const waterfall = terminal => (name, ...values) => dispatch('waterfall', name, values, terminal)
   return {
     emit: (name, ...values) => { dispatch('emit', name, values) },
     parallel: (name, ...values) => dispatch('parallel', name, values),
     serial: (name, ...values) => dispatch('serial', name, values),
-    waterfall: (name, ...values) => {
-      const terminal = values.pop()
-      return dispatch('waterfall', name, values, terminal)
-    },
+    waterfall: Object.assign(waterfall(undefined), {
+      with: terminal => {
+        if (typeof terminal !== 'function') throw new PluginTestError('waterfall.with needs a terminal function')
+        return waterfall(terminal)
+      },
+    }),
     bail: (name, ...values) => dispatch('bail', name, values),
     filter: predicate => {
       if (typeof predicate !== 'function') throw new PluginTestError('filter needs a predicate function')
-      const { filter: _, ...five } = emitters(bus, row, scope, crossing, descriptor => predicate(crossing ? cross(descriptor, 'a listener descriptor') : descriptor))
+      const { filter: _, ...five } = emitters(bus, row, scope, crossing, descriptor => predicate(crossing ? cross(descriptor, 'a listener descriptor') : descriptor), errors)
       return five
     },
   }
@@ -320,12 +331,14 @@ function emitters(bus, row, scope, crossing, keep) {
  * five modes, scopes, filters, unload waiting and cancellation. `services`
  * are given to every row that injects them; `scopes` names the group of a
  * scope path (`{ t1: 'tenant' }`); `deadline` is how long an unloading
- * row's listeners are waited for (ms, as RUTIS_SHUTDOWN_TIMEOUT).
+ * row's listeners are waited for (ms; by default RUTIS_SHUTDOWN_TIMEOUT
+ * seconds, else 10 s, as the runtimes); `runtime` is what descriptors call
+ * the runtime (`node`, or `bun` under Bun, by default).
  */
-export function host({ services = {}, strict = true, scopes = {}, deadline = 10_000, ...rest } = {}) {
+export function host({ services = {}, strict = true, scopes = {}, deadline = shutdownDeadline(), runtime = defaultRuntime(), ...rest } = {}) {
   refuse(rest)
   const reported = []
-  const bus = new Bus({ runtime: null, report: (line, details = {}) => { reported.push({ line, ...details }) } })
+  const bus = new Bus({ runtime, report: (line, details = {}) => { reported.push({ line, ...details }) } })
   const rows = new Map()
   let counter = 0
   let closed = false
@@ -359,6 +372,7 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = 10_
       }
       const row = { key, plugin, chain: chainOf(scope, scopes), provided: new Map(), cleanups: [], abort: new AbortController(), unloaded: false }
       rows.set(key, row)
+      bus.nameRow(key, key)
       const ctx = {
         use(name) {
           if (!plugin.inject.includes(name)) throw new PluginTestError(`the plugin uses ${name} without declaring it in inject`)
@@ -391,10 +405,11 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = 10_
           if (row.unloaded) throw new PluginTestError('the plugin is unloaded')
           if (typeof listener !== 'function') throw new PluginTestError('on needs a listener function')
           internal(name)
+          // Named by the plugin's declared name, else its row's id (§4.2).
           const entry = bus.on({ name, callback: listener, prepend: options?.prepend, global: options?.global, row: key, plugin: plugin.name ?? key, scope: row.chain })
           return () => { bus.off(entry) }
         },
-        ...emitters(bus, key, row.chain, false),
+        ...emitters(bus, key, row.chain, false, undefined, strict),
       }
       row.apply = config => applyRow(row, ctx, config)
       await row.apply(config)
@@ -482,6 +497,7 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = 10_
         await unloadRow(row)
         Object.assign(row, { provided: new Map(), cleanups: [], abort: new AbortController(), unloaded: false })
         rows.set(row.key, row)
+        bus.nameRow(row.key, row.key)
         await row.apply(config)
       },
       /** Withdraw its listeners and services, wait for its running listeners (signalled), then run its cleanups, latest first. */
@@ -505,7 +521,20 @@ function refuse(options) {
  * it is) with `config` and the services in `services`, as one row of a host
  * of its own (`host()`), in the scope path `scope`.
  */
-export async function load(plugin, { config, services = {}, strict = true, scope, deadline, ...rest } = {}) {
+export async function load(plugin, { config, services = {}, strict = true, scope, deadline, runtime, ...rest } = {}) {
   refuse(rest)
-  return host({ services, strict, deadline }).load(plugin, { config, scope })
+  return host({ services, strict, deadline, runtime }).load(plugin, { config, scope })
+}
+
+// How long an unloading row's listeners are waited for, in ms: as the
+// runtimes, RUTIS_SHUTDOWN_TIMEOUT seconds, 10 by default.
+function shutdownDeadline() {
+  const seconds = Number(globalThis.process?.env?.RUTIS_SHUTDOWN_TIMEOUT)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 10_000
+}
+
+// The runtime's name in descriptors, as a host names its runtimes by
+// default: the language's.
+function defaultRuntime() {
+  return typeof globalThis.Bun === 'undefined' ? 'node' : 'bun'
 }

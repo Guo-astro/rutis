@@ -81,12 +81,25 @@ let mountScope = []
 const mountAbort = new AbortController()
 // The row whose plugin is being created (its fiber not known yet).
 let creating
-const bus = new Bus()
+// The fibers of rows unloaded, with their row: a plugin keeping its
+// context past its row emits from that row, which the bus refuses (§3).
+const unloaded = new WeakMap()
+const bus = new Bus({ loading: key => key === null ? !mounted : Boolean(rows.get(key)?.loading) })
 function whose(context) {
   const owner = rowOf(context?.fiber) ?? (creating ? [creating.key, creating] : undefined)
-  if (!owner) return { row: null, scope: mountScope, signal: mountAbort.signal }
+  if (!owner) {
+    const gone = goneRowOf(context?.fiber)
+    if (gone) return { row: gone.key, scope: gone.chain, signal: gone.abort.signal, gone: true }
+    return { row: null, scope: mountScope, signal: mountAbort.signal }
+  }
   const [key, row] = owner
   return { row: key, scope: row.chain, signal: row.abort.signal }
+}
+function goneRowOf(fiber) {
+  for (let current = fiber; current; current = current.runtime ? current.parent?.fiber : undefined) {
+    const row = unloaded.get(current)
+    if (row) return row
+  }
 }
 install(ctx, Context, bus, whose)
 // How long an unloading row's listeners are waited for (§7.1).
@@ -457,6 +470,7 @@ async function unloadRow(key) {
   // and waited for, at most the shutdown deadline (§7.1).
   bus.withdraw(key)
   rows.delete(key)
+  for (const fiber of [row.fiber, row.inner]) if (fiber) unloaded.set(fiber, row)
   for (const id of row.exports) {
     const slot = slots.get(id)
     await slot?.exporter?.dispose()
@@ -537,8 +551,22 @@ async function updateRow([key, config]) {
     return null
   }
   if (commitVolatile(fiber, config)) return null
-  fiber.update(config, true)
+  // A restart is an unload and a load, as in every runtime: the row's
+  // listeners leave (here and on the host), those running are signalled
+  // and waited for (§7.1); then the plugin applies again, and the update
+  // is answered once its new listeners are registered (§4.3, §4.4 2).
+  bus.withdraw(key, { restart: true })
+  row.abort.abort(new DOMException('the row is unloading', 'AbortError'))
+  await bus.settle(key, deadline)
+  row.abort = new AbortController()
+  row.loading = true
+  try {
+    fiber.update(config, true)
     await fiber.await()
+    await Promise.all(bus.registrations(key))
+  } finally {
+    row.loading = false
+  }
   return null
 }
 

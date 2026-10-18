@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import background
 
-from rutis import AggregateError, PLUGIN_API, RemoteError, ReservedEvent, define_plugin
+from rutis import AggregateError, BindingError, PLUGIN_API, RemoteError, ReservedEvent, define_plugin
 from rutis.testing import Bus, PluginTestError, load
 
 
@@ -212,13 +212,16 @@ class Testing(background.TestCase):
 
     def test_event_disposers_and_failed_cleanup_remove_every_listener(self):
         async def go():
-            seen, saved = [], []
+            seen, saved, refused = [], [], []
 
             def apply(ctx, config):
                 callback = lambda value: seen.append(value)
                 ctx.on("early", callback)
                 def cleanup():
-                    ctx.emit("early", 99)
+                    try:
+                        ctx.emit("early", 99)
+                    except BindingError as error:
+                        refused.append(str(error))
                     raise asyncio.CancelledError()
                 ctx.effect(cleanup)
                 off = ctx.on("tick", callback)
@@ -232,7 +235,11 @@ class Testing(background.TestCase):
                     saved[1]()
                     self.assertIsNone(saved[0].emit("tick", 2))
                     self.assertEqual(seen, [1, 1, 2])
-            saved[0].emit("early", 3)
+            # An unloaded row emits nothing: refused at once (#464 §3).
+            self.assertEqual(refused, ["row test_testing is not loaded in this runtime"])
+            for mode in ("emit", "parallel", "serial", "waterfall", "bail"):
+                with self.assertRaisesRegex(BindingError, "^row test_testing is not loaded in this runtime$"):
+                    getattr(saved[0], mode)("early", 3)
             self.assertEqual(seen, [1, 1, 2], "cleanup emissions cannot reach the unloading plugin")
             with self.assertRaisesRegex(PluginTestError, "unloaded"):
                 saved[0].on("tick", lambda: None)
@@ -346,6 +353,93 @@ class Testing(background.TestCase):
                         if cleanup is None:
                             raise primary
                 self.assertIs(failure.exception, primary)
+
+        run(go())
+
+    def test_errors_reach_a_plugins_own_emitter_as_from_another_process(self):
+        # #464 §11: matched by name, never by class; AggregateError children
+        # in registration order; rutis's own names keep their classes.
+        class Refused(Exception):
+            code = "Refused"
+
+        async def go():
+            outcomes = {}
+
+            def listener(ctx, config):
+                def refuse():
+                    raise Refused("no")
+
+                ctx.on("t/err", refuse)
+                ctx.on("t/err", lambda: (_ for _ in ()).throw(BindingError("gone")))
+
+            def emitter(ctx, config):
+                async def emit():
+                    for mode in ("parallel", "serial"):
+                        try:
+                            await getattr(ctx, mode)("t/err")
+                        except Exception as error:  # noqa: BLE001
+                            outcomes[mode] = error
+                    try:
+                        ctx.bail("t/err")
+                    except Exception as error:  # noqa: BLE001
+                        outcomes["bail"] = error
+
+                saved.append(emit)
+
+            saved = []
+            bus = Bus()
+            async with load(define_plugin(listener), bus=bus, row="l"), load(define_plugin(emitter), bus=bus, row="e"):
+                await saved[0]()
+            aggregate = outcomes["parallel"]
+            self.assertIsInstance(aggregate, AggregateError)
+            self.assertEqual([(type(e), e.name, e.message) for e in aggregate.errors], [
+                (RemoteError, "Refused", "no"), (BindingError, "BindingError", "gone"),
+            ])
+            self.assertEqual(aggregate.errors[0].code, "Refused")
+            for mode in ("serial", "bail"):
+                self.assertIs(type(outcomes[mode]), RemoteError, mode)
+                self.assertEqual((outcomes[mode].name, outcomes[mode].code), ("Refused", "Refused"))
+
+        run(go())
+
+    def test_descriptors_name_the_declared_plugin_and_python(self):
+        # #464 §4.2: `plugin` is the declared name, else the row; `runtime`
+        # "python" unless load(runtime=) says otherwise.
+        async def go():
+            on = lambda ctx, config: ctx.on("t/d", lambda: None)
+            bus = Bus()
+            async with load(define_plugin(on, name="chat-ui"), bus=bus), \
+                    load(define_plugin(on), bus=bus, row="audit"), \
+                    load(define_plugin(on), bus=bus, row="other", runtime="go"):
+                seen = [(d["plugin"], d["row"], d["runtime"]) for d in bus.listeners("t/d")]
+            self.assertEqual(seen, [("chat-ui", "chat-ui", "python"), ("audit", "audit", "python"), ("other", "other", "go")])
+
+        run(go())
+
+    def test_unload_waits_at_most_its_deadline(self):
+        async def go():
+            release = asyncio.Event()
+
+            async def stubborn():
+                while not release.is_set():
+                    try:
+                        await release.wait()
+                    except asyncio.CancelledError:
+                        pass
+
+            def apply(ctx, config):
+                ctx.on("tick", stubborn)
+                ctx.emit("tick")
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                async with load(define_plugin(apply), row="slow", deadline=0.05):
+                    pass
+            release.set()
+            self.assertEqual(stderr.getvalue(), "rutis: listeners of row slow still running after 0.05s; unloading anyway\n")
+            with self.assertRaisesRegex(PluginTestError, "deadline"):
+                async with load(define_plugin(apply), deadline=-1):
+                    pass
 
         run(go())
 

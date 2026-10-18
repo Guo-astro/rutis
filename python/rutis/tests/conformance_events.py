@@ -120,9 +120,10 @@ class Row:
             if spec.get("terminal") is not None:
                 end = spec["terminal"]
 
-                def terminal(*_args):
+                # A text it returns, or {"echo": true}: its first argument.
+                def terminal(*args):
                     self.add("terminal")
-                    return end
+                    return args[0] if isinstance(end, dict) and end.get("echo") else end
 
             dispatched = emitter.waterfall(name, *args, terminal=terminal)
         else:

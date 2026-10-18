@@ -46,8 +46,10 @@ export interface LoadOptions {
   strict?: boolean
   /** The scope path to load it in (`t1/s1`; the root by default). */
   scope?: string
-  /** How long unloading waits for running listeners, in ms (default 10 000). */
+  /** How long unloading waits for running listeners, in ms (default: `RUTIS_SHUTDOWN_TIMEOUT` seconds, else 10 000, as the runtimes). */
   deadline?: number
+  /** What listener descriptors call the runtime (default `'node'`, `'bun'` under Bun). */
+  runtime?: string
 }
 
 export interface HostOptions {
@@ -57,8 +59,10 @@ export interface HostOptions {
   strict?: boolean
   /** The group of a scope path: `{ t1: 'tenant', 't1/s1': 'session' }` (default: the path's last part). */
   scopes?: Record<string, string>
-  /** How long unloading waits for running listeners, in ms (default 10 000). */
+  /** How long unloading waits for running listeners, in ms (default: `RUTIS_SHUTDOWN_TIMEOUT` seconds, else 10 000, as the runtimes). */
   deadline?: number
+  /** What listener descriptors call the runtime (default `'node'`, `'bun'` under Bun). */
+  runtime?: string
 }
 
 export interface RowOptions {

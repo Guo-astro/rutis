@@ -6,9 +6,9 @@ export interface ListenerDescriptor {
   readonly name: string
   /** A Rust pattern listener's prefix entry. */
   readonly prefix: boolean
-  /** The plugin that registered it. */
+  /** The plugin that registered it: its declared name (`PluginSpec.name`, a Cordis plugin's name), else its row's id. */
   readonly plugin: string
-  /** Its row's key; `null` for a plugin a mount loaded. */
+  /** Its row's id, the name the configuration gives the row (the copies a group's instances make share it); `null` for a plugin a mount loaded. */
   readonly row: string | null
   /** The runtime it runs in; `null` for the host's own Rust plugins. */
   readonly runtime: string | null
@@ -38,12 +38,27 @@ export interface Emitter {
   parallel(name: string, ...args: any[]): Promise<void>
   /** Run the listeners one by one; resolves to the first result (not `undefined`, `null` or `false`), or `undefined`. An error stops and rejects. */
   serial<T = any>(name: string, ...args: any[]): Promise<T | undefined>
-  /** Each listener gets `next` (no arguments) last and returns the result; not calling `next` vetoes the rest. The last argument is the terminal, called with the event's arguments at the end of the chain. Returns the outermost listener's value as is (a Promise whenever a listener runs elsewhere: await it). Calling `next` twice, or after the end, throws `WaterfallNext`. */
-  waterfall<T = any>(name: string, ...argsThenTerminal: any[]): T | Promise<T>
+  /** Each listener gets `next` (no arguments) last and returns the result; not calling `next` vetoes the rest. Every argument is the event's; the end of the chain gives `undefined` (see `with` for a terminal). Returns the outermost listener's value as is (a Promise whenever a listener runs elsewhere: await it). Calling `next` twice, or after the end, gives a Promise rejected with `WaterfallNext`. */
+  waterfall: Waterfall
   /** Synchronously, the first result as `serial`. An `async` listener, or one returning a Promise, fails it with `AsyncListener`. */
   bail<T = any>(name: string, ...args: any[]): T | undefined
 }
 
+export interface Waterfall {
+  <T = any>(name: string, ...args: any[]): T | Promise<T>
+  /** The same waterfall with a terminal: called with the event's arguments at the end of the chain, its value what the last `next` gives. */
+  with<T = any>(terminal: (...args: any[]) => any): <U = T>(name: string, ...args: any[]) => U | Promise<U>
+}
+
+/**
+ * An error a listener in another process threw arrives as an `Error` of the
+ * same built-in class (`TypeError`, `RangeError`, …, `AggregateError`) or a
+ * plain `Error` with the thrower's `name`, `message` and `code`, never as
+ * the thrower's own class: match errors by `name`. In one process (the
+ * fast path) the listener's own error may arrive; `@arcships/rutis/testing`
+ * gives a plugin's emitters the crossed form, so a test catches a match by
+ * class.
+ */
 export interface Context extends Emitter {
   /** The service `name`, which the plugin declares in `inject`: the object itself when a plugin in the same process provides it, else a proxy whose methods are sync or async as declared. */
   use<T = any>(name: string): T
@@ -60,6 +75,7 @@ export interface Context extends Emitter {
 }
 
 export interface PluginSpec<C = any> {
+  /** Its name: what listener descriptors (`ListenerDescriptor.plugin`) call it. Without one, they call it by its row's id. */
   name?: string
   /** Services the plugin uses: rutis starts it once they are all available, and stops it when one goes. */
   inject?: string[]
