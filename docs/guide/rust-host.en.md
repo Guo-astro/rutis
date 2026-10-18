@@ -6,9 +6,9 @@ Use the crates directly when your application needs to provide its own Rust serv
 
 ```toml
 [dependencies]
-rutis = "0.11"
-rutis-loader = { version = "0.11", features = ["node", "python", "peer"] }
-rutis-bridge = { version = "0.11", features = ["python", "websocket"] }   # node is enabled by default
+rutis = "0.12"
+rutis-loader = { version = "0.12", features = ["node", "python", "peer"] }
+rutis-bridge = { version = "0.12", features = ["python", "websocket"] }   # node is enabled by default
 ```
 
 | Crate / feature | Contents |

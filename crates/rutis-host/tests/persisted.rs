@@ -197,7 +197,7 @@ fn versions() -> Vec<(String, PathBuf)> {
 fn every_release_s_rutis_json_reads_as_it_did() {
     let versions = versions();
     let names: Vec<&str> = versions.iter().map(|(name, _)| name.as_str()).collect();
-    for release in ["0.8.0", "0.9.0", "0.9.1", "0.10.0", "0.11.0"] {
+    for release in ["0.8.0", "0.9.0", "0.9.1", "0.10.0", "0.11.0", "0.12.0"] {
         assert!(
             names.contains(&release),
             "no sample of {release}: {names:?}"
