@@ -219,7 +219,11 @@ impl Spec {
         if let Some(filter) = &filter {
             match (filter.get("keep"), filter.get("throws")) {
                 (Some(Json::Array(_)), None) | (None, Some(Json::Object(_))) => {}
-                _ => return Err(format!("a filter is {{keep: [..]}} or {{throws: {{..}}}}: {filter}")),
+                _ => {
+                    return Err(format!(
+                        "a filter is {{keep: [..]}} or {{throws: {{..}}}}: {filter}"
+                    ))
+                }
             }
         }
         Ok(Self {
@@ -577,14 +581,17 @@ fn limit_holds(limit: &Json, combo: &Combo) -> bool {
     let Json::Object(fields) = limit else {
         return false;
     };
-    fields.iter().filter(|(key, _)| *key != "why").all(|(label, languages)| {
-        let Some(language) = combo.language_of(label) else {
-            return false;
-        };
-        languages
-            .as_array()
-            .is_some_and(|all| all.iter().any(|l| l.as_str() == Some(language)))
-    })
+    fields
+        .iter()
+        .filter(|(key, _)| *key != "why")
+        .all(|(label, languages)| {
+            let Some(language) = combo.language_of(label) else {
+                return false;
+            };
+            languages
+                .as_array()
+                .is_some_and(|all| all.iter().any(|l| l.as_str() == Some(language)))
+        })
 }
 
 /// The placements of `case` with X in `x`, for each language Y may be in
@@ -629,10 +636,18 @@ pub fn combinations(case: &Case, x: &str, ys: &[&str]) -> Result<Vec<Combo>, Str
                 at: at.clone(),
             };
             let y_used = combo.uses(Location::Y)
-                || case
-                    .parsed_steps()?
-                    .iter()
-                    .any(|step| matches!(step, Step::Kill { target: Location::Y, .. } | Step::Restart { target: Location::Y, .. }));
+                || case.parsed_steps()?.iter().any(|step| {
+                    matches!(
+                        step,
+                        Step::Kill {
+                            target: Location::Y,
+                            ..
+                        } | Step::Restart {
+                            target: Location::Y,
+                            ..
+                        }
+                    )
+                });
             if !y_used && *y != ys[0] {
                 continue;
             }
@@ -700,7 +715,12 @@ pub fn placements(
             .count()
     };
     let together = |combo: &Combo| {
-        let places: BTreeSet<Location> = case.vary.iter().filter_map(|l| combo.at.get(l)).copied().collect();
+        let places: BTreeSet<Location> = case
+            .vary
+            .iter()
+            .filter_map(|l| combo.at.get(l))
+            .copied()
+            .collect();
         places.len() == 1
     };
     Ok(all
@@ -738,9 +758,7 @@ impl Row {
         let fields = config.as_object_mut().expect("a participant is an object");
         fields.remove("at");
         fields.remove("scope");
-        fields
-            .entry("name")
-            .or_insert_with(|| json!(case.name));
+        fields.entry("name").or_insert_with(|| json!(case.name));
         let kind = if case.all_sync() { "sync" } else { "async" };
         fields.entry("kind").or_insert_with(|| json!(kind));
         fields.entry("log").or_insert_with(|| json!("label"));
@@ -839,14 +857,19 @@ fn tagged(key: &str, inner: &Json) -> Option<Value> {
 pub fn written(value: Value) -> Result<Json, Error> {
     let tagged = |tag: &str, value: Json| json!({ format!("${tag}"): value });
     Ok(match value {
-        Value::List(values) => Json::Array(values.into_iter().map(written).collect::<Result<_, _>>()?),
+        Value::List(values) => {
+            Json::Array(values.into_iter().map(written).collect::<Result<_, _>>()?)
+        }
         Value::Record(fields) => Json::Object(
             fields
                 .into_iter()
                 .map(|(key, value)| Ok((key, written(value)?)))
                 .collect::<Result<_, Error>>()?,
         ),
-        Value::Bytes(bytes) => tagged("bytes", json!(crate::session::values::base64_encode(&bytes))),
+        Value::Bytes(bytes) => tagged(
+            "bytes",
+            json!(crate::session::values::base64_encode(&bytes)),
+        ),
         Value::Map(entries) => tagged(
             "map",
             Json::Array(
@@ -858,7 +881,12 @@ pub fn written(value: Value) -> Result<Json, Error> {
         ),
         Value::Set(elements) => tagged(
             "set",
-            Json::Array(elements.into_iter().map(written).collect::<Result<_, _>>()?),
+            Json::Array(
+                elements
+                    .into_iter()
+                    .map(written)
+                    .collect::<Result<_, _>>()?,
+            ),
         ),
         Value::Instant(value) => tagged("instant", json!(value.to_string())),
         Value::DateTime(value) => tagged("datetime", json!(value.to_string())),
@@ -902,7 +930,11 @@ pub fn aggregated(error: &Error) -> Option<Vec<(String, String)>> {
             let child = node(child)?;
             Some((
                 child.get("name")?.as_str()?.to_owned(),
-                child.get("message")?.as_str().unwrap_or_default().to_owned(),
+                child
+                    .get("message")?
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
             ))
         })
         .collect()
@@ -934,6 +966,18 @@ impl EventsLog {
         self.changed.notify_waiters();
     }
 
+    /// What `events-log.filter(description)` does: log `filter:<row>` and
+    /// keep the description.
+    pub fn filter_description(&self, description: Json) {
+        let row = description["row"].as_str().unwrap_or("null").to_owned();
+        {
+            let mut state = self.state.lock().unwrap();
+            state.entries.push(format!("filter:{row}"));
+            state.seen.push(description);
+        }
+        self.changed.notify_waiters();
+    }
+
     pub fn entries(&self) -> Vec<String> {
         self.state.lock().unwrap().entries.clone()
     }
@@ -958,7 +1002,12 @@ impl EventsLog {
             }
         })
         .await
-        .map_err(|_| format!("{entry:?} was not logged within {within:?}: {:?}", self.entries()))
+        .map_err(|_| {
+            format!(
+                "{entry:?} was not logged within {within:?}: {:?}",
+                self.entries()
+            )
+        })
     }
 
     /// The methods as the plugins see them.
@@ -981,14 +1030,7 @@ impl HostDispatch for EventsLogService {
                 Ok(Value::Undefined)
             }
             "filter" => {
-                let description = written(first)?;
-                let row = description["row"].as_str().unwrap_or("null").to_owned();
-                {
-                    let mut state = self.0.state.lock().unwrap();
-                    state.entries.push(format!("filter:{row}"));
-                    state.seen.push(description);
-                }
-                self.0.changed.notify_waiters();
+                self.0.filter_description(written(first)?);
                 Ok(Value::Undefined)
             }
             "wait" => {
@@ -1167,10 +1209,7 @@ async fn run_step(
             }
             outcomes.push(within(call, settles).await);
         }
-        Step::Load {
-            participant,
-            ..
-        } => {
+        Step::Load { participant, .. } => {
             let row = Row::listener(case, combo, participant);
             world.load(&row).await?;
         }
@@ -1285,7 +1324,11 @@ async fn within(call: impl std::future::Future<Output = Outcome>, settles: bool)
 }
 
 async fn joined(handle: tokio::task::JoinHandle<Outcome>, settles: bool) -> Outcome {
-    within(async move { handle.await.map_err(|e| e.to_string())? }, settles).await
+    within(
+        async move { handle.await.map_err(|e| e.to_string())? },
+        settles,
+    )
+    .await
 }
 
 /// `returns`, `throws` and `settles` against the dispatches of a step.
@@ -1406,14 +1449,18 @@ fn log_holds(world: &dyn World, log: &EventsLog, expect: &Json) -> Result<(), St
         want.sort();
         got.sort();
         if want != got {
-            return Err(format!("log (any order): expected {want:?}, got {entries:?}"));
+            return Err(format!(
+                "log (any order): expected {want:?}, got {entries:?}"
+            ));
         }
     }
     if let Some(contains) = expect.get("logContains") {
         let mut rest = entries.iter();
         for want in strings(contains) {
             if !rest.any(|entry| *entry == want) {
-                return Err(format!("log: expected to contain {contains} in order, got {entries:?}"));
+                return Err(format!(
+                    "log: expected to contain {contains} in order, got {entries:?}"
+                ));
             }
         }
     }
@@ -1431,7 +1478,9 @@ fn log_holds(world: &dyn World, log: &EventsLog, expect: &Json) -> Result<(), St
             .map(|d| d["row"].as_str().unwrap_or("null").to_owned())
             .collect();
         if rows != strings(sees) {
-            return Err(format!("filterSees: expected {sees}, the filter saw {rows:?}"));
+            return Err(format!(
+                "filterSees: expected {sees}, the filter saw {rows:?}"
+            ));
         }
         for description in &seen {
             let row = description["row"].as_str().unwrap_or_default();
@@ -1465,10 +1514,13 @@ fn log_holds(world: &dyn World, log: &EventsLog, expect: &Json) -> Result<(), St
             let found = lines.iter().any(|line| {
                 line.contains("rutis: listener of ")
                     && line.contains(&format!("failed: {name}:"))
-                    && (line.contains(&format!(" in row {label} failed")) || !line.contains(" in row "))
+                    && (line.contains(&format!(" in row {label} failed"))
+                        || !line.contains(" in row "))
             });
             if !found {
-                return Err(format!("reported: no line for {label} failing with {name}: {lines:?}"));
+                return Err(format!(
+                    "reported: no line for {label} failing with {name}: {lines:?}"
+                ));
             }
         }
     }
@@ -1534,10 +1586,16 @@ fn check_participant(expected: &Expected, participant: &Participant) -> Result<(
         &PARTICIPANT,
     )?;
     if participant.scope != "root" && !expected.scopes.contains_key(&participant.scope) {
-        return Err(format!("{}: unknown scope {}", participant.label, participant.scope));
+        return Err(format!(
+            "{}: unknown scope {}",
+            participant.label, participant.scope
+        ));
     }
     if participant.at == Location::Node && participant.scope != "root" {
-        return Err(format!("{}: a node participant is at the root", participant.label));
+        return Err(format!(
+            "{}: a node participant is at the root",
+            participant.label
+        ));
     }
     check_does(&participant.raw["does"])?;
     if let Some(kind) = participant.raw.get("kind") {
@@ -1549,8 +1607,13 @@ fn check_participant(expected: &Expected, participant: &Participant) -> Result<(
         unknown_keys("options", options, &["prepend", "global"])?;
     }
     if let Some(typed) = participant.raw.get("typed") {
-        if participant.at != Location::Host || !matches!(typed.as_str(), Some("struct" | "tuple" | "unit")) {
-            return Err(format!("{}: typed is struct, tuple or unit, at host", participant.label));
+        if participant.at != Location::Host
+            || !matches!(typed.as_str(), Some("struct" | "tuple" | "unit"))
+        {
+            return Err(format!(
+                "{}: typed is struct, tuple or unit, at host",
+                participant.label
+            ));
         }
     }
     Ok(())
@@ -1588,10 +1651,14 @@ pub fn problems(expected: &Expected) -> Vec<String> {
                     if spec.scope != "root" && !expected.scopes.contains_key(&spec.scope) {
                         return Err(format!("unknown scope {}", spec.scope));
                     }
-                    if spec.mode == "waterfall-sync" && spec.from != Location::Host && !case.vary.contains(&spec.row) {
+                    if spec.mode == "waterfall-sync"
+                        && spec.from != Location::Host
+                        && !case.vary.contains(&spec.row)
+                    {
                         return Err("only Rust emits waterfall-sync".into());
                     }
-                    if spec.cancel.is_some() && !places.contains_key(spec.cancel.as_ref().unwrap()) {
+                    if spec.cancel.is_some() && !places.contains_key(spec.cancel.as_ref().unwrap())
+                    {
                         return Err("cancel names no label of the case".into());
                     }
                 }
@@ -1608,7 +1675,11 @@ pub fn problems(expected: &Expected) -> Vec<String> {
                         return Err(format!("a limit names {label}, not in the case"));
                     }
                     for language in languages.as_array().into_iter().flatten() {
-                        if !expected.languages.iter().any(|l| Some(l.as_str()) == language.as_str()) {
+                        if !expected
+                            .languages
+                            .iter()
+                            .any(|l| Some(l.as_str()) == language.as_str())
+                        {
                             return Err(format!("unknown language {language}"));
                         }
                     }
@@ -1617,9 +1688,15 @@ pub fn problems(expected: &Expected) -> Vec<String> {
             if case.tool {
                 // The tools run every participant at X in one process: no
                 // other process, no host, no rutis/* (§12.2 testing tools).
-                let typed = case.participants()?.iter().any(|p| p.raw.get("typed").is_some());
+                let typed = case
+                    .participants()?
+                    .iter()
+                    .any(|p| p.raw.get("typed").is_some());
                 let rutis = case.participants()?.iter().any(|p| {
-                    p.raw["name"].as_str().unwrap_or(&case.name).starts_with("rutis/")
+                    p.raw["name"]
+                        .as_str()
+                        .unwrap_or(&case.name)
+                        .starts_with("rutis/")
                 });
                 let more = steps.iter().any(|step| {
                     matches!(step, Step::Kill { .. } | Step::Restart { .. } | Step::Concurrent { .. })
@@ -1632,7 +1709,13 @@ pub fn problems(expected: &Expected) -> Vec<String> {
             }
             for x in expected.languages.iter().filter(|l| *l != "rust") {
                 let ys: Vec<&str> = std::iter::once(x.as_str())
-                    .chain(expected.languages.iter().map(String::as_str).filter(|l| *l != x && *l != "rust"))
+                    .chain(
+                        expected
+                            .languages
+                            .iter()
+                            .map(String::as_str)
+                            .filter(|l| *l != x && *l != "rust"),
+                    )
                     .collect();
                 combinations(case, x, &ys)?;
             }
@@ -1656,7 +1739,10 @@ pub fn tool_combo(case: &Case, language: &str) -> Option<Combo> {
     let combo = Combo {
         x: language.to_owned(),
         y: language.to_owned(),
-        at: places.keys().map(|label| (label.clone(), Location::X)).collect(),
+        at: places
+            .keys()
+            .map(|label| (label.clone(), Location::X))
+            .collect(),
     };
     let allowed = case.only.iter().all(|limit| limit_holds(limit, &combo))
         && !case.except.iter().any(|limit| limit_holds(limit, &combo));
@@ -1677,7 +1763,11 @@ pub fn runtime_languages(expected: &Expected) -> Vec<&str> {
 /// language.
 pub fn y_languages<'a>(expected: &'a Expected, x: &'a str) -> Vec<&'a str> {
     std::iter::once(x)
-        .chain(runtime_languages(expected).into_iter().filter(move |l| *l != x))
+        .chain(
+            runtime_languages(expected)
+                .into_iter()
+                .filter(move |l| *l != x),
+        )
         .collect()
 }
 
@@ -1703,7 +1793,10 @@ impl Tally {
     }
 
     pub fn failed(&self) -> usize {
-        self.rows.values().filter(|(_, failed, _)| *failed > 0).count()
+        self.rows
+            .values()
+            .filter(|(_, failed, _)| *failed > 0)
+            .count()
     }
 
     pub fn cases(&self) -> usize {
@@ -1716,7 +1809,11 @@ impl std::fmt::Display for Tally {
         for (case, (passed, failed, first)) in &self.rows {
             match first {
                 None => writeln!(f, "pass {case} ({passed} placements)")?,
-                Some(first) => writeln!(f, "FAIL {case} ({failed} of {} placements): {first}", passed + failed)?,
+                Some(first) => writeln!(
+                    f,
+                    "FAIL {case} ({failed} of {} placements): {first}",
+                    passed + failed
+                )?,
             }
         }
         write!(f, "{} of {} cases failed", self.failed(), self.cases())

@@ -163,7 +163,7 @@
         {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"returns": "a", "log": ["a"]}}
       ] },
 
-    { "case": "waterfall/next-twice", "rule": "5.4 next", "name": "t/wf-twice", "vary": ["a", "b", "e"],
+    { "case": "waterfall/next-twice", "rule": "5.4 next", "name": "t/wf-twice", "vary": ["a", "b", "e"], "except": [{"a": ["rust"], "why": "Rust's Call::next takes the call: a second next does not compile"}],
       "listeners": [
         {"label": "a", "at": "Y", "does": {"nextTwice": true}},
         {"label": "b", "at": "X", "does": {"veto": "b"}}
@@ -528,7 +528,7 @@
         {"emit": {"from": "X", "mode": "waterfall", "args": [], "terminal": "t"}, "expect": {"returns": false, "log": ["a"]}}
       ] },
 
-    { "case": "waterfall/next-twice-in-sync", "rule": "5.4 next", "name": "t/wfs-twice", "tool": false, "vary": ["a"],
+    { "case": "waterfall/next-twice-in-sync", "rule": "5.4 next", "name": "t/wfs-twice", "tool": false, "vary": ["a"], "except": [{"a": ["rust"], "why": "Rust's Call::next takes the call: a second next does not compile"}],
       "listeners": [
         {"label": "a", "at": "Y", "does": {"nextTwice": true}}
       ],

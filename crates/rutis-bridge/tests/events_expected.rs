@@ -96,9 +96,11 @@ fn every_case_runs_somewhere() {
         println!("X={x}: {total} placements, {sampled} sampled");
     }
     for case in &expected.cases {
-        let anywhere = runtime_languages(&expected)
-            .iter()
-            .any(|x| !combinations(case, x, &y_languages(&expected, x)).unwrap().is_empty());
+        let anywhere = runtime_languages(&expected).iter().any(|x| {
+            !combinations(case, x, &y_languages(&expected, x))
+                .unwrap()
+                .is_empty()
+        });
         assert!(anywhere, "{} runs in no placement", case.case);
     }
     for language in ["node-leaf", "python", "go"] {

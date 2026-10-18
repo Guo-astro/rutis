@@ -106,7 +106,11 @@ fn runtime(language: &str, name: &str, dir: &Path) -> (LocalRuntime, Modules) {
             let modules = variants
                 .iter()
                 .map(|v| {
-                    let dash = if v.is_empty() { String::new() } else { format!("-{v}") };
+                    let dash = if v.is_empty() {
+                        String::new()
+                    } else {
+                        format!("-{v}")
+                    };
                     let file = match language {
                         "node" => fixtures.join(format!("conformance-events{dash}/index.mjs")),
                         _ => fixtures.join(format!("conformance-events-leaf{dash}.mjs")),
@@ -114,7 +118,11 @@ fn runtime(language: &str, name: &str, dir: &Path) -> (LocalRuntime, Modules) {
                     (*v, path(file))
                 })
                 .collect();
-            (Launcher::node(&package), package.join("package.json"), modules)
+            (
+                Launcher::node(&package),
+                package.join("package.json"),
+                modules,
+            )
         }
         "python" => {
             let project = repo().join("python/rutis/tests/fixtures");
@@ -127,7 +135,11 @@ fn runtime(language: &str, name: &str, dir: &Path) -> (LocalRuntime, Modules) {
             let modules = variants
                 .iter()
                 .map(|v| {
-                    let under = if v.is_empty() { String::new() } else { format!("_{v}") };
+                    let under = if v.is_empty() {
+                        String::new()
+                    } else {
+                        format!("_{v}")
+                    };
                     (*v, format!("conformance_events{under}"))
                 })
                 .collect();
@@ -153,11 +165,18 @@ fn runtime(language: &str, name: &str, dir: &Path) -> (LocalRuntime, Modules) {
             let modules = variants
                 .iter()
                 .map(|v| {
-                    let dash = if v.is_empty() { String::new() } else { format!("-{v}") };
+                    let dash = if v.is_empty() {
+                        String::new()
+                    } else {
+                        format!("-{v}")
+                    };
                     let file = format!("conformance-events{dash}.ts");
                     let entry = project.join(&file);
-                    std::fs::copy(repo().join("bun/rutis-bun/test/fixtures").join(&file), &entry)
-                        .unwrap_or_else(|e| panic!("{file}: {e}"));
+                    std::fs::copy(
+                        repo().join("bun/rutis-bun/test/fixtures").join(&file),
+                        &entry,
+                    )
+                    .unwrap_or_else(|e| panic!("{file}: {e}"));
                     (*v, path(entry))
                 })
                 .collect();
@@ -189,7 +208,9 @@ fn recorded(launcher: Launcher, pid: &Path, stderr: &Path) -> Launcher {
     }
     wrapped.env = launcher.env.clone();
     wrapped.env.push(("RUTIS_EVENTS_PID".into(), pid.into()));
-    wrapped.env.push(("RUTIS_EVENTS_STDERR".into(), stderr.into()));
+    wrapped
+        .env
+        .push(("RUTIS_EVENTS_STDERR".into(), stderr.into()));
     wrapped.cwd = launcher.cwd.clone();
     wrapped.inherit_fd = launcher.inherit_fd;
     wrapped.stdin = launcher.stdin;
@@ -333,7 +354,8 @@ impl Host {
         );
         for (name, language) in names {
             let (local, modules) = runtime(&language, &name, dir.path());
-            let resolver = Arc::new(RuntimeResolver::modules(local.handle()).with_catalog(&catalog));
+            let resolver =
+                Arc::new(RuntimeResolver::modules(local.handle()).with_catalog(&catalog));
             let view = root.plugin(local);
             chain = chain.with_shared(resolver.clone());
             resolvers.push(resolver);
@@ -380,7 +402,8 @@ impl Host {
         while created.len() < host.expected.scopes.len() {
             for (path, group, parent) in groups(&host.expected) {
                 let parent_path = parent.clone().unwrap_or_else(|| "root".into());
-                if created.contains(&path) || (parent.is_some() && !created.contains(&parent_path)) {
+                if created.contains(&path) || (parent.is_some() && !created.contains(&parent_path))
+                {
                     continue;
                 }
                 let at = host.anchor(&parent_path).await;
@@ -400,7 +423,12 @@ impl Host {
         COLD.eventually_with(
             || self.anchors.0.lock().unwrap().get(path).cloned(),
             &format!("the scope {path}"),
-            || format!("{:?}", self.anchors.0.lock().unwrap().keys().collect::<Vec<_>>()),
+            || {
+                format!(
+                    "{:?}",
+                    self.anchors.0.lock().unwrap().keys().collect::<Vec<_>>()
+                )
+            },
         )
         .await
     }
@@ -412,8 +440,15 @@ impl Host {
             let name = match row.at {
                 Location::X | Location::Y => {
                     let runtime = runtime_name(row.at, &state.y);
-                    let variant = if row.config.get("emitter").is_some() { row.label.as_str() } else { "" };
-                    format!("{runtime}:{}", self.runtimes.get(&runtime)?.modules.get(variant)?)
+                    let variant = if row.config.get("emitter").is_some() {
+                        row.label.as_str()
+                    } else {
+                        ""
+                    };
+                    format!(
+                        "{runtime}:{}",
+                        self.runtimes.get(&runtime)?.modules.get(variant)?
+                    )
                 }
                 Location::Host => "conformance-events".into(),
                 // On the node's own loader.
@@ -431,7 +466,13 @@ impl Host {
                 "name": "scope-anchor",
                 "config": { "path": path },
             })];
-            rows.extend(state.rows.iter().filter(|(r, _)| r.scope == path).filter_map(row));
+            rows.extend(
+                state
+                    .rows
+                    .iter()
+                    .filter(|(r, _)| r.scope == path)
+                    .filter_map(row),
+            );
             rows
         };
         fn nest(
@@ -506,7 +547,9 @@ impl Host {
             .runtimes
             .iter()
             .map(|(name, runtime)| {
-                let len = std::fs::metadata(&runtime.stderr).map(|m| m.len()).unwrap_or(0);
+                let len = std::fs::metadata(&runtime.stderr)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
                 (name.clone(), len)
             })
             .collect();
@@ -535,7 +578,8 @@ impl Host {
     async fn kill_y(&self) -> Result<(), String> {
         let name = self.y_runtime();
         let runtime = &self.runtimes[&name];
-        let pid = std::fs::read_to_string(&runtime.pid).map_err(|e| format!("{name}'s pid: {e}"))?;
+        let pid =
+            std::fs::read_to_string(&runtime.pid).map_err(|e| format!("{name}'s pid: {e}"))?;
         let status = std::process::Command::new("kill")
             .args(["-9", pid.trim()])
             .status()
@@ -710,7 +754,11 @@ impl World for Host {
             self.reconcile().await?;
             for (row, _) in rows.iter().filter(|(row, _)| row.at != Location::Node) {
                 COLD.eventually_with(
-                    || self.row_state(&row.label, &row.scope).is_none().then_some(()),
+                    || {
+                        self.row_state(&row.label, &row.scope)
+                            .is_none()
+                            .then_some(())
+                    },
                     &format!("{} to unload", row.label),
                     || format!("{:?}", self.row_state(&row.label, &row.scope)),
                 )
@@ -743,7 +791,10 @@ impl World for Host {
             lines.extend(
                 String::from_utf8_lossy(&text[from..])
                     .lines()
-                    .filter(|line| line.starts_with("rutis: listener of") || line.starts_with("rutis: filter of"))
+                    .filter(|line| {
+                        line.starts_with("rutis: listener of")
+                            || line.starts_with("rutis: filter of")
+                    })
                     .map(str::to_owned),
             );
         }
@@ -799,7 +850,12 @@ async fn conformance(x: &str) {
             host.state.lock().unwrap().y = combo.y.clone();
             let result = events::run_keeping(&host, &log, case, &combo).await;
             if let Err(why) = &result {
-                eprintln!("FAIL {} [{}]: {why}\n{}", case.case, combo.describe(), host.stderr());
+                eprintln!(
+                    "FAIL {} [{}]: {why}\n{}",
+                    case.case,
+                    combo.describe(),
+                    host.stderr()
+                );
             }
             if let Err(why) = events::finish(&host, &log).await {
                 panic!("the world could not be reset after {}: {why}", case.case);
