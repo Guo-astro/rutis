@@ -19,9 +19,27 @@ export function encodeError(thrown) {
         ...('cause' in value ? { cause: visit(value.cause) } : {}),
         ...(value instanceof AggregateError ? { errors: [...value.errors].map(visit) } : {}),
       }
+      // A string `code` and its `data` (what a Rust service's error carries)
+      // cross too; `data` only when it is data the graph can hold.
+      if (typeof value.code === 'string') nodes[id].code = value.code
+      if (Object.hasOwn(value, 'data')) {
+        const data = attempt(value.data)
+        if (data) nodes[id].data = data
+      }
     } else if (Array.isArray(value)) nodes[id] = { type: 'array', values: value.map(visit) }
     else nodes[id] = { type: 'object', values: Object.entries(value).map(([key, value]) => [key, visit(value)]) }
     return { type: 'reference', value: id }
+  }
+  // `value` visited, or nothing (and nothing of it recorded) if it cannot be.
+  const attempt = value => {
+    const mark = nodes.length
+    try {
+      return visit(value)
+    } catch {
+      nodes.length = mark
+      for (const [object, id] of seen) if (id >= mark) seen.delete(object)
+      return undefined
+    }
   }
   return { name: thrown?.name ?? 'ThrownValue', message: String(thrown?.message ?? thrown), graph: { root: visit(thrown), nodes } }
 }
@@ -54,6 +72,9 @@ export function decodeError({ name, message, graph }) {
     if (node.type === 'error') {
       if ('cause' in node) Object.defineProperty(target, 'cause', { value: read(node.cause), configurable: true, writable: true })
       if (node.errors !== undefined) target.errors = node.errors.map(read)
+      // What a Rust service's `Err(e)` carries: `code` and `data` (#440).
+      if (typeof node.code === 'string') Object.defineProperty(target, 'code', { value: node.code, enumerable: true, configurable: true, writable: true })
+      if (node.data !== undefined) Object.defineProperty(target, 'data', { value: read(node.data), enumerable: true, configurable: true, writable: true })
     } else if (node.type === 'array') target.push(...node.values.map(read))
     else for (const [key, value] of node.values) Object.defineProperty(target, key, { value: read(value), enumerable: true, configurable: true, writable: true })
   })

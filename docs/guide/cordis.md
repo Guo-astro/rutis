@@ -168,4 +168,3 @@ RUTIS_CORDIS_ROOT=/opt/app/cordis /opt/app/my-app
 | `… 1.0.0 is installed, 2.0.0 is required` | 让 npm 项目与 `version` 一致 |
 | `… speaks protocol N, this rutis-bridge speaks M` | 安装与 crate 匹配的 `@arcships/rutis-runtime` |
 | `native plugin dependencies are unresolved: … (name)`（运行时） | 缺少的服务需要放进同一个 `group`，或在 `provide` 中由 rutis 提供 |
-

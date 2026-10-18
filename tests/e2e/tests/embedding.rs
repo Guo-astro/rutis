@@ -296,6 +296,35 @@ fn inspect_until(app: &mut Host, what: &str, expected: &BTreeMap<String, u64>) -
     }
 }
 
+/// Inspect until what a runtime holds no longer moves: nothing left of
+/// `gone` (a tenant's entry from an earlier inspection, closed since), and
+/// two inspections in a row with the same numbers, within the hang guard;
+/// the last inspection. A baseline taken while a close still settles would
+/// count what is about to go.
+fn inspect_settled(app: &mut Host, what: &str, gone: Option<&Value>) -> Value {
+    let deadline = Instant::now() + hang_guard();
+    let mut last: Option<BTreeMap<String, u64>> = None;
+    loop {
+        let inspect = ok(app, "inspect");
+        let found = counts(&inspect);
+        let left = gone
+            .map(|tenant| tenant_ids(&inspect, tenant))
+            .unwrap_or_default();
+        if left.is_empty() && last.as_ref() == Some(&found) {
+            return inspect;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "{what}: not settled within {:?}: left {left:?}, numbers {last:?} then {found:?}",
+                hang_guard()
+            );
+        }
+        last = left.is_empty().then_some(found);
+        // Polling: the application has no event for "the runtimes let go".
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Steps 1 to 5 of #191: start with global and template rows; open two
 /// tenants that see only their own instance services; edit one tenant's
 /// configuration, all or nothing; close a tenant and find nothing of it
@@ -327,7 +356,7 @@ fn tenants_are_created_edited_closed_and_restored_after_a_restart() {
     // 2. Two tenants: each one's rows run, and the same names answer from
     // the tenant they are called in.
     let t1 = ok(&mut app, "create t1 Hello");
-    let only_t1 = ok(&mut app, "inspect");
+    let only_t1 = inspect_settled(&mut app, "t1 alone", None);
     let t2 = ok(&mut app, "create t2 Hej");
     for created in [&t1, &t2] {
         started(created);
@@ -457,14 +486,16 @@ fn tenants_are_created_edited_closed_and_restored_after_a_restart() {
 /// the full runs of the `e2e` job (nightly) set 3000 (D3, about a minute
 /// on macOS).
 fn cycles() -> usize {
-    std::env::var("RUTIS_E2E_TENANT_CYCLES")
-        .ok()
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(20)
+    match std::env::var("RUTIS_E2E_TENANT_CYCLES") {
+        Ok(n) => n
+            .parse()
+            .unwrap_or_else(|e| panic!("RUTIS_E2E_TENANT_CYCLES={n:?}: {e}")),
+        Err(_) => 20,
+    }
 }
 
 /// A process's open descriptors (handles on Windows) and resident memory
-/// in KiB, as far as this platform tells.
+/// (the working set on Windows) in KiB, as far as this platform tells.
 #[derive(Debug, Clone, Copy)]
 struct Held {
     fds: Option<u64>,
@@ -534,25 +565,14 @@ fn held(pid: u32) -> Held {
 
 #[cfg(windows)]
 fn held(pid: u32) -> Held {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        GetProcessHandleCount, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    // SAFETY: plain Win32 calls on a process of the scenario's; the handle
-    // is closed once used.
-    let fds = unsafe {
-        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if process.is_null() {
-            None
-        } else {
-            let mut count = 0u32;
-            let read = GetProcessHandleCount(process, &mut count);
-            CloseHandle(process);
-            (read != 0).then_some(u64::from(count))
-        }
-    };
-    // Resident memory needs another Win32 feature: not read here.
-    Held { fds, rss: None }
+    // The handle count and the working set, as the soak reads them.
+    let usage = rutis_e2e::usage::sample(&[pid])
+        .first()
+        .map(|(_, usage)| *usage);
+    Held {
+        fds: usage.map(|u| u.fds),
+        rss: usage.map(|u| u.rss_kib),
+    }
 }
 
 /// The application's processes and what each holds, by pid.
@@ -612,7 +632,9 @@ fn creating_and_closing_tenants_over_and_over_holds_nothing_more() {
 
     let cycles = cycles();
     let warm_up = (cycles / 10).max(5);
-    let churn = |app: &mut Host, cycle: usize| {
+    // One cycle; with `last`, what `inspect` sees of the tenant while it
+    // is open, to wait for it to go after.
+    let churn = |app: &mut Host, cycle: usize, last: bool| {
         // Four names: the admin layer keeps four more rows, enabled and
         // disabled in turn.
         let tenant = format!("churn{}", cycle % 4);
@@ -621,17 +643,25 @@ fn creating_and_closing_tenants_over_and_over_holds_nothing_more() {
             ok(app, &format!("call {tenant} greeter hello [\"Ada\"]"))["ok"],
             format!("Hello, Ada (ts {tenant})")
         );
+        assert_eq!(
+            ok(app, &format!("call {tenant} py_greeter hello [\"Ada\"]"))["ok"],
+            format!("HELLO, Ada (py {tenant})")
+        );
+        let open = last.then(|| ok(app, "inspect")["tenants"][&tenant].clone());
         ok(app, &format!("close {tenant}"));
+        open
     };
-    for cycle in 0..warm_up {
-        churn(&mut app, cycle);
+    for cycle in 0..warm_up - 1 {
+        churn(&mut app, cycle, false);
     }
-    let base_inspect = ok(&mut app, "inspect");
+    let last = churn(&mut app, warm_up - 1, true).unwrap();
+    assert!(last.get("label").is_some(), "{last}");
+    let base_inspect = inspect_settled(&mut app, "the baseline", Some(&last));
     let base = sample(&s, &app);
     let started = Instant::now();
     let mut middle = None;
     for cycle in warm_up..warm_up + cycles {
-        churn(&mut app, cycle);
+        churn(&mut app, cycle, false);
         if cycle == warm_up + cycles / 2 {
             middle = Some(sample(&s, &app));
         }

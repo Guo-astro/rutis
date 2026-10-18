@@ -107,9 +107,88 @@ class RemoteError(Exception):
         self.name = name
         self.message = message
         self.graph = graph
+        # What a Rust service's `Err(e)` carries (#440): its code (the
+        # variant's name) and data (`e`'s serde value); None otherwise.
+        self.code, self.data = _code_and_data(graph)
 
     def __str__(self) -> str:
         return f"{self.name}: {self.message}"
+
+
+def _code_and_data(graph: Any) -> tuple:
+    """The `code` and `data` of the error a graph's root refers to."""
+    try:
+        nodes = graph["nodes"]
+        root = nodes[graph["root"]["value"]]
+        if root.get("type") != "error":
+            return None, None
+        code = root.get("code")
+        code = code if isinstance(code, str) else None
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+        return None, None
+
+    def read(value, depth=0):
+        if depth > 64:
+            raise ValueError("error data nested too deep")
+        kind = value["type"]
+        if kind == "data":
+            return value["value"]
+        if kind == "undefined":
+            return None
+        if kind == "number":
+            return float(value["value"])
+        if kind == "map":
+            entries = value["value"]
+            return _values.received_map([read(k, depth + 1) for k, _ in entries], [read(v, depth + 1) for _, v in entries])
+        if kind == "set":
+            return _values.received_set([read(item, depth + 1) for item in value["value"]])
+        # The other tagged values, as the session decodes them (bigint included).
+        if kind in _values.TAGS:
+            return _values.read(kind, value["value"])
+        node = nodes[value["value"]]
+        if node["type"] == "array":
+            return [read(item, depth + 1) for item in node["values"]]
+        if node["type"] == "object":
+            return {key: read(item, depth + 1) for key, item in node["values"]}
+        raise ValueError("unexpected error data")
+
+    # Data that cannot be read leaves the code as it is.
+    try:
+        data = read(root["data"]) if "data" in root else None
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError, _values.Refused):
+        data = None
+    return code, data
+
+
+def _graph_data(value: Any, nodes: list, depth: int = 0) -> dict:
+    """`value` as an error graph value (an exception's `data`): plain data,
+    big integers as bigints, lists and dicts as nodes. Anything else raises
+    ValueError, and the data is left out."""
+    if depth > 64:
+        raise ValueError("error data nested too deep")
+    if value is None or isinstance(value, (bool, str)):
+        return {"type": "data", "value": value}
+    if isinstance(value, int):
+        if abs(value) > 2**53 - 1:
+            return {"type": "bigint", "value": str(value)}
+        return {"type": "data", "value": value}
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return {"type": "number", "value": "NaN" if value != value else ("Infinity" if value > 0 else "-Infinity")}
+        return {"type": "data", "value": value}
+    if isinstance(value, (list, tuple)):
+        node = {"type": "array", "values": []}
+        nodes.append(node)
+        reference = {"type": "reference", "value": len(nodes) - 1}
+        node["values"] = [_graph_data(item, nodes, depth + 1) for item in value]
+        return reference
+    if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+        node = {"type": "object", "values": []}
+        nodes.append(node)
+        reference = {"type": "reference", "value": len(nodes) - 1}
+        node["values"] = [[key, _graph_data(item, nodes, depth + 1)] for key, item in value.items()]
+        return reference
+    raise ValueError("error data that cannot cross")
 
 
 class SyncWaitCycle(RemoteError):
@@ -192,6 +271,17 @@ def encode_error(thrown: BaseException) -> dict:
             "stack": "".join(traceback.format_exception(error)),
         }
         nodes.append(node)
+        # A str `code` and its `data` cross, as from JavaScript and Rust
+        # (#440); data that cannot cross is left out, nothing of it kept.
+        code = getattr(error, "code", None)
+        if isinstance(code, str):
+            node["code"] = code
+        if hasattr(error, "data") and not (isinstance(error, RemoteError) and error.data is None):
+            mark = len(nodes)
+            try:
+                node["data"] = _graph_data(error.data, nodes)
+            except (ValueError, RecursionError):
+                del nodes[mark:]
         if isinstance(error, AggregateError):
             node["errors"] = [visit(item) for item in error.errors]
         return reference

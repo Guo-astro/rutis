@@ -887,7 +887,8 @@ const STORE_USER: &str = r#"
 export const name = 'store-user'
 export const inject = ['store', 'probe']
 export function apply(ctx) {
-  ctx.probe.record(`user: ${ctx.store.get('x')} ${ctx.store instanceof Object}`)
+  // `prefix` is a field: only the native object has it, not a proxy.
+  ctx.probe.record(`user: ${ctx.store.get('x')} prefix=${ctx.store.prefix}`)
 }
 "#;
 
@@ -970,7 +971,7 @@ async fn cordis_rows_offer_what_they_provide_without_declaring_it() {
     );
     let report = loader.reconcile(layer(rows), None).await.unwrap();
     assert!(report.failures.is_empty(), "{report:?}");
-    probe.wait_for("user: v:x true").await;
+    probe.wait_for("user: v:x prefix=v:").await;
     probe
         .wait_for(r#"rust: v:y {"get":"async","keys":"async"}"#)
         .await;

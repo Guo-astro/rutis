@@ -63,7 +63,8 @@ def apply(ctx, config):
     threading.Event().wait()
 "#;
 
-/// The same in JavaScript.
+/// The same in JavaScript (the marker plugin; `delay`: its cleanup takes
+/// that many milliseconds).
 pub fn node_plugin() -> String {
     let sdk = repo()
         .join("node/rutis/src/index.mjs")
@@ -78,6 +79,7 @@ pub fn node_plugin() -> String {
            return async () => {{\n\
              console.log(`plugin ${{config.row}} cleanup started`)\n\
              if (config.hold) await new Promise(() => {{}})\n\
+             if (config.delay) await new Promise(done => setTimeout(done, config.delay))\n\
              appendFileSync(join(config.out, config.row + '.cleanup'), 'cleanup\\n')\n\
            }}\n\
          }} }})\n",

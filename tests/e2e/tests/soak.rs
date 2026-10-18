@@ -31,8 +31,10 @@
 //!    states, the link's lines) and checks it with calls. Meanwhile the
 //!    host, its runtimes and B are sampled ([`rutis_e2e::usage`]): process
 //!    count, descriptors (handles), threads, resident memory; their growth
-//!    is bounded ([`Bounds`]). The host ends in one of the ways below,
-//!    chosen by the seed.
+//!    is bounded ([`Bounds`]); a timed run too short to compare the
+//!    samples fails. It starts with one fault of each kind ([`Planner`]),
+//!    whatever the seed. The host ends in
+//!    one of the ways below, chosen by the seed.
 //! 2. One shorter host per way of ending, every run: Ctrl-C (Ctrl-Break on
 //!    Windows), SIGTERM (Unix), `kill -9` (TerminateProcess). Its runtimes
 //!    have no restart policy: after a few random operations its Python
@@ -384,21 +386,40 @@ impl Model {
 }
 
 /// The operations of one host: a function of its seed alone. `kills`: it
-/// may kill runtimes (those of a host whose runtimes restart).
+/// may kill runtimes (those of a host whose runtimes restart); such a host
+/// (the soak host) starts with one fault of each kind, so that every kind
+/// is done whatever the seed and however short the run: a rejected edit of
+/// each kind, a cut of the link to B, a kill of the Node runtime and one
+/// of the Python runtime (the cut and the kills wait for their spacing,
+/// some 75 s in all, sampled as idle time).
 struct Planner {
     rng: Rng,
     model: Model,
     kills: bool,
     rev: u64,
+    opening: Vec<Op>,
 }
 
 impl Planner {
     fn new(seed: u64, kills: bool) -> Self {
+        // Taken from the end: the first operation is last.
+        let opening = match kills {
+            true => vec![
+                Op::Kill(Runtime::Py),
+                Op::Kill(Runtime::Node),
+                Op::Cut,
+                Op::Reject(Bad::RuntimeSetting),
+                Op::Reject(Bad::MissingPlugin),
+                Op::Reject(Bad::Syntax),
+            ],
+            false => Vec::new(),
+        };
         Self {
             rng: Rng(seed),
             model: Model::new(),
             kills,
             rev: 0,
+            opening,
         }
     }
 
@@ -409,6 +430,9 @@ impl Planner {
 
     /// The next operation, applied to the model.
     fn next(&mut self) -> Op {
+        if let Some(op) = self.opening.pop() {
+            return op;
+        }
         let free: Vec<usize> = (0..SLOTS)
             .filter(|&slot| self.model.slots[slot].is_none())
             .collect();
@@ -578,6 +602,18 @@ fn the_operations_are_a_function_of_the_seed() {
     assert_eq!(ops(42), ops(42));
     assert_ne!(ops(42), ops(43));
     let all = ops(7);
+    assert_eq!(
+        all[..6],
+        [
+            Op::Reject(Bad::Syntax),
+            Op::Reject(Bad::MissingPlugin),
+            Op::Reject(Bad::RuntimeSetting),
+            Op::Cut,
+            Op::Kill(Runtime::Node),
+            Op::Kill(Runtime::Py),
+        ],
+        "the soak host starts with one fault of each kind"
+    );
     for kind in [
         "Call",
         "Add",
@@ -997,7 +1033,15 @@ impl Project {
         }))
         .unwrap();
         match bad {
-            Some(Bad::Syntax) => text[..text.len() / 2].to_owned(),
+            // Cut at a character boundary: the paths in it may not be
+            // ASCII.
+            Some(Bad::Syntax) => {
+                let mut half = text.len() / 2;
+                while !text.is_char_boundary(half) {
+                    half -= 1;
+                }
+                text[..half].to_owned()
+            }
             _ => text,
         }
     }
@@ -1495,10 +1539,14 @@ impl Sampler {
     }
 }
 
+/// A knob: unset is `None`; set, it must be a number.
 fn env(name: &str) -> Option<u64> {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
+    let value = std::env::var(name).ok()?;
+    Some(
+        value
+            .parse()
+            .unwrap_or_else(|e| panic!("{name}={value:?} is not a number: {e}")),
+    )
 }
 
 /// risk: L1, L3, L4, B3 (runtimes outlive a killed host), C3, B4
@@ -1571,6 +1619,27 @@ fn a_long_running_host_holds_no_more_and_every_end_leaves_nothing() {
     );
     for line in &summary {
         println!("soak-s8: {line}");
+    }
+    // A replay (`RUTIS_S8_OPS`) repeats operations, however long they
+    // take; a timed run must have checked growth and done every fault.
+    if ops_limit.is_none() {
+        assert!(
+            !summary[0].starts_with("growth not checked"),
+            "{}: set RUTIS_S8_SECS higher (150 by default)",
+            summary[0]
+        );
+        // The opening operations did each fault (Planner).
+        let killed = |runtime| run.restarts.get(&runtime).copied().unwrap_or(0);
+        assert!(
+            killed(Runtime::Node) > 0
+                && killed(Runtime::Py) > 0
+                && run.cuts > 0
+                && run.rejects >= 3,
+            "not every fault was done: restarts {:?}, {} cuts, {} rejected edits",
+            run.restarts,
+            run.cuts,
+            run.rejects
+        );
     }
     assert!(
         grew.is_empty(),

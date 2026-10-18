@@ -114,7 +114,7 @@ class Conformance(background.TestCase):
         for arg in entry.get("args", []):
             fields = arg.get("$callback", {}).get("throws", {}).get("fields", {}) if isinstance(arg, dict) else {}
             for field in fields:
-                self.assertFalse(hasattr(raised, field), f"{why}: {field} does not cross")
+                self.assertIsNone(getattr(raised, field, None), f"{why}: {field} does not cross")
 
     def test_the_testing_tool_returns_what_the_real_runtime_does(self):
         async def go():

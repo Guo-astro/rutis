@@ -136,22 +136,33 @@ fn a_runtime_ending_with_restart_exit_stops_the_host_with_3() {
 }
 
 /// A host stopping does not restart a runtime that ended meanwhile: the
-/// signal comes during the first wait.
+/// signal comes during the first wait, and the stop lasts past it (the
+/// Node row's cleanup takes 2 s, the first wait 1 s).
 /// guarantee: host/runtime-restart
 #[test]
 fn nothing_restarts_once_the_host_stops() {
     let dir = tempfile::tempdir().unwrap();
     let file = run_project(dir.path(), false);
     restart(&file, "on-failure");
+    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    config["rows"][1]["config"]["delay"] = json!(2000);
+    std::fs::write(&file, config.to_string()).unwrap();
     let mut host = Host::start(&["run", file.to_str().unwrap()], dir.path());
     let pids = host.started(&["py-row", "node-row"]);
     kill(pids[0]);
     host.wait_line(|line| line.starts_with("runtime py: down (").then_some(()));
     // Within the first wait (1 s).
+    let stopping = std::time::Instant::now();
     signal(&host, libc::SIGTERM, false);
     let (status, stderr, output) = host.exit();
     let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
     assert_eq!(status.code(), Some(0), "{context}");
+    assert!(
+        stopping.elapsed() >= std::time::Duration::from_secs(2),
+        "the stop outlasted the first wait: {:?}; {context}",
+        stopping.elapsed()
+    );
+    assert_eq!(cleanups(dir.path(), "node-row"), 1, "{context}");
     assert!(
         !output.iter().any(|line| line == "runtime py: restarting"),
         "{context}"

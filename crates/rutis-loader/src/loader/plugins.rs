@@ -67,6 +67,22 @@ impl Plugin for GroupPlugin {
                 return Ok(Effect::Done);
             };
             let token = self.token;
+            // An instance serves its group's exported Rust services.
+            #[cfg(any(feature = "runtimes", feature = "peer"))]
+            {
+                let instanced = inner
+                    .state
+                    .lock()
+                    .unwrap()
+                    .desired
+                    .row(&self.slot.row)
+                    .is_some_and(|row| row.instanced);
+                if instanced {
+                    for export in inner.catalog.exports_in(Some(&self.slot.row)) {
+                        ctx.plugin(export.plugin(Some(ctx.instance())));
+                    }
+                }
+            }
             inner.attach(Some(self.slot.clone()), token, ctx);
             let weak = self.inner.clone();
             let slot = self.slot.clone();
@@ -115,6 +131,11 @@ impl Plugin for LoaderPlugin {
         Box::pin(async move {
             // The service is released with the fiber.
             ctx.provide(self.loader.clone())?;
+            // Exported Rust services outside instances, served from here.
+            #[cfg(any(feature = "runtimes", feature = "peer"))]
+            for export in self.loader.inner.catalog.exports_in(None) {
+                ctx.plugin(export.plugin(None));
+            }
             let token = self.loader.inner.next_token();
             self.loader.inner.attach(None, token, ctx);
             let weak = Arc::downgrade(&self.loader.inner);

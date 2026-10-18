@@ -86,7 +86,7 @@
 | 任务 | 机器 | PR 上 | 完整运行多做的 | 内容 |
 | --- | --- | --- | --- | --- |
 | `links` | macOS（自托管，§10） | `docs` | — | 检查 Markdown 里的相对链接 |
-| `rust` | Linux | `code` | Linux 上 loopback 方式启动运行时的重跑 | 全部 Rust 测试，每项只跑一次：工作区（除 bridge、loader、`rutis-e2e`）、loader 全部行类型、bridge 全部 feature；内核的 shuttle 模型，1000 次迭代（用 `--cfg rutis_shuttle` 在 `target/shuttle` 里构建，远不到一分钟；`stress.yml` 大规模运行）。用最低支持版本（§9） |
+| `rust` | Linux | `code` | Linux 上 loopback 方式启动运行时的重跑 | 全部 Rust 测试，每项只跑一次：工作区（除 bridge、loader、`rutis-e2e`）、loader 全部行类型、bridge 全部 feature；内核的 shuttle 模型，1000 次迭代（用 `--cfg rutis_shuttle` 在 `target/shuttle` 里构建，远不到一分钟；`stress.yml` 大规模运行）；模糊测试入口（`crates/rutis-bridge/src/fuzzing.rs`）用 `--cfg fuzzing` 在 `target/fuzzcheck` 里 `cargo check` 一遍（只编译不运行，`stress.yml` 的 `fuzz` 才跑）。用最低支持版本（§9） |
 | `e2e` | Linux | `code` | 跨版本相遇：`cargo test -p rutis-e2e --test cross_version -- --ignored`（#209），上一个发布版本的运行时包、Go SDK、`rutis-host` 与这次提交相遇；从 npm、PyPI、Go 模块代理下载，装在 `runner.temp`（不进 Rust 缓存），约 1–2 分钟。结果随新版本发布而变（§6 第 5 条），不在 PR 上跑；它只随本项目自己的发布而变，又要在发布门里跑，所以放完整运行（每晚、发布门），不放每周。放进已有的 `e2e`（Node、Python、Bun、Go 都已装好），不新开任务（§6「加一个任务」第 4 条）；完整运行中 `e2e` 不在关键路径上 | 端到端场景 `cargo test -p rutis-e2e`（`tests/e2e`：真实的 rutis-host 进程、项目目录、各语言的探针插件），与 `rust` 并行，用最低支持版本（§9）。失败时上传 `RUTIS_E2E_DIR`（失败场景的目录和日志）为 artifact `e2e-linux`。安装场景不在这里跑，由 `install.yml` 跑。S7（`embedding.rs`）反复创建关闭租户的次数由 `RUTIS_E2E_TENANT_CYCLES` 决定：PR 上 20 次，完整运行（每晚）3000 次，多约一分钟；其他任务用默认的 20 次。同样的场景在 macOS 上由 `network-macos` 跑，在 Windows 上由 `runtimes-windows` 跑（只跑不限于 Unix 的场景） |
 | `js-py` | macOS（自托管，§10） | `code` | — | `scripts/train.mjs`；Node 包（`node/rutis`、`rutis-runtime`、`rutis-host`）和 rutis-dsh 的 dsh 测试；Python 单元测试 |
 | `lint` | Linux | `code` | — | `cargo fmt --check`；`PURE_TESTS_*` 里的每个名字都有对应的测试文件（§4）；`cargo clippy --workspace --all-targets --all-features -- -D warnings`。与测试并行。没有基线：警告在引入它的 PR 里改掉，升级工具链带来的新 lint 在升级的 PR 里改掉 |
@@ -290,7 +290,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 
 ## 11. 自托管的 Linux runner
 
-`ci.yml` 的 Linux 任务（`rust`、`e2e`、`lint`、`runtimes-go`/`runtimes-bun` 的 Linux 矩阵项、`dylib-linux-*`、`sdk-repro`）由仓库变量 `LINUX_RUNNER`（`runs-on` 的 JSON 值）决定跑在哪里：没设置时是 GitHub 的 `"ubuntu-24.04"`，设成 `["self-hosted","Linux"]` 就跑在组织的自托管 Linux runner 上；删掉变量就回到 GitHub。`package.yml`（要 Docker 容器）、`install.yml`、`stress.yml` 等其他工作流不受影响，只有 `stress.yml` 的 `shuttle`、`fuzz` 和 `soak-host` 的 Linux 项也按这个变量（`soak-host` 的 macOS 项按 `MACOS_RUNNER`，Windows 项按 `WINDOWS_RUNNER`）。
+`ci.yml` 的 Linux 任务（`rust`、`e2e`、`lint`、`runtimes-go`/`runtimes-bun` 的 Linux 矩阵项、`dylib-linux-*`、`sdk-repro`）由仓库变量 `LINUX_RUNNER`（`runs-on` 的 JSON 值）决定跑在哪里：没设置时是 GitHub 的 `"ubuntu-24.04"`，设成 `["self-hosted","Linux"]` 就跑在组织的自托管 Linux runner 上；删掉变量就回到 GitHub。`package.yml`（要 Docker 容器）、`install.yml`、`stress.yml` 等其他工作流不受影响，只有 `stress.yml` 的 `shuttle`、`fuzz` 和 `soak-host` 的 Linux 项、`nightly.yml` 的 `cordis-latest` 也按这个变量（`soak-host` 的 macOS 项按 `MACOS_RUNNER`，Windows 项按 `WINDOWS_RUNNER`）。
 
 这些 runner 是同一台机器（32 核、60 GB 内存）上的 4 个 Docker 容器，每个容器一个 runner，用户 `runner`，有免密 sudo，自带 Rust、Node、Go、Python，没有 `lsof`、Docker 和 Bun（Bun 由 `setup-bun` 装）。任务开头和结尾同样运行 `tools/ci-self-hosted.sh`（见上一节），区别是：
 

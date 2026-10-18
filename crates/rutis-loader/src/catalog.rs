@@ -87,12 +87,19 @@ struct Service {
 /// A shared name that a runtime connection's plugins provide is, in the
 /// copies inside that connection's instance, the instance's own
 /// (`RuntimeInstances`, feature `runtimes`): `host_key_in(name, instance)`.
-#[derive(Clone, Default)]
+///
+/// Every name not registered otherwise is shared by name, as in rutis-host
+/// ([`ServiceCatalog::share_by_name`]); [`ServiceCatalog::share_registered_only`]
+/// shares only the names registered as shared.
+#[derive(Clone)]
 pub struct ServiceCatalog {
     services: HashMap<String, Service>,
     /// Every name not registered otherwise is shared by name.
     #[cfg_attr(not(any(feature = "runtimes", feature = "peer")), allow(dead_code))]
     by_name: bool,
+    /// Rust services exported by name ([`ServiceCatalog::export`]).
+    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    exports: Vec<rutis_bridge::exports::Export>,
 }
 
 fn probe<T: ?Sized + Send + Sync + 'static>() -> Probe {
@@ -106,7 +113,19 @@ fn reader<T: Serialize + Send + Sync + 'static>() -> Read {
     })
 }
 
+impl Default for ServiceCatalog {
+    fn default() -> Self {
+        Self {
+            services: HashMap::new(),
+            by_name: true,
+            #[cfg(any(feature = "runtimes", feature = "peer"))]
+            exports: Vec::new(),
+        }
+    }
+}
+
 impl ServiceCatalog {
+    /// A catalog sharing every name by name ([`ServiceCatalog::share_by_name`]).
     pub fn new() -> Self {
         Self::default()
     }
@@ -215,7 +234,9 @@ impl ServiceCatalog {
 
     /// Name a service shared across languages: a `dyn HostDispatch` at
     /// `host_key(name)`, provided by Rust or by a row of any runtime. Rows
-    /// that inject a shared name wait for it in rutis; other names a
+    /// that inject a shared name wait for it in rutis. Every name is shared
+    /// by default; this matters after
+    /// [`ServiceCatalog::share_registered_only`], where the other names a
     /// JavaScript row injects are left to Cordis.
     #[cfg(feature = "runtimes")]
     pub fn register_shared(&mut self, name: impl Into<String>) -> &mut Self {
@@ -242,10 +263,76 @@ impl ServiceCatalog {
     /// Share every name not registered otherwise, as
     /// [`ServiceCatalog::register_shared`] would: a host whose services all
     /// cross between languages and nodes by name (rutis-host).
+    ///
+    /// The default: a catalog shares every name by name unless
+    /// [`ServiceCatalog::share_registered_only`] said otherwise. Rows gate in
+    /// rutis on the names rutis has a provider for (a Rust service, an
+    /// exported one, another row's); a name only a Cordis row of the same
+    /// runtime provides resolves in Cordis.
     #[cfg(any(feature = "runtimes", feature = "peer"))]
     pub fn share_by_name(&mut self) -> &mut Self {
         self.by_name = true;
         self
+    }
+
+    /// Share only the names registered as shared (`register_shared`,
+    /// `register_shared_instance`, `export`): the other names a JavaScript
+    /// row injects are left to Cordis, and a leaf row cannot inject them.
+    /// What `ServiceCatalog::new()` did before 0.12.
+    pub fn share_registered_only(&mut self) -> &mut Self {
+        self.by_name = false;
+        self
+    }
+
+    /// Export an existing Rust service by name, with the dispatcher
+    /// generated for it (`rutis_bridge::build::Exports`): the name
+    /// is shared (inside the instances of the export's group, if it has
+    /// one), and the loader serves it while the native service is there,
+    /// from its own context or, for a group, from each of the group's
+    /// instances. Rows of every language that inject the name gate on it
+    /// and call its methods. The application provides the native service as
+    /// usual (`TypeKey::of::<T>()`, in an instance with its id); a later
+    /// export of the same name replaces an earlier one.
+    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    pub fn export(&mut self, export: rutis_bridge::exports::Export) -> &mut Self {
+        let name = export.name().to_owned();
+        let key = rutis_bridge::session::host_key(&name);
+        match export.group() {
+            None => self.register_keyed::<dyn rutis_bridge::session::HostDispatch>(&name, key),
+            Some(group) => self.register_instance_keyed::<dyn rutis_bridge::session::HostDispatch>(
+                &name,
+                group.to_owned(),
+                key,
+            ),
+        };
+        self.exports.retain(|known| known.name() != name);
+        self.exports.push(export);
+        self
+    }
+
+    /// [`ServiceCatalog::export`] each of `exports`, such as the generated
+    /// `exports::all()`.
+    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    pub fn export_all(
+        &mut self,
+        exports: impl IntoIterator<Item = rutis_bridge::exports::Export>,
+    ) -> &mut Self {
+        for export in exports {
+            self.export(export);
+        }
+        self
+    }
+
+    /// The exports to serve outside instances (`None`) or in the instances
+    /// of `group`.
+    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    pub(crate) fn exports_in<'a>(
+        &'a self,
+        group: Option<&'a str>,
+    ) -> impl Iterator<Item = &'a rutis_bridge::exports::Export> + 'a {
+        self.exports
+            .iter()
+            .filter(move |export| export.group() == group)
     }
 
     /// Whether `name` is shared across languages by name, globally or
@@ -276,7 +363,8 @@ impl ServiceCatalog {
         };
         #[cfg(any(feature = "runtimes", feature = "peer"))]
         if service.key.base() == &rutis_bridge::session::host_key(name) {
-            return false;
+            // An exported Rust service is the application's own.
+            return self.exports.iter().any(|export| export.name() == name);
         }
         let _ = service;
         true

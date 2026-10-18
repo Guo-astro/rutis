@@ -1,10 +1,15 @@
 package peer
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -13,6 +18,11 @@ type RemoteError struct {
 	Name    string
 	Message string
 	Graph   json.RawMessage
+	// Code and Data are what a Rust service's Err(e) carries (#440): its
+	// code (the variant's name) and data (e's serde value, decoded as
+	// encoding/json does, big integers as *big.Int); empty and nil otherwise.
+	Code string
+	Data any
 }
 
 func (e *RemoteError) Error() string {
@@ -145,6 +155,20 @@ func encodeError(err error) map[string]any {
 		id := len(nodes)
 		node := map[string]any{"type": "error", "name": name, "message": message, "stack": name + ": " + message}
 		nodes = append(nodes, node)
+		// A code and its data cross, as from JavaScript and Rust (#440):
+		// an error with `Code() string` and `Data() any`. Data that cannot
+		// cross is left out, nothing of it kept.
+		if coded, ok := err.(interface{ Code() string }); ok {
+			node["code"] = coded.Code()
+		}
+		if carrying, ok := err.(interface{ Data() any }); ok {
+			mark := len(nodes)
+			if data, ok := graphData(carrying.Data(), &nodes); ok {
+				node["data"] = data
+			} else {
+				nodes = nodes[:mark]
+			}
+		}
 		if aggregate, ok := err.(*AggregateError); ok {
 			children := make([]any, 0, len(aggregate.Errors))
 			for _, child := range aggregate.Errors {
@@ -197,5 +221,213 @@ func decodeError(raw json.RawMessage) error {
 	if strings.TrimSpace(string(graph)) == "null" {
 		graph = nil
 	}
-	return &RemoteError{Name: name, Message: message, Graph: graph}
+	remote := &RemoteError{Name: name, Message: message, Graph: graph}
+	remote.Code, remote.Data = codeAndData(graph)
+	return remote
+}
+
+// codeAndData reads the code and data of the error a graph's root refers to.
+func codeAndData(raw json.RawMessage) (string, any) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var graph struct {
+		Root  graphValue                   `json:"root"`
+		Nodes []map[string]json.RawMessage `json:"nodes"`
+	}
+	if json.Unmarshal(raw, &graph) != nil || graph.Root.Type != "reference" {
+		return "", nil
+	}
+	node := func(value json.RawMessage) map[string]json.RawMessage {
+		var id int
+		if json.Unmarshal(value, &id) != nil || id < 0 || id >= len(graph.Nodes) {
+			return nil
+		}
+		return graph.Nodes[id]
+	}
+	root := node(graph.Root.Value)
+	if root == nil {
+		return "", nil
+	}
+	var code string
+	_ = json.Unmarshal(root["code"], &code)
+	var read func(json.RawMessage, int) (any, bool)
+	read = func(raw json.RawMessage, depth int) (any, bool) {
+		var value graphValue
+		if depth > 64 || json.Unmarshal(raw, &value) != nil {
+			return nil, false
+		}
+		switch value.Type {
+		case "undefined":
+			return nil, true
+		case "data":
+			var data any
+			return data, json.Unmarshal(value.Value, &data) == nil
+		case "number":
+			var text string
+			if json.Unmarshal(value.Value, &text) != nil {
+				return nil, false
+			}
+			switch text {
+			case "NaN":
+				return math.NaN(), true
+			case "Infinity":
+				return math.Inf(1), true
+			case "-Infinity":
+				return math.Inf(-1), true
+			}
+			number, err := strconv.ParseFloat(text, 64)
+			return number, err == nil
+		case "map", "set":
+			var items []json.RawMessage
+			if json.Unmarshal(value.Value, &items) != nil {
+				return nil, false
+			}
+			var out []any
+			for _, item := range items {
+				parts := []json.RawMessage{item}
+				if value.Type == "map" {
+					if json.Unmarshal(item, &parts) != nil || len(parts) != 2 {
+						return nil, false
+					}
+				}
+				for _, part := range parts {
+					decoded, ok := read(part, depth+1)
+					if !ok {
+						return nil, false
+					}
+					out = append(out, decoded)
+				}
+			}
+			if value.Type == "set" {
+				return Set(out), CheckKeys(out, "set element") == nil
+			}
+			m := make(Map, len(out)/2)
+			for i := range m {
+				m[i] = MapEntry{Key: out[2*i], Value: out[2*i+1]}
+			}
+			return m, CheckKeys(m.keys(), "map key") == nil
+		case "reference":
+			target := node(value.Value)
+			var kind string
+			if target == nil || json.Unmarshal(target["type"], &kind) != nil {
+				return nil, false
+			}
+			switch kind {
+			case "array":
+				var items []json.RawMessage
+				if json.Unmarshal(target["values"], &items) != nil {
+					return nil, false
+				}
+				list := make([]any, 0, len(items))
+				for _, item := range items {
+					element, ok := read(item, depth+1)
+					if !ok {
+						return nil, false
+					}
+					list = append(list, element)
+				}
+				return list, true
+			case "object":
+				var entries [][2]json.RawMessage
+				if json.Unmarshal(target["values"], &entries) != nil {
+					return nil, false
+				}
+				object := make(map[string]any, len(entries))
+				for _, entry := range entries {
+					var key string
+					if json.Unmarshal(entry[0], &key) != nil {
+						return nil, false
+					}
+					element, ok := read(entry[1], depth+1)
+					if !ok {
+						return nil, false
+					}
+					object[key] = element
+				}
+				return object, true
+			}
+		default:
+			// The other tagged values, as the session decodes them.
+			var text string
+			if !isTag(value.Type) || json.Unmarshal(value.Value, &text) != nil {
+				return nil, false
+			}
+			decoded, err := parseTagged(value.Type, text)
+			return decoded, err == nil
+		}
+		return nil, false
+	}
+	var data any
+	if raw, found := root["data"]; found {
+		data, _ = read(raw, 0)
+	}
+	return code, data
+}
+
+// graphData is `value` (an error's Data) as an error graph value: its JSON
+// form, integers beyond ±(2^53−1) as bigints, arrays and objects as nodes.
+func graphData(value any, nodes *[]any) (map[string]any, bool) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var data any
+	if decoder.Decode(&data) != nil {
+		return nil, false
+	}
+	var visit func(any, int) (map[string]any, bool)
+	visit = func(value any, depth int) (map[string]any, bool) {
+		if depth > 64 {
+			return nil, false
+		}
+		switch value := value.(type) {
+		case json.Number:
+			if integer, ok := new(big.Int).SetString(string(value), 10); ok && integer.CmpAbs(big.NewInt(1<<53-1)) > 0 {
+				return map[string]any{"type": "bigint", "value": integer.String()}, true
+			}
+			return map[string]any{"type": "data", "value": value}, true
+		case []any:
+			id := len(*nodes)
+			*nodes = append(*nodes, nil)
+			values := make([]any, 0, len(value))
+			for _, item := range value {
+				encoded, ok := visit(item, depth+1)
+				if !ok {
+					return nil, false
+				}
+				values = append(values, encoded)
+			}
+			(*nodes)[id] = map[string]any{"type": "array", "values": values}
+			return map[string]any{"type": "reference", "value": id}, true
+		case map[string]any:
+			id := len(*nodes)
+			*nodes = append(*nodes, nil)
+			keys := make([]string, 0, len(value))
+			for key := range value {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			values := make([]any, 0, len(value))
+			for _, key := range keys {
+				encoded, ok := visit(value[key], depth+1)
+				if !ok {
+					return nil, false
+				}
+				values = append(values, []any{key, encoded})
+			}
+			(*nodes)[id] = map[string]any{"type": "object", "values": values}
+			return map[string]any{"type": "reference", "value": id}, true
+		default:
+			return map[string]any{"type": "data", "value": value}, true
+		}
+	}
+	return visit(data, 0)
+}
+
+type graphValue struct {
+	Type  string          `json:"type"`
+	Value json.RawMessage `json:"value"`
 }

@@ -670,7 +670,7 @@ Moved out or opened during step two: revoking while running (#273), changing `ru
 | Item | Risks covered | issue → PR |
 | --- | --- | --- |
 | Three FZ targets; three SH models | P2, E7, K2 | #179 → #425. Done (0.12) |
-| Host-level soak (S8) | L1, L3, L4 | #192. Done (0.12): nightly on three platforms; found and fixed a Python runtime that did not exit after its host was `kill -9`ed |
+| Host-level soak (S8) | L1, L3, L4 | #192 → #431. Done (0.12): nightly on three platforms; found and fixed a Python runtime that did not exit after its host was `kill -9`ed |
 | S6 Cordis plugins; nightly baseline with the latest Cordis plugins | F8, F4 | #190 → #429. Done (0.12); the gap it found, #428, is fixed (0.12) |
 | S7 Rust embedding and multiple tenants | D2, D3, D5 | #191 → #430. Done (0.12): found and fixed a projection task and export slots leaked per language row |
 | Previous release's runtime vs current host | J2, E13, P8 | #209 → #426. Done (0.12): `tests/e2e/tests/cross_version.rs`, the previous release derived from the versions on npm, run in the `e2e` job of `ci.yml`'s full runs (nightly, release gate); no combination failed after loading or hung |
@@ -679,8 +679,11 @@ Moved out or opened during step two: revoking while running (#273), changing `ru
 | S5 nightly: two containers, non-loopback + TLS, netem | E12 | #341 → #433. Done (0.12): `tests/e2e/tests/netem.rs`, `netem.yml`, nightly, report only; found and fixed a Python `listen:` with its controller connected not stopping on Ctrl-C and skipping its cleanups on SIGTERM; B printing websockets' traceback on an outage (#434) |
 | Values consistent across languages: Python `datetime` by reference, Go structs bypassing the checks, Python dicts dropping undefined keys | P7, A1 | #355 → #410, #412, #413. Done (0.11) |
 | Passing dates and times, binary data, maps, sets, big integers, decimals and UUIDs across languages | P7, A1 | #308, #360 → designs #404, #414, implementation #406, #415, #410, #412, #413. Done (0.11) |
-| Revoking a peer's credentials while running, without restarting; S5 gains a step afterwards | E5 | #273. Mechanism done (0.12): the identity layer's revocation hook with library tests; rutis-host has no trigger, so neither S5 (over loopback, nor in containers #433) has the step: it is left to the management service |
+| Revoking a peer's credentials while running, without restarting; S5 gains a step afterwards | E5 | #273 → #424. Mechanism done (0.12): the identity layer's revocation hook with library tests; rutis-host has no trigger, so neither S5 (over loopback, nor in containers #433) has the step: it is left to the management service |
 | `rutis-host run` changing its configuration while running; restarting a crashed runtime | B4 | #274 → #421, #422, #423. Done (0.12): SIGUSR1 / `--watch-config` rereads the configuration, all or nothing (`host/reload-config`); automatic restart after a crash is opt-in, off by default (`host/runtime-restart`) |
+| Language runtimes organised as a registry, test helpers moved to `common` | — | #230 → #420. Done (0.12) |
+
+Found and fixed in step three: #407, #408, #409 (#419), #411 (#427), #428 (#443), #434 (#436), #435 (#437), #438 (#439), the release review's fixes (#450).
 
 "CI changes §8.6 steps 3–4" (splitting the dylib jobs on Linux, CI measurements), formerly in step three, were done in #213.
 

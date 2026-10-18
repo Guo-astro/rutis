@@ -19,7 +19,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{BoxFuture, Ctx};
+use rutis::{
+    BoxFuture, CordisError, Ctx, EventKey, Listener, ServiceChange, ServiceChanged, TypeKey,
+};
 use rutis_bridge::channel::{Channel, ConnectError, PeerId};
 use rutis_bridge::session::{Connection, Dispatch, Endpoint, Error, Format, Reply, Value};
 use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
@@ -570,6 +572,27 @@ fn record(mut states: watch::Receiver<LinkState>) -> Arc<Mutex<Vec<LinkState>>> 
     seen
 }
 
+/// Counts the provides of one service key, as the registry reports them
+/// (every one, however soon it is withdrawn).
+#[derive(Clone)]
+struct Provides {
+    key: TypeKey,
+    count: Arc<Mutex<usize>>,
+}
+
+impl Listener<ServiceChanged> for Provides {
+    fn call<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        changed: &'a ServiceChanged,
+    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
+        if changed.change == ServiceChange::Provided && changed.key == self.key {
+            *self.count.lock().unwrap() += 1;
+        }
+        Box::pin(async { Ok(None) })
+    }
+}
+
 /// A far end revoked after main dialed it, before it greeted: main's
 /// dialing link refuses it before providing the peer, and waits as after
 /// an authentication failure. Found by the TLA+ model of remote leases
@@ -606,8 +629,17 @@ async fn a_far_end_revoked_while_it_greets_never_becomes_a_peer() {
         })
         .unwrap();
 
-    // `main` dials it with an identity that can revoke it.
+    // `main` dials it with an identity that can revoke it; every provide
+    // of the peer is counted (a state watch keeps only the latest state,
+    // and would miss a `Ready` replaced at once).
     let main = Ctx::root().unwrap();
+    let provides = Provides {
+        key: peer_key(&id("far")),
+        count: Arc::default(),
+    };
+    main.events()
+        .on(&main, &EventKey::of(), provides.clone())
+        .unwrap();
     (&main.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
         .await
         .unwrap();
@@ -637,6 +669,11 @@ async fn a_far_end_revoked_while_it_greets_never_becomes_a_peer() {
         "{waiting:?}"
     );
     assert!(peer(&main, "far").is_none());
+    assert_eq!(
+        *provides.count.lock().unwrap(),
+        0,
+        "the revoked far end was provided as a peer"
+    );
     let seen = seen.lock().unwrap().clone();
     assert!(
         !seen
@@ -644,6 +681,14 @@ async fn a_far_end_revoked_while_it_greets_never_becomes_a_peer() {
             .any(|state| matches!(state, LinkState::Ready { .. })),
         "the revoked far end never became ready: {seen:?}"
     );
+    // It waits as after an authentication failure (30 s), not the first
+    // step of the backoff (0.5 s +- 20 %): no dial within a second.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let mut dials = 0;
+    while channels.try_recv().is_ok() {
+        dials += 1;
+    }
+    assert_eq!(dials, 0, "main dialed the revoked far end again at once");
 }
 
 /// Records the ids it accepts; releasing the first connection waits for

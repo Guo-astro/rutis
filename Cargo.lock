@@ -3012,6 +3012,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-services-calendar"
+version = "0.1.0"
+dependencies = [
+ "rutis",
+ "serde",
+]
+
+[[package]]
+name = "rust-services-example"
+version = "0.1.0"
+dependencies = [
+ "rust-services-calendar",
+ "rutis",
+ "rutis-bridge",
+ "rutis-loader",
+ "rutis-test-support",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

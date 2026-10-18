@@ -9,7 +9,8 @@
 //!
 //! It starts what `rutis.json` names with rutis-host's library, plus one
 //! row compiled in: `fixture/calendar`, the service `calendar` in Rust
-//! (`today()` is `"rust"`). It prints each row's state as `rutis-host run`
+//! (`today()` is `"rust"`; `caller()` is the row that calls it,
+//! `session::caller_row`: `{ id, key, scope }`, or `null`). It prints each row's state as `rutis-host run`
 //! does, then reads commands from stdin, one per line:
 //!
 //! - `reload`: read `rutis.json` again and run it instead, all or nothing,
@@ -31,7 +32,7 @@ use std::time::Duration;
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin};
 use rutis_bridge::session::{
-    host_key, Error as CallError, HostDispatch, Reply, Value as CallValue,
+    caller_row, host_key, Error as CallError, HostDispatch, Reply, Value as CallValue,
 };
 use rutis_host::config::HostConfig;
 use rutis_host::host::{Embedding, Host, PROCESS_EXIT};
@@ -160,11 +161,16 @@ impl HostDispatch for Calendar {
     fn invoke(&self, method: &str, _args: CallValue) -> Reply {
         match method {
             "today" => Ok(json!("rust").into()),
+            "caller" => Ok(match caller_row() {
+                Some(row) => json!({ "id": row.id(), "key": row.key(), "scope": row.scope() }),
+                None => json!(null),
+            }
+            .into()),
             other => Err(CallError::Value(format!("calendar has no method {other}"))),
         }
     }
 
     fn methods(&self) -> Option<serde_json::Value> {
-        Some(json!({ "today": "async" }))
+        Some(json!({ "today": "async", "caller": "async" }))
     }
 }
