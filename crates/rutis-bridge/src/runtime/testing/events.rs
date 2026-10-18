@@ -945,6 +945,9 @@ pub fn aggregated(error: &Error) -> Option<Vec<(String, String)>> {
 #[derive(Default)]
 struct LogState {
     entries: Vec<String>,
+    /// Where each entry was sent from, when a session's invocation added
+    /// it: that session's tag and the invocation's sequence.
+    senders: Vec<Option<(String, u64)>>,
     /// The descriptions the filters saw, in order.
     seen: Vec<Json>,
 }
@@ -962,20 +965,41 @@ impl EventsLog {
     }
 
     pub fn add(&self, entry: impl Into<String>) {
-        self.state.lock().unwrap().entries.push(entry.into());
+        self.add_from(None, entry.into());
+    }
+
+    /// Log `entry`, sent by the invocation `sender`. The host runs one
+    /// session's invocations concurrently, so they can arrive here out of
+    /// the order the far end sent them in (a reentrant runtime runs the
+    /// next listener while one waits in `add`): an entry goes before the
+    /// entries the same session sent after it.
+    fn add_from(&self, sender: Option<(String, u64)>, entry: String) {
+        {
+            let mut state = self.state.lock().unwrap();
+            let at = sender
+                .as_ref()
+                .and_then(|(tag, sequence)| {
+                    state.senders.iter().position(|logged| {
+                        matches!(logged, Some((other, later)) if other == tag && later > sequence)
+                    })
+                })
+                .unwrap_or(state.entries.len());
+            state.entries.insert(at, entry);
+            state.senders.insert(at, sender);
+        }
         self.changed.notify_waiters();
     }
 
     /// What `events-log.filter(description)` does: log `filter:<row>` and
     /// keep the description.
     pub fn filter_description(&self, description: Json) {
+        self.filter_from(None, description);
+    }
+
+    fn filter_from(&self, sender: Option<(String, u64)>, description: Json) {
         let row = description["row"].as_str().unwrap_or("null").to_owned();
-        {
-            let mut state = self.state.lock().unwrap();
-            state.entries.push(format!("filter:{row}"));
-            state.seen.push(description);
-        }
-        self.changed.notify_waiters();
+        self.state.lock().unwrap().seen.push(description);
+        self.add_from(sender, format!("filter:{row}"));
     }
 
     pub fn entries(&self) -> Vec<String> {
@@ -1026,11 +1050,12 @@ impl HostDispatch for EventsLogService {
         match method {
             "add" => {
                 let entry: String = crate::session::decode_value(first)?;
-                self.0.add(entry);
+                self.0.add_from(crate::session::rpc::invocation(), entry);
                 Ok(Value::Undefined)
             }
             "filter" => {
-                self.0.filter_description(written(first)?);
+                self.0
+                    .filter_from(crate::session::rpc::invocation(), written(first)?);
                 Ok(Value::Undefined)
             }
             "wait" => {

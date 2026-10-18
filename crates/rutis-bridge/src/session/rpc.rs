@@ -528,6 +528,18 @@ fn panic_error(panic: Box<dyn std::any::Any + Send>) -> Error {
 tokio::task_local! { static ASYNC_PATH: Vec<String>; }
 thread_local! { static SYNC_PATH: RefCell<Option<Vec<String>>> = const { RefCell::new(None) }; }
 thread_local! { static CALLER: RefCell<Option<Connection>> = const { RefCell::new(None) }; }
+thread_local! {
+    /// The invocation this thread runs: its session's tag and its sequence.
+    static INVOKING: RefCell<Option<(String, u64)>> = const { RefCell::new(None) };
+}
+
+/// The invocation of a host service this thread is running, as its
+/// session's tag and its sequence in that session: invocations of one
+/// session were sent in sequence order, whatever order they run in.
+#[cfg_attr(not(feature = "testing"), allow(dead_code))]
+pub(crate) fn invocation() -> Option<(String, u64)> {
+    INVOKING.with(|invoking| invoking.borrow().clone())
+}
 /// The session whose call (an `invoke`, or a call of a function this side
 /// exported) is being dispatched on this thread, if any. Code that calls
 /// another session on its behalf passes it to [`Connection::forward`].
@@ -2413,9 +2425,15 @@ impl Connection {
             }
             Accepted::Invoke(target, method, args) => {
                 let previous = CALLER.with(|caller| caller.replace(Some(self.clone())));
+                let sequence = id
+                    .strip_prefix(self.remote_prefix())
+                    .and_then(|n| n.parse::<u64>().ok());
+                let invoking = sequence.map(|n| (self.0.tag.clone(), n));
+                let outer = INVOKING.with(|cell| cell.replace(invoking));
                 let result = crate::session::with_caller_row(None, || {
                     protected(|| self.0.dispatch.invoke(self, &target, &method, args))
                 });
+                INVOKING.with(|cell| cell.replace(outer));
                 CALLER.with(|caller| caller.replace(previous));
                 self.respond(id, result);
                 drop(_flight);
