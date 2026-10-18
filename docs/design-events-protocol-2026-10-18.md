@@ -214,7 +214,7 @@
 ## 六、过滤
 
 - **在哪里执行**：总是在发出方的进程里。快速路径上，运行时对每个候选条目直接调用插件的过滤函数。经宿主时，`events.dispatch` 带 `filter`：运行时包在插件过滤函数外面的一个**选择器**的函数引用。宿主每次分发调用它一次，在快照（§5.1）之后，参数只有一个：非 `global` 候选条目的描述列表，按登记顺序。选择器在发出方的进程里按顺序对每个描述调用插件的过滤函数，返回等长的布尔值列表（`true` = 送达），真假按本语言自己的规则 / `bool`。`bail` 分发中宿主同步调用它，其余异步。长度不对或不是布尔值时这次分发失败（`BindingError`，`filter of <name> returned <n> answers for <m> listeners`）。
-- **错误**：过滤函数抛出时，整次分发以这个错误失败，不开始任何调用（`emit`：§5.6）。
+- **错误**：过滤函数抛出时，整次分发以这个错误失败，不开始任何调用（`emit`：§5.6）。Go 的过滤函数返回 `(bool, error)`：它返回的错误（连同名字）就是这次失败，panic 也是。
 - **默认**：先应用作用域规则，并且总是应用；过滤只在其上再筛。`global` 条目不经过滤。
 - **Cordis**（`Context.filter`）：`ctx.emit(thisArg, name, …)` 以及其余四种，`thisArg` 的 `[Context.filter]` 是函数时，用它作过滤。对本进程的监听器传入条目自己的 Cordis `Context`，对其他每个条目传入 `{ rutis: <描述> }`。rutis 的 Node / Bun 运行时里每个 Context 都有只读的 `ctx.rutis`，值为它的描述，所以 `c => c.rutis.row === 'chat'` 对两者都有效。
 - **其他语言**：`filter(predicate)` 返回一个有同样五个方法的发出器（第十二节）；predicate 收到描述（Node / Bun 叶子与 Python：带 JSON 字段的普通对象 / `dict`；Go：`rutis.Listener`；Rust：`&ListenerInfo`）。
@@ -449,7 +449,7 @@ impl EventBus {
 | `serial` | `await ctx.serial([thisArg,] name, ...args)` | `await ctx.serial(name, ...args)` | `await ctx.serial(name, *args)` | `ctx.Serial(ctx, name, args...) (any, error)` |
 | `waterfall` | `ctx.waterfall([thisArg,] name, ...args, terminal)`（Cordis：最后一个参数是终态） | `ctx.waterfall(name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name string, terminal rutis.Next, args ...any) (any, error)`（`terminal` 可为 nil） |
 | `bail` | `ctx.bail([thisArg,] name, ...args)`（同步） | `ctx.bail(name, ...args)` | `ctx.bail(name, *args)`（同步） | `ctx.Bail(ctx, name, args...) (any, error)` |
-| 过滤 | `thisArg[Context.filter] = c => boolean`；`c.rutis` 是描述 | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `ctx.filter(lambda d: bool)` → 带这五个方法的对象 | `ctx.Filter(func(rutis.Listener) bool) *rutis.Emitter`（五个方法） |
+| 过滤 | `thisArg[Context.filter] = c => boolean`；`c.rutis` 是描述 | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `ctx.filter(lambda d: bool)` → 带这五个方法的对象 | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter`（五个方法；返回的错误或 panic 即过滤失败） |
 | 卸载信号 | `ctx.signal`（这一行的；每个 Cordis Context 上也有） | `ctx.signal` | 任务取消 | 监听器的 `ctx` |
 | parallel 失败 | `AggregateError` | `AggregateError` | `rutis.AggregateError` | `*rutis.AggregateError` |
 

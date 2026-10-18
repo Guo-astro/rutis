@@ -117,7 +117,9 @@ func TestEventRegistrationLifecycle(t *testing.T) {
 		func() error { _, err := a.Serial(ctx, "rutis/row"); return err },
 		func() error { _, err := a.Waterfall(ctx, "rutis/row", nil); return err },
 		func() error { _, err := a.Bail(ctx, "rutis/row"); return err },
-		func() error { return a.Filter(func(Listener) bool { return true }).Emit(ctx, "rutis/row") },
+		func() error {
+			return a.Filter(func(Listener) (bool, error) { return true, nil }).Emit(ctx, "rutis/row")
+		},
 	} {
 		err := emit()
 		if !errors.Is(err, ErrReservedEvent) || err.Error() != "rutis/* events are emitted by rutis only: rutis/row" || peer.ErrorName(err) != "ReservedEvent" {
@@ -372,10 +374,10 @@ func TestFilterGlobalAndPrepend(t *testing.T) {
 	other.On("t/filter", returns(j, "d", nil))
 	a.On("t/filter", returns(j, "p", nil), Prepend())
 	var seen []Listener
-	keep := func(l Listener) bool {
+	keep := func(l Listener) (bool, error) {
 		seen = append(seen, l)
 		j.add("filter")
-		return len(seen) != 2
+		return len(seen) != 2, nil
 	}
 	if _, err := a.Filter(keep).Serial(ctx, "t/filter"); err != nil {
 		t.Fatal(err)
@@ -387,11 +389,14 @@ func TestFilterGlobalAndPrepend(t *testing.T) {
 		t.Fatalf("descriptor %+v", seen[0])
 	}
 	j.entries = nil
-	if err := a.Filter(func(Listener) bool { panic("no") }).Parallel(ctx, "t/filter"); peer.ErrorName(err) != "Panic" || len(j.list()) != 0 {
+	if err := a.Filter(func(Listener) (bool, error) { panic("no") }).Parallel(ctx, "t/filter"); peer.ErrorName(err) != "Panic" || len(j.list()) != 0 {
 		t.Fatalf("a failing filter fails the dispatch before any call: %v %v", err, j.list())
 	}
+	if _, err := a.Filter(func(Listener) (bool, error) { return false, peer.Errorf("FErr", "no") }).Serial(ctx, "t/filter"); peer.ErrorName(err) != "FErr" || err.Error() != "no" || len(j.list()) != 0 {
+		t.Fatalf("the error a filter returns fails the dispatch with it, before any call: %v %v", err, j.list())
+	}
 	reports := captureReports(t)
-	if err := a.Filter(func(Listener) bool { panic("no") }).Emit(ctx, "t/filter"); err != nil {
+	if err := a.Filter(func(Listener) (bool, error) { panic("no") }).Emit(ctx, "t/filter"); err != nil {
 		t.Fatal(err)
 	}
 	if got := reports.list(); len(got) != 1 || !strings.HasPrefix(got[0], "rutis: filter of t/filter from row r0 failed: Panic: ") {

@@ -105,7 +105,7 @@ err = ctx.Parallel(callerCtx, "session/created", id)        // 等全部；*ruti
 value, err := ctx.Serial(callerCtx, "config/resolve", key)   // 第一个结果
 value, err = ctx.Bail(callerCtx, "config/resolve", key)      // 同步调用的 Serial
 value, err = ctx.Waterfall(callerCtx, "chat/reply", terminal, msg) // terminal 可为 nil
-value, err = ctx.Filter(func(l rutis.Listener) bool { return l.Row == "chat" }).Serial(callerCtx, "config/resolve", key)
+value, err = ctx.Filter(func(l rutis.Listener) (bool, error) { return l.Row == "chat", nil }).Serial(callerCtx, "config/resolve", key)
 ```
 
 | 事项 | 规则 |
@@ -113,7 +113,7 @@ value, err = ctx.Filter(func(l rutis.Listener) bool { return l.Row == "chat" }).
 | Waterfall | 监听器的最后一个参数是 `next`（`rutis.Next`，即 `func(context.Context) (any, error)`）；调用它执行链上其余部分，不调用就否决其余；第二次调用以 `WaterfallNext` 失败。返回最外层的值，原样 |
 | 失败 | `Emit` 的监听器失败不影响发出方和其他监听器，在监听器所在处报告（stderr：`rutis: listener of <name> in row <row> failed: …`）。`Parallel` 全部跑完，返回 `*rutis.AggregateError`（只有一个失败也是）；`Serial`、`Bail`、`Waterfall` 遇到第一个错误停止并返回它 |
 | 作用域 | 一行收到在自己的作用域（`ctx.Scope()`，它外面的加载器实例）及其内的所有作用域里发出的事件，收不到旁边的 |
-| 过滤 | `Filter(keep)` 在任何监听器执行之前，按登记顺序对每个监听器调用一次 `keep`，传入它的 `rutis.Listener`（`Name`、`Plugin`、`Row`、`Runtime`、`Node`、`Scope`、`Global`）；用 `rutis.Global()` 登记的监听器不经过滤 |
+| 过滤 | `Filter(keep)` 在任何监听器执行之前，按登记顺序对每个监听器调用一次 `keep`，传入它的 `rutis.Listener`（`Name`、`Plugin`、`Row`、`Runtime`、`Node`、`Scope`、`Global`）；`keep` 返回 `(bool, error)`：它返回错误（或 panic）时，这次分发以这个错误失败，不执行任何监听器；用 `rutis.Global()` 登记的监听器不经过滤 |
 | Context | 监听器的 `ctx` 来自发出方（带调用链），发出方放弃或这一行卸载时取消。卸载等正在运行的监听器结束，最多 `RUTIS_SHUTDOWN_TIMEOUT` |
 | 名字 | `internal/*` 是运行时自己的；`rutis/*`（`rutis/service`、`rutis/row`、`rutis/runtime`）可以监听，不能发出（`ReservedEvent`） |
 
@@ -139,7 +139,7 @@ go test ./...
 
 `Provides` 可以不写：`ctx.Provide` 提供的服务自动对外，方法取值的导出方法，都按 `async` 调用。写了就按声明（`Sync` 标出同步方法、`Rename` 改名），`rutis-host check` 也能在运行前知道插件提供什么。
 
-测试里的事件：测试一侧就是总线的宿主。`loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail` 和 `Filter` 从这一行的作用域发出；`loaded.On(name, fn)` 像宿主一样监听（插件发出这个名字的事件随后经测试一侧，就像经 rutis）；`loaded.Load(config, rutistest.InScope("t1/s1"))` 在一个作用域里再加载一行；`loaded.Reported()` 是运行时报告的 `Emit` 监听器失败。
+测试里的事件：测试一侧就是总线的宿主。`loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail` 和 `Filter` 从这一行的作用域发出；`loaded.On(name, fn)` 像宿主一样监听（插件发出这个名字的事件随后经测试一侧，就像经 rutis）；`loaded.Load(config, rutistest.InScope("t1/s1"))` 在一个作用域里再加载一行；`loaded.Update(config)` 像 rutis 一样修改一行的配置（这一行重新加载，监听器重新登记，排在其他监听器之后）；`loaded.Reported()` 是运行时报告的 `Emit` 监听器失败。
 
 `Load` 会检查宿主会检查的事：插件只用 `Inject` 里声明的服务；提供的服务是 `Provides` 声明的类型（没有声明的服务，像 rutis 一样按导出方法、都按 async 调用）；卸载时清理都成功。只在同一个进程里才成立的写法（例如把结构体当对象传、靠共享内存）在这里就会失败。
 

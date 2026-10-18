@@ -84,7 +84,7 @@ func (l *listener) Info() Listener {
 	l.rt.mu.Lock()
 	runtime := l.rt.runtimeName
 	l.rt.mu.Unlock()
-	return Listener{Name: l.name, Plugin: l.row.def.name, Row: l.row.key, Runtime: runtime, Scope: l.row.scope, Global: l.global}
+	return Listener{Name: l.name, Plugin: l.row.def.name, Row: l.row.name, Runtime: runtime, Scope: l.row.scope, Global: l.global}
 }
 
 // live reports whether invocations may start; rt.mu is held.
@@ -136,7 +136,7 @@ func (l *listener) Emit(ctx context.Context, args []any) bool {
 // failed reports an `emit` invocation's failure where the listener is
 // (§5.6).
 func (l *listener) failed(err error) {
-	events.Report(fmt.Sprintf("rutis: listener of %s in row %s failed: %s", l.name, l.row.key, events.Failure(err)))
+	events.Report(fmt.Sprintf("rutis: listener of %s in row %s failed: %s", l.name, l.row.name, events.Failure(err)))
 }
 
 // run calls the listener: its context is the caller's, cancelled too when
@@ -200,12 +200,12 @@ func (c *Ctx) On(name string, fn func(ctx context.Context, args ...any) (any, er
 	// The host hears of it before any emission this process makes after
 	// it; a row loading answers once the host has it.
 	if rt.session != nil && !rt.closing {
-		row := c.row.key
+		row, id := c.row.key, c.row.name
 		answered := rt.session.AnnounceReporting("", "events.on", []any{map[string]any{
 			"id": l.id, "name": name, "row": row, "plugin": c.row.def.name,
 			"kind": "sync", "prepend": o.Prepend, "global": o.Global,
 		}}, func(err error) {
-			events.Report(fmt.Sprintf("rutis: registration of listener of %s in row %s failed: %s", name, row, events.Failure(err)))
+			events.Report(fmt.Sprintf("rutis: registration of listener of %s in row %s failed: %s", name, id, events.Failure(err)))
 		})
 		if c.row.loading {
 			c.row.pending = append(c.row.pending, answered)
@@ -258,14 +258,16 @@ func (rt *runtimeState) forgetListeners(r *row) {
 // Emitter emits events, filtered: Ctx.Filter makes one.
 type Emitter struct {
 	c    *Ctx
-	keep func(Listener) bool
+	keep func(Listener) (bool, error)
 }
 
 // Filter is an emitter whose dispatches reach only the listeners `keep`
 // accepts (listeners registered with Global excepted). `keep` runs in
 // this process, once per listener, in registration order, before any
-// listener runs; the scope rule applies first.
-func (c *Ctx) Filter(keep func(Listener) bool) *Emitter {
+// listener runs; the scope rule applies first. An error `keep` returns
+// (or a panic) fails the dispatch before any listener runs, with that
+// error (§6).
+func (c *Ctx) Filter(keep func(Listener) (bool, error)) *Emitter {
 	if keep == nil {
 		panic("rutis: Filter needs a predicate")
 	}
@@ -342,13 +344,14 @@ func (e *Emitter) Bail(ctx context.Context, name string, args ...any) (any, erro
 	return e.dispatch(ctx, name, events.ModeBail, args, nil)
 }
 
-// keepOf is the filter as the dispatcher asks it: a panic is its failure.
-func keepOf(keep func(Listener) bool) func(Listener) (bool, error) {
+// keepOf is the filter as the dispatcher asks it: the error it returns, or
+// a panic, is its failure.
+func keepOf(keep func(Listener) (bool, error)) func(Listener) (bool, error) {
 	if keep == nil {
 		return nil
 	}
 	return func(info Listener) (bool, error) {
-		kept, err := peer.Protect(func() (any, error) { return keep(info), nil })
+		kept, err := peer.Protect(func() (any, error) { return keep(info) })
 		if err != nil {
 			return false, err
 		}
@@ -385,7 +388,7 @@ func (e *Emitter) dispatch(ctx context.Context, name string, mode events.Mode, a
 	case events.ModeEmit:
 		// Not cancelled with the emitter: it does not wait.
 		if err := d.Emit(context.WithoutCancel(ctx), args); err != nil {
-			events.Report(fmt.Sprintf("rutis: filter of %s from row %s failed: %s", name, r.key, events.Failure(err)))
+			events.Report(fmt.Sprintf("rutis: filter of %s from row %s failed: %s", name, r.name, events.Failure(err)))
 		}
 		return nil, nil
 	case events.ModeParallel:
@@ -417,7 +420,7 @@ func (rt *runtimeState) viaHost(name string, mode events.Mode) bool {
 }
 
 // dispatchViaHost sends `events.dispatch`; rt.mu is held, and released.
-func (rt *runtimeState) dispatchViaHost(ctx context.Context, r *row, name string, mode events.Mode, args []any, terminal Next, keep func(Listener) bool) (any, error) {
+func (rt *runtimeState) dispatchViaHost(ctx context.Context, r *row, name string, mode events.Mode, args []any, terminal Next, keep func(Listener) (bool, error)) (any, error) {
 	session := rt.session
 	converted, err := convert.ToPeerArgs(args)
 	if err != nil {
@@ -456,7 +459,7 @@ func (rt *runtimeState) dispatchViaHost(ctx context.Context, r *row, name string
 			}
 			rt.mu.Unlock()
 			if err != nil {
-				events.Report(fmt.Sprintf("rutis: emit of %s from row %s failed: %s", name, r.key, events.Failure(err)))
+				events.Report(fmt.Sprintf("rutis: emit of %s from row %s failed: %s", name, r.name, events.Failure(err)))
 			}
 		}()
 		return nil, nil

@@ -320,6 +320,7 @@ class Loaded:
         self._provided: dict[str, list] = {}
         self._cleanups: list[Callable] = []
         self._unloaded = False
+        self._ctx: Any = None
         self.bus = bus
         self.row = row
         self.scope = scope
@@ -387,6 +388,29 @@ class Loaded:
     def provided(self) -> list[str]:
         """The names of the services the plugin provides now."""
         return list(self._provided)
+
+    async def _apply(self, config: Any) -> None:
+        # Run the plugin's apply with `config` on this row.
+        config = config if config is not None else {}
+        returned = self._plugin.apply(self._ctx, _cross(config, "config") if self._strict else config)
+        if inspect.isawaitable(returned):
+            returned = await returned
+        if returned is not None:
+            if not callable(returned):
+                raise PluginTestError("apply must return a cleanup function or None")
+            self._cleanups.append(returned)
+
+    async def update(self, config: Any) -> None:
+        """Change the row's config, as a host's `rows.update`: the row
+        unloads (as `unload`) and applies again with `config` under the same
+        row key, so its listeners register again, after every existing
+        one."""
+        if self._unloaded:
+            raise PluginTestError("the plugin is unloaded")
+        await self.unload()
+        self._unloaded = False
+        self.bus._rows.add(self.row)
+        await self._apply(config)
 
     async def unload(self) -> None:
         """Unload as the runtime does: the plugin's listeners hear nothing
@@ -527,15 +551,9 @@ async def load(
     loaded = Loaded(plugin, strict, bus, row, bus.chain(scope), name)
     bus._rows.add(row)
     ctx = _Context(loaded, services)
-    config = config if config is not None else {}
+    loaded._ctx = ctx
     try:
-        returned = plugin.apply(ctx, _cross(config, "config") if strict else config)
-        if inspect.isawaitable(returned):
-            returned = await returned
-        if returned is not None:
-            if not callable(returned):
-                raise PluginTestError("apply must return a cleanup function or None")
-            loaded._cleanups.append(returned)
+        await loaded._apply(config)
         yield loaded
     finally:
         await loaded.unload()

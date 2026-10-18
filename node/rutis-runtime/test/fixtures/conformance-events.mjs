@@ -101,7 +101,10 @@ function perform(ctx, log, label, does, args, next, kind) {
 function emit(ctx, log, spec) {
   const args = made(spec.args ?? [])
   let emitter = ctx
-  if (spec.filter) {
+  if (spec.filter?.throws) {
+    const { name, message } = spec.filter.throws
+    emitter = ctx.filter(() => { throw Object.assign(new Error(message), { name }) })
+  } else if (spec.filter) {
     const keep = new Set(spec.filter.keep)
     emitter = ctx.filter(descriptor => {
       log(`filter:${descriptor.row}`)

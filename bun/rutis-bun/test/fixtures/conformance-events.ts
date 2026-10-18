@@ -35,6 +35,9 @@ const makers: Record<string, (value: any) => unknown> = {
 function made(item: any): any {
   if (Array.isArray(item)) return item.map(made)
   if (item === null || typeof item !== 'object') return item
+  // A value that arrived as itself (a Date, a Map, binary data, ...) stays.
+  const prototype = Object.getPrototypeOf(item)
+  if (prototype !== Object.prototype && prototype !== null) return item
   const keys = Object.keys(item)
   if (keys.length === 1 && Object.hasOwn(makers, keys[0])) return makers[keys[0]](item[keys[0]])
   return Object.fromEntries(Object.entries(item).map(([key, inner]) => [key, made(inner)]))
@@ -44,8 +47,16 @@ type Log = (entry: string) => void
 
 export const name = 'conformance-events'
 export const inject = ['events-log']
+// How a value is written in the log: strings as they are, null and
+// undefined as `null`, the rest as JSON (`1`, `true`).
+const fmt = (value: unknown) => typeof value === 'string' ? value : value == null ? 'null' : JSON.stringify(value)
+
 export function apply(ctx: any, participant: any) {
+  // The row's apply fails, having registered nothing (`fails`).
+  if (participant?.fails) throw Object.assign(new Error(participant.fails.message), { name: participant.fails.name })
   const log: Log = entry => { ctx.use('events-log').add(entry) }
+  // An empty service of this name besides (`provides`).
+  if (participant?.provides) ctx.provide(participant.provides, { ping: () => null })
   if (participant?.emitter) {
     const emitting = (spec: any) => emit(ctx, log, spec)
     ctx.provide(`emitter-${participant.label ?? 'e'}`, { dispatch: async (spec: any) => emitting(spec), dispatch_sync: emitting })
@@ -56,8 +67,8 @@ export function apply(ctx: any, participant: any) {
   const record = (args: any[]) => {
     if (how === false) return
     if (how === 'label') log(label)
-    else if (how === 'arg') log(`${label}:${args[0]}`)
-    else if (Array.isArray(how)) log(`${label}:${how.map((field: string) => args[0]?.[field]).join(',')}`)
+    else if (how === 'arg') log(`${label}:${fmt(args[0])}`)
+    else if (Array.isArray(how)) log(`${label}:${how.map((field: string) => fmt(args[0]?.[field])).join(',')}`)
   }
   const waterfall = does && ('next' in does || 'veto' in does || 'nextTwice' in does)
   const body = (args: any[]) => {
@@ -102,10 +113,14 @@ function perform(ctx: any, log: Log, label: string, does: any, args: any[], next
 function emit(ctx: any, log: Log, spec: any): any {
   const args = made(spec.args ?? [])
   let emitter = ctx
-  if (spec.filter) {
+  if (spec.filter?.throws) {
+    const { name, message } = spec.filter.throws
+    emitter = ctx.filter(() => { throw Object.assign(new Error(message), { name }) })
+  } else if (spec.filter) {
     const keep = new Set(spec.filter.keep)
     emitter = ctx.filter((descriptor: any) => {
-      log(`filter:${descriptor.row}`)
+      // Logs `filter:<row>` and keeps the description (`filterSees`).
+      ctx.use('events-log').filter(descriptor)
       return keep.has(descriptor.row)
     })
   }

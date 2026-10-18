@@ -115,6 +115,12 @@ func (l *eventLog) Add(entry string) {
 	l.mu.Unlock()
 }
 
+// Filter is events-log.filter: it logs filter:<row> of the description.
+func (l *eventLog) Filter(description map[string]any) {
+	row, _ := description["row"].(string)
+	l.Add("filter:" + row)
+}
+
 func (l *eventLog) list() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -201,14 +207,17 @@ func fromWritten(t *testing.T, raw json.RawMessage) any {
 
 // eventRun is one case on one harness.
 type eventRun struct {
-	t        *testing.T
-	c        *eventCase
-	groups   map[string]string
-	log      *eventLog
-	root     *Loaded
-	rows     map[string]*Loaded
-	pending  chan outcome
-	reported int
+	t      *testing.T
+	c      *eventCase
+	groups map[string]string
+	log    *eventLog
+	root   *Loaded
+	rows   map[string]*Loaded
+	// The listener rows' configs, by label, and the last config generation.
+	participants map[string]map[string]any
+	generation   int
+	pending      chan outcome
+	reported     int
 }
 
 type outcome struct {
@@ -242,6 +251,24 @@ func (r *eventRun) load(raw json.RawMessage) {
 	label, _ := listener["label"].(string)
 	scope, _ := listener["scope"].(string)
 	r.rows[label] = r.root.Load(listener, r.options(label, scope)...)
+	r.participants[label] = listener
+}
+
+// update changes the config of the row `label` (a new generation), so it
+// registers its listeners again.
+func (r *eventRun) update(label string) {
+	participant, ok := r.participants[label]
+	if !ok {
+		r.t.Fatalf("no listener row %s to update", label)
+	}
+	r.generation++
+	config := make(map[string]any, len(participant)+1)
+	for key, value := range participant {
+		config[key] = value
+	}
+	config["generation"] = r.generation
+	r.rows[label].Update(config)
+	r.participants[label] = config
 }
 
 // emitter is the emitter row of `label` in `scope`, created on first use.
@@ -472,6 +499,7 @@ func (r *eventRun) step(i int, raw json.RawMessage) {
 		Expect     json.RawMessage `json:"expect"`
 		Load       json.RawMessage `json:"load"`
 		Unload     string          `json:"unload"`
+		Update     string          `json:"update"`
 		When       string          `json:"when"`
 	}
 	if err := json.Unmarshal(raw, &step); err != nil {
@@ -486,6 +514,9 @@ func (r *eventRun) step(i int, raw json.RawMessage) {
 		r.check(where, step.Expect, &got)
 	case step.Load != nil:
 		r.load(step.Load)
+		r.check(where, step.Expect, nil)
+	case step.Update != "":
+		r.update(step.Update)
 		r.check(where, step.Expect, nil)
 	case step.Unload != "":
 		if step.When != "" {
@@ -536,7 +567,7 @@ func TestRutistestMeetsTheEventExpectations(t *testing.T) {
 			}
 			ran++
 			log := &eventLog{}
-			r := &eventRun{t: t, c: c, groups: expected.Scopes, log: log, rows: map[string]*Loaded{}, pending: make(chan outcome, 1)}
+			r := &eventRun{t: t, c: c, groups: expected.Scopes, log: log, rows: map[string]*Loaded{}, participants: map[string]map[string]any{}, pending: make(chan outcome, 1)}
 			r.root = Load(t, conformance.Plugin, map[string]any{"label": "e", "emitter": true}, map[string]any{"events-log": log}, Row("e"))
 			r.rows["e"] = r.root
 			r.reported = len(r.root.Reported())

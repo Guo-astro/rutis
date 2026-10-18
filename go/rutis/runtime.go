@@ -97,7 +97,10 @@ type handleEntry struct {
 }
 
 type row struct {
-	key      string
+	key string
+	// The row's id in the configuration (rows.load's `id`; the key when
+	// not given): descriptors and reported lines call the row so.
+	name     string
 	entry    string
 	def      *Definition
 	config   any
@@ -350,11 +353,19 @@ func printable(id string) string { return strings.ReplaceAll(id, "\x00", "@") }
 // ── Rows ─────────────────────────────────────────────────────────
 
 func (rt *runtimeState) load(ctx context.Context, key, entry string, config any, exports map[string]map[string]string, isolate map[string]string, scope []Scope) error {
+	return rt.loadNamed(ctx, key, key, entry, config, exports, isolate, scope)
+}
+
+// loadNamed loads row key, whose id in the configuration is name.
+func (rt *runtimeState) loadNamed(ctx context.Context, key, name, entry string, config any, exports map[string]map[string]string, isolate map[string]string, scope []Scope) error {
 	def, err := rt.definition(entry)
 	if err != nil {
 		return err
 	}
-	r := &row{key: key, entry: entry, def: def, config: config, exports: exports, isolate: isolate, scope: scope, loading: true}
+	if name == "" {
+		name = key
+	}
+	r := &row{key: key, name: name, entry: entry, def: def, config: config, exports: exports, isolate: isolate, scope: scope, loading: true}
 	rt.mu.Lock()
 	if _, loaded := rt.rows[key]; loaded {
 		rt.mu.Unlock()
@@ -469,7 +480,7 @@ func (rt *runtimeState) update(ctx context.Context, key string, config any) erro
 	if err := rt.unload(ctx, key); err != nil {
 		return err
 	}
-	return rt.load(ctx, key, r.entry, config, r.exports, r.isolate, r.scope)
+	return rt.loadNamed(ctx, key, r.name, r.entry, config, r.exports, r.isolate, r.scope)
 }
 
 // waitListeners waits for the row's running listeners, cancelled, at most
@@ -483,7 +494,7 @@ func waitListeners(r *row) {
 	select {
 	case <-done:
 	case <-timer.C:
-		events.Report(fmt.Sprintf("rutis: listeners of row %s still running after %ss; unloading anyway", r.key, strconv.FormatFloat(budget.Seconds(), 'f', -1, 64)))
+		events.Report(fmt.Sprintf("rutis: listeners of row %s still running after %ss; unloading anyway", r.name, strconv.FormatFloat(budget.Seconds(), 'f', -1, 64)))
 	}
 }
 
@@ -614,12 +625,15 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 		if err != nil {
 			return nil, fmt.Errorf("exports: %w", err)
 		}
-		// The seventh, from rutis 0.13: the row's scope chain.
-		placed, err := argument[struct{ Scope []Scope }](args, 6)
+		// The seventh, from rutis 0.13: the row's scope chain and its id.
+		placed, err := argument[struct {
+			Scope []Scope
+			ID    string `json:"id"`
+		}](args, 6)
 		if err != nil {
 			return nil, fmt.Errorf("scope: %w", err)
 		}
-		return nil, rt.load(ctx, key, entry, config, exports, isolate, placed.Scope)
+		return nil, rt.loadNamed(ctx, key, placed.ID, entry, config, exports, isolate, placed.Scope)
 	case "rows.update":
 		key, err := argument[string](args, 0)
 		if err != nil {

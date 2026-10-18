@@ -396,16 +396,8 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = 10_
         },
         ...emitters(bus, key, row.chain, false),
       }
-      try {
-        const returned = await plugin.apply(ctx, strict ? cross(config, 'config') : config)
-        if (returned !== undefined && returned !== null) {
-          if (typeof returned !== 'function') throw new PluginTestError('apply must return a cleanup function or nothing')
-          row.cleanups.push(returned)
-        }
-      } catch (error) {
-        await unloadRow(row).catch(() => {})
-        throw error
-      }
+      row.apply = config => applyRow(row, ctx, config)
+      await row.apply(config)
       return loaded(row)
     },
     /** Unload every row, latest first. */
@@ -418,6 +410,21 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = 10_
     // The five ways to emit and `filter`, from the root, as the test: values
     // cross as from another process (strict).
     ...emitters(bus, null, [], strict),
+  }
+
+  // Run the plugin's apply for `row` with `config`; on failure, unload the row.
+  async function applyRow(row, ctx, config) {
+    const { plugin } = row
+    try {
+      const returned = await plugin.apply(ctx, strict ? cross(config, 'config') : config)
+      if (returned !== undefined && returned !== null) {
+        if (typeof returned !== 'function') throw new PluginTestError('apply must return a cleanup function or nothing')
+        row.cleanups.push(returned)
+      }
+    } catch (error) {
+      await unloadRow(row).catch(() => {})
+      throw error
+    }
   }
 
   // Withdraw the row's listeners, then its services; signal its running
@@ -464,6 +471,19 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = 10_
       // The five ways to emit and `filter`, in the row's scope, as the test:
       // values cross as from another process (strict).
       ...emitters(bus, null, row.chain, strict),
+      /**
+       * Change the row's config, as a host's `rows.update`: the row unloads
+       * (as `unload`) and applies again with `config` under the same key, so
+       * its listeners register again, after every existing one (§4.3).
+       */
+      async update(config) {
+        if (row.unloaded) throw new PluginTestError('the plugin is unloaded')
+        if (closed) throw new PluginTestError('the host is unloaded')
+        await unloadRow(row)
+        Object.assign(row, { provided: new Map(), cleanups: [], abort: new AbortController(), unloaded: false })
+        rows.set(row.key, row)
+        await row.apply(config)
+      },
       /** Withdraw its listeners and services, wait for its running listeners (signalled), then run its cleanups, latest first. */
       async unload() {
         if (row.unloaded) return

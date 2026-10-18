@@ -32,6 +32,8 @@ export interface Loaded extends TestEmitter {
   provided(): string[]
   /** What `emit` listeners reported on the host. */
   readonly reported: Reported[]
+  /** Change the row's config, as a host's `rows.update`: the row unloads (as `unload`) and applies again with `config` under the same key, so its listeners register again, after every existing one. */
+  update(config: unknown): Promise<void>
   /** Withdraw its listeners and services, abort its `ctx.signal` and wait for its running listeners, then run the cleanups, latest first. */
   unload(): Promise<void>
 }
