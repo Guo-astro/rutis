@@ -66,6 +66,9 @@ function peerOf(id, session, generation, operations) {
     callAsync: (target, method, args) => session.invokeAsync(target, method, args),
     supports: capability => session.supports(capability),
     get offers() { return operations.remote.families },
+    // Which offer of `family` this end made, if it serves it: what the far
+    // end reads as its epoch. A later registration has a higher one.
+    epoch: family => operations.since.get(family),
     // Serve `family` on this session; returns its unregistration.
     register(family, handler) {
       if (!family || family === 'link' || /[.:]/.test(family)) throw new Error(`${family} cannot be registered`)

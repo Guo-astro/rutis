@@ -234,6 +234,12 @@ function selected(name, prefix, items) {
   return out.filter(([n, p]) => p || !prefixes.some(prefix => n.startsWith(prefix)))
 }
 
+// The offer an announced id was made under, `<epoch>.<n>`, if it says.
+const epochOf = id => {
+  const match = /^(\d+)\.\d+$/.exec(id)
+  return match ? Number(match[1]) : undefined
+}
+
 const REMOVED_EVENTS = 'the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)'
 const REMOVED_OUT_IN = 'the Events options out / in were removed in rutis 0.13: use export / import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)'
 
@@ -261,13 +267,18 @@ export const Events = {
       // Announced id -> entry.
       const byId = new Map()
       let next = 0, calls = 0, offer
+      // This end's offer of `events` (the start of each id it announces,
+      // `<epoch>.<n>`, so the peer tells one offer's announcements from
+      // another's), and the latest offer of the peer's seen here: what the
+      // peer announced under an older one is gone with it.
+      let epoch = 0, seen = 0
       const send = (method, args) => link.callAsync('', method, args)
         .catch(error => process.stderr.write(`rutis-bridge: ${method} to ${peer} failed: ${error.message}\n`))
       const announce = entry => {
         if (entry.remote || entry.scope?.length || announced.has(entry)) return
         const ids = []
         for (const [name, prefix] of selected(entry.name, Boolean(entry.prefix), imported)) {
-          const id = String(++next)
+          const id = `${epoch}.${++next}`
           byId.set(id, entry)
           ids.push(id)
           send('events.on', [{ id, name, prefix, plugin: entry.plugin, row: entry.row, runtime: null, kind: entry.kind, prepend: false, global: entry.global }])
@@ -281,28 +292,37 @@ export const Events = {
         for (const id of ids) byId.delete(id)
         send('events.off', [ids])
       }
-      const unwatch = events.watch(change => {
-        if (offer === undefined) return
-        if (change.added) announce(change.added)
-        else withdraw(change.removed)
-      })
-      // Announced to each offer of `events` anew.
-      const off = link.onOffers((_families, epoch) => {
-        const now = epoch('events')
-        if (now === undefined || now === offer) return
-        offer = now
-        announced.clear()
-        byId.clear()
-        for (const entry of events.entries()) announce(entry)
-      })
       const forget = id => {
         for (const entry of accepted.get(id) ?? []) events.off(entry)
         accepted.delete(id)
+      }
+      // Forget the peer's entries announced under an offer before `below`
+      // (an id without an epoch, from a node that does not say, is
+      // replaced by id only).
+      const olderThan = below => {
+        for (const id of [...accepted.keys()]) {
+          const of = epochOf(id)
+          if (of !== undefined && of < below) forget(id)
+        }
+      }
+      // The peer's offer `now` is seen: its older offers' entries are gone.
+      const newer = now => {
+        if (now <= seen) return
+        seen = now
+        olderThan(now)
       }
       const unregister = link.register('events', (_target, method, [argument]) => {
         if (method === 'events.on') {
           const { id, name, prefix = false, plugin = 'plugin', row = null, runtime = null, kind = 'any', global = false } = argument ?? {}
           if (typeof name !== 'string' || name.startsWith('internal/')) throw Object.assign(new Error(`event ${name} is internal to its runtime`), { name: 'BindingError' })
+          // Of an offer already gone: not taken. Of a newer one than seen
+          // (its announcement may come before the offer): the older
+          // offers' entries are gone.
+          const of = epochOf(String(id))
+          if (of !== undefined) {
+            if (of < seen) return undefined
+            newer(of)
+          }
           forget(id)
           const entries = selected(name, Boolean(prefix), exported).map(([selectedName, selectedPrefix]) => events.onRemote({
             name: selectedName, prefix: selectedPrefix, kind, global, plugin, row, runtime, node: peer, scope: [],
@@ -328,6 +348,24 @@ export const Events = {
           return events.call({ ...argument, listener: entry.id, own: false })
         }
         throw new Error(`${method} is not offered here`)
+      })
+      epoch = link.epoch?.('events') ?? 0
+      const unwatch = events.watch(change => {
+        if (offer === undefined) return
+        if (change.added) announce(change.added)
+        else withdraw(change.removed)
+      })
+      // Announced to each offer of `events` anew; what the peer announced
+      // under an older offer (or one it withdrew) is gone.
+      const off = link.onOffers((_families, epochOfPeer) => {
+        const now = epochOfPeer('events')
+        if (now === undefined) olderThan(seen + 1)
+        else newer(now)
+        if (now === undefined || now === offer) return
+        offer = now
+        announced.clear()
+        byId.clear()
+        for (const entry of events.entries()) announce(entry)
       })
       scope.effect(() => () => {
         unregister()
