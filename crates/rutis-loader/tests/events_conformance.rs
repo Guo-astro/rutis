@@ -598,12 +598,40 @@ impl Host {
         if !status.success() {
             return Err(format!("kill {name} ({})", pid.trim()));
         }
-        COLD.eventually_with(
-            || (runtime.view.state().state != FiberState::Active).then_some(()),
-            &format!("{name} to stop"),
-            || format!("{:?}", runtime.view.state().state),
-        )
-        .await;
+        // The runtime's fiber stays up for a restart; its rows wait.
+        let pid = pid.trim().to_owned();
+        let gone = || {
+            !std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        let rows: Vec<Row> = self
+            .state
+            .lock()
+            .unwrap()
+            .rows
+            .iter()
+            .filter(|(row, _)| row.at == Location::Y)
+            .map(|(row, _)| row.clone())
+            .collect();
+        let deadline = tokio::time::Instant::now() + COLD.0;
+        while !(gone()
+            && rows.iter().all(|row| {
+                !matches!(
+                    self.row_state(&row.label, &row.scope),
+                    Some((FiberState::Active, _))
+                )
+            }))
+        {
+            if tokio::time::Instant::now() > deadline {
+                return Err(format!(
+                    "{name} ({pid}) did not stop, or its rows still run"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         Ok(())
     }
 
@@ -678,13 +706,11 @@ impl World for Host {
                 return self.node.unload(label).await;
             }
             self.reconcile().await?;
-            COLD.eventually_with(
-                || self.row_state(label, &row.scope).is_none().then_some(()),
+            until(
+                || self.row_state(label, &row.scope).is_none(),
                 &format!("{label} to unload"),
-                || format!("{:?}", self.row_state(label, &row.scope)),
             )
-            .await;
-            Ok(())
+            .await
         })
     }
 
@@ -764,16 +790,11 @@ impl World for Host {
             self.node.reset().await?;
             self.reconcile().await?;
             for (row, _) in rows.iter().filter(|(row, _)| row.at != Location::Node) {
-                COLD.eventually_with(
-                    || {
-                        self.row_state(&row.label, &row.scope)
-                            .is_none()
-                            .then_some(())
-                    },
+                until(
+                    || self.row_state(&row.label, &row.scope).is_none(),
                     &format!("{} to unload", row.label),
-                    || format!("{:?}", self.row_state(&row.label, &row.scope)),
                 )
-                .await;
+                .await?;
             }
             if killed.contains(&Location::Y) {
                 self.restart_y().await?;
@@ -837,6 +858,19 @@ impl World for Host {
         }
         Some(json!({ "runtime": runtime, "node": node, "scope": groups }))
     }
+}
+
+/// Wait until `check` holds, at most [`COLD`]; a case's failure otherwise,
+/// not the whole run's.
+async fn until(check: impl Fn() -> bool, what: &str) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + COLD.0;
+    while !check() {
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("timed out waiting for {what}"));
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    Ok(())
 }
 
 // ── The suite ───────────────────────────────────────────────────
