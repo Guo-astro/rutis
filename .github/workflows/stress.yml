@@ -384,7 +384,6 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm --prefix node/rutis-runtime ci
-      - run: npm --prefix node/rutis ci
       # No Bun on Windows: the scenario has no Bun rows there.
       - uses: oven-sh/setup-bun@v2
         if: runner.os != 'Windows'

@@ -29,9 +29,6 @@
     "node": ">=22",
     "bun": ">=1.4"
   },
-  "dependencies": {
-    "@deepseek-ai/cordis": "4.0.4"
-  },
   "publishConfig": {
     "access": "public"
   },

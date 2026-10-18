@@ -50,7 +50,6 @@ jobs:
         with:
           node-version: '22'
       - run: npm --prefix node/rutis-runtime ci
-      - run: npm --prefix node/rutis ci
       # The containers run this release build (ubuntu:24.04, the runner's
       # glibc).
       - run: cargo build --release -p rutis-host
