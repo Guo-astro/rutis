@@ -208,6 +208,16 @@ pub fn peer_key(id: &PeerId) -> TypeKey {
 pub struct Offered {
     operations: Weak<Operations>,
     family: String,
+    since: u64,
+}
+
+impl Offered {
+    /// Which offer of the family this is: what the far end reads as its
+    /// epoch ([`Offers::epoch`]). A later registration of the family on the
+    /// session has a higher one.
+    pub fn epoch(&self) -> u64 {
+        self.since
+    }
 }
 
 impl Drop for Offered {
@@ -263,7 +273,7 @@ impl Peer {
         if family.is_empty() || family == "link" || family.contains(['.', ':']) {
             return Err(Error::Value(format!("{family:?} cannot be registered")));
         }
-        {
+        let since = {
             let mut handlers = self.operations.handlers.lock().unwrap();
             if handlers.contains_key(family) {
                 return Err(Error::Value(format!("{family} is already registered")));
@@ -273,11 +283,13 @@ impl Peer {
             let since =
                 (self.operations.offered).fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             handlers.insert(family.to_owned(), Family { handler, since });
-        }
+            since
+        };
         self.operations.announce();
         Ok(Offered {
             operations: Arc::downgrade(&self.operations),
             family: family.to_owned(),
+            since,
         })
     }
 

@@ -48,6 +48,7 @@ impl Dispatch for Fake {
                 json!({ "services": {}, "features": ["rows.v2", "hosts"] }),
             )),
             ("", "rows.load") | ("", "rows.unload") => Ok(Value::Undefined),
+            ("", "ping") => Ok(Value::Data(json!("pong"))),
             ("", "events.elsewhere") => {
                 self.elsewhere.lock().unwrap().push(first()?.json()?);
                 Ok(Value::Undefined)
@@ -717,4 +718,134 @@ async fn parallel_failures_are_aggregated_in_registration_order() {
         }
     })
     .await;
+}
+
+/// Captures the context it is applied in.
+struct Owner(Mutex<Option<tokio::sync::oneshot::Sender<Ctx>>>);
+impl rutis::Plugin for Owner {
+    fn name(&self) -> &str {
+        "owner"
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+        Box::pin(async move {
+            if let Some(sender) = self.0.lock().unwrap().take() {
+                let _ = sender.send(ctx.clone());
+            }
+            Ok(rutis::Effect::Done)
+        })
+    }
+}
+
+/// guarantee: events/hub-lifecycle
+///
+/// The plugin a runtime's entries belong to unloads while a call of one of
+/// them waits for the runtime's answer, which never comes: the unload does
+/// not wait for it (it would end the session only after its wait); the call
+/// fails once with the session's end (events protocol §7.2), and nothing is
+/// left running past the shutdown deadline.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unload_does_not_wait_for_a_call_the_runtime_never_answers() {
+    let errors: Arc<Mutex<Vec<String>>> = Arc::default();
+    let into = errors.clone();
+    let root = Ctx::root_with_sink(
+        tokio::runtime::Handle::current(),
+        Arc::new(move |error: Arc<CordisError>| into.lock().unwrap().push(error.to_string())),
+    );
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let view = root.plugin(Owner(Mutex::new(Some(sender))));
+    (&view).await.unwrap();
+    let owner = receiver.await.unwrap();
+    let rig = rig_with(owner, Endpoint::rust(id("rt"))).await.unwrap();
+    rig.on(
+        "1",
+        "t/hang",
+        None,
+        "async",
+        Arc::new(|_| Ok(Value::future(std::future::pending::<Reply>()))),
+    )
+    .await;
+    let emitter = root.clone();
+    let parallel = tokio::spawn(async move {
+        emitter
+            .events()
+            .parallel(&emitter, &key("t/hang"), args(&[]))
+            .await
+    });
+    eventually(
+        || !rig.fake.calls.lock().unwrap().is_empty(),
+        "the call reached the runtime",
+    )
+    .await;
+    within("the unload", view.dispose()).await.unwrap();
+    let failed = within("the call", parallel).await.unwrap().unwrap_err();
+    assert!(
+        failed.to_string().contains("1 listeners of t/hang failed"),
+        "{failed}"
+    );
+    let errors = errors.lock().unwrap().clone();
+    assert!(
+        !errors.iter().any(|line| line.contains("still running")),
+        "{errors:?}"
+    );
+}
+
+/// guarantee: events/hub-dispatch
+///
+/// A session's event operations never run on its reader: a dispatch
+/// observer (plugin code) seeing a runtime's `emit` calls that runtime
+/// synchronously over the same session, and gets its answer, which only
+/// that reader can read.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_code_seeing_a_runtime_s_emit_can_call_that_runtime() {
+    let rig = rig().await;
+    let answers: Arc<Mutex<Vec<Json>>> = Arc::default();
+    let into = answers.clone();
+    let connection = rig.process.connection().clone();
+    rig.root
+        .events()
+        .observe_dispatch(&rig.root, move |attempt| {
+            if attempt.name == "t/probe" {
+                let answer = connection
+                    .invoke("", "ping", Value::List(vec![]))
+                    .and_then(Value::json);
+                into.lock().unwrap().push(answer.unwrap_or(Json::Null));
+            }
+        })
+        .unwrap();
+    within(
+        "the emit",
+        rig.dispatch(None, "t/probe", "emit", vec![], None),
+    )
+    .await
+    .unwrap();
+    eventually(
+        || !answers.lock().unwrap().is_empty(),
+        "the observer's call",
+    )
+    .await;
+    assert_eq!(*answers.lock().unwrap(), [json!("pong")]);
+}
+
+/// `EventKey::<Args>::of()` names no event: it fails clearly instead of
+/// dispatching under a made-up name (events protocol §12.1).
+#[tokio::test(flavor = "multi_thread")]
+async fn args_events_need_a_name() {
+    let root = Ctx::root().unwrap();
+    let message = "Args events need a name: EventKey::dynamic(name)";
+    let emitted = root
+        .events()
+        .emit(&root, &EventKey::<Args>::of(), args(&[]))
+        .unwrap_err();
+    assert_eq!(emitted.to_string(), message);
+    let refused = root
+        .events()
+        .on(&root, &EventKey::<Args>::of(), Answer(None, Arc::default()))
+        .err()
+        .unwrap();
+    assert_eq!(refused.to_string(), message);
+    let session = rutis_bridge::events::to_session_error(&refused);
+    assert!(
+        matches!(&session, Error::Remote { name, .. } if name == "BindingError"),
+        "{session:?}"
+    );
 }

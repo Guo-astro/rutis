@@ -81,6 +81,19 @@ fn selected(name: &str, prefix: bool, items: &[Item]) -> Vec<(String, bool)> {
             }
         }
     }
+    // A prefix another selected prefix covers is that one's already
+    // (`t/*` with `t/a/*`): an event under both would be delivered twice.
+    let covering: Vec<String> = out
+        .iter()
+        .filter(|(_, prefix)| *prefix)
+        .map(|(p, _)| p.clone())
+        .collect();
+    out.retain(|(p, prefix)| {
+        !*prefix
+            || !covering
+                .iter()
+                .any(|q| q.len() < p.len() && p.starts_with(q.as_str()))
+    });
     // A name a prefix also selects is that prefix's already.
     let prefixes: Vec<String> = out
         .iter()
@@ -153,6 +166,20 @@ struct LinkState {
     /// The peer's entries accepted here, by its id.
     accepted: HashMap<String, Vec<Disposer>>,
     next: u64,
+    /// The epoch of this node's offer of `events` on the session: the
+    /// start of each id it announces, so the peer tells the announcements
+    /// of one offer from those of another.
+    epoch: u64,
+    /// The latest epoch of the peer's offer of `events` seen here: what the
+    /// peer announced under an older one is gone.
+    seen: u64,
+}
+
+/// The offer (epoch) an announced id was made under, `<epoch>.<n>`, if it
+/// says (a node of another implementation may not: its entries are
+/// replaced by id only, as before).
+fn epoch_of(id: &str) -> Option<u64> {
+    id.split_once('.').and_then(|(epoch, _)| epoch.parse().ok())
 }
 
 impl Link {
@@ -190,7 +217,7 @@ impl Link {
         let mut sent = Vec::new();
         for (name, prefix) in selected(&entry.name, entry.prefix, &self.import) {
             state.next += 1;
-            let id = format!("{}", state.next);
+            let id = format!("{}.{}", state.epoch, state.next);
             state.calls.insert(id.clone(), entry.id);
             self.send(
                 "events.on",
@@ -268,6 +295,50 @@ impl Link {
         state.live = true;
     }
 
+    /// The peer's offer of `events` is now `now`: what it announced under
+    /// an older offer is gone with that offer (its events feature
+    /// restarted, or stopped), and is withdrawn here. An announcement of a
+    /// newer offer, come before the offer itself, stays.
+    fn peer_offer(&self, now: Option<u64>) {
+        let gone = {
+            let mut state = self.state.lock().unwrap();
+            match now {
+                Some(epoch) => Self::newer(&mut state, epoch),
+                None => {
+                    let below = state.seen.saturating_add(1);
+                    Self::older_than(&mut state, below)
+                }
+            }
+        };
+        for disposer in gone {
+            dispose_now(disposer);
+        }
+    }
+
+    /// The peer's offer `epoch` is seen: the entries of older offers.
+    fn newer(state: &mut LinkState, epoch: u64) -> Vec<Disposer> {
+        if epoch <= state.seen {
+            return Vec::new();
+        }
+        state.seen = epoch;
+        Self::older_than(state, epoch)
+    }
+
+    /// Take out the accepted entries announced under an offer before
+    /// `epoch`.
+    fn older_than(state: &mut LinkState, epoch: u64) -> Vec<Disposer> {
+        let ids: Vec<String> = state
+            .accepted
+            .keys()
+            .filter(|id| epoch_of(id).is_some_and(|of| of < epoch))
+            .cloned()
+            .collect();
+        ids.iter()
+            .filter_map(|id| state.accepted.remove(id))
+            .flatten()
+            .collect()
+    }
+
     /// The peer announced one of its entries.
     fn accept(&self, announced: Value) -> Reply {
         #[derive(serde::Deserialize)]
@@ -295,6 +366,21 @@ impl Link {
                 announced.name
             )));
         }
+        // Of an offer already gone: it is not taken. Of a newer one than
+        // seen so far (its announcement may come before the offer): the
+        // older offers' entries are gone.
+        if let Some(epoch) = epoch_of(&announced.id) {
+            let gone = {
+                let mut state = self.state.lock().unwrap();
+                if epoch < state.seen {
+                    return Ok(Value::Undefined);
+                }
+                Self::newer(&mut state, epoch)
+            };
+            for disposer in gone {
+                dispose_now(disposer);
+            }
+        }
         let mut disposers = Vec::new();
         for (name, prefix) in selected(&announced.name, announced.prefix, &self.export) {
             let info = ListenerInfo {
@@ -321,6 +407,7 @@ impl Link {
                 id: announced.id.clone(),
                 kind: announced.kind,
                 origin: self.origin,
+                owner: self.ctx.clone(),
             });
             disposers.push(
                 self.ctx
@@ -439,8 +526,8 @@ impl Link {
             return Ok(Value::cancellable_future(run));
         }
         // `emit` invocations start in arrival order (§5.5): this one starts
-        // here, as its frame is handled, before the next frame is read; the
-        // rest runs on a task.
+        // here, in its turn on the session's ordered task (never on its
+        // reader), before the next event operation; the rest runs on a task.
         let mut run: rutis::BoxFuture<'static, Reply> = Box::pin(run);
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         if let std::task::Poll::Ready(reply) = run.as_mut().poll(&mut context) {
@@ -536,6 +623,7 @@ impl Plugin for LinkEventsPlugin {
             let offered: Offered = peer
                 .register("events", Arc::new(Handler(Arc::downgrade(&link))))
                 .map_err(|error| CordisError::PluginFailed(error.to_string().into()))?;
+            link.state.lock().unwrap().epoch = offered.epoch();
             // Own entries change from now on; they are announced once the
             // peer takes them.
             let watched = Arc::downgrade(&link);
@@ -561,6 +649,7 @@ impl Plugin for LinkEventsPlugin {
                     let mut epoch = None;
                     loop {
                         let now = offers.borrow_and_update().epoch("events");
+                        link.peer_offer(now);
                         if now.is_some() && now != epoch {
                             epoch = now;
                             link.offered();
@@ -623,5 +712,26 @@ mod tests {
             selected("t/", true, &items(&["t/*", "t/b"])),
             vec![("t/".to_owned(), true)]
         );
+        // Nor a prefix another selected prefix covers, in either order: an
+        // event under both would reach the entry twice.
+        assert_eq!(
+            selected("t/", true, &items(&["t/*", "t/a/*"])),
+            vec![("t/".to_owned(), true)]
+        );
+        assert_eq!(
+            selected("t/", true, &items(&["t/a/*", "t/*"])),
+            vec![("t/".to_owned(), true)]
+        );
+        assert_eq!(
+            selected("", true, &items(&["t/a/*", "t/*", "u/x"])),
+            vec![("t/".to_owned(), true), ("u/x".to_owned(), false)]
+        );
+    }
+
+    #[test]
+    fn announced_ids_carry_their_offer() {
+        assert_eq!(epoch_of("7.12"), Some(7));
+        assert_eq!(epoch_of("12"), None);
+        assert_eq!(epoch_of("x.1"), None);
     }
 }
