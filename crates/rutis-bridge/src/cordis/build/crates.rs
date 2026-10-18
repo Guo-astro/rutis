@@ -96,17 +96,28 @@ impl Sources {
         )
         .join("Cargo.toml");
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let output = std::process::Command::new(cargo)
-            .args([
-                "metadata",
-                "--format-version",
-                "1",
-                "--offline",
-                "--manifest-path",
-            ])
-            .arg(&manifest)
-            .output()
-            .map_err(|error| format!("cannot run cargo metadata: {error}"))?;
+        // Only the crates of the target being built: those are downloaded
+        // already. Offline first; should Cargo still miss a package (one
+        // only a dev-dependency needs, say), it may fetch it.
+        let run = |offline: bool| {
+            let mut command = std::process::Command::new(&cargo);
+            command
+                .args(["metadata", "--format-version", "1", "--manifest-path"])
+                .arg(&manifest);
+            if let Ok(target) = std::env::var("TARGET") {
+                command.args(["--filter-platform", &target]);
+            }
+            if offline {
+                command.arg("--offline");
+            }
+            command
+                .output()
+                .map_err(|error| format!("cannot run cargo metadata: {error}"))
+        };
+        let mut output = run(true)?;
+        if !output.status.success() {
+            output = run(false)?;
+        }
         if !output.status.success() {
             return Err(format!(
                 "cargo metadata failed:\n{}",

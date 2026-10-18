@@ -240,7 +240,7 @@ Node 侧为每个导出的服务槽位维护一串**对象句柄**：
 
 **声明。** 应用的 `build.rs` 列出要导出的东西：`Exports::new().service(name, path)` / `.service_in(name, path, group)`，别的什么都不写。路径按应用自己的写法写，可以是依赖 crate 的类型。
 
-**读源码（稳定版 Rust）。** 构建脚本用 `cargo metadata --offline` 得到每个 crate 的入口文件和解析出的 feature，再用 syn 读模块树，在需要的范围内按 rustc 的规则解析名字：`mod` 文件、`use`、glob、`pub use` 再导出、类型别名、extern prelude 和标准 prelude、按解析出的 feature 和 `CARGO_CFG_*` 求值的 `#[cfg]`。没有采用的：nightly 的 rustdoc JSON（不稳定）；在类型上加过程宏（要改依赖 crate，而类型不是应用自己的）；编译器（构建脚本问不到类型）。代价是看不到宏写出的条目，作为限制写进文档。
+**读源码（稳定版 Rust）。** 构建脚本用 `cargo metadata`（只取正在构建的目标平台，先离线）得到每个 crate 的入口文件和解析出的 feature，再用 syn 读模块树，在需要的范围内按 rustc 的规则解析名字：`mod` 文件、`use`、glob、`pub use` 再导出、类型别名、extern prelude 和标准 prelude、按解析出的 feature 和 `CARGO_CFG_*` 求值的 `#[cfg]`。没有采用的：nightly 的 rustdoc JSON（不稳定）；在类型上加过程宏（要改依赖 crate，而类型不是应用自己的）；编译器（构建脚本问不到类型）。代价是看不到宏写出的条目，作为限制写进文档。
 
 **生成的代码不写它写不对的名字。** 参数类型的公开路径可能和定义处不同（从私有模块再导出），所以生成的 dispatcher 从不写参数、结果或错误的类型：它调用 `<Service>::method(&*service, a0, ..)`，每个参数用泛型的 `decode` 解码，由类型推断按真实签名定类型。借用的参数在推断定不了的地方写出拥有所有权的类型（`&str` → `String`、`&Path` → `PathBuf`、`&[T]` → `Vec<_>`）。按引用传的函数同样处理：`impl Fn` / 泛型参数用闭包（签名来自约束），`Arc<dyn Fn>` / `Box<dyn Fn>` 用 `FromCallback`（按参数类型选实现）。Cargo 按真实签名检查每个调用，所以读错源码是编译错误，而不是调错。
 
