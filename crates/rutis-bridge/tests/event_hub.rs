@@ -843,9 +843,14 @@ async fn args_events_need_a_name() {
         .err()
         .unwrap();
     assert_eq!(refused.to_string(), message);
-    let session = rutis_bridge::events::to_session_error(&refused);
-    assert!(
-        matches!(&session, Error::Remote { name, .. } if name == "BindingError"),
-        "{session:?}"
-    );
+    // A runtime gets it as a `BindingError` (`to_session_error` is in the
+    // `testing` feature).
+    #[cfg(feature = "testing")]
+    {
+        let session = rutis_bridge::events::to_session_error(&refused);
+        assert!(
+            matches!(&session, Error::Remote { name, .. } if name == "BindingError"),
+            "{session:?}"
+        );
+    }
 }
