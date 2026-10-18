@@ -368,9 +368,12 @@ class Runtime:
         exports: dict | None,
         isolate: dict | None = None,
         scope: list | None = None,
+        id: str | None = None,
     ) -> None:
         if key in self.rows:
             raise ValueError(f"row {key} is already loaded")
+        # Descriptors and reported lines call the row by its id (§4.2).
+        self.bus.row_ids[key] = id if isinstance(id, str) else key
         exports = exports or {}
         row = Row(key, module, config, exports, dict(isolate or {}), check_scope(scope))
         for name, label in row.isolate.items():
@@ -437,6 +440,7 @@ class Runtime:
         # Its running listeners are cancelled and waited for, at most the
         # shutdown deadline (§7.1 step 4), before its cleanups run.
         await self.bus.stop(key, shutdown_deadline())
+        self.bus.row_ids.pop(key, None)
         errors = []
         cleanups = row.cleanups[::-1]
         row.cleanups.clear()
@@ -453,8 +457,9 @@ class Runtime:
         row = self.rows.get(key)
         if row is None:
             raise ValueError(f"row {key} is not loaded")
+        id = self.bus.row_id(key)
         await self.unload(key)
-        await self.load(key, row.module, config, row.exports, row.isolate, row.scope)
+        await self.load(key, row.module, config, row.exports, row.isolate, row.scope, id)
 
     def module(self, name: str):
         """The plugin module, imported again when its source file changed
@@ -627,7 +632,7 @@ class Runtime:
                 following = request.get("next")
                 args.append(lambda: plain(following()))
             refused = AsyncListener(
-                f"listener of {name} in row {entry.row} is asynchronous and cannot run in a synchronous {mode}"
+                f"listener of {name} in row {self.bus.row_id(entry.row)} is asynchronous and cannot run in a synchronous {mode}"
             )
             if entry.kind == "async":
                 raise refused
@@ -651,6 +656,12 @@ class Runtime:
             self.bus.track(entry.row, task)
         try:
             value = await _settle(entry.listener(*args))
+        except asyncio.CancelledError:
+            # Cancelled by its row's unload (§7.1): in `emit` mode not a
+            # failure, and the reply is undefined as always (§5.3).
+            if mode != "emit":
+                raise
+            return UNDEFINED
         except Exception as error:
             if mode != "emit":
                 raise
@@ -696,11 +707,12 @@ class Runtime:
             self.closing = True
             return self._dispose_and_drain()
         if method == "rows.load":
-            # From rutis 0.13 the seventh argument is `{ scope }`.
+            # From rutis 0.13 the seventh argument is `{ scope, id }`.
             key, module, config, isolate, _inject, exports, row = (list(args) + [None] * 7)[:7]
             labels = {name: label for name, label in (isolate or [])}
             scope = row.get("scope") if isinstance(row, dict) else None
-            return self.load(key, str(module), config, exports, labels, scope)
+            id = row.get("id") if isinstance(row, dict) else None
+            return self.load(key, str(module), config, exports, labels, scope, id)
         if method == "rows.update":
             key, config = args
             return self.update(key, config)

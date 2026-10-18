@@ -169,13 +169,14 @@ class Entry:
         self.global_ = global_
         self.alive = True
 
-    def descriptor(self, runtime: str | None) -> dict:
-        """What a filter sees of it (§4.2)."""
+    def descriptor(self, runtime: str | None, row: str | None = None) -> dict:
+        """What a filter sees of it (§4.2); `row` is its row's id (its key
+        when not given)."""
         return {
             "name": self.name,
             "prefix": False,
             "plugin": self.plugin,
-            "row": self.row,
+            "row": self.row if row is None else row,
             "runtime": runtime,
             "node": None,
             "scope": [dict(item) for item in self.scope],
@@ -193,9 +194,20 @@ class Bus:
         self.entries: list[Entry] = []
         self.by_id: dict[str, Entry] = {}
         self.running: dict[str, set] = {}
-        self.report = report
+        self._report = report
         self.runtime = runtime
         self._ids = 0
+        # The id each row's configuration gives it, by row key (`rows.load`'s
+        # `id`): descriptors and reported lines call the row so (§4.2).
+        self.row_ids: dict[str, str] = {}
+
+    def row_id(self, row: str | None) -> str | None:
+        """What descriptors and lines call row `row` (a key): its id, or the
+        key when it was not named."""
+        return None if row is None else self.row_ids.get(row, row)
+
+    def report(self, kind: str, name: str, row: str | None, error: BaseException) -> None:
+        self._report(kind, name, self.row_id(row), error)
 
     # ── The table ────────────────────────────────────────────────
 
@@ -238,7 +250,11 @@ class Bus:
         in order, before any of them runs; its error is the dispatch's."""
         if keep is None:
             return entries
-        return [entry for entry in entries if entry.global_ or bool(keep(entry.descriptor(self.runtime)))]
+        return [
+            entry
+            for entry in entries
+            if entry.global_ or bool(keep(entry.descriptor(self.runtime, self.row_id(entry.row))))
+        ]
 
     # ── Invocations ──────────────────────────────────────────────
 
@@ -277,7 +293,7 @@ class Bus:
             task.cancel()
         _done, pending = await asyncio.wait(tasks, timeout=seconds)
         if pending:
-            line = f"rutis: listeners of row {row} still running after {seconds:g}s; unloading anyway"
+            line = f"rutis: listeners of row {self.row_id(row)} still running after {seconds:g}s; unloading anyway"
             (say or _say)(line)
 
     # ── The five modes, here ─────────────────────────────────────
@@ -371,7 +387,7 @@ class Bus:
             if not entry.alive:
                 continue
             refused = AsyncListener(
-                f"listener of {name} in row {entry.row} is asynchronous and cannot run in a synchronous bail"
+                f"listener of {name} in row {self.row_id(entry.row)} is asynchronous and cannot run in a synchronous bail"
             )
             if entry.kind == "async":
                 raise refused

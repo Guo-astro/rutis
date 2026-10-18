@@ -39,7 +39,7 @@ export function install(ctx, Context, bus, where) {
     const current = bus.filtering
     if (current && current.owner === context) return bus.describe(current)
     const { row, scope } = where(context)
-    return { name: null, prefix: false, plugin: context.fiber?.name ?? 'root', row, runtime: bus.runtime, node: null, scope, global: false }
+    return { name: null, prefix: false, plugin: context.fiber?.name ?? 'root', row: bus.rowId(row), runtime: bus.runtime, node: null, scope, global: false }
   }
   ctx.accessor('rutis', { get() { return describe(this) } })
   ctx.accessor('signal', { get() { return where(this).signal } })

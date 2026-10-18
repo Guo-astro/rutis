@@ -408,6 +408,7 @@ async function loadRow([key, entry, config, isolate, inject, exports, place]) {
     scope = scope.isolate(name, isolated(name, label))
   }
   const row = { key, fiber: undefined, inner: undefined, config, exports: ids, loading: true, scope, labelOf, chain: chainOf(place?.scope), abort: new AbortController() }
+  bus.nameRow(key, place?.id)
   let fiber
   creating = row
   try {
@@ -465,6 +466,7 @@ async function unloadRow(key) {
   row.abort.abort(new DOMException('the row is unloading', 'AbortError'))
   await bus.settle(key, deadline)
   await row.fiber.dispose()
+  bus.forgetRow(key)
   return null
 }
 

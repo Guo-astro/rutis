@@ -93,6 +93,8 @@ export class Bus {
   #running = new Map()
   // Who follows the table (`watch`).
   #watchers = new Set()
+  // The id each row's configuration gives it, by row key (`nameRow`).
+  #rowIds = new Map()
 
   // `runtime`: this runtime's name, for descriptors (null when unknown).
   // `peer`: { callAsync, call, callFunctionAsync } to the host, or none
@@ -105,6 +107,21 @@ export class Bus {
     this.report = report
     this.dispatched = dispatched
   }
+
+  // ── Rows ──────────────────────────────────────────────────────
+
+  // Row `key` is the row `id` of the configuration (`rows.load`'s `id`):
+  // descriptors and reported lines call it so (§4.2). Keys are unique in
+  // the process; ids need not be.
+  nameRow(key, id) {
+    if (key !== null && key !== undefined && typeof id === 'string') this.#rowIds.set(key, id)
+  }
+
+  forgetRow(key) { this.#rowIds.delete(key) }
+
+  // What descriptors and lines call row `key`: its id, or the key itself
+  // when it was not named; null for none.
+  rowId(key) { return key === null || key === undefined ? null : this.#rowIds.get(key) ?? key }
 
   // ── Registration (§4) ─────────────────────────────────────────
 
@@ -194,7 +211,7 @@ export class Bus {
     const finished = await Promise.race([done, late])
     clearTimeout(timer)
     if (!finished) {
-      this.report(`rutis: listeners of row ${row} still running after ${deadline / 1000}s; unloading anyway`)
+      this.report(`rutis: listeners of row ${this.rowId(row)} still running after ${deadline / 1000}s; unloading anyway`)
       running.clear()
     }
     return finished
@@ -202,10 +219,10 @@ export class Bus {
 
   describe(entry) {
     if (entry.remote) return { name: entry.name, prefix: entry.prefix, plugin: entry.plugin, row: entry.row, runtime: entry.runtime, node: entry.node, scope: entry.scope, global: entry.global }
-    return { name: entry.name, prefix: false, plugin: entry.plugin, row: entry.row, runtime: this.runtime, node: null, scope: entry.scope, global: entry.global }
+    return { name: entry.name, prefix: false, plugin: entry.plugin, row: this.rowId(entry.row), runtime: this.runtime, node: null, scope: entry.scope, global: entry.global }
   }
 
-  #where(entry) { return entry.row ?? entry.plugin }
+  #where(entry) { return (entry.remote ? entry.row : this.rowId(entry.row)) ?? entry.plugin }
 
   // ── elsewhere (§4.5) ──────────────────────────────────────────
 
@@ -261,7 +278,7 @@ export class Bus {
           if (mode === 'bail') throw error
           return Promise.reject(error)
         }
-        this.report(`rutis: filter of ${name} from row ${row ?? 'none'} failed: ${errorText(error)}`, { event: name, row, filter: true, error })
+        this.report(`rutis: filter of ${name} from row ${this.rowId(row) ?? 'none'} failed: ${errorText(error)}`, { event: name, row, filter: true, error })
         return undefined
       }
     }
@@ -289,7 +306,7 @@ export class Bus {
   #localFor(descriptor) {
     if (descriptor?.node != null || descriptor?.prefix) return undefined
     if (this.runtime !== null && descriptor?.runtime !== this.runtime) return undefined
-    return this.#entries.find(entry => entry.name === descriptor.name && entry.row === descriptor.row && entry.plugin === descriptor.plugin && entry.global === Boolean(descriptor.global))
+    return this.#entries.find(entry => entry.name === descriptor.name && this.rowId(entry.row) === descriptor.row && entry.plugin === descriptor.plugin && entry.global === Boolean(descriptor.global))
   }
 
   // Run one listener here, counted as running for its row until it settles;
@@ -401,10 +418,10 @@ export class Bus {
       if (count > 0) this.#unanswered.set(name, count); else this.#unanswered.delete(name)
     }
     let sent
-    try { sent = peer.callAsync('', 'events.dispatch', [fields]) } catch (error) { answered(); this.report(`rutis: emit of ${name} from row ${row ?? 'none'} failed: ${errorText(error)}`); return undefined }
+    try { sent = peer.callAsync('', 'events.dispatch', [fields]) } catch (error) { answered(); this.report(`rutis: emit of ${name} from row ${this.rowId(row) ?? 'none'} failed: ${errorText(error)}`); return undefined }
     sent.then(answered, error => {
       answered()
-      this.report(`rutis: emit of ${name} from row ${row ?? 'none'} failed: ${errorText(error)}`)
+      this.report(`rutis: emit of ${name} from row ${this.rowId(row) ?? 'none'} failed: ${errorText(error)}`)
     })
     return undefined
   }
