@@ -27,7 +27,7 @@ export interface PluginSpec<C = any> {
 export interface Plugin<C = any> extends Readonly<Required<Pick<PluginSpec<C>, 'inject' | 'provides'>>>, Readonly<Omit<PluginSpec<C>, 'inject' | 'provides'>> {
   /** The plugin API it was written against. */
   readonly api: number
-  /** It declares no `provides`: what it provides is known once it runs. */
+  /** Always `true`: what it provides beyond `provides` reaches rutis by itself, known once it runs. */
   readonly announces: boolean
 }
 

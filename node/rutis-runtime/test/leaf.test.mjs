@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { definePlugin } from '../../rutis/src/index.mjs'
-import { supported, toCordis } from '../src/leaf.mjs'
+import { oncePerName, supported, toCordis } from '../src/leaf.mjs'
 
 test('leaf events delegate to the shared Cordis bus and leave with their fiber', async () => {
   const root = new Context()
@@ -58,4 +58,29 @@ test('a failed apply and an update remove the leaf listeners, as the runner driv
   assert.deepEqual(seen, ['updated'])
   await failed.dispose()
   await plugin.dispose()
+})
+
+// An undeclared service under a host older than 0.12: told once per name,
+// a declared or keyed one not at all.
+test('a leaf plugin providing an undeclared service is told once per name', async () => {
+  const root = new Context()
+  const written = []
+  const spec = definePlugin({
+    provides: { declared: { get: 'sync' } },
+    apply(ctx) {
+      ctx.provide('declared', { get() {} })
+      ctx.provide('weather', { today() {} })
+      ctx.provide('weather#1', { today() {} })
+    },
+  })
+  const told = oncePerName(text => written.push(text))
+  const first = root.plugin(toCordis(supported(spec, 'old-host'), told))
+  await first.await()
+  await first.dispose()
+  const again = root.plugin(toCordis(supported(spec, 'old-host'), told))
+  await again.await()
+  await again.dispose()
+  assert.deepEqual(written, [
+    'rutis: service weather is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host\n',
+  ])
 })

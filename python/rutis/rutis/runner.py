@@ -26,11 +26,13 @@ NUL and the label inside one.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import importlib
 import importlib.metadata
 import inspect
 import os
 import sys
+import threading
 import traceback
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -54,6 +56,16 @@ def _unhandled_event(error):
     traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
     sys.stderr.flush()
     os._exit(1)
+
+
+def old_host(name: str) -> str:
+    """What a plugin providing the undeclared service `name` is told when
+    the host, older than 0.12, mounted without `announce`: such a host
+    does not take the service, which stays in this process."""
+    return (
+        f"rutis: service {name} is not declared in provides, and this host (older than 0.12) "
+        "does not take undeclared services; declare it or upgrade rutis-host"
+    )
 
 
 def scoped_id(name: str, label: str | None) -> str:
@@ -139,8 +151,17 @@ class Row:
     provided: list = field(default_factory=list)
     # Ids of the slots of services it announced.
     announced: list = field(default_factory=list)
-    # Announcements the host has yet to answer, while the row loads.
+    # Announcements the host has yet to answer, while the row loads: those
+    # sent from the session's loop, and from other threads.
     pending: list | None = field(default_factory=list)
+    # Guards `pending`, which other threads add to.
+    lock: Any = field(default_factory=threading.Lock)
+
+    def pend(self, sent) -> None:
+        """Await `sent` before saying the row loaded, while it loads."""
+        with self.lock:
+            if self.pending is not None:
+                self.pending.append(sent)
 
     def id(self, name: str) -> str:
         """The id of `name` as this row sees it."""
@@ -182,6 +203,10 @@ class Runtime:
         self.closing = False
         # The host takes announced services (mount `announce`).
         self.announce = False
+        # Mounted by a host; one without `announce` is older than 0.12.
+        self.mounted = False
+        # The undeclared names a plugin was told such a host does not take.
+        self.told: set = set()
         self.events = Events(_unhandled_event)
         self.emits = set()
         # The source file of each plugin module when it was imported.
@@ -202,10 +227,15 @@ class Runtime:
             raise ValueError(f"service {id} is already provided by row {self.services[id][0]}")
         self.services[id] = (row.key, value)
         row.provided.append(id)
-        # Not declared: announced, with the methods it has.
-        if self.announce and id not in self.slots and "#" not in name:
-            self.slots[id] = Slot(row.key, set(), name, announced=True)
-            row.announced.append(id)
+        # Not declared: announced, with the methods it has; a host older
+        # than 0.12 does not take it, and the plugin is told, once per name.
+        if id not in self.slots and "#" not in name:
+            if self.announce:
+                self.slots[id] = Slot(row.key, set(), name, announced=True)
+                row.announced.append(id)
+            elif self.mounted and name not in self.told:
+                self.told.add(name)
+                print(old_host(name), file=sys.stderr, flush=True)
         self._refresh(id)
 
         def withdraw() -> None:
@@ -251,14 +281,20 @@ class Runtime:
         except RuntimeError:
             running = None
         if running is not self.peer.loop:
-            # Provided from another thread: sent from the session's own.
-            self.peer.notify("", "service", args)
-            return
-        sent = asyncio.ensure_future(self.peer.call_async("", "service", args))
-        sent.add_done_callback(_ignore)
+            # Provided from another thread: sent from the session's own, and
+            # awaited like the others while the row loads.
+            if self.peer.closed_error is not None or self.peer.loop.is_closed():
+                return
+            sent = asyncio.run_coroutine_threadsafe(
+                self.peer.call_async("", "service", args), self.peer.loop
+            )
+            sent.add_done_callback(_ignore)
+        else:
+            sent = asyncio.ensure_future(self.peer.call_async("", "service", args))
+            sent.add_done_callback(_ignore)
         row = self.rows.get(slot.row)
-        if row is not None and row.pending is not None:
-            row.pending.append(sent)
+        if row is not None:
+            row.pend(sent)
 
     def _retire(self, handle: str) -> None:
         entry = self.handles.get(handle)
@@ -304,9 +340,15 @@ class Runtime:
             for name in exports:
                 self._refresh(row.id(name))
             # rutis has published the announced services (or refused one,
-            # which fails the row there) before it hears that the row loaded.
-            pending, row.pending = row.pending or [], None
-            await asyncio.gather(*pending, return_exceptions=True)
+            # which fails the row there) before it hears that the row loaded:
+            # those its threads provide while it waits too.
+            while True:
+                with row.lock:
+                    pending = row.pending or []
+                    row.pending = [] if pending else None
+                if not pending:
+                    break
+                await asyncio.gather(*map(_awaitable, pending), return_exceptions=True)
         except BaseException:
             try:
                 await self.unload(key)
@@ -413,6 +455,7 @@ class Runtime:
                 raise ValueError(refused)
             self.emits = set(names)
             self.announce = args.get("announce") is True
+            self.mounted = True
             return {"services": {}, "features": FEATURES}
         if method == "emit":
             name, values = args
@@ -473,11 +516,19 @@ class Runtime:
         await self.peer.drain()
 
 
-def _ignore(sent: asyncio.Future) -> None:
+def _ignore(sent) -> None:
     """An announcement nobody awaits: its failure (the session ended) is
     not an error of anything here."""
     if not sent.cancelled():
         sent.exception()
+
+
+def _awaitable(sent):
+    """`sent` as the session's loop awaits it: one another thread sent is a
+    `concurrent.futures.Future`."""
+    if isinstance(sent, concurrent.futures.Future):
+        return asyncio.wrap_future(sent)
+    return sent
 
 
 def _entry_point(name: str) -> tuple[str, str | None]:
