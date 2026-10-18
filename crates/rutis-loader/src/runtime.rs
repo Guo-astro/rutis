@@ -33,10 +33,11 @@
 //! `dyn HostDispatch` at `host_key(name)`:
 //!
 //! - a service the plugin injects gates the row in rutis, and the row leases
-//!   it into its runtime while it runs. In a leaf runtime (Python) every
-//!   injected name does; in Cordis only the names the catalog registers as
-//!   shared ([`ServiceCatalog::register_shared`]), the others are left to
-//!   Cordis;
+//!   it into its runtime while it runs, in a scope of the row's own, so the
+//!   service sees which row calls it (`rutis_bridge::session::caller_row`).
+//!   In a leaf runtime (Python) every injected name does; in Cordis only the
+//!   names the catalog registers as shared
+//!   ([`ServiceCatalog::register_shared`]), the others are left to Cordis;
 //! - the services the plugin declares it provides are published from the
 //!   row's own fiber, so Rust plugins and other runtimes' rows can inject
 //!   them. So are the ones it provides without declaring them, which a
@@ -61,7 +62,7 @@ use rutis::{BoxFuture, CordisError, Ctx, Effect, Listener, Plugin, PluginFactory
 use rutis_bridge::runtime::{
     row_projection_of, HostLease, Process, Projection, Runtime, RuntimeHandle,
 };
-use rutis_bridge::session::{host_key, HostDispatch};
+use rutis_bridge::session::{host_key, CallerRow, HostDispatch};
 use serde_json::{json, Map, Value};
 
 use crate::resolver::{Build, ScopedFactory};
@@ -714,34 +715,12 @@ impl JsRow {
                 isolate.push((name.clone(), label.clone()));
             }
         }
-        let label_of = |name: &str| {
+        let label_of = |isolate: &[(String, String)], name: &str| {
             isolate
                 .iter()
                 .find(|(isolated, _)| isolated == name)
                 .map(|(_, label)| label.clone())
         };
-        // The shared services the plugin injects, registered in Cordis for
-        // as long as the row runs, in the row's scope for each. One served
-        // by a row of this same process is already there natively.
-        for (name, key) in &self.gated {
-            let dispatch = ctx.require_as::<dyn HostDispatch>(key.clone())?;
-            if dispatch
-                .origin()
-                .is_some_and(|origin| origin == process.connection().tag())
-            {
-                continue;
-            }
-            let lease = process
-                .lease_host_in(
-                    name,
-                    label_of(name).as_deref(),
-                    dispatch,
-                    runtime.and_then(|runtime| runtime.host_methods(name)),
-                )
-                .await
-                .map_err(failed)?;
-            leases.push(lease);
-        }
         // The fiber identity and a generation number key the row on the
         // Cordis side: a fiber keeps its identity across restarts, and a
         // late `rows.ended` of an earlier generation must not end this one.
@@ -751,6 +730,38 @@ impl JsRow {
             ctx.instance(),
             GENERATION.fetch_add(1, Ordering::Relaxed)
         );
+        // Who calls the services it leases (`caller_row`).
+        let caller = CallerRow::new(id.clone(), key.clone(), ctx.clone());
+        // The shared services the plugin injects, registered in Cordis for
+        // as long as the row runs, each in a scope of the row's own (inside
+        // the one it isolates the name in), so their calls name the row.
+        // One served by a row of this same process is already there
+        // natively.
+        for (name, key) in &self.gated {
+            let dispatch = ctx.require_as::<dyn HostDispatch>(key.clone())?;
+            if dispatch
+                .origin()
+                .is_some_and(|origin| origin == process.connection().tag())
+            {
+                continue;
+            }
+            let label = label_of(&isolate, name);
+            let lease = process
+                .lease_host_for(
+                    name,
+                    label.as_deref(),
+                    &caller,
+                    dispatch,
+                    runtime.and_then(|runtime| runtime.host_methods(name)),
+                )
+                .await
+                .map_err(failed)?;
+            if let Some(own) = lease.label().filter(|own| Some(*own) != label.as_deref()) {
+                isolate.retain(|(isolated, _)| isolated != name);
+                isolate.push((name.clone(), own.to_owned()));
+            }
+            leases.push(lease);
+        }
         // The row's services are published from this fiber, so they go when
         // it does: the declared ones, and those it announces.
         let provided = self.provided.clone();

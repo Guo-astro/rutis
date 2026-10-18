@@ -8,7 +8,7 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use common::runtimes::{active, repo, title, NoConfig, Probe, Title, Tools, COLD};
+use common::runtimes::{active, repo, title, tool_callers, NoConfig, Probe, Title, Tools, COLD};
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory, TypeKey};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, host_key_in, settle, HostDispatch, Value as RpcValue};
@@ -300,6 +300,32 @@ async fn each_instance_sees_its_own_services_across_languages() {
         );
     }
     assert!(!fixture.probe.has("rust in A reads py B / js B"));
+    // `tools` sees which row asks, in which instance's scope (#441). Other
+    // tests of this file open instances with the same titles: each title's
+    // scopes are compared as sets.
+    let scopes = |title: &str, id: &str| -> std::collections::BTreeSet<String> {
+        let callers = tool_callers(title);
+        let scopes: std::collections::BTreeSet<String> = callers
+            .iter()
+            .filter(|(caller, _)| caller == id)
+            .map(|(_, scope)| scope.clone().expect("a scope"))
+            .collect();
+        assert!(
+            !scopes.is_empty(),
+            "{id} in {title} asked as a row: {callers:?}"
+        );
+        scopes
+    };
+    for title in ["A", "B"] {
+        for id in ["py", "js"] {
+            let all = scopes(title, id);
+            assert!(all.iter().all(|s| s.starts_with("rutis-loader/instance/")));
+        }
+        let (py, js) = (scopes(title, "py"), scopes(title, "js"));
+        assert!(py.intersection(&js).next().is_some(), "one instance");
+    }
+    let (a, b) = (scopes("A", "js"), scopes("B", "js"));
+    assert!(a.is_disjoint(&b), "two instances");
     fixture.root.shutdown().await.unwrap();
 }
 

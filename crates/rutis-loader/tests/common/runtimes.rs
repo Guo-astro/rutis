@@ -126,12 +126,35 @@ pub fn go_binary() -> &'static Path {
 
 // ── Instances ───────────────────────────────────────────────────
 
-/// The instance's `tools`: tells its instance's title.
+/// The instance's `tools`: tells its instance's title, and remembers the
+/// rows that ask ([`tool_callers`]).
 pub struct Tools(pub String);
+
+/// `(title, row id, scope)` of every row that asked a `tools` its title.
+static TOOL_CALLERS: Mutex<Vec<(String, String, Option<String>)>> = Mutex::new(Vec::new());
+
+/// The rows that asked the `tools` titled `title`, as `(row id, scope)`.
+#[allow(dead_code)]
+pub fn tool_callers(title: &str) -> Vec<(String, Option<String>)> {
+    TOOL_CALLERS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(asked, _, _)| asked == title)
+        .map(|(_, id, scope)| (id.clone(), scope.clone()))
+        .collect()
+}
 
 impl HostDispatch for Tools {
     fn invoke(&self, method: &str, _: RpcValue) -> Reply {
         assert_eq!(method, "title");
+        if let Some(row) = rutis_bridge::session::caller_row() {
+            let scope = row.scope().map(str::to_owned);
+            TOOL_CALLERS
+                .lock()
+                .unwrap()
+                .push((self.0.clone(), row.id().to_owned(), scope));
+        }
         Ok(json!(self.0).into())
     }
 

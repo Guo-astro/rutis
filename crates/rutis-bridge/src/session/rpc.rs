@@ -2196,15 +2196,19 @@ impl Connection {
             Accepted::Call(object, args) => {
                 // A function this side exported, called by this session: code
                 // in it that calls another session forwards from this one.
+                // It names no calling row: only a call to a host service a
+                // row leased does (`caller_row`).
                 let previous = CALLER.with(|caller| caller.replace(Some(self.clone())));
-                let result = object.call(args);
+                let result = crate::session::with_caller_row(None, || object.call(args));
                 CALLER.with(|caller| caller.replace(previous));
                 self.respond(id, result);
                 drop(_flight);
             }
             Accepted::Invoke(target, method, args) => {
                 let previous = CALLER.with(|caller| caller.replace(Some(self.clone())));
-                let result = protected(|| self.0.dispatch.invoke(self, &target, &method, args));
+                let result = crate::session::with_caller_row(None, || {
+                    protected(|| self.0.dispatch.invoke(self, &target, &method, args))
+                });
                 CALLER.with(|caller| caller.replace(previous));
                 self.respond(id, result);
                 drop(_flight);
