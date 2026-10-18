@@ -2,7 +2,7 @@
 //! `RuntimeSession` a [`RuntimePlugin::remote`](crate::runtime::RuntimePlugin::remote)
 //! runs its rows on.
 //!
-//! The runtime's calls into rutis (`host:<name>`, `service`, `event`,
+//! The runtime's calls into rutis (`host:<name>`, `service`, `events.*`,
 //! `rows.ended`) are families on the peer, routed to whatever the runtime
 //! plugin serves them with. The session stays the link's: the runtime
 //! plugin neither opens nor closes it.
@@ -17,7 +17,7 @@ use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, TypeKey};
 use crate::{peer_key, Peer};
 
 /// The families a runtime calls rutis with.
-const FAMILIES: [&str; 4] = ["host", "service", "event", "rows"];
+const FAMILIES: [&str; 4] = ["host", "service", "events", "rows"];
 
 /// Provides `RuntimeSession#<runtime>` on `Peer#<peer>`.
 pub struct RuntimeAccessPlugin {

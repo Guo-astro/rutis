@@ -615,11 +615,18 @@ const VALUE_CAPABILITIES: [&str; 10] = [
     "value-decimal",
     "value-uuid",
 ];
+/// The event protocol of rutis 0.13 (#464): mandatory, declared by every
+/// endpoint in both formats; a far end that does not declare it is refused
+/// right after the handshake (`docs/design-events-protocol-2026-10-18.md`
+/// §2).
+pub const EVENTS_CAPABILITY: &str = "events-v2";
+
 /// What this side declares in a compat-format handshake: it marks its
 /// synchronous waits, and takes such marks (#228); it takes every tagged
-/// value (#308).
-const COMPAT_CAPABILITIES: [&str; 11] = [
+/// value (#308); it speaks the event protocol of 0.13 (#464).
+const COMPAT_CAPABILITIES: [&str; 12] = [
     "sync-wait",
+    EVENTS_CAPABILITY,
     "value-instant",
     "value-datetime",
     "value-date",
@@ -633,8 +640,9 @@ const COMPAT_CAPABILITIES: [&str; 11] = [
 ];
 /// What a compat-format handshake may declare that means anything here; any
 /// other capability there is ignored, as before the format had any.
-const COMPAT_DECLARED: [&str; 13] = [
+const COMPAT_DECLARED: [&str; 14] = [
     "sync-wait",
+    EVENTS_CAPABILITY,
     "sync-stack",
     "reentrant-sync",
     "value-instant",
@@ -861,6 +869,7 @@ impl Endpoint {
                 "reentrant-sync",
                 "forwarding",
                 "sync-wait",
+                EVENTS_CAPABILITY,
             ]
             .into_iter()
             .chain(VALUE_CAPABILITIES)
@@ -903,6 +912,49 @@ fn version_mismatch(far: u32, local: u32, implementation: Option<&Implementation
     }
 }
 
+/// Why a far end that does not declare [`EVENTS_CAPABILITY`] is refused
+/// (`docs/design-events-protocol-2026-10-18.md` §2.2): `far` names it.
+fn without_events(far: &str) -> String {
+    format!(
+        "incompatible session: the far end ({far}) does not declare events-v2 (the event \
+         protocol of rutis 0.13): upgrade it to rutis 0.13 or later"
+    )
+}
+
+/// Whether the control operation `method` is handled on the reader, before
+/// the next frame (events protocol §4.1, §5.5): the event table changes
+/// (`events.on`, `events.off`, `events.elsewhere`), and the `emit`
+/// dispatches and invocations, which start in arrival order.
+fn inline_event_op(method: &str, args: &Value) -> bool {
+    match method {
+        "events.on" | "events.off" | "events.elsewhere" => true,
+        "events.dispatch" | "events.call" => {
+            let first = match args {
+                Value::List(items) => items.first(),
+                _ => None,
+            };
+            let mode = match first {
+                Some(Value::Record(fields)) => match fields.get("mode") {
+                    Some(Value::Data(Json::String(mode))) => Some(mode.as_str()),
+                    _ => None,
+                },
+                Some(Value::Data(Json::Object(fields))) => {
+                    fields.get("mode").and_then(Json::as_str)
+                }
+                _ => match args {
+                    Value::Data(Json::Array(items)) => items
+                        .first()
+                        .and_then(|first| first.get("mode"))
+                        .and_then(Json::as_str),
+                    _ => None,
+                },
+            };
+            mode == Some("emit")
+        }
+        _ => false,
+    }
+}
+
 /// One session's state. The session is reached through [`Connection`];
 /// the channel underneath is any [`Channel`].
 struct SessionState {
@@ -939,7 +991,23 @@ impl Drop for SessionState {
 
 #[derive(Clone)]
 pub struct Connection(Arc<SessionState>);
+
+/// A [`Connection`] that does not keep its session alive: for what the
+/// session's own dispatch holds (a cycle otherwise).
+#[derive(Clone)]
+pub struct WeakConnection(Weak<SessionState>);
+impl WeakConnection {
+    /// The session, while something else keeps it.
+    pub fn upgrade(&self) -> Option<Connection> {
+        self.0.upgrade().map(Connection)
+    }
+}
+
 impl Connection {
+    /// This session, held weakly.
+    pub fn downgrade(&self) -> WeakConnection {
+        WeakConnection(Arc::downgrade(&self.0))
+    }
     /// Start a session on `channel`: sends `hello` and reads frames on a
     /// thread of its own. When the channel ends, the session closes with
     /// `peer disconnected` (a normal end) or the channel's reason.
@@ -1210,6 +1278,33 @@ impl Connection {
     pub async fn invoke_async(&self, target: &str, method: &str, args: Value) -> Reply {
         self.request_async(Operation::Invoke(target.into(), method.into(), args))
             .await
+    }
+    /// [`Connection::invoke_async`], its frame written before this returns:
+    /// calls started one after another reach the far end in that order,
+    /// whenever their replies are awaited. Dropping the returned future
+    /// cancels the call (`cancel`), as dropping `invoke_async`'s does.
+    pub fn invoke_started(
+        &self,
+        target: &str,
+        method: &str,
+        args: Value,
+    ) -> Result<impl Future<Output = Reply> + Send + 'static, Error> {
+        let (sender, receiver) = oneshot::channel();
+        let id = self.send(
+            Operation::Invoke(target.into(), method.into(), args),
+            Waiting::Async(sender),
+        )?;
+        let guard = CancelOnDrop {
+            peer: Arc::downgrade(&self.0),
+            id,
+            done: false,
+        };
+        Ok(async move {
+            let mut guard = guard;
+            let result = receiver.await.map_err(transport);
+            guard.done = true;
+            result?
+        })
     }
     pub async fn drain(&self) {
         loop {
@@ -1761,14 +1856,17 @@ impl Connection {
                     implementation.as_ref(),
                 )));
             }
-            if let Some(capabilities) = capabilities {
-                let _ = self.0.compat_capabilities.set(
-                    capabilities
-                        .into_iter()
-                        .filter(|c| COMPAT_DECLARED.contains(&c.as_str()))
-                        .collect(),
-                );
+            let capabilities: Vec<String> = capabilities
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|c| COMPAT_DECLARED.contains(&c.as_str()))
+                .collect();
+            if !capabilities.iter().any(|c| c == EVENTS_CAPABILITY) {
+                return Err(incompatible(without_events(
+                    "a runtime older than rutis 0.13",
+                )));
             }
+            let _ = self.0.compat_capabilities.set(capabilities);
             self.record_profile();
             return Ok(());
         };
@@ -1801,11 +1899,19 @@ impl Connection {
                 "the far end greeted as this endpoint ({endpoint})"
             ))));
         }
+        let capabilities = capabilities.unwrap_or_default();
+        if !capabilities.iter().any(|c| c == EVENTS_CAPABILITY) {
+            let named = match &implementation {
+                Some(Implementation { name, version }) => format!("{name} {version}"),
+                None => endpoint.to_string(),
+            };
+            return Err(incompatible(without_events(&named)));
+        }
         let _ = self.0.remote_prefix.set(format!("{endpoint}:"));
         let _ = self.0.greeting.set(Greeting {
             endpoint,
             implementation,
-            capabilities: capabilities.unwrap_or_default(),
+            capabilities,
         });
         self.record_profile();
         Ok(())
@@ -2071,6 +2177,12 @@ impl Connection {
             | Accepted::Get(object, _) => object.executor.handle.clone(),
             Accepted::Invoke(..) => self.0.executor.clone(),
         };
+        // Event table changes, and emits, are handled here, in frame order,
+        // before the next frame is read (events protocol §4.1, §5.5).
+        let inline = matches!(
+            &incoming.call,
+            Accepted::Invoke(target, method, args) if target.is_empty() && inline_event_op(method, args)
+        );
         // Its caller waits for it synchronously: what it forwards to another
         // session is checked for wait cycles. Marked before anything can run
         // or answer it, and outside this session's locks (the table is the
@@ -2111,7 +2223,13 @@ impl Connection {
                 Err(id)
             }
         };
-        if let Err(id) = delivery {
+        if let (Err(id), true) = (&delivery, inline) {
+            let incoming = self.0.calls.lock().unwrap().incoming.remove(id);
+            if let Some(incoming) = incoming {
+                let _entered = handle.enter();
+                self.execute(incoming, false);
+            }
+        } else if let Err(id) = delivery {
             let peer = self.clone();
             handle.spawn(async move {
                 let incoming = peer.0.calls.lock().unwrap().incoming.remove(&id);
