@@ -334,6 +334,7 @@ impl Listener<ServiceChanged> for Published {
         &'a self,
         _ctx: &'a Ctx,
         changed: &'a ServiceChanged,
+        _: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         if changed.change == ServiceChange::Provided {
             self.0.fetch_add(1, Ordering::SeqCst);

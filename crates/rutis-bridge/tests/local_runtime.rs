@@ -47,7 +47,7 @@ async fn a_runtime_that_cannot_start_says_why() {
     );
 }
 
-// guarantee: sdk/leaf-events (declared events survive restart)
+// guarantee: sdk/leaf-events (a leaf listener is on the host's bus, across restarts)
 #[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
 async fn local_runtime_events_follow_leaf_lifecycle() {
@@ -59,8 +59,11 @@ async fn local_runtime_events_follow_leaf_lifecycle() {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let package = repo.join("node/rutis-runtime");
         let entry = repo.join("crates/rutis-bridge/tests/fixtures/leaf-events.mjs");
-        let runtime =
-            LocalRuntime::node(&package, package.join("package.json")).emits(["leaf/changed"]);
+        let runtime = LocalRuntime::node(&package, package.join("package.json"));
+        let changed = rutis::EventKey::<rutis_bridge::events::Args>::dynamic("leaf/changed");
+        let emit = |args: Vec<rutis_bridge::session::Value>| {
+            std::sync::Arc::new(rutis_bridge::events::Args(args))
+        };
         let handle = runtime.handle();
         let root = Ctx::root().unwrap();
         let view = root.plugin(runtime);
@@ -86,8 +89,8 @@ async fn local_runtime_events_follow_leaf_lifecycle() {
                 .load_row("listener", &entry, json!({}), &[], &[], &[])
                 .await
                 .unwrap();
-            process
-                .emit("leaf/changed", vec![json!(generation).into()])
+            root.events()
+                .parallel(&root, &changed, emit(vec![json!(generation).into()]))
                 .await
                 .unwrap();
             let expected = json!([generation]);
@@ -96,7 +99,10 @@ async fn local_runtime_events_follow_leaf_lifecycle() {
                 expected
             );
             process.unload_row("listener").await.unwrap();
-            process.emit("leaf/changed", vec![]).await.unwrap();
+            root.events()
+                .parallel(&root, &changed, emit(vec![]))
+                .await
+                .unwrap();
             assert_eq!(
                 process.call_async(&probe, "seen", json!([])).await.unwrap(),
                 expected
@@ -111,23 +117,30 @@ async fn local_runtime_events_follow_leaf_lifecycle() {
     .await;
 }
 
-// guarantee: sdk/leaf-events (a runtime without `events` fails at mount)
+// guarantee: events/framework (rutis/runtime)
 #[tokio::test(flavor = "multi_thread")]
-async fn a_runtime_without_events_refuses_emits_before_rows_load() {
-    use std::sync::Arc;
+async fn a_runtime_announces_running_and_down() {
+    use std::sync::{Arc, Mutex};
 
+    use rutis::{BoxFuture, Call, CordisError, EventKey, Listener};
     use rutis_bridge::channel::PeerId;
+    use rutis_bridge::events::{RuntimeEvent, RuntimeEventState};
     use rutis_bridge::runtime::{runtime_session_key, RuntimePlugin, RuntimeSession};
     use rutis_bridge::session::{Connection, Dispatch, Endpoint, Error, Format, Reply, Value};
-    use rutis_test_support::within;
+    use rutis_test_support::{eventually, within};
     use serde_json::json;
 
-    // This old runtime has the row contract but not the event capability.
-    struct OldRuntime;
-    impl Dispatch for OldRuntime {
+    /// Mounts, and takes what the host says of elsewhere.
+    struct Fake;
+    impl Dispatch for Fake {
         fn invoke(&self, _: &Connection, target: &str, method: &str, _: Value) -> Reply {
-            assert_eq!((target, method), ("", "mount"));
-            Ok(json!({ "services": {}, "features": ["rows.v2", "hosts"] }).into())
+            match (target, method) {
+                ("", "mount") => {
+                    Ok(json!({ "services": {}, "features": ["rows.v2", "hosts"] }).into())
+                }
+                ("", "events.elsewhere") => Ok(Value::Undefined),
+                _ => Err(Error::Value(format!("no {method}"))),
+            }
         }
     }
     struct Session(Connection);
@@ -139,33 +152,54 @@ async fn a_runtime_without_events_refuses_emits_before_rows_load() {
             &self,
             _: Arc<dyn Dispatch>,
         ) -> Result<Box<dyn std::any::Any + Send + Sync>, Error> {
-            // No rows load, so this runtime makes no calls back to its host.
             Ok(Box::new(()))
         }
     }
-    within("the old runtime refusing declared events", async {
+    struct Heard(Arc<Mutex<Vec<RuntimeEvent>>>);
+    impl Listener<RuntimeEvent> for Heard {
+        fn call<'a>(
+            &'a self,
+            _: &'a Ctx,
+            event: &'a RuntimeEvent,
+            _: Call<'a, ()>,
+        ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
+            self.0.lock().unwrap().push(event.clone());
+            Box::pin(async { Ok(None) })
+        }
+    }
+    within("rutis/runtime", async {
         let (a, b) = rutis_bridge::transport::memory::pair();
         let endpoint = |name| Format::Endpoint(Endpoint::rust(PeerId::new(name).unwrap()));
-        let old = Connection::open_with(b, Arc::new(OldRuntime), endpoint("old")).unwrap();
-        let session = Connection::open_with(a, Arc::new(OldRuntime), endpoint("main")).unwrap();
+        let far = Connection::open_with(b, Arc::new(Fake), endpoint("fake")).unwrap();
+        let session = Connection::open_with(a, Arc::new(Fake), endpoint("main")).unwrap();
         session.ready().await.unwrap();
         let root = Ctx::root().unwrap();
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        root.events()
+            .on(&root, &EventKey::<RuntimeEvent>::of(), Heard(heard.clone()))
+            .unwrap();
         root.provide_as::<dyn RuntimeSession>(
-            runtime_session_key("old"),
+            runtime_session_key("fake"),
             Arc::new(Session(session.clone())),
         )
         .unwrap();
-        let runtime = RuntimePlugin::remote("old").emits(["leaf/changed"]);
-        let handle = runtime.handle();
-        let view = root.plugin(runtime);
-        assert!((&view).await.is_err());
-        let RuntimeState::Down(message) = handle.state() else {
-            panic!("the runtime should refuse declared events before rows load")
-        };
-        assert!(message.contains("lacks events"), "{message}");
+        let view = root.plugin(RuntimePlugin::remote("fake"));
+        (&view).await.unwrap();
+        eventually(|| (!heard.lock().unwrap().is_empty()).then_some(()), "running").await;
+        assert_eq!(
+            heard.lock().unwrap()[0],
+            RuntimeEvent {
+                runtime: "fake".into(),
+                state: RuntimeEventState::Running,
+                reason: None,
+            }
+        );
+        far.close(Error::Transport("the runtime went".into()));
+        eventually(|| (heard.lock().unwrap().len() == 2).then_some(()), "down").await;
+        let down = heard.lock().unwrap()[1].clone();
+        assert_eq!(down.state, RuntimeEventState::Down);
+        assert!(down.reason.is_some());
         root.shutdown().await.unwrap();
-        session.close(Error::Transport("test finished".into()));
-        old.closed().await;
     })
     .await;
 }
