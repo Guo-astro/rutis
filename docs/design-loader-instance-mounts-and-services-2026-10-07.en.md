@@ -153,15 +153,15 @@ A change to a configuration row acts on all of that row's copies:
 - `LoaderChanged` gains `InstanceCreated { group, plugin }`, `InstanceRemoved { group, plugin }`, and `Stopped { id, instance, plugin }`.
 - A plugin inside an instance calling `dispose_self` stops only that copy: its status is `EntryStatus::Stopped`, `EntryInfo.plugin` keeps its last fiber, and no configuration is written; `restart_instance(plugin)`, a change to that row, or a rebuild of the instance starts it again. `dispose_self` on rows outside instances is unchanged.
 
-## 7. Example: dim-agent
+## 7. Example: an application organized by session and branch
 
-| dim-agent today | With the loader |
+| The application today | With the loader |
 | --- | --- |
-| `SessionScopePlugin` provides Session services with its own `ctx.instance()` | The `session-scope` row in the `session` group; provides with `build.instance("session")` |
-| `session_plugin(\|scope: &SessionScope\| P)`, installed after SessionScope is Active | Rows in the `session` group; factories use `build.instance("session")`; `injects` waits for `session-scope` |
-| `timeline_plugin(\|scope: &BranchScope\| P)` | Rows in the `branch` group; factories use `build.instance("session")` and `build.instance("branch")` |
-| `ctx.plugin(SessionScopePlugin(assembly))` then `wait_active` | `create_instance(&ctx, "session").with(assembly)`, judge by `report`, then `validate` as before |
-| `TimelineFactory::build` creates BranchScope and calls `wait_active` | `create_instance(ctx, "branch").with(branch_assembly)` |
+| A scope plugin provides session services with its own `ctx.instance()` | The `session-scope` row in the `session` group; provides with `build.instance("session")` |
+| Session plugins installed by a factory once the scope is Active | Rows in the `session` group; factories use `build.instance("session")`; `injects` waits for `session-scope` |
+| Branch plugins created by a factory per branch scope | Rows in the `branch` group; factories use `build.instance("session")` and `build.instance("branch")` |
+| `ctx.plugin(ScopePlugin(assembly))` then `wait_active` | `create_instance(&ctx, "session").with(assembly)`, judge by `report`, then `validate` as before |
+| A factory creates the branch scope and calls `wait_active` | `create_instance(ctx, "branch").with(branch_assembly)` |
 | Closing: `FiberView::shutdown()` | Unchanged |
 | Capability set fixed before publication | The application decides whether to change configuration at runtime |
 

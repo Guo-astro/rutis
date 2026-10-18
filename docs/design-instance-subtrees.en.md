@@ -2,7 +2,7 @@
 
 Status: in progress; associated GitHub issues [#22](https://github.com/arcships/rutis/issues/22), [#23](https://github.com/arcships/rutis/issues/23), and [#24](https://github.com/arcships/rutis/issues/24).
 
-Comparison baseline: upstream `a6ce10300f3cd75caa7732e7d4e9e18877a073a0` and the rutis vendor snapshot pinned by dim-agent. This document describes proposed contracts; it does not claim current code already satisfies them.
+Comparison baseline: upstream `a6ce10300f3cd75caa7732e7d4e9e18877a073a0` and the rutis vendor snapshot pinned by a downstream application. This document describes proposed contracts; it does not claim current code already satisfies them.
 
 ## 1. Scope and baseline
 
@@ -228,4 +228,4 @@ cargo +1.98.1 clippy --offline -p rutis --all-targets -- -D warnings
 cargo +1.98.1 fmt --all -- --check
 ```
 
-dim-agent's migration task owns real Session performance thresholds, runtime migration, and the vendor source commit update.
+The downstream application's migration task owns real Session performance thresholds, runtime migration, and the vendor source commit update.
