@@ -55,8 +55,8 @@
 | `mount` 参数 `events`、`emits`；`mount` 特性 `events`；运行时 → 宿主的 `event`；宿主 → 运行时的 `emit` | 协议 | —（到不了：§2.1 先拒绝了对端） |
 | 节点的 `events.forward`、`NodeEvent`、`EventsPlugin` | rutis-bridge | —（从 API 删除） |
 | `RuntimePlugin::emits`、`LocalRuntime::emits`、`Mount.emits`、`Mount.events`、`Process::emit`、`runtime::events::{Events, EmitToCordis}` | Rust API | 删除；编译错误 |
-| Cordis 挂载 / 生成器配置的 `events`、`emits` | `rutis-bridge` 生成器配置 | `the config field <events\|emits> was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)` |
-| 节点连接配置 `events: { out, in }` | `rutis-bridge/peer` 行的配置 | `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (docs/migration-0.13.md)` |
+| Cordis 挂载 / 生成器配置的 `events`、`emits` | `rutis-bridge` 生成器配置 | `the config field <events\|emits> was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)` |
+| 节点连接配置 `events: { out, in }` | `rutis-bridge/peer` 行的配置 | `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)` |
 | `on_waterfall*`、`on_waterfall_sync*`、`*_instance`、`*_keyed`、`EventKey::instance`、`SyncEvent` | rutis 内核 | 删除；编译错误（替代写法见 §12.1） |
 
 ## 三、作用域
@@ -248,7 +248,7 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 | 名字 | 参数 | 何时发出 | 发出方作用域 |
 | --- | --- | --- | --- |
 | `rutis/service` | `{ "name": <服务名>, "scope": <链>, "available": <bool>, "row": <提供它的行或 null> }` | 一个服务名在一个作用域里有了提供方（`available: true`）；提供方被替换（再次 `true`，新的 `row`）；被撤下且不再有提供方（`false`，`row` 为最后的提供方） | 服务的作用域 |
-| `rutis/row` | `{ "row": <键>, "plugin": <名字>, "scope": <链>, "state": "pending" \| "running" \| "failed" \| "stopped", "error": <信息或 null> }` | 配置的行（任何语言，包括 Rust 行）每次状态变化；`failed` 时带 `error` | 行的作用域 |
+| `rutis/row` | `{ "row": <行的 id>, "plugin": <名字>, "scope": <链>, "state": "pending" \| "running" \| "failed" \| "stopped", "error": <信息或 null> }` | 配置的行（任何语言，包括 Rust 行）每次状态变化；`failed` 时带 `error`。`row` 是配置给这一行的 id（加载器的行 id，同描述的 `row`，§4.2），不是会话里的行键 | 行的作用域 |
 | `rutis/runtime` | `{ "runtime": <名字>, "state": "running" \| "down", "reason": <文字或 null> }` | 运行时挂载成功时（每次重连之后也是）`running`；会话结束或挂载失败时 `down`，`reason` 说明原因（退出状态、传输错误、拒绝信息） | 根 |
 
 `internal/*` 留在每个运行时内部，从不向宿主登记或发给宿主。
@@ -888,7 +888,7 @@ impl EventBus {
 
 28. **`mount` 写明运行时的名字**（`runtime`），快速路径上的描述与宿主的相同。
 29. **宿主按顺序处理一个会话的 `emit` 分发，而不阻塞它的读线程**：能马上开始的 `emit`（没有待回的过滤选择器）在读下一帧之前就答 `undefined`；不能马上开始的（它的选择器调用要从同一个会话回来），连同这个会话之后的每个 `emit`，进入队列，各自在调用都开始后作答（这时答的是一个运行时去等待的 future）。两种情况下 §5.5 的保证都成立。
-30. **宿主在会话读线程上按帧序处理 `events.on`、`events.off`、`events.elsewhere`，以及 `emit` 方式的 `events.dispatch` / `events.call`**（会话层内联执行这些控制操作）；其余事件操作与任何调用一样作为任务执行。
+30. **宿主按帧序处理一个会话的事件操作，但不在它的读线程上**：会话层把收到的 `events.*` 依次交给这个会话的一个有序任务；`events.on`、`events.off`、`events.elsewhere` 以及 `emit` 方式的 `events.dispatch` / `events.call` 在轮到时就地执行，其余事件操作在轮到时作为各自的任务开始。读线程从不执行插件代码（监听器、分发观察者）：它们可能同步调用同一个会话，而回复只有这个读线程能读到。
 31. **节点按自己的条目每匹配一个 `import` 项就宣告一次**（按 §9 收窄），每次宣告有自己的 id；对端宣告的条目同样按每匹配一个 `export` 项接受一次。宣告在对端提供 `events` 这一族时开始，对端每次重新提供时从头再来。
 32. **线上的 `AggregateError`** 在错误图里带着子错误（§11），各语言都按登记顺序还原子错误。
 33. **`rutis/row`**：加载器生成该行时发 `pending`，之后按加载器看到的 fiber 状态的每次变化发（`loading` 算作 `pending`；`unloading` 与销毁算作 `stopped`）；组行也是行（`plugin` 为 `group`）。**`rutis/service`** 针对运行时行提供给 rutis 的服务（宿主投影它们时）发出，位于该行的作用域，带该行的 id。

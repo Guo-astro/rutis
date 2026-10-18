@@ -162,7 +162,7 @@ events = ["credentials/record-updated"]   # 删除
 emits = ["file-changed"]                  # 删除
 ```
 
-还写着时构建失败：`mount credentials: the config field events was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)`。`rutis_bridge::cordis::build` 的 `.event(name)`、`.emit(name)` 同样删除。
+还写着时构建失败：`mount credentials: the config field events was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`。`rutis_bridge::cordis::build` 的 `.event(name)`、`.emit(name)` 同样删除。
 
 Rust 一侧自己定义事件类型（名字就是 Cordis 的事件名），或用 `Args` 按名字收：
 
@@ -194,7 +194,7 @@ ctx.plugin(Events, { peer: 'main', out: ['tock'], in: ['tick'] })
 ctx.plugin(Events, { peer: 'main', export: ['tock'], import: ['tick'] })
 ```
 
-还写着 `out` / `in` 时报 `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (docs/migration-0.13.md)`。
+还写着 `out` / `in` 时报 `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`。
 
 ## 节点连接
 
@@ -212,7 +212,7 @@ ctx.plugin(Events, { peer: 'main', export: ['tock'], import: ['tick'] })
 { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["clock", "tick"], "import": ["tock"] } }
 ```
 
-还写着时报 `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (docs/migration-0.13.md)`。
+还写着时报 `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`。
 
 - 一项是名字，或以 `*` 结尾的前缀（`session/*`；单独的 `*` 是所有名字）；前缀只用于事件。`export` 里的名字既导出这个服务，也让本节点发出的这个事件到达对端，所以一个名字同时是服务和事件时两者一起共享。
 - 节点之间的事件现在是对端监听器在本节点总线上的条目：五种方式、作用域、过滤、所有值类型都与本机相同（以前一律当作 `parallel`、只能 JSON、断线时静默丢弃）。连接断开时它们离开总线，进行中的调用失败一次。事件只走一跳：引进来的不再往外共享。

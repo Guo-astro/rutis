@@ -33,6 +33,7 @@ pub use patch::{apply_patches, Composed, ComposedRow, Layer, Owner, Patch, Patch
 #[cfg(feature = "peer")]
 pub use peer::{
     node_schema, register_peer_node, LoaderCatalog, PeerResolver, PeerRows, PeerRowsPlugin,
+    REMOVED_EVENTS,
 };
 pub use persist::{NoPersist, Persist, Version};
 pub use resolver::{
