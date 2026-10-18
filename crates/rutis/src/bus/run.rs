@@ -59,14 +59,18 @@ impl OwnedInv {
 // ── filters ───────────────────────────────────────────────────────
 
 pub(crate) enum FilterSpec {
-    /// A predicate in this process, called once per non-global candidate.
-    Each(Arc<dyn Fn(&ListenerInfo) -> bool + Send + Sync>),
+    /// A predicate in this process, called once per non-global candidate;
+    /// its error is the dispatch's.
+    Each(Arc<Keep>),
     Batch(crate::events::BatchFilter),
 }
 
+/// A filter predicate of this process.
+pub(crate) type Keep = dyn Fn(&ListenerInfo) -> Result<bool, CordisError> + Send + Sync;
+
 pub(crate) fn filter_each(
     entries: Vec<Arc<Entry>>,
-    keep: &(dyn Fn(&ListenerInfo) -> bool + Send + Sync),
+    keep: &Keep,
 ) -> Result<Vec<Arc<Entry>>, CordisError> {
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -75,8 +79,9 @@ pub(crate) fn filter_each(
             continue;
         }
         match catch_unwind(AssertUnwindSafe(|| keep(&entry.info))) {
-            Ok(true) => out.push(entry),
-            Ok(false) => {}
+            Ok(Ok(true)) => out.push(entry),
+            Ok(Ok(false)) => {}
+            Ok(Err(error)) => return Err(error),
             Err(panic) => return Err(panic_error(panic)),
         }
     }

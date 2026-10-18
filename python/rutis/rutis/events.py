@@ -169,13 +169,14 @@ class Entry:
         self.global_ = global_
         self.alive = True
 
-    def descriptor(self, runtime: str | None) -> dict:
-        """What a filter sees of it (§4.2)."""
+    def descriptor(self, runtime: str | None, row: str | None = None) -> dict:
+        """What a filter sees of it (§4.2); `row` is its row's id (its key
+        when not given)."""
         return {
             "name": self.name,
             "prefix": False,
             "plugin": self.plugin,
-            "row": self.row,
+            "row": self.row if row is None else row,
             "runtime": runtime,
             "node": None,
             "scope": [dict(item) for item in self.scope],
@@ -193,9 +194,25 @@ class Bus:
         self.entries: list[Entry] = []
         self.by_id: dict[str, Entry] = {}
         self.running: dict[str, set] = {}
-        self.report = report
+        # Invocations still in their eager start, by row: each a future set
+        # once the start returned. A listener can be inside its first step
+        # when its row unloads (a synchronous call there lets this process
+        # run the unload), so the unload waits for it to come out.
+        self.starting: dict[str, set] = {}
+        self._report = report
         self.runtime = runtime
         self._ids = 0
+        # The id each row's configuration gives it, by row key (`rows.load`'s
+        # `id`): descriptors and reported lines call the row so (§4.2).
+        self.row_ids: dict[str, str] = {}
+
+    def row_id(self, row: str | None) -> str | None:
+        """What descriptors and lines call row `row` (a key): its id, or the
+        key when it was not named."""
+        return None if row is None else self.row_ids.get(row, row)
+
+    def report(self, kind: str, name: str, row: str | None, error: BaseException) -> None:
+        self._report(kind, name, self.row_id(row), error)
 
     # ── The table ────────────────────────────────────────────────
 
@@ -238,7 +255,11 @@ class Bus:
         in order, before any of them runs; its error is the dispatch's."""
         if keep is None:
             return entries
-        return [entry for entry in entries if entry.global_ or bool(keep(entry.descriptor(self.runtime)))]
+        return [
+            entry
+            for entry in entries
+            if entry.global_ or bool(keep(entry.descriptor(self.runtime, self.row_id(entry.row))))
+        ]
 
     # ── Invocations ──────────────────────────────────────────────
 
@@ -262,22 +283,37 @@ class Bus:
         value = entry.listener(*args)
         if not inspect.isawaitable(value):
             return None, value
-        task = start(value)
-        self.track(entry.row, task)
+        started = asyncio.get_running_loop().create_future()
+        starting = self.starting.setdefault(entry.row, set())
+        starting.add(started)
+        try:
+            task = start(value)
+            self.track(entry.row, task)
+        finally:
+            starting.discard(started)
+            if not starting and self.starting.get(entry.row) is starting:
+                del self.starting[entry.row]
+            started.set_result(None)
         return task, None
 
     async def stop(self, row: str, seconds: float, say=None) -> None:
         """Cancel the row's running invocations and wait for them, at most
         `seconds`; then say so and go on (§7.1 step 4)."""
+        deadline = asyncio.get_running_loop().time() + seconds
+        starts = set(self.starting.get(row, ()))
+        if starts:
+            # Out of their first step, they are tracked: cancelled below.
+            await asyncio.wait(starts, timeout=seconds)
         current = asyncio.current_task()
         tasks = {task for task in self.running.get(row, ()) if task is not current}
         if not tasks:
             return
         for task in tasks:
             task.cancel()
-        _done, pending = await asyncio.wait(tasks, timeout=seconds)
+        remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+        _done, pending = await asyncio.wait(tasks, timeout=remaining)
         if pending:
-            line = f"rutis: listeners of row {row} still running after {seconds:g}s; unloading anyway"
+            line = f"rutis: listeners of row {self.row_id(row)} still running after {seconds:g}s; unloading anyway"
             (say or _say)(line)
 
     # ── The five modes, here ─────────────────────────────────────
@@ -371,7 +407,7 @@ class Bus:
             if not entry.alive:
                 continue
             refused = AsyncListener(
-                f"listener of {name} in row {entry.row} is asynchronous and cannot run in a synchronous bail"
+                f"listener of {name} in row {self.row_id(entry.row)} is asynchronous and cannot run in a synchronous bail"
             )
             if entry.kind == "async":
                 raise refused

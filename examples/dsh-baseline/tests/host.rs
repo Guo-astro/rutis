@@ -83,8 +83,8 @@ async fn persona_uses_the_system_prompt_the_rutis_host_provides() {
     ctx.events()
         .parallel(
             &ctx,
-            &rutis::EventKey::<persona::SystemPromptChange>::of(),
-            std::sync::Arc::new(persona::SystemPromptChange {}),
+            &rutis::EventKey::<dsh_baseline::events::SystemPromptChange>::of(),
+            std::sync::Arc::new(dsh_baseline::events::SystemPromptChange),
         )
         .await
         .unwrap();

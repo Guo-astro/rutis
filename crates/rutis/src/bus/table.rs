@@ -56,6 +56,8 @@ impl Entry {
             origin: self.origin,
             kind: self.kind(),
             info: self.info.clone(),
+            prepend: self.prepend,
+            position: self.position,
         }
     }
 

@@ -248,8 +248,10 @@ export class Runtime {
 
   // ── Rows ──────────────────────────────────────────────────────
 
-  async load(key: string, entry: string, config: unknown, isolate: Array<[string, string]> | null, exports: Row['exports'] | null, scope?: unknown) {
+  async load(key: string, entry: string, config: unknown, isolate: Array<[string, string]> | null, exports: Row['exports'] | null, scope?: unknown, id?: unknown) {
     if (this.#rows.has(key)) throw new Error(`row ${key} is already loaded`)
+    // Descriptors and reported lines call the row by its id (protocol §4.2).
+    this.#bus.nameRow(key, id)
     const row: Row = { key, entry, config, exports: exports ?? {}, isolate: new Map(), cleanups: [], chain: chainOf(scope), abort: new AbortController(), provided: [], announced: [], pending: [] }
     for (const [name, label] of isolate ?? []) { scopedId(name, label); row.isolate.set(name, label) }
     for (const name of Object.keys(row.exports)) {
@@ -328,6 +330,7 @@ export class Runtime {
     // shutdown deadline; then its cleanups run.
     row.abort.abort(new DOMException('the row is unloading', 'AbortError'))
     await this.#bus.settle(key, this.#deadline)
+    this.#bus.forgetRow(key)
     const errors: unknown[] = []
     for (const cleanup of row.cleanups.splice(0).reverse()) {
       try { await cleanup() } catch (error) { errors.push(error) }
@@ -340,8 +343,9 @@ export class Runtime {
   async update(key: string, config: unknown) {
     const row = this.#rows.get(key)
     if (!row) throw new Error(`row ${key} is not loaded`)
+    const id = this.#bus.rowId(key)
     await this.unload(key)
-    return this.load(key, row.entry, config, [...row.isolate], row.exports, row.chain)
+    return this.load(key, row.entry, config, [...row.isolate], row.exports, row.chain, id)
   }
 
   async #plugin(entry: string) {
@@ -399,7 +403,7 @@ export class Runtime {
       case 'events.call': return this.#bus.call(args[0] ?? {})
       case 'rows.load': {
         const [key, entry, config, isolate, _inject, exports, place] = args
-        return this.load(key, String(entry), config, isolate, exports, place?.scope)
+        return this.load(key, String(entry), config, isolate, exports, place?.scope, place?.id)
       }
       case 'rows.update': return this.update(args[0], args[1])
       case 'rows.unload': return this.unload(args[0])

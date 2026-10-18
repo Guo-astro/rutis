@@ -4,9 +4,11 @@
 
 use std::sync::Arc;
 
-use rutis::events::Scope;
-use rutis::{Ctx, Event, EventKey};
+use rutis::events::{Dispatch, Mode, Payload, Scope};
+use rutis::{BoxFuture, Call, CordisError, Ctx, Event, EventKey, ServiceChange, ServiceChanged};
 use serde::{Deserialize, Serialize};
+
+use crate::session::host_key;
 
 /// `rutis/service`: a service name got a provider in a scope
 /// (`available`), its provider was replaced (`available` again, the new
@@ -52,19 +54,52 @@ fn report(ctx: &Ctx, error: rutis::CordisError) {
     (ctx.error_sink())(Arc::new(error));
 }
 
-/// Emit `rutis/service` from `ctx` (the providing row's context).
-pub(crate) fn service(ctx: &Ctx, name: &str, available: bool) {
-    let event = ServiceEvent {
-        name: name.to_owned(),
-        scope: ctx.scope(),
-        available,
-        row: ctx.row(),
+/// The name of the host service `key` is ([`host_key`], in an instance or
+/// not; an isolated one without its label), if it is one.
+fn service_name(key: &rutis::TypeKey) -> Option<&str> {
+    let name = key.name()?;
+    let plain = match key.instance_id() {
+        Some(instance) => host_key(name).with_instance(instance),
+        None => host_key(name),
     };
-    if let Err(error) =
-        ctx.events()
-            .emit_framework(ctx, &EventKey::<ServiceEvent>::of(), Arc::new(event))
-    {
-        report(ctx, error);
+    (&plain == key).then(|| name.split('\0').next().unwrap_or(name))
+}
+
+/// Turns the kernel's [`ServiceChanged`] of every host service, whoever
+/// provides it (a Rust plugin, a runtime's row, a node), into
+/// `rutis/service` at the provider's scope (events protocol §8). Listens
+/// at the root, which hears every scope.
+pub(crate) struct ServiceEvents;
+
+impl rutis::Listener<ServiceChanged> for ServiceEvents {
+    fn call<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+        changed: &'a ServiceChanged,
+        _: Call<'a, ()>,
+    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
+        let Some(name) = service_name(&changed.key) else {
+            return Box::pin(std::future::ready(Ok(None)));
+        };
+        let event = ServiceEvent {
+            name: name.to_owned(),
+            scope: changed.chain.clone(),
+            available: changed.change == ServiceChange::Provided,
+            row: changed.row.clone(),
+        };
+        let mut dispatch = Dispatch::new(
+            ServiceEvent::NAME,
+            Mode::Emit,
+            Payload::new(Arc::new(event)),
+        );
+        dispatch.scope = Some(changed.chain.clone());
+        dispatch.framework = true;
+        Box::pin(async move {
+            if let Err(error) = ctx.events().dispatch(ctx, dispatch).await {
+                report(ctx, error);
+            }
+            Ok(None)
+        })
     }
 }
 

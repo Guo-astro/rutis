@@ -439,6 +439,16 @@ impl FiberInner {
         self.transition.lock().unwrap().state
     }
 
+    pub(crate) fn sequenced_snapshot(&self) -> (u64, Snapshot) {
+        let tr = self.transition.lock().unwrap();
+        let snapshot = Snapshot {
+            generation: tr.generation,
+            state: tr.state,
+            error: tr.error.clone(),
+        };
+        (tr.seq, snapshot)
+    }
+
     pub(crate) fn state_snapshot(&self) -> Snapshot {
         let tr = self.transition.lock().unwrap();
         Snapshot {
@@ -1241,6 +1251,12 @@ impl FiberView {
     /// 当前快照。
     pub fn state(&self) -> Snapshot {
         self.inner.state_snapshot()
+    }
+
+    /// 当前快照,及造成它的 `FiberStatusChanged` 的 `seq`(尚无变化时为 0):
+    /// 与事件对照,可知哪些事件早于这份快照。
+    pub fn sequenced_state(&self) -> (u64, Snapshot) {
+        self.inner.sequenced_snapshot()
     }
 
     /// Current cleanup ownership tree for this fiber. Records being drained

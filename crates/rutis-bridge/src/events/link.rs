@@ -25,6 +25,7 @@ use super::args::{from_wire, result_from_wire, result_to_wire, SessionTranscoder
 use super::errors::{binding, to_cordis, to_session};
 use super::hub::{dispose_now, next_origin, WireEntry};
 use crate::channel::PeerId;
+use crate::session::rpc::with_caller;
 use crate::session::{settle, Connection, Error, Reference, Reply, Value, WeakConnection};
 use crate::{peer_key, Offered, Peer};
 
@@ -136,6 +137,9 @@ struct Link {
 struct LinkState {
     /// The peer took `events.on`: announcements go out as they happen.
     announcing: bool,
+    /// Announcing as entries register (not the whole table at once): a
+    /// `prepend` entry is announced as one.
+    live: bool,
     /// The table's snapshot is in `table`.
     ready: bool,
     /// Changes seen before the snapshot was in.
@@ -155,15 +159,21 @@ impl Link {
     /// Whether this node's entry goes to the peer at all: its own (not
     /// imported), at or above the link's scope.
     fn own(&self, entry: &TableEntry) -> bool {
-        !imported(entry.origin) && scope_contains(&entry.info.scope, &self.scope)
+        !imported(entry.origin)
+            && !super::hub::process_local(&entry.name)
+            && scope_contains(&entry.info.scope, &self.scope)
     }
 
     fn send(&self, method: &str, argument: Json) {
         let Some(connection) = self.connection.upgrade() else {
             return;
         };
+        // A table change of this node, whichever call made it: it carries no
+        // chain of that call.
         if let (Ok(answer), Ok(runtime)) = (
-            connection.invoke_started("", method, Value::List(vec![Value::Data(argument)])),
+            crate::session::rpc::unchained(|| {
+                connection.invoke_started("", method, Value::List(vec![Value::Data(argument)]))
+            }),
             tokio::runtime::Handle::try_current(),
         ) {
             runtime.spawn(async move {
@@ -192,7 +202,10 @@ impl Link {
                     "row": entry.info.row,
                     "runtime": entry.info.runtime,
                     "kind": entry.kind,
-                    "prepend": false,
+                    // Registered in front: it goes in front on the peer
+                    // too (when announced as it registers; the first
+                    // announcement goes in table order).
+                    "prepend": entry.prepend && state.live,
                     "global": entry.info.global,
                 }),
             );
@@ -245,11 +258,14 @@ impl Link {
         state.announced.clear();
         state.calls.clear();
         state.announcing = true;
+        // In table order, each appended there: the peer's order is this.
         let mut entries: Vec<TableEntry> = state.table.values().cloned().collect();
-        entries.sort_by_key(|entry| entry.id);
+        entries.sort_by_key(|entry| entry.position);
+        state.live = false;
         for entry in &entries {
             self.announce(&mut state, entry);
         }
+        state.live = true;
     }
 
     /// The peer announced one of its entries.
@@ -267,6 +283,8 @@ impl Link {
             #[serde(default)]
             runtime: Option<String>,
             kind: ListenerKind,
+            #[serde(default)]
+            prepend: bool,
             #[serde(default)]
             global: bool,
         }
@@ -293,7 +311,9 @@ impl Link {
                 name,
                 prefix,
                 info,
-                options: EventOptions::default().global(announced.global),
+                options: EventOptions::default()
+                    .prepend(announced.prepend)
+                    .global(announced.global),
                 origin: self.origin,
             };
             let listener = Arc::new(WireEntry {
@@ -339,7 +359,10 @@ impl Link {
     }
 
     /// The peer calls one of this node's entries it accepted.
-    fn call(&self, request: Value) -> Reply {
+    /// The peer's call of one of this bus's entries, on `source` (the
+    /// link's session): what it calls in other sessions is forwarded from
+    /// it, its chain rebased; it stops when the peer gives it up (§5.7).
+    fn call(&self, source: &Connection, request: Value) -> Reply {
         let mut fields = match request {
             Value::Record(fields) => fields,
             Value::Data(Json::Object(fields)) => fields
@@ -404,13 +427,33 @@ impl Link {
                 .map_err(mapped)?;
             return result_to_wire(result);
         }
-        Ok(Value::future(async move {
+        let run = with_caller(source.clone(), async move {
             let result = ctx
                 .events()
                 .invoke_entry(&ctx, id, call)
                 .await
                 .map_err(mapped)?;
             result_to_wire(result)
+        });
+        if mode != Mode::Emit {
+            return Ok(Value::cancellable_future(run));
+        }
+        // `emit` invocations start in arrival order (§5.5): this one starts
+        // here, as its frame is handled, before the next frame is read; the
+        // rest runs on a task.
+        let mut run: rutis::BoxFuture<'static, Reply> = Box::pin(run);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        if let std::task::Poll::Ready(reply) = run.as_mut().poll(&mut context) {
+            return reply;
+        }
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = answer.send(run.await);
+        });
+        Ok(Value::future(async move {
+            answered
+                .await
+                .unwrap_or_else(|_| Err(binding("the emit was dropped")))
         }))
     }
 }
@@ -448,7 +491,7 @@ fn next_terminal(next: Reference, mode: Mode) -> RawTerminal {
 struct Handler(Weak<Link>);
 
 impl crate::Handler for Handler {
-    fn invoke(&self, _: &Connection, _: &str, method: &str, args: Value) -> Reply {
+    fn invoke(&self, connection: &Connection, _: &str, method: &str, args: Value) -> Reply {
         let link = self
             .0
             .upgrade()
@@ -457,7 +500,7 @@ impl crate::Handler for Handler {
         match method {
             "events.on" => link.accept(first),
             "events.off" => link.forget(first),
-            "events.call" => link.call(first),
+            "events.call" => link.call(connection, first),
             _ => Err(binding(format!("{method} is not offered here"))),
         }
     }

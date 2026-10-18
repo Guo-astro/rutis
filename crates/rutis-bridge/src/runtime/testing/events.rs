@@ -945,6 +945,9 @@ pub fn aggregated(error: &Error) -> Option<Vec<(String, String)>> {
 #[derive(Default)]
 struct LogState {
     entries: Vec<String>,
+    /// Where each entry was sent from, when a session's invocation added
+    /// it: that session's tag and the invocation's sequence.
+    senders: Vec<Option<(String, u64)>>,
     /// The descriptions the filters saw, in order.
     seen: Vec<Json>,
 }
@@ -962,20 +965,41 @@ impl EventsLog {
     }
 
     pub fn add(&self, entry: impl Into<String>) {
-        self.state.lock().unwrap().entries.push(entry.into());
+        self.add_from(None, entry.into());
+    }
+
+    /// Log `entry`, sent by the invocation `sender`. The host runs one
+    /// session's invocations concurrently, so they can arrive here out of
+    /// the order the far end sent them in (a reentrant runtime runs the
+    /// next listener while one waits in `add`): an entry goes before the
+    /// entries the same session sent after it.
+    fn add_from(&self, sender: Option<(String, u64)>, entry: String) {
+        {
+            let mut state = self.state.lock().unwrap();
+            let at = sender
+                .as_ref()
+                .and_then(|(tag, sequence)| {
+                    state.senders.iter().position(|logged| {
+                        matches!(logged, Some((other, later)) if other == tag && later > sequence)
+                    })
+                })
+                .unwrap_or(state.entries.len());
+            state.entries.insert(at, entry);
+            state.senders.insert(at, sender);
+        }
         self.changed.notify_waiters();
     }
 
     /// What `events-log.filter(description)` does: log `filter:<row>` and
     /// keep the description.
     pub fn filter_description(&self, description: Json) {
+        self.filter_from(None, description);
+    }
+
+    fn filter_from(&self, sender: Option<(String, u64)>, description: Json) {
         let row = description["row"].as_str().unwrap_or("null").to_owned();
-        {
-            let mut state = self.state.lock().unwrap();
-            state.entries.push(format!("filter:{row}"));
-            state.seen.push(description);
-        }
-        self.changed.notify_waiters();
+        self.state.lock().unwrap().seen.push(description);
+        self.add_from(sender, format!("filter:{row}"));
     }
 
     pub fn entries(&self) -> Vec<String> {
@@ -1026,11 +1050,12 @@ impl HostDispatch for EventsLogService {
         match method {
             "add" => {
                 let entry: String = crate::session::decode_value(first)?;
-                self.0.add(entry);
+                self.0.add_from(crate::session::rpc::invocation(), entry);
                 Ok(Value::Undefined)
             }
             "filter" => {
-                self.0.filter_description(written(first)?);
+                self.0
+                    .filter_from(crate::session::rpc::invocation(), written(first)?);
                 Ok(Value::Undefined)
             }
             "wait" => {
@@ -1197,15 +1222,19 @@ async fn run_step(
     let settles = expect["settles"].as_bool().unwrap_or(false);
     let before = world.dispatches();
     let mut outcomes: Vec<Outcome> = Vec::new();
+    // Where the step's emitter is: the descriptions its filter sees are
+    // this process's view (an entry of another node is the link's).
+    let mut viewer = None;
     match step {
         Step::Emit {
             spec, background, ..
         } => {
+            viewer = Some(combo.at.get(&spec.row).copied().unwrap_or(spec.from));
             let emitter = emitter_for(world, combo, spec, emitters).await?;
             let call = dispatch(emitter, spec.clone(), case.clone());
             if *background {
                 *pending = Some(tokio::spawn(call));
-                return check_log(world, log, expect).await;
+                return check_log(world, log, expect, viewer).await;
             }
             outcomes.push(within(call, settles).await);
         }
@@ -1262,7 +1291,7 @@ async fn run_step(
             ));
         }
     }
-    check_log(world, log, expect).await
+    check_log(world, log, expect, viewer).await
 }
 
 /// The emitter row `spec` needs, loaded where `combo` puts it: at most one
@@ -1305,9 +1334,14 @@ async fn dispatch(emitter: Arc<dyn HostDispatch>, spec: Spec, case: Case) -> Out
             Some(methods) if methods.get("dispatchSync").is_some() => "dispatchSync",
             _ => "dispatch_sync",
         };
-        tokio::task::spawn_blocking(move || emitter.invoke(method, args))
+        let reply = tokio::task::spawn_blocking(move || emitter.invoke(method, args))
             .await
-            .map_err(|error| format!("dispatch_sync panicked: {error}"))
+            .map_err(|error| format!("dispatch_sync panicked: {error}"))?;
+        // Go's is announced, so async on the wire: its answer is a future.
+        Ok(match reply {
+            Ok(value) => settle(value).await,
+            Err(error) => Err(error),
+        })
     } else {
         Ok(match emitter.invoke("dispatch", args) {
             Ok(value) => settle(value).await,
@@ -1410,10 +1444,15 @@ fn matches_error(throws: &Json, error: &Error) -> Result<(), String> {
 }
 
 /// The log expectations, retried until they hold or [`SETTLE`] passed.
-async fn check_log(world: &dyn World, log: &EventsLog, expect: &Json) -> Result<(), String> {
+async fn check_log(
+    world: &dyn World,
+    log: &EventsLog,
+    expect: &Json,
+    viewer: Option<Location>,
+) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + SETTLE;
     loop {
-        let checked = log_holds(world, log, expect);
+        let checked = log_holds(world, log, expect, viewer);
         match checked {
             Ok(()) => return Ok(()),
             Err(_) if tokio::time::Instant::now() < deadline => {
@@ -1436,7 +1475,12 @@ fn strings(value: &Json) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn log_holds(world: &dyn World, log: &EventsLog, expect: &Json) -> Result<(), String> {
+fn log_holds(
+    world: &dyn World,
+    log: &EventsLog,
+    expect: &Json,
+    viewer: Option<Location>,
+) -> Result<(), String> {
     let entries = log.entries();
     if let Some(exact) = expect.get("log") {
         let exact = strings(exact);
@@ -1484,9 +1528,22 @@ fn log_holds(world: &dyn World, log: &EventsLog, expect: &Json) -> Result<(), St
         }
         for description in &seen {
             let row = description["row"].as_str().unwrap_or_default();
-            let Some(want) = world.description(row) else {
+            let Some(mut want) = world.description(row) else {
                 continue;
             };
+            // Seen from the other side of the node link (§9): the entry is
+            // imported, named by the peer it came from, at the link's
+            // scope (the root).
+            let on_node = want["node"] == json!("node");
+            if (viewer == Some(Location::Node)) != on_node {
+                want["node"] = match on_node {
+                    true => json!("node"),
+                    false => json!("host"),
+                };
+                want["scope"] = json!([]);
+            } else if on_node {
+                want["node"] = Json::Null;
+            }
             for (key, value) in want.as_object().into_iter().flatten() {
                 let got = if key == "scope" {
                     json!(description["scope"]

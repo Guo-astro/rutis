@@ -4,9 +4,14 @@ import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { definePlugin } from '../../rutis/src/index.mjs'
 import { oncePerName, supported, toCordis } from '../src/leaf.mjs'
+import { Bus } from '../src/events.mjs'
+import { install } from '../src/cordis-events.mjs'
 
 test('leaf events delegate to the shared Cordis bus and leave with their fiber', async () => {
+  // The runtime's logical bus on the root, as the runner installs it.
   const root = new Context()
+  const reported = []
+  install(root, Context, new Bus({ runtime: 'node', report: line => reported.push(line) }), () => ({ row: null, scope: [], signal: undefined }))
   const received = []
   const seen = []
   let leaf
@@ -28,8 +33,10 @@ test('leaf events delegate to the shared Cordis bus and leave with their fiber',
   assert.throws(() => leaf.on(null, () => {}), TypeError)
   assert.throws(() => leaf.emit(null, 'internal/service'), TypeError)
   assert.throws(() => leaf.emit({}, 'internal/service'), TypeError)
-  assert.throws(() => leaf.emit('e'), /sync failure/)
-  assert.deepEqual(seen, [1])
+  // emit never throws: every listener runs, the failure is reported (§5.6).
+  leaf.emit('e')
+  assert.deepEqual(seen, [1, 2])
+  assert.match(reported.join('\n'), /rutis: listener of e in .* failed: Error: sync failure/)
   await root.parallel('root-event', 2)
   assert.deepEqual(received, [['root', 1], ['leaf', 2]])
   await plugin.dispose()

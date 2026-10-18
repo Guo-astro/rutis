@@ -105,7 +105,7 @@ err = ctx.Parallel(callerCtx, "session/created", id)        // waits for all; *r
 value, err := ctx.Serial(callerCtx, "config/resolve", key)   // the first result
 value, err = ctx.Bail(callerCtx, "config/resolve", key)      // Serial as a synchronous call
 value, err = ctx.Waterfall(callerCtx, "chat/reply", terminal, msg) // terminal may be nil
-value, err = ctx.Filter(func(l rutis.Listener) bool { return l.Row == "chat" }).Serial(callerCtx, "config/resolve", key)
+value, err = ctx.Filter(func(l rutis.Listener) (bool, error) { return l.Row == "chat", nil }).Serial(callerCtx, "config/resolve", key)
 ```
 
 A complete example: the plugin answers `greeting/pick` and adds a link to the `greeting/format` waterfall; the service it provides takes the first result with `Serial`, lets other plugins (in any language) rewrite the greeting with `Waterfall`, and notifies with `Emit`:
@@ -172,7 +172,7 @@ Python or TypeScript plugins, or Rust code in the host, listening to the same na
 | Waterfall | The listener gets `next` (a `rutis.Next`, `func(context.Context) (any, error)`) as its last argument; calling it runs the rest of the chain, not calling it vetoes the rest; a second call fails with `WaterfallNext`. The outermost value is returned as it is |
 | Failures | A failing `Emit` listener never reaches the emitter or the other listeners: it is reported where the listener runs (`rutis: listener of <name> in row <row> failed: …` on stderr). `Parallel` runs all and returns an `*rutis.AggregateError` (even for one failure); `Serial`, `Bail` and `Waterfall` stop at the first error and return it |
 | Scope | A row hears what is emitted in its scope (`ctx.Scope()`, the loader instances around it) and in every scope inside it, never from beside or above |
-| Filter | `Filter(keep)` asks `keep` once per listener, in registration order, before any runs, with its `rutis.Listener` (`Name`, `Plugin`, `Row`, `Runtime`, `Node`, `Scope`, `Global`); listeners registered with `rutis.Global()` skip filters |
+| Filter | `Filter(keep)` asks `keep` once per listener, in registration order, before any runs, with its `rutis.Listener` (`Name`, `Plugin`, `Row`, `Runtime`, `Node`, `Scope`, `Global`); `keep` returns `(bool, error)`: an error it returns (or a panic) fails the dispatch before any listener runs, with that error; listeners registered with `rutis.Global()` skip filters |
 | Context | A listener's `ctx` is the emitter's (its call chain), cancelled when the emitter gives up or the row unloads. Unloading waits for running listeners, at most `RUTIS_SHUTDOWN_TIMEOUT` |
 | Names | `internal/*` is the runtime's own; `rutis/*` (`rutis/service`, `rutis/row`, `rutis/runtime`) can be listened to but not emitted (`ReservedEvent`) |
 
@@ -198,7 +198,7 @@ go test ./...
 
 `Provides` is optional: what `ctx.Provide` provides reaches rutis by itself, its methods the value's exported ones, all called as `async`. When present it applies (`Sync` marks synchronous methods, `Rename` renames them), and `rutis-host check` knows before running what the plugin provides.
 
-Events in tests: the test side is the host of the bus. `loaded.Emit`, `Parallel`, `Serial`, `Waterfall`, `Bail` and `Filter` emit from the row's scope; `loaded.On(name, fn)` listens as the host does (the plugin's emissions of that name then go through the test side, as they go through rutis); `loaded.Load(config, rutistest.InScope("t1/s1"))` loads another row in a scope; `loaded.Reported()` is what the runtime reported of failed `Emit` listeners. A test of the `greeter` above:
+Events in tests: the test side is the host of the bus. `loaded.Emit`, `Parallel`, `Serial`, `Waterfall`, `Bail` and `Filter` emit from the row's scope; `loaded.On(name, fn)` listens as the host does (the plugin's emissions of that name then go through the test side, as they go through rutis); `loaded.Load(config, rutistest.InScope("t1/s1"))` loads another row in a scope; `loaded.Update(config)` changes a row's config as rutis does (the row loads again, its listeners registered anew, after the others); `loaded.Reported()` is what the runtime reported of failed `Emit` listeners. A test of the `greeter` above:
 
 ```go
 func TestEvents(t *testing.T) {

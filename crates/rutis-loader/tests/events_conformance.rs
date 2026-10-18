@@ -12,14 +12,13 @@
 //! `tenant` (t1), `session` (t1/s1, inside t1) and `team` (t2).
 //!
 //! Each test prints a table of every case with its first failing placement,
-//! and fails if any case fails. `RUTIS_EVENTS_CASE=<prefix>` runs only the
+//! and fails if any case fails. `RUTIS_EVENTS_CASE=<prefix>[,<prefix>...]` runs only the
 //! cases whose id starts with it.
 //!
-//! The `host` and `node` locations, `viaHost`, `hold` and the host's own
-//! failure reports need the events-v2 Rust API (#464, events/kernel and
-//! events/host); until it lands they are built only with
-//! `RUSTFLAGS="--cfg rutis_events_v2"`, and without it the cases using them
-//! fail saying so.
+//! The `host` and `node` locations are the Rust plugin of
+//! `events_conformance/rust_participant.rs`; `viaHost`, `hold` and the
+//! host's own failure reports are the host bus's test hooks
+//! (`rutis_bridge::events::testing::Tap`).
 #![cfg(all(unix, feature = "node", feature = "python"))]
 
 mod common;
@@ -31,6 +30,7 @@ use std::time::Duration;
 
 use common::runtimes::{repo, COLD};
 use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, FiberView, Plugin, PluginFactory};
+use rutis_bridge::events::testing::Tap;
 use rutis_bridge::runtime::testing::events::{
     self, Coverage, EventsLog, EventsLogService, Location, Row, Tally, World,
 };
@@ -308,9 +308,7 @@ struct Host {
     anchors: Anchors,
     runtimes: BTreeMap<String, Runtime>,
     state: Mutex<State>,
-    #[cfg(rutis_events_v2)]
     rust: rust_participant::Hooks,
-    #[cfg(rutis_events_v2)]
     node: rust_participant::Node,
     _dir: tempfile::TempDir,
 }
@@ -327,7 +325,16 @@ impl Host {
     async fn start(x: &str, log: &Arc<EventsLog>) -> Host {
         let expected = events::expected();
         let dir = tempfile::tempdir().unwrap();
-        let root = Ctx::root().unwrap();
+        // The host prints event failures as rutis-host does; the tap
+        // records them and counts and holds the runtimes' dispatches.
+        let tap = Tap::new();
+        let print: rutis::ErrorSink =
+            Arc::new(|error| match rutis_bridge::events::report_line(&error) {
+                Some(line) => eprintln!("{line}"),
+                None => rutis::default_sink()(error),
+            });
+        let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), tap.sink(print));
+        tap.attach(&root).unwrap();
         root.provide_as::<dyn HostDispatch>(
             host_key("events-log"),
             Arc::new(EventsLogService(log.clone())),
@@ -340,8 +347,7 @@ impl Host {
         let anchors = Anchors::default();
         let mut builtins = Builtins::new();
         builtins.register::<Json, _>("scope-anchor", AnchorFactory(anchors.clone()));
-        #[cfg(rutis_events_v2)]
-        let rust = rust_participant::register(&mut builtins, log.clone());
+        let rust = rust_participant::register(&mut builtins, log.clone(), tap);
 
         let mut chain = Chain::new().with(builtins);
         let mut resolvers = Vec::new();
@@ -381,7 +387,6 @@ impl Host {
         for resolver in resolvers {
             root.plugin(RuntimeRowsPlugin::new(resolver));
         }
-        #[cfg(rutis_events_v2)]
         let node = rust_participant::Node::start(&root, log.clone()).await;
         let host = Host {
             root,
@@ -390,9 +395,7 @@ impl Host {
             anchors,
             runtimes,
             state: Mutex::default(),
-            #[cfg(rutis_events_v2)]
             rust,
-            #[cfg(rutis_events_v2)]
             node,
             _dir: dir,
         };
@@ -546,10 +549,77 @@ impl Host {
                 }
             }
             if tokio::time::Instant::now() > deadline {
-                return Err(format!("row {} did not start: {state:?}", row.label));
+                // Each runtime's state and the end of all it wrote.
+                let runtimes: Vec<String> = self
+                    .runtimes
+                    .iter()
+                    .map(|(name, runtime)| {
+                        let text = std::fs::read_to_string(&runtime.stderr).unwrap_or_default();
+                        let last: Vec<&str> = text.lines().rev().take(5).collect();
+                        format!("{name} {:?} {last:?}", runtime.view.state().state)
+                    })
+                    .collect();
+                return Err(format!(
+                    "row {} did not start: {state:?} (runtimes: {})",
+                    row.label,
+                    runtimes.join(", ")
+                ));
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    /// The listener of `row` is on the other node's bus too, when it is
+    /// shared there (a name the link shares, at the root): the link
+    /// announces it after it registered, and the case goes on once it has,
+    /// as it does once a row runs.
+    async fn announced(&self, row: &Row) -> Result<(), String> {
+        let Some(name) = row.config["name"].as_str() else {
+            return Ok(());
+        };
+        let shared = name.starts_with("t/") || name.starts_with("rutis/");
+        if !shared
+            || row.scope != "root"
+            || row.config.get("fails").is_some()
+            || row.config.get("typed").is_some()
+        {
+            return Ok(());
+        }
+        let on_node = row.at == Location::Node;
+        let Ok(node) = self.node.ctx() else {
+            return Ok(()); // killed: nothing to announce to
+        };
+        // How many remote entries of `name` the far side must have: on the
+        // host, the runtimes' and the node's; on the node, the host's own
+        // at the root (the link's scope).
+        let wanted = self
+            .state
+            .lock()
+            .unwrap()
+            .rows
+            .iter()
+            .filter(|(r, _)| {
+                r.config["name"].as_str() == Some(name)
+                    && r.config.get("fails").is_none()
+                    && match on_node {
+                        true => r.at != Location::Host,
+                        false => r.at != Location::Node && r.scope == "root",
+                    }
+            })
+            .count();
+        let far = if on_node { self.root.clone() } else { node };
+        let imported = || {
+            far.events()
+                .subscriptions()
+                .iter()
+                .filter(|entry| entry.remote && entry.name == name)
+                .count()
+        };
+        until(
+            || imported() >= wanted,
+            &format!("{name} of {} to reach the other node", row.label),
+        )
+        .await
     }
 
     /// Where every runtime's stderr is now: `reported` reads after it.
@@ -638,10 +708,9 @@ impl Host {
     async fn restart_y(&self) -> Result<(), String> {
         let name = self.y_runtime();
         let runtime = &self.runtimes[&name];
-        runtime
-            .view
-            .restart()
+        tokio::time::timeout(COLD.0, runtime.view.restart())
             .await
+            .map_err(|_| format!("restart {name}: did not finish within {:?}", COLD.0))?
             .map_err(|e| format!("restart {name}: {e}"))?;
         let rows: Vec<Row> = self
             .state
@@ -669,25 +738,17 @@ impl World for Host {
                         return Err(format!("no runtime {runtime} here"));
                     }
                 }
-                #[cfg(not(rutis_events_v2))]
-                Location::Host | Location::Node => {
-                    return Err(format!(
-                        "{} at {}: the Rust participant needs the events-v2 Rust API (build with --cfg rutis_events_v2)",
-                        row.label,
-                        row.at.as_str()
-                    ))
-                }
-                #[cfg(rutis_events_v2)]
                 Location::Host => {}
-                #[cfg(rutis_events_v2)]
                 Location::Node => {
                     self.state.lock().unwrap().rows.push((row.clone(), 0));
-                    return self.node.load(row).await;
+                    self.node.load(row).await?;
+                    return self.announced(row).await;
                 }
             }
             self.state.lock().unwrap().rows.push((row.clone(), 0));
             self.reconcile().await?;
-            self.settled(row).await
+            self.settled(row).await?;
+            self.announced(row).await
         })
     }
 
@@ -701,7 +762,6 @@ impl World for Host {
             let Some(row) = removed else {
                 return Err(format!("no row {label}"));
             };
-            #[cfg(rutis_events_v2)]
             if row.at == Location::Node {
                 return self.node.unload(label).await;
             }
@@ -728,7 +788,6 @@ impl World for Host {
                 entry.1 = generation;
                 entry.0.clone()
             };
-            #[cfg(rutis_events_v2)]
             if row.at == Location::Node {
                 return self.node.update(&row).await;
             }
@@ -742,7 +801,6 @@ impl World for Host {
     fn emitter(&self, label: &str) -> Option<Arc<dyn HostDispatch>> {
         let state = self.state.lock().unwrap();
         let (row, _) = state.rows.iter().find(|(row, _)| row.label == label)?;
-        #[cfg(rutis_events_v2)]
         if row.at == Location::Node {
             return self.node.emitter(label);
         }
@@ -754,9 +812,37 @@ impl World for Host {
         Box::pin(async move {
             match target {
                 Location::Y => self.kill_y().await?,
-                #[cfg(rutis_events_v2)]
-                Location::Node => self.node.kill().await?,
-                _ => return Err("killing the node link needs the events-v2 Rust API".into()),
+                Location::Node => {
+                    // The node's listeners leave the host's bus when the
+                    // link's session ends, just after its calls in flight
+                    // failed: wait for that, as for a runtime's rows.
+                    let remote = || {
+                        self.root
+                            .events()
+                            .subscriptions()
+                            .iter()
+                            .filter(|entry| entry.remote)
+                            .count()
+                    };
+                    let on_node = self
+                        .state
+                        .lock()
+                        .unwrap()
+                        .rows
+                        .iter()
+                        .filter(|(row, _)| {
+                            row.at == Location::Node && row.config.get("name").is_some()
+                        })
+                        .count();
+                    let before = remote();
+                    self.node.kill().await?;
+                    until(
+                        || remote() + on_node <= before,
+                        "the node's listeners to leave the bus",
+                    )
+                    .await?;
+                }
+                at => return Err(format!("{} cannot be killed", at.as_str())),
             }
             self.state.lock().unwrap().killed.insert(target);
             Ok(())
@@ -767,9 +853,8 @@ impl World for Host {
         Box::pin(async move {
             match target {
                 Location::Y => self.restart_y().await?,
-                #[cfg(rutis_events_v2)]
                 Location::Node => self.node.restart().await?,
-                _ => return Err("restarting the node link needs the events-v2 Rust API".into()),
+                at => return Err(format!("{} cannot be restarted", at.as_str())),
             }
             self.state.lock().unwrap().killed.remove(&target);
             Ok(())
@@ -786,7 +871,6 @@ impl World for Host {
                     std::mem::take(&mut state.killed),
                 )
             };
-            #[cfg(rutis_events_v2)]
             self.node.reset().await?;
             self.reconcile().await?;
             for (row, _) in rows.iter().filter(|(row, _)| row.at != Location::Node) {
@@ -796,6 +880,20 @@ impl World for Host {
                 )
                 .await?;
             }
+            // Gone from the other node too: a case counting the entries
+            // the far side imported must not count the last case's.
+            let stale = |ctx: &Ctx| {
+                ctx.events()
+                    .subscriptions()
+                    .iter()
+                    .any(|entry| entry.remote && entry.name.starts_with("t/"))
+            };
+            let node = self.node.ctx().ok();
+            until(
+                || !stale(&self.root) && !node.as_ref().is_some_and(stale),
+                "the last case's listeners to leave both nodes",
+            )
+            .await?;
             if killed.contains(&Location::Y) {
                 self.restart_y().await?;
             }
@@ -804,12 +902,10 @@ impl World for Host {
         })
     }
 
-    #[cfg(rutis_events_v2)]
     fn dispatches(&self) -> Option<u64> {
         Some(self.rust.dispatches())
     }
 
-    #[cfg(rutis_events_v2)]
     fn hold(&self, n: usize) -> Result<(), String> {
         self.rust.hold(n)
     }
@@ -830,7 +926,6 @@ impl World for Host {
                     .map(str::to_owned),
             );
         }
-        #[cfg(rutis_events_v2)]
         lines.extend(self.rust.reported());
         Some(lines)
     }
@@ -890,7 +985,12 @@ async fn conformance(x: &str) {
     let only = std::env::var("RUTIS_EVENTS_CASE").unwrap_or_default();
     let coverage = Coverage::from_env();
     let mut tally = Tally::default();
-    for case in expected.cases.iter().filter(|c| c.case.starts_with(&only)) {
+    for case in expected
+        .cases
+        .iter()
+        .filter(|c| only.split(',').any(|prefix| c.case.starts_with(prefix)))
+    {
+        let started = std::time::Instant::now();
         for combo in events::placements(case, x, &ys, coverage).unwrap() {
             host.state.lock().unwrap().y = combo.y.clone();
             let result = events::run_keeping(&host, &log, case, &combo).await;
@@ -906,6 +1006,10 @@ async fn conformance(x: &str) {
                 panic!("the world could not be reset after {}: {why}", case.case);
             }
             tally.record(case, &combo, &result);
+        }
+        // Where the time goes: the cases that wait.
+        if started.elapsed() > Duration::from_secs(5) {
+            eprintln!("X={x}: {} took {:?}", case.case, started.elapsed());
         }
     }
     println!("events conformance, X={x}:\n{tally}");
@@ -951,9 +1055,7 @@ async fn events_with_x_a_bun_plugin() {
 /// The Rust plugin `conformance-events` (location `host`, and `node` on
 /// the second node), written against the events-v2 Rust API
 /// (docs/design-events-protocol-2026-10-18.md §12.1), and the test hooks of
-/// the host's bus. Built with `--cfg rutis_events_v2` until that API is on
-/// the branch.
-#[cfg(rutis_events_v2)]
+/// the host's bus.
 mod rust_participant {
     include!("events_conformance/rust_participant.rs");
 }

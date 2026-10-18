@@ -39,7 +39,7 @@ export function install(ctx, Context, bus, where) {
     const current = bus.filtering
     if (current && current.owner === context) return bus.describe(current)
     const { row, scope } = where(context)
-    return { name: null, prefix: false, plugin: context.fiber?.name ?? 'root', row, runtime: bus.runtime, node: null, scope, global: false }
+    return { name: null, prefix: false, plugin: context.fiber?.name ?? 'root', row: bus.rowId(row), runtime: bus.runtime, node: null, scope, global: false }
   }
   ctx.accessor('rutis', { get() { return describe(this) } })
   ctx.accessor('signal', { get() { return where(this).signal } })
@@ -61,6 +61,25 @@ export function install(ctx, Context, bus, where) {
       return live
     }
   })
+
+  // Cordis's primitive the five are built on, `events.dispatch(type, args)`:
+  // it gives the callbacks to call (some plugins call them themselves). The
+  // listeners are the bus's, not Cordis's: it gives one callback that
+  // dispatches on the bus (here, or through the host when the name has
+  // listeners elsewhere).
+  const dispatchCallbacks = events.dispatch
+  const throughBus = { emit: 'parallel', serial: 'serial', bail: 'bail' }
+  events.dispatch = function (type, args) {
+    const hasThis = typeof args[0] === 'object' || typeof args[0] === 'function'
+    const name = args[hasThis ? 1 : 0]
+    const mode = throughBus[type]
+    if (typeof name !== 'string' || internal(name) || !mode) return dispatchCallbacks.call(this, type, args)
+    const thisArg = hasThis ? args.shift() : null
+    args.shift()
+    original.emit.call(this, 'internal/dispatch', type, name, args, thisArg)
+    const { row, scope } = where(this.ctx)
+    return [(...values) => bus.dispatch(mode, name, values, { row, scope, thisArg })]
+  }
 
   for (const mode of Object.keys(original)) {
     events[mode] = function (...args) {

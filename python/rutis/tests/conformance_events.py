@@ -81,7 +81,13 @@ class Row:
     # ── Emitting ─────────────────────────────────────────────────
 
     def emitter(self, spec: dict):
-        keep = (spec.get("filter") or {}).get("keep")
+        chosen = spec.get("filter") or {}
+        if "throws" in chosen:
+            def throws(_descriptor):
+                raise _thrown(chosen["throws"])
+
+            return self.ctx.filter(throws)
+        keep = chosen.get("keep")
         if keep is None:
             return self.ctx
 

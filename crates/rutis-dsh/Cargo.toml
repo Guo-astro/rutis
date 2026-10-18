@@ -50,7 +50,6 @@ npm = "dsh"
 [package.metadata.rutis-cordis.mounts.web]
 path = "dsh/launcher.ts"
 provide = ["aimux"]
-events = ["rutis-dsh/ready", "rutis-dsh/startup-failed", "rutis-dsh/exit"]
 
 # The dsh agent loop without a UI: the smallest composition that runs an agent
 # turn with tools. The probes are test drivers.

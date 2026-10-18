@@ -3,10 +3,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use dsh_baseline::credentials::{
-    self, CredentialKey, CredentialRef, CredentialsRecordUpdated, CredentialsReferenceUpdated,
-};
-use rutis::{BoxFuture, CordisError, Ctx, EventKey, Listener};
+use dsh_baseline::credentials::{self, CredentialKey, CredentialRef};
+use dsh_baseline::events::{CredentialsRecordUpdated, CredentialsReferenceUpdated};
+use rutis::{BoxFuture, Call, CordisError, Ctx, EventKey, Listener};
 use rutis_bridge::cordis::serde_json::json;
 use rutis_test_support::eventually_with;
 
@@ -18,12 +17,13 @@ impl Listener<CredentialsReferenceUpdated> for Seen {
         &'a self,
         _: &'a Ctx,
         event: &'a CredentialsReferenceUpdated,
+        _: Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async move {
             self.0
                 .lock()
                 .unwrap()
-                .push(format!("reference {}", event.r#ref));
+                .push(format!("reference {}", event.0));
             Ok(None)
         })
     }
@@ -34,9 +34,10 @@ impl Listener<CredentialsRecordUpdated> for Seen {
         &'a self,
         _: &'a Ctx,
         event: &'a CredentialsRecordUpdated,
+        _: Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async move {
-            self.0.lock().unwrap().push(format!("record {}", event.key));
+            self.0.lock().unwrap().push(format!("record {}", event.0));
             Ok(None)
         })
     }

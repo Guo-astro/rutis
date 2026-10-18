@@ -114,7 +114,10 @@ for (const entry of expected.cases) {
     const loadListener = async listener => {
       const participant = { ...listener, name: listener.name ?? entry.name, kind: listener.kind ?? (sync ? 'sync' : 'async') }
       rows.set(listener.label, await h.load(conformance, { row: listener.label, scope: listener.scope, config: participant }))
+      participants.set(listener.label, participant)
     }
+    const participants = new Map()
+    let generation = 0
     for (const listener of entry.listeners) await loadListener(listener)
     const emitters = new Map()
     const emitter = async (label, scope) => {
@@ -141,6 +144,9 @@ for (const entry of expected.cases) {
             checkOutcome(what, step.expect, done)
             await settled(() => checkLog(what, step.expect, log, h))
           }
+        } else if (step.update !== undefined) {
+          // The row's config changes (a new generation): it registers again.
+          await rows.get(step.update).update({ ...participants.get(step.update), generation: ++generation })
         } else if (step.load) {
           await loadListener(step.load)
         } else if (step.unload !== undefined) {

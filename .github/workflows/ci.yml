@@ -411,8 +411,6 @@ jobs:
             node/baseline/package-lock.json
             bun/rutis-bun/bun.lock
       - run: npm --prefix node/rutis-runtime ci
-      # The SDK the Bun runtime's rows and the templates import.
-      - run: npm --prefix node/rutis ci
       # The published Cordis plugins S6 mounts (tests/e2e/tests/cordis.rs),
       # at the lockfile's versions.
       - run: npm --prefix node/baseline ci
@@ -498,7 +496,7 @@ jobs:
             crates/rutis-dsh/dsh/package-lock.json
       # The release train: one version for every package released together.
       - run: node scripts/train.mjs
-      # The SDK's testing tool uses the same Cordis as the runtimes.
+      # The SDK has no dependencies: `ci` only checks its lockfile.
       - run: npm --prefix node/rutis ci
       - run: npm --prefix node/rutis test
       - run: npm --prefix node/rutis-runtime ci
@@ -814,9 +812,6 @@ jobs:
         with:
           node-version: '22'
       - run: npm --prefix node/rutis-runtime ci
-      # The SDK, whose testing tool `bun/rutis-bun/test/sdk.test.ts` imports
-      # (`node/rutis/src/testing.mjs`) and which needs its own dependencies.
-      - run: npm --prefix node/rutis ci
       # setup-python's macOS builds install only under /Users/runner (the
       # hosted image's user): the self-hosted Macs take uv's Python 3.12, in
       # a virtual environment (as js-py).
@@ -904,7 +899,7 @@ jobs:
           node-version: '26'
           cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: node/rutis-runtime/package-lock.json
-      # The SDK, and its own dependencies (the testing tool uses Cordis).
+      # The SDK has no dependencies: `ci` only checks its lockfile.
       - run: npm --prefix node/rutis ci
       # The SDK's own tests do not depend on the platform: full runs only.
       - run: npm --prefix node/rutis test
@@ -1276,10 +1271,6 @@ jobs:
         with:
           node-version: '26'
       - run: npm --prefix node/rutis-runtime ci
-      # The SDK: the e2e scenarios junction `@arcships/rutis` to this checkout,
-      # and its testing tool (used by the Node template's tests) needs its own
-      # dependencies.
-      - run: npm --prefix node/rutis ci
       # setup-python's Windows installer needs an administrator, which the
       # self-hosted runners are not: they take the machine's Python, in a
       # virtual environment with pip.
