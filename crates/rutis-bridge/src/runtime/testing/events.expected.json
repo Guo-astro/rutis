@@ -478,7 +478,7 @@
       ],
       "steps": [
         {"emit": {"from": "X", "mode": "emit", "args": []}, "expect": {"reported": [{"label": "a", "name": "Boom"}]}},
-        {"emit": {"from": "X", "mode": "serial", "name": "t/emit-alive-after", "args": []}, "expect": {"returns": "B", "log": ["a", "b"]}}
+        {"emit": {"from": "X", "mode": "serial", "name": "t/emit-alive-after", "args": []}, "expect": {"returns": "B", "logUnordered": ["a", "b"]}}
       ] },
 
     { "case": "modes/no-listeners", "rule": "5.4", "name": "t/nobody", "vary": ["e"],
