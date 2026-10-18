@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	goruntime "runtime"
@@ -140,6 +141,21 @@ type runtimeState struct {
 	emits    map[string]bool
 	// The host takes announced services (mount `announce`).
 	announce bool
+	// Mounted by a host; one without `announce` is older than 0.12.
+	mounted bool
+	// The undeclared names a plugin was told such a host does not take.
+	told map[string]bool
+}
+
+// Where a plugin is told that the host does not take an undeclared
+// service (oldHost).
+var oldHostOutput io.Writer = os.Stderr
+
+// What a plugin providing the undeclared service name is told when the
+// host, older than 0.12, mounted without `announce`: such a host does not
+// take the service, which stays in this process.
+func oldHost(name string) string {
+	return fmt.Sprintf("rutis: service %s is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host", name)
 }
 
 func newRuntime(defs []*Definition) *runtimeState {
@@ -156,6 +172,7 @@ func newRuntime(defs []*Definition) *runtimeState {
 		handles:  map[string]*handleEntry{},
 		events:   map[string][]*listener{},
 		emits:    map[string]bool{},
+		told:     map[string]bool{},
 	}
 }
 
@@ -277,9 +294,16 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 	}
 	rt.services[id] = providedService{row: r.key, value: value, shape: shape}
 	r.provided = append(r.provided, id)
-	if rt.announce && rt.slots[id] == nil && !strings.Contains(name, "#") {
-		rt.slots[id] = &slot{row: r.key, name: name, announced: true}
-		r.announced = append(r.announced, id)
+	// Not declared: announced, with its exported methods; a host older
+	// than 0.12 does not take it, and the plugin is told, once per name.
+	if rt.slots[id] == nil && !strings.Contains(name, "#") {
+		if rt.announce {
+			rt.slots[id] = &slot{row: r.key, name: name, announced: true}
+			r.announced = append(r.announced, id)
+		} else if rt.mounted && !rt.told[name] {
+			rt.told[name] = true
+			fmt.Fprintln(oldHostOutput, oldHost(name))
+		}
 	}
 	rt.refresh(id)
 	return func() {
@@ -511,6 +535,7 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 		rt.mu.Lock()
 		rt.emits = emits
 		rt.announce = mount.Announce
+		rt.mounted = true
 		rt.mu.Unlock()
 		return map[string]any{
 			"services":       map[string]any{},

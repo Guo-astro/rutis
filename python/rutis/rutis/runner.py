@@ -58,6 +58,16 @@ def _unhandled_event(error):
     os._exit(1)
 
 
+def old_host(name: str) -> str:
+    """What a plugin providing the undeclared service `name` is told when
+    the host, older than 0.12, mounted without `announce`: such a host
+    does not take the service, which stays in this process."""
+    return (
+        f"rutis: service {name} is not declared in provides, and this host (older than 0.12) "
+        "does not take undeclared services; declare it or upgrade rutis-host"
+    )
+
+
 def scoped_id(name: str, label: str | None) -> str:
     """How the service `name` is identified in the scope `label`: the name
     outside any scope (no label: None), the name, a NUL and the label inside
@@ -193,6 +203,10 @@ class Runtime:
         self.closing = False
         # The host takes announced services (mount `announce`).
         self.announce = False
+        # Mounted by a host; one without `announce` is older than 0.12.
+        self.mounted = False
+        # The undeclared names a plugin was told such a host does not take.
+        self.told: set = set()
         self.events = Events(_unhandled_event)
         self.emits = set()
         # The source file of each plugin module when it was imported.
@@ -213,10 +227,15 @@ class Runtime:
             raise ValueError(f"service {id} is already provided by row {self.services[id][0]}")
         self.services[id] = (row.key, value)
         row.provided.append(id)
-        # Not declared: announced, with the methods it has.
-        if self.announce and id not in self.slots and "#" not in name:
-            self.slots[id] = Slot(row.key, set(), name, announced=True)
-            row.announced.append(id)
+        # Not declared: announced, with the methods it has; a host older
+        # than 0.12 does not take it, and the plugin is told, once per name.
+        if id not in self.slots and "#" not in name:
+            if self.announce:
+                self.slots[id] = Slot(row.key, set(), name, announced=True)
+                row.announced.append(id)
+            elif self.mounted and name not in self.told:
+                self.told.add(name)
+                print(old_host(name), file=sys.stderr, flush=True)
         self._refresh(id)
 
         def withdraw() -> None:
@@ -436,6 +455,7 @@ class Runtime:
                 raise ValueError(refused)
             self.emits = set(names)
             self.announce = args.get("announce") is True
+            self.mounted = True
             return {"services": {}, "features": FEATURES}
         if method == "emit":
             name, values = args
