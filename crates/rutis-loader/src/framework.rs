@@ -53,9 +53,23 @@ pub(crate) fn follow(ctx: &Ctx, view: &FiberView, row: &str, plugin: &str) {
     let mut watch = view.watch();
     let ctx = ctx.clone();
     let (row, plugin) = (row.to_owned(), plugin.to_owned());
+    // Just spawned: pending, said before anything else of the row.
+    let scope = ctx.scope();
+    let emit = move |ctx: &Ctx, state: RowState, error: Option<String>| {
+        let event = RowEvent {
+            row: row.clone(),
+            plugin: plugin.clone(),
+            scope: scope.clone(),
+            state,
+            error,
+        };
+        let _ = ctx
+            .events()
+            .emit_framework(ctx, &EventKey::<RowEvent>::of(), Arc::new(event));
+    };
+    emit(&ctx, RowState::Pending, None);
     tasks.spawn(async move {
-        let scope = ctx.scope();
-        let mut last = None;
+        let mut last = Some(RowState::Pending);
         loop {
             let (state, error) = {
                 let snapshot = watch.borrow_and_update();
@@ -66,18 +80,8 @@ pub(crate) fn follow(ctx: &Ctx, view: &FiberView, row: &str, plugin: &str) {
             };
             if last != Some(state) {
                 last = Some(state);
-                let event = RowEvent {
-                    row: row.clone(),
-                    plugin: plugin.clone(),
-                    scope: scope.clone(),
-                    state,
-                    error: (state == RowState::Failed).then_some(error).flatten(),
-                };
-                let _ = ctx.events().emit_framework(
-                    &ctx,
-                    &EventKey::<RowEvent>::of(),
-                    Arc::new(event),
-                );
+                let error = (state == RowState::Failed).then_some(error).flatten();
+                emit(&ctx, state, error);
             }
             if state == RowState::Stopped && watch.borrow().state == FiberState::Disposed {
                 return;

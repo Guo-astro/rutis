@@ -60,7 +60,9 @@ impl Listener<Args> for Record {
         _: Call<'a, ArgValue>,
     ) -> BoxFuture<'a, Result<Option<ArgValue>, CordisError>> {
         Box::pin(async move {
-            let args = RpcValue::List(event.0.clone()).json().unwrap_or(Value::Null);
+            let args = RpcValue::List(event.0.clone())
+                .json()
+                .unwrap_or(Value::Null);
             self.0.lock().unwrap().push(args);
             Ok(None)
         })

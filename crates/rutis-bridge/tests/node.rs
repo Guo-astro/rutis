@@ -6,11 +6,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rutis::{
-    BoxFuture, Call, CordisError, Ctx, Effect, EventKey, FiberView, Listener, Plugin,
-    PluginFactory,
+    BoxFuture, Call, CordisError, Ctx, Effect, EventKey, FiberView, Listener, Plugin, PluginFactory,
 };
-use rutis_bridge::events::{ArgValue, Args, LinkEventsPlugin};
 use rutis_bridge::channel::PeerId;
+use rutis_bridge::events::{ArgValue, Args, LinkEventsPlugin};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value};
 use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
@@ -435,10 +434,18 @@ async fn node_listeners_are_entries_of_the_other_bus() {
     let (main, mac, mac_link) = linked().await;
     let heard = Arc::new(Mutex::new(Vec::new()));
     mac.events()
-        .on(&mac, &node_event("t/tick"), Record(heard.clone(), Some("pong")))
+        .on(
+            &mac,
+            &node_event("t/tick"),
+            Record(heard.clone(), Some("pong")),
+        )
         .unwrap();
     mac.events()
-        .on(&mac, &node_event("n/kept"), Record(heard.clone(), Some("leaked")))
+        .on(
+            &mac,
+            &node_event("n/kept"),
+            Record(heard.clone(), Some("leaked")),
+        )
         .unwrap();
     // mac hears main's `t/*`; main's emissions of every name reach mac.
     (&mac.plugin(LinkEventsPlugin::new(
@@ -448,7 +455,11 @@ async fn node_listeners_are_entries_of_the_other_bus() {
     )))
         .await
         .unwrap();
-    (&main.plugin(LinkEventsPlugin::new(id("mac"), ["*"], Vec::<String>::new())))
+    (&main.plugin(LinkEventsPlugin::new(
+        id("mac"),
+        ["*"],
+        Vec::<String>::new(),
+    )))
         .await
         .unwrap();
 

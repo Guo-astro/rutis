@@ -348,12 +348,13 @@ impl Link {
                 .collect(),
             _ => return Err(binding("events.call needs its call")),
         };
-        let text = |fields: &mut std::collections::BTreeMap<String, Value>, field: &str| {
-            match fields.remove(field) {
+        let text =
+            |fields: &mut std::collections::BTreeMap<String, Value>, field: &str| match fields
+                .remove(field)
+            {
                 Some(Value::Data(Json::String(text))) => Ok(text),
                 _ => Err(binding(format!("events.call needs a {field}"))),
-            }
-        };
+            };
         let listener = text(&mut fields, "listener")?;
         let name = text(&mut fields, "name")?;
         let dispatch = text(&mut fields, "dispatch")?;
@@ -397,11 +398,18 @@ impl Link {
             error => to_session(&error),
         };
         if mode.is_sync() {
-            let result = ctx.events().invoke_entry_sync(&ctx, id, call).map_err(mapped)?;
+            let result = ctx
+                .events()
+                .invoke_entry_sync(&ctx, id, call)
+                .map_err(mapped)?;
             return result_to_wire(result);
         }
         Ok(Value::future(async move {
-            let result = ctx.events().invoke_entry(&ctx, id, call).await.map_err(mapped)?;
+            let result = ctx
+                .events()
+                .invoke_entry(&ctx, id, call)
+                .await
+                .map_err(mapped)?;
             result_to_wire(result)
         }))
     }
@@ -527,12 +535,11 @@ impl Plugin for LinkEventsPlugin {
                     if let Some((offered, link, watching)) = kept.lock().unwrap().take() {
                         drop(offered);
                         dispose_now(watching);
-                        let accepted: Vec<Disposer> = std::mem::take(
-                            &mut link.state.lock().unwrap().accepted,
-                        )
-                        .into_values()
-                        .flatten()
-                        .collect();
+                        let accepted: Vec<Disposer> =
+                            std::mem::take(&mut link.state.lock().unwrap().accepted)
+                                .into_values()
+                                .flatten()
+                                .collect();
                         for disposer in accepted {
                             dispose_now(disposer);
                         }
@@ -564,7 +571,10 @@ mod tests {
             vec![("t/a/".to_owned(), true), ("t/b".to_owned(), false)]
         );
         // A shorter item keeps the entry's prefix.
-        assert_eq!(selected("t/a/", true, &items(&["*"])), vec![("t/a/".to_owned(), true)]);
+        assert_eq!(
+            selected("t/a/", true, &items(&["*"])),
+            vec![("t/a/".to_owned(), true)]
+        );
         // A name a selected prefix covers is not selected twice.
         assert_eq!(
             selected("t/", true, &items(&["t/*", "t/b"])),

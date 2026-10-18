@@ -12,9 +12,7 @@ use rutis::{BoxFuture, Call, CordisError, Ctx, Event, EventKey, Listener, SyncCa
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::events::{ArgValue, Args};
 use rutis_bridge::runtime::{Mount, Process};
-use rutis_bridge::session::{
-    settle, Connection, Dispatch, Endpoint, Error, Format, Reply, Value,
-};
+use rutis_bridge::session::{settle, Connection, Dispatch, Endpoint, Error, Format, Reply, Value};
 use rutis_test_support::within;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
@@ -38,7 +36,12 @@ struct Fake {
 impl Dispatch for Fake {
     fn invoke(&self, _: &Connection, target: &str, method: &str, args: Value) -> Reply {
         let first = || -> Result<Value, Error> {
-            Ok(args.clone().list()?.into_iter().next().unwrap_or(Value::Undefined))
+            Ok(args
+                .clone()
+                .list()?
+                .into_iter()
+                .next()
+                .unwrap_or(Value::Undefined))
         };
         match (target, method) {
             ("", "mount") => Ok(Value::Data(
@@ -140,7 +143,14 @@ impl Rig {
 
     async fn load(&self, row: &str, scope: &[Scope]) {
         self.process
-            .load_row(row, std::path::Path::new("fake"), json!({}), &[], &[], scope)
+            .load_row(
+                row,
+                std::path::Path::new("fake"),
+                json!({}),
+                &[],
+                &[],
+                scope,
+            )
             .await
             .unwrap();
     }
@@ -226,10 +236,14 @@ impl Listener<Args> for Answer {
 async fn a_runtime_without_events_v2_is_refused() {
     within("refused", async {
         let mut old = Endpoint::rust(id("rt"));
-        old.capabilities.retain(|capability| capability != "events-v2");
+        old.capabilities
+            .retain(|capability| capability != "events-v2");
         old.implementation.name = "old-runtime".into();
         old.implementation.version = "0.12.1".into();
-        let error = rig_with(Ctx::root().unwrap(), old).await.err().expect("refused");
+        let error = rig_with(Ctx::root().unwrap(), old)
+            .await
+            .err()
+            .expect("refused");
         assert!(
             error.to_string().contains(
                 "incompatible session: the far end (old-runtime 0.12.1) does not declare \
@@ -254,7 +268,9 @@ async fn a_runtime_hears_what_is_elsewhere() {
         root.events()
             .on(&root, &key("t/before"), Answer(None, heard.clone()))
             .unwrap();
-        let rig = rig_with(root.clone(), Endpoint::rust(id("rt"))).await.unwrap();
+        let rig = rig_with(root.clone(), Endpoint::rust(id("rt")))
+            .await
+            .unwrap();
         assert_eq!(rig.elsewhere()[0], json!({ "add": ["t/before"] }));
 
         let later = root
@@ -269,7 +285,8 @@ async fn a_runtime_hears_what_is_elsewhere() {
         assert_eq!(rig.elsewhere()[2], json!({ "remove": ["t/later"] }));
 
         // Its own listener is not elsewhere to it.
-        rig.on("1", "t/own", None, "async", answers(json!(null))).await;
+        rig.on("1", "t/own", None, "async", answers(json!(null)))
+            .await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(rig.elsewhere().len(), 3);
     })
@@ -310,8 +327,14 @@ async fn dispatches_cross_between_host_and_runtime() {
     within("dispatch", async {
         let rig = rig().await;
         rig.load("chat", &[]).await;
-        rig.on("1", "t/created", Some("chat"), "async", answers(json!(false)))
-            .await;
+        rig.on(
+            "1",
+            "t/created",
+            Some("chat"),
+            "async",
+            answers(json!(false)),
+        )
+        .await;
         // Host -> runtime: typed, two arguments.
         let result = rig
             .root
@@ -374,8 +397,14 @@ async fn rows_dispatch_and_hear_at_their_scopes() {
         rig.load("root", &[]).await;
         rig.on("in-t2", "t/x", Some("b"), "async", answers(json!("t2")))
             .await;
-        rig.on("at-root", "t/x", Some("root"), "async", answers(json!(null)))
-            .await;
+        rig.on(
+            "at-root",
+            "t/x",
+            Some("root"),
+            "async",
+            answers(json!(null)),
+        )
+        .await;
         let heard = Arc::new(Mutex::new(Vec::new()));
         rig.root
             .events()
@@ -403,7 +432,9 @@ async fn rows_dispatch_and_hear_at_their_scopes() {
             .await
             .unwrap_err();
         assert!(
-            error.to_string().contains("row ghost is not loaded in this runtime"),
+            error
+                .to_string()
+                .contains("row ghost is not loaded in this runtime"),
             "{error}"
         );
     })
@@ -427,7 +458,11 @@ async fn the_filter_runs_in_the_emitters_process() {
             .unwrap();
         rig.root
             .events()
-            .on(&rig.root, &key("t/f"), Answer(Some("dropped"), heard.clone()))
+            .on(
+                &rig.root,
+                &key("t/f"),
+                Answer(Some("dropped"), heard.clone()),
+            )
             .unwrap();
         let seen: Arc<Mutex<Vec<Json>>> = Arc::default();
         let recorded = seen.clone();
@@ -528,7 +563,10 @@ async fn reserved_and_internal_names_are_refused() {
         match error {
             Error::Remote { name, message, .. } => {
                 assert_eq!(name, "ReservedEvent");
-                assert_eq!(message, "rutis/* events are emitted by rutis only: rutis/row");
+                assert_eq!(
+                    message,
+                    "rutis/* events are emitted by rutis only: rutis/row"
+                );
             }
             other => panic!("{other:?}"),
         }

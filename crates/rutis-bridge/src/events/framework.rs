@@ -60,9 +60,9 @@ pub(crate) fn service(ctx: &Ctx, name: &str, available: bool) {
         available,
         row: ctx.row(),
     };
-    if let Err(error) = ctx
-        .events()
-        .emit_framework(ctx, &EventKey::<ServiceEvent>::of(), Arc::new(event))
+    if let Err(error) =
+        ctx.events()
+            .emit_framework(ctx, &EventKey::<ServiceEvent>::of(), Arc::new(event))
     {
         report(ctx, error);
     }
@@ -76,9 +76,9 @@ pub(crate) fn runtime(ctx: &Ctx, runtime: &str, state: RuntimeEventState, reason
         state,
         reason,
     };
-    if let Err(error) = root
-        .events()
-        .emit_framework(&root, &EventKey::<RuntimeEvent>::of(), Arc::new(event))
+    if let Err(error) =
+        root.events()
+            .emit_framework(&root, &EventKey::<RuntimeEvent>::of(), Arc::new(event))
     {
         report(&root, error);
     }

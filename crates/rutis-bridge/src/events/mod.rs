@@ -25,6 +25,6 @@ pub use args::{ArgValue, Args};
 pub use framework::{RuntimeEvent, RuntimeEventState, ServiceEvent};
 pub use link::LinkEventsPlugin;
 
-pub(crate) use framework::{runtime as emit_runtime, service as emit_service};
 pub(crate) use errors::to_session as to_session_error;
+pub(crate) use framework::{runtime as emit_runtime, service as emit_service};
 pub(crate) use hub::SessionEvents;

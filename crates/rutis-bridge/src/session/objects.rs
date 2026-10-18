@@ -1069,9 +1069,7 @@ fn unmarked(json: Json, keys: &Keys, references: &[Reference], tagged: &[Tagged]
 /// so the [`ObjectRef`]s, [`RemoteFunction`]s, tagged values and
 /// [`Dynamic`]s it serializes cross as themselves, as in [`arg`]. For
 /// serializations done elsewhere (an event's type-erased codec).
-pub(crate) fn encode_with(
-    produce: impl FnOnce() -> Result<Json, String>,
-) -> Result<Value, Error> {
+pub(crate) fn encode_with(produce: impl FnOnce() -> Result<Json, String>) -> Result<Value, Error> {
     let keys = Keys::new(NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     let previous = ENCODING.with(|current| current.replace(Some(Vec::new())));
     let previous_tagged = ENCODING_TAGGED.with(|current| current.replace(Some(Vec::new())));
@@ -1153,8 +1151,7 @@ pub struct Dynamic(pub Value);
 
 impl Serialize for Dynamic {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let Some(keys) = current_keys().filter(|_| ENCODING.with(|e| e.borrow().is_some()))
-        else {
+        let Some(keys) = current_keys().filter(|_| ENCODING.with(|e| e.borrow().is_some())) else {
             return self
                 .0
                 .clone()

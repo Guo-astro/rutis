@@ -185,7 +185,11 @@ async fn a_runtime_announces_running_and_down() {
         .unwrap();
         let view = root.plugin(RuntimePlugin::remote("fake"));
         (&view).await.unwrap();
-        eventually(|| (!heard.lock().unwrap().is_empty()).then_some(()), "running").await;
+        eventually(
+            || (!heard.lock().unwrap().is_empty()).then_some(()),
+            "running",
+        )
+        .await;
         assert_eq!(
             heard.lock().unwrap()[0],
             RuntimeEvent {

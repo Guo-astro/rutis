@@ -74,7 +74,11 @@ fn event_error(type_name: &'static str, message: impl Into<String>) -> CordisErr
 pub(crate) struct SessionTranscoder;
 
 impl Transcoder for SessionTranscoder {
-    fn event(&self, from: PayloadRef<'_>, into: &Codec) -> Result<Box<dyn Any + Send>, CordisError> {
+    fn event(
+        &self,
+        from: PayloadRef<'_>,
+        into: &Codec,
+    ) -> Result<Box<dyn Any + Send>, CordisError> {
         let into_args = into.type_id() == std::any::TypeId::of::<Args>();
         if let Some(args) = from.downcast::<Args>() {
             if into_args {

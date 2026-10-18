@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin};
 
-use crate::runtime::RuntimeAccessPlugin;
 use crate::events::LinkEventsPlugin;
+use crate::runtime::RuntimeAccessPlugin;
 use crate::{
     ExportPlugin, HostPlugin, ImportPlugin, LinkConfig, LinkPlugin, LinkState, PluginCatalog,
     ServiceKeys,
@@ -114,21 +114,21 @@ fn spawn(ctx: &Ctx, link: &LinkConfig, features: &Features, part: Part) -> Optio
         Part::Export => {
             let services = Features::services(&features.export);
             (!services.is_empty()).then(|| {
-            let export = ExportPlugin::new(peer, services);
-            ctx.plugin(match &features.services {
-                Some(keys) => export.with_keys(keys.clone()),
-                None => export,
-            })
+                let export = ExportPlugin::new(peer, services);
+                ctx.plugin(match &features.services {
+                    Some(keys) => export.with_keys(keys.clone()),
+                    None => export,
+                })
             })
         }
         Part::Import => {
             let services = Features::services(&features.import);
             (!services.is_empty()).then(|| {
-            let import = ImportPlugin::new(peer, services);
-            ctx.plugin(match &features.services {
-                Some(keys) => import.with_keys(keys.clone()),
-                None => import,
-            })
+                let import = ImportPlugin::new(peer, services);
+                ctx.plugin(match &features.services {
+                    Some(keys) => import.with_keys(keys.clone()),
+                    None => import,
+                })
             })
         }
         Part::Events => {
@@ -136,7 +136,11 @@ fn spawn(ctx: &Ctx, link: &LinkConfig, features: &Features, part: Part) -> Optio
             if export.is_empty() && import.is_empty() {
                 return None;
             }
-            Some(ctx.plugin(LinkEventsPlugin::new(peer, export.to_vec(), import.to_vec())))
+            Some(ctx.plugin(LinkEventsPlugin::new(
+                peer,
+                export.to_vec(),
+                import.to_vec(),
+            )))
         }
         Part::Host => features.host.clone().map(|catalog| {
             let host = HostPlugin::new(peer, catalog);

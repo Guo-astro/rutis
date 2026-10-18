@@ -964,4 +964,29 @@ mod tests {
         )
         .await;
     }
+
+    /// guarantee: events/node-config
+    ///
+    /// `events: { out, in }` is gone (events protocol §2.4): writing it is
+    /// refused, naming the replacement; `export` / `import` take `*`
+    /// prefixes, which select events only, and nothing else with a `*`.
+    #[test]
+    fn link_config_shares_events_through_export_and_import() {
+        let base = json!({ "peer": "mac", "transport": "memory", "identity": "main", "dial": "x" });
+        let with = |field: &str, value: Value| {
+            let mut config = base.clone();
+            config[field] = value;
+            NodeConfig::parse(&config)
+        };
+        let refused = with("events", json!({ "out": ["tick"] })).err().unwrap();
+        assert!(refused.to_string().contains(REMOVED_EVENTS), "{refused}");
+        let config = with("export", json!(["clock", "session/*", "*"])).unwrap();
+        let features = config.features(None, &Build::default());
+        assert_eq!(features.export, ["clock", "session/*", "*"]);
+        let refused = with("import", json!(["a*b"])).err().unwrap();
+        assert!(
+            refused.to_string().contains("a prefix of event names"),
+            "{refused}"
+        );
+    }
 }

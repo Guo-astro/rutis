@@ -40,7 +40,10 @@ async fn a_session_runs_on_a_memory_channel() {
                 "value-uuid",
             ] })
         );
-        send(&mut remote, json!({ "op": "hello", "version": PROTOCOL, "capabilities": ["events-v2"] }));
+        send(
+            &mut remote,
+            json!({ "op": "hello", "version": PROTOCOL, "capabilities": ["events-v2"] }),
+        );
         // A call from here reaches the far end.
         let call = read(&mut remote);
         assert_eq!(
@@ -83,7 +86,10 @@ async fn the_far_end_closing_ends_the_session() {
     let (local, mut remote) = rutis_bridge::transport::memory::pair();
     let session = Connection::open(local, Arc::new(Echo)).unwrap();
     read(&mut remote);
-    send(&mut remote, json!({ "op": "hello", "version": PROTOCOL, "capabilities": ["events-v2"] }));
+    send(
+        &mut remote,
+        json!({ "op": "hello", "version": PROTOCOL, "capabilities": ["events-v2"] }),
+    );
     session.ready().await.unwrap();
     remote.closer.close("bye");
     session.closed().await;

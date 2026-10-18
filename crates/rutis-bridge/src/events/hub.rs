@@ -108,7 +108,6 @@ impl Hub {
         Ok(hub)
     }
 
-
     /// A change of the table: the sessions for which a name or prefix
     /// starts or stops being elsewhere are told, in order, before the
     /// change's registration returns (events protocol §4.4).
@@ -158,7 +157,11 @@ impl Hub {
     }
 }
 
-fn count(presence: &mut HashMap<Key, HashMap<Option<u64>, usize>>, entry: &TableEntry, added: bool) {
+fn count(
+    presence: &mut HashMap<Key, HashMap<Option<u64>, usize>>,
+    entry: &TableEntry,
+    added: bool,
+) {
     let key = (entry.name.clone(), entry.prefix);
     let counts = presence.entry(key.clone()).or_default();
     let n = counts.entry(entry.origin).or_default();
@@ -177,9 +180,7 @@ fn count(presence: &mut HashMap<Key, HashMap<Option<u64>, usize>>, entry: &Table
 
 /// Whether some entry of these counts is not `origin`'s.
 fn elsewhere(counts: &HashMap<Option<u64>, usize>, origin: u64) -> bool {
-    counts
-        .iter()
-        .any(|(at, n)| *n > 0 && *at != Some(origin))
+    counts.iter().any(|(at, n)| *n > 0 && *at != Some(origin))
 }
 
 /// One `events.elsewhere` message.
@@ -352,7 +353,13 @@ impl SessionEvents {
             hub.leave(self.origin);
         }
         self.rows.lock().unwrap().clear();
-        let entries: Vec<Registered> = self.entries.lock().unwrap().drain().map(|(_, e)| e).collect();
+        let entries: Vec<Registered> = self
+            .entries
+            .lock()
+            .unwrap()
+            .drain()
+            .map(|(_, e)| e)
+            .collect();
         for entry in entries {
             dispose_now(entry.disposer);
         }
@@ -650,7 +657,9 @@ fn reference(
     match fields.remove(field) {
         None | Some(Value::Undefined) | Some(Value::Data(Json::Null)) => Ok(None),
         Some(Value::Reference(reference)) if reference.is_function() => Ok(Some(reference)),
-        Some(_) => Err(binding(format!("events.dispatch: {field} is not a function"))),
+        Some(_) => Err(binding(format!(
+            "events.dispatch: {field} is not a function"
+        ))),
     }
 }
 
@@ -684,12 +693,9 @@ fn selector(selector: crate::session::Reference, name: String, sync: bool) -> Ba
                 .collect()
         };
         match sync {
-            true => FilterAnswer::Ready(
-                selector
-                    .call(argument)
-                    .map_err(to_cordis)
-                    .and_then(answers),
-            ),
+            true => {
+                FilterAnswer::Ready(selector.call(argument).map_err(to_cordis).and_then(answers))
+            }
             false => FilterAnswer::Pending(Box::pin(async move {
                 let reply = selector.call_async(argument).await.map_err(to_cordis)?;
                 let reply = settle(reply).await.map_err(to_cordis)?;
@@ -794,7 +800,10 @@ impl RemoteListener for WireEntry {
         self.kind
     }
 
-    fn call<'a>(&'a self, call: RemoteCall<'a>) -> BoxFuture<'a, Result<Option<rutis::events::Value>, CordisError>> {
+    fn call<'a>(
+        &'a self,
+        call: RemoteCall<'a>,
+    ) -> BoxFuture<'a, Result<Option<rutis::events::Value>, CordisError>> {
         let mode = call.mode();
         let own = self.own(call.origin());
         let started = self.connection().and_then(|connection| {
@@ -817,7 +826,10 @@ impl RemoteListener for WireEntry {
         })
     }
 
-    fn call_sync(&self, call: RemoteSyncCall<'_>) -> Result<Option<rutis::events::Value>, CordisError> {
+    fn call_sync(
+        &self,
+        call: RemoteSyncCall<'_>,
+    ) -> Result<Option<rutis::events::Value>, CordisError> {
         let mode = call.mode();
         let own = self.own(call.origin());
         let connection = self.connection()?;

@@ -16,7 +16,6 @@ use crate::session::{settle, Error, Reply, Value};
 /// `about` says how to read it.
 pub const WEATHER_EXPECTED: &str = include_str!("testing/weather.expected.json");
 
-
 /// **Runtime** ([`runtime`]): a runtime loads, as a row, a plugin `entry`
 /// that injects `clock` (a rutis host service with `now`, sync, returning
 /// 0, 1, 2, ...) and provides `weather`:

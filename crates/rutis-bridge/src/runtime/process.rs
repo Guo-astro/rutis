@@ -980,7 +980,9 @@ impl Process {
         scope: &[rutis::Scope],
     ) -> Result<(), Error> {
         let loaded = self
-            .load_exporting(key, entry, config, isolate, inject, exports, observer, scope)
+            .load_exporting(
+                key, entry, config, isolate, inject, exports, observer, scope,
+            )
             .await;
         if loaded.is_err() {
             // Never loaded, so it cannot end.

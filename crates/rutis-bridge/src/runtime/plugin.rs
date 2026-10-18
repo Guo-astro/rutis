@@ -26,7 +26,6 @@ use crate::runtime::{Mount, Process};
 /// mounts use neither, so only [`RuntimePlugin`] checks them.
 const ROW_FEATURES: [&str; 2] = ["rows.v2", "hosts"];
 
-
 /// The service a running runtime provides.
 pub struct Runtime {
     process: Arc<Process>,
