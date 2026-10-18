@@ -205,6 +205,11 @@ func TestRutistestMeetsTheRuntimeExpectations(t *testing.T) {
 			Throws json.RawMessage   `json:"throws"`
 			Why    string            `json:"why"`
 		} `json:"events"`
+		Undeclared struct {
+			Service string            `json:"service"`
+			Methods map[string]string `json:"methods"`
+			Calls   []entry           `json:"calls"`
+		} `json:"undeclared"`
 	}
 	if err := json.Unmarshal(data, &expected); err != nil {
 		t.Fatal(err)
@@ -269,5 +274,23 @@ func TestRutistestMeetsTheRuntimeExpectations(t *testing.T) {
 		then.Why = event.Why
 		value, err := service.call(ctx, then.Call)
 		check(t, "after "+event.Emit, then, value, err)
+	}
+	// A service the plugin does not declare: its methods inferred, all
+	// asynchronous.
+	undeclared := expected.Undeclared
+	if _, declared := describe(t, weather.Plugin).Provides[undeclared.Service]; declared {
+		t.Fatalf("the plugin declares %s", undeclared.Service)
+	}
+	forecast := loaded.Service(undeclared.Service)
+	if !reflect.DeepEqual(forecast.Methods(), undeclared.Methods) {
+		t.Errorf("%s: methods %v, want %v", undeclared.Service, forecast.Methods(), undeclared.Methods)
+	}
+	for i, e := range undeclared.Calls {
+		args := make([]any, len(e.Args))
+		for j, arg := range e.Args {
+			args[j] = argument(t, arg)
+		}
+		value, err := forecast.call(ctx, e.Call, args...)
+		check(t, fmt.Sprintf("undeclared.calls[%d] %s", i, e.Call), e, value, err)
 	}
 }

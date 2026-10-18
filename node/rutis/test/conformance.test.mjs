@@ -123,5 +123,16 @@ test('the testing tool returns what the real runtime does (weather.expected.json
       await t.test(what, () => check(what, entry, emitted))
     }
   }
+  // A service the plugin does not declare: its methods inferred, all async.
+  const { undeclared } = expected
+  assert.equal(weather.provides[undeclared.service], undefined, `the plugin does not declare ${undeclared.service}`)
+  assert.deepStrictEqual(plugin.methods(undeclared.service), undeclared.methods, 'the methods rutis sees')
+  const forecast = plugin.service(undeclared.service)
+  for (const [i, entry] of undeclared.calls.entries()) {
+    const what = `undeclared.calls[${i}] ${entry.call}`
+    const call = forecast[entry.call](...entry.args.map(argument))
+    assert.ok(call instanceof Promise, `${what}: async`)
+    await t.test(what, async () => check(what, entry, await outcome(() => call)))
+  }
   await plugin.unload()
 })

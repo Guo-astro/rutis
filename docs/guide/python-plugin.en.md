@@ -44,12 +44,13 @@ def apply(ctx, config):
 plugin = define_plugin(
     apply,
     inject=["llm"],                       # Services used: start when all are ready; stop if any is revoked
-    provides={"weather": Weather},        # Service methods are inferred from the class (async def means async)
     config={"type": "object", "properties": {"city": {"type": "string"}}},
 )
 ```
 
 You can also omit `define_plugin` and declare `apply`, `inject`, `provides`, and `Config` directly in the module. `apply` may be an `async def` function.
+
+`weather` needs no declaration: what `ctx.provide` provides reaches rutis by itself, its methods the object's callable attributes not starting with `_`, called as `async`. To mark methods `sync`, or to let `rutis-host check` know before running what the plugin provides, declare `provides`: `provides={"weather": Weather}` reads the class (`async def` methods async, the others sync), or `{"weather": {"unit": "sync"}}`.
 
 `ctx.use("llm")` gets the service. A service provided by a plugin in the same process is the object itself; services from another language or machine are proxies, whose methods return synchronously or produce awaitable results according to their declarations. See [Plugin API](plugin-api.en.md) for capabilities and value passing rules.
 
@@ -85,7 +86,7 @@ class Weather(unittest.TestCase):
 uv run python -m unittest discover -s tests
 ```
 
-`load` checks the same things as the host: the plugin uses only services declared in `inject`; its provided service has every method declared in `provides`; and all cleanup functions run when the `async with` block exits. In strict mode (the default), values follow cross-process rules: data is copied (dataclasses become dictionaries), functions and objects with methods are passed by reference, and `sync` methods cannot return coroutines. Code that works only within one process fails here.
+`load` checks the same things as the host: the plugin uses only services declared in `inject`; its provided service has every method declared in `provides` (an undeclared service is called as rutis calls it, by the object's public methods, all async; `t.methods(name)` returns the methods rutis sees); and all cleanup functions run when the `async with` block exits. In strict mode (the default), values follow cross-process rules: data is copied (dataclasses become dictionaries), functions and objects with methods are passed by reference, and `sync` methods cannot return coroutines. Code that works only within one process fails here.
 
 ## 4. Run in a local host
 

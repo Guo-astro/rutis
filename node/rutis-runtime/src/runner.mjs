@@ -62,14 +62,15 @@ let emits = new Set() // events the rutis side may emit here
 // A host that did not ask (0.11) hears only the declared ones.
 let announce = false
 // Rows: plugins rutis-loader manages one by one in this Context (`rows.*`).
-const rows = new Map() // key -> { fiber, inner, config, exports, loading, scope, labelOf, leaf }
+const rows = new Map() // key -> { fiber, inner, config, exports, loading, scope, labelOf }
 // rutis services registered one by one (`hosts.*`): id -> withdraw
 const hosts = new Map()
 // What this runner supports beyond protocol 2, reported by `mount`.
 // events: leaf plugins receive what rutis emits (RuntimePlugin::emits).
-// rows.announce: the services a Cordis row provides reach rutis without a
-// declaration, announced with the methods they have (`service` with a
-// fourth argument, to a host whose mount asked for it).
+// rows.announce: the services a row provides (a Cordis plugin's, or a leaf
+// plugin's `ctx.provide`) reach rutis without a declaration, announced with
+// the methods they have (`service` with a fourth argument, to a host whose
+// mount asked for it).
 const FEATURES = ['rows.v2', 'hosts', 'leaf.js', 'scopes', 'events', 'rows.announce']
 // Test support, not part of the protocol: with RUTIS_TEST_INSPECT set, the
 // control method `inspect` reports what this runner holds (rows, host
@@ -208,11 +209,11 @@ function rowOf(fiber) {
   }
 }
 
-// Find the services Cordis rows provide that nothing exports yet, and
-// export each from its row (announced, see `refresh`): read through the
-// row's scope, like the declared ones, so a service provided in a scope the
-// row does not see (a plugin isolating it further) stays where it is.
-// Returns the new slots. Leaf plugins declare what they provide.
+// Find the services rows provide that nothing exports yet, and export each
+// from its row (announced, see `refresh`): read through the row's scope,
+// like the declared ones, so a service provided in a scope the row does not
+// see (a plugin isolating it further) stays where it is. Returns the new
+// slots.
 function discover() {
   const found = []
   if (!announce || closing) return found
@@ -223,7 +224,7 @@ function discover() {
     if (!owner) continue
     const [rowKey, row] = owner
     const name = impl.name
-    if (row.leaf || typeof name !== 'string' || name.includes('#') || name.includes('\0')) continue
+    if (typeof name !== 'string' || name.includes('#') || name.includes('\0')) continue
     if (row.scope[Context.isolate]?.[name] !== key) continue
     const id = scopedId(name, row.labelOf(name))
     if (row.exports.includes(id) || slots.has(id)) continue
@@ -312,16 +313,10 @@ function located(entry) {
   }
 }
 
-// The plugin as written, on the plugin a row loads.
-const DECLARED = Symbol('rutis.declared')
-
 async function pluginOf(entry) {
   entry = located(entry)
   const declared = await declaredOf(entry)
-  if (!isLeaf(declared)) return declared
-  const plugin = toCordis(declared)
-  plugin[DECLARED] = declared
-  return plugin
+  return isLeaf(declared) ? toCordis(declared) : declared
 }
 
 // The module's plugin as written: a leaf plugin (`definePlugin`), or a
@@ -377,8 +372,7 @@ async function loadRow([key, entry, config, isolate, inject, exports]) {
     scopedId(name, label)
     scope = scope.isolate(name, isolated(name, label))
   }
-  const leaf = isLeaf(plugin[DECLARED])
-  const row = { fiber: undefined, inner: undefined, config, exports: ids, loading: true, scope, labelOf, leaf }
+  const row = { fiber: undefined, inner: undefined, config, exports: ids, loading: true, scope, labelOf }
   const fiber = fiberOf(inject?.length
     ? scope.plugin({ name: `row:${key}`, inject, apply(gated) { row.inner = fiberOf(gated.plugin(plugin, row.config)) } })
     : scope.plugin(plugin, config))
@@ -437,8 +431,9 @@ async function unloadRow(key) {
 async function describe(entry) {
   entry = located(entry)
   const declared = await declaredOf(entry)
-  // A leaf plugin declares everything in code.
-  if (isLeaf(declared)) return { config: declared.config ?? null, inject: declared.inject, provides: declared.provides }
+  // A leaf plugin declares in code; one that declares no `provides` (an
+  // SDK of 0.12 or later says so) has its services announced.
+  if (isLeaf(declared)) return { config: declared.config ?? null, inject: declared.inject, provides: declared.provides, announces: declared.announces === true }
   const plugin = declared
   const schema = plugin.Config ?? plugin.schema
   const provides = await providesOf(entry)

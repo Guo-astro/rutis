@@ -946,6 +946,25 @@ func (p *Peer) Notify(target, method string, args []any) {
 	}
 }
 
+// Announce sends a call as Notify does, and returns a channel closed once
+// the far end answered it (whatever the answer) or the session ended.
+func (p *Peer) Announce(target, method string, args []any) <-chan struct{} {
+	done := make(chan struct{})
+	_, waiter, err := p.request(context.Background(), "invoke", map[string]any{"target": target, "method": method}, args, true, nil)
+	if err != nil {
+		close(done)
+		return done
+	}
+	go func() {
+		select {
+		case <-waiter:
+		case <-p.closed:
+		}
+		close(done)
+	}()
+	return done
+}
+
 func (p *Peer) call(ctx context.Context, op string, fields map[string]any, args []any, hasArgs bool, origin []string, cancellable bool) (any, error) {
 	if ctx == nil {
 		panic("rutis: a nil context: pass the context.Context your caller gave you")

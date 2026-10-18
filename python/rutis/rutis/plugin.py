@@ -4,17 +4,18 @@ A plugin is a module with an `apply(ctx, config)` function. It may declare:
 
 - `inject`: the names of the services it uses. rutis starts the plugin only
   once all of them are available, and stops it when one goes away.
-- `provides`: the services it provides to rutis, as
+- `provides` (optional): the services it provides to rutis, as
   `{ name: { method: "sync" | "async" } }`, or `{ name: SomeClass }` to
   take the methods from the class (public methods; `async def` ones are
-  async).
+  async). Without it, what `ctx.provide` provides still reaches rutis: its
+  methods are the object's public callables, all async. With it, methods
+  can be `sync`, and `rutis-host check` knows before the plugin runs.
 - `Config`: the JSON Schema of its config, as a dict.
 
 `apply` may be `async`. It returns a cleanup function (which may be async)
 or None::
 
     inject = ["llm"]
-    provides = {"weather": Weather}
 
     def apply(ctx, config):
         ctx.provide("weather", Weather(ctx.use("llm"), config["city"]))
@@ -73,6 +74,8 @@ class Plugin:
     config: dict | None = None
     # The plugin API it was written against.
     api: int = PLUGIN_API
+    # It declares no `provides`: what it provides is known once it runs.
+    announces: bool = False
 
 
 def define_plugin(
@@ -82,7 +85,7 @@ def define_plugin(
     provides: dict | None = None,
     config: dict | None = None,
 ) -> Plugin:
-    return Plugin(apply, list(inject), shapes(provides or {}), config)
+    return Plugin(apply, list(inject), shapes(provides or {}), config, announces=provides is None)
 
 
 def shapes(provides: dict) -> dict:
@@ -105,6 +108,25 @@ def shapes(provides: dict) -> dict:
     return result
 
 
+def methods_of(value: Any) -> set:
+    """The methods of a service no declaration describes: its public
+    callable attributes (not starting with `_`), its class's and its own;
+    a property is not read."""
+    methods = set()
+    for name in dir(value):
+        if name.startswith("_"):
+            continue
+        try:
+            static = inspect.getattr_static(value, name)
+        except AttributeError:
+            continue
+        if isinstance(static, property):
+            continue
+        if callable(getattr(value, name, None)):
+            methods.add(name)
+    return methods
+
+
 def load(module: ModuleType) -> Plugin:
     declared = getattr(module, "plugin", None)
     if isinstance(declared, Plugin):
@@ -120,4 +142,5 @@ def load(module: ModuleType) -> Plugin:
         list(inject),
         shapes(getattr(module, "provides", {})),
         getattr(module, "Config", None),
+        announces=not hasattr(module, "provides"),
     )

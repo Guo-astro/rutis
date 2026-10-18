@@ -121,6 +121,24 @@ func (w *Weather) Sample(name string) (any, error) {
 	return sample(), nil
 }
 
+// Days and Forecast: `undeclared` in the expectations, a service no
+// Provides declares, with a method of its own, one promoted from an
+// embedded type, a field and an unexported method.
+type Days struct{}
+
+func (Days) Week(n int) []string { return []string{"mon", "tue", "wed"}[:n] }
+
+type Forecast struct {
+	Days
+	City string
+}
+
+func (f *Forecast) Tomorrow() string { return f.City + " tomorrow" }
+
+func (f *Forecast) private() string { return "not a method rutis sees" }
+
+var _ = (*Forecast).private
+
 var Plugin = rutis.Define(rutis.Plugin[Config]{
 	Name:     "weather",
 	Inject:   []string{"clock"},
@@ -136,6 +154,7 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 		}
 		w := &Weather{clock: clock, city: city}
 		ctx.Provide("weather", w)
+		ctx.Provide("forecast", &Forecast{City: "Oslo"})
 		ctx.On("weather/city", func(_ context.Context, args ...any) error {
 			if len(args) != 1 {
 				return fmt.Errorf("weather/city needs one city")

@@ -383,4 +383,4 @@ M2 的运行时一致性测试本来就是"同一组插件行为，在每个运�
 | — | 行配置 `isolate` 的名字留在行自己的作用域里，不投到 rutis；实例的作用域照旧（`host_key_in`） | 私有作用域里的服务本来就不给别人用 |
 | — | `rows.schema` 的回复加 `announces`：包里没有 `rutis.provides` 时为 `true`。`check` 对只可能由这类行提供的服务报 `may be provided at runtime by …`（`Supply::Announced`），不算失败 | `check` 不运行插件，看不到推断出的服务 |
 
-协议：runner 在 `mount` 回复的 `features` 里加 `rows.announce`；宿主在 `mount` 参数里加 `announce: true`，runner 只对这样的宿主发第四个参数。0.11 的宿主不发 `announce`，看到的仍是三个参数的 `service`，没声明的服务不投过去，和以前一样；0.11 的 runner 不认 `announce`，没有 `rows.announce`，也和以前一样。带推断服务的行在回复 `rows.load` 前等宿主处理完这些通知，所以重名在装载时就失败。叶子插件（`definePlugin`）在 0.12 的这一步仍按声明，见 #442。
+协议：runner 在 `mount` 回复的 `features` 里加 `rows.announce`；宿主在 `mount` 参数里加 `announce: true`，runner 只对这样的宿主发第四个参数。0.11 的宿主不发 `announce`，看到的仍是三个参数的 `service`，没声明的服务不投过去，和以前一样；0.11 的 runner 不认 `announce`，没有 `rows.announce`，也和以前一样。带推断服务的行在回复 `rows.load` 前等宿主处理完这些通知，所以重名在装载时就失败。叶子插件随后（#442）按同一套做法：四种 SDK 的 `ctx.provide` 都自动对外，方法取实现对象的公开方法（JS：自身和原型链上的函数；Python：不以 `_` 开头的可调用属性；Go：导出方法），都是 `async`；`provides` 变为可选，写了仍按声明（标 `sync`、给 `check` 静态信息）。没有声明 `provides` 的叶子插件在 `rows.schema` / Go 清单里报 `announces: true`。

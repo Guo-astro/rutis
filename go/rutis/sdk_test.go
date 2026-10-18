@@ -241,7 +241,10 @@ func TestDefineRefusesBrokenDeclarations(t *testing.T) {
 	})
 }
 
-func TestAnUndeclaredServiceIsRefused(t *testing.T) {
+// A service Provides does not declare reaches rutis all the same (#442):
+// its methods are the value's exported ones, all asynchronous, and the
+// manifest says the plugin may provide services it does not declare.
+func TestAnUndeclaredServiceIsAnnounced(t *testing.T) {
 	undeclared := rutis.Define(rutis.Plugin[rutis.NoConfig]{
 		Name: "undeclared",
 		Apply: func(ctx *rutis.Ctx, _ rutis.NoConfig) error {
@@ -249,8 +252,21 @@ func TestAnUndeclaredServiceIsRefused(t *testing.T) {
 			return nil
 		},
 	})
-	if message := loadFails(t, undeclared, nil); !strings.Contains(message, "Provides does not declare it") {
-		t.Fatal(message)
+	loaded := rutistest.Load(t, undeclared, nil, nil)
+	weather := loaded.Service("weather")
+	if kinds := weather.Methods(); len(kinds) != 3 || kinds["unit"] != "async" || kinds["today"] != "async" {
+		t.Fatalf("methods %v", kinds)
+	}
+	var unit string
+	if err := weather.Call(context.Background(), "unit", &unit); err != nil || unit != "celsius" {
+		t.Fatal(unit, err)
+	}
+	data, err := rutis.Manifest(undeclared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"announces":true`) {
+		t.Fatalf("the manifest says it announces: %s", data)
 	}
 }
 

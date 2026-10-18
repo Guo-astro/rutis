@@ -74,6 +74,26 @@ class Weather:
         return SAMPLES[name]()
 
 
+class Days:
+    def week(self, n):
+        return ["mon", "tue", "wed"][:n]
+
+
+class Forecast(Days):
+    """`undeclared` in the expectations: a service no `provides` declares,
+    with a method of its own, an inherited one, a field and a private
+    method."""
+
+    def __init__(self, city):
+        self.city = city
+
+    def tomorrow(self):
+        return f"{self.city} tomorrow"
+
+    def _private(self):
+        return "not a method rutis sees"
+
+
 provides = {"weather": Weather}
 
 
@@ -81,3 +101,4 @@ def apply(ctx, config):
     weather = Weather(ctx.use("clock"))
     ctx.on("weather/city", lambda city: setattr(weather, "city", city))
     ctx.provide("weather", weather)
+    ctx.provide("forecast", Forecast("Oslo"))
