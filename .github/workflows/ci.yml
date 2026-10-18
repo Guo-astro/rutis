@@ -35,6 +35,10 @@ on:
         description: The commit the links check compares with (default the parent commit)
         type: string
         default: ""
+      release:
+        description: Called by release.yml, the release gate (the cross-version meetings leave out the version being released)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -341,6 +345,15 @@ jobs:
           RUSTFLAGS: --cfg rutis_shuttle
         run: cargo test -p rutis --lib --target-dir "${CARGO_TARGET_DIR:-target}/shuttle" shuttle
 
+      # The fuzz entry points (crates/rutis-bridge/src/fuzzing.rs, #179)
+      # compile only under cargo-fuzz's --cfg fuzzing, which the nightly
+      # stress.yml uses: checked here (no run), in a target directory of
+      # its own, so that a change breaking them fails the pull request.
+      - name: cargo check (rutis-bridge fuzz entry points)
+        env:
+          RUSTFLAGS: --cfg fuzzing
+        run: cargo check -p rutis-bridge --features websocket --target-dir "${CARGO_TARGET_DIR:-target}/fuzzcheck"
+
       # Plugins of other languages and of other nodes as rutis-loader rows.
       - name: cargo test (rutis-loader, every row kind)
         run: cargo test -p rutis-loader --features node,python,go,peer
@@ -430,11 +443,15 @@ jobs:
       # The published releases meeting this code (#209). They come from
       # npm, PyPI and the Go proxy and change as releases are published,
       # so only full runs (nightly, release gate) run them (docs/ci.md §2).
-      # Installed outside target/: not into the Rust cache.
+      # Installed outside target/: not into the Rust cache. Which releases
+      # it met goes to the job summary (tests/e2e/src/previous.rs). In the
+      # release gate, only older releases: a release re-run after it failed
+      # halfway may find its own version published in part.
       - name: cargo test (cross-version meetings)
         if: needs.changes.outputs.all == 'true'
         env:
           RUTIS_E2E_CACHE: ${{ runner.temp }}/rutis-e2e-previous
+          RUTIS_E2E_ONLY_OLDER: ${{ inputs.release && '1' || '' }}
         run: cargo test -p rutis-e2e --test cross_version -- --ignored
       # A failed scenario keeps its directory, with every host's output and
       # the residue found in logs/.
@@ -832,7 +849,7 @@ jobs:
           RUTIS_LOCAL_HANDOVER: loopback
         run: cargo test -p rutis-bridge --features bun,testing,websocket --test session_matrix bun
       - name: cargo test (rutis-loader, Bun rows)
-        run: cargo test -p rutis-loader --features bun,node,python --test bun_rows --test bun_instances --test bun_multilang
+        run: cargo test -p rutis-loader --features bun,node,python --test bun_rows --test bun_instances --test bun_multilang --test caller_rows
       # A listening Bun runtime's leases (the other languages run in `rust`).
       - name: cargo test (rutis-loader, remote Bun runtime leases)
         run: cargo test -p rutis-loader --features bun,node,python --test leases bun
