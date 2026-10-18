@@ -48,7 +48,7 @@ The host controls when a plugin runs:
 
 Services obtained in `apply` remain valid while the plugin is running, so the plugin does not need to handle a service disappearing midway through its work.
 
-A service name has one provider in rutis: when another plugin (any language, any node) already provides a service of that name, the plugin providing it later fails to load, and the error names both, for example `service weather is already provided by row forecast: row weather cannot provide it too`. An undeclared service appears only once its plugin runs; plugins depending on it wait for it as usual, and `rutis-host check` reports such a dependency as `may be provided at runtime by …`, not as a failure.
+A service name has one provider in rutis: when another plugin (any language, any node) already provides a service of that name, the plugin providing it later fails (to load, or, when it provides it after loading, at that point), and the error names both, for example `service weather is already provided by row forecast: row weather cannot provide it too`. An undeclared service appears only once its plugin runs; plugins depending on it wait for it as usual, and `rutis-host check` reports such a dependency as `may be provided at runtime by …`, not as a failure.
 
 When the host stops, it unloads every plugin, each cleanup runs once, and then the runtime process exits. When the host goes away without unloading them (it was killed, or crashed), the runtime sees its connection to the host close, unloads every plugin itself, and exits; timers, sockets, threads or goroutines a plugin left behind do not keep it running.
 

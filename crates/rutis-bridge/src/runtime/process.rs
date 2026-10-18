@@ -636,6 +636,11 @@ pub struct RowSchema {
     /// whose package declares nothing (a published one), say.
     #[serde(default)]
     pub announces: bool,
+    /// A Cordis plugin, not a leaf one (`definePlugin`): it resolves what
+    /// it injects from Cordis rows of its own runtime in Cordis. Only the
+    /// Node runtime has them.
+    #[serde(default)]
+    pub cordis: bool,
 }
 
 /// One row's use of a host service (see [`Process::lease_host`]). Give it

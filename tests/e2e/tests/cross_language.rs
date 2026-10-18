@@ -290,6 +290,8 @@ fn services_no_declaration_describes_cross_languages() {
         );
         assert!(printed.contains(&line), "check, {service}:\n{printed}");
     }
+    // Leaf plugins, no Cordis rows: nothing about resolving in Cordis (#446).
+    assert!(!printed.contains("resolves in Cordis"), "{printed}");
     assert!(
         printed.contains("  provides: {\"counter\":{\"next\":\"sync\"}}"),
         "check, what counter declares:\n{printed}"

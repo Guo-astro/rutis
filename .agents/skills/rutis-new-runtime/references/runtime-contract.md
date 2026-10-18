@@ -69,7 +69,7 @@ Adding fields to the `mount` reply (such as `engine` or `plugins`) is not a prot
 
 | Operation | Behavior |
 | --- | --- |
-| `rows.schema(entry)` | `{ config, inject, provides, version, announces }`: config JSON Schema, service names used, service names provided with each method `sync` / `async`, and `announces: true` when the plugin may provide services `provides` does not list (the host's `check` then reports them as possibly provided at runtime); an unknown entry is an error listing the available names |
+| `rows.schema(entry)` | `{ config, inject, provides, version, announces }`: config JSON Schema, service names used, service names provided with each method `sync` / `async`, and `announces: true` when the plugin may provide services `provides` does not list (the host's `check` then reports them as possibly provided at runtime); the Node runtime adds `cordis: true` for a Cordis plugin (not a leaf one), whose dependencies on Cordis rows of its runtime resolve in Cordis, and a leaf runtime leaves it out; an unknown entry is an error listing the available names |
 | `rows.load(key, entry, config, isolate, inject, exports)` | Resolve the entry → check the plugin API version (a plugin newer than the runtime is refused, naming both versions) → decode the config → `apply`; services from `ctx.provide` are announced with `service(id, handle, version)` before the reply; on failure unload the row, then report |
 | `rows.update(key, config)` | Leaf plugins have no volatile fields: unload, then load again |
 | `rows.unload(key)` | Withdraw provides first (`service(id, None, version)`) → cancel the row's tasks → run cleanups in reverse order |

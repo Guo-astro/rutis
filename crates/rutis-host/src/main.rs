@@ -8,6 +8,8 @@
 //! rutis-host go add <module>@<version> [rutis.json]
 //! ```
 
+use std::collections::HashSet;
+
 use rutis_host::{config, errln, host, languages, new, outln, project, status};
 use rutis_loader::{RowStatus, Supply};
 
@@ -407,6 +409,17 @@ async fn check(args: &[String]) -> Result<(), String> {
         errln!("rutis-host: warning: {issue}");
     }
     let mut failed = report.failing().count();
+    // The Cordis rows (the Node runtime's, not leaf plugins): between them a
+    // dependency resolves in Cordis.
+    let cordis: HashSet<&str> = report
+        .rows
+        .iter()
+        .filter(|row| match &row.status {
+            RowStatus::Checked { resolved, .. } => resolved.meta["cordis"] == true,
+            _ => false,
+        })
+        .map(|row| row.id.as_str())
+        .collect();
     for row in &report.rows {
         let (id, name) = (&row.id, &row.name);
         match &row.status {
@@ -447,7 +460,14 @@ async fn check(args: &[String]) -> Result<(), String> {
                     outln!("  config: {schema}");
                 }
                 for requirement in requires {
-                    if let Some(line) = supply_line(&requirement.service, &requirement.supply) {
+                    let between_cordis_rows = cordis.contains(id.as_str())
+                        && matches!(&requirement.supply, Supply::Announced(rows)
+                            if rows.iter().any(|row| cordis.contains(row.as_str())));
+                    if let Some(line) = supply_line(
+                        &requirement.service,
+                        &requirement.supply,
+                        between_cordis_rows,
+                    ) {
                         outln!("  {line}");
                     }
                 }
@@ -511,7 +531,9 @@ async fn check(args: &[String]) -> Result<(), String> {
 
 /// `check`'s line for a service a row waits for: what to do when nothing
 /// provides it, what may when that is not known; none when it is provided.
-fn supply_line(service: &str, supply: &Supply) -> Option<String> {
+/// `between_cordis_rows`: the row and one of those that may provide it are
+/// Cordis rows, where the dependency resolves in Cordis.
+fn supply_line(service: &str, supply: &Supply, between_cordis_rows: bool) -> Option<String> {
     match supply {
         Supply::Missing { disabled } if !disabled.is_empty() => Some(format!(
             "{service}: only disabled rows provide it ({}): enable one, or add a row that provides it",
@@ -521,8 +543,12 @@ fn supply_line(service: &str, supply: &Supply) -> Option<String> {
             "{service}: add a row that provides it, or import it from a peer (import: [\"{service}\"])"
         )),
         Supply::Announced(rows) => Some(format!(
-            "{service}: may be provided at runtime by rows that do not declare all they provide ({}); between Cordis rows of one runtime it resolves in Cordis",
-            some_of(rows)
+            "{service}: may be provided at runtime by rows that do not declare all they provide ({}){}",
+            some_of(rows),
+            match between_cordis_rows {
+                true => "; between Cordis rows of one runtime it resolves in Cordis",
+                false => "",
+            }
         )),
         Supply::Unknown(sources) => Some(format!(
             "{service}: not known to be provided; it may come from {}",

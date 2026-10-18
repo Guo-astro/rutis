@@ -10,7 +10,7 @@ class Plugin(unittest.TestCase):
     def test_greets_with_the_configured_greeting(self):
         async def go():
             async with load(plugin, config={"greeting": "Hi"}) as t:
-                self.assertEqual(t.service("greeter").hello("Ada"), "Hi, Ada!")
+                self.assertEqual(await t.service("greeter").hello("Ada"), "Hi, Ada!")
 
         asyncio.run(go())
 

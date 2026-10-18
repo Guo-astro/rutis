@@ -105,7 +105,6 @@ class Greeter {{
 
 export default definePlugin<Config>({{
   inject: [],
-  provides: {{ greeter: {{ hello: 'sync' }} }},
   config: {{ type: 'object', properties: {{ greeting: {{ type: 'string', default: 'Hello' }} }} }},
   apply(ctx, config) {{
     console.log(`demo v{n} applied ${{process.execPath}}`)
@@ -143,7 +142,6 @@ def apply(ctx, config):
 plugin = define_plugin(
     apply,
     inject=[],
-    provides={{"greeter": Greeter}},
     config={{"type": "object", "properties": {{"greeting": {{"type": "string", "default": "Hello"}}}}}},
 )
 "#
@@ -175,9 +173,8 @@ type Greeter struct {{
 func (g *Greeter) Hello(name string) string {{ return g.greeting + ", " + name + "! (v{n})" }}
 
 var Plugin = rutis.Define(rutis.Plugin[Config]{{
-	Name:     "demo",
-	Inject:   []string{{}},
-	Provides: rutis.Provides{{"greeter": rutis.MethodsOf[*Greeter](rutis.Sync("Hello"))}},
+	Name:   "demo",
+	Inject: []string{{}},
 	Apply: func(ctx *rutis.Ctx, config Config) error {{
 		greeting := config.Greeting
 		if greeting == "" {{
@@ -381,8 +378,9 @@ fn dev_loop(kind: Kind) {
     // 3. check, on the template project as generated.
     let mut check = s.host_in_with("demo", ["check"], GO_ENV);
     assert!(check.wait_exit().success(), "rutis-host check");
+    // The template declares no `provides`: its greeter is known once it
+    // runs.
     check.expect("demo");
-    check.expect("greeter");
 
     // 4. dev, with a probe that calls the greeter.
     let (lang, dir) = kind.probe();
