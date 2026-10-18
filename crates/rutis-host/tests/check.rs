@@ -347,11 +347,19 @@ async fn check_fails_on_a_service_nothing_provides() {
 /// Cordis rows that declare nothing (published packages): what one injects
 /// another may provide once they run, resolved in Cordis, so check names
 /// those rows and passes; a declared provider is named as usual (#428).
+/// Between leaf plugins (`definePlugin` without `provides`) the same,
+/// without the words about Cordis (#446).
 /// risk: A6, F8
 /// guarantee: host/check
 #[tokio::test(flavor = "multi_thread")]
 async fn check_passes_what_cordis_rows_may_provide_at_runtime() {
     let dir = tempfile::tempdir().unwrap();
+    let leaf = |body: &str| {
+        format!(
+            "import {{ definePlugin }} from '{}'\nexport default definePlugin({body})\n",
+            sdk()
+        )
+    };
     write(
         dir.path(),
         &[
@@ -369,11 +377,21 @@ async fn check_passes_what_cordis_rows_may_provide_at_runtime() {
                 "export const name = 'workspace'\nexport const inject = ['storageDomain']\nexport function apply() {}\n",
             ),
             (
+                "forecast.mjs",
+                &leaf("{ apply(ctx) { ctx.provide('forecast', { today() {} }) } }"),
+            ),
+            (
+                "planner.mjs",
+                &leaf("{ inject: ['forecast'], apply() {} }"),
+            ),
+            (
                 "rutis.json",
                 &configuration(serde_json::json!([
                     { "id": "storage", "name": "./storage.mjs" },
                     { "id": "domain", "name": "./domain.mjs" },
-                    { "id": "workspace", "name": "./workspace.mjs" }
+                    { "id": "workspace", "name": "./workspace.mjs" },
+                    { "id": "forecast", "name": "./forecast.mjs" },
+                    { "id": "planner", "name": "./planner.mjs" }
                 ])),
             ),
         ],
@@ -400,11 +418,18 @@ async fn check_passes_what_cordis_rows_may_provide_at_runtime() {
             "domain (file://<dir>/domain.mjs): ok",
             "  inject: [\"storage\"]",
             "  provides: {}",
-            "  storage: may be provided at runtime by rows that do not declare all they provide (storage, workspace); between Cordis rows of one runtime it resolves in Cordis",
+            "  storage: may be provided at runtime by rows that do not declare all they provide (storage, workspace, forecast and 1 more); between Cordis rows of one runtime it resolves in Cordis",
             "workspace (file://<dir>/workspace.mjs): ok",
             "  inject: [\"storageDomain\"]",
             "  provides: {}",
-            "  storageDomain: may be provided at runtime by rows that do not declare all they provide (storage, domain); between Cordis rows of one runtime it resolves in Cordis",
+            "  storageDomain: may be provided at runtime by rows that do not declare all they provide (storage, domain, forecast and 1 more); between Cordis rows of one runtime it resolves in Cordis",
+            "forecast (file://<dir>/forecast.mjs): ok",
+            "  inject: []",
+            "  provides: {}",
+            "planner (file://<dir>/planner.mjs): ok",
+            "  inject: [\"forecast\"]",
+            "  provides: {}",
+            "  forecast: may be provided at runtime by rows that do not declare all they provide (storage, domain, workspace and 1 more)",
         ]
     );
     assert_eq!(checked.stderr, "");

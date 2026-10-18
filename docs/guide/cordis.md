@@ -9,7 +9,7 @@ rutis 和 Cordis（Node 插件框架）有两种互通方式：
 
 - 同一个 Node 运行时里的 Cordis 行按 Cordis 的原生规则互相使用服务，拿到的是对象本身。
 - 一行提供的服务自动投到 rutis，别的运行时的行、别的节点和 Rust 插件按名字使用；方法取服务对象上的函数（自身和原型链上的，不含 `constructor`），都按 `async` 调用。包的 `package.json` 里写了 `rutis.provides` 时按它（例如把某些方法标成 `sync`）。
-- 同名服务已经有别的提供者（另一个运行时的行、Rust 插件、节点导入）时，后提供的那一行失败，错误写明双方，例如 `service storage is already provided by row prompts: row storage cannot provide it too`。
+- 同名服务已经有别的提供者（另一个运行时的行、Rust 插件、节点导入）时，后提供的那一行失败（装载后才提供的也一样），错误写明双方，例如 `service storage is already provided by row prompts: row storage cannot provide it too`。
 - `rutis-host check` 不运行插件，看不到没有声明的服务：一行依赖的服务只可能由这类行提供时，写 `may be provided at runtime by …`，不算失败。
 
 ## Cordis 应用作为节点

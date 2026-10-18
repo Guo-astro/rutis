@@ -442,6 +442,9 @@ async function describe(entry) {
     inject: Object.keys(Inject.resolve(plugin.inject)),
     provides: provides ?? {},
     announces: provides === undefined,
+    // A Cordis plugin, not a leaf one: what it injects from rows of this
+    // runtime resolves in Cordis.
+    cordis: true,
   }
 }
 

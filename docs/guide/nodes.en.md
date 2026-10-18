@@ -105,7 +105,7 @@ A runtime can also connect to rutis instead: use this when the remote machines a
 }
 ```
 
-Every connection presents the same token (`RUTIS_TOKEN_WORKER`, or `RUTIS_TOKEN`), reports an id of its own, and becomes an instance of the group: created when it connects, closed when it disconnects; a newer connection with the same id takes over. The group's rows run, in each instance, on that instance's connection, and the services they provide are seen only in that instance. For the fields and rules, see [rutis-host](rutis-host.en.md#runtimes-that-connect-in).
+Every connection presents the same token (`RUTIS_TOKEN_WORKER`, or `RUTIS_TOKEN`), reports an id of its own, and becomes an instance of the group: created when it connects, closed when it disconnects; a newer connection with the same id takes over. The group's rows run, in each instance, on that instance's connection, and the services they provide are seen only in that instance. That holds for the services they provide without declaring them too (which reach rutis by themselves): those are visible only inside that instance, to the rows of the instance, never to rows outside it or to other instances. For the fields and rules, see [rutis-host](rutis-host.en.md#runtimes-that-connect-in).
 
 A Python runtime connects in with `dial:`:
 

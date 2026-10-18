@@ -30,6 +30,17 @@ type Announce = Box<dyn FnMut(&Projection, &str, &serde_json::Value) -> bool + S
 /// for the error naming both sides.
 type Occupied = Arc<dyn Fn(&Ctx) -> Option<String> + Send + Sync>;
 
+/// Told why a slot was refused (see [`Projection::on_refused`]).
+type Refuse = Arc<dyn Fn(String) + Send + Sync>;
+
+/// Slots refused because another provider has their key: the first one
+/// kept for [`Projection::take_refused`], or each passed to the hook.
+#[derive(Default)]
+struct Refusals {
+    first: Option<String>,
+    hook: Option<Refuse>,
+}
+
 struct Slot {
     /// Newest handle reported by the Cordis side.
     handle: Option<String>,
@@ -66,9 +77,9 @@ pub struct Projection {
     idle: tokio::sync::Notify,
     me: Weak<Projection>,
     announce: Mutex<Option<Announce>>,
-    /// The first slot refused because another provider has its key, and
-    /// why (see [`Projection::take_refused`]).
-    refused: Mutex<Option<String>>,
+    /// Slots refused because another provider has their key, and why
+    /// (see [`Projection::take_refused`], [`Projection::on_refused`]).
+    refused: Mutex<Refusals>,
 }
 
 impl Projection {
@@ -78,7 +89,7 @@ impl Projection {
             idle: tokio::sync::Notify::new(),
             me: me.clone(),
             announce: Mutex::new(None),
-            refused: Mutex::new(None),
+            refused: Mutex::default(),
         })
     }
 
@@ -104,7 +115,39 @@ impl Projection {
     /// ([`Projection::service_keyed_occupied`]). A row loading checks it to
     /// fail as the later provider.
     pub fn take_refused(&self) -> Option<String> {
-        self.refused.lock().unwrap().take()
+        self.refused.lock().unwrap().first.take()
+    }
+
+    /// From now on, give `refuse` why each slot is refused when another
+    /// provider has its key, a refusal not yet taken first: a row that has
+    /// loaded fails as the later provider when it provides such a service
+    /// afterwards. `refuse` is called while a slot publishes, so it should
+    /// only arrange for the row to fail, not wait for it.
+    pub fn on_refused(&self, refuse: impl Fn(String) + Send + Sync + 'static) {
+        let refuse: Refuse = Arc::new(refuse);
+        let pending = {
+            let mut refused = self.refused.lock().unwrap();
+            refused.hook = Some(refuse.clone());
+            refused.first.take()
+        };
+        if let Some(why) = pending {
+            refuse(why);
+        }
+    }
+
+    /// A slot was refused because of `why`.
+    fn refuse(&self, why: String) {
+        let hook = {
+            let mut refused = self.refused.lock().unwrap();
+            match refused.hook.clone() {
+                Some(hook) => hook,
+                None => {
+                    refused.first.get_or_insert(why);
+                    return;
+                }
+            }
+        };
+        hook(why);
     }
 
     /// Declare an exported slot. `make` builds the native proxy for one handle.
@@ -190,10 +233,7 @@ impl Projection {
                             "service {service} is already provided by {holder}: {this} cannot provide it too"
                         );
                         if let Some(me) = me.upgrade() {
-                            me.refused
-                                .lock()
-                                .unwrap()
-                                .get_or_insert_with(|| why.clone());
+                            me.refuse(why.clone());
                         }
                         Err(Error::Value(why))
                     }
@@ -269,6 +309,7 @@ impl Projection {
     /// A publication under way finishes first: until then its slot is not
     /// here to withdraw, and its service would stay.
     pub async fn withdraw(&self) {
+        self.refused.lock().unwrap().hook = None;
         let (target, mut slots) = loop {
             let idle = self.idle.notified();
             let mut idle = std::pin::pin!(idle);
@@ -307,6 +348,7 @@ impl Projection {
     /// unloaded row reports its services' withdrawal and leaves them to the
     /// publication under way). It publishes nothing new meanwhile.
     pub fn close(&self) {
+        self.refused.lock().unwrap().hook = None;
         let slots = {
             let mut state = self.state.lock().unwrap();
             if state.applying {

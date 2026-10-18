@@ -62,11 +62,10 @@ interface Llm {
 
 export default definePlugin<{ city?: string }>({
   inject: ['llm'],                             // services it needs: starts once all are there
-  provides: { weather: { today: 'async' } },   // services it offers, and how each method is called
   apply(ctx, config) {
     const llm = ctx.use<Llm>('llm')
     const city = config.city ?? 'Oslo'
-    ctx.provide('weather', {
+    ctx.provide('weather', {                   // the service it offers, by name, to every language
       today: () => llm.ask(`weather in ${city}`),
     })
   },
