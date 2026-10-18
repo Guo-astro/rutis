@@ -119,9 +119,10 @@ type row struct {
 	order int64
 	// Ids of the slots of services it announced.
 	announced []string
-	// Announcements the host has yet to answer, while the row loads; nil
-	// once it loaded.
-	pending []<-chan struct{}
+	// Announcements the host has yet to answer, while the row loads: each
+	// waits for its answer, and an error is a refusal that fails the load.
+	// Nil once it loaded.
+	pending []func() error
 	loading bool
 }
 
@@ -167,6 +168,49 @@ type runtimeState struct {
 	mounted bool
 	// The undeclared names a plugin was told such a host does not take.
 	told map[string]bool
+
+	// Frames for the host, queued under mu in the order they are taken and
+	// sent by flush once mu is released: a write blocked by a far end that
+	// does not read then never holds mu, which the session's reader needs.
+	// outMu guards the queue; sendMu keeps the sends in queue order.
+	outMu  sync.Mutex
+	outbox []func()
+	sendMu sync.Mutex
+}
+
+// post queues `send`, which writes to the session, behind every frame
+// queued before; rt.mu is held. The caller flushes after releasing rt.mu.
+func (rt *runtimeState) post(send func()) {
+	rt.outMu.Lock()
+	rt.outbox = append(rt.outbox, send)
+	rt.outMu.Unlock()
+}
+
+// flush sends the queued frames in order; rt.mu is not held. Once it
+// returns, every frame queued before the call is sent.
+func (rt *runtimeState) flush() {
+	rt.sendMu.Lock()
+	defer rt.sendMu.Unlock()
+	for {
+		rt.outMu.Lock()
+		if len(rt.outbox) == 0 {
+			rt.outMu.Unlock()
+			return
+		}
+		send := rt.outbox[0]
+		rt.outbox[0] = nil
+		rt.outbox = rt.outbox[1:]
+		rt.outMu.Unlock()
+		send()
+	}
+}
+
+// relay closes `to` once `from` is closed.
+func relay(from <-chan struct{}, to chan struct{}) {
+	go func() {
+		<-from
+		close(to)
+	}()
 }
 
 // Where a plugin is told that the host does not take an undeclared
@@ -236,7 +280,7 @@ func same(a, b any) bool {
 }
 
 // refresh reports the object now in an exported slot under a new handle;
-// rt.mu is held.
+// rt.mu is held, and the report is queued (post).
 func (rt *runtimeState) refresh(id string) {
 	s := rt.slots[id]
 	if s == nil {
@@ -271,23 +315,28 @@ func (rt *runtimeState) refresh(id string) {
 	}
 	rt.version++
 	if rt.session != nil && !rt.closing {
+		session := rt.session
 		var handle any
 		if s.handle != "" {
 			handle = s.handle
 		}
 		if !s.announced {
-			rt.session.Notify("", "service", []any{id, handle, rt.version})
+			args := []any{id, handle, rt.version}
+			rt.post(func() { session.Notify("", "service", args) })
 			return
 		}
 		// An announced service says whose it is and what it offers, and a
-		// row loading answers once rutis has heard it.
+		// row loading answers once rutis has heard it (a refusal fails the
+		// row there).
 		methods := map[string]any{}
 		for wire := range s.methods {
 			methods[wire] = "async"
 		}
-		answered := rt.session.Announce("", "service", []any{id, handle, rt.version, map[string]any{"row": s.row, "methods": methods}})
+		args := []any{id, handle, rt.version, map[string]any{"row": s.row, "methods": methods}}
+		answered := make(chan struct{})
+		rt.post(func() { relay(session.Announce("", "service", args), answered) })
 		if r := rt.rows[s.row]; r != nil && r.loading {
-			r.pending = append(r.pending, answered)
+			r.pending = append(r.pending, func() error { <-answered; return nil })
 		}
 	}
 }
@@ -314,8 +363,8 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 		panic(fmt.Sprintf("rutis: provide %s: %T is not the %s Provides declares", name, value, shape.typ))
 	}
 	rt.mu.Lock()
-	defer rt.mu.Unlock()
 	if existing, ok := rt.services[id]; ok {
+		rt.mu.Unlock()
 		panic(fmt.Sprintf("rutis: service %s is already provided by row %s", printable(id), existing.row))
 	}
 	rt.services[id] = providedService{row: r.key, value: value, shape: shape}
@@ -332,9 +381,10 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 		}
 	}
 	rt.refresh(id)
+	rt.mu.Unlock()
+	rt.flush()
 	return func() {
 		rt.mu.Lock()
-		defer rt.mu.Unlock()
 		if existing, ok := rt.services[id]; ok && existing.row == r.key && same(existing.value, value) {
 			delete(rt.services, id)
 			for i, provided := range r.provided {
@@ -345,6 +395,8 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 			}
 			rt.refresh(id)
 		}
+		rt.mu.Unlock()
+		rt.flush()
 	}
 }
 
@@ -416,11 +468,21 @@ func (rt *runtimeState) loadNamed(ctx context.Context, key, name, entry string, 
 	pending := r.pending
 	r.pending, r.loading = nil, false
 	rt.mu.Unlock()
+	rt.flush()
 	// rutis has published the announced services (or refused one, which
 	// fails the row there) and registered the row's listeners before it
-	// hears that the row loaded.
-	for _, answered := range pending {
-		<-answered
+	// hears that the row loaded. A refused listener fails the load (§4.4).
+	var refused error
+	for _, wait := range pending {
+		if err := wait(); err != nil && refused == nil {
+			refused = err
+		}
+	}
+	if refused != nil {
+		if unloadErr := rt.unload(ctx, key); unloadErr != nil {
+			return errors.Join(refused, unloadErr)
+		}
+		return refused
 	}
 	return nil
 }
@@ -456,6 +518,7 @@ func (rt *runtimeState) unload(ctx context.Context, key string) error {
 	}
 	r.announced = nil
 	rt.mu.Unlock()
+	rt.flush()
 	r.cancel()
 	waitListeners(r)
 	r.tasks.Wait()

@@ -48,7 +48,8 @@ type Spec struct {
 			Message string `json:"message"`
 		} `json:"throws"`
 	} `json:"filter"`
-	Terminal *string `json:"terminal"`
+	// A text it returns, or {"echo": true}: its first argument.
+	Terminal json.RawMessage `json:"terminal"`
 	Cancel   *struct {
 		When string `json:"when"`
 	} `json:"cancel"`
@@ -174,7 +175,7 @@ func (r *row) dispatch(ctx context.Context, spec Spec) (any, error) {
 		emit      func(context.Context, string, ...any) error
 		parallel  func(context.Context, string, ...any) error
 		serial    func(context.Context, string, ...any) (any, error)
-		waterfall func(context.Context, string, rutis.Next, ...any) (any, error)
+		waterfall func(context.Context, string, rutis.Terminal, ...any) (any, error)
 		bail      func(context.Context, string, ...any) (any, error)
 	}{r.c.Emit, r.c.Parallel, r.c.Serial, r.c.Waterfall, r.c.Bail}
 	if spec.Filter != nil {
@@ -200,10 +201,21 @@ func (r *row) dispatch(ctx context.Context, spec Spec) (any, error) {
 	case "bail":
 		return emitter.bail(ctx, spec.Name, spec.Args...)
 	case "waterfall":
-		var terminal rutis.Next
-		if spec.Terminal != nil {
-			text := *spec.Terminal
-			terminal = func(ctx context.Context) (any, error) { r.add(ctx, "terminal"); return text, nil }
+		var terminal rutis.Terminal
+		var text string
+		var echo struct {
+			Echo bool `json:"echo"`
+		}
+		if json.Unmarshal(spec.Terminal, &text) == nil {
+			terminal = func(ctx context.Context, _ ...any) (any, error) { r.add(ctx, "terminal"); return text, nil }
+		} else if json.Unmarshal(spec.Terminal, &echo) == nil && echo.Echo {
+			terminal = func(ctx context.Context, args ...any) (any, error) {
+				r.add(ctx, "terminal")
+				if len(args) == 0 {
+					return nil, nil
+				}
+				return args[0], nil
+			}
 		}
 		return emitter.waterfall(ctx, spec.Name, terminal, spec.Args...)
 	}
