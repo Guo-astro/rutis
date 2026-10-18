@@ -61,6 +61,10 @@ Expected behavior: the dialer prints `clock: <n>` every second. After a network 
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
 
+## 0.12.0
+
+The persisted `rutis.json` sample gains `restart`, added after 0.11: `"on-failure"` on `runtimes.node`, `"exit"` on `runtimes.py` and `"no"` (the default) on `runtimes.bun`; `format` stays 1. The persisted test's expectations record `restart` when it is not the default, so `"no"` does not appear in them and the older samples' expectations are unchanged. dsh's user layer has not changed since 0.11.0, so `cordis.patch.yml` is copied as is. This is also the first release whose gate runs the cross-version meetings (#426, CI's `e2e` job): the gate sets `RUTIS_E2E_ONLY_OLDER=1`, so they meet only earlier releases, here 0.11.0.
+
 ## 0.11.0
 
 Released early so that leaf plugin events (#343) are available sooner. The persisted `rutis.json` sample gains the remote runtime fields added after 0.10: `listen` and `instances` on `runtimes.remote[]` (a runtime that connects in, with a top-level `instanced` group) and `"language": "bun"`; `format` stays 1. From this release the persisted test's expectations also record a remote runtime's `listen` and `instances` (when given), and it checks the runtime names and the configuration of runtimes that connect in; the older samples' expectations are unchanged.

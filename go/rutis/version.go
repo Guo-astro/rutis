@@ -2,7 +2,7 @@ package rutis
 
 // Version is this SDK's version: the runtime's implementation version and
 // the manifest's `sdk`. The release train checks it.
-const Version = "0.11.0"
+const Version = "0.12.0"
 
 // PluginAPI is the plugin API this SDK writes plugins against and its
 // runtime supports.
