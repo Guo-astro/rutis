@@ -11,7 +11,7 @@ rutis (https://github.com/arcships/rutis) has a Rust core; plugins in other lang
 | --- | --- |
 | `references/principles.md` | rutis design principles and how to decide whether a capability belongs |
 | `references/plugin-api.md` | The plugin API shared by all languages (what plugin authors see) |
-| `references/runtime-contract.md` | What a runtime implements: frames and channels, handshake and capabilities, `mount`, control operations, values, manifests, conformance tests |
+| `references/runtime-contract.md` | What a runtime implements: frames and channels, handshake and capabilities, `mount`, control operations, values, events, manifests, conformance tests |
 
 The key idea: the rutis paradigm (dependency gating, lifecycle, configuration reconciliation) is **implemented once, in the Rust core**. A runtime and its SDK are a thin leaf layer that only connects one language's plugins. If you find yourself implementing the paradigm again in the new language, you are going the wrong way.
 
@@ -36,7 +36,7 @@ Using the criteria in `references/principles.md`:
 
 | Constraint | Meaning |
 | --- | --- |
-| Leaf plugins | The SDK offers only `define` (`inject`, optional `provides` with method shapes, config schema, `apply`; an undeclared `ctx.provide` is announced with its public methods, all `async`: `rows.announce` in the contract), `ctx.use` / `ctx.provide` / `ctx.effect` / `ctx.on` / `ctx.emit`, cancellation and errors. No child plugins, event trees or local dependency graphs |
+| Leaf plugins | The SDK offers only `define` (`inject`, optional `provides` with method shapes, config schema, `apply`; an undeclared `ctx.provide` is announced with its public methods, all `async`: `rows.announce` in the contract), `ctx.use` / `ctx.provide` / `ctx.effect` / `ctx.on` / `ctx.emit` (from rutis 0.13 also `parallel` / `serial` / `waterfall` / `bail` / `filter`: contract §6), cancellation and errors. No child plugins, event trees or local dependency graphs |
 | rutis drives | The runtime does not decide whether dependencies are met, start order or restart policy; every `inject` is gated by rutis (feature `leaf`) |
 | One plugin API | Matches `references/plugin-api.md`: declarations, ctx, lifecycle, cleanup order, deadline, value rules, plugin API version (currently 2) |
 | Platform-language implementation | The runtime and SDK are written entirely in that language, **with no Rust dependency** (no FFI or native extension bridging to rutis) |
@@ -117,6 +117,6 @@ Every local language is one entry in a registry (arcships/rutis#230): `config.rs
 | Omitting or guessing capabilities | Declare `reentrant-sync`, `sync-stack`, `sync-wait` according to the execution model |
 | Running plugin code, or bridging sync calls, on the reader thread | One execution unit per incoming call |
 | Having the host compile plugin code | `dev` runs only the project's own build; `run` runs only ready-made artifacts |
-| Forwarding leaf events across processes | Events are dispatched within the runtime process; host → runtime is declared with `emits`, runtime → host is not available yet |
+| Forwarding leaf events across processes yourself | Up to 0.12, events stay in the runtime process (host → runtime only through `emits`). From 0.13 every listener registers with the host automatically and emissions go through it when needed (contract §6); a runtime never forwards events on its own |
 | Writing docs in only one language | Keep `.md` and `.en.md` in step |
 | Running only your own unit tests | The Rust-side conformance tests are the contract |
