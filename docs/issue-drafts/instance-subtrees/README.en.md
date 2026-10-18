@@ -2,7 +2,7 @@
 
 Status: published; implementation is on the `feat/instance-subtrees` branch.
 
-The unified design is [Instance Keys, Instance Events, and Permanent Subtree Shutdown](../../design-instance-subtrees.en.md). The requirements came from dim-agent !2001, but this document tracks only rutis framework capabilities.
+The unified design is [Instance Keys, Instance Events, and Permanent Subtree Shutdown](../../design-instance-subtrees.en.md). The requirements came from a downstream application, but this document tracks only rutis framework capabilities.
 
 | Order | Issue | Requirement | Dependency |
 | --- | --- | --- | --- |

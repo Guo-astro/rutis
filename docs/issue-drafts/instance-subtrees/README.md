@@ -2,7 +2,7 @@
 
 状态：已发布，实现在 `feat/instance-subtrees` 分支进行。
 
-统一设计见 [实例键、实例事件与子树永久关闭](../../design-instance-subtrees.md)。需求来自 dim-agent !2001，但这里仅跟踪 rutis 框架能力。
+统一设计见 [实例键、实例事件与子树永久关闭](../../design-instance-subtrees.md)。需求来自一个下游应用，但这里仅跟踪 rutis 框架能力。
 
 | 顺序 | Issue | 对应需求 | 依赖 |
 | --- | --- | --- | --- |

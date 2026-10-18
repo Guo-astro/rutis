@@ -153,15 +153,15 @@ builtins.register_with::<LoopConfig, _, _>("dim/loop", |build: &Build| {
 - `LoaderChanged` 新增 `InstanceCreated { group, plugin }`、`InstanceRemoved { group, plugin }` 与 `Stopped { id, instance, plugin }`。
 - 实例中的插件 `dispose_self`：只停这一份，状态为 `EntryStatus::Stopped`，`EntryInfo.plugin` 保留它最后的 fiber，不写配置；`restart_instance(plugin)`、对该行的修改或实例重建会让它重新启动。不在实例中的行，`dispose_self` 不变。
 
-## 7. 以 dim-agent 为例
+## 7. 例：按会话、分支组织插件的应用
 
-| dim-agent 现状 | 使用 loader 后 |
+| 应用现在的写法 | 使用 loader 后 |
 | --- | --- |
-| `SessionScopePlugin` 用自己的 `ctx.instance()` 提供 Session 服务 | `session` 分组里的 `session-scope` 行；用 `build.instance("session")` 提供 |
-| `session_plugin(\|scope: &SessionScope\| P)`，在 SessionScope Active 后 `install` | `session` 分组里的行；工厂用 `build.instance("session")`；靠 `injects` 等 `session-scope` 就绪 |
-| `timeline_plugin(\|scope: &BranchScope\| P)` | `branch` 分组里的行；工厂用 `build.instance("session")`、`build.instance("branch")` |
-| `ctx.plugin(SessionScopePlugin(assembly))` 后 `wait_active` | `create_instance(&ctx, "session").with(assembly)`，按 `report` 判断，再照旧 `validate` |
-| `TimelineFactory::build` 中建 BranchScope 并 `wait_active` | `create_instance(ctx, "branch").with(branch_assembly)` |
+| 一个作用域插件用自己的 `ctx.instance()` 提供会话级服务 | `session` 分组里的 `session-scope` 行；用 `build.instance("session")` 提供 |
+| 会话级插件由工厂在作用域就绪（Active）后 `install` | `session` 分组里的行；工厂用 `build.instance("session")`；靠 `injects` 等 `session-scope` 就绪 |
+| 分支级插件由工厂按分支作用域创建 | `branch` 分组里的行；工厂用 `build.instance("session")`、`build.instance("branch")` |
+| `ctx.plugin(作用域插件(装配))` 后 `wait_active` | `create_instance(&ctx, "session").with(assembly)`，按 `report` 判断，再照旧 `validate` |
+| 工厂里创建分支作用域并 `wait_active` | `create_instance(ctx, "branch").with(branch_assembly)` |
 | 关闭：`FiberView::shutdown()` | 不变 |
 | 能力集合在发布前固定 | 由应用决定是否在运行中修改配置 |
 

@@ -2,7 +2,7 @@
 
 状态：实现中；对应 GitHub [#22](https://github.com/arcships/rutis/issues/22)、[#23](https://github.com/arcships/rutis/issues/23)、[#24](https://github.com/arcships/rutis/issues/24)。
 
-核对基准：上游 `a6ce10300f3cd75caa7732e7d4e9e18877a073a0`，以及 dim-agent 固定的 rutis vendor。本文描述拟增加的契约，不表示当前代码已满足这些保证。
+核对基准：上游 `a6ce10300f3cd75caa7732e7d4e9e18877a073a0`，以及一个下游应用固定的 rutis vendor。本文描述拟增加的契约，不表示当前代码已满足这些保证。
 
 ## 1. 范围与基线
 
@@ -228,4 +228,4 @@ cargo +1.98.1 clippy --offline -p rutis --all-targets -- -D warnings
 cargo +1.98.1 fmt --all -- --check
 ```
 
-真实 Session 的性能阈值、runtime 迁移和 vendor 来源 commit 更新由 dim-agent 的迁移任务验收。
+真实 Session 的性能阈值、runtime 迁移和 vendor 来源 commit 更新由下游应用的迁移任务验收。
