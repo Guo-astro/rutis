@@ -20,7 +20,7 @@ Keep one sentence in mind: **rutis has no such thing as a "remote plugin" — on
 | What the other side is | Use | Row on the rutis side |
 | --- | --- | --- |
 | A language runtime on another machine; **this rutis** loads, configures, starts and stops its plugins | Remote runtime (link + `runtime`) | `<runtime name>:<plugin>` |
-| Another full rutis host that manages its own plugins and only shares services | Node link (`export` / `import`) | No new row; imported services are available by name |
+| Another full rutis host that manages its own plugins and only shares services and events | Node link (`export` / `import`) | No new row; imported services are available by name |
 | Another full rutis host on which this side wants to run rows it writes | Node link (`host: true` there, `rows: true` here) | `peer:<peer>/<plugin>` |
 | A phone or desktop app offering its own capabilities as plugins | App hosting (designed, not implemented) | `<runtime name>:<plugin>`, one instance per connection |
 
@@ -42,11 +42,11 @@ When unsure, ask one question: **who decides whether the plugin is loaded and wi
 
 Details in `references/plugin-api.md`. The essentials:
 
-- Write a leaf plugin with the language's SDK: declare `inject` (service names it uses) and a config schema; in `apply(ctx, config)` use `ctx.use` / `ctx.provide` / `ctx.effect`. What `ctx.provide` provides reaches rutis by itself (its public methods, all `async`); `provides` is optional, to mark methods `sync` and let `rutis-host check` know before running what the plugin provides. The current plugin API version is 2 (adds leaf events, `ctx.on` / `ctx.emit`).
+- Write a leaf plugin with the language's SDK: declare `inject` (service names it uses) and a config schema; in `apply(ctx, config)` use `ctx.use` / `ctx.provide` / `ctx.effect`. What `ctx.provide` provides reaches rutis by itself (its public methods, all `async`); `provides` is optional, to mark methods `sync` and let `rutis-host check` know before running what the plugin provides. The current plugin API version is 3 (rutis 0.13: events with `ctx.on` and the five ways to emit, `emit` / `parallel` / `serial` / `waterfall` / `bail`, plus `filter`).
 - The plugin does **not** decide when it runs, does not reconnect, does not probe whether the other side is up: it is applied when all its services are ready, stops when any is withdrawn, and starts again when it returns. A remote disconnect is, to the plugin, an ordinary stop.
 - Values follow the cross-process rules: JSON-compatible data is copied; dates and times, binary data, maps, sets, big integers, decimals and UUIDs are copied and arrive as each language's own types (integers beyond ±(2^53−1) cross as big integers automatically); functions and objects go by reference; nesting at most 64 levels. Never assume the same process.
 - Do not hold locks while calling other services: your service may be called again in the middle of your own synchronous call. Prefer `async` methods for calls that cross runtimes and may cross each other.
-- Leaf events are dispatched only **within one runtime process**; do not use events to talk across machines — use services.
+- Events are **one logical bus** across processes, languages and machines: `ctx.on` registers with the host by itself, and an event reaches every listener in the emitter's scope or above it, wherever that listener runs, with the same result as in one process. Nothing to declare for a remote runtime; between nodes, list the event names (or `prefix/*`) in the link's `export` on the emitting side and `import` on the listening side (one hop). `emit` never waits and a failing listener is only reported; use `parallel` to wait, `serial` / `waterfall` / `bail` for results. When the far end goes away its listeners leave the bus and calls in flight fail once (`BindingError`). Runtimes and nodes of 0.12 and earlier cannot join a 0.13 host (`events-v2` is required); upgrade every end together.
 - Dependency declarations contain only service names, never languages, machines or addresses.
 
 ## 4. Deploy a remote runtime (listening, as of today)

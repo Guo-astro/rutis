@@ -1,6 +1,6 @@
 # Plugin API
 
-TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) and Go plugins (`github.com/arcships/rutis/go/rutis`, see [Go plugins](go-plugin.en.md)) use the same conventions. The current plugin API version is **2**.
+TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) and Go plugins (`github.com/arcships/rutis/go/rutis`, see [Go plugins](go-plugin.en.md)) use the same conventions. The current plugin API version is **3**.
 
 ## Declarations
 
@@ -18,24 +18,204 @@ TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) an
 | `ctx.use(name)` | Gets a service declared in `inject`. A service provided by a plugin in the same runtime process is the object itself; services from other processes, languages, or machines are proxies. |
 | `ctx.provide(name, value)` | Provides a service until the plugin is unloaded or the returned function is called. It reaches rutis by itself, used by name from other languages and processes; when `provides` does not declare it, its methods are the public methods of `value` (JavaScript: its own and its prototype chain's functions, not `constructor`; Python: callable attributes not starting with `_`; Go: exported methods), all called as `async`; fields are not methods. The inferred methods follow each language's rules, so the same service written in two languages can differ: a JavaScript class extending `EventEmitter` also exposes `on`, `emit` and the rest; list the methods in `provides` to expose only those. |
 | `ctx.effect(cleanup)` | Runs `cleanup` when the plugin is unloaded. It may be async. |
-| `ctx.on(name, listener)` | Listens on the runtime process's shared event bus: events the host emits into it (names declared with the runtime's `emits`, see [Embedding in a Rust application](rust-host.en.md)) and events plugins in the process emit with `ctx.emit`. The listener is unregistered when the plugin unloads; the returned function unregisters it at once. |
-| `ctx.emit(name, ...args)` | Dispatches on this runtime process's event bus to listeners in this plugin and other plugins in the same process; calls listeners synchronously without awaiting returned promises/coroutines (for Go and listener errors, see below). |
-
-Node, Bun, Python and Go support leaf events (plugin API 2) and report the `events` runtime feature. Node and Bun use Cordis's own event service (each Bun row holds a Cordis fiber), so they share one bus with Cordis plugins in the same process and dispatch exactly as Cordis does; Python and Go implement the same semantics (against `cordis/src/events.ts` and `crates/rutis/src/bus.rs`). Go exposes `ctx.On(name, func(context.Context, ...any) error) func()` and `ctx.Emit(callerCtx, name, args...) error`; listeners receive a context preserving the current call chain and cancelled when their plugin unloads. Unload waits for running listeners to finish before cleanups. Pass the received caller context when emitting from a plugin method; in `Apply`, the plugin's `ctx` itself can be used.
-
-Local emission calls listeners in registration order. A synchronous exception in Node, Bun or Python stops later listeners; returned promises/coroutines are not awaited, and unhandled asynchronous failures end the runtime process. Go's `ctx.Emit` executes synchronously and returns the first error; goroutines started by the plugin follow the existing `ctx.Go` contract. The host's `Process::emit` instead waits for every listener and aggregates failures as `AggregateError`. Go starts a goroutine for each host-event listener, so their execution order is not guaranteed. As with Rust's `Ctx::dispose_self`, a listener must not wait for its own row to unload (a Go listener that synchronously unloads or updates its own row through a host callback would wait on itself): let the listener return first.
+| `ctx.on(name, listener, options?)` | Listens to an event: wherever it is emitted (another plugin, another runtime, the host, a linked node), it reaches `listener` when the emitter is in this plugin's scope or inside it. Unregistered when the plugin unloads; the returned function unregisters it at once. See [Events](#events) below. |
+| `ctx.emit` / `parallel` / `serial` / `waterfall` / `bail` | The five ways to emit; `ctx.filter(keep)` gives the same five methods delivering to some listeners only. See [Events](#events). |
+| `ctx.signal` | (JavaScript) Aborted when the plugin unloads; Python cancels the task, in Go it is `ctx` itself. |
 
 An error that crossed a session and is thrown on crosses again with its whole error graph (causes, an `AggregateError`'s children) on Node, Bun, Python and Go, not only inside an aggregate: Node decodes it into a real `Error` whose re-encoding carries the whole graph, and Python's `encode_error` and Go's `encodeError` splice a `RemoteError`'s graph in (nodes appended, references shifted) to match.
-
-`internal/*` belongs to the runtime and cannot be listened to, emitted or listed in `emits`. When `RuntimePlugin` / `LocalRuntime` has `emits` configured, a runtime lacking the `events` feature fails at mount (`lacks events`). This feature check does not cover direct `Process::mount` / `attach` for static Cordis mounts: older Node runtimes already deliver Cordis events without reporting the feature.
-
-`emits` only declares host → runtime events. A leaf plugin's `ctx.emit` / `ctx.Emit` dispatches within the process; `RuntimePlugin` exposes no `Mount.events` / `EventSink` configuration, so runtime → Rust host forwarding is not available here.
-
-The Node and Python test tools use the runtime's own event implementation: Node's goes through Cordis, as the runtime does, and Python's uses `rutis.events`. Test tools declare host events at load: Node's `load(plugin, { emits })`, Python's `load(plugin, emits=[...])`, and Go's `rutistest.Load(t, plugin, config, services, "event", ...)`. Their host-emission entry points are `await t.emit(...)`, `await t.emit(...)`, and `loaded.Emit(callerCtx, name, args...)`; all check the declaration and wait for listeners. The Python test tool cancels and settles unfinished local asynchronous listeners at unload. It preserves an existing test-body or cleanup exception; otherwise it reports listener failures. A real runtime exits on an unhandled asynchronous failure.
 
 Cleanups run in reverse registration order: the function returned by `apply` runs first, followed by functions registered with `ctx.effect`.
 
 In Go: `ctx.Use(name, &target)` binds the service to a struct of function fields (or a `*rutis.Service`); `ctx.Provide(name, value)`; `ctx.Effect(func(context.Context) error)`; `ctx.Go(task)` runs a goroutine stopped at unload. `*rutis.Ctx` is a `context.Context` cancelled when the plugin unloads.
+
+## Events
+
+Every listener on a host — of the host's Rust plugins, of every plugin in every runtime process (any language), of what node links bring in — is on **one logical bus**. There is one rule:
+
+> Wherever an event is emitted and wherever its listeners are, the result is the same as if every listener were in one process.
+
+The only exceptions are what is physically impossible (a cycle of synchronous waits, waiting synchronously on a far end that went away); those fail with an error and never silently turn into something else. Design: [unified events](../design-events-2026-10-18.en.md); wire protocol: [protocol spec](../design-events-protocol-2026-10-18.en.md).
+
+- **Registration is automatic**: a plugin writes `ctx.on(name, listener)` as usual and declares nothing, neither in `rutis.json` nor in the host's Rust code. A runtime registers its listeners with the host, as services reach rutis by themselves.
+- **An event is a name, arguments and a scope**. The name is a string, the same in every language and on every path, by convention `area/verb` (`session/created`). Arguments cross as in [passing values](#passing-values). The scope is the loader instance the emitter is in (below).
+- **One listener table**: a listener registered once can be called by any of the modes below; the emitter chooses the mode.
+- **Through the host only when needed**: when every listener of a name is in the emitter's process, the dispatch runs in that process without the host; the results are the same, only where the code runs differs.
+
+### The five modes
+
+| Mode | The emitter gets | Order | Return values | A listener fails |
+| --- | --- | --- | --- | --- |
+| `emit` | Returns at once, waits for nothing | Starts every listener in registration order; events of one emitter and one name reach each listener in emission order | Ignored | Reaches neither the emitter nor the other listeners; reported in one line where the listener runs (see [reported failures](#reported-failures)); never ends a process |
+| `parallel` | Waits for all | Starts them in registration order; asynchronous parts overlap | Ignored | All run to the end; failures are thrown as an `AggregateError` with the failures in **registration order** (not completion order), even when only one failed |
+| `serial` | The first return value that is a result, or no result | One at a time in registration order | The first result stops the dispatch and is returned | Thrown; the rest do not run |
+| `waterfall` | The outermost listener's return value, as is | Outermost first; each listener's last argument is `next`; `next()` runs the rest of the chain and, at its end, the terminal | Passed along the chain; not calling `next` vetoes the rest | Thrown to the emitter; calling `next` twice, or after the dispatch ended, fails with `WaterfallNext` |
+| `bail` (synchronous) | The first result, synchronously | Called synchronously in registration order; listeners elsewhere run as synchronous calls, under the same wait-cycle detection as synchronous service calls | As `serial` | Thrown, the rest do not run; a wait cycle (`SyncWaitCycle`) or a far end that went away fails it; an asynchronous listener fails it with `AsyncListener` |
+
+Rust also has `waterfall_sync`: a synchronous `waterfall`, under the same rules as `bail`.
+
+- **No result**: returning `undefined` / `null` (JavaScript), `None` (Python), `nil` (Go), `None` (Rust), or `false` in any language (Rust's `Some(false)` included). Everything else is a result, `0` and `""` too.
+- **`waterfall` returns as is**: no "result or not" normalization, `false` stays `false`. `next` takes no arguments and returns the result of the rest of the chain (JavaScript: a Promise; Python: an awaitable; Go: a blocking call; Rust: a future). The terminal receives the event's arguments; without one, the last `next()` gives no result. With no listeners, `waterfall` returns the terminal's value.
+- **Asynchronous listeners**: a JavaScript `async` function, a Python `async def`, a Rust listener registered with `on` cannot be called by `bail` / `waterfall_sync` (`AsyncListener`); a plain function that returns a Promise / coroutine fails the same (the Promise / coroutine is discarded). Go listeners are all synchronous.
+
+### In each language
+
+Each language has the five modes, written the language's own way:
+
+| | Rust (`rutis`) | Node / Bun leaf plugin (`@arcships/rutis`) | Cordis plugin (in the Node / Bun runtime) | Python (`rutis`) | Go (`rutis`) |
+| --- | --- | --- | --- | --- | --- |
+| Listen | `ctx.events().on(ctx, &key, listener)`; a synchronous listener `on_sync`; with options `on_opt` / `on_sync_opt`; a prefix `on_pattern(ctx, &EventPattern::prefix(p), ..)`; `once` | `ctx.on(name, fn, { prepend, global }?)` → `() => void` | Cordis's own `ctx.on(name, fn, options?)` → `() => boolean`; `ctx.once` | `ctx.on(name, fn, *, prepend=False, global_=False)` → `Callable[[], None]` | `ctx.On(name, func(ctx context.Context, args ...any) (any, error), rutis.Prepend(), rutis.Global())` → `func()` |
+| Listener | `impl Listener<E>`: `call(ctx, &event, call: Call<'_, E::Value>)`, with `call.mode()`, `call.next()`; an `on_sync` closure gets a `SyncCall` | `(...args[, next]) => value \| Promise` | The same | `fn(*args[, next])`, may be `async def` | `fn(ctx, args...)`; in a waterfall the last argument is a `rutis.Next` (`func(context.Context) (any, error)`) |
+| `emit` | `emit(ctx, &key, Arc<E>) -> Result<()>` | `ctx.emit(name, ...args): void` | `ctx.emit([thisArg,] name, ...args)` | `ctx.emit(name, *args) -> None` | `ctx.Emit(ctx, name, args...) error` (refusals only) |
+| `parallel` | `parallel(ctx, &key, Arc<E>).await` | `await ctx.parallel(name, ...args)` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` |
+| `serial` | `serial(ctx, &key, Arc<E>).await -> Option<E::Value>` | `await ctx.serial(name, ...args)` | `await ctx.serial([thisArg,] name, ...args)` | `await ctx.serial(name, *args)` | `ctx.Serial(ctx, name, args...) (any, error)` |
+| `waterfall` | `waterfall(ctx, &key, &e, terminal).await` (`()`: no terminal) | `ctx.waterfall(name, ...args, terminal)`: the last argument is the terminal | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)` (`terminal` may be `nil`) |
+| `bail` | `bail_sync(ctx, &key, &e)`; `waterfall_sync(ctx, &key, &e, terminal)` | `ctx.bail(name, ...args)` | `ctx.bail([thisArg,] name, ...args)` | `ctx.bail(name, *args)` | `ctx.Bail(ctx, name, args...) (any, error)` |
+| Filter | `ctx.events().filter(\|info\| ..)`, then the same six methods | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`, `c.rutis` is the descriptor | `ctx.filter(lambda d: ...)` → an object with the five methods | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter` |
+| Scope | `ctx.scope()` | the descriptor's `scope` | `ctx.rutis.scope` | the descriptor's `scope` | `ctx.Scope()` |
+| Unload signal | a listener is called with the `ctx` that registered it: `ctx.cancelled()` | `ctx.signal` | `ctx.signal` | the listener's task is cancelled | the listener's `ctx` is cancelled |
+| `parallel` failures | `CordisError::ListenersFailed` | `AggregateError` | `AggregateError` | `rutis.AggregateError` (`errors`) | `*rutis.AggregateError` (`Errors`) |
+
+In Node, `waterfall` returns a Promise whenever a listener is outside the process, so always `await` it. In Go, pass the `ctx` you received when emitting from a plugin method (it carries the call chain), and `ctx` itself in `Apply`. Rust's emitting methods are on `ctx.events()` and take the emitter's `ctx` first.
+
+The same waterfall listener in the five languages:
+
+```rust
+struct Exclaim;
+impl Listener<Format> for Exclaim {            // Format: impl Event, Value = String
+    fn call<'a>(&'a self, _: &'a Ctx, _: &'a Format, call: Call<'a, String>)
+        -> BoxFuture<'a, Result<Option<String>, CordisError>> {
+        Box::pin(async move { Ok(call.next().await?.map(|text| format!("{text}!"))) })
+    }
+}
+ctx.events().on(ctx, &EventKey::<Format>::of(), Exclaim)?;
+```
+
+```ts
+// A Node / Bun leaf plugin; a Cordis plugin writes the same
+ctx.on('greeting/format', async (text: string, next: () => Promise<string>) => `${await next()}!`)
+```
+
+```python
+async def exclaim(text, next):
+    return f"{await next()}!"
+
+ctx.on("greeting/format", exclaim)
+```
+
+```go
+ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
+	inner, err := args[len(args)-1].(rutis.Next)(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return fmt.Sprint(inner, "!"), nil
+})
+```
+
+Each language's guide has a complete example: [TypeScript](typescript-plugin.en.md#events), [Bun](bun-plugin.en.md#events), [Python](python-plugin.en.md#events), [Go](go-plugin.en.md#events), [Cordis](cordis.en.md#events), [Rust](rust-host.en.md#events).
+
+### Scope
+
+A scope is a loader group instance (a copy of an `instanced` group, such as a tenant or a session), or the root. Every plugin and every emission is in one scope: the innermost instance around it, or the root.
+
+> A listener receives the events emitted in its own scope and in every scope inside it.
+
+A listener at the root receives every event; a listener in tenant `t1` does not receive `t2`'s; an event emitted in a session of `t1` reaches the listeners of `t1` and of the root. The host determines the emitter's scope from the emitting row; plugins have no API to emit into another scope: to choose listeners further, use a filter on the descriptor's `scope`. A leaf plugin's `isolate` label (a service scope) has nothing to do with event scopes.
+
+### Filter
+
+An emission can carry a filter function: it is called once for each candidate listener with that listener's **descriptor** and returns whether to deliver.
+
+- It runs **in the emitter's process**, in registration order, before any listener starts; it sees the listeners the scope rule kept, and works the same for listeners anywhere.
+- When the filter throws, the whole dispatch fails with that error and no listener starts (in `emit`, it is reported instead).
+- Listeners registered with the `global` option are never filtered (the scope rule still applies).
+
+The descriptor (JSON fields; Rust `ListenerInfo`, Go `rutis.Listener`, empty values `""`):
+
+| Field | Meaning |
+| --- | --- |
+| `name` | The event name (a prefix, for a Rust prefix listener) |
+| `prefix` | Whether it is a Rust prefix listener |
+| `plugin` | The plugin that registered it |
+| `row` | Its row; `null` for a plugin loaded by a mount |
+| `runtime` | The runtime it runs in; `null` for the host's own Rust plugins |
+| `node` | For a listener a node link brought in, the far node's id; `null` otherwise |
+| `scope` | Its scope chain, `[{ id, group }]`, outermost first, the root `[]` |
+| `global` | Whether it was registered with `global` |
+
+Cordis plugins use Cordis's own way: in `ctx.emit(thisArg, name, ...)` (and the other four), when `thisArg[Context.filter]` is a function it is the filter. A listener in this process is passed its own Cordis `Context`, any other listener `{ rutis: descriptor }`; in the Node / Bun runtime every Context has a read-only `ctx.rutis`, so `c => c.rutis.row === 'chat'` works for both.
+
+### `prepend` and `global`
+
+Every language has these two listener options: `prepend` puts the listener before every listener of the name registered so far (the host decides the one registration order everyone sees); `global` exempts it from filters. Rust: `EventOptions { prepend, global, once }` with `on_opt` / `on_sync_opt`; Node / Bun: `ctx.on(name, fn, { prepend: true })` (for a Cordis plugin, Cordis's own options); Python: `ctx.on(name, fn, prepend=True, global_=True)`; Go: `ctx.On(name, fn, rutis.Prepend(), rutis.Global())`.
+
+### Lifecycle
+
+- A listener belongs to the plugin (row) that registered it and is unregistered when the plugin unloads; the returned function unregisters it at once.
+- **On unload**: the row's listeners leave the bus first (later events no longer reach them); the ones still running get a cancellation signal — Go the listener's `context`, Python task cancellation, JavaScript the row's `ctx.signal` aborted, Rust `ctx.cancelled()` — and are waited for, at most `RUTIS_SHUTDOWN_TIMEOUT` (10 seconds by default; the host's Rust plugins use the host's shutdown deadline), before the cleanups run. Past it, the runtime writes `rutis: listeners of row <row> still running after <s>s; unloading anyway` on stderr and goes on.
+- A call already on its way to a withdrawn listener fails once (`BindingError`, `listener <id> of <name> is withdrawn`, or a transport error); it is never retried.
+- **The emitter gives up** (Rust drops the future, Python cancels the task, Go cancels the context): no further listener starts and running ones are cancelled; the emitter gets its language's cancellation. `emit` is not cancelled. JavaScript has no way to cancel a dispatch, and JavaScript listeners have no per-call signal (only `ctx.signal`, on unload).
+- Which context a listener runs in: a Rust listener is called with the `ctx` **that registered it**, so what it registers belongs to the listener's plugin; a Go listener's `ctx` carries the emitter's call chain and is cancelled when the emitter gives up or the row unloads: pass it on to the services the listener calls.
+- As with Rust's `Ctx::dispose_self`, a listener must not wait for its own row to finish unloading: return from the listener first.
+
+### Disconnection
+
+When a runtime process or a node link goes away, its listeners leave the bus as if their plugins had unloaded: later events no longer go to them (the listeners are gone; nothing is silently dropped). In a dispatch in progress, a call to the side that went away fails once, with the same transport error a service call gets (`BindingError`): `parallel` puts it in its `AggregateError`, `serial` / `waterfall` / `bail` throw it to the emitter, `emit` reports a line. A synchronous wait on it fails the same. There is no call timeout, as for service calls.
+
+### Framework events `rutis/*`
+
+The host publishes framework information with `emit`, one argument (a record) per event. Plugins in every language can listen; any plugin emitting `rutis/*` (in any mode) fails with `ReservedEvent`.
+
+| Event | Argument | When | Scope |
+| --- | --- | --- | --- |
+| `rutis/service` | `{ name, scope, available, row }` | A service name gets a provider in a scope (`available: true`), the provider is replaced (`true` again, the new `row`), or it is withdrawn with no provider left (`false`) | The service's scope |
+| `rutis/row` | `{ row, plugin, scope, state, error }`, `state` one of `pending` / `running` / `failed` / `stopped` | Every state change of a configured row (any language, Rust rows and group rows included); `failed` with `error` | The row's scope |
+| `rutis/runtime` | `{ runtime, state, reason }`, `state` one of `running` / `down` | A runtime mounted (after every reconnection too); its session ended or its mount failed (`reason` says why) | The root |
+
+By the scope rule, a listener at the root sees `rutis/row` of every row, one in an instance only the rows in its instance. In Rust the types are `rutis_loader::RowEvent` and `rutis_bridge::events::{ServiceEvent, RuntimeEvent}`. The test tools emit no `rutis/*` events.
+
+`internal/*` is each runtime's own framework machinery (Cordis's `internal/dispatch`, `internal/service` and the like) and never crosses processes: leaf plugins cannot listen to or emit it, and the host refuses to register it (`event <name> is internal to its runtime`). Cordis plugins use it in their process as before; events arriving from elsewhere also go through Cordis's own dispatch, so `internal/dispatch` validators still see them.
+
+### Values
+
+An event's arguments, results, and the results of `next` and the terminal cross on every path as in [passing values](#passing-values): the ten values, references to functions and objects, the 64-level depth limit, between nodes too. A value that cannot be sent fails only that one call (in `parallel` one child of the `AggregateError`, in `emit` a reported line); when the emitter's own arguments cannot be sent, the whole dispatch fails. A reference passed as an argument lives until that call ends.
+
+Rust typed events are named across languages by `Event::NAME` and their arguments are serde-encoded, so an `Event` and its `Value` derive `Serialize` / `Deserialize`. Arity: a tuple struct of two or more fields (`struct Created(String, u32)`) is that many arguments; a unit struct is none; anything else (a struct with named fields, a newtype, a map, a sequence) is one argument. Listeners are found by name: a listener of another Rust type with the same name receives the event too, converted through serde. To send or receive any arguments by name, use `rutis_bridge::events::Args` (`EventKey::<Args>::dynamic(name)`).
+
+### Reported failures
+
+A failure nobody waits for is written in one line where it happens (a runtime on stderr; the host into its error sink, which rutis-host prints with the same text):
+
+| When | The line |
+| --- | --- |
+| A listener fails in `emit` | `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>` |
+| A call that could not be delivered or got no answer (transport, a value, withdrawn), reported by the dispatcher | `rutis: listener of <name> in runtime <runtime> failed: …` or `… in node <peer> failed: …` |
+| The filter of an `emit` fails | `rutis: filter of <name> from row <row> failed: …` |
+| An `emit` through the host is refused or not answered | `rutis: emit of <name> from row <row> failed: …` |
+| The host refuses to register a listener (while the row loads, the load fails instead) | `rutis: registration of listener of <name> in row <row> failed: …` |
+
+### Errors
+
+| Name | When | In each language |
+| --- | --- | --- |
+| `AggregateError` | `parallel` had failures; children in registration order, message `<n> listeners of <name> failed` | JS `AggregateError` (`errors`); Python `rutis.AggregateError` (`errors`); Go `*rutis.AggregateError` (`Errors`); Rust `CordisError::ListenersFailed` |
+| `AsyncListener` | `bail` / `waterfall_sync` met an asynchronous listener | JS an `Error` named `AsyncListener`; Python `rutis.AsyncListener`; Go `rutis.ErrAsyncListener`; Rust `CordisError::AsyncListener` |
+| `WaterfallNext` | `next` called twice, after the dispatch ended or was cancelled; in Rust, `call.next()` outside a waterfall, or by a synchronous listener in an asynchronous waterfall | JS `WaterfallNext`; Python `rutis.WaterfallNext`; Go `rutis.ErrWaterfallNext`; Rust `CordisError::WaterfallNext` |
+| `ReservedEvent` | Emitting `rutis/*`, refused synchronously by the emitting API | JS `ReservedEvent`; Python `rutis.ReservedEvent`; Go `rutis.ErrReservedEvent`; Rust `CordisError::ReservedEvent` |
+| `SyncWaitCycle` | A synchronous call (`bail`) would close a cycle of waits | As for service calls: Python `rutis.SyncWaitCycle`; Go `rutis.ErrSyncWaitCycle` |
+| `BindingError` | A transport failure, a withdrawn listener, a refused frame | Python `rutis.BindingError`; Go `rutis.ErrBinding`; Rust `CordisError::ListenerWithdrawn` or a transport error |
+
+In Go, check with `errors.Is(err, rutis.ErrWaterfallNext)` and the like; an error of that name from any process matches. An error a listener throws crosses with its name, message and error graph, as any call's error.
+
+### Mixing with 0.12 and earlier
+
+The event protocol is rutis 0.13's, with no old path. A runtime or node of 0.12 or earlier connecting to a 0.13 host is refused before anything loads:
+
+```text
+incompatible session: the far end (<name> <version>) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later
+```
+
+A 0.13 runtime meeting an older host exits (status 1): `rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping`. Upgrading from 0.12: [migrating to 0.13](../migration-0.13.en.md).
 
 ## Lifecycle
 
@@ -112,7 +292,7 @@ Values are not copied within one process. Code that mutates an object after pass
 - Times: years 0001–9999. A local date and time has no time zone and crosses as it is, with no zone guessed and no conversion to a point in time. A point in time is truncated toward negative infinity to the receiver's precision: milliseconds in JS, microseconds in Python, nanoseconds in Go and Rust; Python also truncates local date-times and times of day to the microsecond.
 - A decimal keeps its trailing zeros (`1.10` is not `1.1`) and uses no exponent; NaN and infinities cannot cross. Big integers and decimals have at most 4300 digits.
 - Map keys and set elements can only be strings, finite numbers, booleans, big integers, local date-times, dates, times of day, decimals and UUIDs; points in time, binary data, `null`, arrays, objects, maps, sets and references cannot, and the sender refuses them before sending. When two keys become equal after conversion on the receiving side (a JS `Map` with keys `1` and `true` arriving in Python, say), the call fails: an entry would be lost. A JS `Map` with string keys still crosses as a map; a plain Python `dict` with string keys crosses as an object.
-- Each value is sent only to a far end that declared it. When the far end does not take it (a runtime older than 0.11, say, integers beyond ±(2^53−1) included), only that call fails, with an error naming the value, and the session and other calls go on. Events forwarded between nodes do not carry these ten values; leaf events within one runtime process carry them as usual.
+- Each value is sent only to a far end that declared it. When the far end does not take it (a runtime older than 0.11, say, integers beyond ±(2^53−1) included), only that call fails, with an error naming the value, and the session and other calls go on. Event arguments and results carry them as calls do, between nodes too.
 
 ### Where the test tool differs from a real runtime
 
@@ -124,9 +304,8 @@ The test tools (`@arcships/rutis/testing`, `rutis.testing`, Go's `rutistest`) an
 | No restarts: a config change or a withdrawn injected service does not stop and start the plugin | `load` starts it once; the host decides the lifecycle (see above) |
 | Sync calls do not block, so there is no `SyncWaitCycle`; no cancellation (`AbortSignal`, coroutine cancellation) | The plugin and the test share one event loop |
 | Python: an exception that crosses is a `RemoteError` whose `__cause__` is the original exception | For debugging; a real runtime's `RemoteError` has no `__cause__` |
-| TypeScript: only plugins written with `definePlugin` load, not Cordis plugins (events go through Cordis's event service; the plugin model is still not Cordis's) | The tool mounts one plugin, with no services or dependency gating |
-| TypeScript / Python events: the plugin under test hears only what it emits with `ctx.emit` and what `t.emit` sends; on a real runtime the whole process shares one event bus, so it also hears other plugins in the process (and, on Node, Cordis plugins) | The test tool loads one plugin. `t.emit` accepts only names declared in `emits` at load, as `RuntimePlugin::emits`; both refuse `internal/*` |
-| The Python tool cancels and settles local asynchronous listeners at unload, preserving test-body or cleanup exceptions; the real runtime exits on an unhandled asynchronous failure | Keeps the test process running while failing the test explicitly |
+| TypeScript: only plugins written with `definePlugin` load, not Cordis plugins | The tool has no Cordis plugin model, services or dependency gating |
+| Events: every listener is in the test's process (always dispatched locally), with no other process or node, and no `rutis/*` events | The test tool runs the plugins in one process. The five modes, filters, scopes (TypeScript `host()` with `scope`, Python `Bus` and `scope=`, Go `rutistest.InScope`), unload waiting and cancelling, and reporting `emit` failures (`reported`) are as on a real runtime, checked against the same [events expectations file](../../crates/rutis-bridge/src/runtime/testing/events.expected.json) |
 
 The ten values cross by the same rules on both sides, so they are not a difference. With strict mode off (`strict: false`), values skip the table above and other differences can appear.
 
@@ -156,4 +335,4 @@ When the caller abandons an async call (for example, on timeout), the call is ca
 
 Plugins are tagged with the plugin API version they use (`definePlugin` / `define_plugin` / `rutis.Define` adds the tag automatically). If the runtime is older than the plugin requires, loading fails with an explanation of what to upgrade. Depend on the SDK's major version range; it does not need to match the host version.
 
-Plugin API 2 adds leaf events. New runtimes still accept API 1. Plugins tagged API 2 by the new SDK need an updated runtime; Go binaries also need a host supporting API 2. Wire protocol and Go manifest formats are unchanged.
+Plugin API 3 (rutis 0.13) adds `parallel`, `serial`, `waterfall`, `bail` and `filter`, and events become one logical bus; 0.13 runtimes still load API 2 plugins, and an older runtime refuses an API 3 plugin with the existing message. The 0.13 event protocol does not mix with runtimes or nodes of 0.12 and earlier (see [mixing with 0.12 and earlier](#mixing-with-012-and-earlier) above). Plugin API 2 added leaf events; API 1 plugins still load.

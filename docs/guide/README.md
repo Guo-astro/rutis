@@ -9,6 +9,7 @@
 | 用 Python 写插件 | [写一个 Python 插件](python-plugin.md) |
 | 用 Go 写插件 | [写一个 Go 插件](go-plugin.md) |
 | 查插件能做什么、值怎样传递 | [插件 API](plugin-api.md) |
+| 在插件之间（任何语言、任何进程、任何节点）收发事件 | [插件 API：事件](plugin-api.md#事件) |
 | 不写 Rust，直接运行插件 | [rutis-host 与 rutis.json](rutis-host.md) |
 | 把多台机器连起来、在别的机器上运行插件 | [连接节点](nodes.md) |
 | 在自己的 Rust 应用里加载插件 | [在 Rust 应用里嵌入](rust-host.md) |
@@ -24,7 +25,7 @@
 
 这些包（包括内核 `rutis` 和 dylib 工具链）一起发布、版本号相同（发布列车，当前为 0.12）。各个 rutis 包请使用同一个版本。
 
-从 0.8 升级见 [0.8 → 0.9](../migration-0.8-to-0.9.md)，从 0.7 升级见 [0.7 → 0.8](../migration-0.7-to-0.8.md)。用过 `rutis-interop` 的项目见[迁移指南](../migration-interop-to-0.7.md)。
+从 0.12 升级见 [迁移到 0.13](../migration-0.13.md)（统一的事件，不与 0.12 混用）。从 0.8 升级见 [0.8 → 0.9](../migration-0.8-to-0.9.md)，从 0.7 升级见 [0.7 → 0.8](../migration-0.7-to-0.8.md)。用过 `rutis-interop` 的项目见[迁移指南](../migration-interop-to-0.7.md)。
 
 ## 环境
 
