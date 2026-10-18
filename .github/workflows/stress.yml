@@ -473,8 +473,15 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       - name: Run the shuttle models
         # bash -eo pipefail: a failing model fails the step through tee.
         shell: bash
@@ -502,6 +509,11 @@ jobs:
           name: shuttle-log
           path: ${{ runner.temp }}/shuttle
           retention-days: 14
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: bash tools/ci-self-hosted.sh end
 
   # The fuzz targets in fuzz/ (cargo-fuzz, nightly Rust), `fuzz_secs` each,
   # in parallel: session frames, the local line framing, WebSocket upgrade
@@ -517,8 +529,15 @@ jobs:
         target: [session_frame, local_lines, websocket_upgrade]
     steps:
       - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+        run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@nightly
+      # Self-hosted runners keep their target directory instead.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           workspaces: fuzz
       - name: Install cargo-fuzz
@@ -570,3 +589,8 @@ jobs:
           name: fuzz-${{ matrix.target }}
           path: fuzz/artifacts
           retention-days: 14
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: bash tools/ci-self-hosted.sh end

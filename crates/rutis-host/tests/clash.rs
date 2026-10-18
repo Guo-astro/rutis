@@ -15,9 +15,12 @@ use common::repo;
 use serde_json::json;
 
 /// Python: provides `weather` and `ready` while loading; once `go` is
-/// there (from Node), provides `forecast` after loading.
+/// there (from Node), provides `forecast` after loading, when the test
+/// creates the file `gate` (once it has seen the row running).
 const PYTHON: &str = r#"
+import os
 import threading
+import time
 
 class Weather:
     def today(self):
@@ -25,27 +28,36 @@ class Weather:
 
 def apply(ctx, config):
     if config["late"]:
-        threading.Timer(0.1, lambda: ctx.provide("forecast", Weather())).start()
+        def provide():
+            while not os.path.exists(config["gate"]):
+                time.sleep(0.02)
+            ctx.provide("forecast", Weather())
+        threading.Thread(target=provide, daemon=True).start()
     else:
         ctx.provide("weather", Weather())
         ctx.provide("ready", Weather())
 "#;
 
-/// Node: the same the other way round.
+/// Node: the same the other way round, `late` gated on its own file.
 fn node() -> String {
     let sdk = repo()
         .join("node/rutis/src/index.mjs")
         .canonicalize()
         .unwrap();
     format!(
-        "import {{ definePlugin }} from '{}'\n\
+        "import {{ existsSync }} from 'node:fs'\n\
+         import {{ definePlugin }} from '{}'\n\
          class Weather {{ today() {{ return 'sun' }} }}\n\
          export const early = definePlugin({{ apply(ctx) {{\n\
            ctx.provide('forecast', new Weather())\n\
            ctx.provide('go', new Weather())\n\
          }} }})\n\
-         export const late = definePlugin({{ inject: ['ready'], apply(ctx) {{\n\
-           setTimeout(() => ctx.provide('weather', new Weather()), 100)\n\
+         export const late = definePlugin({{ inject: ['ready'], apply(ctx, config) {{\n\
+           const timer = setInterval(() => {{\n\
+             if (!existsSync(config.gate)) return\n\
+             clearInterval(timer)\n\
+             ctx.provide('weather', new Weather())\n\
+           }}, 20)\n\
          }} }})\n",
         file_url(&sdk)
     )
@@ -95,10 +107,30 @@ fn a_service_provided_after_loading_twice_fails_the_later_row() {
             { "id": "node-late", "name": "./late.mjs" },
         ]
     });
+    let gate = |row: &str| dir.path().join(format!("{row}.gate"));
+    let config = {
+        let mut config = config;
+        config["rows"][1]["config"]["gate"] = json!(gate("py-late"));
+        config["rows"][3]["config"] = json!({ "gate": gate("node-late") });
+        config
+    };
     let file = dir.path().join("rutis.json");
     std::fs::write(&file, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
     let mut host = Host::start(&["run", file.to_str().unwrap()], dir.path());
+    // Each late row runs first, and only then provides the clashing name.
+    let mut running = Vec::new();
+    while running.len() < 2 {
+        let row = host.wait_line(|line| {
+            ["py-late", "node-late"]
+                .into_iter()
+                .find(|row| line == format!("{row}: running"))
+        });
+        running.push(row);
+    }
+    for row in running {
+        std::fs::write(gate(row), "").unwrap();
+    }
     let mut failed = Vec::new();
     while failed.len() < 2 {
         let line = host.wait_line(|line| {
@@ -127,6 +159,19 @@ fn a_service_provided_after_loading_twice_fails_the_later_row() {
     let (status, stderr, output) = host.exit();
     let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
     assert_eq!(status.code(), Some(0), "{context}");
+    // Each late row was running, then failed.
+    for row in ["py-late", "node-late"] {
+        let states: Vec<&String> = output
+            .iter()
+            .filter(|line| line.starts_with(&format!("{row}: ")))
+            .collect();
+        let at = |prefix: String| states.iter().position(|line| line.starts_with(&prefix));
+        let (running, failed) = (at(format!("{row}: running")), at(format!("{row}: failed")));
+        assert!(
+            running.is_some() && running < failed,
+            "{row}: running, then failed: {context}"
+        );
+    }
     // The earlier providers ran on: neither printed another state.
     for row in ["py-early", "node-early"] {
         let states: Vec<&String> = output

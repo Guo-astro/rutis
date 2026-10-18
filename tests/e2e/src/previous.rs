@@ -2,15 +2,17 @@
 //! quality standard Q9.3.2.4): their runtime packages, rutis-host and Go
 //! SDK, from the registries, cached.
 //!
-//! Which releases: `RUTIS_E2E_PREVIOUS` (versions separated by commas),
-//! else derived from npm's list of `@arcships/rutis-runtime` versions
+//! Which releases: `RUTIS_E2E_PREVIOUS` (versions separated by commas;
+//! set, it must name at least one), else derived from npm's list of `@arcships/rutis-runtime` versions
 //! (every package is released at the same version) and this checkout's
 //! version (`node/rutis-host/package.json`): the latest release older than
 //! the checkout's version — the previous release — and the latest release
 //! that is not newer, when it differs (the checkout's version once it is
 //! released, while main has not moved on to the next one). Nothing to edit
 //! after a release: with main at 0.11.0 that is 0.10.0 and 0.11.0; once
-//! main says 0.12.0, 0.11.0.
+//! main says 0.12.0, 0.11.0. `RUTIS_E2E_ONLY_OLDER` (set, not empty)
+//! leaves the checkout's own version out: the release gate sets it, as a
+//! release run again after failing halfway may find it published in part.
 //!
 //! What a release brings, each installed once per machine into
 //! `RUTIS_E2E_CACHE` (else `target/rutis-e2e-previous` in this checkout),
@@ -52,11 +54,13 @@ pub fn releases() -> Vec<Release> {
     RELEASES
         .get_or_init(|| match resolve() {
             Ok(versions) => {
-                eprintln!(
+                let met = format!(
                     "cross-version: the current code meets {} (this checkout is {})",
                     versions.join(", "),
                     current()
                 );
+                eprintln!("{met}");
+                summary(&met);
                 versions
                     .into_iter()
                     .map(|version| Release { version })
@@ -71,6 +75,23 @@ pub fn releases() -> Vec<Release> {
             }
         })
         .clone()
+}
+
+/// Add `line` to the GitHub Actions job summary, when there is one (CI):
+/// which releases a run met, without `--nocapture`.
+fn summary(line: &str) {
+    let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY") else {
+        return;
+    };
+    use std::io::Write as _;
+    let written = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&path)
+        .and_then(|mut file| writeln!(file, "{line}"));
+    if let Err(error) = written {
+        eprintln!("cross-version: the job summary: {error}");
+    }
 }
 
 /// This checkout's version: the one every package is released at.
@@ -88,10 +109,17 @@ fn resolve() -> Result<Vec<String>, String> {
             .filter(|version| !version.is_empty())
             .map(str::to_owned)
             .collect();
+        // Set wrong (empty, or not versions): a mistake, offline or not,
+        // never a request to meet nothing.
+        assert!(
+            !versions.is_empty(),
+            "RUTIS_E2E_PREVIOUS={list:?} names no version"
+        );
         for version in &versions {
-            if parse(version).is_none() {
-                return Err(format!("RUTIS_E2E_PREVIOUS: {version} is not a version"));
-            }
+            assert!(
+                parse(version).is_some(),
+                "RUTIS_E2E_PREVIOUS: {version} is not a version"
+            );
         }
         return Ok(versions);
     }
@@ -116,7 +144,9 @@ fn resolve() -> Result<Vec<String>, String> {
     }
     let published: Vec<String> = serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("npm view printed no list of versions: {error}"))?;
-    let versions = choose(&current(), &published);
+    let only_older =
+        std::env::var_os("RUTIS_E2E_ONLY_OLDER").is_some_and(|value| !value.is_empty());
+    let versions = choose(&current(), &published, only_older);
     if versions.is_empty() {
         return Err(format!(
             "no release before {} is published: {published:?}",
@@ -128,8 +158,10 @@ fn resolve() -> Result<Vec<String>, String> {
 
 /// The releases to meet, of `published`, for a checkout at `current`: the
 /// latest release older than it, then the latest one not newer than it
-/// when that is another.
-fn choose(current: &str, published: &[String]) -> Vec<String> {
+/// when that is another. `only_older` (`RUTIS_E2E_ONLY_OLDER`, set by the
+/// release gate) leaves out the checkout's own version: a release run
+/// again after it failed halfway may find it published in part.
+fn choose(current: &str, published: &[String], only_older: bool) -> Vec<String> {
     let current = parse(current).expect("this checkout's version");
     let mut releases: Vec<(u64, u64, u64)> = published
         .iter()
@@ -139,7 +171,7 @@ fn choose(current: &str, published: &[String]) -> Vec<String> {
     let previous = releases.iter().rev().find(|version| **version < current);
     let latest = releases.iter().rev().find(|version| **version <= current);
     let mut chosen: Vec<(u64, u64, u64)> = previous.into_iter().copied().collect();
-    if let Some(latest) = latest {
+    if let Some(latest) = latest.filter(|latest| !(only_older && **latest == current)) {
         if Some(latest) != previous {
             chosen.push(*latest);
         }
@@ -338,10 +370,20 @@ mod tests {
     fn the_previous_release_and_the_checkouts_once_released() {
         let published = versions(&["0.9.1", "0.10.0", "0.11.0", "0.12.0-rc.1"]);
         // main at the released version: the one before, and that one.
-        assert_eq!(choose("0.11.0", &published), ["0.10.0", "0.11.0"]);
+        assert_eq!(choose("0.11.0", &published, false), ["0.10.0", "0.11.0"]);
         // main moved on to the next version: the latest release only.
-        assert_eq!(choose("0.12.0", &published), ["0.11.0"]);
-        assert_eq!(choose("0.10.0", &published), ["0.9.1", "0.10.0"]);
-        assert!(choose("0.9.0", &published).is_empty());
+        assert_eq!(choose("0.12.0", &published, false), ["0.11.0"]);
+        assert_eq!(choose("0.10.0", &published, false), ["0.9.1", "0.10.0"]);
+        assert!(choose("0.9.0", &published, false).is_empty());
+    }
+
+    /// The release gate (`RUTIS_E2E_ONLY_OLDER`): never the version being
+    /// released, published in part or not; older ones as before.
+    #[test]
+    fn only_older_releases_leave_the_checkouts_out() {
+        let published = versions(&["0.9.1", "0.10.0", "0.11.0"]);
+        assert_eq!(choose("0.11.0", &published, true), ["0.10.0"]);
+        assert_eq!(choose("0.12.0", &published, true), ["0.11.0"]);
+        assert!(choose("0.9.1", &published, true).is_empty());
     }
 }

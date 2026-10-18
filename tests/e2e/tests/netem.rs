@@ -484,10 +484,31 @@ fn main_host(s: &Scenario, net: &Net, token: &str) -> (Host, Probe) {
     (a, probe)
 }
 
-/// The waits `retrying in <n>s` of A's `link down` lines so far.
-fn retry_waits(a: &Host) -> Vec<f64> {
+/// The step of the backoff a wait comes from: 0.5 s doubling up to 30 s,
+/// each ± 20 % (the ranges do not overlap), printed to a tenth.
+fn backoff_step(wait: f64) -> Option<f64> {
+    [0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 30.0]
+        .into_iter()
+        .find(|step| (step * 0.8 - 0.05..=step * 1.2 + 0.05).contains(&wait))
+}
+
+/// Every printed wait of the backoff has its step; others have none.
+#[test]
+fn a_redial_wait_names_its_backoff_step() {
+    for (wait, step) in [(0.4, 0.5), (0.6, 0.5), (1.2, 1.0), (2.1, 2.0), (36.0, 30.0)] {
+        assert_eq!(backoff_step(wait), Some(step), "{wait}");
+    }
+    for wait in [0.3, 0.7, 2.5, 5.0, 37.0] {
+        assert_eq!(backoff_step(wait), None, "{wait}");
+    }
+}
+
+/// The waits `retrying in <n>s` of A's `link down` lines so far, from its
+/// `from`th line on.
+fn retry_waits(a: &Host, from: usize) -> Vec<f64> {
     a.lines()
         .iter()
+        .skip(from)
         .filter(|line| line.text.starts_with("gpu: link down ("))
         .filter_map(|line| line.text.rsplit_once("; retrying in "))
         .filter_map(|(_, wait)| wait.strip_suffix('s')?.parse().ok())
@@ -563,6 +584,7 @@ fn two_containers_over_tls_through_delay_loss_and_an_outage() {
     // 3. A full outage while B runs a call.
     a.skip_written();
     b.skip_written();
+    let outage = a.lines().len();
     let gated = probe.send("infer", "run", json!(["gated"]));
     b.expect("infer: executing gated");
     net.netem(&net.a, Some("loss 100%"));
@@ -612,10 +634,23 @@ fn two_containers_over_tls_through_delay_loss_and_an_outage() {
         reconnect <= bound,
         "reconnected {reconnect:?} after the network came back, over the backoff bound {bound:?}"
     );
-    for wait in retry_waits(&a) {
-        assert!(
-            (0.4..=LONGEST_WAIT).contains(&wait),
-            "a redial waits {wait}s, outside 0.5 s – 30 s ± 20 %"
+    // The outage's redials wait twice as long each time (± 20 %) up to
+    // the cap: each wait comes from a step, the next step is the double.
+    let waits = retry_waits(&a, outage);
+    assert!(!waits.is_empty(), "no redial during the outage");
+    let steps: Vec<f64> = waits
+        .iter()
+        .map(|&wait| {
+            backoff_step(wait).unwrap_or_else(|| {
+                panic!("a redial waits {wait}s, outside 0.5 s – 30 s ± 20 %: {waits:?}")
+            })
+        })
+        .collect();
+    for pair in steps.windows(2) {
+        assert_eq!(
+            pair[1],
+            (pair[0] * 2.0).min(30.0),
+            "the redial waits do not double up to 30 s: {waits:?}"
         );
     }
     probe.started(&mut a);

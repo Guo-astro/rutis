@@ -112,6 +112,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.run == 'true'
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
+    timeout-minutes: 30
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -224,10 +225,11 @@ jobs:
         run: |
           run_url="$SERVER/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           # Every job of this run, those of the called workflows included
-          # ("ci / rust").
+          # ("ci / rust"), but the report-only ones (`cordis-latest`,
+          # `netem / …`), which never fail the run.
           failed=$(gh api --paginate \
             "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
-            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | "- [\(.name)](\(.html_url))：\(.conclusion)"')
+            --jq '.jobs[] | select(.name != "cordis-latest" and (.name | startswith("netem / ") | not)) | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | "- [\(.name)](\(.html_url))：\(.conclusion)"')
           if [ -n "$BASE" ]; then
             range="[\`${BASE:0:10}..${GITHUB_SHA:0:10}\`]($SERVER/$GITHUB_REPOSITORY/compare/$BASE...$GITHUB_SHA)（上一次成功的每晚运行到这次）"
           else

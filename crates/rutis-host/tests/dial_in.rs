@@ -262,5 +262,10 @@ async fn a_reload_changes_the_rows_of_each_instance() {
     );
     let instance = contacts.unwrap().2;
     assert!(after.iter().all(|copy| copy.2 == instance), "{after:?}");
+    // The changed row's copy is among them (in that instance).
+    assert!(
+        after.iter().any(|(id, ..)| id == "digest"),
+        "no copy of digest: {after:?}"
+    );
     host.shut_down(HANG_GUARD).await.ok();
 }

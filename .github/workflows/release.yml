@@ -108,6 +108,9 @@ jobs:
       pull-requests: read
     with:
       all: true
+      # The cross-version meetings leave this version out, even when a
+      # re-run finds it published in part.
+      release: true
 
   # The Windows dylib plugin tests, the reproducible-SDK check included (it
   # runs for every event but pull_request).
