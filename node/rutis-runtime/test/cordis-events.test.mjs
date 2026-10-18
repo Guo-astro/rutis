@@ -153,7 +153,11 @@ test('leaf plugins: on with prepend and global, the five methods, filter, signal
   await leaf.serial('o')
   assert.deepEqual(log.splice(0), ['first', 'later'])
   assert.equal(await leaf.parallel('o'), undefined)
-  assert.equal(leaf.waterfall('w', '!', () => 'end'), 'end!')
+  // Every argument is the event's; the terminal comes with `with`.
+  assert.equal(leaf.waterfall.with(() => 'end')('w', '!'), 'end!')
+  assert.equal(leaf.waterfall('w', '!'), 'undefined!')
+  assert.equal(leaf.filter(() => true).waterfall.with(() => 'f')('w', '?'), 'f?')
+  assert.throws(() => leaf.waterfall.with('end'), TypeError)
   assert.equal(leaf.bail('nothing'), undefined)
   log.length = 0
   await leaf.filter(() => false).parallel('g')
@@ -166,6 +170,73 @@ test('leaf plugins: on with prepend and global, the five methods, filter, signal
   assert.throws(() => leaf.emit('rutis/fake'), { name: 'ReservedEvent' })
   assert.throws(() => leaf.serial('rutis/fake'), { name: 'ReservedEvent' })
   root.emit('nothing')
+})
+
+// Descriptors name a plugin by its declared name: Cordis's own, a leaf
+// plugin's `name`, else (a leaf plugin without one) its row's id.
+test('a leaf plugin without a name is named by its row\'s id', async () => {
+  const { root, bus, load } = setup()
+  bus.nameRow('anon', 'anon-id')
+  const named = definePlugin({ name: 'greeter', apply(ctx) { ctx.on('p', () => {}) } })
+  const unnamed = definePlugin({ apply(ctx) { ctx.on('p', () => {}) } })
+  await load('named', supported(toCordis(named), 'named').apply)
+  await load('anon', supported(toCordis(unnamed), 'anon').apply)
+  await load('cordis', ctx => { ctx.on('p', () => {}) })
+  assert.deepEqual(bus.entries().filter(entry => entry.name === 'p').map(entry => entry.plugin), ['greeter', 'anon-id', 'cordis'])
+  root.emit('nothing')
+})
+
+// Cordis's `emit` calls the callbacks of `events.dispatch('emit')` without
+// awaiting them: a failure is reported, not an unhandled rejection that
+// ends the process. `parallel` awaits them and gets the failure itself.
+test('a failure of events.dispatch(\'emit\') nobody awaits is reported', async () => {
+  const { root, load, reported } = setup()
+  const unhandled = []
+  const onUnhandled = reason => unhandled.push(reason)
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    await load('a', ctx => { ctx.on('d', () => { throw new Error('a failed') }) })
+    for (const callback of root.events.dispatch('emit', ['d'])) callback()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.deepEqual(reported, ['rutis: listener of d in row a failed: Error: a failed'])
+    reported.length = 0
+    const results = await Promise.allSettled(root.events.dispatch('emit', ['d']).map(async callback => callback()))
+    assert.equal(results[0].status, 'rejected')
+    assert.equal(results[0].reason.name, 'AggregateError')
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.deepEqual(reported, [], 'awaited: the caller has the failure')
+    assert.deepEqual(unhandled, [])
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
+})
+
+// Through the host the filter gets each listener's own Context by the id
+// the host gives: one plugin listening from two Contexts (two child
+// fibers) has two equal descriptors.
+test('through the host, Context.filter gets the Context the host asks about', async () => {
+  const sent = []
+  const host = { callAsync: (target, method, args) => { sent.push([method, args]); return Promise.resolve() }, call() {}, callFunctionAsync() {} }
+  const { root, bus, load } = setup()
+  bus.peer = host
+  const contexts = []
+  await load('chat', ctx => {
+    for (const label of ['one', 'two']) {
+      ctx.plugin({ name: 'child', apply(child) { contexts.push(child); child.on('f', () => {}) } })
+    }
+  })
+  const ids = sent.filter(([method]) => method === 'events.on').map(([, [fields]]) => fields.id)
+  assert.equal(ids.length, 2)
+  bus.elsewhere({ add: ['f'] })
+  const self = Object.create(root)
+  const seen = []
+  self[Context.filter] = context => { seen.push(context); return context === contexts[1] }
+  root.parallel(self, 'f')
+  const [, [fields]] = sent.at(-1)
+  const descriptor = { name: 'f', prefix: false, plugin: 'child', row: 'chat', runtime: 'node', node: null, scope: [], global: false }
+  assert.deepEqual(fields.filter([{ ...descriptor, listener: ids[0] }, { ...descriptor, listener: ids[1] }]), [false, true])
+  assert.equal(seen[0], contexts[0])
+  assert.equal(seen[1], contexts[1])
 })
 
 // Some plugins call Cordis's primitive themselves (`ctx.events.dispatch`,

@@ -125,7 +125,9 @@ function dispatch(ctx, log, spec) {
     case 'parallel': return ctx.parallel(...head, ...args).then(() => null)
     case 'serial': return ctx.serial(...head, ...args)
     case 'waterfall': {
-      const terminal = typeof spec.terminal === 'string'
+      // A text it returns, or `{ echo: true }`: its first argument.
+      const terminal = spec.terminal?.echo ? first => { log.add('terminal'); return first }
+        : typeof spec.terminal === 'string'
         ? () => { log.add('terminal'); return spec.terminal }
         : () => undefined
       return ctx.waterfall(...head, ...args, terminal)

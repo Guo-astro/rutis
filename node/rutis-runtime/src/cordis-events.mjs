@@ -20,15 +20,51 @@
 // A leaf plugin's filter (`ctx.filter(predicate)`) is passed as
 // `thisArg[KEEP]`: called with the descriptor alone.
 
+import { FAILED } from './events.mjs'
+
 export const KEEP = Symbol.for('rutis.events.keep')
+
+// A leaf plugin's listener options carry its declared name (null: none,
+// and descriptors name the plugin by its row's id).
+export const LEAF_NAME = Symbol.for('rutis.events.leaf-name')
 
 const ORIGINAL = Symbol.for('cordis.original')
 
 const internal = name => typeof name !== 'string' || name.startsWith('internal/')
 
+const errorText = error => `${error?.name ?? 'Error'}: ${error?.message ?? String(error)}`
+
+// The callback of Cordis's `dispatch('emit')` runs a `parallel`: Cordis's
+// `parallel` awaits it, its `emit` (and a plugin calling it so) does not.
+// A failure nobody awaits is reported where it happened, as `emit`
+// reports it (§5.6), instead of ending the process as an unhandled
+// rejection: one line per listener that failed here, or the line of an
+// emit through the host.
+function unawaited(bus, result, name, row) {
+  if (!(result instanceof Promise)) return result
+  let awaited = false
+  result.catch(error => {
+    if (awaited) return
+    const where = error?.[FAILED]
+    if (where) {
+      error.errors.forEach((child, index) => bus.report(`rutis: listener of ${name} in ${where[index]} failed: ${errorText(child)}`, { event: name, error: child }))
+    } else {
+      bus.report(`rutis: emit of ${name} from ${row === null || row === undefined ? 'the mount' : `row ${bus.rowId(row)}`} failed: ${errorText(error)}`, { event: name, row, error })
+    }
+  })
+  // Awaiting it, or calling then / catch / finally, takes the failure.
+  return new Proxy(result, {
+    get(target, key) {
+      if (key === 'then' || key === 'catch' || key === 'finally') awaited = true
+      const value = Reflect.get(target, key, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+}
+
 // Install the bus on `ctx`, the root of a Context. `where(context)` says
-// whose a Context is: `{ row, scope, signal }` (row null for a plugin
-// loaded by `mount`).
+// whose a Context is: `{ row, scope, signal, gone }` (row null for a plugin
+// loaded by `mount`; `gone`: of a row unloaded since).
 export function install(ctx, Context, bus, where) {
   const events = ctx.events[ORIGINAL] ?? ctx.events
   const original = Object.fromEntries(['emit', 'parallel', 'serial', 'waterfall', 'bail'].map(mode => [mode, events[mode]]))
@@ -37,7 +73,7 @@ export function install(ctx, Context, bus, where) {
 
   const describe = context => {
     const current = bus.filtering
-    if (current && current.owner === context) return bus.describe(current)
+    if (current && current.owner === context) return current.descriptor
     const { row, scope } = where(context)
     return { name: null, prefix: false, plugin: context.fiber?.name ?? 'root', row: bus.rowId(row), runtime: bus.runtime, node: null, scope, global: false }
   }
@@ -49,9 +85,12 @@ export function install(ctx, Context, bus, where) {
     const context = this
     const { row, scope } = where(context)
     const label = `ctx.on(${JSON.stringify(name)})`
+    // The plugin's declared name: Cordis's, or a leaf plugin's own, else
+    // its row's id (§4.2).
+    const plugin = options && Object.hasOwn(options, LEAF_NAME) ? options[LEAF_NAME] ?? bus.rowId(row) ?? context.fiber.name : context.fiber.name
     let entry
     const dispose = context.fiber.effect(() => {
-      entry = bus.on({ name, callback: listener, prepend: options?.prepend, global: options?.global, row, plugin: context.fiber.name, scope, owner: context })
+      entry = bus.on({ name, callback: listener, prepend: options?.prepend, global: options?.global, row, plugin, scope, owner: context })
       return () => bus.off(entry)
     }, label)
     // Cordis's disposer says whether the listener was still registered.
@@ -77,8 +116,11 @@ export function install(ctx, Context, bus, where) {
     const thisArg = hasThis ? args.shift() : null
     args.shift()
     original.emit.call(this, 'internal/dispatch', type, name, args, thisArg)
-    const { row, scope } = where(this.ctx)
-    return [(...values) => bus.dispatch(mode, name, values, { row, scope, thisArg })]
+    const { row, scope, gone } = where(this.ctx)
+    return [(...values) => {
+      const result = bus.dispatch(mode, name, values, { row, scope, thisArg, gone })
+      return type === 'emit' ? unawaited(bus, result, name, row) : result
+    }]
   }
 
   for (const mode of Object.keys(original)) {
@@ -91,14 +133,14 @@ export function install(ctx, Context, bus, where) {
       const terminal = mode === 'waterfall' ? values.pop() : undefined
       // Cordis's own diagnostics hook, once for this dispatch here.
       original.emit.call(this, 'internal/dispatch', mode, name, values, thisArg)
-      const { row, scope } = where(this.ctx)
+      const { row, scope, gone } = where(this.ctx)
       let keep
       if (typeof thisArg?.[KEEP] === 'function') keep = thisArg[KEEP]
       else if (typeof thisArg?.[Context.filter] === 'function') {
         const filter = thisArg[Context.filter]
         keep = (descriptor, entry) => filter.call(thisArg, entry ? entry.owner : { rutis: descriptor })
       }
-      return bus.dispatch(mode, name, values, { row, scope, keep, thisArg, terminal })
+      return bus.dispatch(mode, name, values, { row, scope, keep, thisArg, terminal, gone })
     }
   }
 }
