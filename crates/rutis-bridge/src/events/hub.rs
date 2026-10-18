@@ -28,6 +28,8 @@ type Key = (String, bool);
 
 /// The logical bus of one kernel bus, as the sessions on it see it.
 pub(crate) struct Hub {
+    /// The bus's root: holds the bus (and its address) while the hub lives.
+    #[allow(dead_code)]
     ctx: Ctx,
     state: Mutex<HubState>,
     watching: Mutex<Option<Disposer>>,
@@ -62,6 +64,8 @@ pub(crate) fn next_origin() -> u64 {
 impl Hub {
     /// The hub of `ctx`'s bus, made when none lives.
     pub(crate) fn of(ctx: &Ctx) -> Result<Arc<Hub>, Error> {
+        // The bus's root: the watcher lasts as long as the bus.
+        let ctx = &ctx.root_ctx();
         let address = ctx.events() as *const _ as usize;
         let mut hubs = HUBS.lock().unwrap();
         hubs.retain(|(_, hub)| hub.strong_count() > 0);
@@ -104,10 +108,6 @@ impl Hub {
         Ok(hub)
     }
 
-    /// The context the hub dispatches and registers through.
-    pub(crate) fn ctx(&self) -> &Ctx {
-        &self.ctx
-    }
 
     /// A change of the table: the sessions for which a name or prefix
     /// starts or stops being elsewhere are told, in order, before the
@@ -248,6 +248,9 @@ pub(crate) struct SessionEvents {
     /// The hub; `None` when the runtime has no bus to join (a process
     /// mounted without a context), whose events then stay in its process.
     hub: Option<Arc<Hub>>,
+    /// The context its entries are registered and its dispatches emitted
+    /// through (the runtime plugin's): they go with it.
+    ctx: Option<Ctx>,
     origin: u64,
     connection: WeakConnection,
     runtime: String,
@@ -300,6 +303,7 @@ impl SessionEvents {
         let hub = ctx.map(Hub::of).transpose()?;
         let session = Arc::new(Self {
             hub,
+            ctx: ctx.cloned(),
             origin: next_origin(),
             connection: connection.downgrade(),
             runtime,
@@ -413,7 +417,7 @@ impl SessionEvents {
             )));
         }
         let scope = self.scope_of(registration.row.as_deref())?;
-        let Some(hub) = &self.hub else {
+        let Some(ctx) = &self.ctx else {
             return Ok(Value::Undefined);
         };
         if self.entries.lock().unwrap().contains_key(&registration.id) {
@@ -447,10 +451,9 @@ impl SessionEvents {
             kind: registration.kind,
             origin: self.origin,
         });
-        let disposer = hub
-            .ctx()
+        let disposer = ctx
             .events()
-            .on_remote(hub.ctx(), entry, listener)
+            .on_remote(ctx, entry, listener)
             .map_err(|error| to_session(&error))?;
         self.entries.lock().unwrap().insert(
             registration.id,
@@ -506,7 +509,7 @@ impl SessionEvents {
         };
         let filter = reference(&mut fields, "filter")?;
         let terminal = reference(&mut fields, "terminal")?;
-        let Some(hub) = self.hub.clone() else {
+        let Some(ctx) = self.ctx.clone() else {
             // No bus: nothing is elsewhere, and a runtime never sends this.
             return Ok(Value::Undefined);
         };
@@ -515,7 +518,7 @@ impl SessionEvents {
         dispatch.origin = Some(self.origin);
         dispatch.filter = filter.map(|filter| selector(filter, name.clone(), mode.is_sync()));
         dispatch.terminal = terminal.map(terminal_of);
-        let ctx = hub.ctx().clone();
+
         match mode {
             Mode::Bail => {
                 let result = ctx

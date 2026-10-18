@@ -5,7 +5,7 @@
     "The plugin injects `clock`, whose `now()` returns 0, 1, 2, ... one per call, and provides `service` with `methods`.",
     "A call: `call` (method), `args` (JSON; {\"$callback\": ...} is a function the caller passes: \"upper\" returns its argument upper-cased; {\"throws\": {name, message, fields}} throws an error with that name and message and extra `fields`), and what it does: `returns` (a JSON value; keys in `ignore` are not compared; `copied`: it is not the object passed in), `throws` ({} for any error, or the `name` and `message` the caller receives; the thrown error's extra `fields` do not cross) or `exits` (the plugin's process exits with this status).",
     "`samples` are values one language makes: the plugin's `samples()` names the ones it has, `sample(name)` returns one; a runtime whose plugin has no `samples` method has none.",
-    "`events` (after `calls` and `samples`): the host emits `emit` with `args` (JSON) as Process::emit does, the runtime mounted with `emits`; then `then` is a call as in `calls`, or the emission `throws`. The session matrix requires these checks on Node, Bun, Python and Go; the Node and Python testing tools also check them.",
+    "`events` (after `calls` and `samples`): the host emits `emit` with `args` (JSON) with `parallel` on its bus, which the runtime's listeners joined (docs/design-events-protocol-2026-10-18.md); then `then` is a call as in `calls`, or the emission `throws`. The session matrix requires these checks on Node, Bun, Python and Go; the testing tools emit the same in one process.",
     "`allowed`: the testing tool does not do what this entry says, and why (a bounded, written-down difference, also in docs/guide/plugin-api.md). Every other entry holds for both.",
     "Tagged values (#308, docs/design-value-types-2026-10-15.md) are written {\"$<tag>\": <the value's wire text>}: {\"$instant\": \"2026-10-15T03:22:15.123Z\"}, {\"$bytes\": \"aGVsbG8=\"} (base64), {\"$map\": [[key, value], ...]}, {\"$set\": [element, ...]}, and so for datetime, date, time, bigint, decimal and uuid. No plain value is written so.",
     "`pending`: no runtime's plugin names this sample yet; a runtime names it in its `samples()` once it sends that value (#308 phase 3), and the entry then holds for it like any other. Until then it is not checked.",
@@ -47,17 +47,11 @@
       { "call": "week", "args": [2], "returns": ["mon", "tue"], "why": "an inherited method (a prototype's in JavaScript, a base class's in Python, an embedded type's in Go) is one of its methods" }
     ]
   },
-  "emits": ["weather/city"],
   "events": [
     {
       "emit": "weather/city", "args": ["Bergen"],
       "then": { "call": "today", "args": [], "returns": "Bergen at 2" },
-      "why": "a leaf listener receives a declared host event, and its effect is visible to the next call"
-    },
-    {
-      "emit": "weather/undeclared", "args": [],
-      "throws": { "message": "event weather/undeclared is not declared for emission from rutis" },
-      "why": "only events declared in emits can be sent"
+      "why": "a leaf listener hears a host event without declaring anything, and the host's parallel waits for it: its effect is visible to the next call"
     }
   ],
   "samples": [

@@ -236,6 +236,7 @@ impl Plugin for LocalRuntime {
                 LinkConfig::dial(peer.clone(), &kind, &kind, "spawn:runtime").local_runtime(),
             );
             let mut link_state = link.state();
+            self.runtime.announce(ctx);
             self.runtime.starting();
             ctx.plugin(link);
             ctx.plugin(RuntimeAccessPlugin::new(peer, &self.runtime_name));

@@ -146,9 +146,54 @@ pub struct RuntimePlugin {
     anchor: PathBuf,
     hosts: Arc<HashMap<String, Value>>,
     state: Arc<watch::Sender<RuntimeState>>,
+    /// `rutis/runtime` follows the state (once started, [`RuntimePlugin::announce`]).
+    announcing: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl RuntimePlugin {
+    /// Emit `rutis/runtime` on `ctx`'s bus at each change of the runtime's
+    /// state from now on, for as long as the runtime exists (events
+    /// protocol §8): `running` once mounted, `down` with why when its
+    /// session ended or its mount failed (or `stopped` when it was
+    /// stopped).
+    pub(crate) fn announce(&self, ctx: &Ctx) {
+        use std::sync::atomic::Ordering;
+        if self.announcing.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Ok(tasks) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let mut states = self.state.subscribe();
+        let ctx = ctx.root_ctx();
+        let name = self.runtime.clone();
+        tasks.spawn(async move {
+            use crate::events::RuntimeEventState::{Down, Running};
+            let mut running = false;
+            loop {
+                let state = states.borrow_and_update().clone();
+                match state {
+                    RuntimeState::Ready(_) if !running => {
+                        running = true;
+                        crate::events::emit_runtime(&ctx, &name, Running, None);
+                    }
+                    RuntimeState::Down(reason) => {
+                        running = false;
+                        crate::events::emit_runtime(&ctx, &name, Down, Some(reason));
+                    }
+                    RuntimeState::Idle if running => {
+                        running = false;
+                        crate::events::emit_runtime(&ctx, &name, Down, Some("stopped".into()));
+                    }
+                    _ => {}
+                }
+                if states.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
     fn with(runtime: String, anchor: PathBuf, remote: bool) -> Self {
         Self {
             label: format!("{runtime}-runtime"),
@@ -158,6 +203,7 @@ impl RuntimePlugin {
             anchor,
             hosts: Arc::default(),
             state: Arc::new(watch::channel(RuntimeState::Idle).0),
+            announcing: Arc::default(),
         }
     }
 
@@ -235,6 +281,7 @@ impl Plugin for RuntimePlugin {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
         Box::pin(async move {
+            self.announce(ctx);
             self.state.send_replace(RuntimeState::Starting);
             // The runtime may hang before it answers; dispose or restart
             // cancels this generation.

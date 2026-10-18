@@ -118,7 +118,7 @@ struct Imports {
     hosts: Mutex<HashMap<String, HostEntry>>,
     /// The session's side of the logical event bus (`events.*`), set once
     /// the session is up, before `mount`.
-    events: std::sync::OnceLock<Arc<crate::events::SessionEvents>>,
+    bus: std::sync::OnceLock<Arc<crate::events::SessionEvents>>,
     /// What to do when a row's plugin ends on its own (`rows.ended`), by
     /// row key (see [`Process::on_row_ended`]).
     ended: Mutex<HashMap<String, RowEnded>>,
@@ -451,7 +451,7 @@ impl Dispatch for Imports {
             return crate::session::with_caller_row(row, || host.invoke(method, args));
         }
         if target.is_empty() && method.starts_with("events.") {
-            return match self.events.get() {
+            return match self.bus.get() {
                 Some(events) => events.invoke(connection, method, args),
                 None => Err(Error::Value(format!(
                     "{method}: the session's events are not set up yet"
@@ -461,7 +461,7 @@ impl Dispatch for Imports {
         if target.is_empty() && method == "rows.ended" {
             let (key,): (String,) = crate::runtime::decode(args.json()?)?;
             // Its listeners leave the bus at once (events protocol §7.1).
-            if let Some(events) = self.events.get() {
+            if let Some(events) = self.bus.get() {
                 events.row_ended(&key);
             }
             let ended = self.ended.lock().unwrap().remove(&key);
@@ -799,7 +799,7 @@ impl Process {
             exported: Mutex::default(),
             rows: Mutex::default(),
             hosts: Mutex::new(hosts),
-            events: std::sync::OnceLock::new(),
+            bus: std::sync::OnceLock::new(),
             ended: Mutex::default(),
         });
         let rest = MountRest {
@@ -870,7 +870,7 @@ impl Process {
             runtime.unwrap_or_else(|| "runtime".to_owned()),
             scope.clone(),
         )?;
-        let _ = process.imports.events.set(events);
+        let _ = process.imports.bus.set(events);
         let mounted = process
             .call_async(
                 "",
@@ -941,7 +941,7 @@ impl Process {
     /// Row `key` is being loaded in `scope`: its listeners may register
     /// from now on.
     fn row_loading(&self, key: &str, scope: &[rutis::Scope]) {
-        if let Some(events) = self.imports.events.get() {
+        if let Some(events) = self.imports.bus.get() {
             events.row_loading(key, scope.to_vec());
         }
     }
@@ -949,7 +949,7 @@ impl Process {
     /// Row `key` is gone: its listeners leave the bus (events protocol
     /// §7.1).
     fn row_gone(&self, key: &str) {
-        if let Some(events) = self.imports.events.get() {
+        if let Some(events) = self.imports.bus.get() {
             events.row_ended(key);
         }
     }
@@ -1426,7 +1426,7 @@ mod tests {
             exported: Mutex::default(),
             rows: Mutex::default(),
             hosts: Mutex::default(),
-            events: std::sync::OnceLock::new(),
+            bus: std::sync::OnceLock::new(),
             ended: Mutex::default(),
         }
     }
