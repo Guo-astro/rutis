@@ -91,6 +91,34 @@ In short:
 
 **Always pass ctx on.** The call chain (`path`) lives in `context.Context`: when Node calls your method synchronously and your method calls back into Node synchronously, Node recognizes the chain it is waiting on only if the call carries the ctx you received; with `context.Background()` both sides wait for each other. Under `rutis-host dev`, a call that lost its chain is reported once on stderr.
 
+### Events
+
+Every listener on a host, in any language and any process, is on one event bus ([design](../design-events-2026-10-18.en.md)): where an event is emitted and where its listeners are does not change the result.
+
+```go
+off := ctx.On("session/created", func(ctx context.Context, args ...any) (any, error) {
+	return nil, nil // nil and false are no result; anything else is one
+}, rutis.Prepend()) // options: rutis.Prepend(), rutis.Global()
+
+err := ctx.Emit(callerCtx, "session/created", id)          // returns at once; err only for a refused emission
+err = ctx.Parallel(callerCtx, "session/created", id)        // waits for all; *rutis.AggregateError in registration order
+value, err := ctx.Serial(callerCtx, "config/resolve", key)   // the first result
+value, err = ctx.Bail(callerCtx, "config/resolve", key)      // Serial as a synchronous call
+value, err = ctx.Waterfall(callerCtx, "chat/reply", terminal, msg) // terminal may be nil
+value, err = ctx.Filter(func(l rutis.Listener) bool { return l.Row == "chat" }).Serial(callerCtx, "config/resolve", key)
+```
+
+| Topic | Rule |
+| --- | --- |
+| Waterfall | The listener gets `next` (a `rutis.Next`, `func(context.Context) (any, error)`) as its last argument; calling it runs the rest of the chain, not calling it vetoes the rest; a second call fails with `WaterfallNext`. The outermost value is returned as it is |
+| Failures | A failing `Emit` listener never reaches the emitter or the other listeners: it is reported where the listener runs (`rutis: listener of <name> in row <row> failed: …` on stderr). `Parallel` runs all and returns an `*rutis.AggregateError` (even for one failure); `Serial`, `Bail` and `Waterfall` stop at the first error and return it |
+| Scope | A row hears what is emitted in its scope (`ctx.Scope()`, the loader instances around it) and in every scope inside it, never from beside or below |
+| Filter | `Filter(keep)` asks `keep` once per listener, in registration order, before any runs, with its `rutis.Listener` (`Name`, `Plugin`, `Row`, `Runtime`, `Node`, `Scope`, `Global`); listeners registered with `rutis.Global()` skip filters |
+| Context | A listener's `ctx` is the emitter's (its call chain), cancelled when the emitter gives up or the row unloads. Unloading waits for running listeners, at most `RUTIS_SHUTDOWN_TIMEOUT` |
+| Names | `internal/*` is the runtime's own; `rutis/*` (`rutis/service`, `rutis/row`, `rutis/runtime`) can be listened to but not emitted (`ReservedEvent`) |
+
+Pass on the context your caller gave you, as with service calls. `errors.Is(err, rutis.ErrWaterfallNext)` (and `ErrReservedEvent`, `ErrAsyncListener`, `ErrBinding`) matches an error of that name from any process.
+
 ## 3. Test
 
 `rutistest` needs no host, but the plugin runs in its real runtime and values cross a real session:
@@ -110,6 +138,8 @@ go test ./...
 ```
 
 `Provides` is optional: what `ctx.Provide` provides reaches rutis by itself, its methods the value's exported ones, all called as `async`. When present it applies (`Sync` marks synchronous methods, `Rename` renames them), and `rutis-host check` knows before running what the plugin provides.
+
+Events in tests: the test side is the host of the bus. `loaded.Emit`, `Parallel`, `Serial`, `Waterfall`, `Bail` and `Filter` emit from the row's scope; `loaded.On(name, fn)` listens as the host does (the plugin's emissions of that name then go through the test side, as they go through rutis); `loaded.Load(config, rutistest.InScope("t1/s1"))` loads another row in a scope; `loaded.Reported()` is what the runtime reported of failed `Emit` listeners.
 
 `Load` checks what a host would: the plugin uses only the services `Inject` declares; provided services are of the type `Provides` declares (an undeclared service is called as rutis calls it, by its exported methods, all async); cleanups succeed on unload. What works only within one process (passing a struct as an object, relying on shared memory) fails here.
 

@@ -197,7 +197,6 @@ func TestRutistestMeetsTheRuntimeExpectations(t *testing.T) {
 		Methods map[string]string `json:"methods"`
 		Calls   []entry           `json:"calls"`
 		Samples []entry           `json:"samples"`
-		Emits   []string          `json:"emits"`
 		Events  []struct {
 			Emit   string            `json:"emit"`
 			Args   []json.RawMessage `json:"args"`
@@ -215,7 +214,7 @@ func TestRutistestMeetsTheRuntimeExpectations(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	loaded := Load(t, weather.Plugin, nil, map[string]any{"clock": &clock{}}, expected.Emits...)
+	loaded := Load(t, weather.Plugin, nil, map[string]any{"clock": &clock{}})
 	service := loaded.Service(expected.Service)
 	for method, kind := range expected.Methods {
 		if service.Methods()[method] != kind {
@@ -259,14 +258,14 @@ func TestRutistestMeetsTheRuntimeExpectations(t *testing.T) {
 		for j, arg := range event.Args {
 			args[j] = argument(t, arg)
 		}
-		err := loaded.Emit(ctx, event.Emit, args...)
 		if event.Then == nil {
-			var throws entry
-			_ = json.Unmarshal([]byte(`{"throws":`+string(event.Throws)+`}`), &throws)
-			throws.Why = event.Why
-			check(t, "emit "+event.Emit, throws, nil, err)
+			// The declared-emits list is gone (#464): every name can be
+			// emitted, so an entry about refusing an undeclared one does
+			// not apply.
 			continue
 		}
+		// As a host plugin emits: Parallel waits for the listeners.
+		err := loaded.Parallel(ctx, event.Emit, args...)
 		if err != nil {
 			t.Fatalf("emit %s: %v", event.Emit, err)
 		}
