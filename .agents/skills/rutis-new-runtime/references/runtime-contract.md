@@ -1,6 +1,6 @@
 # The rutis runtime contract (summary)
 
-> Compiled from the rutis implementation and design docs on main (2026-10-14) and shipped with this skill so it can be used on its own. The code and the originals are authoritative:
+> Compiled from the rutis implementation and design docs on main (2026-10-18) and shipped with this skill so it can be used on its own. The code and the originals are authoritative:
 > multi-language design https://github.com/arcships/rutis/blob/main/docs/design-multilang-runtimes-2026-10-03.en.md ·
 > remote plugins https://github.com/arcships/rutis/blob/main/docs/design-remote-plugins-2026-10-03.en.md ·
 > reference implementations: Python https://github.com/arcships/rutis/tree/main/python/rutis/rutis , Go https://github.com/arcships/rutis/tree/main/go/rutis
@@ -87,7 +87,7 @@ Adding fields to the `mount` reply (such as `engine` or `plugins`) is not a prot
 
 ## 5. Values
 
-As in the plugin API's "how values cross" (see `plugin-api.md`): JSON-compatible data is copied; functions, promises / coroutines and objects with methods go by reference; nesting at most 64 levels (a `list`, `record`, `map` or `set` is one level); NaN, ±Infinity, symbols and cyclic references cannot cross. Values over a limit are refused by the **sender** before sending: only that call fails and the session continues. Errors cross with their name, message and whole error graph (causes, children of aggregate errors).
+As in the plugin API's "how values cross" (see `plugin-api.md`): JSON-compatible data is copied; functions, promises / coroutines and objects with methods go by reference; nesting at most 64 levels (a `list`, `record`, `map` or `set` is one level); NaN, ±Infinity, symbols and cyclic references cannot cross. Values over a limit are refused by the **sender** before sending: only that call fails and the session continues. Errors cross with their name, message and whole error graph (causes, children of aggregate errors). An error node may also carry `code` (a string) and `data` (a graph value, decoded like any other value; for example what an exported Rust service's `Err(e)` serializes to): decode them onto the native error (JavaScript properties `code` / `data`, Python attributes, Go `RemoteError.Code` / `Data`), encode them from the native error when the plugin's error has them (a string `code`, any `data`; leave out `data` that cannot cross and send the rest of the error), and keep both when the plugin throws a received error again. A far end that does not know them ignores them, so they need no capability.
 
 Ten tagged values cross beside `reference` and `signal`: `instant`, `datetime`, `date`, `time`, `bytes`, `map`, `set`, `bigint`, `decimal`, `uuid` (wire text and rules: protocol design §6.1, https://github.com/arcships/rutis/blob/main/docs/design-protocol-plugins-2026-09-25.en.md; per-language mapping: https://github.com/arcships/rutis/blob/main/docs/design-value-types-2026-10-15.en.md §2).
 

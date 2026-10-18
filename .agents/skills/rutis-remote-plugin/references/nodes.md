@@ -1,4 +1,4 @@
-> Copied from `docs/guide/nodes.en.md` in the rutis repository (main, 2026-10-14) so this skill can be used on its own. The original is authoritative: https://github.com/arcships/rutis/blob/main/docs/guide/nodes.en.md
+> Copied from `docs/guide/nodes.en.md` in the rutis repository (main, 2026-10-18) so this skill can be used on its own. The original is authoritative: https://github.com/arcships/rutis/blob/main/docs/guide/nodes.en.md
 
 # Connect Nodes
 
@@ -88,7 +88,62 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 }
 ```
 
-A remote Python runtime row is named `<runtime-name>:<module>`; the module is resolved on the remote machine. A Node runtime can also run remotely: in the Node project on that machine, run `node node_modules/@arcships/rutis-runtime/src/runner.mjs listen:wss://… --id <name> --peer <controller> ./package.json` (plugins are resolved from that `package.json`) and set `language` to `node`; likewise a Bun runtime: in the Bun project on that machine, run `bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts listen:wss://… --id <name> --peer <controller> .` (plugins are resolved from that directory, rows named `<runtime-name>:<module>`) and set `language` to `bun`. A remote runtime serves one controller at a time. When its controller disconnects, it unloads all plugins running for that controller.
+A remote Python runtime row is named `<runtime-name>:<module>`; the module is resolved on the remote machine. A Node runtime can also run remotely: in the Node project on that machine, run `node node_modules/@arcships/rutis-runtime/src/runner.mjs listen:wss://… --id <name> --peer <controller> ./package.json` (plugins are resolved from that `package.json`) and set `language` to `node`; likewise a Bun runtime: in the Bun project on that machine, run `bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts listen:wss://… --id <name> --peer <controller> .` (plugins are resolved from that directory, rows named `<runtime-name>:<module>`) and set `language` to `bun`. A remote runtime serves one controller at a time. When its controller disconnects, it unloads all plugins running for that controller. The Python runtime prints `rutis: listening on …` on stderr, one line `rutis: session ended (<reason>); waiting for a controller` when a session ends (the reason such as `heartbeat timeout`, `connection lost`, `closed (1001): …`), and `rutis: session ended (replaced by a new connection)` when a new connection takes over.
+
+### Runtimes that connect in
+
+A runtime can also connect to rutis instead: use this when the remote machines are behind NAT, change address, or come and go in numbers (devices, workers that scale). On the rutis side, give the `runtimes.remote` entry `listen` (the listener they connect to) and `instances` (an `instanced` group), and write no node row:
+
+```json
+{
+  "id": "main",
+  "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
+  "runtimes": { "remote": [{ "name": "worker", "language": "python", "listen": "public", "instances": "worker" }] },
+  "rows": [
+    { "id": "worker", "group": true, "instanced": true, "config": [
+      { "id": "embedder", "name": "worker:embedder" }
+    ] }
+  ]
+}
+```
+
+Every connection presents the same token (`RUTIS_TOKEN_WORKER`, or `RUTIS_TOKEN`), reports an id of its own, and becomes an instance of the group: created when it connects, closed when it disconnects; a newer connection with the same id takes over. The group's rows run, in each instance, on that instance's connection, and the services they provide are seen only in that instance. That holds for the services they provide without declaring them too (which reach rutis by themselves): those are visible only inside that instance, to the rows of the instance, never to rows outside it or to other instances. For the fields and rules, see [rutis-host](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.en.md#runtimes-that-connect-in).
+
+A Python runtime connects in with `dial:`:
+
+```bash
+# The worker machine: with rutis[network] and the plugins installed, connect to rutis
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  python -m rutis dial:wss://main.example.com:7443/rutis --id worker-1 --peer main /srv/plugins
+```
+
+A Go plugin binary takes the same `dial:` channel, with the same arguments, environment variables, reconnection rules and state lines as Python (set `language` to `go`):
+
+```bash
+# The worker machine: with the plugin binary there, connect to rutis
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  ./weather dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
+```
+
+- `--id` is the id this connection reports (lower-case letters, digits and `-`), which names its instance; `--peer` is the rutis `id`.
+- `RUTIS_TOKEN` equals `RUTIS_TOKEN_WORKER` on the rutis side; `RUTIS_CA` is a further trusted CA (for a self-signed certificate), besides the system roots. A non-loopback address must be `wss://`.
+- The runtime keeps the connection itself and reconnects by fixed rules: when it cannot connect or the connection drops, it waits from 0.5 s, doubling up to 30 s, back to 0.5 s once a connection has lasted 60 s; a refused token or id (401 / 403 at the upgrade, or rutis rejecting the id with close code 4003) is tried again every 30 s; an incompatible protocol (400 at the upgrade and the like) is not retried, and the process exits with status 1. On every disconnect all rows are unloaded first (cleanups in reverse order); a reconnection is a new session, and the rows load again.
+- States go to stderr: `rutis: connected to …`, `rutis: connection lost (…); retrying in 1s`, `rutis: refused: auth-rejected (…); retrying in 30s`, `rutis: refused: incompatible (…); stopping`.
+- SIGTERM or Ctrl-C stops it: all rows are unloaded, the connection closes, and it does not reconnect.
+- Two processes with the same id take over from each other, displacing one another in turn at the pace of their backoffs; give every machine and worker an id of its own.
+
+Node and Bun runtimes dial out with the same arguments, environment variables and rules; set `language` in `runtimes.remote` to `node` or `bun`:
+
+```bash
+# In a Node project (plugins are resolved from package.json)
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  node node_modules/@arcships/rutis-runtime/src/runner.mjs dial:wss://main.example.com:7443/rutis --id worker-1 --peer main ./package.json
+# In a Bun project (plugins are resolved from this directory)
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
+```
+
+Node and Bun run each session in a child process: on a disconnect the child unloads every row and exits, and a reconnection starts a new one. `RUTIS_CA` is trusted together with the roots Node and Bun trust by default.
 
 ## Connect a Cordis application as a node
 
@@ -97,7 +152,8 @@ An existing Cordis application can become a node through `@arcships/rutis-runtim
 ## Security
 
 - Use `wss://` for remote connections. A listener without TLS may bind only to a loopback address.
-- A Python runtime cannot listen on `wss://` with CPython 3.13.6: its TLS sockets deadlock when one thread is blocked reading while another writes ([python/cpython#137583](https://github.com/python/cpython/issues/137583)), so every handshake hangs, and rutis refuses to start `listen:wss://` on that version. Use 3.13.7 or later (3.13.5 and earlier, and 3.14, are not affected); `ws://` is not affected.
+- A Python runtime cannot listen on `wss://` with CPython 3.13.6: its TLS sockets deadlock when one thread is blocked reading while another writes ([python/cpython#137583](https://github.com/python/cpython/issues/137583)), so every handshake hangs, and rutis refuses to start `listen:wss://` on that version. Use 3.13.7 or later (3.13.5 and earlier, and 3.14, are not affected); `ws://` is not affected. Dialing out (`dial:wss://`) is not affected either: one thread does all of a connection's reads and writes.
 - Use one token per peer (`RUTIS_TOKEN_<NODE>`) and set it only on the nodes that need it.
+- `rutis-host` takes its tokens from the environment, so they cannot be revoked while it runs: to cut off a peer or a runtime that connects in, change the token and restart `rutis-host` (a restart drops every connection). Cutting off one identity at runtime is the identity layer's revocation hook (`Revocations` in rutis-bridge, [design](https://github.com/arcships/rutis/blob/main/docs/design-remote-runtime-dial-2026-10-14.en.md#5-identity-layer)), for the future management service and for Rust programs that embed rutis: only the connections accepted as that identity close, calls in flight on them fail with a transport error, and later connections are refused as with a wrong token (403, or close code 4003), retried every 30 s.
 - `host: true` lets a peer run any plugin installed on this node. Enable it only for trusted peers. It can load installed plugins, not file paths.
 - Nodes share services by name, and only services listed in `export` are shared.
