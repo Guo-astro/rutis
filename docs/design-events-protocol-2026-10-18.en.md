@@ -127,6 +127,8 @@ The **descriptor** the bus keeps and the filter sees (JSON; Rust `ListenerInfo`,
 
 For each runtime session R, the host maintains **elsewhere(R)**: every name and prefix that has at least one entry not in R (host Rust plugins, other runtimes, node imports), regardless of scope. It sends R the changes with `events.elsewhere`: the full current set as `add` right after the handshake and before `mount`, then only differences, in order. R's fast-path check (§5.2) uses it. When R's session ends, R treats elsewhere(R) as empty.
 
+The kernel's process-local diagnostic events (names starting with `rutis::`, such as `rutis::ServiceChanged` and `rutis::FiberStatusChanged`) name Rust types and cannot be decoded elsewhere: their entries never count towards elsewhere and are not announced over node links.
+
 ## 5. Dispatch
 
 ### 5.1 The algorithm (the same for every dispatcher)
@@ -169,6 +171,8 @@ The receiving runtime calls the listener with the event arguments, and in `water
 An `events.call` for an id that is unknown or withdrawn is answered with `throw` `BindingError`, message `listener <id> of <name> is withdrawn`.
 
 `internal/dispatch` (Node / Bun): when a dispatch with `own: false` first invokes a listener in the process, the runtime emits Cordis `internal/dispatch` (mode, name, args, `null`) once for that `dispatch` id before calling it; emissions of the process itself go through Cordis's own `dispatch()` and fire it there. A throw from it fails that invocation.
+
+Cordis's `events.dispatch(type, args)` (the primitive under the five methods, which returns the callbacks to call; some published plugins call it and then the callbacks themselves): for a name that is not `internal/*` and a type `emit`, `serial` or `bail`, it returns one callback that dispatches on the bus in `parallel`, `serial` or `bail` with the arguments it is called with (here, or through the host when the name is elsewhere). The listeners are the bus's, not Cordis's, so this is how such a plugin reaches them.
 
 ### 5.4 Modes
 

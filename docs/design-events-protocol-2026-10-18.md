@@ -127,6 +127,8 @@
 
 对每个运行时会话 R，宿主维护 **elsewhere(R)**：至少有一个条目不在 R 里的全部名字和前缀（宿主的 Rust 插件、其他运行时、节点引进），不考虑作用域。宿主用 `events.elsewhere` 把变化发给 R：握手之后、`mount` 之前先把当前全集作为 `add` 发出，之后只发差异，按顺序。R 的快速路径判断（§5.2）用它。R 的会话结束后，R 把 elsewhere(R) 当作空。
 
+内核的进程内诊断事件（名字以 `rutis::` 开头，如 `rutis::ServiceChanged`、`rutis::FiberStatusChanged`）以 Rust 类型命名，在别处无法解码：它们的条目从不计入 elsewhere，也不经节点连接通告。
+
 ## 五、分发
 
 ### 5.1 算法（每个分发方都相同）
@@ -169,6 +171,8 @@
 对未知或已撤下的 id 的 `events.call`，以 `throw` `BindingError` 回复，信息为 `listener <id> of <name> is withdrawn`。
 
 `internal/dispatch`（Node / Bun）：`own: false` 的一次分发第一次调用本进程的监听器时，运行时在调用它之前，对这个 `dispatch` id 发一次 Cordis `internal/dispatch`（方式、名字、参数、`null`）；本进程自己发出的事件经 Cordis 自己的 `dispatch()`，在那里触发它。它抛出时，这次调用失败。
+
+Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回要调用的回调；有的已发布插件直接调用它再自己调用回调）：名字不是 `internal/*`、`type` 为 `emit`、`serial` 或 `bail` 时，它返回一个回调，以被调用时的参数在总线上按 `parallel`、`serial` 或 `bail` 分发（在本进程，或名字在别处时经宿主）。监听器是总线的，不是 Cordis 的，这样的插件因此能到达它们。
 
 ### 5.4 方式
 

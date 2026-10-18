@@ -155,7 +155,9 @@ impl Link {
     /// Whether this node's entry goes to the peer at all: its own (not
     /// imported), at or above the link's scope.
     fn own(&self, entry: &TableEntry) -> bool {
-        !imported(entry.origin) && scope_contains(&entry.info.scope, &self.scope)
+        !imported(entry.origin)
+            && !super::hub::process_local(&entry.name)
+            && scope_contains(&entry.info.scope, &self.scope)
     }
 
     fn send(&self, method: &str, argument: Json) {

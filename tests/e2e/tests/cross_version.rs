@@ -134,9 +134,19 @@ fn refused_named(line: &str, release: &Release) -> bool {
         .is_some_and(|(who, _)| who.ends_with(&release.version))
 }
 
+/// A runtime the host starts with did not start: the host says why and
+/// ends with a failure status; nothing ran.
+fn ended_failing(mut host: Host) {
+    let status = host.wait_exit();
+    assert!(
+        !status.success(),
+        "a host whose runtime did not start fails: {status}"
+    );
+}
+
 /// A previous `@arcships/rutis-runtime` under the current host: refused at
 /// the handshake (compat format: the far end does not name itself), the
-/// row never runs, the runtime is not restarted for it.
+/// row never runs, the host says which runtime did not start and fails.
 ///
 /// guarantee: events/old-peer-refused
 #[test]
@@ -160,15 +170,11 @@ fn a_previous_node_runtime_is_refused_by_the_event_protocol() {
         let mut host = s.host(["run", "rutis.json"]);
         let line = host.expect(&refused_far_end("a runtime older than rutis 0.13"));
         assert!(
-            line.contains("runtime node"),
+            line.contains("the node runtime did not start"),
             "the refusal names the runtime: {line}"
         );
-        assert_eq!(
-            host.count("greeter: running"),
-            0,
-            "nothing loads in a refused runtime"
-        );
-        stop(host);
+        ended_failing(host);
+        // Read after the exit: all the host wrote.
         s.finish();
     });
 }
@@ -187,9 +193,13 @@ fn a_previous_python_runtime_is_refused_by_the_event_protocol() {
         );
         let old = release.python_path().display().to_string();
         let mut host = s.host_with(["run", "rutis.json"], &[("RUTIS_PYTHON_PATH", &old)]);
-        host.expect(&refused_far_end("a runtime older than rutis 0.13"));
+        let line = host.expect(&refused_far_end("a runtime older than rutis 0.13"));
+        assert!(
+            line.contains("the py runtime did not start"),
+            "the refusal names the runtime: {line}"
+        );
         assert_eq!(host.count("echo: running"), 0);
-        stop(host);
+        ended_failing(host);
         s.finish();
     });
 }
@@ -253,44 +263,44 @@ fn a_previous_remote_runtime_is_refused_by_the_event_protocol() {
 }
 
 /// The current runtimes under a previous host: each refuses the host on
-/// stderr with the §2.2 line and exits with status 1; a dialing one does
-/// not dial again.
+/// stderr with the §2.2 line and exits with status 1 (the old host then
+/// stops: a runtime of it did not start). One runtime per host, so that
+/// each one's refusal is seen.
 ///
 /// guarantee: events/old-peer-refused
 #[test]
 #[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
 fn the_current_runtimes_refuse_a_previous_host() {
-    each("events-prev-host", |release, s| {
-        s.link_node_sdk();
-        s.write("greeter.ts", GREETER_TS);
-        s.write("echo.py", echo_py("echo"));
-        s.write_json(
-            "rutis.json",
-            &json!({
-                "runtimes": { "node": {}, "py": {} },
-                "rows": [
-                    { "id": "greeter", "name": "./greeter.ts" },
-                    { "id": "echo", "name": "py:echo" },
-                ],
-            }),
-        );
-        let mut host = s.program("", release.host(), ["run", "rutis.json"], &[]);
-        let refusal = "rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping";
-        // Both runtimes, Node and Python, say it.
-        host.expect(refusal);
-        host.expect(refusal);
-        assert_eq!(
-            host.count("greeter: running") + host.count("echo: running"),
-            0
-        );
-        stop(host);
-        s.finish();
-    });
+    let runtimes = [
+        ("node", "greeter", "./greeter.ts"),
+        ("py", "echo", "py:echo"),
+    ];
+    for (runtime, row, name) in runtimes {
+        each(&format!("events-prev-host-{runtime}"), |release, s| {
+            s.link_node_sdk();
+            s.write("greeter.ts", GREETER_TS);
+            s.write("echo.py", echo_py("echo"));
+            s.write_json(
+                "rutis.json",
+                &json!({
+                    "runtimes": { runtime: {} },
+                    "rows": [{ "id": row, "name": name }],
+                }),
+            );
+            let mut host = s.program("", release.host(), ["run", "rutis.json"], &[]);
+            host.expect("rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping");
+            host.wait_exit();
+            assert_eq!(host.count(&format!("{row}: running")), 0);
+            s.finish();
+        });
+    }
 }
 
 /// A previous rutis-host node and the current one, either dialing: the
-/// current node refuses the link naming the old node and its version; the
-/// link stops and is not retried.
+/// current node refuses the link naming the old node and its version. When
+/// the current node dials, its link stops and is not dialed again; when it
+/// listens, it refuses the old node (`link refused`) however often that
+/// one dials. Never connected.
 ///
 /// guarantee: events/old-peer-refused
 #[test]
@@ -332,16 +342,19 @@ fn a_previous_node_is_refused_by_the_event_protocol() {
                     ["run", "rutis.json"],
                     &[("RUTIS_TOKEN_OLD", &token)],
                 );
-                let stopped = current.wait_for("the link stopped as incompatible", |line| {
-                    line.starts_with("old: link stopped: incompatible (")
+                // Listening, the link waits for the next dial; dialing, it stops.
+                let said = match old_listens {
+                    true => "old: link stopped: incompatible (",
+                    false => "old: link refused: incompatible (",
+                };
+                let refused = current.wait_for("the link refused as incompatible", |line| {
+                    line.starts_with(said)
                 });
-                assert!(refused_named(&stopped, release), "{stopped}");
+                assert!(refused_named(&refused, release), "{refused}");
                 std::thread::sleep(std::time::Duration::from_secs(3));
-                assert_eq!(
-                    current.count("old: link stopped: incompatible ("),
-                    1,
-                    "not retried"
-                );
+                if old_listens {
+                    assert_eq!(current.count(said), 1, "not dialed again");
+                }
                 assert_eq!(current.count("old: link connected"), 0);
                 stop(current);
                 stop(old);

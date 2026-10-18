@@ -180,11 +180,21 @@ impl Hub {
     }
 }
 
+/// The kernel's process-local diagnostic events (`rutis::ServiceChanged`,
+/// `rutis::FiberStatusChanged`): they name Rust types and cannot be decoded
+/// elsewhere, so their listeners are never announced to runtimes or nodes.
+pub(crate) fn process_local(name: &str) -> bool {
+    name.starts_with("rutis::")
+}
+
 fn count(
     presence: &mut HashMap<Key, HashMap<Option<u64>, usize>>,
     entry: &TableEntry,
     added: bool,
 ) {
+    if process_local(&entry.name) {
+        return;
+    }
     let key = (entry.name.clone(), entry.prefix);
     let counts = presence.entry(key.clone()).or_default();
     let n = counts.entry(entry.origin).or_default();

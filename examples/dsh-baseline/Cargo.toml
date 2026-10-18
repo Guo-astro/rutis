@@ -10,6 +10,7 @@ description = "Typed rutis bindings for published dsh Cordis plugins (node/basel
 rutis = { path = "../../crates/rutis" }
 rutis-bridge = { path = "../../crates/rutis-bridge", features = ["cordis"] }
 tokio.workspace = true
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 rutis-test-support = { path = "../../crates/rutis-test-support" }
@@ -31,8 +32,6 @@ version = "0.2.0-rc.1"
 [package.metadata.rutis-cordis.mounts.credentials]
 plugin = "@deepseek-ai/dsh-credentials-local"
 version = "0.2.0-rc.1"
-# Credential changes are forwarded to rutis listeners.
-events = ["credentials/reference-updated", "credentials/record-updated"]
 
 [package.metadata.rutis-cordis.mounts.fs]
 plugin = "@deepseek-ai/dsh-fs-local"
@@ -55,8 +54,8 @@ group = [
 ]
 
 # dsh-persona contributes prompt sections to `systemPrompt`, which this rutis
-# application provides; the host announces prompt changes like the registry.
+# application provides; the host announces prompt changes like the registry
+# (`system-prompt/change`, `events::SystemPromptChange`).
 [package.metadata.rutis-cordis.mounts.persona]
 plugin = "@deepseek-ai/dsh-persona"
 provide = ["systemPrompt"]
-emits = ["system-prompt/change"]

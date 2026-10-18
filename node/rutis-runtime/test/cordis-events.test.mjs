@@ -167,3 +167,27 @@ test('leaf plugins: on with prepend and global, the five methods, filter, signal
   assert.throws(() => leaf.serial('rutis/fake'), { name: 'ReservedEvent' })
   root.emit('nothing')
 })
+
+// Some plugins call Cordis's primitive themselves (`ctx.events.dispatch`,
+// then each callback, as dsh-credentials fans its events out): with the
+// listeners on the bus, here or elsewhere, it gives one callback that
+// dispatches on the bus.
+test('events.dispatch dispatches on the bus, here or through the host', async () => {
+  const sent = []
+  const host = { callAsync: (target, method, args) => { sent.push([method, args]); return Promise.resolve() }, call() {}, callFunctionAsync() {} }
+  const { root, bus, load } = setup()
+  const seen = []
+  await load('chat', ctx => { ctx.on('credentials/updated', value => { seen.push(value) }) })
+  // Only here: one callback, dispatching on the bus here.
+  for (const callback of root.events.dispatch('emit', ['credentials/updated', 'a'])) await callback('a')
+  assert.deepEqual(seen, ['a'])
+  assert.deepEqual(sent, [])
+  bus.peer = host
+  bus.elsewhere({ add: ['credentials/updated'] })
+  const callbacks = root.events.dispatch('emit', ['credentials/updated', 'b'])
+  assert.equal(callbacks.length, 1)
+  await callbacks[0]('b')
+  const dispatched = sent.filter(([method]) => method === 'events.dispatch').map(([, [fields]]) => [fields.name, fields.mode, fields.args])
+  assert.deepEqual(dispatched, [['credentials/updated', 'parallel', ['b']]])
+  assert.deepEqual(seen, ['a'], 'this process\'s listener is called through the host, not twice')
+})
