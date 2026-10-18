@@ -66,7 +66,7 @@ Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（�
 | 数组 / list、普通对象 / 字符串键的 dict | 递归复制 |
 | Python dataclass | 复制为 dict |
 | 日期时间、二进制、Map、Set、大整数、Decimal、UUID | 复制，各语言收到本语言的类型，见下面的[十种值](#十种值) |
-| `Error` / 异常 | 作为值传递时复制为数据 `{ name, message }`（TypeScript 另带 `stack`）；抛出时另一端得到同名、同消息的错误（TypeScript 中内置错误类保留类，其余是 `Error`；Python 中是 `rutis.peer.RemoteError`，`name` 是原来的类名），其他属性不传 |
+| `Error` / 异常 | 作为值传递时复制为数据 `{ name, message }`（TypeScript 另带 `stack`）；抛出时另一端得到同名、同消息的错误（TypeScript 中内置错误类保留类，其余是 `Error`；Python 中是 `rutis.RemoteError`，`name` 是原来的类名；Go 中是 `*rutis.RemoteError`）。任何语言抛出的错误都可以带 code 和 data：TypeScript 中是字符串属性 `code` 和属性 `data`，Python 中是字符串属性 `code` 和属性 `data`，Go 中是方法 `Code() string` 和 `Data() any`，Rust 中是 [`rutis_bridge::exports::failure`](rust-host.md#手写-hostdispatch)（[导出的 Rust 服务](rust-host.md#导出服务参考)的 `Err(e)` 就变成它）。收到的一方从 `code`、`data` 读到它们（Go：`Code`、`Data`；Rust：`Error::code()`、`Error::data()`），再次抛出时继续传。`data` 按数据传（大整数为 bigint）；传不过去的 data 被略去，错误的其余部分照常传。其他属性不传 |
 | 函数、Promise / 协程 | 按引用：另一端调用或 await 的是原来那个 |
 | 带方法的对象、类的实例 | 按引用：另一端拿到代理，调用的是原对象 |
 | 数据里的 `undefined` | 变成 `null`（Python 收到 `None`） |

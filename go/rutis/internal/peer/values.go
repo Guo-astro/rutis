@@ -401,6 +401,15 @@ func (p *Peer) decodeTagged(tag string, raw json.RawMessage, d *decoding) (any, 
 	if !p.declares("value-" + tag) {
 		return refuse(undeclared())
 	}
+	value, err := parseTagged(tag, text)
+	if err != nil {
+		return refuse(err)
+	}
+	return value, nil
+}
+
+// parseTagged reads the text of a tagged value other than a map or a set.
+func parseTagged(tag, text string) (any, error) {
 	var value any
 	var err error
 	switch tag {
@@ -422,11 +431,10 @@ func (p *Peer) decodeTagged(tag string, raw json.RawMessage, d *decoding) (any, 
 	case "uuid":
 		err = values.CheckUUID(text)
 		value = values.UUID(text)
+	default:
+		err = fmt.Errorf("invalid %s", tag)
 	}
-	if err != nil {
-		return refuse(err)
-	}
-	return value, nil
+	return value, err
 }
 
 // isTag reports whether `tag` is one of the tags beyond JSON data.

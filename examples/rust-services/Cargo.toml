@@ -1,0 +1,24 @@
+[package]
+name = "rust-services-example"
+description = "An application exporting existing Rust services, from a dependency crate, to its TypeScript and Python rows"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rust-services-calendar = { path = "calendar" }
+rutis = { path = "../../crates/rutis" }
+rutis-bridge = { path = "../../crates/rutis-bridge" }
+
+[build-dependencies]
+rutis-bridge = { path = "../../crates/rutis-bridge", features = ["exports"] }
+
+[dev-dependencies]
+rutis-loader = { path = "../../crates/rutis-loader", features = ["node", "python"] }
+rutis-test-support = { path = "../../crates/rutis-test-support" }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio.workspace = true

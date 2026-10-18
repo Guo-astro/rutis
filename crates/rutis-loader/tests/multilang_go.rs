@@ -22,12 +22,22 @@ use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
 
 const PY_PROVIDER: &str = r#"
+class WeatherError(Exception):
+    def __init__(self):
+        super().__init__("too windy")
+        self.code = "Stormy"
+        self.data = {"wind": 2**60}
+
+
 class Weather:
     def today(self):
         return "py sunny"
 
     async def later(self):
         return "py later"
+
+    async def fail(self):
+        raise WeatherError()
 
 
 provides = {"py_weather": Weather}
@@ -84,6 +94,24 @@ export default definePlugin({
 })
 "#;
 
+/// Calls the Go and the Python service's `fail`, recording what it throws.
+const JS_ERRORS: &str = r#"
+import { definePlugin } from 'PLUGIN'
+export default definePlugin({
+  inject: ['go_weather', 'py_weather', 'probe'],
+  async apply(ctx) {
+    const probe = ctx.use('probe')
+    for (const name of ['go_weather', 'py_weather']) {
+      try {
+        await ctx.use(name).fail()
+      } catch (error) {
+        probe.record(`${name} threw ${error.name} ${error.code} ${error.message} ${typeof error.data.wind} ${error.data.wind}`)
+      }
+    }
+  },
+})
+"#;
+
 struct Fixture {
     root: Ctx,
     loader: Loader,
@@ -116,6 +144,7 @@ async fn fixture() -> Fixture {
         JS_GO_CONSUMER.replace("PLUGIN", &sdk),
     )
     .unwrap();
+    std::fs::write(js.join("js_errors.mjs"), JS_ERRORS.replace("PLUGIN", &sdk)).unwrap();
 
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
@@ -225,6 +254,29 @@ fn all_rows(fixture: &Fixture) -> Vec<Value> {
         named("gc", "go:go_consumer"),
         named("gl", "go:go_local"),
     ]
+}
+
+/// An error thrown in Go (`Code()`, `Data()`) or in Python (`code`,
+/// `data` attributes) reaches a JavaScript caller with its code and data,
+/// a big integer in the data as a bigint (#440).
+/// guarantee: bridge/error-code-and-data
+#[tokio::test(flavor = "multi_thread")]
+async fn errors_with_a_code_and_data_cross_from_go_and_python() {
+    let fixture = fixture().await;
+    let rows = vec![
+        named("pp", "py:py_provider"),
+        named("gp", "go:go_provider"),
+        js(&fixture, "je", "js_errors"),
+    ];
+    let report = fixture.loader.reconcile(layer(rows), None).await.unwrap();
+    assert!(report.failures.is_empty(), "{report:?}");
+    fixture
+        .expect("go_weather threw WeatherError Stormy too windy bigint 1152921504606846976")
+        .await;
+    fixture
+        .expect("py_weather threw WeatherError Stormy too windy bigint 1152921504606846976")
+        .await;
+    fixture.root.shutdown().await.unwrap();
 }
 
 /// Three runtimes start cold with rows using each other's services: none
