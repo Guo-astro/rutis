@@ -420,18 +420,9 @@ impl Projection {
                 return failure.map_or(Ok(()), Err);
             };
             attempted.insert((name.clone(), handle.clone()));
+            // `rutis/service` (events protocol §8) follows the kernel's
+            // `ServiceChanged` of the binding (`events::framework`).
             let result = apply(&ctx, &process, handle.clone());
-            // `rutis/service` (events protocol §8): the service got its
-            // provider, or a new one, or went.
-            let available = match &result {
-                Ok(None) => Some(handle.is_some()),
-                Ok(Some(_)) => Some(false),
-                Err(_) => None,
-            };
-            if let Some(available) = available {
-                let service = name.split('\0').next().unwrap_or(&name);
-                crate::events::emit_service(&ctx, service, available);
-            }
             let mut state = self.state.lock().unwrap();
             let runtime = state.runtime.clone();
             let Some(slot) = state.slots.get_mut(&name) else {

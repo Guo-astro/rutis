@@ -99,7 +99,7 @@ for (const entry of expected.cases) {
     const dir = mkdtempSync(join(tmpdir(), 'rutis-bun-events-'))
     writeFileSync(join(dir, 'package.json'), '{}')
     copyFileSync(new URL('./fixtures/conformance-events.ts', import.meta.url).pathname, join(dir, 'conformance-events.ts'))
-    writeFileSync(join(dir, 'log.ts'), 'export function apply(ctx) { ctx.provide("events-log", { add(item) { globalThis.__eventsLog.push(item) } }) }')
+    writeFileSync(join(dir, 'log.ts'), 'export function apply(ctx) { ctx.provide("events-log", { add(item) { globalThis.__eventsLog.push(item) }, filter(description) { globalThis.__eventsLog.push(`filter:${description.row}`) } }) }')
     const log: string[] = (globalThis as any).__eventsLog = []
     const reported: any[] = []
     const write = process.stderr.write
@@ -119,8 +119,13 @@ for (const entry of expected.cases) {
       await runtime.load('log', './log.ts', {}, null, null)
       const modes = entry.steps.flatMap((step: any) => step.emit ? [step.emit.mode] : [])
       const sync = modes.length > 0 && modes.every((mode: string) => mode === 'bail' || mode === 'waterfall-sync')
-      const loadListener = (listener: any) => runtime.load(listener.label, './conformance-events.ts',
-        { ...listener, name: listener.name ?? entry.name, kind: listener.kind ?? (sync ? 'sync' : 'async') }, null, null, chainOf(listener.scope))
+      const configs = new Map<string, any>()
+      const loadListener = (listener: any) => {
+        const config = { ...listener, name: listener.name ?? entry.name, kind: listener.kind ?? (sync ? 'sync' : 'async') }
+        configs.set(listener.label, config)
+        return runtime.load(listener.label, './conformance-events.ts', config, null, null, chainOf(listener.scope))
+      }
+      let generation = 0
       for (const listener of entry.listeners) await loadListener(listener)
       const emitters = new Set<string>()
       const emit = async (spec: any) => {
@@ -144,6 +149,13 @@ for (const entry of expected.cases) {
           }
         } else if (step.load) {
           await loadListener(step.load)
+          if (step.expect) await settled(() => checkLog(step.expect, log, reported))
+        } else if (step.update !== undefined) {
+          // A new config: the row registers its listeners again (rows.update).
+          const config = { ...configs.get(step.update), generation: ++generation }
+          configs.set(step.update, config)
+          await runtime.update(step.update, config)
+          if (step.expect) await settled(() => checkLog(step.expect, log, reported))
         } else if (step.unload !== undefined) {
           if (step.when) await settled(() => expect(log).toContain(step.when))
           await runtime.unload(step.unload)

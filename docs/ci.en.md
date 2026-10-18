@@ -259,7 +259,7 @@ In the macOS entries of `runtimes-go` and `runtimes-bun` in full runs, Node and 
 
 **Change CI versions in the same PR as a declaration**: a PR that changes `engines`, `requires-python`, the websockets lower bound or `rust-version` also changes the versions of the matching jobs in the table above; otherwise the declared minimum is unverified (Q10.3).
 
-**Package dependencies**: the three npm packages each have their own lockfile, and a job installs one before using it: a job that starts the Node runtime runs `npm --prefix node/rutis-runtime ci` first; a job that loads the SDK's testing tool (`node/rutis/src/testing.mjs`, which imports Cordis) — the SDK's own tests, `bun/rutis-bun/test/sdk.test.ts`, the Node template's tests in the end-to-end scenarios — also runs `npm --prefix node/rutis ci`; a job that starts the Bun runtime (it imports Cordis; `rutis-bridge/tests/bun_runtime.rs` checks that `node_modules` exists) runs `bun install --frozen-lockfile` in `bun/rutis-bun`. The same holds locally ([CONTRIBUTING](../CONTRIBUTING.md)).
+**Package dependencies**: the three npm packages each have their own lockfile, and a job installs one before using it: a job that starts the Node runtime runs `npm --prefix node/rutis-runtime ci` first; the SDK (`node/rutis`) has no dependencies, so a job that loads it or its testing tool installs nothing for it (its own tests still run `npm --prefix node/rutis ci`, which checks the lockfile); a job that starts the Bun runtime (it imports Cordis; `rutis-bridge/tests/bun_runtime.rs` checks that `node_modules` exists) runs `bun install --frozen-lockfile` in `bun/rutis-bun`. The same holds locally ([CONTRIBUTING](../CONTRIBUTING.md)).
 
 ## 10. Self-hosted macOS runners
 

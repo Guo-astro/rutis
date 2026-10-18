@@ -288,13 +288,7 @@ func (h *harness) load(config any, list []Option) *Loaded {
 func (h *harness) forgetRow(row string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.entries = slices.DeleteFunc(h.entries, func(e *busEntry) bool {
-		if e.fn == nil && e.row == row {
-			e.withdrawn = true
-			return true
-		}
-		return false
-	})
+	h.withdrawRow(row)
 	delete(h.scope, row)
 	h.rows = slices.DeleteFunc(h.rows, func(l *Loaded) bool { return l.row == row })
 }
@@ -800,15 +794,16 @@ func (l *Loaded) Bail(ctx context.Context, name string, args ...any) (any, error
 	return l.emit(ctx, nil, name, events.ModeBail, args, nil)
 }
 
-// Filter dispatches only to the listeners `keep` accepts.
-func (l *Loaded) Filter(keep func(rutis.Listener) bool) *Emitter {
+// Filter dispatches only to the listeners `keep` accepts. An error `keep`
+// returns (or a panic) fails the dispatch before any listener runs.
+func (l *Loaded) Filter(keep func(rutis.Listener) (bool, error)) *Emitter {
 	return &Emitter{l: l, keep: keep}
 }
 
 // Emitter is Loaded's emissions, filtered.
 type Emitter struct {
 	l    *Loaded
-	keep func(rutis.Listener) bool
+	keep func(rutis.Listener) (bool, error)
 }
 
 // Emit is Loaded.Emit, filtered.
@@ -838,7 +833,7 @@ func (e *Emitter) Bail(ctx context.Context, name string, args ...any) (any, erro
 	return e.l.emit(ctx, e.keep, name, events.ModeBail, args, nil)
 }
 
-func (l *Loaded) emit(ctx context.Context, keep func(rutis.Listener) bool, name string, mode events.Mode, args []any, terminal rutis.Next) (any, error) {
+func (l *Loaded) emit(ctx context.Context, keep func(rutis.Listener) (bool, error), name string, mode events.Mode, args []any, terminal rutis.Next) (any, error) {
 	if err := events.CheckEmit(name); err != nil {
 		return nil, err
 	}
@@ -849,7 +844,7 @@ func (l *Loaded) emit(ctx context.Context, keep func(rutis.Listener) bool, name 
 	d := l.h.snapshot(name, l.scope, false)
 	if keep != nil {
 		d.Keep = func(info rutis.Listener) (bool, error) {
-			kept, err := peer.Protect(func() (any, error) { return keep(info), nil })
+			kept, err := peer.Protect(func() (any, error) { return keep(info) })
 			if err != nil {
 				return false, err
 			}
@@ -946,6 +941,46 @@ func (l *Loaded) Unload() {
 			h.t.Errorf("rutistest: unload: %v", err)
 		}
 	})
+}
+
+// withdrawRow withdraws the runtime's listeners of `row` from the bus;
+// h.mu is held.
+func (h *harness) withdrawRow(row string) {
+	h.entries = slices.DeleteFunc(h.entries, func(e *busEntry) bool {
+		if e.fn == nil && e.row == row {
+			e.withdrawn = true
+			return true
+		}
+		return false
+	})
+}
+
+// Update changes the row's config, as a host's rows.update: the host
+// withdraws the row's listeners and the runtime unloads the row and loads
+// it again with `config`, so its listeners register again, after every
+// existing one (protocol §4.3).
+func (l *Loaded) Update(config any) {
+	h := l.h
+	h.t.Helper()
+	configValue, err := convert.ToPeer(config)
+	if err != nil {
+		h.t.Fatalf("rutistest: config: %v", err)
+	}
+	if configValue == nil {
+		configValue = json.RawMessage("null")
+	}
+	h.mu.Lock()
+	if _, loaded := h.scope[l.row]; !loaded || h.closed {
+		h.mu.Unlock()
+		h.t.Fatalf("rutistest: row %s is not loaded", l.row)
+	}
+	h.withdrawRow(l.row)
+	h.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := h.session.Call(ctx, "", "rows.update", []any{l.row, configValue}, false); err != nil {
+		h.t.Fatalf("rutistest: update %s: %v", l.row, err)
+	}
 }
 
 // close unloads every row, latest first, and ends the runtime.

@@ -70,7 +70,7 @@ Rust 另有 `waterfall_sync`：同步的 `waterfall`，规则与 `bail` 相同�
 | `serial` | `serial(ctx, &key, Arc<E>).await -> Option<E::Value>` | `await ctx.serial(name, ...args)` | `await ctx.serial([thisArg,] name, ...args)` | `await ctx.serial(name, *args)` | `ctx.Serial(ctx, name, args...) (any, error)` |
 | `waterfall` | `waterfall(ctx, &key, &e, terminal).await`（`()` 表示没有终态） | `ctx.waterfall(name, ...args, terminal)`：最后一个参数是终态 | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)`（`terminal` 可为 `nil`） |
 | `bail` | `bail_sync(ctx, &key, &e)`；`waterfall_sync(ctx, &key, &e, terminal)` | `ctx.bail(name, ...args)` | `ctx.bail([thisArg,] name, ...args)` | `ctx.bail(name, *args)` | `ctx.Bail(ctx, name, args...) (any, error)` |
-| 过滤 | `ctx.events().filter(\|info\| ..)`，之后同样的六个方法 | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`，`c.rutis` 是描述 | `ctx.filter(lambda d: ...)` → 带这五个方法的对象 | `ctx.Filter(func(rutis.Listener) bool) *rutis.Emitter` |
+| 过滤 | `ctx.events().filter(\|info\| ..)`，之后同样的六个方法 | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`，`c.rutis` 是描述 | `ctx.filter(lambda d: ...)` → 带这五个方法的对象 | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter` |
 | 作用域 | `ctx.scope()` | 描述的 `scope` | `ctx.rutis.scope` | 描述的 `scope` | `ctx.Scope()` |
 | 卸载信号 | 监听器以登记它的 `ctx` 被调用，`ctx.cancelled()` | `ctx.signal` | `ctx.signal` | 监听器的任务被取消 | 监听器的 `ctx` 被取消 |
 | `parallel` 的失败 | `CordisError::ListenersFailed` | `AggregateError` | `AggregateError` | `rutis.AggregateError`（`errors`） | `*rutis.AggregateError`（`Errors`） |

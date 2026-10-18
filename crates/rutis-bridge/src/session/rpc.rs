@@ -146,6 +146,18 @@ impl Value {
     pub fn future(future: impl Future<Output = Reply> + Send + 'static) -> Self {
         Self::future_inner(future, true)
     }
+    /// [`Value::future`] that stops (is dropped) when every wait for it
+    /// is given up before it finished: a far end that cancels its `await`
+    /// cancels the work, not only its wait for it.
+    pub fn cancellable_future(future: impl Future<Output = Reply> + Send + 'static) -> Self {
+        let value = Self::future_inner(future, true);
+        if let Self::Reference(Reference(ReferenceInner::Local(object))) = &value {
+            if let Body::Future(state) = &object.body {
+                state.future.lock().unwrap().cancellable = true;
+            }
+        }
+        value
+    }
     #[cfg(all(unix, feature = "cordis"))]
     pub(crate) fn control_future(future: impl Future<Output = Reply> + Send + 'static) -> Self {
         Self::future_inner(future, false)
@@ -166,6 +178,8 @@ impl Value {
                 future: Mutex::new(FutureState {
                     pending: Some(Box::pin(future)),
                     task: None,
+                    cancellable: false,
+                    waiters: 0,
                 }),
                 result: watch::channel(None).0,
             }),
@@ -376,6 +390,25 @@ struct AsyncResult {
 struct FutureState {
     pending: Option<BoxFuture<'static, Reply>>,
     task: Option<tokio::task::AbortHandle>,
+    /// Aborted when its last waiter gives up ([`Value::cancellable_future`]).
+    cancellable: bool,
+    /// The waits under way.
+    waiters: usize,
+}
+
+/// One wait for a future: when the last one is given up before the result,
+/// a cancellable future's task is aborted.
+struct Waiter<'a>(&'a AsyncResult);
+impl Drop for Waiter<'_> {
+    fn drop(&mut self) {
+        let mut state = self.0.future.lock().unwrap();
+        state.waiters -= 1;
+        if state.waiters == 0 && state.cancellable && self.0.result.borrow().is_none() {
+            if let Some(task) = state.task.take() {
+                task.abort();
+            }
+        }
+    }
 }
 impl Drop for AsyncResult {
     fn drop(&mut self) {
@@ -453,7 +486,9 @@ impl Object {
                     }));
                 pending.task = Some(task.abort_handle());
             }
+            pending.waiters += 1;
         }
+        let _waiter = Waiter(state);
         let mut result = state.result.subscribe();
         loop {
             if let Some(result) = result.borrow().clone() {
@@ -493,11 +528,43 @@ fn panic_error(panic: Box<dyn std::any::Any + Send>) -> Error {
 tokio::task_local! { static ASYNC_PATH: Vec<String>; }
 thread_local! { static SYNC_PATH: RefCell<Option<Vec<String>>> = const { RefCell::new(None) }; }
 thread_local! { static CALLER: RefCell<Option<Connection>> = const { RefCell::new(None) }; }
+thread_local! {
+    /// The invocation this thread runs: its session's tag and its sequence.
+    static INVOKING: RefCell<Option<(String, u64)>> = const { RefCell::new(None) };
+}
+
+/// The invocation of a host service this thread is running, as its
+/// session's tag and its sequence in that session: invocations of one
+/// session were sent in sequence order, whatever order they run in.
+#[cfg_attr(not(feature = "testing"), allow(dead_code))]
+pub(crate) fn invocation() -> Option<(String, u64)> {
+    INVOKING.with(|invoking| invoking.borrow().clone())
+}
 /// The session whose call (an `invoke`, or a call of a function this side
 /// exported) is being dispatched on this thread, if any. Code that calls
 /// another session on its behalf passes it to [`Connection::forward`].
 pub fn caller() -> Option<Connection> {
     CALLER.with(|caller| caller.borrow().clone())
+}
+/// Run `call` outside any invocation chain: what it sends is not part of
+/// the call being handled here (a notification another session's call
+/// happens to trigger), so it carries no chain of that session.
+pub(crate) fn unchained<R>(call: impl FnOnce() -> R) -> R {
+    let _path = PathGuard::enter(Vec::new());
+    call()
+}
+/// Poll `future` with `source` as the [`caller`]: what it calls in other
+/// sessions on that session's behalf is forwarded from it (its chain
+/// rebased), however long after the call it runs.
+pub(crate) async fn with_caller<F: Future>(source: Connection, future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    std::future::poll_fn(|cx| {
+        let previous = CALLER.with(|caller| caller.replace(Some(source.clone())));
+        let polled = future.as_mut().poll(cx);
+        CALLER.with(|caller| caller.replace(previous));
+        polled
+    })
+    .await
 }
 thread_local! { static PUMPING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 /// Marks a thread that runs an invocation pumped by its own synchronous
@@ -1304,6 +1371,36 @@ impl Connection {
             let result = receiver.await.map_err(transport);
             guard.done = true;
             result?
+        })
+    }
+    /// [`Connection::invoke_started`], settled: a future the far end answers
+    /// with is awaited too. Dropped before that, the call is cancelled,
+    /// also after the far end answered with its future (it is still
+    /// running it).
+    pub fn invoke_settled(
+        &self,
+        target: &str,
+        method: &str,
+        args: Value,
+    ) -> Result<impl Future<Output = Reply> + Send + 'static, Error> {
+        let (sender, receiver) = oneshot::channel();
+        let id = self.send(
+            Operation::Invoke(target.into(), method.into(), args),
+            Waiting::Async(sender),
+        )?;
+        let guard = CancelOnDrop {
+            peer: Arc::downgrade(&self.0),
+            id,
+            done: false,
+        };
+        Ok(async move {
+            let mut guard = guard;
+            let settled = match receiver.await.map_err(transport) {
+                Ok(Ok(value)) => settle(value).await,
+                Ok(Err(error)) | Err(error) => Err(error),
+            };
+            guard.done = true;
+            settled
         })
     }
     pub async fn drain(&self) {
@@ -2328,9 +2425,15 @@ impl Connection {
             }
             Accepted::Invoke(target, method, args) => {
                 let previous = CALLER.with(|caller| caller.replace(Some(self.clone())));
+                let sequence = id
+                    .strip_prefix(self.remote_prefix())
+                    .and_then(|n| n.parse::<u64>().ok());
+                let invoking = sequence.map(|n| (self.0.tag.clone(), n));
+                let outer = INVOKING.with(|cell| cell.replace(invoking));
                 let result = crate::session::with_caller_row(None, || {
                     protected(|| self.0.dispatch.invoke(self, &target, &method, args))
                 });
+                INVOKING.with(|cell| cell.replace(outer));
                 CALLER.with(|caller| caller.replace(previous));
                 self.respond(id, result);
                 drop(_flight);

@@ -219,6 +219,10 @@ pub struct TableEntry {
     pub origin: Option<u64>,
     pub kind: ListenerKind,
     pub info: Arc<ListenerInfo>,
+    /// Registered with `prepend`.
+    pub prepend: bool,
+    /// Its place in the table: smaller first (§4.3).
+    pub position: i64,
 }
 
 /// A change of the listener table.

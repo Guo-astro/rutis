@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,11 @@ type Participant struct {
 	} `json:"options"`
 	// A service of this name the row provides besides (rutis/service).
 	Provides string `json:"provides"`
+	// The row's Apply fails with this error, having registered nothing.
+	Fails *struct {
+		Name    string `json:"name"`
+		Message string `json:"message"`
+	} `json:"fails"`
 }
 
 // Spec is an emission (§13.2).
@@ -36,7 +42,11 @@ type Spec struct {
 	Name   string `json:"name"`
 	Args   []any  `json:"args"`
 	Filter *struct {
-		Keep []string `json:"keep"`
+		Keep   []string `json:"keep"`
+		Throws *struct {
+			Name    string `json:"name"`
+			Message string `json:"message"`
+		} `json:"throws"`
 	} `json:"filter"`
 	Terminal *string `json:"terminal"`
 	Cancel   *struct {
@@ -46,6 +56,8 @@ type Spec struct {
 
 type logService struct {
 	Add func(ctx context.Context, entry string) error
+	// Filter logs `filter:<row>` and keeps the description (filterSees).
+	Filter func(ctx context.Context, description map[string]any) error
 }
 
 // logged lets an emitter of this process wait for a listener of this
@@ -88,11 +100,39 @@ type row struct {
 	c   *rutis.Ctx
 	p   Participant
 	log logService
+	// The host's events-log.wait, where it has one: an emitter waits for
+	// a listener of another process to log (cancel.when).
+	wait *struct {
+		Wait func(ctx context.Context, entry string) error
+	}
+}
+
+// waitFor waits until `entry` is logged, by any participant.
+func (r *row) waitFor(ctx context.Context, entry string) error {
+	if r.wait != nil {
+		return r.wait.Wait(ctx, entry)
+	}
+	return waitLogged(ctx, entry)
 }
 
 func (r *row) add(ctx context.Context, entry string) {
 	note(entry)
 	_ = r.log.Add(context.WithoutCancel(ctx), entry)
+}
+
+// sees reports a description the filter is called with to events-log's
+// filter, whole, with the protocol's field names (§4.2).
+func (r *row) sees(ctx context.Context, l rutis.Listener) error {
+	encoded, err := json.Marshal(l)
+	if err != nil {
+		return err
+	}
+	var description map[string]any
+	if err := json.Unmarshal(encoded, &description); err != nil {
+		return err
+	}
+	note("filter:" + l.Row)
+	return r.log.Filter(context.WithoutCancel(ctx), description)
 }
 
 // named is an error with the name `does.throws` gives.
@@ -125,7 +165,7 @@ func (r *row) dispatch(ctx context.Context, spec Spec) (any, error) {
 		ctx, cancel = context.WithCancel(ctx)
 		defer cancel()
 		go func() {
-			if waitLogged(ctx, spec.Cancel.When) == nil {
+			if r.waitFor(ctx, spec.Cancel.When) == nil {
 				cancel()
 			}
 		}()
@@ -138,15 +178,15 @@ func (r *row) dispatch(ctx context.Context, spec Spec) (any, error) {
 		bail      func(context.Context, string, ...any) (any, error)
 	}{r.c.Emit, r.c.Parallel, r.c.Serial, r.c.Waterfall, r.c.Bail}
 	if spec.Filter != nil {
-		keep := spec.Filter.Keep
-		filtered := r.c.Filter(func(l rutis.Listener) bool {
-			r.add(ctx, "filter:"+l.Row)
-			for _, label := range keep {
-				if label == l.Row {
-					return true
-				}
+		keep, throws := spec.Filter.Keep, spec.Filter.Throws
+		filtered := r.c.Filter(func(l rutis.Listener) (bool, error) {
+			if throws != nil {
+				return false, &named{throws.Name, throws.Message}
 			}
-			return false
+			if err := r.sees(ctx, l); err != nil {
+				return false, err
+			}
+			return slices.Contains(keep, l.Row), nil
 		})
 		emitter.emit, emitter.parallel, emitter.serial, emitter.waterfall, emitter.bail = filtered.Emit, filtered.Parallel, filtered.Serial, filtered.Waterfall, filtered.Bail
 	}
@@ -327,9 +367,18 @@ var Plugin = rutis.Define(rutis.Plugin[Participant]{
 	Inject:   []string{"events-log"},
 	Provides: rutis.Provides{},
 	Apply: func(c *rutis.Ctx, p Participant) error {
+		if p.Fails != nil {
+			return &named{p.Fails.Name, p.Fails.Message}
+		}
 		r := &row{c: c, p: p}
 		if err := c.Use("events-log", &r.log); err != nil {
 			return err
+		}
+		wait := &struct {
+			Wait func(ctx context.Context, entry string) error
+		}{}
+		if c.Use("events-log", wait) == nil {
+			r.wait = wait
 		}
 		if p.Emitter {
 			c.Provide("emitter-"+p.Label, &Emitter{r})

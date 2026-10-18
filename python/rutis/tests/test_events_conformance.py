@@ -109,6 +109,8 @@ class Case:
         self.bus = Bus(scopes=doc["scopes"])
         self.log = Log()
         self.rows = {}
+        self.participants = {}
+        self.generation = 0
         self.emitters = {}
         self.background = None
         modes = [step["emit"]["mode"] for step in case["steps"] if "emit" in step]
@@ -119,6 +121,7 @@ class Case:
         config.setdefault("name", self.case["name"])
         config.setdefault("kind", self.kind)
         label = participant["label"]
+        self.participants[label] = config
         self.rows[label] = await stack.enter_async_context(
             load(conformance_events, config=config, services={"events-log": self.log}, bus=self.bus,
                  row=label, scope=participant.get("scope", "root"))
@@ -169,6 +172,11 @@ class Case:
                 self.background = dispatched
                 return
             outcome = await asyncio.wait_for(dispatched, SETTLE)
+        elif "update" in step:
+            # The row's config changes (a new generation): it registers again.
+            self.generation += 1
+            label = step["update"]
+            await self.rows[label].update({**self.participants[label], "generation": self.generation})
         elif "load" in step:
             await self.load(stack, step["load"])
         elif "unload" in step:

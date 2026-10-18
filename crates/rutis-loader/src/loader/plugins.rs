@@ -174,10 +174,16 @@ impl Plugin for LoaderPlugin {
             for export in self.loader.inner.catalog.exports_in(None) {
                 ctx.plugin(export.plugin(None));
             }
+            // `rutis/service` for the rows' services, Rust ones included
+            // (events protocol §8).
+            #[cfg(any(feature = "runtimes", feature = "peer"))]
+            let bus = rutis_bridge::events::join_bus(ctx).map_err(CordisError::from)?;
             let token = self.loader.inner.next_token();
             self.loader.inner.attach(None, token, ctx);
             let weak = Arc::downgrade(&self.loader.inner);
             Ok(Effect::Disposer(Box::new(move || {
+                #[cfg(any(feature = "runtimes", feature = "peer"))]
+                drop(bus);
                 if let Some(inner) = weak.upgrade() {
                     inner.detach(None, token);
                     // Instances live in the loader's tree: they go with it.

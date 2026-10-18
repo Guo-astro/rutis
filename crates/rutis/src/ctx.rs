@@ -1051,6 +1051,8 @@ impl Ctx {
             provider: binding.provider_id,
             generation: binding.provider_gen,
             change,
+            chain: self.scope(),
+            row: self.row(),
         };
         if let Err(error) = self
             .events()

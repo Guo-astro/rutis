@@ -106,9 +106,9 @@ func (e *emitting) Run(ctx context.Context, mode, name string, keep string) (any
 		Bail      func(context.Context, string, ...any) (any, error)
 	}{e.c.Emit, e.c.Parallel, e.c.Serial, e.c.Waterfall, e.c.Bail}
 	if keep != "" {
-		filtered := e.c.Filter(func(l rutis.Listener) bool {
+		filtered := e.c.Filter(func(l rutis.Listener) (bool, error) {
 			e.add("filter:" + l.Plugin + "/" + l.Runtime)
-			return l.Plugin == keep
+			return l.Plugin == keep, nil
 		})
 		emitter.Emit, emitter.Parallel, emitter.Serial, emitter.Waterfall, emitter.Bail = filtered.Emit, filtered.Parallel, filtered.Serial, filtered.Waterfall, filtered.Bail
 	}
@@ -320,7 +320,7 @@ func TestRowsInScopesHearUpNotDown(t *testing.T) {
 		t.Fatalf("scope %v", scope)
 	}
 	var seen []rutis.Listener
-	if _, err := s1.Filter(func(l rutis.Listener) bool { seen = append(seen, l); return false }).Serial(ctx, "t/scope"); err != nil {
+	if _, err := s1.Filter(func(l rutis.Listener) (bool, error) { seen = append(seen, l); return false, nil }).Serial(ctx, "t/scope"); err != nil {
 		t.Fatal(err)
 	}
 	if len(seen) != 3 || seen[2].Row != "test-3" || seen[2].Runtime != "go" || len(seen[2].Scope) != 2 {
