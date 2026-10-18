@@ -83,7 +83,38 @@ pub(super) struct Sources {
     roots: HashMap<usize, usize>,
     /// Every file read, for `cargo:rerun-if-changed`.
     pub(super) inputs: BTreeSet<PathBuf>,
+    /// What reading the sources skipped, for build warnings.
+    pub(super) warnings: Vec<String>,
+    /// The module files being read, outermost first: a `#[path]` back to
+    /// one of them is a cycle.
+    loading: Vec<PathBuf>,
+    lookups: Lookups,
 }
+
+/// A name looked up in a module; `scope`: as a path's first segment.
+type Key = (usize, String, bool);
+
+/// The state of name lookups. Globs may form cycles (`pub use m::*;` at a
+/// crate root, `use crate::*;` in `m`), which Rust allows: a lookup
+/// already under way is not entered again, and gives nothing on that path,
+/// as rustc's resolver does.
+#[derive(Default)]
+struct Lookups {
+    /// Final results, kept for the whole run: those that did not depend on
+    /// a lookup that was under way.
+    done: HashMap<Key, Option<Res>>,
+    /// The lookups under way, outermost first.
+    stack: Vec<Key>,
+    /// Results that depended on a lookup still under way (the lowest
+    /// stack index they reached): reused within it, dropped when it ends.
+    pending: Vec<(Key, Option<Res>, usize)>,
+    /// A lookup went deeper than [`MAX_DEPTH`]: keep nothing from this one.
+    overflow: bool,
+}
+
+/// How many lookups may nest. Cycles end on their own; this only bounds a
+/// (very) long acyclic chain of imports.
+const MAX_DEPTH: usize = 256;
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -204,6 +235,9 @@ impl Sources {
             modules: Vec::new(),
             roots: HashMap::new(),
             inputs: BTreeSet::new(),
+            warnings: Vec::new(),
+            loading: Vec::new(),
+            lookups: Lookups::default(),
         })
     }
 
@@ -230,6 +264,20 @@ impl Sources {
     }
 
     fn load(
+        &mut self,
+        package: usize,
+        parent: Option<usize>,
+        file: &Path,
+        dir: PathBuf,
+    ) -> Result<usize> {
+        let canonical = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_owned());
+        self.loading.push(canonical);
+        let loaded = self.load_file(package, parent, file, dir);
+        self.loading.pop();
+        loaded
+    }
+
+    fn load_file(
         &mut self,
         package: usize,
         parent: Option<usize>,
@@ -314,7 +362,21 @@ impl Sources {
                                     dir.join(&name).join("mod.rs"),
                                 ],
                             };
-                            match candidates.into_iter().find(|candidate| candidate.exists()) {
+                            let found = candidates.into_iter().find(|candidate| candidate.exists());
+                            let cycle = found.as_ref().is_some_and(|found| {
+                                let found = std::fs::canonicalize(found)
+                                    .unwrap_or_else(|_| found.to_owned());
+                                self.loading.contains(&found)
+                            });
+                            if cycle {
+                                // rustc refuses it ("circular modules").
+                                self.warnings.push(format!(
+                                    "{}: module `{name}` is not read: its file is one of the modules that declare it",
+                                    file.display()
+                                ));
+                                continue;
+                            }
+                            match found {
                                 Some(found) => {
                                     let is_mod_rs =
                                         found.file_name().is_some_and(|f| f == "mod.rs");
@@ -424,19 +486,23 @@ impl Sources {
     /// What `path` names when written in `module`.
     pub(super) fn resolve(&mut self, module: usize, path: &syn::Path) -> Result<Option<Res>> {
         let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-        self.resolve_segments(module, path.leading_colon.is_some(), &segments, 0)
+        // A lookup an error ended leaves nothing behind.
+        self.lookups.stack.clear();
+        self.lookups.pending.clear();
+        self.lookups.overflow = false;
+        let mut low = usize::MAX;
+        self.resolve_segments(module, path.leading_colon.is_some(), &segments, &mut low)
     }
 
+    /// `low`: lowered to the stack index of the outermost lookup under way
+    /// the result depended on.
     fn resolve_segments(
         &mut self,
         module: usize,
         leading: bool,
         segments: &[String],
-        depth: usize,
+        low: &mut usize,
     ) -> Result<Option<Res>> {
-        if depth > 48 {
-            return Ok(None);
-        }
         let Some((first, rest)) = segments.split_first() else {
             return Ok(Some(Res::Module(module)));
         };
@@ -448,7 +514,7 @@ impl Sources {
                 "self" => Some(Res::Module(module)),
                 "super" => self.modules[module].parent.map(Res::Module),
                 "Self" => None,
-                _ => self.lookup(module, first, true, depth + 1)?,
+                _ => self.lookup(module, first, true, low)?,
             }
         };
         for segment in rest {
@@ -456,7 +522,7 @@ impl Sources {
                 Some(Res::Module(inner)) => match segment.as_str() {
                     "super" => self.modules[inner].parent.map(Res::Module),
                     "self" => Some(Res::Module(inner)),
-                    _ => self.lookup(inner, segment, false, depth + 1)?,
+                    _ => self.lookup(inner, segment, false, low)?,
                 },
                 Some(Res::External(mut path)) => {
                     path.push(segment.clone());
@@ -476,11 +542,59 @@ impl Sources {
         module: usize,
         name: &str,
         scope: bool,
-        depth: usize,
+        low: &mut usize,
     ) -> Result<Option<Res>> {
-        if depth > 48 {
+        let key: Key = (module, name.to_owned(), scope);
+        let lookups = &mut self.lookups;
+        if let Some(found) = lookups.done.get(&key) {
+            return Ok(found.clone());
+        }
+        if let Some(index) = lookups.stack.iter().position(|under_way| *under_way == key) {
+            // A cycle: nothing on this path.
+            *low = (*low).min(index);
             return Ok(None);
         }
+        if let Some((_, found, reached)) = lookups.pending.iter().find(|(k, ..)| *k == key) {
+            *low = (*low).min(*reached);
+            return Ok(found.clone());
+        }
+        if lookups.stack.len() >= MAX_DEPTH {
+            lookups.overflow = true;
+            *low = 0;
+            return Ok(None);
+        }
+        let index = lookups.stack.len();
+        lookups.stack.push(key.clone());
+        let mark = lookups.pending.len();
+        let mut reached = usize::MAX;
+        let found = self.lookup_new(module, name, scope, &mut reached);
+        let lookups = &mut self.lookups;
+        lookups.stack.pop();
+        let found = found?;
+        if reached >= index {
+            // Complete: it depended on nothing outside itself.
+            lookups.pending.truncate(mark);
+            if !lookups.overflow {
+                lookups.done.insert(key, found.clone());
+            }
+        } else {
+            // Part of a cycle through a lookup still under way.
+            for entry in &mut lookups.pending[mark..] {
+                entry.2 = reached;
+            }
+            lookups.pending.push((key, found.clone(), reached));
+            *low = (*low).min(reached);
+        }
+        Ok(found)
+    }
+
+    fn lookup_new(
+        &mut self,
+        module: usize,
+        name: &str,
+        scope: bool,
+        low: &mut usize,
+    ) -> Result<Option<Res>> {
         let entries = self.modules[module]
             .names
             .get(name)
@@ -505,7 +619,7 @@ impl Sources {
                 {
                     self.extern_crate(module, name)?
                 } else {
-                    self.resolve_segments(module, path.leading, &path.segments, depth + 1)?
+                    self.resolve_segments(module, path.leading, &path.segments, low)?
                 };
                 if found.is_some() {
                     return Ok(found);
@@ -519,9 +633,9 @@ impl Sources {
         }
         let globs = self.modules[module].globs.clone();
         for glob in globs {
-            match self.resolve_segments(module, glob.leading, &glob.segments, depth + 1)? {
+            match self.resolve_segments(module, glob.leading, &glob.segments, low)? {
                 Some(Res::Module(inner)) if inner != module => {
-                    if let Some(found) = self.lookup(inner, name, false, depth + 1)? {
+                    if let Some(found) = self.lookup(inner, name, false, low)? {
                         return Ok(Some(found));
                     }
                 }

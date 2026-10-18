@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use quote::ToTokens;
+use syn::visit::Visit;
 use syn::{
     FnArg, GenericArgument, ImplItem, Item, PathArguments, ReturnType, Type, TypeParamBound,
 };
@@ -129,6 +130,7 @@ impl Exports {
             declarations: Vec::new(),
             thrown: BTreeMap::new(),
             warnings: Vec::new(),
+            cyclic: HashMap::new(),
         };
         for (path, typescript) in &self.declared {
             let parsed: syn::Path =
@@ -231,10 +233,12 @@ impl Exports {
         typescript.push_str(&format!(
             "\n/** The exported services by name: `ctx.use<Services['name']>('name')`. */\nexport interface Services {{\n{services_ts}}}\n"
         ));
+        let mut warnings = std::mem::take(&mut generator.sources.warnings);
+        warnings.extend(generator.warnings);
         Ok(Generated {
             rust,
             typescript,
-            warnings: generator.warnings,
+            warnings,
         })
     }
 }
@@ -363,6 +367,8 @@ struct Generator<'a> {
     /// `<Name>Thrown` declarations, by error type.
     thrown: BTreeMap<String, String>,
     warnings: Vec<String>,
+    /// Whether a type alias refers to itself, by alias.
+    cyclic: HashMap<(usize, usize), bool>,
 }
 
 fn path_is(path: &[String], candidates: &[&[&str]]) -> bool {
@@ -405,6 +411,58 @@ impl Generator<'_> {
             return None;
         }
         scope.params.get(&segment.ident.to_string()).cloned()
+    }
+
+    /// Fails for a type alias that refers to itself, directly or through
+    /// other aliases (`type A = B; type B = A;`), which rustc refuses:
+    /// expanding it would not end.
+    fn expandable(&mut self, module: usize, index: usize) -> Result<()> {
+        if !self.alias_cycle(module, index)? {
+            return Ok(());
+        }
+        let item = self.sources.item(module, index).clone();
+        let ident = match &item {
+            Item::Type(alias) => alias.ident.to_string(),
+            _ => String::new(),
+        };
+        Err(format!(
+            "{}: type alias `{ident}` refers to itself",
+            self.sources.location(module, &item)
+        ))
+    }
+
+    fn alias_cycle(&mut self, module: usize, index: usize) -> Result<bool> {
+        let start = (module, index);
+        if let Some(cyclic) = self.cyclic.get(&start) {
+            return Ok(*cyclic);
+        }
+        let mut seen = HashSet::new();
+        let mut todo = vec![start];
+        let mut cyclic = false;
+        'walk: while let Some((module, index)) = todo.pop() {
+            let Item::Type(alias) = self.sources.item(module, index).clone() else {
+                continue;
+            };
+            let mut paths = PathTypes(Vec::new());
+            paths.visit_type(&alias.ty);
+            for path in paths.0 {
+                let Some(Res::Item { module, index }) = self.sources.resolve(module, &path)? else {
+                    continue;
+                };
+                if !matches!(self.sources.item(module, index), Item::Type(_)) {
+                    continue;
+                }
+                if (module, index) == start {
+                    cyclic = true;
+                    break 'walk;
+                }
+                if seen.insert((module, index)) {
+                    todo.push((module, index));
+                }
+            }
+        }
+        self.cyclic.insert(start, cyclic);
+        Ok(cyclic)
     }
 
     /// What a path type names in `scope`, with its last segment.
@@ -473,6 +531,7 @@ impl Generator<'_> {
                 let (module, index) = (*module, *index);
                 match self.sources.item(module, index).clone() {
                     Item::Type(alias) => {
+                        self.expandable(module, index)?;
                         let params = bind(&alias.generics, args, scope)?;
                         let alias_scope = Scope {
                             module,
@@ -1304,6 +1363,7 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                         match self.sources.item(module, index).clone() {
                             // `type Fut<'a, T> = BoxFuture<'a, T>`, say.
                             Item::Type(alias) => {
+                                self.expandable(module, index)?;
                                 let params =
                                     bind(&alias.generics, &Self::type_args(segment), scope)?;
                                 let alias_scope = Scope {
@@ -1358,6 +1418,7 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
             }
             Some(Res::Item { module, index }) => match self.sources.item(module, index).clone() {
                 Item::Type(alias) => {
+                    self.expandable(module, index)?;
                     let params = bind(&alias.generics, &args, scope)?;
                     let alias_scope = Scope {
                         module,
@@ -1473,6 +1534,7 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                         self.ty(scope, error)?.ts(),
                     ),
                     Item::Type(alias) => {
+                        self.expandable(module, index)?;
                         let params = bind(&alias.generics, &Self::type_args(segment), scope)?;
                         let alias_scope = Scope {
                             module,
@@ -1587,6 +1649,7 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                     Some(Res::Item { module, index }) => {
                         match self.sources.item(module, index).clone() {
                             Item::Type(alias) => {
+                                self.expandable(module, index)?;
                                 let params =
                                     bind(&alias.generics, &Self::type_args(segment), scope)?;
                                 let alias_scope = Scope {
@@ -1716,6 +1779,18 @@ fn is_ctx(generator: &mut Generator<'_>, scope: &Scope, ty: &Type) -> Result<boo
         generator.sources.resolve(scope.module, &path.path)?,
         Some(Res::External(found)) if found.first().is_some_and(|k| k == "rutis") && found.last().is_some_and(|l| l == "Ctx")
     ))
+}
+
+/// The paths a type is written with, its arguments' included.
+struct PathTypes(Vec<syn::Path>);
+
+impl<'ast> Visit<'ast> for PathTypes {
+    fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
+        if ty.qself.is_none() {
+            self.0.push(ty.path.clone());
+        }
+        syn::visit::visit_type_path(self, ty);
+    }
 }
 
 /// A type's generic parameters bound to `args`, written in `scope`.
@@ -2371,5 +2446,261 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("twice"), "{error}");
+    }
+
+    // ── Cycles (#459) ───────────────────────────────────────────
+
+    /// Runs `run` on a thread of its own and fails the test should it take
+    /// longer than `limit`, so that a lookup that does not end fails fast
+    /// instead of hanging the test run.
+    fn within<T: Send + 'static>(
+        limit: std::time::Duration,
+        run: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .stack_size(16 << 20)
+            .spawn(move || {
+                let _ = send.send(run());
+            })
+            .unwrap();
+        match receive.recv_timeout(limit) {
+            Ok(value) => value,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!("did not finish within {limit:?}")
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("the run panicked"),
+        }
+    }
+
+    /// [`generate`] under [`within`] 10 s, asserting it took under 2 s.
+    fn generate_quickly(exports: Exports, files: &[(&str, &str)]) -> Generated {
+        let files: Vec<(String, String)> = files
+            .iter()
+            .map(|(path, text)| ((*path).to_owned(), (*text).to_owned()))
+            .collect();
+        within(std::time::Duration::from_secs(10), move || {
+            let files: Vec<(&str, &str)> = files
+                .iter()
+                .map(|(path, text)| (path.as_str(), text.as_str()))
+                .collect();
+            let started = std::time::Instant::now();
+            let generated = generate(exports, &files).unwrap();
+            let took = started.elapsed();
+            assert!(took < std::time::Duration::from_secs(2), "took {took:?}");
+            generated
+        })
+    }
+
+    const NAMES: &str = r#"
+        use crate::*;
+        pub struct Service;
+        impl Service {
+            pub fn names(&self) -> Result<Vec<String>, String> { Ok(Vec::new()) }
+            pub fn first(&self) -> Option<Item6> { None }
+        }
+    "#;
+
+    fn assert_names(generated: &Generated) {
+        let ts = &generated.typescript;
+        assert!(
+            ts.contains("/** @throws {StringThrown} */\n  names(): Promise<string[]>"),
+            "{ts}"
+        );
+        assert!(ts.contains("first(): Promise<Item6 | null>"), "{ts}");
+        let rust = &generated.rust;
+        assert!(rust.contains("string_failure(&error)"), "{rust}");
+        assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
+    }
+
+    /// The layout of #459: the root re-exports every module with
+    /// `pub use m::*;`, and every module has `use crate::*;`.
+    #[test]
+    fn glob_imports_of_the_crate_root_from_its_modules_end() {
+        let lib = (1..=6)
+            .map(|n| format!("mod m{n}; pub use m{n}::*;\n"))
+            .collect::<String>();
+        let items: Vec<(String, String)> = (2..=6)
+            .map(|n| {
+                (
+                    format!("m{n}.rs"),
+                    format!(
+                        "use crate::*;\n#[derive(serde::Serialize)] pub struct Item{n} {{ pub at: Option<String> }}\n"
+                    ),
+                )
+            })
+            .collect();
+        let mut files = vec![("lib.rs", lib.as_str()), ("m1.rs", NAMES)];
+        files.extend(
+            items
+                .iter()
+                .map(|(path, text)| (path.as_str(), text.as_str())),
+        );
+        let generated = generate_quickly(
+            Exports::new().service("service", "dep_crate::Service"),
+            &files,
+        );
+        assert_names(&generated);
+        assert!(
+            generated
+                .typescript
+                .contains("export interface Item6 {\n  at?: string | null\n}"),
+            "{}",
+            generated.typescript
+        );
+    }
+
+    /// `use super::*;` in a module its parent globs.
+    #[test]
+    fn glob_imports_of_the_parent_end() {
+        let generated = generate_quickly(
+            Exports::new().service("service", "dep_crate::Service"),
+            &[
+                ("lib.rs", "pub mod a; pub use a::*;"),
+                ("a.rs", "use super::*; pub mod b; pub use b::*;"),
+                (
+                    "a/b.rs",
+                    &format!(
+                        "use super::*;\n#[derive(serde::Serialize)] pub struct Item6;\n{NAMES}"
+                    ),
+                ),
+            ],
+        );
+        assert_names(&generated);
+    }
+
+    /// root → a → b → root, each a glob of the next.
+    #[test]
+    fn a_longer_chain_of_globs_ends() {
+        let generated = generate_quickly(
+            Exports::new().service("service", "dep_crate::Service"),
+            &[
+                ("lib.rs", "mod a; pub use a::*; mod b; mod m1;"),
+                ("a.rs", "pub use crate::b::*;"),
+                ("b.rs", "pub use crate::*; pub use crate::m1::*;"),
+                (
+                    "m1.rs",
+                    &format!(
+                        "use crate::b::*;\n#[derive(serde::Serialize)] pub struct Item6;\n{}",
+                        NAMES.replace("use crate::*;", "")
+                    ),
+                ),
+            ],
+        );
+        assert_names(&generated);
+    }
+
+    /// Two crates that glob each other's root (a dev-dependency cycle).
+    #[test]
+    fn globs_across_two_crates_that_import_each_other_end() {
+        let generated = within(std::time::Duration::from_secs(10), || {
+            let dir = tempfile::tempdir().unwrap();
+            let write = |path: &str, text: &str| {
+                let path = dir.path().join(path);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, text).unwrap();
+            };
+            write("host/lib.rs", "");
+            write("a/lib.rs", "pub use b_crate::*; mod m1; pub use m1::*;");
+            write("a/m1.rs", NAMES);
+            write(
+                "b/lib.rs",
+                "pub use a_crate::*;\n#[derive(serde::Serialize)] pub struct Item6;\n",
+            );
+            let lib = |id: &str, name: &str, src: &str| {
+                json_package(id, name, &dir.path().join(src).to_string_lossy())
+            };
+            let metadata = serde_json::json!({
+                "packages": [
+                    lib("host", "host", "host/lib.rs"),
+                    lib("a", "a_crate", "a/lib.rs"),
+                    lib("b", "b_crate", "b/lib.rs"),
+                    lib("serde", "serde", "none.rs"),
+                ],
+                "resolve": { "root": "host", "nodes": [
+                    { "id": "host", "deps": [{ "name": "a_crate", "pkg": "a" }], "features": [] },
+                    { "id": "a", "deps": [{ "name": "b_crate", "pkg": "b" }, { "name": "serde", "pkg": "serde" }], "features": [] },
+                    { "id": "b", "deps": [{ "name": "a_crate", "pkg": "a" }, { "name": "serde", "pkg": "serde" }], "features": [] },
+                ] },
+            });
+            let mut sources = Sources::from_metadata(&metadata, "host").unwrap();
+            let started = std::time::Instant::now();
+            let generated = Exports::new()
+                .service("service", "a_crate::Service")
+                .generate_from(&mut sources)
+                .unwrap();
+            let took = started.elapsed();
+            assert!(took < std::time::Duration::from_secs(2), "took {took:?}");
+            generated
+        });
+        assert_names(&generated);
+    }
+
+    /// `type A = B; type B = A;` leaves the method out with a warning;
+    /// an alias used twice in one type is no cycle.
+    #[test]
+    fn a_type_alias_that_refers_to_itself_is_a_warning() {
+        let generated = generate_quickly(
+            Exports::new().service("service", "dep_crate::Service"),
+            &[
+                ("lib.rs", "mod m1; pub use m1::*;"),
+                (
+                    "m1.rs",
+                    &format!(
+                        "pub type A = B;\npub type B = A;\npub type Pair<T> = (T, T);\n\
+                         #[derive(serde::Serialize)] pub struct Item6;\n\
+                         impl Service {{ pub fn bad(&self) -> A {{ todo!() }} \
+                         pub fn pairs(&self) -> Pair<Pair<u8>> {{ todo!() }} }}\n{NAMES}"
+                    ),
+                ),
+            ],
+        );
+        assert!(
+            generated
+                .warnings
+                .iter()
+                .any(|w| w.contains("Service::bad") && w.contains("refers to itself")),
+            "{:?}",
+            generated.warnings
+        );
+        assert_eq!(generated.warnings.len(), 1, "{:?}", generated.warnings);
+        assert!(
+            generated
+                .typescript
+                .contains("pairs(): Promise<[[number, number], [number, number]]>"),
+            "{}",
+            generated.typescript
+        );
+    }
+
+    /// A `#[path]` back to a file being read is skipped with a warning.
+    #[test]
+    fn a_module_path_back_to_its_own_file_is_a_warning() {
+        let generated = generate_quickly(
+            Exports::new().service("service", "dep_crate::Service"),
+            &[
+                (
+                    "lib.rs",
+                    "mod m1; pub use m1::*; #[derive(serde::Serialize)] pub struct Item6;",
+                ),
+                (
+                    "m1.rs",
+                    &format!("#[path = \"lib.rs\"] mod again;\n{NAMES}"),
+                ),
+            ],
+        );
+        assert!(
+            generated
+                .warnings
+                .iter()
+                .any(|w| w.contains("m1.rs") && w.contains("`again`")),
+            "{:?}",
+            generated.warnings
+        );
+        assert!(
+            generated.typescript.contains("names(): Promise<string[]>"),
+            "{}",
+            generated.typescript
+        );
     }
 }
