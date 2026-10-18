@@ -398,7 +398,8 @@ func (e *Emitter) dispatch(ctx context.Context, name string, mode events.Mode, a
 // (§5.2): a listener of it may be elsewhere, or an earlier emit of it
 // through the host is unanswered. rt.mu is held.
 func (rt *runtimeState) viaHost(name string, mode events.Mode) bool {
-	if rt.session == nil || rt.closing {
+	// Once the session ended, nothing is elsewhere.
+	if rt.session == nil || rt.closing || rt.session.Err() != nil {
 		return false
 	}
 	if rt.elsewhere[name] {

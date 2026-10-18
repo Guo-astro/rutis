@@ -47,7 +47,9 @@ func TestEventsCrossTheSessionAndKeepReentrantCallChains(t *testing.T) {
 			c.On("changed", func(ctx context.Context, args ...any) (any, error) {
 				return nil, host.Check(ctx, func(ctx context.Context) error { return c.Parallel(ctx, "local", args...) })
 			})
-			c.On("failed", func(context.Context, ...any) (any, error) { return nil, &rutis.RemoteError{Name: "TypeError", Message: "first"} })
+			c.On("failed", func(context.Context, ...any) (any, error) {
+				return nil, &rutis.RemoteError{Name: "TypeError", Message: "first"}
+			})
 			c.On("failed", func(context.Context, ...any) (any, error) { panic("second") })
 			return nil
 		},
@@ -151,8 +153,13 @@ func loadEmitting(t *testing.T) (*rutistest.Loaded, *emitting) {
 			state.c = c
 			c.On("t/serial", func(context.Context, ...any) (any, error) { state.add("plugin"); return nil, nil })
 			c.On("t/wf", linking("a"))
-			c.On("t/par", func(context.Context, ...any) (any, error) { return nil, &rutis.RemoteError{Name: "PluginErr", Message: "p"} })
-			c.On("t/switch", func(_ context.Context, args ...any) (any, error) { state.add(fmt.Sprint("switch:", args[0])); return nil, nil })
+			c.On("t/par", func(context.Context, ...any) (any, error) {
+				return nil, &rutis.RemoteError{Name: "PluginErr", Message: "p"}
+			})
+			c.On("t/switch", func(_ context.Context, args ...any) (any, error) {
+				state.add(fmt.Sprint("switch:", args[0]))
+				return nil, nil
+			})
 			c.Provide("emitter", state)
 			return nil
 		},
@@ -182,7 +189,9 @@ func TestPluginEmissionsGoThroughTheHostWhenListenedElsewhere(t *testing.T) {
 	if value, err := run("waterfall", "t/wf", ""); err != nil || value != "atz" {
 		t.Fatalf("waterfall through the host: %v %v", value, err)
 	}
-	loaded.On("t/par", func(context.Context, ...any) (any, error) { return nil, &rutis.RemoteError{Name: "TestErr", Message: "t"} })
+	loaded.On("t/par", func(context.Context, ...any) (any, error) {
+		return nil, &rutis.RemoteError{Name: "TestErr", Message: "t"}
+	})
 	_, err := run("parallel", "t/par", "")
 	if err == nil || !strings.Contains(err.Error(), "2 listeners of t/par failed") {
 		t.Fatalf("parallel through the host: %v", err)
@@ -204,13 +213,17 @@ func TestAggregateErrorThroughTheHost(t *testing.T) {
 	failing := rutis.Define(rutis.Plugin[rutis.NoConfig]{
 		Name: "failing",
 		Apply: func(c *rutis.Ctx, _ rutis.NoConfig) error {
-			c.On("t/par", func(context.Context, ...any) (any, error) { return nil, &rutis.RemoteError{Name: "PluginErr", Message: "p"} })
+			c.On("t/par", func(context.Context, ...any) (any, error) {
+				return nil, &rutis.RemoteError{Name: "PluginErr", Message: "p"}
+			})
 			c.Provide("emitter", &aggregating{c})
 			return nil
 		},
 	})
 	loaded := rutistest.Load(t, failing, nil, nil)
-	loaded.On("t/par", func(context.Context, ...any) (any, error) { return nil, &rutis.RemoteError{Name: "TestErr", Message: "t"} })
+	loaded.On("t/par", func(context.Context, ...any) (any, error) {
+		return nil, &rutis.RemoteError{Name: "TestErr", Message: "t"}
+	})
 	var names []string
 	if err := loaded.Service("emitter").Call(context.Background(), "names", &names); err != nil {
 		t.Fatal(err)
