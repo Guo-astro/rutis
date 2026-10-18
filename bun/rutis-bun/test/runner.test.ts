@@ -88,9 +88,10 @@ test('rows.schema reports what a module declares', async () => {
   const dir = project({ 'scoped.ts': SCOPED })
   const runtime = new Runtime(dir)
   expect(await runtime.dispatch('', 'rows.schema', ['./scoped.ts'])).toEqual({
-    config: null, inject: [], provides: { tools: { title: 'sync' } }, announces: false, version: null,
+    config: null, inject: [], provides: { tools: { title: 'sync' } }, announces: true, version: null,
   })
-  // Without `provides`, what it provides is announced when it runs (#442).
+  // With or without `provides`, what it provides beyond it is announced when
+  // it runs (#442).
   const undeclared = project({ 'plain.ts': 'export function apply(ctx) { ctx.provide("tools", { title() {} }) }' })
   expect(await new Runtime(undeclared).dispatch('', 'rows.schema', ['./plain.ts'])).toEqual({
     config: null, inject: [], provides: {}, announces: true, version: null,
