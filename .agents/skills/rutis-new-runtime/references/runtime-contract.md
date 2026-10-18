@@ -38,6 +38,7 @@ A runtime is a process (or a remote connection) that holds one **session** with 
 | `sync-stack` | One thread, one stack: calls run while waiting are stacked on top of the waiting one (last in, first out) | You take part only in call-chain edges (runtimes with one execution unit per call do not declare it) |
 | `signals` | Signal frames of the endpoint format; every existing implementation (Rust, Node, Python, Bun, Go) declares it | — |
 | `objects` | You can receive object references from the peer | You can send references but not receive them |
+| `events-v2` | You implement the event protocol of rutis 0.13 (§6). Mandatory from 0.13: declare it in both handshake formats, and end the session right after the handshake when the far end does not | A 0.13 host ends the session: `incompatible session: the far end (…) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later` |
 
 How to choose: one execution unit per incoming call (thread / goroutine / Task / virtual thread) → `sync-wait` + `reentrant-sync`, no `sync-stack`; single-threaded event loops that run incoming calls while waiting, like Python and Bun → all three; Node is not reentrant → no `reentrant-sync`.
 
@@ -60,7 +61,7 @@ The first control operation from rutis. Reply:
 | `hosts` | Supports `hosts.provide` / `hosts.withdraw` |
 | `leaf` | Leaf runtime: rutis gates every `inject` of its plugins |
 | `scopes` | Service ids may carry a scope label: `name`, or `name` + NUL + `label` |
-| `events` | Leaf events (plugin API 2): `ctx.on` / `ctx.emit`, and events sent from the host to the runtime; mounting fails if the host configured `emits` and the runtime lacks `events` |
+| `events` | rutis 0.12 only: leaf events (plugin API 2), `ctx.on` / `ctx.emit` and host events configured with `emits`. Removed in 0.13 together with the `mount` arguments `events` / `emits`; events are §6 |
 | `rows.announce` | Services a row provides without declaring them are announced to the host with their methods (see `service` below); only to a host whose `mount` arguments carry `announce: true` (rutis 0.12 and later). Every runtime of the repository does it (Node for Cordis and leaf rows, Bun, Python, Go) |
 
 Adding fields to the `mount` reply (such as `engine` or `plugins`) is not a protocol change.
@@ -70,7 +71,7 @@ Adding fields to the `mount` reply (such as `engine` or `plugins`) is not a prot
 | Operation | Behavior |
 | --- | --- |
 | `rows.schema(entry)` | `{ config, inject, provides, version, announces }`: config JSON Schema, service names used, service names provided with each method `sync` / `async`, and `announces: true` when the plugin may provide services `provides` does not list (the host's `check` then reports them as possibly provided at runtime); the Node runtime adds `cordis: true` for a Cordis plugin (not a leaf one), whose dependencies on Cordis rows of its runtime resolve in Cordis, and a leaf runtime leaves it out; an unknown entry is an error listing the available names |
-| `rows.load(key, entry, config, isolate, inject, exports)` | Resolve the entry → check the plugin API version (a plugin newer than the runtime is refused, naming both versions) → decode the config → `apply`; services from `ctx.provide` are announced with `service(id, handle, version)` before the reply; on failure unload the row, then report |
+| `rows.load(key, entry, config, isolate, inject, exports, row)` | Resolve the entry → check the plugin API version (a plugin newer than the runtime is refused, naming both versions) → decode the config → `apply`; services from `ctx.provide` are announced with `service(id, handle, version)` before the reply; on failure unload the row, then report. From 0.13 the seventh argument is `{ scope }`, the row's scope chain (§6), `exports` being `{}` when the row exports nothing; answer only once every `events.on` the row sent during `apply` was answered |
 | `rows.update(key, config)` | Leaf plugins have no volatile fields: unload, then load again |
 | `rows.unload(key)` | Withdraw provides first (`service(id, None, version)`) → cancel the row's tasks → run cleanups in reverse order |
 | `hosts.provide(name, methods, label?)` | Register a proxy for a rutis service so plugins can `ctx.use` it; call target `host:<id>` |
@@ -98,7 +99,43 @@ Ten tagged values cross beside `reference` and `signal`: `instant`, `datetime`, 
 - Points in time are truncated toward negative infinity to the receiver's precision. `undefined` inside data becomes `null`.
 - A malformed tagged value or key fails only that call; keep decoding the rest so every reference in it is imported and released. A frame not in the protocol's JSON shape still ends the session.
 
-## 6. Extra rules for compiled-program runtimes (the Go model)
+## 6. Events (rutis 0.13, #464)
+
+Full specification: https://github.com/arcships/rutis/blob/main/docs/design-events-protocol-2026-10-18.en.md (section numbers below refer to it); design: https://github.com/arcships/rutis/blob/main/docs/design-events-2026-10-18.en.md. All listeners on a host form **one logical bus** whose table the host keeps. Your runtime registers its plugins' listeners automatically and dispatches through the host unless every listener of the name is in your process.
+
+**Messages** (all `invoke` frames with an empty target, family `events`; handle `events.on` / `events.off` / `events.elsewhere` inline, in frame order):
+
+| Direction | Method and arguments | Meaning |
+| --- | --- | --- |
+| you → host | `events.on [{ id, name, row, plugin, kind, prepend, global }]` | Register a listener when a plugin calls `ctx.on`. `id`: a string unique in the session, never reused. `kind`: `"sync"` (known synchronous), `"async"` (async function / `async def`), `"any"` (known only from what it returns). Never register `internal/*` |
+| you → host | `events.off [[id, …]]` | A listener's disposer was called |
+| host → you | `events.elsewhere [{ add, remove, addPrefixes, removePrefixes }]` | Names / prefixes that have listeners outside your process: the full set first (before `mount`), then differences. Treat it as empty when the session ends |
+| you → host | `events.dispatch [{ row, name, mode, args, filter?, terminal? }]` | An emission that is not on the fast path. `mode`: `emit` / `parallel` / `serial` / `waterfall` / `bail` (`bail` is a synchronous call). `filter`: a function reference to a selector taking the list of descriptors and returning a list of booleans, running the plugin's filter on each in your process. `terminal`: `waterfall`'s innermost function, called with the event arguments |
+| host → you | `events.call [{ listener, dispatch, own, name, mode, args, next?, signal }]` | Run one listener: call it with `args`, plus `next` as the last argument in `waterfall` / `waterfall-sync`; answer its return value as is, or `throw` its error. In `emit` mode answer `undefined` after it finished and report a failure yourself (below). An unknown or withdrawn `listener`: `throw` `BindingError` `listener <id> of <name> is withdrawn` |
+
+**Fast path**: dispatch an emission of `name` in your own process when `name` is not in elsewhere, no prefix in it matches, and (for `emit`) no earlier `emit` of `name` you sent through the host is still unanswered. Otherwise send `events.dispatch`.
+
+**Dispatch rules** (the same on both paths, §5): take the listeners of the name in registration order whose scope chain is a prefix of the emitting row's chain; apply the filter (non-`global` listeners only) before any listener runs; check each listener is still live just before starting it.
+
+| Mode | Behavior |
+| --- | --- |
+| `emit` | Start every listener in order, wait for none; the API returns at once. A failure never reaches the emitter: write `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>` on stderr, never end the process |
+| `parallel` | Start all in order, wait for all; failures → `AggregateError` with the failures in **registration order**, even when only one failed |
+| `serial` | One at a time; return the first value that is a result; an error stops and is thrown as is |
+| `waterfall` | Outermost first, each gets `next` (no arguments; a second call or a call after the end fails with `WaterfallNext`); the outermost return value as is |
+| `bail` | Like `serial`, synchronous. A listener of kind `async` is not called and the dispatch fails with `AsyncListener`; one returning a Promise / awaitable fails the same (discard it) |
+
+"No result" is `undefined` / `null` / `None` / `nil` / `false`; anything else is a result. Start `emit` invocations in arrival order (one execution unit per call: queue them per listener and run them one after another). Refuse emitting `rutis/*` synchronously with `ReservedEvent` (`rutis/* events are emitted by rutis only: <name>`); `rutis/*` can be listened to.
+
+**Scope**: each row's chain arrives as the seventh `rows.load` argument `{ scope: [{ id, group }, …] }` (root `[]`); mount-mode plugins get `mount`'s `scope`. Your emissions name their `row`; the host never takes a scope from you.
+
+**Filter API**: Cordis plugins use `thisArg[Context.filter]`, called with the real `Context` for listeners in your process and `{ rutis: descriptor }` for others; give every Context a read-only `ctx.rutis` (its descriptor). Other plugins: `ctx.filter(predicate)` returns an emitter with the five methods. A descriptor is `{ name, prefix, plugin, row, runtime, node, scope, global }`.
+
+**Unload and disconnection**: the host withdraws a row's listeners when it sends `rows.unload` (or gets `rows.ended`); refuse the row's `events.call` from then on, withdraw provides, signal cancellation to its running listeners (Go context, Python task cancellation, JavaScript the row's `ctx.signal`) and wait for them at most `RUTIS_SHUTDOWN_TIMEOUT` (then write `rutis: listeners of row <row> still running after <s>s; unloading anyway`), then run cleanups. A `cancel` for an `events.call` aborts its `signal`. When the session ends, unload every row as before.
+
+**API per language** (§12.2): `on`, `emit`, `parallel`, `serial`, `waterfall` (terminal last), `bail`, `filter`, in the language's native style; a `waterfall` listener receives `next` as its last argument. Plugin API version 3.
+
+## 7. Extra rules for compiled-program runtimes (the Go model)
 
 - The executable answers `--rutis-manifest` by printing its manifest to stdout and exiting (no channel, no `apply`):
 
@@ -110,7 +147,7 @@ Ten tagged values cross beside `reference` and `signal`: `instant`, `datetime`, 
 - The file contains the marker string `rutis-<language>-runtime:1`; when scanning a directory rutis executes only files containing it. Plugin entries are generated by the same code as the `rows.schema` reply.
 - Two plugins with the same name in one file: exit at startup naming both definitions. Plugins are registered only through the arguments to `serve(...)`, never through static registries.
 
-## 7. Conformance tests (the contract itself)
+## 8. Conformance tests (the contract itself)
 
 The Rust tests in the rutis repository start your runtime and check it item by item:
 
@@ -120,4 +157,5 @@ The Rust tests in the rutis repository start your runtime and check it item by i
 | `rutis-bridge/tests/session_matrix.rs` | The runtime contract over every channel |
 | `rutis-loader/tests/multilang*.rs` | Cross-language cold starts and calls, withdrawing a provider stops only its users, `inject` gating, crossing synchronous calls do not deadlock |
 | `rutis-bridge/tests/websocket_conformance.rs` | Remote listening |
+| Event expectations `crates/rutis-bridge/src/runtime/testing/events.expected.json` (0.13) | The five modes, scope, filter, unload, cancellation, disconnection and `rutis/*` events, with listeners and emitters in your runtime, another runtime, the host and a linked node; the testing tool runs the in-process cases |
 | Test-tool expectations `crates/rutis-bridge/src/runtime/testing/weather.expected.json` | The SDK's host-free test tool and the real runtime give the same results, an undeclared service (`undeclared`: inferred methods, all `async`) included |
