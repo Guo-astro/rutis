@@ -15,7 +15,9 @@ export class Client {
   #session: Session
 
   // `worker`: the I/O worker's script; tests give one that misbehaves.
-  constructor(channel: string, { dispatch, settled, endpoint, token, worker = new URL('./io-worker.ts', import.meta.url) }: { dispatch: Dispatch, settled?: () => void, endpoint?: Endpoint, token?: string, worker?: URL }) {
+  // `inline` and `requires`: the session's (control methods run as their
+  // frame arrives; capabilities the far end must declare).
+  constructor(channel: string, { dispatch, settled, endpoint, token, inline, requires, worker = new URL('./io-worker.ts', import.meta.url) }: { dispatch: Dispatch, settled?: () => void, endpoint?: Endpoint, token?: string, inline?: string[], requires?: string[], worker?: URL }) {
     const { port1, port2 } = new MessageChannel()
     this.#port = port1
     this.#session = new Session({
@@ -25,6 +27,8 @@ export class Client {
       dispatch,
       settled,
       endpoint,
+      inline,
+      requires,
       pump: (done: () => boolean) => {
         const sequence = Atomics.load(this.#signal, 0)
         let packet
@@ -61,6 +65,7 @@ export class Client {
   get session() { return this.#session }
   call(target: string, method: string, args: unknown) { return this.#session.invoke(target, method, args) }
   callAsync(target: string, method: string, args: unknown) { return this.#session.invokeAsync(target, method, args) }
+  callFunctionAsync(fn: unknown, args: unknown[]) { return this.#session.callFunctionAsync(fn, args) }
   release(value: unknown) { this.#session.release(value) }
   drain() { return this.#session.drain() }
   closed() { return this.#exited }

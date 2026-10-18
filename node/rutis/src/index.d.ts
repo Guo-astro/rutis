@@ -1,16 +1,62 @@
 export type MethodKind = 'sync' | 'async'
 
-export interface Context {
+/** Where a listener is, as the logical bus describes it (#464): what a filter sees. */
+export interface ListenerDescriptor {
+  /** The event name (a prefix, for a Rust pattern listener). */
+  readonly name: string
+  /** A Rust pattern listener's prefix entry. */
+  readonly prefix: boolean
+  /** The plugin that registered it. */
+  readonly plugin: string
+  /** Its row's key; `null` for a plugin a mount loaded. */
+  readonly row: string | null
+  /** The runtime it runs in; `null` for the host's own Rust plugins. */
+  readonly runtime: string | null
+  /** The node it came from over a node link; `null` otherwise. */
+  readonly node: string | null
+  /** Its scope chain, outermost first; `[]` at the root. */
+  readonly scope: ReadonlyArray<{ readonly id: string, readonly group: string }>
+  /** A `global` listener is never filtered (the scope rule still applies). */
+  readonly global: boolean
+}
+
+export interface ListenerOptions {
+  /** Run before every listener of the name registered so far. */
+  prepend?: boolean
+  /** Not subject to emitters' filters (still to the scope rule). */
+  global?: boolean
+}
+
+/** A listener: the event's arguments, then, in a `waterfall`, `next` (the rest of the chain) last. */
+export type Listener = (...args: any[]) => any
+
+/** The five ways to emit. Each reaches every listener of the name in the emitter's scope or above it, wherever the listener runs, by the same rules as if all were in this process. Emitting `rutis/*` throws `ReservedEvent`; `internal/*` is refused. */
+export interface Emitter {
+  /** Start every listener in registration order; returns at once. A listener's failure is reported where it ran and reaches neither the emitter nor the other listeners. */
+  emit(name: string, ...args: any[]): void
+  /** Start every listener and wait for all. Failures reject with an `AggregateError` in registration order, even a single one. */
+  parallel(name: string, ...args: any[]): Promise<void>
+  /** Run the listeners one by one; resolves to the first result (not `undefined`, `null` or `false`), or `undefined`. An error stops and rejects. */
+  serial<T = any>(name: string, ...args: any[]): Promise<T | undefined>
+  /** Each listener gets `next` (no arguments) last and returns the result; not calling `next` vetoes the rest. The last argument is the terminal, called with the event's arguments at the end of the chain. Returns the outermost listener's value as is (a Promise whenever a listener runs elsewhere: await it). Calling `next` twice, or after the end, throws `WaterfallNext`. */
+  waterfall<T = any>(name: string, ...argsThenTerminal: any[]): T | Promise<T>
+  /** Synchronously, the first result as `serial`. An `async` listener, or one returning a Promise, fails it with `AsyncListener`. */
+  bail<T = any>(name: string, ...args: any[]): T | undefined
+}
+
+export interface Context extends Emitter {
   /** The service `name`, which the plugin declares in `inject`: the object itself when a plugin in the same process provides it, else a proxy whose methods are sync or async as declared. */
   use<T = any>(name: string): T
   /** Provide `value` as the service `name` until the plugin unloads, or until the returned function is called. It reaches rutis by itself: its methods are the object's functions (own and inherited, not `constructor`), `async` unless `provides` marks them `sync`. */
   provide(name: string, value: unknown): () => unknown
   /** Run `cleanup` when the plugin unloads. */
   effect(cleanup: () => unknown): void
-  /** Listen to an event of this runtime's shared event bus: the host emits into it (names declared with `emits` on the runtime) and plugins may emit too. The listener is unregistered when the plugin unloads. */
-  on(name: string, listener: (...args: any[]) => any): () => void
-  /** Dispatch synchronously to this runtime process's listeners, including other plugins; does not await listener promises. `RuntimePlugin` exposes no `Mount.events` / `EventSink` configuration, so runtime → Rust host forwarding is not available. */
-  emit(name: string, ...args: any[]): void
+  /** Aborted when the plugin unloads; its running listeners are then waited for (up to the host's shutdown deadline) before the cleanups run. */
+  readonly signal: AbortSignal
+  /** Listen to `name` on the host's logical bus: events emitted in the plugin's scope or below it, from any process or language. Registered with the host by itself; unregistered when the plugin unloads or the returned function is called. `rutis/*` (the host's framework events) can be listened to; `internal/*` cannot. */
+  on(name: string, listener: Listener, options?: ListenerOptions): () => void
+  /** The five ways to emit, delivered only to the listeners `keep` returns true for (`global` listeners are always delivered). `keep` runs in this process, once per candidate, before any listener runs. */
+  filter(keep: (listener: ListenerDescriptor) => unknown): Emitter
 }
 
 export interface PluginSpec<C = any> {
