@@ -47,6 +47,12 @@ pub struct Release {
     pub version: String,
 }
 
+/// The first release with the unified events (#464): every endpoint of it
+/// declares `events-v2` and refuses a far end that does not
+/// (`docs/design-events-protocol-2026-10-18.md` §2). The current code
+/// meets a release from it on, and refuses an older one at the handshake.
+pub const EVENTS_V2: &str = "0.13.0";
+
 /// The releases to meet ([module docs](self)); none when the registry is
 /// out of reach outside CI.
 pub fn releases() -> Vec<Release> {
@@ -193,6 +199,12 @@ impl Release {
     /// Whether this release is older than `version` (`x.y.z`).
     pub fn older_than(&self, version: &str) -> bool {
         parse(&self.version) < parse(version)
+    }
+
+    /// Whether it declares `events-v2` ([`EVENTS_V2`]): the current code
+    /// meets it; an older release is refused at the handshake.
+    pub fn declares_events_v2(&self) -> bool {
+        !self.older_than(EVENTS_V2)
     }
 
     /// Its `@arcships/rutis-runtime` package directory.
@@ -360,7 +372,7 @@ pub fn python() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::choose;
+    use super::{choose, Release};
 
     fn versions(list: &[&str]) -> Vec<String> {
         list.iter().map(|version| (*version).to_owned()).collect()
@@ -385,5 +397,36 @@ mod tests {
         assert_eq!(choose("0.11.0", &published, true), ["0.10.0"]);
         assert_eq!(choose("0.12.0", &published, true), ["0.11.0"]);
         assert!(choose("0.9.1", &published, true).is_empty());
+    }
+
+    /// Around the events release (#464): its gate (the checkout at 0.13.0,
+    /// only older releases) meets 0.12.1 alone, all refused; once 0.13.0 is
+    /// out, the next gate (0.13.1) meets 0.13.0, which declares
+    /// `events-v2`; main at 0.13.0 meets both. A checkout still at 0.12.1
+    /// (the version before the release is cut) meets only 0.12 releases.
+    #[test]
+    fn the_events_release_meets_older_releases_only_as_refusals() {
+        let before = versions(&["0.11.0", "0.12.0", "0.12.1"]);
+        assert_eq!(choose("0.13.0", &before, true), ["0.12.1"]);
+        assert_eq!(choose("0.13.0", &before, false), ["0.12.1"]);
+        assert_eq!(choose("0.12.1", &before, false), ["0.12.0", "0.12.1"]);
+        assert_eq!(choose("0.12.1", &before, true), ["0.12.0"]);
+        let after = versions(&["0.11.0", "0.12.0", "0.12.1", "0.13.0"]);
+        assert_eq!(choose("0.13.1", &after, true), ["0.13.0"]);
+        assert_eq!(choose("0.13.1", &after, false), ["0.13.0"]);
+        assert_eq!(choose("0.13.0", &after, false), ["0.12.1", "0.13.0"]);
+        assert_eq!(choose("0.13.0", &after, true), ["0.12.1"]);
+        let declares = |version: &str| {
+            Release {
+                version: version.to_owned(),
+            }
+            .declares_events_v2()
+        };
+        for version in ["0.9.1", "0.12.0", "0.12.1"] {
+            assert!(!declares(version), "{version} is refused");
+        }
+        for version in ["0.13.0", "0.13.1", "0.14.0", "1.0.0"] {
+            assert!(declares(version), "{version} is met");
+        }
     }
 }
