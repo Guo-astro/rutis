@@ -880,6 +880,20 @@ impl World for Host {
                 )
                 .await?;
             }
+            // Gone from the other node too: a case counting the entries
+            // the far side imported must not count the last case's.
+            let stale = |ctx: &Ctx| {
+                ctx.events()
+                    .subscriptions()
+                    .iter()
+                    .any(|entry| entry.remote && entry.name.starts_with("t/"))
+            };
+            let node = self.node.ctx().ok();
+            until(
+                || !stale(&self.root) && !node.as_ref().is_some_and(stale),
+                "the last case's listeners to leave both nodes",
+            )
+            .await?;
             if killed.contains(&Location::Y) {
                 self.restart_y().await?;
             }
