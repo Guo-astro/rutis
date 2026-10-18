@@ -85,6 +85,64 @@ npm test
 
 `load` 会检查宿主会检查的事：插件只用 `inject` 里声明的服务；提供的服务带着 `provides` 里声明的每个方法（没有声明的服务，像 rutis 一样按对象上的方法、都按 async 调用；`t.methods(name)` 返回 rutis 看到的方法）；卸载时清理函数都运行了。默认的严格模式下，值按跨进程的规则传递：数据被复制，函数和带方法的对象按引用传递，声明为 `sync` 的方法不能返回 Promise。只在同一进程里才成立的写法，在这里就会失败。
 
+### 事件
+
+`ctx.on(name, listener)` 监听事件；`ctx.emit`、`ctx.parallel`、`ctx.serial`、`ctx.waterfall`、`ctx.bail` 是发出的五种方式。监听器自动登记给宿主，什么都不用声明：发出方是同一个进程里的另一个插件、另一种语言的插件、宿主里的 Rust 代码还是相连的节点，结果都一样。完整的规则见 [插件 API：事件](plugin-api.md#事件)。
+
+下面两个插件在测试工具的 `host()` 上共享一条总线：`greeter` 用 `serial` 取第一个结果、用 `waterfall` 让别的插件改写问候语、用 `emit` 通知；`shout` 是 waterfall 的一环，并监听通知。
+
+<!-- example: typescript file=greeter/test/events.test.ts order=2 -->
+```ts
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { definePlugin } from '@arcships/rutis'
+import { host } from '@arcships/rutis/testing'
+
+const greeter = definePlugin({
+  apply(ctx) {
+    // 返回 undefined / null / false 是"没有结果"，serial 接着问下一个监听器
+    ctx.on('greeting/pick', (lang: string) => (lang === 'sv' ? 'Hej' : undefined))
+    ctx.provide('greeter', {
+      async hello(name: string, lang: string) {
+        const word = (await ctx.serial<string>('greeting/pick', lang)) ?? 'Hello'
+        // 最后一个参数是终态：链的最里面
+        const text = await ctx.waterfall<string>('greeting/format', `${word}, ${name}`, (text: string) => text)
+        ctx.emit('greeting/said', name)                  // 立即返回，不等监听器
+        return text
+      },
+    })
+  },
+})
+
+const said: string[] = []
+const shout = definePlugin({
+  apply(ctx) {
+    // waterfall 的监听器最后一个参数是 next：执行链上其余部分
+    ctx.on('greeting/format', async (text: string, next: () => Promise<string>) => `${await next()}!`)
+    ctx.on('greeting/said', (name: string) => { said.push(name) })
+  },
+})
+
+test('plugins hear each other', async () => {
+  const h = host()
+  const t = await h.load(greeter)
+  await h.load(shout)
+  assert.equal(await t.service('greeter').hello('Ada', 'sv'), 'Hej, Ada!')
+  assert.equal(await t.service('greeter').hello('Bo', 'en'), 'Hello, Bo!')
+  assert.deepEqual(said, ['Ada', 'Bo'])
+  assert.equal(await h.serial('greeting/pick', 'sv'), 'Hej')   // 测试自己也能发出
+  await h.unload()
+})
+```
+
+- `emit` 立即返回；监听器出错不影响发出方和别的监听器，在监听器所在处报告一行（测试里在 `h.reported` / `t.reported`）。要等全部监听器、拿到它们的错误，用 `await ctx.parallel(...)`：失败是 `AggregateError`，按登记顺序。
+- `waterfall` 只要有监听器在别的进程就返回 Promise，所以总是 `await` 它。`bail` 是同步的 `serial`，遇到 `async` 监听器以 `AsyncListener` 失败。
+- `ctx.filter(d => d.row === 'audit').parallel(...)` 只送达过滤函数留下的监听器；`ctx.on(name, fn, { prepend: true })` 排到最前，`{ global: true }` 不受过滤。
+- 作用域：`h.load(plugin, { scope: 't1/s1' })` 把插件加载到一个实例里，`h.at('t1/s1').emit(...)` 从那里发出；监听器只收到自己作用域及其内发出的事件。
+- 卸载时插件的 `ctx.signal` 被中止，正在运行的监听器被等待（最多到关闭截止时间），然后才运行清理。
+
+`load(plugin)` 返回的 `t` 也有这五个方法和 `filter`，从这个插件的作用域发出。别的语言的插件监听 TypeScript 插件发出的事件，写法见 [Python 插件：事件](python-plugin.md#事件)。
+
 ## 4. 在本地宿主里运行
 
 <!-- example: typescript run until="greeter: running" order=99 -->

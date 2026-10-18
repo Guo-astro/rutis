@@ -88,6 +88,117 @@ uv run python -m unittest discover -s tests
 
 `load` checks the same things as the host: the plugin uses only services declared in `inject`; its provided service has every method declared in `provides` (an undeclared service is called as rutis calls it, by the object's public methods, all async; `t.methods(name)` returns the methods rutis sees); and all cleanup functions run when the `async with` block exits. In strict mode (the default), values follow cross-process rules: data is copied (dataclasses become dictionaries), functions and objects with methods are passed by reference, and `sync` methods cannot return coroutines. Code that works only within one process fails here.
 
+### Events
+
+`ctx.on(name, listener)` listens to an event; `ctx.emit`, `await ctx.parallel`, `await ctx.serial`, `await ctx.waterfall` and `ctx.bail` are the five ways to emit. Listeners register themselves with the host and nothing is declared: whether the emitter is in the same process, in a runtime of another language, in the host or on a linked node, the result is the same. The full rules are in [plugin API: events](plugin-api.en.md#events).
+
+The two plugins below are on one `Bus`: `greeter` takes the first result with `serial`, lets other plugins rewrite the greeting with `waterfall` and notifies with `emit`; `shout` is a link of the waterfall and listens to the notification.
+
+<!-- example: python-en file=weather/tests/test_events.py order=2 -->
+```python
+import asyncio
+import unittest
+
+from rutis import define_plugin
+from rutis.testing import Bus, load
+
+
+def greeter_apply(ctx, config):
+    # None or False is "no result": serial asks the next listener
+    ctx.on("greeting/pick", lambda lang: "Hej" if lang == "sv" else None)
+
+    class Greeter:
+        async def hello(self, name, lang):
+            word = await ctx.serial("greeting/pick", lang) or "Hello"
+            # terminal: the innermost end of the chain, given the event's arguments
+            text = await ctx.waterfall("greeting/format", f"{word}, {name}", terminal=lambda text: text)
+            ctx.emit("greeting/said", name)      # returns at once, waits for no listener
+            return text
+
+    ctx.provide("greeter", Greeter())
+
+
+greeter = define_plugin(greeter_apply)
+said = []
+
+
+def shout_apply(ctx, config):
+    async def exclaim(text, next):           # a waterfall listener gets next last
+        return f"{await next()}!"
+
+    ctx.on("greeting/format", exclaim)
+    ctx.on("greeting/said", said.append)
+
+
+shout = define_plugin(shout_apply)
+
+
+class Events(unittest.TestCase):
+    def test_plugins_hear_each_other(self):
+        async def go():
+            bus = Bus()                          # plugins on one bus hear each other
+            async with load(greeter, bus=bus, row="greeter") as t, load(shout, bus=bus, row="shout"):
+                self.assertEqual(await t.service("greeter").hello("Ada", "sv"), "Hej, Ada!")
+                self.assertEqual(await t.service("greeter").hello("Bo", "en"), "Hello, Bo!")
+                self.assertEqual(said, ["Ada", "Bo"])
+                self.assertEqual(await t.serial("greeting/pick", "sv"), "Hej")  # the test can emit too
+
+        asyncio.run(go())
+```
+
+- `emit` returns at once; a failing listener reaches neither the emitter nor the other listeners and is reported in one line where it runs (in a test, in `t.reported`). To wait for every listener and get their errors, use `await ctx.parallel(...)`: failures are a `rutis.AggregateError` whose `errors` are in registration order.
+- `bail` is a synchronous `serial`: an `async def` listener (or a function returning a coroutine) fails it with `rutis.AsyncListener`.
+- `ctx.filter(lambda d: d["row"] == "audit")` returns an object with the five methods that delivers only to the listeners the filter keeps; `ctx.on(name, fn, prepend=True)` goes first, `global_=True` is exempt from filters.
+- Scopes: `load(plugin, bus=bus, scope="t1/s1")` loads a plugin into an instance (`Bus(scopes={"t1": "tenant"})` names the groups); a listener receives only the events emitted in its scope and inside it.
+- On unload, the tasks of running listeners are cancelled and waited for (at most `RUTIS_SHUTDOWN_TIMEOUT`) before the cleanups run. When the emitter gives up (its task is cancelled), the listeners in progress are cancelled too.
+
+**Across languages**: a TypeScript plugin emits, a Python plugin listens, nothing to change. The host's `rutis.json`:
+
+```json
+{
+  "runtimes": { "node": { "project": "web" }, "py": { "project": "plugins" } },
+  "rows": [
+    { "id": "sessions", "name": "sessions" },
+    { "id": "audit", "name": "py:audit" }
+  ]
+}
+```
+
+The TypeScript plugin `sessions` in `web/` emits the event, and asks others for a quota with `serial`:
+
+```ts
+ctx.provide('sessions', {
+  async create(user: string) {
+    const quota = (await ctx.serial<number>('session/quota', user)) ?? 1
+    const id = crypto.randomUUID()
+    await ctx.parallel('session/created', id, user, quota)   // waits for every listener, in any language
+    return id
+  },
+})
+```
+
+`plugins/audit.py` answers the quota and records the creation:
+
+```python
+import sys
+
+from rutis import define_plugin
+
+
+def apply(ctx, config):
+    ctx.on("session/quota", lambda user: 10 if user == "ada" else None)
+
+    async def created(session_id, user, quota):
+        print(f"session {session_id} for {user}, quota {quota}", file=sys.stderr)
+
+    ctx.on("session/created", created)
+
+
+plugin = define_plugin(apply)
+```
+
+Arguments cross processes as in [passing values](plugin-api.en.md#passing-values); an error a Python listener raises is an error of the same name on the TypeScript side (in `parallel`, a child of the `AggregateError`).
+
 ## 4. Run in a local host
 
 <!-- example: python-en run until="weather: running" order=99 -->

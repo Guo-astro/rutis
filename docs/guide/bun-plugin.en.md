@@ -37,6 +37,45 @@ test('greets', async () => {
 
 Without the SDK, a module can also export `apply(ctx, config)` directly, with `inject`, `provides` (optional, each method `'sync'` or `'async'`) and `config` (a JSON Schema). `provides` may be left out: what `ctx.provide` provides reaches rutis by itself, its methods the object's functions, called as `async`, by the same rules as on Node (see [Plugin API](plugin-api.en.md)).
 
+### Events
+
+As for TypeScript plugins ([TypeScript plugins: events](typescript-plugin.en.md#events)): `ctx.on` listens, `ctx.emit` / `ctx.parallel` / `ctx.serial` / `ctx.waterfall` / `ctx.bail` emit, `ctx.filter` picks listeners. Listeners register themselves with the host: events emitted by Node, Python and Go plugins and by Rust code in the host reach listeners in Bun too, and the other way round. On unload the row's `ctx.signal` is aborted and its running listeners are waited for.
+
+```ts
+import { definePlugin } from '@arcships/rutis'
+
+export default definePlugin({
+  apply(ctx) {
+    ctx.on('greeting/pick', (lang: string) => (lang === 'sv' ? 'Hej' : undefined))   // undefined when there is no result
+    ctx.on('greeting/format', async (text: string, next: () => Promise<string>) => `${await next()}!`)
+    ctx.provide('greeter', {
+      async hello(name: string, lang: string) {
+        const word = (await ctx.serial<string>('greeting/pick', lang)) ?? 'Hello'
+        const text = await ctx.waterfall<string>('greeting/format', `${word}, ${name}`, (text: string) => text)
+        ctx.emit('greeting/said', name)                                               // returns at once
+        return text
+      },
+    })
+  },
+})
+```
+
+Tests use the same test tool and run with `bun test` as usual; `host()` puts several plugins on one bus:
+
+```ts
+import { expect, test } from 'bun:test'
+import { host } from '@arcships/rutis/testing'
+import plugin from '../src/index.ts'
+
+test('greets through events', async () => {
+  const h = host()
+  const t = await h.load(plugin)
+  expect(await t.service('greeter').hello('Ada', 'sv')).toBe('Hej, Ada!')
+  expect(await h.serial('greeting/pick', 'en')).toBeUndefined()
+  await h.unload()
+})
+```
+
 ## 3. Run it in a host
 
 ```bash

@@ -144,8 +144,6 @@ impl HostDispatch for Tools {
 - 只在 `invoke` 本身里读它：`invoke` 返回的 future 之后在别处运行，读不到。
 - 它来自 rutis-loader 的行租用服务的方式（`Process::lease_host_for`）：每一行把它租用的服务注册在自己的作用域里（另有与以前一样、所有行共享的那份注册），所以线上格式不变，Node、Bun、Python、Go 的运行时都可以用，0.11 的也可以。自己用 `Process` 加载行时，用 `lease_host_for` 并按 `HostLease::label()` 隔离这个名字；`lease_host` / `lease_host_in` 的调用是 `None`。
 
-宿主事件的 `emits` 声明通过下述 Rust API 配置；`rutis-host` 的 JSON 配置暂未提供这个入口。同进程插件的本地事件不需要该声明。
-
 ## 运行时与加载器
 
 ```rust
@@ -160,11 +158,8 @@ use rutis_loader::{
 let mut catalog = ServiceCatalog::new();
 
 // 本机的 Node 运行时：@arcships/rutis-runtime 所在的目录，和插件解析所用的 package.json。
-// `emits` 声明宿主会向该运行时发哪些事件（`Process::emit`）：运行时拒绝未声明的事件，
-// 插件用 `ctx.on`（同名事件总线）接收。在运行时挂载前设置。只有报告 `events` 能力的运行时
-// （Node、Bun、Python、Go）接受 `emits`，其他运行时在挂载时失败；`internal/*` 不能声明。
-let node = LocalRuntime::node("app/node_modules/@arcships/rutis-runtime", "app/package.json")
-    .emits(["file-changed", "active-leaf-changed"]);
+// 事件不用配置：运行时里的监听器自动登记到宿主的事件总线上（见下面的“事件”）。
+let node = LocalRuntime::node("app/node_modules/@arcships/rutis-runtime", "app/package.json");
 let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
 // 本机的 Python 运行时：插件模块所在的目录，装着 rutis 的解释器。
 let python = LocalRuntime::python("app/plugins").interpreter("app/.venv/bin/python");
@@ -246,6 +241,73 @@ root.plugin(PeerPlugin::new(
 ```
 
 用 rutis-loader 配置时，`rutis_loader::register_peer_node` 注册 `rutis-bridge/peer` 行（与 rutis.json 相同），`PeerResolver` 解析 `peer:` 行。远程运行时：`RuntimePlugin::remote(名字)` 加一个 `runtime` 设为同名的节点行，行名由 `RuntimeResolver::modules(handle)` 解析为 `<名字>:<模块>`。概念与安全见 [连接节点](nodes.md)。
+
+## 事件
+
+宿主里的 Rust 插件、每个运行时里的插件（任何语言）和相连节点上的监听器在一个逻辑总线上（[插件 API：事件](plugin-api.md#事件)）。运行时的监听器自动登记，宿主一侧什么都不用配置：`ctx.events()` 上发出的事件到达所有语言的监听器，它们发出的事件也到达这里的 Rust 监听器。
+
+事件类型以 `Event::NAME` 作为跨语言的名字，参数按 serde 编解码，所以它和它的 `Value` 都派生 `Serialize` / `Deserialize`。两个及以上字段的元组结构体对应同样多个参数，所以下面的 `Created` 就是别的语言里的 `emit("session/created", id, size)`：
+
+```rust
+use std::sync::Arc;
+use rutis::{BoxFuture, Call, CordisError, Ctx, Event, EventKey, Listener, Mode, SyncCall};
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+struct Created(String, u32);
+impl Event for Created {
+    const NAME: &'static str = "session/created";
+    type Value = String;
+}
+
+struct Audit;
+impl Listener<Created> for Audit {
+    fn call<'a>(&'a self, _ctx: &'a Ctx, event: &'a Created, call: Call<'a, String>)
+        -> BoxFuture<'a, Result<Option<String>, CordisError>> {
+        Box::pin(async move {
+            if call.mode() == Mode::Waterfall {
+                // 中间件：执行链上其余部分，再改写它的结果
+                let inner = call.next().await?;
+                return Ok(inner.map(|text| format!("[{text}]")));
+            }
+            Ok(Some(format!("audited {}", event.0)))      // Ok(None) 是没有结果
+        })
+    }
+}
+
+fn terminal<'a>(_: &'a Ctx, e: &'a Created) -> BoxFuture<'a, Result<Option<String>, CordisError>> {
+    Box::pin(async move { Ok(Some(format!("saved {}", e.0))) })
+}
+
+let key = EventKey::<Created>::of();
+let events = ctx.events();
+let off = events.on(&ctx, &key, Audit)?;                                   // 监听器以这个 ctx 被调用
+events.on_sync(&ctx, &key, |_: &Ctx, e: &Created, _: SyncCall<'_, String>| Ok(Some(format!("sync {}", e.1))))?;
+
+events.emit(&ctx, &key, Arc::new(Created("s1".into(), 3)))?;              // 立即返回
+events.parallel(&ctx, &key, Arc::new(Created("s1".into(), 3))).await?;    // 等全部；ListenersFailed
+let first: Option<String> = events.serial(&ctx, &key, Arc::new(Created("s1".into(), 3))).await?;
+let out = events.waterfall(&ctx, &key, &Created("s1".into(), 3), terminal).await?;   // `()`：没有终态
+let sync = events.bail_sync(&ctx, &key, &Created("s1".into(), 3));        // 遇到 Audit（异步）：AsyncListener
+let python_only = events
+    .filter(|l| l.runtime.as_deref() == Some("py"))                       // ListenerInfo
+    .serial(&ctx, &key, Arc::new(Created("s1".into(), 3)))
+    .await?;
+off.dispose().await?;
+```
+
+| 事项 | 规则 |
+| --- | --- |
+| 监听器 | 一个监听器登记一次，五种方式都能调用它；`call.mode()` 是这次的方式，`call.next()` 只在 `waterfall` 里可用（否则 `WaterfallNext`）。`on_sync` 登记同步监听器，它能被所有方式调用，但在异步 `waterfall` 里不能调 `next`；`on` 的（异步）监听器不能被 `bail_sync` / `waterfall_sync` 调用（`AsyncListener`） |
+| 选项与前缀 | `on_opt` / `on_sync_opt` 取 `EventOptions { prepend, once, global }`；`on_pattern(&ctx, &EventPattern::prefix("session/"), ..)` 收这个前缀下的所有名字 |
+| 按名字 | 不定义类型时用 `rutis_bridge::events::Args`：`EventKey::<Args>::dynamic("file-changed")`，参数是 `Args(vec![Value::Data(json!(…))])`，结果是 `ArgValue`。同名的类型化监听器与 `Args` 监听器互相收到对方的事件，经 serde 转换 |
+| 作用域 | 发出方的作用域是 `ctx.scope()`：加载器为每个组实例调用 `Ctx::mark_scope`，监听器收到自己作用域及其内的事件。没有向别的作用域发出的 API，按 `ListenerInfo::scope` 过滤 |
+| 失败 | `emit` 的监听器失败以 `CordisError::ListenerFailed` 进入错误汇集（`Ctx::root_with_sink`），`rutis_bridge::events::report_line` 给出 rutis-host 打印的那一行；`parallel` 是 `CordisError::ListenersFailed`（按登记顺序）；别处监听器的错误带着名字与信息到达 |
+| 卸载与取消 | 插件卸载时它的监听器撤下，正在运行的调用看到 `ctx.cancelled()`，卸载等它们结束（最多到关闭截止时间）。丢弃 `parallel` / `serial` / `waterfall` 的 future 即取消这次分发 |
+| 框架事件 | `rutis_loader::RowEvent`（`rutis/row`）、`rutis_bridge::events::{ServiceEvent, RuntimeEvent}`（`rutis/service`、`rutis/runtime`）：用 `on` 监听；发出 `rutis/*` 以 `ReservedEvent` 失败 |
+| 节点 | `PeerPlugin` 的 `Features { export, import }` 同时选择事件（名字或 `*` 前缀），见[节点](#节点)与[连接节点](nodes.md#节点之间的事件) |
+
+测试不需要单独的工具：在 `#[tokio::test]` 里用 `Ctx::root()`（或 `Ctx::root_with_sink` 收集 `emit` 的失败），加载插件，再按上面的方式发出、断言。运行时里的监听器要用真实的运行时（`LocalRuntime`），与生产相同。
 
 ## 导出服务：参考
 

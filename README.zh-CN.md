@@ -208,12 +208,12 @@ stateDiagram-v2
     Disposed --> [*]
 ```
 
-服务在 Rust 里以类型为键，跨语言时按名字。事件总线提供 emit、parallel、serial、waterfall 与同步 bail 五种分发方式。`rutis-loader` 用分层配置描述要运行的插件，并持续把运行中的系统调和到这个状态。宿主之间通过 WebSocket 与 TLS 互联：共享服务、在另一台机器上运行插件、转发事件、断线后重连。
+服务在 Rust 里以类型为键，跨语言时按名字。事件是跨语言、跨进程、跨机器的一个逻辑总线，提供 emit、parallel、serial、waterfall 与同步 bail 五种分发方式，监听器在哪里含义都一样。`rutis-loader` 用分层配置描述要运行的插件，并持续把运行中的系统调和到这个状态。宿主之间通过 WebSocket 与 TLS 互联：共享服务、在另一台机器上运行插件、共享事件、断线后重连。
 
 ## 代价
 
 - **进程与延迟**：每种语言至少一个进程，跨语言的同步调用约 30 µs（Node 侧实测）。调用频繁的路径应该放在 Rust 或同一个运行时里。
-- **跨边界的语义更弱**：事件只能是通知，waterfall 不转发；做不到的事写成[边界规则](docs/requirements-protocol-plugins.md)，不悄悄降级。
+- **跨边界的等待有限制**：事件和服务跨进程、跨机器保持同样的语义（[统一事件](docs/design-events-2026-10-18.md)），但同步等待不能成环，也不能等一个已经断开的对端：会这样的同步调用或 `bail` 明确报错。做不到的事写成[边界规则](docs/requirements-protocol-plugins.md)，不悄悄降级。
 - **故障范围**：同一个运行时里的插件共享一个进程。要隔离，就多开运行时实例。
 
 这些取舍的理由，以及 rutis 和 Cordis 的根本区别，见 [设计哲学](docs/design-philosophy.md)。

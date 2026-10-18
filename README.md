@@ -208,12 +208,12 @@ stateDiagram-v2
     Disposed --> [*]
 ```
 
-Services are registered by type in Rust and by name across languages. The event bus dispatches in five ways: emit, parallel, serial, waterfall and synchronous bail. `rutis-loader` describes the plugins to run as layered configuration and keeps reconciling the running system toward it. Hosts link over WebSocket and TLS to share services, run plugins on another machine, forward events and reconnect after a drop.
+Services are registered by type in Rust and by name across languages. Events are one logical bus across languages, processes and machines, dispatched in five ways (emit, parallel, serial, waterfall and synchronous bail) that mean the same wherever the listeners are. `rutis-loader` describes the plugins to run as layered configuration and keeps reconciling the running system toward it. Hosts link over WebSocket and TLS to share services, run plugins on another machine, share events and reconnect after a drop.
 
 ## Trade-offs
 
 - **Processes and latency**: each language needs at least one process, and a synchronous cross-language call takes about 30 µs (measured on the Node side). Hot paths belong in Rust or in one runtime.
-- **Weaker semantics across a boundary**: events become notifications and waterfalls are not forwarded; what cannot cross a boundary is a [written rule](docs/requirements-protocol-plugins.en.md), not a silent degradation.
+- **Waiting across a boundary has limits**: events and services keep their semantics across processes and machines ([unified events](docs/design-events-2026-10-18.en.md)), but a synchronous wait cannot form a cycle or outlive the far end: a synchronous call or `bail` that would is refused with an error. What cannot cross a boundary is a [written rule](docs/requirements-protocol-plugins.en.md), not a silent degradation.
 - **Shared failure**: plugins in one runtime share its process. Isolation means more runtime instances.
 
 The [design philosophy](docs/design-philosophy.en.md) explains these choices, and how rutis differs from Cordis.
