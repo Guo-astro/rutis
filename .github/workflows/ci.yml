@@ -272,7 +272,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
+    # About 10 minutes on a pull request, 15 in a full run (2026-10-19);
+    # the step "job time" writes this run's to the summary.
+    timeout-minutes: 45
     steps:
+      - name: job time, start
+        run: echo "RUTIS_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - name: self-hosted runner, start (tools/ci-self-hosted.sh)
         if: runner.environment == 'self-hosted'
@@ -354,9 +359,15 @@ jobs:
           RUSTFLAGS: --cfg fuzzing
         run: cargo check -p rutis-bridge --features websocket --target-dir "${CARGO_TARGET_DIR:-target}/fuzzcheck"
 
-      # Plugins of other languages and of other nodes as rutis-loader rows.
+      # Plugins of other languages and of other nodes as rutis-loader rows,
+      # and the unified events conformance suite (events_conformance: a
+      # sample of the placements; stress.yml runs all of them), which runs
+      # one test at a time and must find every runtime language.
       - name: cargo test (rutis-loader, every row kind)
-        run: cargo test -p rutis-loader --features node,python,go,peer
+        env:
+          RUTIS_EVENTS_REQUIRE: node,python,go,bun
+          RUTIS_EVENTS_SETTLE_SCALE: '2'
+        run: cargo test -p rutis-loader --features node,python,go,bun,peer
 
       # Both runtimes, every transport, and the conformance suites.
       - name: cargo test (rutis-bridge, all features)
@@ -370,7 +381,13 @@ jobs:
         if: needs.changes.outputs.all == 'true'
         env:
           RUTIS_LOCAL_HANDOVER: loopback
-        run: cargo test -p rutis-loader --features node,python,go,peer --test runtime_rows --test python_rows --test multilang --test leases --test instance_runtimes --test go_rows --test multilang_go --test instance_go --test sync_cycles
+          RUTIS_EVENTS_PLACEMENTS: written
+          RUTIS_EVENTS_REQUIRE: node,python,go,bun
+          RUTIS_EVENTS_SETTLE_SCALE: '2'
+        run: cargo test -p rutis-loader --features node,python,go,bun,peer --test runtime_rows --test python_rows --test multilang --test leases --test instance_runtimes --test go_rows --test multilang_go --test instance_go --test sync_cycles --test events_conformance
+      - name: job time
+        if: always()
+        run: echo "rust job, $(( ($(date +%s) - RUTIS_JOB_STARTED) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
         env:
@@ -939,6 +956,7 @@ jobs:
       - name: cargo test (network stack, runtimes, host)
         env:
           ALL: ${{ needs.changes.outputs.all }}
+          RUTIS_EVENTS_REQUIRE: node,python,go,bun
         run: |
           BRIDGE_TESTS= LOADER_TESTS=
           if [ "$ALL" != true ]; then
@@ -1292,9 +1310,14 @@ jobs:
       - name: go test (the Go SDK)
         run: go test ./...
         working-directory: go/rutis
+      # events_conformance: the written placements (the runtimes are
+      # started through a Node script, Windows having no sh).
       - name: cargo test (rutis-loader, every row kind)
         env:
           ALL: ${{ needs.changes.outputs.all }}
+          RUTIS_EVENTS_PLACEMENTS: written
+          RUTIS_EVENTS_REQUIRE: node,python,go
+          RUTIS_EVENTS_SETTLE_SCALE: '2'
         run: |
           LOADER_TESTS=
           if [ "$ALL" != true ]; then
