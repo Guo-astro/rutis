@@ -161,3 +161,36 @@ async fn dispatch_observers_prune_after_repeated_registration() {
         assert_eq!(bus.observer_count(), 0);
     }
 }
+
+/// An emit on a runtime shutting down: `spawn` drops its task's future at
+/// once. What the emit recorded (its backlog entry, its name's chain) goes
+/// with it instead of staying forever.
+#[test]
+fn an_emit_dropped_by_a_runtime_shutting_down_leaves_no_backlog() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let ctx = Ctx::root_with(runtime.handle().clone());
+    let bus = ctx.events().clone();
+    let listener = runtime.block_on(async {
+        bus.on::<Ping>(&ctx, &crate::EventKey::dynamic("gone/1"), Nop)
+            .unwrap()
+    });
+    // The root outlives its driver: its listener is still live.
+    let root = ctx.root_view().unwrap();
+    runtime.shutdown_timeout(Duration::from_secs(1));
+    assert_eq!(bus.subscriptions().len(), 1);
+    bus.emit::<Ping>(&ctx, &crate::EventKey::dynamic("gone/1"), Arc::new(Ping))
+        .unwrap();
+    assert!(bus.backlogs().is_empty(), "{:?}", bus.backlogs());
+    std::mem::forget(root);
+    assert_eq!(
+        bus.table_counts().2,
+        0,
+        "no chain of a task that never runs"
+    );
+    std::mem::forget(listener);
+    std::mem::forget(ctx);
+}

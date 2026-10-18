@@ -256,6 +256,21 @@ impl<E: crate::Event> EventKey<E> {
             Qualifier::Dynamic(name) => name.clone(),
         }
     }
+
+    /// The name to register or dispatch under. An event type whose `NAME`
+    /// is empty has no name of its own (`rutis_bridge::events::Args`): its
+    /// key needs one, `EventKey::dynamic(name)` (protocol spec §12.1).
+    pub(crate) fn checked_name(&self) -> Result<Arc<str>, crate::CordisError> {
+        let name = self.name_arc();
+        if name.is_empty() {
+            let full = std::any::type_name::<E>();
+            let short = full.rsplit("::").next().unwrap_or(full);
+            return Err(crate::CordisError::EventNeedsName {
+                event: short.to_owned(),
+            });
+        }
+        Ok(name)
+    }
 }
 
 impl<E: crate::Event> Default for EventKey<E> {

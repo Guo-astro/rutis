@@ -575,8 +575,11 @@ async fn pattern_only_emit_preserves_each_name_without_global_tail() {
     root.shutdown().await.unwrap();
 }
 
+/// A `once` listener a short-circuited `bail` never reached is still there
+/// for the next dispatch: it is claimed when its call starts, not when a
+/// dispatch selects it.
 #[tokio::test]
-async fn sync_bail_short_circuits_and_once_selection_is_not_actual_invocation() {
+async fn sync_bail_short_circuits_and_a_once_listener_stays_until_called() {
     let root = Ctx::root().unwrap();
     let key = EventKey::named("room/1");
     let skipped = Arc::new(AtomicUsize::new(0));
@@ -603,12 +606,23 @@ async fn sync_bail_short_circuits_and_once_selection_is_not_actual_invocation() 
         Some(7)
     );
     assert_eq!(skipped.load(Ordering::SeqCst), 0);
-    assert_eq!(root.events().subscriptions().len(), 1);
+    assert_eq!(
+        root.events().subscriptions().len(),
+        2,
+        "the once listener stays"
+    );
     stop.dispose().await.unwrap();
     assert_eq!(
         root.events().bail_sync(&root, &key, &Ping(0)).unwrap(),
         None
     );
+    assert_eq!(skipped.load(Ordering::SeqCst), 1, "called now");
+    assert!(root.events().subscriptions().is_empty(), "and gone");
+    assert_eq!(
+        root.events().bail_sync(&root, &key, &Ping(0)).unwrap(),
+        None
+    );
+    assert_eq!(skipped.load(Ordering::SeqCst), 1, "only once");
     root.shutdown().await.unwrap();
 }
 
@@ -719,19 +733,22 @@ async fn sync_patterns_expose_keys_and_share_order_for_both_modes() {
     root.shutdown().await.unwrap();
 }
 
+/// A synchronous listener may dispatch its own name again, synchronously,
+/// in every combination of `bail` and `waterfall-sync` (as Cordis allows;
+/// `ReentrantEvent` is no error of events protocol §11): the inner
+/// dispatch runs on the same stack and is observed like any.
 #[tokio::test]
-async fn sync_listener_reentry_rejects_all_bail_and_waterfall_combinations() {
+async fn sync_listener_reentry_runs_in_all_bail_and_waterfall_combinations() {
     fn nested(
         ctx: &Ctx,
         key: &EventKey<Ping>,
         waterfall: bool,
     ) -> Result<Option<u64>, CordisError> {
         if waterfall {
-            ctx.events().waterfall_sync(ctx, key, &Ping(0), |_, _| {
-                panic!("reentrant terminal must not execute")
-            })
+            ctx.events()
+                .waterfall_sync(ctx, key, &Ping(1), |_, _| Ok(Some(99)))
         } else {
-            ctx.events().bail_sync(ctx, key, &Ping(0))
+            ctx.events().bail_sync(ctx, key, &Ping(1))
         }
     }
     for outer_waterfall in [false, true] {
@@ -746,17 +763,18 @@ async fn sync_listener_reentry_rejects_all_bail_and_waterfall_combinations() {
                 })
                 .unwrap();
             let inner_key = key.clone();
-            // One listener answers both modes.
+            // One listener answers both modes: the outer call dispatches
+            // the same name once more, the inner one answers.
             root.events()
                 .on_sync(
                     &root,
                     &key,
-                    move |ctx: &Ctx, _: &Ping, _: SyncCall<'_, u64>| {
-                        nested(ctx, &inner_key, inner_waterfall)
+                    move |ctx: &Ctx, event: &Ping, _: SyncCall<'_, u64>| match event.0 {
+                        0 => Ok(nested(ctx, &inner_key, inner_waterfall)?.map(|inner| inner + 1)),
+                        _ => Ok(Some(10)),
                     },
                 )
                 .unwrap();
-            // A second attempt also verifies that the first error released the guard.
             for attempt in 1..=2 {
                 let result = if outer_waterfall {
                     root.events()
@@ -764,8 +782,8 @@ async fn sync_listener_reentry_rejects_all_bail_and_waterfall_combinations() {
                 } else {
                     root.events().bail_sync(&root, &key, &Ping(0))
                 };
-                assert!(matches!(result, Err(CordisError::ReentrantEvent { .. })));
-                assert_eq!(observed.load(Ordering::SeqCst), attempt);
+                assert_eq!(result.unwrap(), Some(11));
+                assert_eq!(observed.load(Ordering::SeqCst), attempt * 2);
             }
             root.shutdown().await.unwrap();
         }
@@ -829,6 +847,8 @@ async fn same_sync_key_can_execute_on_two_threads_at_once() {
     }
 }
 
+/// A synchronous dispatch of the same name from an observer and from a
+/// terminal runs (as Cordis allows); other names and other buses too.
 #[tokio::test]
 async fn sync_reentry_covers_observer_terminal_modes_and_bus_identity() {
     let root = Ctx::root().unwrap();
@@ -839,7 +859,6 @@ async fn sync_reentry_covers_observer_terminal_modes_and_bus_identity() {
     root.events()
         .observe_dispatch(&root, move |attempt| {
             if attempt.mode == Mode::WaterfallSync {
-                // This observer must be rejected before another observation starts.
                 assert!(matches!(root_call(attempt.event), Some(0)));
                 checked.fetch_add(1, Ordering::SeqCst);
             }
@@ -853,13 +872,16 @@ async fn sync_reentry_covers_observer_terminal_modes_and_bus_identity() {
     let guard_seen = Arc::new(AtomicUsize::new(0));
     let guard_check = guard_seen.clone();
     root.events()
-        .observe_dispatch(&root, move |_| {
-            if matches!(
-                observed_ctx
-                    .events()
-                    .bail_sync(&observed_ctx, &observed_key, &Ping(0)),
-                Err(CordisError::ReentrantEvent { .. })
-            ) {
+        .observe_dispatch(&root, move |attempt| {
+            // Once per waterfall: the inner bail is observed too.
+            if attempt.mode == Mode::WaterfallSync
+                && matches!(
+                    observed_ctx
+                        .events()
+                        .bail_sync(&observed_ctx, &observed_key, &Ping(0)),
+                    Ok(None)
+                )
+            {
                 guard_check.fetch_add(1, Ordering::SeqCst);
             }
         })
@@ -869,7 +891,7 @@ async fn sync_reentry_covers_observer_terminal_modes_and_bus_identity() {
         .waterfall_sync(&root, &key, &Ping(0), |_, _| {
             assert!(matches!(
                 root.events().bail_sync(&root, &key, &Ping(0)),
-                Err(CordisError::ReentrantEvent { .. })
+                Ok(None)
             ));
             assert_eq!(
                 other
@@ -1299,21 +1321,24 @@ async fn sync_observer_can_register_before_snapshot_or_close_admission() {
         .on_sync(
             &root,
             &EventKey::named("body"),
-            move |_: &Ctx, _: &Ping, _: SyncCall<'_, u64>| {
-                body_ctx
+            move |_: &Ctx, event: &Ping, _: SyncCall<'_, u64>| match event.0 {
+                // The body dispatches its own name once more.
+                0 => body_ctx
                     .events()
-                    .bail_sync(&body_ctx, &EventKey::named("body"), &Ping(0))
-                    .map(|_| Some(0))
+                    .bail_sync(&body_ctx, &EventKey::named("body"), &Ping(1))
+                    .map(|inner| inner.map(|inner| inner + 1)),
+                _ => Ok(Some(40)),
             },
         )
         .unwrap();
-    assert!(matches!(
+    assert_eq!(
         root.events()
             .waterfall_sync(&root, &EventKey::named("body"), &Ping(0), |_, _| Ok(Some(
                 0
-            ))),
-        Err(CordisError::ReentrantEvent { .. })
-    ));
+            )))
+            .unwrap(),
+        Some(41)
+    );
     let closing = root.clone();
     root.events()
         .observe_dispatch(&root, move |attempt| {

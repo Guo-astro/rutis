@@ -36,6 +36,8 @@ pub(crate) struct Entry {
     pub owner: Weak<FiberInner>,
     pub generation: u64,
     pub withdrawn: AtomicBool,
+    /// A `once` entry's first call started ([`super::EventBus::start`]).
+    pub claimed: AtomicBool,
     pub calls: AtomicU64,
 }
 
@@ -81,13 +83,13 @@ impl Entry {
 
     /// Begin one call: count it on the owner (its unload waits for it, §7.1),
     /// then check it is still live. `None`: skip it, as if it had never been
-    /// selected (§5.1 step 3).
+    /// selected (§5.1 step 3). Through [`super::EventBus::start`], which
+    /// claims a `once` entry.
     pub fn start(&self) -> Option<CallFlight> {
         let flight = CallFlight::begin(self.owner.upgrade()?);
         if !self.live() {
             return None;
         }
-        self.calls.fetch_add(1, Ordering::Relaxed);
         Some(flight)
     }
 }
@@ -190,14 +192,9 @@ impl Table {
     }
 
     /// §5.1 step 1: the entries matching `name`, in registration order,
-    /// whose scope contains the emitter's, and live. `once` entries are
-    /// claimed here; they are returned in `claimed` too.
-    pub fn select(
-        &mut self,
-        name: &str,
-        scope: &[Scope],
-        claimed: &mut Vec<Arc<Entry>>,
-    ) -> Vec<Arc<Entry>> {
+    /// whose scope contains the emitter's, and live. A `once` entry stays
+    /// until a call of it starts.
+    pub fn select(&self, name: &str, scope: &[Scope]) -> Vec<Arc<Entry>> {
         let mut out: Vec<Arc<Entry>> = Vec::new();
         let take = |entry: &Arc<Entry>| scope_contains(&entry.info.scope, scope) && entry.live();
         if let Some(list) = self.exact.get(name) {
@@ -213,11 +210,6 @@ impl Table {
             );
             if before > 0 && out.len() > before {
                 out.sort_by_key(|e| e.position);
-            }
-        }
-        for entry in out.iter().filter(|e| e.once) {
-            if self.remove(entry) {
-                claimed.push(entry.clone());
             }
         }
         out

@@ -453,7 +453,7 @@ struct NodeConfig {
 /// Why a peer config with `events` is refused: events are shared through
 /// `export` and `import` since rutis 0.13 (events protocol §2.4, §9).
 pub const REMOVED_EVENTS: &str = "the peer config field events was removed in rutis 0.13: list \
-     events: { out } in export and events: { in } in import (docs/migration-0.13.md)";
+     events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)";
 
 impl NodeConfig {
     fn parse(config: &Value) -> Result<Self, CordisError> {

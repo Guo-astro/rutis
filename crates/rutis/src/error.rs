@@ -146,8 +146,6 @@ pub enum CordisError {
     ServiceExists(String),
     #[error("instance {instance} is outside the caller's fiber subtree")]
     InstanceOutOfScope { instance: InstanceId },
-    #[error("synchronous event {name} reentered on the same bus")]
-    ReentrantEvent { name: String },
     /// `parallel` had failures: one per failed listener, in registration
     /// order (`AggregateError`, also for a single failure).
     #[error("{} listeners of {name} failed", errors.len())]
@@ -196,6 +194,17 @@ pub enum CordisError {
     },
     #[error(transparent)]
     SyncEventPanicked(Arc<CordisError>),
+    /// The key of an event type with no name of its own (an empty `NAME`,
+    /// `rutis_bridge::events::Args`) was not given one: `EventKey::of()`
+    /// where `EventKey::dynamic(name)` is needed (protocol spec §12.1).
+    #[error("{event} events need a name: EventKey::dynamic(name)")]
+    EventNeedsName { event: String },
+    /// An unload waited `seconds` (`RUTIS_SHUTDOWN_TIMEOUT`) for the event
+    /// calls of `listeners` (`row <id>` or `plugin <name>`) still running,
+    /// and went on without them (protocol spec §7.1); reported to the error
+    /// sink.
+    #[error("listeners of {listeners} still running after {seconds}s; unloading anyway")]
+    ListenersStillRunning { listeners: String, seconds: f64 },
 }
 
 /// How a waterfall's `next` was misused (protocol spec §11 `WaterfallNext`).
@@ -242,6 +251,7 @@ impl CordisError {
             CordisError::AsyncListener { .. } => Some("AsyncListener"),
             CordisError::WaterfallNext { .. } => Some("WaterfallNext"),
             CordisError::ReservedEvent { .. } => Some("ReservedEvent"),
+            CordisError::EventNeedsName { .. } => Some("BindingError"),
             _ => None,
         }
     }
