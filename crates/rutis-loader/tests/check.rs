@@ -87,6 +87,7 @@ async fn loader(applied: &Arc<AtomicUsize>) -> (Ctx, Loader) {
             Ok(Declared {
                 requires: names(config, "requires"),
                 provides: names(config, "provides"),
+                announces: config["announces"] == true,
             })
         }),
     );
@@ -216,6 +217,46 @@ async fn a_row_that_may_provide_it_makes_it_unknown_not_missing() {
                 },
             ])
         )]
+    );
+    assert_eq!(report.failing().count(), 0);
+}
+
+/// A service no row declares, but rows that provide services they do not
+/// declare may (a published Cordis plugin's, announced when it runs), may
+/// be provided at runtime: not missing, and named with those rows. A
+/// declared provider still wins, a disabled one does not count, and a row
+/// does not provide for itself.
+/// risk: A6 (#428)
+/// guarantee: loader/check
+#[tokio::test(flavor = "multi_thread")]
+async fn rows_that_announce_what_they_provide_may_provide_it() {
+    let applied = Arc::new(AtomicUsize::new(0));
+    let (_root, loader) = loader(&applied).await;
+    let report = loader
+        .check(&layers(json!([
+            { "id": "storage", "name": "plain", "config": { "announces": true } },
+            { "id": "domain", "name": "plain", "config": { "requires": ["storage"], "announces": true } },
+            { "id": "workspace", "name": "plain", "config": { "requires": ["storageDomain", "llm"] } },
+            { "id": "llm", "name": "plain", "config": { "provides": ["llm"] } },
+            { "id": "off", "name": "plain", "config": { "announces": true }, "disabled": true },
+        ])))
+        .await;
+    assert_eq!(
+        supplies(&report, "domain"),
+        [("storage".into(), Supply::Announced(vec!["storage".into()]))]
+    );
+    assert_eq!(
+        supplies(&report, "workspace"),
+        [
+            (
+                "llm".into(),
+                Supply::Provided(vec![Provider::Row("llm".into())])
+            ),
+            (
+                "storageDomain".into(),
+                Supply::Announced(vec!["storage".into(), "domain".into()])
+            ),
+        ]
     );
     assert_eq!(report.failing().count(), 0);
 }

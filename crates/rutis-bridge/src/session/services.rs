@@ -28,6 +28,12 @@ pub trait HostDispatch: Send + Sync + 'static {
     fn origin(&self) -> Option<&str> {
         None
     }
+
+    /// Who provides it, for messages naming it ("row prompts", "peer
+    /// office"), when it says.
+    fn provider(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The key a host service named `name` is provided under, for example

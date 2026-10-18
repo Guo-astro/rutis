@@ -40,7 +40,12 @@
 //!   ([`ServiceCatalog::register_shared`]), the others are left to Cordis;
 //! - the services the plugin declares it provides are published from the
 //!   row's own fiber, so Rust plugins and other runtimes' rows can inject
-//!   them.
+//!   them. So are the ones it provides without declaring them, which a
+//!   runtime with `rows.announce` announces with the methods they have (a
+//!   published Cordis plugin's, say); a Cordis row injecting a service
+//!   another row of its runtime provides is served natively, and waits in
+//!   rutis only until that service is there. A name another provider has
+//!   already fails the later row, naming both.
 //!
 //! A shared name inside instances ([`ServiceCatalog::register_shared_instance`])
 //! is each instance's own: a copy gates, leases and publishes it at
@@ -55,7 +60,7 @@ use std::sync::{Arc, Mutex};
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Listener, Plugin, PluginFactory, TypeKey};
 use rutis_bridge::runtime::{
-    row_projection_with, HostLease, Process, Projection, Runtime, RuntimeHandle,
+    row_projection_of, HostLease, Process, Projection, Runtime, RuntimeHandle,
 };
 use rutis_bridge::session::{host_key, CallerRow, HostDispatch};
 use serde_json::{json, Map, Value};
@@ -391,6 +396,7 @@ pub(crate) fn leaf_resolved(
     let declared = crate::Declared {
         requires: gated.clone(),
         provides: described.provides.keys().cloned().collect(),
+        announces: described.announces,
     };
     let module = JsModule {
         name: name.to_owned(),
@@ -460,6 +466,14 @@ impl JsModule {
             .filter(|(name, _)| self.catalog.is_shared(name))
             .map(|(name, instance)| (name, format!("rutis-loader/instance/{instance}")))
             .collect();
+        // A service the row announces is keyed as a declared one would be.
+        let (catalog, build) = (self.catalog.clone(), build.clone());
+        let announced: KeyOf = Arc::new(move |name| match catalog.is_shared(name) {
+            true => catalog
+                .key_in(name, &build)
+                .unwrap_or_else(|_| host_key(name)),
+            false => host_key(name),
+        });
         Ok(JsFactory::with_keys(
             &self.name,
             RowRuntime::Named(self.runtime.clone()),
@@ -468,7 +482,8 @@ impl JsModule {
             self.provides.clone(),
             keyed(&mut self.provides.keys())?,
             scopes,
-        ))
+        )
+        .announcing(announced))
     }
 }
 
@@ -483,6 +498,9 @@ pub(crate) enum RowRuntime {
     Connection(Arc<Process>),
 }
 
+/// The key a service a row announces is published under, by name.
+pub(crate) type KeyOf = Arc<dyn Fn(&str) -> TypeKey + Send + Sync>;
+
 struct JsFactory {
     name: String,
     runtime: RowRuntime,
@@ -496,6 +514,8 @@ struct JsFactory {
     /// label: isolated in the runtime so other instances do not see them.
     scopes: Vec<(String, String)>,
     injects: Vec<TypeKey>,
+    /// The key of each service the row announces.
+    announced: KeyOf,
 }
 
 impl JsFactory {
@@ -555,7 +575,14 @@ impl JsFactory {
             provided,
             scopes,
             injects,
+            announced: Arc::new(host_key),
         }
+    }
+
+    /// Publish the services a row announces under `key(name)`.
+    pub(crate) fn announcing(mut self, key: KeyOf) -> Self {
+        self.announced = key;
+        self
     }
 }
 
@@ -579,6 +606,7 @@ impl PluginFactory<Value> for JsFactory {
             provided: self.provided.clone(),
             scopes: self.scopes.clone(),
             injects: self.injects.clone(),
+            announced: self.announced.clone(),
         }))
     }
 }
@@ -594,6 +622,7 @@ struct JsRow {
     provided: Vec<(String, TypeKey)>,
     scopes: Vec<(String, String)>,
     injects: Vec<TypeKey>,
+    announced: KeyOf,
 }
 
 fn failed(error: impl std::fmt::Display) -> CordisError {
@@ -676,6 +705,9 @@ impl JsRow {
             Some(row) => (row.id, row.isolate, row.inject),
             None => (self.name.clone(), Vec::new(), Vec::new()),
         };
+        // What its config isolates stays in the row's scope: a service it
+        // provides there is not rutis's to publish.
+        let private: HashSet<String> = isolate.iter().map(|(name, _)| name.clone()).collect();
         // Shared names inside the row's instances are isolated under the
         // instance's label, unless its config isolates them already.
         for (name, label) in &self.scopes {
@@ -699,7 +731,7 @@ impl JsRow {
             GENERATION.fetch_add(1, Ordering::Relaxed)
         );
         // Who calls the services it leases (`caller_row`).
-        let caller = CallerRow::new(id, key.clone(), ctx.clone());
+        let caller = CallerRow::new(id.clone(), key.clone(), ctx.clone());
         // The shared services the plugin injects, registered in Cordis for
         // as long as the row runs, each in a scope of the row's own (inside
         // the one it isolates the name in), so their calls name the row.
@@ -731,15 +763,21 @@ impl JsRow {
             leases.push(lease);
         }
         // The row's services are published from this fiber, so they go when
-        // it does.
+        // it does: the declared ones, and those it announces.
         let provided = self.provided.clone();
-        let projection = row_projection_with(&self.provides, move |name| {
-            provided
-                .iter()
-                .find(|(provided, _)| provided == name)
-                .map(|(_, key)| key.clone())
-                .unwrap_or_else(|| host_key(name))
-        });
+        let announced = self.announced.clone();
+        let projection = row_projection_of(
+            &format!("row {id}"),
+            &self.provides,
+            move |name| {
+                provided
+                    .iter()
+                    .find(|(provided, _)| provided == name)
+                    .map(|(_, key)| key.clone())
+                    .unwrap_or_else(|| announced(name))
+            },
+            move |name| private.contains(name),
+        );
         projection.attach(ctx, process.clone())?;
         // A plugin that disposes itself there ends this fiber, as a Rust
         // plugin disposing itself: the loader's monitor takes it from there.
@@ -762,6 +800,13 @@ impl JsRow {
         {
             projection.close();
             return Err(failed(error));
+        }
+        // A service another provider had first: this row, the later one,
+        // fails.
+        if let Some(refused) = projection.take_refused() {
+            projection.withdraw().await;
+            let _ = process.unload_row(&key).await;
+            return Err(failed(refused));
         }
         // Volatile-only changes go to Cordis, which commits them in place.
         let listening = ctx.events().on(

@@ -13,7 +13,7 @@ use common::runtimes::{layer, row_state, Probe};
 use rutis::{BoxFuture, CordisError, Ctx, EventKey, FiberState, FiberView, Listener};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_bridge::session::{Reply, Value as RpcValue};
+use rutis_bridge::session::{settle, Reply, Value as RpcValue};
 use rutis_loader::{
     Chain, EntryStatus, Layer, Loader, LoaderChanged, LoaderError, LoaderOptions, LoaderPlugin,
     Patch, RuntimeResolver, RuntimeRows, RuntimeRowsPlugin, ServiceCatalog,
@@ -862,6 +862,181 @@ async fn row_services_are_shared_by_name() {
     .await;
 
     root.shutdown().await.unwrap();
+}
+
+// ── Services rows provide without declaring them ────────────────
+
+/// A published Cordis plugin: no `rutis.provides` anywhere, a service
+/// class with a method of its own, an inherited one, and a field.
+const STORE: &str = r#"
+export const name = 'store'
+class Base {
+  keys() { return ['a'] }
+}
+class Store extends Base {
+  constructor(prefix) { super(); this.prefix = prefix }
+  get(key) { return `${this.prefix}${key}` }
+}
+export function apply(ctx, config) {
+  ctx.provide('store', new Store(config.prefix ?? ''))
+}
+"#;
+
+/// Uses `store` in Cordis, natively.
+const STORE_USER: &str = r#"
+export const name = 'store-user'
+export const inject = ['store', 'probe']
+export function apply(ctx) {
+  ctx.probe.record(`user: ${ctx.store.get('x')} ${ctx.store instanceof Object}`)
+}
+"#;
+
+/// A Rust plugin calling `store` by name, whoever provides it.
+struct StoreUser(Probe);
+
+impl rutis::Plugin for StoreUser {
+    fn name(&self) -> &str {
+        "store-user"
+    }
+
+    fn injects(&self) -> &[rutis::TypeKey] {
+        static KEYS: std::sync::OnceLock<[rutis::TypeKey; 1]> = std::sync::OnceLock::new();
+        KEYS.get_or_init(|| [host_key("store")])
+    }
+
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+    ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
+        Box::pin(async move {
+            let store = ctx.require_as::<dyn HostDispatch>(host_key("store"))?;
+            let failed =
+                |e: rutis_bridge::session::Error| CordisError::PluginFailed(e.to_string().into());
+            let methods = store.methods().unwrap_or_default();
+            let got = settle(store.invoke("get", json!(["y"]).into()).map_err(failed)?)
+                .await
+                .and_then(RpcValue::json)
+                .map_err(failed)?;
+            let line = format!("rust: {} {methods}", got.as_str().unwrap_or_default());
+            self.0 .0.lock().unwrap().push(line);
+            Ok(rutis::Effect::Done)
+        })
+    }
+}
+
+/// The services a Cordis row provides without declaring them reach rutis
+/// by name, with the methods the object has (own and inherited, async;
+/// not its fields): Rust calls them. A row of the same runtime injecting
+/// one gets the native object, its dependency resolved in Cordis.
+/// risk: F8 (#428)
+/// guarantee: loader/announced-services
+#[tokio::test(flavor = "multi_thread")]
+async fn cordis_rows_offer_what_they_provide_without_declaring_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("store.mjs");
+    std::fs::write(&store, STORE).unwrap();
+    let user = dir.path().join("user.mjs");
+    std::fs::write(&user, STORE_USER).unwrap();
+    let probe = Probe::default();
+    let root = Ctx::root().unwrap();
+    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+        .unwrap();
+    // As rutis-host: every name crosses by name.
+    let (loader, runtime) = mount_by_name(&root).await;
+    (&runtime).await.unwrap();
+    root.plugin(StoreUser(probe.clone()));
+
+    let rows = vec![
+        row("s", &store, json!({ "prefix": "v:" }), json!(null)),
+        row("u", &user, json!({}), json!(null)),
+    ];
+    let report = loader.check(&layer(rows.clone())).await;
+    let requires = report
+        .rows
+        .iter()
+        .find(|row| row.id == "u")
+        .map(|row| match &row.status {
+            rutis_loader::RowStatus::Checked { requires, .. } => requires.clone(),
+            other => panic!("{other:?}"),
+        })
+        .unwrap();
+    assert_eq!(
+        requires
+            .iter()
+            .find(|requirement| requirement.service == "store")
+            .unwrap()
+            .supply,
+        rutis_loader::Supply::Announced(vec!["s".into()])
+    );
+    let report = loader.reconcile(layer(rows), None).await.unwrap();
+    assert!(report.failures.is_empty(), "{report:?}");
+    probe.wait_for("user: v:x true").await;
+    probe
+        .wait_for(r#"rust: v:y {"get":"async","keys":"async"}"#)
+        .await;
+
+    root.shutdown().await.unwrap();
+}
+
+/// A row providing a service another provider has already fails, as the
+/// later one, and the error names both.
+/// risk: F8 (#428)
+/// guarantee: loader/announced-services
+#[tokio::test(flavor = "multi_thread")]
+async fn a_service_provided_twice_fails_the_later_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("store.mjs");
+    std::fs::write(&store, STORE).unwrap();
+    let probe = Probe::default();
+    let root = Ctx::root().unwrap();
+    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+        .unwrap();
+    // The application provides `store` itself.
+    root.provide_as::<dyn HostDispatch>(host_key("store"), Arc::new(probe.clone()))
+        .unwrap();
+    let (loader, runtime) = mount_by_name(&root).await;
+    (&runtime).await.unwrap();
+
+    loader
+        .reconcile(layer(vec![row("s", &store, json!({}), json!(null))]), None)
+        .await
+        .unwrap();
+    until(
+        || row_state(&loader, "s") == Some(FiberState::Failed),
+        "the row to fail",
+    )
+    .await;
+    let EntryStatus::Running(snapshot) = loader.get("s").unwrap().status else {
+        panic!("s has no fiber");
+    };
+    let error = snapshot.error.expect("why it failed").to_string();
+    assert!(
+        error.contains(
+            "service store is already provided by the application: row s cannot provide it too"
+        ),
+        "{error}"
+    );
+
+    root.shutdown().await.unwrap();
+}
+
+/// [`mount`] with a catalog sharing every name, as rutis-host's does.
+async fn mount_by_name(root: &Ctx) -> (Loader, FiberView) {
+    let mut catalog = ServiceCatalog::new();
+    catalog.share_by_name();
+    let runtime = LocalRuntime::node(node_package(), node_package().join("package.json"))
+        .host("probe", json!({ "record": "sync" }));
+    let resolver = Arc::new(RuntimeResolver::node(runtime.handle()).with_catalog(&catalog));
+    let runtime = root.plugin(runtime);
+    let options = LoaderOptions {
+        catalog,
+        ..LoaderOptions::default()
+    };
+    let plugin = LoaderPlugin::new(Chain::new().with_shared(resolver.clone()), options);
+    let loader = plugin.handle();
+    root.plugin(plugin).await.unwrap();
+    root.plugin(RuntimeRowsPlugin::new(resolver));
+    (loader, runtime)
 }
 
 // ── A row removed while it loads ────────────────────────────────

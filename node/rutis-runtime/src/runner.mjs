@@ -46,7 +46,7 @@ function cordisOf(entry) {
   try { return createRequire(entry).resolve('@deepseek-ai/cordis') } catch { return undefined }
 }
 const cordisPath = cordisOf(pluginPath)
-const { Context, Inject, resolveConfig } = await import(cordisPath ? pathToFileURL(cordisPath).href : '@deepseek-ai/cordis')
+const { Context, Inject, Service, resolveConfig } = await import(cordisPath ? pathToFileURL(cordisPath).href : '@deepseek-ai/cordis')
 // Volatile config helpers from the cosmokit that Cordis itself uses.
 const cosmokit = await import(pathToFileURL(createRequire(cordisPath ?? fileURLToPath(import.meta.resolve('@deepseek-ai/cordis'))).resolve('@deepseek-ai/cosmokit')).href).catch(() => ({}))
 let peer
@@ -57,13 +57,20 @@ let closing = false
 let disposing
 let version = 0
 let emits = new Set() // events the rutis side may emit here
+// The host takes the services rows provide without declaring them, each
+// announced with its methods (mount `announce`, feature `rows.announce`).
+// A host that did not ask (0.11) hears only the declared ones.
+let announce = false
 // Rows: plugins rutis-loader manages one by one in this Context (`rows.*`).
-const rows = new Map() // key -> { fiber, inner, config, exports, loading }
+const rows = new Map() // key -> { fiber, inner, config, exports, loading, scope, labelOf, leaf }
 // rutis services registered one by one (`hosts.*`): id -> withdraw
 const hosts = new Map()
 // What this runner supports beyond protocol 2, reported by `mount`.
 // events: leaf plugins receive what rutis emits (RuntimePlugin::emits).
-const FEATURES = ['rows.v2', 'hosts', 'leaf.js', 'scopes', 'events']
+// rows.announce: the services a Cordis row provides reach rutis without a
+// declaration, announced with the methods they have (`service` with a
+// fourth argument, to a host whose mount asked for it).
+const FEATURES = ['rows.v2', 'hosts', 'leaf.js', 'scopes', 'events', 'rows.announce']
 // Test support, not part of the protocol: with RUTIS_TEST_INSPECT set, the
 // control method `inspect` reports what this runner holds (rows, host
 // proxies, export slots, object handles, Cordis plugins, fibers and
@@ -94,7 +101,7 @@ const isolated = (name, label) => Symbol.for(`rutis-row:${JSON.stringify([label,
 // A handle always addresses the object it was created for; when the slot
 // changes, the Rust side receives a new handle and replaces its native proxy.
 // The first object of a slot uses its id (scopedId) as its handle.
-const slots = new Map() // id -> { name, methods, scope, object, identity, handle, generation, exporter }
+const slots = new Map() // id -> { name, methods, scope, object, identity, handle, generation, exporter, row? }
 const handles = new Map() // handle -> { name: slot id, object, current, released }
 
 // Cordis wraps Service instances in a new tracing proxy on every read; the
@@ -156,12 +163,89 @@ function refresh() {
       slot.generation++
       slot.handle = handleOf(id, slot.generation)
       handles.set(slot.handle, { name: id, object, current: true, released: false })
+      // A service no declaration describes offers the methods it has.
+      if (slot.row !== undefined) slot.methods = methodsOf(current)
     }
     slot.version = ++version
     if (mounted && !closing) {
-      peer.callAsync('', 'service', [id, slot.handle, slot.version]).catch(() => {})
+      // An announced service says whose it is and what it offers.
+      const args = slot.row === undefined
+        ? [id, slot.handle, slot.version]
+        : [id, slot.handle, slot.version, { row: slot.row, methods: Object.fromEntries([...slot.methods].map(method => [method, 'async'])) }]
+      // Kept, so a row loading answers only once rutis has heard it.
+      slot.announcing = peer.callAsync('', 'service', args).catch(() => {})
     }
   }
+}
+
+// The methods a service object offers when nothing declares them: its own
+// and inherited functions, up to Object's (and Cordis's Service base, whose
+// machinery is not the service's), not the constructor. A property that
+// is not a function hides an inherited function of the same name.
+function methodsOf(object) {
+  const methods = new Set()
+  if (object === null || (typeof object !== 'object' && typeof object !== 'function')) return methods
+  const seen = new Set()
+  const stops = [Object.prototype, Function.prototype, Service?.prototype]
+  for (let level = object; level != null && !stops.includes(level); level = Object.getPrototypeOf(level)) {
+    for (const name of Object.getOwnPropertyNames(level)) {
+      if (seen.has(name)) continue
+      seen.add(name)
+      if (name === 'constructor') continue
+      if (typeof Object.getOwnPropertyDescriptor(level, name)?.value === 'function') methods.add(name)
+    }
+  }
+  return methods
+}
+
+// The row whose plugin `fiber` belongs to: its own fiber, its gate's, or a
+// fiber its plugin started.
+function rowOf(fiber) {
+  for (let current = fiber; current; current = current.runtime ? current.parent?.fiber : undefined) {
+    for (const [key, row] of rows) {
+      if (row.fiber === current || row.inner === current) return [key, row]
+    }
+  }
+}
+
+// Find the services Cordis rows provide that nothing exports yet, and
+// export each from its row (announced, see `refresh`): read through the
+// row's scope, like the declared ones, so a service provided in a scope the
+// row does not see (a plugin isolating it further) stays where it is.
+// Returns the new slots. Leaf plugins declare what they provide.
+function discover() {
+  const found = []
+  if (!announce || closing) return found
+  const store = ctx.reflect.store
+  for (const key of Reflect.ownKeys(store)) {
+    const impl = store[key]
+    const owner = rowOf(impl?.fiber)
+    if (!owner) continue
+    const [rowKey, row] = owner
+    const name = impl.name
+    if (row.leaf || typeof name !== 'string' || name.includes('#') || name.includes('\0')) continue
+    if (row.scope[Context.isolate]?.[name] !== key) continue
+    const id = scopedId(name, row.labelOf(name))
+    if (row.exports.includes(id) || slots.has(id)) continue
+    const slot = { name, methods: new Set(), scope: undefined, object: undefined, identity: undefined, handle: null, generation: 0, version: 0, row: rowKey }
+    row.exports.push(id)
+    slots.set(id, slot)
+    slot.exporter = exporter(name, slot, row.scope)
+    found.push(slot)
+  }
+  return found
+}
+
+// Services appear as Cordis emits internal/service, from inside its own
+// bookkeeping: they are looked for once it is done.
+let discovering = false
+function discoverLater() {
+  if (discovering || !announce || !rows.size) return
+  discovering = true
+  queueMicrotask(() => {
+    discovering = false
+    discover()
+  })
 }
 
 // Cordis's FiberState is a const enum, gone at run time.
@@ -189,7 +273,10 @@ ctx.on('internal/status', fiber => {
   if (ended) endRow(ended[0])
 })
 
-ctx.on('internal/service', () => { if (slots.size) refresh() })
+ctx.on('internal/service', () => {
+  if (slots.size) refresh()
+  discoverLater()
+})
 ctx.on('internal/set', (_ctx, _name, _value, _error, next) => {
   const result = next()
   if (slots.size) refresh()
@@ -225,10 +312,16 @@ function located(entry) {
   }
 }
 
+// The plugin as written, on the plugin a row loads.
+const DECLARED = Symbol('rutis.declared')
+
 async function pluginOf(entry) {
   entry = located(entry)
   const declared = await declaredOf(entry)
-  return isLeaf(declared) ? toCordis(declared) : declared
+  if (!isLeaf(declared)) return declared
+  const plugin = toCordis(declared)
+  plugin[DECLARED] = declared
+  return plugin
 }
 
 // The module's plugin as written: a leaf plugin (`definePlugin`), or a
@@ -284,7 +377,8 @@ async function loadRow([key, entry, config, isolate, inject, exports]) {
     scopedId(name, label)
     scope = scope.isolate(name, isolated(name, label))
   }
-  const row = { fiber: undefined, inner: undefined, config, exports: ids, loading: true }
+  const leaf = isLeaf(plugin[DECLARED])
+  const row = { fiber: undefined, inner: undefined, config, exports: ids, loading: true, scope, labelOf, leaf }
   const fiber = fiberOf(inject?.length
     ? scope.plugin({ name: `row:${key}`, inject, apply(gated) { row.inner = fiberOf(gated.plugin(plugin, row.config)) } })
     : scope.plugin(plugin, config))
@@ -300,6 +394,14 @@ async function loadRow([key, entry, config, isolate, inject, exports]) {
   }
   try {
     await fiber.await()
+    // What the row provides without declaring it is announced before the
+    // reply, as the declared services are.
+    discover()
+    const announced = row.exports.map(id => slots.get(id)).filter(slot => slot?.row === key)
+    await Promise.all(announced.map(slot => slot.exporter.await()))
+    // rutis has published them (or refused one, which fails the row there)
+    // before it hears that the row loaded.
+    await Promise.all(announced.map(slot => slot.announcing))
   } catch (error) {
     await unloadRow(key)
     throw error
@@ -329,6 +431,9 @@ async function unloadRow(key) {
 // What rutis-loader needs before loading a plugin: its config schema, the
 // services it injects (all required in Cordis), and the services it provides
 // to rutis with their method kinds, from `rutis.provides` in its package.json.
+// A Cordis plugin whose package declares none (a published one, say) may
+// provide services all the same: they reach rutis when it provides them
+// (`announces`), so what it provides is known only then.
 async function describe(entry) {
   entry = located(entry)
   const declared = await declaredOf(entry)
@@ -336,20 +441,23 @@ async function describe(entry) {
   if (isLeaf(declared)) return { config: declared.config ?? null, inject: declared.inject, provides: declared.provides }
   const plugin = declared
   const schema = plugin.Config ?? plugin.schema
+  const provides = await providesOf(entry)
   return {
     config: schema ? toJsonSchema(schema) : null,
     inject: Object.keys(Inject.resolve(plugin.inject)),
-    provides: await providesOf(entry),
+    provides: provides ?? {},
+    announces: provides === undefined,
   }
 }
 
+// `rutis.provides` in the package.json nearest the plugin, if it declares it.
 async function providesOf(entry) {
   const { readFile } = await import('node:fs/promises')
   const { dirname, join } = await import('node:path')
   for (let dir = dirname(entry); ; dir = dirname(dir)) {
     const text = await readFile(join(dir, 'package.json'), 'utf8').catch(() => undefined)
-    if (text !== undefined) return JSON.parse(text).rutis?.provides ?? {}
-    if (dirname(dir) === dir) return {}
+    if (text !== undefined) return JSON.parse(text).rutis?.provides
+    if (dirname(dir) === dir) return undefined
   }
 }
 
@@ -473,6 +581,7 @@ function mount(args) {
   }
   const plugins = args.plugins ?? [{ entry: pluginPath, config: args.config }]
   emits = new Set(args.emits ?? [])
+  announce = args.announce === true
   // Services the rutis application provides are registered before the
   // plugins load, so the plugins' dependencies on them resolve natively.
   for (const [name, methods] of Object.entries(args.provided ?? {})) ctx.provide(name, hostProxy(name, methods))

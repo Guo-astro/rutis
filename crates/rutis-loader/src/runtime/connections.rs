@@ -310,15 +310,19 @@ impl RuntimeInstances {
             .collect();
         // The process is the instance's alone: nothing in it needs a label
         // to keep instances apart.
-        let factory: Arc<dyn PluginFactory<Value>> = Arc::new(JsFactory::with_keys(
-            row,
-            RowRuntime::Connection(process),
-            PathBuf::from(plugin),
-            gated,
-            described.provides.clone(),
-            provided,
-            Vec::new(),
-        ));
+        let factory: Arc<dyn PluginFactory<Value>> = Arc::new(
+            JsFactory::with_keys(
+                row,
+                RowRuntime::Connection(process),
+                PathBuf::from(plugin),
+                gated,
+                described.provides.clone(),
+                provided,
+                Vec::new(),
+            )
+            // So are the ones it announces.
+            .announcing(Arc::new(move |name| host_key(name).with_instance(instance))),
+        );
         Ok(factory)
     }
 
