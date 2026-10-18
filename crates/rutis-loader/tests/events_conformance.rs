@@ -569,6 +569,59 @@ impl Host {
         }
     }
 
+    /// The listener of `row` is on the other node's bus too, when it is
+    /// shared there (a name the link shares, at the root): the link
+    /// announces it after it registered, and the case goes on once it has,
+    /// as it does once a row runs.
+    async fn announced(&self, row: &Row) -> Result<(), String> {
+        let Some(name) = row.config["name"].as_str() else {
+            return Ok(());
+        };
+        let shared = name.starts_with("t/") || name.starts_with("rutis/");
+        if !shared
+            || row.scope != "root"
+            || row.config.get("fails").is_some()
+            || row.config.get("typed").is_some()
+        {
+            return Ok(());
+        }
+        let on_node = row.at == Location::Node;
+        let Ok(node) = self.node.ctx() else {
+            return Ok(()); // killed: nothing to announce to
+        };
+        // How many remote entries of `name` the far side must have: on the
+        // host, the runtimes' and the node's; on the node, the host's own
+        // at the root (the link's scope).
+        let wanted = self
+            .state
+            .lock()
+            .unwrap()
+            .rows
+            .iter()
+            .filter(|(r, _)| {
+                r.config["name"].as_str() == Some(name)
+                    && r.config.get("fails").is_none()
+                    && match on_node {
+                        true => r.at != Location::Host,
+                        false => r.at != Location::Node && r.scope == "root",
+                    }
+            })
+            .count();
+        let far = if on_node { self.root.clone() } else { node };
+        let imported = || {
+            far.events()
+                .subscriptions()
+                .iter()
+                .filter(|entry| entry.remote && entry.name == name)
+                .count()
+        };
+        until(
+            || imported() >= wanted,
+            &format!("{name} of {} to reach the other node", row.label),
+        )
+        .await
+    }
+
     /// Where every runtime's stderr is now: `reported` reads after it.
     fn mark(&self) {
         let marks = self
@@ -688,12 +741,14 @@ impl World for Host {
                 Location::Host => {}
                 Location::Node => {
                     self.state.lock().unwrap().rows.push((row.clone(), 0));
-                    return self.node.load(row).await;
+                    self.node.load(row).await?;
+                    return self.announced(row).await;
                 }
             }
             self.state.lock().unwrap().rows.push((row.clone(), 0));
             self.reconcile().await?;
-            self.settled(row).await
+            self.settled(row).await?;
+            self.announced(row).await
         })
     }
 

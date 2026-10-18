@@ -137,6 +137,9 @@ struct Link {
 struct LinkState {
     /// The peer took `events.on`: announcements go out as they happen.
     announcing: bool,
+    /// Announcing as entries register (not the whole table at once): a
+    /// `prepend` entry is announced as one.
+    live: bool,
     /// The table's snapshot is in `table`.
     ready: bool,
     /// Changes seen before the snapshot was in.
@@ -199,7 +202,10 @@ impl Link {
                     "row": entry.info.row,
                     "runtime": entry.info.runtime,
                     "kind": entry.kind,
-                    "prepend": false,
+                    // Registered in front: it goes in front on the peer
+                    // too (when announced as it registers; the first
+                    // announcement goes in table order).
+                    "prepend": entry.prepend && state.live,
                     "global": entry.info.global,
                 }),
             );
@@ -252,11 +258,14 @@ impl Link {
         state.announced.clear();
         state.calls.clear();
         state.announcing = true;
+        // In table order, each appended there: the peer's order is this.
         let mut entries: Vec<TableEntry> = state.table.values().cloned().collect();
-        entries.sort_by_key(|entry| entry.id);
+        entries.sort_by_key(|entry| entry.position);
+        state.live = false;
         for entry in &entries {
             self.announce(&mut state, entry);
         }
+        state.live = true;
     }
 
     /// The peer announced one of its entries.
@@ -274,6 +283,8 @@ impl Link {
             #[serde(default)]
             runtime: Option<String>,
             kind: ListenerKind,
+            #[serde(default)]
+            prepend: bool,
             #[serde(default)]
             global: bool,
         }
@@ -300,7 +311,9 @@ impl Link {
                 name,
                 prefix,
                 info,
-                options: EventOptions::default().global(announced.global),
+                options: EventOptions::default()
+                    .prepend(announced.prepend)
+                    .global(announced.global),
                 origin: self.origin,
             };
             let listener = Arc::new(WireEntry {

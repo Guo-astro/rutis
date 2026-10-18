@@ -351,8 +351,31 @@ fn listen(
 
 /// Emit `spec` from `ctx` with the Rust API and return the result.
 /// `args`: the arguments as they came (functions included), else the
-/// spec's written ones.
+/// spec's written ones. With `cancel`, the emitter gives up (drops the
+/// dispatch) once that listener has logged its start (§5.7).
 async fn dispatch(ctx: &Ctx, log: &Arc<EventsLog>, spec: &Json, args: Option<Vec<Value>>) -> Reply {
+    let Some(when) = spec["cancel"]["when"].as_str() else {
+        return dispatch_now(ctx, log, spec, args).await;
+    };
+    tokio::select! {
+        result = dispatch_now(ctx, log, spec, args) => result,
+        waited = log.wait(when, Duration::from_secs(30)) => {
+            waited.map_err(Error::Value)?;
+            Err(Error::Remote {
+                name: "Cancelled".into(),
+                message: "the emitter gave up the dispatch".into(),
+                graph: None,
+            })
+        }
+    }
+}
+
+async fn dispatch_now(
+    ctx: &Ctx,
+    log: &Arc<EventsLog>,
+    spec: &Json,
+    args: Option<Vec<Value>>,
+) -> Reply {
     let name = spec["name"].as_str().unwrap_or_default().to_owned();
     let key = EventKey::<Args>::dynamic(name);
     let args = Args(args.unwrap_or_else(|| {
@@ -627,7 +650,7 @@ impl Node {
         *self.node.lock().unwrap() = Some(node);
     }
 
-    fn ctx(&self) -> Result<Ctx, String> {
+    pub fn ctx(&self) -> Result<Ctx, String> {
         self.node.lock().unwrap().clone().ok_or_else(|| "the node is killed".into())
     }
 

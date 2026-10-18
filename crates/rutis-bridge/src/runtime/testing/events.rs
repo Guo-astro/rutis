@@ -1197,15 +1197,19 @@ async fn run_step(
     let settles = expect["settles"].as_bool().unwrap_or(false);
     let before = world.dispatches();
     let mut outcomes: Vec<Outcome> = Vec::new();
+    // Where the step's emitter is: the descriptions its filter sees are
+    // this process's view (an entry of another node is the link's).
+    let mut viewer = None;
     match step {
         Step::Emit {
             spec, background, ..
         } => {
+            viewer = Some(combo.at.get(&spec.row).copied().unwrap_or(spec.from));
             let emitter = emitter_for(world, combo, spec, emitters).await?;
             let call = dispatch(emitter, spec.clone(), case.clone());
             if *background {
                 *pending = Some(tokio::spawn(call));
-                return check_log(world, log, expect).await;
+                return check_log(world, log, expect, viewer).await;
             }
             outcomes.push(within(call, settles).await);
         }
@@ -1262,7 +1266,7 @@ async fn run_step(
             ));
         }
     }
-    check_log(world, log, expect).await
+    check_log(world, log, expect, viewer).await
 }
 
 /// The emitter row `spec` needs, loaded where `combo` puts it: at most one
@@ -1415,10 +1419,15 @@ fn matches_error(throws: &Json, error: &Error) -> Result<(), String> {
 }
 
 /// The log expectations, retried until they hold or [`SETTLE`] passed.
-async fn check_log(world: &dyn World, log: &EventsLog, expect: &Json) -> Result<(), String> {
+async fn check_log(
+    world: &dyn World,
+    log: &EventsLog,
+    expect: &Json,
+    viewer: Option<Location>,
+) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + SETTLE;
     loop {
-        let checked = log_holds(world, log, expect);
+        let checked = log_holds(world, log, expect, viewer);
         match checked {
             Ok(()) => return Ok(()),
             Err(_) if tokio::time::Instant::now() < deadline => {
@@ -1441,7 +1450,12 @@ fn strings(value: &Json) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn log_holds(world: &dyn World, log: &EventsLog, expect: &Json) -> Result<(), String> {
+fn log_holds(
+    world: &dyn World,
+    log: &EventsLog,
+    expect: &Json,
+    viewer: Option<Location>,
+) -> Result<(), String> {
     let entries = log.entries();
     if let Some(exact) = expect.get("log") {
         let exact = strings(exact);
@@ -1489,9 +1503,22 @@ fn log_holds(world: &dyn World, log: &EventsLog, expect: &Json) -> Result<(), St
         }
         for description in &seen {
             let row = description["row"].as_str().unwrap_or_default();
-            let Some(want) = world.description(row) else {
+            let Some(mut want) = world.description(row) else {
                 continue;
             };
+            // Seen from the other side of the node link (§9): the entry is
+            // imported, named by the peer it came from, at the link's
+            // scope (the root).
+            let on_node = want["node"] == json!("node");
+            if (viewer == Some(Location::Node)) != on_node {
+                want["node"] = match on_node {
+                    true => json!("node"),
+                    false => json!("host"),
+                };
+                want["scope"] = json!([]);
+            } else if on_node {
+                want["node"] = Json::Null;
+            }
             for (key, value) in want.as_object().into_iter().flatten() {
                 let got = if key == "scope" {
                     json!(description["scope"]

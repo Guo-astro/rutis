@@ -261,12 +261,12 @@ Emitted by the host only, in `emit` mode, each with one argument (a record). Plu
 
   | Method | Arguments | Meaning |
   | --- | --- | --- |
-  | `events.on` | `[{ "id", "name", "prefix", "plugin", "row", "runtime", "kind", "prepend": false, "global" }]` | An entry of the sender, offered to the receiver |
+  | `events.on` | `[{ "id", "name", "prefix", "plugin", "row", "runtime", "kind", "prepend", "global" }]` | An entry of the sender, offered to the receiver. When the receiver offers `events`, the sender announces its whole table in table order with `prepend: false`; after that, each entry as it registers, `prepend` as registered: the receiver's order is the sender's |
   | `events.off` | `[[id, …]]` | Withdrawn |
   | `events.call` | as §5.3 | Invoke an entry the sender accepted |
 
 - **What a node announces**: only its own entries (host Rust plugins and its runtimes), never entries it imported over any link (no relaying, so no loops), and only entries whose scope chain is a prefix of the link's scope (the scope of the `rutis-bridge/peer` row; the root for a link outside instances), since only those could hear an event arriving there. A prefix entry is announced narrowed to what both it and the `import` item match (two prefixes: the longer when one extends the other; a prefix and a name: the name).
-- **Where an accepted entry sits**: at the link's scope on the accepting node, appended (or prepended) in arrival order; descriptor `node` = the peer id, `plugin` / `row` / `runtime` as announced, `scope` = the link's scope. An entry announced that matches nothing in `export` is ignored (answered `undefined`).
+- **Where an accepted entry sits**: at the link's scope on the accepting node, appended in arrival order, or in front of every existing entry when announced with `prepend: true`; descriptor `node` = the peer id, `plugin` / `row` / `runtime` as announced, `scope` = the link's scope. An entry announced that matches nothing in `export` is ignored (answered `undefined`).
 - **Rules**: identical to local entries: five modes, scope, filter, value types, withdrawal and disconnection (§7.2). The invoked node runs the entry (its Rust listener, or relays `events.call` to its runtime). A disconnected link's entries are withdrawn.
 
 ## 10. Values
