@@ -11,12 +11,12 @@ use crate::ctx::{Ctx, Shared};
 use crate::diagnostics::ServiceAccess;
 use crate::effect::{Effect, EffectMeta, EffectRecord};
 use crate::error::{aggregate_arcs, panic_error, CordisError, ServiceReadFailure};
-use crate::event::{CatchUnwind, Event};
+use crate::events::{CatchUnwind, Event};
 use crate::key::{InstanceId, ScopeId, TypeKey};
 use crate::{BoxFuture, Plugin, PluginFactory};
 
 /// 六态状态机(§四:保留 TS 六态)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FiberState {
     /// 等待声明的依赖就绪。
     Pending,
@@ -41,7 +41,9 @@ pub struct Snapshot {
 }
 
 /// 插件身份(D10:注册返回的显式 id,非闭包指针)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct PluginId(pub u64);
 
 /// 等待卸载的结果。超时只结束本次等待；驱动继续执行清理，再次调用
@@ -63,7 +65,7 @@ pub enum DisposeWaitError {
 
 /// fiber 状态迁移事件(D24:锁内 FIFO 入队、锁外分发;
 /// `seq` 保证提交顺序可识别,不保证 listener 完成顺序)。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct FiberStatusChanged {
     pub plugin_id: PluginId,
@@ -238,6 +240,10 @@ pub(crate) struct FiberInner {
     /// 失败的 fiber 因此也算消费者:驱逐时对它重查,依赖缺失则保持 Failed。
     pub last_deps: Mutex<Option<HashSet<(PluginId, u64, TypeKey, Option<crate::key::ScopeId>)>>>,
     pub accesses: Mutex<Vec<ServiceAccess>>,
+    /// The loader group this fiber is an instance of (`Ctx::mark_scope`).
+    pub scope_group: std::sync::OnceLock<Arc<str>>,
+    /// The row this fiber is (`Ctx::mark_row`).
+    pub row: std::sync::OnceLock<Arc<str>>,
 }
 
 /// 工厂擦除面(D32):泛型 `PluginFactory<C>` 的类型擦除适配层内部协议。
@@ -1180,6 +1186,8 @@ fn spawn_fiber_inner(
             provided: Mutex::new(Vec::new()),
             last_deps: Mutex::new(None),
             accesses: Mutex::new(Vec::new()),
+            scope_group: std::sync::OnceLock::new(),
+            row: std::sync::OnceLock::new(),
             shutdown_task: Mutex::new(None),
             shutdown_inner: Mutex::new(None),
             driver: Mutex::new(None),

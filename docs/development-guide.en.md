@@ -98,20 +98,21 @@ Services suit explicit call relationships and shared-resource access. Document i
 
 ### Dispatching and handling events
 
-The event bus dispatches events to registered handlers and organizes how those handlers execute. A sender submits an event, handlers register listeners, and the bus finds matching listeners by event type and channel, then invokes them using the selected mode.
+The event bus dispatches events to registered handlers and organizes how those handlers execute. A sender submits an event, handlers register listeners, and the bus finds the listeners by the event's name (including listeners of other types with that name and listeners in other processes), then invokes them using the mode the sender chose. A listener registered once can be invoked by any mode.
 
-When an event has multiple listeners, define execution order, whether dispatch waits for completion, and how results are returned. Rutis provides four dispatch modes:
+When an event has multiple listeners, define execution order, whether dispatch waits for completion, and how results are returned. Rutis provides five dispatch modes:
 
 | API | Execution | Result handling |
 |---|---|---|
-| `emit` | Returns immediately after submission; invokes listeners sequentially in the background; same-key events are dispatched in order | Listener errors go to ErrorSink |
-| `parallel` | Invokes listeners concurrently and waits for all to finish | Returns `()` on success; aggregates errors on failure |
-| `serial` | Calls listeners in registration order; stops at the first `Some(value)` or error | Returns the first value; returns `None` if all return `None` |
-| `waterfall` | Listeners call later stages through `next` and can process the returned result | Returns the result of the whole call chain |
+| `emit` | Returns immediately; starts every listener in registration order without waiting for any; one name's events start in emit order | Listener errors go to ErrorSink and never affect the other listeners |
+| `parallel` | Starts listeners in registration order, runs them concurrently and waits for all | Returns `()` on success; on failures `ListenersFailed`, in registration order |
+| `serial` | Calls listeners one by one in registration order; stops at the first result or error | Returns the first result; `None` and `Some(false)` are no result |
+| `waterfall` | Listeners call later stages through `call.next()` and can process the returned result | Returns the outermost listener's result |
+| `bail_sync` / `waterfall_sync` | As `serial` / `waterfall`, synchronously | An async listener fails them with `AsyncListener` |
 
 These mechanisms can support state notifications, request dispatch, plugin collaboration, and middleware processing. For example, multiple listeners can handle one state change independently, or a request can pass through handlers until one returns a result. The event and handler together define the specific use.
 
-When designing an event interface, first define its data and expected result, then choose a dispatch mode. If multiple listeners participate, also define order, error handling, and behavior when no listener exists. Register ordinary listeners with `on`; register waterfalls with `on_waterfall`, and provide the terminal handler at the end of the chain from the caller.
+When designing an event interface, first define its data and expected result, then choose a dispatch mode. If multiple listeners participate, also define order, error handling, and behavior when no listener exists. Register async listeners with `on` and synchronous ones with `on_sync`; a waterfall's caller provides the terminal handler at the end of the chain (optional: pass `()`).
 
 ## Organizing multiple instances
 
@@ -130,11 +131,9 @@ Here `ctx` belongs to the parent plugin that owns the state. The instance key le
 
 `InstanceId` identifies a plugin instance in the current process. Define separate application-level identifiers for business IDs that must persist across processes.
 
-### Distinguishing event channels
+### Choosing an event's reach
 
-Ordinary events are dispatched on the bus within one root. Named channels distinguish events of the same type by name; instance channels limit registration and sending to the corresponding instance subtree.
-
-For instance events, the parent passes its instance ID to the relevant children. Children use their own context and the same parent instance ID to register and send with `on_instance` and `emit_instance`.
+Events are dispatched by name on the bus within one root; `EventKey::named` / `EventKey::dynamic` give one type other names. To keep an event within one instance (a tenant, a session) going up only, use scopes: the loader calls `ctx.mark_scope(group)` for each group instance, and a listener hears events emitted in its own scope and below it, never in a sibling scope. An emitter that picks listeners further filters them by their descriptors with `ctx.events().filter(..)`.
 
 ### Choosing service scope
 

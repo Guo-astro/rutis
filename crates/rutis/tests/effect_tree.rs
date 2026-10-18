@@ -76,6 +76,7 @@ async fn draining_record_remains_visible_until_cleanup_finishes() {
     assert!(view.effects().iter().all(|effect| effect.label != "slow"));
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Ping;
 
 impl Event for Ping {
@@ -90,6 +91,7 @@ impl Listener<Ping> for Nop {
         &'a self,
         _ctx: &'a Ctx,
         _event: &'a Ping,
+        _call: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async { Ok(None) })
     }
@@ -125,7 +127,7 @@ async fn framework_labels_and_child_ownership_follow_lifecycle() {
         .any(|e| e.label.contains("service provide:") && e.label.contains("u64")));
     assert!(effects
         .iter()
-        .any(|e| e.label.contains("event listener:") && e.label.contains("Ping")));
+        .any(|e| e.label.contains("event listener:") && e.label.contains("effect-tree-ping")));
 
     let child = root.plugin(NamedPlugin);
     (&child).into_future().await.unwrap();

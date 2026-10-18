@@ -40,7 +40,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Listener, Plugin, TypeKey};
+use rutis::{BoxFuture, Call, CordisError, Ctx, Effect, Listener, Plugin, TypeKey};
 use rutui_core::scrollback::block::RenderBlock;
 use rutui_core::scrollback::blocks::{
     AgentMessageBlock, OtherToolCallBlock, SessionEvent, SessionEventBlock, SystemMessageBlock,
@@ -539,6 +539,7 @@ impl Listener<AgentTextDelta> for DeltaL {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a AgentTextDelta,
+        _call: Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         let tx = self.0.clone();
         let ev = UiCmd::TextDelta(e.delta.clone());
@@ -556,6 +557,7 @@ impl Listener<AgentToolCall> for ToolCallL {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a AgentToolCall,
+        _call: Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         let tx = self.0.clone();
         let ev = UiCmd::ToolCall {
@@ -576,6 +578,7 @@ impl Listener<AgentToolResult> for ToolResultL {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a AgentToolResult,
+        _call: Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         let tx = self.0.clone();
         let ev = UiCmd::ToolResult {
@@ -597,6 +600,7 @@ impl Listener<AgentTurnEnd> for TurnEndL {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a AgentTurnEnd,
+        _call: Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         let tx = self.0.clone();
         let ev = UiCmd::TurnEnd {
@@ -617,6 +621,7 @@ impl Listener<AgentReasoning> for ReasoningL {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a AgentReasoning,
+        _call: Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         let tx = self.0.clone();
         let ev = UiCmd::ReasoningDelta(e.delta.clone());

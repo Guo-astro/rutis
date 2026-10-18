@@ -6,9 +6,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rutis::{
-    BoxFuture, CordisError, Ctx, DependencyStatus, Effect, Event, FiberState, Listener, Plugin,
-    TypeKey,
+    BoxFuture, Call, CordisError, Ctx, DependencyStatus, Effect, Event, EventKey, FiberState,
+    Listener, Plugin, TypeKey,
 };
+use serde::{Deserialize, Serialize};
 use tokio::sync::{oneshot, Semaphore};
 
 use common::still_pending;
@@ -79,12 +80,14 @@ impl Plugin for Read {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Ping(u32);
 impl Event for Ping {
     const NAME: &'static str = "instance-subtree-ping";
     type Value = ();
 }
+
+const PING: EventKey<Ping> = EventKey::of();
 
 struct Record {
     log: Arc<Mutex<Vec<u32>>>,
@@ -97,6 +100,7 @@ impl Listener<Ping> for Record {
         &'a self,
         _ctx: &'a Ctx,
         event: &'a Ping,
+        _call: Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         let value = event.0;
         Box::pin(async move {
@@ -121,22 +125,27 @@ impl Listener<Ping> for Bail {
         &'a self,
         _ctx: &'a Ctx,
         _event: &'a Ping,
+        _call: Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async { Ok(Some(())) })
     }
 }
 
+#[derive(Serialize, Deserialize)]
 struct Fault;
 impl Event for Fault {
     const NAME: &'static str = "instance-subtree-fault";
     type Value = ();
 }
+const FAULT: EventKey<Fault> = EventKey::of();
+
 struct FailListener;
 impl Listener<Fault> for FailListener {
     fn call<'a>(
         &'a self,
         _ctx: &'a Ctx,
         _event: &'a Fault,
+        _call: Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async { Err(CordisError::PluginFailed("listener".into())) })
     }
@@ -148,13 +157,14 @@ impl Listener<Ping> for PanicCall {
         &'a self,
         _ctx: &'a Ctx,
         _event: &'a Ping,
+        _call: Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         panic!("listener call failed before returning a future")
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn instance_emit_reports_synchronous_listener_panic() {
+async fn emit_reports_synchronous_listener_panic() {
     let (tx, rx) = oneshot::channel();
     let sink = Arc::new(Mutex::new(Some(tx)));
     let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), {
@@ -166,20 +176,8 @@ async fn instance_emit_reports_synchronous_listener_panic() {
         })
     });
     let (view, ctx) = child(&root).await;
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of().instance(ctx.instance()),
-            PanicCall,
-        )
-        .unwrap();
-    ctx.events()
-        .emit(
-            &ctx,
-            &rutis::EventKey::of().instance(ctx.instance()),
-            Arc::new(Ping(1)),
-        )
-        .unwrap();
+    ctx.events().on(&ctx, &PING, PanicCall).unwrap();
+    ctx.events().emit(&ctx, &PING, Arc::new(Ping(1))).unwrap();
     let error = tokio::time::timeout(Duration::from_secs(10), rx)
         .await
         .unwrap()
@@ -190,17 +188,15 @@ async fn instance_emit_reports_synchronous_listener_panic() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn instance_serial_short_circuits_and_parallel_aggregates() {
+async fn serial_short_circuits_and_parallel_aggregates() {
     let root = Ctx::root().unwrap();
     let (view, ctx) = child(&root).await;
     let log = Arc::new(Mutex::new(Vec::new()));
-    ctx.events()
-        .on(&ctx, &rutis::EventKey::of().instance(ctx.instance()), Bail)
-        .unwrap();
+    ctx.events().on(&ctx, &PING, Bail).unwrap();
     ctx.events()
         .on(
             &ctx,
-            &rutis::EventKey::of().instance(ctx.instance()),
+            &PING,
             Record {
                 log: log.clone(),
                 entered: Mutex::new(None),
@@ -210,40 +206,20 @@ async fn instance_serial_short_circuits_and_parallel_aggregates() {
         .unwrap();
     let value = ctx
         .events()
-        .serial(
-            &ctx,
-            &rutis::EventKey::of().instance(ctx.instance()),
-            &Ping(2),
-        )
+        .serial(&ctx, &PING, Arc::new(Ping(2)))
         .await
         .unwrap();
     assert_eq!(value, Some(()));
     assert!(log.lock().unwrap().is_empty());
 
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of().instance(ctx.instance()),
-            FailListener,
-        )
-        .unwrap();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of().instance(ctx.instance()),
-            FailListener,
-        )
-        .unwrap();
+    ctx.events().on(&ctx, &FAULT, FailListener).unwrap();
+    ctx.events().on(&ctx, &FAULT, FailListener).unwrap();
     let error = ctx
         .events()
-        .parallel(
-            &ctx,
-            &rutis::EventKey::of().instance(ctx.instance()),
-            Arc::new(Fault),
-        )
+        .parallel(&ctx, &FAULT, Arc::new(Fault))
         .await
         .unwrap_err();
-    assert!(matches!(error, CordisError::Aggregate { errors } if errors.len() == 2));
+    assert!(matches!(error, CordisError::ListenersFailed { errors, .. } if errors.len() == 2));
     view.shutdown().await.unwrap();
     root.shutdown().await.unwrap();
 }
@@ -315,45 +291,18 @@ async fn instance_keys_enforce_subtree_and_explain_pending_dependency() {
     new_root.shutdown().await.unwrap();
 }
 
+/// Instance event channels are gone (#464): only the service registry and
+/// listener registration are checked here. Dispatch no longer validates the
+/// emitter's state, so the old emit / serial / parallel assertions are gone.
 #[tokio::test]
 async fn registration_errors_prioritize_closed_then_inactive_then_instance_scope() {
     let root = Ctx::root().unwrap();
     let (disposed_view, disposed) = child(&root).await;
     let (closed_view, closed) = child(&root).await;
     let foreign = TypeKey::instance::<u64>(closed.instance());
-    let id = closed.instance();
 
     assert!(matches!(
         root.provide_as(foreign.clone(), Arc::new(1u64)),
-        Err(CordisError::InstanceOutOfScope { .. })
-    ));
-    assert!(matches!(
-        root.events()
-            .on(&root, &rutis::EventKey::of().instance(id), Bail),
-        Err(CordisError::InstanceOutOfScope { .. })
-    ));
-    assert!(matches!(
-        root.events().emit(
-            &root,
-            &rutis::EventKey::of().instance(id),
-            Arc::new(Ping(1))
-        ),
-        Err(CordisError::InstanceOutOfScope { .. })
-    ));
-    assert!(matches!(
-        root.events()
-            .serial(&root, &rutis::EventKey::of().instance(id), &Ping(1))
-            .await,
-        Err(CordisError::InstanceOutOfScope { .. })
-    ));
-    assert!(matches!(
-        root.events()
-            .parallel(
-                &root,
-                &rutis::EventKey::of().instance(id),
-                Arc::new(Ping(1))
-            )
-            .await,
         Err(CordisError::InstanceOutOfScope { .. })
     ));
 
@@ -367,35 +316,7 @@ async fn registration_errors_prioritize_closed_then_inactive_then_instance_scope
         Err(CordisError::InactiveEffect)
     ));
     assert!(matches!(
-        disposed
-            .events()
-            .on(&disposed, &rutis::EventKey::of().instance(id), Bail),
-        Err(CordisError::InactiveEffect)
-    ));
-    assert!(matches!(
-        disposed.events().emit(
-            &disposed,
-            &rutis::EventKey::of().instance(id),
-            Arc::new(Ping(1))
-        ),
-        Err(CordisError::InactiveEffect)
-    ));
-    assert!(matches!(
-        disposed
-            .events()
-            .serial(&disposed, &rutis::EventKey::of().instance(id), &Ping(1))
-            .await,
-        Err(CordisError::InactiveEffect)
-    ));
-    assert!(matches!(
-        disposed
-            .events()
-            .parallel(
-                &disposed,
-                &rutis::EventKey::of().instance(id),
-                Arc::new(Ping(1))
-            )
-            .await,
+        disposed.events().on(&disposed, &PING, Bail),
         Err(CordisError::InactiveEffect)
     ));
 
@@ -409,35 +330,7 @@ async fn registration_errors_prioritize_closed_then_inactive_then_instance_scope
         Err(CordisError::Closed)
     ));
     assert!(matches!(
-        closed
-            .events()
-            .on(&closed, &rutis::EventKey::of().instance(id), Bail),
-        Err(CordisError::Closed)
-    ));
-    assert!(matches!(
-        closed.events().emit(
-            &closed,
-            &rutis::EventKey::of().instance(id),
-            Arc::new(Ping(1))
-        ),
-        Err(CordisError::Closed)
-    ));
-    assert!(matches!(
-        closed
-            .events()
-            .serial(&closed, &rutis::EventKey::of().instance(id), &Ping(1))
-            .await,
-        Err(CordisError::Closed)
-    ));
-    assert!(matches!(
-        closed
-            .events()
-            .parallel(
-                &closed,
-                &rutis::EventKey::of().instance(id),
-                Arc::new(Ping(1))
-            )
-            .await,
+        closed.events().on(&closed, &PING, Bail),
         Err(CordisError::Closed)
     ));
 
@@ -456,32 +349,7 @@ async fn registration_errors_prioritize_closed_then_inactive_then_instance_scope
         Err(CordisError::Closed)
     ));
     assert!(matches!(
-        root.events()
-            .on(&root, &rutis::EventKey::of().instance(id), Bail),
-        Err(CordisError::Closed)
-    ));
-    assert!(matches!(
-        root.events().emit(
-            &root,
-            &rutis::EventKey::of().instance(id),
-            Arc::new(Ping(1))
-        ),
-        Err(CordisError::Closed)
-    ));
-    assert!(matches!(
-        root.events()
-            .serial(&root, &rutis::EventKey::of().instance(id), &Ping(1))
-            .await,
-        Err(CordisError::Closed)
-    ));
-    assert!(matches!(
-        root.events()
-            .parallel(
-                &root,
-                &rutis::EventKey::of().instance(id),
-                Arc::new(Ping(1))
-            )
-            .await,
+        root.events().on(&root, &PING, Bail),
         Err(CordisError::Closed)
     ));
 }
@@ -618,7 +486,7 @@ async fn dropping_borrowed_serial_releases_shutdown_flight() {
     ctx.events()
         .on(
             &ctx,
-            &rutis::EventKey::of().instance(ctx.instance()),
+            &PING,
             Record {
                 log: Arc::new(Mutex::new(Vec::new())),
                 entered: Mutex::new(Some(entered_tx)),
@@ -626,12 +494,7 @@ async fn dropping_borrowed_serial_releases_shutdown_flight() {
             },
         )
         .unwrap();
-    let event = Ping(1);
-    let mut dispatch = Box::pin(ctx.events().serial(
-        &ctx,
-        &rutis::EventKey::of().instance(ctx.instance()),
-        &event,
-    ));
+    let mut dispatch = ctx.events().serial(&ctx, &PING, Arc::new(Ping(1)));
     tokio::select! {
         result = &mut dispatch => panic!("serial completed before its gate: {result:?}"),
         result = entered_rx => result.unwrap(),
@@ -654,6 +517,7 @@ impl Listener<Ping> for StartOwnShutdown {
         &'a self,
         _ctx: &'a Ctx,
         _event: &'a Ping,
+        _call: Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async move {
             drop(self.view.shutdown());
@@ -671,7 +535,7 @@ async fn callback_can_start_own_shutdown_and_return() {
     ctx.events()
         .on(
             &ctx,
-            &rutis::EventKey::of().instance(ctx.instance()),
+            &PING,
             StartOwnShutdown {
                 view: view.clone(),
                 calls: calls.clone(),
@@ -679,11 +543,7 @@ async fn callback_can_start_own_shutdown_and_return() {
         )
         .unwrap();
     ctx.events()
-        .serial(
-            &ctx,
-            &rutis::EventKey::of().instance(ctx.instance()),
-            &Ping(1),
-        )
+        .serial(&ctx, &PING, Arc::new(Ping(1)))
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(10), view.shutdown())
@@ -731,11 +591,20 @@ async fn dependency_gate_reuses_registration_snapshot() {
     root.shutdown().await.unwrap();
 }
 
+/// Two sibling scopes (instance event channels are gone, #464): each one's
+/// listener hears only the events emitted in its own scope, and shutting a
+/// scope down waits for its listener's running call.
+///
+/// Changed with #464: a slow call no longer holds up the next emit of the
+/// name, so `3` is recorded while `1` still waits for its gate; and an emit
+/// from a closing context is no longer rejected (not asserted).
 #[tokio::test(start_paused = true)]
-async fn instance_events_are_isolated_ordered_and_drained_by_shutdown() {
+async fn sibling_scopes_are_isolated_and_drained_by_shutdown() {
     let root = Ctx::root().unwrap();
     let (view_a, a) = child(&root).await;
     let (_view_b, b) = child(&root).await;
+    a.mark_scope("tenant").unwrap();
+    b.mark_scope("tenant").unwrap();
     let log_a = Arc::new(Mutex::new(Vec::new()));
     let log_b = Arc::new(Mutex::new(Vec::new()));
     let release = Arc::new(Semaphore::new(0));
@@ -743,7 +612,7 @@ async fn instance_events_are_isolated_ordered_and_drained_by_shutdown() {
     a.events()
         .on(
             &a,
-            &rutis::EventKey::of().instance(a.instance()),
+            &PING,
             Record {
                 log: log_a.clone(),
                 entered: Mutex::new(Some(entered_tx)),
@@ -754,7 +623,7 @@ async fn instance_events_are_isolated_ordered_and_drained_by_shutdown() {
     b.events()
         .on(
             &b,
-            &rutis::EventKey::of().instance(b.instance()),
+            &PING,
             Record {
                 log: log_b.clone(),
                 entered: Mutex::new(None),
@@ -762,54 +631,27 @@ async fn instance_events_are_isolated_ordered_and_drained_by_shutdown() {
             },
         )
         .unwrap();
-    a.events()
-        .emit(
-            &a,
-            &rutis::EventKey::of().instance(a.instance()),
-            Arc::new(Ping(1)),
-        )
-        .unwrap();
+    a.events().emit(&a, &PING, Arc::new(Ping(1))).unwrap();
     entered_rx.await.unwrap();
-    a.events()
-        .emit(
-            &a,
-            &rutis::EventKey::of().instance(a.instance()),
-            Arc::new(Ping(3)),
-        )
-        .unwrap();
-    b.events()
-        .emit(
-            &b,
-            &rutis::EventKey::of().instance(b.instance()),
-            Arc::new(Ping(2)),
-        )
-        .unwrap();
+    a.events().emit(&a, &PING, Arc::new(Ping(3))).unwrap();
+    b.events().emit(&b, &PING, Arc::new(Ping(2))).unwrap();
     // Polls on the paused clock, so the hang guard still fires.
     tokio::time::timeout(Duration::from_secs(10), async {
-        while log_b.lock().unwrap().is_empty() {
+        while log_b.lock().unwrap().is_empty() || log_a.lock().unwrap().is_empty() {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
     .await
     .unwrap();
-    assert!(log_a.lock().unwrap().is_empty());
+    assert_eq!(*log_a.lock().unwrap(), vec![3]);
 
     let pending = view_a.shutdown();
-    assert!(matches!(
-        a.events().emit(
-            &a,
-            &rutis::EventKey::of().instance(a.instance()),
-            Arc::new(Ping(4))
-        ),
-        Err(CordisError::Closed)
-    ));
     assert!(matches!(
         a.provide_as(TypeKey::instance::<u32>(a.instance()), Arc::new(1u32)),
         Err(CordisError::Closed)
     ));
     assert!(matches!(
-        a.events()
-            .on(&a, &rutis::EventKey::of().instance(a.instance()), Bail),
+        a.events().on(&a, &PING, Bail),
         Err(CordisError::Closed)
     ));
     let closed_child = a.plugin(PanicMetadata);
@@ -821,7 +663,7 @@ async fn instance_events_are_isolated_ordered_and_drained_by_shutdown() {
     );
     release.add_permits(1);
     waiter.await.unwrap().unwrap();
-    assert_eq!(*log_a.lock().unwrap(), vec![1, 3]);
+    assert_eq!(*log_a.lock().unwrap(), vec![3, 1]);
     assert_eq!(*log_b.lock().unwrap(), vec![2]);
     assert!(view_a.restart().await.is_err());
     root.shutdown().await.unwrap();
@@ -839,7 +681,7 @@ async fn closing_listener_is_excluded_from_new_ancestor_dispatches() {
         .events()
         .on(
             &listener_ctx,
-            &rutis::EventKey::of().instance(parent.instance()),
+            &PING,
             Record {
                 log: log.clone(),
                 entered: Mutex::new(Some(entered_tx)),
@@ -849,21 +691,13 @@ async fn closing_listener_is_excluded_from_new_ancestor_dispatches() {
         .unwrap();
     parent
         .events()
-        .emit(
-            &parent,
-            &rutis::EventKey::of().instance(parent.instance()),
-            Arc::new(Ping(1)),
-        )
+        .emit(&parent, &PING, Arc::new(Ping(1)))
         .unwrap();
     entered_rx.await.unwrap();
     let closing = child_view.shutdown();
     parent
         .events()
-        .emit(
-            &parent,
-            &rutis::EventKey::of().instance(parent.instance()),
-            Arc::new(Ping(2)),
-        )
+        .emit(&parent, &PING, Arc::new(Ping(2)))
         .unwrap();
     release.add_permits(1);
     closing.await.unwrap();
@@ -871,8 +705,11 @@ async fn closing_listener_is_excluded_from_new_ancestor_dispatches() {
     root.shutdown().await.unwrap();
 }
 
+/// Changed with #464: dropping a `parallel` future cancels the calls it
+/// started (was: the calls ran on and shutdown waited for them), so the
+/// shutdown no longer waits for the gate and the call never records.
 #[tokio::test(start_paused = true)]
-async fn dropped_parallel_waiter_does_not_finish_dispatch_early() {
+async fn dropped_parallel_waiter_cancels_its_calls() {
     let root = Ctx::root().unwrap();
     let (view, ctx) = child(&root).await;
     let release = Arc::new(Semaphore::new(0));
@@ -881,7 +718,7 @@ async fn dropped_parallel_waiter_does_not_finish_dispatch_early() {
     ctx.events()
         .on(
             &ctx,
-            &rutis::EventKey::of().instance(ctx.instance()),
+            &PING,
             Record {
                 log: log.clone(),
                 entered: Mutex::new(Some(entered_tx)),
@@ -893,28 +730,26 @@ async fn dropped_parallel_waiter_does_not_finish_dispatch_early() {
     let waiting = tokio::spawn(async move {
         dispatch_ctx
             .events()
-            .parallel(
-                &dispatch_ctx,
-                &rutis::EventKey::of().instance(dispatch_ctx.instance()),
-                Arc::new(Ping(1)),
-            )
+            .parallel(&dispatch_ctx, &PING, Arc::new(Ping(1)))
             .await
     });
     entered_rx.await.unwrap();
     waiting.abort();
-    let mut closing = tokio::spawn(view.shutdown());
-    assert!(
-        still_pending(&mut closing).await,
-        "shutdown waits for the callback the dropped waiter started"
-    );
+    assert!(waiting.await.unwrap_err().is_cancelled());
+    tokio::time::timeout(Duration::from_secs(10), view.shutdown())
+        .await
+        .expect("shutdown does not wait for a cancelled call")
+        .unwrap();
     release.add_permits(1);
-    closing.await.unwrap().unwrap();
-    assert_eq!(*log.lock().unwrap(), vec![1]);
+    assert!(log.lock().unwrap().is_empty());
     root.shutdown().await.unwrap();
 }
 
+/// Changed with #464: disposing one listener withdraws it at once (no new
+/// call starts) and no longer waits for its running call; the fiber's
+/// unload is what waits for running calls.
 #[tokio::test(start_paused = true)]
-async fn manual_instance_listener_disposal_waits_for_accepted_callback() {
+async fn manual_listener_disposal_stops_new_calls() {
     let root = Ctx::root().unwrap();
     let (view, ctx) = child(&root).await;
     let release = Arc::new(Semaphore::new(0));
@@ -924,7 +759,7 @@ async fn manual_instance_listener_disposal_waits_for_accepted_callback() {
         .events()
         .on(
             &ctx,
-            &rutis::EventKey::of().instance(ctx.instance()),
+            &PING,
             Record {
                 log: log.clone(),
                 entered: Mutex::new(Some(entered_tx)),
@@ -932,31 +767,23 @@ async fn manual_instance_listener_disposal_waits_for_accepted_callback() {
             },
         )
         .unwrap();
-    ctx.events()
-        .emit(
-            &ctx,
-            &rutis::EventKey::of().instance(ctx.instance()),
-            Arc::new(Ping(1)),
-        )
-        .unwrap();
+    ctx.events().emit(&ctx, &PING, Arc::new(Ping(1))).unwrap();
     entered_rx.await.unwrap();
 
-    let mut removing = tokio::spawn(listener.dispose());
+    tokio::time::timeout(Duration::from_secs(10), listener.dispose())
+        .await
+        .expect("disposal does not wait for the running call")
+        .unwrap();
+    ctx.events().emit(&ctx, &PING, Arc::new(Ping(2))).unwrap();
+    assert!(log.lock().unwrap().is_empty());
+    let mut closing = tokio::spawn(view.shutdown());
     assert!(
-        still_pending(&mut removing).await,
-        "listener disposal waits for the accepted callback"
+        still_pending(&mut closing).await,
+        "the fiber's unload waits for the running call"
     );
     release.add_permits(1);
-    removing.await.unwrap().unwrap();
-    ctx.events()
-        .emit(
-            &ctx,
-            &rutis::EventKey::of().instance(ctx.instance()),
-            Arc::new(Ping(2)),
-        )
-        .unwrap();
+    closing.await.unwrap().unwrap();
     assert_eq!(*log.lock().unwrap(), vec![1]);
-    view.shutdown().await.unwrap();
     root.shutdown().await.unwrap();
 }
 
@@ -1300,6 +1127,7 @@ impl Listener<Ping> for AwaitOwnerCancellation {
         &'a self,
         _sender: &'a Ctx,
         _event: &'a Ping,
+        _call: Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async move {
             self.entered.add_permits(1);
@@ -1310,12 +1138,12 @@ impl Listener<Ping> for AwaitOwnerCancellation {
     }
 }
 
-/// A descendant's listener is running for an `ancestor` instance event and
+/// A descendant's listener is running for an event emitted by `ancestor` and
 /// only returns once its owner is cancelled. Returns how often it returned.
 async fn start_owner_waiting_callback(ancestor: &Ctx, owner: &Ctx) -> Arc<AtomicUsize> {
     let entered = Arc::new(Semaphore::new(0));
     let returned = Arc::new(AtomicUsize::new(0));
-    let key = rutis::EventKey::<Ping>::of().instance(ancestor.instance());
+    let key = PING;
     owner
         .events()
         .on(
@@ -1341,7 +1169,7 @@ async fn start_owner_waiting_callback(ancestor: &Ctx, owner: &Ctx) -> Arc<Atomic
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn root_shutdown_cancels_descendants_before_draining_instance_events() {
+async fn root_shutdown_cancels_descendants_before_draining_listener_calls() {
     let root = Ctx::root().unwrap();
     let (_owner_view, owner) = child(&root).await;
     let returned = start_owner_waiting_callback(&root, &owner).await;
@@ -1360,7 +1188,7 @@ async fn root_shutdown_cancels_descendants_before_draining_instance_events() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn subtree_shutdown_cancels_descendants_before_draining_instance_events() {
+async fn subtree_shutdown_cancels_descendants_before_draining_listener_calls() {
     let root = Ctx::root().unwrap();
     let (ancestor_view, ancestor) = child(&root).await;
     let (_owner_view, owner) = child(&ancestor).await;
@@ -1421,6 +1249,7 @@ impl Listener<Ping> for CountPings {
         &'a self,
         _ctx: &'a Ctx,
         _event: &'a Ping,
+        _call: Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(None) })
@@ -1443,8 +1272,9 @@ impl Plugin for Resident {
 }
 
 /// A short-lived subtree: needs the resident's service, provides an
-/// instance service, listens to and emits its instance event, and mounts a
-/// child of its own.
+/// instance service, is a scope, listens to and emits an event under a name
+/// of its own (so the resident does not hear it), and mounts a child of its
+/// own.
 struct Transient {
     dropped: Arc<AtomicUsize>,
     pings: Arc<AtomicUsize>,
@@ -1469,7 +1299,8 @@ impl Plugin for Transient {
             ctx.require::<ResidentService>()?;
             let id = ctx.instance();
             ctx.provide_as(TypeKey::instance::<u64>(id), Arc::new(1u64))?;
-            let key = rutis::EventKey::of().instance(id);
+            ctx.mark_scope("transient")?;
+            let key = EventKey::<Ping>::dynamic(format!("instance-subtree-ping/{id}"));
             ctx.events().on(ctx, &key, CountPings(self.pings.clone()))?;
             ctx.events().emit(ctx, &key, Arc::new(Ping(0)))?;
             ctx.plugin(DropProbe(self.dropped.clone()));

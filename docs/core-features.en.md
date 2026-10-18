@@ -18,23 +18,40 @@ let view = ctx.plugin_with(MyFactory, cfg_v1);
 view.update(cfg_v2).await?;   // dry-run failure leaves everything untouched; success unloads + reloads
 ```
 
-## Dynamic event names
+## Events: one listener table, five modes
 
-events whose names are only known at runtime (host events, script-registered channels): typed events + dynamic qualifiers inherit all four dispatch semantics and lifecycle cleanup for free:
+Events are dispatched by **name** (`EventKey::<E>::of()` is named `E::NAME`; `named` / `dynamic` give another name). Event types derive `Serialize` / `Deserialize`, so listeners of another Rust type with the same name, and listeners in other processes or on other nodes, hear the same event ([unified events design](design-events-2026-10-18.en.md), [protocol spec](design-events-protocol-2026-10-18.en.md) §12.1).
 
 ```rust
-let key = rutis::EventKey::<RoomEvent>::dynamic(name);
-ctx.events().on(&ctx, &key, listener)?;
-ctx.events().emit(&ctx, &key, Arc::new(event))?;
+#[derive(Serialize, Deserialize)]
+struct RoomEvent { room: String }
+impl Event for RoomEvent { const NAME: &'static str = "room/joined"; type Value = String; }
+
+// Registered once, called by any mode; call.mode() says which, call.next() only in a waterfall
+struct Greet;
+impl Listener<RoomEvent> for Greet {
+    fn call<'a>(&'a self, _ctx: &'a Ctx, e: &'a RoomEvent, _call: Call<'a, String>)
+        -> BoxFuture<'a, Result<Option<String>, CordisError>> {
+        Box::pin(async move { Ok(Some(format!("hi {}", e.room))) })
+    }
+}
+ctx.events().on(&ctx, &EventKey::of(), Greet)?;
+let hi = ctx.events().serial(&ctx, &EventKey::of(), Arc::new(RoomEvent { room: "a".into() })).await?;
 ```
 
-## Patterns and synchronous decisions
-
-`EventPattern::prefix("room/")` subscribes to dynamic channels and delivers the actual matching key. Events implementing `SyncEvent` can use `bail_sync` / `waterfall_sync`; the terminal can borrow the caller's local variables or MutexGuard. See the [0.3 → 0.5 migration guide](migration-0.3-to-0.5.en.md).
+- `emit` returns at once and starts every listener in registration order without waiting for any; one name's emits start in emit order; a listener's failure goes to the ErrorSink (`ListenerFailed`) and never affects the other listeners.
+- `parallel` starts in registration order and waits for all; failures are always `ListenersFailed` (AggregateError), in registration order.
+- `serial` / `bail_sync` return the first result (`None` and `Some(false)` are no result); an error stops them. `bail_sync` / `waterfall_sync` meeting an async listener fail with `AsyncListener`.
+- `waterfall` / `waterfall_sync` run outer to inner, each listener calling the rest with `call.next()`; not calling it vetoes; the terminal is optional (`()`); the outermost value is returned.
+- Synchronous listeners register with `on_sync`; every mode can call them. `EventPattern::prefix("room/")` registers a prefix listener, which gets the actual name. `EventOptions` has `prepend`, `once` and `global`.
+- **Scope**: the loader marks group instances with `Ctx::mark_scope(group)`; `Ctx::scope()` is the scope chain from the root. A listener hears events emitted in its own scope and below it, never in a sibling scope.
+- **Filter**: `ctx.events().filter(|info: &ListenerInfo| ..)` gives the same emitting methods; the filter sees each non-`global` listener's descriptor (plugin, row, runtime, node, scope) in the emitter's process, before any call.
+- **Lifecycle**: a listener is called with the `Ctx` that registered it; once its fiber unloads no new call starts, and the unload waits for running calls (their `ctx.cancelled()` has fired), at most until the host's shutdown deadline.
+- `rutis/*` is reserved for framework events: plugins listen to them; emitting one fails with `ReservedEvent`.
 
 ## Observing dispatch
 
-`ctx.events().observe_dispatch(&ctx, observer)` calls the observer synchronously before business listeners are selected, even when there are none. An observer sees only dispatches within the subtree of the fiber that registered it and is cleaned up with that fiber; a `DispatchAttempt` carries the full event key, the dispatch mode, the emitter and the borrowed event. It records attempts; it cannot veto a dispatch.
+`ctx.events().observe_dispatch(&ctx, observer)` calls the observer synchronously before business listeners are selected, even when there are none. An observer sees only dispatches within the subtree of the fiber that registered it and is cleaned up with that fiber; a `DispatchAttempt` carries the event name, the dispatch mode, the emitter and the borrowed event. It records attempts; it cannot veto a dispatch.
 
 ## Cleanup tree
 
@@ -46,7 +63,7 @@ ctx.events().emit(&ctx, &key, Arc::new(event))?;
 
 ## API boundaries
 
-`require/require_as` are strict reads corresponding to Cordis's ordinary plugin service access. They check `injects()` along the fiber ancestry and distinguish undeclared, unavailable, out-of-scope, and inactive reads, retaining the call site. If a read is both out of scope and inactive, the instance boundary takes precedence; registration and instance dispatch define their own error order. `get/get_as` correspond to Cordis's explicit `ctx.get()` locator: they return `Option` without enforcing declarations. A service is normally hidden while its provider is inactive or the reader is unloading, except that the provider's subtree can read its own service during cleanup. Instance keys also have subtree visibility checks. The `Ctx` passed to `on` owns a listener; the callback's `Ctx` belongs to the emitter. Capture the registration `Ctx` when the callback must register resources for its own plugin. See the compiling [listener ownership example](../crates/rutis/examples/listener_ctx_ownership.rs).
+`require/require_as` are strict reads corresponding to Cordis's ordinary plugin service access. They check `injects()` along the fiber ancestry and distinguish undeclared, unavailable, out-of-scope, and inactive reads, retaining the call site. If a read is both out of scope and inactive, the instance boundary takes precedence; registration and instance dispatch define their own error order. `get/get_as` correspond to Cordis's explicit `ctx.get()` locator: they return `Option` without enforcing declarations. A service is normally hidden while its provider is inactive or the reader is unloading, except that the provider's subtree can read its own service during cleanup. Instance keys also have subtree visibility checks. The `Ctx` passed to `on` owns a listener, and the callback is called with that `Ctx`: resources the callback registers belong to the listener's plugin. See the compiling [listener ownership example](../crates/rutis/examples/listener_ctx_ownership.rs).
 
 ## Dependency diagnostics
 
@@ -58,4 +75,4 @@ Synchronous and asynchronous `apply` panics become plugin errors; a `check()` pa
 
 ## Relation to Cordis
 
-rutis is an idiomatic Rust implementation of the [Cordis](https://github.com/shigma/cordis) paradigm, not a translation: all 96 original specs reviewed line by line, the 58 language-agnostic invariants locked by automated parity tests; every other difference is explicitly declared (decision table + non-port list + audit record). Known deliberate strengthenings: cross-effect cleanup is strictly serial LIFO (cordis runs concurrently), per-key emit ordering is rebuilt explicitly.
+rutis is an idiomatic Rust implementation of the [Cordis](https://github.com/shigma/cordis) paradigm, not a translation: all 96 original specs reviewed line by line, the 58 language-agnostic invariants locked by automated parity tests; every other difference is explicitly declared (decision table + non-port list + audit record). Known deliberate strengthenings: cross-effect cleanup is strictly serial LIFO (cordis runs concurrently), one name's emits start in emit order.

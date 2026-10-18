@@ -60,6 +60,7 @@ impl Plugin for SelfProvider {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Pulse;
 impl Event for Pulse {
     const NAME: &'static str = "strict-read-pulse";
@@ -72,6 +73,7 @@ impl Listener<Pulse> for CallbackRead {
         &'a self,
         ctx: &'a Ctx,
         _event: &'a Pulse,
+        _call: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async move {
             self.0
@@ -255,7 +257,7 @@ async fn denied_reads_do_not_run_checks_or_change_bindings_and_callbacks_are_che
         .on(&ctx, &rutis::EventKey::of(), CallbackRead(reasons.clone()))
         .unwrap();
     ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), &Pulse)
+        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Pulse))
         .await
         .unwrap();
     assert_eq!(

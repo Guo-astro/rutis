@@ -96,6 +96,7 @@ impl Listener<ServiceChanged> for Changes {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a ServiceChanged,
+        _: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         self.0
             .lock()

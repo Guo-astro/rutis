@@ -1,141 +1,42 @@
-mod subscriptions;
-pub(crate) mod sync;
-pub use subscriptions::{EventSubscription, ListenerKind};
-use subscriptions::{HookMetrics, HookTable};
+//! The event bus: one listener table, five dispatch modes (protocol spec
+//! §4–§7, §12.1).
 
-use std::collections::HashMap;
+pub(crate) mod run;
+pub(crate) mod table;
+
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+use std::marker::PhantomData;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::time::Instant;
+
+use run::{
+    filter_any, filter_each, filter_sync, first_poll, report_listener, run_bail, run_parallel,
+    run_serial, AsyncNext, ErasedSyncTerminal, ErasedTerminal, FilterSpec, Inv, NoTerminal,
+    OwnedInv, RawTerm, Started, SyncNext,
+};
+use table::{Body, Entry, Table};
 
 use crate::ctx::Ctx;
-use crate::error::{join_panic_error, panic_error, CordisError};
-use crate::event::{
-    CatchUnwind, DynEvent, ErasedValue, Event, EventOptions, Listener, ListenerAdapter, Terminal,
-    TerminalAdapter, WaterfallAdapter, WaterfallListener,
+use crate::error::{panic_error, CordisError};
+use crate::events::{
+    AsyncAdapter, AsyncPatternAdapter, Dispatch, EntryCall, Event, EventOptions, JsonTranscoder,
+    Listener, ListenerInfo, ListenerKind, Mode, PatternListener, Payload, PayloadRef, RemoteEntry,
+    RemoteListener, Scope, SyncAdapter, SyncListener, SyncPatternAdapter, SyncPatternListener,
+    TableChange, TableEntry, Terminal, Transcoder, Value, RESERVED_PREFIX,
 };
 use crate::fiber::{FiberInner, PluginId};
-use crate::key::{EventKey, EventPattern, InstanceId, TypeKey};
+use crate::key::{EventKey, EventPattern, InstanceId};
 use crate::{BoxFuture, Disposer, Effect};
 
-/// waterfall 链上的擦除续延:调用下一个监听器,最终落到终态续延。
-pub(crate) struct ErasedNext<'a> {
-    chain: &'a [Arc<Hook<Arc<dyn ErasedWaterfallCall>>>],
-    index: usize,
-    ctx: &'a Ctx,
-    key: &'a TypeKey,
-    event: &'a DynEvent,
-    terminal: &'a mut (dyn ErasedTerminal + 'a),
-}
-
-impl<'a> ErasedNext<'a> {
-    pub(crate) fn invoke(self) -> BoxFuture<'a, Result<ErasedValue, CordisError>> {
-        if self.index < self.chain.len() {
-            let ErasedNext {
-                chain,
-                index,
-                ctx,
-                key,
-                event,
-                terminal,
-            } = self;
-            chain[index].record_call();
-            chain[index].call.call(
-                ctx,
-                key,
-                event,
-                ErasedNext {
-                    chain,
-                    index: index + 1,
-                    ctx,
-                    key,
-                    event,
-                    terminal,
-                },
-            )
-        } else {
-            let ErasedNext {
-                ctx,
-                key: _,
-                event,
-                terminal,
-                ..
-            } = self;
-            terminal.call(ctx, event)
-        }
-    }
-}
-
-pub(crate) trait ErasedCall: Send + Sync + 'static {
-    fn call<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-        key: &'a TypeKey,
-        e: &'a DynEvent,
-    ) -> BoxFuture<'a, Result<Option<ErasedValue>, CordisError>>;
-}
-
-pub(crate) trait ErasedWaterfallCall: Send + Sync + 'static {
-    fn call<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-        key: &'a TypeKey,
-        e: &'a DynEvent,
-        next: ErasedNext<'a>,
-    ) -> BoxFuture<'a, Result<ErasedValue, CordisError>>;
-}
-
-pub(crate) trait ErasedTerminal: Send {
-    fn call<'a>(
-        &'a mut self,
-        ctx: &'a Ctx,
-        e: &'a DynEvent,
-    ) -> BoxFuture<'a, Result<ErasedValue, CordisError>>;
-}
-
-/// 注册的监听器条目(泛型合一,简化 S4):`C` 为擦除后的调用句柄。
-struct Hook<C> {
-    call: C,
-    once: bool,
-    prepend: bool,
-    pattern: bool,
-    // Dispatch only needs the callback and flags. Keep diagnostics and owner
-    // checks off the cache lines walked by the common exact async path.
-    meta: Box<HookMeta>,
-}
-
-struct HookMeta {
-    id: u64,
-    generation: u64,
-    metrics: Option<Box<HookMetrics>>,
-    owner: Weak<FiberInner>,
-}
-
-impl<C> std::ops::Deref for Hook<C> {
-    type Target = HookMeta;
-    fn deref(&self) -> &Self::Target {
-        &self.meta
-    }
-}
-
-/// Which public dispatch operation produced an observation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum DispatchMode {
-    Emit,
-    Serial,
-    Parallel,
-    Waterfall,
-    BailSync,
-    WaterfallSync,
-}
-
-/// A dispatch before its business listener snapshot is selected. An observed
-/// instance attempt can still lose a race with subtree shutdown and be rejected.
+/// A dispatch before its listener snapshot is selected. Observers see it
+/// synchronously and cannot veto it.
 #[non_exhaustive]
 pub struct DispatchAttempt<'a> {
-    pub key: &'a TypeKey,
-    pub mode: DispatchMode,
+    pub name: &'a str,
+    pub mode: Mode,
     pub emitter: PluginId,
     pub emitter_instance: InstanceId,
     pub event: &'a (dyn std::any::Any + Send + Sync),
@@ -148,138 +49,399 @@ struct DispatchObserver {
     owner: Weak<FiberInner>,
 }
 
-/// An accepted scoped, pattern or synchronous dispatch owns fibers that must wait
-/// for the callback snapshot. Dropping the owner releases all counts.
-struct EventFlight(Vec<Arc<FiberInner>>);
+type Watcher = Arc<dyn Fn(&TableChange) + Send + Sync>;
 
-impl EventFlight {
-    fn from_owners(mut owners: Vec<Arc<FiberInner>>) -> Self {
-        owners.sort_by_key(|fiber| fiber.id);
-        owners.dedup_by_key(|fiber| fiber.id);
-        for fiber in &owners {
-            fiber.begin_event();
-        }
-        Self(owners)
-    }
-
-    fn new<C>(ctx: &Ctx, id: InstanceId, hooks: &[Arc<Hook<C>>]) -> Self {
-        let mut owners = Vec::new();
-        if let Some(owner) = ctx.instance_owner(id) {
-            owners.push(owner);
-        }
-        if let Some(emitter) = ctx.weak_fiber().upgrade() {
-            owners.push(emitter);
-        }
-        for hook in hooks {
-            if let Some(owner) = hook.owner.upgrade() {
-                owners.push(owner);
-            }
-        }
-        Self::from_owners(owners)
-    }
+/// A current registration, without its callback or fiber.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct EventSubscription {
+    pub id: u64,
+    /// The name, or the prefix of a prefix entry.
+    pub name: String,
+    pub prefix: bool,
+    /// The fiber that registered it; `None` once it is gone.
+    pub owner: Option<PluginId>,
+    pub kind: ListenerKind,
+    pub remote: bool,
+    pub once: bool,
+    pub prepend: bool,
+    pub global: bool,
+    /// Calls started so far.
+    pub calls: u64,
 }
 
-impl Drop for EventFlight {
+/// The `emit` chain of one name: each emit starts its calls after the one
+/// before it did (§5.5).
+struct Tail {
+    generation: u64,
+    task: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct BusState {
+    table: Table,
+    observers: Vec<Arc<DispatchObserver>>,
+    watchers: Vec<(u64, Watcher)>,
+    next_watcher: u64,
+    tails: HashMap<Arc<str>, Tail>,
+    /// Accepted emits whose calls have not all finished, by name.
+    backlog: HashMap<Arc<str>, BTreeMap<u64, Instant>>,
+    next_emit: u64,
+}
+
+struct BusCore {
+    state: Mutex<BusState>,
+    transcoder: RwLock<Arc<dyn Transcoder>>,
+    next_dispatch: AtomicU64,
+}
+
+/// The event bus of one root: one listener table for every mode.
+///
+/// Listeners are found by name. A Rust listener is called with the context
+/// that registered it, so `ctx.cancelled()` is its own unload signal.
+#[derive(Clone)]
+pub struct EventBus {
+    core: Arc<BusCore>,
+}
+
+/// Holds an emit in its name's backlog until every call of it finished.
+pub(crate) struct EmitTicket {
+    bus: EventBus,
+    name: Arc<str>,
+    seq: u64,
+}
+
+impl Drop for EmitTicket {
     fn drop(&mut self) {
-        for fiber in &self.0 {
-            fiber.finish_event();
+        let mut state = self.bus.core.state.lock().unwrap();
+        if let Some(list) = state.backlog.get_mut(&self.name) {
+            list.remove(&self.seq);
+            if list.is_empty() {
+                state.backlog.remove(&self.name);
+            }
         }
     }
 }
 
 struct TailCleanup {
     bus: EventBus,
-    key: TypeKey,
+    name: Arc<str>,
     generation: u64,
 }
 
 impl Drop for TailCleanup {
     fn drop(&mut self) {
-        let mut inner = self.bus.inner.lock().unwrap();
-        let Some(tail) = inner.dispatch_tail.get_mut(&self.key) else {
-            return;
-        };
-        tail.accepted.pop_front();
-        if tail.generation == self.generation {
-            inner.dispatch_tail.remove(&self.key);
-            shrink_if_sparse(&mut inner.dispatch_tail);
+        let mut state = self.bus.core.state.lock().unwrap();
+        if state
+            .tails
+            .get(&self.name)
+            .is_some_and(|tail| tail.generation == self.generation)
+        {
+            state.tails.remove(&self.name);
+            if state.tails.capacity() > 64 && state.tails.len() * 4 < state.tails.capacity() {
+                state.tails.shrink_to_fit();
+            }
         }
     }
 }
 
-/// The dispatch chain of one event key: `emit`s run one after another.
-struct Tail {
-    /// The newest dispatch; it removes the chain when it finishes.
-    generation: u64,
-    task: tokio::task::JoinHandle<()>,
-    /// When each accepted, unfinished dispatch was emitted, oldest first.
-    accepted: std::collections::VecDeque<std::time::Instant>,
-}
-
-fn insert_hook<C>(list: &mut Vec<Arc<Hook<C>>>, hook: Arc<Hook<C>>, prepend: bool) {
-    if prepend {
-        list.insert(0, hook);
-    } else {
-        list.push(hook);
-    }
-}
-
-/// 稀疏即收缩(0.2.5):同 registry `shrink_if_sparse`。
-fn shrink_if_sparse<K: Eq + std::hash::Hash, V>(map: &mut HashMap<K, V>) {
-    if map.capacity() > 64 && map.len() * 4 < map.capacity() {
-        map.shrink_to_fit();
-    }
-}
-/// 同一规则用于单个键的监听列表(#291):同 registry `shrink_vec_if_sparse`。
-fn shrink_vec_if_sparse<T>(list: &mut Vec<T>) {
-    if list.capacity() > 64 && list.len() * 4 < list.capacity() {
-        list.shrink_to_fit();
-    }
-}
-fn retain_hook<C>(list: &mut Vec<Arc<Hook<C>>>, hook: &Arc<Hook<C>>) {
-    list.retain(|h| !Arc::ptr_eq(h, hook));
-    shrink_vec_if_sparse(list);
-}
-
+/// Options of one dispatch, beyond its name, mode and event.
 #[derive(Default)]
-struct BusInner {
-    /// 注册面键 = TypeKey(D33:限定名通道;非 keyed 注册 qualifier 为 None)。
-    hooks: HookTable<Arc<dyn ErasedCall>>,
-    wf_hooks: HookTable<Arc<dyn ErasedWaterfallCall>>,
-    sync_hooks: HookTable<Arc<dyn sync::ErasedSyncCall>>,
-    sync_wf_hooks: HookTable<Arc<dyn sync::ErasedSyncWaterfallCall>>,
-    next_hook_id: u64,
-    observers: Vec<Arc<DispatchObserver>>,
-    /// 同事件键的派发尾链(D31):每次 emit 的派发任务 await 上一个,
-    /// 保证同键多次 emit 按发射序执行(修 spawn 调度乱序)。
-    /// 代次 = 最新派发:它完成时摘除整条链;代次防旧任务误删新尾链
-    /// (0.2.1:keyed 通道随实例 churn,空尾链条目不残留)。
-    dispatch_tail: HashMap<TypeKey, Tail>,
+pub(crate) struct Opts {
+    pub scope: Option<Vec<Scope>>,
+    pub filter: Option<FilterSpec>,
+    pub origin: Option<u64>,
+    pub framework: bool,
 }
 
-/// Typed event bus: four async dispatch modes, plus synchronous bail/waterfall.
-///
-/// 监听器经 `Ctx` 注册,自动归该 fiber 所有(D28)。
-#[derive(Clone)]
-pub struct EventBus {
-    inner: Arc<Mutex<BusInner>>,
+thread_local! {
+    static ACTIVE_SYNC: RefCell<Vec<(usize, Arc<str>)>> = const { RefCell::new(Vec::new()) };
+}
+
+struct ReentryGuard;
+
+impl ReentryGuard {
+    fn enter(bus: &EventBus, name: &Arc<str>) -> Result<Self, CordisError> {
+        let identity = Arc::as_ptr(&bus.core) as usize;
+        ACTIVE_SYNC.with(|active| {
+            let mut active = active.borrow_mut();
+            if active.iter().any(|(bus, n)| *bus == identity && n == name) {
+                return Err(CordisError::ReentrantEvent {
+                    name: name.to_string(),
+                });
+            }
+            active.push((identity, name.clone()));
+            Ok(Self)
+        })
+    }
+}
+
+impl Drop for ReentryGuard {
+    fn drop(&mut self) {
+        ACTIVE_SYNC.with(|active| {
+            active.borrow_mut().pop();
+        });
+    }
+}
+
+struct TypedTerminal<E, T>(Mutex<Option<T>>, PhantomData<fn(E) -> E>);
+
+impl<E: Event, T: Terminal<E>> ErasedTerminal for TypedTerminal<E, T> {
+    fn call<'a>(&'a self, inv: &'a Inv<'a>) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
+        let terminal = self.0.lock().unwrap().take();
+        Box::pin(async move {
+            let Some(terminal) = terminal else {
+                return Ok(None);
+            };
+            let event = crate::events::typed::<E>(inv)?;
+            let out = crate::events::CatchUnwind::new(terminal.call(inv.emitter, &event))
+                .await
+                .unwrap_or_else(|panic| Err(panic_error(panic)))?;
+            Ok(out.map(Value::new))
+        })
+    }
+}
+
+struct TypedSyncTerminal<E, F>(RefCell<Option<F>>, PhantomData<fn(E) -> E>);
+
+impl<E, F> ErasedSyncTerminal for TypedSyncTerminal<E, F>
+where
+    E: Event,
+    F: FnOnce(&Ctx, &E) -> Result<Option<E::Value>, CordisError>,
+{
+    fn call(&self, inv: &Inv<'_>) -> Result<Option<Value>, CordisError> {
+        let Some(terminal) = self.0.borrow_mut().take() else {
+            return Ok(None);
+        };
+        let event = crate::events::typed::<E>(inv)?;
+        Ok(terminal(inv.emitter, &event)?.map(Value::new))
+    }
+}
+
+fn typed_value<V: serde::Serialize + serde::de::DeserializeOwned + Send + 'static>(
+    bus: &EventBus,
+    value: Option<Value>,
+) -> Result<Option<V>, CordisError> {
+    value
+        .map(|value| value.into_typed::<V>(&*bus.transcoder()))
+        .transpose()
 }
 
 impl EventBus {
+    pub(crate) fn new() -> Self {
+        Self {
+            core: Arc::new(BusCore {
+                state: Mutex::new(BusState::default()),
+                transcoder: RwLock::new(Arc::new(JsonTranscoder)),
+                next_dispatch: AtomicU64::new(1),
+            }),
+        }
+    }
+
     fn ensure_bus(&self, ctx: &Ctx) -> Result<(), CordisError> {
-        if Arc::ptr_eq(&self.inner, &ctx.events().inner) {
+        if Arc::ptr_eq(&self.core, &ctx.events().core) {
             Ok(())
         } else {
             Err(CordisError::Validation {
-                issues: vec!["dispatch belongs to another event bus".into()],
+                issues: vec!["the context belongs to another event bus".into()],
             })
         }
     }
+
+    /// The transcoder that converts between event and value types.
+    pub fn transcoder(&self) -> Arc<dyn Transcoder> {
+        self.core.transcoder.read().unwrap().clone()
+    }
+
+    /// Replace the transcoder (the default is [`JsonTranscoder`]).
+    pub fn set_transcoder(&self, transcoder: Arc<dyn Transcoder>) {
+        *self.core.transcoder.write().unwrap() = transcoder;
+    }
+
+    // ── registration ─────────────────────────────────────────────
+
+    /// Change the table under its lock; the watchers hear the changes after.
+    fn change<R>(&self, f: impl FnOnce(&mut Table) -> (R, Vec<TableChange>)) -> R {
+        let (out, changes, watchers) = {
+            let mut state = self.core.state.lock().unwrap();
+            let (out, changes) = f(&mut state.table);
+            let watchers: Vec<Watcher> = if changes.is_empty() {
+                Vec::new()
+            } else {
+                state.watchers.iter().map(|(_, w)| w.clone()).collect()
+            };
+            (out, changes, watchers)
+        };
+        notify(&watchers, &changes);
+        out
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn register(
+        &self,
+        ctx: &Ctx,
+        name: Arc<str>,
+        prefix: bool,
+        body: Body,
+        opts: EventOptions,
+        remote: Option<(ListenerInfo, u64)>,
+        label: &str,
+    ) -> Result<Disposer, CordisError> {
+        ctx.registration_preflight()?;
+        if !Arc::ptr_eq(&self.core, &ctx.events().core) {
+            return Err(CordisError::Validation {
+                issues: vec!["listener belongs to another event bus".into()],
+            });
+        }
+        let (info, origin) = match remote {
+            Some((mut info, origin)) => {
+                info.name = name.to_string();
+                info.prefix = prefix;
+                info.global = opts.global;
+                (info, Some(origin))
+            }
+            None => (
+                ListenerInfo {
+                    name: name.to_string(),
+                    prefix,
+                    plugin: ctx.plugin_name(),
+                    row: ctx.row(),
+                    runtime: None,
+                    node: None,
+                    scope: ctx.scope(),
+                    global: opts.global,
+                },
+                None,
+            ),
+        };
+        let info = Arc::new(info);
+        let label = format!("{label}: {}{name}", if prefix { "prefix " } else { "" });
+        let bus = self.clone();
+        let owner_ctx = ctx.clone();
+        let mut added: Option<(Vec<Watcher>, TableChange)> = None;
+        let pending = &mut added;
+        let disposer = ctx.register_internal_effect_named(label, move |fiber, generation, _| {
+            let mut state = bus.core.state.lock().unwrap();
+            let id = state.table.next_id();
+            let position = state.table.position(opts.prepend);
+            let entry = Arc::new(Entry {
+                id,
+                position,
+                name,
+                prefix,
+                once: opts.once,
+                prepend: opts.prepend,
+                info,
+                origin,
+                body,
+                ctx: owner_ctx,
+                owner: Arc::downgrade(fiber),
+                generation,
+                withdrawn: Default::default(),
+                calls: AtomicU64::new(0),
+            });
+            state.table.insert(entry.clone());
+            *pending = Some((
+                state.watchers.iter().map(|(_, w)| w.clone()).collect(),
+                TableChange::Added(entry.table_entry()),
+            ));
+            drop(state);
+            let bus = bus.clone();
+            Ok(Effect::Disposer(Box::new(move || {
+                entry.withdrawn.store(true, Ordering::SeqCst);
+                bus.change(|table| {
+                    let removed = table.remove(&entry);
+                    let changes = if removed {
+                        vec![TableChange::Removed(entry.table_entry())]
+                    } else {
+                        Vec::new()
+                    };
+                    ((), changes)
+                });
+                Ok(())
+            })))
+        })?;
+        // The entry is in the table; its watchers hear it before `on` returns.
+        if let Some((watchers, change)) = added {
+            notify(&watchers, std::slice::from_ref(&change));
+        }
+        Ok(disposer)
+    }
+
+    /// Register an async listener of `key`'s name.
+    pub fn on<E: Event>(
+        &self,
+        ctx: &Ctx,
+        key: &EventKey<E>,
+        listener: impl Listener<E>,
+    ) -> Result<Disposer, CordisError> {
+        self.on_opt(ctx, key, listener, EventOptions::default())
+    }
+
+    pub fn on_opt<E: Event>(
+        &self,
+        ctx: &Ctx,
+        key: &EventKey<E>,
+        listener: impl Listener<E>,
+        opts: EventOptions,
+    ) -> Result<Disposer, CordisError> {
+        let body = Body::Async(Arc::new(AsyncAdapter(listener, PhantomData)));
+        self.register(
+            ctx,
+            key.name_arc(),
+            false,
+            body,
+            opts,
+            None,
+            "event listener",
+        )
+    }
+
+    /// Register an async listener called at most once.
+    pub fn once<E: Event>(
+        &self,
+        ctx: &Ctx,
+        key: &EventKey<E>,
+        listener: impl Listener<E>,
+    ) -> Result<Disposer, CordisError> {
+        self.on_opt(ctx, key, listener, EventOptions::default().once(true))
+    }
+
+    /// Register a synchronous listener: every mode can call it.
+    pub fn on_sync<E: Event>(
+        &self,
+        ctx: &Ctx,
+        key: &EventKey<E>,
+        listener: impl SyncListener<E>,
+    ) -> Result<Disposer, CordisError> {
+        self.on_sync_opt(ctx, key, listener, EventOptions::default())
+    }
+
+    pub fn on_sync_opt<E: Event>(
+        &self,
+        ctx: &Ctx,
+        key: &EventKey<E>,
+        listener: impl SyncListener<E>,
+        opts: EventOptions,
+    ) -> Result<Disposer, CordisError> {
+        let body = Body::Sync(Arc::new(SyncAdapter(listener, PhantomData)));
+        self.register(
+            ctx,
+            key.name_arc(),
+            false,
+            body,
+            opts,
+            None,
+            "sync event listener",
+        )
+    }
+
+    /// Register an async listener of every name starting with the prefix.
     pub fn on_pattern<E: Event>(
         &self,
         ctx: &Ctx,
-        pattern: EventPattern<E>,
-        listener: impl crate::PatternListener<E>,
+        pattern: &EventPattern<E>,
+        listener: impl PatternListener<E>,
     ) -> Result<Disposer, CordisError> {
         self.on_pattern_opt(ctx, pattern, listener, EventOptions::default())
     }
@@ -287,113 +449,176 @@ impl EventBus {
     pub fn on_pattern_opt<E: Event>(
         &self,
         ctx: &Ctx,
-        pattern: EventPattern<E>,
-        listener: impl crate::PatternListener<E>,
+        pattern: &EventPattern<E>,
+        listener: impl PatternListener<E>,
         opts: EventOptions,
     ) -> Result<Disposer, CordisError> {
-        let call: Arc<dyn ErasedCall> = Arc::new(crate::event::PatternAdapter(
-            listener,
-            std::marker::PhantomData,
-        ));
-        self.register_hook(
+        let body = Body::Async(Arc::new(AsyncPatternAdapter(listener, PhantomData)));
+        self.register(
             ctx,
-            TypeKey::of::<E>(),
-            Some(pattern.into_prefixes()),
-            call,
-            opts,
+            pattern.prefix_arc(),
             true,
+            body,
+            opts,
+            None,
             "event pattern",
-            |inner| &mut inner.hooks,
         )
     }
 
-    pub fn on_waterfall_pattern<E: Event>(
+    pub fn on_sync_pattern<E: Event>(
         &self,
         ctx: &Ctx,
-        pattern: EventPattern<E>,
-        listener: impl crate::PatternWaterfallListener<E>,
+        pattern: &EventPattern<E>,
+        listener: impl SyncPatternListener<E>,
     ) -> Result<Disposer, CordisError> {
-        self.on_waterfall_pattern_opt(ctx, pattern, listener, EventOptions::default())
+        self.on_sync_pattern_opt(ctx, pattern, listener, EventOptions::default())
     }
 
-    pub fn on_waterfall_pattern_opt<E: Event>(
+    pub fn on_sync_pattern_opt<E: Event>(
         &self,
         ctx: &Ctx,
-        pattern: EventPattern<E>,
-        listener: impl crate::PatternWaterfallListener<E>,
+        pattern: &EventPattern<E>,
+        listener: impl SyncPatternListener<E>,
         opts: EventOptions,
     ) -> Result<Disposer, CordisError> {
-        let call: Arc<dyn ErasedWaterfallCall> = Arc::new(crate::event::PatternWaterfallAdapter(
-            listener,
-            std::marker::PhantomData,
-        ));
-        self.register_hook(
+        let body = Body::Sync(Arc::new(SyncPatternAdapter(listener, PhantomData)));
+        self.register(
             ctx,
-            TypeKey::of::<E>(),
-            Some(pattern.into_prefixes()),
-            call,
-            opts,
+            pattern.prefix_arc(),
             true,
-            "waterfall pattern",
-            |inner| &mut inner.wf_hooks,
+            body,
+            opts,
+            None,
+            "sync event pattern",
         )
     }
 
-    pub(crate) fn new() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(BusInner::default())),
-        }
+    /// Register a remote entry: its calls go to `listener` (protocol spec
+    /// §4). Owned by `ctx`'s fiber like any listener; its disposer
+    /// withdraws it.
+    pub fn on_remote(
+        &self,
+        ctx: &Ctx,
+        entry: RemoteEntry,
+        listener: Arc<dyn RemoteListener>,
+    ) -> Result<Disposer, CordisError> {
+        let RemoteEntry {
+            name,
+            prefix,
+            info,
+            options,
+            origin,
+        } = entry;
+        self.register(
+            ctx,
+            Arc::from(name),
+            prefix,
+            Body::Remote(listener),
+            options,
+            Some((info, origin)),
+            "remote event listener",
+        )
     }
 
+    /// The current table, and every later change, to `watcher`. Changes
+    /// made before this returns are in the snapshot; later ones reach the
+    /// watcher (a Rust registration before its `on` returns).
+    pub fn watch_table(
+        &self,
+        owner: &Ctx,
+        watcher: impl Fn(&TableChange) + Send + Sync + 'static,
+    ) -> Result<(Vec<TableEntry>, Disposer), CordisError> {
+        let bus = self.clone();
+        let watcher: Watcher = Arc::new(watcher);
+        let mut snapshot = Vec::new();
+        let out = &mut snapshot;
+        let disposer = owner.register_internal_effect_named(
+            "event table watcher".into(),
+            move |_, _, _| {
+                let mut state = bus.core.state.lock().unwrap();
+                *out = state
+                    .table
+                    .entries()
+                    .iter()
+                    .map(|e| e.table_entry())
+                    .collect();
+                state.next_watcher += 1;
+                let id = state.next_watcher;
+                state.watchers.push((id, watcher));
+                drop(state);
+                Ok(Effect::Disposer(Box::new(move || {
+                    bus.core
+                        .state
+                        .lock()
+                        .unwrap()
+                        .watchers
+                        .retain(|(watcher, _)| *watcher != id);
+                    Ok(())
+                })))
+            },
+        )?;
+        Ok((snapshot, disposer))
+    }
+
+    /// Current registrations, in registration order.
+    pub fn subscriptions(&self) -> Vec<EventSubscription> {
+        let state = self.core.state.lock().unwrap();
+        state
+            .table
+            .entries()
+            .iter()
+            .map(|entry| EventSubscription {
+                id: entry.id,
+                name: entry.name.to_string(),
+                prefix: entry.prefix,
+                owner: entry.owner.upgrade().map(|fiber| fiber.id),
+                kind: entry.kind(),
+                remote: matches!(entry.body, Body::Remote(_)),
+                once: entry.once,
+                prepend: entry.prepend,
+                global: entry.info.global,
+                calls: entry.calls.load(Ordering::Relaxed),
+            })
+            .collect()
+    }
+
+    /// (entries, exact names, emit chains).
     #[cfg(test)]
     pub(crate) fn table_counts(&self) -> (usize, usize, usize) {
-        let inner = self.inner.lock().unwrap();
-        (
-            inner.hooks.len(),
-            inner.wf_hooks.len(),
-            inner.dispatch_tail.len(),
-        )
+        let state = self.core.state.lock().unwrap();
+        (state.table.len(), state.table.names(), state.tails.len())
     }
 
-    /// Allocated slots of the same three tables, for the capacity checks.
+    /// Allocated slots: (exact names, entries by id, emit chains).
     #[cfg(test)]
     pub(crate) fn table_capacities(&self) -> (usize, usize, usize) {
-        let inner = self.inner.lock().unwrap();
-        (
-            inner.hooks.capacity(),
-            inner.wf_hooks.capacity(),
-            inner.dispatch_tail.capacity(),
-        )
+        let state = self.core.state.lock().unwrap();
+        let (names, ids) = state.table.capacities();
+        (names, ids, state.tails.capacity())
     }
 
-    /// The largest allocated length of one key's listener list, over the
-    /// exact and pattern lists of every hook table.
     #[cfg(test)]
     pub(crate) fn max_list_capacity(&self) -> usize {
-        let inner = self.inner.lock().unwrap();
-        [
-            inner.hooks.max_list_capacity(),
-            inner.wf_hooks.max_list_capacity(),
-            inner.sync_hooks.max_list_capacity(),
-            inner.sync_wf_hooks.max_list_capacity(),
-        ]
-        .into_iter()
-        .max()
-        .unwrap_or(0)
+        self.core.state.lock().unwrap().table.max_list_capacity()
     }
 
-    /// Accepted `emit` dispatches not yet finished, per event key.
+    #[cfg(test)]
+    pub(crate) fn observer_count(&self) -> usize {
+        self.core.state.lock().unwrap().observers.len()
+    }
+
+    /// Accepted `emit`s whose calls have not all finished, per name.
     pub(crate) fn backlogs(&self) -> Vec<crate::EventBacklog> {
-        let now = std::time::Instant::now();
-        let inner = self.inner.lock().unwrap();
-        let mut backlogs: Vec<_> = inner
-            .dispatch_tail
+        let now = Instant::now();
+        let state = self.core.state.lock().unwrap();
+        let mut backlogs: Vec<_> = state
+            .backlog
             .iter()
-            .filter_map(|(key, tail)| {
-                let oldest = tail.accepted.front()?;
+            .filter_map(|(name, list)| {
+                let oldest = list.values().min()?;
                 Some(crate::EventBacklog {
-                    key: key.clone(),
-                    pending: tail.accepted.len(),
+                    name: name.to_string(),
+                    pending: list.len(),
                     oldest: now.saturating_duration_since(*oldest),
                 })
             })
@@ -402,21 +627,16 @@ impl EventBus {
         backlogs
     }
 
-    #[cfg(test)]
-    pub(crate) fn observer_count(&self) -> usize {
-        self.inner.lock().unwrap().observers.len()
-    }
-
-    /// Observe a dispatch before business listeners are selected. The callback
-    /// borrows the event for this synchronous invocation and cannot veto it.
-    /// Observers are trusted code: they may inspect event payloads.
+    /// Observe each dispatch before its listeners are selected. Observers
+    /// are trusted code: they see the event. Only dispatches from the
+    /// owner's subtree are observed.
     pub fn observe_dispatch(
         &self,
         owner: &Ctx,
         observer: impl for<'a> Fn(&DispatchAttempt<'a>) + Send + Sync + 'static,
     ) -> Result<Disposer, CordisError> {
         owner.registration_preflight()?;
-        if !Arc::ptr_eq(&self.inner, &owner.events().inner) {
+        if !Arc::ptr_eq(&self.core, &owner.events().core) {
             return Err(CordisError::Validation {
                 issues: vec!["dispatch observer belongs to another event bus".into()],
             });
@@ -426,23 +646,20 @@ impl EventBus {
             owner: owner.weak_fiber(),
         });
         let bus = self.clone();
-        let shared = owner.shared().clone();
         owner.register_internal_effect_named("dispatch observer".into(), move |_, _, _| {
-            bus.inner.lock().unwrap().observers.push(hook.clone());
+            bus.core.state.lock().unwrap().observers.push(hook.clone());
             Ok(Effect::AsyncDisposer(Box::new(move || {
                 {
-                    // Serialize removal with observer selection and flight
-                    // registration. Neither lock is held during callbacks.
-                    let _admission = shared.admission.lock().unwrap();
-                    let mut inner = bus.inner.lock().unwrap();
-                    inner.observers.retain(|entry| !Arc::ptr_eq(entry, &hook));
-                    if inner.observers.capacity() > 64
-                        && inner.observers.len() * 4 < inner.observers.capacity()
+                    let mut state = bus.core.state.lock().unwrap();
+                    state.observers.retain(|entry| !Arc::ptr_eq(entry, &hook));
+                    if state.observers.capacity() > 64
+                        && state.observers.len() * 4 < state.observers.capacity()
                     {
-                        inner.observers.shrink_to_fit();
+                        state.observers.shrink_to_fit();
                     }
                 }
                 Box::pin(async move {
+                    // A call that selected it before the removal finishes first.
                     if let Some(owner) = hook.owner.upgrade() {
                         owner.wait_events().await;
                     }
@@ -452,66 +669,31 @@ impl EventBus {
         })
     }
 
-    fn observe_attempt<E: Event>(
+    fn observe(
         &self,
-        key: &TypeKey,
-        mode: DispatchMode,
         ctx: &Ctx,
-        event: &E,
-    ) -> Result<(), CordisError> {
-        // The first table read is the observation linearization point when no
-        // observers exist. Avoid the admission lock and ancestry scan in that
-        // common case; concurrent registration affects later attempts.
-        if self.inner.lock().unwrap().observers.is_empty() {
-            return Ok(());
-        }
-        let (observers, _flight) = {
-            let _admission = ctx.shared().admission.lock().unwrap();
-            if let Some(id) = key.instance_id() {
-                ctx.registration_preflight()?;
-                self.ensure_instance_ctx(ctx, id)?;
-            } else if ctx.dispatch_preflight().is_err() {
-                // Preserve the existing behavior of non-instance dispatches
-                // from inactive contexts; they simply have no observation.
-                return Ok(());
+        name: &str,
+        mode: Mode,
+        event: &(dyn std::any::Any + Send + Sync),
+    ) {
+        let observers: Vec<Arc<DispatchObserver>> = {
+            let state = self.core.state.lock().unwrap();
+            if state.observers.is_empty() {
+                return;
             }
-            let mut ancestry = Vec::new();
-            let mut current = ctx.weak_fiber().upgrade();
-            while let Some(fiber) = current {
-                current = fiber.parent_fiber.as_ref().and_then(Weak::upgrade);
-                ancestry.push(fiber);
-            }
-            let mut owners = Vec::new();
-            if let Some(emitter) = ancestry.first() {
-                owners.push(emitter.clone());
-            }
-            if let Some(id) = key.instance_id() {
-                if let Some(owner) = ctx.instance_owner(id) {
-                    owners.push(owner);
-                }
-            }
-            let observers = self
-                .inner
-                .lock()
-                .unwrap()
-                .observers
-                .iter()
-                .filter_map(|observer| {
-                    let owner = observer.owner.upgrade()?;
-                    if !owner.alive.load(Ordering::SeqCst)
-                        || owner.closing.load(Ordering::SeqCst)
-                        || !ancestry.iter().any(|fiber| Arc::ptr_eq(fiber, &owner))
-                    {
-                        return None;
-                    }
-                    owners.push(owner);
-                    Some(observer.clone())
-                })
-                .collect::<Vec<_>>();
-            (observers, EventFlight::from_owners(owners))
+            state.observers.clone()
         };
+        if ctx.dispatch_preflight().is_err() {
+            return;
+        }
+        let mut ancestry = Vec::new();
+        let mut current = ctx.weak_fiber().upgrade();
+        while let Some(fiber) = current {
+            current = fiber.parent_fiber.as_ref().and_then(Weak::upgrade);
+            ancestry.push(fiber);
+        }
         let attempt = DispatchAttempt {
-            key,
+            name,
             mode,
             emitter: ctx.plugin_id(),
             emitter_instance: ctx.instance(),
@@ -519,723 +701,762 @@ impl EventBus {
         };
         let sink = ctx.error_sink();
         for observer in observers {
+            let Some(owner) = observer.owner.upgrade() else {
+                continue;
+            };
+            // Counted first: the owner's unload, and the observer's own
+            // disposal, wait for this call.
+            let _flight = table::CallFlight::begin(owner.clone());
+            let registered = self
+                .core
+                .state
+                .lock()
+                .unwrap()
+                .observers
+                .iter()
+                .any(|entry| Arc::ptr_eq(entry, &observer));
+            if !registered
+                || !owner.alive.load(Ordering::SeqCst)
+                || owner.closing.load(Ordering::SeqCst)
+                || !ancestry.iter().any(|fiber| Arc::ptr_eq(fiber, &owner))
+            {
+                continue;
+            }
             if let Err(panic) = catch_unwind(AssertUnwindSafe(|| (observer.call)(&attempt))) {
                 let error = Arc::new(panic_error(panic));
                 let _ = catch_unwind(AssertUnwindSafe(|| sink(error)));
             }
         }
-        Ok(())
     }
 
-    /// 注册监听器(默认追加在后)。
-    pub fn on<E: Event>(
+    // ── dispatch ─────────────────────────────────────────────────
+
+    /// §5.1 step 1, after the reserved-name check and the observers.
+    fn snapshot(
         &self,
         ctx: &Ctx,
-        key: &EventKey<E>,
-        l: impl Listener<E>,
-    ) -> Result<Disposer, CordisError> {
-        self.add_hook(key.erased(), ctx, l, EventOptions::default(), false)
-    }
-
-    /// Register a listener visible only to the owning instance subtree.
-    #[deprecated(
-        since = "0.5.0",
-        note = "use the corresponding method with EventKey instead"
-    )]
-    pub fn on_instance<E: Event>(
-        &self,
-        ctx: &Ctx,
-        id: InstanceId,
-        listener: impl Listener<E>,
-    ) -> Result<Disposer, CordisError> {
-        ctx.registration_preflight()?;
-        self.ensure_instance_ctx(ctx, id)?;
-        self.add_hook(
-            TypeKey::instance::<E>(id),
-            ctx,
-            listener,
-            EventOptions::default(),
-            false,
-        )
-    }
-
-    fn ensure_instance_ctx(&self, ctx: &Ctx, id: InstanceId) -> Result<(), CordisError> {
-        if !Arc::ptr_eq(&self.inner, &ctx.events().inner) {
-            return Err(CordisError::InstanceOutOfScope { instance: id });
-        }
-        ctx.check_instance(&TypeKey::instance::<()>(id))
-    }
-
-    /// 注册监听器(带选项)。
-    pub fn on_opt<E: Event>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        l: impl Listener<E>,
-        opts: EventOptions,
-    ) -> Result<Disposer, CordisError> {
-        self.add_hook(key.erased(), ctx, l, opts, false)
-    }
-
-    /// 注册一次性监听器:至多调用一次。
-    pub fn once<E: Event>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        l: impl Listener<E>,
-    ) -> Result<Disposer, CordisError> {
-        self.add_hook(key.erased(), ctx, l, EventOptions::default(), true)
-    }
-
-    /// 注册带动态限定名的监听器(D33):同事件类型多通道互不串扰。
-    /// name 与 `emit_keyed` 按字符串内容匹配。
-    #[deprecated(
-        since = "0.5.0",
-        note = "use the corresponding method with EventKey instead"
-    )]
-    pub fn on_keyed<E: Event>(
-        &self,
-        ctx: &Ctx,
-        name: impl Into<std::sync::Arc<str>>,
-        l: impl Listener<E>,
-    ) -> Result<Disposer, CordisError> {
-        self.add_hook(
-            TypeKey::keyed_dynamic::<E>(name),
-            ctx,
-            l,
-            EventOptions::default(),
-            false,
-        )
-    }
-
-    /// 注册带动态限定名的监听器(带选项)。
-    #[deprecated(
-        since = "0.5.0",
-        note = "use the corresponding method with EventKey instead"
-    )]
-    pub fn on_keyed_opt<E: Event>(
-        &self,
-        ctx: &Ctx,
-        name: impl Into<std::sync::Arc<str>>,
-        l: impl Listener<E>,
-        opts: EventOptions,
-    ) -> Result<Disposer, CordisError> {
-        self.add_hook(TypeKey::keyed_dynamic::<E>(name), ctx, l, opts, false)
-    }
-
-    /// 注册带动态限定名的一次性监听器。
-    #[deprecated(
-        since = "0.5.0",
-        note = "use the corresponding method with EventKey instead"
-    )]
-    pub fn once_keyed<E: Event>(
-        &self,
-        ctx: &Ctx,
-        name: impl Into<std::sync::Arc<str>>,
-        l: impl Listener<E>,
-    ) -> Result<Disposer, CordisError> {
-        self.add_hook(
-            TypeKey::keyed_dynamic::<E>(name),
-            ctx,
-            l,
-            EventOptions::default(),
-            true,
-        )
-    }
-
-    /// 注册 waterfall 监听器(D17:独立注册面)。
-    pub fn on_waterfall<E: Event>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        l: impl WaterfallListener<E>,
-    ) -> Result<Disposer, CordisError> {
-        self.add_wf_hook(key.erased(), ctx, l, EventOptions::default(), false)
-    }
-
-    /// 注册 waterfall 监听器(带选项)。
-    pub fn on_waterfall_opt<E: Event>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        l: impl WaterfallListener<E>,
-        opts: EventOptions,
-    ) -> Result<Disposer, CordisError> {
-        self.add_wf_hook(key.erased(), ctx, l, opts, false)
-    }
-
-    /// 注册带动态限定名的 waterfall 监听器(D33)。
-    #[deprecated(
-        since = "0.5.0",
-        note = "use the corresponding method with EventKey instead"
-    )]
-    pub fn on_waterfall_keyed<E: Event>(
-        &self,
-        ctx: &Ctx,
-        name: impl Into<std::sync::Arc<str>>,
-        l: impl WaterfallListener<E>,
-    ) -> Result<Disposer, CordisError> {
-        self.add_wf_hook(
-            TypeKey::keyed_dynamic::<E>(name),
-            ctx,
-            l,
-            EventOptions::default(),
-            false,
-        )
-    }
-
-    // Keep every callback family on the same atomic effect registration path.
-    #[allow(clippy::too_many_arguments)]
-    fn register_hook<C: Send + Sync + 'static>(
-        &self,
-        ctx: &Ctx,
-        key: TypeKey,
-        prefixes: Option<Vec<Arc<str>>>,
-        call: C,
-        opts: EventOptions,
-        drain: bool,
-        label: &str,
-        table: fn(&mut BusInner) -> &mut HookTable<C>,
-    ) -> Result<Disposer, CordisError> {
-        ctx.registration_preflight()?;
-        if !Arc::ptr_eq(&self.inner, &ctx.events().inner) {
-            return Err(CordisError::Validation {
-                issues: vec!["listener belongs to another event bus".into()],
+        name: &str,
+        mode: Mode,
+        event: &(dyn std::any::Any + Send + Sync),
+        opts: &mut Opts,
+    ) -> Result<Vec<Arc<Entry>>, CordisError> {
+        self.ensure_bus(ctx)?;
+        if !opts.framework && name.starts_with(RESERVED_PREFIX) {
+            return Err(CordisError::ReservedEvent {
+                name: name.to_owned(),
             });
         }
-        ctx.check_instance(&key)?;
-        if prefixes.as_ref().is_some_and(Vec::is_empty) {
-            return Err(CordisError::Validation {
-                issues: vec!["event pattern needs at least one prefix".into()],
-            });
-        }
-        let pattern = prefixes.is_some();
-        let owner = ctx.weak_fiber();
-        let bus = self.clone();
-        let access_ctx = ctx.clone();
-        let shared = ctx.shared().clone();
-        let drain = drain || pattern || key.instance_id().is_some();
-        let label = match &prefixes {
-            Some(prefixes) => format!("{label}: {} prefixes={prefixes:?}", key.describe()),
-            None => format!("{label}: {}", key.describe()),
-        };
-        ctx.register_internal_effect_named(label, move |_, generation, _| {
-            access_ctx.check_instance(&key)?;
-            let hook = {
-                let mut inner = bus.inner.lock().unwrap();
-                inner.next_hook_id = inner
-                    .next_hook_id
-                    .checked_add(1)
-                    .expect("event registration ids exhausted");
-                let hook = Arc::new(Hook {
-                    call,
-                    once: opts.once,
-                    prepend: opts.prepend,
-                    pattern,
-                    meta: Box::new(HookMeta {
-                        id: inner.next_hook_id,
-                        generation,
-                        metrics: pattern.then(|| Box::new(HookMetrics::default())),
-                        owner,
-                    }),
-                });
-                table(&mut inner).insert(key.clone(), prefixes, hook.clone());
-                hook
-            };
-            Ok(Effect::AsyncDisposer(Box::new(move || {
-                {
-                    let _admission = drain.then(|| shared.admission.lock().unwrap());
-                    table(&mut bus.inner.lock().unwrap()).remove(&key, &hook);
+        self.observe(ctx, name, mode, event);
+        let scope = opts.scope.take().unwrap_or_else(|| ctx.scope());
+        Ok(self.change(|table| {
+            let mut claimed = Vec::new();
+            let entries = table.select(name, &scope, &mut claimed);
+            let changes = claimed
+                .iter()
+                .map(|entry| TableChange::Removed(entry.table_entry()))
+                .collect();
+            (entries, changes)
+        }))
+    }
+
+    fn dispatch_id(&self) -> u64 {
+        self.core.next_dispatch.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// `emit`: every call starts in registration order, after the calls of
+    /// the name's previous emit started; nothing waits for them. The
+    /// receiver fires once every call started.
+    pub(crate) fn emit_erased(
+        &self,
+        ctx: &Ctx,
+        name: Arc<str>,
+        payload: Payload,
+        mut opts: Opts,
+    ) -> Result<tokio::sync::oneshot::Receiver<()>, CordisError> {
+        let (started, receiver) = tokio::sync::oneshot::channel();
+        let mut entries = self.snapshot(ctx, &name, Mode::Emit, &**payload.arc(), &mut opts)?;
+        let mut batch = None;
+        match opts.filter.take() {
+            Some(FilterSpec::Each(keep)) => match filter_each(entries, &*keep) {
+                Ok(kept) => entries = kept,
+                Err(error) => {
+                    report_filter(ctx, &name, error);
+                    let _ = started.send(());
+                    return Ok(receiver);
                 }
-                Box::pin(async move {
-                    if drain {
-                        if let Some(owner) = hook.owner.upgrade() {
-                            owner.wait_events().await;
-                        }
+            },
+            Some(batch_filter) => batch = Some(batch_filter),
+            None => {}
+        }
+        if entries.is_empty() {
+            let _ = started.send(());
+            return Ok(receiver);
+        }
+        let owned = Arc::new(OwnedInv {
+            bus: self.clone(),
+            emitter: ctx.clone(),
+            name: name.clone(),
+            mode: Mode::Emit,
+            payload,
+            dispatch: self.dispatch_id(),
+            origin: opts.origin,
+        });
+        let handle = ctx.handle().clone();
+        let mut state = self.core.state.lock().unwrap();
+        state.next_emit += 1;
+        let seq = state.next_emit;
+        state
+            .backlog
+            .entry(name.clone())
+            .or_default()
+            .insert(seq, Instant::now());
+        let ticket = Arc::new(EmitTicket {
+            bus: self.clone(),
+            name: name.clone(),
+            seq,
+        });
+        let (generation, prev) = match state.tails.remove(&name) {
+            Some(tail) => (tail.generation + 1, Some(tail.task)),
+            None => (0, None),
+        };
+        let cleanup = TailCleanup {
+            bus: self.clone(),
+            name: name.clone(),
+            generation,
+        };
+        let spawn_handle = handle.clone();
+        let task = handle.spawn(async move {
+            let _cleanup = cleanup;
+            if let Some(prev) = prev {
+                let _ = prev.await;
+            }
+            let entries = if batch.is_some() {
+                match filter_any(&owned.name, entries, batch).await {
+                    Ok(entries) => entries,
+                    Err(error) => {
+                        report_filter(&owned.emitter, &owned.name, error);
+                        let _ = started.send(());
+                        return;
                     }
-                    Ok(())
-                })
-            })))
+                }
+            } else {
+                entries
+            };
+            for entry in entries {
+                let Some(flight) = entry.start() else {
+                    continue;
+                };
+                let call = run::emit_call(owned.clone(), entry, flight, Some(ticket.clone()));
+                if let Started::Pending(rest) = first_poll(call).await {
+                    spawn_handle.spawn(rest);
+                }
+            }
+            drop(ticket);
+            let _ = started.send(());
+        });
+        state.tails.insert(name, Tail { generation, task });
+        Ok(receiver)
+    }
+
+    pub(crate) fn parallel_erased<'a>(
+        &self,
+        ctx: &'a Ctx,
+        name: Arc<str>,
+        payload: Payload,
+        mut opts: Opts,
+    ) -> BoxFuture<'a, Result<(), CordisError>> {
+        let bus = self.clone();
+        Box::pin(async move {
+            let entries = bus.snapshot(ctx, &name, Mode::Parallel, &**payload.arc(), &mut opts)?;
+            let entries = filter_any(&name, entries, opts.filter.take()).await?;
+            if entries.is_empty() {
+                return Ok(());
+            }
+            let owned = Arc::new(OwnedInv {
+                bus: bus.clone(),
+                emitter: ctx.clone(),
+                name,
+                mode: Mode::Parallel,
+                payload,
+                dispatch: bus.dispatch_id(),
+                origin: opts.origin,
+            });
+            run_parallel(owned, entries, ctx.handle()).await
         })
     }
 
-    fn add_hook<E: Event>(
+    pub(crate) fn serial_erased<'a>(
         &self,
-        key: TypeKey,
-        ctx: &Ctx,
-        l: impl Listener<E>,
-        mut opts: EventOptions,
-        once: bool,
-    ) -> Result<Disposer, CordisError> {
-        opts.once |= once;
-        let call: Arc<dyn ErasedCall> = Arc::new(ListenerAdapter(l, std::marker::PhantomData));
-        self.register_hook(
-            ctx,
-            key,
-            None,
-            call,
-            opts,
-            false,
-            "event listener",
-            |inner| &mut inner.hooks,
-        )
+        ctx: &'a Ctx,
+        name: Arc<str>,
+        payload: Payload,
+        mut opts: Opts,
+    ) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
+        let bus = self.clone();
+        Box::pin(async move {
+            let entries = bus.snapshot(ctx, &name, Mode::Serial, &**payload.arc(), &mut opts)?;
+            let entries = filter_any(&name, entries, opts.filter.take()).await?;
+            let inv = Inv {
+                bus: &bus,
+                emitter: ctx,
+                name: &name,
+                mode: Mode::Serial,
+                event: payload.as_ref(),
+                dispatch: bus.dispatch_id(),
+                origin: opts.origin,
+            };
+            run_serial(&inv, &entries).await
+        })
     }
 
-    fn add_wf_hook<E: Event>(
+    pub(crate) fn waterfall_erased<'a>(
         &self,
-        key: TypeKey,
-        ctx: &Ctx,
-        l: impl WaterfallListener<E>,
-        mut opts: EventOptions,
-        once: bool,
-    ) -> Result<Disposer, CordisError> {
-        opts.once |= once;
-        let call: Arc<dyn ErasedWaterfallCall> =
-            Arc::new(WaterfallAdapter(l, std::marker::PhantomData));
-        self.register_hook(
-            ctx,
-            key,
-            None,
-            call,
-            opts,
-            false,
-            "waterfall listener",
-            |inner| &mut inner.wf_hooks,
-        )
-    }
-
-    fn take_hooks(&self, key: &TypeKey) -> Vec<Arc<Hook<Arc<dyn ErasedCall>>>> {
-        self.inner
-            .lock()
-            .unwrap()
-            .hooks
-            .take(key, key.instance_id().is_some())
-    }
-
-    fn take_instance_hooks(
-        &self,
-        ctx: &Ctx,
-        id: InstanceId,
-        key: &TypeKey,
-    ) -> Result<(Vec<Arc<Hook<Arc<dyn ErasedCall>>>>, EventFlight), CordisError> {
-        let _admission = ctx.shared().admission.lock().unwrap();
-        ctx.registration_preflight()?;
-        self.ensure_instance_ctx(ctx, id)?;
-        let hooks = self.take_hooks(key);
-        let flight = EventFlight::new(ctx, id, &hooks);
-        Ok((hooks, flight))
-    }
-
-    fn take_wf_hooks(&self, key: &TypeKey) -> Vec<Arc<Hook<Arc<dyn ErasedWaterfallCall>>>> {
-        self.inner
-            .lock()
-            .unwrap()
-            .wf_hooks
-            .take(key, key.instance_id().is_some())
-    }
-
-    #[inline]
-    fn take_named_hooks<C>(
-        &self,
-        ctx: &Ctx,
-        key: &TypeKey,
-        table: fn(&mut BusInner) -> &mut HookTable<C>,
-    ) -> (Vec<Arc<Hook<C>>>, Option<Arc<EventFlight>>) {
-        // Keep exact dispatch's existing fast path and snapshot contract.
-        {
-            let mut inner = self.inner.lock().unwrap();
-            if !table(&mut inner).has_patterns(key) {
-                return (table(&mut inner).take(key, false), None);
+        ctx: &'a Ctx,
+        name: Arc<str>,
+        event: PayloadRef<'a>,
+        terminal: Box<dyn ErasedTerminal + Send + 'a>,
+        mut opts: Opts,
+    ) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
+        let bus = self.clone();
+        Box::pin(async move {
+            let entries = bus.snapshot(ctx, &name, Mode::Waterfall, event.as_any(), &mut opts)?;
+            let entries = filter_any(&name, entries, opts.filter.take()).await?;
+            let inv = Inv {
+                bus: &bus,
+                emitter: ctx,
+                name: &name,
+                mode: Mode::Waterfall,
+                event,
+                dispatch: bus.dispatch_id(),
+                origin: opts.origin,
+            };
+            AsyncNext {
+                inv: &inv,
+                chain: &entries,
+                terminal: &*terminal,
             }
+            .invoke()
+            .await
+        })
+    }
+
+    pub(crate) fn bail_erased(
+        &self,
+        ctx: &Ctx,
+        name: Arc<str>,
+        event: PayloadRef<'_>,
+        mut opts: Opts,
+    ) -> Result<Option<Value>, CordisError> {
+        ctx.registration_preflight()?;
+        let _reentry = ReentryGuard::enter(self, &name)?;
+        let entries = self.snapshot(ctx, &name, Mode::Bail, event.as_any(), &mut opts)?;
+        let entries = filter_sync(&name, entries, opts.filter.take())?;
+        let inv = Inv {
+            bus: self,
+            emitter: ctx,
+            name: &name,
+            mode: Mode::Bail,
+            event,
+            dispatch: self.dispatch_id(),
+            origin: opts.origin,
+        };
+        run_bail(&inv, &entries)
+    }
+
+    pub(crate) fn waterfall_sync_erased(
+        &self,
+        ctx: &Ctx,
+        name: Arc<str>,
+        event: PayloadRef<'_>,
+        terminal: &dyn ErasedSyncTerminal,
+        mut opts: Opts,
+    ) -> Result<Option<Value>, CordisError> {
+        ctx.registration_preflight()?;
+        let _reentry = ReentryGuard::enter(self, &name)?;
+        let entries = self.snapshot(ctx, &name, Mode::WaterfallSync, event.as_any(), &mut opts)?;
+        let entries = filter_sync(&name, entries, opts.filter.take())?;
+        let inv = Inv {
+            bus: self,
+            emitter: ctx,
+            name: &name,
+            mode: Mode::WaterfallSync,
+            event,
+            dispatch: self.dispatch_id(),
+            origin: opts.origin,
+        };
+        SyncNext {
+            inv: &inv,
+            chain: &entries,
+            terminal,
         }
-        let _admission = ctx.shared().admission.lock().unwrap();
-        let hooks = table(&mut self.inner.lock().unwrap()).take(key, false);
-        let owners = hooks
-            .iter()
-            .filter(|hook| hook.pattern)
-            .filter_map(|hook| hook.owner.upgrade())
-            .collect();
-        let flight = Arc::new(EventFlight::from_owners(owners));
-        (hooks, Some(flight))
+        .invoke()
     }
 
-    /// Current exact and grouped prefix registrations, in registration order.
-    pub fn subscriptions(&self) -> Vec<EventSubscription> {
-        let inner = self.inner.lock().unwrap();
-        let mut out = Vec::new();
-        inner.hooks.diagnostics(ListenerKind::Async, &mut out);
-        inner
-            .wf_hooks
-            .diagnostics(ListenerKind::AsyncWaterfall, &mut out);
-        inner.sync_hooks.diagnostics(ListenerKind::Sync, &mut out);
-        inner
-            .sync_wf_hooks
-            .diagnostics(ListenerKind::SyncWaterfall, &mut out);
-        out.sort_by_key(|entry| entry.id);
-        out
-    }
+    // ── typed dispatch ───────────────────────────────────────────
 
-    /// emit:触发即忘(D16/D30)。**同事件键按发射序串行派发**(D31):
-    /// 单次持锁内"取上一派发任务句柄 → spawn 新任务 → 存为尾"(原子,
-    /// 防 remove/insert 两段锁在并发同键 emit 下分叉链);任务内先
-    /// await 上一个,再按注册序逐个 await 监听器。监听器 panic 经
-    /// CatchUnwind 捕获路由 ErrorSink,`prev.await` 正常返回,链不断;
-    /// 监听器内重入 emit 同键事件仅排到链尾,不死锁。跨事件键不保证
-    /// 顺序(已知边界,见 D31)。spawn 在临界区内只入队不同步执行,
-    /// std Mutex 无重入,故 `take_hooks` 的锁必须已释放。
+    /// `emit`: returns at once. Every listener's call starts in
+    /// registration order; the calls of one name's emits start in emit
+    /// order. A listener's failure goes to the error sink
+    /// (`ListenerFailed`); it never stops the other listeners. `Err` only
+    /// for a rejected emit (`ReservedEvent`, another bus).
     pub fn emit<E: Event>(
         &self,
         ctx: &Ctx,
         key: &EventKey<E>,
-        e: Arc<E>,
+        event: Arc<E>,
     ) -> Result<(), CordisError> {
-        self.emit_keyed_inner(key.erased(), ctx, e)
+        self.emit_erased(ctx, key.name_arc(), Payload::new(event), Opts::default())
+            .map(drop)
     }
 
-    /// emit 的 keyed 通道(D33):同类型不同名互不串扰,同名共享尾链。
-    #[deprecated(
-        since = "0.5.0",
-        note = "use the corresponding method with EventKey instead"
-    )]
-    pub fn emit_keyed<E: Event>(&self, ctx: &Ctx, name: impl Into<std::sync::Arc<str>>, e: Arc<E>) {
-        let _ = self.emit_keyed_inner(TypeKey::keyed_dynamic::<E>(name), ctx, e);
-    }
-
-    /// Queue an event for one instance. A successful return means the event
-    /// has been accepted; callback failures still go to the error sink.
-    #[deprecated(
-        since = "0.5.0",
-        note = "use the corresponding method with EventKey instead"
-    )]
-    pub fn emit_instance<E: Event>(
+    /// `emit` of a framework event: only rutis emits `rutis/*`.
+    pub fn emit_framework<E: Event>(
         &self,
         ctx: &Ctx,
-        id: InstanceId,
-        e: Arc<E>,
+        key: &EventKey<E>,
+        event: Arc<E>,
     ) -> Result<(), CordisError> {
-        self.emit_keyed_inner(TypeKey::instance::<E>(id), ctx, e)
+        let opts = Opts {
+            framework: true,
+            ..Opts::default()
+        };
+        self.emit_erased(ctx, key.name_arc(), Payload::new(event), opts)
+            .map(drop)
     }
 
-    fn emit_keyed_inner<E: Event>(
-        &self,
-        key: TypeKey,
-        ctx: &Ctx,
-        e: Arc<E>,
-    ) -> Result<(), CordisError> {
-        self.ensure_bus(ctx)?;
-        self.observe_attempt(&key, DispatchMode::Emit, ctx, e.as_ref())?;
-        let _admission = key
-            .instance_id()
-            .map(|_| ctx.shared().admission.lock().unwrap());
-        if let Some(id) = key.instance_id() {
-            ctx.registration_preflight()?;
-            self.ensure_instance_ctx(ctx, id)?;
-        }
-        let (hooks, pattern_flight) = if key.instance_id().is_some() {
-            (self.take_hooks(&key), None)
-        } else {
-            self.take_named_hooks(ctx, &key, |inner| &mut inner.hooks)
-        };
-        if hooks.is_empty() {
-            return Ok(()); // 不进链:无监听器不产生派发任务
-        }
-        let flight = key
-            .instance_id()
-            .map(|id| EventFlight::new(ctx, id, &hooks));
-        let ctx2 = ctx.clone();
-        let sink = ctx.error_sink();
-        let handle = ctx.handle().clone();
-        let bus = self.clone();
-        let tail_key = key.clone();
-        let mut inner = self.inner.lock().unwrap();
-        let (gen, prev, mut accepted) = match inner.dispatch_tail.remove(&key) {
-            Some(tail) => (tail.generation + 1, Some(tail.task), tail.accepted),
-            None => (0, None, std::collections::VecDeque::new()),
-        };
-        accepted.push_back(std::time::Instant::now());
-        let tail = handle.spawn(async move {
-            let _flight = flight;
-            let _pattern_flight = pattern_flight;
-            let _tail_cleanup = TailCleanup {
-                bus,
-                key: tail_key,
-                generation: gen,
-            };
-            // 等同键上一次派发完成(链式保序)
-            if let Some(prev) = prev {
-                let _ = prev.await;
-            }
-            // 按注册序逐个 await(不并发 spawn,否则退回乱序)
-            for hook in hooks {
-                hook.record_call();
-                let out = CatchUnwind::new(async {
-                    hook.call
-                        .call(&ctx2, &_tail_cleanup.key, &*e as &DynEvent)
-                        .await
-                })
-                .await;
-                match out {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(err)) => sink(Arc::new(err)),
-                    Err(p) => sink(Arc::new(panic_error(p))),
-                }
-            }
-        });
-        inner.dispatch_tail.insert(
-            key,
-            Tail {
-                generation: gen,
-                task: tail,
-                accepted,
-            },
-        );
-        Ok(())
-    }
-
-    /// parallel:并发全等,聚合全部错误(JoinSet,D16)。
+    /// `parallel`: starts every call in registration order and waits for
+    /// all. Failures: `ListenersFailed` (AggregateError), in registration
+    /// order, also for one. Dropping the future cancels the calls.
     pub fn parallel<'a, E: Event>(
         &self,
         ctx: &'a Ctx,
         key: &EventKey<E>,
-        e: Arc<E>,
-    ) -> impl std::future::Future<Output = Result<(), CordisError>> + Send + 'a {
-        let bus = self.clone();
-        let key = key.erased();
-        async move { bus.parallel_keyed_inner(key, ctx, e).await }
+        event: Arc<E>,
+    ) -> BoxFuture<'a, Result<(), CordisError>> {
+        self.parallel_erased(ctx, key.name_arc(), Payload::new(event), Opts::default())
     }
 
-    /// parallel 的 keyed 通道(D33)。
-    #[deprecated(
-        since = "0.5.0",
-        note = "use the corresponding method with EventKey instead"
-    )]
-    pub async fn parallel_keyed<E: Event>(
-        &self,
-        ctx: &Ctx,
-        name: impl Into<std::sync::Arc<str>>,
-        e: Arc<E>,
-    ) -> Result<(), CordisError> {
-        self.parallel_keyed_inner(TypeKey::keyed_dynamic::<E>(name), ctx, e)
-            .await
-    }
-
-    /// Run instance listeners concurrently. The accepted dispatch continues
-    /// to completion if the caller drops its waiting future.
-    #[deprecated(
-        since = "0.5.0",
-        note = "use the corresponding method with EventKey instead"
-    )]
-    pub async fn parallel_instance<E: Event>(
-        &self,
-        ctx: &Ctx,
-        id: InstanceId,
-        e: Arc<E>,
-    ) -> Result<(), CordisError> {
-        self.parallel(ctx, &EventKey::of().instance(id), e).await
-    }
-
-    async fn parallel_keyed_inner<E: Event>(
-        &self,
-        key: TypeKey,
-        ctx: &Ctx,
-        e: Arc<E>,
-    ) -> Result<(), CordisError> {
-        self.ensure_bus(ctx)?;
-        self.observe_attempt(&key, DispatchMode::Parallel, ctx, e.as_ref())?;
-        let (hooks, flight) = if let Some(id) = key.instance_id() {
-            let (hooks, flight) = self.take_instance_hooks(ctx, id, &key)?;
-            (hooks, Some(Arc::new(flight)))
-        } else {
-            self.take_named_hooks(ctx, &key, |inner| &mut inner.hooks)
-        };
-        if hooks.is_empty() {
-            return Ok(());
-        }
-        let ctx2 = ctx.clone();
-        let instance = key.instance_id().is_some();
-        let run = async move {
-            let _flight = flight;
-            let mut set = tokio::task::JoinSet::new();
-            for hook in hooks {
-                let ctx3 = ctx2.clone();
-                let e2 = e.clone();
-                let key2 = key.clone();
-                let flight2 = _flight.clone();
-                set.spawn_on(
-                    async move {
-                        let _flight = flight2;
-                        hook.record_call();
-                        hook.call.call(&ctx3, &key2, &*e2 as &DynEvent).await
-                    },
-                    ctx2.handle(),
-                );
-            }
-            let mut errors = Vec::new();
-            while let Some(joined) = set.join_next().await {
-                match joined {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(error)) => errors.push(error),
-                    Err(error) => errors.push(join_panic_error(error)),
-                }
-            }
-            crate::error::aggregate_errors(errors).map_or(Ok(()), Err)
-        };
-        if instance {
-            ctx.handle()
-                .spawn(run)
-                .await
-                .unwrap_or_else(|error| Err(join_panic_error(error)))
-        } else {
-            run.await
-        }
-    }
-
-    /// serial:顺序调用至首个短路值 `Ok(Some(v))`(TS serial 语义:
-    /// 上一个监听器完成才调用下一个,按注册序短路)。
-    /// 内联顺序 await,不 spawn(载荷可借用,`&E` 对齐 §二 草案);
-    /// panic 经 CatchUnwind 边界转 `PluginFailed`(D30 精神)。
+    /// `serial`: one call at a time; the first result that is not "no
+    /// result" (`None`, `Some(false)`) ends it. An error stops it.
     pub fn serial<'a, E: Event>(
         &self,
         ctx: &'a Ctx,
         key: &EventKey<E>,
-        e: &'a E,
-    ) -> impl std::future::Future<Output = Result<Option<E::Value>, CordisError>> + Send + 'a {
+        event: Arc<E>,
+    ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
+        self.serial_with(ctx, key, event, Opts::default())
+    }
+
+    fn serial_with<'a, E: Event>(
+        &self,
+        ctx: &'a Ctx,
+        key: &EventKey<E>,
+        event: Arc<E>,
+        opts: Opts,
+    ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
         let bus = self.clone();
-        let key = key.erased();
-        async move { bus.serial_keyed_inner(key, ctx, e).await }
+        let run = self.serial_erased(ctx, key.name_arc(), Payload::new(event), opts);
+        Box::pin(async move { typed_value(&bus, run.await?) })
     }
 
-    /// serial 的 keyed 通道(D33)。
-    #[deprecated(
-        since = "0.5.0",
-        note = "use the corresponding method with EventKey instead"
-    )]
-    pub async fn serial_keyed<E: Event>(
-        &self,
-        ctx: &Ctx,
-        name: impl Into<std::sync::Arc<str>>,
-        e: &E,
-    ) -> Result<Option<E::Value>, CordisError> {
-        self.serial_keyed_inner(TypeKey::keyed_dynamic::<E>(name), ctx, e)
-            .await
-    }
-
-    /// Call one instance's listeners in registration order until one bails.
-    #[deprecated(
-        since = "0.5.0",
-        note = "use the corresponding method with EventKey instead"
-    )]
-    pub async fn serial_instance<E: Event>(
-        &self,
-        ctx: &Ctx,
-        id: InstanceId,
-        e: &E,
-    ) -> Result<Option<E::Value>, CordisError> {
-        self.serial(ctx, &EventKey::of().instance(id), e).await
-    }
-
-    async fn serial_keyed_inner<E: Event>(
-        &self,
-        key: TypeKey,
-        ctx: &Ctx,
-        e: &E,
-    ) -> Result<Option<E::Value>, CordisError> {
-        self.ensure_bus(ctx)?;
-        self.observe_attempt(&key, DispatchMode::Serial, ctx, e)?;
-        let (hooks, _flight) = if let Some(id) = key.instance_id() {
-            let (hooks, flight) = self.take_instance_hooks(ctx, id, &key)?;
-            (hooks, Some(Arc::new(flight)))
-        } else {
-            self.take_named_hooks(ctx, &key, |inner| &mut inner.hooks)
-        };
-        for hook in hooks {
-            hook.record_call();
-            // The erased adapter calls the user inside its returned future;
-            // one polling boundary catches both callback creation and polling.
-            let outcome = CatchUnwind::new(hook.call.call(ctx, &key, e as &DynEvent)).await;
-            match outcome {
-                Ok(Ok(Some(boxed))) => {
-                    return match boxed.downcast::<E::Value>() {
-                        Ok(v) => Ok(Some(*v)),
-                        Err(_) => Err(CordisError::PluginFailed(
-                            "serial value type mismatch".into(),
-                        )),
-                    };
-                }
-                Ok(Ok(None)) => continue,
-                Ok(Err(err)) => return Err(err),
-                Err(p) => return Err(panic_error(p)),
-            }
-        }
-        Ok(None)
-    }
-
-    /// waterfall:中间件续延(D17)。`terminal` 为调用方兜底续延;
-    /// 监听器不调用 `next` 即 veto。内联 CPS 递归(见 §八:panic 向分发者传播)。
+    /// `waterfall`: the first listener is called with `next`; each `next`
+    /// calls the following listener, the last one's calls `terminal` (`()`:
+    /// none, `next` gives `None`). Returns the outermost listener's value as
+    /// it is.
     pub fn waterfall<'a, E: Event, T: Terminal<E> + 'a>(
         &self,
         ctx: &'a Ctx,
         key: &EventKey<E>,
-        e: &'a E,
+        event: &'a E,
         terminal: T,
-    ) -> BoxFuture<'a, Result<E::Value, CordisError>> {
-        self.waterfall_keyed_inner(key.erased(), ctx, e, terminal)
+    ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
+        self.waterfall_with(ctx, key, event, terminal, Opts::default())
     }
 
-    /// waterfall 的 keyed 通道(D33)。
-    #[deprecated(
-        since = "0.5.0",
-        note = "use the corresponding method with EventKey instead"
-    )]
-    pub fn waterfall_keyed<'a, E: Event, T: Terminal<E> + 'a>(
+    fn waterfall_with<'a, E: Event, T: Terminal<E> + 'a>(
         &self,
         ctx: &'a Ctx,
-        name: impl Into<std::sync::Arc<str>>,
-        e: &'a E,
+        key: &EventKey<E>,
+        event: &'a E,
         terminal: T,
-    ) -> BoxFuture<'a, Result<E::Value, CordisError>> {
-        self.waterfall_keyed_inner(TypeKey::keyed_dynamic::<E>(name), ctx, e, terminal)
+        opts: Opts,
+    ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
+        let bus = self.clone();
+        let terminal = Box::new(TypedTerminal::<E, T>(
+            Mutex::new(Some(terminal)),
+            PhantomData,
+        ));
+        let run = self.waterfall_erased(
+            ctx,
+            key.name_arc(),
+            PayloadRef::borrowed(event),
+            terminal,
+            opts,
+        );
+        Box::pin(async move { typed_value(&bus, run.await?) })
     }
 
-    fn waterfall_keyed_inner<'a, E: Event, T: Terminal<E> + 'a>(
+    /// `bail`, synchronously: as `serial`, inline. An async listener is an
+    /// `AsyncListener` error.
+    pub fn bail_sync<E: Event>(
         &self,
-        key: TypeKey,
+        ctx: &Ctx,
+        key: &EventKey<E>,
+        event: &E,
+    ) -> Result<Option<E::Value>, CordisError> {
+        self.bail_with(ctx, key, event, Opts::default())
+    }
+
+    fn bail_with<E: Event>(
+        &self,
+        ctx: &Ctx,
+        key: &EventKey<E>,
+        event: &E,
+        opts: Opts,
+    ) -> Result<Option<E::Value>, CordisError> {
+        let out = self.bail_erased(ctx, key.name_arc(), PayloadRef::borrowed(event), opts)?;
+        typed_value(self, out)
+    }
+
+    /// `waterfall`, synchronously. The terminal can borrow the caller's
+    /// stack; it needs neither `Send` nor `'static`.
+    pub fn waterfall_sync<E: Event, F>(
+        &self,
+        ctx: &Ctx,
+        key: &EventKey<E>,
+        event: &E,
+        terminal: F,
+    ) -> Result<Option<E::Value>, CordisError>
+    where
+        F: FnOnce(&Ctx, &E) -> Result<Option<E::Value>, CordisError>,
+    {
+        self.waterfall_sync_with(ctx, key, event, terminal, Opts::default())
+    }
+
+    fn waterfall_sync_with<E: Event, F>(
+        &self,
+        ctx: &Ctx,
+        key: &EventKey<E>,
+        event: &E,
+        terminal: F,
+        opts: Opts,
+    ) -> Result<Option<E::Value>, CordisError>
+    where
+        F: FnOnce(&Ctx, &E) -> Result<Option<E::Value>, CordisError>,
+    {
+        let terminal = TypedSyncTerminal::<E, F>(RefCell::new(Some(terminal)), PhantomData);
+        let out = self.waterfall_sync_erased(
+            ctx,
+            key.name_arc(),
+            PayloadRef::borrowed(event),
+            &terminal,
+            opts,
+        )?;
+        typed_value(self, out)
+    }
+
+    /// The same six emitting methods, filtered (§6): `keep` sees each
+    /// non-global candidate's descriptor, in this process, before any call.
+    pub fn filter(
+        &self,
+        keep: impl Fn(&ListenerInfo) -> bool + Send + Sync + 'static,
+    ) -> Filtered<'_> {
+        Filtered {
+            bus: self,
+            keep: Arc::new(keep),
+        }
+    }
+
+    // ── raw dispatch ─────────────────────────────────────────────
+
+    fn raw_opts(d: &mut Dispatch) -> Opts {
+        Opts {
+            scope: d.scope.take(),
+            filter: d.filter.take().map(FilterSpec::Batch),
+            origin: d.origin,
+            framework: d.framework,
+        }
+    }
+
+    /// Dispatch an erased event (`emit`, `parallel`, `serial`,
+    /// `waterfall`). For `emit` it resolves once every call started; its
+    /// failures are reported, the result is `Ok(None)`.
+    pub fn dispatch<'a>(
+        &self,
         ctx: &'a Ctx,
-        e: &'a E,
-        terminal: T,
-    ) -> BoxFuture<'a, Result<E::Value, CordisError>> {
+        mut d: Dispatch,
+    ) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
+        let opts = Self::raw_opts(&mut d);
+        let name: Arc<str> = Arc::from(d.name.as_str());
+        match d.mode {
+            Mode::Emit => match self.emit_erased(ctx, name, d.payload, opts) {
+                Ok(started) => Box::pin(async move {
+                    let _ = started.await;
+                    Ok(None)
+                }),
+                Err(error) => Box::pin(std::future::ready(Err(error))),
+            },
+            Mode::Parallel => {
+                let run = self.parallel_erased(ctx, name, d.payload, opts);
+                Box::pin(async move { run.await.map(|()| None) })
+            }
+            Mode::Serial => self.serial_erased(ctx, name, d.payload, opts),
+            Mode::Waterfall => {
+                let bus = self.clone();
+                let terminal = d.terminal.take();
+                let payload = d.payload;
+                Box::pin(async move {
+                    let terminal: Box<dyn ErasedTerminal + Send> = match terminal {
+                        Some(terminal) => Box::new(RawTerm(Mutex::new(Some(terminal)))),
+                        None => Box::new(NoTerminal),
+                    };
+                    bus.waterfall_erased(ctx, name, payload.as_ref(), terminal, opts)
+                        .await
+                })
+            }
+            Mode::Bail | Mode::WaterfallSync => {
+                Box::pin(std::future::ready(Err(CordisError::Validation {
+                    issues: vec![format!("{} is synchronous: use dispatch_sync", d.mode)],
+                })))
+            }
+        }
+    }
+
+    /// Dispatch an erased event synchronously (`bail`, `waterfall-sync`).
+    pub fn dispatch_sync(&self, ctx: &Ctx, mut d: Dispatch) -> Result<Option<Value>, CordisError> {
+        let opts = Self::raw_opts(&mut d);
+        let name: Arc<str> = Arc::from(d.name.as_str());
+        match d.mode {
+            Mode::Bail => self.bail_erased(ctx, name, d.payload.as_ref(), opts),
+            Mode::WaterfallSync => {
+                let terminal = d.terminal.take();
+                match terminal {
+                    Some(terminal) => {
+                        let terminal = RawTerm(Mutex::new(Some(terminal)));
+                        self.waterfall_sync_erased(ctx, name, d.payload.as_ref(), &terminal, opts)
+                    }
+                    None => {
+                        self.waterfall_sync_erased(ctx, name, d.payload.as_ref(), &NoTerminal, opts)
+                    }
+                }
+            }
+            mode => Err(CordisError::Validation {
+                issues: vec![format!("{mode} is asynchronous: use dispatch")],
+            }),
+        }
+    }
+
+    fn live_entry(&self, id: u64, name: &str) -> Result<Arc<Entry>, CordisError> {
+        let entry = self.core.state.lock().unwrap().table.get(id);
+        entry
+            .filter(|e| e.live())
+            .ok_or_else(|| CordisError::ListenerWithdrawn {
+                id,
+                name: name.to_owned(),
+            })
+    }
+
+    /// Call one entry, outside a dispatch, as `call.mode` would (a node
+    /// running a call the other node sent, protocol spec §9). Returns its
+    /// result as it is; in `emit` a failure is reported and the result is
+    /// `Ok(None)`. A withdrawn or unknown id: `ListenerWithdrawn`.
+    pub fn invoke_entry<'a>(
+        &self,
+        ctx: &'a Ctx,
+        id: u64,
+        call: EntryCall,
+    ) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
         let bus = self.clone();
         Box::pin(async move {
-            bus.ensure_bus(ctx)?;
-            bus.observe_attempt(&key, DispatchMode::Waterfall, ctx, e)?;
-            let (chain, _flight) = if let Some(id) = key.instance_id() {
-                let _admission = ctx.shared().admission.lock().unwrap();
-                ctx.registration_preflight()?;
-                bus.ensure_instance_ctx(ctx, id)?;
-                let hooks = bus.take_wf_hooks(&key);
-                let flight = EventFlight::new(ctx, id, &hooks);
-                (hooks, Some(Arc::new(flight)))
-            } else {
-                bus.take_named_hooks(ctx, &key, |inner| &mut inner.wf_hooks)
+            let entry = bus.live_entry(id, &call.name)?;
+            let Some(flight) = entry.start() else {
+                return Err(CordisError::ListenerWithdrawn {
+                    id,
+                    name: call.name,
+                });
             };
-            let mut terminal: Box<dyn ErasedTerminal + 'a> =
-                Box::new(TerminalAdapter(terminal, std::marker::PhantomData));
-            let next = ErasedNext {
-                chain: &chain,
-                index: 0,
-                ctx,
-                key: &key,
-                event: e as &DynEvent,
-                terminal: terminal.as_mut(),
+            let inv = Inv {
+                bus: &bus,
+                emitter: ctx,
+                name: &call.name,
+                mode: call.mode,
+                event: call.payload.as_ref(),
+                dispatch: call.dispatch,
+                origin: call.origin,
             };
-            let boxed = next.invoke().await?;
-            match boxed.downcast::<E::Value>() {
-                Ok(v) => Ok(*v),
-                Err(_) => Err(CordisError::PluginFailed(
-                    "waterfall value type mismatch".into(),
-                )),
+            let out = match call.mode {
+                Mode::Waterfall => {
+                    let terminal: Box<dyn ErasedTerminal + Send> = match call.next {
+                        Some(next) => Box::new(RawTerm(Mutex::new(Some(next)))),
+                        None => Box::new(NoTerminal),
+                    };
+                    let next = AsyncNext {
+                        inv: &inv,
+                        chain: &[],
+                        terminal: &*terminal,
+                    };
+                    run::call_async(&entry, &inv, Some(next)).await
+                }
+                Mode::Bail | Mode::WaterfallSync => Err(CordisError::Validation {
+                    issues: vec![format!(
+                        "{} is synchronous: use invoke_entry_sync",
+                        call.mode
+                    )],
+                }),
+                _ => run::call_async(&entry, &inv, None).await,
+            };
+            drop(flight);
+            match (call.mode, out) {
+                (Mode::Emit, Err(error)) => {
+                    report_listener(ctx, &call.name, &entry, error);
+                    Ok(None)
+                }
+                (_, out) => out,
             }
         })
+    }
+
+    /// [`EventBus::invoke_entry`] for `bail` and `waterfall-sync`.
+    pub fn invoke_entry_sync(
+        &self,
+        ctx: &Ctx,
+        id: u64,
+        call: EntryCall,
+    ) -> Result<Option<Value>, CordisError> {
+        let entry = self.live_entry(id, &call.name)?;
+        let Some(flight) = entry.start() else {
+            return Err(CordisError::ListenerWithdrawn {
+                id,
+                name: call.name,
+            });
+        };
+        let inv = Inv {
+            bus: self,
+            emitter: ctx,
+            name: &call.name,
+            mode: call.mode,
+            event: call.payload.as_ref(),
+            dispatch: call.dispatch,
+            origin: call.origin,
+        };
+        let out = match call.mode {
+            Mode::Bail => run::call_sync(&entry, &inv, None),
+            Mode::WaterfallSync => {
+                let terminal = RawTerm(Mutex::new(call.next));
+                let next = SyncNext {
+                    inv: &inv,
+                    chain: &[],
+                    terminal: &terminal,
+                };
+                run::call_sync(&entry, &inv, Some(next))
+            }
+            mode => Err(CordisError::Validation {
+                issues: vec![format!("{mode} is asynchronous: use invoke_entry")],
+            }),
+        };
+        drop(flight);
+        out
+    }
+}
+
+fn notify(watchers: &[Watcher], changes: &[TableChange]) {
+    for change in changes {
+        for watcher in watchers {
+            let _ = catch_unwind(AssertUnwindSafe(|| watcher(change)));
+        }
+    }
+}
+
+fn report_filter(ctx: &Ctx, name: &str, error: CordisError) {
+    let emitter = match ctx.row() {
+        Some(row) => format!("row {row}"),
+        None => format!("plugin {}", ctx.plugin_name()),
+    };
+    let sink = ctx.error_sink();
+    let report = CordisError::FilterFailed {
+        name: name.to_owned(),
+        emitter,
+        error: Arc::new(error),
+    };
+    let _ = catch_unwind(AssertUnwindSafe(|| sink(Arc::new(report))));
+}
+
+/// The emitting methods of [`EventBus`], with a filter (§6).
+pub struct Filtered<'b> {
+    bus: &'b EventBus,
+    keep: Arc<dyn Fn(&ListenerInfo) -> bool + Send + Sync>,
+}
+
+impl Filtered<'_> {
+    fn opts(&self) -> Opts {
+        Opts {
+            filter: Some(FilterSpec::Each(self.keep.clone())),
+            ..Opts::default()
+        }
+    }
+
+    pub fn emit<E: Event>(
+        &self,
+        ctx: &Ctx,
+        key: &EventKey<E>,
+        event: Arc<E>,
+    ) -> Result<(), CordisError> {
+        self.bus
+            .emit_erased(ctx, key.name_arc(), Payload::new(event), self.opts())
+            .map(drop)
+    }
+
+    pub fn parallel<'a, E: Event>(
+        &self,
+        ctx: &'a Ctx,
+        key: &EventKey<E>,
+        event: Arc<E>,
+    ) -> BoxFuture<'a, Result<(), CordisError>> {
+        self.bus
+            .parallel_erased(ctx, key.name_arc(), Payload::new(event), self.opts())
+    }
+
+    pub fn serial<'a, E: Event>(
+        &self,
+        ctx: &'a Ctx,
+        key: &EventKey<E>,
+        event: Arc<E>,
+    ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
+        self.bus.serial_with(ctx, key, event, self.opts())
+    }
+
+    pub fn waterfall<'a, E: Event, T: Terminal<E> + 'a>(
+        &self,
+        ctx: &'a Ctx,
+        key: &EventKey<E>,
+        event: &'a E,
+        terminal: T,
+    ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
+        self.bus
+            .waterfall_with(ctx, key, event, terminal, self.opts())
+    }
+
+    pub fn bail_sync<E: Event>(
+        &self,
+        ctx: &Ctx,
+        key: &EventKey<E>,
+        event: &E,
+    ) -> Result<Option<E::Value>, CordisError> {
+        self.bus.bail_with(ctx, key, event, self.opts())
+    }
+
+    pub fn waterfall_sync<E: Event, F>(
+        &self,
+        ctx: &Ctx,
+        key: &EventKey<E>,
+        event: &E,
+        terminal: F,
+    ) -> Result<Option<E::Value>, CordisError>
+    where
+        F: FnOnce(&Ctx, &E) -> Result<Option<E::Value>, CordisError>,
+    {
+        self.bus
+            .waterfall_sync_with(ctx, key, event, terminal, self.opts())
     }
 }
 

@@ -46,6 +46,7 @@ async fn run_turn(agent: &Arc<dyn Agent>, input: &str) {
 fn print_delta<'a>(
     _ctx: &'a Ctx,
     e: &'a AgentTextDelta,
+    _call: rutis::Call<'a, ()>,
 ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
     let d = e.delta.clone();
     Box::pin(async move {
@@ -59,6 +60,7 @@ fn print_delta<'a>(
 fn print_tool_call<'a>(
     _ctx: &'a Ctx,
     e: &'a AgentToolCall,
+    _call: rutis::Call<'a, ()>,
 ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
     let s = format!("\n⚙ {}({})", e.name, e.args);
     Box::pin(async move {
@@ -70,6 +72,7 @@ fn print_tool_call<'a>(
 fn print_tool_result<'a>(
     _ctx: &'a Ctx,
     e: &'a AgentToolResult,
+    _call: rutis::Call<'a, ()>,
 ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
     let s = if e.ok {
         format!("  → [{}] {}", e.name, e.output)

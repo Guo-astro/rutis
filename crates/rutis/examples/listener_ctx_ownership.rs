@@ -1,11 +1,13 @@
-//! The registration context owns the listener; the callback receives the
-//! emitter's context. Run with `cargo run -p rutis --example listener_ctx_ownership`.
+//! The registration context owns the listener, and the callback is called
+//! with that same context (not the emitter's), so what it registers belongs
+//! to the listener's plugin. Run with `cargo run -p rutis --example listener_ctx_ownership`.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Event, Listener, Plugin};
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Tick;
 
 impl Event for Tick {
@@ -21,13 +23,15 @@ struct OwnedListener {
 impl Listener<Tick> for OwnedListener {
     fn call<'a>(
         &'a self,
-        emitter: &'a Ctx,
+        ctx: &'a Ctx,
         _event: &'a Tick,
+        _call: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async move {
-            assert_ne!(emitter.instance(), self.owner.instance());
+            // The registering context, whoever emitted.
+            assert_eq!(ctx.instance(), self.owner.instance());
             let cleaned = self.cleaned.clone();
-            self.owner.effect(move || {
+            ctx.effect(move || {
                 Effect::Disposer(Box::new(move || {
                     cleaned.fetch_add(1, Ordering::SeqCst);
                     Ok(())
@@ -67,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let plugin = root.plugin(Register(cleaned.clone()));
     (&plugin).await?;
     root.events()
-        .serial(&root, &rutis::EventKey::of(), &Tick)
+        .serial(&root, &rutis::EventKey::of(), Arc::new(Tick))
         .await?;
     plugin.shutdown().await?;
     assert_eq!(cleaned.load(Ordering::SeqCst), 1);
