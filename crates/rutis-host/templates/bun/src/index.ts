@@ -15,8 +15,9 @@ class Greeter {
 export default definePlugin<Config>({
   // Services this plugin uses: `inject: ['llm']`, then `ctx.use('llm')`.
   inject: [],
-  // Services it provides, and whether each method is sync or async.
-  provides: { greeter: { hello: 'sync' } },
+  // What ctx.provide provides reaches rutis by itself, every method async.
+  // Declare `provides: { greeter: { hello: 'sync' } }` only to make methods
+  // sync, or for `rutis-host check` to know it before the plugin runs.
   // The JSON Schema of its config.
   config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },
   apply(ctx, config) {

@@ -105,7 +105,7 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 }
 ```
 
-每条连接出示同一个 token（`RUTIS_TOKEN_WORKER`，或 `RUTIS_TOKEN`），自报一个 id，成为分组的一个实例：连进来时创建，断开时关闭，同一 id 的新连接接管旧连接。分组里的行在每个实例中运行在该实例的连接上，它们提供的服务只在本实例里可见。字段与规则见 [rutis-host](rutis-host.md#连进来的运行时)。
+每条连接出示同一个 token（`RUTIS_TOKEN_WORKER`，或 `RUTIS_TOKEN`），自报一个 id，成为分组的一个实例：连进来时创建，断开时关闭，同一 id 的新连接接管旧连接。分组里的行在每个实例中运行在该实例的连接上，它们提供的服务只在本实例里可见。没有声明就提供的服务（自动投到 rutis 的）也一样：只有本实例里的行看得到，实例外的行和别的实例都看不到。字段与规则见 [rutis-host](rutis-host.md#连进来的运行时)。
 
 Python 运行时用 `dial:` 连进来：
 

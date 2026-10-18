@@ -62,11 +62,10 @@ interface Llm {
 
 export default definePlugin<{ city?: string }>({
   inject: ['llm'],                             // 需要的服务：都就绪才启动
-  provides: { weather: { today: 'async' } },   // 提供的服务，以及每个方法的调用方式
   apply(ctx, config) {
     const llm = ctx.use<Llm>('llm')
     const city = config.city ?? 'Oslo'
-    ctx.provide('weather', {
+    ctx.provide('weather', {                   // 提供的服务，各语言按名字使用
       today: () => llm.ask(`weather in ${city}`),
     })
   },

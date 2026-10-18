@@ -363,6 +363,9 @@ impl Resolver for RuntimeResolver {
                         .or_else(|| described.version.clone().map(Value::String)),
                     "inject": described.inject,
                     "provides": described.provides,
+                    // A Cordis row: its dependencies on the Cordis rows of
+                    // this runtime resolve in Cordis.
+                    "cordis": described.cordis,
                 }),
             ));
             if caches {
@@ -516,7 +519,13 @@ struct JsFactory {
     injects: Vec<TypeKey>,
     /// The key of each service the row announces.
     announced: KeyOf,
+    /// Why a running row was refused a service it provided after loading,
+    /// by its fiber: the restart that follows fails with it.
+    refused: Refused,
 }
+
+/// See [`JsFactory::refused`].
+type Refused = Arc<Mutex<HashMap<rutis::InstanceId, String>>>;
 
 impl JsFactory {
     /// The factory of a copy outside instances.
@@ -576,6 +585,7 @@ impl JsFactory {
             scopes,
             injects,
             announced: Arc::new(host_key),
+            refused: Refused::default(),
         }
     }
 
@@ -607,6 +617,7 @@ impl PluginFactory<Value> for JsFactory {
             scopes: self.scopes.clone(),
             injects: self.injects.clone(),
             announced: self.announced.clone(),
+            refused: self.refused.clone(),
         }))
     }
 }
@@ -623,6 +634,7 @@ struct JsRow {
     scopes: Vec<(String, String)>,
     injects: Vec<TypeKey>,
     announced: KeyOf,
+    refused: Refused,
 }
 
 fn failed(error: impl std::fmt::Display) -> CordisError {
@@ -640,6 +652,11 @@ impl Plugin for JsRow {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
         Box::pin(async move {
+            // Restarted because it provided a service another provider has:
+            // it fails as it would have had it provided it while loading.
+            if let Some(refused) = self.refused.lock().unwrap().remove(&ctx.instance()) {
+                return Err(failed(refused));
+            }
             let (process, runtime) = match &self.runtime {
                 RowRuntime::Named(name) => {
                     let runtime = ctx
@@ -824,6 +841,42 @@ impl JsRow {
             let _ = process.unload_row(&key).await;
             return Err(error);
         }
+        // One it provides afterwards fails it the same way: the fiber
+        // restarts, and that load fails with why.
+        let refused = self.refused.clone();
+        let restarting = ctx.clone();
+        let tasks = tokio::runtime::Handle::current();
+        projection.on_refused(move |why| {
+            let generation = restarting.cancellation_token();
+            if generation.is_cancelled() {
+                return; // already unloading or restarted
+            }
+            refused
+                .lock()
+                .unwrap()
+                .entry(restarting.instance())
+                .or_insert(why);
+            let ctx = restarting.clone();
+            let refused = refused.clone();
+            tasks.spawn(async move {
+                let instance = ctx.instance();
+                let view = ctx
+                    .diagnostics()
+                    .plugins
+                    .into_iter()
+                    .find(|plugin| plugin.instance == instance)
+                    .and_then(|plugin| ctx.view(plugin.id));
+                match view {
+                    Some(view) if !generation.is_cancelled() => {
+                        let _ = view.restart().await;
+                    }
+                    // Gone or restarting anyway: nothing to fail.
+                    _ => {
+                        refused.lock().unwrap().remove(&instance);
+                    }
+                }
+            });
+        });
         Ok((key, projection))
     }
 }
