@@ -15,6 +15,13 @@
 //! [`SLOTS`] rows `x1`… that the random edits add, change (and move between
 //! runtimes) and remove.
 //!
+//! Events (#464): each slot row also listens to `t/slot/<its id>` and
+//! answers what its `ping` does; `report` (Node) and B's `infer` (the
+//! remote Python runtime) `serial` it. Every [`Op::Call`] asks each slot
+//! from both, so whatever the random edits, kills and cuts did, an event
+//! reaches exactly the listener the configuration has now, in whichever
+//! runtime, and nothing once the slot is removed.
+//!
 //! Phases:
 //!
 //! 1. The soak host: the Node and Python runtimes have `"restart":
@@ -97,11 +104,13 @@ interface Store {
 
 export default definePlugin({
   inject: ['store'],
-  provides: { report: { summary: 'async' } },
+  provides: { report: { summary: 'async', ask: 'async' } },
   apply(ctx) {
     const store = ctx.use<Store>('store')
     ctx.provide('report', {
       summary: async (key: string) => `report: ${await store.get(key)}`,
+      // Events (#464): the slot row's listener, wherever it runs.
+      ask: async (slot: string) => (await ctx.serial(`t/slot/${slot}`)) ?? null,
     })
   },
 })
@@ -117,18 +126,25 @@ export function apply(ctx) {
 }
 "#;
 
-/// B's plugin, as in S5.
+/// B's plugin, as in S5, and `ask`: the slot row's listener through the
+/// link (#464).
 const INFER: &str = r#"
-provides = {"infer": {"run": "async"}}
+provides = {"infer": {"run": "async", "ask": "async"}}
 
 
 class Infer:
+    def __init__(self, ctx):
+        self.ctx = ctx
+
     async def run(self, job):
         return f"inferred {job}"
 
+    async def ask(self, slot):
+        return await self.ctx.serial(f"t/slot/{slot}")
+
 
 def apply(ctx, config):
-    ctx.provide("infer", Infer())
+    ctx.provide("infer", Infer(ctx))
 "#;
 
 /// A slot row in each runtime: `NAME.ping()` says which row, runtime and
@@ -140,6 +156,7 @@ export default definePlugin<{ rev: number }>({
   provides: { NAME: { ping: 'sync' } },
   apply(ctx, config) {
     ctx.provide('NAME', { ping: () => `NAME node rev ${config.rev}` })
+    ctx.on('t/slot/NAME', () => `NAME node rev ${config.rev}`)
   },
 })
 "#;
@@ -148,6 +165,7 @@ const SLOT_BUN: &str = r#"
 export const provides = { NAME: { ping: 'sync' } }
 export function apply(ctx, config) {
   ctx.provide('NAME', { ping: () => `NAME bun rev ${config.rev}` })
+  ctx.on('t/slot/NAME', () => `NAME bun rev ${config.rev}`)
 }
 "#;
 
@@ -165,6 +183,7 @@ class Slot:
 
 def apply(ctx, config):
     ctx.provide("NAME", Slot(config["rev"]))
+    ctx.on("t/slot/NAME", lambda: f"NAME py rev {config['rev']}")
 "#;
 
 /// Rows whose cleanup leaves a mark, then never returns; the Node and Bun
@@ -1066,6 +1085,8 @@ struct Run<'a> {
     restarts: BTreeMap<Runtime, usize>,
     cuts: usize,
     calls: u64,
+    /// Events dispatched across runtimes and checked (#464).
+    emits: u64,
     /// When the link to B last connected.
     connected: Instant,
 }
@@ -1116,6 +1137,7 @@ impl<'a> Run<'a> {
             restarts: BTreeMap::new(),
             cuts: 0,
             calls: 0,
+            emits: 0,
             connected: now,
         }
     }
@@ -1167,6 +1189,29 @@ impl<'a> Run<'a> {
         );
     }
 
+    /// Events (#464): `t/slot/x<n>` from Node (`report`) and from the
+    /// remote runtime (`infer`) reaches the slot's listener as configured
+    /// now, or nothing when the slot is empty.
+    fn slot_events(&mut self, slot: usize) {
+        let id = format!("x{}", slot + 1);
+        let expected = match self.model.slots[slot] {
+            Some((runtime, rev)) => json!(format!("{id} {} rev {rev}", runtime.name())),
+            None => json!(null),
+        };
+        let host = &mut self.host;
+        assert_eq!(
+            self.project.probe.call(host, "report", "ask", json!([id])),
+            Ok(expected.clone()),
+            "serial of t/slot/{id} from the Node runtime"
+        );
+        assert_eq!(
+            self.project.far.call(host, "infer", "ask", json!([id])),
+            Ok(expected),
+            "serial of t/slot/{id} from the remote runtime"
+        );
+        self.emits += 2;
+    }
+
     /// Calls through every row.
     fn calls(&mut self) {
         let host = &mut self.host;
@@ -1189,6 +1234,7 @@ impl<'a> Run<'a> {
         );
         for slot in 0..SLOTS {
             self.slot(slot);
+            self.slot_events(slot);
         }
     }
 
@@ -1610,12 +1656,13 @@ fn a_long_running_host_holds_no_more_and_every_end_leaves_nothing() {
     let elapsed = sampler.started.elapsed().as_secs_f64();
     let (grew, summary) = check_growth(&record.samples.borrow(), elapsed);
     println!(
-        "soak-s8: seed {seed}: {done} operations in {elapsed:.0} s, {} samples; {} reloads, {} rejected, {} kills, {} cuts",
+        "soak-s8: seed {seed}: {done} operations in {elapsed:.0} s, {} samples; {} reloads, {} rejected, {} kills, {} cuts, {} events checked",
         record.samples.borrow().len(),
         run.reloads,
         run.rejects,
         run.restarts.values().sum::<usize>(),
-        run.cuts
+        run.cuts,
+        run.emits
     );
     for line in &summary {
         println!("soak-s8: {line}");
