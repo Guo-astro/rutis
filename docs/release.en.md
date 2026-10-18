@@ -61,6 +61,10 @@ Expected behavior: the dialer prints `clock: <n>` every second. After a network 
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
 
+## 0.13.0
+
+`format` of `rutis.json` stays 1 and the persisted samples are copied as usual. Unified events (#464) removed `events: { out, in }` from the config of node rows (`rutis-bridge/peer`): no sample of 0.12.1 or earlier writes it, so their expectations are unchanged; an old file writing it is refused by `rutis-host check` and at start, the message naming the rewrite (`the peer config field events was removed in rutis 0.13: …`, see [migrating to 0.13](migration-0.13.en.md#node-links)). This is the first time a removed way of writing puts a sample in `rejected/`: its `rutis.json` has a node row with `events`, and the `rutis.error` beside it is that message. It is also the first release whose cross-version meetings only check refusals: 0.13 and every earlier release refuse each other at the handshake (`events/old-peer-refused`).
+
 ## 0.12.0
 
 The persisted `rutis.json` sample gains `restart`, added after 0.11: `"on-failure"` on `runtimes.node`, `"exit"` on `runtimes.py` and `"no"` (the default) on `runtimes.bun`; `format` stays 1. The persisted test's expectations record `restart` when it is not the default, so `"no"` does not appear in them and the older samples' expectations are unchanged. dsh's user layer has not changed since 0.11.0, so `cordis.patch.yml` is copied as is. This is also the first release whose gate runs the cross-version meetings (#426, CI's `e2e` job): the gate sets `RUTIS_E2E_ONLY_OLDER=1`, so they meet only earlier releases, here 0.11.0.

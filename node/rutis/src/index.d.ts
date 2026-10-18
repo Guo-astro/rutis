@@ -8,7 +8,7 @@ export interface ListenerDescriptor {
   readonly prefix: boolean
   /** The plugin that registered it. */
   readonly plugin: string
-  /** Its row's key; `null` for a plugin a mount loaded. */
+  /** Its row's id (the row id in the configuration, not the session's row key); `null` for a plugin a mount loaded. */
   readonly row: string | null
   /** The runtime it runs in; `null` for the host's own Rust plugins. */
   readonly runtime: string | null

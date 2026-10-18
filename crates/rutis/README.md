@@ -7,7 +7,7 @@ Plugins say what they need and what they provide; rutis decides when they start,
 - **Dependencies drive the lifecycle**: a plugin starts once its dependencies are there, stops when they go away, and reloads when a provider is replaced.
 - **Cleanup you can rely on**: everything a plugin registers is released exactly once, in reverse order; a failed load rolls back.
 - **Change without downtime**: hot-update configuration and swap providers; only what depends on the change restarts.
-- **Small**: pure Rust, no `unsafe`, no serde; tokio, tokio-util and thiserror are the only dependencies.
+- **Small**: pure Rust, no `unsafe`; tokio, tokio-util, thiserror, serde and serde_json (events cross processes as serde values) are the only dependencies.
 
 ```toml
 [dependencies]

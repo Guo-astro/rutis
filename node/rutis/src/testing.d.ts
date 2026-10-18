@@ -13,6 +13,8 @@ export interface Reported {
   line: string
   event: string
   row: string | null
+  /** The plugin of the failing listener (absent for a filter). */
+  plugin?: string
   error: unknown
   /** The filter failed, not a listener. */
   filter?: boolean

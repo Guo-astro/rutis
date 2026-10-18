@@ -299,7 +299,7 @@ off.dispose().await?;
 | 事项 | 规则 |
 | --- | --- |
 | 监听器 | 一个监听器登记一次，五种方式都能调用它；`call.mode()` 是这次的方式，`call.next()` 只在 `waterfall` 里可用（否则 `WaterfallNext`）。`on_sync` 登记同步监听器，它能被所有方式调用，但在异步 `waterfall` 里不能调 `next`；`on` 的（异步）监听器不能被 `bail_sync` / `waterfall_sync` 调用（`AsyncListener`） |
-| 选项与前缀 | `on_opt` / `on_sync_opt` 取 `EventOptions { prepend, once, global }`；`on_pattern(&ctx, &EventPattern::prefix("session/"), ..)` 收这个前缀下的所有名字 |
+| 选项与前缀 | `on_opt` / `on_sync_opt` 取 `EventOptions`，用构建方法写：`EventOptions::default().prepend(true)`（还有 `.once(true)`、`.global(true)`）；`on_pattern(&ctx, &EventPattern::prefix("session/"), ..)` 收这个前缀下的所有名字 |
 | 按名字 | 不定义类型时用 `rutis_bridge::events::Args`：`EventKey::<Args>::dynamic("file-changed")`，参数是 `Args(vec![Value::Data(json!(…))])`，结果是 `ArgValue`。同名的类型化监听器与 `Args` 监听器互相收到对方的事件，经 serde 转换 |
 | 作用域 | 发出方的作用域是 `ctx.scope()`：加载器为每个组实例调用 `Ctx::mark_scope`，监听器收到自己作用域及其内的事件。没有向别的作用域发出的 API，按 `ListenerInfo::scope` 过滤 |
 | 失败 | `emit` 的监听器失败以 `CordisError::ListenerFailed` 进入错误汇集（`Ctx::root_with_sink`），`rutis_bridge::events::report_line` 给出 rutis-host 打印的那一行；`parallel` 是 `CordisError::ListenersFailed`（按登记顺序）；别处监听器的错误带着名字与信息到达 |

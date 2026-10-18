@@ -549,7 +549,7 @@ async fn entries_leave_with_their_row_and_their_session() {
     .await;
 }
 
-/// guarantee: events/reserved
+/// guarantee: events/hub-reserved
 ///
 /// A runtime cannot emit `rutis/*` (`ReservedEvent`) nor register
 /// `internal/*`.

@@ -49,7 +49,7 @@ The first control operation from rutis. Reply:
 ```json
 {
   "services": {},
-  "features": ["rows.v2", "hosts", "leaf", "scopes", "events"],
+  "features": ["rows.v2", "hosts", "leaf", "scopes"],
   "implementation": { "name": "<package name>", "version": "<SDK version>" },
   "engine": { "name": "<language>", "version": "<language / VM version>" }
 }
@@ -146,7 +146,7 @@ Full specification: https://github.com/arcships/rutis/blob/main/docs/design-even
 - The executable answers `--rutis-manifest` by printing its manifest to stdout and exiting (no channel, no `apply`):
 
   ```json
-  { "manifest": 1, "sdk": "<version>", "pluginApi": 2, "runtime": "rutis-<language>-runtime:1",
+  { "manifest": 1, "sdk": "<version>", "pluginApi": 3, "runtime": "rutis-<language>-runtime:1",
     "platform": "<os>/<arch>", "plugins": { "<name>": { "config": {}, "inject": [], "provides": {}, "version": null } } }
   ```
 

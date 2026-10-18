@@ -235,6 +235,7 @@ function selected(name, prefix, items) {
 }
 
 const REMOVED_EVENTS = 'the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (docs/migration-0.13.md)'
+const REMOVED_OUT_IN = 'the Events options out / in were removed in rutis 0.13: use export / import (docs/migration-0.13.md)'
 
 // events: { peer, export: [item], import: [item] } (§9)
 // This application's emissions of what `export` names reach the peer's
@@ -247,7 +248,8 @@ export const Events = {
   reusable: true,
   apply(ctx, config) {
     const { peer } = config
-    if (Object.hasOwn(config, 'out') || Object.hasOwn(config, 'in') || Object.hasOwn(config, 'events')) throw new Error(REMOVED_EVENTS)
+    if (Object.hasOwn(config, 'out') || Object.hasOwn(config, 'in')) throw new Error(REMOVED_OUT_IN)
+    if (Object.hasOwn(config, 'events')) throw new Error(REMOVED_EVENTS)
     const exported = (config.export ?? []).map(itemOf)
     const imported = (config.import ?? []).map(itemOf)
     const events = bus(ctx)
