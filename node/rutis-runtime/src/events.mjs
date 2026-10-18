@@ -119,7 +119,7 @@ export class Bus {
     this.#changed({ added: entry })
     if (this.peer) {
       entry.registered = this.peer.callAsync('', 'events.on', [{ id: entry.id, name, row, plugin, kind, prepend: entry.prepend, global: entry.global }])
-      entry.registered.catch(error => this.report(`rutis: listener of ${name} in row ${this.#where(entry)} was not registered: ${errorText(error)}`))
+      entry.registered.catch(error => this.report(`rutis: registration of listener of ${name} in row ${this.#where(entry)} failed: ${errorText(error)}`))
     }
     return entry
   }
@@ -432,8 +432,8 @@ export class Bus {
         const onward = () => {
           if (called) throw named('WaterfallNext', `next of ${entry.name} was already called`)
           called = true
-          // A linked node's `next` arrives as a function (§9).
-          if (typeof next === 'function') return next()
+          // A linked node's `next`, to a bus with no host above it (§9).
+          if (!this.peer && typeof next === 'function') return next()
           return this.peer ? this.peer.callFunctionAsync(next, []) : Promise.reject(named('BindingError', 'the session ended'))
         }
         return this.#invoke(entry, [...values, onward], null)

@@ -89,7 +89,8 @@ pub fn report_line(error: &CordisError) -> Option<String> {
         )),
         CordisError::PluginFailed(source) => {
             let line = source.to_string();
-            line.starts_with("filter of ").then(|| format!("rutis: {line}"))
+            line.starts_with("filter of ")
+                .then(|| format!("rutis: {line}"))
         }
         _ => None,
     }

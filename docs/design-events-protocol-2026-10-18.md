@@ -282,6 +282,13 @@
 
 监听器自己的错误带着名字、信息与错误图跨边界，与任何调用的错误相同。
 
+没有人等待的失败在发生的一侧报告，每个运行时都是一行 stderr（§5.6 的监听器与过滤函数那两行之外）：
+
+| 何时 | 行（原文；`<…>` 填入） |
+| --- | --- |
+| 经宿主发送的 `emit` 被拒绝或没有得到回答 | `rutis: emit of <name> from row <row> failed: <ErrorName>: <message>` |
+| 宿主拒绝一个监听器的 `events.on`（行加载期间则改为让加载失败） | `rutis: registration of listener of <name> in row <row> failed: <ErrorName>: <message>` |
+
 ## 十二、API
 
 ### 12.1 Rust

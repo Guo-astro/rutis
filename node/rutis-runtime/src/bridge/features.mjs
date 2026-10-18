@@ -5,11 +5,15 @@ import { pathToFileURL } from 'node:url'
 import { peerService } from './link.mjs'
 import { toJsonSchema } from '../schema.mjs'
 import { isLeaf, supported, toCordis } from '../leaf.mjs'
+import { Context } from '@deepseek-ai/cordis'
+import { Bus } from '../events.mjs'
+import { install } from '../cordis-events.mjs'
 
 // The node features of a Cordis application, each gated on its link's peer
 // (`rutisPeer.<id>`), so each session gets them anew. They speak what the
 // Rust ones do (rutis-bridge): services cross as records of functions with
-// their shape, plugins are hosted by name, events go one way per name.
+// their shape, plugins are hosted by name, and events are shared as
+// entries of each other's bus (docs/design-events-protocol-2026-10-18.md §9).
 
 const fiberOf = wrapped => Object.hasOwn(wrapped, 'then') ? Object.getPrototypeOf(wrapped) : wrapped
 
@@ -188,29 +192,147 @@ export const Host = {
   },
 }
 
-// events: { peer, out: [name], in: [name] }
-// Forwards `out` events to the peer and emits the `in` events it forwards
-// here with `parallel`; a name goes one way only.
+// The bus of a Cordis application (#464): its Context dispatches through
+// it, so the listeners of linked nodes are entries of it (§9). Installed
+// once per application root, before its plugins register listeners (`bus`
+// installs it; the `Events` feature does when it starts).
+const buses = new WeakMap()
+export function bus(ctx) {
+  const root = ctx.root ?? ctx
+  let found = buses.get(root)
+  if (!found) {
+    found = new Bus()
+    buses.set(root, found)
+    install(root, Context, found, () => ({ row: null, scope: [], signal: undefined }))
+  }
+  return found
+}
+
+// An item of `export` / `import`: a name, or a prefix ending in `*`.
+const itemOf = item => item.endsWith('*') ? { prefix: item.slice(0, -1) } : { name: item }
+
+// What both an entry (`name`, a prefix when `prefix`) and `item` select
+// (§9): [name, prefix] or nothing.
+function narrowed(name, prefix, item) {
+  if (!prefix) {
+    if (item.name !== undefined) return item.name === name ? [name, false] : undefined
+    return name.startsWith(item.prefix) ? [name, false] : undefined
+  }
+  if (item.name !== undefined) return item.name.startsWith(name) ? [item.name, false] : undefined
+  if (item.prefix.startsWith(name)) return [item.prefix, true]
+  if (name.startsWith(item.prefix)) return [name, true]
+  return undefined
+}
+
+function selected(name, prefix, items) {
+  const out = []
+  for (const item of items) {
+    const found = narrowed(name, prefix, item)
+    if (found && !out.some(([n, p]) => n === found[0] && p === found[1])) out.push(found)
+  }
+  const prefixes = out.filter(([, p]) => p).map(([n]) => n)
+  return out.filter(([n, p]) => p || !prefixes.some(prefix => n.startsWith(prefix)))
+}
+
+const REMOVED_EVENTS = 'the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (docs/migration-0.13.md)'
+
+// events: { peer, export: [item], import: [item] } (§9)
+// This application's emissions of what `export` names reach the peer's
+// listeners, and its listeners of what `import` names hear the peer's: its
+// own listeners matching `import` are announced to the peer (never the
+// ones it imported: one hop), and the peer's announced listeners matching
+// `export` become entries of its bus, called with `events.call`.
 export const Events = {
   name: 'rutis-bridge/events',
   reusable: true,
-  apply(ctx, { peer, out = [], in: inbound = [] }) {
-    const both = out.find(name => inbound.includes(name))
-    if (both) throw new Error(`event ${both} cannot be forwarded both ways on the link to ${peer}`)
+  apply(ctx, config) {
+    const { peer } = config
+    if (Object.hasOwn(config, 'out') || Object.hasOwn(config, 'in') || Object.hasOwn(config, 'events')) throw new Error(REMOVED_EVENTS)
+    const exported = (config.export ?? []).map(itemOf)
+    const imported = (config.import ?? []).map(itemOf)
+    const events = bus(ctx)
     ctx.plugin(gated(`events:${peer}`, peer, (scope, link) => {
-      for (const name of out) {
-        scope.on(name, (...args) => link.callAsync('', 'events.forward', [{ name, args }]))
+      // The peer's entries accepted here, by its id.
+      const accepted = new Map()
+      // This application's entries announced: entry -> [announced id].
+      const announced = new Map()
+      // Announced id -> entry.
+      const byId = new Map()
+      let next = 0, calls = 0, offer
+      const send = (method, args) => link.callAsync('', method, args)
+        .catch(error => process.stderr.write(`rutis-bridge: ${method} to ${peer} failed: ${error.message}\n`))
+      const announce = entry => {
+        if (entry.remote || entry.scope?.length || announced.has(entry)) return
+        const ids = []
+        for (const [name, prefix] of selected(entry.name, Boolean(entry.prefix), imported)) {
+          const id = String(++next)
+          byId.set(id, entry)
+          ids.push(id)
+          send('events.on', [{ id, name, prefix, plugin: entry.plugin, row: entry.row, runtime: null, kind: entry.kind, prepend: false, global: entry.global }])
+        }
+        if (ids.length) announced.set(entry, ids)
       }
-      if (inbound.length) {
-        const unregister = link.register('events', async (_target, method, [fields]) => {
-          if (method !== 'events.forward') throw new Error(`${method} is not offered here`)
-          if (!inbound.includes(fields?.name)) throw new Error(`event ${fields?.name} is not forwarded here`)
-          const args = Array.isArray(fields.args) ? fields.args : [fields.args]
-          await scope.parallel(fields.name, ...args)
-          return null
-        })
-        scope.effect(() => unregister)
+      const withdraw = entry => {
+        const ids = announced.get(entry)
+        if (!ids) return
+        announced.delete(entry)
+        for (const id of ids) byId.delete(id)
+        send('events.off', [ids])
       }
+      const unwatch = events.watch(change => {
+        if (offer === undefined) return
+        if (change.added) announce(change.added)
+        else withdraw(change.removed)
+      })
+      // Announced to each offer of `events` anew.
+      const off = link.onOffers((_families, epoch) => {
+        const now = epoch('events')
+        if (now === undefined || now === offer) return
+        offer = now
+        announced.clear()
+        byId.clear()
+        for (const entry of events.entries()) announce(entry)
+      })
+      const forget = id => {
+        for (const entry of accepted.get(id) ?? []) events.off(entry)
+        accepted.delete(id)
+      }
+      const unregister = link.register('events', (_target, method, [argument]) => {
+        if (method === 'events.on') {
+          const { id, name, prefix = false, plugin = 'plugin', row = null, runtime = null, kind = 'any', global = false } = argument ?? {}
+          if (typeof name !== 'string' || name.startsWith('internal/')) throw Object.assign(new Error(`event ${name} is internal to its runtime`), { name: 'BindingError' })
+          forget(id)
+          const entries = selected(name, Boolean(prefix), exported).map(([selectedName, selectedPrefix]) => events.onRemote({
+            name: selectedName, prefix: selectedPrefix, kind, global, plugin, row, runtime, node: peer, scope: [],
+            invoke(mode, dispatched, args) {
+              const waterfall = mode === 'waterfall' || mode === 'waterfall-sync'
+              const values = waterfall ? args.slice(0, -1) : args
+              const request = { listener: id, dispatch: `d${++calls}`, own: false, name: dispatched, mode, args: values }
+              if (waterfall) request.next = args.at(-1)
+              if (mode === 'bail' || mode === 'waterfall-sync') return link.call('', 'events.call', [request])
+              return link.callAsync('', 'events.call', [request])
+            },
+          }))
+          if (entries.length) accepted.set(id, entries)
+          return undefined
+        }
+        if (method === 'events.off') {
+          for (const id of argument ?? []) forget(id)
+          return undefined
+        }
+        if (method === 'events.call') {
+          const entry = byId.get(String(argument?.listener))
+          if (!entry?.live) throw Object.assign(new Error(`listener ${argument?.listener} of ${argument?.name} is withdrawn`), { name: 'BindingError' })
+          return events.call({ ...argument, listener: entry.id, own: false })
+        }
+        throw new Error(`${method} is not offered here`)
+      })
+      scope.effect(() => () => {
+        unregister()
+        unwatch()
+        off()
+        for (const id of [...accepted.keys()]) forget(id)
+      })
     }))
   },
 }

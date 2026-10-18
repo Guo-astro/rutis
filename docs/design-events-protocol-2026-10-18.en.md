@@ -282,6 +282,13 @@ Event arguments, results, `next` / terminal results and filter descriptors are s
 
 A listener's own error crosses with its name, message and graph, as any call's error.
 
+Failures nobody waits for are reported on the side they happen, one stderr line each, in every runtime (besides §5.6's listener and filter lines):
+
+| When | Line (exact; `<…>` filled in) |
+| --- | --- |
+| an `emit` sent through the host is refused or not answered | `rutis: emit of <name> from row <row> failed: <ErrorName>: <message>` |
+| the host refuses a listener's `events.on` (outside a row load, which fails instead) | `rutis: registration of listener of <name> in row <row> failed: <ErrorName>: <message>` |
+
 ## 12. APIs
 
 ### 12.1 Rust
