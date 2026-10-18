@@ -3,7 +3,22 @@
 //
 //   const t = await load(plugin, { config: { city: 'Oslo' }, services: { llm } })
 //   assert.equal(await t.service('weather').today(), 'sunny in Oslo')
+//   assert.equal(await t.serial('weather/ask', 'Oslo'), 'sunny')
 //   await t.unload()
+//
+// Several plugins share one event bus on a `host()`, each row in a scope:
+//
+//   const h = host({ services: { llm } })
+//   const chat = await h.load(chatPlugin, { scope: 't1/s1' })
+//   await h.at('t1/s1').parallel('session/created', id)
+//
+// Events (#464) run as on a real runtime whose listeners are all in its
+// process: the five modes (emit, parallel, serial, waterfall, bail), the
+// scope rule (a listener hears its scope and those under it), filters,
+// prepend and global, emit's failures reported (`reported`), rutis/*
+// refused, and unload withdrawing listeners, aborting `ctx.signal` and
+// waiting for those still running. rutis/* events are the host's: the
+// tool emits none.
 //
 // It checks what a host would: the plugin uses only the services it declares
 // in `inject`, provides what it declares in `provides` with every declared
@@ -18,8 +33,8 @@
 // to the millisecond, a datetime, date, time, decimal or uuid as its
 // text); what works only in one process fails here too.
 
-import { Context } from '@deepseek-ai/cordis'
 import { PLUGIN_API, isPlugin } from './index.mjs'
+import { Bus, refuseRemoved } from './events.mjs'
 import { ValueError, bytesOf, checkKeys, checkText, constructedTag, instantFromText, instantText, keyOf, tagOf } from './values.mjs'
 
 export class PluginTestError extends Error {
@@ -247,114 +262,230 @@ function internal(name) {
   if (name.startsWith('internal/')) throw new PluginTestError(internalMessage(name))
 }
 
-/**
- * Load `plugin` (what definePlugin returns, or a module whose default export
- * it is) with `config` and the services in `services`. `emits` lists the
- * events `t.emit` may send, as `RuntimePlugin::emits` does on a real runtime.
- */
-export async function load(plugin, { config = {}, services = {}, strict = true, emits = [] } = {}) {
-  plugin = isPlugin(plugin) ? plugin : plugin?.default
-  if (!isPlugin(plugin)) throw new PluginTestError('load needs a plugin made with definePlugin')
-  if (plugin.api > PLUGIN_API) {
-    throw new PluginTestError(`the plugin needs plugin API ${plugin.api}; this SDK supports ${PLUGIN_API}`)
+// A scope path (`t1/s1`; `root` or nothing for the root) as the chain a
+// host gives a row (protocol §3): each instance's id is its path, its group
+// `groups[path]` or the path's last part.
+function chainOf(path, groups) {
+  if (path === undefined || path === null || path === '' || path === 'root') return []
+  if (typeof path !== 'string') throw new PluginTestError('a scope is a path such as t1/s1')
+  const parts = path.split('/')
+  if (parts.some(part => part === '')) throw new PluginTestError(`invalid scope path ${path}`)
+  return parts.map((part, index) => {
+    const id = parts.slice(0, index + 1).join('/')
+    return { id, group: groups?.[id] ?? part }
+  })
+}
+
+// The five ways to emit and `filter`, on `bus`, from `row` in `scope`.
+// `crossing`: values cross between the emitter and the listeners (the test
+// emitting, strict), as from another process.
+function emitters(bus, row, scope, crossing, keep) {
+  const where = name => `event ${name}`
+  const inbound = (name, values) => crossing ? values.map((value, i) => cross(value, `${where(name)} argument ${i}`)) : values
+  const outbound = (name, value) => {
+    if (!crossing) return value
+    if (value instanceof Promise) return value.then(result => cross(result, where(name)), thrown => { throw crossThrown(thrown, where(name)) })
+    return cross(value, where(name))
   }
-  if (!Array.isArray(emits) || emits.some(name => typeof name !== 'string')) throw new PluginTestError('emits must be a list of event names')
-  // As the runners' mount: internal/* cannot be declared for emission (the
-  // sentence of rutis's own check, `Process::mount`, naming every one).
-  {
-    const internal = emits.filter(name => name.startsWith('internal/'))
-    if (internal.length) throw new PluginTestError(`framework-internal events do not cross the boundary (mount emits): ${internal.join(', ')}`)
-  }
-  const declared = new Set(emits)
-  for (const name of plugin.inject) {
-    if (!(name in services)) throw new PluginTestError(`the plugin injects ${name}: give the test a service ${name}`)
-  }
-  const provided = new Map()
-  const cleanups = []
-  // Events are Cordis's own, as on the Node runtime: the plugin's listeners
-  // belong to a fiber of a Context of its own, which unload disposes.
-  const bus = new Context()
-  let events
-  const fiber = bus.plugin({ name: 'rutis-testing', apply: context => { events = context } })
-  await fiber.await()
-  let unloaded = false
-  const ctx = {
-    use(name) {
-      if (!plugin.inject.includes(name)) throw new PluginTestError(`the plugin uses ${name} without declaring it in inject`)
-      return strict ? cross(services[name], `service ${name}`) : services[name]
-    },
-    provide(name, value) {
-      const shape = plugin.provides[name]
-      if (shape) {
-        for (const method of Object.keys(shape)) {
-          if (typeof value?.[method] !== 'function') throw new PluginTestError(`${name} is declared with ${method} in provides, but the service has no such method`)
-        }
-      }
-      const entry = { value }
-      provided.set(name, entry)
-      return () => {
-        if (provided.get(name) === entry) provided.delete(name)
-      }
-    },
-    effect(cleanup) {
-      if (typeof cleanup !== 'function') throw new PluginTestError('effect needs a cleanup function')
-      cleanups.push(cleanup)
-    },
-    on(name, handler) {
-      if (unloaded) throw new PluginTestError('the plugin is unloaded')
-      if (typeof handler !== 'function') throw new PluginTestError('on needs a listener function')
-      internal(name)
-      return events.on(name, handler)
-    },
-    emit(name, ...args) {
-      internal(name)
-      events.emit(name, ...args)
-    },
-  }
-  const returned = await plugin.apply(ctx, strict ? cross(config, 'config') : config)
-  if (returned !== undefined && returned !== null) {
-    if (typeof returned !== 'function') throw new PluginTestError('apply must return a cleanup function or nothing')
-    cleanups.push(returned)
+  const dispatch = (mode, name, values, terminal) => {
+    internal(name)
+    let result
+    try {
+      result = bus.dispatch(mode, name, inbound(name, values), { row, scope, keep, terminal: crossing && terminal ? cross(terminal, `${where(name)} terminal`) : terminal })
+    } catch (thrown) {
+      throw crossing ? crossThrown(thrown, where(name)) : thrown
+    }
+    return outbound(name, result)
   }
   return {
-    /** The service `name` the plugin provides, as rutis sees it: its declared methods, or, undeclared, the object's methods, all async. */
-    service(name) {
-      if (unloaded) throw new PluginTestError('the plugin is unloaded')
-      const entry = provided.get(name)
-      if (!entry) throw new PluginTestError(`the plugin does not provide ${name} (now)`)
-      return shaped(name, entry.value, plugin.provides[name] ?? inferred(entry.value), strict)
+    emit: (name, ...values) => { dispatch('emit', name, values) },
+    parallel: (name, ...values) => dispatch('parallel', name, values),
+    serial: (name, ...values) => dispatch('serial', name, values),
+    waterfall: (name, ...values) => {
+      const terminal = values.pop()
+      return dispatch('waterfall', name, values, terminal)
     },
-    /** The methods rutis sees on the service `name`: `{ method: 'sync' | 'async' }`. */
-    methods(name) {
-      const entry = provided.get(name)
-      if (!entry) throw new PluginTestError(`the plugin does not provide ${name} (now)`)
-      return { ...(plugin.provides[name] ?? inferred(entry.value)) }
-    },
-    /** The names of the services the plugin provides now. */
-    provided: () => [...provided.keys()],
-    /** Emit as the host would with `Process::emit`: copy arguments in strict mode and await every listener, aggregating their errors. */
-    async emit(name, ...args) {
-      internal(name)
-      if (unloaded) throw new PluginTestError('the plugin is unloaded')
-      if (!declared.has(name)) throw new PluginTestError(`event ${name} is not declared for emission from rutis`)
-      const values = strict ? args.map((arg, i) => cross(arg, `event ${name} argument ${i}`)) : args
-      try {
-        await bus.parallel(name, ...values)
-      } catch (error) {
-        throw strict ? crossThrown(error, `event ${name}`) : error
-      }
-    },
-    /** Run the cleanups, latest first; the plugin's services are withdrawn. */
-    async unload() {
-      if (unloaded) return
-      unloaded = true
-      try {
-        // The listeners leave first, as on every runtime.
-        await fiber.dispose()
-        for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
-      } finally {
-        provided.clear()
-      }
+    bail: (name, ...values) => dispatch('bail', name, values),
+    filter: predicate => {
+      if (typeof predicate !== 'function') throw new PluginTestError('filter needs a predicate function')
+      const { filter: _, ...five } = emitters(bus, row, scope, crossing, descriptor => predicate(crossing ? cross(descriptor, 'a listener descriptor') : descriptor))
+      return five
     },
   }
+}
+
+/**
+ * A host for plugins in one process, as a real runtime is (#464): the rows
+ * share one event bus, always dispatched here (the fast path), with the
+ * five modes, scopes, filters, unload waiting and cancellation. `services`
+ * are given to every row that injects them; `scopes` names the group of a
+ * scope path (`{ t1: 'tenant' }`); `deadline` is how long an unloading
+ * row's listeners are waited for (ms, as RUTIS_SHUTDOWN_TIMEOUT).
+ */
+export function host({ services = {}, strict = true, scopes = {}, deadline = 10_000, ...rest } = {}) {
+  refuse(rest)
+  const reported = []
+  const bus = new Bus({ runtime: null, report: (line, details = {}) => { reported.push({ line, ...details }) } })
+  const rows = new Map()
+  let counter = 0
+  let closed = false
+  // Where the service `name` comes from: the test (`own`, then `services`),
+  // or another row here.
+  const lookup = (name, own) => {
+    if (Object.hasOwn(own, name)) return { test: true, value: own[name] }
+    if (Object.hasOwn(services, name)) return { test: true, value: services[name] }
+    for (const row of rows.values()) {
+      const entry = row.provided.get(name)
+      if (entry) return { test: false, value: entry.value }
+    }
+    return undefined
+  }
+  const self = {
+    /** The failures `emit` reported (§5.6): `{ line, event, row, error }`. */
+    get reported() { return [...reported] },
+    /** Load `plugin` as a row (key `row`, scope path `scope`), with `config` and its own `services`. */
+    async load(plugin, { config = {}, services: own = {}, scope, row: key, ...more } = {}) {
+      refuse(more)
+      if (closed) throw new PluginTestError('the host is unloaded')
+      plugin = isPlugin(plugin) ? plugin : plugin?.default
+      if (!isPlugin(plugin)) throw new PluginTestError('load needs a plugin made with definePlugin')
+      if (plugin.api > PLUGIN_API) {
+        throw new PluginTestError(`the plugin needs plugin API ${plugin.api}; this SDK supports ${PLUGIN_API}`)
+      }
+      key ??= `row${++counter}`
+      if (rows.has(key)) throw new PluginTestError(`row ${key} is already loaded`)
+      for (const name of plugin.inject) {
+        if (lookup(name, own) === undefined) throw new PluginTestError(`the plugin injects ${name}: give the test a service ${name}`)
+      }
+      const row = { key, plugin, chain: chainOf(scope, scopes), provided: new Map(), cleanups: [], abort: new AbortController(), unloaded: false }
+      rows.set(key, row)
+      const ctx = {
+        use(name) {
+          if (!plugin.inject.includes(name)) throw new PluginTestError(`the plugin uses ${name} without declaring it in inject`)
+          const found = lookup(name, own)
+          if (found === undefined) throw new PluginTestError(`service ${name} is not available`)
+          // A service another row here provides is the object itself.
+          if (!found.test) return found.value
+          return strict ? cross(found.value, `service ${name}`) : found.value
+        },
+        provide(name, value) {
+          const shape = plugin.provides[name]
+          if (shape) {
+            for (const method of Object.keys(shape)) {
+              if (typeof value?.[method] !== 'function') throw new PluginTestError(`${name} is declared with ${method} in provides, but the service has no such method`)
+            }
+          }
+          const entry = { value }
+          row.provided.set(name, entry)
+          return () => {
+            if (row.provided.get(name) === entry) row.provided.delete(name)
+          }
+        },
+        effect(cleanup) {
+          if (typeof cleanup !== 'function') throw new PluginTestError('effect needs a cleanup function')
+          row.cleanups.push(cleanup)
+        },
+        /** Aborted when the row unloads, while its listeners are waited for. */
+        get signal() { return row.abort.signal },
+        on(name, listener, options) {
+          if (row.unloaded) throw new PluginTestError('the plugin is unloaded')
+          if (typeof listener !== 'function') throw new PluginTestError('on needs a listener function')
+          internal(name)
+          const entry = bus.on({ name, callback: listener, prepend: options?.prepend, global: options?.global, row: key, plugin: plugin.name ?? key, scope: row.chain })
+          return () => { bus.off(entry) }
+        },
+        ...emitters(bus, key, row.chain, false),
+      }
+      try {
+        const returned = await plugin.apply(ctx, strict ? cross(config, 'config') : config)
+        if (returned !== undefined && returned !== null) {
+          if (typeof returned !== 'function') throw new PluginTestError('apply must return a cleanup function or nothing')
+          row.cleanups.push(returned)
+        }
+      } catch (error) {
+        await unloadRow(row).catch(() => {})
+        throw error
+      }
+      return loaded(row)
+    },
+    /** Unload every row, latest first. */
+    async unload() {
+      closed = true
+      for (const row of [...rows.values()].reverse()) await unloadRow(row)
+    },
+    /** The five ways to emit from the scope path `scope`, as the test. */
+    at: scope => emitters(bus, null, chainOf(scope, scopes), strict),
+    // The five ways to emit and `filter`, from the root, as the test: values
+    // cross as from another process (strict).
+    ...emitters(bus, null, [], strict),
+  }
+
+  // Withdraw the row's listeners, then its services; signal its running
+  // listeners and wait for them (at most `deadline`); then run its
+  // cleanups, latest first (protocol §7.1).
+  async function unloadRow(row) {
+    if (row.unloaded) return
+    row.unloaded = true
+    bus.withdraw(row.key)
+    row.provided.clear()
+    row.abort.abort(new DOMException('the row is unloading', 'AbortError'))
+    try {
+      await bus.settle(row.key, deadline)
+      for (const cleanup of row.cleanups.splice(0).reverse()) await cleanup()
+    } finally {
+      rows.delete(row.key)
+    }
+  }
+
+  function loaded(row) {
+    const { plugin } = row
+    return {
+      /** The row's key. */
+      row: row.key,
+      /** The service `name` the plugin provides, as rutis sees it: its declared methods, or, undeclared, the object's methods, all async. */
+      service(name) {
+        if (row.unloaded) throw new PluginTestError('the plugin is unloaded')
+        const entry = row.provided.get(name)
+        if (!entry) throw new PluginTestError(`the plugin does not provide ${name} (now)`)
+        return shaped(name, entry.value, plugin.provides[name] ?? inferred(entry.value), strict)
+      },
+      /** The methods rutis sees on the service `name`: `{ method: 'sync' | 'async' }`. */
+      methods(name) {
+        const entry = row.provided.get(name)
+        if (!entry) throw new PluginTestError(`the plugin does not provide ${name} (now)`)
+        return { ...(plugin.provides[name] ?? inferred(entry.value)) }
+      },
+      /** The names of the services the plugin provides now. */
+      provided: () => [...row.provided.keys()],
+      /** The failures `emit` reported, on the whole host. */
+      get reported() { return self.reported },
+      /** The host this row is loaded on. */
+      host: self,
+      // The five ways to emit and `filter`, in the row's scope, as the test:
+      // values cross as from another process (strict).
+      ...emitters(bus, null, row.chain, strict),
+      /** Withdraw its listeners and services, wait for its running listeners (signalled), then run its cleanups, latest first. */
+      async unload() {
+        if (row.unloaded) return
+        await unloadRow(row)
+      },
+    }
+  }
+
+  return self
+}
+
+// What a 0.12 test passed and 0.13 removed (#464).
+function refuse(options) {
+  try { refuseRemoved(options) } catch (error) { throw new PluginTestError(error.message) }
+}
+
+/**
+ * Load `plugin` (what definePlugin returns, or a module whose default export
+ * it is) with `config` and the services in `services`, as one row of a host
+ * of its own (`host()`), in the scope path `scope`.
+ */
+export async function load(plugin, { config, services = {}, strict = true, scope, deadline, ...rest } = {}) {
+  refuse(rest)
+  return host({ services, strict, deadline }).load(plugin, { config, scope })
 }
