@@ -79,7 +79,7 @@ export default definePlugin({
 ```
 
 - 原生服务在时，加载器就提供这个导出：`inject` 这个名字的行等它出现、随它撤下而停止，与其他服务相同。实例内的导出按 `register_shared_instance` 的规则解析：行拿到离它最近的那个组实例的服务。不用加载器时，自己挂上 `exports::calendar().plugin(None)`。
-- 每个公开的 `&self` 方法都会导出，对调用方是 `async`（JavaScript 里是 Promise，Python 里是 awaitable）；Python 和 Go 的行调用同一个 dispatcher。生成器绑定不了的方法会被跳过，构建警告写明位置和原因。
+- 每个公开的 `&self` 方法都会导出，对调用方是 `async`（JavaScript 里是 Promise，Python 里是 awaitable）；Python 和 Go 的行调用同一个 dispatcher。`&Ctx` 参数是调用方那一行的上下文，不是给调用方的参数：方法在上面登记的东西随该行卸载而移除。生成器绑定不了的方法会被跳过，构建警告写明位置和原因。
 - `Err(e)` 在调用方语言里作为错误抛出，带 `name`（`e` 的类型）、`code`（变体）、`message`（`Display`）和 `data`（serde 值）。能传什么、依赖 crate 的源码怎么找、有哪些限制：见 [Cordis](cordis.md#把-rust-服务导出给行)。完整示例：[`examples/rust-services`](../../examples/rust-services)。
 
 ### 手写 `HostDispatch`

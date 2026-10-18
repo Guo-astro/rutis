@@ -79,7 +79,7 @@ export default definePlugin({
 ```
 
 - The loader serves an export while its native service is there: rows that inject the name wait for it and stop when it goes, as with any service. An instance export resolves as `register_shared_instance` does: a row gets the nearest enclosing instance of the group. Without the loader, mount `exports::calendar().plugin(None)` yourself.
-- Every public `&self` method is exported and is `async` for the caller (a Promise in JavaScript, an awaitable in Python); Python and Go rows call the same dispatcher. A method the generator cannot bind is left out with a build warning saying where and why.
+- Every public `&self` method is exported and is `async` for the caller (a Promise in JavaScript, an awaitable in Python); Python and Go rows call the same dispatcher. A parameter `&Ctx` is the calling row's context, not a parameter for the caller: what the method registers on it goes when that row unloads. A method the generator cannot bind is left out with a build warning saying where and why.
 - `Err(e)` is thrown in the caller's language with `name` (the type of `e`), `code` (its variant), `message` (its `Display`) and `data` (its serde value). What crosses, how the source of a dependency crate is found, and the limits: [Cordis](cordis.en.md#export-rust-services-to-rows). A complete example: [`examples/rust-services`](../../examples/rust-services).
 
 ### Write a `HostDispatch` by hand

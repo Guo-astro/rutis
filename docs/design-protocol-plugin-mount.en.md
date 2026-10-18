@@ -252,4 +252,4 @@ Before 0.12 the only way to give a TypeScript or Python row a Rust service was a
 
 **Name sharing by default.** `ServiceCatalog::new()` now shares every name by name, as rutis-host does; with #428 only names that have a provider on the rutis side gate rows in rutis, and services Cordis rows provide reach rutis by themselves, so sharing by default no longer leaves Cordis rows waiting on each other. `share_registered_only()` is the former behaviour.
 
-**The calling row's `Ctx`** (a method taking `&Ctx`) uses the mechanism of #441 and comes after it.
+**The calling row's `Ctx`.** A parameter `&Ctx` (or `Ctx`) is not one for the caller: the dispatcher reads `caller_row()` (#441) while `invoke` runs, before the future it returns, and passes that row's context, so what the method registers there (an effect, a listener) goes when the row unloads or restarts, while its runtime keeps running. A call from outside any row (Rust, a peer node) is refused, saying the method needs the calling row's context.

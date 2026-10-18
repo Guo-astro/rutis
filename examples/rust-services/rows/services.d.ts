@@ -58,8 +58,9 @@ export interface Calendar {
   /** The largest id the calendar can give. */
   lastId(): Promise<number | bigint>
   /**
-   * Tell `handler` of every change from now on; returns the
-   * subscription, for [`Calendar::unsubscribe`].
+   * Tell `handler` of every change from now on, until `ctx`'s plugin
+   * unloads or [`Calendar::unsubscribe`]; returns the subscription.
+   * @throws {CordisErrorThrown}
    */
   subscribe(handler: (arg0: Change) => void | Promise<void>): Promise<number | bigint>
   unsubscribe(subscription: number | bigint): Promise<boolean>

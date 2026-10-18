@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use rutis::{BoxFuture, CordisError};
+use rutis::{BoxFuture, CordisError, Ctx, Effect};
 
 use crate::model::{CalendarError, Change, Entry, Handler, NewEntry};
 
@@ -11,7 +11,7 @@ use crate::model::{CalendarError, Change, Entry, Handler, NewEntry};
 pub struct Calendar {
     entries: Mutex<BTreeMap<u64, Entry>>,
     next: AtomicU64,
-    subscribers: Mutex<Vec<(u64, Handler)>>,
+    subscribers: Arc<Mutex<Vec<(u64, Handler)>>>,
     capacity: Option<usize>,
 }
 
@@ -95,12 +95,22 @@ impl Calendar {
         u64::MAX
     }
 
-    /// Tell `handler` of every change from now on; returns the
-    /// subscription, for [`Calendar::unsubscribe`].
-    pub fn subscribe(&self, handler: Handler) -> u64 {
+    /// Tell `handler` of every change from now on, until `ctx`'s plugin
+    /// unloads or [`Calendar::unsubscribe`]; returns the subscription.
+    pub fn subscribe(&self, ctx: &Ctx, handler: Handler) -> Result<u64, CordisError> {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         self.subscribers.lock().unwrap().push((id, handler));
-        id
+        let subscribers = self.subscribers.clone();
+        ctx.effect(move || {
+            Effect::Disposer(Box::new(move || {
+                subscribers
+                    .lock()
+                    .unwrap()
+                    .retain(|(known, _)| *known != id);
+                Ok(())
+            }))
+        })?;
+        Ok(id)
     }
 
     pub fn unsubscribe(&self, subscription: u64) -> bool {

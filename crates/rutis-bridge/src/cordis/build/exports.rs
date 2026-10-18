@@ -1064,6 +1064,7 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
         let mut call = Vec::new();
         let mut params_ts = Vec::new();
         let mut count = 0;
+        let mut takes_ctx = false;
         for input in sig.inputs.iter().skip(1) {
             let FnArg::Typed(input) = input else {
                 unreachable!()
@@ -1080,10 +1081,18 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
             };
             let local = format!("a{count}");
             let js = camel(name.strip_prefix("r#").unwrap_or(&name));
+            // The calling row's context: not a parameter for the caller.
             if is_ctx(self, scope, &input.ty)? {
-                return Err(
-                    "it takes the calling row's Ctx, which is not supported yet (#441)".into(),
-                );
+                if matches!(input.ty.as_ref(), Type::Reference(reference) if reference.mutability.is_some())
+                {
+                    return Err("it takes a mutable reference".into());
+                }
+                takes_ctx = true;
+                call.push(match input.ty.as_ref() {
+                    Type::Reference(_) => "&caller".to_owned(),
+                    _ => "caller.clone()".to_owned(),
+                });
+                continue;
             }
             if let Some(callback) = self.callback(scope, &input.ty, &bounds)? {
                 let args_ts: Vec<String> = callback
@@ -1211,10 +1220,19 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
         let body = format!(
             "let mut args = ::rutis_bridge::exports::arguments(args, {count})?;\n{decode}{returned}"
         );
-        let arm = if awaited {
-            format!("Ok(::rutis_bridge::session::Value::future(async move {{\n{body}\n}}))")
+        // Read while `invoke` runs: the future it returns does not see it.
+        let caller = if takes_ctx {
+            format!(
+                "let caller = ::rutis_bridge::exports::caller_ctx({:?})?;\n",
+                camel(&sig.ident.to_string())
+            )
         } else {
-            format!("(|| -> ::rutis_bridge::session::Reply {{\n{body}\n}})()")
+            String::new()
+        };
+        let arm = if awaited {
+            format!("{{\n{caller}Ok(::rutis_bridge::session::Value::future(async move {{\n{body}\n}}))\n}}")
+        } else {
+            format!("{{\n{caller}(|| -> ::rutis_bridge::session::Reply {{\n{body}\n}})()\n}}")
         };
         let mut docs = doc_lines(&method.attrs);
         if let Some(thrown) = error_ts {
@@ -2159,6 +2177,7 @@ mod tests {
             pub async fn find(&self, name: &str, limit: Option<u8>) -> Option<Item> { None }
             pub fn watch(&self, each: impl Fn(Item, u8) -> BoxFuture<'static, Result<bool, CordisError>> + Send) {}
             pub fn reset(&mut self) {}
+            pub fn tied(&self, ctx: &rutis::Ctx, n: u8) {}
             pub fn borrowing(&self, each: impl Fn(&Item) -> BoxFuture<'static, Result<(), CordisError>>) {}
             #[cfg(feature = "extra")]
             pub fn extra(&self) -> String { String::new() }
@@ -2222,6 +2241,7 @@ mod tests {
             "  find(name: string, limit?: number | null): Promise<Item | null>",
             "  watch(each: (arg0: Item, arg1: number) => boolean | Promise<boolean>): Promise<void>",
             "  extra(): Promise<string>",
+            "  tied(n: number): Promise<void>",
             "  /** @throws {StringThrown} */\n  count(): Promise<number | bigint>",
             "export type Item = {\n  itemName: string\n  n: number | bigint\n  pages: Page<number[]>\n} & Meta",
             "export interface Page<T> {\n  items: T\n  next?: string | null\n}",
@@ -2245,6 +2265,14 @@ mod tests {
             "{rust}"
         );
         assert!(rust.contains("string_failure(&error)"), "{rust}");
+        assert!(
+            rust.contains("let caller = ::rutis_bridge::exports::caller_ctx(\"tied\")?;"),
+            "{rust}"
+        );
+        assert!(
+            rust.contains("<dep_crate::Store>::tied(&*service, &caller, a0)"),
+            "{rust}"
+        );
         assert!(rust.contains("move |p0, p1| a0.invoke("), "{rust}");
         assert!(
             rust.contains("Export::new::<dep_crate::Store>(\"store\""),
@@ -2301,7 +2329,11 @@ mod tests {
         }
         // Nothing of what could not be declared is left in the declarations.
         for absent in ["Wrapper", "Other"] {
-            assert!(!generated.typescript.contains(absent), "{}", generated.typescript);
+            assert!(
+                !generated.typescript.contains(absent),
+                "{}",
+                generated.typescript
+            );
         }
         let generated = generate(
             Exports::new()

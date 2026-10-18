@@ -208,6 +208,8 @@ Arguments are decoded with serde (any `Deserialize`), results encoded with serde
 
 **Cancellation:** a call the caller stops waiting for (an `AbortSignal`, a dropped future) drops the method's future on the Rust side, as for every call.
 
+**The calling row's context:** a parameter `&rutis::Ctx` (or `Ctx`) is not a parameter in TypeScript: it is the context of the row making the call (`rutis_bridge::session::caller_row()`), so what the method registers on it (`ctx.effect`, a listener) is that row's and goes when the row unloads or restarts, for example a subscription. Called from outside any row (from Rust, from a peer node), such a method fails, saying it needs the calling row's context.
+
 ### Errors
 
 A method returning `Result<T, E>` (`std::result::Result`, an alias of it, `anyhow::Result`, `io::Result`) throws `Err(e)` in the caller's language: a JavaScript `Error`, a Python `rutis.RemoteError`, a Go `*rutis.RemoteError`. It is not an unclassified call error:
@@ -231,7 +233,7 @@ A method returning `Result<T, E>` (`std::result::Result`, an alias of it, `anyho
 ### Limits
 
 - What a macro writes is not seen: types, `impl` blocks or methods written by a macro (other than derives) are not found. A service type must be a concrete struct or enum (not generic, not a trait object).
-- Methods taking `&mut self`, borrowing a reference out, taking a reference to a function's argument (`Fn(&A)`), a generic parameter other than a function, `impl Trait` other than `Fn`, or a function that does not return a future of a `Result` are left out with a warning. Methods taking the calling row's `&Ctx` are left out until [#441](https://github.com/arcships/rutis/issues/441).
+- Methods taking `&mut self`, borrowing a reference out, taking a reference to a function's argument (`Fn(&A)`), a generic parameter other than a function, `impl Trait` other than `Fn`, or a function that does not return a future of a `Result` are left out with a warning.
 - A data type needs a serde derive the generator can read: a hand-written `Serialize`, `#[serde(with / serialize_with / into / remote)]`, or a type of a crate not read (other than `std`, `serde_json`, `chrono`, `uuid`, `url` and the tagged values) needs `.declared(path, typescript)`: until then the methods using it are left out, the warning naming the type.
 - `#[cfg]` is evaluated as above; a `cfg` the build script cannot see is taken as off.
 - A method's future must be `Send` (the compile fails otherwise).

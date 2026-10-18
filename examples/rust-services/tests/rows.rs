@@ -268,6 +268,37 @@ async fn a_node_rows_handler_settles_before_the_native_side_goes_on() {
     fixture.root.shutdown().await.unwrap();
 }
 
+/// `subscribe` takes the calling row's `Ctx` (hidden from TypeScript): the
+/// subscription is that row's, and goes when the row unloads while the
+/// runtime keeps running. Called from Rust, outside any row, it is refused.
+/// guarantee: bridge/exported-services
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subscription_goes_when_its_row_unloads() {
+    let fixture = fixture(json!([{ "id": "calendar", "name": "ROWS/calendar.ts" }])).await;
+    fixture.probe.wait_for("subscribed").await;
+    assert_eq!(fixture.calendar.subscribers(), 1);
+    let report = fixture
+        .loader
+        .reconcile(vec![Layer::new("rows", Vec::new())], None)
+        .await
+        .unwrap();
+    assert!(report.failures.is_empty(), "{report:?}");
+    COLD.until(
+        || fixture.calendar.subscribers() == 0,
+        "the row's subscription removed",
+    )
+    .await;
+    let direct = exports::DispatchCalendar(fixture.calendar.clone());
+    let refused = direct
+        .invoke("subscribe", RpcValue::List(Vec::new()))
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("calling row's context"),
+        "{refused}"
+    );
+    fixture.root.shutdown().await.unwrap();
+}
+
 /// A service exported inside `session` instances: each instance's row
 /// gets its own instance's `Notes`.
 /// guarantee: bridge/exported-services

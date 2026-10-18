@@ -159,6 +159,20 @@ pub fn shapes(methods: &[&str]) -> Json {
     )
 }
 
+/// The context of the row calling `method` ([`crate::session::caller_row`]),
+/// for a method taking `&Ctx`: what it registers there goes when that row
+/// unloads. A call from outside any row (Rust, a peer node) is refused.
+#[doc(hidden)]
+pub fn caller_ctx(method: &str) -> Result<Ctx, Error> {
+    crate::session::caller_row()
+        .map(|row| row.ctx().clone())
+        .ok_or_else(|| {
+            Error::Value(format!(
+                "{method} needs the calling row's context: only a row of a language runtime can call it"
+            ))
+        })
+}
+
 /// The `count` arguments of a call, those not passed being undefined.
 #[doc(hidden)]
 pub fn arguments(args: Value, count: usize) -> Result<std::vec::IntoIter<Value>, Error> {
