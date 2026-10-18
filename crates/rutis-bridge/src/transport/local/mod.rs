@@ -48,8 +48,8 @@ mod unix;
 
 pub use output::{output_ended, write_line, OutputStream, MAX_LINE};
 pub use spawn::{
-    kill_processes, processes_ended, running_processes, Handover, Spawn, Stdio, CHANNEL_FD,
-    CHANNEL_TOKEN, HANDOVER_VARIABLE,
+    kill_processes, processes_ended, running_processes, Handover, Processes, Spawn, Stdio,
+    CHANNEL_FD, CHANNEL_TOKEN, HANDOVER_VARIABLE,
 };
 
 /// Provides `Transport#local`.
@@ -90,6 +90,7 @@ pub struct LocalTransport {
     spawners: Mutex<HashMap<String, Spawn>>,
     trace: Mutex<Option<crate::channel::trace::Sink>>,
     token_wait: Mutex<Option<std::time::Duration>>,
+    processes: spawn::Processes,
 }
 
 impl LocalTransport {
@@ -99,6 +100,20 @@ impl LocalTransport {
     /// holds up the process's ([`Handover::Loopback`]).
     pub fn token_wait(&self, wait: std::time::Duration) {
         *self.token_wait.lock().unwrap() = Some(wait);
+    }
+
+    /// A transport recording the processes it starts in `processes`, which
+    /// something that outlives it keeps ([`LocalTransport::processes`]).
+    pub fn sharing(processes: spawn::Processes) -> Self {
+        Self {
+            processes,
+            ..Self::default()
+        }
+    }
+
+    /// The processes it started, to tell when they have ended.
+    pub fn processes(&self) -> spawn::Processes {
+        self.processes.clone()
     }
 
     /// Let `spawn:<name>` start `spawn`.
@@ -162,7 +177,7 @@ impl LocalTransport {
                 reason: format!("nothing to spawn as {name}"),
             })?;
         let token_wait = self.token_wait.lock().unwrap().unwrap_or(spawn::TOKEN_WAIT);
-        spawn::start(&spawn, token_wait).await
+        spawn::start(&spawn, token_wait, &self.processes).await
     }
 }
 

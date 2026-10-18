@@ -38,6 +38,9 @@ pub struct Host {
     /// The local runtimes' plugins, by name, to stop one
     /// ([`Host::stop_runtime`]).
     fibers: Vec<(String, FiberView)>,
+    /// The processes each local runtime started, by name: to wait for its
+    /// own once it is stopped ([`Host::reload`]).
+    processes: Vec<(String, rutis_bridge::transport::local::Processes)>,
     /// The `rutis-bridge/peer` rows' resolver, which also knows their links'
     /// states ([`PeerResolver::link_state`]).
     pub peers: Arc<PeerResolver>,
@@ -208,6 +211,7 @@ impl Host {
             runtimes: Vec::new(),
             resolvers: Vec::new(),
             fibers: Vec::new(),
+            processes: Vec::new(),
             later: Vec::new(),
         };
         // In reverse: Node's resolver, which takes bare npm names, last.
@@ -248,6 +252,7 @@ impl Host {
             runtimes,
             resolvers,
             fibers,
+            processes,
             later,
             ..
         } = mount;
@@ -307,6 +312,7 @@ impl Host {
             resolvers,
             go,
             fibers,
+            processes,
             peers,
             listening,
             config: config.clone(),
@@ -538,18 +544,21 @@ impl Host {
     }
 
     /// [`Host::stop_runtime`], then wait (up to [`RUNTIME_EXIT`]) until its
-    /// process has ended.
+    /// process has ended: its own, whichever generation started it (one a
+    /// restart started meanwhile too), not whichever ends first. A runtime
+    /// that is down has none left, and returns at once.
     async fn stop_runtime_process(&mut self, name: &str) -> Result<(), Error> {
-        let before = rutis_bridge::transport::local::running_processes();
+        let processes = self
+            .processes
+            .iter()
+            .position(|(runtime, _)| runtime == name)
+            .map(|index| self.processes.remove(index).1);
         self.stop_runtime(name).await?;
-        // Its process ends once its channel closed: one of those running
-        // before (the others are other runtimes', which go on).
+        let Some(processes) = processes else {
+            return Ok(());
+        };
         let ended = async {
-            loop {
-                let running = rutis_bridge::transport::local::running_processes();
-                if before.iter().any(|pid| !running.contains(pid)) {
-                    return;
-                }
+            while processes.running() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         };

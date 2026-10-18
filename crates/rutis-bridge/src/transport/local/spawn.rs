@@ -176,7 +176,11 @@ fn retryable(error: std::io::Error) -> ConnectError {
 pub const HANDOVER_VARIABLE: &str = "RUTIS_LOCAL_HANDOVER";
 
 /// Start `spawn` and connect it.
-pub(crate) async fn start(spawn: &Spawn, token_wait: Duration) -> Result<Channel, ConnectError> {
+pub(crate) async fn start(
+    spawn: &Spawn,
+    token_wait: Duration,
+    processes: &Processes,
+) -> Result<Channel, ConnectError> {
     let forced =
         !cfg!(unix) || std::env::var_os(HANDOVER_VARIABLE).is_some_and(|value| value == "loopback");
     let handover = match forced {
@@ -197,6 +201,7 @@ pub(crate) async fn start(spawn: &Spawn, token_wait: Duration) -> Result<Channel
         mut info,
     } = channel;
     info.peer = Some(spawn.peer.clone());
+    processes.add(child.ended.clone());
     Ok(Channel {
         sender: Box::new(EndedSender {
             sender,
@@ -626,11 +631,17 @@ impl Sender for EndedSender {
 
 /// How the process ended, once it has. Readable from the reader thread,
 /// which must not depend on the async runtime: a current-thread runtime may
-/// be blocked in a synchronous call.
+/// be blocked in a synchronous call. The last flag: the process has been
+/// waited for, and is gone.
 #[derive(Default)]
-struct Exit(Mutex<Option<String>>, Condvar, AtomicBool);
+struct Exit(Mutex<Option<String>>, Condvar, AtomicBool, AtomicBool);
 
 impl Exit {
+    /// Whether the process has ended and been waited for.
+    fn ended(&self) -> bool {
+        self.3.load(Ordering::SeqCst)
+    }
+
     fn record(&self, status: String) {
         self.0.lock().unwrap().get_or_insert(status);
         self.1.notify_all();
@@ -669,6 +680,27 @@ impl Exit {
             })
             .unwrap();
         status.clone()
+    }
+}
+
+/// The processes a [`LocalTransport`](super::LocalTransport) started, to
+/// tell when every one of them has ended: what started them waits for its
+/// own, not for whichever process ends first (#448).
+#[derive(Clone, Default)]
+pub struct Processes(Arc<Mutex<Vec<Arc<Exit>>>>);
+
+impl Processes {
+    fn add(&self, exit: Arc<Exit>) {
+        let mut started = self.0.lock().unwrap();
+        started.retain(|exit| !exit.ended());
+        started.push(exit);
+    }
+
+    /// Whether one of them has not ended yet.
+    pub fn running(&self) -> bool {
+        let mut started = self.0.lock().unwrap();
+        started.retain(|exit| !exit.ended());
+        !started.is_empty()
     }
 }
 
@@ -805,6 +837,7 @@ impl Child {
                 }
             };
             record.record(describe(status));
+            record.3.store(true, Ordering::SeqCst);
             // Waited for: the process is gone, its id free for reuse.
             if let Some(pid) = pid {
                 RUNNING.send_modify(|running| {
