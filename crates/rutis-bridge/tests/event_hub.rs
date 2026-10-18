@@ -523,12 +523,11 @@ async fn entries_leave_with_their_row_and_their_session() {
                 .events()
                 .serial(&rig.root, &key("t/l"), args(&[]))
                 .await
-                .unwrap()
-                .map(|value| value.0)
+                .map(|value| value.map(|value| value.0))
         };
-        assert_eq!(serial().await, Some(Value::Data(json!("chat"))));
+        assert_eq!(serial().await.unwrap(), Some(Value::Data(json!("chat"))));
         rig.process.unload_row("chat").await.unwrap();
-        assert_eq!(serial().await, Some(Value::Data(json!("other"))));
+        assert_eq!(serial().await.unwrap(), Some(Value::Data(json!("other"))));
         rig.far.close(Error::Transport("gone".into()));
         eventually(
             || rig.process.connection().close_reason().is_some(),
@@ -537,7 +536,9 @@ async fn entries_leave_with_their_row_and_their_session() {
         .await;
         let mut gone = false;
         for _ in 0..200 {
-            if serial().await.is_none() {
+            // A call already on its way to the ended session fails once
+            // (events protocol §7.2); then the entries are gone.
+            if matches!(serial().await, Ok(None)) {
                 gone = true;
                 break;
             }
