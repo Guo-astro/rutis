@@ -16,14 +16,14 @@ use std::time::Duration;
 
 use rutis::{
     BoxFuture, CordisError, Ctx, Effect, Event, FiberState, FiberStatusChanged, FiberView,
-    Listener, Next, Plugin, PluginId, Terminal, TypeKey, WaterfallListener,
+    Listener, Plugin, PluginId, Terminal, TypeKey,
 };
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 
 // ── 测试助手 ─────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Ping {
     value: u32,
 }
@@ -77,6 +77,7 @@ impl Listener<Ping> for Rec {
         &'a self,
         _ctx: &'a Ctx,
         _e: &'a Ping,
+        _call: rutis::Call<'a, u32>,
     ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
         let hits = self.hits.clone();
         let notify = self.notify.clone();
@@ -225,6 +226,7 @@ impl Listener<FiberStatusChanged> for StatusLog {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a FiberStatusChanged,
+        _call: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         let seen = self.seen.clone();
         let ev = e.clone();
@@ -398,6 +400,7 @@ async fn logs_disposal_observer_failures_without_rejecting_disposal() {
             &'a self,
             _ctx: &'a Ctx,
             e: &'a FiberStatusChanged,
+            _call: rutis::Call<'a, ()>,
         ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
             let hit = e.plugin_id == self.id && e.to == FiberState::Unloading;
             Box::pin(async move {
@@ -418,6 +421,7 @@ async fn logs_disposal_observer_failures_without_rejecting_disposal() {
             &'a self,
             _ctx: &'a Ctx,
             e: &'a FiberStatusChanged,
+            _call: rutis::Call<'a, ()>,
         ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
             let seen = self.seen.clone();
             let hit = e.plugin_id == self.id && e.to == FiberState::Unloading;
@@ -456,9 +460,12 @@ async fn logs_disposal_observer_failures_without_rejecting_disposal() {
     assert_eq!(*seen.lock().unwrap(), vec!["disposed"]);
     eventually(|| !sink.lock().unwrap().is_empty()).await;
     assert_eq!(sink.lock().unwrap().len(), 1);
-    assert!(
-        matches!(*sink.lock().unwrap()[0], CordisError::ServiceNotFound(ref m) if m == "observer failed")
-    );
+    // An emit listener's failure reaches the sink as `ListenerFailed`.
+    assert!(matches!(
+        &*sink.lock().unwrap()[0],
+        CordisError::ListenerFailed { error, .. }
+            if matches!(&**error, CordisError::ServiceNotFound(m) if m == "observer failed")
+    ));
     assert_eq!(view.state().state, FiberState::Disposed);
 }
 
@@ -477,6 +484,7 @@ async fn does_not_await_async_disposal_observers_but_still_observes_rejections()
             &'a self,
             _ctx: &'a Ctx,
             e: &'a FiberStatusChanged,
+            _call: rutis::Call<'a, ()>,
         ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
             let started = self.started.clone();
             let gate = self.gate.clone();
@@ -539,9 +547,12 @@ async fn does_not_await_async_disposal_observers_but_still_observes_rejections()
 
     observer_gate.notify_one();
     eventually(|| !sink.lock().unwrap().is_empty()).await;
-    assert!(
-        matches!(*sink.lock().unwrap()[0], CordisError::ServiceNotFound(ref m) if m == "observer")
-    );
+    // An emit listener's failure reaches the sink as `ListenerFailed`.
+    assert!(matches!(
+        &*sink.lock().unwrap()[0],
+        CordisError::ListenerFailed { error, .. }
+            if matches!(&**error, CordisError::ServiceNotFound(m) if m == "observer")
+    ));
 }
 
 // tests/reentrant.spec.ts:288
@@ -1452,7 +1463,7 @@ async fn plugin_error() {
     assert!(sink.lock().unwrap().is_empty()); // 偏差:不记 logger
 
     ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), &Ping { value: 1 })
+        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
         .await
         .unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 1); // 只有成功 fiber 的监听器
@@ -2060,21 +2071,21 @@ async fn plugin_nested_plugins() {
     (&view).await.expect("nested applied");
 
     ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), &Ping { value: 1 })
+        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
         .await
         .unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 4); // root + 三层嵌套
 
     view.dispose().await.unwrap();
     ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), &Ping { value: 1 })
+        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
         .await
         .unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 5); // 只剩 root 的 1 个
 
     view.dispose().await.unwrap(); // 二次 dispose 幂等
     ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), &Ping { value: 1 })
+        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
         .await
         .unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 6); // 仍然 1 个
@@ -2146,7 +2157,7 @@ async fn plugin_compare_snapshot() {
         )
         .unwrap();
     ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), &Ping { value: 1 })
+        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
         .await
         .unwrap();
     let baseline = hits.load(Ordering::SeqCst);
@@ -2157,7 +2168,7 @@ async fn plugin_compare_snapshot() {
     });
     (&view).await.expect("applied");
     ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), &Ping { value: 1 })
+        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
         .await
         .unwrap();
     let with_plugin = hits.load(Ordering::SeqCst);
@@ -2165,7 +2176,7 @@ async fn plugin_compare_snapshot() {
 
     view.dispose().await.unwrap();
     ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), &Ping { value: 1 })
+        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
         .await
         .unwrap();
     assert_eq!(hits.load(Ordering::SeqCst) - with_plugin, 1); // 恢复基线
@@ -2176,7 +2187,7 @@ async fn plugin_compare_snapshot() {
     });
     (&view2).await.expect("re-applied");
     ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), &Ping { value: 1 })
+        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
         .await
         .unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), with_plugin + 1 + 4); // 重装一致
@@ -2514,36 +2525,36 @@ async fn events_ctx_waterfall() {
     struct Adder {
         called: Arc<AtomicUsize>,
     }
-    impl WaterfallListener<Ping> for Adder {
+    impl Listener<Ping> for Adder {
         fn call<'a>(
             &'a self,
             _ctx: &'a Ctx,
             e: &'a Ping,
-            next: Next<'a, Ping>,
-        ) -> BoxFuture<'a, Result<u32, CordisError>> {
+            call: rutis::Call<'a, u32>,
+        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
             let called = self.called.clone();
             let base = e.value;
             Box::pin(async move {
                 called.fetch_add(1, Ordering::SeqCst);
-                let inner = next.call().await?;
-                Ok(base + inner)
+                let inner = call.next().await?.unwrap_or(0);
+                Ok(Some(base + inner))
             })
         }
     }
     struct Veto {
         called: Arc<AtomicUsize>,
     }
-    impl WaterfallListener<Ping> for Veto {
+    impl Listener<Ping> for Veto {
         fn call<'a>(
             &'a self,
             _ctx: &'a Ctx,
             e: &'a Ping,
-            _next: Next<'a, Ping>,
-        ) -> BoxFuture<'a, Result<u32, CordisError>> {
+            _call: rutis::Call<'a, u32>,
+        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
             let called = self.called.clone();
             Box::pin(async move {
                 called.fetch_add(1, Ordering::SeqCst);
-                Ok(e.value) // veto:不调 next,直接返回
+                Ok(Some(e.value)) // veto:不调 next,直接返回
             })
         }
     }
@@ -2553,8 +2564,8 @@ async fn events_ctx_waterfall() {
             &'a self,
             _ctx: &'a Ctx,
             _e: &'a Ping,
-        ) -> BoxFuture<'a, Result<u32, CordisError>> {
-            Box::pin(async { Ok(self.0) })
+        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
+            Box::pin(async { Ok(Some(self.0)) })
         }
     }
 
@@ -2564,7 +2575,7 @@ async fn events_ctx_waterfall() {
     let veto_called = counter();
     let a4_called = counter();
     ctx.events()
-        .on_waterfall(
+        .on(
             &ctx,
             &rutis::EventKey::of(),
             Adder {
@@ -2573,7 +2584,7 @@ async fn events_ctx_waterfall() {
         )
         .unwrap();
     ctx.events()
-        .on_waterfall(
+        .on(
             &ctx,
             &rutis::EventKey::of(),
             Adder {
@@ -2591,12 +2602,12 @@ async fn events_ctx_waterfall() {
         )
         .await
         .unwrap();
-    assert_eq!(out, 4); // 1 + (1 + terminal 2)
+    assert_eq!(out, Some(4)); // 1 + (1 + terminal 2)
     assert_eq!(a1_called.load(Ordering::SeqCst), 1);
     assert_eq!(a2_called.load(Ordering::SeqCst), 1);
 
     ctx.events()
-        .on_waterfall(
+        .on(
             &ctx,
             &rutis::EventKey::of(),
             Veto {
@@ -2605,7 +2616,7 @@ async fn events_ctx_waterfall() {
         )
         .unwrap();
     ctx.events()
-        .on_waterfall(
+        .on(
             &ctx,
             &rutis::EventKey::of(),
             Adder {
@@ -2623,7 +2634,7 @@ async fn events_ctx_waterfall() {
         )
         .await
         .unwrap();
-    assert_eq!(out2, 3); // veto 截断:1 + (1 + veto 1)
+    assert_eq!(out2, Some(3)); // veto 截断:1 + (1 + veto 1)
     assert_eq!(veto_called.load(Ordering::SeqCst), 1);
     assert_eq!(a4_called.load(Ordering::SeqCst), 0); // veto 后不再执行
 }

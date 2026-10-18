@@ -4,50 +4,54 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use rutis::{
-    BoxFuture, CordisError, Ctx, Event, EventKey, EventPattern, Listener, Next, PatternListener,
-    SyncEvent, SyncNext, WaterfallListener,
+    BoxFuture, Call, CordisError, Ctx, Event, EventKey, EventPattern, Listener, Mode,
+    PatternListener, SyncCall,
 };
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Ping;
 impl Event for Ping {
     const NAME: &'static str = "bench/ping";
     type Value = u64;
 }
-impl SyncEvent for Ping {}
 struct Pass;
-impl Listener<Ping> for Pass {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        _: &'a Ping,
-    ) -> BoxFuture<'a, Result<Option<u64>, CordisError>> {
-        Box::pin(async { Ok(None) })
-    }
-}
 impl PatternListener<Ping> for Pass {
     fn call<'a>(
         &'a self,
         _: &'a Ctx,
         _: EventKey<Ping>,
         _: &'a Ping,
+        _: Call<'a, u64>,
     ) -> BoxFuture<'a, Result<Option<u64>, CordisError>> {
         Box::pin(async { Ok(None) })
     }
 }
-/// Passes to the rest of the chain.
+/// No result; in a waterfall, passes to the rest of the chain.
 struct Through;
-impl WaterfallListener<Ping> for Through {
+impl Listener<Ping> for Through {
     fn call<'a>(
         &'a self,
         _: &'a Ctx,
         _: &'a Ping,
-        next: Next<'a, Ping>,
-    ) -> BoxFuture<'a, Result<u64, CordisError>> {
-        next.call()
+        call: Call<'a, u64>,
+    ) -> BoxFuture<'a, Result<Option<u64>, CordisError>> {
+        if call.mode() == Mode::Waterfall {
+            call.next()
+        } else {
+            Box::pin(async { Ok(None) })
+        }
     }
 }
-fn terminal<'a>(_: &'a Ctx, _: &'a Ping) -> BoxFuture<'a, Result<u64, CordisError>> {
-    Box::pin(async { Ok(1) })
+/// The synchronous `Through`.
+fn sync_through(_: &Ctx, _: &Ping, call: SyncCall<'_, u64>) -> Result<Option<u64>, CordisError> {
+    if call.mode() == Mode::WaterfallSync {
+        call.next()
+    } else {
+        Ok(None)
+    }
+}
+fn terminal<'a>(_: &'a Ctx, _: &'a Ping) -> BoxFuture<'a, Result<Option<u64>, CordisError>> {
+    Box::pin(async { Ok(Some(1)) })
 }
 fn measure(mut call: impl FnMut(), iterations: usize) -> f64 {
     for _ in 0..1000 {
@@ -80,16 +84,8 @@ fn main() {
         let root = Ctx::root().unwrap();
         let key = EventKey::of();
         for _ in 0..listeners {
-            root.events()
-                .on_sync(&root, &key, |_: &Ctx, _: &Ping| Ok(None))
-                .unwrap();
-            root.events()
-                .on_waterfall_sync(
-                    &root,
-                    &key,
-                    |_: &Ctx, _: &Ping, next: SyncNext<'_, Ping>| next.call(),
-                )
-                .unwrap();
+            // One table: the same listeners serve both modes.
+            root.events().on_sync(&root, &key, sync_through).unwrap();
         }
         report(
             &format!("bail_sync exact listeners={listeners}"),
@@ -106,7 +102,7 @@ fn main() {
                 || {
                     black_box(
                         root.events()
-                            .waterfall_sync(&root, &key, &Ping, |_, _| Ok(1))
+                            .waterfall_sync(&root, &key, &Ping, |_, _| Ok(Some(1)))
                             .unwrap(),
                     );
                 },
@@ -122,8 +118,7 @@ fn main() {
         let root = Ctx::root().unwrap();
         let key = EventKey::named("awaited");
         for _ in 0..listeners {
-            root.events().on(&root, &key, Pass).unwrap();
-            root.events().on_waterfall(&root, &key, Through).unwrap();
+            root.events().on(&root, &key, Through).unwrap();
         }
         let loops = if listeners > 8 {
             iterations / 10 + 1
@@ -143,7 +138,12 @@ fn main() {
                     let once = || async {
                         match mode {
                             0 => {
-                                black_box(root.events().serial(&root, &key, &Ping).await.unwrap());
+                                black_box(
+                                    root.events()
+                                        .serial(&root, &key, ping.clone())
+                                        .await
+                                        .unwrap(),
+                                );
                             }
                             1 => root
                                 .events()
@@ -180,13 +180,14 @@ fn main() {
     for patterns in [0, 1, 8, 64, 1024] {
         let root = Ctx::root().unwrap();
         let key = EventKey::named("room/hit");
-        root.events().on(&root, &key, Pass).unwrap();
+        root.events().on(&root, &key, Through).unwrap();
+        let ping = std::sync::Arc::new(Ping);
         for i in 0..patterns {
             root.events()
                 .on_pattern(
                     &root,
-                    EventPattern::prefix(if i == 0 {
-                        "room/".into()
+                    &EventPattern::prefix(if i == 0 {
+                        "room/".to_owned()
                     } else {
                         format!("miss/{i}/")
                     }),
@@ -201,25 +202,33 @@ fn main() {
         };
         let samples = runtime.block_on(async {
             for _ in 0..1000 {
-                root.events().serial(&root, &key, &Ping).await.unwrap();
+                root.events()
+                    .serial(&root, &key, ping.clone())
+                    .await
+                    .unwrap();
             }
             let start = Instant::now();
             for _ in 0..loops {
-                black_box(root.events().serial(&root, &key, &Ping).await.unwrap());
+                black_box(
+                    root.events()
+                        .serial(&root, &key, ping.clone())
+                        .await
+                        .unwrap(),
+                );
             }
             start.elapsed().as_nanos() as f64 / loops as f64
         });
         report(&format!("serial exact + patterns={patterns}"), samples);
         runtime.block_on(root.shutdown()).unwrap();
     }
-    // emit returns once the dispatch is queued; same-key dispatches then run
-    // one after another. "accept" is the caller's cost, "drain" the time per
+    // emit returns once the dispatch is queued; the calls of one name's
+    // emits start in emit order. "accept" is the caller's cost, "drain" the time per
     // event until the chain behind one listener is empty.
     for listeners in [0, 1] {
         let root = Ctx::root().unwrap();
         let key = EventKey::named("queue");
         for _ in 0..listeners {
-            root.events().on(&root, &key, Pass).unwrap();
+            root.events().on(&root, &key, Through).unwrap();
         }
         let ping = std::sync::Arc::new(Ping);
         let loops = iterations / 10 + 1;
@@ -241,20 +250,4 @@ fn main() {
         report(&format!("emit drain same key listeners={listeners}"), drain);
         runtime.block_on(root.shutdown()).unwrap();
     }
-    let root = Ctx::root().unwrap();
-    let scoped = EventKey::<Ping>::of().instance(root.instance());
-    report(
-        "waterfall_sync instance no listeners",
-        measure(
-            || {
-                black_box(
-                    root.events()
-                        .waterfall_sync(&root, &scoped, &Ping, |_, _| Ok(1))
-                        .unwrap(),
-                );
-            },
-            iterations,
-        ),
-    );
-    runtime.block_on(root.shutdown()).unwrap();
 }

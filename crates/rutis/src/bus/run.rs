@@ -589,19 +589,17 @@ pub(crate) fn run_bail(
 
 /// One `emit` call, in its own task when it does not finish at once; its
 /// failure is reported, never returned (§5.6).
-pub(crate) fn emit_call(
+pub(crate) async fn emit_call(
     owned: Arc<OwnedInv>,
     entry: Arc<Entry>,
     flight: CallFlight,
     ticket: Option<Arc<super::EmitTicket>>,
-) -> impl Future<Output = ()> + Send + 'static {
-    async move {
-        let _flight = flight;
-        let _ticket = ticket;
-        let inv = owned.inv();
-        if let Err(error) = call_async(&entry, &inv, None).await {
-            report_listener(&owned.emitter, &owned.name, &entry, error);
-        }
+) {
+    let _flight = flight;
+    let _ticket = ticket;
+    let inv = owned.inv();
+    if let Err(error) = call_async(&entry, &inv, None).await {
+        report_listener(&owned.emitter, &owned.name, &entry, error);
     }
 }
 

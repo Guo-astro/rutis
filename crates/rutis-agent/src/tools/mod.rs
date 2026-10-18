@@ -28,7 +28,7 @@ pub fn tools_key() -> TypeKey {
 }
 
 /// 一次工具执行的输出(失败已转为模型可见的 `error: ...` 文本)。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolOutput {
     pub ok: bool,
     pub output: String,

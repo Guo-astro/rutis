@@ -18,23 +18,40 @@ let view = ctx.plugin_with(MyFactory, cfg_v1);
 view.update(cfg_v2).await?;   // dry-run 不过则现状不动;通过则卸载重载
 ```
 
-## 动态事件名
+## 事件：一张监听器表，五种方式
 
-运行时才知道名字的事件(宿主事件、脚本注册),类型化事件 + 动态限定名,四分发与生命周期清理免费继承:
+事件按**名字**分发（`EventKey::<E>::of()` 的名字是 `E::NAME`，`named` / `dynamic` 给别的名字）。事件类型派生 `Serialize` / `Deserialize`，所以同名的另一个 Rust 类型、另一个进程或节点上的监听器都收到同一个事件（[统一事件设计](design-events-2026-10-18.md)、[协议规格](design-events-protocol-2026-10-18.md) §12.1）。
 
 ```rust
-let key = rutis::EventKey::<RoomEvent>::dynamic(name);
-ctx.events().on(&ctx, &key, listener)?;
-ctx.events().emit(&ctx, &key, Arc::new(event))?;
+#[derive(Serialize, Deserialize)]
+struct RoomEvent { room: String }
+impl Event for RoomEvent { const NAME: &'static str = "room/joined"; type Value = String; }
+
+// 登记一次，任何方式都能调用它；call.mode() 是这次的方式，call.next() 只在 waterfall 里可用
+struct Greet;
+impl Listener<RoomEvent> for Greet {
+    fn call<'a>(&'a self, _ctx: &'a Ctx, e: &'a RoomEvent, _call: Call<'a, String>)
+        -> BoxFuture<'a, Result<Option<String>, CordisError>> {
+        Box::pin(async move { Ok(Some(format!("hi {}", e.room))) })
+    }
+}
+ctx.events().on(&ctx, &EventKey::of(), Greet)?;
+let hi = ctx.events().serial(&ctx, &EventKey::of(), Arc::new(RoomEvent { room: "a".into() })).await?;
 ```
 
-## 模式与同步事件
-
-`EventPattern::prefix("room/")` 可以订阅一组动态名字，监听器收到实际命中的键。需要当场决定时，事件实现 `SyncEvent`，使用 `bail_sync` / `waterfall_sync`；同步终点可借用调用方的局部变量或 MutexGuard。见 [0.3 → 0.5 迁移说明](migration-0.3-to-0.5.md)。
+- `emit` 立即返回，按登记顺序开始每个监听器，不等任何一个；同一名字的多次 emit 按发出顺序开始；监听器失败进 ErrorSink（`ListenerFailed`），不影响其他监听器。
+- `parallel` 按登记顺序开始、等全部完成；有失败时总是 `ListenersFailed`（AggregateError），按登记顺序。
+- `serial` / `bail_sync` 取第一个"有结果"的返回值（`None` 与 `Some(false)` 是没有结果）；错误停止。`bail_sync` / `waterfall_sync` 遇到异步监听器报 `AsyncListener`。
+- `waterfall` / `waterfall_sync` 由外向内，监听器经 `call.next()` 调用其余；不调即否决；终态可选（`()`）；返回最外层的值。
+- 同步监听器用 `on_sync` 登记，所有方式都能调用它。`EventPattern::prefix("room/")` 登记前缀监听器，它收到实际的名字。`EventOptions` 有 `prepend`、`once`、`global`。
+- **作用域**：加载器用 `Ctx::mark_scope(group)` 把组实例标为作用域，`Ctx::scope()` 是从根起的作用域链。监听器收到自己作用域及其下各作用域发出的事件，收不到兄弟作用域的。
+- **过滤**：`ctx.events().filter(|info: &ListenerInfo| ..)` 给出同样的发出方法；过滤在任何调用之前、在发出方进程里看每个非 `global` 监听器的描述（插件、行、运行时、节点、作用域）。
+- **生命周期**：监听器以登记它的 `Ctx` 被调用；它的 fiber 卸载时不再开始新的调用，并等正在运行的调用结束（它们的 `ctx.cancelled()` 已触发），最多到宿主的关闭截止时间。
+- `rutis/*` 是框架事件的保留名字：插件可以监听，发出则报 `ReservedEvent`。
 
 ## 投递前观察
 
-`ctx.events().observe_dispatch(&ctx, observer)` 在选择业务监听器前同步调用观察器，零监听器时也会调用。观察器只看注册 fiber 子树内的投递，随该 fiber 清理；`DispatchAttempt` 包含完整事件键、分发模式、发射方和借用的事件。它记录投递尝试，不提供拒绝投递的返回值。
+`ctx.events().observe_dispatch(&ctx, observer)` 在选择业务监听器前同步调用观察器，零监听器时也会调用。观察器只看注册 fiber 子树内的投递，随该 fiber 清理；`DispatchAttempt` 包含事件名、分发方式、发射方和借用的事件。它记录投递尝试，不提供拒绝投递的返回值。
 
 ## 清理树
 
@@ -46,7 +63,7 @@ ctx.events().emit(&ctx, &key, Arc::new(event))?;
 
 ## 使用边界
 
-`require/require_as` 是严格读取，对应 Cordis 普通插件访问服务时的声明检查；它沿 fiber 祖先链核对 `injects()`，并区分未声明、未就绪、实例越界和上下文失活，错误保留调用位置。同一次读取同时越界且上下文失活时，先报实例越界；登记和实例派发的错误优先级单独定义。`get/get_as` 对应 Cordis 显式 `ctx.get()` 定位器：返回 `Option`，不强制依赖声明。provider 未 Active 或读取方正在卸载时通常不可见，provider 子树在清理期间仍可读取自己提供的服务。实例键另有子树可见性检查。监听器由注册时传给 `on` 的 `Ctx` 持有，回调参数 `Ctx` 来自发送方；回调要给注册插件登记资源时，应捕获注册方的 `Ctx`。可编译示例见 [listener_ctx_ownership.rs](../crates/rutis/examples/listener_ctx_ownership.rs)。
+`require/require_as` 是严格读取，对应 Cordis 普通插件访问服务时的声明检查；它沿 fiber 祖先链核对 `injects()`，并区分未声明、未就绪、实例越界和上下文失活，错误保留调用位置。同一次读取同时越界且上下文失活时，先报实例越界；登记和实例派发的错误优先级单独定义。`get/get_as` 对应 Cordis 显式 `ctx.get()` 定位器：返回 `Option`，不强制依赖声明。provider 未 Active 或读取方正在卸载时通常不可见，provider 子树在清理期间仍可读取自己提供的服务。实例键另有子树可见性检查。监听器由注册时传给 `on` 的 `Ctx` 持有，回调也以这个 `Ctx` 被调用：回调登记的资源属于登记监听器的插件。可编译示例见 [listener_ctx_ownership.rs](../crates/rutis/examples/listener_ctx_ownership.rs)。
 
 ## 依赖诊断
 
@@ -58,4 +75,4 @@ ctx.events().emit(&ctx, &key, Arc::new(event))?;
 
 ## 与 Cordis 的关系
 
-rutis 是 [Cordis](https://github.com/shigma/cordis) 范式的 Rust 惯用实现,不是翻译:96 个原版 spec 逐条审阅,58 个语言无关不变量全部自动化对拍;其余差异全部显式声明(决策表 + 不移植清单 + 对照审计)。已知的刻意强化:跨 effect 清理严格串行 LIFO(cordis 并发)、emit 同键保序显式重建。
+rutis 是 [Cordis](https://github.com/shigma/cordis) 范式的 Rust 惯用实现,不是翻译:96 个原版 spec 逐条审阅,58 个语言无关不变量全部自动化对拍;其余差异全部显式声明(决策表 + 不移植清单 + 对照审计)。已知的刻意强化:跨 effect 清理严格串行 LIFO(cordis 并发)、同一名字的多次 emit 按发出顺序开始。

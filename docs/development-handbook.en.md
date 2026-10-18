@@ -10,6 +10,7 @@ Add dependencies to a Rust project:
 [dependencies]
 rutis = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
 ```
 
 The following example demonstrates service registration and dependency declaration with one provider and one consumer. Backend provides a service; Indexer declares and uses it.
@@ -241,23 +242,24 @@ Use this mechanism for notifications, request dispatch, or processing shared amo
 
 ### Defining Events and Listeners
 
-Implement `Event` for an event type, specifying a diagnostic name and result type. Implement handling logic through `Listener`. The following `DocumentIndexed` event carries a document name:
+Implement `Event` for an event type, specifying the event name and result type; the event and result types implement serde's `Serialize` and `Deserialize` (add `serde = { version = "1", features = ["derive"] }` to the dependencies). Implement handling logic through `Listener`. The following `DocumentIndexed` event carries a document name:
 
 ```rust
 use std::sync::Arc;
-use rutis::{BoxFuture, CordisError, Ctx, Event, EventKey, Listener};
+use rutis::{BoxFuture, Call, CordisError, Ctx, Event, EventKey, Listener};
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct DocumentIndexed(String);
 
 impl Event for DocumentIndexed {
-    const NAME: &'static str = "app::DocumentIndexed";
+    const NAME: &'static str = "app/document-indexed";
     type Value = ();
 }
 
 struct Progress;
 
 impl Listener<DocumentIndexed> for Progress {
-    fn call<'a>(&'a self, _sender: &'a Ctx, event: &'a DocumentIndexed)
+    fn call<'a>(&'a self, _ctx: &'a Ctx, event: &'a DocumentIndexed, _call: Call<'a, ()>)
         -> BoxFuture<'a, Result<Option<()>, CordisError>>
     {
         Box::pin(async move {
@@ -275,30 +277,35 @@ fn index(ctx: &Ctx, path: String) -> Result<(), CordisError> {
 }
 ```
 
-Here, `EventKey::<DocumentIndexed>::of()` is the channel for this event type, `on` registers a listener on that channel, and `emit` submits an event to it. Both return `Result`; if an operation fails (for example, the context is already closed), registration or delivery does not occur.
+Here, `EventKey::<DocumentIndexed>::of()` names the event `DocumentIndexed::NAME`, `on` registers a listener for that name, and `emit` sends an event under it. Both return `Result`; if an operation fails (for example, the context is already closed), registration or delivery does not occur.
 
-Events match by type and channel; `NAME` is for diagnostics. One event type can use `EventKey::named("…")` to split channels (use `EventKey::dynamic` for names generated at runtime). A listener belongs to the `Ctx` passed at registration; the callback receives a `Ctx` from the sender. If a callback creates resources owned by the listening plugin, capture that plugin's registration `Ctx`. Runnable code is in the [context ownership example](../crates/rutis/examples/listener_ctx_ownership.rs).
+Events match by name. `EventKey::named("…")` (or `EventKey::dynamic` for names generated at runtime) gives the same event type another name; listen to a prefix with `on_pattern` and `EventPattern::prefix("…")`. Different Rust types under the same name hear the same events, converted through serde, so unrelated event types should use different names. Names starting with `rutis/` are reserved for framework events; plugins can only listen to them.
+
+A listener belongs to the `Ctx` passed at registration, and the callback receives that same `Ctx`, not the sender's. Resources the callback registers through it therefore belong to the listening plugin, and `ctx.cancelled()` is that plugin's unload signal. Once a plugin starts unloading, its listeners are no longer called, and the unload waits for their running calls to finish. Runnable code is in the [context ownership example](../crates/rutis/examples/listener_ctx_ownership.rs).
 
 ### Choosing a Dispatch Mode
 
+A listener is registered once and every dispatch mode calls it; the sender chooses the mode, and the callback can check it with `call.mode()`.
+
 | API | Execution | Return and error handling |
 |---|---|---|
-| `emit` | Call listeners sequentially in background; same-key events dispatch in sequence | Returns immediately; errors go to ErrorSink |
-| `parallel` | Call listeners concurrently; wait for all | Returns `()` on success; aggregates errors on failure |
-| `serial` | Call in registration order; stop on `Some(value)` or error | Return first value; if all return `None`, result is `None` |
-| `waterfall` | Listeners call later handlers through `next` and can process their result | Return result of the whole chain |
+| `emit` | Start each listener's call in registration order in background; same-name events start in send order; calls run concurrently | Returns immediately; each failure goes to ErrorSink as `ListenerFailed` and does not affect other listeners |
+| `parallel` | Call listeners concurrently; wait for all | Returns `()` on success; failures aggregate into `ListenersFailed` (also for a single failure), in registration order |
+| `serial` | Call one at a time in registration order; stop on a result or error | Return first result; `None` and `Some(false)` count as no result |
+| `waterfall` | Listeners call later handlers through `call.next()` and can process their result | Return the outermost listener's result |
+| `bail_sync` / `waterfall_sync` | As `serial` / `waterfall`, but synchronously on the caller's thread | Listeners must be registered with `on_sync`; an async listener is an `AsyncListener` error |
 
-Ordinary listeners return `Result<Option<E::Value>, CordisError>`. For example, if the event declares `type Value = String`, a serial listener can return a title with `Ok(Some(title))` or pass to the next handler with `Ok(None)`.
+Listeners return `Result<Option<E::Value>, CordisError>`. For example, if the event declares `type Value = String`, a serial listener can return a title with `Ok(Some(title))` or pass to the next handler with `Ok(None)`.
 
-Use `on` to register ordinary listeners for emit, parallel, and serial; use `on_waterfall` for waterfall listeners. A waterfall listener invokes the rest of the chain with `next.call().await` and can process the result; returning directly ends the current flow. The caller provides the chain's final handler through `terminal`. The event argument stays the same throughout the chain; results flow through return values.
+In a waterfall, a listener invokes the rest of the chain with `call.next().await` and can process the result; returning directly ends the current flow. In other modes, `next` returns a `WaterfallNext` error. The caller provides the chain's final handler through `terminal` (`()` for none). The event argument stays the same throughout the chain; results flow through return values.
 
 Emit and parallel ignore `Some(value)` returned by listeners; serial uses it to decide when to stop. Choose a dispatch mode based on whether you need to wait for completion, receive a return value, or enforce handler order.
 
-Subsequent same-key `emit` dispatch waits for the preceding one to complete. `ctx.diagnostics().event_backlogs` lists how many emits per event key have been accepted but not completed and the oldest one's wait duration; use it to identify slow listeners. High-rate data streams can use bounded queues with batching or coalescing to limit backlog; persist data separately if it must be replayed. Processing errors are expressed with `Result`; the caller handles panic in waterfall.
+A slow listener does not hold up other calls of the same name, but each emit stays in the backlog until every call it started has finished. `ctx.diagnostics().event_backlogs` lists how many emits per event name have been accepted but not completed and the oldest one's wait duration; use it to identify slow listeners. High-rate data streams can use bounded queues with batching or coalescing to limit backlog; persist data separately if it must be replayed. Processing errors are expressed with `Result`; the caller handles panic in waterfall.
 
 ## Instance Subtrees
 
-An instance subtree groups a plugin and its descendants for shared management. Instance service keys limit service scope, instance event channels limit listener registration and event delivery, and `FiberView::shutdown()` closes the subtree.
+An instance subtree groups a plugin and its descendants for shared management. Instance service keys limit service scope, event scopes limit where events arrive, and `FiberView::shutdown()` closes the subtree.
 
 Use this structure to manage multiple runtime instances with independent lifetimes. The following workspace example shows how to associate services and events.
 
@@ -321,10 +328,13 @@ Once the parent provides state and creates the child plugin, initialization is c
 
 ### Example: Dispatch Within an Instance
 
-Pass the workspace ID to Progress and Indexer too. They use their own contexts with the same workspace ID:
+The workspace plugin marks itself as a scope; Progress and Indexer are its child plugins and use their own contexts:
 
 ```rust,ignore
-let key = EventKey::<DocumentIndexed>::of().instance(workspace);
+// In WorkspacePlugin::apply: this plugin's subtree becomes a scope.
+ctx.mark_scope("workspace")?;
+
+let key = EventKey::<DocumentIndexed>::of();
 
 // Register from the Progress child plugin.
 progress_ctx.events().on(progress_ctx, &key, Progress)?;
@@ -333,9 +343,9 @@ progress_ctx.events().on(progress_ctx, &key, Progress)?;
 indexer_ctx.events().emit(indexer_ctx, &key, Arc::new(DocumentIndexed(path)))?;
 ```
 
-The instance channel allows the corresponding workspace and its children to register and send events. When that subtree closes, the framework waits for already admitted instance-event handlers to finish before completing cleanup. Any additional background task created by a callback should be registered using the task-management pattern above.
+An event sent inside a scope reaches the listeners of that scope and of its enclosing scopes (up to root); sibling workspaces do not hear it, and events sent outside the scope do not reach listeners inside it. Listeners on root hear every event. When the subtree closes, the framework waits for the running calls of its listeners to finish before completing cleanup. Any additional background task created by a callback should be registered using the task-management pattern above.
 
-Ordinary events are notifications shared within root; named channels (`EventKey::named`) distinguish channels by name; instance events notify within a subtree. The three channel forms match independently; `.instance(id)` can also be applied to a named channel. Isolate service scope is separate from event channels. Instance events currently support emit, parallel, and serial. The older `on_instance` / `emit_instance` / `on_keyed` / `emit_keyed` APIs are deprecated since 0.5.0; use `EventKey` in new code.
+Isolate service scope is separate from event scopes.
 
 The host coordinates shutdown. If an instance callback needs to close its workspace, it should send a request to the host and return; the host can then wait for shutdown to finish normally, including the current callback.
 
@@ -427,7 +437,7 @@ async fn try_shutdown(view: &FiberView, limit: Duration)
 
 `true` means shutdown completed; `false` means this wait timed out. Keep the view and call `view.shutdown().await` again later to obtain the result. Once started, shutdown proceeds independently of the waiter.
 
-In-flight instance-event handlers are tracked by the framework; ordinary and named-event callbacks that have already started may continue running. Manage other work that must be awaited explicitly through task handles and cleanup functions.
+When a plugin unloads, the framework waits for its listeners' running calls to finish (they see `ctx.cancelled()`). Manage other work that must be awaited explicitly through task handles and cleanup functions.
 
 ## Diagnostics and Verification
 
@@ -441,13 +451,13 @@ In-flight instance-event handlers are tracked by the framework; ordinary and nam
 | Service lookup returns None | Registration/lookup type, qualifier, instance ID, and whether provider is Active |
 | Old service still used after update | Dependency declarations complete? Did consumer obtain new-generation instance? |
 | Plugin enters Failed | Specific reason in `view.state().error` |
-| Shutdown waits for a long time | Did initialization finish? Does task respond to cancellation? Are cleanup and instance callbacks complete? |
+| Shutdown waits for a long time | Did initialization finish? Does task respond to cancellation? Are cleanup and listener callbacks complete? |
 
 `diagnostics()` reads current state. For services using health predicates, call `refresh()` after conditions change and inspect the new check result.
 
 ### Handling Errors
 
-Lifecycle operations and waiting event APIs return errors directly. Emit errors and cleanup errors during reload go to ErrorSink; default output is stderr, and hosts can use `Ctx::root_with_sink` to connect their own logger.
+Lifecycle operations and waiting event APIs return errors directly. Emit listener errors (wrapped as `ListenerFailed`) and cleanup errors during reload go to ErrorSink; default output is stderr, and hosts can use `Ctx::root_with_sink` to connect their own logger.
 
 When releasing an effect early, handle the result of `Disposer::dispose()`. Long-lived plugins may periodically call `take_cleanup_errors()` to retrieve completed historical cleanup failures. The owner of each background task observes and reports its errors.
 

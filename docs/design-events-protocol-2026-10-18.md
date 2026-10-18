@@ -96,8 +96,8 @@
 | `row` | 登记它的行的键；挂载方式加载的插件为 `null`。不是这个会话上加载的行时宿主拒绝 |
 | `plugin` | 登记它的插件的名字（Cordis 插件的名字，可以是这一行的子插件；叶子插件的名字） |
 | `kind` | `"sync"`：已知同步（Go 的每个监听器）；`"async"`：已知异步（JavaScript 的 `AsyncFunction`、Python 的 `async def`）；`"any"`：要看它返回什么才知道（其余 JavaScript 和 Python 函数） |
-| `prepend` | Cordis 的 `prepend`；其他语言发 `false` |
-| `global` | Cordis 的 `global`：条目不受自定义过滤，但仍受作用域规则 |
+| `prepend` | 监听器选项 `prepend`（所有语言，第十二节；Node / Bun 上就是 Cordis 自己的选项） |
+| `global` | 监听器选项 `global`（所有语言，第十二节；Node / Bun 上就是 Cordis 自己的）：条目不受自定义过滤，但仍受作用域规则 |
 
 运行时从不登记前缀；Rust 的模式监听器是宿主上的前缀条目（`prefix: true`，`name` 为前缀）。
 
@@ -277,7 +277,6 @@
 | `AsyncListener` | `bail` / `waterfall-sync` 遇到异步监听器 | `listener of <name> in row <row> is asynchronous and cannot run in a synchronous <bail\|waterfall-sync>` |
 | `WaterfallNext` | `next` 调用两次 / 结束后 / 取消后 / 不在 waterfall 中（Rust）/ Rust 同步监听器在异步 waterfall 中 | `next of <name> was already called` · `next of <name> was called after its waterfall ended` · `next is available only in a waterfall (this is <mode>)` · `a synchronous listener cannot call next in an asynchronous waterfall; register it with on` |
 | `ReservedEvent` | 发出 `rutis/*`（任何方式、任何语言，由发出的 API 同步拒绝） | `rutis/* events are emitted by rutis only: <name>` |
-| `NoWire` | 没有 `WIRE` 的 Rust 事件类型要跨进程（发往或来自另一个进程） | `event type <type> (<name>) has no wire format: give it const WIRE: Option<Wire<Self>> = Some(Wire::serde())` |
 | `SyncWaitCycle` | 一次同步调用会使等待成环 | 同服务调用 |
 | `BindingError` | 传输错误、已撤下的监听器、被拒绝的帧 | 传输的信息，或第三节、§4.2、§5.3、第六节给出的信息 |
 
@@ -288,18 +287,11 @@
 ### 12.1 Rust
 
 ```rust
-// rutis (kernel)
-pub trait Event: Send + Sync + 'static {
+// rutis (kernel); everything below is in `rutis::events`, the common types also at the crate root
+pub trait Event: Serialize + DeserializeOwned + Send + Sync + 'static {
     const NAME: &'static str;
-    type Value: Send + 'static;
-    /// How the event crosses processes. `None`: it stays in this process,
-    /// and crossing fails with `NoWire`.
-    const WIRE: Option<Wire<Self>> = None;
-}
-pub struct Wire<E: ?Sized> { /* E's and E::Value's serde, type-erased */ }
-impl<E: Event + Serialize + DeserializeOwned> Wire<E> where E::Value: Serialize + DeserializeOwned {
-    pub const fn serde() -> Self;
-}
+    type Value: Serialize + DeserializeOwned + Send + 'static;
+}   // every event crosses processes: derive Serialize and Deserialize
 
 pub enum Mode { Emit, Parallel, Serial, Waterfall, Bail, WaterfallSync }
 
@@ -330,7 +322,7 @@ pub trait PatternListener<E: Event> { /* as Listener, plus `key: EventKey<E>` be
 pub trait SyncPatternListener<E: Event> { /* as SyncListener, plus `key` */ }
 pub trait Terminal<E: Event>: Send + 'static {
     fn call<'a>(&'a self, ctx: &'a Ctx, event: &'a E) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>>;
-}
+}   // implemented for such closures, and for `()`: no terminal (the last `next` gives `None`)
 
 pub struct EventOptions { pub prepend: bool, pub once: bool, pub global: bool }
 
@@ -342,6 +334,7 @@ impl EventBus {   // ctx.events()
     pub fn once<E: Event>(&self, ctx: &Ctx, key: &EventKey<E>, l: impl Listener<E>) -> Result<Disposer, CordisError>;
     pub fn on_pattern<E: Event>(&self, ctx: &Ctx, p: &EventPattern<E>, l: impl PatternListener<E>) -> Result<Disposer, CordisError>;
     pub fn on_sync_pattern<E: Event>(&self, ctx: &Ctx, p: &EventPattern<E>, l: impl SyncPatternListener<E>) -> Result<Disposer, CordisError>;
+    // and on_pattern_opt / on_sync_pattern_opt with EventOptions
 
     pub fn emit<E: Event>(&self, ctx: &Ctx, key: &EventKey<E>, e: Arc<E>) -> Result<(), CordisError>;
     pub fn parallel<'a, E: Event>(&self, ctx: &'a Ctx, key: &EventKey<E>, e: Arc<E>) -> BoxFuture<'a, Result<(), CordisError>>;
@@ -367,15 +360,74 @@ impl Ctx {
     /// Make this context's fiber a scope of `group` (the loader calls it for
     /// each group instance before its rows start).
     pub fn mark_scope(&self, group: &str) -> Result<(), CordisError>;
+    /// Make this context's fiber the row `key`: `ListenerInfo::row` of the
+    /// listeners registered in it and below it (the loader calls it for each row).
+    pub fn mark_row(&self, key: &str) -> Result<(), CordisError>;
+    /// The nearest marked row.
+    pub fn row(&self) -> Option<String>;
 }
 ```
 
-- **名字**：`EventKey::<E>::of()` 的名字是 `E::NAME`；`EventKey::named(n)` / `EventKey::dynamic(n)` 的名字是 `n`。`EventPattern::prefix(p)` 登记前缀条目。
-- **参数 ↔ `E`**（用 `Wire::serde()` 时）：`E` 序列化为两个及以上字段的元组或元组结构体 → 每个字段一个参数；unit 或 unit 结构体 → 没有参数；其余（结构体、newtype、map、序列）→ 一个参数。解码：0 个参数 → 从 unit；1 个 → 从这个参数；2 个及以上 → 把列表当作元组。编码按服务参数的规则（`session::arg` / `decode_value`），所以 `Bytes`、`Instant`、`ValueMap`、`ObjectRef`、`RemoteFunction` 作为值标记与引用跨边界。
-- **动态事件**：`rutis_bridge::events::Args(pub Vec<rutis_bridge::session::Value>)`，`Value = rutis_bridge::session::Value`，只以 `EventKey::<Args>::dynamic(name)` 使用（用 `of()` 以 `BindingError` 失败，`Args events need a name: EventKey::dynamic(name)`）；它不经 serde 直接跨边界。
+rutis-bridge 在其上搭建逻辑总线的部分（宿主一侧；插件不用）：
+
+```rust
+/// How one Rust type crosses as JSON; carried by every payload and value.
+pub struct Codec { /* .. */ }   // Codec::of::<T>(), to_json / from_json, to_args / from_args (the argument mapping below)
+pub struct Payload { /* .. */ } // an event: Payload::new(Arc<E>), Payload::from_boxed(box, codec)
+pub struct PayloadRef<'a> { /* .. */ }
+pub struct Value { /* .. */ }   // a result: Value::new(v), Value::from_boxed(box, codec), into_typed::<T>(transcoder)
+/// Converts an event or a value to another type: a listener whose type differs
+/// from the dispatch's, a result of another type. Default: JSON. The bridge
+/// installs its own (session values, `Args`) with `EventBus::set_transcoder`.
+pub trait Transcoder: Send + Sync + 'static {
+    fn event(&self, from: PayloadRef<'_>, into: &Codec) -> Result<Box<dyn Any + Send>, CordisError>;
+    fn value(&self, from: &Value, into: &Codec) -> Result<Box<dyn Any + Send>, CordisError>;
+}
+
+pub enum ListenerKind { Sync, Async, Any }
+/// A remote entry: a listener whose calls go to an external dispatcher
+/// (a runtime session, a node link). Same table, positions, scope rule,
+/// filter (by its `ListenerInfo`) and `global` as any entry.
+pub trait RemoteListener: Send + Sync + 'static {
+    fn kind(&self) -> ListenerKind;   // `Async`: never called by bail / waterfall-sync (AsyncListener)
+    /// Called in registration order when the call starts (for `emit`, before
+    /// the dispatch resolves); dropping the future cancels the call (§5.7).
+    fn call<'a>(&'a self, call: RemoteCall<'a>) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
+    /// Inline on the dispatching thread, no kernel lock held: a bridge's
+    /// sync-wait path (SyncWaitCycle) applies as to any synchronous call.
+    fn call_sync(&self, call: RemoteSyncCall<'_>) -> Result<Option<Value>, CordisError>;
+}
+// RemoteCall / RemoteSyncCall: name(), mode(), dispatch() (one id per dispatch),
+// origin() (the raw dispatch's tag), emitter() (&Ctx), event() (PayloadRef),
+// next(): Option<RemoteNext> / Option<RemoteSyncNext> — 'static, Clone; the first
+// call runs the rest of the chain, a second fails "already called", a call after
+// the entry's call ended fails "called after its waterfall ended".
+pub struct RemoteEntry { pub name: String, pub prefix: bool, pub info: ListenerInfo, pub options: EventOptions, pub origin: u64 }
+
+impl EventBus {
+    pub fn on_remote(&self, ctx: &Ctx, entry: RemoteEntry, l: Arc<dyn RemoteListener>) -> Result<Disposer, CordisError>;
+    /// The current entries, then every change; a Rust `on` is reported before it returns (§4.4).
+    pub fn watch_table(&self, owner: &Ctx, f: impl Fn(&TableChange) + Send + Sync + 'static) -> Result<(Vec<TableEntry>, Disposer), CordisError>;
+    /// A dispatch whose event is erased (a runtime's `events.dispatch`): name, mode, payload,
+    /// optional emitter scope, batch filter (§6 selector), terminal, origin, `framework` (`rutis/*`).
+    /// For `emit` it resolves once every call started.
+    pub fn dispatch<'a>(&self, ctx: &'a Ctx, d: Dispatch) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
+    pub fn dispatch_sync(&self, ctx: &Ctx, d: Dispatch) -> Result<Option<Value>, CordisError>;   // bail, waterfall-sync
+    /// Call one entry by id outside a dispatch (a node running the other node's `events.call`, §9).
+    pub fn invoke_entry<'a>(&self, ctx: &'a Ctx, id: u64, call: EntryCall) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
+    pub fn invoke_entry_sync(&self, ctx: &Ctx, id: u64, call: EntryCall) -> Result<Option<Value>, CordisError>;
+    /// `emit` of a framework event: only rutis emits `rutis/*`.
+    pub fn emit_framework<E: Event>(&self, ctx: &Ctx, key: &EventKey<E>, e: Arc<E>) -> Result<(), CordisError>;
+}
+```
+
+- **名字**：`EventKey::<E>::of()` 的名字是 `E::NAME`；`EventKey::named(n)` / `EventKey::dynamic(n)` 的名字是 `n`。`EventPattern::prefix(p)` 登记前缀条目。监听器只按名字查找：同名的另一个 Rust 类型的监听器也收到这个事件，由转码器（serde）转换。
+- **参数 ↔ `E`**（每个事件类型）：`E` 序列化为两个及以上字段的元组或元组结构体 → 每个字段一个参数；unit 或 unit 结构体 → 没有参数；其余（结构体、newtype、map、序列）→ 一个参数。解码：0 个参数 → 从 unit；1 个 → 从这个参数；2 个及以上 → 把列表当作元组（`Codec::to_args` / `from_args`）。bridge 的转码器按服务参数的规则编码（`session::arg` / `decode_value`），所以 `Bytes`、`Instant`、`ValueMap`、`ObjectRef`、`RemoteFunction` 作为值标记与引用跨边界。
+- **动态事件**：`rutis_bridge::events::Args(pub Vec<rutis_bridge::session::Value>)`，`Value = rutis_bridge::session::Value`，只以 `EventKey::<Args>::dynamic(name)` 使用（用 `of()` 以 `BindingError` 失败，`Args events need a name: EventKey::dynamic(name)`）；bridge 的转码器原样取用它的值。
+- Rust 监听器以登记它的上下文被调用（它的 `ctx.cancelled()` 就是卸载信号，§7.1）。
 - `serial` / `bail_sync` 中 `Ok(Some(false))` 是没有结果；`waterfall` 原样返回值。
-- 作用域：发出方的作用域是 `ctx.scope()`；没有向别的作用域发出的 API（改用按 `ListenerInfo::scope` 过滤）。
-- 删除：`on_waterfall*`、`on_waterfall_sync*`、`WaterfallListener`、`SyncWaterfallListener`、`Next`、`SyncNext`、`SyncEvent`、`EventKey::instance`、所有 `*_instance` 与 `*_keyed` 方法。
+- 作用域：发出方的作用域是 `ctx.scope()`；插件没有向别的作用域发出的 API（改用按 `ListenerInfo::scope` 过滤）。
+- 删除：`on_waterfall*`、`on_waterfall_sync*`、`WaterfallListener`、`SyncWaterfallListener`、`Next`、`SyncNext`、`SyncEvent`、`EventKey::instance`、所有 `*_instance` 与 `*_keyed` 方法、`EventPattern::any_prefix`。
 
 ### 12.2 其他语言
 
@@ -383,7 +435,7 @@ impl Ctx {
 
 | | Node / Bun（Cordis 插件） | Node / Bun（叶子） | Python | Go |
 | --- | --- | --- | --- | --- |
-| 监听 | `ctx.on(name, fn, options?) → () => boolean`（`options`：`prepend`、`global`；也有 `ctx.once`） | `ctx.on(name, fn) → () => void` | `ctx.on(name, fn) → Callable[[], None]` | `ctx.On(name string, fn func(ctx context.Context, args ...any) (any, error)) func()` |
+| 监听 | `ctx.on(name, fn, options?) → () => boolean`（`options`：`prepend`、`global`；也有 `ctx.once`） | `ctx.on(name, fn, { prepend?, global }?) → () => void` | `ctx.on(name, fn, *, prepend=False, global_=False) → Callable[[], None]` | `ctx.On(name string, fn func(ctx context.Context, args ...any) (any, error), options ...rutis.ListenOption) func()`（`rutis.Prepend()`、`rutis.Global()`） |
 | 监听器 | `(...args[, next]) => value \| Promise` | 同左 | `fn(*args[, next]) -> value \| awaitable` | `fn(ctx, args...)`；waterfall 中最后一个参数是 `rutis.Next`（`func(context.Context) (any, error)`） |
 | `emit` | `ctx.emit([thisArg,] name, ...args): void` | `ctx.emit(name, ...args): void` | `ctx.emit(name, *args) -> None` | `ctx.Emit(ctx context.Context, name string, args ...any) error`（只报拒绝） |
 | `parallel` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` |
@@ -420,7 +472,7 @@ impl Ctx {
 
 一个**用例**：`case`（id）、`rule`（本文的章节）、`name`（默认事件名）、`listeners`、`steps`，可选 `vary`、`only`、`except`、`tool`。
 
-- **监听器**：`label`、`at`（位置）、`scope`（作用域路径，默认 `root`）、`name`（默认用例的）、`kind`（`sync` / `async` / `any`；用例的每一步都用 `bail` 或 `waterfall-sync` 时默认 `sync`，否则 `async`；Go 总是 `sync`；JavaScript / Python 的 `async` = 异步函数，`any` = 返回 `does` 所返回内容的普通函数）、`options`（`{ "prepend": true }`、`{ "global": true }`：只有 Cordis 与 Rust）、`log`（默认 `"label"`；`"arg"`：记 `label:<args[0]>`；字段名列表：记 `args[0]` 的这些字段 `label:<f1>,<f2>`；`false`：不记）、`does`：
+- **监听器**：`label`、`at`（位置）、`scope`（作用域路径，默认 `root`）、`name`（默认用例的）、`kind`（`sync` / `async` / `any`；用例的每一步都用 `bail` 或 `waterfall-sync` 时默认 `sync`，否则 `async`；Go 总是 `sync`；JavaScript / Python 的 `async` = 异步函数，`any` = 返回 `does` 所返回内容的普通函数）、`options`（`{ "prepend": true }`、`{ "global": true }`；所有语言）、`log`（默认 `"label"`；`"arg"`：记 `label:<args[0]>`；字段名列表：记 `args[0]` 的这些字段 `label:<f1>,<f2>`；`false`：不记）、`does`：
 
   | `does` | 监听器 |
   | --- | --- |
@@ -654,13 +706,11 @@ impl Ctx {
 
     { "case": "filter/global-skips-filter", "rule": "4.2 global, 6", "name": "t/filter-global",
       "listeners": [ { "label": "g", "at": "Y", "options": { "global": true }, "does": { "returns": null } } ],
-      "only": [ { "g": ["node", "bun", "rust"], "why": "only Cordis and Rust have global listeners" } ],
       "vary": ["g", "e"],
       "steps": [ { "emit": { "from": "X", "mode": "parallel", "args": [], "filter": { "keep": [] } }, "expect": { "log": ["g"] } } ] },
 
     { "case": "order/prepend", "rule": "4.3", "name": "t/prepend",
       "listeners": [ { "label": "b", "at": "X", "does": { "returns": null } }, { "label": "a", "at": "Y", "options": { "prepend": true }, "does": { "returns": null } } ],
-      "only": [ { "a": ["node", "bun", "rust"], "why": "prepend is Cordis's and Rust's" } ],
       "vary": ["a", "b", "e"],
       "steps": [ { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "log": ["a", "b"] } } ] },
 
@@ -766,10 +816,6 @@ impl Ctx {
         { "emit": { "from": "X", "mode": "serial", "args": [ { "city": "Oslo" } ] }, "expect": { "returns": { "city": "Oslo" } } },
         { "emit": { "from": "X", "mode": "serial", "name": "t/typed-pair", "args": ["x", 2] }, "expect": { "returns": ["x", 2] } } ] },
 
-    { "case": "rust/no-wire", "rule": "11 NoWire", "name": "t/local-type", "tool": false,
-      "listeners": [ { "label": "h", "at": "host", "typed": "local", "does": { "returns": "H" } } ],
-      "steps": [ { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "throws": { "name": "NoWire" } } } ] },
-
     { "case": "rust/next-outside-waterfall", "rule": "11 WaterfallNext", "name": "t/rust-next", "tool": false,
       "listeners": [ { "label": "h", "at": "host", "does": { "next": "h" } } ],
       "steps": [ { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "throws": { "name": "WaterfallNext" } } } ] }
@@ -777,7 +823,7 @@ impl Ctx {
 }
 ```
 
-上面用到的 Rust 专用监听器字段：`typed`（`"struct"`：带 `Wire::serde()` 的类型化事件 `struct { city: String }`；`"tuple"`：`struct Pair(String, i64)`；`"local"`：没有 `WIRE` 的类型）。`does` 为 `next` 的 Rust 监听器，无论以哪种方式被调用都调用 `call.next()`。
+上面用到的 Rust 专用监听器字段：`typed`（`"struct"`：类型化事件 `struct { city: String }`；`"tuple"`：`struct Pair(String, i64)`；两者都派生 `Serialize` / `Deserialize`，每个 Rust 事件都如此）。`does` 为 `next` 的 Rust 监听器，无论以哪种方式被调用都调用 `call.next()`。
 
 文件之外另由 Rust 测试检查：§2.2 对 0.12 运行时与节点的握手拒绝（跨版本端到端测试）；第四至九节的每种帧按所写解码与拒绝（会话单元测试）；卸载超过截止时间（§7.1）。
 
@@ -816,14 +862,14 @@ impl Ctx {
 17. **卸载最多等 `RUTIS_SHUTDOWN_TIMEOUT`**（默认 10 秒），之后写 §7.1 的一行并继续。
 18. **`rutis/*` 的参数**各为一个记录，状态用小写；以 `emit` 方式在对象所在的作用域发出；替换提供方时再发一次 `available: true`。
 19. **节点连接**：`export` = 我发出的到达对端，`import` = 我的监听器收到对端的（所以 `events.out` → `export`，`events.in` → `import`）；条目从导入方流向导出方；结尾 `*` 为前缀，只用于事件；只通告节点自己的、位于连接作用域或其上的条目；引进的条目从不转发（事件不多跳）；接受的条目放在连接的作用域；同一名字可以双向共享。
-20. **Rust 事件类型以 `const WIRE` 选择跨进程**；没有它的类型在要跨进程时以 `NoWire` 失败，从不悄悄留在本地；参数按元组 / unit / 单值对应；动态事件为 `rutis_bridge::events::Args`；`SyncEvent`、实例键与已弃用的 keyed / instance 方法随 `on_waterfall*` 一起删除；`Terminal` 返回 `Option`；`on` 保留登记用的 `ctx` 参数。
+20. **每个 Rust 事件类型都能跨进程**：`Event` 要求 `Serialize + DeserializeOwned`（派生），它的 `Value` 也是，所以没有只留在本进程的类型，也不需要选择（2026-10-18 修订；删除原先的 `const WIRE` / `NoWire`）。监听器按名字查找；同名的另一个 Rust 类型的监听器经总线的转码器（serde）收到转换后的事件。参数按元组 / unit / 单值对应；动态事件为 `rutis_bridge::events::Args`；`SyncEvent`、实例键与已弃用的 keyed / instance 方法随 `on_waterfall*` 一起删除；`Terminal` 返回 `Option`（`()` 表示没有终态）；`on` 保留登记用的 `ctx` 参数，Rust 监听器以这个上下文被调用。内核另加 `Ctx::mark_row`（宿主 Rust 监听器描述的 `row`），以及给 bridge 用的别处监听器条目（`RemoteListener`）、原始的 `dispatch` / `dispatch_sync`、`invoke_entry` 与 `watch_table`（§12.1）。
 21. **Rust 的 `on_sync` 监听器在异步 waterfall 中不能调用 `next`**（`WaterfallNext`）；需要时用 `on` 登记。
 22. **Go 监听器为 `func(ctx, args ...any) (any, error)`**，waterfall 中 `next` 是最后一个参数；`Emit` 只对拒绝返回错误。
 23. **`emit` 方式的 `events.call` 在监听器结束后回复**，总是 `undefined`；失败在监听器所在处以 §5.6 的一行报告。
-24. **错误名与信息**见第十一节，包括 `AsyncListener`、`WaterfallNext`、`ReservedEvent`、`NoWire`；传输类失败保持 `BindingError`。
+24. **错误名与信息**见第十一节，包括 `AsyncListener`、`WaterfallNext`、`ReservedEvent`；传输类失败保持 `BindingError`。
 25. **Node / Bun 对每次分发在每个执行其监听器的进程里触发一次 Cordis `internal/dispatch`**，另加发出方自己的 Cordis 分发中的那一次。
 26. **测试工具**在一个进程里提供作用域、过滤、卸载等待与取消，不提供 `rutis/*`；期望文件以 `tool: false` 标出它们跳过的用例。
-27. **`prepend` 与 `global`** 只在今天已有的地方存在（Cordis、Rust）；Python、Go 与 Node 叶子的监听器发 `false`。
+27. **`prepend` 与 `global` 在所有语言中都有**（2026-10-18 修订）：Node / Bun 的 Cordis 插件用 Cordis 自己的选项，Node / Bun 叶子用 `ctx.on(name, fn, { prepend, global })`，Python 用 `ctx.on(name, fn, prepend=…, global_=…)`，Go 用 `rutis.Prepend()` / `rutis.Global()`，Rust 用 `EventOptions`（第十二节）。
 
 实现宿主侧时（#464，`events/host`）定下的：
 

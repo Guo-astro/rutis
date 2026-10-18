@@ -96,8 +96,8 @@ Registration (runtime → host):
 | `row` | The registering row's key; `null` for a mount-mode plugin. The host refuses a row not loaded on the session |
 | `plugin` | Name of the registering plugin (the Cordis plugin's name, which may be a child plugin of the row; the leaf plugin's name) |
 | `kind` | `"sync"`: known synchronous (every Go listener); `"async"`: known asynchronous (JavaScript `AsyncFunction`, Python `async def`); `"any"`: known only from what it returns (other JavaScript and Python functions) |
-| `prepend` | Cordis `prepend`; other languages send `false` |
-| `global` | Cordis `global`: the entry is exempt from custom filters (§6), never from the scope rule |
+| `prepend` | The listener option `prepend` (every language, §12; Cordis's own option on Node / Bun) |
+| `global` | The listener option `global` (every language, §12; Cordis's own on Node / Bun): the entry is exempt from custom filters (§6), never from the scope rule |
 
 Runtimes never register prefixes; Rust pattern listeners are prefix entries of the host (`prefix: true`, `name` = the prefix).
 
@@ -277,7 +277,6 @@ Event arguments, results, `next` / terminal results and filter descriptors are s
 | `AsyncListener` | async listener in `bail` / `waterfall-sync` | `listener of <name> in row <row> is asynchronous and cannot run in a synchronous <bail\|waterfall-sync>` |
 | `WaterfallNext` | `next` twice / after the end / after cancellation / outside a waterfall (Rust) / Rust sync listener in an async waterfall | `next of <name> was already called` · `next of <name> was called after its waterfall ended` · `next is available only in a waterfall (this is <mode>)` · `a synchronous listener cannot call next in an asynchronous waterfall; register it with on` |
 | `ReservedEvent` | emitting `rutis/*` (any mode, any language, refused synchronously by the emit API) | `rutis/* events are emitted by rutis only: <name>` |
-| `NoWire` | a Rust event type without `WIRE` reaching or reached from another process | `event type <type> (<name>) has no wire format: give it const WIRE: Option<Wire<Self>> = Some(Wire::serde())` |
 | `SyncWaitCycle` | a synchronous invocation would close a wait cycle | as for service calls |
 | `BindingError` | transport errors, withdrawn listeners, refused frames | the transport's message, or as given in §3, §4.2, §5.3, §6 |
 
@@ -288,18 +287,11 @@ A listener's own error crosses with its name, message and graph, as any call's e
 ### 12.1 Rust
 
 ```rust
-// rutis (kernel)
-pub trait Event: Send + Sync + 'static {
+// rutis (kernel); everything below is in `rutis::events`, the common types also at the crate root
+pub trait Event: Serialize + DeserializeOwned + Send + Sync + 'static {
     const NAME: &'static str;
-    type Value: Send + 'static;
-    /// How the event crosses processes. `None`: it stays in this process,
-    /// and crossing fails with `NoWire`.
-    const WIRE: Option<Wire<Self>> = None;
-}
-pub struct Wire<E: ?Sized> { /* E's and E::Value's serde, type-erased */ }
-impl<E: Event + Serialize + DeserializeOwned> Wire<E> where E::Value: Serialize + DeserializeOwned {
-    pub const fn serde() -> Self;
-}
+    type Value: Serialize + DeserializeOwned + Send + 'static;
+}   // every event crosses processes: derive Serialize and Deserialize
 
 pub enum Mode { Emit, Parallel, Serial, Waterfall, Bail, WaterfallSync }
 
@@ -330,7 +322,7 @@ pub trait PatternListener<E: Event> { /* as Listener, plus `key: EventKey<E>` be
 pub trait SyncPatternListener<E: Event> { /* as SyncListener, plus `key` */ }
 pub trait Terminal<E: Event>: Send + 'static {
     fn call<'a>(&'a self, ctx: &'a Ctx, event: &'a E) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>>;
-}
+}   // implemented for such closures, and for `()`: no terminal (the last `next` gives `None`)
 
 pub struct EventOptions { pub prepend: bool, pub once: bool, pub global: bool }
 
@@ -342,6 +334,7 @@ impl EventBus {   // ctx.events()
     pub fn once<E: Event>(&self, ctx: &Ctx, key: &EventKey<E>, l: impl Listener<E>) -> Result<Disposer, CordisError>;
     pub fn on_pattern<E: Event>(&self, ctx: &Ctx, p: &EventPattern<E>, l: impl PatternListener<E>) -> Result<Disposer, CordisError>;
     pub fn on_sync_pattern<E: Event>(&self, ctx: &Ctx, p: &EventPattern<E>, l: impl SyncPatternListener<E>) -> Result<Disposer, CordisError>;
+    // and on_pattern_opt / on_sync_pattern_opt with EventOptions
 
     pub fn emit<E: Event>(&self, ctx: &Ctx, key: &EventKey<E>, e: Arc<E>) -> Result<(), CordisError>;
     pub fn parallel<'a, E: Event>(&self, ctx: &'a Ctx, key: &EventKey<E>, e: Arc<E>) -> BoxFuture<'a, Result<(), CordisError>>;
@@ -367,15 +360,74 @@ impl Ctx {
     /// Make this context's fiber a scope of `group` (the loader calls it for
     /// each group instance before its rows start).
     pub fn mark_scope(&self, group: &str) -> Result<(), CordisError>;
+    /// Make this context's fiber the row `key`: `ListenerInfo::row` of the
+    /// listeners registered in it and below it (the loader calls it for each row).
+    pub fn mark_row(&self, key: &str) -> Result<(), CordisError>;
+    /// The nearest marked row.
+    pub fn row(&self) -> Option<String>;
 }
 ```
 
-- **Names**: `EventKey::<E>::of()` is named `E::NAME`; `EventKey::named(n)` / `EventKey::dynamic(n)` are named `n`. `EventPattern::prefix(p)` registers a prefix entry.
-- **Arguments ↔ `E`** (with `Wire::serde()`): `E` serializing as a tuple or tuple struct of two or more fields → one argument per field; unit or unit struct → no arguments; anything else (struct, newtype, map, sequence) → one argument. Decoding: 0 arguments → from unit; 1 → from that argument; 2 or more → from the list as a tuple. Encoding follows the service-argument rules (`session::arg` / `decode_value`), so `Bytes`, `Instant`, `ValueMap`, `ObjectRef`, `RemoteFunction` cross as tagged values and references.
-- **Dynamic events**: `rutis_bridge::events::Args(pub Vec<rutis_bridge::session::Value>)` with `Value = rutis_bridge::session::Value`, used only as `EventKey::<Args>::dynamic(name)` (`of()` fails with `BindingError`, `Args events need a name: EventKey::dynamic(name)`); it crosses without serde.
+What rutis-bridge builds the logical bus on (the host side; plugins do not use it):
+
+```rust
+/// How one Rust type crosses as JSON; carried by every payload and value.
+pub struct Codec { /* .. */ }   // Codec::of::<T>(), to_json / from_json, to_args / from_args (the argument mapping below)
+pub struct Payload { /* .. */ } // an event: Payload::new(Arc<E>), Payload::from_boxed(box, codec)
+pub struct PayloadRef<'a> { /* .. */ }
+pub struct Value { /* .. */ }   // a result: Value::new(v), Value::from_boxed(box, codec), into_typed::<T>(transcoder)
+/// Converts an event or a value to another type: a listener whose type differs
+/// from the dispatch's, a result of another type. Default: JSON. The bridge
+/// installs its own (session values, `Args`) with `EventBus::set_transcoder`.
+pub trait Transcoder: Send + Sync + 'static {
+    fn event(&self, from: PayloadRef<'_>, into: &Codec) -> Result<Box<dyn Any + Send>, CordisError>;
+    fn value(&self, from: &Value, into: &Codec) -> Result<Box<dyn Any + Send>, CordisError>;
+}
+
+pub enum ListenerKind { Sync, Async, Any }
+/// A remote entry: a listener whose calls go to an external dispatcher
+/// (a runtime session, a node link). Same table, positions, scope rule,
+/// filter (by its `ListenerInfo`) and `global` as any entry.
+pub trait RemoteListener: Send + Sync + 'static {
+    fn kind(&self) -> ListenerKind;   // `Async`: never called by bail / waterfall-sync (AsyncListener)
+    /// Called in registration order when the call starts (for `emit`, before
+    /// the dispatch resolves); dropping the future cancels the call (§5.7).
+    fn call<'a>(&'a self, call: RemoteCall<'a>) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
+    /// Inline on the dispatching thread, no kernel lock held: a bridge's
+    /// sync-wait path (SyncWaitCycle) applies as to any synchronous call.
+    fn call_sync(&self, call: RemoteSyncCall<'_>) -> Result<Option<Value>, CordisError>;
+}
+// RemoteCall / RemoteSyncCall: name(), mode(), dispatch() (one id per dispatch),
+// origin() (the raw dispatch's tag), emitter() (&Ctx), event() (PayloadRef),
+// next(): Option<RemoteNext> / Option<RemoteSyncNext> — 'static, Clone; the first
+// call runs the rest of the chain, a second fails "already called", a call after
+// the entry's call ended fails "called after its waterfall ended".
+pub struct RemoteEntry { pub name: String, pub prefix: bool, pub info: ListenerInfo, pub options: EventOptions, pub origin: u64 }
+
+impl EventBus {
+    pub fn on_remote(&self, ctx: &Ctx, entry: RemoteEntry, l: Arc<dyn RemoteListener>) -> Result<Disposer, CordisError>;
+    /// The current entries, then every change; a Rust `on` is reported before it returns (§4.4).
+    pub fn watch_table(&self, owner: &Ctx, f: impl Fn(&TableChange) + Send + Sync + 'static) -> Result<(Vec<TableEntry>, Disposer), CordisError>;
+    /// A dispatch whose event is erased (a runtime's `events.dispatch`): name, mode, payload,
+    /// optional emitter scope, batch filter (§6 selector), terminal, origin, `framework` (`rutis/*`).
+    /// For `emit` it resolves once every call started.
+    pub fn dispatch<'a>(&self, ctx: &'a Ctx, d: Dispatch) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
+    pub fn dispatch_sync(&self, ctx: &Ctx, d: Dispatch) -> Result<Option<Value>, CordisError>;   // bail, waterfall-sync
+    /// Call one entry by id outside a dispatch (a node running the other node's `events.call`, §9).
+    pub fn invoke_entry<'a>(&self, ctx: &'a Ctx, id: u64, call: EntryCall) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
+    pub fn invoke_entry_sync(&self, ctx: &Ctx, id: u64, call: EntryCall) -> Result<Option<Value>, CordisError>;
+    /// `emit` of a framework event: only rutis emits `rutis/*`.
+    pub fn emit_framework<E: Event>(&self, ctx: &Ctx, key: &EventKey<E>, e: Arc<E>) -> Result<(), CordisError>;
+}
+```
+
+- **Names**: `EventKey::<E>::of()` is named `E::NAME`; `EventKey::named(n)` / `EventKey::dynamic(n)` are named `n`. `EventPattern::prefix(p)` registers a prefix entry. Listeners are found by name only: a listener of another Rust type with the same name hears the event, converted by the transcoder (serde).
+- **Arguments ↔ `E`** (every event type): `E` serializing as a tuple or tuple struct of two or more fields → one argument per field; unit or unit struct → no arguments; anything else (struct, newtype, map, sequence) → one argument. Decoding: 0 arguments → from unit; 1 → from that argument; 2 or more → from the list as a tuple (`Codec::to_args` / `from_args`). The bridge's transcoder encodes by the service-argument rules (`session::arg` / `decode_value`), so `Bytes`, `Instant`, `ValueMap`, `ObjectRef`, `RemoteFunction` cross as tagged values and references.
+- **Dynamic events**: `rutis_bridge::events::Args(pub Vec<rutis_bridge::session::Value>)` with `Value = rutis_bridge::session::Value`, used only as `EventKey::<Args>::dynamic(name)` (`of()` fails with `BindingError`, `Args events need a name: EventKey::dynamic(name)`); the bridge's transcoder takes its values as they are.
+- A Rust listener is called with the context that registered it (its `ctx.cancelled()` is its unload signal, §7.1).
 - `Ok(Some(false))` is no result in `serial` / `bail_sync`; `waterfall` returns the value as is.
-- Scope: the emitter's scope is `ctx.scope()`; there is no API to emit into another scope (filter by `ListenerInfo::scope` instead).
-- Removed: `on_waterfall*`, `on_waterfall_sync*`, `WaterfallListener`, `SyncWaterfallListener`, `Next`, `SyncNext`, `SyncEvent`, `EventKey::instance`, every `*_instance` and `*_keyed` method.
+- Scope: the emitter's scope is `ctx.scope()`; there is no API for plugins to emit into another scope (filter by `ListenerInfo::scope` instead).
+- Removed: `on_waterfall*`, `on_waterfall_sync*`, `WaterfallListener`, `SyncWaterfallListener`, `Next`, `SyncNext`, `SyncEvent`, `EventKey::instance`, every `*_instance` and `*_keyed` method, `EventPattern::any_prefix`.
 
 ### 12.2 Other languages
 
@@ -383,7 +435,7 @@ impl Ctx {
 
 | | Node / Bun (Cordis plugin) | Node / Bun (leaf) | Python | Go |
 | --- | --- | --- | --- | --- |
-| listen | `ctx.on(name, fn, options?) → () => boolean` (`options`: `prepend`, `global`; `ctx.once` too) | `ctx.on(name, fn) → () => void` | `ctx.on(name, fn) → Callable[[], None]` | `ctx.On(name string, fn func(ctx context.Context, args ...any) (any, error)) func()` |
+| listen | `ctx.on(name, fn, options?) → () => boolean` (`options`: `prepend`, `global`; `ctx.once` too) | `ctx.on(name, fn, { prepend?, global }?) → () => void` | `ctx.on(name, fn, *, prepend=False, global_=False) → Callable[[], None]` | `ctx.On(name string, fn func(ctx context.Context, args ...any) (any, error), options ...rutis.ListenOption) func()` (`rutis.Prepend()`, `rutis.Global()`) |
 | listener | `(...args[, next]) => value \| Promise` | same | `fn(*args[, next]) -> value \| awaitable` | `fn(ctx, args...)`; in a waterfall the last arg is a `rutis.Next` (`func(context.Context) (any, error)`) |
 | `emit` | `ctx.emit([thisArg,] name, ...args): void` | `ctx.emit(name, ...args): void` | `ctx.emit(name, *args) -> None` | `ctx.Emit(ctx context.Context, name string, args ...any) error` (refusals only) |
 | `parallel` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` |
@@ -420,7 +472,7 @@ Top level: `about` (how to read), `plugin`, `scopes` (scope path → group: the 
 
 A **case**: `case` (id), `rule` (the section of this document), `name` (default event name), `listeners`, `steps`, optional `vary`, `only`, `except`, `tool`.
 
-- **Listener**: `label`, `at` (location), `scope` (scope path, default `root`), `name` (default the case's), `kind` (`sync` / `async` / `any`; default `sync` when every step of the case uses `bail` or `waterfall-sync`, else `async`; Go is always `sync`; JavaScript / Python `async` = async function, `any` = plain function returning what `does` returns), `options` (`{ "prepend": true }`, `{ "global": true }`: Cordis and Rust only), `log` (`"label"` default; `"arg"`: logs `label:<args[0]>`; a list of field names: logs `label:<f1>,<f2>` of `args[0]`; `false`: nothing), `does`:
+- **Listener**: `label`, `at` (location), `scope` (scope path, default `root`), `name` (default the case's), `kind` (`sync` / `async` / `any`; default `sync` when every step of the case uses `bail` or `waterfall-sync`, else `async`; Go is always `sync`; JavaScript / Python `async` = async function, `any` = plain function returning what `does` returns), `options` (`{ "prepend": true }`, `{ "global": true }`; every language), `log` (`"label"` default; `"arg"`: logs `label:<args[0]>`; a list of field names: logs `label:<f1>,<f2>` of `args[0]`; `false`: nothing), `does`:
 
   | `does` | The listener |
   | --- | --- |
@@ -654,13 +706,11 @@ A **case**: `case` (id), `rule` (the section of this document), `name` (default 
 
     { "case": "filter/global-skips-filter", "rule": "4.2 global, 6", "name": "t/filter-global",
       "listeners": [ { "label": "g", "at": "Y", "options": { "global": true }, "does": { "returns": null } } ],
-      "only": [ { "g": ["node", "bun", "rust"], "why": "only Cordis and Rust have global listeners" } ],
       "vary": ["g", "e"],
       "steps": [ { "emit": { "from": "X", "mode": "parallel", "args": [], "filter": { "keep": [] } }, "expect": { "log": ["g"] } } ] },
 
     { "case": "order/prepend", "rule": "4.3", "name": "t/prepend",
       "listeners": [ { "label": "b", "at": "X", "does": { "returns": null } }, { "label": "a", "at": "Y", "options": { "prepend": true }, "does": { "returns": null } } ],
-      "only": [ { "a": ["node", "bun", "rust"], "why": "prepend is Cordis's and Rust's" } ],
       "vary": ["a", "b", "e"],
       "steps": [ { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "log": ["a", "b"] } } ] },
 
@@ -766,10 +816,6 @@ A **case**: `case` (id), `rule` (the section of this document), `name` (default 
         { "emit": { "from": "X", "mode": "serial", "args": [ { "city": "Oslo" } ] }, "expect": { "returns": { "city": "Oslo" } } },
         { "emit": { "from": "X", "mode": "serial", "name": "t/typed-pair", "args": ["x", 2] }, "expect": { "returns": ["x", 2] } } ] },
 
-    { "case": "rust/no-wire", "rule": "11 NoWire", "name": "t/local-type", "tool": false,
-      "listeners": [ { "label": "h", "at": "host", "typed": "local", "does": { "returns": "H" } } ],
-      "steps": [ { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "throws": { "name": "NoWire" } } } ] },
-
     { "case": "rust/next-outside-waterfall", "rule": "11 WaterfallNext", "name": "t/rust-next", "tool": false,
       "listeners": [ { "label": "h", "at": "host", "does": { "next": "h" } } ],
       "steps": [ { "emit": { "from": "X", "mode": "serial", "args": [] }, "expect": { "throws": { "name": "WaterfallNext" } } } ] }
@@ -777,7 +823,7 @@ A **case**: `case` (id), `rule` (the section of this document), `name` (default 
 }
 ```
 
-Rust-only listener field used above: `typed` (`"struct"`: a typed event `struct { city: String }` with `Wire::serde()`; `"tuple"`: `struct Pair(String, i64)`; `"local"`: a type without `WIRE`). A Rust listener whose `does` is `next` calls `call.next()` in whatever mode it is invoked.
+Rust-only listener field used above: `typed` (`"struct"`: a typed event `struct { city: String }`; `"tuple"`: `struct Pair(String, i64)`; both derive `Serialize` / `Deserialize`, as every Rust event does). A Rust listener whose `does` is `next` calls `call.next()` in whatever mode it is invoked.
 
 Also checked outside the file (Rust tests): the handshake refusals of §2.2 against a 0.12 runtime and node (the cross-version end-to-end tests); every frame of §4–§9 decoded and refused as written (session unit tests); unload past the deadline (§7.1).
 
@@ -816,14 +862,14 @@ Where the design was silent, this specification chose:
 17. **Unload waits at most `RUTIS_SHUTDOWN_TIMEOUT`** (default 10 s), then writes the §7.1 line and goes on.
 18. **`rutis/*` payloads** are one record each with lowercase states; fired in `emit` mode at the subject's scope; a provider replacement fires `available: true` again.
 19. **Node links**: `export` = my emissions reach the peer, `import` = my listeners hear the peer (so `events.out` → `export`, `events.in` → `import`); entries travel from importer to exporter; `*` suffix = prefix, for events only; only a node's own entries at or above the link's scope are announced; imported entries are never relayed (no multi-hop events); accepted entries sit at the link's scope; a name may be shared both ways.
-20. **Rust event types opt in to crossing** with `const WIRE`; a type without it fails with `NoWire` when it would cross, never silently stays local; argument mapping by tuple / unit / single value; dynamic events are `rutis_bridge::events::Args`; `SyncEvent`, instance keys and the deprecated keyed / instance methods are removed with `on_waterfall*`; `Terminal` returns `Option`; `on` keeps its registering `ctx` parameter.
+20. **Every Rust event type crosses processes**: `Event` requires `Serialize + DeserializeOwned` (derived), its `Value` too, so no type is ever process-local and there is no opt-in (amended 2026-10-18; the earlier `const WIRE` / `NoWire` are dropped). Listeners are found by name; a listener of another Rust type with the same name gets the event converted through serde by the bus's transcoder. Argument mapping by tuple / unit / single value; dynamic events are `rutis_bridge::events::Args`; `SyncEvent`, instance keys and the deprecated keyed / instance methods are removed with `on_waterfall*`; `Terminal` returns `Option` (`()` = none); `on` keeps its registering `ctx` parameter, and a Rust listener is called with that context. The kernel adds `Ctx::mark_row` (descriptor `row` of host Rust listeners) and, for the bridge, remote entries (`RemoteListener`), the raw `dispatch` / `dispatch_sync`, `invoke_entry` and `watch_table` (§12.1).
 21. **A Rust `on_sync` listener cannot call `next` in an asynchronous waterfall** (`WaterfallNext`); register with `on` for that.
 22. **Go listeners are `func(ctx, args ...any) (any, error)`** with `next` as the last argument in a waterfall; `Emit` returns an error only for refusals.
 23. **`emit`-mode `events.call` is answered after the listener finished**, always with `undefined`; failures are reported where the listener runs, with the §5.6 line.
-24. **Error names and messages** of §11, including `AsyncListener`, `WaterfallNext`, `ReservedEvent`, `NoWire`; transport-class failures keep `BindingError`.
+24. **Error names and messages** of §11, including `AsyncListener`, `WaterfallNext`, `ReservedEvent`; transport-class failures keep `BindingError`.
 25. **Node / Bun fire Cordis `internal/dispatch` once per dispatch** in each process that runs a listener of it, besides the emitter's own Cordis dispatch.
 26. **Testing tools** run in one process with scopes, filter, unload waiting and cancellation, without `rutis/*`; the expectation file marks cases they skip with `tool: false`.
-27. **Prepend and `global`** exist only where they exist today (Cordis, Rust); Python, Go and Node leaf listeners send `false`.
+27. **`prepend` and `global` exist in every language** (amended 2026-10-18): Cordis's own options on Node / Bun Cordis plugins, `ctx.on(name, fn, { prepend, global })` for Node / Bun leaves, `ctx.on(name, fn, prepend=…, global_=…)` in Python, `rutis.Prepend()` / `rutis.Global()` in Go, `EventOptions` in Rust (§12).
 
 Decided while implementing the host side (#464, `events/host`):
 

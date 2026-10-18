@@ -648,15 +648,23 @@ impl EventBus {
         let bus = self.clone();
         owner.register_internal_effect_named("dispatch observer".into(), move |_, _, _| {
             bus.core.state.lock().unwrap().observers.push(hook.clone());
-            Ok(Effect::Disposer(Box::new(move || {
-                let mut state = bus.core.state.lock().unwrap();
-                state.observers.retain(|entry| !Arc::ptr_eq(entry, &hook));
-                if state.observers.capacity() > 64
-                    && state.observers.len() * 4 < state.observers.capacity()
+            Ok(Effect::AsyncDisposer(Box::new(move || {
                 {
-                    state.observers.shrink_to_fit();
+                    let mut state = bus.core.state.lock().unwrap();
+                    state.observers.retain(|entry| !Arc::ptr_eq(entry, &hook));
+                    if state.observers.capacity() > 64
+                        && state.observers.len() * 4 < state.observers.capacity()
+                    {
+                        state.observers.shrink_to_fit();
+                    }
                 }
-                Ok(())
+                Box::pin(async move {
+                    // A call that selected it before the removal finishes first.
+                    if let Some(owner) = hook.owner.upgrade() {
+                        owner.wait_events().await;
+                    }
+                    Ok(())
+                })
             })))
         })
     }
@@ -696,7 +704,19 @@ impl EventBus {
             let Some(owner) = observer.owner.upgrade() else {
                 continue;
             };
-            if !owner.alive.load(Ordering::SeqCst)
+            // Counted first: the owner's unload, and the observer's own
+            // disposal, wait for this call.
+            let _flight = table::CallFlight::begin(owner.clone());
+            let registered = self
+                .core
+                .state
+                .lock()
+                .unwrap()
+                .observers
+                .iter()
+                .any(|entry| Arc::ptr_eq(entry, &observer));
+            if !registered
+                || !owner.alive.load(Ordering::SeqCst)
                 || owner.closing.load(Ordering::SeqCst)
                 || !ancestry.iter().any(|fiber| Arc::ptr_eq(fiber, &owner))
             {

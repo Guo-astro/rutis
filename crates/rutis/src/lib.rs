@@ -4,7 +4,7 @@
 //! 1. 插件 = 装配单元(一次 `apply`,提供服务/监听/清理)
 //! 2. fiber = 生命周期容器(六态状态机 + 依赖门控 + 级联卸载 + 恰好一次清理)
 //! 3. 服务 = 类型键注册表 + isolate 作用域
-//! 4. 事件总线 = 四分发语义(emit/parallel/serial/waterfall)
+//! 4. 事件总线 = 一张监听器表、五种分发(emit/parallel/serial/waterfall/bail),按名字与作用域
 //! 5. 依赖驱动重载(provider 卸载 → 消费者驱逐并自动重载)
 
 #![allow(clippy::type_complexity)]
@@ -31,8 +31,8 @@ pub use diagnostics::{
 };
 pub use effect::{Disposer, Effect, EffectMeta, EffectPhase};
 pub use error::{
-    CordisError, ErrorSink, NextMisuse, ServiceReadError, ServiceReadFailure, ServiceWriteError,
-    ServiceWriteFailure,
+    default_sink, CordisError, ErrorSink, NextMisuse, ServiceReadError, ServiceReadFailure,
+    ServiceWriteError, ServiceWriteFailure,
 };
 pub use events::{
     Call, Event, EventOptions, Listener, ListenerInfo, ListenerKind, Mode, PatternListener, Scope,
