@@ -255,6 +255,8 @@ struct Remote {
     target: Target,
     asynchronous: HashSet<String>,
     shape: Json,
+    /// The peer that offers it.
+    peer: PeerId,
 }
 
 enum Target {
@@ -310,6 +312,10 @@ impl HostDispatch for Remote {
 
     fn methods(&self) -> Option<Json> {
         Some(self.shape.clone())
+    }
+
+    fn provider(&self) -> Option<String> {
+        Some(format!("peer {}", self.peer))
     }
 }
 
@@ -395,6 +401,7 @@ impl Importer {
                     target,
                     asynchronous,
                     shape,
+                    peer: self.peer.clone(),
                 }),
             )
             .map_err(|error| Error::Value(error.to_string()))?;

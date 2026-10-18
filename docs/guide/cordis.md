@@ -5,7 +5,12 @@ rutis 和 Cordis（Node 插件框架）有两种互通方式：
 - **Cordis 应用作为节点**：已有的 Cordis 应用接到 rutis 节点上，互相使用服务、转发事件，并让 rutis 在它里面运行插件。用 `@arcships/rutis-runtime/bridge`。
 - **在 Rust 应用里挂载 Cordis 插件**：已发布的 Cordis 插件在真实的 Cordis 中运行，源码不改，Rust 侧拿到构建时从它的类型声明生成的 Rust 类型。用 `rutis-bridge` 的 `cordis` feature。
 
-此外，Cordis 插件本身也可以作为 rutis-loader 的行运行（在包的 `package.json` 里声明 `rutis.provides`），见 [写一个 TypeScript 插件](typescript-plugin.md#已有的-cordis-插件)。`rutis-host` 里目前还做不到的：已发布、没有 `rutis.provides` 的包提供的服务，别的行都用不到，同一个 Node 运行时里的其他 Cordis 行也不行（[#428](https://github.com/arcships/rutis/issues/428)）；只用 rutis 一侧服务的这类插件可以作为行运行。
+此外，Cordis 插件本身也可以作为 rutis-loader 的行运行，`rutis.json` 里写包名就行，包不用改，见 [写一个 TypeScript 插件](typescript-plugin.md#已有的-cordis-插件)：
+
+- 同一个 Node 运行时里的 Cordis 行按 Cordis 的原生规则互相使用服务，拿到的是对象本身。
+- 一行提供的服务自动投到 rutis，别的运行时的行、别的节点和 Rust 插件按名字使用；方法取服务对象上的函数（自身和原型链上的，不含 `constructor`），都按 `async` 调用。包的 `package.json` 里写了 `rutis.provides` 时按它（例如把某些方法标成 `sync`）。
+- 同名服务已经有别的提供者（另一个运行时的行、Rust 插件、节点导入）时，后提供的那一行失败，错误写明双方，例如 `service storage is already provided by row prompts: row storage cannot provide it too`。
+- `rutis-host check` 不运行插件，看不到没有声明的服务：一行依赖的服务只可能由这类行提供时，写 `may be provided at runtime by …`，不算失败。
 
 ## Cordis 应用作为节点
 

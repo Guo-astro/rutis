@@ -36,7 +36,7 @@ pub use local::LocalRuntime;
 pub use plugin::{Runtime, RuntimeHandle, RuntimePlugin, RuntimeState};
 pub use process::{scoped_id, Host, HostLease, Launcher, Mount, Process, RowSchema, ServiceEvents};
 pub use projection::Projection;
-pub use rows::{row_projection, row_projection_with, RowService};
+pub use rows::{row_projection, row_projection_of, row_projection_with, RowService};
 
 use std::sync::Arc;
 

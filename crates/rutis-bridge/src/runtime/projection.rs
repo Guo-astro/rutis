@@ -22,6 +22,14 @@ type Apply = Box<
         + Send,
 >;
 
+/// Declares the slot of a service a row announces (see
+/// [`Projection::on_announced`]).
+type Announce = Box<dyn FnMut(&Projection, &str, &serde_json::Value) -> bool + Send>;
+
+/// Says who already provides a service a slot could not be published as,
+/// for the error naming both sides.
+type Occupied = Arc<dyn Fn(&Ctx) -> Option<String> + Send + Sync>;
+
 struct Slot {
     /// Newest handle reported by the Cordis side.
     handle: Option<String>,
@@ -57,6 +65,10 @@ pub struct Projection {
     /// Woken when a publisher finishes.
     idle: tokio::sync::Notify,
     me: Weak<Projection>,
+    announce: Mutex<Option<Announce>>,
+    /// The first slot refused because another provider has its key, and
+    /// why (see [`Projection::take_refused`]).
+    refused: Mutex<Option<String>>,
 }
 
 impl Projection {
@@ -65,7 +77,34 @@ impl Projection {
             state: Mutex::default(),
             idle: tokio::sync::Notify::new(),
             me: me.clone(),
+            announce: Mutex::new(None),
+            refused: Mutex::new(None),
         })
+    }
+
+    /// Follow the services a row announces without declaring them
+    /// ([`ServiceEvents::announced`]): `declare` is given each one's name
+    /// and methods, before each new object of it, and declares its slot
+    /// the first time (with [`Projection::service_keyed`]). It returns
+    /// whether the projection follows the service.
+    pub fn on_announced(
+        &self,
+        declare: impl FnMut(&Projection, &str, &serde_json::Value) -> bool + Send + 'static,
+    ) {
+        *self.announce.lock().unwrap() = Some(Box::new(declare));
+    }
+
+    /// Whether a slot named `name` is declared.
+    pub fn has_service(&self, name: &str) -> bool {
+        self.state.lock().unwrap().slots.contains_key(name)
+    }
+
+    /// Why a slot could not be published since the last call, when another
+    /// provider has its key: the error names both sides
+    /// ([`Projection::service_keyed_occupied`]). A row loading checks it to
+    /// fail as the later provider.
+    pub fn take_refused(&self) -> Option<String> {
+        self.refused.lock().unwrap().take()
     }
 
     /// Declare an exported slot. `make` builds the native proxy for one handle.
@@ -85,8 +124,36 @@ impl Projection {
         &self,
         name: &str,
         key: TypeKey,
-        mut make: impl FnMut(Arc<Process>, String) -> Arc<T> + Send + 'static,
+        make: impl FnMut(Arc<Process>, String) -> Arc<T> + Send + 'static,
     ) {
+        self.declare(name, key, make, None);
+    }
+
+    /// [`Projection::service_keyed`], saying who has the key when the
+    /// slot cannot be published because another provider does:
+    /// `occupied` describes it ("row prompts", say). The error then names
+    /// both sides, `this` being the slot's own provider ("row storage"),
+    /// and [`Projection::take_refused`] returns it.
+    pub fn service_keyed_occupied<T: ?Sized + Send + Sync + 'static>(
+        &self,
+        name: &str,
+        key: TypeKey,
+        make: impl FnMut(Arc<Process>, String) -> Arc<T> + Send + 'static,
+        this: String,
+        occupied: impl Fn(&Ctx) -> Option<String> + Send + Sync + 'static,
+    ) {
+        self.declare(name, key, make, Some((this, Arc::new(occupied))));
+    }
+
+    fn declare<T: ?Sized + Send + Sync + 'static>(
+        &self,
+        name: &str,
+        key: TypeKey,
+        mut make: impl FnMut(Arc<Process>, String) -> Arc<T> + Send + 'static,
+        occupied: Option<(String, Occupied)>,
+    ) {
+        let service = name.to_owned();
+        let me = self.me.clone();
         let mut binding: Option<(Disposer, ServiceWriter<T>)> = None;
         // A proxy whose publication failed is kept for the retry: it holds its
         // handle, and dropping it would release that handle on the Cordis side.
@@ -109,10 +176,29 @@ impl Projection {
                 Some((_, writer)) => writer
                     .set(ctx, proxy.clone())
                     .map_err(|error| Error::Value(error.to_string())),
-                None => ctx
-                    .provide_mut_as(key.clone(), proxy.clone())
-                    .map(|registered| binding = Some(registered))
-                    .map_err(|error| Error::Value(error.to_string())),
+                None => match ctx.provide_mut_as(key.clone(), proxy.clone()) {
+                    Ok(registered) => {
+                        binding = Some(registered);
+                        Ok(())
+                    }
+                    // Another provider has the key: the later one fails,
+                    // and says who has it.
+                    Err(CordisError::ServiceExists(_)) if occupied.is_some() => {
+                        let (this, occupied) = occupied.as_ref().unwrap();
+                        let holder = occupied(ctx).unwrap_or_else(|| "another plugin".to_owned());
+                        let why = format!(
+                            "service {service} is already provided by {holder}: {this} cannot provide it too"
+                        );
+                        if let Some(me) = me.upgrade() {
+                            me.refused
+                                .lock()
+                                .unwrap()
+                                .get_or_insert_with(|| why.clone());
+                        }
+                        Err(Error::Value(why))
+                    }
+                    Err(error) => Err(Error::Value(error.to_string())),
+                },
             };
             if published.is_err() {
                 candidate = Some((handle, proxy));
@@ -334,6 +420,15 @@ impl Projection {
 }
 
 impl ServiceEvents for Projection {
+    fn announced(&self, name: &str, methods: &serde_json::Value) -> bool {
+        // Not under the state's lock: declaring a slot takes it.
+        let mut announce = self.announce.lock().unwrap();
+        match announce.as_mut() {
+            Some(declare) => declare(self, name, methods),
+            None => false,
+        }
+    }
+
     fn changed(&self, name: &str, handle: Option<String>, _version: u64) {
         let skipped = {
             let mut state = self.state.lock().unwrap();

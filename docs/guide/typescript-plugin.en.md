@@ -142,10 +142,16 @@ See [rutis-host and rutis.json](rutis-host.en.md), or [Embed in a Rust applicati
 
 ## Existing Cordis plugins
 
-No rewrite is needed. Declare the services rutis should expose in the plugin package's `package.json`:
+No rewrite is needed, and no change to the package: name the package in a row of `rutis.json` (a published package as well):
 
 ```json
-"rutis": { "provides": { "weather": { "today": "async" } } }
+{ "id": "storage", "name": "@deepseek-ai/dsh-storage" }
 ```
 
-The plugin runs in the Node runtime's Cordis Context, in the same process as leaf plugins. They receive the actual objects when using each other's services.
+The plugin runs in the Node runtime's Cordis Context, in the same process as leaf plugins and other Cordis rows: rows of the same runtime use each other's services by Cordis's native rules and receive the objects themselves. The services it provides reach rutis by themselves, and other runtimes and Rust use them by name; the methods are the functions of the service object, called as `async`. To mark some methods `sync`, or to let `rutis-host check` know before running what it provides, declare them in the package's `package.json` (a declaration applies when present):
+
+```json
+"rutis": { "provides": { "weather": { "today": "sync" } } }
+```
+
+For name clashes and what `check` reports, see [Cordis](cordis.en.md).

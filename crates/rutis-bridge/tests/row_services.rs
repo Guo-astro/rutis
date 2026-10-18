@@ -8,7 +8,9 @@ use std::sync::{mpsc, Arc};
 use std::task::Poll;
 
 use rutis::{BoxFuture, CordisError, Ctx, EventKey, Listener, ServiceChange, ServiceChanged};
-use rutis_bridge::runtime::{row_projection, Mount, Process, Projection, RowService};
+use rutis_bridge::runtime::{
+    row_projection, row_projection_of, Mount, Process, Projection, RowService,
+};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value as RpcValue};
 use rutis_test_support::{recv_within, until, within};
@@ -92,15 +94,88 @@ async fn describe_reports_config_inject_and_provides() {
         Value::Object(described.provides),
         json!({ "weather": { "today": "sync", "later": "async" } })
     );
+    assert!(!described.announces, "its package says what it provides");
     assert_eq!(
         described.config.unwrap()["properties"]["city"]["default"],
         json!("Paris")
     );
-    // A plugin outside any package with `rutis.provides` provides nothing.
+    // A plugin outside any package with `rutis.provides` declares nothing:
+    // what it provides is announced when it runs.
     let inspector = write(dir.path(), "inspector.mjs", INSPECTOR);
     let described = process.describe_row(&inspector).await.unwrap();
     assert!(described.inject.is_empty() && described.provides.is_empty());
+    assert!(described.announces);
     process.dispose().await.unwrap();
+}
+
+/// A published Cordis plugin: it declares nothing, and provides a service
+/// with methods of its own and inherited, a field, and a second service
+/// the row keeps to itself.
+const STORE: &str = r#"
+class Base { keys() { return ['a'] } }
+class Store extends Base {
+  constructor(prefix) { super(); this.prefix = prefix }
+  get(key) { return `${this.prefix}${key}` }
+}
+export function apply(ctx) {
+  ctx.provide('store', new Store('v:'))
+  ctx.provide('kept', { secret() { return 1 } })
+}
+"#;
+
+/// #428: the services a row provides without declaring them are announced
+/// with the methods each object has (own and inherited, `async`; not its
+/// fields), and published before its load returns; one the row keeps to
+/// its own scope is not; unloading withdraws them.
+#[tokio::test(flavor = "multi_thread")]
+async fn services_a_row_does_not_declare_are_announced_with_their_methods() {
+    let dir = tempfile::tempdir().unwrap();
+    let process = rows_process(dir.path()).await;
+    assert!(process.supports("rows.announce"));
+    let entry = write(dir.path(), "store.mjs", STORE);
+    let ctx = Ctx::root().unwrap();
+    let projection = row_projection_of("row store", &serde_json::Map::new(), host_key, |name| {
+        name == "kept"
+    });
+    projection.attach(&ctx, process.clone()).unwrap();
+    process
+        .load_row_exporting(
+            "store",
+            &entry,
+            json!({}),
+            &[],
+            &[],
+            &serde_json::Map::new(),
+            projection.clone(),
+        )
+        .await
+        .unwrap();
+    let store = ctx
+        .get_as::<dyn HostDispatch>(host_key("store"))
+        .expect("announced and published before the load returned");
+    assert_eq!(
+        store.methods(),
+        Some(json!({ "get": "async", "keys": "async" }))
+    );
+    assert_eq!(store.provider().as_deref(), Some("row store"));
+    let got = settle(store.invoke("get", json!(["x"]).into()).unwrap())
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(got, json!("v:x"));
+    assert!(
+        store.invoke("prefix", json!([]).into()).is_err(),
+        "a field is not a method"
+    );
+    drop(store);
+    assert!(ctx.get_as::<dyn HostDispatch>(host_key("kept")).is_none());
+
+    projection.withdraw().await;
+    process.unload_row("store").await.unwrap();
+    assert!(ctx.get_as::<dyn HostDispatch>(host_key("store")).is_none());
+    process.dispose().await.unwrap();
+    ctx.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

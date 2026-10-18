@@ -17,10 +17,12 @@
 //! runtime: the host says so and how, the rows there wait, the Python rows
 //! go on. The residue checks end it (Q5.4.2).
 //!
-//! The second scenario, the published plugins using each other's services
-//! and answering a probe as in native Cordis (`node/baseline/scenarios.mjs`),
-//! is a known failure: rows of published plugins can neither resolve each
-//! other's services natively nor offer theirs to rutis (#428).
+//! The second scenario: the published plugins use each other's services
+//! and answer a probe as in native Cordis (`node/baseline/scenarios.mjs`,
+//! #428). Rows of the same Node runtime resolve each other's services in
+//! Cordis; what they provide reaches rutis without any declaration, with
+//! the methods each service has; `check` says such a dependency may be
+//! provided at runtime instead of failing.
 
 use std::path::{Path, PathBuf};
 
@@ -149,7 +151,10 @@ fn node_project(s: &Scenario) {
 /// Run `node <script> <args>` from `node/baseline` and read the JSON it
 /// prints.
 fn node(s: &Scenario, script: &str, args: &[&str]) -> Value {
-    let script = baseline().join(script);
+    // Without the `\\?\` of a canonical Windows path: `scenarios.mjs`
+    // prints only when `process.argv[1]` is its own path.
+    let script = baseline().join(script).display().to_string();
+    let script = PathBuf::from(script.strip_prefix(r"\\?\").unwrap_or(&script));
     let mut program = s.program(
         "",
         "node",
@@ -407,8 +412,9 @@ fn substitute(value: &Value, captured: &Map<String, Value>) -> Value {
 
 /// risk: F8 (mounted from rutis.json, a Cordis plugin behaves otherwise
 /// than mounted by a library, or than in Cordis)
+///
+/// guarantee: loader/announced-services, host/check
 #[test]
-#[ignore = "known failing: rows of published Cordis plugins can neither resolve each other's services natively nor offer theirs to rutis (#428)"]
 fn published_cordis_services_resolve_and_answer_as_in_native_cordis() {
     let s = Scenario::new("cordis-services");
     // Native Cordis first, in the directories both runs share (file
@@ -444,12 +450,21 @@ fn published_cordis_services_resolve_and_answer_as_in_native_cordis() {
         &json!({ "runtimes": { "node": {} }, "rows": rows }),
     );
 
+    // `check` passes: what the rows inject, other rows of the runtime may
+    // provide once they run (nothing declares it), and in Cordis it
+    // resolves natively.
     let mut check = s.host(["check", "rutis.json"]);
     let status = check.wait_exit();
+    let printed = output(&check).join("\n");
+    assert!(status.success(), "check: {status}\n{printed}");
     assert!(
-        status.success(),
-        "check: {status}\n{}",
-        output(&check).join("\n")
+        !printed.contains("nothing provides"),
+        "check, dependencies between rows:\n{printed}"
+    );
+    let workspace = printed.split("workspace-4 (").nth(1).unwrap();
+    assert!(
+        workspace.contains("storageDomain: may be provided at runtime by "),
+        "check, what workspace uses:\n{printed}"
     );
 
     let mut host = s.host(["run", "rutis.json"]);

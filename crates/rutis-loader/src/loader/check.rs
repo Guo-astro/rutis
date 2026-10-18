@@ -84,6 +84,11 @@ pub enum Supply {
     /// Nothing known provides it, but these rows may: what they provide is
     /// not known yet.
     Unknown(Vec<Unknown>),
+    /// No row declares it, but these rows may provide it once they run:
+    /// they provide services they do not declare ([`Declared::announces`],
+    /// a published Cordis plugin, say). A Cordis row's dependency on
+    /// another row of its runtime resolves in Cordis.
+    Announced(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +179,7 @@ impl Loader {
         let mut providers: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         let mut disabled: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         let mut unknown: Vec<Unknown> = Vec::new();
+        let mut announcing: Vec<&str> = Vec::new();
         let starts = |id: &str| {
             rows.iter()
                 .any(|row| row.id == id && matches!(row.status, RowStatus::Checked { .. }))
@@ -188,6 +194,9 @@ impl Loader {
                     };
                     for name in &declared.provides {
                         into.entry(name).or_default().push(id);
+                    }
+                    if declared.announces && *wanted {
+                        announcing.push(id);
                     }
                 }
                 Err(why) if *wanted && starts(id) => unknown.push(Unknown {
@@ -244,8 +253,14 @@ impl Loader {
                             .filter(|source| source.row != check.id)
                             .cloned()
                             .collect();
+                        let announced: Vec<String> = announcing
+                            .iter()
+                            .filter(|id| **id != check.id)
+                            .map(|id| (*id).to_owned())
+                            .collect();
                         let supply = match (by.is_empty(), others.is_empty()) {
                             (false, _) => Supply::Provided(by),
+                            (true, _) if !announced.is_empty() => Supply::Announced(announced),
                             (true, false) => Supply::Unknown(others),
                             (true, true) => Supply::Missing {
                                 disabled: disabled
