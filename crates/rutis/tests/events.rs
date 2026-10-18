@@ -1539,7 +1539,8 @@ async fn raw_dispatch_and_entry_calls() {
     // A batch filter knows which entry of which session each candidate is
     // (its origin and the id it was registered with), also when two have
     // equal descriptors.
-    let asked: Arc<Mutex<Vec<(Option<u64>, Option<String>)>>> = Arc::default();
+    type Asked = Vec<(Option<u64>, Option<String>)>;
+    let asked: Arc<Mutex<Asked>> = Arc::default();
     let seen = asked.clone();
     dispatch.filter = Some(Box::new(move |candidates: Vec<Candidate>| {
         *seen.lock().unwrap() = candidates
