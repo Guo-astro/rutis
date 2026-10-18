@@ -290,14 +290,19 @@ impl Value {
     }
 
     /// "No result" (protocol spec §1): `false`, or JSON `null` / `false`;
-    /// a value of another type when it serializes to one of them (a unit,
-    /// a session value holding `null`). A `None` never becomes a `Value`.
+    /// a value of another type, but `()`, when it serializes to one of them
+    /// (a session value holding `null`, say). A `None` never becomes a `Value`.
     pub fn is_no_result(&self) -> bool {
         if let Some(value) = self.value.downcast_ref::<bool>() {
             return !*value;
         }
         if let Some(json) = self.value.downcast_ref::<Json>() {
             return matches!(json, Json::Null | Json::Bool(false));
+        }
+        // `Some(())` is a result (only `None` is no result in Rust), though
+        // it serializes to `null`.
+        if self.value.is::<()>() {
+            return false;
         }
         // A value that does not serialize (a reference, say) is a result.
         self.to_json()
