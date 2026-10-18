@@ -285,12 +285,20 @@
         {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"log": ["a", "b"]}}
       ] },
 
-    { "case": "values/every-tag", "rule": "10", "name": "t/values", "vary": ["a", "e"], "except": [{"a": ["go"], "why": "Go receives a set as `any` as a slice (value rules), so its echo is a list"}, {"e": ["go"], "why": "Go receives a set as `any` as a slice (value rules), so the result it returns is a list"}],
+    { "case": "values/every-tag", "rule": "10", "name": "t/values", "vary": ["a", "e"], "except": [{"a": ["go"], "why": "Go receives a set as `any` as a slice (value rules), so its echo is a list"}, {"e": ["go"], "why": "Go receives a set as `any` as a slice (value rules), so the result it returns is a list"}, {"a": ["node", "node-leaf", "bun"], "why": "JavaScript receives a datetime, date, time, decimal and uuid as strings (docs/design-value-types-2026-10-15.md §2), so its echo sends strings; values/through-javascript covers the rest"}, {"e": ["node", "node-leaf", "bun"], "why": "JavaScript receives a datetime, date, time, decimal and uuid as strings (docs/design-value-types-2026-10-15.md §2), so the result it returns has strings; values/through-javascript covers the rest"}],
       "listeners": [
         {"label": "a", "at": "Y", "does": {"echo": true}}
       ],
       "steps": [
         {"emit": {"from": "X", "mode": "serial", "args": [[{"$instant": "2026-10-15T03:22:15.123Z"}, {"$datetime": "2026-10-15T14:30:05.25"}, {"$date": "2026-10-15"}, {"$time": "14:30:05.25"}, {"$bytes": "aGVsbG8="}, {"$map": [[1, "a"]]}, {"$set": ["a"]}, {"$bigint": "-123456789012345678901"}, {"$decimal": "1.10"}, {"$uuid": "0f8fad5b-d9cb-469f-a165-70867728950e"}]]}, "expect": {"returns": [{"$instant": "2026-10-15T03:22:15.123Z"}, {"$datetime": "2026-10-15T14:30:05.25"}, {"$date": "2026-10-15"}, {"$time": "14:30:05.25"}, {"$bytes": "aGVsbG8="}, {"$map": [[1, "a"]]}, {"$set": ["a"]}, {"$bigint": "-123456789012345678901"}, {"$decimal": "1.10"}, {"$uuid": "0f8fad5b-d9cb-469f-a165-70867728950e"}]}}
+      ] },
+
+    { "case": "values/through-javascript", "rule": "10", "name": "t/values-js", "vary": ["a", "e"],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"echo": true}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "serial", "args": [[{"$instant": "2026-10-15T03:22:15.123Z"}, {"$bytes": "aGVsbG8="}, {"$map": [[1, "a"]]}, {"$bigint": "-123456789012345678901"}]]}, "expect": {"returns": [{"$instant": "2026-10-15T03:22:15.123Z"}, {"$bytes": "aGVsbG8="}, {"$map": [[1, "a"]]}, {"$bigint": "-123456789012345678901"}]}}
       ] },
 
     { "case": "values/function-argument", "rule": "10", "name": "t/callback", "vary": ["a", "e"],
@@ -391,6 +399,15 @@
       "steps": [
         {"load": {"label": "z", "at": "Y", "provides": "zsvc", "name": "t/unused", "does": {"returns": null}}},
         {"unload": "z", "expect": {"logContains": ["w:zsvc,true", "w:zsvc,false"]}}
+      ] },
+
+    { "case": "rutis/service-of-rust", "rule": "8", "name": "rutis/service", "tool": false, "vary": ["w"],
+      "listeners": [
+        {"label": "w", "at": "X", "log": ["name", "available", "row"], "does": {"returns": null}}
+      ],
+      "steps": [
+        {"load": {"label": "z", "at": "host", "provides": "zsvc", "name": "t/unused", "does": {"returns": null}}},
+        {"unload": "z", "expect": {"logContains": ["w:zsvc,true,z", "w:zsvc,false,z"]}}
       ] },
 
     { "case": "rutis/runtime", "rule": "8", "name": "rutis/runtime", "tool": false,
