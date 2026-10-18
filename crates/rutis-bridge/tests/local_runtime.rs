@@ -77,12 +77,13 @@ async fn local_runtime_events_follow_leaf_lifecycle() {
                     &[],
                     &exports,
                     row_projection(&exports),
+                    &[],
                 )
                 .await
                 .unwrap();
             let probe = eventually(|| process.service("probe"), "the observer").await;
             process
-                .load_row("listener", &entry, json!({}), &[], &[])
+                .load_row("listener", &entry, json!({}), &[], &[], &[])
                 .await
                 .unwrap();
             process

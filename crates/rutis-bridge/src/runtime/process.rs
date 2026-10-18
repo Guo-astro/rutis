@@ -864,10 +864,11 @@ impl Process {
         // runtime learns which names have listeners elsewhere first
         // (events protocol §4.5).
         let scope = ctx.as_ref().map(rutis::Ctx::scope).unwrap_or_default();
+        let runtime = runtime.unwrap_or_else(|| "runtime".to_owned());
         let events = crate::events::SessionEvents::join(
             ctx.as_ref(),
             process.peer.clone(),
-            runtime.unwrap_or_else(|| "runtime".to_owned()),
+            runtime.clone(),
             scope.clone(),
         )?;
         let _ = process.imports.bus.set(events);
@@ -877,8 +878,9 @@ impl Process {
                 "mount",
                 // `announce`: this side takes the services rows provide without
                 // declaring them (`service` with `{ row, methods }`). `scope`:
-                // the chain of the plugins of `plugins` (events protocol §3).
-                json!({ "plugins": plugins, "services": services, "provided": provided, "announce": true, "scope": scope }),
+                // the chain of the plugins of `plugins` (events protocol §3);
+                // `runtime`: its name, as listener descriptors give it.
+                json!({ "plugins": plugins, "services": services, "provided": provided, "announce": true, "scope": scope, "runtime": runtime }),
             )
             .await?;
         let slots: HashMap<String, (Option<String>, u64)> =

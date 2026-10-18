@@ -85,7 +85,7 @@ async fn a_lease_for_a_row_names_it_and_a_shared_one_does_not() {
         let isolate = [("ledger".to_owned(), label)];
         let name = key.split('.').next().unwrap();
         process
-            .load_row(key, &entry, json!({ "name": name }), &isolate, &[])
+            .load_row(key, &entry, json!({ "name": name }), &isolate, &[], &[])
             .await
             .unwrap();
         leases.push(lease);
@@ -96,7 +96,7 @@ async fn a_lease_for_a_row_names_it_and_a_shared_one_does_not() {
         .await
         .unwrap();
     process
-        .load_row("c.1", &entry, json!({ "name": "c" }), &[], &[])
+        .load_row("c.1", &entry, json!({ "name": "c" }), &[], &[], &[])
         .await
         .unwrap();
     // And a call from Rust.

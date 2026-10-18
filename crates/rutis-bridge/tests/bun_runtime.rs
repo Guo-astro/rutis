@@ -98,6 +98,7 @@ async fn load(
             &[],
             &described.provides,
             projection.clone(),
+            &[],
         )
         .await
         .unwrap();
