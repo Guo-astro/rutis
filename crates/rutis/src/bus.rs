@@ -111,8 +111,19 @@ pub(crate) struct EmitTicket {
     seq: u64,
 }
 
+std::thread_local! {
+    /// This thread holds the bus state while it spawns an emit's task: a
+    /// runtime shutting down drops the task's future inside `spawn`, and its
+    /// guards must not take the state again (a deadlock). What they would
+    /// clean up is not recorded yet, or goes with the runtime.
+    static SPAWNING_EMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 impl Drop for EmitTicket {
     fn drop(&mut self) {
+        if SPAWNING_EMIT.with(std::cell::Cell::get) {
+            return;
+        }
         let mut state = self.bus.core.state.lock().unwrap();
         if let Some(list) = state.backlog.get_mut(&self.name) {
             list.remove(&self.seq);
@@ -131,6 +142,9 @@ struct TailCleanup {
 
 impl Drop for TailCleanup {
     fn drop(&mut self) {
+        if SPAWNING_EMIT.with(std::cell::Cell::get) {
+            return;
+        }
         let mut state = self.bus.core.state.lock().unwrap();
         if state
             .tails
@@ -825,6 +839,7 @@ impl EventBus {
             generation,
         };
         let spawn_handle = handle.clone();
+        SPAWNING_EMIT.with(|spawning| spawning.set(true));
         let task = handle.spawn(async move {
             let _cleanup = cleanup;
             if let Some(prev) = prev {
@@ -854,6 +869,7 @@ impl EventBus {
             drop(ticket);
             let _ = started.send(());
         });
+        SPAWNING_EMIT.with(|spawning| spawning.set(false));
         state.tails.insert(name, Tail { generation, task });
         Ok(receiver)
     }
