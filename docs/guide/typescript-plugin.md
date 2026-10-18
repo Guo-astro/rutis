@@ -105,8 +105,8 @@ const greeter = definePlugin({
     ctx.provide('greeter', {
       async hello(name: string, lang: string) {
         const word = (await ctx.serial<string>('greeting/pick', lang)) ?? 'Hello'
-        // 最后一个参数是终态：链的最里面
-        const text = await ctx.waterfall<string>('greeting/format', `${word}, ${name}`, (text: string) => text)
+        // 参数都是事件的；终态用 `with` 给出：链的最里面
+        const text = await ctx.waterfall.with((text: string) => text)<string>('greeting/format', `${word}, ${name}`)
         ctx.emit('greeting/said', name)                  // 立即返回，不等监听器
         return text
       },

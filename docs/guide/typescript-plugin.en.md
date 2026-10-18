@@ -105,8 +105,8 @@ const greeter = definePlugin({
     ctx.provide('greeter', {
       async hello(name: string, lang: string) {
         const word = (await ctx.serial<string>('greeting/pick', lang)) ?? 'Hello'
-        // the last argument is the terminal: the innermost end of the chain
-        const text = await ctx.waterfall<string>('greeting/format', `${word}, ${name}`, (text: string) => text)
+        // every argument is the event's; `with` gives the terminal, the innermost end of the chain
+        const text = await ctx.waterfall.with((text: string) => text)<string>('greeting/format', `${word}, ${name}`)
         ctx.emit('greeting/said', name)                  // returns at once, waits for no listener
         return text
       },
