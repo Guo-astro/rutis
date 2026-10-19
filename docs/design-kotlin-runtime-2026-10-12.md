@@ -2,7 +2,7 @@
 
 [English](design-kotlin-runtime-2026-10-12.en.md)
 
-> **挂起（2026-10-14）**：有具体需求（Maven / JVM 生态的插件）时再重开。Kotlin 的当前主线是 [Android 应用托管](design-android-runtime-2026-10-12.md)，它的 SDK 有 jvm target，是本运行时将来的基础。重开时以下各条以 Android 稿为准：无运行时反射，方法表与 schema 显式（取代本文 D20、§7.1 的 `methodsOf` / `schemaOf`）；远程连接只拨出（取代本文 D18 的 `listen:ws`，见 [拨出与动态接入](design-remote-runtime-dial-2026-10-14.md)）；依赖以 Android 稿 K8 为准（取代 D13）。下文"本设计是总体稿之后第一个新语言运行时""Swift 尚未开工"为起草时的表述，已过时（Bun、Go 已落地，Swift 已定稿）。
+> **挂起（2026-10-14；2026-10-19 更新）**：有具体需求（Maven / JVM 生态的插件）时再重开。Kotlin 的当前主线是 [Android 应用托管](design-android-runtime-2026-10-12.md)：它的 K-P1（里程碑 0.14）不依赖本文，其 jvm target 只用于桌面上的一致性测试，是本运行时将来的基础。重开时以 Android 稿（已对齐 rutis 0.13，见其 §十一）为准，本文的下列内容作废：方法反射（D20、§7.1 的 `methodsOf` / `schemaOf`）改为 KSP 生成方法表与代理、schema 由 `SerialDescriptor` 推出；值层（D8、§7）改为 `RutisFormat` 与十种值；插件 API 1（D14）改为 3 与统一事件；`provides` 必写改为自动对外；远程连接（D18）两个方向都支持（监听与拨出，见 [拨出与动态接入](design-remote-runtime-dial-2026-10-14.md)，此前这里写的"只拨出"有误）；依赖以 Android 稿 K8 为准（取代 D13）；崩溃策略（D15）按运行时的 `restart`（默认 `no`，#274）。下文"本设计是总体稿之后第一个新语言运行时""Swift 尚未开工"为起草时的表述，已过时（Bun、Go 已落地，Swift 已定稿）。
 
 状态：挂起（见上）。日期：2026-10-12。基线：`main` `ebf0711`（0.9.1）。
 依据：[多语言插件总体设计](design-multilang-runtimes-2026-10-03.md)（及其 [M1](design-multilang-m1-2026-10-04.md)、[M2](design-multilang-m2-2026-10-04.md) 实施稿）、[Bun 运行时设计](design-bun-runtime-2026-10-09.md)、[Go 插件运行时设计](design-go-runtime-2026-10-10.md)、[开发者包设计](design-developer-packages-2026-10-06.md)、[插件 API 约定](guide/plugin-api.md)。Swift（总体稿的 M3）尚未开工，本设计是总体稿之后第一个新语言运行时，按 Go 设计 §9 的提议替 Kotlin 回答可重入问题（§6），结论应回记到总体稿 §九。
