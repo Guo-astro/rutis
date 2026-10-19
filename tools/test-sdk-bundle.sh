@@ -205,7 +205,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rutis-sdk = "0.12"
+rutis-sdk = "0.13"
 EOF
 if with_timeout 900 env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS cargo xtask pack-plugin --manifest-path "$base/bad-manifest/Cargo.toml" \
   --bundle "$base/sdk-bundle" --output "$base/bad-out" > "$base/e3.stdout" 2>&1; then

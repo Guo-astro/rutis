@@ -6,9 +6,9 @@
 
 ```toml
 [dependencies]
-rutis = "0.12"
-rutis-loader = { version = "0.12", features = ["node", "python", "peer"] }
-rutis-bridge = { version = "0.12", features = ["python", "websocket"] }   # node 默认开
+rutis = "0.13"
+rutis-loader = { version = "0.13", features = ["node", "python", "peer"] }
+rutis-bridge = { version = "0.13", features = ["python", "websocket"] }   # node 默认开
 ```
 
 | crate / feature | 内容 |
@@ -27,10 +27,10 @@ rutis-bridge = { version = "0.12", features = ["python", "websocket"] }   # node
 
 ```toml
 [dependencies]
-rutis-bridge = "0.12"
+rutis-bridge = "0.13"
 
 [build-dependencies]
-rutis-bridge = { version = "0.12", features = ["exports"] }
+rutis-bridge = { version = "0.13", features = ["exports"] }
 ```
 
 ```rust
