@@ -1230,7 +1230,7 @@ async fn go_tagged_values_round_trip() {
 /// built once per test binary with the `swift` on PATH. Its echo returns
 /// the value as the session received it, so tagged values come back
 /// exactly as sent.
-#[cfg(feature = "swift")]
+#[cfg(all(feature = "swift", target_os = "macos"))]
 async fn swift_far_end() -> (Connection, tokio::process::Child) {
     static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     let binary = BINARY.get_or_init(|| {
@@ -1251,7 +1251,7 @@ async fn swift_far_end() -> (Connection, tokio::process::Child) {
     far_end(tokio::process::Command::new(binary), "swift").await
 }
 
-#[cfg(feature = "swift")]
+#[cfg(all(feature = "swift", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_values_round_trip() {
     let (near, _child) = swift_far_end().await;
@@ -1260,7 +1260,7 @@ async fn swift_values_round_trip() {
         .unwrap();
 }
 
-#[cfg(feature = "swift")]
+#[cfg(all(feature = "swift", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_tagged_values_round_trip() {
     let (near, _child) = swift_far_end().await;
@@ -1269,7 +1269,7 @@ async fn swift_tagged_values_round_trip() {
         .unwrap();
 }
 
-#[cfg(feature = "swift")]
+#[cfg(all(feature = "swift", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_depth_limit() {
     let (near, _child) = swift_far_end().await;
@@ -1278,7 +1278,7 @@ async fn swift_depth_limit() {
         .unwrap();
 }
 
-#[cfg(feature = "swift")]
+#[cfg(all(feature = "swift", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_releases_balance() {
     let (near, _child) = swift_far_end().await;

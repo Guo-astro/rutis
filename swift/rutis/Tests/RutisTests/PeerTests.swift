@@ -1,6 +1,6 @@
 import Foundation
 @testable import Rutis
-import XCTest
+import Testing
 
 /// A compat session in this process: `host` drives `runtime`, which serves
 /// `dispatch`.
@@ -19,8 +19,8 @@ func pairOfPeers(_ dispatch: @escaping (String, String, [Value]) async throws ->
     return (host, runtime)
 }
 
-final class PeerTests: XCTestCase {
-    func testCallsAndCallbacks() async throws {
+@Suite struct PeerTests {
+    @Test func testCallsAndCallbacks() async throws {
         let (host, runtime) = try await pairOfPeers { _, method, args in
             switch method {
             case "echo": return args.first ?? .undefined
@@ -57,7 +57,7 @@ final class PeerTests: XCTestCase {
         XCTAssertEqual(chain.plainJSON?.arrayValue?.first, .string("node:9"))
     }
 
-    func testCancellingAnAsyncCallAbortsTheCallee() async throws {
+    @Test func testCancellingAnAsyncCallAbortsTheCallee() async throws {
         let started = Event()
         let aborted = Event()
         let (host, runtime) = try await pairOfPeers { _, _, _ in
@@ -82,7 +82,7 @@ final class PeerTests: XCTestCase {
         XCTAssertTrue(heard, "the callee's Task is cancelled")
     }
 
-    func testAValueTooDeepFailsOnlyItsCall() async throws {
+    @Test func testAValueTooDeepFailsOnlyItsCall() async throws {
         let (host, runtime) = try await pairOfPeers { _, _, args in args.first ?? .undefined }
         defer {
             host.close()
@@ -100,7 +100,7 @@ final class PeerTests: XCTestCase {
         XCTAssertEqual(fine.plainJSON, .string("ok"))
     }
 
-    func testTheSessionEndsWhenTheFarEndGoes() async throws {
+    @Test func testTheSessionEndsWhenTheFarEndGoes() async throws {
         let (host, runtime) = try await pairOfPeers { _, _, _ in .undefined }
         host.close()
         host.channel.close()

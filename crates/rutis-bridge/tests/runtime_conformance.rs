@@ -263,7 +263,7 @@ fn go() -> tokio::process::Command {
 
 /// A product of the Swift package (the repository's root `Package.swift`),
 /// built with the `swift` on PATH.
-#[cfg(feature = "swift")]
+#[cfg(all(feature = "swift", target_os = "macos"))]
 fn swift_product(product: &str) -> PathBuf {
     let status = std::process::Command::new("swift")
         .args(["build", "--product", product])
@@ -281,7 +281,7 @@ fn swift_product(product: &str) -> PathBuf {
 
 /// The Swift session fixture (`swift/rutis/Sources/RutisSessionFixture`),
 /// built once per test binary.
-#[cfg(feature = "swift")]
+#[cfg(all(feature = "swift", target_os = "macos"))]
 fn swift() -> tokio::process::Command {
     static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     tokio::process::Command::new(BINARY.get_or_init(|| swift_product("RutisSessionFixture")))
@@ -369,13 +369,13 @@ async fn go_meets_the_session_contract_on_loopback() {
     contract(go(), Via::Loopback, "go").await;
 }
 
-#[cfg(feature = "swift")]
+#[cfg(all(feature = "swift", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_meets_the_session_contract_on_a_unix_socket() {
     contract(swift(), Via::UnixSocket, "swift").await;
 }
 
-#[cfg(feature = "swift")]
+#[cfg(all(feature = "swift", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_meets_the_session_contract_on_loopback() {
     contract(swift(), Via::Loopback, "swift").await;
@@ -511,13 +511,13 @@ async fn go_ends_the_session_on_malformed_frames_on_loopback() {
 }
 
 /// Swift ends the session on the same malformed and dangling frames.
-#[cfg(feature = "swift")]
+#[cfg(all(feature = "swift", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_ends_the_session_on_malformed_frames_on_a_unix_socket() {
     ends_on_malformed(swift, Via::UnixSocket).await;
 }
 
-#[cfg(feature = "swift")]
+#[cfg(all(feature = "swift", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_ends_the_session_on_malformed_frames_on_loopback() {
     ends_on_malformed(swift, Via::Loopback).await;
