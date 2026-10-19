@@ -206,3 +206,44 @@ pub struct NoConfig {}
 pub fn active(entry: &EntryInfo) -> bool {
     matches!(&entry.status, EntryStatus::Running(s) if s.state == FiberState::Active)
 }
+
+// ── Kotlin ──────────────────────────────────────────────────────
+
+/// The Kotlin SDK's conformance jar (`kotlin/rutis/rutis-conformance`,
+/// Gradle task `fatJar`: the test plugins served by `Rutis.serve` on the
+/// jvm target), built once with the Gradle wrapper, or the one
+/// `RUTIS_KOTLIN_JAR` names.
+#[cfg(feature = "kotlin")]
+pub fn kotlin_jar() -> &'static Path {
+    static JAR: OnceLock<PathBuf> = OnceLock::new();
+    JAR.get_or_init(|| {
+        if let Some(jar) = std::env::var_os("RUTIS_KOTLIN_JAR") {
+            return PathBuf::from(jar);
+        }
+        let project = repo().join("kotlin/rutis");
+        let wrapper = project.join(if cfg!(windows) {
+            "gradlew.bat"
+        } else {
+            "gradlew"
+        });
+        let status = std::process::Command::new(wrapper)
+            .args(["--quiet", ":rutis-conformance:fatJar"])
+            .current_dir(&project)
+            .status()
+            .expect("the Gradle wrapper runs (a JDK 17 on PATH or JAVA_HOME)");
+        assert!(status.success(), "gradlew :rutis-conformance:fatJar");
+        project.join("rutis-conformance/build/libs/rutis-conformance-all.jar")
+    })
+}
+
+/// The Kotlin runtime serving the test plugins, as the generic launcher
+/// starts it (design K-P1: no Kotlin runtime in rutis-host), in `project`.
+#[cfg(feature = "kotlin")]
+pub fn kotlin_launcher(project: &Path) -> rutis_bridge::runtime::Launcher {
+    rutis_bridge::runtime::Launcher::new("java")
+        .arg("-XX:TieredStopAtLevel=1")
+        .arg("-XX:+UseSerialGC")
+        .arg("-jar")
+        .arg(kotlin_jar())
+        .cwd(project)
+}

@@ -64,6 +64,8 @@ class GeneratedTest {
     @Test
     fun theTableListsPublicMemberFunctions() {
         assertEquals(setOf("inherited", "area", "later", "each", "echo", "adder", "touch"), table.methods.toSet())
+        assertEquals(mapOf("area" to "sync", "later" to "async"), service<Shapes>(sync = setOf("area")).kinds.filterKeys { it in setOf("area", "later") })
+        assertFailsWith<IllegalArgumentException> { Rutis.define<Rutis.NoConfig>("p", provides = mapOf("s" to service<Shapes>(sync = setOf("nope")))) { _, _ -> } }
     }
 
     @Test

@@ -146,6 +146,10 @@ The runtime contract (`runtime::testing::runtime`, `tests/session_matrix.rs`):
 | Bun | `fd:3`, socket path dialed back | Runs; `runtimes-bun` reruns with `RUTIS_LOCAL_HANDOVER=loopback` | Runs | Not compiled: as above |
 | Bun | loopback TCP | No column of its own: the rerun of the row above covers it | As Linux | Not compiled: as above |
 | Bun | WebSocket (the runtime listens, Rust dials) | Runs | Runs | Not compiled: as above |
+| Kotlin (the jvm target's `Rutis.serve`, started by the generic `Launcher` as `java -jar`) | socket path dialed back | Runs | Runs | Skipped: Windows has loopback only |
+| Kotlin | loopback TCP | Runs | Runs | Runs |
+| Kotlin | `fd:3` | Not run: the JDK has no public API to wrap an inherited descriptor (design §4.3) | As Linux | As Linux |
+| Kotlin | WebSocket | Not run: listening is K-P2 | As Linux | As Linux |
 | A Node package without `fd` falls back to dialing back | — | Runs | Runs | Skipped: Windows has loopback only |
 
 The first two columns and the last row start the process through the `Process` facade, and the contract also checks the exit status after the crash; the loopback and WebSocket columns attach to a channel and check only that the crash ends the session. On Windows, `python_runtime.rs`, `go_runtime.rs` and others cover the facade's loopback start.
