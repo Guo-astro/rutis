@@ -151,12 +151,6 @@ pub struct Case {
     pub only: Vec<Json>,
     #[serde(default)]
     pub except: Vec<Json>,
-    /// Limits (as `except`'s) under which the real runtimes are known to
-    /// fail the case, each saying why (the bug and where it is reported):
-    /// those placements run, and their failure is reported but does not
-    /// fail the run. The testing tools ignore it.
-    #[serde(default, rename = "knownFailing")]
-    pub known_failing: Vec<Json>,
     /// `false`: the testing tools do not run it.
     #[serde(default = "yes")]
     pub tool: bool,
@@ -636,15 +630,6 @@ fn limit_holds(limit: &Json, combo: &Combo) -> bool {
                 .as_array()
                 .is_some_and(|all| all.iter().any(|l| l.as_str() == Some(language)))
         })
-}
-
-/// Why `case` is known to fail in `combo` (its first `knownFailing` limit
-/// that holds there), if it is.
-pub fn known_failing(case: &Case, combo: &Combo) -> Option<String> {
-    case.known_failing
-        .iter()
-        .find(|limit| limit_holds(limit, combo))
-        .map(|limit| limit["why"].as_str().unwrap_or_default().to_owned())
 }
 
 /// The placements of `case` with X in `x`, for each language Y may be in
@@ -1942,12 +1927,7 @@ pub fn problems(expected: &Expected) -> Vec<String> {
                     }
                 }
             }
-            for limit in case
-                .only
-                .iter()
-                .chain(&case.except)
-                .chain(&case.known_failing)
-            {
+            for limit in case.only.iter().chain(&case.except) {
                 let Json::Object(fields) = limit else {
                     return Err(format!("a limit is an object: {limit}"));
                 };
@@ -2061,9 +2041,6 @@ pub fn y_languages<'a>(expected: &'a Expected, x: &'a str) -> Vec<&'a str> {
 #[derive(Default)]
 pub struct Tally {
     rows: BTreeMap<String, (usize, usize, Option<String>)>,
-    /// Per case: the placements that failed as `knownFailing` says, and
-    /// why.
-    known: BTreeMap<String, (usize, String)>,
 }
 
 impl Tally {
@@ -2087,17 +2064,6 @@ impl Tally {
         }
     }
 
-    /// `case` failed in `combo`, as its `knownFailing` says it does
-    /// (`why`): reported, not a failure of the run.
-    pub fn known(&mut self, case: &Case, why: &str) {
-        let entry = self
-            .known
-            .entry(case.case.clone())
-            .or_insert_with(|| (0, why.to_owned()));
-        entry.0 += 1;
-        self.rows.entry(case.case.clone()).or_default();
-    }
-
     pub fn failed(&self) -> usize {
         self.rows
             .values()
@@ -2113,11 +2079,7 @@ impl Tally {
 impl std::fmt::Display for Tally {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (case, (passed, failed, first)) in &self.rows {
-            if let Some((known, why)) = self.known.get(case) {
-                writeln!(f, "known failing {case} ({known} placements): {why}")?;
-            }
             match first {
-                None if *passed == 0 && self.known.contains_key(case) => {}
                 None => writeln!(f, "pass {case} ({passed} placements)")?,
                 Some(first) => writeln!(
                     f,

@@ -505,6 +505,52 @@ async fn the_filter_runs_in_the_emitters_process() {
     .await;
 }
 
+/// guarantee: events/hub-filter
+///
+/// A runtime's `emit` through the host whose filter fails runs no listener
+/// and is reported naming the emitter's row (events protocol §5.6), not the
+/// runtime plugin the dispatch runs in.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failing_filter_of_an_emit_is_reported_from_its_row() {
+    within("filter report", async {
+        let lines: Arc<Mutex<Vec<String>>> = Arc::default();
+        let into = lines.clone();
+        let root = Ctx::root_with_sink(
+            tokio::runtime::Handle::current(),
+            Arc::new(move |error: Arc<CordisError>| {
+                if let Some(line) = rutis_bridge::events::report_line(&error) {
+                    into.lock().unwrap().push(line);
+                }
+            }),
+        );
+        let rig = rig_with(root, Endpoint::rust(id("rt"))).await.unwrap();
+        rig.load("chat", &[]).await;
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        rig.root
+            .events()
+            .on(&rig.root, &key("t/fe"), Answer(None, heard.clone()))
+            .unwrap();
+        let throws = Value::callback(|_| {
+            Err(Error::Remote {
+                name: "FErr".into(),
+                message: "no".into(),
+                graph: None,
+            })
+        });
+        rig.dispatch(Some("chat"), "t/fe", "emit", vec![], Some(throws))
+            .await
+            .unwrap();
+        eventually(|| !lines.lock().unwrap().is_empty(), "the report").await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            *lines.lock().unwrap(),
+            vec!["rutis: filter of t/fe from row chat failed: FErr: no".to_owned()]
+        );
+        assert!(heard.lock().unwrap().is_empty());
+    })
+    .await;
+}
+
 /// guarantee: events/hub-lifecycle
 ///
 /// A row's entries leave the bus when it unloads, every entry of a session

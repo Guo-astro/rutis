@@ -614,6 +614,14 @@ impl SessionEvents {
                 result_to_wire(result)
             }
             Mode::Emit => {
+                // The filter's failure is reported here, naming the
+                // emitter's row (§5.6): the bus would name the runtime
+                // plugin, whose context this dispatch runs in. Keeping no
+                // listener is what a failed filter does.
+                dispatch.filter = dispatch
+                    .filter
+                    .take()
+                    .map(|filter| reporting(filter, ctx.clone(), name.clone(), row.clone()));
                 let reporter = ctx.clone();
                 let (started, answered) = tokio::sync::oneshot::channel();
                 let row = row.clone();
@@ -834,6 +842,26 @@ fn selector(
                 let reply = settle(reply).await.map_err(to_cordis)?;
                 answers(reply)
             })),
+        }
+    })
+}
+
+/// `filter`, its failure reported as the failure of `emit` `name` from
+/// `row` and answered as keeping no listener.
+fn reporting(filter: BatchFilter, ctx: Ctx, name: String, row: Option<String>) -> BatchFilter {
+    Box::new(move |candidates: Vec<Candidate>| {
+        let wanted = candidates.len();
+        let settle = move |answer: Result<Vec<bool>, CordisError>| {
+            answer.or_else(|error| {
+                report_filter(&ctx, &name, row.as_deref(), &error);
+                Ok(vec![false; wanted])
+            })
+        };
+        match filter(candidates) {
+            FilterAnswer::Ready(answer) => FilterAnswer::Ready(settle(answer)),
+            FilterAnswer::Pending(answer) => {
+                FilterAnswer::Pending(Box::pin(async move { settle(answer.await) }))
+            }
         }
     })
 }

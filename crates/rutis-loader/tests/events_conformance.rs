@@ -1156,14 +1156,9 @@ async fn conformance(x: &str) {
             placements += 1;
             host.state.lock().unwrap().y = combo.y.clone();
             let result = events::run_keeping(&host, &log, case, &combo).await;
-            let known = events::known_failing(case, &combo);
             if let Err(why) = &result {
-                let label = match known {
-                    Some(_) => "known failing",
-                    None => "FAIL",
-                };
                 eprintln!(
-                    "{label} {} [{}]: {why}\n{}",
+                    "FAIL {} [{}]: {why}\n{}",
                     case.case,
                     combo.describe(),
                     host.stderr()
@@ -1172,10 +1167,7 @@ async fn conformance(x: &str) {
             if let Err(why) = events::finish(&host, &log).await {
                 panic!("the world could not be reset after {}: {why}", case.case);
             }
-            match (&result, known) {
-                (Err(_), Some(why)) => tally.known(case, &why),
-                _ => tally.record(case, &combo, &result),
-            }
+            tally.record(case, &combo, &result);
         }
         // Where the time goes: the cases that wait.
         if started.elapsed() > Duration::from_secs(5) {
