@@ -16,7 +16,7 @@
 //! | `@arcships/rutis-runtime` | rutis-host | refused naming the runtime; nothing loads |
 //! | `@arcships/rutis-bun` | rutis-host | the same |
 //! | PyPI `rutis` (local runtime) | rutis-host | the same |
-//! | Go SDK (a binary built against the tagged module) | rutis-host | refused naming the binary's runtime; its row never runs |
+//! | Go SDK (a binary built against the tagged module) | rutis-host | refused naming the binary's runtime, not started again; its row fails with the refusal |
 //! | PyPI `rutis` (`listen:`, remote runtime) | rutis-host dialing it | refused naming it and its version; the link stops and is not dialed again |
 //! | rutis-host | the current runtimes (Node, Python) | each runtime refuses the host on stderr and stops |
 //! | rutis-host (a node) | rutis-host (a node), both dialing and listening | the link is refused naming the old node and its version, not retried |
@@ -488,7 +488,8 @@ fn a_previous_python_runtime_is_refused_by_the_event_protocol() {
 /// A Go binary built against a previous Go SDK under the current host:
 /// refused at the handshake the same way. The binary's runtime starts on
 /// demand (one per binary): it is down, naming why, and is not started
-/// again; its row never runs, and the host runs on.
+/// again; its row fails with the same message (it does not wait for the
+/// runtime), and the host runs on.
 ///
 /// guarantee: events/old-peer-refused
 #[test]
@@ -510,9 +511,14 @@ fn a_previous_go_sdk_binary_is_refused_by_the_event_protocol() {
             line.starts_with("runtime go-gogreeter: down ("),
             "the refusal names the binary's runtime: {line}"
         );
+        let row = host.expect("gogreeter: unresolved: ");
+        assert!(
+            row.contains(&refusal),
+            "the row fails with the refusal: {row}"
+        );
         // Not started again within a restart's first steps.
         std::thread::sleep(std::time::Duration::from_secs(3));
-        assert_eq!(host.count(&refusal), 1, "started again");
+        assert_eq!(host.count(&format!("down ({refusal}")), 1, "started again");
         assert_eq!(host.count("gogreeter: running"), 0);
         stop(host);
         s.finish();
