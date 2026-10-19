@@ -145,7 +145,7 @@ rutis-host: reload rejected: <原因>; nothing changed
 
 ## 运行时结束时
 
-本机运行时（`node`、`py`、`bun`）的进程自己结束（崩溃、被 `kill -9`、插件让进程退出）时，`rutis-host` 按这个运行时的 `restart` 处理：
+本机运行时（`node`、`py`、`bun`、每个 Go 运行时）的进程自己结束（崩溃、被 `kill -9`、插件让进程退出）时，`rutis-host` 按这个运行时的 `restart` 处理：
 
 | `restart` | 做法 |
 | --- | --- |
@@ -164,8 +164,10 @@ rutis-host: reload rejected: <原因>; nothing changed
 - 进程内存里的状态随崩溃丢失，重启不会多丢；正在进行的调用已经显式失败，不会自动重试。会再执行一次的是插件启动时做的事（`apply`），和手动重启宿主一样。
 - 宿主停止时（收到终止信号、`exit` 策略）不再重启任何运行时；[运行中改配置](#运行中改配置)删掉的运行时也不会重启。
 - `restart` 是运行时的设置，运行中改它要重启宿主。
-- `dev` 用同样的规则和默认值；在 `rutis.dev.json` 里写 `"runtimes": { "py": { "restart": "on-failure" } }`（项目自己的那个运行时只取 `restart`）。
-- Go 运行时还没有这个设置（崩溃后留在 `down`，换了二进制后有行用到时再启动）；远程运行时和节点行的 link 自己重连，不受它影响。
+- `dev` 用同样的规则和默认值；在 `rutis.dev.json` 里写 `"runtimes": { "py": { "restart": "on-failure" } }`（或 `"go"` 等）（项目自己的那个运行时只取 `restart`）。
+
+- Go：`runtimes.go.restart` 对每个 Go 运行时生效，各算各的（各自的等待和上限；打印 `runtime go-<名字>: restarting`）。空闲停下的运行时不算自己结束；握手被拒（旧 SDK）的二进制也不算，文件改变前不再启动。不论 `restart` 怎么写，崩溃的 Go 运行时换了二进制后有行用到时也会再启动。运行中改 `runtimes.go` 仍要重启宿主。
+- 远程运行时和节点行的 link 自己重连，不受它影响。
 
 ## 输出
 
@@ -230,12 +232,12 @@ rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-
 | `node` | `project`（默认 `.`）、`runtime`、`restart` | 启动 Node 运行时。插件包从 `project` 的 `package.json` 解析；`@arcships/rutis-runtime` 装在这里（或由 `runtime` 指定，或用 npm 版 rutis-host 自带的） |
 | `bun` | `project`（默认 `.`）、`runtime`、`program`、`restart` | 启动 Bun 运行时，行名 `bun:<模块>`。模块从 `project` 解析（`node_modules` 里的包、`./相对路径`）；`@arcships/rutis-bun` 装在这里（或由 `runtime` 指定）；`program` 是 Bun 可执行文件，默认 `PATH` 上的 `bun`。见 [写一个 Bun 插件](bun-plugin.md) |
 | `py` | `project`（默认 `.`）、`python`、`restart` | 启动 Python 运行时。解释器默认依次为 `$VIRTUAL_ENV/bin/python`、`<project>/.venv/bin/python`、`python3`（Windows 上为 `Scripts\python.exe` 和 `python`），它的环境里要装 `rutis` 和插件 |
-| `go` | `dir`、`binaries`、`start`（`on-demand` 默认 / `eager`）、`idle`（秒，默认 60）、`project`（默认 `.`） | Go 插件：一个二进制一个运行时进程。`dir` 里含 Go SDK 标记的可执行文件都算（整个目录被视为受信任，应是专用目录），`binaries` 列出单个文件。运行时名由文件名得出（`netkit` → `go-netkit`）。按需启动的运行时在第一次有行用到时启动、空闲 `idle` 秒后停下；`eager` 全部启动并一直运行（不能同时写 `idle`）。换了二进制，重启宿主后生效 |
+| `go` | `dir`、`binaries`、`start`（`on-demand` 默认 / `eager`）、`idle`（秒，默认 60）、`project`（默认 `.`）、`restart` | Go 插件：一个二进制一个运行时进程。`dir` 里含 Go SDK 标记的可执行文件都算（整个目录被视为受信任，应是专用目录），`binaries` 列出单个文件。运行时名由文件名得出（`netkit` → `go-netkit`）。按需启动的运行时在第一次有行用到时启动、空闲 `idle` 秒后停下；`eager` 全部启动并一直运行（不能同时写 `idle`）。换了二进制，重启宿主后生效 |
 | `remote` | `name`、`language`、`listen`、`instances` | 别的机器上的运行时：经 `rows` 里 `"runtime": "<name>"` 的节点行连接，见 [连接节点](nodes.md)；或写 `listen` 与 `instances`，由运行时连进来，见下 |
 
 缺少运行时包时，启动失败并给出安装命令。
 
-`node`、`py`、`bun` 的 `restart`（`"no"` 默认、`"on-failure"`、`"exit"`）决定运行时进程自己结束时怎么办，见 [运行时结束时](#运行时结束时)。
+`node`、`py`、`bun`、`go` 的 `restart`（`"no"` 默认、`"on-failure"`、`"exit"`）决定运行时进程自己结束时怎么办（`go` 是每个 Go 运行时各自的），见 [运行时结束时](#运行时结束时)。
 
 #### 连进来的运行时
 

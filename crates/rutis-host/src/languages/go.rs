@@ -15,7 +15,7 @@ use rutis_loader::{GoBinaries, GoResolver, GoRuntimes, ServiceCatalog};
 use serde_json::{json, Value};
 
 use super::{id_of, Language, Mount, LANGUAGES};
-use crate::config::{GoRuntime, GoStart, HostConfig, Runtimes};
+use crate::config::{GoRuntime, GoStart, HostConfig, Restart, Runtimes};
 use crate::host::{Error, GoHost};
 
 pub struct Go;
@@ -31,6 +31,19 @@ impl Language for Go {
 
     fn settings(&self, runtimes: &Runtimes) -> Option<String> {
         runtimes.go.as_ref().map(|go| format!("{go:?}"))
+    }
+
+    /// Each Go runtime on its own: the host supervises them all
+    /// ([`crate::host::Host::supervise`]).
+    fn restart(&self, runtimes: &Runtimes) -> Restart {
+        runtimes.go.as_ref().map_or(Restart::No, |go| go.restart)
+    }
+
+    /// The dev file's `restart`; the project's other settings stay.
+    fn dev_file(&self, own: &mut Runtimes, dev: &Runtimes) {
+        if let (Some(own), Some(dev)) = (&mut own.go, &dev.go) {
+            own.restart = dev.restart;
+        }
     }
 
     /// Its runtimes start as rows use them, from a resolver the loader was
@@ -140,6 +153,8 @@ impl Language for Go {
                 start: GoStart::OnDemand,
                 idle: None,
                 project: go.dir.clone(),
+                restart: Restart::No,
+
                 dev: Some((binary, go.runtime.clone())),
             }),
             ..Runtimes::default()

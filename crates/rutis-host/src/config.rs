@@ -230,14 +230,18 @@ pub struct GoRuntime {
     /// The directory the runtimes run in.
     #[serde(default = "here")]
     pub project: PathBuf,
+    /// What the host does when a runtime's process ends on its own (`no`,
+    /// the default; `on-failure`; `exit`), each runtime on its own.
+    #[serde(default)]
+    pub restart: Restart,
     /// A development build and its runtime's name (`rutis-host dev`).
     #[serde(skip)]
     pub dev: Option<(PathBuf, String)>,
 }
 
 /// What the host does when a local runtime's process ends on its own
-/// (`runtimes.<node|py|bun>.restart`; `docs/guide/rutis-host.md`, "When a
-/// runtime ends").
+/// (`runtimes.<node|py|bun|go>.restart`; `docs/guide/rutis-host.md`, "When
+/// a runtime ends").
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Restart {
@@ -249,6 +253,16 @@ pub enum Restart {
     OnFailure,
     /// Stop the host, which exits 3, for its process manager to restart.
     Exit,
+}
+
+impl From<Restart> for rutis_loader::RestartPolicy {
+    fn from(restart: Restart) -> Self {
+        match restart {
+            Restart::No => Self::No,
+            Restart::OnFailure => Self::OnFailure,
+            Restart::Exit => Self::Exit,
+        }
+    }
 }
 
 impl Restart {

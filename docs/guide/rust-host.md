@@ -219,7 +219,10 @@ root.plugin(go_runtimes).await?;
 ```
 
 - 运行时名由文件名得出（`netkit` → `go-netkit`），两个二进制有同名插件时行写 `go-netkit:<插件>`。
-- 进程运行期间按它启动时的清单解析；换了二进制，`control.restart("go-netkit")` 后生效。崩溃的运行时不自动重启。
+- 进程运行期间按它启动时的清单解析；换了二进制，`control.restart("go-netkit")` 后生效。
+- 崩溃的运行时默认不自动重启。`control.supervise(RestartPolicy::OnFailure, |end| …)` 之后，进程自己结束的运行时等一会儿后重新启动（1 秒起每次翻倍、最多 30 秒，运行满 60 秒后从 1 秒重来，5 分钟内重启 5 次后再结束就放弃），每个运行时各算各的；`RestartPolicy::Exit` 只把结束报告给回调（`RuntimeEnd::Exit`），由应用决定停下。`end.line()` 是 rutis-host 打印的那一行；`control.unsupervise()` 停止监督，正在等待的重启不再发生。握手被拒（旧 SDK）的二进制不算自己结束，不重启。
+- Go 之外的编译型语言（之后的 Swift）用同一套实现：`BinaryResolver<L>`、`BinaryRuntimes<L>`，`L` 实现 `BinaryLanguage`（行名前缀、SDK 标记串、启动方式）；`GoResolver` 就是 `BinaryResolver<Go>`。
+
 - 只运行一个固定的二进制时，也可以像 Python 一样：`LocalRuntime::go(binary, project)` 加 `RuntimeResolver::modules`（行名 `<运行时名>:<插件>`）。
 
 ## 节点

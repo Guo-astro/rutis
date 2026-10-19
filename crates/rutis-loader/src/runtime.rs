@@ -24,7 +24,10 @@
 //!   `py:<module>` loads that module as a leaf plugin.
 //! - **Go** (feature `go`, [`GoResolver`], [`GoRuntimes`]): a row named
 //!   `go:<plugin>` runs the plugin in the Go binary that has it, one runtime
-//!   per binary, started when a row uses it.
+//!   per binary, started when a row uses it. What compiled languages share
+//!   (feature `binary`, which theirs enable) is [`BinaryResolver`] and
+//!   [`BinaryRuntimes`]; a language names itself with a [`BinaryLanguage`].
+
 //! - **Runtimes that dial in** ([`RuntimeInstances`]): each connection an
 //!   access point admits is an instance of an `instanced` group, whose rows
 //!   `<runtime>:<plugin>` run on that connection.
@@ -71,16 +74,24 @@ use crate::{
     volatile_key, Loader, LoaderError, Resolved, Resolver, ServiceCatalog, VolatileUpdate,
 };
 
+#[cfg(feature = "binary")]
+mod binary;
 mod connections;
 #[cfg(feature = "go")]
 mod go;
 mod rows;
+#[cfg(feature = "binary")]
+pub use binary::{
+    read_binary_manifest, Binaries, BinaryFile, BinaryLanguage, BinaryManifest, BinaryResolver,
+    BinaryRuntimeInfo, BinaryRuntimeState, BinaryRuntimes, BinaryRuntimesHandle, RestartPolicy,
+    RuntimeEnd,
+};
 pub(crate) use connections::{claimed, claimed_names};
 pub use connections::{AcceptInstances, RuntimeConnection, RuntimeInstances};
 #[cfg(feature = "go")]
 pub use go::{
-    read_go_manifest, GoBinaries, GoBinary, GoManifest, GoResolver, GoRuntimeInfo, GoRuntimeState,
-    GoRuntimes, GoRuntimesHandle, GO_MARKER, PLUGIN_API,
+    read_go_manifest, Go, GoBinaries, GoBinary, GoManifest, GoResolver, GoRuntimeInfo,
+    GoRuntimeState, GoRuntimes, GoRuntimesHandle, GO_MARKER, PLUGIN_API,
 };
 pub use rows::{RowsSource, RuntimeRows, RuntimeRowsPlugin};
 

@@ -62,8 +62,8 @@ pub trait Language: Sync {
     }
 
     /// What the host does when its runtime's process ends on its own
-    /// (`runtimes.<key>.restart`); a language without the setting (Go, for
-    /// now) leaves it down.
+    /// (`runtimes.<key>.restart`); a language without the setting leaves it
+    /// down.
     fn restart(&self, _runtimes: &Runtimes) -> Restart {
         Restart::No
     }

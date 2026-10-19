@@ -1,9 +1,10 @@
 //! A local runtime whose process ends on its own, as its `restart` says
 //! (`docs/guide/rutis-host.md`, "When a runtime ends"): started again after
 //! a backoff, up to a limit (`on-failure`), or the host told to stop
-//! (`exit`). The numbers are fixed, not configurable.
+//! (`exit`). The numbers are fixed, not configurable. The Go runtimes are
+//! supervised by their plugin instead ([`crate::host::Host::supervise`]),
+//! with the same [`Backoff`].
 
-use std::collections::VecDeque;
 use std::time::Duration;
 
 use rutis::{CordisError, FiberView};
@@ -13,64 +14,9 @@ use tokio::time::Instant;
 use crate::config::Restart;
 use crate::outln;
 
-/// The wait before the first restart; each one after doubles it.
-pub const FIRST: Duration = Duration::from_secs(1);
-
-/// The longest wait before a restart.
-pub const LONGEST: Duration = Duration::from_secs(30);
-
-/// A runtime that ran this long before it ended starts over from
-/// [`FIRST`].
-pub const STABLE: Duration = Duration::from_secs(60);
-
-/// At most [`LIMIT`] restarts within this long; one more end gives up.
-pub const WINDOW: Duration = Duration::from_secs(5 * 60);
-
-/// How many restarts [`WINDOW`] allows.
-pub const LIMIT: usize = 5;
-
-/// When to start a runtime again after it ended.
-#[derive(Debug)]
-pub struct Backoff {
-    /// The next wait.
-    wait: Duration,
-    /// When it was restarted, within the last [`WINDOW`].
-    restarts: VecDeque<Instant>,
-}
-
-impl Default for Backoff {
-    fn default() -> Self {
-        Self {
-            wait: FIRST,
-            restarts: VecDeque::new(),
-        }
-    }
-}
-
-impl Backoff {
-    /// The runtime ended at `now`, `ran` after it last started: how long to
-    /// wait before starting it again, or `None` to give up, when it was
-    /// restarted [`LIMIT`] times within the last [`WINDOW`].
-    pub fn next(&mut self, now: Instant, ran: Duration) -> Option<Duration> {
-        if ran >= STABLE {
-            self.wait = FIRST;
-        }
-        while self
-            .restarts
-            .front()
-            .is_some_and(|restart| now.duration_since(*restart) >= WINDOW)
-        {
-            self.restarts.pop_front();
-        }
-        if self.restarts.len() >= LIMIT {
-            return None;
-        }
-        let wait = self.wait;
-        self.wait = (self.wait * 2).min(LONGEST);
-        self.restarts.push_back(now + wait);
-        Some(wait)
-    }
-}
+/// The backoff and its numbers: rutis-loader's, which the Go runtimes'
+/// restarts use too.
+pub use rutis_loader::backoff::{Backoff, FIRST, LIMIT, LONGEST, STABLE, WINDOW};
 
 /// How watching a runtime ended.
 #[derive(Debug, PartialEq, Eq)]

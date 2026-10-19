@@ -116,6 +116,7 @@ fn absent_fields_take_their_defaults() {
     assert_eq!(bun.restart, Restart::No);
     let go = runtimes.go.unwrap();
     assert_eq!((go.start, go.idle), (GoStart::OnDemand, None));
+    assert_eq!(go.restart, Restart::No);
     assert!(go.binaries.is_empty());
     assert_eq!(go.project, dir.path());
     let listener = &config.listen[0];
@@ -123,8 +124,7 @@ fn absent_fields_take_their_defaults() {
     assert!(listener.cert.is_none() && listener.key.is_none());
 }
 
-/// `restart` takes `no`, `on-failure` or `exit`; Go runtimes have none
-/// yet.
+/// `restart` takes `no`, `on-failure` or `exit`, for Go runtimes too.
 /// guarantee: host/runtime-restart
 #[test]
 fn restart_is_one_of_three() {
@@ -139,13 +139,22 @@ fn restart_is_one_of_three() {
         error.contains("unknown variant `always`, expected one of `no`, `on-failure`, `exit`"),
         "{error}"
     );
-    let error = read(
+    let config = read(
         dir.path(),
         r#"{ "runtimes": { "go": { "dir": "g", "restart": "on-failure" } } }"#,
     )
+    .unwrap();
+    assert_eq!(config.runtimes.go.unwrap().restart, Restart::OnFailure);
+    let error = read(
+        dir.path(),
+        r#"{ "runtimes": { "go": { "dir": "g", "restart": "always" } } }"#,
+    )
     .err()
     .unwrap();
-    assert!(error.contains("unknown field `restart`"), "{error}");
+    assert!(
+        error.contains("unknown variant `always`, expected one of `no`, `on-failure`, `exit`"),
+        "{error}"
+    );
 }
 
 /// Relative paths are relative to the file's directory; bare program names
@@ -348,7 +357,7 @@ fn unknown_fields_are_refused() {
         ),
         (
             r#"{ "runtimes": { "go": { "dirs": "g" } } }"#,
-            "<dir>/rutis.json: unknown field `dirs`, expected one of `dir`, `binaries`, `start`, `idle`, `project` at line 1 column 30",
+            "<dir>/rutis.json: unknown field `dirs`, expected one of `dir`, `binaries`, `start`, `idle`, `project`, `restart` at line 1 column 30",
         ),
         (
             r#"{ "runtimes": { "remote": [{ "name": "gpu", "lang": "python" }] } }"#,

@@ -448,6 +448,9 @@ Acceptance: an EventKit plugin runs in a signed binary and the prompt points at 
 | Conformance: the event expectation file's languages gain `swift` (usable in `only` / `except`); `events_conformance.rs` and `session_matrix.rs` gain the Swift runtime (feature `swift`) | `rutis-bridge/src/runtime/testing/events.rs`, tests |
 | `scripts/train.mjs`'s version regex adds `swift/rutis/Sources/Rutis/Version.swift` | `scripts/train.mjs` |
 
+Implementation note (0.14, the extraction is done): `binary.rs` has the `BinaryLanguage` trait (constants `PREFIX`, `TITLE`, `MARKER`, `PLUGIN_API`; functions `runtime_name` and `launch`) and, taking it as their parameter, `Binaries`, `BinaryManifest`, `BinaryResolver<L>`, `BinaryRuntimes<L>`, `BinaryRuntimesHandle<L>`, `BinaryRuntimeState`, `BinaryRuntimeInfo` and `read_binary_manifest`, under the feature `binary` (which `go` enables, and `swift` should: `swift = ["binary", "rutis-bridge/swift"]`). `go.rs` is now only `struct Go`'s implementation and type aliases such as `GoResolver = BinaryResolver<Go>`; Go users' code is unchanged. `swift.rs` follows it: `struct Swift` implementing `BinaryLanguage` (`swift_runtime_name`, `LocalRuntime::swift`) plus aliases. Crash restarts are in the shared module too: `BinaryRuntimesHandle::supervise(RestartPolicy, callback)`, with the backoff of `rutis_loader::backoff` (the same one rutis-host uses for node/py/bun); rutis-host's `runtimes.go.restart` is built on it, and `runtimes.swift.restart` can copy it.
+
+
 ## 10. rutis-host
 
 ```json

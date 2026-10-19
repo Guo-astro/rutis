@@ -13,9 +13,11 @@
 
 mod common;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use common::process::{alive, cleanups, dev_project, run_project, signal, Host};
+use common::repo;
 use serde_json::{json, Value};
 
 /// Set `runtimes.py.restart` in the configuration `file` (`run`'s, or the
@@ -195,4 +197,98 @@ fn dev_restarts_as_run_does() {
     let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
     assert_eq!(status.code(), Some(0), "{context}");
     assert_eq!(cleanups(dir.path(), "marker"), 1, "{context}");
+}
+
+/// A project of one Go row (`go:ping`, the loader's netkit fixture built
+/// into `plugins/`) whose runtimes' `restart` is `restart`.
+fn go_project(dir: &Path, restart: &str) -> PathBuf {
+    let plugins = dir.join("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    let status = Command::new("go")
+        .args(["build", "-o"])
+        .arg(plugins.join("netkit"))
+        .arg("./cmd/netkit")
+        .current_dir(repo().join("crates/rutis-loader/tests/fixtures/go"))
+        .status()
+        .expect("go is on PATH");
+    assert!(status.success(), "go build");
+    let config = json!({
+        "runtimes": { "go": { "dir": "plugins", "restart": restart } },
+        "rows": [{ "id": "ping", "name": "go:ping" }]
+    });
+    let file = dir.join("rutis.json");
+    std::fs::write(&file, config.to_string()).unwrap();
+    file
+}
+
+/// The processes `parent` started, as pgrep(1) lists them.
+fn children(parent: i32) -> Vec<i32> {
+    let output = Command::new("pgrep")
+        .args(["-P", &parent.to_string()])
+        .output()
+        .expect("pgrep");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|pid| pid.trim().parse().ok())
+        .collect()
+}
+
+/// `runtimes.go.restart: "on-failure"`: the killed Go runtime starts again
+/// (a new process), and its row with it (run in the Go CI job: the name
+/// has `go`).
+/// guarantee: host/runtime-restart
+#[test]
+fn a_go_runtime_restarted_on_failure_brings_its_rows_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = go_project(dir.path(), "on-failure");
+    let mut host = Host::start(&["run", file.to_str().unwrap()], dir.path());
+    host.wait_line(|line| (line == "ping: running").then_some(()));
+    let pids = children(host.pid());
+    assert_eq!(pids.len(), 1, "the Go runtime process: {pids:?}");
+    host.runtimes.extend(&pids);
+    kill(pids[0]);
+    host.wait_line(|line| line.starts_with("runtime go-netkit: down (").then_some(()));
+    host.wait_line(|line| (line == "runtime go-netkit: restarting").then_some(()));
+    host.wait_line(|line| (line == "ping: running").then_some(()));
+    let again = children(host.pid());
+    assert!(
+        again.len() == 1 && again[0] != pids[0],
+        "the restarted Go runtime: {again:?}, before {pids:?}"
+    );
+    host.runtimes.extend(&again);
+    signal(&host, libc::SIGTERM, false);
+    let (status, stderr, output) = host.exit();
+    let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
+    assert_eq!(status.code(), Some(0), "{context}");
+    assert!(
+        !alive(again[0]),
+        "the new Go runtime outlived the host; {context}"
+    );
+}
+
+/// `runtimes.go.restart: "exit"`: the Go runtime's end stops the host,
+/// which exits 3.
+/// guarantee: host/runtime-restart, host/exit-codes
+#[test]
+fn a_go_runtime_ending_with_restart_exit_stops_the_host_with_3() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = go_project(dir.path(), "exit");
+    let mut host = Host::start(&["run", file.to_str().unwrap()], dir.path());
+    host.wait_line(|line| (line == "ping: running").then_some(()));
+    let pids = children(host.pid());
+    assert_eq!(pids.len(), 1, "the Go runtime process: {pids:?}");
+    host.runtimes.extend(&pids);
+    kill(pids[0]);
+    let (status, stderr, output) = host.exit();
+    let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
+    assert_eq!(status.code(), Some(3), "{context}");
+    assert!(
+        stderr.contains("rutis-host: runtime go-netkit ended (")
+            && stderr.contains("its restart is \"exit\": stopping"),
+        "{context}"
+    );
+    assert!(
+        !output.iter().any(|line| line.contains("restarting")),
+        "{context}"
+    );
 }
