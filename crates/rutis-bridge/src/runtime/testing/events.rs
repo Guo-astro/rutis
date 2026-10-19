@@ -1438,6 +1438,8 @@ pub fn cancellation(language: &str) -> Option<Json> {
         "python" => Some(json!({ "name": "CancelledError" })),
         // A plain Go error crosses named `Error`.
         "go" => Some(json!({ "name": "Error", "message": "context canceled" })),
+        // Swift's own: a cancelled Task throws CancellationError.
+        "swift" => Some(json!({ "name": "CancellationError" })),
         "rust" => Some(json!({ "name": "Cancelled" })),
         _ => None,
     }

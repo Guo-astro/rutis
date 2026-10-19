@@ -115,8 +115,9 @@ final class ValueDecoderImpl: Decoder {
             default: throw mismatch(type, "a bigint")
             }
         case is Rutis.RemoteFunction.Type:
-            guard case let .remoteFunction(far) = value else { throw mismatch(type, "a function") }
-            return Rutis.RemoteFunction(far)
+            if case let .remoteFunction(far) = value { return Rutis.RemoteFunction(far) }
+            if case let .function(function) = value { return Rutis.RemoteFunction(local: function) }
+            throw mismatch(type, "a function")
         default:
             return nil
         }

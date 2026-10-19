@@ -127,9 +127,10 @@ package enum ValueCodec {
         case let object as [String: Any]:
             return .record(of: try object.sorted { $0.key < $1.key }.map { ($0.key, try encodeAny($0.value, depth: depth + 1)) })
         case let map as [AnyHashable: Any]:
-            return .map(try map.map { (try encodeAny($0.key.base, depth: depth + 1), try encodeAny($0.value, depth: depth + 1)) })
+            let entries = try map.map { (try encodeAny($0.key.base, depth: depth + 1), try encodeAny($0.value, depth: depth + 1)) }
+            return .map(entries.sorted { keyOrder($0.0, $1.0) })
         case let set as Set<AnyHashable>:
-            return .set(try set.map { try encodeAny($0.base, depth: depth + 1) })
+            return .set(try set.map { try encodeAny($0.base, depth: depth + 1) }.sorted(by: keyOrder))
         default:
             throw ValueError("a \(type(of: value)) cannot cross processes: it is neither Codable, a @RutisService instance, nor a value rutis knows")
         }
@@ -168,14 +169,15 @@ package enum ValueCodec {
         case let value as Rutis.CalendarDate: return .date(value)
         case let value as Rutis.TimeOfDay: return .time(value)
         case let value as Rutis.BigInt: return .bigint(value)
-        case let function as Rutis.RemoteFunction: return .remoteFunction(function.far)
+        case let function as Rutis.RemoteFunction: return function.value
         case let service as RutisExportable: return .object(ServiceObject(service))
         case let error as Error:
             return .data(.object([("name", .string(errorName(error))), ("message", .string(errorMessage(error)))]))
         case let map as MapEncodable where !map.rutisKeyIsString:
-            return .map(try map.rutisEntries().map { (try encodeAny($0.0, depth: depth + 1), try encodeAny($0.1, depth: depth + 1)) })
+            let entries = try map.rutisEntries().map { (try encodeAny($0.0, depth: depth + 1), try encodeAny($0.1, depth: depth + 1)) }
+            return .map(entries.sorted { keyOrder($0.0, $1.0) })
         case let set as SetEncodable:
-            return .set(try set.rutisElements().map { try encodeAny($0, depth: depth + 1) })
+            return .set(try set.rutisElements().map { try encodeAny($0, depth: depth + 1) }.sorted(by: keyOrder))
         default:
             return nil
         }
@@ -205,6 +207,13 @@ package enum ValueCodec {
     /// `value` as a `T`: what a parameter or result declared `T` receives.
     package static func decode<T>(_ type: T.Type, from value: Value) throws -> T {
         if T.self == Void.self { return () as! T }
+        if !decodes(T.self) {
+            // A type of Swift's own values ([String: Any?], [Any?], ...): the
+            // value as Any, cast.
+            if value.isNullish, let optional = T.self as? OptionalProtocol.Type { return optional.rutisNone as! T }
+            if let native = native(value) as? T { return native }
+            throw ValueError("cannot decode \(value.described) into \(T.self)")
+        }
         let decoded = try decodeAny(type, value, codingPath: [])
         guard let typed = decoded as? T else {
             throw ValueError("cannot decode \(value.described) into \(T.self)")
@@ -212,9 +221,20 @@ package enum ValueCodec {
         return typed
     }
 
+    /// Whether `decodeAny` takes `type`: Any, Decodable types, Optionals of
+    /// them, and the session's own.
+    static func decodes(_ type: Any.Type) -> Bool {
+        if type == Any.self || type == Value.self || type == Rutis.RemoteFunction.self || type is Decodable.Type { return true }
+        if let optional = type as? OptionalProtocol.Type { return decodes(optional.wrappedType) }
+        return false
+    }
+
     /// `value` as a value of the type `type`.
     static func decodeAny(_ type: Any.Type, _ value: Value, codingPath: [CodingKey]) throws -> Any {
-        if type == Any.self { return native(value) as Any }
+        if type == Any.self {
+            guard let native = native(value) else { throw ValueError("expected a value, got \(value.described)") }
+            return native
+        }
         if let optional = type as? OptionalProtocol.Type {
             if value.isNullish { return optional.rutisNone }
             return optional.rutisSome(try decodeAny(optional.wrappedType, value, codingPath: codingPath))
@@ -223,7 +243,10 @@ package enum ValueCodec {
         if let decodable = type as? Decodable.Type {
             return try ValueDecoderImpl(value, codingPath: codingPath).decodeExistential(decodable)
         }
-        if type == Rutis.RemoteFunction.self, case let .remoteFunction(far) = value { return Rutis.RemoteFunction(far) }
+        if type == Rutis.RemoteFunction.self {
+            if case let .remoteFunction(far) = value { return Rutis.RemoteFunction(far) }
+            if case let .function(function) = value { return Rutis.RemoteFunction(local: function) }
+        }
         throw ValueError("a value cannot be decoded into \(type): it is not Decodable")
     }
 
@@ -265,7 +288,7 @@ package enum ValueCodec {
             return out
         case let .remoteFunction(far): return Rutis.RemoteFunction(far)
         case .remoteFuture: return nil
-        case let .function(function): return function
+        case let .function(function): return Rutis.RemoteFunction(local: function)
         case let .object(object): return (object as? ServiceObject)?.service ?? object
         case .signal: return nil
         }
@@ -305,8 +328,10 @@ extension Rutis {
     /// A function of another process, received where a value of type `Any`
     /// was expected.
     public final class RemoteFunction: @unchecked Sendable {
-        let far: FarFunction
-        init(_ far: FarFunction) { self.far = far }
+        /// The function as the session holds it.
+        let value: Value
+        init(_ far: FarFunction) { value = .remoteFunction(far) }
+        init(local function: SessionFunction) { value = .function(function) }
 
         /// Calls it with `args` and returns its result as `Any?`.
         @discardableResult
@@ -317,8 +342,32 @@ extension Rutis {
         /// Calls it with `args` and decodes its result into `R`.
         public func call<R>(_ args: [Any?], as type: R.Type = R.self) async throws -> R {
             let values = try args.map { try ValueCodec.encodeAny($0 as Any) }
-            let result = try await far.call(values, sync: false)
+            let result: Value
+            switch value {
+            case let .remoteFunction(far): result = try await settle(try await far.call(values, sync: false))
+            case let .function(function): result = try await function.body(values)
+            default: result = .undefined
+            }
             return try ValueCodec.decode(R.self, from: result)
         }
     }
+}
+
+/// The order a Swift Dictionary's or Set's entries are sent in (they have
+/// none of their own): numbers by value, then the rest by kind and text, so
+/// the same value is always sent alike.
+func keyOrder(_ a: Value, _ b: Value) -> Bool {
+    func rank(_ v: Value) -> (Int, Double, String) {
+        switch v {
+        case let .data(.number(text)): return (0, Double(text) ?? 0, text)
+        case let .bigint(n): return (0, Double(n.description) ?? 0, n.description)
+        case let .data(.string(s)): return (1, 0, s)
+        case let .data(.bool(b)): return (2, b ? 1 : 0, "")
+        default: return (3, 0, (try? taggedText(v)).flatMap { $0 } ?? v.described)
+        }
+    }
+    let (x, y) = (rank(a), rank(b))
+    if x.0 != y.0 { return x.0 < y.0 }
+    if x.1 != y.1 { return x.1 < y.1 }
+    return x.2 < y.2
 }

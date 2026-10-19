@@ -315,7 +315,7 @@ struct Malformed: Error, CustomStringConvertible {
 
 /// One session.
 package final class Peer: @unchecked Sendable {
-    let channel: Channel
+    package let channel: Channel
     let options: PeerOptions
 
     private let lock = Lock()

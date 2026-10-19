@@ -323,6 +323,14 @@ impl Launcher {
         Launcher::new(binary).cwd(project).inherit_fd()
     }
 
+    /// A Swift runtime: `binary`, built with the Swift SDK (`swift/rutis`),
+    /// serving the plugins compiled into it; in `project`, on an inherited
+    /// socket. The same start as a Go binary's.
+    #[cfg(feature = "swift")]
+    pub fn swift(binary: &std::path::Path, project: &std::path::Path) -> Self {
+        Launcher::new(binary).cwd(project).inherit_fd()
+    }
+
     /// The Bun runtime of the npm package `package` (`bun/rutis-bun`, or a
     /// deployed `@arcships/rutis-bun`), run by the Bun executable `program`
     /// (`bun` on `PATH` when `None`), in `project`, on an inherited socket

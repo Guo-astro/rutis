@@ -827,13 +827,16 @@ jobs:
         run: |
           if sdk=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null); then
             swift build --target Rutis --triple arm64-apple-ios17.0 --sdk "$sdk" --build-path .build/ios
+            swift build --target RutisTest --triple arm64-apple-ios17.0 --sdk "$sdk" --build-path .build/ios
           else
             echo "no iOS SDK on this runner: skipped"
           fi
       # Only the Swift tests of the contract suites: the other runtimes run
       # in their own jobs.
       - name: cargo test (the contract suites with Swift)
-        run: cargo test -p rutis-bridge --features testing,websocket,swift --test runtime_conformance --test value_roundtrip swift_
+        run: cargo test -p rutis-bridge --features testing,websocket,swift --test runtime_conformance --test value_roundtrip --test session_matrix swift_
+      - name: cargo test (the Swift runtime in the bridge)
+        run: cargo test -p rutis-bridge --features testing,swift --test swift_runtime
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
         env:
