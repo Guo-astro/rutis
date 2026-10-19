@@ -248,9 +248,7 @@ fn a_killed_runtime_fails_its_calls_and_a_restart_recovers() {
     // Every row's state so far is settled: the waits below see only what
     // the crash changes.
     host.skip_written();
-    for pid in &killed {
-        s.kill(&host, *pid);
-    }
+    s.kill(&host, &killed);
     // The call in progress fails, naming why (C4).
     let error = probe.answer(&mut host, held).unwrap_err();
     assert!(error.contains("exited"), "the call in progress: {error}");
@@ -330,9 +328,7 @@ fn a_killed_runtime_restarted_on_failure_brings_its_rows_back() {
         "no Python runtime among the host's processes: {before:?}"
     );
     host.skip_written();
-    for pid in &killed {
-        s.kill(&host, *pid);
-    }
+    s.kill(&host, &killed);
     let down = host.expect("runtime py: down (");
     assert!(down.contains("exited with"), "how it ended: {down}");
     host.expect("runtime py: restarting");

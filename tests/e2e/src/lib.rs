@@ -477,44 +477,27 @@ impl Scenario {
         residue::descendants(host)
     }
 
-    /// Kill one of `host`'s processes ([`Scenario::descendants`]) as
-    /// `kill -9` does (TerminateProcess on Windows), as when it crashes:
-    /// no cleanup of its own runs.
-    pub fn kill(&self, host: &Host, pid: u32) {
-        assert!(
-            self.descendants(host)
-                .iter()
-                .any(|(found, _)| *found == pid),
-            "process {pid} is not one of {}'s",
-            host.pid()
-        );
-        #[cfg(unix)]
-        {
-            // SAFETY: kill(2) on a process of the host's, just listed.
-            if unsafe { libc::kill(pid as i32, libc::SIGKILL) } != 0 {
-                panic!("kill -9 {pid}: {}", std::io::Error::last_os_error());
-            }
+    /// Kill `pids`, processes of `host`'s ([`Scenario::descendants`]), as
+    /// `kill -9` does (TerminateProcess on Windows), as when they crash: no
+    /// cleanup of their own runs.
+    ///
+    /// They are checked against one listing, then killed one after the
+    /// other. One that has ended by the time its turn comes went down with
+    /// one killed before it, which is not an error: on Windows a venv's
+    /// `python.exe` is a launcher that runs the interpreter as its child, in
+    /// a job object that kills the child when the launcher dies, and the
+    /// launcher exits when the child does.
+    pub fn kill(&self, host: &Host, pids: &[u32]) {
+        let processes = self.descendants(host);
+        for pid in pids {
+            assert!(
+                processes.iter().any(|(found, _)| found == pid),
+                "process {pid} is not one of {}'s: {processes:?}",
+                host.pid()
+            );
         }
-        #[cfg(windows)]
-        {
-            use windows_sys::Win32::Foundation::CloseHandle;
-            use windows_sys::Win32::System::Threading::{
-                OpenProcess, TerminateProcess, PROCESS_TERMINATE,
-            };
-            // SAFETY: plain Win32 calls on a process in the host's job,
-            // just listed; the handle is closed once used.
-            unsafe {
-                let process = OpenProcess(PROCESS_TERMINATE, 0, pid);
-                if process.is_null() {
-                    panic!("open process {pid}: {}", std::io::Error::last_os_error());
-                }
-                let killed = TerminateProcess(process, 1);
-                let error = std::io::Error::last_os_error();
-                CloseHandle(process);
-                if killed == 0 {
-                    panic!("terminate process {pid}: {error}");
-                }
-            }
+        for &pid in pids {
+            kill(pid);
         }
     }
 
@@ -894,4 +877,53 @@ pub fn leaked<'a>(output: impl IntoIterator<Item = &'a str>, secrets: &[String])
         .filter(|line| secrets.iter().any(|secret| line.contains(secret.as_str())))
         .map(str::to_owned)
         .collect()
+}
+
+/// `kill -9 pid` (TerminateProcess on Windows); a process that has already
+/// ended is left as it is ([`Scenario::kill`]).
+fn kill(pid: u32) {
+    #[cfg(unix)]
+    {
+        // SAFETY: kill(2) on a process of the host's, just listed.
+        if unsafe { libc::kill(pid as i32, libc::SIGKILL) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                panic!("kill -9 {pid}: {error}");
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            PROCESS_TERMINATE,
+        };
+        // SAFETY: plain Win32 calls on a process in the host's job, just
+        // listed; the handle is closed once used.
+        unsafe {
+            let process = OpenProcess(
+                PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                pid,
+            );
+            if process.is_null() {
+                let error = std::io::Error::last_os_error();
+                // No process with that id any more: it has ended.
+                if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+                    return;
+                }
+                panic!("open process {pid}: {error}");
+            }
+            let killed = TerminateProcess(process, 1);
+            let error = std::io::Error::last_os_error();
+            let mut code = 0u32;
+            let ended = GetExitCodeProcess(process, &mut code) != 0 && code != STILL_ACTIVE as u32;
+            CloseHandle(process);
+            // TerminateProcess fails on a process that is ending or ended.
+            if killed == 0 && !ended {
+                panic!("terminate process {pid}: {error}");
+            }
+        }
+    }
 }

@@ -1251,9 +1251,7 @@ impl<'a> Run<'a> {
             runtime.name()
         );
         self.host.skip_written();
-        for pid in pids {
-            self.s.kill(&self.host, pid);
-        }
+        self.s.kill(&self.host, &pids);
         let down = self
             .host
             .expect(&format!("runtime {}: down (", runtime.name()));

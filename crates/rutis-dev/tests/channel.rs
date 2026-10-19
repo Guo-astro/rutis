@@ -279,6 +279,16 @@ async fn load_swap_unload_and_watch() {
     assert!(audit[1].result.is_err());
 }
 
+/// A socket file nobody listens on, as a crashed channel leaves behind.
+///
+/// Not a stream listener that is bound and dropped: the other tests here
+/// spawn processes, and a child between fork and exec holds a copy of every
+/// descriptor, so the dropped listener can still accept a connection for a
+/// moment and the file looks live. A datagram socket never accepts one.
+fn stale_socket(path: &std::path::Path) {
+    std::os::unix::net::UnixDatagram::bind(path).unwrap();
+}
+
 #[tokio::test]
 async fn a_live_socket_is_not_replaced_but_a_stale_one_is() {
     let s = setup().await;
@@ -291,7 +301,7 @@ async fn a_live_socket_is_not_replaced_but_a_stale_one_is() {
     drop(s.channel);
     assert!(!path.exists(), "dropping the channel removes the socket");
     // A stale file left behind by a crash is replaced.
-    std::os::unix::net::UnixListener::bind(&path).unwrap();
+    stale_socket(&path);
     let again = DevChannel::start(s._root.clone(), s.loader.clone(), DevOptions::new(&path))
         .await
         .unwrap();
@@ -320,7 +330,7 @@ async fn a_path_that_is_not_a_socket_is_never_removed() {
         std::io::ErrorKind::AlreadyExists
     );
     let stale = dir.join("stale.sock");
-    std::os::unix::net::UnixListener::bind(&stale).unwrap();
+    stale_socket(&stale);
     let to_socket = dir.join("to-socket.sock");
     std::os::unix::fs::symlink(&stale, &to_socket).unwrap();
     assert_eq!(
