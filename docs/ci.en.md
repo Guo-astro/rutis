@@ -96,7 +96,7 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 | `runtimes-windows` | Windows | `code`: only the tests that depend on the platform | All bridge and loader tests | The same on Windows (processes start over loopback); the Go SDK tests; the E2E harness and the E2E scenarios not limited to Unix (`rutis-e2e`: Job Objects, Ctrl-Break, residue checks); a build check of the whole workspace |
 | `runtimes-bun` | Linux | `bun`: Bun 1.4.0 | Linux latest; macOS 1.4.0 | Every Bun runtime test, with the reruns over loopback |
 | `runtimes-go` | Linux | `go`: Go oldstable | Linux stable; macOS oldstable; the reruns over loopback on Linux | Every Go SDK and Go runtime test |
-| `runtimes-swift` | macOS (self-hosted, §10) | `swift`: the toolchain of the runner's Xcode | — | The Swift SDK's own tests (`swift run RutisSelfTest`), its library built for iOS where the runner has the iOS SDK, the Rust contract suites with the Swift session and runtimes, Swift rows with Node and Python ones (`swift_rows`, `multilang_swift`, caller rows, wait cycles), and `events_conformance` with X a Swift plugin (written placements on pull requests, sampled in full runs) |
+| `runtimes-swift` | macOS (self-hosted, §10) | `swift`: the toolchain of the runner's Xcode | — | The Swift SDK's own tests (`swift run RutisSelfTest`), its library built for iOS where the runner has the iOS SDK, the Rust contract suites with the Swift session and runtimes, Swift rows with Node and Python ones (`swift_rows`, `multilang_swift`, caller rows, wait cycles), the Swift runtime remotely (`dial_conformance` and `swift_remote`), `runtimes.swift` in rutis-host and the Swift plugin development loop (`rutis-host --test swift`, `rutis-e2e --test dev_loop`), and `events_conformance` with X a Swift plugin (written placements on pull requests, sampled in full runs) |
 | `semver-rutis` | macOS (self-hosted, §10) | `packaging` | The whole job | Whether the public API changed incompatibly since the last release (warning only) |
 | `dylib-linux-launcher`, `dylib-linux-sdk-bundle` | Linux | `dylib` | — | Dylib tests, split into two jobs that run at the same time |
 | `dylib-linux-repro` | Linux | `repro` | The whole job | Reproducible SDK builds (built twice on one machine, in two directories) |
@@ -141,6 +141,7 @@ The runtime contract (`runtime::testing::runtime`, `tests/session_matrix.rs`):
 | Bun | `fd:3`, socket path dialed back | Runs; `runtimes-bun` reruns with `RUTIS_LOCAL_HANDOVER=loopback` | Runs | Not compiled: as above |
 | Bun | loopback TCP | No column of its own: the rerun of the row above covers it | As Linux | Not compiled: as above |
 | Bun | WebSocket (the runtime listens, Rust dials) | Runs | Runs | Not compiled: as above |
+| Swift | `fd:3`, socket path dialed back, loopback TCP, WebSocket (the runtime listens, Rust dials) | Not compiled: Swift plugin binaries are macOS only | Runs (`runtimes-swift`; its listener's and dialer's own rules, TLS included, in `tests/swift_remote.rs`) | Not compiled: as Linux |
 | A Node package without `fd` falls back to dialing back | — | Runs | Runs | Skipped: Windows has loopback only |
 
 The first two columns and the last row start the process through the `Process` facade, and the contract also checks the exit status after the crash; the loopback and WebSocket columns attach to a channel and check only that the crash ends the session. On Windows, `python_runtime.rs`, `go_runtime.rs` and others cover the facade's loopback start.
@@ -161,6 +162,7 @@ The dial-out contract (`tests/dial_conformance.rs`: rutis runs an access point, 
 | Go | Runs | Runs | Runs; the own-stop case is skipped: it sends SIGTERM, which Windows does not have |
 | Node | Runs | Runs | Runs; the own-stop case is skipped: as above |
 | Bun | Runs | Runs | Not compiled: Bun on Windows is not a declared platform |
+| Swift | Not compiled: Swift plugin binaries are macOS only | Runs (`runtimes-swift`) | Not compiled: as Linux |
 
 Other bridge test files compiled on Unix only (each says why next to its `cfg`): `bun_runtime.rs`, `bun_channel.rs` (Bun); `local_spawn.rs` (the `fd:3` and dial-back handovers; `local_loopback.rs` covers Windows' loopback handover); `local_plugin.rs`, `value_roundtrip.rs` (Unix sockets); `local_stdio.rs` (`dup2`); `concurrent_launch.rs` (descriptors inherited across fork/exec); the two soaks on Linux only (they read `/proc`).
 

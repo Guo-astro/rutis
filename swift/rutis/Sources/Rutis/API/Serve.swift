@@ -35,10 +35,25 @@ extension Rutis {
             FileHandle.standardOutput.write(Data(manifest(plugins).utf8 + [0x0A]))
             return
         }
-        let (channel, project) = try parse(args)
+        let (channel, endpoint, project) = try parse(args)
         Responsibility.claim()
-        if channel.hasPrefix("listen:") || channel.hasPrefix("dial:") || channel.hasPrefix("ws:") || channel.hasPrefix("wss:") {
-            throw RutisError(name: "Error", message: "remote channels (listen:, dial:) are not in this version of the Swift SDK: \(channel)")
+        if let endpoint, channel.hasPrefix("listen:") || channel.hasPrefix("dial:") {
+            #if canImport(Network)
+            let remote = String(channel.drop(while: { $0 != ":" }).dropFirst())
+            try block {
+                if channel.hasPrefix("listen:") {
+                    try await listen(remote, endpoint: endpoint, project: project, plugins)
+                } else {
+                    try await dialOut(remote, endpoint: endpoint, project: project, plugins)
+                }
+            }
+            return
+            #else
+            throw RutisError(name: "Error", message: "remote channels need Network.framework: \(channel)")
+            #endif
+        }
+        if channel.hasPrefix("ws:") || channel.hasPrefix("wss:") {
+            throw RutisError(name: "Error", message: "a WebSocket channel is listen:<address> or dial:<address>: \(channel)")
         }
         try serve(channel: try Channels.open(channel), project: project, plugins)
     }
@@ -46,10 +61,15 @@ extension Rutis {
     /// Serves `plugins` on `channel` (the compat protocol, one message per
     /// line) until the session ends, then unloads them.
     static func serve(channel: Channel, project: String, _ plugins: [Definition]) throws {
+        try block { try await serveSession(channel: channel, project: project, plugins) }
+    }
+
+    /// Runs `body` in a Task of its own, blocking this thread until it ends.
+    static func block(_ body: @escaping @Sendable () async throws -> Void) throws {
         let ended = ResultEvent()
         Task.detached {
             do {
-                try await serveSession(channel: channel, project: project, plugins)
+                try await body()
                 ended.finish(nil)
             } catch {
                 ended.finish(error)
@@ -70,9 +90,10 @@ extension Rutis {
 
     /// Starts a session serving `plugins`: a host older than 0.13 is
     /// refused right after its handshake.
-    static func startSession(channel: Channel, project: String, _ plugins: [Definition]) throws -> (Peer, Runtime) {
+    static func startSession(channel: Channel, project: String, _ plugins: [Definition], endpoint: Endpoint? = nil) throws -> (Peer, Runtime) {
         let runtime = Runtime(plugins, project: project)
         var options = PeerOptions()
+        options.endpoint = endpoint
         options.dispatch = { [unowned runtime] target, method, args in try await runtime.dispatch(target, method, args) }
         options.arrive = { [unowned runtime] method, args in runtime.arrive(method, args) }
         options.require = [eventsCapability]
@@ -124,18 +145,42 @@ extension Rutis {
         #endif
     }
 
-    static func parse(_ args: [String]) throws -> (channel: String, project: String) {
+    /// The channel, the endpoint of a network channel (`listen:`, `dial:`:
+    /// a runtime, its controller managing its rows) and the project. What
+    /// retrying cannot fix fails here, before any dial.
+    static func parse(_ args: [String]) throws -> (channel: String, endpoint: Endpoint?, project: String) {
         guard let channel = args.first else { throw RutisError(name: "Error", message: serveUsage) }
         var rest = Array(args.dropFirst())
+        var flags: [String: String] = [:]
         while let flag = rest.first, flag.hasPrefix("--") {
             guard rest.count >= 2 else { throw RutisError(name: "Error", message: "\(flag) needs a value") }
             guard flag == "--id" || flag == "--peer" else {
                 throw RutisError(name: "Error", message: "unknown flag \(flag); \(serveUsage)")
             }
+            flags[String(flag.dropFirst(2))] = rest[1]
             rest.removeFirst(2)
         }
         guard rest.count == 1 else { throw RutisError(name: "Error", message: serveUsage) }
-        return (channel, rest[0])
+        var endpoint: Endpoint?
+        if channel.hasPrefix("listen:") || channel.hasPrefix("dial:") {
+            guard let id = flags["id"], !id.isEmpty else {
+                throw RutisError(name: "Error", message: "a network channel needs --id <endpoint>: \(channel)")
+            }
+            guard validEndpointID(id) else {
+                throw RutisError(name: "Error", message: "invalid endpoint id \(id): use lower-case letters, digits and -")
+            }
+            endpoint = Endpoint(local: id, expected: flags["peer"], declare: ["runtime"])
+        }
+        #if canImport(Network)
+        if channel.hasPrefix("dial:") {
+            do {
+                _ = try dialHost(String(channel.dropFirst("dial:".count)))
+            } catch {
+                throw RutisError(name: "Error", message: "\(error)")
+            }
+        }
+        #endif
+        return (channel, endpoint, rest[0])
     }
 }
 

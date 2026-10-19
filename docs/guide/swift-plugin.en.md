@@ -229,3 +229,20 @@ A host names a Swift plugin directory in `rutis.json` and puts binaries there:
 ```
 
 Download the binary from a release into the directory (a downloaded binary is quarantined: `rutis-host check` says so, and `xattr -d com.apple.quarantine <file>` clears it once you trust it). The host finds `swift:<plugin>` in all binaries; when two binaries have a plugin of the same name, write `swift-<binary name>:<plugin>`. The settings are those of `runtimes.go`: a binary starts when a row first uses it and stops after `idle` seconds (60) without one, `"start": "eager"` starts all and keeps them running, `restart` (`no` by default, `on-failure`, `exit`) applies to each runtime on its own, and a replaced binary takes effect when its runtime restarts. Running Swift binaries needs no Swift toolchain. See [rutis-host and rutis.json](rutis-host.en.md); for Rust hosts, [embedding in a Rust application](rust-host.en.md) (`SwiftResolver`, `SwiftRuntimes` in rutis-loader).
+
+## 8. Run it on another machine
+
+A plugin binary can also run on another Mac as a remote runtime, with `language` set to `swift`. Two ways, with the same arguments, environment variables and rules as the Python and Go runtimes; see [Connect nodes](nodes.en.md#a-language-runtime-on-another-machine):
+
+```bash
+# Listen, and rutis connects (certificate and key in RUTIS_CERT, RUTIS_KEY)
+RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
+  ./weather listen:wss://0.0.0.0:7443/rutis --id gpu --peer main .
+
+# Dial out to a rutis access point, reconnecting by fixed rules after a disconnect
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  ./weather dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
+```
+
+- Listening: a non-loopback address needs `wss://`; the key may be an EC (P-256, P-384, P-521) or RSA key, PKCS#8, SEC1 or PKCS#1, in PEM. One controller at a time, a newer connection taking over; the runtime says `rutis: listening on <address>` once bound.
+- Dialing out: it reports its state on stderr (`rutis: connected to …`, `rutis: connection lost (…); retrying in 1s`, `rutis: refused: auth-rejected (…); retrying in 30s`); SIGTERM or Ctrl-C unloads all rows and exits; an incompatible access point makes it exit with status 1 (`rutis: refused: incompatible (…); stopping`). For the rules, see [Runtimes that connect in](nodes.en.md#runtimes-that-connect-in).

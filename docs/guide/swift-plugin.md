@@ -229,3 +229,20 @@ public final class Calendar: @unchecked Sendable {
 ```
 
 从 Release 下载二进制放进这个目录（下载的二进制带隔离属性：`rutis-host check` 会提示，信任它之后用 `xattr -d com.apple.quarantine <文件>` 清除）。宿主在所有二进制里找 `swift:<插件>`；两个二进制有同名插件时写 `swift-<二进制名>:<插件>`。设置与 `runtimes.go` 相同：二进制在第一次有行用到时启动，空闲 `idle` 秒（60）后停下，`"start": "eager"` 全部启动并一直运行，`restart`（默认 `no`、`on-failure`、`exit`）对每个运行时各自生效，换了二进制在它的运行时重启后生效。运行 Swift 二进制不需要 Swift 工具链。见 [rutis-host 与 rutis.json](rutis-host.md)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)（rutis-loader 的 `SwiftResolver`、`SwiftRuntimes`）。
+
+## 8. 在另一台机器上运行
+
+插件二进制也可以在另一台 Mac 上作为远程运行时运行，`language` 写 `swift`。两种方式，参数、环境变量和规则与 Python、Go 运行时相同；见 [连接节点](nodes.md#别的机器上的语言运行时)：
+
+```bash
+# 监听，由 rutis 连过来（证书和私钥在 RUTIS_CERT、RUTIS_KEY）
+RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
+  ./weather listen:wss://0.0.0.0:7443/rutis --id gpu --peer main .
+
+# 拨出到 rutis 的接入点，断开后按固定规则重连
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  ./weather dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
+```
+
+- 监听：非回环地址必须用 `wss://`；私钥可以是 EC（P-256、P-384、P-521）或 RSA，PKCS#8、SEC1 或 PKCS#1，PEM 格式。一次一个控制方，新连接接管；绑定后打印 `rutis: listening on <地址>`。
+- 拨出：在 stderr 报告状态（`rutis: connected to …`、`rutis: connection lost (…); retrying in 1s`、`rutis: refused: auth-rejected (…); retrying in 30s`）；SIGTERM 或 Ctrl-C 卸载全部行后退出；接入点不兼容时以状态 1 退出（`rutis: refused: incompatible (…); stopping`）。规则见 [连进来的运行时](nodes.md#连进来的运行时)。

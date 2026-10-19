@@ -1,6 +1,6 @@
 //! The runtime conformance suite (`rutis_bridge::runtime::testing::runtime`) over
 //! every channel: the Node, the Python, (feature `go`) the Go and (feature
-//! `swift`, local channels) the Swift runtime, each connected on an
+//! `swift`, macOS) the Swift runtime, each connected on an
 //! inherited socket (`fd:3`), on a socket path it dials back, on a loopback
 //! address it dials presenting a token, and over a loopback WebSocket it
 //! listens on (dialed by Rust and attached); the Bun runtime (feature `bun`,
@@ -344,8 +344,7 @@ fn swift_binary(product: &str) -> PathBuf {
     PathBuf::from(String::from_utf8(output.stdout).unwrap().trim()).join(product)
 }
 
-// Swift (feature `swift`): the local channels. No WebSocket column:
-// listening is a later phase of the Swift SDK (A1, design §15).
+// Swift (feature `swift`, macOS): every channel.
 #[cfg(all(feature = "swift", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_on_an_inherited_socket() {
@@ -362,6 +361,12 @@ async fn swift_dialing_a_socket_path() {
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_dialing_a_loopback_address() {
     semantics(Runtime::Swift, Via::Loopback).await;
+}
+
+#[cfg(all(feature = "swift", target_os = "macos"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_listening_on_a_websocket() {
+    semantics(Runtime::Swift, Via::WebSocket).await;
 }
 
 #[cfg(feature = "go")]
