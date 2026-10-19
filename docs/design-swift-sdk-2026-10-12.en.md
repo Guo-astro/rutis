@@ -602,6 +602,22 @@ Not needed: method tables, JSON encoding, reference wrappers (`ref`), context pa
 | 12 | Dialing out uses `URLSessionWebSocketTask` (the status of a refused upgrade comes from the task's `response`), listening uses Network.framework; shape ②'s counterparts of the environment variables are `RutisApp` parameters |
 | 13 | `objects` is not declared (no receiving object references), as Go; added when needed |
 
+### 17.4 Implementation notes of S2 (2026-10-19, #387)
+
+S2 follows §10 and §11, and also brings the remote connections form ① shares with A1 (`listen:` / `dial:`). Decided while implementing:
+
+| Item | How | Why |
+| --- | --- | --- |
+| Access belongs to the binary (§8) | Before serving, when macOS holds another process responsible for it, `Rutis.serve` runs its own image again in place with `posix_spawn(POSIX_SPAWN_SETEXEC)` and `responsibility_spawnattrs_setdisclaim` (the same pid and descriptors), responsible for itself from then on; both functions are looked up at run time, and nothing changes when one is missing | A child inherits its parent's (the terminal's, the host's) responsible process: the prompt would name the terminal, and the access go to it. In the SDK it holds whoever starts the binary, and the host needs no change |
+| `dev`'s build | `swift build --product <product>` (debug), copied to `.rutis/swift/<product>-<n>` | The development loop should be fast; a new file keeps a binary rewritten while it runs from no longer matching its signature. §11 said `-c release`; the publish workflow builds release |
+| The template's tests | Swift Testing (`@Test`) with `RutisTest` | Xcode 16's default; the Command Line Tools alone have no test framework (there the e2e builds only the plugin, and the guide says `swift test` needs Xcode) |
+| `check` | A binary of plugin API below 3 says "rebuild it with the 0.13 SDK or later" and fails; Go's too | §3.3 |
+| Compiled languages in the host | rutis-host's Go-only parts became `languages/binary.rs` (`BinaryHost`, `DevBuild`), one file each for Go and Swift | "One file and one line" in the registry holds for compiled languages too |
+| The listener's WebSocket layer | The upgrade and frames are the SDK's, over an `NWListener` (TCP / TLS) | `NWProtocolWebSocket` refuses with 400 whatever the reason and does not show the path, while dialers classify by status (401 / 403 retried, 400 stops) |
+| `RUTIS_KEY` | EC (P-256/384/521) or RSA, PKCS#8 / SEC1 / PKCS#1; the identity is made with `SecIdentityCreate`, no keychain | `SecItemImport` does not take unencrypted PKCS#8 |
+
+Acceptance (§15 S2, which is the master plan's original M3 acceptance): on-demand start and restart policies (`swift_rows.rs`); a code change in `dev` restarts only its runtime (e2e `dev_loop`); the access prompt names the binary and a refusal reaches the caller (e2e `tcc.rs`: the binary is responsible for itself, its signing identifier comes from its Info.plist, and without access the Python caller gets the plugin's error; the prompt itself and a granted access are a manual check).
+
 ## Appendix
 
 ### A. Why not a dlopen auxiliary program (the revision of the master plan's M3)

@@ -70,7 +70,7 @@ Also:
 - Once the host stops (a termination signal, the `exit` policy), no runtime is restarted; nor is one removed by [changing the configuration while it runs](#changing-the-configuration-while-it-runs).
 - `restart` is a runtime setting: changing it while the host runs needs a restart.
 - `dev` follows the same rules and defaults; write `"runtimes": { "py": { "restart": "on-failure" } }` in `rutis.dev.json` (for the project's own runtime, only `restart` is taken).
-- Go runtimes have no such setting yet (a crashed one stays `down`, and starts again when a row uses it once its binary changed); remote runtimes and peer rows' links reconnect by themselves and are not affected.
+- Go and Swift: `runtimes.go.restart` and `runtimes.swift.restart` apply to each of their runtimes on its own (`runtime go-<name>: restarting`); a runtime stopped for being idle did not end on its own. Remote runtimes and peer rows' links reconnect by themselves and are not affected.
 
 ## `rutis.json`
 
@@ -125,6 +125,7 @@ The endpoint ID of this node. Connected nodes see this name. Defaults to `host`.
 | `bun` | `project` (default `.`), `runtime`, `program`, `restart` | Starts the Bun runtime, with rows named `bun:<module>`. Modules resolve from `project` (packages in `node_modules`, `./relative-paths`). Install `@arcships/rutis-bun` there or specify it with `runtime`; `program` is the Bun executable, by default `bun` on `PATH`. See [Write a Bun plugin](https://github.com/arcships/rutis/blob/main/docs/guide/bun-plugin.en.md). |
 | `py` | `project` (default `.`), `python`, `restart` | Starts the Python runtime. The interpreter defaults to `$VIRTUAL_ENV/bin/python`, then `<project>/.venv/bin/python`, then `python3` (on Windows, `Scripts\python.exe` and `python`). Its environment must contain `rutis` and the plugins. |
 | `go` | `dir`, `binaries`, `start` (`on-demand` by default / `eager`), `idle` (seconds, default 60), `project` (default `.`) | Go plugins: one runtime process per binary. Every executable in `dir` that contains the Go SDK's marker counts (the directory is trusted as a whole and should be dedicated); `binaries` lists single files. A runtime is named after its file (`netkit` → `go-netkit`). An on-demand runtime starts when a row first uses it and stops after `idle` seconds without one; `eager` starts all and keeps them running (not together with `idle`). A replaced binary takes effect when the host restarts. |
+| `swift` | as `go` | Swift plugins (macOS): as `go`, for binaries built with the Swift SDK (`plugin-binary` → `swift-plugin-binary`); see [Swift plugins](https://github.com/arcships/rutis/blob/main/docs/guide/swift-plugin.en.md). |
 | `remote` | `name`, `language`, `listen`, `instances` | A runtime on another machine: connected through a node row with `"runtime": "<name>"`, see [Connect nodes](https://github.com/arcships/rutis/blob/main/docs/guide/nodes.en.md); or, with `listen` and `instances`, one that connects in, see below. |
 
 If a runtime package is missing, startup fails and prints an installation command.
@@ -158,7 +159,7 @@ With `listen` (the name of a listener under `listen`) and `instances` (the id of
 - No node row is needed. `listen` and `instances` go together; a listener or group that does not exist, a group that is not `instanced`, or a missing token stops the host at startup.
 - `<name>:` rows belong in that group; anywhere else the row fails.
 
-A Python runtime connects in with `python -m rutis dial:wss://… --id <id> --peer <this host's id> <project>`, a Go plugin binary with `<binary> dial:wss://… --id <id> --peer <this host's id> <project>`, and Node and Bun runtimes with `dial:` too; the commands are in [Connect nodes](https://github.com/arcships/rutis/blob/main/docs/guide/nodes.en.md#runtimes-that-connect-in).
+A Python runtime connects in with `python -m rutis dial:wss://… --id <id> --peer <this host's id> <project>`, a Go or Swift plugin binary with `<binary> dial:wss://… --id <id> --peer <this host's id> <project>`, and Node and Bun runtimes with `dial:` too; the commands are in [Connect nodes](https://github.com/arcships/rutis/blob/main/docs/guide/nodes.en.md#runtimes-that-connect-in).
 
 ### `listen`
 

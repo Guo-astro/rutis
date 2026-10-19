@@ -209,6 +209,6 @@ SDK 只做这几件事：
 | M1 | 契约补充：运行时启动命令可配置；`rows.schema` 报出依赖和服务形状；行提供的服务按名字投到 rutis 并登记进服务名目录；跨会话的引用转交和调用链改写；宿主服务从运行时依赖改为按行门控、`hosts.provide / hosts.withdraw` 动态注册；运行时两段放行。先在 Node 运行时上做完 | JS 行提供的服务能被 Rust 行按名字 `inject`；JS 插件声明的依赖参与 rutis 门控；先解析一个 `inject` 为 `llm` 的行、后启动运行时，这一行等到 `llm` 出现才启动，`llm` 撤销后停下；现有测试全部通过 |
 | M1 / M2 交界 | 两个运行时同时冷启动：Python 提供者 P 和 JS 提供者 J 各提供一个服务，JS 消费者用 P 的服务、Python 消费者用 J 的服务 | 四行同时冷启动全部启动，运行时之间不互等；任一提供者撤销服务时，只有对应的消费者停下 |
 | M2 | Python 运行时插件 + 叶子 SDK + 运行时契约的一致性测试 | 同一套一致性测试在 Node 和 Python 两个运行时上通过；Python 插件和 JS 插件互相使用服务；同进程调用不走 IPC |
-| M3 | Swift 运行时插件（macOS）+ 叶子 SDK，以及 Apple 应用托管（设计见 [Swift SDK](design-swift-sdk-2026-10-12.md)、[应用接入](design-app-integration-2026-10-14.md)） | 一个用 EventKit 的插件在签名二进制里运行，系统授权提示指向该二进制；应用托管的验收见 Swift SDK §十五 |
+| M3 | Swift 运行时插件（macOS）+ 叶子 SDK，以及 Apple 应用托管（设计见 [Swift SDK](design-swift-sdk-2026-10-12.md)、[应用接入](design-app-integration-2026-10-14.md)） | 一个用 EventKit 的插件在签名二进制里运行，系统授权提示指向该二进制；应用托管的验收见 Swift SDK §十五。形态①已完成（2026-10-19，S1 #386、S2 #387）：授权归属于二进制与拒绝传回由 e2e `tests/e2e/tests/tcc.rs` 检查，提示本身为人工验收（Swift SDK §17.4） |
 | M4 | Go（有具体需求时；设计见 [Go 插件运行时](design-go-runtime-2026-10-10.md)） | 一组 Go 插件编译成一个可执行文件，由运行时插件拉起，换二进制后这组插件重启 |
 | M5 | Android 应用托管（Kotlin SDK；设计见 [Android 应用托管](design-android-runtime-2026-10-12.md)、[应用接入](design-app-integration-2026-10-14.md)；连接见 [拨出与动态接入](design-remote-runtime-dial-2026-10-14.md)） | 应用拨出接入，按 rutis 配置装载插件；两台设备同名插件各在自己的实例 |

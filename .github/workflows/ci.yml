@@ -158,6 +158,7 @@ jobs:
               - crates/rutis-loader/**
               - crates/rutis-host/**
               - tests/e2e/tests/dev_loop.rs
+              - tests/e2e/tests/tcc.rs
             # What decides whether the SDK builds reproducibly. Kernel
             # changes reach the SDK too, but are checked in full runs
             # (Q12.6.3).
@@ -866,13 +867,15 @@ jobs:
           cargo test -p rutis-loader --features node,python,swift --test swift_rows --test multilang_swift
           cargo test -p rutis-loader --features node,python,swift --test caller_rows --test sync_cycles swift
       # runtimes.swift in rutis-host (rows, restart, check), and the plugin
-      # author's loop: new --lang swift, swift test, check, dev rebuilding.
+      # author's loop: new --lang swift, swift test, check, dev rebuilding;
+      # an EventKit plugin's access belonging to its binary (tcc).
       - name: cargo test (rutis-host with Swift, the Swift development loop)
         env:
           RUTIS_E2E_DIR: /tmp/rutis-e2e
         run: |
           cargo test -p rutis-host --test swift
           cargo test -p rutis-e2e --test dev_loop the_swift_plugin_development_loop
+          cargo test -p rutis-e2e --test tcc
       # The events conformance with X a Swift plugin, in the placements a
       # pull request runs (written; full runs sample more).
       - name: cargo test (events conformance, X Swift)
