@@ -61,12 +61,16 @@ async fn call(
     method: &str,
     args: Value,
 ) -> Result<Value, String> {
+    let what = format!("{method} answering");
     let method = method.to_owned();
-    tokio::task::spawn_blocking(move || service.invoke(&method, args.into()))
-        .await
-        .unwrap()
-        .map_err(|error| error.to_string())
-        .and_then(|value| value.json().map_err(|error| error.to_string()))
+    COLD.within(
+        &what,
+        tokio::task::spawn_blocking(move || service.invoke(&method, args.into())),
+    )
+    .await
+    .unwrap()
+    .map_err(|error| error.to_string())
+    .and_then(|value| value.json().map_err(|error| error.to_string()))
 }
 
 /// A row `swift:ping` runs in the runtime of the binary that has it,
@@ -84,9 +88,14 @@ async fn a_swift_row_runs_in_its_binarys_runtime_and_comes_back_after_a_crash() 
     }))
     .unwrap();
     config.rebase(dir.path());
-    let host = Host::start(&config).await.unwrap();
+    let host = COLD
+        .within("the host's start", Host::start(&config))
+        .await
+        .unwrap();
     let _exits = host.supervise();
-    host.load(config.rows()).await.unwrap();
+    COLD.within("the rows", host.load(config.rows()))
+        .await
+        .unwrap();
     let service = COLD
         .eventually(|| host.service("ping"), "the ping service")
         .await;
@@ -115,6 +124,11 @@ async fn a_swift_row_runs_in_its_binarys_runtime_and_comes_back_after_a_crash() 
         call(service, "echo", json!(["back"])).await.unwrap(),
         json!("netkit pong back")
     );
+    // Stopped, its runtime ends with it: nothing is left running.
+    COLD.within("the host's stop", host.shut_down(HANG_GUARD))
+        .await
+        .ok()
+        .expect("the host stops");
 }
 
 /// `check` lists each Swift binary with its platform, SDK and plugin API;
