@@ -21,13 +21,16 @@ use crate::session::{decode_with, encode_with, transcode_with, Dynamic, Error, V
 
 /// A dynamic event: its arguments as session values. Use it as
 /// `EventKey::<Args>::dynamic(name)` to listen to, or emit, an event by
-/// name with whatever arguments it has; [`EventKey::of`](rutis::EventKey::of)
-/// has no name for it.
+/// name with whatever arguments it has. It has no name of its own: with
+/// [`EventKey::of`](rutis::EventKey::of) every registration and dispatch
+/// fails (`Args events need a name: EventKey::dynamic(name)`, events
+/// protocol §12.1).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Args(pub Vec<Value>);
 
 impl Event for Args {
-    const NAME: &'static str = "rutis-bridge/args";
+    /// Empty: no name of its own (see [`Args`]).
+    const NAME: &'static str = "";
     type Value = ArgValue;
 }
 

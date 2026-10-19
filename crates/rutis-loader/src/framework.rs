@@ -23,6 +23,9 @@ pub enum RowState {
 /// `rutis/row`: row `row` (plugin `plugin`, at `scope`) is now `state`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RowEvent {
+    /// The row's id as configured (the loader's row id, as a listener
+    /// descriptor's `row`): the same in every copy of an instanced group,
+    /// told apart by `scope`.
     pub row: String,
     pub plugin: String,
     pub scope: Vec<Scope>,

@@ -1,0 +1,7 @@
+{
+  "format": 1,
+  "id": "main",
+  "rows": [
+    { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "events": { "out": ["order/*"], "in": ["stock/changed"] } } }
+  ]
+}

@@ -1049,6 +1049,19 @@ struct SessionState {
     ready: watch::Sender<Option<Result<(), Error>>>,
     ended: watch::Sender<bool>,
     activity: Arc<Activity>,
+    /// The far end's `events.*` operations, run one after another in
+    /// arrival order by one task, never on the reader ([`Ordered`]).
+    ordered: Mutex<Ordered>,
+}
+
+/// The event operations of a session waiting for their turn (events
+/// protocol §4.1, §5.5): each is the id of an admitted call, and whether it
+/// runs in its turn (table changes, `emit`) or only starts there, as a task
+/// of its own (the other modes, which wait for results).
+#[derive(Default)]
+struct Ordered {
+    busy: bool,
+    queue: std::collections::VecDeque<(String, bool)>,
 }
 impl Drop for SessionState {
     fn drop(&mut self) {
@@ -1143,6 +1156,7 @@ impl Connection {
                 count: Mutex::new(0),
                 changed: Notify::new(),
             }),
+            ordered: Mutex::default(),
         }));
         // Greet before reading (#239). A side that finds the far end's
         // greeting incompatible closes the channel; had it not greeted yet,
@@ -2274,8 +2288,14 @@ impl Connection {
             | Accepted::Get(object, _) => object.executor.handle.clone(),
             Accepted::Invoke(..) => self.0.executor.clone(),
         };
-        // Event table changes, and emits, are handled here, in frame order,
-        // before the next frame is read (events protocol §4.1, §5.5).
+        // Event operations run in frame order (events protocol §4.1, §5.5):
+        // table changes and emits each in its turn, the rest started in it.
+        // Never here: a reader runs no plugin code (a listener, an
+        // observer), which could wait for a frame only this reader reads.
+        let event_op = matches!(
+            &incoming.call,
+            Accepted::Invoke(target, method, _) if target.is_empty() && method.starts_with("events.")
+        );
         let inline = matches!(
             &incoming.call,
             Accepted::Invoke(target, method, args) if target.is_empty() && inline_event_op(method, args)
@@ -2320,12 +2340,8 @@ impl Connection {
                 Err(id)
             }
         };
-        if let (Err(id), true) = (&delivery, inline) {
-            let incoming = self.0.calls.lock().unwrap().incoming.remove(id);
-            if let Some(incoming) = incoming {
-                let _entered = handle.enter();
-                self.execute(incoming, false);
-            }
+        if let (Err(id), true) = (&delivery, event_op) {
+            self.run_ordered(id.clone(), inline);
         } else if let Err(id) = delivery {
             let peer = self.clone();
             handle.spawn(async move {
@@ -2340,6 +2356,50 @@ impl Connection {
             waiter.send(Message::Invoke(incoming)).map_err(transport)?;
         }
         Ok(())
+    }
+    /// Queue the admitted event operation `id` behind the session's others;
+    /// the session's ordered task takes it in its turn.
+    fn run_ordered(&self, id: String, inline: bool) {
+        {
+            let mut ordered = self.0.ordered.lock().unwrap();
+            ordered.queue.push_back((id, inline));
+            if ordered.busy {
+                return;
+            }
+            ordered.busy = true;
+        }
+        let peer = self.clone();
+        self.0.executor.spawn(async move { peer.drain_ordered() });
+    }
+    /// The session's ordered task: each queued event operation in arrival
+    /// order, run (`inline`) or started as a task, until none is left.
+    fn drain_ordered(&self) {
+        loop {
+            let (id, inline) = {
+                let mut ordered = self.0.ordered.lock().unwrap();
+                match ordered.queue.pop_front() {
+                    Some(next) => next,
+                    None => {
+                        ordered.busy = false;
+                        return;
+                    }
+                }
+            };
+            if inline {
+                let incoming = self.0.calls.lock().unwrap().incoming.remove(&id);
+                if let Some(incoming) = incoming {
+                    self.execute(incoming, false);
+                }
+            } else {
+                let peer = self.clone();
+                self.0.executor.spawn(async move {
+                    let incoming = peer.0.calls.lock().unwrap().incoming.remove(&id);
+                    if let Some(incoming) = incoming {
+                        peer.execute(incoming, false);
+                    }
+                });
+            }
+        }
     }
     fn execute(&self, incoming: Incoming, sync: bool) {
         if self.0.calls.lock().unwrap().closed.is_some() {

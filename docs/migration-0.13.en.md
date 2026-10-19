@@ -162,7 +162,7 @@ events = ["credentials/record-updated"]   # remove
 emits = ["file-changed"]                  # remove
 ```
 
-Still there, the build fails: `mount credentials: the config field events was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)`. `.event(name)` and `.emit(name)` of `rutis_bridge::cordis::build` are removed as well.
+Still there, the build fails: `mount credentials: the config field events was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`. `.event(name)` and `.emit(name)` of `rutis_bridge::cordis::build` are removed as well.
 
 On the Rust side define the event type yourself (named by the Cordis event's name), or receive it by name with `Args`:
 
@@ -194,7 +194,7 @@ ctx.plugin(Events, { peer: 'main', out: ['tock'], in: ['tick'] })
 ctx.plugin(Events, { peer: 'main', export: ['tock'], import: ['tick'] })
 ```
 
-Still writing `out` / `in` gives `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (docs/migration-0.13.md)`.
+Still writing `out` / `in` gives `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`.
 
 ## Node links
 
@@ -212,7 +212,7 @@ Now:
 { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["clock", "tick"], "import": ["tock"] } }
 ```
 
-Still there, it gives `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (docs/migration-0.13.md)`.
+Still there, it gives `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`.
 
 - An item is a name, or a prefix ending in `*` (`session/*`; `*` alone is every name); prefixes apply to events only. A name in `export` exports that service and also lets this node's events of that name reach the far end, so a name that is both a service and an event shares both.
 - Events between nodes are now the far listeners as entries on this node's bus: the five modes, scopes, filters and every value type as on one machine (before: always `parallel`, JSON only, silently dropped on a disconnect). When the link goes away they leave the bus, and calls in progress fail once. Events travel one hop: what a node imports is not shared further.
