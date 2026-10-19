@@ -375,8 +375,24 @@ fn template_tests(s: &Scenario, kind: Kind) -> Host {
             )
         }
         Kind::Go => s.program("demo", "go", ["test", "./..."], GO_ENV),
+        // The Command Line Tools (the self-hosted runners' toolchain) have
+        // neither XCTest nor Swift Testing's macro plugin: there the test
+        // target cannot build, and only the plugin is built.
+        Kind::Swift if command_line_tools() => {
+            s.program("demo", "swift", ["build", "--target", "DemoPlugin"], &[])
+        }
         Kind::Swift => s.program("demo", "swift", ["test"], &[]),
     }
+}
+
+/// Whether the active developer directory is the Command Line Tools, not
+/// Xcode.
+fn command_line_tools() -> bool {
+    std::process::Command::new("xcode-select")
+        .arg("-p")
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).contains("CommandLineTools"))
+        .unwrap_or(false)
 }
 
 fn greet(probe: &Probe, host: &mut Host) -> Value {

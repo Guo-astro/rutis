@@ -2,7 +2,7 @@
 
 [中文](swift-plugin.md)
 
-From creating a project to publishing it, and to a host using it. Needs macOS 14 or later and a Swift 6 toolchain (Xcode 16 or later, or its Command Line Tools); the SDK itself is written in the Swift 5 language mode, and so is the project `new` makes.
+From creating a project to publishing it, and to a host using it. Needs macOS 14 or later and Xcode 16 or later (the Command Line Tools alone build and run plugins, but `swift test` needs Xcode's test frameworks); the SDK itself is written in the Swift 5 language mode, and so is the project `new` makes.
 
 Swift plugins follow the same conventions as TypeScript, Python and Go plugins (see the [plugin API](plugin-api.en.md)); as with Go, **a Swift plugin is compiled into a binary, and a binary is one runtime process in the host**. A binary holds one or several plugins; a host can run many binaries at once, starting each only when a row uses it. Swift is the language for what macOS offers its own programs: calendars and reminders (EventKit), contacts, accessibility and Apple events automation, screen capture, Core ML.
 
