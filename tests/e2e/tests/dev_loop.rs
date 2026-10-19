@@ -377,9 +377,9 @@ fn template_tests(s: &Scenario, kind: Kind) -> Host {
         Kind::Go => s.program("demo", "go", ["test", "./..."], GO_ENV),
         // The Command Line Tools (the self-hosted runners' toolchain) have
         // neither XCTest nor Swift Testing's macro plugin: there the test
-        // target cannot build, and only the plugin is built.
+        // target cannot build, and only the plugin and its binary are built.
         Kind::Swift if command_line_tools() => {
-            s.program("demo", "swift", ["build", "--target", "DemoPlugin"], &[])
+            s.program("demo", "swift", ["build", "--product", "demo"], &[])
         }
         Kind::Swift => s.program("demo", "swift", ["test"], &[]),
     }
@@ -463,8 +463,13 @@ fn dev_loop(kind: Kind) {
     );
 
     // 3. check, on the template project as generated.
+    // A compiled language's check builds the binary first: a build's time.
     let mut check = s.host_in_with("demo", ["check"], GO_ENV);
-    assert!(check.wait_exit().success(), "rutis-host check");
+    let checked = match kind.compiled() {
+        true => check.wait_exit_within(build_guard()),
+        false => check.wait_exit(),
+    };
+    assert!(checked.success(), "rutis-host check");
     // The template declares no `provides`: its greeter is known once it
     // runs.
     check.expect("demo");
