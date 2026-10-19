@@ -272,9 +272,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
-    # About 27 minutes on a pull request (2026-10-19, events_conformance
-    # sampled in every language, one test at a time); the step "job time"
-    # writes each run's to the summary.
+    # About 14 minutes on a pull request with events_conformance sampled
+    # (2026-10-19), of which events_conformance took about 6.5; pull
+    # requests now run its written placements. The step "job time" writes
+    # each run's to the summary.
     timeout-minutes: 60
     steps:
       - name: job time, start
@@ -357,11 +358,14 @@ jobs:
         run: cargo check -p rutis-bridge --features websocket --target-dir "${CARGO_TARGET_DIR:-target}/fuzzcheck"
 
       # Plugins of other languages and of other nodes as rutis-loader rows,
-      # and the unified events conformance suite (events_conformance: a
-      # sample of the placements; stress.yml runs all of them), which runs
-      # one test at a time and must find every runtime language.
+      # and the unified events conformance suite (events_conformance), which
+      # runs one test at a time and must find every runtime language. Its
+      # placements: the written ones on pull requests, a sample of them in
+      # full runs (about 900 per language, some 6 minutes more); the
+      # nightly stress.yml `events-all` runs all of them.
       - name: cargo test (rutis-loader, every row kind)
         env:
+          RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
           RUTIS_EVENTS_REQUIRE: node,python,go,bun
           RUTIS_EVENTS_SETTLE_SCALE: '2'
         run: cargo test -p rutis-loader --features node,python,go,bun,peer
@@ -941,9 +945,12 @@ jobs:
           go-version: stable
           cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: go/rutis/go.mod
+      # events_conformance: the written placements on pull requests, the
+      # sampled ones in full runs (as in `rust`).
       - name: cargo test (network stack, runtimes, host)
         env:
           ALL: ${{ needs.changes.outputs.all }}
+          RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
           RUTIS_EVENTS_REQUIRE: node,python,go,bun
         run: |
           BRIDGE_TESTS= LOADER_TESTS=
