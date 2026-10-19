@@ -90,7 +90,8 @@ test('next called twice or after the waterfall ended fails with WaterfallNext', 
   }))
   await assert.rejects(t.waterfall('twice'), { name: 'WaterfallNext', message: 'next of twice was already called' })
   assert.equal(await t.waterfall('late'), 'early')
-  assert.throws(() => kept(), { name: 'WaterfallNext', message: 'next of late was called after its waterfall ended' })
+  // As through the host, a late next is a rejected Promise, not a throw.
+  await assert.rejects(kept(), { name: 'WaterfallNext', message: 'next of late was called after its waterfall ended' })
   await t.unload()
 })
 

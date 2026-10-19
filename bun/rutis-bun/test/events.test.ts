@@ -36,7 +36,8 @@ test('next called twice or after the waterfall ended fails with WaterfallNext', 
   let kept: (() => unknown) | undefined
   bus.on({ name: 'late', callback: (next: () => unknown) => { kept = next; return 'x' }, row: 'r' })
   assert.equal(bus.dispatch('waterfall', 'late', []), 'x')
-  assert.throws(() => kept!(), { name: 'WaterfallNext', message: 'next of late was called after its waterfall ended' })
+  // As through the host, a late next is a rejected Promise, not a throw.
+  await assert.rejects(kept!() as Promise<unknown>, { name: 'WaterfallNext', message: 'next of late was called after its waterfall ended' })
 })
 
 test('unload gives up on a listener still running after the deadline, with its line', async () => {
