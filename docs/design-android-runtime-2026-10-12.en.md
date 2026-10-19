@@ -2,7 +2,7 @@
 
 [中文](design-android-runtime-2026-10-12.md)
 
-Status: finalized, not implemented. Date: 2026-10-12; finalized and revised 2026-10-14 (now follows [app integration](design-app-integration-2026-10-14.en.md); see §10); aligned with the runtime contract of rutis 0.13 on 2026-10-19 (values, automatic exposure, errors, the calling row, unified events, developer transparency; see §11). Baseline: `main` `028783f` (0.13.0).
+Status: finalized; K-P1 implemented (#390, `kotlin/rutis`), K-P2 and K-P3 not yet. Date: 2026-10-12; finalized and revised 2026-10-14 (now follows [app integration](design-app-integration-2026-10-14.en.md); see §10); aligned with the runtime contract of rutis 0.13 on 2026-10-19 (values, automatic exposure, errors, the calling row, unified events, developer transparency; see §11). Baseline: `main` `028783f` (0.13.0).
 Based on: [the runtime contract](../.agents/skills/rutis-new-runtime/references/runtime-contract.md) (implementations follow it), [app integration](design-app-integration-2026-10-14.en.md) (the general model), [remote runtimes: dial-out and dynamic access](design-remote-runtime-dial-2026-10-14.en.md) (connections), [cross-language value types](design-value-types-2026-10-15.en.md), [the unified events protocol specification](design-events-protocol-2026-10-18.en.md), [the multilingual design](design-multilang-runtimes-2026-10-03.en.md), [the plugin API](guide/plugin-api.en.md), [the Swift SDK](design-swift-sdk-2026-10-12.en.md) (the Swift counterpart of shape ②), [the Go plugin runtime](design-go-runtime-2026-10-10.en.md) (the precedent for one execution unit per call).
 
 Positioning: an Android app provides its own capabilities and those of the device it runs on as rutis plugins; the plugins are written in Kotlin, compiled into the app, and driven by rutis. This is the only current design of the Kotlin SDK: the desktop-JVM runtime ([the Kotlin runtime](design-kotlin-runtime-2026-10-12.en.md)) is suspended and is not a premise of this document; K-P1's jvm target only serves to run the conformance tests on a desktop.
@@ -384,3 +384,18 @@ Not needed: method tables, JSON encoding, reference wrappers, context parameters
 | 10 | The testing tool runs plugins over a real session (in-memory channel) with the test as the host, checked against both expectation files |
 | 11 | K-P1's desktop test entry is `Rutis.serve` on the jvm (`unix:` / `tcp:`), started by the tests through the generic `Launcher`; the desktop runtime is not reopened and no host configuration is added |
 | 12 | `objects` is not declared, as Go |
+
+## 12. K-P1 implementation notes (2026-10-19, #390)
+
+The implementation is in `kotlin/rutis` (`rutis`, `rutis-ksp`, `rutis-conformance`). Where it differs from the above, or the above says nothing:
+
+| Item | Implementation | Why |
+| --- | --- | --- |
+| Source layout | Both targets share `rutis/src/shared`; the jvm-only local channels and `Rutis.serve` are in `src/jvmMain`. Without an Android SDK only the jvm target is configured | `UnixDomainSocketAddress` is not in Android's API; the jvm target builds on machines without an Android SDK |
+| Writing frames | One writer thread sends frames in the order they are queued (call ids are taken when queued) | Plugin threads are interrupted (cancellation), and interrupting a thread writing to a `SocketChannel` closes the channel; the writer is never interrupted |
+| A listener cancelled by its row's unload | While the dispatch goes on, it ends with no result (`null`) | A cancelled coroutine cannot return a value normally; Go and Python listeners return after their cancellation, to the same effect |
+| `RUTIS_CHANNEL_TOKEN` | Not removed from the environment once read | The JDK has no public API to change its own environment; child processes a plugin starts inherit it |
+| Blocking calls on the main thread | Not checked | It matters only on Android; it comes with `RutisApp` in K-P2 |
+| `--rutis-manifest` | The jvm entry answers it too (Go's shape, `runtime` `rutis-kotlin-runtime:1`) | Handy for checks; no host reads it in K-P1 |
+| The multilang column | `crates/rutis-loader/tests/multilang_kotlin.rs` (as `multilang_go.rs`), the crossing synchronous calls through Kotlin included | Self-contained, leaving the tests other languages share unchanged |
+| An emitter giving up | Kotlin's cancellation in the expectations is `CancellationException` | A coroutine's cancellation |
