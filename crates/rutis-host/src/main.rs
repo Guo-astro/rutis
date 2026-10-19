@@ -4,7 +4,7 @@
 //! rutis-host run [rutis.json]      run what the file names
 //! rutis-host dev                   run the plugin project here, reloading it as it changes
 //! rutis-host check [rutis.json]    describe every row, and fail on what cannot run
-//! rutis-host new <name> --lang node|bun|python|go
+//! rutis-host new <name> --lang node|bun|python|go|swift
 //! rutis-host go add <module>@<version> [rutis.json]
 //! ```
 
@@ -18,28 +18,35 @@ mod stop;
 
 use stop::{Ended, Stopped};
 
-/// The plugin API of Go binaries this host runs (their manifests); Node, Bun
-/// and Python runtimes check their own plugins against their own API. One
-/// definition, shared with the loader that reads the manifests.
+/// The plugin API of Go and Swift binaries this host runs (their
+/// manifests); Node, Bun and Python runtimes check their own plugins
+/// against their own API. One definition, shared with the loader that
+/// reads the manifests.
 const PLUGIN_API: u64 = rutis_loader::PLUGIN_API;
+const _: () = assert!(PLUGIN_API == rutis_loader::SWIFT_PLUGIN_API);
+
+/// The oldest plugin API of a binary this host runs: an SDK older than rutis
+/// 0.13 (plugin API 2 or lower) does not declare the event protocol of 0.13,
+/// so its session is refused at the handshake; `check` says so first.
+const OLDEST_PLUGIN_API: u64 = 3;
 
 const USAGE: &str = "\
-rutis-host: run rutis plugins written in TypeScript, JavaScript, Python and Go
+rutis-host: run rutis plugins written in TypeScript, JavaScript, Python, Go and Swift
 
 usage:
   rutis-host run [rutis.json]                 run what the configuration names
   rutis-host dev [dir]                        run the plugin project in dir (default .),
-                                              reloading (Go: rebuilding) it as its files change
+                                              reloading (Go, Swift: rebuilding) it as its files change
     run and dev: --shutdown-timeout <seconds> how long cleanups may take after
                                               Ctrl-C or SIGTERM (default 10, or
                                               RUTIS_SHUTDOWN_TIMEOUT)
     run: --watch-config                       read rutis.json again when it changes
                                               (SIGUSR1 does too, on Unix)
-  rutis-host check [rutis.json] [--strict]    describe every row and Go binary; fail on what
+  rutis-host check [rutis.json] [--strict]    describe every row and Go or Swift binary; fail on what
                                               cannot run (in a plugin project without
                                               rutis.json: the project); warn of a service
                                               no row declares, which --strict fails
-  rutis-host new <name> --lang node|bun|python|go
+  rutis-host new <name> --lang node|bun|python|go|swift
                                               create a plugin project
   rutis-host go add <module>@<version> [rutis.json]
                                               install a Go plugin binary into runtimes.go.dir
@@ -278,13 +285,12 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
     std::env::set_var("RUTIS_DEV", "1");
     let (config, id) = project::dev_config(&dir)?;
     warn(&config);
-    // A Go project is rebuilt, not reloaded: the loop below does both.
-    let go_project = match languages::of_project(&dir) {
-        Some(language) if language.key() == "go" => {
-            project::GoDev::of(&std::path::absolute(&dir).unwrap_or(dir.clone()))
-        }
-        _ => None,
-    };
+    // A compiled language's project (Go, Swift) is rebuilt, not reloaded:
+    // the loop below does both.
+    let compiled = languages::of_project(&dir).and_then(|language| {
+        let build = language.dev_build(&std::path::absolute(&dir).unwrap_or(dir.clone()))?;
+        Some((language.key(), build))
+    });
     let mut build = 1;
     let host = host::Host::start(&config).await?;
     for line in status::listening(&host.listening) {
@@ -322,12 +328,15 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
             continue;
         }
         seen = now;
-        if let (Some(go), Some(running)) = (&go_project, &host.go) {
-            // A Go plugin is a binary: build it again, then restart its
-            // runtime on the new build. A failed build keeps the old one.
-            // Nor does a build: a signal ends it (and the go command).
+        let running = compiled
+            .as_ref()
+            .and_then(|(key, project)| Some((project, host.binaries_of(key)?)));
+        if let Some((project, running)) = running {
+            // A Go or Swift plugin is a binary: build it again, then restart
+            // its runtime on the new build. A failed build keeps the old one.
+            // Nor does a build: a signal ends it (and the build command).
             let built = tokio::select! {
-                built = go.rebuild(build + 1) => built,
+                built = project.rebuild(build + 1) => built,
                 signal = signals.next() => {
                     return Ok(stop::stop(&host, signal, deadline, &mut signals).await);
                 }
@@ -335,27 +344,23 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
             match built {
                 Ok(binary) => {
                     build += 1;
-                    running.resolver.replace(&go.runtime, &binary);
+                    running.replace(project.runtime(), &binary);
                     // A runtime that hangs starting does not keep a signal out.
                     let restarted = tokio::select! {
-                        restarted = running.runtimes.restart(&go.runtime) => restarted,
+                        restarted = running.restart_runtime(project.runtime()) => restarted,
                         signal = signals.next() => {
                             return Ok(stop::stop(&host, signal, deadline, &mut signals).await);
                         }
                     };
                     match restarted {
-                        Ok(()) => outln!("{}: rebuilt and restarted", go.runtime),
-                        Err(error) => outln!("{}: cannot restart: {error}", go.runtime),
+                        Ok(()) => outln!("{}: rebuilt and restarted", project.runtime()),
+                        Err(error) => outln!("{}: cannot restart: {error}", project.runtime()),
                     }
-                    let previous = go.dir.join(".rutis/go").join(match cfg!(windows) {
-                        true => format!("{}-{}.exe", go.name, build - 1),
-                        false => format!("{}-{}", go.name, build - 1),
-                    });
-                    let _ = std::fs::remove_file(previous);
+                    let _ = std::fs::remove_file(project.binary(build - 1));
                 }
                 Err(errors) => outln!(
                     "{}: the build failed; the last build keeps running\n{errors}",
-                    go.name
+                    project.name()
                 ),
             }
             continue;
@@ -403,7 +408,7 @@ async fn check(args: &[String]) -> Result<(), String> {
     let host = host::Host::start(&config).await?;
     host.runtimes_ready().await?;
     outln!(
-        "plugin API for Go binaries: {PLUGIN_API} (checked by this host; the Node, Bun and Python runtimes check their own plugins)"
+        "plugin API for Go and Swift binaries: {PLUGIN_API} (checked by this host; the Node, Bun and Python runtimes check their own plugins)"
     );
     // Each local runtime: what implements it and what it runs on.
     for (name, runtime) in &host.runtimes {
@@ -510,9 +515,9 @@ async fn check(args: &[String]) -> Result<(), String> {
             _ => outln!("{id} ({name}): not checked"),
         }
     }
-    if let Some(go) = &host.go {
-        outln!("go binaries:");
-        for binary in go.resolver.binaries() {
+    for binaries in &host.binaries {
+        outln!("{} binaries:", binaries.key);
+        for binary in binaries.binaries() {
             match &binary.manifest {
                 Ok(manifest) => {
                     let plugins: Vec<String> = manifest
@@ -523,9 +528,12 @@ async fn check(args: &[String]) -> Result<(), String> {
                             None => name.clone(),
                         })
                         .collect();
-                    let api = match manifest.plugin_api <= PLUGIN_API {
-                        true => "compatible",
-                        false => "incompatible: upgrade the host",
+                    let api = if manifest.plugin_api > binaries.plugin_api() {
+                        "incompatible: upgrade the host"
+                    } else if manifest.plugin_api < OLDEST_PLUGIN_API {
+                        "incompatible: built with an SDK older than rutis 0.13; rebuild it with the 0.13 SDK or later"
+                    } else {
+                        "compatible"
                     };
                     outln!(
                         "  {} ({}): {}sdk {}, plugin API {} ({api}), plugins: {}",
@@ -540,7 +548,9 @@ async fn check(args: &[String]) -> Result<(), String> {
                         manifest.plugin_api,
                         plugins.join(", ")
                     );
-                    if manifest.plugin_api > PLUGIN_API {
+                    if manifest.plugin_api > binaries.plugin_api()
+                        || manifest.plugin_api < OLDEST_PLUGIN_API
+                    {
                         failed += 1;
                     }
                 }
@@ -553,7 +563,7 @@ async fn check(args: &[String]) -> Result<(), String> {
                 }
             }
         }
-        for skipped in go.resolver.diagnostics() {
+        for skipped in binaries.diagnostics() {
             failed += 1;
             outln!("  skipped {skipped}");
         }

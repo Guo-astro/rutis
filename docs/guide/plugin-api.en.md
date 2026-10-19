@@ -1,10 +1,10 @@
 # Plugin API
 
-TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) and Go plugins (`github.com/arcships/rutis/go/rutis`, see [Go plugins](go-plugin.en.md)) use the same conventions; so do Swift plugins (the Swift package `Rutis` of this repository, a preview until its guide: [swift/README.md](../../swift/README.md)). The current plugin API version is **3**.
+TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) and Go plugins (`github.com/arcships/rutis/go/rutis`, see [Go plugins](go-plugin.en.md)) use the same conventions; so do Swift plugins (the Swift package `Rutis` of this repository, see [Swift plugins](swift-plugin.en.md)). The current plugin API version is **3**.
 
 ## Declarations
 
-| Declaration | TypeScript (`definePlugin({...})`) | Python (`define_plugin(apply, ...)` or module variable) | Go (`rutis.Define(rutis.Plugin[C]{...})`) | Swift (`Rutis.define(Plugin(...))`, preview) | Meaning |
+| Declaration | TypeScript (`definePlugin({...})`) | Python (`define_plugin(apply, ...)` or module variable) | Go (`rutis.Define(rutis.Plugin[C]{...})`) | Swift (`Rutis.define(Plugin(...))`) | Meaning |
 | --- | --- | --- | --- | --- | --- |
 | Services used | `inject: ['llm']` | `inject=["llm"]` | `Inject: []string{"llm"}` | `inject: ["llm"]` | The plugin starts when all are ready. If any is revoked, the plugin stops and waits for it to return. |
 | Services provided (optional) | `provides: { weather: { today: 'sync' } }` | `provides={"weather": Weather}` or `{"weather": {"today": "sync"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}` (exported methods, `async` unless `Sync` names them) | `provides: ["weather": .of(Weather.self, sync: ["unit"])]` (the methods of a `@RutisService` type, `async` unless `sync` names them) | Not needed: what `ctx.provide` provides reaches rutis by itself (see below). When present it applies: it marks methods `sync` and lets `rutis-host check` know before running who provides what; a declared service offers only its declared methods. |
@@ -61,7 +61,7 @@ Rust also has `waterfall_sync`: a synchronous `waterfall`, under the same rules 
 
 Each language has the five modes, written the language's own way:
 
-| | Rust (`rutis`) | Node / Bun leaf plugin (`@arcships/rutis`) | Cordis plugin (in the Node runtime) | Python (`rutis`) | Go (`rutis`) | Swift (`Rutis`, preview) |
+| | Rust (`rutis`) | Node / Bun leaf plugin (`@arcships/rutis`) | Cordis plugin (in the Node runtime) | Python (`rutis`) | Go (`rutis`) | Swift (`Rutis`) |
 | --- | --- | --- | --- | --- | --- | --- |
 | Listen | `ctx.events().on(ctx, &key, listener)`; a synchronous listener `on_sync`; with options `on_opt` / `on_sync_opt`; a prefix `on_pattern(ctx, &EventPattern::prefix(p), ..)`; `once` | `ctx.on(name, fn, { prepend, global }?)` → `() => void` | Cordis's own `ctx.on(name, fn, options?)` → `() => boolean`; `ctx.once` | `ctx.on(name, fn, *, prepend=False, global_=False)` → `Callable[[], None]` | `ctx.On(name, func(ctx context.Context, args ...any) (any, error), rutis.Prepend(), rutis.Global())` → `func()` | `ctx.on(name, prepend:, global:) { (args...) in ... }` → `() -> Void` |
 | Listener | `impl Listener<E>`: `call(ctx, &event, call: Call<'_, E::Value>)`, with `call.mode()`, `call.next()`; an `on_sync` closure gets a `SyncCall` | `(...args[, next]) => value \| Promise` | The same | `fn(*args[, next])`, may be `async def` | `fn(ctx, args...)`; in a waterfall the last argument is a `rutis.Next` (`func(context.Context) (any, error)`) | a closure of any parameters, decoded by their types; in a waterfall the last one is a `Rutis.Next<R>` (`async throws -> R?`) |
@@ -275,7 +275,7 @@ Values are not copied within one process. Code that mutates an object after pass
 
 ### The ten values
 
-| Value | JS (Node, Bun) | Python | Go | Rust (`rutis-bridge`) | Swift (preview) |
+| Value | JS (Node, Bun) | Python | Go | Rust (`rutis-bridge`) | Swift |
 | --- | --- | --- | --- | --- | --- |
 | Point in time | `Date` | `datetime` with a time zone (received in UTC) | `time.Time` (received in UTC) | `Instant` | `Date` (to the microsecond) |
 | Local date and time | String `"2026-10-15T14:30:05"` | `datetime` without a time zone | `rutis.DateTime` | `DateTime` | `Rutis.DateTime` |

@@ -7,7 +7,8 @@
 //!   "runtimes": {
 //!     "node": { "project": "." },
 //!     "py": { "project": ".", "python": ".venv/bin/python", "restart": "on-failure" },
-//!     "go": { "dir": "plugins/go", "start": "on-demand", "idle": 60 }
+//!     "go": { "dir": "plugins/go", "start": "on-demand", "idle": 60 },
+//!     "swift": { "dir": "plugins/swift", "restart": "on-failure" }
 //!   },
 //!   "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
 //!   "rows": [
@@ -113,6 +114,9 @@ pub struct Runtimes {
     pub bun: Option<BunRuntime>,
     /// Go binaries, one runtime each, started when a row uses them.
     pub go: Option<GoRuntime>,
+    /// Swift binaries (macOS), one runtime each, started when a row uses
+    /// them: the same settings as Go's.
+    pub swift: Option<SwiftRuntime>,
     /// Runtimes on other machines: reached through a `rutis-bridge/peer`
     /// row with `"runtime": "<name>"`, or dialing in to a listener, each
     /// connection an instance of a group (`listen` and `instances`).
@@ -210,20 +214,24 @@ pub struct PythonRuntime {
     pub restart: Restart,
 }
 
+/// `runtimes.go` and `runtimes.swift`: the binaries of a compiled language,
+/// one runtime each.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct GoRuntime {
-    /// Every Go binary in this directory (trusted as a whole: its files
-    /// that contain the Go SDK's marker are run to read their manifests).
+pub struct BinaryRuntime {
+    /// Every binary of the language in this directory (trusted as a whole:
+    /// its files that contain the SDK's marker are run to read their
+    /// manifests).
     #[serde(default)]
     pub dir: Option<PathBuf>,
-    /// Go binaries, each a runtime named after its file (`go-<name>`).
+    /// Binaries, each a runtime named after its file (`go-<name>`,
+    /// `swift-<name>`).
     #[serde(default)]
     pub binaries: Vec<PathBuf>,
     /// `on-demand` (the default): a runtime starts when a row uses it;
     /// `eager`: every one starts with the host and keeps running.
     #[serde(default)]
-    pub start: GoStart,
+    pub start: BinaryStart,
     /// Seconds an on-demand runtime stays idle before it stops (60).
     #[serde(default)]
     pub idle: Option<u64>,
@@ -239,8 +247,14 @@ pub struct GoRuntime {
     pub dev: Option<(PathBuf, String)>,
 }
 
+/// `runtimes.go`: Go binaries.
+pub type GoRuntime = BinaryRuntime;
+
+/// `runtimes.swift`: Swift binaries.
+pub type SwiftRuntime = BinaryRuntime;
+
 /// What the host does when a local runtime's process ends on its own
-/// (`runtimes.<node|py|bun|go>.restart`; `docs/guide/rutis-host.md`, "When
+/// (`runtimes.<node|py|bun|go|swift>.restart`; `docs/guide/rutis-host.md`, "When
 /// a runtime ends").
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -276,24 +290,28 @@ impl Restart {
     }
 }
 
+/// When a compiled language's runtimes start (`runtimes.<go|swift>.start`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum GoStart {
+pub enum BinaryStart {
     #[default]
     OnDemand,
     Eager,
 }
 
-impl GoRuntime {
-    /// Refuse settings that cannot work together.
-    pub fn validate(&self) -> Result<(), String> {
+/// `runtimes.go.start`.
+pub type GoStart = BinaryStart;
+
+impl BinaryRuntime {
+    /// Refuse settings that cannot work together, as `runtimes.<key>`.
+    pub fn validate(&self, key: &str) -> Result<(), String> {
         if self.dir.is_none() && self.binaries.is_empty() && self.dev.is_none() {
-            return Err("runtimes.go needs a dir or binaries".into());
+            return Err(format!("runtimes.{key} needs a dir or binaries"));
         }
-        if self.start == GoStart::Eager && self.idle.is_some() {
-            return Err(
-                "runtimes.go: eager runtimes keep running, so idle does not apply to them".into(),
-            );
+        if self.start == BinaryStart::Eager && self.idle.is_some() {
+            return Err(format!(
+                "runtimes.{key}: eager runtimes keep running, so idle does not apply to them"
+            ));
         }
         Ok(())
     }
@@ -649,16 +667,19 @@ mod tests {
     fn go_runtimes_are_checked() {
         let parse =
             |value: serde_json::Value| -> GoRuntime { serde_json::from_value(value).unwrap() };
-        assert!(parse(json!({ "dir": "plugins/go" })).validate().is_ok());
+        assert!(parse(json!({ "dir": "plugins/go" })).validate("go").is_ok());
         assert!(
             parse(json!({ "binaries": ["bin/netkit"], "start": "eager" }))
-                .validate()
+                .validate("go")
                 .is_ok()
         );
-        let none = parse(json!({})).validate().unwrap_err();
-        assert!(none.contains("needs a dir or binaries"), "{none}");
+        let none = parse(json!({})).validate("swift").unwrap_err();
+        assert!(
+            none.contains("runtimes.swift needs a dir or binaries"),
+            "{none}"
+        );
         let both = parse(json!({ "dir": "d", "start": "eager", "idle": 30 }))
-            .validate()
+            .validate("go")
             .unwrap_err();
         assert!(both.contains("idle does not apply"), "{both}");
         let mut config: HostConfig = serde_json::from_value(json!({

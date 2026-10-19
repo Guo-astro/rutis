@@ -1,8 +1,8 @@
-# Swift SDK (preview)
+# Swift SDK
 
 [中文](README.zh-CN.md)
 
-Write rutis plugins in Swift and run them as a macOS plugin binary. The package is the repository root's `Package.swift` (targets under `swift/rutis`); it follows the release train's `v` tags. Design: [Swift SDK](../docs/design-swift-sdk-2026-10-12.en.md). This is a preview: the guide, `rutis-host` support (`runtimes.swift`, `new --lang swift`) and remote connections come in later phases (design §15).
+Write rutis plugins in Swift and run them as a macOS plugin binary. The package is the repository root's `Package.swift` (targets under `swift/rutis`); it follows the release train's `v` tags. Design: [Swift SDK](../docs/design-swift-sdk-2026-10-12.en.md). The guide: [Write a Swift plugin](../docs/guide/swift-plugin.en.md) (`rutis-host new <name> --lang swift` makes a project).
 
 ```swift
 // Package.swift: .package(url: "https://github.com/arcships/rutis", from: "0.14.0")
@@ -45,7 +45,7 @@ let weather = Rutis.define(Plugin(
 Rutis.serve(weather)
 ```
 
-- `swift build` makes the binary; `<binary> --rutis-manifest` prints what it serves. rutis-loader runs it with `SwiftResolver` / `SwiftRuntimes` (rows `swift:<plugin>`).
+- `swift build` makes the binary; `<binary> --rutis-manifest` prints what it serves. `rutis-host` runs it from `runtimes.swift` (rows `swift:<plugin>`), Rust hosts with rutis-loader's `SwiftResolver` / `SwiftRuntimes`.
 - Plugin code takes no context parameter: the call chain travels with the Task. Each incoming call runs in a Task of its own; a synchronous call suspends the Task, never a thread.
 - Values: the SDK's own encoder and decoder, driven by `Codable` (never `JSONEncoder`). `Date`, `Data`, `Decimal`, `UUID`, `Set` and non-`String`-keyed dictionaries cross as rutis's tagged values; `Rutis.DateTime`, `Rutis.CalendarDate`, `Rutis.TimeOfDay` and `Rutis.BigInt` are the types Swift lacks. Instances of `@RutisService` types and closures cross by reference.
 - Errors cross with their name (the type's), message, `code` and `data` (stored properties of those names); a received error is a `RutisError`, matched by `name`.

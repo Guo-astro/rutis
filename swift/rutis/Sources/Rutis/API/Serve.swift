@@ -36,6 +36,7 @@ extension Rutis {
             return
         }
         let (channel, project) = try parse(args)
+        Responsibility.claim()
         if channel.hasPrefix("listen:") || channel.hasPrefix("dial:") || channel.hasPrefix("ws:") || channel.hasPrefix("wss:") {
             throw RutisError(name: "Error", message: "remote channels (listen:, dial:) are not in this version of the Swift SDK: \(channel)")
         }

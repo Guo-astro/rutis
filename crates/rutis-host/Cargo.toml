@@ -1,6 +1,6 @@
 [package]
 name = "rutis-host"
-description = "A rutis host that needs no Rust: run plugins written in TypeScript, JavaScript, Python and Go (in Node, Bun, Python or Go binaries) from a rutis.json, develop them with live reload, link machines"
+description = "A rutis host that needs no Rust: run plugins written in TypeScript, JavaScript, Python, Go and Swift (in Node, Bun, Python, Go or Swift binaries) from a rutis.json, develop them with live reload, link machines"
 # The release train.
 version = "0.13.0"
 edition.workspace = true
@@ -20,8 +20,8 @@ path = "src/main.rs"
 
 [dependencies]
 rutis = { path = "../rutis", version = "0.13.0" }
-rutis-bridge = { path = "../rutis-bridge", version = "0.13.0", features = ["node", "python", "bun", "go", "websocket"] }
-rutis-loader = { path = "../rutis-loader", version = "0.13.0", features = ["node", "python", "bun", "go", "peer"] }
+rutis-bridge = { path = "../rutis-bridge", version = "0.13.0", features = ["node", "python", "bun", "go", "swift", "websocket"] }
+rutis-loader = { path = "../rutis-loader", version = "0.13.0", features = ["node", "python", "bun", "go", "swift", "peer"] }
 # To say which file is not PEM (the transport only sees the contents).
 rustls-pki-types = { version = "1", features = ["std"] }
 serde = { version = "1", features = ["derive"] }

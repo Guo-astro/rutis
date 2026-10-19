@@ -11,7 +11,9 @@ use rutis::FiberState;
 use crate::outln;
 use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
 use rutis_bridge::{Failure, LinkState};
-use rutis_loader::{EntryStatus, GoRuntimesHandle, Loader, PeerResolver};
+use rutis_loader::{EntryStatus, Loader, PeerResolver};
+
+use crate::languages::BinaryHost;
 
 /// One line for a row's state.
 pub fn describe(status: &EntryStatus) -> String {
@@ -147,20 +149,22 @@ pub struct Followed {
     pub peers: Arc<PeerResolver>,
     /// The local runtimes (`node`, `py`, `bun`) by name.
     pub runtimes: Vec<(String, RuntimeHandle)>,
-    /// The Go runtimes, when the configuration has them.
-    pub go: Option<GoRuntimesHandle>,
+    /// The compiled languages' runtimes (Go, Swift), those the
+    /// configuration has.
+    pub binaries: Vec<BinaryHost>,
 }
 
 impl Followed {
-    /// Each local runtime's state by name, Go's among them.
+    /// Each local runtime's state by name, the compiled languages' among
+    /// them.
     fn runtime_states(&self) -> Vec<(String, RuntimeState)> {
         let mut states: Vec<(String, RuntimeState)> = self
             .runtimes
             .iter()
             .map(|(name, handle)| (name.clone(), handle.state()))
             .collect();
-        if let Some(go) = &self.go {
-            states.extend(go.states());
+        for binaries in &self.binaries {
+            states.extend(binaries.states());
         }
         states
     }
@@ -187,7 +191,7 @@ impl Shown {
     }
 
     /// The lines for the runtimes `states` whose state changed. A runtime
-    /// gone from `states` keeps its last line: one Go stops when idle, and
+    /// gone from `states` keeps its last line: one of Go or Swift stops when idle, and
     /// one the host stops goes on to `Idle`, neither printed.
     pub fn runtime_changes(&mut self, states: &[(String, RuntimeState)]) -> Vec<String> {
         let mut out = Vec::new();

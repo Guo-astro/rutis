@@ -10,7 +10,8 @@
 //! from a registry: that is S9, #193). On Windows (#232) each host is in a
 //! Job Object, which the residue checks read, and Ctrl-C is Ctrl-Break to
 //! the host's console process group ([`Host::ctrl_c`]); Bun is not declared
-//! for Windows (Bun design §10), so its test is ignored there.
+//! for Windows (Bun design §10), so its test is ignored there; Swift runs
+//! on macOS only (Swift SDK design §13).
 
 use std::path::{Path, PathBuf};
 
@@ -23,6 +24,7 @@ enum Kind {
     Python,
     Bun,
     Go,
+    Swift,
 }
 
 impl Kind {
@@ -32,6 +34,7 @@ impl Kind {
             Kind::Python => "python",
             Kind::Bun => "bun",
             Kind::Go => "go",
+            Kind::Swift => "swift",
         }
     }
 
@@ -41,6 +44,7 @@ impl Kind {
             Kind::Node | Kind::Bun => "src/index.ts",
             Kind::Python => "src/demo/__init__.py",
             Kind::Go => "plugin.go",
+            Kind::Swift => "Sources/DemoPlugin/Plugin.swift",
         }
     }
 
@@ -52,6 +56,7 @@ impl Kind {
             Kind::Node | Kind::Bun => ts_version(n),
             Kind::Python => python_version(n),
             Kind::Go => go_version(n),
+            Kind::Swift => swift_version(n),
         }
     }
 
@@ -61,7 +66,7 @@ impl Kind {
         lines[4] = match self {
             Kind::Node | Kind::Bun => "const const = 1",
             Kind::Python => "def broken(:",
-            Kind::Go => "func broken( {",
+            Kind::Go | Kind::Swift => "func broken( {",
         }
         .to_owned();
         lines.join("\n") + "\n"
@@ -74,15 +79,21 @@ impl Kind {
             Kind::Node => (Lang::Node, ""),
             // The src layout: the Python runtime's project is src/.
             Kind::Python => (Lang::Python, "src"),
-            Kind::Bun | Kind::Go => (Lang::Python, "dev"),
+            Kind::Bun | Kind::Go | Kind::Swift => (Lang::Python, "dev"),
         }
+    }
+
+    /// A compiled language: an edit rebuilds the binary and restarts its
+    /// runtime instead of reloading the rows.
+    fn compiled(self) -> bool {
+        matches!(self, Kind::Go | Kind::Swift)
     }
 
     /// What `rutis.dev.json` adds for the probe.
     fn runtimes(self) -> Value {
         match self {
             Kind::Node | Kind::Python => Value::Null,
-            Kind::Bun | Kind::Go => json!({ "py": { "project": "dev" } }),
+            Kind::Bun | Kind::Go | Kind::Swift => json!({ "py": { "project": "dev" } }),
         }
     }
 }
@@ -194,6 +205,46 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{{
     )
 }
 
+/// The template's Plugin.swift: its lines go to stderr, as Go's.
+fn swift_version(n: u32) -> String {
+    format!(
+        r#"// The demo rutis plugin.
+import Foundation
+import Rutis
+
+@RutisConfig
+public struct Config: Decodable {{
+    /// how to greet
+    public var greeting: String?
+}}
+
+@RutisService
+public final class Greeter: @unchecked Sendable {{
+    let greeting: String
+
+    init(greeting: String) {{ self.greeting = greeting }}
+
+    public func hello(_ name: String) -> String {{ "\(greeting), \(name)! (v{n})" }}
+}}
+
+func say(_ line: String) {{
+    FileHandle.standardError.write(Data((line + "\n").utf8))
+}}
+
+public let plugin = Rutis.define(Plugin(
+    name: "demo",
+    inject: [],
+    config: Config.self,
+    apply: {{ ctx, config in
+        say("demo v{n} applied \(CommandLine.arguments[0])")
+        ctx.provide("greeter", Greeter(greeting: config.greeting ?? "Hello"))
+        ctx.effect {{ say("demo v{n} cleanup") }}
+    }}
+))
+"#
+    )
+}
+
 /// The Python on PATH: `python3`, `python` on Windows.
 fn python() -> &'static str {
     if cfg!(windows) {
@@ -279,6 +330,22 @@ fn prepare(s: &Scenario, kind: Kind) {
                 )
             });
         }
+        Kind::Swift => {
+            // A path dependency's package is named after its directory:
+            // this checkout as `rutis`.
+            s.link("rutis", &repo());
+            s.edit("demo/Package.swift", |manifest| {
+                let start = manifest
+                    .find(".package(url: \"https://github.com/arcships/rutis\"")
+                    .expect("the rutis dependency");
+                let end = start + manifest[start..].find(')').unwrap() + 1;
+                format!(
+                    "{}.package(path: \"../rutis\"){}",
+                    &manifest[..start],
+                    &manifest[end..]
+                )
+            });
+        }
     }
 }
 
@@ -308,7 +375,24 @@ fn template_tests(s: &Scenario, kind: Kind) -> Host {
             )
         }
         Kind::Go => s.program("demo", "go", ["test", "./..."], GO_ENV),
+        // The Command Line Tools (the self-hosted runners' toolchain) have
+        // neither XCTest nor Swift Testing's macro plugin: there the test
+        // target cannot build, and only the plugin is built.
+        Kind::Swift if command_line_tools() => {
+            s.program("demo", "swift", ["build", "--target", "DemoPlugin"], &[])
+        }
+        Kind::Swift => s.program("demo", "swift", ["test"], &[]),
     }
+}
+
+/// Whether the active developer directory is the Command Line Tools, not
+/// Xcode.
+fn command_line_tools() -> bool {
+    std::process::Command::new("xcode-select")
+        .arg("-p")
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).contains("CommandLineTools"))
+        .unwrap_or(false)
 }
 
 fn greet(probe: &Probe, host: &mut Host) -> Value {
@@ -325,6 +409,9 @@ fn edited(kind: Kind, host: &mut Host, probe: &Probe) {
         Kind::Go => {
             host.expect("go-demo: rebuilt and restarted");
         }
+        Kind::Swift => {
+            host.expect("swift-demo: rebuilt and restarted");
+        }
         _ => {
             host.expect("demo: reloaded");
             host.expect("probe: reloaded");
@@ -336,14 +423,14 @@ fn edited(kind: Kind, host: &mut Host, probe: &Probe) {
 /// After a broken edit: the error line, which names the source file.
 fn failed(kind: Kind, host: &mut Host) -> String {
     let (what, prefix) = match kind {
-        Kind::Go => (
+        Kind::Go | Kind::Swift => (
             "the failed build",
             "demo: the build failed; the last build keeps running",
         ),
         _ => ("the failed reload", "demo: cannot reload: "),
     };
     let line = host.wait_for(what, |line| line.starts_with(prefix));
-    if kind != Kind::Go {
+    if !kind.compiled() {
         // Every row reloads; the probe's does, and it starts again.
         host.expect("probe: reloaded");
         // `wait_for` takes lines in any order: the probe's start comes later.
@@ -425,7 +512,7 @@ fn dev_loop(kind: Kind) {
     if !located(&error) {
         dev.wait_for(&format!("the error's location ({file}, line 5)"), located);
     }
-    if kind != Kind::Go {
+    if !kind.compiled() {
         probe.started(&mut dev);
     }
     assert_eq!(greet(&probe, &mut dev), json!("Hello, Ada! (v2)"));
@@ -440,14 +527,18 @@ fn dev_loop(kind: Kind) {
     edited(kind, &mut dev, &probe);
     dev.expect("demo v3 applied ");
     assert_eq!(greet(&probe, &mut dev), json!("Hello, Ada! (v3)"));
-    if kind == Kind::Go {
+    if kind.compiled() {
         // Only the build that runs is kept.
-        let builds: Vec<_> = std::fs::read_dir(s.path("demo/.rutis/go"))
-            .expect(".rutis/go")
+        let builds = format!("demo/.rutis/{}", kind.lang());
+        let builds: Vec<_> = std::fs::read_dir(s.path(&builds))
+            .expect(&builds)
             .flatten()
             .map(|entry| entry.file_name())
             .collect();
         assert_eq!(builds.len(), 1, "builds left: {builds:?}");
+        // Only the plugin's runtime restarted: the probe's Python runtime
+        // ran on, never down.
+        assert_eq!(dev.count("runtime py"), 0, "the Python runtime restarted");
     }
 
     // 8. Ctrl-C: v3 is cleaned up once, the probe stops, exit code 0.
@@ -489,4 +580,16 @@ fn the_bun_plugin_development_loop() {
 #[test]
 fn the_go_plugin_development_loop() {
     dev_loop(Kind::Go);
+}
+
+/// risk: A2, A3, A4, A7, B2 (Swift: a rebuild and a restart of its runtime
+/// only, as Go's)
+/// guarantee: host/stop-on-signal, host/dev-reload, host/dev-failed-reload-keeps-old, host/new, host/check
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Swift plugin binaries are macOS only (Swift SDK design §13)"
+)]
+fn the_swift_plugin_development_loop() {
+    dev_loop(Kind::Swift);
 }

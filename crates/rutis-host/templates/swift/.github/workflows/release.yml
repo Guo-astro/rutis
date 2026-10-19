@@ -1,0 +1,58 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # the release and its binary
+
+jobs:
+  release:
+    # Xcode: building for two architectures at once needs it.
+    runs-on: macos-15
+    env:
+      SIGNING: ${{ secrets.MACOS_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: swift test
+      - run: npx --yes @arcships/rutis-host@^{{version}} check
+      - name: build a universal binary (arm64 + x86_64)
+        run: |
+          swift build -c release --arch arm64 --arch x86_64 --product {{name}}
+          mkdir -p dist
+          cp .build/apple/Products/Release/{{name}} dist/{{name}}-macos-universal
+          lipo -info dist/{{name}}-macos-universal
+      # Signed with a Developer ID and notarized when the repository has the
+      # secrets; otherwise the binary is ad-hoc signed, and a host that
+      # downloads it must trust it (`xattr -d com.apple.quarantine`).
+      - name: sign and notarize
+        if: env.SIGNING == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }} # a .p12, base64
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }} # "Developer ID Application: …"
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p "" "$keychain"
+          security set-keychain-settings "$keychain"
+          security unlock-keychain -p "" "$keychain"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          codesign --force --options runtime --timestamp --identifier com.example.{{name}} \
+            --sign "$MACOS_SIGNING_IDENTITY" dist/{{name}}-macos-universal
+          ditto -c -k dist/{{name}}-macos-universal "$RUNNER_TEMP/{{name}}.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/{{name}}.zip" --wait \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+      - run: (cd dist && shasum -a 256 * > SHA256SUMS)
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

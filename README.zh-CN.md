@@ -10,7 +10,7 @@
 **为自我迭代的软件准备的插件运行时**
 
 agent 和长期运行的程序自己写插件、换插件、热重载插件，rutis 保证每一次变化都安全。<br>
-Rust 内核 · TypeScript、Python 与 Go 插件 · 跨进程，跨机器
+Rust 内核 · TypeScript、Python、Go 与 Swift 插件 · 跨进程，跨机器
 
 [![crates.io](https://img.shields.io/crates/v/rutis.svg?label=crates.io)](https://crates.io/crates/rutis)
 [![npm](https://img.shields.io/npm/v/@arcships/rutis.svg?label=npm)](https://www.npmjs.com/package/@arcships/rutis)
@@ -72,7 +72,7 @@ export default definePlugin<{ city?: string }>({
 })
 ```
 
-`llm` 可以来自同一进程里的另一个插件、一个 Python 插件，或者另一台机器，这个插件都不用改。完整流程见 [TypeScript](docs/guide/typescript-plugin.md)、[Bun](docs/guide/bun-plugin.md)、[Python](docs/guide/python-plugin.md) 和 [Go](docs/guide/go-plugin.md) 插件指南。
+`llm` 可以来自同一进程里的另一个插件、一个 Python 插件，或者另一台机器，这个插件都不用改。完整流程见 [TypeScript](docs/guide/typescript-plugin.md)、[Bun](docs/guide/bun-plugin.md)、[Python](docs/guide/python-plugin.md)、[Go](docs/guide/go-plugin.md) 和 [Swift](docs/guide/swift-plugin.md) 插件指南。
 
 ### 在 Rust 中
 
@@ -227,7 +227,7 @@ stateDiagram-v2
 | 在应用中运行插件 | [`rutis-loader`](https://crates.io/crates/rutis-loader)、[`rutis-bridge`](https://crates.io/crates/rutis-bridge)、[`rutis-dylib`](https://crates.io/crates/rutis-dylib)（dylib 插件） | [`@arcships/rutis-runtime`](https://www.npmjs.com/package/@arcships/rutis-runtime)（Node）、[`@arcships/rutis-bun`](https://www.npmjs.com/package/@arcships/rutis-bun)（Bun） | [`rutis`](https://pypi.org/project/rutis/) |
 | 不写 Rust 的宿主 | [`rutis-host`](https://crates.io/crates/rutis-host) | [`@arcships/rutis-host`](https://www.npmjs.com/package/@arcships/rutis-host) | [`rutis-host`](https://pypi.org/project/rutis-host/) |
 
-Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)：SDK，以及每个插件二进制自带的运行时。
+Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)：SDK，以及每个插件二进制自带的运行时。Swift 插件（macOS）同样用本仓库的 Swift 包 [`Rutis`](swift/README.zh-CN.md)（`.package(url: "https://github.com/arcships/rutis", from: "0.14.0")`）。
 
 以上所有包组成发布列车，一起发布、版本相同，当前为 0.13。各个 rutis 包请使用同一个版本。
 
@@ -236,13 +236,13 @@ Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)：SDK，以�
 | 项目 | |
 | --- | --- |
 | [rutis-agent](crates/rutis-agent) · [rutis-cli](crates/rutis-cli) | 最小的 coding agent：模型服务、工具、流式驱动和 TUI 都是插件。`cargo run -p rutis-cli -- --scripted` 可以离线体验。 |
-| [rutis-host](crates/rutis-host) | 不写 Rust 的宿主：按 `rutis.json` 运行 TypeScript、JavaScript、Python 和 Go 插件，开发时自动重载，连接多台机器。 |
+| [rutis-host](crates/rutis-host) | 不写 Rust 的宿主：按 `rutis.json` 运行 TypeScript、JavaScript、Python、Go 和 Swift 插件，开发时自动重载，连接多台机器。 |
 | [rutis-dsh](crates/rutis-dsh) | 在 rutis 宿主里运行 dsh 的完整 web 界面，模型调用由同进程的 aimux 提供。 |
 | [aimux-llm](crates/aimux-llm) | 把 [aimux](https://crates.io/crates/aimux-core) 包装成一个 LLM 服务插件。 |
 
 ## 文档
 
-- **[指南](docs/guide/README.md)**：按任务组织。写 TypeScript / Bun / Python / Go 插件、运行 rutis-host、连接节点、在 Rust 中嵌入、与 Cordis 互通。
+- **[指南](docs/guide/README.md)**：按任务组织。写 TypeScript / Bun / Python / Go / Swift 插件、运行 rutis-host、连接节点、在 Rust 中嵌入、与 Cordis 互通。
 - **[设计哲学](docs/design-philosophy.md)**：rutis 为什么存在，由此而来的形态、代价和原则。
 - **[应用设计指南](docs/development-guide.md)**：如何拆分插件、画依赖图、设计重载与多实例。
 - **[开发手册](docs/development-handbook.md)**：API 用法、资源清理、事件、排障与验证。
@@ -257,7 +257,7 @@ Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)：SDK，以�
 rutis 仍处于 0.x，API 还会演进。不兼容的变化会写进发布说明，并附迁移指南。
 
 - **内核** 是纯 Rust，依赖只有 tokio、tokio-util、thiserror、serde 和 serde_json；需要 Rust 1.88 或更高。
-- **语言运行时与 rutis-host**（Node、Bun、Python 与 Go 行、远程运行时、跨语言共享服务、节点、Cordis 挂载）支持 Linux、macOS 和 Windows x64（MSVC）；需要 Node 22+、Bun 1.4+ 或 Python 3.10+；Go 插件是编译好的二进制，构建时需要 Go 1.24+。Bun 运行时还没有在 Windows 上测试。
+- **语言运行时与 rutis-host**（Node、Bun、Python 与 Go 行、远程运行时、跨语言共享服务、节点、Cordis 挂载）支持 Linux、macOS 和 Windows x64（MSVC）；需要 Node 22+、Bun 1.4+ 或 Python 3.10+；Go 插件是编译好的二进制，构建时需要 Go 1.24+；Swift 插件是 macOS 14+ 的编译好的二进制，构建时需要 Swift 6 工具链。Bun 运行时还没有在 Windows 上测试。
 - **dylib 插件** 支持 Linux、macOS 和 Windows x64（MSVC）。
 
 ## 参与

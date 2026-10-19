@@ -632,13 +632,19 @@ fn sockets(dir: &Path, residue: &mut Residue) {
 /// What is left in the hosts' temporary directory. Tools keep some files
 /// there on purpose, across runs; they are not residue: tsx its compile
 /// cache (`tsx-<uid>`), Node its own (`node-compile-cache`, which tsx turns
-/// on), uv its locks (`uv-<hash>.lock`, in install scenarios).
+/// on), uv its locks (`uv-<hash>.lock`, in install scenarios), the Swift
+/// toolchain (`swift build` in a Swift project, run by its tests and by
+/// `dev`) its build's directories (`TemporaryDirectory.<random>`,
+/// `swift-generated-sources`) and SwiftPM its locks (`_<a path>.lock`).
 fn temporary(tmp: &Path, residue: &mut Residue) {
     for entry in std::fs::read_dir(tmp).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let kept = name.starts_with("tsx-")
             || name == "node-compile-cache"
-            || (name.starts_with("uv-") && name.ends_with(".lock"));
+            || (name.starts_with("uv-") && name.ends_with(".lock"))
+            || name.starts_with("TemporaryDirectory.")
+            || name == "swift-generated-sources"
+            || (name.starts_with('_') && name.ends_with(".lock"));
         if !kept {
             residue
                 .found

@@ -22,14 +22,18 @@ use rutis_loader::{Chain, Resolver, RuntimeResolver, ServiceCatalog};
 use serde_json::Value;
 
 use crate::config::{HostConfig, Restart, Runtimes};
-use crate::host::{Error, GoHost};
+use crate::host::Error;
 
+mod binary;
 mod bun;
 mod go;
 mod node;
 mod python;
+mod swift;
 
+pub use binary::{BinaryHost, DevBuild};
 pub use go::GoDev;
+pub use swift::SwiftDev;
 
 /// Every local language, in the order messages list them (`new --lang`)
 /// and `rutis-host dev` tries them on a project (Node before Bun: Node's
@@ -38,7 +42,13 @@ pub use go::GoDev;
 /// The host starts them in the reverse order: their resolvers are tried in
 /// that order, and Node's, which takes bare npm names and `file:` URLs,
 /// comes last, after every prefixed one (`go:`, `py:`, `bun:`).
-pub static LANGUAGES: &[&dyn Language] = &[&node::Node, &bun::Bun, &python::Python, &go::Go];
+pub static LANGUAGES: &[&dyn Language] = &[
+    &node::Node,
+    &bun::Bun,
+    &python::Python,
+    &go::Go,
+    &swift::Swift,
+];
 
 /// One local language.
 pub trait Language: Sync {
@@ -111,9 +121,10 @@ pub trait Language: Sync {
     /// messages show.
     fn new_names(&self) -> &'static [&'static str];
 
-    /// The files of a new project: (path, text), with `__module__` and
-    /// `__name__` in paths and `{{name}}`, `{{id}}`, `{{module}}`,
-    /// `{{package}}`, `{{version}}` and `{{next}}` in texts filled in.
+    /// The files of a new project: (path, text), with `__module__`,
+    /// `__Type__` and `__name__` in paths and `{{name}}`, `{{id}}`,
+    /// `{{module}}`, `{{Type}}` (`NetProbe`), `{{package}}`, `{{version}}`
+    /// and `{{next}}` in texts filled in.
     fn template(&self) -> &'static [(&'static str, &'static str)];
 
     /// What to run in a new project, as `rutis-host new` says.
@@ -134,6 +145,13 @@ pub trait Language: Sync {
     /// project's own settings stay. A language with a `restart` setting
     /// takes the dev file's: `dev` restarts as `run` does.
     fn dev_file(&self, _own: &mut Runtimes, _dev: &Runtimes) {}
+
+    /// A compiled language's project in `dir`, which `rutis-host dev`
+    /// rebuilds as it changes and restarts its runtime on, instead of
+    /// reloading its rows; `None` for the others.
+    fn dev_build(&self, _dir: &Path) -> Option<Box<dyn DevBuild>> {
+        None
+    }
 }
 
 /// The error of a remote runtime named `name` when another runtime has
@@ -219,13 +237,15 @@ pub struct Mount<'a> {
     pub fibers: Vec<(String, FiberView)>,
     /// The processes each local runtime started, by name.
     pub processes: Vec<(String, Processes)>,
-    /// What mounts once the loader runs (Go's runtimes, which start as
-    /// rows use them), and the [`GoHost`] it gives the host.
+    /// What mounts once the loader runs (the compiled languages' runtimes,
+    /// which start as rows use them), and the [`BinaryHost`] it gives the
+    /// host.
     pub later: Vec<Later>,
 }
 
 /// A language's part of the start that waits for the loader.
-pub type Later = Box<dyn FnOnce(Ctx) -> BoxFuture<'static, Result<Option<GoHost>, Error>> + Send>;
+pub type Later =
+    Box<dyn FnOnce(Ctx) -> BoxFuture<'static, Result<Option<BinaryHost>, Error>> + Send>;
 
 impl Mount<'_> {
     /// Try `resolver` after the resolvers added before it.
@@ -335,10 +355,13 @@ mod tests {
     #[test]
     fn messages_list_the_languages() {
         let names: Vec<String> = new_names().iter().map(|n| n.to_string()).collect();
-        assert_eq!(either(&names), "node, bun, python or go");
+        assert_eq!(either(&names), "node, bun, python, go or swift");
         let remote: Vec<String> = remote_names().iter().map(|n| n.to_string()).collect();
-        assert_eq!(either(&remote), "node, bun, python or go");
+        assert_eq!(either(&remote), "node, bun, python, go or swift");
         let files: Vec<String> = project_files().iter().map(|f| f.to_string()).collect();
-        assert_eq!(either(&files), "package.json, pyproject.toml or go.mod");
+        assert_eq!(
+            either(&files),
+            "package.json, pyproject.toml, go.mod or Package.swift"
+        );
     }
 }

@@ -10,7 +10,7 @@
 **A plugin runtime for software that iterates on itself**
 
 Agents and long-running programs write, swap and hot-reload their own plugins, and rutis keeps every change safe.<br>
-A Rust core · plugins in TypeScript, Python and Go · across processes and machines
+A Rust core · plugins in TypeScript, Python, Go and Swift · across processes and machines
 
 [![crates.io](https://img.shields.io/crates/v/rutis.svg?label=crates.io)](https://crates.io/crates/rutis)
 [![npm](https://img.shields.io/npm/v/@arcships/rutis.svg?label=npm)](https://www.npmjs.com/package/@arcships/rutis)
@@ -72,7 +72,7 @@ export default definePlugin<{ city?: string }>({
 })
 ```
 
-`llm` can come from another plugin in the same process, from a Python plugin, or from another machine; this plugin stays the same. The full workflow is in the guides for [TypeScript](docs/guide/typescript-plugin.en.md), [Bun](docs/guide/bun-plugin.en.md), [Python](docs/guide/python-plugin.en.md) and [Go](docs/guide/go-plugin.en.md).
+`llm` can come from another plugin in the same process, from a Python plugin, or from another machine; this plugin stays the same. The full workflow is in the guides for [TypeScript](docs/guide/typescript-plugin.en.md), [Bun](docs/guide/bun-plugin.en.md), [Python](docs/guide/python-plugin.en.md), [Go](docs/guide/go-plugin.en.md) and [Swift](docs/guide/swift-plugin.en.md).
 
 ### In Rust
 
@@ -227,7 +227,7 @@ The [design philosophy](docs/design-philosophy.en.md) explains these choices, an
 | Running plugins in your app | [`rutis-loader`](https://crates.io/crates/rutis-loader), [`rutis-bridge`](https://crates.io/crates/rutis-bridge), [`rutis-dylib`](https://crates.io/crates/rutis-dylib) (dylib plugins) | [`@arcships/rutis-runtime`](https://www.npmjs.com/package/@arcships/rutis-runtime) (Node), [`@arcships/rutis-bun`](https://www.npmjs.com/package/@arcships/rutis-bun) (Bun) | [`rutis`](https://pypi.org/project/rutis/) |
 | A host without Rust | [`rutis-host`](https://crates.io/crates/rutis-host) | [`@arcships/rutis-host`](https://www.npmjs.com/package/@arcships/rutis-host) | [`rutis-host`](https://pypi.org/project/rutis-host/) |
 
-Go plugins use the module [`github.com/arcships/rutis/go/rutis`](go/rutis): the SDK, and the runtime each plugin binary carries.
+Go plugins use the module [`github.com/arcships/rutis/go/rutis`](go/rutis): the SDK, and the runtime each plugin binary carries. Swift plugins (macOS) use the Swift package of this repository, [`Rutis`](swift/README.md) (`.package(url: "https://github.com/arcships/rutis", from: "0.14.0")`), the same way.
 
 All of these form a release train: released together at one version, currently 0.13. Use the same version for every rutis package.
 
@@ -236,13 +236,13 @@ All of these form a release train: released together at one version, currently 0
 | Project | |
 | --- | --- |
 | [rutis-agent](crates/rutis-agent) · [rutis-cli](crates/rutis-cli) | A minimal coding agent in which the model service, tools, streaming driver and TUI are all plugins. Try it offline with `cargo run -p rutis-cli -- --scripted`. |
-| [rutis-host](crates/rutis-host) | A host without Rust: runs TypeScript, JavaScript, Python and Go plugins from a `rutis.json`, reloads them during development, links machines. |
+| [rutis-host](crates/rutis-host) | A host without Rust: runs TypeScript, JavaScript, Python, Go and Swift plugins from a `rutis.json`, reloads them during development, links machines. |
 | [rutis-dsh](crates/rutis-dsh) | Runs the full dsh web interface inside a rutis host, with model calls served by aimux in the same process. |
 | [aimux-llm](crates/aimux-llm) | Wraps [aimux](https://crates.io/crates/aimux-core) as an LLM service plugin. |
 
 ## Documentation
 
-- **[Guides](docs/guide/README.en.md)**: organized by task. Plugins in TypeScript, Bun, Python and Go, running rutis-host, linking nodes, embedding in Rust, working with Cordis.
+- **[Guides](docs/guide/README.en.md)**: organized by task. Plugins in TypeScript, Bun, Python, Go and Swift, running rutis-host, linking nodes, embedding in Rust, working with Cordis.
 - **[Design philosophy](docs/design-philosophy.en.md)**: why rutis exists, the shape that follows, its costs and principles.
 - **[Application design guide](docs/development-guide.en.md)**: splitting an app into plugins, drawing the dependency graph, designing reloads and multiple instances.
 - **[Development handbook](docs/development-handbook.en.md)**: API usage, resource cleanup, events, troubleshooting and verification.
@@ -257,7 +257,7 @@ All of these form a release train: released together at one version, currently 0
 rutis is at 0.x and its API is still evolving. Breaking changes are listed in the release notes and come with a migration guide.
 
 - **The core** is pure Rust with tokio, tokio-util, thiserror, serde and serde_json as its only dependencies; it needs Rust 1.88 or later.
-- **Language runtimes and rutis-host** (Node, Bun, Python and Go rows, remote runtimes, shared services, peers, Cordis mounts) run on Linux, macOS and Windows x64 (MSVC); they need Node 22+, Bun 1.4+ or Python 3.10+; Go plugins are compiled binaries, built with Go 1.24+. The Bun runtime is not tested on Windows yet.
+- **Language runtimes and rutis-host** (Node, Bun, Python and Go rows, remote runtimes, shared services, peers, Cordis mounts) run on Linux, macOS and Windows x64 (MSVC); they need Node 22+, Bun 1.4+ or Python 3.10+; Go plugins are compiled binaries, built with Go 1.24+. Swift plugins are compiled binaries for macOS 14+, built with a Swift 6 toolchain. The Bun runtime is not tested on Windows yet.
 - **dylib plugins** load on Linux, macOS and Windows x64 (MSVC).
 
 ## Contributing

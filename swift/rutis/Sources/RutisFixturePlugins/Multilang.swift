@@ -129,11 +129,20 @@ public final class Ping: @unchecked Sendable {
     public func echo(_ text: String) -> String { "\(from) pong \(text)" }
     public func later(_ text: String) async -> String { "\(from) later \(text)" }
     public func crash() { exit(17) }
+
+    /// This process and the one macOS holds responsible for its access to
+    /// protected data (TCC): the runtime answers for itself.
+    public func responsible() -> [Int] {
+        typealias ResponsibleFor = @convention(c) (pid_t) -> pid_t
+        let all = UnsafeMutableRawPointer(bitPattern: -2) // RTLD_DEFAULT
+        guard let symbol = dlsym(all, "responsibility_get_pid_responsible_for_pid") else { return [Int(getpid()), -1] }
+        return [Int(getpid()), Int(unsafeBitCast(symbol, to: ResponsibleFor.self)(getpid()))]
+    }
 }
 
 public let pingPlugin = Rutis.define(Plugin(
     name: "ping",
-    provides: ["ping": .of(Ping.self, sync: ["echo", "crash"])],
+    provides: ["ping": .of(Ping.self, sync: ["echo", "crash", "responsible"])],
     apply: { ctx in
         let binary = URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent
         ctx.provide("ping", Ping(from: binary))

@@ -62,7 +62,7 @@ fn every_field_is_read() {
     assert_eq!(go.start, GoStart::OnDemand);
     assert_eq!(go.idle, Some(30));
     assert_eq!(go.project, base.join("work"));
-    assert!(go.validate().is_ok());
+    assert!(go.validate("go").is_ok());
     assert_eq!(config.runtimes.remote[0].name, "gpu");
     assert_eq!(config.runtimes.remote[0].language, "python");
     let listener = &config.listen[0];
@@ -341,7 +341,7 @@ fn unknown_fields_are_refused() {
         ),
         (
             r#"{ "runtimes": { "deno": {} } }"#,
-            "<dir>/rutis.json: unknown field `deno`, expected one of `node`, `py`, `bun`, `go`, `remote` at line 1 column 22",
+            "<dir>/rutis.json: unknown field `deno`, expected one of `node`, `py`, `bun`, `go`, `swift`, `remote` at line 1 column 22",
         ),
         (
             r#"{ "runtimes": { "node": { "projects": "." } } }"#,

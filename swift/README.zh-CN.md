@@ -1,8 +1,8 @@
-# Swift SDK（预览）
+# Swift SDK
 
 [English](README.md)
 
-用 Swift 写 rutis 插件，编成 macOS 插件二进制运行。包是仓库根的 `Package.swift`（目标在 `swift/rutis` 下），版本跟发布线的 `v` tag。设计：[Swift SDK](../docs/design-swift-sdk-2026-10-12.md)。现在是预览：指南、`rutis-host` 支持（`runtimes.swift`、`new --lang swift`）和远程连接在后续阶段（设计 §十五）。
+用 Swift 写 rutis 插件，编成 macOS 插件二进制运行。包是仓库根的 `Package.swift`（目标在 `swift/rutis` 下），版本跟发布线的 `v` tag。设计：[Swift SDK](../docs/design-swift-sdk-2026-10-12.md)。指南：[写一个 Swift 插件](../docs/guide/swift-plugin.md)（`rutis-host new <名字> --lang swift` 创建项目）。
 
 ```swift
 // Package.swift: .package(url: "https://github.com/arcships/rutis", from: "0.14.0")
@@ -45,7 +45,7 @@ let weather = Rutis.define(Plugin(
 Rutis.serve(weather)
 ```
 
-- `swift build` 生成二进制；`<二进制> --rutis-manifest` 打印它提供的插件。rutis-loader 用 `SwiftResolver` / `SwiftRuntimes` 运行它（行名 `swift:<插件>`）。
+- `swift build` 生成二进制；`<二进制> --rutis-manifest` 打印它提供的插件。`rutis-host` 按 `runtimes.swift` 运行它（行名 `swift:<插件>`），Rust 宿主用 rutis-loader 的 `SwiftResolver` / `SwiftRuntimes`。
 - 插件代码不传任何上下文参数：调用链随 Task 传递。每个进来的调用一个 Task；同步调用挂起 Task，不占线程。
 - 值：SDK 自己的编码器与解码器，由 `Codable` 驱动（不用 `JSONEncoder`）。`Date`、`Data`、`Decimal`、`UUID`、`Set` 和键不是 `String` 的字典按 rutis 的带标记的值跨进程；`Rutis.DateTime`、`Rutis.CalendarDate`、`Rutis.TimeOfDay`、`Rutis.BigInt` 是 Swift 没有的类型。`@RutisService` 类型的实例与闭包按引用。
 - 错误带着名字（类型名）、信息、`code` 与 `data`（同名存储属性）跨进程；收到的错误是 `RutisError`，按 `name` 匹配。
