@@ -3,11 +3,13 @@
 // is installed, android), `rutis-ksp` (the KSP processor generating method
 // tables and proxies) and `rutis-conformance` (the programs the Rust
 // conformance tests start).
+// Maven Central and Google first: every plugin used is there (the portal
+// only as a fallback), so a build depends on as few hosts as possible.
 pluginManagement {
     repositories {
-        gradlePluginPortal()
-        google()
         mavenCentral()
+        google()
+        gradlePluginPortal()
     }
 }
 

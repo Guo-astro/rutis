@@ -352,7 +352,13 @@ jobs:
       - name: the Kotlin conformance jar
         working-directory: kotlin/rutis
         run: |
-          ./gradlew --no-daemon --quiet :rutis-conformance:fatJar
+          # Retried: a download that fails halfway (the runners' networks)
+          # should not fail the job.
+          for attempt in 1 2 3; do
+            ./gradlew --no-daemon --quiet :rutis-conformance:fatJar && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 20
+          done
           echo "RUTIS_KOTLIN_JAR=$PWD/rutis-conformance/build/libs/rutis-conformance-all.jar" >> "$GITHUB_ENV"
 
       # rutis-bridge and rutis-loader run once each, below, with all their
@@ -835,6 +841,13 @@ jobs:
       - name: gradle build (the SDK, the processor, the conformance programs)
         working-directory: kotlin/rutis
         run: |
+          # The downloads first, retried (the runners' networks); then the
+          # build and its tests, once.
+          for attempt in 1 2 3; do
+            ./gradlew --no-daemon --quiet :rutis-conformance:fatJar && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 20
+          done
           ./gradlew --no-daemon build
           echo "RUTIS_KOTLIN_JAR=$PWD/rutis-conformance/build/libs/rutis-conformance-all.jar" >> "$GITHUB_ENV"
       # Only the Kotlin tests of the contract suites: the other runtimes run
@@ -1019,7 +1032,13 @@ jobs:
       - name: the Kotlin conformance jar
         working-directory: kotlin/rutis
         run: |
-          ./gradlew --no-daemon --quiet :rutis-conformance:fatJar
+          # Retried: a download that fails halfway (the runners' networks)
+          # should not fail the job.
+          for attempt in 1 2 3; do
+            ./gradlew --no-daemon --quiet :rutis-conformance:fatJar && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 20
+          done
           echo "RUTIS_KOTLIN_JAR=$PWD/rutis-conformance/build/libs/rutis-conformance-all.jar" >> "$GITHUB_ENV"
       # events_conformance: the written placements on pull requests, the
       # sampled ones in full runs (as in `rust`).
@@ -1390,7 +1409,13 @@ jobs:
       - name: the Kotlin conformance jar
         working-directory: kotlin/rutis
         run: |
-          ./gradlew --no-daemon --quiet :rutis-conformance:fatJar
+          # Retried: a download that fails halfway (the runners' networks)
+          # should not fail the job.
+          for attempt in 1 2 3; do
+            ./gradlew --no-daemon --quiet :rutis-conformance:fatJar && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 20
+          done
           echo "RUTIS_KOTLIN_JAR=$(cygpath -w "$PWD/rutis-conformance/build/libs/rutis-conformance-all.jar")" >> "$GITHUB_ENV"
       # events_conformance: the written placements (the runtimes are
       # started through a Node script, Windows having no sh).
