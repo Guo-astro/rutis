@@ -2,6 +2,7 @@
 //   node scripts/train.mjs            print the version; fail on a mismatch
 //   node scripts/train.mjs v0.12.1     also fail unless the version is 0.12.1
 //   node scripts/train.mjs --crates   the crates, in publishing order
+//   node scripts/train.mjs --npm      the npm packages, the platform packages included
 import { readFileSync } from 'node:fs'
 
 const root = new URL('../', import.meta.url)
@@ -39,6 +40,13 @@ const versions = {
   'go github.com/arcships/rutis/go/rutis': read('go/rutis/version.go').match(/^const Version = "([^"]+)"/m)?.[1],
 }
 const host = json('node/rutis-host/package.json')
+// The npm packages: the four above and the platform packages the launcher
+// takes as optionalDependencies.
+export const npm = [
+  ...['node/rutis', 'node/rutis-runtime', 'bun/rutis-bun'].map(dir => json(`${dir}/package.json`).name),
+  ...Object.keys(host.optionalDependencies),
+  host.name,
+]
 const references = {
   // Every dependency of a crate in the train on another one.
   ...Object.fromEntries(crates.flatMap(from => crates
@@ -62,10 +70,11 @@ const [major, minor] = version.split('.').map(Number)
 const range = major === 0 ? `rutis>=0.${minor},<0.${minor + 1}` : `rutis>=${major},<${major + 1}`
 if (!read('crates/rutis-host/pyproject.toml').includes(`"${range}"`)) wrong.push(`pypi rutis-host must depend on "${range}"`)
 const tag = process.argv[2]
-if (tag && tag !== '--crates' && tag !== `v${version}`) wrong.push(`the tag is ${tag}, but the train is at ${version}`)
+if (tag && !['--crates', '--npm'].includes(tag) && tag !== `v${version}`) wrong.push(`the tag is ${tag}, but the train is at ${version}`)
 if (wrong.length) {
   for (const line of wrong) console.error(line)
   process.exit(1)
 }
 if (process.argv[2] === '--crates') console.log(crates.join(' '))
+else if (process.argv[2] === '--npm') console.log(npm.join(' '))
 else console.log(version)
