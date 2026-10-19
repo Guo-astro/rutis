@@ -223,6 +223,12 @@ func startSession(channel peer.Channel, endpoint *peer.Endpoint, defs []*Definit
 	}
 	rt.session = p
 	if err := p.Start(); err != nil {
+		// The far end's hello may be read, and refused, while this side's
+		// is still being written: the refusal (set before the channel
+		// closed) is why it failed.
+		if refused := refusal(p.Err()); refused != nil {
+			return nil, p.Err()
+		}
 		return nil, err
 	}
 	return &session{peer: p, runtime: rt}, nil

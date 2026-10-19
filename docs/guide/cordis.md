@@ -14,7 +14,7 @@ rutis 和 Cordis（Node 插件框架）有两种互通方式：
 
 ## 事件
 
-Cordis 插件照常用 Cordis 自己的事件 API，它就是 rutis 的事件 API：`ctx.on`、`ctx.emit`、`ctx.parallel`、`ctx.serial`、`ctx.waterfall`、`ctx.bail`。Cordis 的监听器自动登记到宿主的逻辑总线上，所以不论 Cordis 插件作为 rutis.json 的行运行、挂载在 Rust 应用里，还是在作为节点的 Cordis 应用里，它的事件都按同一套规则到达任何语言、任何进程里的监听器（按作用域），别处发出的事件也到达它的监听器。规则见 [插件 API：事件](plugin-api.md#事件)。
+Cordis 插件照常用 Cordis 自己的事件 API，它就是 rutis 的事件 API：`ctx.on`、`ctx.emit`、`ctx.parallel`、`ctx.serial`、`ctx.waterfall`、`ctx.bail`。Cordis 的监听器自动登记到宿主的逻辑总线上，所以不论 Cordis 插件作为 rutis.json 的行运行、挂载在 Rust 应用里，还是在作为节点的 Cordis 应用里，它的事件都按同一套规则到达任何语言、任何进程里的监听器（按作用域），别处发出的事件也到达它的监听器。作为节点的 Cordis 应用只与对端共享 `Events` 的 `export` / `import` 列出的名字（见[下文](#cordis-应用作为节点)）。规则见 [插件 API：事件](plugin-api.md#事件)。
 
 ```ts
 export function apply(ctx: Context) {
@@ -32,8 +32,8 @@ await ctx.parallel('chat/sent', out)       // 等每个监听器，不论在哪�
 - **过滤**：Cordis 的 `Context.filter` 接到 rutis 的过滤上。`ctx.emit(thisArg, name, ...)`（以及其余四种）的 `thisArg[Context.filter]` 是函数时用它过滤：本进程的监听器传入它自己的 Context，别处的监听器传入 `{ rutis: 描述 }`。每个 Context 都有只读的 `ctx.rutis`，所以 `c => c.rutis.row === 'chat'` 对两者都有效。描述的字段见[过滤](plugin-api.md#过滤)。
 - **`prepend` / `global`**：就是 Cordis 自己的监听器选项，对别处的监听器同样排序、同样豁免过滤。
 - **同步 `bail`**：别处的监听器作为同步调用执行；遇到 `async` 函数或返回 Promise 的监听器以 `AsyncListener` 失败（以前 Cordis 把 Promise 当作结果）。
-- **`parallel`** 的失败总是 `AggregateError`，按登记顺序。`emit` 的监听器出错只在它所在的一侧报告一行，不影响发出方。
-- **`internal/*`** 仍是每个运行时自己的：`internal/dispatch`、`internal/service` 只在本进程里，从不跨进程。从别处到达的事件也经过 Cordis 自己的分发，所以 `internal/dispatch` 的校验插件照常看得到它们。
+- **`parallel`** 的失败总是 `AggregateError`，子错误按登记顺序（与 Cordis 相同），信息为 `<n> listeners of <name> failed`，别处监听器的失败也在其中。`emit` 的监听器出错只在它所在的一侧报告一行，不影响发出方。
+- **`internal/*`** 仍是每个运行时自己的：`internal/dispatch`、`internal/service` 只在本进程里，从不跨进程。从别处到达的事件第一次调用本进程的监听器之前，运行时对这次分发触发一次 `internal/dispatch`，方式是 rutis 的方式名（`emit`、`parallel`、`serial`、`waterfall`、`bail`），所以它的校验插件照常看得到它们。
 - **卸载**：这一行的 `ctx.signal` 被中止，正在运行的监听器被等待，然后才运行清理。
 
 ## Cordis 应用作为节点

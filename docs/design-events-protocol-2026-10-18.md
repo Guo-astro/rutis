@@ -96,8 +96,8 @@
 | `row` | 登记它的行的键；挂载方式加载的插件为 `null`。不是这个会话上加载的行时宿主拒绝。描述里的 `row` 不是它，而是这一行的 id（§3） |
 | `plugin` | 登记它的插件的名字（Cordis 插件的名字，可以是这一行的子插件；叶子插件的名字） |
 | `kind` | `"sync"`：已知同步（Go 的每个监听器）；`"async"`：已知异步（JavaScript 的 `AsyncFunction`、Python 的 `async def`）；`"any"`：要看它返回什么才知道（其余 JavaScript 和 Python 函数） |
-| `prepend` | 监听器选项 `prepend`（所有语言，第十二节；Node / Bun 上就是 Cordis 自己的选项） |
-| `global` | 监听器选项 `global`（所有语言，第十二节；Node / Bun 上就是 Cordis 自己的）：条目不受自定义过滤，但仍受作用域规则 |
+| `prepend` | 监听器选项 `prepend`（所有语言，第十二节；Cordis 插件上就是 Cordis 自己的选项） |
+| `global` | 监听器选项 `global`（所有语言，第十二节；Cordis 插件上就是 Cordis 自己的）：条目不受自定义过滤，但仍受作用域规则 |
 
 运行时从不登记前缀；Rust 的模式监听器是宿主上的前缀条目（`prefix: true`，`name` 为前缀）。
 
@@ -170,7 +170,7 @@
 
 对未知或已撤下的 id 的 `events.call`，以 `throw` `BindingError` 回复，信息为 `listener <id> of <name> is withdrawn`。
 
-`internal/dispatch`（Node / Bun）：`own: false` 的一次分发第一次调用本进程的监听器时，运行时在调用它之前，对这个 `dispatch` id 发一次 Cordis `internal/dispatch`（方式、名字、参数、`null`）；本进程自己发出的事件经 Cordis 自己的 `dispatch()`，在那里触发它。它抛出时，这次调用失败。
+`internal/dispatch`（Node 的 Cordis；Bun 没有 Cordis）：`own: false` 的一次分发第一次调用本进程的监听器时，运行时在调用它之前，对这个 `dispatch` id 发一次 Cordis `internal/dispatch`（方式、名字、参数、`null`）；本进程自己发出的事件经 Cordis 自己的 `dispatch()`，在那里触发它。它抛出时，这次调用失败。
 
 Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回要调用的回调；有的已发布插件直接调用它再自己调用回调）：名字不是 `internal/*`、`type` 为 `emit`、`serial` 或 `bail` 时，它返回一个回调，以被调用时的参数在总线上按 `parallel`、`serial` 或 `bail` 分发（在本进程，或名字在别处时经宿主）。监听器是总线的，不是 Cordis 的，这样的插件因此能到达它们。
 
@@ -207,7 +207,7 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 - 宿主：它的错误汇集（rutis-host 打印同样的文字）。
 - 无法送达或得不到回复的调用（传输、值能力、已撤下）：由分发方报告：`rutis: listener of <name> in <runtime <runtime>|node <peer>> failed: <ErrorName>: <message>`。
 
-`emit` 分发中过滤函数失败时，不送达任何监听器，由分发方同样报告（`listener` 换成 `filter`：`rutis: filter of <name> from row <row> failed: …`）。
+`emit` 分发中过滤函数失败时，不送达任何监听器，由分发方同样报告（`listener` 换成 `filter`：`rutis: filter of <name> from row <row> failed: …`）。挂载方式加载的插件（`row: null`）发出时，`from row <row>` 写作 `from the mount`，第十一节的 `emit` 那一行也一样。
 
 ### 5.7 取消
 
@@ -220,7 +220,7 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 - **在哪里执行**：总是在发出方的进程里。快速路径上，运行时对每个候选条目直接调用插件的过滤函数。经宿主时，`events.dispatch` 带 `filter`：运行时包在插件过滤函数外面的一个**选择器**的函数引用。宿主每次分发调用它一次，在快照（§5.1）之后，参数只有一个：非 `global` 候选条目的描述列表，按登记顺序。选择器在发出方的进程里按顺序对每个描述调用插件的过滤函数，返回等长的布尔值列表（`true` = 送达），真假按本语言自己的规则 / `bool`。`bail` 分发中宿主同步调用它，其余异步。长度不对或不是布尔值时这次分发失败（`BindingError`，`filter of <name> returned <n> answers for <m> listeners`）。发出方自己会话里的条目，其描述还带 `listener`：该条目的 `events.on` id（2026-10-19 修订）。运行时凭它找到自己的监听器，绝不凭描述的其他字段（同一行在两个实例里的两份副本，或一个 Cordis 插件从两个 Context 监听，描述完全相同），并在调用插件的过滤函数前去掉它，使过滤函数在两条路径上看到的描述相同。
 - **错误**：过滤函数抛出时，整次分发以这个错误失败，不开始任何调用（`emit`：§5.6）。Go 的过滤函数返回 `(bool, error)`：它返回的错误（连同名字）就是这次失败，panic 也是。Rust 的 `try_filter` 接受返回 `Result<bool, CordisError>` 的函数，它返回的错误原样就是这次失败；`filter` 接受只返回 `bool` 的函数，只能以 panic 失败。
 - **默认**：先应用作用域规则，并且总是应用；过滤只在其上再筛。`global` 条目不经过滤。
-- **Cordis**（`Context.filter`）：`ctx.emit(thisArg, name, …)` 以及其余四种，`thisArg` 的 `[Context.filter]` 是函数时，用它作过滤。对本进程的监听器传入条目自己的 Cordis `Context`，对其他每个条目传入 `{ rutis: <描述> }`。rutis 的 Node / Bun 运行时里每个 Context 都有只读的 `ctx.rutis`，值为它的描述，所以 `c => c.rutis.row === 'chat'` 对两者都有效。
+- **Cordis**（`Context.filter`）：`ctx.emit(thisArg, name, …)` 以及其余四种，`thisArg` 的 `[Context.filter]` 是函数时，用它作过滤。对本进程的监听器传入条目自己的 Cordis `Context`，对其他每个条目传入 `{ rutis: <描述> }`。rutis 的 Node 运行时里每个 Context 都有只读的 `ctx.rutis`，值为它的描述，所以 `c => c.rutis.row === 'chat'` 对两者都有效。
 - **其他语言**：`filter(predicate)` 返回一个有同样五个方法的发出器（第十二节）；predicate 收到描述（Node / Bun 叶子与 Python：带 JSON 字段的普通对象 / `dict`；Go：`rutis.Listener`；Rust：`&ListenerInfo`）。
 
 ## 七、生命周期与断开
@@ -267,6 +267,7 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 
 - **节点通告什么**：只通告它自己的条目（宿主的 Rust 插件和它的运行时的），从不通告经任何连接引进的条目（不转发，所以不会成环）；并且只通告作用域链是连接作用域前缀的条目（连接的作用域是 `rutis-bridge/peer` 行所在的作用域；不在实例里的连接为根），因为只有它们能收到到达那里的事件。前缀条目按它与 `import` 项共同匹配的部分收窄后通告（两个前缀：一个延伸另一个时取较长的；一个前缀与一个名字：取名字）。
 - **接受的条目放在哪里**：放在接受方节点上连接的作用域，按到达顺序追加，以 `prepend: true` 通告的放在全部已有条目之前；描述的 `node` = 对端 id，`plugin` / `row` / `runtime` 按通告，`scope` = 连接的作用域。通告来的条目若不匹配 `export` 的任何项，则忽略（回复 `undefined`）。
+- **宣告的 id**：`<epoch>.<n>`。`epoch` 是发送方这一次提供 `events` 族的序号（它的 `link.offers` 里这一族的 `since`），`n` 在这次提供内递增。接收方看到对端更新的提供时（经 `link.offers`，或一个 epoch 更大的宣告先到），撤下对端在更早的提供下宣告的全部条目；对端不再提供 `events` 时同样撤下；更早提供的迟到宣告不接受（回复 `undefined`）。不带 epoch 的 id（不说明它的实现）只按 id 替换（2026-10-19 修订）。
 - **规则**：与本机条目完全相同：五种方式、作用域、过滤、值类型、撤下与断开（§7.2）。被调用的节点执行这个条目（它的 Rust 监听器，或把 `events.call` 转给它的运行时）。断开的连接的条目被撤下。
 
 ## 十、值
@@ -278,8 +279,8 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 | `name` | 何时 | 信息（确切；`<…>` 填入） |
 | --- | --- | --- |
 | `AggregateError` | `parallel` 有失败 | `<n> listeners of <name> failed`；子错误按登记顺序：线上，错误图的根是名为 `AggregateError` 的 `error` 节点，其 `errors` 引用各子错误的节点（每个子错误自己的图并入其中），与 JavaScript 编码 `AggregateError` 的方式相同 |
-| `AsyncListener` | `bail` / `waterfall-sync` 遇到异步监听器 | `listener of <name> in row <row> is asynchronous and cannot run in a synchronous <bail\|waterfall-sync>` |
-| `WaterfallNext` | `next` 调用两次 / 结束后 / 取消后 / 不在 waterfall 中（Rust）/ Rust 同步监听器在异步 waterfall 中 | `next of <name> was already called` · `next of <name> was called after its waterfall ended` · `next is available only in a waterfall (this is <mode>)` · `a synchronous listener cannot call next in an asynchronous waterfall; register it with on` |
+| `AsyncListener` | `bail` / `waterfall-sync` 遇到异步监听器 | `listener of <name> in <监听器> is asynchronous and cannot run in a synchronous <bail\|waterfall-sync>`；`<监听器>` 是 `row <行>`、`runtime <运行时>`、`node <对端>` 或 `plugin <插件>`，取描述里第一个有值的 |
+| `WaterfallNext` | `next` 调用两次 / 结束后 / 取消后 / 不在 waterfall 中（Rust）/ Rust 同步监听器在异步 waterfall 中 | `next of <name> was already called` · `next of <name> was called after its waterfall ended` · `next is available only in a waterfall (this is <mode>)` · `a synchronous listener cannot call next in an asynchronous waterfall; register it with on` · `next of <name> was called off the thread of its waterfall`（Rust：别处监听器的同步 `next` 不在分发它的线程上调用） |
 | `ReservedEvent` | 发出 `rutis/*`（任何方式、任何语言，由发出的 API 同步拒绝） | `rutis/* events are emitted by rutis only: <name>` |
 | `SyncWaitCycle` | 一次同步调用会使等待成环 | 同服务调用 |
 | `BindingError` | 传输错误、已撤下的监听器、被拒绝的帧 | 传输的信息，或第三节、§4.2、§5.3、第六节给出的信息 |
@@ -335,7 +336,9 @@ pub trait Terminal<E: Event>: Send + 'static {
     fn call<'a>(&'a self, ctx: &'a Ctx, event: &'a E) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>>;
 }   // implemented for such closures, and for `()`: no terminal (the last `next` gives `None`)
 
+#[non_exhaustive]
 pub struct EventOptions { pub prepend: bool, pub once: bool, pub global: bool }
+// built with EventOptions::default().prepend(true).once(true).global(true)
 
 impl EventBus {   // ctx.events()
     pub fn on<E: Event>(&self, ctx: &Ctx, key: &EventKey<E>, l: impl Listener<E>) -> Result<Disposer, CordisError>;
@@ -436,7 +439,7 @@ impl EventBus {
 
 - **名字**：`EventKey::<E>::of()` 的名字是 `E::NAME`；`EventKey::named(n)` / `EventKey::dynamic(n)` 的名字是 `n`。`EventPattern::prefix(p)` 登记前缀条目。监听器只按名字查找：同名的另一个 Rust 类型的监听器也收到这个事件，由转码器（serde）转换。
 - **参数 ↔ `E`**（每个事件类型）：`E` 序列化为两个及以上字段的元组或元组结构体 → 每个字段一个参数；unit 或 unit 结构体 → 没有参数；其余（结构体、newtype、map、序列）→ 一个参数。解码：0 个参数 → 从 unit；1 个 → 从这个参数；2 个及以上 → 把列表当作元组（`Codec::to_args` / `from_args`）。bridge 的转码器按服务参数的规则编码（`session::arg` / `decode_value`），所以 `Bytes`、`Instant`、`ValueMap`、`ObjectRef`、`RemoteFunction` 作为值标记与引用跨边界。
-- **动态事件**：`rutis_bridge::events::Args(pub Vec<rutis_bridge::session::Value>)`，`Value = rutis_bridge::session::Value`，只以 `EventKey::<Args>::dynamic(name)` 使用（用 `of()` 以 `BindingError` 失败，`Args events need a name: EventKey::dynamic(name)`）；bridge 的转码器原样取用它的值。
+- **动态事件**：`rutis_bridge::events::Args(pub Vec<rutis_bridge::session::Value>)`，`Value = rutis_bridge::events::ArgValue`（`ArgValue(pub rutis_bridge::session::Value)`），只以 `EventKey::<Args>::dynamic(name)` 使用（用 `of()` 以 `BindingError` 失败，`Args events need a name: EventKey::dynamic(name)`）；bridge 的转码器原样取用它的值。
 - Rust 监听器以登记它的上下文被调用（它的 `ctx.cancelled()` 就是卸载信号，§7.1）。
 - `serial` / `bail_sync` 中 `Ok(Some(false))` 是没有结果；`waterfall` 原样返回值。
 - 作用域：发出方的作用域是 `ctx.scope()`；插件没有向别的作用域发出的 API（改用按 `ListenerInfo::scope` 过滤）。
@@ -446,9 +449,9 @@ impl EventBus {
 
 `[thisArg,]` 是 Cordis 可选的第一个参数。每种语言里，`waterfall` 的监听器都把 `next` 作为**最后一个**参数收到。
 
-| | Node / Bun（Cordis 插件） | Node / Bun（叶子） | Python | Go |
+| | Node（Cordis 插件） | Node / Bun（叶子） | Python | Go |
 | --- | --- | --- | --- | --- |
-| 监听 | `ctx.on(name, fn, options?) → () => boolean`（`options`：`prepend`、`global`；也有 `ctx.once`） | `ctx.on(name, fn, { prepend?, global }?) → () => void` | `ctx.on(name, fn, *, prepend=False, global_=False) → Callable[[], None]` | `ctx.On(name string, fn func(ctx context.Context, args ...any) (any, error), options ...rutis.ListenOption) func()`（`rutis.Prepend()`、`rutis.Global()`） |
+| 监听 | `ctx.on(name, fn, options?) → () => boolean`（`options`：`prepend`、`global`；也有 `ctx.once`） | `ctx.on(name, fn, { prepend?, global? }?) → () => void` | `ctx.on(name, fn, *, prepend=False, global_=False) → Callable[[], None]` | `ctx.On(name string, fn func(ctx context.Context, args ...any) (any, error), options ...rutis.ListenOption) func()`（`rutis.Prepend()`、`rutis.Global()`） |
 | 监听器 | `(...args[, next]) => value \| Promise` | 同左 | `fn(*args[, next]) -> value \| awaitable` | `fn(ctx, args...)`；waterfall 中最后一个参数是 `rutis.Next`（`func(context.Context) (any, error)`） |
 | `emit` | `ctx.emit([thisArg,] name, ...args): void` | `ctx.emit(name, ...args): void` | `ctx.emit(name, *args) -> None` | `ctx.Emit(ctx context.Context, name string, args ...any) error`（只报拒绝） |
 | `parallel` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` |
@@ -462,7 +465,7 @@ impl EventBus {
 - 没有结果到达时是 `undefined`（JS）、`None`、`nil`。Node 的 `waterfall` 只要有监听器在本进程之外就返回 Promise；插件 `await` 它。
 - Go：`rutis.Listener` = `struct { Name string; Prefix bool; Plugin, Row, Runtime, Node string; Scope []rutis.Scope; Global bool }`（null 为 `""`）；`rutis.Scope` = `struct { ID, Group string }`；`rutis.Next` = `func(context.Context) (any, error)`。Python 与叶子插件的描述是带 JSON 字段名的普通 `dict` / 对象。
 - 保留的名字：叶子插件（Python、Go、Node 叶子）不能监听或发出 `internal/*`（同 0.12）；`rutis/*` 可以监听，不能发出。
-- **测试工具**（`@arcships/rutis/testing`、`rutis.testing`、`rutistest`）：同样的五种方法、`filter`、作用域（可以把一行加载到一个命名的作用域路径，如 `t1/s1`）、卸载等待与取消，都在一个进程里（总是快速路径）。它们不发出 `rutis/*`。
+- **测试工具**（`@arcships/rutis/testing`、`rutis.testing`、`rutistest`）：同样的五种方法、`filter`、作用域（可以把一行加载到一个命名的作用域路径，如 `t1/s1`）、卸载等待与取消。`@arcships/rutis/testing` 与 `rutis.testing` 都在一个进程里（总是快速路径）；`rutistest` 让插件在真实的 Go 运行时里经真实的会话运行，测试一方就是总线的宿主（`loaded.On` 像宿主一样监听）。它们不发出 `rutis/*`。
 
 ## 十三、事件期望文件
 
@@ -501,7 +504,7 @@ impl EventBus {
   | `{ "calls": 0 }` | 以 `"x"` 调用 `args[0]`（一个函数），返回它的结果 |
   | `{ "emits": spec }` | 从自己这一行发出 `spec`（见下），返回结果 |
 
-- **发出说明**（spec）：`from`（位置）、`row`（发出方 label，默认 `e`）、`scope`（默认 `root`）、`mode`、`name`（默认用例的）、`args`（值；值标记写作 `{"$<tag>": …}`，同 `weather.expected.json`；`{"$callback":"upper"}` 是把参数转成大写的函数）、`filter`（`{ "keep": [labels] }`：送达 `row` 在列表中的条目；探针对它被调用时的每个描述记 `filter:<row>`）、`via`（`"thisArg"`：Cordis 的 `Context.filter`，只用于 Node / Bun 的 Cordis 发出方）、`terminal`（文字：记 `terminal` 并返回这段文字的终态；`{ "echo": true }`：记 `terminal` 并返回它的第一个参数，即事件的第一个参数）、`cancel`（`{ "when": "<label>" }`：那个监听器记下开始后，发出方取消这次分发）。
+- **发出说明**（spec）：`from`（位置）、`row`（发出方 label，默认 `e`）、`scope`（默认 `root`）、`mode`、`name`（默认用例的）、`args`（值；值标记写作 `{"$<tag>": …}`，同 `weather.expected.json`；`{"$callback":"upper"}` 是把参数转成大写的函数）、`filter`（`{ "keep": [labels] }`：送达 `row` 在列表中的条目；探针对它被调用时的每个描述记 `filter:<row>`）、`via`（`"thisArg"`：Cordis 的 `Context.filter`，只用于 Node 的 Cordis 发出方）、`terminal`（文字：记 `terminal` 并返回这段文字的终态；`{ "echo": true }`：记 `terminal` 并返回它的第一个参数，即事件的第一个参数）、`cancel`（`{ "when": "<label>" }`：那个监听器记下开始后，发出方取消这次分发）。
 - **发出方的行**：运行器在 spec 的 `from` 位置与 `scope` 创建它写明的发出方（`row`，默认 `e`）；监听器的 `emits` 从监听器自己的行发出。
 - **步骤**，按顺序：`{ "emit": spec, "expect": … }`（`"background": true`：这一步不等分发结束；下一个 `unload` / `kill` 步骤的 `expect` 说的是这次分发的结果与日志）、`{ "load": listener }`（新的一行；`provides`：它另外提供一个这个名字的空服务）、`{ "unload": label }`、`{ "kill": "Y" | "node" }`（结束那个进程 / 那条连接；在 `restart` 步骤之前不恢复）、`{ "restart": "Y" }`、`{ "concurrent": [steps], "hold": true }`（`hold`：宿主的测试钩子扣住这些分发直到全部到达；之后 `expect` 适用于每一个，`throws` 表示至少一个）。`unload` 与 `kill` 可带 `"when": "<label>"`：先等那个监听器开始。
 - **期望**：`returns`（值；`null` = 没有结果）、`throws`（`{}` 任意错误，或 `name`、`message`（子串）、`errors`（按顺序的子错误，每个为 `{}` / `name` / `message`））、`log`（确切顺序）、`logUnordered`、`logContains`（按此顺序出现，中间可有其他）、`reported`（`[{ "label", "name" }]`，§5.6）、`filterSees`（过滤函数被调用时的行，按顺序；运行器按每个参与者实际所在核对描述的 `runtime`、`node` 与 `scope`）、`viaHost`（是否有 `events.dispatch` 到达宿主）、`settles`（`true`：这一步在 5 秒内结束，无论成败）、`logLacks`（日志里不得出现的条目）。日志在整个用例中累积；每个日志期望说的都是到此为止的全部日志。运行器最多等 5 秒让日志完整。
@@ -880,9 +883,9 @@ impl EventBus {
 22. **Go 监听器为 `func(ctx, args ...any) (any, error)`**，waterfall 中 `next` 是最后一个参数；`Emit` 只对拒绝返回错误。
 23. **`emit` 方式的 `events.call` 在监听器结束后回复**，总是 `undefined`；失败在监听器所在处以 §5.6 的一行报告。
 24. **错误名与信息**见第十一节，包括 `AsyncListener`、`WaterfallNext`、`ReservedEvent`；传输类失败保持 `BindingError`。
-25. **Node / Bun 对每次分发在每个执行其监听器的进程里触发一次 Cordis `internal/dispatch`**，另加发出方自己的 Cordis 分发中的那一次。
-26. **测试工具**在一个进程里提供作用域、过滤、卸载等待与取消，不提供 `rutis/*`；期望文件以 `tool: false` 标出它们跳过的用例。
-27. **`prepend` 与 `global` 在所有语言中都有**（2026-10-18 修订）：Node / Bun 的 Cordis 插件用 Cordis 自己的选项，Node / Bun 叶子用 `ctx.on(name, fn, { prepend, global })`，Python 用 `ctx.on(name, fn, prepend=…, global_=…)`，Go 用 `rutis.Prepend()` / `rutis.Global()`，Rust 用 `EventOptions`（第十二节）。
+25. **Node 对每次分发在每个执行其监听器的进程里触发一次 Cordis `internal/dispatch`**，另加发出方自己的 Cordis 分发中的那一次。
+26. **测试工具**提供作用域、过滤、卸载等待与取消（Node、Python 的在一个进程里，Go 的 `rutistest` 以测试一方为宿主运行真实的会话），不提供 `rutis/*`；期望文件以 `tool: false` 标出它们跳过的用例。
+27. **`prepend` 与 `global` 在所有语言中都有**（2026-10-18 修订）：Node 的 Cordis 插件用 Cordis 自己的选项，Node / Bun 叶子用 `ctx.on(name, fn, { prepend, global })`，Python 用 `ctx.on(name, fn, prepend=…, global_=…)`，Go 用 `rutis.Prepend()` / `rutis.Global()`，Rust 用 `EventOptions`（第十二节）。
 
 实现宿主侧时（#464，`events/host`）定下的：
 
@@ -891,4 +894,4 @@ impl EventBus {
 30. **宿主按帧序处理一个会话的事件操作，但不在它的读线程上**：会话层把收到的 `events.*` 依次交给这个会话的一个有序任务；`events.on`、`events.off`、`events.elsewhere` 以及 `emit` 方式的 `events.dispatch` / `events.call` 在轮到时就地执行，其余事件操作在轮到时作为各自的任务开始。读线程从不执行插件代码（监听器、分发观察者）：它们可能同步调用同一个会话，而回复只有这个读线程能读到。
 31. **节点按自己的条目每匹配一个 `import` 项就宣告一次**（按 §9 收窄），每次宣告有自己的 id；对端宣告的条目同样按每匹配一个 `export` 项接受一次。宣告在对端提供 `events` 这一族时开始，对端每次重新提供时从头再来。
 32. **线上的 `AggregateError`** 在错误图里带着子错误（§11），各语言都按登记顺序还原子错误。
-33. **`rutis/row`**：加载器生成该行时发 `pending`，之后按加载器看到的 fiber 状态的每次变化发（`loading` 算作 `pending`；`unloading` 与销毁算作 `stopped`）；组行也是行（`plugin` 为 `group`）。**`rutis/service`** 针对运行时行提供给 rutis 的服务（宿主投影它们时）发出，位于该行的作用域，带该行的 id。
+33. **`rutis/row`**：加载器生成该行时发 `pending`，之后按加载器看到的 fiber 状态的每次变化发（`loading` 算作 `pending`；`unloading` 与销毁算作 `stopped`）；组行也是行（`plugin` 为 `group`）。**`rutis/service`** 针对每个宿主服务发出，不论提供方是 Rust 插件、运行时的行还是节点导入，位于提供方的作用域，带提供它的行的 id。

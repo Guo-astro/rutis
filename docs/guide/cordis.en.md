@@ -14,7 +14,7 @@ A Cordis plugin can also run as a row in rutis-loader: name its package in `ruti
 
 ## Events
 
-A Cordis plugin uses Cordis's own event API as before, and it is rutis's event API: `ctx.on`, `ctx.emit`, `ctx.parallel`, `ctx.serial`, `ctx.waterfall`, `ctx.bail`. Cordis listeners register themselves on the host's logical bus, so whether a Cordis plugin runs as a row of rutis.json, mounted in a Rust application, or in a Cordis application acting as a node, its events reach listeners in any language and process by the same rules (by scope), and events emitted elsewhere reach its listeners. The rules are in [plugin API: events](plugin-api.en.md#events).
+A Cordis plugin uses Cordis's own event API as before, and it is rutis's event API: `ctx.on`, `ctx.emit`, `ctx.parallel`, `ctx.serial`, `ctx.waterfall`, `ctx.bail`. Cordis listeners register themselves on the host's logical bus, so whether a Cordis plugin runs as a row of rutis.json, mounted in a Rust application, or in a Cordis application acting as a node, its events reach listeners in any language and process by the same rules (by scope), and events emitted elsewhere reach its listeners. A Cordis application acting as a node shares with its peer only the names its `Events` lists in `export` / `import` ([below](#use-a-cordis-application-as-a-node)). The rules are in [plugin API: events](plugin-api.en.md#events).
 
 ```ts
 export function apply(ctx: Context) {
@@ -32,8 +32,8 @@ await ctx.parallel('chat/sent', out)       // waits for every listener, wherever
 - **Filters**: Cordis's `Context.filter` is wired to rutis's filters. In `ctx.emit(thisArg, name, ...)` (and the other four), when `thisArg[Context.filter]` is a function it is the filter: a listener in this process is passed its own Context, a listener elsewhere `{ rutis: descriptor }`. Every Context has a read-only `ctx.rutis`, so `c => c.rutis.row === 'chat'` works for both. The descriptor's fields are in [filter](plugin-api.en.md#filter).
 - **`prepend` / `global`** are Cordis's own listener options, ordering and exempting listeners elsewhere the same way.
 - **Synchronous `bail`**: listeners elsewhere run as synchronous calls; an `async` function or a listener returning a Promise fails it with `AsyncListener` (before, Cordis took the Promise as the result).
-- **`parallel`** failures are always an `AggregateError` in registration order. A failing `emit` listener is reported in one line where it runs and does not reach the emitter.
-- **`internal/*`** stays each runtime's own: `internal/dispatch` and `internal/service` are local to the process and never cross. Events arriving from elsewhere also go through Cordis's own dispatch, so `internal/dispatch` validators still see them.
+- **`parallel`** failures are always an `AggregateError`, its errors in registration order (as in Cordis), with the message `<n> listeners of <name> failed`, including failures of listeners elsewhere. A failing `emit` listener is reported in one line where it runs and does not reach the emitter.
+- **`internal/*`** stays each runtime's own: `internal/dispatch` and `internal/service` are local to the process and never cross. Before an event arriving from elsewhere first calls a listener in this process, the runtime fires `internal/dispatch` once for that dispatch, with rutis's mode name (`emit`, `parallel`, `serial`, `waterfall`, `bail`), so `internal/dispatch` validators still see such events.
 - **Unload**: the row's `ctx.signal` is aborted and its running listeners are waited for before the cleanups run.
 
 ## Use a Cordis application as a node

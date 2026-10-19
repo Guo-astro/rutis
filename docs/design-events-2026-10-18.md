@@ -66,7 +66,7 @@ Rust 的 `waterfall_sync` 与同步 `bail` 同理。
 **一张监听器表。** 一个监听器登记一次，可以被任何方式分发；由发出方决定方式（Cordis 本来如此）。`waterfall` 里监听器从参数拿到 `next`。Rust 去掉单独的 waterfall 登记（`on_waterfall*`），监听器统一为：
 
 ```rust
-ctx.events().on(&key, |ctx, event: &E, call: Call<E::Value>| async move {
+ctx.events().on(&ctx, &key, |ctx, event: &E, call: Call<E::Value>| async move {
     // call.mode()：这次是哪种方式；call.next(..)：仅 waterfall 可用，其他方式调用即报错
     Ok(None) // 或 Ok(Some(v))
 })
@@ -80,8 +80,8 @@ ctx.events().on(&key, |ctx, event: &E, call: Call<E::Value>| async move {
 
 | | 监听 | 发出 |
 | --- | --- | --- |
-| Rust | `ctx.events().on(key, ..)`、`on_sync` | `emit` / `parallel` / `serial` / `waterfall` / `bail_sync` / `waterfall_sync` |
-| Node / Bun（含 Cordis 插件） | `ctx.on(name, fn)` | `ctx.emit` / `await ctx.parallel` / `await ctx.serial` / `ctx.waterfall` / `ctx.bail`（就是 Cordis 自己的 API） |
+| Rust | `ctx.events().on(&ctx, &key, ..)`、`on_sync` | `emit` / `parallel` / `serial` / `waterfall` / `bail_sync` / `waterfall_sync` |
+| Node（含 Cordis 插件）、Bun | `ctx.on(name, fn)` | `ctx.emit` / `await ctx.parallel` / `await ctx.serial` / `ctx.waterfall` / `ctx.bail`（Cordis 插件就是 Cordis 自己的 API；Bun 没有 Cordis，只有叶子插件） |
 | Python | `ctx.on(name, fn)` | `ctx.emit` / `await ctx.parallel` / `await ctx.serial` / `await ctx.waterfall` / `ctx.bail` |
 | Go | `ctx.On(name, fn)` | `ctx.Emit` / `ctx.Parallel` / `ctx.Serial` / `ctx.Waterfall` / `ctx.Bail` |
 
@@ -111,7 +111,7 @@ ctx.events().on(&key, |ctx, event: &E, call: Call<E::Value>| async move {
 | `rutis/row` | 行 id、作用域、状态（Pending / Running / Failed / Stopped） |
 | `rutis/runtime` | 运行时名、状态（running / down + 原因） |
 
-插件不能发出 `rutis/*`，只能监听。Cordis 插件在本进程内用的 `internal/dispatch`、`internal/service` 不变；从别处到达的事件经过 Cordis 自己的分发，所以 `internal/dispatch` 的校验插件照常看得到它们。
+插件不能发出 `rutis/*`，只能监听。Cordis 插件在本进程内用的 `internal/dispatch`、`internal/service` 不变；从别处到达的事件在调用本进程的监听器之前，由 Node 运行时以 rutis 的方式名触发一次 `internal/dispatch`，所以它的校验插件照常看得到它们。
 
 ### 8. 节点之间
 
@@ -135,7 +135,7 @@ ctx.events().on(&key, |ctx, event: &E, call: Call<E::Value>| async move {
 一次做完，一起合并，一个版本发布：
 
 1. **先定协议规格**：帧格式、能力、监听器描述、调用与取消、`rutis/*` 事件。写进 `design-protocol-plugins` 与运行时契约（`.agents/skills/rutis-new-runtime/references/runtime-contract.md`），作为各实现的共同依据。
-2. **同时实现**：Rust 内核与 bridge（逻辑总线、别处监听器条目、一张监听器表、过滤、作用域、修复不一致）；Node / Bun（经 Cordis `internal/listener` 登记，Cordis 的五种方式直接用）；Python、Go（五种方式、过滤、卸载等待、测试工具）；节点连接（`export` / `import` 管事件）。
+2. **同时实现**：Rust 内核与 bridge（逻辑总线、别处监听器条目、一张监听器表、过滤、作用域、修复不一致）；Node（Cordis 插件经 Cordis `internal/listener` 登记，Cordis 的五种方式直接用）与 Bun；Python、Go（五种方式、过滤、卸载等待、测试工具）；节点连接（`export` / `import` 管事件）。
 3. **一套测试**：事件期望文件，五种语言的真实运行时与测试工具都对它比对；矩阵覆盖"发出方 × 监听器所在 × 方式 × 作用域 × 过滤 × 断开"；两节点与 netem 场景加事件；原边界规则测试删除或改写。
 4. **文档**：各语言指南加"事件"一节；插件 API、迁移说明、保证登记表、agent skills。
 5. **整体评审、发布门预演、发布。**

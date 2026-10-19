@@ -61,7 +61,7 @@ Rust 另有 `waterfall_sync`：同步的 `waterfall`，规则与 `bail` 相同�
 
 每种语言都有这五种方式，写法是这门语言自己的：
 
-| | Rust（`rutis`） | Node / Bun 叶子插件（`@arcships/rutis`） | Cordis 插件（Node / Bun 运行时里） | Python（`rutis`） | Go（`rutis`） |
+| | Rust（`rutis`） | Node / Bun 叶子插件（`@arcships/rutis`） | Cordis 插件（Node 运行时里） | Python（`rutis`） | Go（`rutis`） |
 | --- | --- | --- | --- | --- | --- |
 | 监听 | `ctx.events().on(ctx, &key, listener)`；同步监听器 `on_sync`；带选项 `on_opt` / `on_sync_opt`；前缀 `on_pattern(ctx, &EventPattern::prefix(p), ..)`；`once` | `ctx.on(name, fn, { prepend, global }?)` → `() => void` | Cordis 自己的 `ctx.on(name, fn, options?)` → `() => boolean`；`ctx.once` | `ctx.on(name, fn, *, prepend=False, global_=False)` → `Callable[[], None]` | `ctx.On(name, func(ctx context.Context, args ...any) (any, error), rutis.Prepend(), rutis.Global())` → `func()` |
 | 监听器 | `impl Listener<E>`：`call(ctx, &event, call: Call<'_, E::Value>)`，`call.mode()`、`call.next()`；`on_sync` 的闭包收到 `SyncCall` | `(...args[, next]) => 值 \| Promise` | 同左 | `fn(*args[, next])`，可以是 `async def` | `fn(ctx, args...)`；waterfall 中最后一个参数是 `rutis.Next`（`func(context.Context) (any, error)`） |
@@ -130,7 +130,7 @@ ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
 - 过滤函数抛出时，整次分发以这个错误失败，不开始任何监听器（`emit` 中改为报告）。
 - 用 `global` 选项登记的监听器不经过滤（仍受作用域规则）。
 
-描述（JSON 字段；Rust 为 `ListenerInfo`，Go 为 `rutis.Listener`，空值为 `""`）：
+描述（JSON 字段，没有值时为 `null`；Rust 为 `ListenerInfo`，没有值时为 `None`；Go 为 `rutis.Listener`，没有值时为 `""`）：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -143,11 +143,11 @@ ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
 | `scope` | 它的作用域链，`[{ id, group }]`，最外层在前，根是 `[]` |
 | `global` | 是否用 `global` 登记 |
 
-Cordis 插件用 Cordis 自己的写法：`ctx.emit(thisArg, name, ...)`（以及其余四种）的 `thisArg[Context.filter]` 是函数时用它过滤。本进程的监听器传入它自己的 Cordis `Context`，其他监听器传入 `{ rutis: 描述 }`；Node / Bun 运行时里每个 Context 都有只读的 `ctx.rutis`，所以 `c => c.rutis.row === 'chat'` 对两者都有效。
+Cordis 插件用 Cordis 自己的写法：`ctx.emit(thisArg, name, ...)`（以及其余四种）的 `thisArg[Context.filter]` 是函数时用它过滤。本进程的监听器传入它自己的 Cordis `Context`，其他监听器传入 `{ rutis: 描述 }`；Node 运行时里每个 Context 都有只读的 `ctx.rutis`，所以 `c => c.rutis.row === 'chat'` 对两者都有效。
 
 ### `prepend` 与 `global`
 
-所有语言都有这两个监听器选项：`prepend` 让监听器排在这个名字已有的全部监听器之前（各处一致的"登记顺序"由宿主决定）；`global` 让它不受过滤。Rust：`EventOptions { prepend, global, once }` 配 `on_opt` / `on_sync_opt`；Node / Bun：`ctx.on(name, fn, { prepend: true })`（Cordis 插件就是 Cordis 自己的选项）；Python：`ctx.on(name, fn, prepend=True, global_=True)`；Go：`ctx.On(name, fn, rutis.Prepend(), rutis.Global())`。
+所有语言都有这两个监听器选项：`prepend` 让监听器排在这个名字已有的全部监听器之前（各处一致的"登记顺序"由宿主决定）；`global` 让它不受过滤。Rust：`EventOptions::default().prepend(true)`（还有 `.global(true)`、`.once(true)`）配 `on_opt` / `on_sync_opt`；Node / Bun：`ctx.on(name, fn, { prepend: true })`（Cordis 插件就是 Cordis 自己的选项）；Python：`ctx.on(name, fn, prepend=True, global_=True)`；Go：`ctx.On(name, fn, rutis.Prepend(), rutis.Global())`。
 
 ### 生命周期
 
@@ -191,7 +191,7 @@ Rust 的类型化事件以 `Event::NAME` 作为跨语言的名字，参数按 se
 | `emit` 的监听器失败 | `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>` |
 | 无法送达或得不到回复的调用（传输、值、已撤下），由分发方报告 | `rutis: listener of <name> in runtime <runtime> failed: …` 或 `… in node <peer> failed: …` |
 | `emit` 的过滤函数失败 | `rutis: filter of <name> from row <row> failed: …` |
-| 经宿主的 `emit` 被拒绝或没有回答 | `rutis: emit of <name> from row <row> failed: …` |
+| 经宿主的 `emit` 被拒绝或没有回答 | `rutis: emit of <name> from row <row> failed: …`（挂载方式加载的插件：`from the mount`，过滤那一行也是） |
 | 宿主拒绝登记一个监听器（行加载期间则让加载失败） | `rutis: registration of listener of <name> in row <row> failed: …` |
 
 ### 错误

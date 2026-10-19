@@ -169,7 +169,7 @@ rutis 是一个小的应用操作系统：`rutis` 内核相当于操作系统的
 
 | 操作系统 | rutis |
 | --- | --- |
-| 内核：小、稳定、很少改 | `rutis` 内核，只依赖 tokio、tokio-util、thiserror |
+| 内核：小、稳定、很少改 | `rutis` 内核，只依赖 tokio、tokio-util、thiserror、serde、serde_json |
 | 进程 | 插件；语言运行时、远端节点、dylib 也都是插件 |
 | 系统调用 | 服务，按名字或类型提供和使用 |
 | 驱动 | 语言运行时、节点连接、Cordis 挂载 |
@@ -256,7 +256,7 @@ Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)：SDK，以�
 
 rutis 仍处于 0.x，API 还会演进。不兼容的变化会写进发布说明，并附迁移指南。
 
-- **内核** 是纯 Rust，依赖只有 tokio、tokio-util 和 thiserror；需要 Rust 1.88 或更高。
+- **内核** 是纯 Rust，依赖只有 tokio、tokio-util、thiserror、serde 和 serde_json；需要 Rust 1.88 或更高。
 - **语言运行时与 rutis-host**（Node、Bun、Python 与 Go 行、远程运行时、跨语言共享服务、节点、Cordis 挂载）支持 Linux、macOS 和 Windows x64（MSVC）；需要 Node 22+、Bun 1.4+ 或 Python 3.10+；Go 插件是编译好的二进制，构建时需要 Go 1.24+。Bun 运行时还没有在 Windows 上测试。
 - **dylib 插件** 支持 Linux、macOS 和 Windows x64（MSVC）。
 

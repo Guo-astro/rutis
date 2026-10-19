@@ -169,7 +169,7 @@ rutis is a small application operating system. The core is the kernel; everythin
 
 | Operating system | rutis |
 | --- | --- |
-| Kernel: small, stable, rarely changed | The `rutis` core, depending only on tokio, tokio-util and thiserror |
+| Kernel: small, stable, rarely changed | The `rutis` core, depending only on tokio, tokio-util, thiserror, serde and serde_json |
 | Processes | Plugins; language runtimes, remote nodes and dylibs are plugins too |
 | System calls | Services, provided and used by name or by type |
 | Drivers | Language runtimes, node links, Cordis mounts |
@@ -256,7 +256,7 @@ All of these form a release train: released together at one version, currently 0
 
 rutis is at 0.x and its API is still evolving. Breaking changes are listed in the release notes and come with a migration guide.
 
-- **The core** is pure Rust with tokio, tokio-util and thiserror as its only dependencies; it needs Rust 1.88 or later.
+- **The core** is pure Rust with tokio, tokio-util, thiserror, serde and serde_json as its only dependencies; it needs Rust 1.88 or later.
 - **Language runtimes and rutis-host** (Node, Bun, Python and Go rows, remote runtimes, shared services, peers, Cordis mounts) run on Linux, macOS and Windows x64 (MSVC); they need Node 22+, Bun 1.4+ or Python 3.10+; Go plugins are compiled binaries, built with Go 1.24+. The Bun runtime is not tested on Windows yet.
 - **dylib plugins** load on Linux, macOS and Windows x64 (MSVC).
 

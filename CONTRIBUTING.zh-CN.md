@@ -39,7 +39,7 @@ cargo test -p rutis-loader --features node,python,peer,bun  # loader 的各种�
 npm --prefix node/rutis ci && npm --prefix node/rutis test
 npm --prefix node/rutis-runtime ci && npm --prefix node/rutis-runtime test
 (cd python/rutis && python3 -m unittest discover -s tests)
-(cd bun/rutis-bun && bun install --frozen-lockfile && bun test)
+(cd bun/rutis-bun && bun test)
 ```
 
 另有两类检查，分别针对并发和来自对端的输入：

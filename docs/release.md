@@ -61,6 +61,10 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 每晚的 stress 工作流还跑两个浸泡测试（link 反复断开重连、进程反复拉起结束），检查文件描述符、线程数不增长、进程都被回收。
 
+## 0.13.0
+
+`rutis.json` 的 `format` 仍是 1，持久化样本照常复制。统一事件（#464）删除了节点行（`rutis-bridge/peer`）配置里的 `events: { out, in }`：0.12.1 及更早的样本都没有写它，期望不变；写了它的旧文件，`rutis-host check` 与启动都拒绝，信息给出改写（`the peer config field events was removed in rutis 0.13: …`，见[迁移到 0.13](migration-0.13.md#节点连接)）。这是第一次因为删除一种写法往 `rejected/` 放样本：`rejected/peer-events/` 的 `rutis.json` 有一个写着 `events` 的节点行，旁边的 `rutis.error` 是这条信息。这也是第一次跨版本相遇只验证拒绝：0.13 与每个更早的发布版本在握手时互相拒绝（`events/old-peer-refused`）。
+
 ## 0.12.0
 
 持久化样本的 `rutis.json` 加上 0.11 之后新增的 `restart`：`runtimes.node` 为 `"on-failure"`，`runtimes.py` 为 `"exit"`，`runtimes.bun` 为 `"no"`（默认值）；`format` 仍是 1。persisted 测试的期望记下不是默认值的 `restart`，所以 `"no"` 不出现在期望里，旧样本的期望不变。dsh 的用户层自 0.11.0 以来没有变化，`cordis.patch.yml` 原样复制。这也是第一次在发布门里跑跨版本相遇（#426，CI 的 `e2e` 任务）：发布门设了 `RUTIS_E2E_ONLY_OLDER=1`，只和更早的发布版本对接，这一版是 0.11.0。

@@ -366,7 +366,7 @@ test('the removed events and emits options are refused', async () => {
   `, file => {
     for (const field of ['events', 'emits']) {
       assert.throws(() => generate(file, root, { [field]: ['store/changed'] }), {
-        message: `the config field ${field} was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)`,
+        message: `the config field ${field} was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`,
       })
     }
     const { rust } = generate(file, root)

@@ -63,14 +63,14 @@ Rust also has `waterfall_sync`: a synchronous `waterfall`, under the same rules 
 
 Each language has the five modes, written the language's own way:
 
-| | Rust (`rutis`) | Node / Bun leaf plugin (`@arcships/rutis`) | Cordis plugin (in the Node / Bun runtime) | Python (`rutis`) | Go (`rutis`) |
+| | Rust (`rutis`) | Node / Bun leaf plugin (`@arcships/rutis`) | Cordis plugin (in the Node runtime) | Python (`rutis`) | Go (`rutis`) |
 | --- | --- | --- | --- | --- | --- |
 | Listen | `ctx.events().on(ctx, &key, listener)`; a synchronous listener `on_sync`; with options `on_opt` / `on_sync_opt`; a prefix `on_pattern(ctx, &EventPattern::prefix(p), ..)`; `once` | `ctx.on(name, fn, { prepend, global }?)` → `() => void` | Cordis's own `ctx.on(name, fn, options?)` → `() => boolean`; `ctx.once` | `ctx.on(name, fn, *, prepend=False, global_=False)` → `Callable[[], None]` | `ctx.On(name, func(ctx context.Context, args ...any) (any, error), rutis.Prepend(), rutis.Global())` → `func()` |
 | Listener | `impl Listener<E>`: `call(ctx, &event, call: Call<'_, E::Value>)`, with `call.mode()`, `call.next()`; an `on_sync` closure gets a `SyncCall` | `(...args[, next]) => value \| Promise` | The same | `fn(*args[, next])`, may be `async def` | `fn(ctx, args...)`; in a waterfall the last argument is a `rutis.Next` (`func(context.Context) (any, error)`) |
 | `emit` | `emit(ctx, &key, Arc<E>) -> Result<()>` | `ctx.emit(name, ...args): void` | `ctx.emit([thisArg,] name, ...args)` | `ctx.emit(name, *args) -> None` | `ctx.Emit(ctx, name, args...) error` (refusals only) |
 | `parallel` | `parallel(ctx, &key, Arc<E>).await` | `await ctx.parallel(name, ...args)` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` |
 | `serial` | `serial(ctx, &key, Arc<E>).await -> Option<E::Value>` | `await ctx.serial(name, ...args)` | `await ctx.serial([thisArg,] name, ...args)` | `await ctx.serial(name, *args)` | `ctx.Serial(ctx, name, args...) (any, error)` |
-| `waterfall` | `waterfall(ctx, &key, &e, terminal).await` (`()`: no terminal) | `ctx.waterfall(name, ...args, terminal)`: the last argument is the terminal | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)` (`terminal` may be `nil`) |
+| `waterfall` | `waterfall(ctx, &key, &e, terminal).await` (`()`: no terminal) | `ctx.waterfall(name, ...args)`; with a terminal `ctx.waterfall.with(terminal)(name, ...args)` (every argument is the event's, functions too) | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)` (`terminal` a `rutis.Terminal`, `func(ctx, args ...any) (any, error)`, or `nil`) |
 | `bail` | `bail_sync(ctx, &key, &e)`; `waterfall_sync(ctx, &key, &e, terminal)` | `ctx.bail(name, ...args)` | `ctx.bail([thisArg,] name, ...args)` | `ctx.bail(name, *args)` | `ctx.Bail(ctx, name, args...) (any, error)` |
 | Filter | `ctx.events().filter(\|info\| ..)`, then the same six methods | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`, `c.rutis` is the descriptor | `ctx.filter(lambda d: ...)` → an object with the five methods | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter` |
 | Scope | `ctx.scope()` | the descriptor's `scope` | `ctx.rutis.scope` | the descriptor's `scope` | `ctx.Scope()` |
@@ -132,24 +132,24 @@ An emission can carry a filter function: it is called once for each candidate li
 - When the filter throws, the whole dispatch fails with that error and no listener starts (in `emit`, it is reported instead).
 - Listeners registered with the `global` option are never filtered (the scope rule still applies).
 
-The descriptor (JSON fields; Rust `ListenerInfo`, Go `rutis.Listener`, empty values `""`):
+The descriptor (JSON fields, `null` when there is no value; Rust `ListenerInfo`, `None` when there is none; Go `rutis.Listener`, `""` when there is none):
 
 | Field | Meaning |
 | --- | --- |
 | `name` | The event name (a prefix, for a Rust prefix listener) |
 | `prefix` | Whether it is a Rust prefix listener |
-| `plugin` | The plugin that registered it |
-| `row` | Its row; `null` for a plugin loaded by a mount |
+| `plugin` | The plugin that registered it: its declared name (`definePlugin({ name })`, `define_plugin(name=)`, the Go plugin's name, a Cordis plugin's name), else its row's id |
+| `row` | Its row's id, the name the configuration gives the row (the copies a group's instances make share it); `null` for a plugin loaded by a mount |
 | `runtime` | The runtime it runs in; `null` for the host's own Rust plugins |
 | `node` | For a listener a node link brought in, the far node's id; `null` otherwise |
 | `scope` | Its scope chain, `[{ id, group }]`, outermost first, the root `[]` |
 | `global` | Whether it was registered with `global` |
 
-Cordis plugins use Cordis's own way: in `ctx.emit(thisArg, name, ...)` (and the other four), when `thisArg[Context.filter]` is a function it is the filter. A listener in this process is passed its own Cordis `Context`, any other listener `{ rutis: descriptor }`; in the Node / Bun runtime every Context has a read-only `ctx.rutis`, so `c => c.rutis.row === 'chat'` works for both.
+Cordis plugins use Cordis's own way: in `ctx.emit(thisArg, name, ...)` (and the other four), when `thisArg[Context.filter]` is a function it is the filter. A listener in this process is passed its own Cordis `Context`, any other listener `{ rutis: descriptor }`; in the Node runtime every Context has a read-only `ctx.rutis`, so `c => c.rutis.row === 'chat'` works for both.
 
 ### `prepend` and `global`
 
-Every language has these two listener options: `prepend` puts the listener before every listener of the name registered so far (the host decides the one registration order everyone sees); `global` exempts it from filters. Rust: `EventOptions { prepend, global, once }` with `on_opt` / `on_sync_opt`; Node / Bun: `ctx.on(name, fn, { prepend: true })` (for a Cordis plugin, Cordis's own options); Python: `ctx.on(name, fn, prepend=True, global_=True)`; Go: `ctx.On(name, fn, rutis.Prepend(), rutis.Global())`.
+Every language has these two listener options: `prepend` puts the listener before every listener of the name registered so far (the host decides the one registration order everyone sees); `global` exempts it from filters. Rust: `EventOptions::default().prepend(true)` (also `.global(true)`, `.once(true)`) with `on_opt` / `on_sync_opt`; Node / Bun: `ctx.on(name, fn, { prepend: true })` (for a Cordis plugin, Cordis's own options); Python: `ctx.on(name, fn, prepend=True, global_=True)`; Go: `ctx.On(name, fn, rutis.Prepend(), rutis.Global())`.
 
 ### Lifecycle
 
@@ -193,7 +193,7 @@ A failure nobody waits for is written in one line where it happens (a runtime on
 | A listener fails in `emit` | `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>` |
 | A call that could not be delivered or got no answer (transport, a value, withdrawn), reported by the dispatcher | `rutis: listener of <name> in runtime <runtime> failed: …` or `… in node <peer> failed: …` |
 | The filter of an `emit` fails | `rutis: filter of <name> from row <row> failed: …` |
-| An `emit` through the host is refused or not answered | `rutis: emit of <name> from row <row> failed: …` |
+| An `emit` through the host is refused or not answered | `rutis: emit of <name> from row <row> failed: …` (for a plugin a mount loaded `from the mount`, in the filter line too) |
 | The host refuses to register a listener (while the row loads, the load fails instead) | `rutis: registration of listener of <name> in row <row> failed: …` |
 
 ### Errors
@@ -208,6 +208,8 @@ A failure nobody waits for is written in one line where it happens (a runtime on
 | `BindingError` | A transport failure, a withdrawn listener, a refused frame | Python `rutis.BindingError`; Go `rutis.ErrBinding`; Rust `CordisError::ListenerWithdrawn` or a transport error |
 
 In Go, check with `errors.Is(err, rutis.ErrWaterfallNext)` and the like; an error of that name from any process matches. An error a listener throws crosses with its name, message and error graph, as any call's error.
+
+**Match a listener's error by its name, not its class.** Where it arrives depends on where the listener runs: from another process it arrives as the language's remote error (TypeScript: an `Error` of the same built-in class or a plain `Error` with that `name`; Python: `rutis.RemoteError`, rutis's own names as their classes; Go: `*rutis.RemoteError`, `errors.As` then `Name`), with its `name`, `message` and `code`; when every listener is in the emitter's process (the fast path), the listener's own error object may arrive. The test tools give a plugin's own emitters the crossed form (in strict mode), so a test catches a match by class; that the fast path keeps the original is not a guarantee.
 
 ### Mixing with 0.12 and earlier
 
@@ -298,7 +300,7 @@ Values are not copied within one process. Code that mutates an object after pass
 
 ### Where the test tool differs from a real runtime
 
-The test tools (`@arcships/rutis/testing`, `rutis.testing`, Go's `rutistest`) and the real runtimes are checked against the same expectations file: the same calls on the same plugin (sync, async, callbacks, errors, the values in the table above) must give the same results ([`weather.expected.json`](https://github.com/arcships/rutis/blob/main/crates/rutis-bridge/src/runtime/testing/weather.expected.json)). In strict mode, these are the only known differences:
+The test tools (`@arcships/rutis/testing`, `rutis.testing`, Go's `rutistest`) and the real runtimes are checked against the same expectations file: the same calls on the same plugin (sync, async, callbacks, errors, the values in the table above) must give the same results ([`weather.expected.json`](https://github.com/arcships/rutis/blob/main/docs/../crates/rutis-bridge/src/runtime/testing/weather.expected.json)). In strict mode, these are the only known differences:
 
 | Difference | Why |
 | --- | --- |
@@ -306,8 +308,9 @@ The test tools (`@arcships/rutis/testing`, `rutis.testing`, Go's `rutistest`) an
 | No restarts: a config change or a withdrawn injected service does not stop and start the plugin | `load` starts it once; the host decides the lifecycle (see above) |
 | Sync calls do not block, so there is no `SyncWaitCycle`; no cancellation (`AbortSignal`, coroutine cancellation) | The plugin and the test share one event loop |
 | Python: an exception that crosses is a `RemoteError` whose `__cause__` is the original exception | For debugging; a real runtime's `RemoteError` has no `__cause__` |
+| Descriptors call the runtime by the language (`node`, `bun`, `python`, `go`; a host uses the names its configuration gives); unloading waits at most `RUTIS_SHUTDOWN_TIMEOUT`, as a runtime, or the tool's own option: TypeScript `host({ deadline })` / `load(…, { deadline, runtime })` in ms, Python `load(…, deadline=, runtime=)` in seconds, Go `rutistest.RuntimeName` and other options | Each tool follows its language's conventions for options |
 | TypeScript: only plugins written with `definePlugin` load, not Cordis plugins | The tool has no Cordis plugin model, services or dependency gating |
-| Events: every listener is in the test's process (always dispatched locally), with no other process or node, and no `rutis/*` events | The test tool runs the plugins in one process. The five modes, filters, scopes (TypeScript `host()` with `scope`, Python `Bus` and `scope=`, Go `rutistest.InScope`), unload waiting and cancelling, and reporting `emit` failures (`reported`) are as on a real runtime, checked against the same [events expectations file](https://github.com/arcships/rutis/blob/main/crates/rutis-bridge/src/runtime/testing/events.expected.json) |
+| Events: every listener is in the test's process (always dispatched locally), with no other process or node, and no `rutis/*` events | The test tool runs the plugins in one process. The five modes, filters, scopes (TypeScript `host()` with `scope`, Python `Bus` and `scope=`, Go `rutistest.InScope`), unload waiting and cancelling, and reporting `emit` failures (`reported`) are as on a real runtime, checked against the same [events expectations file](https://github.com/arcships/rutis/blob/main/docs/../crates/rutis-bridge/src/runtime/testing/events.expected.json) |
 
 The ten values cross by the same rules on both sides, so they are not a difference. With strict mode off (`strict: false`), values skip the table above and other differences can appear.
 

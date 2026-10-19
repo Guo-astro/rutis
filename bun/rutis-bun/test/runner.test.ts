@@ -157,7 +157,7 @@ test('rows share the bus; listeners dispose independently and leave with their r
   expect(() => a.serial('rutis/row')).toThrow('rutis/* events are emitted by rutis only: rutis/row')
   // 0.12's static forwarding is gone (#464).
   expect(() => runtime.dispatch('', 'mount', { emits: ['changed'] }))
-    .toThrow('the config field emits was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)')
+    .toThrow('the config field emits was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)')
   expect(() => runtime.dispatch('', 'mount', { events: ['changed'] })).toThrow('the config field events was removed in rutis 0.13')
 }))
 

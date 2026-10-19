@@ -39,7 +39,7 @@ cargo test -p rutis-loader --features node,python,peer,bun  # every kind of load
 npm --prefix node/rutis ci && npm --prefix node/rutis test
 npm --prefix node/rutis-runtime ci && npm --prefix node/rutis-runtime test
 (cd python/rutis && python3 -m unittest discover -s tests)
-(cd bun/rutis-bun && bun install --frozen-lockfile && bun test)
+(cd bun/rutis-bun && bun test)
 ```
 
 Two more kinds of check, for concurrency and for input from the far end:

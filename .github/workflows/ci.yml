@@ -304,7 +304,6 @@ jobs:
             node/rutis-runtime/package-lock.json
             node/baseline/package-lock.json
             crates/rutis-dsh/dsh/package-lock.json
-            bun/rutis-bun/bun.lock
       # The Node runtime the Rust tests start.
       - run: npm --prefix node/rutis-runtime ci
       # Real published Cordis plugins for the Cordis mount baseline test
@@ -316,9 +315,6 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      # The Bun runtime the Rust tests start (Cordis, from package.json).
-      - run: bun install --frozen-lockfile
-        working-directory: bun/rutis-bun
       # The oldest Python (requires-python) and the
       # oldest websockets (rutis[network]).
       - uses: actions/setup-python@v5
@@ -409,7 +405,6 @@ jobs:
           cache-dependency-path: |
             node/rutis-runtime/package-lock.json
             node/baseline/package-lock.json
-            bun/rutis-bun/bun.lock
       - run: npm --prefix node/rutis-runtime ci
       # The published Cordis plugins S6 mounts (tests/e2e/tests/cordis.rs),
       # at the lockfile's versions.
@@ -418,8 +413,6 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      - run: bun install --frozen-lockfile
-        working-directory: bun/rutis-bun
       # The oldest Python (requires-python) and the oldest websockets
       # (rutis[network]); the scenarios use the checkout's python/rutis.
       - uses: actions/setup-python@v5
@@ -827,9 +820,6 @@ jobs:
           uv python install 3.12
           uv venv --seed --python-preference only-managed --python 3.12 "$RUNNER_TEMP/python"
           echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
-      # The Bun runtime's own dependencies (Cordis), from its lockfile.
-      - run: bun install --frozen-lockfile
-        working-directory: bun/rutis-bun
       - run: bun --version
       - run: bun test
         working-directory: bun/rutis-bun
@@ -928,9 +918,6 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      # The Bun runtime the Rust tests below start (Cordis, from package.json).
-      - run: bun install --frozen-lockfile
-        working-directory: bun/rutis-bun
       - uses: actions/setup-go@v5
         with:
           go-version: stable

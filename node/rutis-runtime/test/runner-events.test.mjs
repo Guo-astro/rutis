@@ -128,7 +128,7 @@ test('the removed mount fields are refused, naming the replacement', async () =>
     await within('the handshake', host.ready)
     for (const field of ['events', 'emits']) {
       await assert.rejects(host.call('mount', { [field]: ['x'] }), {
-        message: `the config field ${field} was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)`,
+        message: `the config field ${field} was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`,
       })
     }
   } finally {

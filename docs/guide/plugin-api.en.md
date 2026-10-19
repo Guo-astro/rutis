@@ -61,7 +61,7 @@ Rust also has `waterfall_sync`: a synchronous `waterfall`, under the same rules 
 
 Each language has the five modes, written the language's own way:
 
-| | Rust (`rutis`) | Node / Bun leaf plugin (`@arcships/rutis`) | Cordis plugin (in the Node / Bun runtime) | Python (`rutis`) | Go (`rutis`) |
+| | Rust (`rutis`) | Node / Bun leaf plugin (`@arcships/rutis`) | Cordis plugin (in the Node runtime) | Python (`rutis`) | Go (`rutis`) |
 | --- | --- | --- | --- | --- | --- |
 | Listen | `ctx.events().on(ctx, &key, listener)`; a synchronous listener `on_sync`; with options `on_opt` / `on_sync_opt`; a prefix `on_pattern(ctx, &EventPattern::prefix(p), ..)`; `once` | `ctx.on(name, fn, { prepend, global }?)` → `() => void` | Cordis's own `ctx.on(name, fn, options?)` → `() => boolean`; `ctx.once` | `ctx.on(name, fn, *, prepend=False, global_=False)` → `Callable[[], None]` | `ctx.On(name, func(ctx context.Context, args ...any) (any, error), rutis.Prepend(), rutis.Global())` → `func()` |
 | Listener | `impl Listener<E>`: `call(ctx, &event, call: Call<'_, E::Value>)`, with `call.mode()`, `call.next()`; an `on_sync` closure gets a `SyncCall` | `(...args[, next]) => value \| Promise` | The same | `fn(*args[, next])`, may be `async def` | `fn(ctx, args...)`; in a waterfall the last argument is a `rutis.Next` (`func(context.Context) (any, error)`) |
@@ -130,7 +130,7 @@ An emission can carry a filter function: it is called once for each candidate li
 - When the filter throws, the whole dispatch fails with that error and no listener starts (in `emit`, it is reported instead).
 - Listeners registered with the `global` option are never filtered (the scope rule still applies).
 
-The descriptor (JSON fields; Rust `ListenerInfo`, Go `rutis.Listener`, empty values `""`):
+The descriptor (JSON fields, `null` when there is no value; Rust `ListenerInfo`, `None` when there is none; Go `rutis.Listener`, `""` when there is none):
 
 | Field | Meaning |
 | --- | --- |
@@ -143,11 +143,11 @@ The descriptor (JSON fields; Rust `ListenerInfo`, Go `rutis.Listener`, empty val
 | `scope` | Its scope chain, `[{ id, group }]`, outermost first, the root `[]` |
 | `global` | Whether it was registered with `global` |
 
-Cordis plugins use Cordis's own way: in `ctx.emit(thisArg, name, ...)` (and the other four), when `thisArg[Context.filter]` is a function it is the filter. A listener in this process is passed its own Cordis `Context`, any other listener `{ rutis: descriptor }`; in the Node / Bun runtime every Context has a read-only `ctx.rutis`, so `c => c.rutis.row === 'chat'` works for both.
+Cordis plugins use Cordis's own way: in `ctx.emit(thisArg, name, ...)` (and the other four), when `thisArg[Context.filter]` is a function it is the filter. A listener in this process is passed its own Cordis `Context`, any other listener `{ rutis: descriptor }`; in the Node runtime every Context has a read-only `ctx.rutis`, so `c => c.rutis.row === 'chat'` works for both.
 
 ### `prepend` and `global`
 
-Every language has these two listener options: `prepend` puts the listener before every listener of the name registered so far (the host decides the one registration order everyone sees); `global` exempts it from filters. Rust: `EventOptions { prepend, global, once }` with `on_opt` / `on_sync_opt`; Node / Bun: `ctx.on(name, fn, { prepend: true })` (for a Cordis plugin, Cordis's own options); Python: `ctx.on(name, fn, prepend=True, global_=True)`; Go: `ctx.On(name, fn, rutis.Prepend(), rutis.Global())`.
+Every language has these two listener options: `prepend` puts the listener before every listener of the name registered so far (the host decides the one registration order everyone sees); `global` exempts it from filters. Rust: `EventOptions::default().prepend(true)` (also `.global(true)`, `.once(true)`) with `on_opt` / `on_sync_opt`; Node / Bun: `ctx.on(name, fn, { prepend: true })` (for a Cordis plugin, Cordis's own options); Python: `ctx.on(name, fn, prepend=True, global_=True)`; Go: `ctx.On(name, fn, rutis.Prepend(), rutis.Global())`.
 
 ### Lifecycle
 
@@ -191,7 +191,7 @@ A failure nobody waits for is written in one line where it happens (a runtime on
 | A listener fails in `emit` | `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>` |
 | A call that could not be delivered or got no answer (transport, a value, withdrawn), reported by the dispatcher | `rutis: listener of <name> in runtime <runtime> failed: …` or `… in node <peer> failed: …` |
 | The filter of an `emit` fails | `rutis: filter of <name> from row <row> failed: …` |
-| An `emit` through the host is refused or not answered | `rutis: emit of <name> from row <row> failed: …` |
+| An `emit` through the host is refused or not answered | `rutis: emit of <name> from row <row> failed: …` (for a plugin a mount loaded `from the mount`, in the filter line too) |
 | The host refuses to register a listener (while the row loads, the load fails instead) | `rutis: registration of listener of <name> in row <row> failed: …` |
 
 ### Errors
