@@ -298,7 +298,8 @@ jobs:
   # The unified events conformance suite (#464,
   # crates/rutis-loader/tests/events_conformance.rs) in every placement of
   # every case (RUTIS_EVENTS_PLACEMENTS=all, about 22 000 per language
-  # under test), where pull requests run a sample (ci.yml `rust`). Sharded
+  # under test), where full runs of ci.yml run a sample and pull requests
+  # the written placements (ci.yml `rust`). Sharded
   # by the language under test (X, the emitter's in most cases) and by
   # case: the shards are case id prefixes of about 5000 placements each,
   # so each job takes about 15 to 25 minutes. With the input `events_case`

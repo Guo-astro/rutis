@@ -2,45 +2,49 @@
 
 [中文](design-swift-sdk-2026-10-12.md)
 
-Status: final, not implemented. Date: 2026-10-12; final revision 2026-10-14 (the app part now follows [app integration](design-app-integration-2026-10-14.en.md), and remote connections support listening and dialing out, see §16). Base: `main` `a763cdc` (0.10.0).
-Depends on: [the multilang master plan](design-multilang-runtimes-2026-10-03.en.md) (this is its M3; the revision of its dlopen approach is appendix A), [app integration](design-app-integration-2026-10-14.en.md) (the generic part of shape ②), [remote runtimes: dial-out and dynamic access](design-remote-runtime-dial-2026-10-14.en.md) (connections), [the Go plugin runtime](design-go-runtime-2026-10-10.en.md) (shape ① reuses its decisions and machinery; a side-by-side is appendix C), [the plugin API](guide/plugin-api.en.md).
+Status: final, not implemented. Date: 2026-10-12; final revision 2026-10-14 (the app part now follows [app integration](design-app-integration-2026-10-14.en.md), and remote connections support listening and dialing out, see §16); aligned with the runtime contract of rutis 0.13 on 2026-10-19 (values, automatic exposure, errors, the calling row, unified events, developer transparency, see §17). Base: `main` `028783f` (0.13.0).
+Depends on: [the runtime contract](../.agents/skills/rutis-new-runtime/references/runtime-contract.md) (implementations follow it), [the multilang master plan](design-multilang-runtimes-2026-10-03.en.md) (this is its M3; the revision of its dlopen approach is appendix A), [app integration](design-app-integration-2026-10-14.en.md) (the generic part of shape ②), [remote runtimes: dial-out and dynamic access](design-remote-runtime-dial-2026-10-14.en.md) (connections), [cross-language value types](design-value-types-2026-10-15.en.md), [the unified events protocol specification](design-events-protocol-2026-10-18.en.md), [the Go plugin runtime](design-go-runtime-2026-10-10.en.md) (shape ① reuses its decisions and machinery; a side-by-side is appendix C), [the plugin API](guide/plugin-api.en.md).
 
-Out of scope: a Swift-side Cordis; build systems other than SwiftPM; the host compiling Swift code; Linux and Windows (§13); app foreground/background, background survival, push wakeup (the business layer, see app integration §7); App Intents and other ways for the Apple ecosystem to call back into rutis; running rutis itself on the device.
+Out of scope: a Swift-side Cordis; build systems other than SwiftPM; the host compiling Swift code; Linux and Windows (§13); app foreground/background, background survival, push wakeup (the business layer, see app integration §7); App Intents and other ways for the Apple ecosystem to call back into rutis; running rutis itself on the device; receiving object references (the capability `objects`, as in Go).
 
 ## 1. Decisions
 
 | # | Decision | Section |
 | --- | --- | --- |
-| S1 | Two hosting shapes share one SDK: ① macOS plugin binaries (local, multi-process); ② apps (plugins hosted inside iOS / iPadOS / macOS apps) | 2 |
-| S2 | Shape ①: one binary, one runtime process, holding one or more plugins as its `main.swift`'s `Rutis.serve(...)` says; the host can run several Swift runtimes at once | 3 |
-| S3 | Shape ① row name `swift:<plugin>`, routed by `SwiftResolver` through manifests; qualified form `<runtime>:<plugin>`; the runtime name comes from the file name (prefix `swift-`) | 3 |
-| S4 | Shape ① binaries describe themselves: `--rutis-manifest` prints the manifest, so resolving needs no running process; while running, the startup manifest is what counts, and a replaced file takes effect after a restart | 3 |
-| S5 | Shape ①: start on demand, stop when idle; `eager` starts all and never stops | 3 |
-| S6 | Shape ②: plugins compile into the app, are written in the rutis model and driven by rutis; the SDK gives the app only `start` / `stop`; the app dials out | 7 |
-| S7 | Calls within one process skip IPC; across processes and languages, rutis forwards by name | 4 |
+| S1 | One SDK for two hosting shapes: ① macOS plugin binaries (local, multi-process); ② apps (plugins hosted inside iOS / iPadOS / macOS apps) | 2 |
+| S2 | Shape ①: one binary is one runtime process holding one or more plugins, decided by `Rutis.serve(...)` in `main.swift`; a host can run several Swift runtimes at once | 3 |
+| S3 | Shape ① row names are `swift:<plugin>`, routed by `SwiftResolver` through the manifests; the qualified form is `<runtime>:<plugin>`; the runtime name derives from the file name (prefix `swift-`) | 3 |
+| S4 | Shape ① binaries describe themselves: `--rutis-manifest` prints the manifest, so resolving needs no running process; a running runtime keeps the manifest it started with, and a replaced file takes effect after a restart | 3 |
+| S5 | Shape ① starts on demand and stops when idle; `eager` starts everything and never stops; after a crash, the runtime's `restart` applies (`no` by default / `on-failure` / `exit`), implemented in `binary.rs` shared with Go | 3, 10 |
+| S6 | Shape ②: plugins are compiled into the app, written in the rutis paradigm and driven by rutis; the SDK gives the app only `start` / `stop`; dialing out from the app is recommended | 7 |
+| S7 | Calls within one process skip IPC; across processes and languages they go through rutis by name | 4 |
 | S8 | One Task per incoming call; declares `sync-wait` and `reentrant-sync`, not `sync-stack`. Applies to both shapes | 5 |
-| S9 | The call chain lives in a `@TaskLocal`; a wait suspends the current Task and never blocks a thread; methods default to `async`, `.sync` marks the rest; calling a peer's `sync` method sends a frame with `sync: true` | 5 |
-| S10 | Leaf plugin; plugin API version 2 (with leaf events `ctx.on` / `ctx.emit`); config decoded via `Codable`, its schema written by hand on the config type | 4 |
-| S11 | Providing services: an explicit closure table (Swift has no method reflection) | 4 |
-| S12 | Using services: a `RutisClient` struct of closure fields, signatures inferred with parameter packs; signatures that infer poorly fall back to 0–3-argument overloads | 4 |
-| S13 | Values split along the type system: value types copy as data, closures cross as references; objects need an explicit `Rutis.ref` | 4 |
-| S14 | Remote connections support both directions: dialing out (`dial:`) and listening (`listen:`); dialing out is recommended for app hosting | 6 |
-| S15 | The host does not compile; `run` only runs ready-made binaries, `dev` only rebuilds the project itself; binaries of different SDK versions coexist | 10, 11 |
-| S16 | The SDK lives at `swift/rutis`, distributed through the repository-root `Package.swift`, versioned by the main release line's `v` tags; the core depends only on Foundation | 12 |
-| S17 | Platforms: macOS 14+ (both shapes), iOS / iPadOS 17+ (shape ②); Linux later, Windows out | 13 |
+| S9 | The call chain lives in a `@TaskLocal`, and plugin code passes no context parameter; waiting suspends the current Task without blocking a thread; methods default to `async`, `sync` only declares how callers wait and the implementation may be an `async` function; calls to the peer's `sync` methods carry `sync: true` | 5 |
+| S10 | Leaf plugins; plugin API version **3**; configuration is an ordinary `Decodable` type decoded by the SDK's value decoder; the Schema is generated by the `@RutisConfig` macro (optional; without it, `{"type":"object"}`) | 4.4 |
+| S11 | Providing services: the `@RutisService` macro (compile time) generates a method table from the type's methods; `ctx.provide(name, obj)` exposes it automatically, `provides` is optional, and undeclared services are announced with `rows.announce`, every method `async` | 4.2 |
+| S12 | Using services: an ordinary Swift protocol with the `@RutisClient` macro, which generates the proxy `<Protocol>Proxy`; `ctx.use("llm", LLMProxy.self)` returns `any LLM`; a same-process provider that conforms to the protocol is returned itself | 4.3 |
+| S13 | Values: the SDK's own `Encoder` / `Decoder` (driven by `Codable`, never `JSONEncoder`) checks every value; all ten tagged values are implemented and `value-<tag>` declared; integers beyond ±(2^53−1) go as `bigint` automatically; instances of `@RutisService` types and closures go by reference, other `Codable` values as data | 4.5 |
+| S14 | Remote connections in both directions: dialing out (`dial:`) and listening (`listen:`); dialing out is recommended for app hosting | 6 |
+| S15 | The host never compiles; `run` only runs existing binaries, `dev` only rebuilds the project itself; binaries built with different SDK versions coexist | 10, 11 |
+| S16 | The SDK lives in `swift/rutis`, is distributed through a root `Package.swift`, and is versioned with the main release line's `v` tags; the runtime library `Rutis` depends only on Foundation (plus the system's Network.framework for listening); the macro target `RutisMacros` depends on swift-syntax at compile time only | 12 |
+| S17 | Platforms: macOS 14+ (both shapes), iOS / iPadOS 17+ (shape ②); Linux later, Windows not planned | 13 |
+| S18 | Unified events (plugin API 3): `ctx.on` / `emit` / `parallel` / `serial` / `waterfall` / `bail` / `filter`, capability `events-v2`; every listener registers as `kind: "sync"` (one Task per call, as in Go) | 4.7 |
+| S19 | Errors carry `name` / `message` / `code` / `data` and the error graph in both directions; received errors and the SDK's own errors are `RutisError`, matched by `name` | 4.6 |
+| S20 | The calling row: each row uses its own service ids from `rows.load`'s `isolate`; scope labels are opaque and only concatenated as given | 6.2 |
+| S21 | The testing tool `RutisTest` runs plugins in the test process over a real session (an in-memory channel), with the test as the host; it is checked against the same `weather.expected.json` and `events.expected.json` as the real runtime | 14 |
 
 ## 2. Two hosting shapes
 
 | | ① macOS plugin binary | ② App |
 | --- | --- | --- |
-| Use | Mac system capabilities (EventKit, Contacts, Accessibility, screen capture, Core ML), AppleScript / AX automation | the app offers its own capabilities and those of its device as rutis plugins |
-| Who starts it | the rutis host starts the process on demand | the app itself; the business layer decides when to `start` / `stop` |
-| Where plugins come from | plugins compiled into the binary, described by its manifest | plugins compiled into the app, shipped with the app |
-| Connection | local channel (`fd:3` / `unix:` / `tcp:`); dial-out when remote | dials out to a rutis access point |
-| Authorization (TCC / entitlements) | on the plugin binary | on the app |
-| Machinery | `SwiftResolver` / `SwiftRuntimes` (shared with Go) | [dial-out and dynamic access](design-remote-runtime-dial-2026-10-14.en.md) (one instance per connection) |
+| Purpose | Mac system capabilities (EventKit, Contacts, Accessibility, screen recording, Core ML), AppleScript / AX automation | the app offers its own capabilities and those of its device as rutis plugins |
+| Who starts it | the rutis host, on demand | the app itself; the business layer decides when to `start` / `stop` |
+| Where plugins come from | plugins compiled into the binary, self-described by the manifest | plugins compiled into the app, shipped with it |
+| Connection | local channels (`fd:3` / `unix:` / `tcp:`); dialing out or listening when remote | dialing out to a rutis access point (listening also possible) |
+| Authorization (TCC / entitlements) | attached to the plugin binary | attached to the app |
+| Machinery | `SwiftResolver` / `SwiftRuntimes` (sharing `binary.rs` with Go) | [dial-out and dynamic access](design-remote-runtime-dial-2026-10-14.en.md) (one instance per connection) |
 
-Plugin code is the same in both shapes: one plugin definition can be `serve`d as a binary or handed to an app to host. §4–§6 hold for both shapes.
+The plugin code is the same in both shapes: one plugin definition can be `serve`d as a binary or handed to an app. §4–§6 apply to both shapes alike.
 
 ## 3. Shape ①: the macOS plugin runtime
 
@@ -49,42 +53,42 @@ Plugin code is the same in both shapes: one plugin definition can be `serve`d as
 ```text
 rutis host
  ├─ LocalRuntime::node / ::python ...
- ├─ SwiftRuntimes (SwiftResolver + lifecycle)
+ ├─ SwiftRuntimes (SwiftResolver + lifecycle, binary.rs)
  │    ├─ plugins/swift/weather ── swift-weather ── weather
  │    ├─ plugins/swift/kits   ── swift-kits    ── calendar, contacts
  │    └─ plugins/swift/ml     ── not started (no row uses it)
  └─ LoaderPlugin + one RuntimeRowsPlugin per running runtime
 ```
 
-- As the Go runtime: a row depends on `RuntimeRows#<runtime>` plus every name the plugin `inject`s (a leaf runtime; rutis gates every name); the services a plugin `provides` are published from the row's fiber to `host_key(name)`; when the process exits, all its rows stop, and rows using its services stop with them.
-- `isolate`, instance labels, service ids, exported handles: same as the Python and Go runtimes.
-- TCC is attributed to the binary the plugin lives in (§8).
+- As with the Go runtime: a row depends on `RuntimeRows#<runtime>` and every name in the plugin's `inject` (a leaf runtime; rutis gates every name); services the plugin provides are published from the row's fiber at `host_key(name)`; when the process exits, all its rows stop, and rows using its services stop with them.
+- `isolate`, instance labels, service ids, export handles: as in the Python / Go runtimes.
+- TCC attaches to the binary holding the plugin (§8).
 
 ### 3.2 Binary and manifest
 
-- A plugin author distributes: a Swift package (exporting plugin definitions) plus `cmd/<name>/main.swift` (`serve`ing its own plugins), or one package with several plugins compiled into one binary.
-- The host accepts any executable that answers `--rutis-manifest` (sources in A.5).
+- Plugin authors distribute: a Swift package (exporting plugin definitions) + `Sources/<name>/main.swift` (`serve`s its own plugins), or several plugins from one package compiled into one binary.
+- The host accepts any executable that answers `--rutis-manifest` (sources: appendix A.5).
 
 ```swift
-// example.com/kits/cmd/kits/main.swift
+// example.com/kits/Sources/kits/main.swift
 import Rutis
 import WeatherKits
 
 Rutis.serve(WeatherKits.calendar, WeatherKits.contacts)
 ```
 
-| `serve` rules | |
+| `serve` rule | |
 | --- | --- |
 | Arguments | `--rutis-manifest`: print the manifest and exit; otherwise `<channel> [--id <endpoint>] [--peer <endpoint>] <project>` |
 | Duplicate plugin names | exit at startup, naming both definitions |
-| Registration | only in `serve`'s arguments; no static-initializer registry |
-| Subcommands | `Rutis.serveArgs(args, defs...)`; also `Rutis.serveConn(channel, defs...)` (in-memory session, for tests) |
+| Registration | only through `serve`'s arguments, never a statically initialized registry |
+| Subcommands | `Rutis.serveArgs(args, defs...)`; also `Rutis.serveConn(channel, defs...)` (an in-memory session, used by `RutisTest` and the conformance entry) |
 
 ```json
 {
   "manifest": 1,
-  "sdk": "0.11.0",
-  "pluginApi": 2,
+  "sdk": "0.14.0",
+  "pluginApi": 3,
   "runtime": "rutis-swift-runtime:1",
   "platform": "macos/arm64",
   "plugins": {
@@ -92,6 +96,7 @@ Rutis.serve(WeatherKits.calendar, WeatherKits.contacts)
       "config": { "type": "object", "properties": { "calendars": { "type": "array", "items": { "type": "string" } } } },
       "inject": [],
       "provides": { "calendar": { "events": "async", "units": "sync" } },
+      "announces": true,
       "version": null
     }
   }
@@ -100,164 +105,226 @@ Rutis.serve(WeatherKits.calendar, WeatherKits.contacts)
 
 | Item | Rule |
 | --- | --- |
-| Output | stdout, exit code 0; no channel connection, no `apply` |
-| Plugin entries | same as the `rows.schema` reply, generated by the same code |
-| `runtime` | the SDK marker string `rutis-swift-runtime:1`: directory scans only execute files containing it |
-| `platform` | `macos/<arch>` (universal binaries report `macos/universal`); the host reports "not built for <os>/<arch>" on mismatch |
+| Output | stdout, exit status 0; no channel, no `apply` |
+| Plugin entries | identical to the `rows.schema` reply, generated by the same code; `announces` is always `true` (the SDK announces undeclared services, contract §4) |
+| `runtime` | the SDK marker string `rutis-swift-runtime:1`: directory scans execute only files containing it |
+| `platform` | `macos/<arch>` (a universal binary reports `macos/universal`); the host checks it and reports "not built for <os>/<arch>" on a mismatch |
 | `sdk` | the constant `Rutis.sdkVersion` |
-| Plugin `version` | a static string the author writes, `null` by default |
-| Execution timeout | 30 seconds (as Go: the first run of a new binary on macOS waits for the system to assess it) |
-| Cache key / bypass / trust | as Go: path, size, mtime (Unix adds ctime); bypassed on start, `restart`, `check`; only sources given by the configuration are executed |
+| `pluginApi` | 3 (the plugin API version; the SDK loads plugin definitions declaring 2 or 3) |
+| Plugin `version` | a static string from the author, `null` by default |
+| Execution timeout | 30 seconds (as Go: on macOS a new binary's first run waits for the system's assessment) |
+| Cache key / bypass / trust | as Go: path, size, mtime (plus ctime on Unix); start, `restart` and `check` bypass the cache; only sources given by the configuration are executed |
 
 ### 3.3 `SwiftResolver`
 
-In rutis-loader (feature `swift`), implements `Resolver`, structurally the same as `GoResolver`:
+In rutis-loader (feature `swift`), implements `Resolver`, isomorphic to `GoResolver`:
 
 | Item | Rule |
 | --- | --- |
-| Sources | `SwiftBinaries`: a file list plus a directory list; directories are rescanned once when an unknown plugin name appears |
-| Candidates in a directory | executable, not starting with `.`, containing the SDK marker string; only candidates are executed |
-| Manifest failure | in `binaries`, a configuration error; in a directory, skipped with a diagnostic; `check` lists them and exits non-zero |
-| Runtime name | strip extension → lowercase → non-`[a-z0-9-]` to `-` → prefix `swift-` (`Net.Kits_v1` → `swift-net-kits-v1`) |
-| `swift:<plugin>` | search all manifests; none: `NotFound`; several: an ambiguity error suggesting `<runtime>:<plugin>` |
+| Sources | `SwiftBinaries`: a file list + a directory list; an unknown plugin name triggers one rescan of the directories |
+| Candidate files in a directory | executable, not starting with `.`, containing the SDK marker string; only candidates are executed |
+| Manifest failures | a configuration error for `binaries`; skipped with a diagnostic in a directory; `check` lists them and exits non-zero |
+| Runtime name | strip the extension → lowercase → replace non-`[a-z0-9-]` with `-` → prefix `swift-` (`Net.Kits_v1` → `swift-net-kits-v1`) |
+| `swift:<plugin>` | searches every manifest; none: `NotFound`; several: an ambiguity error suggesting `<runtime>:<plugin>` |
 | `<runtime>:<plugin>` | searches only that runtime's manifest |
-| Name collisions | with other runtimes (`node`, `py`, `bun`, `go`, remote) or each other: a configuration error in `binaries`; skipped with a diagnostic in a directory |
-| Resolution result | a leaf result; shares the "build `Resolved` from declarations" code with `GoResolver` |
+| Name clashes | with other runtimes (`node`, `py`, `bun`, `go`, remote) or among themselves: a configuration error for `binaries`; skipped with a diagnostic in a directory |
+| Result | a leaf result, sharing the "build `Resolved` from declarations" code with `GoResolver`; for plugins declaring `announces`, `check` reports "may be provided at runtime" per the contract |
 | meta | `{ source: "swift", binary, runtime, version, sdk }` |
-| Replaced file while running | resolve from the startup manifest; plugins only in the new binary report "replaced, effective after `restart("<runtime>")`" |
-| Second-stage release | `RuntimeRowsPlugin` already takes a trait (the Go G1 change); `SwiftResolver` implements the same trait per runtime |
+| File replaced while running | resolution uses the starting manifest; a plugin only the new binary has reports "replaced; takes effect after `restart("<runtime>")`" |
+| Second-stage release | `RuntimeRowsPlugin` already accepts a trait (the Go G1 change); `SwiftResolver` implements the same trait per runtime |
+| Old binaries | a binary whose manifest has `pluginApi` below 3 does not declare `events-v2`: the host refuses its session after the handshake (contract §2), and `check` reports "rebuild with an SDK of 0.13 or later" ahead of time |
 
-The only differences from `GoResolver` are three constants (marker string, prefix, feature name); the implementation goes through shared code (§9).
+The only differences from `GoResolver` are three constants (marker string, prefix, feature name); the implementation is shared code (§9).
 
 ### 3.4 `SwiftRuntimes`
 
-Structurally the same as `GoRuntimes`, in rutis-loader, mounted after the loader.
+Isomorphic to `GoRuntimes`, in rutis-loader, mounted after the loader.
 
 ```rust
 let swift = Arc::new(SwiftResolver::new(SwiftBinaries::new().dir("plugins/swift").file("bin/weather")).with_catalog(&catalog));
 chain = chain.with_shared(swift.clone());
-root.plugin(SwiftRuntimes::new(swift, project).idle(Duration::from_secs(60)));
+root.plugin(SwiftRuntimes::new(swift, project).idle(Duration::from_secs(60)).restart(Restart::No));
 ```
 
 | Item | Rule |
 | --- | --- |
-| Structure | each running runtime = a child `Ctx`: `LocalRuntime::swift(binary, project).named(name)` + `RuntimeRowsPlugin`; stopping = dropping the child `Ctx` |
-| Start | started when a row resolves to a runtime that is not running (plus a periodic check); cold starts run in parallel |
-| Idle stop | after its last row unloads, wait `idle` (default 60 seconds); stop if no enabled entry resolves to it; at most one start / restart / stop in progress at a time |
-| Crash | rows stop with the reason recorded; no automatic restart. Restart conditions: `SwiftRuntimes::restart(name)`, or the binary file changed |
+| Structure | each running runtime = one child `Ctx`: `LocalRuntime::swift(binary, project).named(name)` + `RuntimeRowsPlugin`; stopping = dropping the child `Ctx` |
+| Start | when a row resolves to it and it is not running (plus a periodic check); several cold starts run in parallel |
+| Idle stop | after the last row unloads, wait `idle` (default 60 seconds); stop if no enabled entry resolves to it; one start / restart / stop at a time. An idle stop is not a crash and does not trigger `restart` |
+| Crash | its rows stop and the reason is recorded; then `restart` applies: `no` (default) does not restart; `on-failure` restarts it by rutis-host's rules (backoff 1–30 seconds, gives up after 5 restarts within 5 minutes, the same status lines); `exit` unloads the other rows and the host exits with 3. The rules are those of `restart` for node / py / bun ([rutis-host](guide/rutis-host.en.md#when-a-runtime-ends)), implemented once in `binary.rs` for every compiled runtime (Go, Swift) |
+| Manual restart | `SwiftRuntimes::restart(name)`, or the binary file changed |
 | `eager()` / `runtimes()` | as Go |
-| One fixed binary | no resolver needed: `LocalRuntime::swift` + `RuntimeResolver::modules` |
+| A single fixed binary | no resolver needed: `LocalRuntime::swift` + `RuntimeResolver::modules` |
 
 ## 4. The Swift SDK (shared core)
 
-At `swift/rutis` (SwiftPM target `Rutis`), Swift 5 language mode, toolchain 5.9 and up, deployment targets macOS 14 / iOS 17. Layered:
+In `swift/rutis` (SwiftPM target `Rutis`), Swift 5 language mode, toolchain 5.9 or later, deployment targets macOS 14 / iOS 17. Layers:
 
 | Layer | Contents | Platforms |
 | --- | --- | --- |
-| Core | session protocols (compat / endpoint), leaf API, values, concurrency, `RutisTest` | macOS + iOS (Foundation only; touches no process or file-system facilities) |
-| Channel·process | `fd:3`, `unix:`, `tcp:` (POSIX) | macOS (shape ①) |
-| Channel·dial | the WebSocket client (Foundation `URLSessionWebSocketTask`), reconnecting per [the dial-out design](design-remote-runtime-dial-2026-10-14.en.md) §6 | macOS + iOS |
-| Channel·listen | the WebSocket server (Network.framework `NWListener` + `NWProtocolWebSocket`), with the same semantics as Go's remote listening (one controller at a time, a new connection takes over) | macOS + iOS |
+| Core | the session protocol (compat / endpoint), the leaf API, value encoding, events, concurrency | macOS + iOS (Foundation only; no process or file-system facilities) |
+| Macros | `RutisMacros`: `@RutisService`, `@RutisClient`, `@RutisConfig`; a compiler plugin that runs only at build time and is not in the binary | build machine |
+| Channels · process | `fd:3`, `unix:`, `tcp:` (POSIX) | macOS (shape ①) |
+| Channels · dialing out | a WebSocket client (Foundation's `URLSessionWebSocketTask`; on a refused upgrade the HTTP status is read from the task's `response` and classified by contract §1), reconnecting by contract §1 and the dial-out design §6 | macOS + iOS |
+| Channels · listening | a WebSocket server (Network.framework `NWListener` + `NWProtocolWebSocket`), with the semantics of Go's remote listening (one controller at a time, a new connection takes over) | macOS + iOS |
 | serve packaging | `Rutis.serve` / `serveArgs` / the manifest CLI | macOS (shape ①) |
 | App hosting | `RutisApp` (§7) | macOS + iOS (shape ②) |
+| Testing tool | `RutisTest` (§14) | macOS + iOS |
 
 ### 4.1 Plugin
 
 ```swift
 import Rutis
 
-struct Config: RutisConfig {          // the config type carries both schema and decoding
-    static let schema = Schema.object(
-        properties: ["city": .string(description: "The city to look up")],
-        required: ["city"])
-    var city: String                   // synthesized Codable
+@RutisConfig                          // optional: generates the config's JSON Schema
+struct Config: Decodable {
+    /// The city to report the weather for
+    var city: String
 }
 
-struct LLM: RutisClient {             // using services: a struct of closure fields
-    var ask: (RutisCtx, String) async throws -> String
-    var listModels: ((RutisCtx) async throws -> [String])?   // declare only the methods used
-    init(_ s: RutisService) {         // built from the proxy; parameter packs infer from the field type
-        ask = s.method("ask")
-        listModels = s.method("listModels")
-    }
+@RutisClient                          // a service used: an ordinary protocol
+protocol LLM {
+    func ask(_ question: String) async throws -> String
 }
 
+@RutisService                         // a service provided: an ordinary type
 final class Weather {
-    var llm: LLM; var city: String
-    func today(_ ctx: RutisCtx, _ question: String) async throws -> String { ... }
+    let llm: any LLM
+    let city: String
+    init(llm: any LLM, city: String) { self.llm = llm; self.city = city }
+
+    func today(_ question: String) async throws -> String {
+        try await llm.ask("weather in \(city): \(question)")
+    }
+    func unit() -> String { "celsius" }
 }
 
 let weather = Rutis.define(Plugin(
     name: "weather",
     inject: ["llm"],
-    provides: ["weather": Shape(.async("today"), .sync("unit"))],   // declare shapes (into the manifest)
+    provides: ["weather": .of(Weather.self, sync: ["unit"])],   // optional: without it the service is exposed automatically, every method async
     config: Config.self,
-    apply: { ctx, config in                                          // the implementation (at load time)
-        let llm = ctx.use("llm", LLM.self)
-        let weather = Weather(llm: llm, city: config.city)
-        ctx.provide("weather", [
-            .async("today") { try await weather.today($0, $1) },
-            .sync("unit") { _ in "celsius" },
-        ])
+    apply: { ctx, config in
+        let llm = try ctx.use("llm", LLMProxy.self)
+        ctx.provide("weather", Weather(llm: llm, city: config.city))
+        ctx.on("session/created") { (session: String) in print("new session \(session)") }
         ctx.effect { print("weather unloaded") }
     }))
 ```
 
 | API | Rule |
 | --- | --- |
-| `Rutis.define` | validates the declarations (names, closure table matching the shape) and returns a definition that can be served or handed to an app to host |
-| `apply` throws | the load fails; cleanups registered so far still run |
-| `ctx.use(name, C.self)` | `C: RutisClient`; `name` must be in `inject`; a same-process provider hands over its local implementation |
-| `ctx.provide(name, methods)` | the closure table must match the shape declared in `provides`; lasts until unload or the returned withdraw function |
-| `ctx.effect(cleanup)` | `cleanup` may be `async`; runs in reverse order at unload |
-| `ctx.on(name, listener)` | listens for events on this runtime process's event bus (those the host sends in via `emits`, and those emitted by same-process plugins via `ctx.emit`); unregistered at plugin unload, or immediately by the returned function; listeners carry a call chain and are cancelled at plugin unload |
-| `ctx.emit(name, args...)` | dispatches to this process's event bus, calling listeners synchronously in registration order and returning at the first error; does not cross processes. `internal/*` is not available |
-| `ctx.spawn { ... }` | runs in a child Task, errors captured to stderr; cancelled and awaited at unload |
-| `RutisCtx` | the row scope: cancellation (unload cancels the row's Task tree), `project`, the call chain (§5) |
+| `Rutis.define` | validates the declarations (names; the methods in `provides` exist in the type's method table) and returns a definition that can be served or handed to an app; carries plugin API version 3 |
+| `apply` | may be `async throws`; throwing fails the load, and cleanups already registered still run |
+| `ctx.use(name, P.self)` | `P` is a proxy type generated by `@RutisClient`, returning `any Protocol`; `name` must be in `inject`. The service is looked up by this row's own id (§6.2): a same-process provider conforming to the protocol is returned itself, otherwise a proxy calling through the local method table (same process) or through rutis (other processes). The proxy's methods must be methods the service provides; otherwise `use` throws, naming the method |
+| `ctx.provide(name, obj)` | `obj` is an instance of a `@RutisService` type; a declared service exposes only its declared methods, an undeclared one is announced automatically (§4.2); lasts until unload or until the returned withdraw function is called |
+| `ctx.effect(cleanup)` | `cleanup` may be `async`; runs in reverse order on unload |
+| `ctx.on` / `emit` / `parallel` / `serial` / `waterfall` / `bail` / `filter` | unified events, §4.7 |
+| `ctx.scope` | the row's scope chain `[Rutis.Scope]` (`rows.load`'s seventh argument) |
+| `ctx.spawn { ... }` | runs in a child Task (inheriting the call chain); errors are written to stderr; cancelled and awaited on unload |
+| Unload signal | the row's Task tree is cancelled on unload: `Task.isCancelled` / `try Task.checkCancellation()`, Swift's own cancellation |
+| `ctx.project` | the project directory (in shape ②, a directory the app chooses) |
 | `Rutis.NoConfig` | no configuration |
 
-### 4.2 Providing services: the closure table
+Plugin methods, listeners and cleanups take no rutis context parameter: the call chain is in a `@TaskLocal` and flows with `await` and child Tasks on its own (§5).
 
-Swift has no method reflection (Mirror cannot enumerate a type's methods, nor synthesize methods of arbitrary signatures), so instead of Go's reflected `MethodsOf` or Python's `inspect`, the table is **explicit closures**:
+### 4.2 Providing services: `@RutisService`
 
-- Declaration (at define time): `Shape(.async("today"), .sync("unit"))` → manifest and `rows.schema`.
-- Implementation (at apply time): `.async("today") { (ctx, city) in ... }` with any closure signature (arguments decode positionally into the closure's parameter types; return values encode per §4.5); the SDK checks the table against the shape.
-- Same-process calls: the closure is called directly, no encoding, no crossing processes (S7).
-- Optional later: an `@RutisService` macro generates shape and closure table from the type.
+Swift has no runtime reflection of methods (`Mirror` enumerates stored properties only; it cannot enumerate or call methods), so the method table is generated at compile time by a macro:
 
-### 4.3 Using services: `RutisClient`
+- `@RutisService` attaches to a class / actor / struct and generates a conformance to `RutisExportable`: the method table (wire name → a closure that decodes the arguments, calls, and encodes the result) and the list of method names.
+- Which methods: instance methods that are not `private` / `fileprivate` (`static`, `init`, subscripts and properties do not count), the counterpart of Go's "exported methods" and Python's "not starting with `_`". The wire name is the method's base name (`today(_:)` → `today`); arguments are positional, labels do not cross; two overloads with one base name are a compile error.
+- Methods may be synchronous or `async`, `throws` or not; parameters and results are any value of §4.5 (`Codable`, closures, `@RutisService` instances, `Any?`).
+- A method's `sync` / `async` is a declaration, not the Swift signature: methods listed in `provides`' `.of(T.self, sync: ["unit"])` are `sync`, everything else, and every method of an undeclared service, is `async` (contract §4). A literal `["today": .async, "unit": .sync]` also works.
+- Automatic exposure: a service from `ctx.provide` not in `provides` is announced by contract §4 as `service(id, handle, version, { row, methods })`, the methods taken from the method table, all `async`; only to a host whose `mount` carried `announce: true`, and `rows.load` is answered once those replies arrived (a name clash fails the load). With a host older than 0.12, the one-time stderr notice of the contract applies.
+- `announces` in `rows.schema` and the manifest is always `true`.
+- Calls in the same process: the object is called directly (S7); the path through the method table without encoding is used when the object does not conform to the user's protocol.
 
-```swift
-protocol RutisClient { init(_ service: RutisService) }
-```
+### 4.3 Using services: `@RutisClient`
 
-- The struct's closure fields are the methods used: the field name is the method name; write only the methods you use; every field must match a method the service declares, or construction throws the error to `use`.
-- `s.method("ask")` is a parameter-pack generic: `func method<each A, R>(_ name: String) -> (RutisCtx, repeat each A) async throws -> R`, inferring the closure signature from the field type (verified with Swift 6.3 on this machine, appendix E.3); signatures that infer poorly use a set of overloads for 0–3 arguments.
-- Cross-process proxies are all `async`: there is no blocking `callSync`. Calling a method the peer declares `sync` sends a frame with `sync: true`, and the current Task suspends to wait (§5).
+- The user writes an ordinary Swift protocol listing only the methods it uses; `@RutisClient` generates `<Protocol>Proxy` (conforming to the protocol and to `RutisProxy`).
+- Proxy methods are `async throws`; a synchronous method in the protocol cannot be proxied across processes (a compile error suggesting `async throws`), because Swift does not block threads to wait.
+- A call to a method the peer declared `sync` carries `sync: true`, and the current Task suspends to wait (§5), taking part in the host's wait-cycle detection; a method declared `async` is called normally. The kind comes from the method table `hosts.provide` gave, not from the Swift signature.
+- The protocol is plain Swift; tests can substitute any hand-written implementation.
 
 ### 4.4 Configuration
 
 | Item | Rule |
 | --- | --- |
-| Decoding | `JSONDecoder`, `Config: Codable`; a failure fails the load |
-| Schema | `RutisConfig.schema`, written by hand (Swift reflection cannot produce a schema; like Python's hand-written `Config`) |
+| Type | any `Decodable` type, decoded by the SDK's value decoder (§4.5) from `rows.load`'s configuration value; a failure fails the load, naming the field |
+| Schema | `@RutisConfig` generates a JSON Schema from the stored properties: `String` / integers / floating point / `Bool` / arrays / dictionaries / nested `@RutisConfig` types / optionals (not in `required`) / enums with `String` raw values (`enum`); `///` doc comments become `description`. Without the macro the Schema is `{"type":"object"}` (the host does not validate ahead; decoding still checks). A `static let rutisSchema` on the type takes precedence |
 | Value mapping | JSON Schema semantics as Go §6.3 |
 
 ### 4.5 Values
 
+The value layer is the SDK's own `RutisEncoder` / `RutisDecoder` (implementing `Encoder` / `Decoder`, driven by the types' `Codable` implementations), which checks every single value; it never goes through `JSONEncoder` (which encodes `Date` as a number and `Data` as base64, and lets struct internals bypass checks: Go's problem in #355). The rules follow [the value types design](design-value-types-2026-10-15.en.md) and contract §5.
+
 | Swift value | Across processes |
 | --- | --- |
-| `nil`, `Bool`, `Int` (within ±2^53−1), `Double`, `String` | copied; out-of-range integers error |
-| `Optional`, `Array`, `Dictionary<String, T>`, `Codable` structs / enums | copied recursively, encoded per `Codable` |
-| Closures (function references) | reference; arguments and return values encode per this table |
-| `Rutis.ref(v)` | reference; `v: AnyObject & RutisExportable` (carries its own closure table, §4.2); the far end gets a proxy calling its methods |
-| A class instance | cannot cross processes without an explicit `ref`: an error suggests a struct or `Rutis.ref` |
-| `Error` | name and message copied; the name is the error type name (`String(reflecting:)`), overridable via `RutisErrorName` |
-| `RutisFuture` | an async result; `await fut.value()` |
-| `Data`, non-string-keyed dictionaries, cycles, non-`Codable` | cannot cross processes (as Go's `[]byte` and friends) |
+| `nil`, `Bool`, `String`, `Double` / `Float` | copied; NaN and ±Infinity fail the call |
+| Integers (`Int`, `Int64`, `UInt64`, …) | numbers within ±(2^53−1); beyond it, **automatically** `bigint` (V6) |
+| `Array`, `Dictionary<String, T>`, `Codable` structs / enums / classes | copied recursively as data (field names per `CodingKeys`); a dictionary with string keys is an object |
+| `Date` | `instant`; truncated to microseconds (toward negative infinity) both when sending and when receiving; years 0001–9999 |
+| `Rutis.DateTime` / `Rutis.CalendarDate` / `Rutis.TimeOfDay` | `datetime` / `date` / `time` (Swift lacks these three; `Rutis.DateTime` and the others convert to and from `DateComponents`); nanosecond precision |
+| `Data` | `bytes` |
+| `Dictionary` with non-`String` keys | `map`; restrictions on keys and `Set` elements per contract §5 (`Date`, `Data`, optionals, arrays, dictionaries, sets and references as keys are refused before sending) |
+| `Set` | `set` |
+| `Rutis.BigInt` | `bigint`; a received `bigint` decodes into a declared integer type that holds it, and fails the call when none does |
+| `Decimal` | `decimal`; Foundation's `Decimal` holds at most 38 significant digits, and more fail the call; it keeps no trailing zeros (`1.10` arrives as `1.1`), so declare the parameter `String` to keep the exact text |
+| `UUID` | `uuid` (lowercase) |
+| Closures (`async throws` function types) | by reference; arguments and results encoded by this table. A received function can only be declared as an `async throws` function type (calling across processes waits) |
+| Instances of `@RutisService` types | by reference; the far end gets a proxy calling its method table |
+| `Error` | as a value, copied as `{ name, message }`; thrown, see §4.6 |
+| Parameters declared `Any` / `Any?` | decoded back into native values by this table: numbers as `Int` / `Double`, objects as `[String: Any?]`, lists as `[Any?]`, `map` as `[AnyHashable: Any?]`, `set` as `Set<AnyHashable>`, `bigint` as `Rutis.BigInt`, functions as `Rutis.RemoteFunction` (`callAsFunction`); forwarded as they are, they keep their type |
+| Other class instances (neither `Codable` nor `@RutisService`), cycles | cannot cross: the call fails, naming the type |
 
-- The boundary comes from the type system itself (appendix D).
-- Receiving: function types → closures calling the remote function; everything else decodes via `Codable` into the declared type. Object references are not received (as Go).
+- Nesting is at most 64 levels, checked by the sender before sending; anything in a value breaking a rule fails only that call, and the session continues.
+- Each tag goes only to a far end that declared `value-<tag>`; otherwise the call fails, naming the value. The SDK declares all ten `value-<tag>` in both handshakes.
+- A malformed tagged value or key received fails only that call; the rest is still decoded, so every reference in it is imported and released (contract §5).
+- `undefined` inside data arrives as `nil`.
+
+### 4.6 Errors
+
+| Direction | Rule |
+| --- | --- |
+| Sending (the plugin throws) | `name` = the error type's simple name (`String(describing: type(of: error))`); `message` = `LocalizedError.errorDescription`, else `String(describing: error)`; when the error has a stored `String` property named `code` and/or a stored property named `data` (read with `Mirror`: plain Swift, no rutis type needed), they are sent as `code` and `data`; `data` that cannot cross is left out and the rest sent |
+| Receiving | `RutisError`: `name`, `message`, `code: String?`, `data: Any?` (decoded as a value), `cause`, `errors` (the children of an `AggregateError`, in registration order); matched by `name` (`err.name == "SyncWaitCycle"`), not by type |
+| Rethrowing | a received `RutisError` thrown again carries its whole error graph (`code` / `data` included) across once more |
+| The SDK's own errors | also `RutisError`, with the contract's names: `AggregateError`, `AsyncListener`, `WaterfallNext`, `ReservedEvent`, `SyncWaitCycle`, `BindingError`; constants `RutisError.Name.syncWaitCycle` and so on |
+
+### 4.7 Events
+
+Unified events follow [the protocol specification](design-events-protocol-2026-10-18.en.md) and contract §6. The API, in Swift's own style:
+
+```swift
+let off = ctx.on("greeting/format") { (text: String, next: Rutis.Next<String>) async throws -> String in
+    "\(try await next() ?? text)!"
+}
+ctx.on("rutis/row", prepend: true) { (row: [String: Any?]) in print(row) }
+
+try ctx.emit("t/ping", 1, "a")                                   // returns at once; throws only for ReservedEvent or arguments that cannot be sent
+try await ctx.parallel("t/ping", 1)                               // failure: RutisError(name: "AggregateError")
+let first: String? = try await ctx.serial("t/ask", "q", as: String.self)
+let text: String? = try await ctx.waterfall("greeting/format", "hi", as: String.self) { (text: String) in text }
+let vote: Bool? = try await ctx.bail("t/check", 42, as: Bool.self)  // synchronous on the wire: sync: true, in wait-cycle detection
+let some = ctx.filter { $0.row == "chat" }                        // Rutis.Emitter: the same five methods
+```
+
+| Item | Rule |
+| --- | --- |
+| Listeners | closures of any arity (parameter packs), arguments decoded into the declared types; in `waterfall`, the last parameter is `Rutis.Next<R>` (`async throws -> R?`); extra event arguments are ignored, missing ones are `nil` (the call fails for a non-optional parameter); the return value is answered as is |
+| Options | `prepend:`, `global:`; returns a function that deregisters at once; deregistered when the row unloads |
+| Registration | `ctx.on` sends `events.on [{ id, name, row, plugin, kind: "sync", prepend, global }]` (`id` increasing within the session, never reused); `rows.load` is answered after every registration made during `apply` was answered; `internal/*` is refused locally, and a refusal by the host is reported, or fails the load, per the contract |
+| `kind` | always `"sync"`: one Task per call, so a listener runs to the end in its own Task before the reply, even an `async` closure, and the host can wait for it synchronously (as Go). Swift listeners therefore never cause `AsyncListener` |
+| Fast path | dispatch in this process when the name is not in `events.elsewhere`, no prefix matches, and (for `emit`) no earlier `emit` of the name sent through the host is unanswered; otherwise send `events.dispatch`. Descriptors of this process's entries use `mount`'s `runtime` |
+| Dispatch rules | snapshot (name, registration order, scope chain prefix, live) → filter (non-`global`) → check liveness before each start; the five modes and "no result" (`nil`, `false`) per contract §6 |
+| `emit` order | one serial queue per listener: `emit` invocations on one listener run one after another in arrival order; different listeners run concurrently |
+| Filters | on the fast path, called directly on each descriptor; through the host, `filter` is a selector function reference that finds this process's entries by the descriptor's `listener`, and removes that field before calling the plugin's predicate; descriptors are `Rutis.Listener` (`name`, `prefix`, `plugin`, `row`, `runtime`, `node`, `scope`, `global`, `nil` when absent) |
+| Cancellation | the emitting Task is cancelled: through the host, a `cancel` is sent for the `events.dispatch`; an aborted `signal` or a `cancel` for an `events.call` cancels that listener's Task |
+| Reserved names | emitting `rutis/*` is refused synchronously with `ReservedEvent` (`rutis/* events are emitted by rutis only: <name>`); `rutis/*` can be listened to |
+| Reporting | failures nobody waits for write one stderr line each, with the contract §6 wording (in shape ②, to `RutisApp`'s log callback, stderr by default) |
+| Unload | after `rows.unload`, refuse the row's `events.call` at once → withdraw provided services → cancel the row's running listener Tasks and wait for them, at most the shutdown deadline (shape ① `RUTIS_SHUTDOWN_TIMEOUT`, shape ② the `shutdownTimeout` parameter, 10 seconds by default), writing `rutis: listeners of row <row> still running after <s>s; unloading anyway` past it → cleanups in reverse order |
+| Disconnection | `elsewhere` becomes empty; every row unloads |
 
 ## 5. Concurrency, call chains, cancellation
 
@@ -265,16 +332,16 @@ Applies to both shapes.
 
 | Item | Rule |
 | --- | --- |
-| Session structure | one reader thread (blocking channel reads; frames enter the async world through an `AsyncStream`; blocking reads never sit on the cooperative pool); one actor serializes frame writes; one new Task per incoming `call` / `invoke` / `get` / `await` / control operation; row state under its own locks |
-| Reentrancy | any incoming call may run at any time; declares `reentrant-sync`. Does not declare `sync-stack`: calls run concurrently on separate Tasks with no single-stack order (the Go situation, see the master plan §9) |
-| Synchronous waits | calling a peer's `sync` method sends a frame with `sync: true`, and the current Task suspends on a continuation until the reply — **no thread is blocked**; declares `sync-wait` and takes part in the host's wait-cycle detection (#228). While waiting, other Tasks keep executing incoming calls |
-| Plugin requirements | service closures are concurrency-safe; no locks held while calling other services (goes in the guide) |
-| Call chain | `@TaskLocal var path: [String]`: an incoming call sets `path + [id]` in its Task; outgoing calls take the chain from the current TaskLocal; `apply` and cleanups carry the `rows.load` / `rows.unload` chains |
-| `sync` methods | a `.sync` closure in the closure table must not make cross-process calls (all proxies are async, so this does not compile); the only behavioral difference from Go; goes in the guide |
-| Incoming cancellation | a `cancel` frame → `Task.cancel()` on that call; `Task.checkCancellation()` throws `CancellationError` |
-| Outgoing cancellation | `async`: send `cancel`, throw `CancellationError` immediately, drop late results; `sync`: throw immediately, drop late results, the peer completes anyway |
-| Row unload | cancels the row's Task tree; after withdrawing the service, in-flight calls are awaited (the deadline is the rutis side's) |
-| `SyncWaitCycle` | never produced here; received as a `Rutis.RemoteError`, `isSyncWaitCycle(err)` |
+| Session structure | one reader thread (blocking reads on the channel; frames enter the async world through an `AsyncStream`; blocking reads never sit on the cooperative pool); frame writes serialized by one actor; each incoming `call` / `invoke` / `get` / `await` / control operation gets a new Task; `events.on` / `events.off` / `events.elsewhere` are handled in place, in frame order, by the read loop; per-row state has its own lock |
+| Reentrancy | any incoming call runs at any time; declares `reentrant-sync`. No `sync-stack`: calls run concurrently on different Tasks, with no single-stack order (the same class as Go, contract §2) |
+| Synchronous waits | a call to the peer's `sync` method or a `bail` carries `sync: true`, and the current Task suspends on a continuation until the reply, **blocking no thread**; declares `sync-wait` and takes part in the host's wait-cycle detection. Other Tasks keep running incoming calls meanwhile |
+| Plugin requirements | service objects can be called concurrently (an `actor` or a `Sendable` type is recommended); do not hold locks while calling other services (in the guide) |
+| Call chain | `@TaskLocal var path: [String]`: an incoming call sets `path + [id]` in its Task; outgoing calls take the chain from the current TaskLocal; `apply` / cleanups carry the chain of `rows.load` / `rows.unload`; a plugin's own `Task.detached` loses the chain (in the guide: use `ctx.spawn` or a plain `Task {}`) |
+| `sync` methods | the implementation may be `async` and may call other services (suspending holds no thread); the same behavior as Go |
+| Incoming cancellation | a `cancel` frame or an aborted `signal` → `Task.cancel()` on that call; `Task.checkCancellation()` throws `CancellationError` |
+| Outgoing cancellation | when the Task is cancelled: an `async` call sends `cancel`, throws `CancellationError` at once and discards a late result; a `sync` call throws at once and discards a late result, and the peer runs to completion |
+| Row unload | cancels the row's Task tree; the order is §4.7's unload |
+| `SyncWaitCycle` | never produced here; received as a `RutisError` with `name == "SyncWaitCycle"` |
 
 ## 6. Channels and contract
 
@@ -282,60 +349,75 @@ Applies to both shapes.
 
 | channel | Shape | Implementation |
 | --- | --- | --- |
-| `fd:3` | ① | Unix local inheritance: `dup` + POSIX read/write |
-| `unix:<path>` | ① | dial-back: POSIX socket |
-| `tcp:127.0.0.1:<port>` | ① (reserved) | send `RUTIS_CHANNEL_TOKEN` + newline first, then remove it from the environment |
-| `dial:wss://…` | ① remote, ② (recommended) | WebSocket client, subprotocol `rutis.3`; credentials and id per the dial-out design §5; reconnect per the dial-out design §6 |
-| `listen:ws://…` / `listen:wss://…` | ① remote, ② | WebSocket server; non-loopback must be `wss://` (`RUTIS_CERT` / `RUTIS_KEY` semantics); credentials, heartbeat and message size limit as in Go's remote listening |
+| `fd:3` | ① | inherited on Unix: `dup` + POSIX read/write |
+| `unix:<path>` or a bare path | ① | dial back: a POSIX socket |
+| `tcp:127.0.0.1:<port>` | ① | first send `RUTIS_CHANNEL_TOKEN` + newline, then remove it from the environment (`session_matrix`'s loopback case) |
+| `dial:wss://…` | ① remote, ② (recommended) | a WebSocket client, subprotocol `rutis.3`; the dialing rules of contract §1: `RUTIS_TOKEN` as a Bearer token, `RUTIS_CA` trusted in addition, a non-loopback `ws://` and an invalid id refused at start, retrying or stopping by status / close code, every row unloaded in reverse on each disconnect, SIGTERM unloads and exits 0, the stderr state lines word for word; `RUTIS_RETRY` shortens the waits for tests. In shape ② these values are `RutisApp` parameters |
+| `listen:ws://…` / `listen:wss://…` | ① remote, ② | a WebSocket server; non-loopback requires `wss://` (`RUTIS_CERT` / `RUTIS_KEY`); `RUTIS_TOKEN` compared in constant time; 30-second heartbeat (`RUTIS_HEARTBEAT`); one controller at a time, a new connection takes over |
 
-- Line framing; the per-message size limit as [#173](https://github.com/arcships/rutis/issues/173); the `project` argument is provided through `Rutis.project` (in shape ②, the app's agreed directory).
-- Non-loopback addresses must use `wss://`; a self-signed certificate is trusted through the `RUTIS_CA` semantics (an SDK API parameter).
+- Newline framing, messages at most 16 MiB (beyond, the channel closes); the `project` argument is available as `ctx.project`.
+- When the far end's (the host's) `hello` does not declare `events-v2`, the session ends right after the handshake, stderr gets `rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping`, and shape ① exits with status 1 (a dialer does not retry); shape ② stops reconnecting, with `state` `stopped` carrying that reason.
 
 ### 6.2 Contract
 
-Compat protocol version 2 (local channels), endpoint protocol 3 (remote, listening and dialing out); features `["rows.v2", "hosts", "leaf", "scopes", "events"]`; capabilities `signals`, `sync-wait`, `reentrant-sync`, plus `runtime` declared in the endpoint handshake; call ids in this session use the `node:` prefix (as every leaf runtime).
+compat protocol version 2 (local channels), endpoint protocol 3 (remote, listening and dialing out).
+
+| Item | Value |
+| --- | --- |
+| Capabilities (in both handshakes) | `signals`, `sync-wait`, `reentrant-sync`, `events-v2`, the ten `value-<tag>`; the endpoint handshake also declares `runtime`; `sync-stack` and `objects` are not declared |
+| Features (`mount` reply) | `["rows.v2", "hosts", "leaf", "scopes", "rows.announce"]` |
+| Call ids | prefixed `node:` (as every leaf runtime) |
 
 | Control operation | Behavior |
 | --- | --- |
-| `mount` | `{ services: {}, features, plugins, implementation: { name: "github.com/arcships/rutis", version: Rutis.sdkVersion }, engine: { name: "swift", version: <the toolchain version embedded at build> } }`; `plugins` is the same as the manifest's `plugins` (the dial-out design §4) |
-| `rows.schema(entry)` / `rows.load` / `rows.update` / `rows.unload` | as Go §8.2; `rows.load` ignores `inject` (gating is done by rutis) |
-| `hosts.provide` / `hosts.withdraw`, `release` / `get`, `dispose` | as Go |
+| `mount` | records the arguments `announce` and `runtime`; replies `{ services: {}, features, plugins, implementation: { name: "github.com/arcships/rutis", version: Rutis.sdkVersion }, engine: { name: "swift", version: <toolchain version embedded at build time> } }`; `plugins` equals the manifest's `plugins` (the dial-out design §4) |
+| `rows.schema(entry)` | the manifest entry (`config`, `inject`, `provides`, `version`, `announces: true`); an unknown entry is an error listing the available names |
+| `rows.load(key, entry, config, isolate, inject, exports, { scope, id })` | resolve the entry → check the plugin API (a plugin newer than the SDK is refused, naming both versions) → decode the config → `apply`; declared services are reported with `service(id, handle, version)`, undeclared ones announced with four arguments, waiting for the host's answers; answered after every `events.on` sent during `apply` was answered; on failure the row unloads first, then the failure is reported; `inject` is ignored (rutis gates); `id` is how descriptors and report lines call the row (`key` when absent) |
+| `rows.update(key, config)` | unload, then load again (leaf plugins have no volatile fields); listeners register again |
+| `rows.unload(key)` | the unload order of §4.7 |
+| `hosts.provide(name, methods, label?)` / `hosts.withdraw(id)` | registers a proxy for a rutis service, call target `host:<id>`; `id` = `name`, or `name` + NUL + label with a label |
+| `release` / `get`, `dispose` | as Go; `dispose` unloads every row and lets calls in flight finish |
+
+- **The calling row**: the host leases each row's services into a scope of that row's own (a label with U+0001 in it), so that calls to `host:<id>` tell it which row calls. For each row the SDK computes the ids the row uses from `rows.load`'s `isolate` (name → label), and `ctx.use` uses only that row's own ids; labels are opaque, never parsed or compared by content, only checked for containing no NUL and not being empty. Code runs in a row, so its calls target that row's ids (the row's Task tree carries the row, `ctx.spawn` too).
+- **The session ends** (rutis is gone): every row unloads; cleanup as a whole is bounded by `RUTIS_SHUTDOWN_TIMEOUT` (10 seconds by default), and past it one stderr line is written; shape ① exits with status 1 (0 when everything finished), shape ② returns to the disconnected state (the app keeps living) and reconnects by the dialing rules.
 
 ### 6.3 Exit and cleanup
 
-| Situation | Rule |
+| Case | Rule |
 | --- | --- |
-| Errors thrown by `apply`, methods, cleanups | captured as error replies |
-| `fatalError` / `try!` / force-unwrap crashes, uncaught errors in `ctx.spawn` | not catchable in Swift → in shape ① the process exits and all rows stop (aligned with Go); in shape ② the app crashes: the connection drops, and the rutis side closes the instance and withdraws its services |
-| Session already ended | unload all rows, cleanups take at most 5 seconds in total; past that, remaining cleanups are abandoned and the affected rows logged to stderr; shape ① `exit(0)`, shape ② returns to the disconnected state (the app stays alive) |
-| `rows.unload`, `dispose` deadlines | none set here (as Go / Python); the deadline is the rutis side's |
+| Errors thrown by `apply`, methods, listeners, cleanups | caught as error replies (an `emit` listener writes its report line) |
+| `fatalError` / `try!` / force-unwrap crashes | not catchable in Swift → in shape ① the process exits and all rows stop, then the runtime's `restart` applies (§3.4); in shape ② the app crashes: the connection drops, and on the rutis side the instance closes and services are withdrawn |
+| Errors thrown in `ctx.spawn` | written to stderr; the process goes on (as background tasks in other runtimes) |
+| Deadlines for `rows.unload`, `dispose` | the listener wait is bounded by the shutdown deadline (§4.7); cleanups themselves get no deadline here, rutis's side sets it |
 
 ## 7. Shape ②: hosting in apps
 
-The generic model is in [app integration](design-app-integration-2026-10-14.en.md): plugins are written in the rutis model, compiled into the app and driven by rutis; the SDK gives the app only `start` / `stop`; the app dials out to a rutis access point, and each connection is one instance on the rutis side. This section covers only the Swift side.
+The generic model is [app integration](design-app-integration-2026-10-14.en.md): plugins are written in the paradigm, compiled into the app, driven by rutis; the SDK gives the app only `start` / `stop`; the app dials out to a rutis access point, and each connection is one instance on the rutis side. This section covers only the Swift side.
 
 ```swift
 let rutis = RutisApp(
     plugins: [health, location, device],         // plugin definitions compiled into the app (§4.1)
     connect: "wss://rutis.example.com:7443/rutis",
-    id: "kim-iphone",                             // self-reported id (the dial-out design §5)
+    id: "kim-iphone",                             // self-reported id (dial-out design §5)
     token: secrets.rutisToken)
 
-try await rutis.start()   // connect; from then on rutis loads plugins per its configuration
-await rutis.stop()        // all plugins clean up in reverse order, then disconnect
+try await rutis.start()   // connected; from now on rutis loads plugins per its configuration
+await rutis.stop()        // every plugin cleans up in reverse order, then disconnect
 ```
 
 | Item | Rule |
 | --- | --- |
-| `start()` | connect, greet, report `plugins`; after a disconnect, reconnect automatically per the dial-out design §6 until `stop()` |
-| `stop()` | unload all rows (cleanups in reverse order), close the connection; `start()` may be called again |
-| State | `rutis.state` (`stopped` / `connecting` / `connected`) is observable for the business layer to display; the SDK makes no lifecycle decisions from it |
-| Suspended or terminated by the system | no special handling: to the rutis side it looks like a disconnect |
+| Parameters | `plugins`, `connect` (or `listen:`, below), `id`, `token`; optional `peer` (rutis's id), `trust` (additional CA certificates, the semantics of `RUTIS_CA`), `shutdownTimeout` (10 seconds by default), `log` (where report lines go, stderr by default) |
+| `start()` | connect, greet, report `plugins`; after a disconnect, reconnect by the dialing rules (contract §1) until `stop()`; rejected credentials retry every 30 seconds; incompatibility (a host without `events-v2` included) stops and puts the reason in `state` |
+| `stop()` | unload every row (cleanups in reverse), close the connection; `start()` may be called again |
+| Listening | `RutisApp(plugins:, listen: "wss://0.0.0.0:7443/rutis", certificate:, token:)` waits for rutis to dial in instead, with §6.1's `listen:` semantics; suits devices with a fixed address, while dialing out is recommended in general |
+| State | `rutis.state` (`stopped(reason?)` / `connecting` / `connected`) is observable (an `AsyncStream` and `@Observable`) for the business layer to display; the SDK makes no lifecycle decision from it |
+| Suspended or terminated by the system | no special handling: rutis sees a disconnect |
 | Packaging | the SDK links statically into the app (a SwiftPM library dependency); no dynamic loading |
-| Authorization | entitlements (HealthKit and friends) and usage descriptions live in the app's Info.plist / provisioning profile; prompts point at the app; a denial = `apply` or a method call throws, and the error goes back to the caller as usual |
-| Local network | connecting to a LAN address triggers iOS's local-network permission (`NSLocalNetworkUsageDescription`); goes in the SDK guide |
+| Authorization | entitlements (HealthKit and others) and usage descriptions in the app's Info.plist / provisioning profile; prompts point at the app; a denial = `apply` or a method call throws, passed back to the caller as usual |
+| Local network | connecting to a LAN address makes iOS show the local-network permission (`NSLocalNetworkUsageDescription`), in the SDK guide |
 | Changing code | ship a new app version |
-| Device information | rutis does not model devices; a plugin provides it when needed (e.g. a `device` plugin) |
+| Device information | rutis does not model devices; plugins provide it when needed (e.g. a `device` plugin) |
 
 ## 8. TCC and signing
 
@@ -357,93 +439,98 @@ Acceptance: an EventKit plugin runs in a signed binary and the prompt points at 
 
 | Change | Where |
 | --- | --- |
-| Extract the language-independent parts of `go.rs` into a shared module: manifest execution and caching, directory scanning and marker sniffing, runtime-name derivation, the on-demand lifecycle and restart, file-replacement semantics; `go.rs` becomes a thin wrapper with unchanged behavior, guarded by the existing tests | `rutis-loader/src/runtime/binary.rs` (new) |
-| `SwiftResolver`, `SwiftBinaries`, `SwiftRuntimes` | `rutis-loader/src/runtime/swift.rs` (new, thin wrapper) |
+| The shared module for compiled runtimes: manifest execution and caching, directory scanning and marker sniffing, runtime-name derivation, the on-demand lifecycle, the `restart` policy (`no` / `on-failure` / `exit`, the rules of rutis-host's local runtimes), manual restart, file-replacement semantics; `go.rs` is a thin wrapper over it (extracted from Go, guarded by Go's existing tests) | `rutis-loader/src/runtime/binary.rs` |
+| `SwiftResolver`, `SwiftBinaries`, `SwiftRuntimes` | `rutis-loader/src/runtime/swift.rs` (new, a thin wrapper, three constants) |
 | `swift_runtime_name`; `Launcher::swift` (the same spawn path as `Launcher::go`); `LocalRuntime::swift` | `rutis-bridge/src/runtime/{local,process}.rs` |
-| features: rutis-bridge `swift = []`; rutis-loader `swift = ["runtimes", "rutis-bridge/swift"]`; rutis-host enables `swift` on its dependency | the three `Cargo.toml`s |
-| Remote npm naming rejects `swift:` and `<swift runtime>:` prefixes | already implemented; tests only |
-| Shape ②: `runtimes.remote[].language` accepts `"swift"`; the rest is in the dial-out design §7 | `rutis-host/src/host.rs` |
-| `scripts/train.mjs` gains the version regex for `swift/rutis/Sources/Rutis/Version.swift` | `scripts/train.mjs` |
+| Features: rutis-bridge `swift = []`; rutis-loader `swift = ["runtimes", "rutis-bridge/swift"]`; rutis-host enables `swift` on its dependencies | three `Cargo.toml` files |
+| Remote npm naming refuses the `swift:` and `<swift runtime name>:` prefixes | already implemented; tests only |
+| Shape ②: `runtimes.remote[].language` accepts `"swift"`; the rest is the dial-out design §7 | `rutis-host/src/host.rs` (implemented) |
+| Conformance: the event expectation file's languages gain `swift` (usable in `only` / `except`); `events_conformance.rs` and `session_matrix.rs` gain the Swift runtime (feature `swift`) | `rutis-bridge/src/runtime/testing/events.rs`, tests |
+| `scripts/train.mjs`'s version regex adds `swift/rutis/Sources/Rutis/Version.swift` | `scripts/train.mjs` |
 
-If the `go.rs` extraction turns out too entangled, `swift.rs` copies first and unifies later; deviations are recorded here with the implementation.
-
-Implementation note (0.14, the extraction is done): `binary.rs` has the `BinaryLanguage` trait (constants `PREFIX`, `TITLE`, `MARKER`, `PLUGIN_API`; functions `runtime_name` and `launch`) and, taking it as their parameter, `Binaries`, `BinaryManifest`, `BinaryResolver<L>`, `BinaryRuntimes<L>`, `BinaryRuntimesHandle<L>`, `BinaryRuntimeState`, `BinaryRuntimeInfo` and `read_binary_manifest`, under the feature `binary` (which `go` enables, and `swift` should). `go.rs` is now only `struct Go`'s implementation and type aliases such as `GoResolver = BinaryResolver<Go>`; Go users' code is unchanged. `swift.rs` follows it: `struct Swift` implementing `BinaryLanguage` (`swift_runtime_name`, `LocalRuntime::swift`) plus aliases. Crash restarts are in the shared module too: `BinaryRuntimesHandle::supervise(RestartPolicy, callback)`, with the backoff of `rutis_loader::backoff` (the same one rutis-host uses for node/py/bun); rutis-host's `runtimes.go.restart` is built on it, and `runtimes.swift.restart` can copy it. "Not restarted after a crash" in §3.4 is therefore only the default.
+Implementation note (0.14, the extraction is done): `binary.rs` has the `BinaryLanguage` trait (constants `PREFIX`, `TITLE`, `MARKER`, `PLUGIN_API`; functions `runtime_name` and `launch`) and, taking it as their parameter, `Binaries`, `BinaryManifest`, `BinaryResolver<L>`, `BinaryRuntimes<L>`, `BinaryRuntimesHandle<L>`, `BinaryRuntimeState`, `BinaryRuntimeInfo` and `read_binary_manifest`, under the feature `binary` (which `go` enables, and `swift` should: `swift = ["binary", "rutis-bridge/swift"]`). `go.rs` is now only `struct Go`'s implementation and type aliases such as `GoResolver = BinaryResolver<Go>`; Go users' code is unchanged. `swift.rs` follows it: `struct Swift` implementing `BinaryLanguage` (`swift_runtime_name`, `LocalRuntime::swift`) plus aliases. Crash restarts are in the shared module too: `BinaryRuntimesHandle::supervise(RestartPolicy, callback)`, with the backoff of `rutis_loader::backoff` (the same one rutis-host uses for node/py/bun); rutis-host's `runtimes.go.restart` is built on it, and `runtimes.swift.restart` can copy it.
 
 
 ## 10. rutis-host
 
 ```json
 {
-  "runtimes": { "swift": { "dir": "plugins/swift", "binaries": ["bin/weather"], "start": "on-demand", "idle": 60 } },
+  "runtimes": { "swift": { "dir": "plugins/swift", "binaries": ["bin/weather"], "start": "on-demand", "idle": 60, "restart": "no" } },
   "rows": [{ "id": "weather", "name": "swift:weather", "config": { "city": "Oslo" } }]
 }
 ```
 
-The fields are the same as `runtimes.go` (`dir` / `binaries`, at least one; `start`: `on-demand` (default) / `eager`; `idle` in seconds; plus `project`). Shape ②'s configuration is in the dial-out design §4.
+The fields are those of `runtimes.go` (at least one of `dir` / `binaries`; `start`: `on-demand` (default) / `eager`; `idle` in seconds; `restart`: `no` (default) / `on-failure` / `exit`, meaning what it means for node / py / bun; plus `project`). `restart` is a setting of the runtime; changing it while running needs a host restart. Shape ②'s configuration is in the dial-out design §4.
 
 | Command | Behavior | Phase |
 | --- | --- | --- |
-| `check` | per binary: runtime name, platform, SDK / plugin API versions, plugins; ambiguities; each row's target binary; failed candidates; the quarantine attribute | S2 |
-| `dev` | without `rutis.dev.json`, detect a Swift project by `Package.swift`; rebuild and restart per §11 | S2 |
-| `new <name> --lang swift` | the plugin target, `cmd/<name>/main.swift`, the `Info.plist` with usage descriptions and `linkerSettings`, tests, `rutis.dev.json`, the release workflow (release artifacts are universal binaries) | S2 |
-| `run` | no Swift toolchain needed | — |
+| `check` | per binary: runtime name, platform, SDK / plugin API versions, plugins; ambiguities; each row's target binary; failed candidate files; quarantine attributes; old binaries with plugin API below 3 | S2 |
+| `dev` | without `rutis.dev.json`, a `Package.swift` marks a Swift project; rebuild and restart per §11; the crash policy as in `run` | S2 |
+| `new <name> --lang swift` | a plugin target, `Sources/<name>/main.swift`, an `Info.plist` with usage descriptions and `linkerSettings`, `RutisTest` tests, `rutis.dev.json`, a release workflow (publishing universal binaries) | S2 |
+| `run` | needs no Swift toolchain | — |
 
 ## 11. Changing code (shape ①)
 
-As Go §12: `dev` watches `.swift`, `Package.swift`, `Package.resolved` → `swift build -c release` into a new cache file `<name>-<seq>` → on success, replace that runtime's file and restart it; on failure print the error, the old process continues. Deploying: replace by rename → `SwiftRuntimes::restart("<runtime>")`.
+As Go §12: `dev` watches `.swift`, `Package.swift`, `Package.resolved` → `swift build -c release` into a new file `<name>-<seq>` in the cache directory → on success, swap that runtime's file and restart it; on failure print the errors and keep the old process. Deployment: rename-replace → `SwiftRuntimes::restart("<runtime>")`.
 
 ## 12. Repository and releases
 
 | Item | Rule |
 | --- | --- |
-| Location | `swift/rutis`: target `Rutis` (core + API), `RutisTest`; the session layer in `Sources/Rutis/Internal/Peer`; the conformance executable target `RutisConformance` |
-| Manifest | a `Package.swift` at the **repository root**, targets pointed at `swift/rutis/Sources/...` via `path:`; platforms `.macOS(.v14)`, `.iOS(.v17)`. SwiftPM git dependencies only read the repository root (appendix E.1); the repository's packed size is about 18 MiB (2026-10-14), an acceptable clone cost for dependents |
-| Versioning | `Rutis.sdkVersion` follows the main release line: the existing `v0.x.y` tags are exactly the form SwiftPM accepts (appendix E.2), so no new tag namespace; `from:` starts at the first release containing the root `Package.swift` |
-| How dependents write it | plugin authors and apps share one line: `.package(url: "https://github.com/arcships/rutis", from: "0.11.0")` + `.product(name: "Rutis", package: "rutis")`; apps add the package directly in Xcode |
-| Dependencies | core: Foundation only; dial-out uses `URLSessionWebSocketTask`, listening uses Network.framework; no uniffi / swift-bridge (appendix B) |
-| Compatibility | within one protocol version, a binary / app of any SDK version runs on a host of any version, provided its plugin API is not above what the host supports |
-| Language mode | Swift 5 mode to start, the API designed Sendable-friendly; the toolchain policy as Go: "the current two stable releases" (today 6.3 and 6.4) |
-| Docs | `docs/guide/swift-plugin.md` (shape ①), `docs/guide/swift-app.md` (shape ②, including integration notes such as the local-network permission), Chinese and English; a Swift column in `docs/guide/plugin-api.md` |
+| Location | `swift/rutis`: targets `Rutis` (core + API), `RutisMacros` (the macro plugin), `RutisTest`; the session layer in `Sources/Rutis/Internal/Peer`; the conformance executable target `RutisConformance` (the plugins `conformance-weather` and `conformance-events`) |
+| Manifest | a **root** `Package.swift` whose targets point at `swift/rutis/Sources/...` via `path:`; platforms `.macOS(.v14)`, `.iOS(.v17)`. SwiftPM git dependencies only see the repository root (appendix E.1); the packed repository is about 18 MiB (2026-10-14), an acceptable clone cost for dependents |
+| Version | `Rutis.sdkVersion` follows the main release line: the existing `v0.x.y` tags are exactly the form SwiftPM accepts (appendix E.2), so no new tag namespace; `from:` starts at the first release with a root `Package.swift` (0.14.0) |
+| How dependents write it | plugin authors and apps alike: `.package(url: "https://github.com/arcships/rutis", from: "0.14.0")` + `.product(name: "Rutis", package: "rutis")`; apps add the package directly in Xcode (Xcode asks to trust the macros on the first build; CI uses `-skipMacroValidation`; in the guide) |
+| Dependencies | `Rutis`: Foundation and the system's Network.framework (listening) only; `RutisMacros` depends on swift-syntax at compile time (a version range following the two supported toolchains); no uniffi / swift-bridge (appendix B) |
+| Compatibility | within one protocol version, binaries / apps built with any SDK version run on any host version, provided the plugin API is not newer than the host supports and both sides declare `events-v2` (rutis 0.13 on) |
+| Language mode | Swift 5 mode to start, with a Sendable-friendly API; the toolchain policy matches Go: "the two current stable releases" (today 6.3 and 6.4) |
+| Docs | `docs/guide/swift-plugin.md` (shape ①), `docs/guide/swift-app.md` (shape ②, covering the local-network permission and other integration notes), in Chinese and English; `docs/guide/plugin-api.md` gains a Swift column (declarations, ctx, events per language, the ten values, errors, testing tool differences) |
 
 ## 13. Platforms
 
 | Platform | Shape ① | Shape ② | Notes |
 | --- | --- | --- | --- |
-| macOS 14+ | ✅ | ✅ (Mac apps) | the Swift 5.9 runtime ships with the system, so parameter packs have no back-deployment problem |
+| macOS 14+ | ✅ | ✅ (Mac apps) | the Swift 5.9 runtime ships with the OS; parameter packs need no deployment back-deployment |
 | iOS / iPadOS 17+ | — | ✅ | no process spawning, no dynamic loading |
-| watchOS / visionOS | — | later | join when needed |
-| Linux | later | — | join when there is a real need |
-| Windows | out | — | |
+| watchOS / visionOS | — | later | when there is a need |
+| Linux | later | — | when there is a real need |
+| Windows | not planned | — | |
 
 ## 14. Tests
 
-| Test | Where | What |
+The runtime contract's conformance tests are the contract itself (contract §8); Swift passes the same suites as every other runtime.
+
+| Test | Where | Contents |
 | --- | --- | --- |
-| Session-layer unit tests | `swift/rutis/Tests` | encode/decode, reference counting, callbacks during a sync wait, cancellation, TaskLocal chains, concurrency, suspended waits not blocking |
-| iOS core unit tests | same, CI adds `xcodebuild test -destination 'platform=iOS Simulator'` | the core layer compiles and tests on iOS (values, leaf API, in-memory session, the `RutisApp` state machine) |
+| Session-layer units | `swift/rutis/Tests` | encoding (the ten values, key rules, truncation, depth, out-of-range integers), reference counting, callbacks during sync calls, cancellation, chain from TaskLocal, concurrency, suspended waits not blocking, macro expansion (method tables, proxies, Schema) |
+| iOS core units | same, with CI adding `xcodebuild test -destination 'platform=iOS Simulator'` | the core layer compiles and passes on iOS (values, leaf API, events, in-memory session, the `RutisApp` state machine) |
 | Session conformance | `rutis-bridge/tests/runtime_conformance.rs` + the `RutisConformance` target | `session::testing::session` |
-| Contract × channels | `session_matrix.rs` gains `Swift` | `fd:3`, dial-back |
-| Swift specifics | `rutis-bridge/tests/swift_runtime.rs` | cancellation reaching the Task; error shapes; `fatalError` exit withdrawing services; references and release |
-| Manifest / binaries / on-demand | `rutis-loader/tests/swift_rows.rs` | the full set mirroring `go_rows.rs` |
-| Runtime conformance | `multilang.rs` (feature `swift`) | a Swift leaf plugin; cross-language cold starts calling each other; a provider going away stops only its users; `inject` gating |
-| Cross sync calls | `multilang.rs` | Node→Swift→calling back into Node (with the chain), Swift↔Go, Swift↔Python: no deadlock; a cross sync cycle between Node and Swift is detected as `SyncWaitCycle` |
+| Contract × channel | `session_matrix.rs` gains `Swift` | `fd:3`, dial-back, loopback `tcp:`, (A1) WebSocket listening; every call, sample value and event of `weather.expected.json` |
+| Value round trips | `tests/value_roundtrip.rs` gains a Swift end | property tests of the ten values and the key rules |
+| Events conformance | `rutis-loader/tests/events_conformance.rs` (X = swift; Y includes swift) | every case of `events.expected.json`: the five modes, scope, filters, unload waiting and cancellation, disconnection, `rutis/*`; CI's `RUTIS_EVENTS_REQUIRE` adds `swift` on macOS |
+| Testing tool | `swift/rutis/Tests/RutisTestConformance` | `RutisTest` is checked against `weather.expected.json` and `events.expected.json` (cases whose `tool` is not `false`), with the same results as the real runtime (`undeclared` included: inferred methods, all `async`) |
+| Old hosts | `rutis-bridge/tests/swift_runtime.rs` | a host not declaring `events-v2`: the refusal line word for word, status 1, a dialer does not retry |
+| Swift specifics | `rutis-bridge/tests/swift_runtime.rs` | cancellation reaching the Task; error shape (`code` / `data` both ways, rethrowing keeps the error graph); `fatalError` exits withdraw services; references and release; the calling row (two rows with different `isolate` each use their own id) |
+| Manifests / multiple binaries / on demand / restart policy | `rutis-loader/tests/swift_rows.rs` | the full set mirroring `go_rows.rs`; under `on-failure`, rows recover after a kill, and an idle stop does not restart |
+| Runtime conformance | `multilang.rs` (feature `swift`) | Swift leaf plugins; cross-language cold starts and calls; withdrawing a provider stops only its users; `inject` gating; undeclared services announced |
+| Crossing sync calls | `multilang.rs` | Node→Swift→callback into Node (with the chain), Swift↔Go, Swift↔Python: no deadlock; a crossing sync cycle between Node and Swift is detected as `SyncWaitCycle` |
 | Listening | `rutis-bridge/tests/websocket_conformance.rs` gains a Swift remote end | the same assertions as Go's remote listening |
-| Dial-out | `rutis-bridge/tests/dial_conformance.rs` gains a Swift column (the dial-out design §6) | backoff, rejected credentials, same-id takeover, the instance closing on disconnect, `stop` / `start` |
-| Authorization (e2e) | the e2e suite | shape ① EventKit; shape ② iOS HealthKit: prompt attribution, the error going back after a denial. Clicking the prompts is a manual acceptance checklist, the rest is automated |
-| Fixtures | `crates/rutis-loader/tests/fixtures/swift` | built into at least two binaries at test start |
-| CI | `runtimes-swift` (a macOS runner; two stable toolchains; including the iOS Simulator unit tests); `test` and `network-macos` gain the Swift fixture build | `swift test` + `xcodebuild test`; `cargo test -p rutis-bridge --features swift,…`; `-p rutis-loader --features swift,…`; `-p rutis-host` |
+| Dialing out | `rutis-bridge/tests/dial_conformance.rs` gains a Swift column (dial-out design §6) | backoff, rejected credentials, same-id takeover, closing the instance on disconnect, `stop` / `start` |
+| Authorization (e2e) | the e2e suite | shape ① EventKit; shape ② iOS HealthKit: prompt attribution, errors passed back after denial. Clicking through prompts is a manual acceptance checklist; the rest is automated |
+| Fixtures | `crates/rutis-loader/tests/fixtures/swift` | built into at least two binaries when the tests start |
+| CI | `runtimes-swift` (macOS runner; two stable toolchains; including the iOS Simulator units); `test` and `network-macos` build the Swift fixtures | `swift test` + `xcodebuild test`; `cargo test -p rutis-bridge --features swift,…`; `-p rutis-loader --features swift,…`; `-p rutis-host` |
 
 ## 15. Phasing
 
-| Phase | Content | Acceptance |
+| Phase | Contents | Acceptance |
 | --- | --- | --- |
-| S1 | the SDK core (session, leaf API, values, concurrency) + shape ①'s `serve` (`fd` / `unix`), manifest, `RutisTest`; the `binary.rs` extraction + the thin `go.rs` wrapper; `Launcher::swift`, the feature; `SwiftResolver`; `SwiftRuntimes` (`eager` only) | all of §14 except on-demand, dial-out and authorization pass; several binaries in parallel; the iOS Simulator unit tests pass; Go's existing tests stay green |
-| S2 | shape ① on-demand start and idle stop; rutis-host (`runtimes.swift`, `dev`, `check`, `new --lang swift`); the guides; TCC / EventKit | the on-demand tests pass; `dev` restarts only its own runtime after a code change; the prompt points at the binary, a denial's error goes back |
-| A1 | shape ②: the dial-out and listening channels, `RutisApp`; depends on the dial-out design's R-P1 | an app (simulator and device) dials out and connects, and loads plugins per the rutis configuration; after `stop` its users stop, after `start` they recover; same-named plugins on two devices each live in their own instance; the `dial_conformance` and `websocket_conformance` Swift columns pass |
+| S1 | SDK core (session, leaf API, macros, values, errors, events, concurrency) + shape ①'s `serve` (`fd` / `unix` / `tcp`), the manifest, `RutisTest`; extract `binary.rs` + thin `go.rs`; `Launcher::swift`, features; `SwiftResolver`; `SwiftRuntimes` (`eager` only) | all of §14 passes except on-demand, the restart policy, listening, dialing out and authorization, that is: `runtime_conformance`, `session_matrix` (local channels + `weather.expected.json`), `value_roundtrip`, `events_conformance` (Swift as X and Y), `multilang`, the testing tool against both expectation files, the old-host refusal; multiple binaries in parallel; iOS Simulator units pass; Go's existing tests all green |
+| S2 | Shape ①'s on-demand start and idle stop; the `restart` policy (`binary.rs`, Go gets it at the same time); rutis-host (`runtimes.swift`, `dev`, `check`, `new --lang swift`); the guide; TCC / EventKit | on-demand and restart-policy tests pass; changing code under `dev` restarts only this runtime; prompts point at the binary, denial errors are passed back |
+| A1 | Shape ②: dialing-out and listening channels, `RutisApp`; depends on the dial-out design's R-P1 (done) | apps (simulator and device) dial in and load plugins per rutis's configuration; after `stop` the users stop, after `start` they recover; two devices with same-named plugins each get their own instance; the Swift columns of `dial_conformance`, `websocket_conformance` and `session_matrix`'s listening case pass |
 
-A1 depends only on S1's session layer and the dial-out design's R-P1, and can run in parallel with S2.
+A1 depends only on S1's session layer and can run in parallel with S2.
 
-Later (when needed): downloading prebuilt binaries (`swift add <URL>`), receiving object references, the `@RutisService` / schema macro, plugin versions generated by the build, watchOS / visionOS, Linux.
+Later (on demand): downloading prebuilt binaries (`swift add <URL>`), receiving object references (`objects`), plugin versions generated by the build, watchOS / visionOS, Linux.
 
 ## 16. Departures from the master plan and the first draft
 
@@ -460,6 +547,61 @@ Later (when needed): downloading prebuilt binaries (`swift add <URL>`), receivin
 | First draft capabilities declare only `signals`, `reentrant-sync` | adds `sync-wait`: without it the runtime is outside wait-cycle detection |
 | First draft deployment target macOS 13 | macOS 14: the same Swift 5.9 runtime as iOS 17 |
 
+## 17. Alignment with rutis 0.13 (2026-10-19)
+
+0.11–0.13 changed the runtime contract: ten value types (0.11), automatic exposure and errors' `code` / `data` (0.12), the calling row (#441), unified events and plugin API 3 (0.13), the dialing rules written down (#383/#384), the runtime crash policy (#274, 0.12). This section records the revisions and new decisions that follow; implementations follow [the runtime contract](../.agents/skills/rutis-new-runtime/references/runtime-contract.md).
+
+### 17.1 Revisions
+
+| 2026-10-14 text | Now | Why |
+| --- | --- | --- |
+| Plugin API 2, leaf events `ctx.on` / `ctx.emit` only in the process, feature `events` | plugin API 3; unified events (§4.7), capability `events-v2`, feature `events` removed, old hosts refused word for word | the 0.13 event protocol; 0.12's leaf events are gone |
+| Explicit closure tables `Shape(.async("today"), …)` + `.async("today") { … }` | the `@RutisService` macro generates method tables; `provides` is optional | automatic exposure (0.12) and developer transparency (V0) |
+| `RutisClient` structs of closure fields, `s.method("ask")` | an ordinary protocol + the `@RutisClient` macro generating the proxy | V0: users write native protocols |
+| Methods' first parameter `RutisCtx` | no context parameter; the call chain is in a `@TaskLocal` | V0; TaskLocals already flow with `await` and child Tasks |
+| A `.sync` closure cannot call across processes | `sync` is a declaration only; the implementation may be `async` | one Task per call, suspending holds no thread, the same behavior as Go: the one difference is gone |
+| `Codable` through JSON; `Data` and dictionaries with non-string keys cannot cross; out-of-range integers fail | own `Encoder` / `Decoder`; ten values; out-of-range integers become `bigint` automatically | value types design V1, V6, §6 |
+| Classes need an explicit `Rutis.ref(v)` | instances of `@RutisService` types go by reference, no `ref` | the macro already gives the method table; the type decides reference or data (appendix D) |
+| Error names from `String(reflecting:)`, carrying only name and message | simple names; `code` / `data` both ways; received errors are `RutisError` | the 0.12 error contract; names consistent with other languages |
+| Cleanup at most 5 seconds when the session ends, shape ① `exit(0)` | `RUTIS_SHUTDOWN_TIMEOUT` (10 seconds by default), exit 1 past it | contract §4 |
+| No automatic restart after a crash | by `restart`, `no` by default, implemented in `binary.rs` for Go and Swift | #274 maintainer decision (0.12) |
+| First SDK version 0.11.0 | 0.14.0 | milestone 0.14 |
+
+### 17.2 Where rutis-specific code is still needed
+
+Developer transparency (V0): plugin authors write only native Swift. Swift has no runtime reflection of methods (and iOS cannot generate code at runtime); these are the rutis-specific pieces that remain, kept to a minimum:
+
+| Where | What | Why it cannot be less |
+| --- | --- | --- |
+| Plugin definition and entry point | `Rutis.define(Plugin(...))`; shape ① `Rutis.serve(...)`, shape ② `RutisApp(...)` | every language has it: declaring dependencies, provides and configuration is the paradigm itself |
+| Types of provided services | one `@RutisService` on the type | without method reflection, the method table can only be generated at compile time; one attribute, and the type stays plain Swift |
+| Services used | one `@RutisClient` on the protocol; `ctx.use("llm", LLMProxy.self)` | the same; the macro generates the proxy, the protocol stays plain Swift and can be replaced by any implementation |
+| Declaring `sync` methods (optional) | `provides: ["weather": .of(Weather.self, sync: ["unit"])]` | only when a method should be `sync`, or `check` should know ahead; as Go's `MethodsOf(Sync(...))` |
+| Config Schema (optional) | one `@RutisConfig` on the config type | without it the config still decodes; the host just cannot validate ahead |
+| Value types Swift lacks | `Rutis.DateTime`, `Rutis.CalendarDate`, `Rutis.TimeOfDay`, `Rutis.BigInt` | the one exception of V0: types the language does not have; `Date`, `Data`, `Decimal`, `UUID`, `Set`, `Dictionary` are native |
+| A few event types | `waterfall`'s `Rutis.Next<R>`; the filter's descriptor `Rutis.Listener` | the language has nothing corresponding |
+| Received errors | `RutisError`, matched by `name` | an error from another process is not the sender's type (the same in every language) |
+
+Not needed: method tables, JSON encoding, reference wrappers (`ref`), context parameters, wrappers for errors' `code` / `data` (plain stored properties do), handling of synchronous waits and reentrancy, event registration.
+
+### 17.3 Decisions made here
+
+| # | Decision |
+| --- | --- |
+| 1 | Method tables, proxies and Schemas are generated at compile time by Swift macros (`@RutisService` / `@RutisClient` / `@RutisConfig`); no hand-written tables, no guessing methods with `Mirror` |
+| 2 | A service method's wire name is its base name, arguments are positional, overloads are a compile error; instance methods that are not `private` / `fileprivate` are exposed |
+| 3 | A method's kind is a declaration (default `async`), independent of the Swift signature; proxies are always `async throws` |
+| 4 | The call chain lives only in a `@TaskLocal`; plugin code passes no context |
+| 5 | The value layer is an own `Encoder` / `Decoder` implementing all ten values; `Date` truncates to microseconds; `Decimal` fails beyond 38 digits and keeps no trailing zeros (declare `String` to keep them); `Any` parameters decode into native values |
+| 6 | `@RutisService` instances go by reference, other `Codable` values (classes included) as data; received functions can only be declared `async throws` |
+| 7 | Errors' `code` / `data` are read from stored properties of those names (`Mirror`); received errors and the SDK's own are one type, `RutisError`, matched by name |
+| 8 | Listeners are always `kind: "sync"`, and `emit` queues serially per listener; `bail` is an `async` API in Swift and synchronous on the wire |
+| 9 | The calling row: each row computes its own service ids from `isolate`; labels are opaque |
+| 10 | `RutisTest` runs plugins over a real session (in-memory channel) with the test as the host, checked against both expectation files (as Go's `rutistest`) |
+| 11 | The crash policy `restart` has the values and default (`no`) of node / py / bun, implemented in `binary.rs` for Go and Swift together, in S2; an idle stop is not a crash |
+| 12 | Dialing out uses `URLSessionWebSocketTask` (the status of a refused upgrade comes from the task's `response`), listening uses Network.framework; shape ②'s counterparts of the environment variables are `RutisApp` parameters |
+| 13 | `objects` is not declared (no receiving object references), as Go; added when needed |
+
 ## Appendix
 
 ### A. Why not a dlopen auxiliary program (the revision of the master plan's M3)
@@ -472,7 +614,7 @@ Later (when needed): downloading prebuilt binaries (`swift add <URL>`), receivin
 
 **A.4 Signing and library validation.** A signed auxiliary program with the hardened runtime that dlopens bundles not signed by the same team needs `disable-library-validation` (widening the attack surface) or every plugin author signing with one team. Executables and apps with statically linked plugins have no such problem.
 
-**A.5 The loss and its substitutes.** What is lost: dropping a new bundle into a running process and having it load. Substitutes: the deployment composes several plugin packages into one binary in `cmd/main.swift` (as Go appendix H.3); or several plugins each in their own binary, started on demand, stopped when idle. In shape ② the equivalent is shipping a new app version.
+**A.5 The loss and its substitutes.** What is lost: dropping a new bundle into a running process and having it load. Substitutes: the deployment composes several plugin packages into one binary in `main.swift` (as Go appendix H.3); or several plugins each in their own binary, started on demand, stopped when idle. In shape ② the equivalent is shipping a new app version.
 
 ### B. Swift facts
 
@@ -485,6 +627,7 @@ Later (when needed): downloading prebuilt binaries (`swift add <URL>`), receivin
 | Blocking reads must not sit on the cooperative pool (its width is the core count); a dedicated thread + continuation is the standard approach | Swift concurrency docs |
 | Linking an Info.plist into a bare executable's `__TEXT,__info_plist` (`-sectcreate`) is long-standing practice | CMake / swift-forums practice |
 | `URLSessionWebSocketTask` is Foundation's WebSocket client, supporting subprotocols and custom TLS trust; Network.framework's `NWListener` + `NWProtocolWebSocket` is a WebSocket server with subprotocols and TLS | Apple documentation |
+| Swift macros (SE-0382, SE-0389, SE-0402) run at compile time and can add conformances and members to types and generate peer types for protocols; `Mirror` enumerates stored properties only | swift-evolution |
 | iOS: no process spawning, downloading and executing code is forbidden, background apps are suspended, local-network permission (iOS 14+) | Apple platform documentation |
 
 ### C. Side-by-side with the Go runtime (shape ①)
@@ -497,19 +640,23 @@ Later (when needed): downloading prebuilt binaries (`swift add <URL>`), receivin
 | Execution unit per call | a goroutine (blocking wait) | a Task (suspending wait, no thread held) |
 | Reentrancy / sync-stack | reentrant / not declared | same |
 | sync-wait | declared | same |
-| Call chain | `context.Context` | `@TaskLocal` |
-| Method enumeration | reflection, `MethodsOf` | explicit closure table |
-| Schema | reflected, overridable | hand-written |
-| Values by default | data, `rutis.Ref` for explicit references | value types are data; classes need `Rutis.ref` |
-| Calling out from a sync method | allowed (blocks the goroutine) | not allowed (all proxies are async) |
+| Call chain | `context.Context` (passed explicitly) | `@TaskLocal` (flows on its own) |
+| Method enumeration | reflection, `MethodsOf` | the `@RutisService` macro |
+| Using services | structs of function fields | `@RutisClient` protocols |
+| Schema | reflected, overridable | generated by the `@RutisConfig` macro, overridable |
+| Values by default | data, `rutis.Ref` for explicit references | `Codable` is data; `@RutisService` instances are references |
+| Calling out from a sync method | allowed (blocks the goroutine) | allowed (suspends the Task) |
+| Listener kind | `sync` | `sync` |
 | panic / fatalError | captured as an error; uncaught in a goroutine → process exit | errors are `throws`; `fatalError` → process exit |
-| Remote | listens (`listen:`); dialing out comes with dial-out design R-P3 | listens and dials out |
+| After a crash | the `restart` policy (`binary.rs`) | same |
+| Testing tool | `rutistest` (a real session) | `RutisTest` (a real session) |
+| Remote | listens and dials out | same |
 | Platforms | Linux / macOS / Windows | macOS (①) / macOS + iOS (②) |
 | Distribution | git tag `go/rutis/vX.Y.Z` + the module proxy | root `Package.swift` + the main release line's `v` tags |
 
 ### D. Why the value boundary needs no `Ref`-style rule
 
-Go needs an explicit `Ref` because a Go struct can be either data or an object, and the language does not distinguish them. Swift's value types (struct / enum) and reference types (class) are two separate worlds in the type system: structs copy as data; a class crosses processes only through an explicit `Rutis.ref` and must carry its own method table (Swift cannot reflect out its methods; the same mechanism as §4.2's closure table).
+Go needs an explicit `Ref` because a Go struct can be either data or an object, and the language does not distinguish them. In Swift, whether a type has a method table to expose is decided by `@RutisService`, which a provided service type carries anyway: instances with a method table go by reference, other `Codable` values (structs, enums, and `Codable` classes) as data. A value that is neither cannot cross, and the error names its type.
 
 ### E. Local PoCs (2026-10-12, Swift 6.3.2 / Xcode)
 
@@ -517,4 +664,4 @@ Go needs an explicit `Ref` because a Go struct can be either data or an object, 
 
 **E.2 SwiftPM's version-tag rule**: tested against a git dependency, `1.0.0` and `v1.1.0` are accepted as versions; `rutis-swift-1.0.0`, `swift/rutis/1.0.0`, `rutis-mono-1.2.0` are all ignored. Conclusion: the main release `v` tags are directly usable as SwiftPM versions.
 
-**E.3 Parameter-pack contextual inference**: `func method<each A, R>(_:) -> (Ctx, repeat each A) async throws -> R` infers from the field's closure type at `LLM(ask: s.method("ask"), …)` and compiles. Signatures that infer poorly fall back to 0–3-argument overloads (S12).
+**E.3 Parameter-pack contextual inference**: `func method<each A, R>(_:) -> (repeat each A) async throws -> R` infers from the target closure type and compiles. It is now used for listeners (`ctx.on`) and the typed decoding of received function references; method tables and proxies come from the macros and no longer depend on it.
