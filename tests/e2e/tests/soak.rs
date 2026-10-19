@@ -950,7 +950,6 @@ fn setup(s: &Scenario) -> (Project, Host) {
     // Node B, listening for this project's host, through the proxy.
     s.write("gpu/infer.py", INFER);
     let token = s.secret();
-    let port = s.port();
     let pythonpath = repo().join("python/rutis").display().to_string();
     let mut b = s.program(
         "",
@@ -958,7 +957,7 @@ fn setup(s: &Scenario) -> (Project, Host) {
         [
             "-m".into(),
             "rutis".into(),
-            format!("listen:ws://127.0.0.1:{port}/rutis"),
+            "listen:ws://127.0.0.1:0/rutis".into(),
             "--id".into(),
             "gpu".into(),
             "--peer".into(),
@@ -970,7 +969,7 @@ fn setup(s: &Scenario) -> (Project, Host) {
             ("PYTHONPATH", pythonpath.as_str()),
         ],
     );
-    b.expect("rutis: listening on");
+    let (_, port) = s.announced(&mut b);
     let proxy = s.proxy(SocketAddr::from(([127, 0, 0, 1], port)));
     (
         Project {

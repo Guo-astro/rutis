@@ -413,20 +413,47 @@ impl Scenario {
         }
     }
 
-    /// A free loopback port for the project to listen on; after the
-    /// scenario it must be free again.
+    /// The address `host` (`rutis-host run`, any release since 0.10) bound
+    /// its listener `name` to, from its line `rutis-host: listening on
+    /// <name> <address>`; after the scenario the port must be free again.
     ///
-    /// The port is free when returned, not reserved: another process may
-    /// take it before the host binds it (the usual bind-0-and-release race).
-    /// A scenario that cannot afford that lets the host pick the port (`:0`)
-    /// and reads it from the host's output instead.
-    pub fn port(&self) -> u16 {
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .and_then(|listener| listener.local_addr())
-            .expect("a free port")
-            .port();
+    /// The harness never picks a port and hands it to a process to bind:
+    /// another process may take it in between (#455). The listener is
+    /// configured with port 0 and the host reports the port it got.
+    pub fn listening(&self, host: &mut Host, name: &str) -> std::net::SocketAddr {
+        let marker = format!("rutis-host: listening on {name} ");
+        let line = host.wait_for(&format!("a line containing {marker:?}"), |line| {
+            line.contains(&marker)
+        });
+        let address = &line[line.find(&marker).unwrap() + marker.len()..];
+        let address: std::net::SocketAddr = address
+            .trim()
+            .parse()
+            .unwrap_or_else(|error| panic!("listener {name}'s address in {line:?}: {error}"));
+        assert_ne!(address.port(), 0, "{line}");
+        self.ports.borrow_mut().push(address.port());
+        address
+    }
+
+    /// The URL a runtime started with `listen:<url>` on port 0 reports
+    /// (`rutis: listening on <url>`, the same line in every runtime), and
+    /// its port; after the scenario the port must be free again. See
+    /// [`Scenario::listening`] for why the harness picks no port itself.
+    pub fn announced(&self, node: &mut Host) -> (String, u16) {
+        const MARKER: &str = "rutis: listening on ";
+        let line = node.expect(MARKER);
+        let url = line[line.find(MARKER).unwrap() + MARKER.len()..]
+            .trim()
+            .to_owned();
+        let port = url
+            .split_once("://")
+            .and_then(|(_, rest)| rest.split('/').next())
+            .and_then(|authority| authority.rsplit_once(':'))
+            .and_then(|(_, port)| port.parse::<u16>().ok())
+            .unwrap_or_else(|| panic!("no port in the announced address {url:?}"));
+        assert_ne!(port, 0, "{line}");
         self.ports.borrow_mut().push(port);
-        port
+        (url, port)
     }
 
     /// A TCP proxy on a free loopback port to `target`, for a network

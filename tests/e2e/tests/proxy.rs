@@ -74,6 +74,32 @@ fn a_proxy_relays_cuts_and_restores() {
     drop(proxy);
 }
 
+/// Retargeted, the proxy relays new connections to the new target (a far
+/// end started again on a port of its own, #455) and leaves the
+/// connections it relays alone.
+#[test]
+fn a_retargeted_proxy_relays_new_connections_to_the_new_target() {
+    let s = Scenario::new("proxy-retarget");
+    let (first, first_server) = echo(1);
+    let (second, second_server) = echo(1);
+    let proxy = s.proxy(first);
+    let (mut old, mut old_reader) = connect(proxy.addr());
+    round_trip(&mut old, &mut old_reader, "to the first");
+
+    proxy.retarget(second);
+    // Each server accepts one connection: a new connection relayed to the
+    // first would get no echo.
+    let (mut new, mut new_reader) = connect(proxy.addr());
+    round_trip(&mut new, &mut new_reader, "to the second");
+    round_trip(&mut old, &mut old_reader, "still to the first");
+    drop((old, old_reader, new, new_reader));
+
+    s.finish();
+    first_server.join().expect("the first echo server");
+    second_server.join().expect("the second echo server");
+    drop(proxy);
+}
+
 /// A client that sends its request, half-closes, then reads the reply
 /// gets the reply: an end of stream is passed on as a half-close, not as
 /// the end of the connection.

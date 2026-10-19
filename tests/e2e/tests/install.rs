@@ -785,8 +785,6 @@ fn go_build(s: &Scenario, src: &str, out: &str) {
 /// the probe calls it through the link.
 fn listen(s: &Scenario, venv: &Path) {
     let token = s.secret();
-    let port = s.port();
-    let url = format!("ws://127.0.0.1:{port}/rutis");
     s.write("node/greeter.py", GREETER_PY);
     let mut node = s.program(
         "pip",
@@ -794,7 +792,7 @@ fn listen(s: &Scenario, venv: &Path) {
         [
             "-m".to_owned(),
             "rutis".into(),
-            format!("listen:{url}"),
+            "listen:ws://127.0.0.1:0/rutis".into(),
             "--id".into(),
             "gpu".into(),
             "--peer".into(),
@@ -803,7 +801,7 @@ fn listen(s: &Scenario, venv: &Path) {
         ],
         &[("RUTIS_TOKEN", token.as_str())],
     );
-    node.expect("rutis: listening on");
+    let (url, _) = s.announced(&mut node);
     let probe = s.probe_in("pip", "probe-ws", Lang::Python, &["greeter"]);
     s.write_json(
         "pip/rutis.json",

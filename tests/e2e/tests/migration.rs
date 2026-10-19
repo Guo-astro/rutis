@@ -118,17 +118,18 @@ fn a_config(s: &Scenario, calendar: Calendar, watch: &Probe) {
     s.replace("rutis.json", serde_json::to_string_pretty(&config).unwrap());
 }
 
-/// Node B: `rutis-host run b.json`, listening on `port` for A with
-/// `token`, exporting its `calendar`. Returns once its rows run (its
-/// listener is bound before they load).
-fn node_b(s: &Scenario, port: u16, token: &str) -> Host {
+/// Node B: `rutis-host run b.json`, listening for A with `token` on a
+/// port it picks (#455), exporting its `calendar`. Returns once its rows
+/// run (its listener is bound before they load), with the address it
+/// reported.
+fn node_b(s: &Scenario, token: &str) -> (Host, std::net::SocketAddr) {
     s.write("calendar-b.ts", B_CALENDAR);
     s.write_json(
         "b.json",
         &json!({
             "id": "b",
             "runtimes": { "node": {} },
-            "listen": [{ "name": "local", "address": format!("127.0.0.1:{port}") }],
+            "listen": [{ "name": "local", "address": "127.0.0.1:0" }],
             "rows": [
                 { "id": "calendar", "name": "./calendar-b.ts" },
                 {
@@ -140,9 +141,10 @@ fn node_b(s: &Scenario, port: u16, token: &str) -> Host {
         }),
     );
     let mut b = s.host_with(["run", "b.json"], &[("RUTIS_TOKEN_A", token)]);
+    let address = s.listening(&mut b, "local");
     b.expect("calendar: running");
     b.expect("a: running");
-    b
+    (b, address)
 }
 
 /// The Python runtime's processes among A's.
@@ -351,7 +353,6 @@ fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
     let s = Scenario::new("migration");
     let watch = s.probe("watch", Lang::Node, &[]);
     let token = s.secret();
-    let port = s.port();
 
     // 1. A: `planner` with the Python `calendar`.
     let (mut a, before) = stage_1(&s, A::Fixture, &watch, &token);
@@ -360,8 +361,8 @@ fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
     // 2. One edit: the Python row and runtime out, a link to B importing
     //    its `calendar` in. Results come from B; A's Python runtime has
     //    exited (G3); the Node runtime is the same process.
-    let mut b = node_b(&s, port, &token);
-    let proxy = s.proxy(std::net::SocketAddr::from(([127, 0, 0, 1], port)));
+    let (mut b, address) = node_b(&s, &token);
+    let proxy = s.proxy(address);
     let dial = format!("ws://{}/rutis", proxy.addr());
     a_config(&s, Calendar::Node(&dial), &watch);
     switch(A::Fixture, &mut a, &watch, "python", "node B");
@@ -434,12 +435,11 @@ fn an_implementation_moves_from_python_to_a_node_while_rutis_host_runs() {
     let s = Scenario::new("migration-run");
     let watch = s.probe("watch", Lang::Node, &[]);
     let token = s.secret();
-    let port = s.port();
     let (mut a, before) = stage_1(&s, A::Run, &watch, &token);
     let pid = a.pid();
 
-    let mut b = node_b(&s, port, &token);
-    let dial = format!("ws://127.0.0.1:{port}/rutis");
+    let (mut b, address) = node_b(&s, &token);
+    let dial = format!("ws://{address}/rutis");
     a_config(&s, Calendar::Node(&dial), &watch);
     switch(A::Run, &mut a, &watch, "python", "node B");
     b.expect("calendar on B: today");

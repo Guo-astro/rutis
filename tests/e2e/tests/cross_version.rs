@@ -535,7 +535,6 @@ fn a_previous_go_sdk_binary_is_refused_by_the_event_protocol() {
 fn a_previous_remote_runtime_is_refused_by_the_event_protocol() {
     each("events-prev-remote", Meeting::Refused, |release, s| {
         let token = s.secret();
-        let port = s.port();
         s.write("gpu/echo.py", echo_py("echo"));
         let old = release.python_path().display().to_string();
         let mut node = s.program(
@@ -544,7 +543,7 @@ fn a_previous_remote_runtime_is_refused_by_the_event_protocol() {
             [
                 "-m".to_owned(),
                 "rutis".into(),
-                format!("listen:ws://127.0.0.1:{port}/rutis"),
+                "listen:ws://127.0.0.1:0/rutis".into(),
                 "--id".into(),
                 "gpu".into(),
                 "--peer".into(),
@@ -553,7 +552,7 @@ fn a_previous_remote_runtime_is_refused_by_the_event_protocol() {
             ],
             &[("RUTIS_TOKEN", &token), ("PYTHONPATH", &old)],
         );
-        node.expect("rutis: listening on");
+        let (url, _) = s.announced(&mut node);
         s.write_json(
             "rutis.json",
             &json!({
@@ -561,7 +560,7 @@ fn a_previous_remote_runtime_is_refused_by_the_event_protocol() {
                 "runtimes": { "remote": [{ "name": "gpu", "language": "python" }] },
                 "rows": [
                     { "id": "gpu", "name": "rutis-bridge/peer", "config": {
-                        "peer": "gpu", "dial": format!("ws://127.0.0.1:{port}/rutis"), "runtime": "gpu",
+                        "peer": "gpu", "dial": url, "runtime": "gpu",
                     } },
                     { "id": "echo", "name": "gpu:echo" },
                 ],
@@ -623,6 +622,56 @@ fn the_current_runtimes_refuse_a_previous_host() {
     }
 }
 
+/// The link row to `peer`: listening on the node's listener `local`
+/// ([`start_nodes`] adds it), or dialing, at the address [`start_nodes`]
+/// sets once the far end listens.
+fn link(peer: &str, listens: bool, export: &[&str], import: &[&str]) -> Value {
+    let mut config = json!({ "peer": peer, "export": export, "import": import });
+    if listens {
+        config["listen"] = json!("local");
+    }
+    json!({ "id": peer, "name": "rutis-bridge/peer", "config": config })
+}
+
+/// Start two linked nodes, `old/rutis.json` and `current/rutis.json`
+/// (their link rows from [`link`]): the listening one first, on a port it
+/// picks (`127.0.0.1:0`, #455); then the other, its link dialing the
+/// address the first reported. Returns (old, current).
+fn start_nodes(
+    s: &Scenario,
+    old_listens: bool,
+    mut old: Value,
+    mut current: Value,
+    start_old: impl FnOnce() -> Host,
+    start_current: impl FnOnce() -> Host,
+) -> (Host, Host) {
+    let listener = json!([{ "name": "local", "address": "127.0.0.1:0" }]);
+    let dial = |config: &mut Value, peer: &str, address: std::net::SocketAddr| {
+        let row = config["rows"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|row| row["id"] == peer)
+            .expect("the link row");
+        row["config"]["dial"] = json!(format!("ws://{address}/rutis"));
+    };
+    if old_listens {
+        old["listen"] = listener;
+        s.write_json("old/rutis.json", &old);
+        let mut old = start_old();
+        dial(&mut current, "old", s.listening(&mut old, "local"));
+        s.write_json("current/rutis.json", &current);
+        (old, start_current())
+    } else {
+        current["listen"] = listener;
+        s.write_json("current/rutis.json", &current);
+        let mut current = start_current();
+        dial(&mut old, "current", s.listening(&mut current, "local"));
+        s.write_json("old/rutis.json", &old);
+        (start_old(), current)
+    }
+}
+
 /// A previous rutis-host node and the current one, either dialing: the
 /// current node refuses the link naming the old node and its version. When
 /// the current node dials, its link stops and is not dialed again; when it
@@ -639,36 +688,29 @@ fn a_previous_node_is_refused_by_the_event_protocol() {
             Meeting::Refused,
             |release, s| {
                 let token = s.secret();
-                let port = s.port();
-                let url = format!("ws://127.0.0.1:{port}/rutis");
-                let listener = json!([{ "name": "local", "address": format!("127.0.0.1:{port}") }]);
-                let link = |peer: &str, listens: bool| {
-                    let mut config = json!({ "peer": peer, "export": [], "import": [] });
-                    match listens {
-                        true => config["listen"] = json!("local"),
-                        false => config["dial"] = json!(url),
-                    }
-                    json!({ "id": peer, "name": "rutis-bridge/peer", "config": config })
-                };
-                let mut old = json!({ "id": "old", "rows": [link("current", old_listens)] });
-                let mut current = json!({ "id": "current", "rows": [link("old", !old_listens)] });
-                if old_listens {
-                    old["listen"] = listener;
-                } else {
-                    current["listen"] = listener;
-                }
-                s.write_json("old/rutis.json", &old);
-                s.write_json("current/rutis.json", &current);
-                let old = s.program(
-                    "old",
-                    release.host(),
-                    ["run", "rutis.json"],
-                    &[("RUTIS_TOKEN_CURRENT", &token)],
-                );
-                let mut current = s.host_in_with(
-                    "current",
-                    ["run", "rutis.json"],
-                    &[("RUTIS_TOKEN_OLD", &token)],
+                let old = json!({ "id": "old", "rows": [link("current", old_listens, &[], &[])] });
+                let current =
+                    json!({ "id": "current", "rows": [link("old", !old_listens, &[], &[])] });
+                let (old, mut current) = start_nodes(
+                    &s,
+                    old_listens,
+                    old,
+                    current,
+                    || {
+                        s.program(
+                            "old",
+                            release.host(),
+                            ["run", "rutis.json"],
+                            &[("RUTIS_TOKEN_CURRENT", &token)],
+                        )
+                    },
+                    || {
+                        s.host_in_with(
+                            "current",
+                            ["run", "rutis.json"],
+                            &[("RUTIS_TOKEN_OLD", &token)],
+                        )
+                    },
                 );
                 // Listening, the link waits for the next dial; dialing, it stops.
                 let said = match old_listens {
@@ -869,7 +911,6 @@ fn a_previous_python_runtime_under_the_current_host() {
 fn a_previous_python_remote_runtime_dialed_by_the_current_host() {
     each("prev-python-listen", Meeting::Works, |release, s| {
         let token = s.secret();
-        let port = s.port();
         s.write("gpu/echo.py", echo_py("echo"));
         let old = release.python_path().display().to_string();
         let mut node = s.program(
@@ -878,7 +919,7 @@ fn a_previous_python_remote_runtime_dialed_by_the_current_host() {
             [
                 "-m".to_owned(),
                 "rutis".into(),
-                format!("listen:ws://127.0.0.1:{port}/rutis"),
+                "listen:ws://127.0.0.1:0/rutis".into(),
                 "--id".into(),
                 "gpu".into(),
                 "--peer".into(),
@@ -887,7 +928,7 @@ fn a_previous_python_remote_runtime_dialed_by_the_current_host() {
             ],
             &[("RUTIS_TOKEN", &token), ("PYTHONPATH", &old)],
         );
-        node.expect("rutis: listening on");
+        let (url, _) = s.announced(&mut node);
         s.link_node_sdk();
         s.write("sender.ts", SENDER_TS.replace("TARGET", "echo"));
         let probe = s.probe("probe", Lang::Node, &["echo", "sender"]);
@@ -905,7 +946,7 @@ fn a_previous_python_remote_runtime_dialed_by_the_current_host() {
                         "name": "rutis-bridge/peer",
                         "config": {
                             "peer": "gpu",
-                            "dial": format!("ws://127.0.0.1:{port}/rutis"),
+                            "dial": url,
                             "runtime": "gpu",
                         },
                     },
@@ -1032,21 +1073,10 @@ fn the_current_runtimes_under_a_previous_host() {
 /// tagged values to the old node; events cross both ways.
 fn nodes(release: &Release, s: Scenario, old_listens: bool) {
     let token = s.secret();
-    let port = s.port();
-    let url = format!("ws://127.0.0.1:{port}/rutis");
-    let link = |peer: &str, listens: bool, export: &[&str], import: &[&str]| {
-        let mut config = json!({ "peer": peer, "export": export, "import": import });
-        match listens {
-            true => config["listen"] = json!("local"),
-            false => config["dial"] = json!(url),
-        }
-        json!({ "id": peer, "name": "rutis-bridge/peer", "config": config })
-    };
-    let listener = json!([{ "name": "local", "address": format!("127.0.0.1:{port}") }]);
 
     s.write("old/echo.py", echo_py("echo"));
     let old_probe = s.probe_in("old", "probe-old", Lang::Python, &["greeter", "thrower"]);
-    let mut config = json!({
+    let old_config = json!({
         "id": "old",
         "runtimes": { "py": {} },
         "rows": [
@@ -1060,10 +1090,6 @@ fn nodes(release: &Release, s: Scenario, old_listens: bool) {
             old_probe.row(),
         ],
     });
-    if old_listens {
-        config["listen"] = listener.clone();
-    }
-    s.write_json("old/rutis.json", &config);
 
     s.link_node_sdk();
     s.write_json(
@@ -1074,7 +1100,7 @@ fn nodes(release: &Release, s: Scenario, old_listens: bool) {
     s.write("current/sender.ts", SENDER_TS.replace("TARGET", "echo"));
     s.write("current/thrower.ts", THROWER_TS);
     let probe = s.probe_in("current", "probe", Lang::Node, &["echo", "sender"]);
-    let mut config = json!({
+    let current_config = json!({
         "id": "current",
         "runtimes": { "node": {}, "py": {} },
         "rows": [
@@ -1090,31 +1116,35 @@ fn nodes(release: &Release, s: Scenario, old_listens: bool) {
             probe.row(),
         ],
     });
-    if !old_listens {
-        config["listen"] = listener;
-    }
-    s.write_json("current/rutis.json", &config);
 
     let python = release.python_path().display().to_string();
-    let mut old = s.program(
-        "old",
-        release.host(),
-        ["run", "rutis.json"],
-        &[
-            ("RUTIS_TOKEN_CURRENT", &token),
-            ("RUTIS_PYTHON_PATH", &python),
-            (
-                "RUTIS_NODE_RUNTIME",
-                &release.node_runtime().display().to_string(),
-            ),
-        ],
+    let node_runtime = release.node_runtime().display().to_string();
+    let (mut old, mut current) = start_nodes(
+        &s,
+        old_listens,
+        old_config,
+        current_config,
+        || {
+            s.program(
+                "old",
+                release.host(),
+                ["run", "rutis.json"],
+                &[
+                    ("RUTIS_TOKEN_CURRENT", &token),
+                    ("RUTIS_PYTHON_PATH", &python),
+                    ("RUTIS_NODE_RUNTIME", &node_runtime),
+                ],
+            )
+        },
+        || {
+            s.host_in_with(
+                "current",
+                ["run", "rutis.json"],
+                &[("RUTIS_TOKEN_OLD", &token)],
+            )
+        },
     );
     old.expect("echo: running");
-    let mut current = s.host_in_with(
-        "current",
-        ["run", "rutis.json"],
-        &[("RUTIS_TOKEN_OLD", &token)],
-    );
     current.expect("old: link connected");
     old.expect("current: link connected");
     probe.started(&mut current);

@@ -26,7 +26,8 @@ pub struct Proxy {
 
 pub(crate) struct Shared {
     addr: SocketAddr,
-    target: SocketAddr,
+    /// Where new connections go: [`Proxy::retarget`] changes it.
+    target: Mutex<SocketAddr>,
     state: Mutex<State>,
     /// Notified when a relayed connection closes.
     changed: Condvar,
@@ -135,7 +136,7 @@ impl Proxy {
         let addr = listener.local_addr().expect("the proxy's address");
         let shared = Arc::new(Shared {
             addr,
-            target,
+            target: Mutex::new(target),
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
         });
@@ -185,6 +186,14 @@ impl Proxy {
             )
         });
         self.shared.accept(listener);
+    }
+
+    /// Relay new connections to `target` from now on: the far end started
+    /// again on a port of its own (each start binds port 0 and reports it,
+    /// #455), behind the same proxy address. Connections relayed now are
+    /// left alone.
+    pub fn retarget(&self, target: SocketAddr) {
+        *self.shared.target.lock().unwrap() = target;
     }
 
     /// Wait until `n` connections the target accepted through the proxy
@@ -295,7 +304,8 @@ impl Shared {
     /// Relay `client` to a new connection to the target; if the target
     /// cannot be reached, close `client`, as an unreachable network would.
     fn relay(&self, client: TcpStream, generation: u64) {
-        let Ok(server) = TcpStream::connect_timeout(&self.target, CONNECT) else {
+        let target = *self.target.lock().unwrap();
+        let Ok(server) = TcpStream::connect_timeout(&target, CONNECT) else {
             let _ = client.shutdown(Shutdown::Both);
             return;
         };
