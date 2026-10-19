@@ -23,10 +23,12 @@ let package = Package(
             dependencies: ["Rutis"],
             path: "swift/rutis/Sources/RutisSessionFixture"
         ),
-        .testTarget(
-            name: "RutisTests",
+        // The SDK's own tests: `swift run RutisSelfTest` (a harness of its
+        // own, so that they run with any toolchain, Command Line Tools too).
+        .executableTarget(
+            name: "RutisSelfTest",
             dependencies: ["Rutis"],
-            path: "swift/rutis/Tests/RutisTests"
+            path: "swift/rutis/Tests/SelfTest"
         ),
     ],
     swiftLanguageVersions: [.v5]

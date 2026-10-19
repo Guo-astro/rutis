@@ -814,27 +814,21 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Swift toolchain
         run: swift --version
-      - name: swift build and test (SDK, fixtures)
+      # The SDK's own tests run as a program (swift/rutis/Tests/SelfTest):
+      # the runners' Command Line Tools have no XCTest, and not every
+      # version has Swift Testing's macros.
+      - name: swift build and the SDK's tests
         run: |
-          swift build --build-tests
-          swift test
-      # The library alone for iOS (design §13: the core is iOS too), when
-      # this Xcode has the iOS SDK; the Simulator tests need a Simulator
-      # runtime installed.
+          swift build
+          swift run RutisSelfTest
+      # The library for iOS (design §13: its core is iOS too), when this
+      # toolchain has the iOS SDK (Xcode).
       - name: iOS build of the library
         run: |
           if sdk=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null); then
             swift build --target Rutis --triple arm64-apple-ios17.0 --sdk "$sdk" --build-path .build/ios
           else
             echo "no iOS SDK on this runner: skipped"
-          fi
-      - name: iOS Simulator tests
-        run: |
-          if xcrun simctl list runtimes 2>/dev/null | grep -q '^iOS'; then
-            xcodebuild test -scheme rutis-Package -destination 'platform=iOS Simulator,name=iPhone 16' -skipMacroValidation -quiet \
-              || xcodebuild test -scheme rutis-Package -destination "platform=iOS Simulator,id=$(xcrun simctl list devices available -j | jq -r '[.devices[][] | select(.name | startswith("iPhone"))][0].udid')" -skipMacroValidation -quiet
-          else
-            echo "no iOS Simulator runtime on this runner: skipped"
           fi
       # Only the Swift tests of the contract suites: the other runtimes run
       # in their own jobs.

@@ -1,6 +1,5 @@
 import Foundation
 @testable import Rutis
-import Testing
 
 /// A compat session in this process: `host` drives `runtime`, which serves
 /// `dispatch`.
@@ -19,8 +18,8 @@ func pairOfPeers(_ dispatch: @escaping (String, String, [Value]) async throws ->
     return (host, runtime)
 }
 
-@Suite struct PeerTests {
-    @Test func testCallsAndCallbacks() async throws {
+struct PeerTests {
+    func testCallsAndCallbacks() async throws {
         let (host, runtime) = try await pairOfPeers { _, method, args in
             switch method {
             case "echo": return args.first ?? .undefined
@@ -57,7 +56,7 @@ func pairOfPeers(_ dispatch: @escaping (String, String, [Value]) async throws ->
         XCTAssertEqual(chain.plainJSON?.arrayValue?.first, .string("node:9"))
     }
 
-    @Test func testCancellingAnAsyncCallAbortsTheCallee() async throws {
+    func testCancellingAnAsyncCallAbortsTheCallee() async throws {
         let started = Event()
         let aborted = Event()
         let (host, runtime) = try await pairOfPeers { _, _, _ in
@@ -82,7 +81,7 @@ func pairOfPeers(_ dispatch: @escaping (String, String, [Value]) async throws ->
         XCTAssertTrue(heard, "the callee's Task is cancelled")
     }
 
-    @Test func testAValueTooDeepFailsOnlyItsCall() async throws {
+    func testAValueTooDeepFailsOnlyItsCall() async throws {
         let (host, runtime) = try await pairOfPeers { _, _, args in args.first ?? .undefined }
         defer {
             host.close()
@@ -100,7 +99,7 @@ func pairOfPeers(_ dispatch: @escaping (String, String, [Value]) async throws ->
         XCTAssertEqual(fine.plainJSON, .string("ok"))
     }
 
-    @Test func testTheSessionEndsWhenTheFarEndGoes() async throws {
+    func testTheSessionEndsWhenTheFarEndGoes() async throws {
         let (host, runtime) = try await pairOfPeers { _, _, _ in .undefined }
         host.close()
         host.channel.close()

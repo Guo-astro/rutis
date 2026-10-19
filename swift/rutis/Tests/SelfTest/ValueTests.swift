@@ -1,9 +1,8 @@
 import Foundation
 @testable import Rutis
-import Testing
 
-@Suite struct JSONTests {
-    @Test func testReadsAndWritesData() throws {
+struct JSONTests {
+    func testReadsAndWritesData() throws {
         let text = #"{"a":[1,2.5,-3,9007199254740991,1e+21,-0.0],"b":"x\ny\"\u0001é😀","c":null,"d":true}"#
         let json = try JSONReader.parse(text)
         XCTAssertEqual(json["a"], .array([.number("1"), .number("2.5"), .number("-3"), .number("9007199254740991"),
@@ -13,7 +12,7 @@ import Testing
         XCTAssertEqual(JSONWriter.string(json), #"{"a":[1,2.5,-3,9007199254740991,1e+21,-0.0],"b":"x\ny\"\u0001é😀","c":null,"d":true}"#)
     }
 
-    @Test func testRefusesWhatIsNotJSON() {
+    func testRefusesWhatIsNotJSON() {
         for bad in ["", "{", "[1,]", "\u{FEFF}{}", "{} x", "01", "1.", "-", "\"\u{1}\"", "{\"a\" 1}", "nul", "[1 2]"] {
             XCTAssertThrowsError(try JSONReader.parse(bad), bad)
         }
@@ -23,13 +22,13 @@ import Testing
         XCTAssertThrowsError(try JSONReader.parse([0x22, 0xC0, 0xAF, 0x22]), "an overlong form")
     }
 
-    @Test func testSurrogatePairs() throws {
+    func testSurrogatePairs() throws {
         XCTAssertEqual(try JSONReader.parse(#""😀""#), .string("😀"))
         // A lone surrogate becomes U+FFFD.
         XCTAssertEqual(try JSONReader.parse(#""\ud83d""#), .string("\u{FFFD}"))
     }
 
-    @Test func testDoublesKeepTheirBits() throws {
+    func testDoublesKeepTheirBits() throws {
         for value in [0.1, 2.0, -0.0, 5e-324, Double.greatestFiniteMagnitude, 9_007_199_254_740_993.0, 1e21, 1e-7] {
             let json = try XCTUnwrap(JSON.double(value))
             guard case let .number(text) = json else { return XCTFail() }
@@ -41,8 +40,8 @@ import Testing
     }
 }
 
-@Suite struct TaggedValueTests {
-    @Test func testDatesAndTimes() throws {
+struct TaggedValueTests {
+    func testDatesAndTimes() throws {
         XCTAssertEqual(Rutis.CalendarDate("2026-10-15"), Rutis.CalendarDate(year: 2026, month: 10, day: 15))
         XCTAssertNil(Rutis.CalendarDate("2026-02-29"))
         XCTAssertNotNil(Rutis.CalendarDate("2024-02-29"))
@@ -56,7 +55,7 @@ import Testing
         XCTAssertNil(Rutis.DateTime("2026-10-15T14:30:05Z"))
     }
 
-    @Test func testInstants() throws {
+    func testInstants() throws {
         let instant = try XCTUnwrap(Instant("2026-10-15T03:22:15.123456789Z"))
         XCTAssertEqual(instant.description, "2026-10-15T03:22:15.123456789Z")
         // A Date holds about a microsecond: truncated toward negative
@@ -70,7 +69,7 @@ import Testing
         XCTAssertThrowsError(try Instant(Date(timeIntervalSince1970: -70_000_000_000)).check())
     }
 
-    @Test func testBigIntegers() {
+    func testBigIntegers() {
         let big = Rutis.BigInt("-123456789012345678901")
         XCTAssertEqual(big?.description, "-123456789012345678901")
         XCTAssertNil(Rutis.BigInt("-0"))
@@ -85,7 +84,7 @@ import Testing
         XCTAssertTrue(Rutis.BigInt(10) > Rutis.BigInt(9))
     }
 
-    @Test func testBytesDecimalsAndUUIDs() throws {
+    func testBytesDecimalsAndUUIDs() throws {
         XCTAssertEqual(try TagText.bytes("aGVsbG8="), Data("hello".utf8))
         XCTAssertThrowsError(try TagText.bytes("aGVsbG8"))
         XCTAssertThrowsError(try TagText.bytes("aGVsbG9="), "unused bits must be zero")
@@ -98,7 +97,7 @@ import Testing
         XCTAssertNoThrow(try TagText.checkUUID("0f8fad5b-d9cb-469f-a165-70867728950e"))
     }
 
-    @Test func testMapKeys() throws {
+    func testMapKeys() throws {
         XCTAssertNoThrow(try checkKeys([.data(.string("1")), .data(.number("1")), .data(.bool(true))], "map key"))
         XCTAssertThrowsError(try checkKeys([.data(.number("1")), .data(.number("1.0"))], "map key"), "1 and 1.0 are one key")
         XCTAssertThrowsError(try checkKeys([.data(.number("9007199254740992"))], "map key"), "beyond ±(2^53−1)")
@@ -119,7 +118,7 @@ struct Reading: Codable, Equatable {
     var day: Rutis.CalendarDate?
 }
 
-@Suite struct CodecTests {
+struct CodecTests {
     func written(_ value: Value) -> String {
         switch value {
         case let .data(json): return JSONWriter.string(json)
@@ -131,7 +130,7 @@ struct Reading: Codable, Equatable {
         }
     }
 
-    @Test func testStructFieldsCrossAsTheirValues() throws {
+    func testStructFieldsCrossAsTheirValues() throws {
         // The V9 rule: inside a struct, a Date is an instant, Data bytes, a
         // big Int64 a bigint, a Dictionary with Int keys a map.
         let reading = Reading(at: Instant("2025-10-15T03:22:15.123Z")!.date, raw: Data("hello".utf8), n: 1 << 60,
@@ -143,14 +142,14 @@ struct Reading: Codable, Equatable {
         XCTAssertEqual(back, reading)
     }
 
-    @Test func testPlainDataIsData() throws {
+    func testPlainDataIsData() throws {
         struct Point: Codable { var x: Int; var y: [Double] }
         let value = try ValueCodec.encode(Point(x: 1, y: [2.5]))
         guard case .data = value else { return XCTFail("\(value)") }
         XCTAssertEqual(written(value), #"{"x":1,"y":[2.5]}"#)
     }
 
-    @Test func testIntegersBeyondTheSafeRangeAreBigInts() throws {
+    func testIntegersBeyondTheSafeRangeAreBigInts() throws {
         XCTAssertEqual(written(try ValueCodec.encode(9_007_199_254_740_991)), "9007199254740991")
         XCTAssertEqual(written(try ValueCodec.encode(UInt64.max)), "bigint(18446744073709551615)")
         XCTAssertEqual(try ValueCodec.decode(UInt64.self, from: .bigint(Rutis.BigInt(UInt64.max))), UInt64.max)
@@ -159,12 +158,12 @@ struct Reading: Codable, Equatable {
         XCTAssertThrowsError(try ValueCodec.decode(Int.self, from: .data(.number("2.5"))))
     }
 
-    @Test func testNonFiniteNumbersDoNotCross() {
+    func testNonFiniteNumbersDoNotCross() {
         XCTAssertThrowsError(try ValueCodec.encode(Double.nan))
         XCTAssertThrowsError(try ValueCodec.encode([1.0, .infinity]))
     }
 
-    @Test func testAnyDecodesIntoNativeValues() throws {
+    func testAnyDecodesIntoNativeValues() throws {
         let value = Value.list([.data(.number("1")), .data(.number("1.5")), .data(.string("a")), .null,
                                 .map([(.data(.number("1")), .data(.string("a")))]), .set([.data(.string("s"))]),
                                 .bigint(Rutis.BigInt(UInt64.max)), .uuid("0f8fad5b-d9cb-469f-a165-70867728950e")])
@@ -182,12 +181,12 @@ struct Reading: Codable, Equatable {
         XCTAssertEqual(written(again), #"[1,1.5,"a",null,map(1="a"),set("s"),bigint(18446744073709551615),uuid(0f8fad5b-d9cb-469f-a165-70867728950e)]"#)
     }
 
-    @Test func testDecimalKeepsItsTextAsAString() throws {
+    func testDecimalKeepsItsTextAsAString() throws {
         XCTAssertEqual(try ValueCodec.decode(String.self, from: .decimal("1.10")), "1.10")
         XCTAssertEqual(try ValueCodec.decode(Decimal.self, from: .decimal("1.10")), Decimal(string: "1.1"))
     }
 
-    @Test func testCyclicValuesFail() {
+    func testCyclicValuesFail() {
         final class Node: Encodable {
             var next: Node?
         }
@@ -196,7 +195,7 @@ struct Reading: Codable, Equatable {
         XCTAssertThrowsError(try ValueCodec.encode(node))
     }
 
-    @Test func testOptionalsAndMissingFields() throws {
+    func testOptionalsAndMissingFields() throws {
         struct Config: Decodable, Equatable { var city: String; var days: Int? }
         let value = Value.data(.object([("city", .string("Oslo"))]))
         XCTAssertEqual(try ValueCodec.decode(Config.self, from: value), Config(city: "Oslo", days: nil))
@@ -205,14 +204,14 @@ struct Reading: Codable, Equatable {
     }
 }
 
-@Suite struct ErrorGraphTests {
+struct ErrorGraphTests {
     struct Quota: Error, LocalizedError {
         var code = "quota"
         var data: [String: Int] = ["left": 0]
         var errorDescription: String? { "quota exhausted" }
     }
 
-    @Test func testAnErrorCrossesWithItsCodeAndData() {
+    func testAnErrorCrossesWithItsCodeAndData() {
         let wire = encodeError(Quota()) { try ValueCodec.encodeAny($0) }
         XCTAssertEqual(wire["name"], .string("Quota"))
         XCTAssertEqual(wire["message"], .string("quota exhausted"))
@@ -226,7 +225,7 @@ struct Reading: Codable, Equatable {
         XCTAssertEqual(again.graph, back.graph)
     }
 
-    @Test func testAnAggregateKeepsItsChildrenInOrder() {
+    func testAnAggregateKeepsItsChildrenInOrder() {
         let aggregate = RutisError(name: RutisError.Name.aggregateError, message: "2 listeners of t/x failed",
                                    errors: [RutisError(name: "AErr", message: "a"), RutisError(name: "BErr", message: "b", code: "B")])
         let back = decodeError(encodeError(aggregate) { try ValueCodec.encodeAny($0) }) { ValueCodec.native($0) }
