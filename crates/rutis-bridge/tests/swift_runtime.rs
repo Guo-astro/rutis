@@ -12,7 +12,7 @@ use std::sync::{Arc, OnceLock};
 use rutis::Ctx;
 use rutis_bridge::runtime::{row_projection, Launcher, Mount, Process};
 use rutis_bridge::session::{host_key, settle, Error, HostDispatch, Value as RpcValue};
-use rutis_test_support::until;
+use rutis_test_support::{until, within, Guard, HANG_GUARD};
 use serde_json::{json, Value};
 
 fn repo() -> PathBuf {
@@ -41,16 +41,20 @@ fn binary(product: &str) -> PathBuf {
 
 async fn swift(project: &Path, product: &str) -> Arc<Process> {
     let launcher = Launcher::swift(&binary(product), project);
-    Process::mount(
-        &repo(),
+    let repo = repo();
+    // A cold start: twice the hang guard.
+    let mount = Process::mount(
+        &repo,
         Mount {
             anchor: Some(project),
             launcher: Some(&launcher),
             ..Mount::default()
         },
-    )
-    .await
-    .unwrap()
+    );
+    Guard(HANG_GUARD * 2)
+        .within("the Swift runtime's start", mount)
+        .await
+        .unwrap()
 }
 
 /// Load `entry` as row `key` and wait for its service `name`.
@@ -113,7 +117,9 @@ async fn swift_rows_follow_the_row_contract() {
         }
         other => panic!("describing a missing plugin should fail, got {other:?}"),
     }
-    process.dispose().await.unwrap();
+    within("the Swift runtime's exit", process.dispose())
+        .await
+        .unwrap();
 }
 
 /// guarantee: bridge/cancellation
@@ -155,8 +161,10 @@ async fn a_dropped_async_call_cancels_the_methods_task() {
         "the session goes on"
     );
     drop(work);
-    process.dispose().await.unwrap();
-    ctx.shutdown().await.unwrap();
+    within("the Swift runtime's exit", process.dispose())
+        .await
+        .unwrap();
+    within("the shutdown", ctx.shutdown()).await.unwrap();
 }
 
 /// guarantee: bridge/error-code-and-data
@@ -209,8 +217,10 @@ async fn errors_cross_with_their_names_codes_and_data_both_ways() {
     }
     assert_eq!(json_of(&work, "ping", json!([])), json!("pong"));
     drop(work);
-    process.dispose().await.unwrap();
-    ctx.shutdown().await.unwrap();
+    within("the Swift runtime's exit", process.dispose())
+        .await
+        .unwrap();
+    within("the shutdown", ctx.shutdown()).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -243,8 +253,10 @@ async fn data_is_copied_and_service_objects_cross_by_reference() {
     let counter = counter();
     assert_eq!(counter.get("total").unwrap().json().unwrap(), json!(5));
     drop((counter, work));
-    process.dispose().await.unwrap();
-    ctx.shutdown().await.unwrap();
+    within("the Swift runtime's exit", process.dispose())
+        .await
+        .unwrap();
+    within("the shutdown", ctx.shutdown()).await.unwrap();
 }
 
 /// A host older than rutis 0.13 does not declare events-v2: the runtime
@@ -263,7 +275,9 @@ async fn a_host_without_events_v2_is_refused() {
         .kill_on_drop(true)
         .spawn()
         .unwrap();
-    let (mut stream, _) = listener.accept().await.unwrap();
+    let (mut stream, _) = within("the runtime's connection", listener.accept())
+        .await
+        .unwrap();
     // A 0.12 host's greeting: no events-v2.
     stream
         .write_all(b"{\"op\":\"hello\",\"version\":2,\"capabilities\":[\"sync-wait\"]}\n")
