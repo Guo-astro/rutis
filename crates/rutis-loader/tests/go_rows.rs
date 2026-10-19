@@ -920,22 +920,37 @@ async fn a_failed_manifest_read_of_a_listed_binary_is_read_again_once_it_stood()
 /// A Go binary (a script with the SDK's marker) at `path` built against a
 /// Go SDK older than 0.13: its manifest has the plugin `old`, and its
 /// session greets in the format of 0.12, without `events-v2`; each start
-/// adds a line to the file `runs`.
+/// adds a line to the file `runs`. It takes its channel as a Go binary
+/// does (its first argument): `fd:3`, a socket path to dial, or, with
+/// `RUTIS_LOCAL_HANDOVER=loopback`, `tcp:<address>` presenting the token of
+/// `RUTIS_CHANNEL_TOKEN` first.
 #[cfg(unix)]
 fn old_sdk(path: &Path, runs: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let script = format!(
-        r#"#!/bin/sh
+        r#"#!/usr/bin/env python3
 # rutis-go-runtime:1
-if [ "$1" = --rutis-manifest ]; then
-  echo '{{"pluginApi":1,"plugins":{{"old":{{"inject":[],"provides":{{}}}}}}}}'
-  exit 0
-fi
-echo run >> '{runs}'
-printf '%s\n' '{{"op":"hello","version":2}}' >&3
-cat <&3 > /dev/null
+import os, socket, sys
+if sys.argv[1] == "--rutis-manifest":
+    print('{{"pluginApi":1,"plugins":{{"old":{{"inject":[],"provides":{{}}}}}}}}')
+    sys.exit(0)
+with open({runs:?}, "a") as runs:
+    runs.write("run\n")
+channel = sys.argv[1]
+if channel.startswith("fd:"):
+    conn = socket.socket(fileno=int(channel[3:]))
+elif channel.startswith("tcp:"):
+    host, port = channel[4:].rsplit(":", 1)
+    conn = socket.create_connection((host, int(port)))
+    conn.sendall((os.environ["RUTIS_CHANNEL_TOKEN"] + "\n").encode())
+else:
+    conn = socket.socket(socket.AF_UNIX)
+    conn.connect(channel.removeprefix("unix:"))
+conn.sendall(b'{{"op":"hello","version":2}}\n')
+while conn.recv(4096):
+    pass
 "#,
-        runs = runs.display()
+        runs = runs.display().to_string()
     );
     std::fs::write(path, script).unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
