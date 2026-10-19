@@ -69,6 +69,7 @@ fn available(language: &str) -> bool {
         "node" | "node-leaf" | "python" => true,
         "bun" => cfg!(feature = "bun") && on_path("bun"),
         "go" => cfg!(feature = "go") && on_path("go"),
+        "swift" => cfg!(all(feature = "swift", target_os = "macos")) && on_path("swift"),
         _ => false,
     }
 }
@@ -95,6 +96,28 @@ fn go_binary() -> &'static Path {
             .expect("go is on PATH");
         assert!(status.success(), "go build ./internal/fixtures/runtime");
         binary
+    })
+}
+
+#[cfg(all(feature = "swift", target_os = "macos"))]
+/// The Swift fixture runtime (`swift/rutis/Sources/RutisConformance`,
+/// serving `conformance-events` among its test plugins), built once.
+fn swift_binary() -> &'static Path {
+    static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BINARY.get_or_init(|| {
+        let product = "RutisConformance";
+        let status = std::process::Command::new("swift")
+            .args(["build", "--product", product])
+            .current_dir(repo())
+            .status()
+            .expect("swift is on PATH");
+        assert!(status.success(), "swift build --product {product}");
+        let output = std::process::Command::new("swift")
+            .args(["build", "--show-bin-path"])
+            .current_dir(repo())
+            .output()
+            .expect("swift is on PATH");
+        PathBuf::from(String::from_utf8(output.stdout).unwrap().trim()).join(product)
     })
 }
 
@@ -167,6 +190,18 @@ fn runtime(language: &str, name: &str, dir: &Path) -> (LocalRuntime, Modules) {
                 .map(|v| (*v, "conformance-events".to_owned()))
                 .collect();
             (Launcher::go(go_binary(), &project), project, modules)
+        }
+        #[cfg(all(feature = "swift", target_os = "macos"))]
+        "swift" => {
+            let project = dir.join(format!("{name}-project"));
+            std::fs::create_dir_all(&project).unwrap();
+            // As Go: one plugin provides `emitter-<label>` without declaring
+            // it (its sync method on the wire: `dispatchSync`).
+            let modules = variants
+                .iter()
+                .map(|v| (*v, "conformance-events".to_owned()))
+                .collect();
+            (Launcher::swift(swift_binary(), &project), project, modules)
         }
         #[cfg(feature = "bun")]
         "bun" => {
@@ -1206,6 +1241,13 @@ async fn events_with_x_a_python_plugin() {
 #[tokio::test(flavor = "multi_thread")]
 async fn events_with_x_a_go_plugin() {
     conformance("go").await;
+}
+
+/// guarantee: events/one-bus, X a Swift plugin.
+#[cfg(all(feature = "swift", target_os = "macos"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn events_with_x_a_swift_plugin() {
+    conformance("swift").await;
 }
 
 /// guarantee: events/one-bus, X a Bun plugin.

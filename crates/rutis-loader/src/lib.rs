@@ -60,5 +60,11 @@ pub use runtime::{
     read_go_manifest, Go, GoBinaries, GoBinary, GoManifest, GoResolver, GoRuntimeInfo,
     GoRuntimeState, GoRuntimes, GoRuntimesHandle, GO_MARKER,
 };
+#[cfg(feature = "swift")]
+pub use runtime::{
+    read_swift_manifest, Swift, SwiftBinaries, SwiftBinary, SwiftManifest, SwiftResolver,
+    SwiftRuntimeInfo, SwiftRuntimeState, SwiftRuntimes, SwiftRuntimesHandle, SWIFT_MARKER,
+    SWIFT_PLUGIN_API,
+};
 
 pub use volatile::{volatile_key, volatile_paths, VolatileUpdate};

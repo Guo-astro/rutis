@@ -124,6 +124,32 @@ pub fn go_binary() -> &'static Path {
     })
 }
 
+/// The product `product` of the Swift package (the repository's root
+/// `Package.swift`: `RutisMultilang`, `RutisPing`, `RutisConformance`),
+/// built with the `swift` on PATH, copied once into a directory of its own
+/// as `name`.
+#[allow(dead_code)]
+pub fn swift_binary(product: &str, name: &str) -> PathBuf {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    let bin = BUILT.get_or_init(|| {
+        let status = std::process::Command::new("swift")
+            .args(["build"])
+            .current_dir(repo())
+            .status()
+            .expect("swift is on PATH");
+        assert!(status.success(), "swift build");
+        let output = std::process::Command::new("swift")
+            .args(["build", "--show-bin-path"])
+            .current_dir(repo())
+            .output()
+            .expect("swift is on PATH");
+        PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
+    });
+    let out = tempfile::tempdir().unwrap().keep().join(name);
+    std::fs::copy(bin.join(product), &out).unwrap();
+    out
+}
+
 // ── Instances ───────────────────────────────────────────────────
 
 /// The instance's `tools`: tells its instance's title, and remembers the

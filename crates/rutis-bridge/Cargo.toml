@@ -60,6 +60,8 @@ bun = []
 # jvm target), started through the generic `Launcher`; no Kotlin runtime is
 # configured in rutis-host (docs/design-android-runtime-2026-10-12.md K-P1).
 kotlin = []
+# Local Swift runtimes: binaries built with the Swift SDK (swift/rutis).
+swift = []
 # The WebSocket transport.
 websocket = [
     "dep:futures-util",

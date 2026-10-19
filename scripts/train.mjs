@@ -38,6 +38,9 @@ const versions = {
   // The Go SDK (module go/rutis, released by the tag go/rutis/v<version>):
   // what its runtime and manifests say it is.
   'go github.com/arcships/rutis/go/rutis': read('go/rutis/version.go').match(/^const Version = "([^"]+)"/m)?.[1],
+  // The Swift SDK (the root Package.swift, released by the train's own
+  // v<version> tag): what its runtime and manifests say it is.
+  'swift github.com/arcships/rutis (Rutis)': read('swift/rutis/Sources/Rutis/Version.swift').match(/^ {4}public static let sdkVersion = "([^"]+)"/m)?.[1],
 }
 const host = json('node/rutis-host/package.json')
 // The npm packages: the four above and the platform packages the launcher

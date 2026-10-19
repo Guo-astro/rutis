@@ -1,5 +1,6 @@
 //! The runtime conformance suite (`rutis_bridge::runtime::testing::runtime`) over
-//! every channel: the Node, the Python and (feature `go`) the Go runtime, each connected on an
+//! every channel: the Node, the Python, (feature `go`) the Go and (feature
+//! `swift`, local channels) the Swift runtime, each connected on an
 //! inherited socket (`fd:3`), on a socket path it dials back, on a loopback
 //! address it dials presenting a token, and over a loopback WebSocket it
 //! listens on (dialed by Rust and attached); the Bun runtime (feature `bun`,
@@ -24,6 +25,8 @@ enum Runtime {
     Python,
     #[cfg_attr(not(feature = "go"), allow(dead_code))]
     Go,
+    #[cfg_attr(not(all(feature = "swift", target_os = "macos")), allow(dead_code))]
+    Swift,
     /// Unix only: Bun on Windows is not a declared platform.
     #[cfg(all(unix, feature = "bun"))]
     Bun,
@@ -106,6 +109,11 @@ async fn start(runtime: Runtime, via: Via, dir: &Path, ctx: &Ctx) -> (Arc<Proces
                 PathBuf::from("weather"),
             )
         }
+        Runtime::Swift => (
+            Launcher::new(swift_binary("RutisConformance")),
+            dir.to_owned(),
+            PathBuf::from("weather"),
+        ),
         #[cfg(all(unix, feature = "bun"))]
         Runtime::Bun => {
             let entry = dir.join("weather.ts");
@@ -317,6 +325,43 @@ fn go_binary(package: &str) -> PathBuf {
         .expect("go is on PATH");
     assert!(status.success(), "go build {package}");
     binary
+}
+
+/// A product of the Swift package (the repository's root `Package.swift`),
+/// built with the `swift` on PATH.
+fn swift_binary(product: &str) -> PathBuf {
+    let status = std::process::Command::new("swift")
+        .args(["build", "--product", product])
+        .current_dir(repo())
+        .status()
+        .expect("swift is on PATH");
+    assert!(status.success(), "swift build --product {product}");
+    let output = std::process::Command::new("swift")
+        .args(["build", "--show-bin-path"])
+        .current_dir(repo())
+        .output()
+        .expect("swift is on PATH");
+    PathBuf::from(String::from_utf8(output.stdout).unwrap().trim()).join(product)
+}
+
+// Swift (feature `swift`): the local channels. No WebSocket column:
+// listening is a later phase of the Swift SDK (A1, design §15).
+#[cfg(all(feature = "swift", target_os = "macos"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_on_an_inherited_socket() {
+    semantics(Runtime::Swift, Via::Inherit).await;
+}
+
+#[cfg(all(feature = "swift", target_os = "macos"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_dialing_a_socket_path() {
+    semantics(Runtime::Swift, Via::DialBack).await;
+}
+
+#[cfg(all(feature = "swift", target_os = "macos"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_dialing_a_loopback_address() {
+    semantics(Runtime::Swift, Via::Loopback).await;
 }
 
 #[cfg(feature = "go")]

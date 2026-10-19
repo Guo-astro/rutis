@@ -27,6 +27,9 @@
 //!   per binary, started when a row uses it. What compiled languages share
 //!   (feature `binary`, which theirs enable) is [`BinaryResolver`] and
 //!   [`BinaryRuntimes`]; a language names itself with a [`BinaryLanguage`].
+//! - **Swift** (feature `swift`, [`SwiftResolver`], [`SwiftRuntimes`]): a
+//!   row named `swift:<plugin>` runs the plugin in the Swift binary that has
+//!   it, as Go does.
 
 //! - **Runtimes that dial in** ([`RuntimeInstances`]): each connection an
 //!   access point admits is an instance of an `instanced` group, whose rows
@@ -80,6 +83,8 @@ mod connections;
 #[cfg(feature = "go")]
 mod go;
 mod rows;
+#[cfg(feature = "swift")]
+mod swift;
 #[cfg(feature = "binary")]
 pub use binary::{
     read_binary_manifest, Binaries, BinaryFile, BinaryLanguage, BinaryManifest, BinaryResolver,
@@ -94,6 +99,12 @@ pub use go::{
     GoRuntimeState, GoRuntimes, GoRuntimesHandle, GO_MARKER, PLUGIN_API,
 };
 pub use rows::{RowsSource, RuntimeRows, RuntimeRowsPlugin};
+#[cfg(feature = "swift")]
+pub use swift::{
+    read_swift_manifest, Swift, SwiftBinaries, SwiftBinary, SwiftManifest, SwiftResolver,
+    SwiftRuntimeInfo, SwiftRuntimeState, SwiftRuntimes, SwiftRuntimesHandle, SWIFT_MARKER,
+    SWIFT_PLUGIN_API,
+};
 
 #[cfg(doc)]
 use rutis_bridge::runtime::RuntimePlugin;
