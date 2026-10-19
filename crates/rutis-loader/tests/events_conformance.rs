@@ -16,7 +16,8 @@
 //! some for X (a language it needs is not available here).
 //! `RUTIS_EVENTS_CASE=<prefix>[,<prefix>...]` runs only the cases whose id
 //! starts with one of them (each must match a case).
-//! `RUTIS_EVENTS_REQUIRE=<language>[,...]` (CI: `node,python,go,bun`)
+//! `RUTIS_EVENTS_REQUIRE=<language>[,...]` (CI: `node,python,go,bun`; the
+//! Kotlin job adds `kotlin`)
 //! fails instead of skipping when one of them cannot run here.
 //!
 //! The suite runs one test at a time (each starts every runtime; a lock
@@ -54,8 +55,8 @@ use serde_json::{json, Value as Json};
 
 // ── Languages ───────────────────────────────────────────────────
 
-/// Whether `language` can run here: Bun and Go need their features and
-/// their programs on PATH.
+/// Whether `language` can run here: Bun, Go and Kotlin need their features
+/// and their programs on PATH (Kotlin: `java`).
 fn available(language: &str) -> bool {
     let on_path = |program: &str| {
         std::process::Command::new(program)
@@ -69,6 +70,7 @@ fn available(language: &str) -> bool {
         "node" | "node-leaf" | "python" => true,
         "bun" => cfg!(feature = "bun") && on_path("bun"),
         "go" => cfg!(feature = "go") && on_path("go"),
+        "kotlin" => cfg!(feature = "kotlin") && on_path("java"),
         "swift" => cfg!(all(feature = "swift", target_os = "macos")) && on_path("swift"),
         _ => false,
     }
@@ -190,6 +192,23 @@ fn runtime(language: &str, name: &str, dir: &Path) -> (LocalRuntime, Modules) {
                 .map(|v| (*v, "conformance-events".to_owned()))
                 .collect();
             (Launcher::go(go_binary(), &project), project, modules)
+        }
+        // The Kotlin runtime (`Rutis.serve` on the jvm target), started by
+        // the generic launcher; one plugin provides every emitter undeclared
+        // (its sync method on the wire: `dispatchSync`), as in Go.
+        #[cfg(feature = "kotlin")]
+        "kotlin" => {
+            let project = dir.join(format!("{name}-project"));
+            std::fs::create_dir_all(&project).unwrap();
+            let modules = variants
+                .iter()
+                .map(|v| (*v, "conformance-events".to_owned()))
+                .collect();
+            (
+                common::runtimes::kotlin_launcher(&project),
+                project,
+                modules,
+            )
         }
         #[cfg(all(feature = "swift", target_os = "macos"))]
         "swift" => {
@@ -1241,6 +1260,13 @@ async fn events_with_x_a_python_plugin() {
 #[tokio::test(flavor = "multi_thread")]
 async fn events_with_x_a_go_plugin() {
     conformance("go").await;
+}
+
+/// guarantee: events/one-bus, X a Kotlin plugin (the SDK's jvm target).
+#[cfg(feature = "kotlin")]
+#[tokio::test(flavor = "multi_thread")]
+async fn events_with_x_a_kotlin_plugin() {
+    conformance("kotlin").await;
 }
 
 /// guarantee: events/one-bus, X a Swift plugin.
