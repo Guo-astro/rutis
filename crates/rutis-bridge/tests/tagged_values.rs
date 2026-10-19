@@ -1,7 +1,6 @@
 //! Tagged values across the Rust side (#308): a call forwarded to a far
 //! end that did not declare a value's capability fails, through a host's
-//! own forwarding and through relays; `Process::emit` checks its arguments
-//! against the runtime's capabilities; generated types carry tagged values
+//! own forwarding and through relays; generated types carry tagged values
 //! through serde (`arg`, `decode_value`), and their integers beyond
 //! ±(2^53−1) as bigints. The wire rules are tested in
 //! `src/session/rpc/tests.rs`, the formats in `src/session/values.rs`.

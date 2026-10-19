@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"slices"
 	"strings"
@@ -539,6 +540,143 @@ func TestACallForAWithdrawnListenerFails(t *testing.T) {
 	if err := call(); !errors.Is(err, ErrBinding) || err.Error() != "listener 1 of t/gone is withdrawn" {
 		t.Fatalf("withdrawn: %v", err)
 	}
+}
+
+// guarantee: events/cancel (a cancelled waterfall fails a later next, §5.7)
+func TestNextAfterTheEmitterGaveUpFails(t *testing.T) {
+	_, rows := eventRows(t, "")
+	a := rows[0]
+	held := make(chan Next, 1)
+	a.On("t/wf-cancel", func(ctx context.Context, args ...any) (any, error) {
+		held <- args[len(args)-1].(Next)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	a.On("t/wf-cancel", func(context.Context, ...any) (any, error) { return "never", nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := a.Waterfall(ctx, "t/wf-cancel", nil); done <- err }()
+	next := testwait.Within(t, "the listener starts", held)
+	cancel()
+	if err := testwait.Within(t, "the emitter's call ends", done); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waterfall: %v", err)
+	}
+	if _, err := next(context.Background()); !errors.Is(err, ErrWaterfallNext) || err.Error() != "next of t/wf-cancel was called after its waterfall ended" {
+		t.Fatalf("next after cancellation: %v", err)
+	}
+}
+
+// refusingHost attaches to `rt` a session whose host refuses every
+// `events.on` and `events.dispatch` (answering the rest with undefined),
+// or, when `silent`, never answers an `events.dispatch`.
+func refusingHost(t *testing.T, rt *runtimeState, silent bool) (end func()) {
+	t.Helper()
+	a, b := net.Pipe()
+	hold := make(chan struct{})
+	host, err := peer.New(peer.NewLines(a), peer.Options{Host: true, Dispatch: func(ctx context.Context, target, method string, args []any) (any, error) {
+		switch {
+		case method == "events.dispatch" && silent:
+			<-hold
+			return peer.Undefined, nil
+		case method == "events.on" || method == "events.dispatch":
+			return nil, peer.Errorf("BindingError", "the host refused %s", method)
+		}
+		return peer.Undefined, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := peer.New(peer.NewLines(b), peer.Options{Dispatch: rt.dispatch, Arrive: rt.arrive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan error, 2)
+	for _, p := range []*peer.Peer{host, runtime} {
+		go func(p *peer.Peer) { started <- p.Start() }(p)
+	}
+	for range 2 {
+		if err := testwait.Within(t, "the session to start", started); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range []*peer.Peer{host, runtime} {
+		testwait.Within(t, "the handshake", p.Ready())
+	}
+	rt.mu.Lock()
+	rt.session = runtime
+	rt.mu.Unlock()
+	t.Cleanup(func() {
+		close(hold)
+		host.Close(nil)
+		runtime.Close(nil)
+		a.Close()
+		b.Close()
+	})
+	return func() { host.Close(nil); a.Close() }
+}
+
+// guarantee: events/reports (§11: an emit through the host refused, a
+// registration refused after its row loaded)
+func TestRefusedEmitsAndRegistrationsAreReported(t *testing.T) {
+	reports := captureReports(t)
+	rt, rows := eventRows(t, "")
+	a := rows[0]
+	refusingHost(t, rt, false)
+	a.On("t/late", func(context.Context, ...any) (any, error) { return nil, nil })
+	rt.mu.Lock()
+	rt.elsewhere["t/e"] = true
+	rt.mu.Unlock()
+	if err := a.Emit(context.Background(), "t/e"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"rutis: emit of t/e from row r0 failed: BindingError: the host refused events.dispatch",
+		"rutis: registration of listener of t/late in row r0 failed: BindingError: the host refused events.on",
+	}
+	testwait.Eventually(t, "both reports", func() bool { return len(reports.list()) == 2 }, func() string { return fmt.Sprint(reports.list()) })
+	got := reports.list()
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// guarantee: events/registration (§11: a registration the host refuses
+// during a row load fails the load instead of being reported)
+func TestARegistrationRefusedDuringTheLoadFailsIt(t *testing.T) {
+	reports := captureReports(t)
+	def := Define(Plugin[NoConfig]{Name: "events", Apply: func(c *Ctx, _ NoConfig) error {
+		c.On("t/early", func(context.Context, ...any) (any, error) { return nil, nil })
+		return nil
+	}})
+	rt := newRuntime([]*Definition{def})
+	t.Cleanup(func() { _ = rt.dispose(context.Background()) })
+	refusingHost(t, rt, false)
+	err := rt.load(context.Background(), "r0", "events", nil, nil, nil, nil)
+	if err == nil || len(reports.list()) != 0 {
+		t.Fatalf("the load gave %v and reported %q; §11 wants the load to fail with the refusal and no line", err, reports.list())
+	}
+}
+
+// guarantee: events/reports (§11: an emit through the host the session
+// ends before answering)
+func TestAnUnansweredEmitIsReportedWhenTheSessionEnds(t *testing.T) {
+	reports := captureReports(t)
+	rt, rows := eventRows(t, "")
+	end := refusingHost(t, rt, true)
+	rt.mu.Lock()
+	rt.elsewhere["t/e"] = true
+	rt.mu.Unlock()
+	if err := rows[0].Emit(context.Background(), "t/e"); err != nil {
+		t.Fatal(err)
+	}
+	end()
+	// The session's end as this process's session gives it.
+	want := "rutis: emit of t/e from row r0 failed: Error: Rust process disconnected"
+	testwait.Eventually(t, "the report", func() bool {
+		got := reports.list()
+		return len(got) == 1 && got[0] == want
+	}, func() string { return fmt.Sprint(reports.list()) })
 }
 
 // guarantee: events/filter (a host descriptor may carry more fields, such

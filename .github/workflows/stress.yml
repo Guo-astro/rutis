@@ -20,6 +20,9 @@
 #
 # And the host soak S8 (#192): rutis-host itself, for an hour, with random
 # operations, then every way of ending it, on Linux, macOS and Windows.
+#
+# And the unified events conformance suite (#464) in every placement
+# (`events-all`): pull requests run a sample of them.
 name: stress
 
 on:
@@ -40,6 +43,9 @@ on:
       host_soak_secs:
         description: How long the S8 host soak runs on each platform, in seconds
         default: "3600"
+      events_case:
+        description: The events conformance cases every placement of which runs (RUTIS_EVENTS_CASE, prefixes); empty, all of them in shards
+        default: ""
   # nightly.yml, with the defaults.
   workflow_call:
     inputs:
@@ -58,6 +64,9 @@ on:
       host_soak_secs:
         type: string
         default: "3600"
+      events_case:
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -192,8 +201,10 @@ jobs:
           }
           # shellcheck disable=SC2046 # the list splits into test names
           build rutis-bridge --all-features "$(bash tools/platform-tests.sh crates/rutis-bridge $(yq -r '.env.PURE_TESTS_BRIDGE' .github/workflows/ci.yml))"
+          # events_conformance runs in events-all instead: one round of
+          # it takes longer than a test binary may here.
           # shellcheck disable=SC2046 # the list splits into test names
-          build rutis-loader "--features node,python,go,bun,peer" "$(bash tools/platform-tests.sh crates/rutis-loader $(yq -r '.env.PURE_TESTS_LOADER' .github/workflows/ci.yml))"
+          build rutis-loader "--features node,python,go,bun,peer" "$(bash tools/platform-tests.sh crates/rutis-loader $(yq -r '.env.PURE_TESTS_LOADER' .github/workflows/ci.yml) | sed 's/ --test events_conformance / /')"
           cut -f1,3 "$list"
           # No binaries would make every round pass without running anything.
           [ -s "$list" ] || { echo "::error::no test binaries"; exit 1; }
@@ -282,6 +293,81 @@ jobs:
         with:
           name: multiprocess-logs
           path: ${{ runner.temp }}/multiprocess-logs
+          retention-days: 14
+
+  # The unified events conformance suite (#464,
+  # crates/rutis-loader/tests/events_conformance.rs) in every placement of
+  # every case (RUTIS_EVENTS_PLACEMENTS=all, about 22 000 per language
+  # under test), where pull requests run a sample (ci.yml `rust`). Sharded
+  # by the language under test (X, the emitter's in most cases) and by
+  # case: the shards are case id prefixes of about 5000 placements each,
+  # so each job takes about 15 to 25 minutes. With the input `events_case`
+  # every job runs the placements of those cases instead (a small run to
+  # check this job). The runtimes of the `rust` job of ci.yml; every
+  # language must be there (RUTIS_EVENTS_REQUIRE). Each job writes its
+  # table of cases and its time to the summary.
+  events-all:
+    name: events-all (${{ matrix.x }}, ${{ matrix.cases }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        x: [node, node-leaf, bun, python, go]
+        cases: ${{ fromJSON(inputs.events_case != '' && format('["{0}"]', inputs.events_case) || '["serial/", "order/", "waterfall,bail/", "parallel/,scope/,filter/", "emit/,unload/,values/,kinds/,rutis/,disconnect/,node/,cancel/,cordis/,reserved/,registration/,rust/,modes/,fast-path/"]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: node/rutis-runtime/package-lock.json
+      - run: npm --prefix node/rutis-runtime ci
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: python3 -m pip install "websockets==15.*"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: oldstable
+          cache-dependency-path: go/rutis/go.mod
+      - run: cargo test -p rutis-loader --features node,python,go,bun,peer --test events_conformance --no-run
+      - name: Every placement
+        # bash -eo pipefail: a failing run fails the step through tee.
+        shell: bash
+        env:
+          RUTIS_EVENTS_PLACEMENTS: all
+          RUTIS_EVENTS_CASE: ${{ matrix.cases }}
+          RUTIS_EVENTS_REQUIRE: node,python,go,bun
+          RUTIS_EVENTS_SETTLE_SCALE: '2'
+          X: ${{ matrix.x }}
+        run: |
+          test=events_with_x_a_${X//-/_}_plugin
+          case "$X" in node) test=events_with_x_a_cordis_plugin;; esac
+          started=$(date +%s)
+          status=0
+          cargo test -p rutis-loader --features node,python,go,bun,peer --test events_conformance -- \
+            --exact "$test" --nocapture 2>&1 | tee "$RUNNER_TEMP/events.txt" || status=$?
+          {
+            echo "### events conformance, X=$X, every placement of $RUTIS_EVENTS_CASE"
+            echo
+            echo "$(( $(date +%s) - started )) s"
+            echo
+            echo '```'
+            grep -E '^(events conformance|FAIL |known failing |[0-9]+ of [0-9]+ cases)' "$RUNNER_TEMP/events.txt" | sort -u
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: events-all-${{ matrix.x }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/events.txt
           retention-days: 14
 
   soak:

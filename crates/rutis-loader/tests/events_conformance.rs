@@ -12,14 +12,24 @@
 //! `tenant` (t1), `session` (t1/s1, inside t1) and `team` (t2).
 //!
 //! Each test prints a table of every case with its first failing placement,
-//! and fails if any case fails. `RUTIS_EVENTS_CASE=<prefix>[,<prefix>...]` runs only the
-//! cases whose id starts with it.
+//! and fails if any case fails, or ran in no placement although it has
+//! some for X (a language it needs is not available here).
+//! `RUTIS_EVENTS_CASE=<prefix>[,<prefix>...]` runs only the cases whose id
+//! starts with one of them (each must match a case).
+//! `RUTIS_EVENTS_REQUIRE=<language>[,...]` (CI: `node,python,go,bun`)
+//! fails instead of skipping when one of them cannot run here.
+//!
+//! The suite runs one test at a time (each starts every runtime; a lock
+//! keeps them from running side by side, whatever `--test-threads` says).
+//! The runtimes are started through `sh` on Unix and through a small Node
+//! script on Windows (`events_conformance/recorded.mjs`), which record
+//! their pid and stderr.
 //!
 //! The `host` and `node` locations are the Rust plugin of
 //! `events_conformance/rust_participant.rs`; `viaHost`, `hold` and the
 //! host's own failure reports are the host bus's test hooks
 //! (`rutis_bridge::events::testing::Tap`).
-#![cfg(all(unix, feature = "node", feature = "python"))]
+#![cfg(all(feature = "node", feature = "python"))]
 
 mod common;
 
@@ -64,7 +74,8 @@ fn available(language: &str) -> bool {
 }
 
 fn python() -> String {
-    std::env::var("RUTIS_PYTHON").unwrap_or_else(|_| "python3".into())
+    std::env::var("RUTIS_PYTHON")
+        .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into())
 }
 
 #[cfg(feature = "go")]
@@ -74,7 +85,7 @@ fn go_binary() -> &'static Path {
     static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     BINARY.get_or_init(|| {
         let out = tempfile::tempdir().unwrap().keep();
-        let binary = out.join("fixtures");
+        let binary = out.join(format!("fixtures{}", std::env::consts::EXE_SUFFIX));
         let status = std::process::Command::new("go")
             .args(["build", "-o"])
             .arg(&binary)
@@ -93,9 +104,9 @@ fn go_binary() -> &'static Path {
 /// whether or not the row provides it).
 type Modules = BTreeMap<&'static str, String>;
 
-/// A runtime of `language` named `name`, started through `sh` so that its
-/// pid and stderr are recorded under `dir` (`kill` and `reported`); and
-/// the modules its rows load.
+/// A runtime of `language` named `name`, started through [`recorded`] so
+/// that its pid and stderr are recorded under `dir` (`kill` and
+/// `reported`); and the modules its rows load.
 fn runtime(language: &str, name: &str, dir: &Path) -> (LocalRuntime, Modules) {
     let fixtures = repo().join("node/rutis-runtime/test/fixtures");
     let path = |file: PathBuf| file.to_string_lossy().into_owned();
@@ -198,6 +209,7 @@ fn runtime(language: &str, name: &str, dir: &Path) -> (LocalRuntime, Modules) {
 /// `launcher` run by `sh`, which writes its pid to `pid` and appends its
 /// stderr to `stderr`, then becomes it (so the channel descriptor and the
 /// pid stay the runtime's).
+#[cfg(unix)]
 fn recorded(launcher: Launcher, pid: &Path, stderr: &Path) -> Launcher {
     let mut wrapped = Launcher::new("sh")
         .arg("-c")
@@ -217,6 +229,71 @@ fn recorded(launcher: Launcher, pid: &Path, stderr: &Path) -> Launcher {
     wrapped.stdout = launcher.stdout;
     wrapped.stderr = launcher.stderr;
     wrapped
+}
+
+/// `launcher` run by `events_conformance/recorded.mjs` with Node (Windows
+/// has no `sh`): it starts the runtime with its stderr appended to
+/// `stderr`, writes the runtime's pid to `pid`, and ends as it ends. The
+/// channel is a loopback one here, reached through the environment, so
+/// the runtime being a child of the script changes nothing for it.
+#[cfg(windows)]
+fn recorded(launcher: Launcher, pid: &Path, stderr: &Path) -> Launcher {
+    let script = repo().join("crates/rutis-loader/tests/events_conformance/recorded.mjs");
+    let mut wrapped = Launcher::new("node")
+        .arg(script.into_os_string())
+        .arg(pid.as_os_str().to_owned())
+        .arg(stderr.as_os_str().to_owned())
+        .arg(launcher.program.clone());
+    for arg in &launcher.args {
+        wrapped = wrapped.arg(arg.clone());
+    }
+    wrapped.env = launcher.env.clone();
+    wrapped.cwd = launcher.cwd.clone();
+    wrapped.inherit_fd = launcher.inherit_fd;
+    wrapped.stdin = launcher.stdin;
+    wrapped.stdout = launcher.stdout;
+    wrapped.stderr = launcher.stderr;
+    wrapped
+}
+
+/// End the process `pid` at once, as a crash would.
+fn kill_now(pid: &str) -> Result<(), String> {
+    let mut command = match cfg!(windows) {
+        true => {
+            let mut taskkill = std::process::Command::new("taskkill");
+            taskkill.args(["/F", "/PID", pid]);
+            taskkill
+        }
+        false => {
+            let mut kill = std::process::Command::new("kill");
+            kill.args(["-9", pid]);
+            kill
+        }
+    };
+    let status = command
+        .stdout(std::process::Stdio::null())
+        .status()
+        .map_err(|e| e.to_string())?;
+    match status.success() {
+        true => Ok(()),
+        false => Err(format!("could not kill {pid}: {status}")),
+    }
+}
+
+/// Whether the process `pid` still runs.
+fn alive(pid: &str) -> bool {
+    if cfg!(windows) {
+        let listed = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .output();
+        return listed
+            .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\"")));
+    }
+    std::process::Command::new("kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 // ── Scopes ──────────────────────────────────────────────────────
@@ -298,6 +375,9 @@ struct State {
     killed: BTreeSet<Location>,
     /// Where each runtime's stderr was when the case started.
     marks: BTreeMap<String, u64>,
+    /// How many lines the host's and the node's error sinks had reported
+    /// when the case started.
+    reported_marks: (usize, usize),
     generation: u64,
 }
 
@@ -521,6 +601,19 @@ impl Host {
             })
     }
 
+    /// The fiber snapshot's generation of the row `label` (its copy in its
+    /// instance), while it has one.
+    fn row_generation(&self, label: &str, scope: &str) -> Option<u64> {
+        self.loader
+            .entries()
+            .into_iter()
+            .filter(|entry| entry.id == label && entry.instance.is_some() == (scope != "root"))
+            .find_map(|entry| match entry.status {
+                EntryStatus::Running(snapshot) => Some(snapshot.generation),
+                _ => None,
+            })
+    }
+
     async fn settled(&self, row: &Row) -> Result<(), String> {
         if row.at == Location::Node {
             return Ok(());
@@ -634,7 +727,10 @@ impl Host {
                 (name.clone(), len)
             })
             .collect();
-        self.state.lock().unwrap().marks = marks;
+        let reported_marks = (self.rust.reported().len(), self.node.reported().len());
+        let mut state = self.state.lock().unwrap();
+        state.marks = marks;
+        state.reported_marks = reported_marks;
     }
 
     /// What the runtimes wrote on stderr since the case started, for a
@@ -661,22 +757,10 @@ impl Host {
         let runtime = &self.runtimes[&name];
         let pid =
             std::fs::read_to_string(&runtime.pid).map_err(|e| format!("{name}'s pid: {e}"))?;
-        let status = std::process::Command::new("kill")
-            .args(["-9", pid.trim()])
-            .status()
-            .map_err(|e| e.to_string())?;
-        if !status.success() {
-            return Err(format!("kill {name} ({})", pid.trim()));
-        }
-        // The runtime's fiber stays up for a restart; its rows wait.
         let pid = pid.trim().to_owned();
-        let gone = || {
-            !std::process::Command::new("kill")
-                .args(["-0", &pid])
-                .stderr(std::process::Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success())
-        };
+        kill_now(&pid).map_err(|e| format!("kill {name}: {e}"))?;
+        // The runtime's fiber stays up for a restart; its rows wait.
+        let gone = || !alive(&pid);
         let rows: Vec<Row> = self
             .state
             .lock()
@@ -791,9 +875,19 @@ impl World for Host {
             if row.at == Location::Node {
                 return self.node.update(&row).await;
             }
+            // A config change restarts the row's fiber (the kernel's
+            // `update`): it runs again once its snapshot moved past the one
+            // it had, with the new config.
+            let before = self.row_generation(&row.label, &row.scope);
             self.reconcile().await?;
-            // Updated in place or restarted: wait until it runs again.
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            until(
+                || {
+                    self.row_generation(&row.label, &row.scope)
+                        .is_some_and(|now| Some(now) > before)
+                },
+                &format!("{label} to start again with its new config"),
+            )
+            .await?;
             self.settled(&row).await
         })
     }
@@ -911,7 +1005,10 @@ impl World for Host {
     }
 
     fn reported(&self) -> Option<Vec<String>> {
-        let marks = self.state.lock().unwrap().marks.clone();
+        let (marks, (host_mark, node_mark)) = {
+            let state = self.state.lock().unwrap();
+            (state.marks.clone(), state.reported_marks)
+        };
         let mut lines = Vec::new();
         for (name, runtime) in &self.runtimes {
             let text = std::fs::read(&runtime.stderr).unwrap_or_default();
@@ -926,7 +1023,9 @@ impl World for Host {
                     .map(str::to_owned),
             );
         }
-        lines.extend(self.rust.reported());
+        // The host's and the node's sinks: what they reported in this case.
+        lines.extend(self.rust.reported().into_iter().skip(host_mark));
+        lines.extend(self.node.reported().into_iter().skip(node_mark));
         Some(lines)
     }
 
@@ -941,17 +1040,34 @@ impl World for Host {
             Location::Node => json!("node"),
             _ => Json::Null,
         };
-        // The groups of the scope path: t1/s1 is [tenant, session].
-        let mut groups = Vec::new();
-        let mut path = String::new();
-        for part in row.scope.split('/').filter(|p| *p != "root") {
-            if !path.is_empty() {
-                path.push('/');
-            }
-            path.push_str(part);
-            groups.push(json!(self.expected.scopes[&path]));
-        }
-        Some(json!({ "runtime": runtime, "node": node, "scope": groups }))
+        // The chain of the row's scope, as its anchor there sees it: t1/s1
+        // is [{id, group: tenant}, {id, group: session}].
+        let chain: Vec<Json> = match row.scope.as_str() {
+            "root" => Vec::new(),
+            path => self
+                .anchors
+                .0
+                .lock()
+                .unwrap()
+                .get(path)?
+                .scope()
+                .into_iter()
+                .map(|scope| json!({ "id": scope.id, "group": scope.group }))
+                .collect(),
+        };
+        let global = row.config["options"]["global"].as_bool().unwrap_or(false);
+        Some(json!({
+            "name": row.config["name"],
+            "prefix": false,
+            // The plugin's own name, the same in every language (the
+            // Python fixture declares it).
+            "plugin": "conformance-events",
+            "row": label,
+            "runtime": runtime,
+            "node": node,
+            "scope": chain,
+            "global": global,
+        }))
     }
 }
 
@@ -970,33 +1086,84 @@ async fn until(check: impl Fn() -> bool, what: &str) -> Result<(), String> {
 
 // ── The suite ───────────────────────────────────────────────────
 
+/// The languages `RUTIS_EVENTS_REQUIRE` names.
+fn required() -> Vec<String> {
+    std::env::var("RUTIS_EVENTS_REQUIRE")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// One test at a time: each starts every runtime, and the timings of the
+/// cases (`settles`, the log's patience) assume a machine not running
+/// another such host.
+static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn conformance(x: &str) {
+    let _one = ONE_AT_A_TIME.lock().await;
+    let expected = events::expected();
+    let required = required();
+    let missing: Vec<&String> = required.iter().filter(|l| !available(l)).collect();
+    assert!(
+        missing.is_empty(),
+        "RUTIS_EVENTS_REQUIRE names {missing:?}, which cannot run here (features, or the program on PATH)"
+    );
     if !available(x) {
         eprintln!("{x} is not available here: skipped");
         return;
     }
+    let started = std::time::Instant::now();
     let log = EventsLog::new();
     let host = Host::start(x, &log).await;
-    let expected = events::expected();
-    let ys: Vec<&str> = events::y_languages(&expected, x)
-        .into_iter()
-        .filter(|l| available(l))
-        .collect();
+    let all_ys = events::y_languages(&expected, x);
+    let ys: Vec<&str> = all_ys.iter().copied().filter(|l| available(l)).collect();
     let only = std::env::var("RUTIS_EVENTS_CASE").unwrap_or_default();
+    let prefixes: Vec<&str> = only.split(',').map(str::trim).collect();
+    for prefix in prefixes.iter().filter(|p| !p.is_empty()) {
+        assert!(
+            expected.cases.iter().any(|c| c.case.starts_with(prefix)),
+            "RUTIS_EVENTS_CASE: no case starts with {prefix:?}"
+        );
+    }
     let coverage = Coverage::from_env();
     let mut tally = Tally::default();
+    let mut placements = 0;
     for case in expected
         .cases
         .iter()
-        .filter(|c| only.split(',').any(|prefix| c.case.starts_with(prefix)))
+        .filter(|c| prefixes.iter().any(|prefix| c.case.starts_with(prefix)))
     {
         let started = std::time::Instant::now();
-        for combo in events::placements(case, x, &ys, coverage).unwrap() {
+        let combos = events::placements(case, x, &ys, coverage).unwrap();
+        if combos.is_empty() {
+            // Not for X (its limits rule X out) is fine; a placement that
+            // needs a language not here is a case that did not run.
+            let anywhere = events::placements(case, x, &all_ys, coverage).unwrap();
+            if !anywhere.is_empty() {
+                tally.unrun(
+                    case,
+                    &format!(
+                        "it ran in no placement: each needs a Y language not available here (available: {ys:?})"
+                    ),
+                );
+            }
+            continue;
+        }
+        for combo in combos {
+            placements += 1;
             host.state.lock().unwrap().y = combo.y.clone();
             let result = events::run_keeping(&host, &log, case, &combo).await;
+            let known = events::known_failing(case, &combo);
             if let Err(why) = &result {
+                let label = match known {
+                    Some(_) => "known failing",
+                    None => "FAIL",
+                };
                 eprintln!(
-                    "FAIL {} [{}]: {why}\n{}",
+                    "{label} {} [{}]: {why}\n{}",
                     case.case,
                     combo.describe(),
                     host.stderr()
@@ -1005,14 +1172,20 @@ async fn conformance(x: &str) {
             if let Err(why) = events::finish(&host, &log).await {
                 panic!("the world could not be reset after {}: {why}", case.case);
             }
-            tally.record(case, &combo, &result);
+            match (&result, known) {
+                (Err(_), Some(why)) => tally.known(case, &why),
+                _ => tally.record(case, &combo, &result),
+            }
         }
         // Where the time goes: the cases that wait.
         if started.elapsed() > Duration::from_secs(5) {
             eprintln!("X={x}: {} took {:?}", case.case, started.elapsed());
         }
     }
-    println!("events conformance, X={x}:\n{tally}");
+    println!(
+        "events conformance, X={x}, {coverage:?}: {placements} placements in {:?}\n{tally}",
+        started.elapsed()
+    );
     host.root.shutdown().await.unwrap();
     assert_eq!(tally.failed(), 0, "X={x}:\n{tally}");
 }

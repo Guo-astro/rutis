@@ -249,6 +249,29 @@ test('an emit through the host keeps later emits of the name there until it is a
   assert.ok(bus.local('emit', 'o'))
 })
 
+// §11: failures nobody waits for are reported, one line each: an emit the
+// host refuses or that cannot be sent, a registration the host refuses.
+test('a refused or unsent emit through the host and a refused registration are reported', async () => {
+  const reported = []
+  const refusing = {
+    callAsync(target, method) { return Promise.reject(Object.assign(new Error(`${method} refused`), { name: 'BindingError' })) },
+  }
+  const bus = new Bus({ runtime: 'node', peer: refusing, report: line => reported.push(line) })
+  bus.nameRow('k1', 'chat')
+  bus.on({ name: 't/on', callback: () => {}, row: 'k1', plugin: 'p' })
+  bus.elsewhere({ add: ['t/e'] })
+  assert.equal(bus.dispatch('emit', 't/e', [], { row: 'k1' }), undefined)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(reported.splice(0), [
+    'rutis: registration of listener of t/on in row chat failed: BindingError: events.on refused',
+    'rutis: emit of t/e from row chat failed: BindingError: events.dispatch refused',
+  ])
+  // The session ended under it: the frame cannot be sent.
+  refusing.callAsync = () => { throw Object.assign(new Error('the session ended'), { name: 'BindingError' }) }
+  assert.equal(bus.dispatch('emit', 't/e', [], { row: 'k1' }), undefined)
+  assert.deepEqual(reported, ['rutis: emit of t/e from row chat failed: BindingError: the session ended'])
+})
+
 test('through the host, the filter is a selector over descriptors and the terminal a function', async () => {
   const host = peer()
   const bus = new Bus({ runtime: 'node', peer: host, report: () => {} })

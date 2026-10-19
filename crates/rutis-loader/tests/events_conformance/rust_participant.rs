@@ -613,6 +613,9 @@ pub struct Node {
     alive: std::sync::Mutex<Arc<AtomicBool>>,
     log: Arc<EventsLog>,
     rows: std::sync::Mutex<std::collections::BTreeMap<String, rutis::FiberView>>,
+    /// The §5.6 lines the node's error sink received, over every process
+    /// of it (a restarted node appends).
+    reported: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 fn peer_id(s: &str) -> rutis_bridge::PeerId {
@@ -632,6 +635,7 @@ impl Node {
             alive: Default::default(),
             log,
             rows: Default::default(),
+            reported: Default::default(),
         };
         node.link().await;
         node
@@ -658,7 +662,19 @@ impl Node {
     /// The node itself, dialing the host: a new process each time.
     async fn link(&self) {
         use rutis_bridge::{Credential, Features, IdentityPlugin, LinkConfig, PeerPlugin, StaticIdentity};
-        let node = Ctx::root().unwrap();
+        // Its error sink prints as rutis-host does and records the event
+        // failures' lines (`reported`).
+        let reported = self.reported.clone();
+        let sink: rutis::ErrorSink = Arc::new(move |error| {
+            match rutis_bridge::events::report_line(&error) {
+                Some(line) => {
+                    eprintln!("node: {line}");
+                    reported.lock().unwrap().push(line);
+                }
+                None => rutis::default_sink()(error),
+            }
+        });
+        let node = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
         // The host's transport, provided as is: the node's end must not
         // close it (`MemoryPlugin` closes every channel and listener of the
         // shared transport when it goes, the host's too).
@@ -679,6 +695,11 @@ impl Node {
         let alive = Arc::new(AtomicBool::new(true));
         *self.alive.lock().unwrap() = alive;
         *self.node.lock().unwrap() = Some(node);
+    }
+
+    /// The §5.6 lines the node reported so far.
+    pub fn reported(&self) -> Vec<String> {
+        self.reported.lock().unwrap().clone()
     }
 
     pub fn ctx(&self) -> Result<Ctx, String> {

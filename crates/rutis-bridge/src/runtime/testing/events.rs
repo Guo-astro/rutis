@@ -52,8 +52,24 @@ use crate::session::{settle, Error, HostDispatch, Reply, Value};
 /// against; its `about` says how to read it.
 pub const EVENTS_EXPECTED: &str = include_str!("events.expected.json");
 
-/// How long a log expectation, or a step that `settles`, may take.
+/// How long a log expectation, or a step that `settles`, may take, on a
+/// quiet machine; [`scaled`] scales it.
 pub const SETTLE: Duration = Duration::from_secs(5);
+
+/// How long a `logLacks` waits after the rest of the step held, for an
+/// entry that would come late; [`scaled`] scales it too.
+pub const LACKS: Duration = Duration::from_millis(300);
+
+/// [`SETTLE`] (or `base`) times `RUTIS_EVENTS_SETTLE_SCALE` (a number, 1
+/// when unset): CI machines run many processes at once and set it.
+pub fn scaled(base: Duration) -> Duration {
+    let scale = std::env::var("RUTIS_EVENTS_SETTLE_SCALE")
+        .ok()
+        .and_then(|scale| scale.parse::<f64>().ok())
+        .filter(|scale| *scale >= 1.0)
+        .unwrap_or(1.0);
+    base.mul_f64(scale)
+}
 
 /// How long any other dispatch may take before the case fails.
 pub const PATIENCE: Duration = Duration::from_secs(30);
@@ -70,6 +86,10 @@ pub struct Expected {
     /// Scope path (`t1/s1`) → the group its instance is of.
     pub scopes: BTreeMap<String, String>,
     pub locations: Vec<Location>,
+    /// How many cases each testing tool runs ([`tool_combo`]); each tool
+    /// checks it ran that many.
+    #[serde(rename = "toolCases")]
+    pub tool_cases: BTreeMap<String, usize>,
     pub cases: Vec<Case>,
 }
 
@@ -131,6 +151,12 @@ pub struct Case {
     pub only: Vec<Json>,
     #[serde(default)]
     pub except: Vec<Json>,
+    /// Limits (as `except`'s) under which the real runtimes are known to
+    /// fail the case, each saying why (the bug and where it is reported):
+    /// those placements run, and their failure is reported but does not
+    /// fail the run. The testing tools ignore it.
+    #[serde(default, rename = "knownFailing")]
+    pub known_failing: Vec<Json>,
     /// `false`: the testing tools do not run it.
     #[serde(default = "yes")]
     pub tool: bool,
@@ -332,9 +358,12 @@ pub enum Step {
     },
 }
 
-pub const EXPECTATIONS: [&str; 13] = [
+/// The keys of a step's `expect` (the first [`STEP_EXPECTATIONS`]), then
+/// the fields of `throws`.
+pub const EXPECTATIONS: [&str; 14] = [
     "returns",
     "throws",
+    "cancelled",
     "log",
     "logUnordered",
     "logContains",
@@ -348,6 +377,9 @@ pub const EXPECTATIONS: [&str; 13] = [
     "message",
 ];
 
+/// How many of [`EXPECTATIONS`] are keys of `expect`.
+pub const STEP_EXPECTATIONS: usize = 11;
+
 impl Step {
     pub fn parse(raw: &Json) -> Result<Self, String> {
         let expect = raw.get("expect").cloned();
@@ -356,7 +388,7 @@ impl Step {
                 return Err(format!("expect is an object: {expect}"));
             };
             for key in fields.keys() {
-                if !EXPECTATIONS[..10].contains(&key.as_str()) {
+                if !EXPECTATIONS[..STEP_EXPECTATIONS].contains(&key.as_str()) {
                     return Err(format!("unknown expectation {key:?}"));
                 }
             }
@@ -606,6 +638,15 @@ fn limit_holds(limit: &Json, combo: &Combo) -> bool {
         })
 }
 
+/// Why `case` is known to fail in `combo` (its first `knownFailing` limit
+/// that holds there), if it is.
+pub fn known_failing(case: &Case, combo: &Combo) -> Option<String> {
+    case.known_failing
+        .iter()
+        .find(|limit| limit_holds(limit, combo))
+        .map(|limit| limit["why"].as_str().unwrap_or_default().to_owned())
+}
+
 /// The placements of `case` with X in `x`, for each language Y may be in
 /// (`ys`, X's own first): every combination of the `vary` labels over the
 /// locations (§13.2), less those `only` / `except` rule out. A placement
@@ -808,7 +849,9 @@ pub fn rows(case: &Case, combo: &Combo) -> Result<Vec<Row>, String> {
 
 /// An argument as the file writes it: data, a tagged value
 /// (`{"$bytes": "aGVsbG8="}`), or `{"$callback": "upper"}`, a function
-/// returning its argument upper-cased.
+/// returning its argument upper-cased. Panics on a tagged value it cannot
+/// read (an unknown `$` tag, or a text its tag does not parse): a typo in
+/// the file must not turn into a record that some case then passes with.
 pub fn argument(arg: &Json) -> Value {
     match arg {
         Json::Array(items) => Value::List(items.iter().map(argument).collect()),
@@ -816,6 +859,9 @@ pub fn argument(arg: &Json) -> Value {
             let (key, inner) = fields.iter().next().unwrap();
             match tagged(key, inner) {
                 Some(value) => value,
+                None if key.starts_with('$') => {
+                    panic!("events.expected.json: a bad tagged value {arg}")
+                }
                 None => Value::Record(
                     fields
                         .iter()
@@ -1139,8 +1185,11 @@ pub trait World: Send + Sync {
     }
 
     /// What the description of the row `label` must say, as far as the
-    /// world knows: `runtime`, `node`, and `scope` as the groups of its
-    /// chain (`filterSees`).
+    /// world knows (`filterSees`, every field it gives compared): as the
+    /// row's own process sees it, `name`, `prefix`, `plugin`, `row`,
+    /// `runtime`, `node`, `scope` (the chain, `[{id, group}]`) and
+    /// `global`. Seen from the other node, `node` and `scope` are the
+    /// link's.
     fn description(&self, _label: &str) -> Option<Json> {
         None
     }
@@ -1246,7 +1295,7 @@ async fn run_step(
             let call = dispatch(emitter, spec.clone(), case.clone());
             if *background {
                 *pending = Some(tokio::spawn(call));
-                return check_log(world, log, expect, viewer).await;
+                return check_log(world, log, expect, viewer, &event_of(case, step)).await;
             }
             outcomes.push(within(call, settles).await);
         }
@@ -1256,7 +1305,7 @@ async fn run_step(
         }
         Step::Unload { label, when, .. } => {
             if let Some(when) = when {
-                log.wait(when, SETTLE).await?;
+                log.wait(when, scaled(SETTLE)).await?;
             }
             world.unload(label).await?;
             if let Some(handle) = pending.take() {
@@ -1266,7 +1315,7 @@ async fn run_step(
         Step::Update { label } => world.update(label).await?,
         Step::Kill { target, when, .. } => {
             if let Some(when) = when {
-                log.wait(when, SETTLE).await?;
+                log.wait(when, scaled(SETTLE)).await?;
             }
             world.kill(*target).await?;
             if let Some(handle) = pending.take() {
@@ -1291,7 +1340,14 @@ async fn run_step(
             }
         }
     }
-    check_outcomes(expect, &outcomes)?;
+    // The language whose cancellation a `cancelled` dispatch ends with:
+    // its emitter's (the emits of the step, or the background one's).
+    let emitter_language = step
+        .emits()
+        .first()
+        .map(|spec| combo.language(combo.at.get(&spec.row).copied().unwrap_or(spec.from)))
+        .map(str::to_owned);
+    check_outcomes(expect, &outcomes, emitter_language.as_deref())?;
     if let Some(via) = expect.get("viaHost").and_then(Json::as_bool) {
         let (Some(before), Some(after)) = (before, world.dispatches()) else {
             return Err("viaHost: this world cannot see the host's dispatches".into());
@@ -1303,7 +1359,15 @@ async fn run_step(
             ));
         }
     }
-    check_log(world, log, expect, viewer).await
+    check_log(world, log, expect, viewer, &event_of(case, step)).await
+}
+
+/// The event a step's reports are about: its emit's name, else the case's.
+fn event_of(case: &Case, step: &Step) -> String {
+    step.emits()
+        .first()
+        .and_then(|spec| spec.name.clone())
+        .unwrap_or_else(|| case.name.clone())
 }
 
 /// The emitter row `spec` needs, loaded where `combo` puts it: at most one
@@ -1363,7 +1427,7 @@ async fn dispatch(emitter: Arc<dyn HostDispatch>, spec: Spec, case: Case) -> Out
 }
 
 async fn within(call: impl std::future::Future<Output = Outcome>, settles: bool) -> Outcome {
-    let limit = if settles { SETTLE } else { PATIENCE };
+    let limit = if settles { scaled(SETTLE) } else { PATIENCE };
     tokio::time::timeout(limit, call)
         .await
         .unwrap_or_else(|_| Err(format!("the dispatch did not settle within {limit:?}")))
@@ -1377,9 +1441,42 @@ async fn joined(handle: tokio::task::JoinHandle<Outcome>, settles: bool) -> Outc
     .await
 }
 
-/// `returns`, `throws` and `settles` against the dispatches of a step.
-fn check_outcomes(expect: &Json, outcomes: &[Outcome]) -> Result<(), String> {
-    let wants = expect.get("returns").is_some() || expect.get("throws").is_some();
+/// The name a dispatch given up by its emitter ends with, by the
+/// emitter's language (§5.7: "the emitter's call ends with its own
+/// language's cancellation"): Python's `asyncio.CancelledError`, Go's
+/// `context.Canceled` (an `Error` saying `context canceled` on the wire),
+/// and for Rust (a dropped future ends with nothing) the fixture's own
+/// `Cancelled`.
+/// JavaScript cannot give up a dispatch.
+pub fn cancellation(language: &str) -> Option<Json> {
+    match language {
+        "python" => Some(json!({ "name": "CancelledError" })),
+        // A plain Go error crosses named `Error`.
+        "go" => Some(json!({ "name": "Error", "message": "context canceled" })),
+        "rust" => Some(json!({ "name": "Cancelled" })),
+        _ => None,
+    }
+}
+
+/// `returns`, `throws`, `cancelled` and `settles` against the dispatches
+/// of a step. Without `throws` or `cancelled` every dispatch that ends in
+/// the step must succeed, whatever else the step expects.
+fn check_outcomes(
+    expect: &Json,
+    outcomes: &[Outcome],
+    emitter_language: Option<&str>,
+) -> Result<(), String> {
+    let cancelled = expect["cancelled"].as_bool().unwrap_or(false);
+    let throws = match cancelled {
+        true => {
+            let language = emitter_language.unwrap_or("none");
+            Some(cancellation(language).ok_or_else(|| {
+                format!("cancelled: an emitter in {language} cannot give up a dispatch")
+            })?)
+        }
+        false => expect.get("throws").cloned(),
+    };
+    let wants = expect.get("returns").is_some() || throws.is_some();
     if wants && outcomes.is_empty() {
         return Err("expects a result, but no dispatch ends in this step".into());
     }
@@ -1388,6 +1485,16 @@ fn check_outcomes(expect: &Json, outcomes: &[Outcome]) -> Result<(), String> {
         match outcome {
             Ok(reply) => replies.push(reply),
             Err(unsettled) => return Err(unsettled.clone()),
+        }
+    }
+    if throws.is_none() {
+        for reply in &replies {
+            if let Err(error) = reply {
+                let (name, message) = named(error);
+                return Err(format!(
+                    "expected the dispatch to succeed, it threw {name}: {message}"
+                ));
+            }
         }
     }
     if let Some(returns) = expect.get("returns") {
@@ -1401,7 +1508,7 @@ fn check_outcomes(expect: &Json, outcomes: &[Outcome]) -> Result<(), String> {
             }
         }
     }
-    if let Some(throws) = expect.get("throws") {
+    if let Some(throws) = &throws {
         // One thrown is enough when several dispatches ran (`concurrent`).
         let mut last = String::new();
         let matched = replies.iter().any(|reply| match reply {
@@ -1456,23 +1563,33 @@ fn matches_error(throws: &Json, error: &Error) -> Result<(), String> {
 }
 
 /// The log expectations, retried until they hold or [`SETTLE`] passed.
+/// Once they hold, a step with `logLacks` (or `reported`, which counts its
+/// lines) waits [`LACKS`] and checks again: what must not happen could
+/// still be on its way.
 async fn check_log(
     world: &dyn World,
     log: &EventsLog,
     expect: &Json,
     viewer: Option<Location>,
+    event: &str,
 ) -> Result<(), String> {
-    let deadline = tokio::time::Instant::now() + SETTLE;
+    let deadline = tokio::time::Instant::now() + scaled(SETTLE);
     loop {
-        let checked = log_holds(world, log, expect, viewer);
+        let checked = log_holds(world, log, expect, viewer, event);
         match checked {
-            Ok(()) => return Ok(()),
+            Ok(()) => break,
             Err(_) if tokio::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(20)).await
             }
             Err(why) => return Err(why),
         }
     }
+    if expect.get("logLacks").is_some() || expect.get("reported").is_some() {
+        tokio::time::sleep(scaled(LACKS)).await;
+        return log_holds(world, log, expect, viewer, event)
+            .map_err(|why| format!("{why} (after the step had settled)"));
+    }
+    Ok(())
 }
 
 fn strings(value: &Json) -> Vec<String> {
@@ -1492,6 +1609,7 @@ fn log_holds(
     log: &EventsLog,
     expect: &Json,
     viewer: Option<Location>,
+    event: &str,
 ) -> Result<(), String> {
     let entries = log.entries();
     if let Some(exact) = expect.get("log") {
@@ -1557,14 +1675,7 @@ fn log_holds(
                 want["node"] = Json::Null;
             }
             for (key, value) in want.as_object().into_iter().flatten() {
-                let got = if key == "scope" {
-                    json!(description["scope"]
-                        .as_array()
-                        .map(|chain| chain.iter().map(|s| s["group"].clone()).collect::<Vec<_>>())
-                        .unwrap_or_default())
-                } else {
-                    description[key].clone()
-                };
+                let got = description[key].clone();
                 if &got != value {
                     return Err(format!(
                         "filterSees: the description of {row} says {key} {got}, expected {value}: {description}"
@@ -1580,15 +1691,21 @@ fn log_holds(
         for want in reported {
             let label = want["label"].as_str().unwrap_or_default();
             let name = want["name"].as_str().unwrap_or_default();
-            let found = lines.iter().any(|line| {
-                line.contains("rutis: listener of ")
-                    && line.contains(&format!("failed: {name}:"))
-                    && (line.contains(&format!(" in row {label} failed"))
-                        || !line.contains(" in row "))
-            });
-            if !found {
+            let filter = want["filter"].as_bool().unwrap_or(false);
+            let places = report_places(world, label, filter);
+            let about: Vec<&String> = lines
+                .iter()
+                .filter(|line| reports(line, event, filter, &places).is_some())
+                .collect();
+            let [line] = about.as_slice() else {
                 return Err(format!(
-                    "reported: no line for {label} failing with {name}: {lines:?}"
+                    "reported: expected one line for {label} about {event}, got {}: {lines:?}",
+                    about.len()
+                ));
+            };
+            if reports(line, event, filter, &places) != Some(name) {
+                return Err(format!(
+                    "reported: {label} should fail with {name}: {line:?}"
                 ));
             }
         }
@@ -1596,7 +1713,77 @@ fn log_holds(
     Ok(())
 }
 
+/// Where a report line of `label` may say its listener is (§5.6): `row
+/// <label>` where it runs; `runtime <name>` or `node <peer>` from the
+/// dispatcher, when the invocation could not be delivered or answered.
+/// A filter's line names its emitter's row (`from row <label>`).
+fn report_places(world: &dyn World, label: &str, filter: bool) -> Vec<String> {
+    let mut places = vec![format!("row {label}")];
+    if filter {
+        return places;
+    }
+    if let Some(description) = world.description(label) {
+        if let Some(runtime) = description["runtime"].as_str() {
+            places.push(format!("runtime {runtime}"));
+        }
+        match description["node"].as_str() {
+            // Seen from the host, a listener on the node is the node's.
+            Some(node) => places.push(format!("node {node}")),
+            // Seen from the node, a listener of the host's side is the host's.
+            None => places.push("node host".into()),
+        }
+    }
+    places
+}
+
+/// The error name of a §5.6 report `line` about `event` at one of
+/// `places`, or `None` when the line is about something else:
+/// `rutis: listener of <event> in <place> failed: <Name>: <message>`, or
+/// `rutis: filter of <event> from <place> failed: ...`.
+fn reports<'a>(line: &'a str, event: &str, filter: bool, places: &[String]) -> Option<&'a str> {
+    let (kind, at) = match filter {
+        true => ("filter", "from"),
+        false => ("listener", "in"),
+    };
+    let rest = line.strip_prefix(&format!("rutis: {kind} of {event} {at} "))?;
+    let rest = places
+        .iter()
+        .find_map(|place| rest.strip_prefix(place.as_str()))?;
+    let rest = rest.strip_prefix(" failed: ")?;
+    let (name, _message) = rest.split_once(": ")?;
+    Some(name)
+}
+
 // ── The file's shape ────────────────────────────────────────────
+
+/// Why a value as the file writes it is no value: a `$` tag [`argument`]
+/// cannot read.
+fn tagged_problem(value: &Json) -> Result<(), String> {
+    match value {
+        Json::Array(items) => items.iter().try_for_each(tagged_problem),
+        Json::Object(fields) if fields.len() == 1 => {
+            let (key, inner) = fields.iter().next().unwrap();
+            if !key.starts_with('$') {
+                return tagged_problem(inner);
+            }
+            if key == "$callback" {
+                return match inner.as_str() {
+                    Some("upper") => Ok(()),
+                    _ => Err(format!("the only callback is \"upper\": {value}")),
+                };
+            }
+            if let Some(entries) = inner.as_array().filter(|_| key == "$map" || key == "$set") {
+                entries.iter().try_for_each(tagged_problem)?;
+            }
+            match tagged(key, inner) {
+                Some(_) => Ok(()),
+                None => Err(format!("a bad tagged value {value}")),
+            }
+        }
+        Json::Object(fields) => fields.values().try_for_each(tagged_problem),
+        _ => Ok(()),
+    }
+}
 
 const DOES: [&str; 11] = [
     "returns",
@@ -1730,9 +1917,37 @@ pub fn problems(expected: &Expected) -> Vec<String> {
                     {
                         return Err("cancel names no label of the case".into());
                     }
+                    spec.args.iter().try_for_each(tagged_problem)?;
+                }
+                if let Some(returns) = step.expect().and_then(|expect| expect.get("returns")) {
+                    tagged_problem(returns)?;
+                }
+                if step
+                    .expect()
+                    .is_some_and(|expect| expect.get("cancelled").is_some())
+                    && step.emits().is_empty()
+                {
+                    return Err("cancelled is for a step that dispatches".into());
+                }
+                for want in step
+                    .expect()
+                    .and_then(|expect| expect["reported"].as_array())
+                    .into_iter()
+                    .flatten()
+                {
+                    unknown_keys("reported", want, &["label", "name", "filter"])?;
+                    let label = want["label"].as_str().unwrap_or_default();
+                    if !places.contains_key(label) {
+                        return Err(format!("reported names {label}, not in the case"));
+                    }
                 }
             }
-            for limit in case.only.iter().chain(&case.except) {
+            for limit in case
+                .only
+                .iter()
+                .chain(&case.except)
+                .chain(&case.known_failing)
+            {
                 let Json::Object(fields) = limit else {
                     return Err(format!("a limit is an object: {limit}"));
                 };
@@ -1841,13 +2056,24 @@ pub fn y_languages<'a>(expected: &'a Expected, x: &'a str) -> Vec<&'a str> {
 }
 
 /// Results of many runs, summarized: per case, how many placements passed,
-/// and the first failure of each case.
+/// and the first failure of each case. A case [`Tally::unrun`] names
+/// failed: it should have run and did not.
 #[derive(Default)]
 pub struct Tally {
     rows: BTreeMap<String, (usize, usize, Option<String>)>,
+    /// Per case: the placements that failed as `knownFailing` says, and
+    /// why.
+    known: BTreeMap<String, (usize, String)>,
 }
 
 impl Tally {
+    /// `case` ran in no placement although it should have, for `why`.
+    pub fn unrun(&mut self, case: &Case, why: &str) {
+        let entry = self.rows.entry(case.case.clone()).or_default();
+        entry.1 += 1;
+        entry.2.get_or_insert_with(|| why.to_owned());
+    }
+
     pub fn record(&mut self, case: &Case, combo: &Combo, result: &Result<(), String>) {
         let entry = self.rows.entry(case.case.clone()).or_default();
         match result {
@@ -1859,6 +2085,17 @@ impl Tally {
                     .get_or_insert_with(|| format!("{}: {why}", combo.describe()));
             }
         }
+    }
+
+    /// `case` failed in `combo`, as its `knownFailing` says it does
+    /// (`why`): reported, not a failure of the run.
+    pub fn known(&mut self, case: &Case, why: &str) {
+        let entry = self
+            .known
+            .entry(case.case.clone())
+            .or_insert_with(|| (0, why.to_owned()));
+        entry.0 += 1;
+        self.rows.entry(case.case.clone()).or_default();
     }
 
     pub fn failed(&self) -> usize {
@@ -1876,7 +2113,11 @@ impl Tally {
 impl std::fmt::Display for Tally {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (case, (passed, failed, first)) in &self.rows {
+            if let Some((known, why)) = self.known.get(case) {
+                writeln!(f, "known failing {case} ({known} placements): {why}")?;
+            }
             match first {
+                None if *passed == 0 && self.known.contains_key(case) => {}
                 None => writeln!(f, "pass {case} ({passed} placements)")?,
                 Some(first) => writeln!(
                     f,

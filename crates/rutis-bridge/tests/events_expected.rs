@@ -6,8 +6,8 @@
 #![cfg(feature = "testing")]
 
 use rutis_bridge::runtime::testing::events::{
-    combinations, expected, placements, problems, runtime_languages, tool_combo, y_languages,
-    Coverage,
+    argument, combinations, expected, placements, problems, runtime_languages, tool_combo,
+    y_languages, Coverage,
 };
 
 #[test]
@@ -94,6 +94,14 @@ fn every_case_runs_somewhere() {
             .map(|case| placements(case, x, &ys, Coverage::Sampled).unwrap().len())
             .sum();
         println!("X={x}: {total} placements, {sampled} sampled");
+        // By the part of the case id before its `/`: what the nightly run
+        // of every placement shards by (stress.yml, `events-all`).
+        let mut by_kind = std::collections::BTreeMap::<&str, usize>::new();
+        for case in &expected.cases {
+            let kind = case.case.split('/').next().unwrap_or_default();
+            *by_kind.entry(kind).or_default() += combinations(case, x, &ys).unwrap().len();
+        }
+        println!("  {by_kind:?}");
     }
     for case in &expected.cases {
         let anywhere = runtime_languages(&expected).iter().any(|x| {
@@ -103,12 +111,38 @@ fn every_case_runs_somewhere() {
         });
         assert!(anywhere, "{} runs in no placement", case.case);
     }
-    for language in ["node-leaf", "python", "go"] {
-        let tool = expected
-            .cases
-            .iter()
-            .filter(|case| tool_combo(case, language).is_some())
-            .count();
-        println!("{language} testing tool: {tool} cases");
-    }
+    // Each testing tool checks it ran as many cases as `toolCases` says,
+    // and `toolCases` is what the cases give each tool's language.
+    let tools: Vec<&str> = expected.tool_cases.keys().map(String::as_str).collect();
+    assert_eq!(tools, ["bun", "go", "node-leaf", "python"], "toolCases");
+    let counted: std::collections::BTreeMap<String, usize> = tools
+        .iter()
+        .map(|language| {
+            let tool = expected
+                .cases
+                .iter()
+                .filter(|case| tool_combo(case, language).is_some())
+                .count();
+            println!("{language} testing tool: {tool} cases");
+            (language.to_string(), tool)
+        })
+        .collect();
+    assert_eq!(
+        expected.tool_cases, counted,
+        "toolCases in events.expected.json"
+    );
+}
+
+/// A tagged value the file writes wrong is an error of the file, not a
+/// record some case passes with.
+#[test]
+#[should_panic(expected = "a bad tagged value")]
+fn a_bad_tagged_value_in_the_file_panics() {
+    argument(&serde_json::json!([{ "$instant": "yesterday" }]));
+}
+
+#[test]
+#[should_panic(expected = "a bad tagged value")]
+fn an_unknown_tag_in_the_file_panics() {
+    argument(&serde_json::json!({ "$instnat": "2026-10-15T03:22:15.123Z" }));
 }

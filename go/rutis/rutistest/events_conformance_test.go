@@ -21,35 +21,20 @@ import (
 )
 
 // The event expectations (#464 §13): the real runtimes and the testing
-// tools are checked against the same list. Until the file is in the
-// checkout, its starting cases are read from the specification, whose
-// §13.3 is the file's first content.
-const (
-	eventExpectations = "../../../crates/rutis-bridge/src/runtime/testing/events.expected.json"
-	eventSpec         = "../../../docs/design-events-protocol-2026-10-18.md"
-)
+// tools are checked against the same list. What each expectation means is
+// crates/rutis-bridge/src/runtime/testing/events.rs.
+const eventExpectations = "../../../crates/rutis-bridge/src/runtime/testing/events.expected.json"
 
-func readEventExpectations(t *testing.T) []byte {
-	if data, err := os.ReadFile(filepath.FromSlash(eventExpectations)); err == nil {
-		return data
-	}
-	doc, err := os.ReadFile(filepath.FromSlash(eventSpec))
-	if err != nil {
-		t.Skipf("neither the event expectations nor the specification are in this checkout: %v", err)
-	}
-	text := string(doc)
-	start := strings.Index(text, "### 13.3")
-	if start < 0 {
-		t.Fatal("the specification has no §13.3")
-	}
-	text = text[start:]
-	open := strings.Index(text, "```json\n")
-	close := strings.Index(text[open+8:], "\n```")
-	if open < 0 || close < 0 {
-		t.Fatal("§13.3 has no JSON block")
-	}
-	return []byte(text[open+8 : open+8+close])
-}
+const (
+	// eventLanguage is the language of the Go testing tool in the file.
+	eventLanguage = "go"
+	// eventSettle is how long a log expectation may take to hold
+	// (events.rs SETTLE).
+	eventSettle = 5 * time.Second
+	// eventLacks is how long `logLacks` / `reported` wait after the rest
+	// held (events.rs LACKS).
+	eventLacks = 300 * time.Millisecond
+)
 
 type eventCase struct {
 	Case      string                       `json:"case"`
@@ -62,42 +47,99 @@ type eventCase struct {
 	Tool      *bool                        `json:"tool"`
 }
 
-// languages are the language lists of an only / except item.
-func languages(item map[string]json.RawMessage) [][]string {
-	var out [][]string
-	for key, raw := range item {
+// eventStep is the part of a step the case's labels come from.
+type eventStep struct {
+	Emit *struct {
+		Row string `json:"row"`
+	} `json:"emit"`
+	Load *struct {
+		Label string `json:"label"`
+	} `json:"load"`
+	Concurrent []eventStep `json:"concurrent"`
+}
+
+// emitRows are the emitter rows of a step: its emit's, or its concurrent
+// ones'.
+func (s eventStep) emitRows() []string {
+	if s.Emit != nil {
+		if s.Emit.Row == "" {
+			return []string{"e"}
+		}
+		return []string{s.Emit.Row}
+	}
+	var rows []string
+	for _, inner := range s.Concurrent {
+		rows = append(rows, inner.emitRows()...)
+	}
+	return rows
+}
+
+// labels are the labels of the case (events.rs `places`): its listeners,
+// its loaded participants and its emitter rows.
+func (c *eventCase) labels(t *testing.T) map[string]bool {
+	labels := map[string]bool{}
+	for _, raw := range c.Listeners {
+		var listener struct{ Label string }
+		if err := json.Unmarshal(raw, &listener); err != nil {
+			t.Fatal(err)
+		}
+		labels[listener.Label] = true
+	}
+	for _, raw := range c.Steps {
+		var step eventStep
+		if err := json.Unmarshal(raw, &step); err != nil {
+			t.Fatal(err)
+		}
+		if step.Load != nil {
+			labels[step.Load.Label] = true
+		}
+		for _, row := range step.emitRows() {
+			labels[row] = true
+		}
+	}
+	return labels
+}
+
+// holds is whether a limit (an only / except item) holds with every label
+// at X in Go (events.rs `limit_holds`): every label it names (X, Y or the
+// case's) is of one of its languages.
+func holds(t *testing.T, limit map[string]json.RawMessage, labels map[string]bool) bool {
+	for key, raw := range limit {
 		if key == "why" {
 			continue
 		}
 		var list []string
-		if json.Unmarshal(raw, &list) == nil {
-			out = append(out, list)
+		if err := json.Unmarshal(raw, &list); err != nil {
+			t.Fatal(err)
+		}
+		if !(key == "X" || key == "Y" || labels[key]) || !slices.Contains(list, eventLanguage) {
+			return false
 		}
 	}
-	return out
+	return true
+}
+
+func why(limit map[string]json.RawMessage) string {
+	var text string
+	_ = json.Unmarshal(limit["why"], &text)
+	return text
 }
 
 // forGo reports whether a case runs on the Go testing tool, where every
-// participant is in this runtime, and why not.
-func (c *eventCase) forGo() (bool, string) {
+// participant is in this runtime, and why not (events.rs `tool_combo`).
+func (c *eventCase) forGo(t *testing.T) (bool, string) {
 	if c.Tool != nil && !*c.Tool {
-		return false, "it needs another process, rutis/* or the host"
+		return false, "tool: false"
 	}
-	for _, item := range c.Only {
-		if goAlso[c.Case] {
-			break
-		}
-		for _, list := range languages(item) {
-			if !slices.Contains(list, "go") {
-				return false, fmt.Sprintf("only %v", list)
-			}
+	labels := c.labels(t)
+	for _, limit := range c.Only {
+		if !holds(t, limit, labels) {
+			return false, "only: " + why(limit)
 		}
 	}
-	for _, item := range c.Except {
-		for _, list := range languages(item) {
-			if slices.Contains(list, "go") {
-				return false, fmt.Sprintf("except %v", list)
-			}
+	for _, limit := range c.Except {
+		if holds(t, limit, labels) {
+			return false, "except: " + why(limit)
 		}
 	}
 	return true, ""
@@ -217,7 +259,9 @@ type eventRun struct {
 	participants map[string]map[string]any
 	generation   int
 	pending      chan outcome
-	reported     int
+	// Whether a background dispatch is running, for the step that ends it.
+	background bool
+	reported   int
 }
 
 type outcome struct {
@@ -327,7 +371,7 @@ func (r *eventRun) emit(raw json.RawMessage) outcome {
 		request["cancel"] = spec.Cancel
 	}
 	method := "dispatch"
-	if spec.Mode == "bail" {
+	if spec.Mode == "bail" || spec.Mode == "waterfall-sync" {
 		method = "dispatchSync"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -337,18 +381,21 @@ func (r *eventRun) emit(raw json.RawMessage) outcome {
 }
 
 type expectation struct {
-	Returns       json.RawMessage `json:"returns"`
-	Throws        *thrown         `json:"throws"`
-	Log           []string        `json:"log"`
-	LogUnordered  []string        `json:"logUnordered"`
-	LogContains   []string        `json:"logContains"`
-	LogLacks      []string        `json:"logLacks"`
-	Reported      []struct{ Label, Name string }
-	FilterSees    []string `json:"filterSees"`
-	ViaHost       *bool    `json:"viaHost"`
-	Settles       bool     `json:"settles"`
-	ReturnsGiven  bool     `json:"-"`
-	ThrowsUnnamed bool     `json:"-"`
+	Returns      json.RawMessage `json:"returns"`
+	Throws       *thrown         `json:"throws"`
+	Cancelled    bool            `json:"cancelled"`
+	Log          []string        `json:"log"`
+	LogUnordered []string        `json:"logUnordered"`
+	LogContains  []string        `json:"logContains"`
+	LogLacks     []string        `json:"logLacks"`
+	Reported     []struct {
+		Label  string `json:"label"`
+		Name   string `json:"name"`
+		Filter bool   `json:"filter"`
+	} `json:"reported"`
+	FilterSees []string `json:"filterSees"`
+	ViaHost    *bool    `json:"viaHost"`
+	Settles    bool     `json:"settles"`
 }
 
 type thrown struct {
@@ -399,35 +446,59 @@ func containsInOrder(log, want []string) bool {
 	return i == len(want)
 }
 
-// check checks a step's expectation, waiting up to 5 s for the log.
-func (r *eventRun) check(where string, raw json.RawMessage, got *outcome) {
-	if raw == nil {
-		return
+// reports is the error name of a §5.6 report `line` about `event` naming
+// `row`, or "" when the line is about something else (events.rs
+// `reports`): `rutis: listener of <event> in row <row> failed: <Name>:
+// <message>`, or `rutis: filter of <event> from row <row> failed: ...`.
+func reports(line, event string, filter bool, row string) string {
+	kind, at := "listener", "in"
+	if filter {
+		kind, at = "filter", "from"
 	}
+	rest, ok := strings.CutPrefix(line, fmt.Sprintf("rutis: %s of %s %s row %s failed: ", kind, event, at, row))
+	if !ok {
+		return ""
+	}
+	name, _, ok := strings.Cut(rest, ": ")
+	if !ok {
+		return ""
+	}
+	return name
+}
+
+// expectation is a step's expectation, or the empty one.
+func (r *eventRun) expectation(raw json.RawMessage) expectation {
 	var e expectation
+	if raw == nil {
+		return e
+	}
 	if err := json.Unmarshal(raw, &e); err != nil {
 		r.t.Fatal(err)
 	}
-	if e.ViaHost != nil && *e.ViaHost {
-		r.t.Errorf("%s: the testing tool always dispatches on the fast path", where)
+	return e
+}
+
+// checkOutcomes checks `returns` and `throws` against the dispatches that
+// end in a step (events.rs `check_outcomes`): without `throws` every one
+// must succeed.
+func (r *eventRun) checkOutcomes(where string, e expectation, outcomes []outcome) {
+	if e.Cancelled {
+		r.t.Errorf("%s: cancelled: the testing tool does not give up a dispatch", where)
+		return
 	}
-	if got != nil {
-		switch {
-		case e.Throws != nil:
-			if got.err == nil {
-				r.t.Errorf("%s: expected an error, got %v", where, got.value)
-			} else if problem := matches(got.err, *e.Throws); problem != "" {
-				r.t.Errorf("%s: %s", where, problem)
-			}
-		case e.Returns != nil:
-			if got.err != nil {
-				r.t.Errorf("%s: expected %s, got %v", where, e.Returns, got.err)
-				break
-			}
+	if (e.Returns != nil || e.Throws != nil) && len(outcomes) == 0 {
+		r.t.Errorf("%s: expects a result, but no dispatch ends in this step", where)
+		return
+	}
+	for _, got := range outcomes {
+		if e.Throws == nil && got.err != nil {
+			r.t.Errorf("%s: expected the dispatch to succeed, it threw %v", where, got.err)
+			continue
+		}
+		if e.Returns != nil {
 			var want any
 			_ = json.Unmarshal(e.Returns, &want)
-			value := written(r.t, got.value)
-			normalized, _ := json.Marshal(value)
+			normalized, _ := json.Marshal(written(r.t, got.value))
 			var have any
 			_ = json.Unmarshal(normalized, &have)
 			if !reflect.DeepEqual(have, want) {
@@ -435,48 +506,79 @@ func (r *eventRun) check(where string, raw json.RawMessage, got *outcome) {
 			}
 		}
 	}
-	problems := func() string {
-		log := r.log.list()
-		var out []string
-		if e.Log != nil && !slices.Equal(log, e.Log) {
-			out = append(out, fmt.Sprintf("log %q, want %q", log, e.Log))
-		}
-		if e.LogUnordered != nil && !slices.Equal(multiset(log), multiset(e.LogUnordered)) {
-			out = append(out, fmt.Sprintf("log %q, want in any order %q", log, e.LogUnordered))
-		}
-		if e.LogContains != nil && !containsInOrder(log, e.LogContains) {
-			out = append(out, fmt.Sprintf("log %q, want it to contain %q", log, e.LogContains))
-		}
-		for _, lacking := range e.LogLacks {
-			if slices.Contains(log, lacking) {
-				out = append(out, fmt.Sprintf("log %q has %q", log, lacking))
+	if e.Throws != nil {
+		problem := fmt.Sprintf("expected an error, got %v", outcomes)
+		for _, got := range outcomes {
+			if got.err == nil {
+				continue
+			}
+			if problem = matches(got.err, *e.Throws); problem == "" {
+				break
 			}
 		}
-		if e.FilterSees != nil {
-			var seen []string
-			for _, entry := range log {
-				if row, ok := strings.CutPrefix(entry, "filter:"); ok {
-					seen = append(seen, row)
-				}
-			}
-			if !slices.Equal(seen, e.FilterSees) {
-				out = append(out, fmt.Sprintf("the filter saw %q, want %q", seen, e.FilterSees))
-			}
+		if problem != "" {
+			r.t.Errorf("%s: %s", where, problem)
 		}
-		reported := r.root.Reported()[r.reported:]
-		for _, want := range e.Reported {
-			prefix := fmt.Sprintf("rutis: listener of %s in row %s failed: %s:", r.c.Name, want.Label, want.Name)
-			if !slices.ContainsFunc(reported, func(line string) bool { return strings.HasPrefix(line, prefix) }) {
-				out = append(out, fmt.Sprintf("reported %q, want %s", reported, prefix))
-			}
-		}
-		return strings.Join(out, "; ")
 	}
-	deadline := time.Now().Add(5 * time.Second)
+}
+
+// logProblems is what of a step's log expectations does not hold now, or
+// "" (events.rs `log_holds`).
+func (r *eventRun) logProblems(e expectation, event string) string {
+	log := r.log.list()
+	var out []string
+	if e.Log != nil && !slices.Equal(log, e.Log) {
+		out = append(out, fmt.Sprintf("log %q, want %q", log, e.Log))
+	}
+	if e.LogUnordered != nil && !slices.Equal(multiset(log), multiset(e.LogUnordered)) {
+		out = append(out, fmt.Sprintf("log %q, want in any order %q", log, e.LogUnordered))
+	}
+	if e.LogContains != nil && !containsInOrder(log, e.LogContains) {
+		out = append(out, fmt.Sprintf("log %q, want it to contain %q", log, e.LogContains))
+	}
+	for _, lacking := range e.LogLacks {
+		if slices.Contains(log, lacking) {
+			out = append(out, fmt.Sprintf("log %q has %q", log, lacking))
+		}
+	}
+	if e.FilterSees != nil {
+		var seen []string
+		for _, entry := range log {
+			if row, ok := strings.CutPrefix(entry, "filter:"); ok {
+				seen = append(seen, row)
+			}
+		}
+		if !slices.Equal(seen, e.FilterSees) {
+			out = append(out, fmt.Sprintf("the filter saw %q, want %q", seen, e.FilterSees))
+		}
+	}
+	lines := r.root.Reported()[r.reported:]
+	for _, want := range e.Reported {
+		var about []string
+		for _, line := range lines {
+			if reports(line, event, want.Filter, want.Label) != "" {
+				about = append(about, line)
+			}
+		}
+		switch {
+		case len(about) != 1:
+			out = append(out, fmt.Sprintf("reported %q: want one line for %s about %s, got %d", lines, want.Label, event, len(about)))
+		case reports(about[0], event, want.Filter, want.Label) != want.Name:
+			out = append(out, fmt.Sprintf("reported %q: %s should fail with %s", about[0], want.Label, want.Name))
+		}
+	}
+	return strings.Join(out, "; ")
+}
+
+// checkLog checks a step's log expectations until they hold, at most
+// eventSettle; with `logLacks` or `reported`, once more a moment later
+// (events.rs `check_log`).
+func (r *eventRun) checkLog(where string, e expectation, event string) {
+	deadline := time.Now().Add(eventSettle)
 	for {
-		problem := problems()
+		problem := r.logProblems(e, event)
 		if problem == "" {
-			return
+			break
 		}
 		if time.Now().After(deadline) {
 			r.t.Errorf("%s: %s", where, problem)
@@ -484,10 +586,16 @@ func (r *eventRun) check(where string, raw json.RawMessage, got *outcome) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	if e.LogLacks != nil || e.Reported != nil {
+		time.Sleep(eventLacks)
+		if problem := r.logProblems(e, event); problem != "" {
+			r.t.Errorf("%s: %s (after the step had settled)", where, problem)
+		}
+	}
 }
 
 func (r *eventRun) waitFor(label string) {
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(eventSettle)
 	for !slices.Contains(r.log.list(), label) {
 		if time.Now().After(deadline) {
 			r.t.Fatalf("%s did not start: %q", label, r.log.list())
@@ -510,64 +618,87 @@ func (r *eventRun) step(i int, raw json.RawMessage) {
 		r.t.Fatal(err)
 	}
 	where := fmt.Sprintf("%s step %d", r.c.Case, i)
+	e := r.expectation(step.Expect)
+	if e.ViaHost != nil && *e.ViaHost {
+		r.t.Errorf("%s: the testing tool always dispatches on the fast path", where)
+	}
+	// The event the step's reports are about: its emit's name, else the
+	// case's.
+	event := r.c.Name
+	if step.Emit != nil {
+		var spec struct {
+			Name string `json:"name"`
+		}
+		_ = json.Unmarshal(step.Emit, &spec)
+		if spec.Name != "" {
+			event = spec.Name
+		}
+	}
+	var outcomes []outcome
+	started := time.Now()
 	switch {
 	case step.Emit != nil && step.Background:
+		r.background = true
 		go func() { r.pending <- r.emit(step.Emit) }()
+		r.checkLog(where, e, event)
+		return
 	case step.Emit != nil:
-		got := r.emit(step.Emit)
-		r.check(where, step.Expect, &got)
+		outcomes = append(outcomes, r.emit(step.Emit))
 	case step.Load != nil:
 		r.load(step.Load)
-		r.check(where, step.Expect, nil)
 	case step.Update != "":
 		r.update(step.Update)
-		r.check(where, step.Expect, nil)
 	case step.Unload != "":
 		if step.When != "" {
 			r.waitFor(step.When)
 		}
 		r.rows[step.Unload].Unload()
-		var got *outcome
-		select {
-		case background := <-r.pending:
-			got = &background
-		default:
+		if r.background {
+			r.background = false
+			select {
+			case got := <-r.pending:
+				outcomes = append(outcomes, got)
+			case <-time.After(eventSettle):
+				r.t.Errorf("%s: the background dispatch did not settle within %v", where, eventSettle)
+			}
 		}
-		r.check(where, step.Expect, got)
+		if e.Settles && time.Since(started) >= eventSettle {
+			r.t.Errorf("%s: did not settle within %v", where, eventSettle)
+		}
 	default:
 		r.t.Fatalf("%s: a step the testing tool cannot take: %s", where, raw)
 	}
+	r.checkOutcomes(where, e, outcomes)
+	r.checkLog(where, e, event)
 }
 
-// goAlso are cases whose `only` predates every language having Prepend and
-// Global listener options (a maintainer's correction to §15.27): Go runs
-// them too.
-var goAlso = map[string]bool{"filter/global-skips-filter": true, "order/prepend": true}
-
-// goDiffers are the cases a Go listener cannot meet, and why: bounded,
-// written-down differences of Go's value model, to be marked in the
-// expectations (except) rather than here once the file is in the checkout.
-var goDiffers = map[string]string{
-	"values/every-tag": "a set received where any value is expected decodes into a slice in Go (Go has no set type; design V, convert.Plain), so an echoing Go listener returns it as a list",
-}
+// knownFailing are the cases a product bug fails here, and why: skipped,
+// and counted so that the tool still runs as many as the file says.
+var knownFailing = map[string]string{}
 
 func TestRutistestMeetsTheEventExpectations(t *testing.T) {
-	var expected struct {
-		Scopes map[string]string `json:"scopes"`
-		Cases  []eventCase       `json:"cases"`
-	}
-	if err := json.Unmarshal(readEventExpectations(t), &expected); err != nil {
+	data, err := os.ReadFile(filepath.FromSlash(eventExpectations))
+	if err != nil {
 		t.Fatal(err)
 	}
-	ran := 0
+	var expected struct {
+		Scopes    map[string]string `json:"scopes"`
+		ToolCases map[string]int    `json:"toolCases"`
+		Cases     []eventCase       `json:"cases"`
+	}
+	if err := json.Unmarshal(data, &expected); err != nil {
+		t.Fatal(err)
+	}
+	ran, known := 0, 0
 	for i := range expected.Cases {
 		c := &expected.Cases[i]
 		t.Run(c.Case, func(t *testing.T) {
-			if ok, why := c.forGo(); !ok {
+			if ok, why := c.forGo(t); !ok {
 				t.Skipf("not for the Go testing tool: %s", why)
 			}
-			if why, differs := goDiffers[c.Case]; differs {
-				t.Skipf("a written-down difference of Go: %s", why)
+			if why, failing := knownFailing[c.Case]; failing {
+				known++
+				t.Skipf("known failing: %s", why)
 			}
 			ran++
 			log := &eventLog{}
@@ -583,7 +714,8 @@ func TestRutistestMeetsTheEventExpectations(t *testing.T) {
 			}
 		})
 	}
-	if ran == 0 {
-		t.Fatal("no case ran")
+	// The skip logic agrees with events.rs `tool_combo`.
+	if ran+known != expected.ToolCases[eventLanguage] {
+		t.Fatalf("ran %d cases and %d known failing, the file gives %s %d", ran, known, eventLanguage, expected.ToolCases[eventLanguage])
 	}
 }
