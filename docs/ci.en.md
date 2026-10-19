@@ -76,6 +76,7 @@ The first job of `ci.yml`, `changes`, looks at the files the pull request change
 | `docs` | Any `.md` file |
 | `bun` | `bun/**`, `node/rutis/**`, `crates/rutis-bridge`, `crates/rutis-loader`, `crates/rutis-host` |
 | `go` | `go/**`, `crates/rutis-bridge`, `crates/rutis-loader`, `crates/rutis-host` |
+| `kotlin` | `kotlin/**`, `crates/rutis-bridge`, `crates/rutis-loader` |
 | `repro` | `crates/rutis-sdk`, `crates/rutis-cli/build.rs`, `tools/test-dylib-repro.sh`, `tools/build-dylib-bundle.sh`, `tools/lib/**`. Kernel changes reach the SDK too, but its reproducibility check for them runs in full runs |
 | `specs` | `specs/**` (the TLA+ models, their configurations, expected outcomes, and the READMEs that record the results) |
 
@@ -96,6 +97,7 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 | `runtimes-windows` | Windows | `code`: only the tests that depend on the platform | All bridge and loader tests | The same on Windows (processes start over loopback); the Go SDK tests; the E2E harness and the E2E scenarios not limited to Unix (`rutis-e2e`: Job Objects, Ctrl-Break, residue checks); a build check of the whole workspace |
 | `runtimes-bun` | Linux | `bun`: Bun 1.4.0 | Linux latest; macOS 1.4.0 | Every Bun runtime test, with the reruns over loopback |
 | `runtimes-go` | Linux | `go`: Go oldstable | Linux stable; macOS oldstable; the reruns over loopback on Linux | Every Go SDK and Go runtime test |
+| `runtimes-kotlin` | Linux | `kotlin`: JDK 17 | — | The Kotlin SDK's (`kotlin/rutis`) Gradle build and tests: the jvm target's unit tests, the testing tool against both expectation files; where the runner has an Android SDK, the android target and its AAR too. Then the Rust conformance suites with Kotlin (feature `kotlin`), Gradle before cargo. The bridge's all-features runs in `rust`, `network-macos` and `runtimes-windows` include `kotlin`: they install JDK 17 and build the conformance jar with Gradle first (`RUTIS_KOTLIN_JAR`) |
 | `runtimes-swift` | macOS (self-hosted, §10) | `swift`: the toolchain of the runner's Xcode | — | The Swift SDK's own tests (`swift run RutisSelfTest`), its library built for iOS where the runner has the iOS SDK, the Rust contract suites with the Swift session and runtimes, Swift rows with Node and Python ones (`swift_rows`, `multilang_swift`, caller rows, wait cycles), and `events_conformance` with X a Swift plugin (written placements on pull requests, sampled in full runs) |
 | `semver-rutis` | macOS (self-hosted, §10) | `packaging` | The whole job | Whether the public API changed incompatibly since the last release (warning only) |
 | `dylib-linux-launcher`, `dylib-linux-sdk-bundle` | Linux | `dylib` | — | Dylib tests, split into two jobs that run at the same time |
@@ -125,8 +127,11 @@ The session contract (`session::testing::session` and the malformed-frame checks
 | Node, Python | loopback TCP (with a one-time token) | Runs | Runs | Runs |
 | Go | Unix socket | Runs | Runs | Skipped: as above |
 | Go | loopback TCP | Runs | Runs | Runs |
+| Kotlin (jvm target) | Unix socket | Runs | Runs | Skipped: as above |
+| Kotlin (jvm target) | loopback TCP | Runs | Runs | Runs |
 | Node, Python | WebSocket (the fixture listens, Rust dials) | Runs | Runs | Runs |
 | Go | WebSocket | Not run: the Go SDK's WebSocket listener is internal to the runtime (`package rutis`), out of reach of the session fixture, a separate program; the Go runtime's WebSocket column is in the runtime contract | As Linux | As Linux |
+| Kotlin | WebSocket | Not run: the Kotlin SDK's dialing and listening are K-P2 (`docs/design-android-runtime-2026-10-12.md` §9) | As Linux | As Linux |
 | Bun | Unix socket, loopback TCP | Runs (malformed frames on the Unix socket only) | Runs | Not compiled: Bun on Windows is not a declared platform |
 | Bun | WebSocket | Not run: the Bun runtime's WebSocket listener is in its supervising process (`src/remote.ts`), out of reach of the session fixture, a separate program; the Bun runtime's WebSocket column is in the runtime contract | As Linux | As Linux |
 
@@ -170,7 +175,8 @@ Other bridge test files compiled on Unix only (each says why next to its `cfg`):
 | --- | --- | --- |
 | Documentation only | `changes`, `links` | About 1 minute |
 | Kernel `crates/rutis` | `rust`, `e2e`, `js-py`, `lint`, `network-macos`, `runtimes-windows` | About 5–8 minutes |
-| Bridge, loader, host | Adds `runtimes-bun`, `runtimes-go` (one version each, Linux) | About 6–9 minutes |
+| Bridge, loader, host | Adds `runtimes-bun`, `runtimes-go` (one version each, Linux) and `runtimes-kotlin` (not for host) | About 6–9 minutes |
+| The Kotlin SDK only (`kotlin/**`) | `rust`, `e2e`, `js-py`, `lint`, `network-macos`, `runtimes-windows`, `runtimes-kotlin` | About 5–8 minutes |
 | Python package only | `rust`, `e2e`, `js-py`, `lint`, `network-macos`, `runtimes-windows` | About 5–8 minutes |
 | `package.json`, `pyproject.toml`, `crates/*/Cargo.toml` | Adds `release-dry-run` and `semver-rutis`; `install.yml` (Linux x64) when a package's `package.json` or `pyproject.toml` changes | Unchanged; they run beside the tests |
 | Dylib | Adds the dylib jobs; `dylib-windows.yml` | About 20–25 minutes (the dylib budget) |
@@ -251,6 +257,7 @@ Rule: for each language, Linux jobs use the oldest supported version, macOS and 
 | websockets | The `network` extra in `python/rutis/pyproject.toml` | `==<lower bound>.*` | `>=<lower bound>` |
 | Bun | `engines.bun` in `bun/rutis-bun/package.json` | The declared oldest | `latest` |
 | Go | `go/rutis/go.mod` | `oldstable` | `stable` |
+| JDK | `jvmToolchain(17)` of the `kotlin/rutis` modules | 17 (`runtimes-kotlin`, `rust`) | 17 |
 | Rust toolchain | `rust-toolchain.toml` | Every workflow's `dtolnay/rust-toolchain@<version>` equals it | Same |
 | MSRV | `rust-version` in the root `Cargo.toml` | The `msrv` job (full runs) | — |
 

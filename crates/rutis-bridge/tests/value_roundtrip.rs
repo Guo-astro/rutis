@@ -1163,7 +1163,7 @@ async fn go_depth_limit() {
 /// `value` as a far end that holds lists and records of data as data
 /// sends it back: a list or record holding no tagged value is data (on the
 /// wire, the two are the same value).
-#[cfg(feature = "go")]
+#[cfg(any(feature = "go", feature = "kotlin"))]
 fn as_data(value: Value) -> Value {
     match value {
         Value::List(items) => {
@@ -1322,4 +1322,55 @@ async fn bun_depth_limit() {
     tokio::task::spawn_blocking(move || depth_limit(&near, "bun"))
         .await
         .unwrap();
+}
+
+// ── Kotlin: values only (its fixture has no reference tables) ────────
+
+#[cfg(feature = "kotlin")]
+mod kotlin;
+
+/// The Kotlin session fixture (the SDK's jvm target), which echoes the
+/// session values it decodes: data as its JSON, tagged values as the JDK
+/// values they decode to.
+#[cfg(feature = "kotlin")]
+async fn kotlin_far_end() -> (Connection, tokio::process::Child) {
+    far_end(kotlin::session(), "kotlin").await
+}
+
+#[cfg(feature = "kotlin")]
+#[tokio::test(flavor = "multi_thread")]
+async fn kotlin_values_round_trip() {
+    let (near, _child) = kotlin_far_end().await;
+    tokio::task::spawn_blocking(move || round_trip(&near, "kotlin", Numbers::Exact))
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "kotlin")]
+#[tokio::test(flavor = "multi_thread")]
+async fn kotlin_depth_limit() {
+    let (near, _child) = kotlin_far_end().await;
+    tokio::task::spawn_blocking(move || depth_limit(&near, "kotlin"))
+        .await
+        .unwrap();
+}
+
+/// guarantee: bridge/value-tags. Tagged values come back from the Kotlin
+/// session's echo as sent: lists and records holding none come back as the
+/// same data.
+#[cfg(feature = "kotlin")]
+#[tokio::test(flavor = "multi_thread")]
+async fn kotlin_tagged_values_round_trip() {
+    let (near, _child) = kotlin_far_end().await;
+    tokio::task::spawn_blocking(move || {
+        check("kotlin tagged round trip", tagged_value(), |sent| {
+            let echoed = near
+                .invoke("conformance", "echo", Value::List(vec![sent.clone()]))
+                .map_err(|error| TestCaseError::fail(format!("echo failed: {error}")))?;
+            prop_assert_eq!(as_data(echoed), as_data(as_received(sent)));
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
 }
