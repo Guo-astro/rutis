@@ -18,13 +18,13 @@ use rutis_bridge::{
 };
 use rutis_loader::{
     register_peer_node, Builtins, Chain, GoResolver, GoRuntimesHandle, Layer, Loader,
-    LoaderOptions, LoaderPlugin, Patch, PeerResolver, RuntimeInstances, RuntimeResolver,
-    RuntimeRows, RuntimeRowsPlugin, ServiceCatalog,
+    LoaderOptions, LoaderPlugin, Patch, PeerResolver, RuntimeEnd, RuntimeInstances,
+    RuntimeResolver, RuntimeRows, RuntimeRowsPlugin, ServiceCatalog,
 };
 
 use crate::config::{token, HostConfig, Restart};
-use crate::errln;
 use crate::languages::{self, Mount, LANGUAGES};
+use crate::{errln, outln};
 
 pub struct Host {
     /// The host runs while this lives.
@@ -55,6 +55,8 @@ pub struct Host {
     accepted: Option<Accepted>,
     /// What each local runtime's `restart` says, by name.
     restarts: Vec<(String, Restart)>,
+    /// What `runtimes.go.restart` says, for every Go runtime.
+    go_restart: Restart,
     /// The tasks watching the local runtimes ([`Host::supervise`]), by
     /// name.
     supervisors: Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
@@ -314,6 +316,12 @@ impl Host {
                 )
             })
             .collect();
+        // Go's runtimes are many, and come and go: their plugin supervises
+        // them ([`Host::supervise`]).
+        let go_restart = LANGUAGES
+            .iter()
+            .find(|language| language.key() == "go")
+            .map_or(Restart::No, |go| go.restart(&config.runtimes));
         // What waits for the loader: Go's runtimes.
         let mut go = None;
         for later in later {
@@ -332,6 +340,7 @@ impl Host {
             config: config.clone(),
             accepted,
             restarts,
+            go_restart,
             supervisors: Mutex::default(),
         })
     }
@@ -339,9 +348,26 @@ impl Host {
     /// Watch each local runtime as its `restart` says, from now on
     /// ([`crate::restart::supervise`]): `on-failure` starts it again when
     /// its process ends on its own; one whose `restart` is `exit` comes out
-    /// of the [`Exits`] returned when it ends, for the host to stop.
+    /// of the [`Exits`] returned when it ends, for the host to stop. The
+    /// Go runtimes, which start and stop as rows use them, are supervised
+    /// by their plugin ([`rutis_loader::GoRuntimesHandle::supervise`]),
+    /// each on its own, with the same numbers and lines.
     pub fn supervise(&self) -> Exits {
         let (send, exits) = tokio::sync::mpsc::unbounded_channel();
+        if let (Some(go), Restart::OnFailure | Restart::Exit) = (&self.go, self.go_restart) {
+            let send = send.clone();
+            go.runtimes
+                .supervise(self.go_restart.into(), move |end| match end {
+                    RuntimeEnd::Exit { runtime, why } => {
+                        let _ = send.send((runtime, why));
+                    }
+                    end => {
+                        if let Some(line) = end.line() {
+                            outln!("{line}");
+                        }
+                    }
+                });
+        }
         let mut supervisors = self.supervisors.lock().unwrap();
         for (name, restart) in &self.restarts {
             let fiber = self.fibers.iter().find(|(runtime, _)| runtime == name);
@@ -372,6 +398,10 @@ impl Host {
     /// Stop watching the runtime `name`, or every runtime: the host is
     /// about to stop it.
     fn unsupervise(&self, name: Option<&str>) {
+        if let (None, Some(go)) = (name, &self.go) {
+            go.runtimes.unsupervise();
+        }
+
         self.supervisors.lock().unwrap().retain(|(runtime, task)| {
             let stop = name.is_none_or(|name| name == runtime);
             if stop {

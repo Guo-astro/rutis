@@ -131,6 +131,8 @@ fn normalized(config: &HostConfig, dir: &Path) -> Value {
             fields.insert("idle".into(), json!(idle));
         }
         fields.insert("project".into(), path(&go.project, dir));
+        // `restart` (0.14) likewise.
+        restart(go.restart, &mut fields);
         runtimes.insert("go".into(), fields.into());
     }
     let remote: Vec<Value> = config

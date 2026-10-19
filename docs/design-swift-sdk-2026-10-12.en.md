@@ -367,6 +367,9 @@ Acceptance: an EventKit plugin runs in a signed binary and the prompt points at 
 
 If the `go.rs` extraction turns out too entangled, `swift.rs` copies first and unifies later; deviations are recorded here with the implementation.
 
+Implementation note (0.14, the extraction is done): `binary.rs` has the `BinaryLanguage` trait (constants `PREFIX`, `TITLE`, `MARKER`, `PLUGIN_API`; functions `runtime_name` and `launch`) and, taking it as their parameter, `Binaries`, `BinaryManifest`, `BinaryResolver<L>`, `BinaryRuntimes<L>`, `BinaryRuntimesHandle<L>`, `BinaryRuntimeState`, `BinaryRuntimeInfo` and `read_binary_manifest`, under the feature `binary` (which `go` enables, and `swift` should). `go.rs` is now only `struct Go`'s implementation and type aliases such as `GoResolver = BinaryResolver<Go>`; Go users' code is unchanged. `swift.rs` follows it: `struct Swift` implementing `BinaryLanguage` (`swift_runtime_name`, `LocalRuntime::swift`) plus aliases. Crash restarts are in the shared module too: `BinaryRuntimesHandle::supervise(RestartPolicy, callback)`, with the backoff of `rutis_loader::backoff` (the same one rutis-host uses for node/py/bun); rutis-host's `runtimes.go.restart` is built on it, and `runtimes.swift.restart` can copy it. "Not restarted after a crash" in §3.4 is therefore only the default.
+
+
 ## 10. rutis-host
 
 ```json

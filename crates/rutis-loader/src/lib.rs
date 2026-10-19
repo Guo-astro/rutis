@@ -5,6 +5,7 @@
 //! layer and are handed to a persistence hook. The loader reads and writes no
 //! files. Design: `docs/design-rutis-loader-2026-10-02.md`.
 
+pub mod backoff;
 mod catalog;
 mod edit;
 mod error;
@@ -48,9 +49,16 @@ pub use runtime::{
     is_runtime_name, AcceptInstances, RowsSource, RuntimeConnection, RuntimeInstances,
     RuntimeResolver, RuntimeRows, RuntimeRowsPlugin,
 };
+#[cfg(feature = "binary")]
+pub use runtime::{
+    read_binary_manifest, Binaries, BinaryFile, BinaryLanguage, BinaryManifest, BinaryResolver,
+    BinaryRuntimeInfo, BinaryRuntimeState, BinaryRuntimes, BinaryRuntimesHandle, RestartPolicy,
+    RuntimeEnd,
+};
 #[cfg(feature = "go")]
 pub use runtime::{
-    read_go_manifest, GoBinaries, GoBinary, GoManifest, GoResolver, GoRuntimeInfo, GoRuntimeState,
-    GoRuntimes, GoRuntimesHandle, GO_MARKER,
+    read_go_manifest, Go, GoBinaries, GoBinary, GoManifest, GoResolver, GoRuntimeInfo,
+    GoRuntimeState, GoRuntimes, GoRuntimesHandle, GO_MARKER,
 };
+
 pub use volatile::{volatile_key, volatile_paths, VolatileUpdate};

@@ -367,6 +367,9 @@ await rutis.stop()        // 全部插件逆序清理，然后断开
 
 `go.rs` 抽取若耦合过深，`swift.rs` 先照抄、随后统一，出入随实现记录在本文。
 
+实现记录（0.14，抽取已完成）：`binary.rs` 提供 `BinaryLanguage` trait（`PREFIX`、`TITLE`、`MARKER`、`PLUGIN_API` 常量，`runtime_name`、`launch` 两个函数）和以它为参数的 `Binaries`、`BinaryManifest`、`BinaryResolver<L>`、`BinaryRuntimes<L>`、`BinaryRuntimesHandle<L>`、`BinaryRuntimeState`、`BinaryRuntimeInfo`、`read_binary_manifest`，feature `binary`（`go` 开启它，`swift` 也应开启）。`go.rs` 只剩 `struct Go` 的实现和 `GoResolver = BinaryResolver<Go>` 等类型别名，Go 用户的代码不用改。`swift.rs` 照此写：`struct Swift` 实现 `BinaryLanguage`（`swift_runtime_name`、`LocalRuntime::swift`）加别名。崩溃重启也在共用模块里：`BinaryRuntimesHandle::supervise(RestartPolicy, 回调)`，退避用 `rutis_loader::backoff`（与 rutis-host 的 node/py/bun 同一份）；rutis-host 的 `runtimes.go.restart` 经它实现，`runtimes.swift.restart` 照搬即可。§3.4 "崩溃不自动重启"因此只是默认值。
+
+
 ## 十、rutis-host
 
 ```json
