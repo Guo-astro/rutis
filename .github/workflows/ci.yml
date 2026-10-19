@@ -272,9 +272,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
-    # About 10 minutes on a pull request, 15 in a full run (2026-10-19);
-    # the step "job time" writes this run's to the summary.
-    timeout-minutes: 45
+    # About 27 minutes on a pull request (2026-10-19, events_conformance
+    # sampled in every language, one test at a time); the step "job time"
+    # writes each run's to the summary.
+    timeout-minutes: 60
     steps:
       - name: job time, start
         run: echo "RUTIS_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
