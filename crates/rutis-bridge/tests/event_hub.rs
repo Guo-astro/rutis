@@ -843,8 +843,8 @@ async fn args_events_need_a_name() {
         .err()
         .unwrap();
     assert_eq!(refused.to_string(), message);
-    // A runtime gets it as a `BindingError` (`to_session_error` is in the
-    // `testing` feature).
+    // The session error a runtime gets: `to_session_error` is exported only
+    // with the `testing` feature.
     #[cfg(feature = "testing")]
     {
         let session = rutis_bridge::events::to_session_error(&refused);
