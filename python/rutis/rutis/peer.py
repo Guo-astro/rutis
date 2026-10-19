@@ -55,7 +55,7 @@ EVENTS_REFUSAL = (
     "this host does not declare events-v2 (the event protocol of rutis 0.13): "
     "upgrade rutis-host to 0.13 or later"
 )
-IMPLEMENTATION = {"name": "rutis", "version": "0.12.1"}
+IMPLEMENTATION = {"name": "rutis", "version": "0.13.0"}
 
 
 def version_mismatch(far, local: int, implementation) -> str:

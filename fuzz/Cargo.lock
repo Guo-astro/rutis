@@ -587,8 +587,10 @@ dependencies = [
 
 [[package]]
 name = "rutis"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "shuttle",
  "thiserror",
  "tokio",
@@ -597,7 +599,7 @@ dependencies = [
 
 [[package]]
 name = "rutis-bridge"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "futures-util",
  "getrandom 0.2.17",

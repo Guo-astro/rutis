@@ -258,7 +258,7 @@ The entry point in `pyproject.toml` lets the host find the plugin by name:
 weather = "weather"
 ```
 
-Declare a version range such as `rutis>=0.12,<0.13`. `define_plugin` tags the plugin with its plugin API version. If the host runtime is older, it reports the problem clearly.
+Declare a version range such as `rutis>=0.13,<0.14`. `define_plugin` tags the plugin with its plugin API version. If the host runtime is older, it reports the problem clearly.
 
 ## 6. Use from a host
 
