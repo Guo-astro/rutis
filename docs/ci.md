@@ -96,7 +96,7 @@
 | `runtimes-windows` | Windows | `code`：只跑和平台有关的测试 | bridge、loader 全部测试 | 同上，在 Windows 上（进程用 loopback 方式启动）；Go SDK 测试；E2E harness 和不限于 Unix 的 E2E 场景（`rutis-e2e`：Job Object、Ctrl-Break、残余检查）；整个工作区的编译检查 |
 | `runtimes-bun` | Linux | `bun`：Bun 1.4.0 | Linux 最新版；macOS 1.4.0 | Bun 运行时的全部测试，包括 loopback 方式启动的重跑 |
 | `runtimes-go` | Linux | `go`：Go oldstable | Linux stable；macOS oldstable；Linux 上 loopback 方式启动的重跑 | Go SDK 与 Go 运行时的全部测试 |
-| `runtimes-swift` | macOS（自托管，§10） | `swift`：runner 上 Xcode 的工具链 | — | Swift SDK 自己的测试（`swift run RutisSelfTest`）、runner 有 iOS SDK 时为 iOS 构建库，以及带 Swift 会话与运行时的 Rust 契约套件 |
+| `runtimes-swift` | macOS（自托管，§10） | `swift`：runner 上 Xcode 的工具链 | — | Swift SDK 自己的测试（`swift run RutisSelfTest`）、runner 有 iOS SDK 时为 iOS 构建库、带 Swift 会话与运行时的 Rust 契约套件、Swift 行与 Node / Python 行一起（`swift_rows`、`multilang_swift`、调用方的行、等待环），以及 X 为 Swift 插件的 `events_conformance`（PR 跑写定的组合，完整运行抽样） |
 | `semver-rutis` | macOS（自托管，§10） | `packaging` | 整个任务 | 公开 API 和上次发布相比有没有不兼容的改动（只提示） |
 | `dylib-linux-launcher`、`dylib-linux-sdk-bundle` | Linux | `dylib` | — | dylib 测试，分两个任务同时跑 |
 | `dylib-linux-repro` | Linux | `repro` | 整个任务 | SDK 可复现构建（在一台机器上用两个目录各构建一次） |

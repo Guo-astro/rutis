@@ -2,8 +2,14 @@
 //! two rows of one plugin in one runtime are two callers, an effect the
 //! service registers on a caller's `Ctx` goes when that row unloads while
 //! the runtime keeps running, and a call from Rust names no row. The same
-//! in every runtime: Node, Python, Go and Bun.
-#![cfg(any(feature = "node", feature = "python", feature = "go", feature = "bun"))]
+//! in every runtime: Node, Python, Go, Bun and Swift.
+#![cfg(any(
+    feature = "node",
+    feature = "python",
+    feature = "go",
+    feature = "bun",
+    feature = "swift"
+))]
 
 mod common;
 
@@ -298,6 +304,39 @@ async fn go_rows_are_callers() {
         go.runtimes()
             .iter()
             .any(|runtime| runtime.state == GoRuntimeState::Running)
+    })
+    .await;
+}
+
+/// guarantee: bridge/caller-row
+#[cfg(all(feature = "swift", target_os = "macos"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_rows_are_callers() {
+    use rutis_loader::{Chain, SwiftBinaries, SwiftResolver, SwiftRuntimeState, SwiftRuntimes};
+
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::default();
+    let mut resolver = None;
+    let (root, loader) = loader(&ledger, |_, catalog| {
+        let swift = Arc::new(
+            SwiftResolver::new(SwiftBinaries::new().file(common::runtimes::swift_binary(
+                "RutisMultilang",
+                "multilang",
+            )))
+            .with_catalog(catalog),
+        );
+        resolver = Some(swift.clone());
+        Chain::new().with_shared(swift)
+    })
+    .await;
+    let runtimes = SwiftRuntimes::new(resolver.unwrap(), dir.path()).idle(None);
+    let swift = runtimes.handle();
+    root.plugin(runtimes).await.unwrap();
+    rows_are_callers(&root, &loader, &ledger, "swift:swift_registrant", || {
+        swift
+            .runtimes()
+            .iter()
+            .any(|runtime| runtime.state == SwiftRuntimeState::Running)
     })
     .await;
 }

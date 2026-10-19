@@ -308,10 +308,12 @@ fn go_binary() -> &'static Path {
     })
 }
 
-/// `go`: also a Go runtime, for `go:` rows.
+/// `go`: also a Go runtime, for `go:` rows; `swift`: a Swift one, for
+/// `swift:` rows.
 async fn fixture(
     runtimes: Vec<(LocalRuntime, bool)>,
     go: bool,
+    swift: bool,
     services: &[&str],
     gate: Gate,
 ) -> Fixture {
@@ -336,6 +338,22 @@ async fn fixture(
     #[cfg(feature = "go")]
     if let Some(go) = &go {
         chain = chain.with_shared(go.clone());
+    }
+    #[cfg(not(all(feature = "swift", target_os = "macos")))]
+    assert!(!swift, "Swift rows need the swift feature, on macOS");
+    #[cfg(all(feature = "swift", target_os = "macos"))]
+    let swift = swift.then(|| {
+        Arc::new(
+            rutis_loader::SwiftResolver::new(
+                rutis_loader::SwiftBinaries::new()
+                    .file(common::runtimes::swift_binary("RutisMultilang", "relay")),
+            )
+            .with_catalog(&catalog),
+        )
+    });
+    #[cfg(all(feature = "swift", target_os = "macos"))]
+    if let Some(swift) = &swift {
+        chain = chain.with_shared(swift.clone());
     }
     let mut resolvers = Vec::new();
     for (runtime, npm) in runtimes {
@@ -365,6 +383,12 @@ async fn fixture(
     #[cfg(feature = "go")]
     if let Some(go) = go {
         root.plugin(rutis_loader::GoRuntimes::new(go, dir.path()).idle(None))
+            .await
+            .unwrap();
+    }
+    #[cfg(all(feature = "swift", target_os = "macos"))]
+    if let Some(swift) = swift {
+        root.plugin(rutis_loader::SwiftRuntimes::new(swift, dir.path()).idle(None))
             .await
             .unwrap();
     }
@@ -428,6 +452,7 @@ async fn two_node_runtimes_calling_each_other() {
     let (gate, _arrivals) = Gate::new(2);
     let fixture = fixture(
         vec![(node("node"), true), (node("nb"), false)],
+        false,
         false,
         &["a_work", "b_work", "a_svc", "b_svc"],
         gate,
@@ -504,6 +529,7 @@ async fn one_node_and_two_python_runtimes() {
             (python("py", dir.path()), false),
             (python("pb", dir.path()), false),
         ],
+        false,
         false,
         &services,
         gate,
@@ -587,6 +613,7 @@ async fn two_node_runtimes_waiting_on_each_other_through_go() {
     let fixture = fixture(
         vec![(node("node"), true), (node("nb"), false)],
         true,
+        false,
         &services,
         gate,
     )
@@ -625,6 +652,78 @@ async fn two_node_runtimes_waiting_on_each_other_through_go() {
                 "b_svc: SyncWaitCycle"
             ]
             || answers == ["a_svc got g_relay: SyncWaitCycle", "b_svc got a_work works"],
+        "exactly one call is refused, and the other completes: {answers:?}"
+    );
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// Two Node runtimes waiting on each other through Swift: as through Go,
+/// a Swift runtime runs every call in a Task of its own and its synchronous
+/// calls say they wait (`sync-wait`): the host sees the cycle and refuses
+/// the call that closes it, and the rest completes.
+/// guarantee: bridge/sync-wait-cycle-refused
+#[cfg(all(feature = "swift", target_os = "macos"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn two_node_runtimes_waiting_on_each_other_through_swift() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = |me: &str| NODE_WORK.replace("SELF", me).replace("INJECT", "");
+    let go = |me: &str, other: &str| NODE_GO_PEER.replace("SELF", me).replace("OTHER", other);
+    let files = [
+        ("aw", "node", write(dir.path(), "aw.mjs", &work("a_work"))),
+        ("bw", "nb", write(dir.path(), "bw.mjs", &work("b_work"))),
+        (
+            "a",
+            "node",
+            write(dir.path(), "a.mjs", &go("a_svc", "s_relay")),
+        ),
+        (
+            "b",
+            "nb",
+            write(dir.path(), "b.mjs", &go("b_svc", "a_work")),
+        ),
+    ];
+    let (gate, _arrivals) = Gate::new(2);
+    let services = ["a_work", "b_work", "a_svc", "b_svc", "s_relay"];
+    let fixture = fixture(
+        vec![(node("node"), true), (node("nb"), false)],
+        false,
+        true,
+        &services,
+        gate,
+    )
+    .await;
+    let mut rows_of: Vec<Value> = files
+        .iter()
+        .map(|(id, runtime, file)| match *runtime {
+            "node" => json!({ "id": id, "name": file.to_string_lossy() }),
+            runtime => json!({ "id": id, "name": format!("{runtime}:{}", file.display()) }),
+        })
+        .collect();
+    rows_of.push(json!({ "id": "s", "name": "swift:swift_relay" }));
+    fixture.loader.reconcile(rows(rows_of), None).await.unwrap();
+    let (loader, root) = (fixture.loader.clone(), fixture.root.clone());
+    COLD.until(
+        || {
+            ["aw", "bw", "a", "b", "s"]
+                .iter()
+                .all(|id| active(&loader, id))
+                && services.iter().all(|name| service(&root, name).is_some())
+        },
+        "the rows and their services",
+    )
+    .await;
+
+    let a_go = call(&fixture.root, "a_svc", "go");
+    let b_go = call(&fixture.root, "b_svc", "go");
+    let answers = [answer(&a_go, "a.go"), answer(&b_go, "b.go")]
+        .map(|answer| answer.as_str().unwrap().to_owned());
+    assert!(
+        answers
+            == [
+                "a_svc got s_relay relays b_work works",
+                "b_svc: SyncWaitCycle"
+            ]
+            || answers == ["a_svc got s_relay: SyncWaitCycle", "b_svc got a_work works"],
         "exactly one call is refused, and the other completes: {answers:?}"
     );
     fixture.root.shutdown().await.unwrap();

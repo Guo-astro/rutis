@@ -1,15 +1,15 @@
 # 插件 API
 
-TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`）和 Go 插件（`github.com/arcships/rutis/go/rutis`，见 [写一个 Go 插件](go-plugin.md)）的写法与规则相同。当前插件 API 版本：**3**。
+TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`）和 Go 插件（`github.com/arcships/rutis/go/rutis`，见 [写一个 Go 插件](go-plugin.md)）的写法与规则相同；Swift 插件（本仓库的 Swift 包 `Rutis`，指南发布前为预览，见 [swift/README.zh-CN.md](../../swift/README.zh-CN.md)）也一样。当前插件 API 版本：**3**。
 
 ## 声明
 
-| 声明 | TypeScript（`definePlugin({...})`） | Python（`define_plugin(apply, ...)` 或模块变量） | Go（`rutis.Define(rutis.Plugin[C]{...})`） | 含义 |
-| --- | --- | --- | --- | --- |
-| 用到的服务 | `inject: ['llm']` | `inject=["llm"]` | `Inject: []string{"llm"}` | 都就绪才启动；任何一个撤销，插件停下，等它回来再启动 |
-| 提供的服务（可选） | `provides: { weather: { today: 'sync' } }` | `provides={"weather": Weather}` 或 `{"weather": {"today": "sync"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}`（导出方法，除 `Sync` 列出的外都是 `async`） | 不写也行：`ctx.provide` 提供的服务自动对外（见下）。写了就按声明：把方法标成 `sync`，并让 `rutis-host check` 在运行前就知道谁提供什么；声明过的服务只能调用声明过的方法 |
-| 配置 | `config: { type: 'object', ... }` | `config={...}`（模块变量写 `Config`） | 类型 `C`（Schema 由它生成），或 `Schema` | JSON Schema；宿主据此校验和展示配置 |
-| 启动 | `apply(ctx, config)` | `apply(ctx, config)` | `Apply: func(ctx *rutis.Ctx, config C) error` | 可以是 async；返回清理函数或不返回（Go：返回错误即装载失败） |
+| 声明 | TypeScript（`definePlugin({...})`） | Python（`define_plugin(apply, ...)` 或模块变量） | Go（`rutis.Define(rutis.Plugin[C]{...})`） | Swift（`Rutis.define(Plugin(...))`，预览） | 含义 |
+| --- | --- | --- | --- | --- | --- |
+| 用到的服务 | `inject: ['llm']` | `inject=["llm"]` | `Inject: []string{"llm"}` | `inject: ["llm"]` | 都就绪才启动；任何一个撤销，插件停下，等它回来再启动 |
+| 提供的服务（可选） | `provides: { weather: { today: 'sync' } }` | `provides={"weather": Weather}` 或 `{"weather": {"today": "sync"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}`（导出方法，除 `Sync` 列出的外都是 `async`） | `provides: ["weather": .of(Weather.self, sync: ["unit"])]`（`@RutisService` 类型的方法，除 `sync` 列出的外都是 `async`） | 不写也行：`ctx.provide` 提供的服务自动对外（见下）。写了就按声明：把方法标成 `sync`，并让 `rutis-host check` 在运行前就知道谁提供什么；声明过的服务只能调用声明过的方法 |
+| 配置 | `config: { type: 'object', ... }` | `config={...}`（模块变量写 `Config`） | 类型 `C`（Schema 由它生成），或 `Schema` | `config:` 的 `Decodable` 类型（Schema 由 `@RutisConfig` 生成，或 `static let rutisSchema`） | JSON Schema；宿主据此校验和展示配置 |
+| 启动 | `apply(ctx, config)` | `apply(ctx, config)` | `Apply: func(ctx *rutis.Ctx, config C) error` | `apply: { ctx, config in ... }`（`async throws`） | 可以是 async；返回清理函数或不返回（Go：返回错误即装载失败） |
 
 ## ctx
 
@@ -61,19 +61,19 @@ Rust 另有 `waterfall_sync`：同步的 `waterfall`，规则与 `bail` 相同�
 
 每种语言都有这五种方式，写法是这门语言自己的：
 
-| | Rust（`rutis`） | Node / Bun 叶子插件（`@arcships/rutis`） | Cordis 插件（Node 运行时里） | Python（`rutis`） | Go（`rutis`） |
-| --- | --- | --- | --- | --- | --- |
-| 监听 | `ctx.events().on(ctx, &key, listener)`；同步监听器 `on_sync`；带选项 `on_opt` / `on_sync_opt`；前缀 `on_pattern(ctx, &EventPattern::prefix(p), ..)`；`once` | `ctx.on(name, fn, { prepend, global }?)` → `() => void` | Cordis 自己的 `ctx.on(name, fn, options?)` → `() => boolean`；`ctx.once` | `ctx.on(name, fn, *, prepend=False, global_=False)` → `Callable[[], None]` | `ctx.On(name, func(ctx context.Context, args ...any) (any, error), rutis.Prepend(), rutis.Global())` → `func()` |
-| 监听器 | `impl Listener<E>`：`call(ctx, &event, call: Call<'_, E::Value>)`，`call.mode()`、`call.next()`；`on_sync` 的闭包收到 `SyncCall` | `(...args[, next]) => 值 \| Promise` | 同左 | `fn(*args[, next])`，可以是 `async def` | `fn(ctx, args...)`；waterfall 中最后一个参数是 `rutis.Next`（`func(context.Context) (any, error)`） |
-| `emit` | `emit(ctx, &key, Arc<E>) -> Result<()>` | `ctx.emit(name, ...args): void` | `ctx.emit([thisArg,] name, ...args)` | `ctx.emit(name, *args) -> None` | `ctx.Emit(ctx, name, args...) error`（只报拒绝） |
-| `parallel` | `parallel(ctx, &key, Arc<E>).await` | `await ctx.parallel(name, ...args)` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` |
-| `serial` | `serial(ctx, &key, Arc<E>).await -> Option<E::Value>` | `await ctx.serial(name, ...args)` | `await ctx.serial([thisArg,] name, ...args)` | `await ctx.serial(name, *args)` | `ctx.Serial(ctx, name, args...) (any, error)` |
-| `waterfall` | `waterfall(ctx, &key, &e, terminal).await`（`()` 表示没有终态） | `ctx.waterfall(name, ...args)`；有终态时 `ctx.waterfall.with(terminal)(name, ...args)`（参数都是事件的，函数也是） | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)`（`terminal` 是 `rutis.Terminal`，即 `func(ctx, args ...any) (any, error)`，或 `nil`） |
-| `bail` | `bail_sync(ctx, &key, &e)`；`waterfall_sync(ctx, &key, &e, terminal)` | `ctx.bail(name, ...args)` | `ctx.bail([thisArg,] name, ...args)` | `ctx.bail(name, *args)` | `ctx.Bail(ctx, name, args...) (any, error)` |
-| 过滤 | `ctx.events().filter(\|info\| ..)`，之后同样的六个方法 | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`，`c.rutis` 是描述 | `ctx.filter(lambda d: ...)` → 带这五个方法的对象 | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter` |
-| 作用域 | `ctx.scope()` | 描述的 `scope` | `ctx.rutis.scope` | 描述的 `scope` | `ctx.Scope()` |
-| 卸载信号 | 监听器以登记它的 `ctx` 被调用，`ctx.cancelled()` | `ctx.signal` | `ctx.signal` | 监听器的任务被取消 | 监听器的 `ctx` 被取消 |
-| `parallel` 的失败 | `CordisError::ListenersFailed` | `AggregateError` | `AggregateError` | `rutis.AggregateError`（`errors`） | `*rutis.AggregateError`（`Errors`） |
+| | Rust（`rutis`） | Node / Bun 叶子插件（`@arcships/rutis`） | Cordis 插件（Node 运行时里） | Python（`rutis`） | Go（`rutis`） | Swift（`Rutis`，预览） |
+| --- | --- | --- | --- | --- | --- | --- |
+| 监听 | `ctx.events().on(ctx, &key, listener)`；同步监听器 `on_sync`；带选项 `on_opt` / `on_sync_opt`；前缀 `on_pattern(ctx, &EventPattern::prefix(p), ..)`；`once` | `ctx.on(name, fn, { prepend, global }?)` → `() => void` | Cordis 自己的 `ctx.on(name, fn, options?)` → `() => boolean`；`ctx.once` | `ctx.on(name, fn, *, prepend=False, global_=False)` → `Callable[[], None]` | `ctx.On(name, func(ctx context.Context, args ...any) (any, error), rutis.Prepend(), rutis.Global())` → `func()` | `ctx.on(name, prepend:, global:) { (参数...) in ... }` → `() -> Void` |
+| 监听器 | `impl Listener<E>`：`call(ctx, &event, call: Call<'_, E::Value>)`，`call.mode()`、`call.next()`；`on_sync` 的闭包收到 `SyncCall` | `(...args[, next]) => 值 \| Promise` | 同左 | `fn(*args[, next])`，可以是 `async def` | `fn(ctx, args...)`；waterfall 中最后一个参数是 `rutis.Next`（`func(context.Context) (any, error)`） | 任意参数的闭包，按声明类型解码；waterfall 中最后一个参数是 `Rutis.Next<R>`（`async throws -> R?`） |
+| `emit` | `emit(ctx, &key, Arc<E>) -> Result<()>` | `ctx.emit(name, ...args): void` | `ctx.emit([thisArg,] name, ...args)` | `ctx.emit(name, *args) -> None` | `ctx.Emit(ctx, name, args...) error`（只报拒绝） | `try ctx.emit(name, args...)`（只报拒绝） |
+| `parallel` | `parallel(ctx, &key, Arc<E>).await` | `await ctx.parallel(name, ...args)` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` | `try await ctx.parallel(name, args...)` |
+| `serial` | `serial(ctx, &key, Arc<E>).await -> Option<E::Value>` | `await ctx.serial(name, ...args)` | `await ctx.serial([thisArg,] name, ...args)` | `await ctx.serial(name, *args)` | `ctx.Serial(ctx, name, args...) (any, error)` | `try await ctx.serial(name, args..., as: R.self)` |
+| `waterfall` | `waterfall(ctx, &key, &e, terminal).await`（`()` 表示没有终态） | `ctx.waterfall(name, ...args)`；有终态时 `ctx.waterfall.with(terminal)(name, ...args)`（参数都是事件的，函数也是） | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)`（`terminal` 是 `rutis.Terminal`，即 `func(ctx, args ...any) (any, error)`，或 `nil`） | `try await ctx.waterfall(name, args..., as: R.self) { 终态 }` |
+| `bail` | `bail_sync(ctx, &key, &e)`；`waterfall_sync(ctx, &key, &e, terminal)` | `ctx.bail(name, ...args)` | `ctx.bail([thisArg,] name, ...args)` | `ctx.bail(name, *args)` | `ctx.Bail(ctx, name, args...) (any, error)` | `try await ctx.bail(name, args..., as: R.self)`（线上同步） |
+| 过滤 | `ctx.events().filter(\|info\| ..)`，之后同样的六个方法 | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`，`c.rutis` 是描述 | `ctx.filter(lambda d: ...)` → 带这五个方法的对象 | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter` | `ctx.filter { (l: Rutis.Listener) in ... }` → `Rutis.Emitter` |
+| 作用域 | `ctx.scope()` | 描述的 `scope` | `ctx.rutis.scope` | 描述的 `scope` | `ctx.Scope()` | `ctx.scope` |
+| 卸载信号 | 监听器以登记它的 `ctx` 被调用，`ctx.cancelled()` | `ctx.signal` | `ctx.signal` | 监听器的任务被取消 | 监听器的 `ctx` 被取消 | 监听器的 Task 被取消 |
+| `parallel` 的失败 | `CordisError::ListenersFailed` | `AggregateError` | `AggregateError` | `rutis.AggregateError`（`errors`） | `*rutis.AggregateError`（`Errors`） | 名为 `AggregateError` 的 `RutisError`（`errors`） |
 
 Node 的 `waterfall` 只要有监听器在本进程之外就返回 Promise，所以总是 `await` 它。Go 在插件方法里发出时传收到的 `ctx`（带着调用链），在 `Apply` 里传 `ctx` 本身。Rust 的发出方法在 `ctx.events()` 上，第一个参数是发出方的 `ctx`。
 
@@ -275,18 +275,18 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 
 ### 十种值
 
-| 值 | JS（Node、Bun） | Python | Go | Rust（`rutis-bridge`） |
-| --- | --- | --- | --- | --- |
-| 时间点 | `Date` | 带时区的 `datetime`（收到为 UTC） | `time.Time`（收到为 UTC） | `Instant` |
-| 本地日期时间 | 字符串 `"2026-10-15T14:30:05"` | 无时区的 `datetime` | `rutis.DateTime` | `DateTime` |
-| 日期 | 字符串 `"2026-10-15"` | `date` | `rutis.Date` | `Date` |
-| 时刻 | 字符串 `"14:30:05"` | 无时区的 `time` | `rutis.TimeOfDay` | `TimeOfDay` |
-| 二进制 | `Uint8Array`（也可发 `Buffer`、`ArrayBuffer`、`DataView`） | `bytes`（也可发 `bytearray`、`memoryview`） | `[]byte` | `Vec<u8>`（生成代码里是 `Bytes`） |
-| Map | `Map` | 键不是字符串的 `dict`（收到的是 `dict` 的子类） | 键不是字符串的 map（解码到 `any` 时是 `map[any]any`） | `Vec<(Value, Value)>`（生成代码里是 `ValueMap`） |
-| Set | `Set` | `set`（也可发 `frozenset`） | `map[K]struct{}`，或切片（解码到 `any` 时是切片） | `Vec<Value>`（生成代码里是 `ValueSet`） |
-| 大整数 | `bigint` | `int`（收到的是 `int` 的子类） | `*big.Int`，或放得下的整数类型 | `BigInt`，或放得下的整数类型 |
-| Decimal | 字符串 `"12.30"` | `Decimal` | `rutis.Decimal` | `Decimal` |
-| UUID | 字符串（小写） | `UUID` | `rutis.UUID` | `Uuid` |
+| 值 | JS（Node、Bun） | Python | Go | Rust（`rutis-bridge`） | Swift（预览） |
+| --- | --- | --- | --- | --- | --- |
+| 时间点 | `Date` | 带时区的 `datetime`（收到为 UTC） | `time.Time`（收到为 UTC） | `Instant` | `Date`（到微秒） |
+| 本地日期时间 | 字符串 `"2026-10-15T14:30:05"` | 无时区的 `datetime` | `rutis.DateTime` | `DateTime` | `Rutis.DateTime` |
+| 日期 | 字符串 `"2026-10-15"` | `date` | `rutis.Date` | `Date` | `Rutis.CalendarDate` |
+| 时刻 | 字符串 `"14:30:05"` | 无时区的 `time` | `rutis.TimeOfDay` | `TimeOfDay` | `Rutis.TimeOfDay` |
+| 二进制 | `Uint8Array`（也可发 `Buffer`、`ArrayBuffer`、`DataView`） | `bytes`（也可发 `bytearray`、`memoryview`） | `[]byte` | `Vec<u8>`（生成代码里是 `Bytes`） | `Data` |
+| Map | `Map` | 键不是字符串的 `dict`（收到的是 `dict` 的子类） | 键不是字符串的 map（解码到 `any` 时是 `map[any]any`） | `Vec<(Value, Value)>`（生成代码里是 `ValueMap`） | 键不是 `String` 的 `Dictionary`（解码进 `Any` 时为 `[AnyHashable: Any?]`） |
+| Set | `Set` | `set`（也可发 `frozenset`） | `map[K]struct{}`，或切片（解码到 `any` 时是切片） | `Vec<Value>`（生成代码里是 `ValueSet`） | `Set` |
+| 大整数 | `bigint` | `int`（收到的是 `int` 的子类） | `*big.Int`，或放得下的整数类型 | `BigInt`，或放得下的整数类型 | `Rutis.BigInt`，或放得下它的整数类型 |
+| Decimal | 字符串 `"12.30"` | `Decimal` | `rutis.Decimal` | `Decimal` | `Decimal`（38 位，不保留末尾零；要文本时声明 `String`） |
+| UUID | 字符串（小写） | `UUID` | `rutis.UUID` | `Uuid` | `UUID` |
 
 - 插件只写本语言原生的代码，转换由 rutis 做。收到的大整数、Map 在 Python 里是 `int`、`dict` 的子类，照常使用；原样转发时仍是大整数、Map。
 - JS 没有本地日期时间、日期、时刻、Decimal、UUID 的类型，收到的是普通字符串，内容完整，`===` 照常可用。这样的值经 JS 原样转发时类型不保留（Python 发出的 `date` 经 JS 转发回来是 `str`）。要在 JS 里凭空创建这五种值，或以原类型转发，用 `@arcships/rutis` 的构造函数：`rutis.datetime('2026-10-15T14:30')`、`rutis.date('2026-10-15')`、`rutis.time('14:30')`、`rutis.decimal('1.10')`、`rutis.uuid('…')`；普通字符串照旧是字符串。Go 也可以把这五种值解码进 `string`。
