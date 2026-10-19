@@ -1430,14 +1430,16 @@ async fn joined(handle: tokio::task::JoinHandle<Outcome>, settles: bool) -> Outc
 /// emitter's language (§5.7: "the emitter's call ends with its own
 /// language's cancellation"): Python's `asyncio.CancelledError`, Go's
 /// `context.Canceled` (an `Error` saying `context canceled` on the wire),
-/// and for Rust (a dropped future ends with nothing) the fixture's own
-/// `Cancelled`.
+/// Kotlin's `CancellationException`, and for Rust (a dropped future ends
+/// with nothing) the fixture's own `Cancelled`.
 /// JavaScript cannot give up a dispatch.
 pub fn cancellation(language: &str) -> Option<Json> {
     match language {
         "python" => Some(json!({ "name": "CancelledError" })),
         // A plain Go error crosses named `Error`.
         "go" => Some(json!({ "name": "Error", "message": "context canceled" })),
+        // A cancelled coroutine's CancellationException.
+        "kotlin" => Some(json!({ "name": "CancellationException" })),
         // Swift's own: a cancelled Task throws CancellationError.
         "swift" => Some(json!({ "name": "CancellationError" })),
         "rust" => Some(json!({ "name": "Cancelled" })),

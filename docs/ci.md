@@ -146,6 +146,10 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 | Bun | `fd:3`、回拨 socket 路径 | 运行；`runtimes-bun` 用 `RUTIS_LOCAL_HANDOVER=loopback` 重跑 | 运行 | 不编译：同上 |
 | Bun | loopback TCP | 不跑单独的列：由上一行的重跑覆盖 | 同 Linux | 不编译：同上 |
 | Bun | WebSocket（运行时监听，Rust 拨入） | 运行 | 运行 | 不编译：同上 |
+| Kotlin（jvm target 的 `Rutis.serve`，经通用 `Launcher` 以 `java -jar` 启动） | 回拨 socket 路径 | 运行 | 运行 | 跳过：Windows 只有 loopback |
+| Kotlin | loopback TCP | 运行 | 运行 | 运行 |
+| Kotlin | `fd:3` | 不跑：JDK 没有包装继承描述符的公开 API（设计 §4.3） | 同 Linux | 同 Linux |
+| Kotlin | WebSocket | 不跑：监听属于 K-P2 | 同 Linux | 同 Linux |
 | 不声明 `fd` 的 Node 包回退到回拨 | — | 运行 | 运行 | 跳过：Windows 只有 loopback |
 
 前两列和最后一行经 `Process` 门面启动进程，契约还检查崩溃后的退出状态；loopback、WebSocket 两列接到通道上，只检查崩溃结束会话。Windows 上 `Process` 门面的 loopback 启动由 `python_runtime.rs`、`go_runtime.rs` 等覆盖。

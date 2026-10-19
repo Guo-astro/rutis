@@ -850,7 +850,7 @@ jobs:
           java-version: '17'
           cache: ${{ runner.environment == 'github-hosted' && 'gradle' || '' }}
           cache-dependency-path: kotlin/rutis/**/*.gradle.kts
-      - name: gradle build (the SDK, the processor, the conformance programs)
+      - name: gradle build (the SDK, the processor, the testing tool, the conformance programs)
         working-directory: kotlin/rutis
         run: |
           # The downloads first, retried (the runners' networks); then the
@@ -862,10 +862,28 @@ jobs:
           done
           ./gradlew --no-daemon build
           echo "RUTIS_KOTLIN_JAR=$PWD/rutis-conformance/build/libs/rutis-conformance-all.jar" >> "$GITHUB_ENV"
+      # The other languages, as the far ends of the events conformance.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm --prefix node/rutis-runtime ci
+      - uses: actions/setup-python@v5
+        if: runner.environment == 'github-hosted' || runner.os != 'macOS'
+        with:
+          python-version: '3.10'
+      - run: python3 -m pip install "websockets==15.*"
       # Only the Kotlin tests of the contract suites: the other runtimes run
       # in their own jobs.
       - name: cargo test (the contract suites with Kotlin)
-        run: cargo test -p rutis-bridge --features testing,kotlin --test runtime_conformance --test value_roundtrip kotlin_
+        run: cargo test -p rutis-bridge --features testing,websocket,kotlin --test runtime_conformance --test value_roundtrip --test session_matrix kotlin_
+      # The events conformance with X Kotlin, and Kotlin as Y of the others
+      # (the written placements on pull requests, a sample in full runs).
+      - name: cargo test (events conformance with Kotlin)
+        env:
+          RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
+          RUTIS_EVENTS_REQUIRE: node,python,kotlin
+          RUTIS_EVENTS_SETTLE_SCALE: '2'
+        run: cargo test -p rutis-loader --features node,python,kotlin --test events_conformance
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
         env:

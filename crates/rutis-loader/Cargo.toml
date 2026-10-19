@@ -32,6 +32,9 @@ go = ["binary", "rutis-bridge/go"]
 swift = ["binary", "rutis-bridge/swift"]
 # JavaScript/TypeScript leaf plugins in Bun (`bun:<module>` rows).
 bun = ["runtimes", "rutis-bridge/bun"]
+# Tests only: Kotlin plugins (kotlin/rutis, the jvm target) as rows of a
+# runtime started through the generic `Launcher`.
+kotlin = ["runtimes", "rutis-bridge/kotlin"]
 # What every language shares; enabled by the language features.
 runtimes = ["dep:rutis-bridge"]
 # What compiled languages (one runtime per program: Go, Swift)
