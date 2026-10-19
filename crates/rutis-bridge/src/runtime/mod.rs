@@ -1,6 +1,6 @@
 //! Language runtimes: processes that run plugins written in another
 //! language (Node with Cordis, feature `node`; Python, feature `python`;
-//! Go, feature `go`; Bun, feature `bun`),
+//! Go, feature `go`; Bun, feature `bun`; Swift, feature `swift`),
 //! whose plugins rutis-loader manages as rows.
 //!
 //! A runtime's session comes from a link, wherever the runtime runs:
@@ -60,6 +60,20 @@ pub trait RuntimeSession: Send + Sync + 'static {
 /// name users see for it.
 #[cfg(feature = "go")]
 pub fn go_runtime_name(path: &std::path::Path) -> String {
+    binary_runtime_name("go", path)
+}
+
+/// The name of the Swift runtime the binary at `path` runs as, as
+/// its file name without `.exe`, lowercased, with every character outside
+/// `[a-z0-9-]` as `-`, after `swift-` (`Net.Kits_v1` -> `swift-net-kits-v1`).
+#[cfg(feature = "swift")]
+pub fn swift_runtime_name(path: &std::path::Path) -> String {
+    binary_runtime_name("swift", path)
+}
+
+/// `<prefix>-<the file name>`, the name of a compiled program's runtime.
+#[cfg(any(feature = "go", feature = "swift"))]
+fn binary_runtime_name(prefix: &str, path: &std::path::Path) -> String {
     let file = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -78,7 +92,7 @@ pub fn go_runtime_name(path: &std::path::Path) -> String {
             _ => '-',
         })
         .collect();
-    format!("go-{name}")
+    format!("{prefix}-{name}")
 }
 
 /// The key the runtime session named `name` is provided under
@@ -87,11 +101,11 @@ pub fn runtime_session_key(name: &str) -> rutis::TypeKey {
     rutis::TypeKey::keyed_dynamic::<dyn RuntimeSession>(name.to_owned())
 }
 
-#[cfg(all(test, feature = "go"))]
+#[cfg(all(test, any(feature = "go", feature = "swift")))]
 mod tests {
-    use super::go_runtime_name;
     use std::path::Path;
 
+    #[cfg(feature = "go")]
     #[test]
     fn go_runtime_names_come_from_file_names() {
         for (file, name) in [
@@ -102,7 +116,19 @@ mod tests {
             ("天气.exe", "go---"),
             ("a天", "go-a-"),
         ] {
-            assert_eq!(go_runtime_name(Path::new(file)), name, "{file}");
+            assert_eq!(super::go_runtime_name(Path::new(file)), name, "{file}");
+        }
+    }
+
+    #[cfg(feature = "swift")]
+    #[test]
+    fn swift_runtime_names_come_from_file_names() {
+        use super::swift_runtime_name;
+        for (file, name) in [
+            ("weather", "swift-weather"),
+            ("Net.Kits_v1", "swift-net-kits-v1"),
+        ] {
+            assert_eq!(swift_runtime_name(Path::new(file)), name, "{file}");
         }
     }
 }

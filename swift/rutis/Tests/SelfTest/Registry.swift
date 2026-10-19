@@ -25,4 +25,13 @@ let registry: [(String, () async throws -> Void)] = [
     ("CodecTests.testOptionalsAndMissingFields", { try CodecTests().testOptionalsAndMissingFields() }),
     ("ErrorGraphTests.testAnErrorCrossesWithItsCodeAndData", { ErrorGraphTests().testAnErrorCrossesWithItsCodeAndData() }),
     ("ErrorGraphTests.testAnAggregateKeepsItsChildrenInOrder", { ErrorGraphTests().testAnAggregateKeepsItsChildrenInOrder() }),
+    ("WeatherConformanceTests.rutisTestMeetsTheRuntimeExpectations", { try await WeatherConformanceTests().rutisTestMeetsTheRuntimeExpectations() }),
+    ("EventsConformanceTests.rutisTestMeetsTheEventExpectations", { try await EventsConformanceTests().rutisTestMeetsTheEventExpectations() }),
+    ("ServiceMacroTests.aMethodTableFromTheTypesMethods", { ServiceMacroTests().aMethodTableFromTheTypesMethods() }),
+    ("ServiceMacroTests.anActorsMethodsAreAwaited", { ServiceMacroTests().anActorsMethodsAreAwaited() }),
+    ("ServiceMacroTests.overloadsAreAnError", { ServiceMacroTests().overloadsAreAnError() }),
+    ("ServiceMacroTests.aFunctionParameterMustBeAsyncThrows", { ServiceMacroTests().aFunctionParameterMustBeAsyncThrows() }),
+    ("ClientMacroTests.aProxyOfTheProtocol", { ClientMacroTests().aProxyOfTheProtocol() }),
+    ("ClientMacroTests.aMethodMustBeAsyncThrows", { ClientMacroTests().aMethodMustBeAsyncThrows() }),
+    ("ConfigMacroTests.aSchemaFromStoredProperties", { ConfigMacroTests().aSchemaFromStoredProperties() }),
 ]
