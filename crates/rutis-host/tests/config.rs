@@ -357,7 +357,7 @@ fn unknown_fields_are_refused() {
         ),
         (
             r#"{ "runtimes": { "go": { "dirs": "g" } } }"#,
-            "<dir>/rutis.json: unknown field `dirs`, expected one of `dir`, `binaries`, `start`, `idle`, `project` at line 1 column 30",
+            "<dir>/rutis.json: unknown field `dirs`, expected one of `dir`, `binaries`, `start`, `idle`, `project`, `restart` at line 1 column 30",
         ),
         (
             r#"{ "runtimes": { "remote": [{ "name": "gpu", "lang": "python" }] } }"#,
