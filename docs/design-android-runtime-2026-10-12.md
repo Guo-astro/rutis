@@ -2,7 +2,7 @@
 
 [English](design-android-runtime-2026-10-12.en.md)
 
-状态：定稿，未实现。日期：2026-10-12，2026-10-14 定稿修订（改为按 [应用接入](design-app-integration-2026-10-14.md)，见 §十），2026-10-19 对齐 rutis 0.13 的运行时契约（值、自动对外、错误、调用方的行、统一事件、开发者无感，见 §十一）。基准：`main` `028783f`（0.13.0）。
+状态：定稿；K-P1 已实现（#390，`kotlin/rutis`），K-P2、K-P3 未实现。日期：2026-10-12，2026-10-14 定稿修订（改为按 [应用接入](design-app-integration-2026-10-14.md)，见 §十），2026-10-19 对齐 rutis 0.13 的运行时契约（值、自动对外、错误、调用方的行、统一事件、开发者无感，见 §十一）。基准：`main` `028783f`（0.13.0）。
 依据：[运行时契约](../.agents/skills/rutis-new-runtime/references/runtime-contract.md)（实现以它为准）、[应用接入](design-app-integration-2026-10-14.md)（通用模型）、[远程运行时：拨出与动态接入](design-remote-runtime-dial-2026-10-14.md)（连接）、[跨语言值类型](design-value-types-2026-10-15.md)、[统一事件的协议规格](design-events-protocol-2026-10-18.md)、[多语言总体稿](design-multilang-runtimes-2026-10-03.md)、[插件 API](guide/plugin-api.md)、[Swift SDK](design-swift-sdk-2026-10-12.md)（形态②的 Swift 对应物）、[Go 插件运行时](design-go-runtime-2026-10-10.md)（每调用一个执行单元的先例）。
 
 定位：Android 应用把自身能力与所在设备的能力作为 rutis 插件提供；插件用 Kotlin 编写、编进应用，由 rutis 驱动。本文是 Kotlin SDK 的唯一现行设计：桌面 JVM 运行时（[Kotlin 运行时](design-kotlin-runtime-2026-10-12.md)）挂起，不是本文的前提；K-P1 的 jvm target 只用于在桌面上跑一致性测试。
@@ -384,3 +384,18 @@ rutis.stop()    // 全部插件逆序清理，然后断开
 | 10 | 测试工具经真实会话（内存通道）运行插件，测试一方是宿主，对两份期望文件比对 |
 | 11 | K-P1 的桌面测试入口是 jvm 上的 `Rutis.serve`（`unix:` / `tcp:`），由测试经通用 `Launcher` 启动；不重开桌面运行时，不加宿主配置 |
 | 12 | 不声明 `objects`，同 Go |
+
+## 十二、K-P1 实现记录（2026-10-19，#390）
+
+实现在 `kotlin/rutis`（`rutis`、`rutis-ksp`、`rutis-conformance`）。与上文不同或上文没写的地方：
+
+| 项 | 实现 | 原因 |
+| --- | --- | --- |
+| 源码布局 | 两个 target 共用 `rutis/src/shared`；jvm 专有的本地通道与 `Rutis.serve` 在 `src/jvmMain`。没有 Android SDK 时只配 jvm target | `UnixDomainSocketAddress` 不在 Android 的 API 里；jvm target 在没有 Android SDK 的机器上照常构建 |
+| 写帧 | 一个写线程按入队顺序发帧（调用号在入队时分配） | 插件线程会被中断（取消），中断一个正在写 `SocketChannel` 的线程会关闭通道；写线程从不被中断 |
+| 被行卸载取消的监听器 | 分发仍在进行时，它以"没有结果"结束（`null`） | 被取消的协程不能正常返回值；Go、Python 的监听器取消后返回，效果相同 |
+| `RUTIS_CHANNEL_TOKEN` | 读取后不能从环境里删去 | JDK 没有修改本进程环境的公开 API；插件自己起的子进程会继承它 |
+| 主线程上的阻塞调用 | 未检查 | 只在 Android 上有意义，随 `RutisApp` 在 K-P2 做 |
+| `--rutis-manifest` | jvm 入口也答复（同 Go 的形状，`runtime` 为 `rutis-kotlin-runtime:1`） | 便于检查；K-P1 不由宿主读取 |
+| 多语言列 | `crates/rutis-loader/tests/multilang_kotlin.rs`（同 `multilang_go.rs`），含经 Kotlin 的交叉同步环 | 自成一体，不改其他语言共用的测试 |
+| 发出方取消 | 在一致性期望里 Kotlin 的取消是 `CancellationException` | 协程的取消 |

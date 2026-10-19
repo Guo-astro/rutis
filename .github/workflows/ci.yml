@@ -875,7 +875,12 @@ jobs:
       # Only the Kotlin tests of the contract suites: the other runtimes run
       # in their own jobs.
       - name: cargo test (the contract suites with Kotlin)
-        run: cargo test -p rutis-bridge --features testing,websocket,kotlin --test runtime_conformance --test value_roundtrip --test session_matrix kotlin_
+        run: |
+          cargo test -p rutis-bridge --features testing,websocket,kotlin --test runtime_conformance --test value_roundtrip --test session_matrix kotlin_
+          cargo test -p rutis-bridge --features testing,kotlin --test kotlin_runtime
+      # Kotlin rows among Node and Python ones (the multilang Kotlin column).
+      - name: cargo test (Kotlin rows)
+        run: cargo test -p rutis-loader --features node,python,kotlin --test multilang_kotlin
       # The events conformance with X Kotlin, and Kotlin as Y of the others
       # (the written placements on pull requests, a sample in full runs).
       - name: cargo test (events conformance with Kotlin)
