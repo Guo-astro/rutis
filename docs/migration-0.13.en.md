@@ -30,6 +30,10 @@ A value type that is not serde (a handle, a channel) does not belong in an event
 | `serial(ctx, key, &e)` | `serial(ctx, key, Arc<E>)` |
 | `waterfall(..) -> Result<V>`, `Terminal` returning `V` | `-> Result<Option<V>>`, `Terminal` returning `Option<V>`; `()` is "no terminal" |
 | `waterfall_sync(.., \|ctx, e\| Ok(v))` | `\|ctx, e\| Ok(Some(v))` |
+| Your own `Listener` / `SyncListener` / `PatternListener` / `SyncPatternListener` implementing `fn call(&self, ctx, e)` (pattern listeners also take `key`) | `call` takes one more, last parameter: `call: Call<'_, E::Value>` (`SyncCall<'_, E::Value>` for the synchronous two) |
+| `WaterfallListener`, `SyncWaterfallListener`, `PatternWaterfallListener`, `SyncPatternWaterfallListener` | Removed: implement the matching `Listener` / `SyncListener` / `PatternListener` / `SyncPatternListener` and call `call.next()` in it |
+| `EventKey::instance_id()` | Removed: event keys no longer carry an instance; use scopes (`Ctx::scope()`) |
+| `EventPattern::prefixes()` | `EventPattern::as_str()`: a pattern has one prefix |
 
 **Behaviour changes.**
 
@@ -43,7 +47,7 @@ A value type that is not serde (a handle, a channel) does not belong in an event
 
 **Scopes replace instance channels.** The loader marks each group instance with `Ctx::mark_scope(group)`; `Ctx::scope()` is the chain from the root. A listener hears events emitted in its scope and below it. To pick listeners further, `ctx.events().filter(|info| ..)` gives the same emitting methods filtered by each listener's `ListenerInfo`.
 
-**Diagnostics.** `EventSubscription`, `EventBacklog` and `DispatchAttempt` carry the event `name` instead of a `TypeKey`; `DispatchMode` is `rutis::Mode`; `ReentrantEvent` carries a `name`.
+**Diagnostics.** `EventSubscription` drops `key` (`TypeKey`), `prefixes`, `selected` and `invoked`, and has `name` (the event name, or the prefix of a prefix entry), `prefix`, `remote` (a listener elsewhere), `global` and `calls` (calls started so far); `owner` is an `Option<PluginId>` (`None` once the fiber that registered it is gone). `ListenerKind` has only `Sync`, `Async` and `Any` (`Any` only for listeners elsewhere): `AsyncWaterfall` and `SyncWaterfall` are gone, so code matching on them changes. `EventBacklog` and `DispatchAttempt` carry the event `name` instead of `key` (a `TypeKey`); `DispatchMode` is `rutis::Mode`; `CordisError::ReentrantEvent` is removed: a synchronous dispatch of a name may re-enter it (as in Cordis), and only a real wait cycle fails, with `SyncWaitCycle`.
 
 **No per-type opt-in.** Every event type crosses processes; there is no `WIRE` switch or the like (it appeared only in a draft of the design and was never released).
 
@@ -83,11 +87,11 @@ err := ctx.Emit(callerCtx, "session/created", id) // ran synchronously, returned
 
 // Now
 ctx.On("session/created", func(ctx context.Context, args ...any) (any, error) { return nil, nil })
-err := ctx.Emit(callerCtx, "session/created", id)     // returns at once; err is only a refusal
+err = ctx.Emit(callerCtx, "session/created", id)      // returns at once; err is only a refusal
 err = ctx.Parallel(callerCtx, "session/created", id)  // waits for all; *rutis.AggregateError
 ```
 
-A listener's `ctx` now carries the emitter's call chain and is cancelled when the emitter gives up or the row unloads.
+A listener's `ctx` now carries the emitter's call chain and is cancelled when the row unloads, and when the emitter of a `Parallel`, `Serial`, `Waterfall` or `Bail` gives up; an `Emit` listener is not cancelled when its emitter gives up (`Emit` does not wait for it). A `Filter` function failing under `Emit` is not returned to the emitter but reported in one line, `rutis: filter of <name> from row <row> failed: …`.
 
 **Unloading waits for running listeners** (in every language): the row's listeners leave the bus first, the running ones get a cancellation signal (JavaScript `ctx.signal`, Python task cancellation, Go's `ctx`) and are waited for, at most `RUTIS_SHUTDOWN_TIMEOUT`, before the cleanups run.
 
@@ -103,7 +107,7 @@ Declaring host events at load is gone: listeners register themselves and a test 
 | Python: `load(plugin, emits=["tick"])`, `await t.emit("tick", 1)` | `load(plugin)`; `t.emit("tick", 1)` returns at once, `await t.parallel("tick", 1)` waits. A shared bus: `bus = Bus(); load(a, bus=bus)`, `load(b, bus=bus, scope="t1")` |
 | Go: `rutistest.Load(t, plugin, config, services, "tick")`, `loaded.Emit(ctx, "tick", 1)` waiting for listeners | `rutistest.Load(t, plugin, config, services)` (then options such as `rutistest.InScope`, `rutistest.Row`); `loaded.Emit` returns at once, `loaded.Parallel` waits; `loaded.On` listens as the host does |
 
-Still passing `emits`: Node / Bun say `the config field emits was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)`, Python says `the load option emits was removed in rutis 0.13: …`, Go does not compile (the parameter type changed). Failures of `emit` listeners are no longer thrown: find them in `t.reported` (Python `t.reported`, Go `loaded.Reported()`).
+Still passing `emits`: Node / Bun say `the config field emits was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`, Python says `the load option emits was removed in rutis 0.13: …`, Go does not compile (the parameter type changed). Failures of `emit` listeners are no longer thrown: find them in `t.reported` (Python `t.reported`, Go `loaded.Reported()`). Python's `t.emit` now returns `None`, so an old `await t.emit(...)` fails with `TypeError`: write `await t.parallel(...)`.
 
 ## Rust applications embedding rutis (`rutis-bridge`, `rutis-loader`)
 
@@ -138,6 +142,10 @@ let node = LocalRuntime::node(runtime_dir, "app/package.json");
 let key = EventKey::<Args>::dynamic("file-changed");
 ctx.events().parallel(&ctx, &key, Arc::new(Args(vec![Value::Data(json!("a.txt"))]))).await?;
 ```
+
+**New parameters of `Mount` and `Process`.** `Mount` has two more fields: `ctx` is the context the runtime joins the logical bus through (its bus, and the scope of the plugins in `plugins`); write `ctx: Some(ctx.clone())`. Without it (`None`) the runtime's events stay in its own process, and neither the host nor other runtimes hear them. `runtime` is optional: the runtime's name in descriptors, `"runtime"` when not set. `Process::load_row` and `load_row_exporting` take one more, last parameter `scope: &[rutis::Scope]`, the row's scope chain: `&[]` for a row at the root, `&ctx.scope()` for one in an instance.
+
+**The runtime conformance suite** (`rutis_bridge::runtime::testing`, feature `testing`): `weather_emits()` is removed (`Mount` has no `emits` any more); `runtime(process, entry, started_here)` becomes `runtime(&ctx, process, entry, started_here)`, `ctx` being the context passed as `Mount::ctx` at mount, on whose bus the `events` checks emit.
 
 Or with a typed event (a one-field tuple struct is one argument):
 
@@ -182,7 +190,8 @@ No code changes. What changes:
 
 - Events cross processes: a Cordis plugin's `ctx.on` receives events emitted by other runtimes, the host and nodes (by scope), and its `ctx.emit` and the rest reach them.
 - A synchronous `ctx.bail` meeting an asynchronous listener (an `async` function, or one returning a Promise) fails with `AsyncListener`; before, Cordis took the Promise as the result.
-- `parallel` failures are always an `AggregateError` in registration order, even a single one.
+- A listener of `ctx.emit` throwing synchronously no longer reaches the emitter or stops the listeners after it: it is reported in one line where the listener runs (`rutis: listener of <name> in row <row> failed: …`), and the other listeners run.
+- `parallel` failures are still an `AggregateError` with the errors in registration order (as in Cordis 4.0.4); new are its message, `<n> listeners of <name> failed`, and the failures of listeners elsewhere among its errors.
 - `Context.filter` is passed `{ rutis: descriptor }` for listeners elsewhere; every Context has a new read-only `ctx.rutis`.
 
 **A Cordis application as a node** (`@arcships/rutis-runtime/bridge`): `out` / `in` of `Events` become `export` / `import`:
@@ -194,7 +203,7 @@ ctx.plugin(Events, { peer: 'main', out: ['tock'], in: ['tick'] })
 ctx.plugin(Events, { peer: 'main', export: ['tock'], import: ['tick'] })
 ```
 
-Still writing `out` / `in` gives `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`.
+Still writing `out` / `in` gives `the Events options out / in were removed in rutis 0.13: use export / import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`; writing `events` gives the node row's message (below).
 
 ## Node links
 
@@ -224,7 +233,8 @@ Still there, it gives `the peer config field events was removed in rutis 0.13: l
 | --- | --- |
 | A failing `emit` listener no longer ends the process, stops the other listeners or reaches the emitter; it is reported in one line where it runs | Node, Bun, Python, Go, Rust |
 | Go's `Emit` no longer waits for listeners; its error is only a refusal | Go |
-| `parallel` failures are always an `AggregateError`, children in registration order, even a single one | Every language |
+| `parallel` failures are always an `AggregateError`, children in registration order, even a single one | Rust (before: one error as is, several in completion order); Cordis had this order already, new are the message `<n> listeners of <name> failed` and failures of listeners elsewhere; leaf plugins' `parallel` is new |
+| A listener of a Cordis `ctx.emit` throwing synchronously is reported where it runs, and the other listeners run | Cordis |
 | `false` is no result, Rust's `Some(false)` too | `serial`, `bail` |
 | A synchronous `bail` / `waterfall_sync` meeting an asynchronous listener (or a function returning a Promise / coroutine) fails with `AsyncListener` | Every language; Cordis took the Promise as the result |
 | A Rust listener is called with the `ctx` that registered it, not the emitter's | Rust |

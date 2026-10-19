@@ -172,8 +172,8 @@ Python、TypeScript 插件或宿主里的 Rust 代码监听同样的名字，就
 | Waterfall | 监听器的最后一个参数是 `next`（`rutis.Next`，即 `func(context.Context) (any, error)`）；调用它执行链上其余部分，不调用就否决其余；第二次调用以 `WaterfallNext` 失败。返回最外层的值，原样 |
 | 失败 | `Emit` 的监听器失败不影响发出方和其他监听器，在监听器所在处报告（stderr：`rutis: listener of <name> in row <row> failed: …`）。`Parallel` 全部跑完，返回 `*rutis.AggregateError`（只有一个失败也是）；`Serial`、`Bail`、`Waterfall` 遇到第一个错误停止并返回它 |
 | 作用域 | 一行收到在自己的作用域（`ctx.Scope()`，它外面的加载器实例）及其内的所有作用域里发出的事件，收不到旁边和外面的 |
-| 过滤 | `Filter(keep)` 在任何监听器执行之前，按登记顺序对每个监听器调用一次 `keep`，传入它的 `rutis.Listener`（`Name`、`Plugin`、`Row`、`Runtime`、`Node`、`Scope`、`Global`）；`keep` 返回 `(bool, error)`：它返回错误（或 panic）时，这次分发以这个错误失败，不执行任何监听器；用 `rutis.Global()` 登记的监听器不经过滤 |
-| Context | 监听器的 `ctx` 来自发出方（带调用链），发出方放弃或这一行卸载时取消。卸载等正在运行的监听器结束，最多 `RUTIS_SHUTDOWN_TIMEOUT` |
+| 过滤 | `Filter(keep)` 在任何监听器执行之前，按登记顺序对每个监听器调用一次 `keep`，传入它的 `rutis.Listener`（`Name`、`Prefix`、`Plugin`、`Row`、`Runtime`、`Node`、`Scope`、`Global`）；`keep` 返回 `(bool, error)`：它返回错误（或 panic）时，不执行任何监听器，这次分发以这个错误失败（`Emit` 不返回它，而是报告一行 `rutis: filter of <name> from row <row> failed: …`）；用 `rutis.Global()` 登记的监听器不经过滤 |
+| Context | 监听器的 `ctx` 来自发出方（带调用链），这一行卸载时取消；`Parallel`、`Serial`、`Waterfall`、`Bail` 的发出方放弃时也取消，`Emit` 的监听器不因发出方放弃而取消。卸载等正在运行的监听器结束，最多 `RUTIS_SHUTDOWN_TIMEOUT` |
 | 名字 | `internal/*` 是运行时自己的；`rutis/*`（`rutis/service`、`rutis/row`、`rutis/runtime`）可以监听，不能发出（`ReservedEvent`） |
 
 和调用服务一样，把调用方给你的 context 传下去。`errors.Is(err, rutis.ErrWaterfallNext)`（以及 `ErrReservedEvent`、`ErrAsyncListener`、`ErrBinding`）匹配任何进程里的同名错误。

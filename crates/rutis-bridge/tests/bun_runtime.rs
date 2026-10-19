@@ -437,16 +437,7 @@ async fn a_bun_too_old_for_the_package_is_refused() {
         let file = file.unwrap().path();
         std::fs::copy(&file, copy.join("src").join(file.file_name().unwrap())).unwrap();
     }
-    // The runtime imports its dependencies (`@deepseek-ai/cordis`), which Bun
-    // resolves before the version check runs: the copy needs them, as an
-    // installed package has them (`bun install`; see docs/ci.md).
-    let modules = package().join("node_modules");
-    assert!(
-        modules.is_dir(),
-        "{}: run `bun install` in bun/rutis-bun first",
-        modules.display()
-    );
-    std::os::unix::fs::symlink(&modules, copy.join("node_modules")).unwrap();
+    // The runtime has no dependencies, so the copy needs no `node_modules`.
     let Err(error) = mount(Launcher::bun(None, &copy, dir.path()), dir.path()).await else {
         panic!("an old Bun is refused");
     };

@@ -163,6 +163,6 @@ test('internal/* events are refused, as on the real runtimes', async () => {
   await t.unload()
   // 0.12's `emits` is gone (#464): listeners register themselves.
   await assert.rejects(load(plugin, { emits: ['tick'] }), {
-    message: 'the config field emits was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (docs/migration-0.13.md)',
+    message: 'the config field emits was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)',
   })
 })

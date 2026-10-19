@@ -171,9 +171,6 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      # The Bun runtime the Rust tests start (Cordis, from package.json).
-      - run: bun install --frozen-lockfile
-        working-directory: bun/rutis-bun
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
@@ -331,8 +328,6 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      - run: bun install --frozen-lockfile
-        working-directory: bun/rutis-bun
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
@@ -477,9 +472,6 @@ jobs:
         if: runner.os != 'Windows'
         with:
           bun-version: ${{ matrix.bun }}
-      - run: bun install --frozen-lockfile
-        if: runner.os != 'Windows'
-        working-directory: bun/rutis-bun
       # Python as in ci.yml: setup-python on GitHub's runners; uv's on the
       # self-hosted Mac, the machine's on the self-hosted Windows, each in a
       # virtual environment with pip.
