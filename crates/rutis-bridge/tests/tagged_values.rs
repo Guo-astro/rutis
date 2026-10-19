@@ -1,15 +1,13 @@
 //! Tagged values across the Rust side (#308): a call forwarded to a far
 //! end that did not declare a value's capability fails, through a host's
-//! own forwarding and through relays; `Process::emit` checks its arguments
-//! against the runtime's capabilities; generated types carry tagged values
+//! own forwarding and through relays; generated types carry tagged values
 //! through serde (`arg`, `decode_value`), and their integers beyond
 //! ±(2^53−1) as bigints. The wire rules are tested in
 //! `src/session/rpc/tests.rs`, the formats in `src/session/values.rs`.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use rutis_bridge::channel::PeerId;
-use rutis_bridge::runtime::{Mount, Process};
 use rutis_bridge::session::{
     arg, decode_value, BigInt, Bytes, Connection, Dispatch, Endpoint, Error, Format, Instant,
     Reply, Value, ValueMap, ValueSet,
@@ -184,76 +182,6 @@ async fn a_result_relayed_to_a_far_end_without_the_capability_fails() {
     .await
     .unwrap();
     assert_eq!(back, Value::Instant(instant()));
-}
-
-/// A runtime that mounts nothing and records the events emitted into it.
-#[derive(Default)]
-struct Runtime(Mutex<Vec<Value>>);
-impl Dispatch for Runtime {
-    fn invoke(&self, _: &Connection, target: &str, method: &str, args: Value) -> Reply {
-        match (target, method) {
-            ("", "mount") => Ok(Value::Data(
-                json!({ "services": {}, "features": ["events"] }),
-            )),
-            ("", "emit") => {
-                self.0.lock().unwrap().push(args);
-                Ok(Value::Undefined)
-            }
-            _ => Err(Error::Value(format!("no method {method}"))),
-        }
-    }
-}
-
-async fn runtime(endpoint: Endpoint) -> (Arc<Process>, Arc<Runtime>, Connection) {
-    let (a, b) = rutis_bridge::transport::memory::pair();
-    let recorded = Arc::new(Runtime::default());
-    let far = Connection::open_with(b, recorded.clone(), Format::Endpoint(endpoint)).unwrap();
-    let process = Process::attach(
-        a,
-        Mount {
-            emits: vec!["tick".into()],
-            ..Mount::default()
-        },
-        Format::Endpoint(Endpoint::rust(id("host"))),
-    )
-    .await
-    .unwrap();
-    (process, recorded, far)
-}
-
-/// guarantee: bridge/value-tags
-///
-/// Events the host emits into a runtime (`Process::emit`) carry tagged
-/// values only to a runtime that declared them: to an older one the
-/// emission fails, naming the capability, and later emissions go on.
-#[tokio::test(flavor = "multi_thread")]
-async fn process_emit_checks_the_runtimes_capabilities() {
-    let (process, recorded, _far) = runtime(without_values("rt")).await;
-    match process
-        .emit("tick", vec![Value::Bytes(b"payload".to_vec())])
-        .await
-    {
-        Err(Error::Value(message)) => assert!(
-            message.contains("did not declare the capability value-bytes"),
-            "{message}"
-        ),
-        other => panic!("an error naming value-bytes expected, got {other:?}"),
-    }
-    process.emit("tick", vec![json!(1).into()]).await.unwrap();
-    assert_eq!(recorded.0.lock().unwrap().len(), 1);
-
-    let (process, recorded, _far) = runtime(Endpoint::rust(id("rt"))).await;
-    process
-        .emit("tick", vec![Value::Bytes(b"payload".to_vec())])
-        .await
-        .unwrap();
-    assert_eq!(
-        recorded.0.lock().unwrap()[0],
-        Value::List(vec![
-            Value::Data(json!("tick")),
-            Value::List(vec![Value::Bytes(b"payload".to_vec())]),
-        ])
-    );
 }
 
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]

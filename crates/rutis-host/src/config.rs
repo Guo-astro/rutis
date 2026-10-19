@@ -553,6 +553,11 @@ fn check_rows(rows: &[Value], at: &str, ignored: &mut Vec<String>) -> Result<(),
                     .join(", ")
             ));
         }
+        // A 0.12 link's `events: { out, in }`: refused here, so `check`
+        // says so, not only `run` once the loader builds the link.
+        if row["name"] == "rutis-bridge/peer" && row["config"].get("events").is_some() {
+            return Err(format!("{place}: {}", rutis_loader::REMOVED_EVENTS));
+        }
         let group = !matches!(
             fields.get("group"),
             None | Some(Value::Null | Value::Bool(false))

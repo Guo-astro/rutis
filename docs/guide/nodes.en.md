@@ -1,6 +1,6 @@
 # Connect Nodes
 
-A rutis host is a **node**. Nodes connect through a **link**: one side dials (`dial`) and the other listens (`listen`). Once connected, they can share services, run plugins on each other's behalf, and forward events. The connection reconnects automatically when interrupted.
+A rutis host is a **node**. Nodes connect through a **link**: one side dials (`dial`) and the other listens (`listen`). Once connected, they can share services, run plugins on each other's behalf, and share events. The connection reconnects automatically when interrupted.
 
 The examples below configure rows in `rutis.json`. In Rust, use `rutis_bridge::PeerPlugin` for the same purpose (see [Embed in a Rust application](rust-host.en.md)).
 
@@ -41,18 +41,37 @@ Both sides use the same token. The dialing side presents `RUTIS_TOKEN` (or `RUTI
 
 ## What a link can do
 
-The node row's `config` determines what happens over the connection. Changing `export`, `import`, or `events` does not disconnect the link; only the corresponding feature restarts.
+The node row's `config` determines what happens over the connection. Changing `export` or `import` does not disconnect the link; only the corresponding feature restarts.
 
 | Field | Purpose |
 | --- | --- |
-| `export: ["weather"]` | Makes this node's `weather` service available to the peer. |
-| `import: ["calendar"]` | Registers the peer's `calendar` service on this node. It is rejected if this node already has a service with that name. |
-| `events: { "out": ["tick"], "in": ["tock"] }` | Forwards events in one direction. |
+| `export: ["weather", "session/*"]` | Makes this node's `weather` service available to the peer, and this node's emissions of `weather` and of every `session/…` event reach the peer's listeners. |
+| `import: ["calendar", "tock"]` | Registers the peer's `calendar` service on this node (rejected if this node already has a service with that name), and this node's listeners of `calendar` and `tock` hear the peer's emissions of them. |
 | `host: true` | Allows the peer to run plugins installed on this node. Enable only for trusted peers. |
 | `rows: true` | Runs rows named `peer:<peer>/<plugin>` from this file on the peer. |
 | `runtime: "<name>"` | Identifies the peer as a language runtime; see below. |
 
 Calls retain their call chain across nodes: callbacks during a synchronous call, including callbacks that call back again, can cross multiple nodes.
+
+### Events between nodes
+
+An item of `export` / `import` is a name, or a prefix written with a trailing `*` (`session/*`; `*` alone is every name); prefixes select events only, services keep exact names. A name may be shared both ways. With the peer's `import` matching this node's `export`, the peer's listeners are entries of this node's event bus, under the same rules as local ones: all five modes (`emit`, `parallel`, `serial`, `waterfall`, `bail`), the scope rule, filters, every value type, and when the link goes down they leave the bus (a call in flight fails once). Events go one hop: what a node imported is never shared further. A listener on the peer sits at the link row's scope (the root for a link outside instances). The whole model is in [Unified events](../design-events-2026-10-18.en.md).
+
+For example, `session/…` events emitted on `main` reach listeners in any language on `office`, and `audit/flagged` emitted on `office` reaches the listeners of `main`:
+
+```json
+{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["session/*"], "import": ["audit/flagged"] } }
+```
+
+```json
+{ "id": "main", "name": "rutis-bridge/peer", "config": { "peer": "main", "listen": "public", "import": ["session/*"], "export": ["audit/flagged"] } }
+```
+
+A name is shared only when the emitting end lists it in `export` and the listening end in `import`. On `main`, `await ctx.serial("session/quota", user)` asks the listeners on `main` and on `office` one by one in registration order and returns the first result; when `office` goes away, its listeners leave the bus and later dispatches ask only those on `main`.
+
+Runtimes (local ones, [on another machine](#a-language-runtime-on-another-machine), [connecting in](#runtimes-that-connect-in)) are not node links: their listeners are on the host's bus directly, with no `export` / `import`.
+
+`events: { "out": […], "in": […] }` was removed in rutis 0.13 and is refused: put `out` in `export` and `in` in `import`. Nodes of 0.12 and earlier are refused when they connect (`link stopped: incompatible (…)`); see [migrating to 0.13](../migration-0.13.en.md).
 
 ## Run a plugin on another node
 
@@ -154,4 +173,4 @@ An existing Cordis application can become a node through `@arcships/rutis-runtim
 - Use one token per peer (`RUTIS_TOKEN_<NODE>`) and set it only on the nodes that need it.
 - `rutis-host` takes its tokens from the environment, so they cannot be revoked while it runs: to cut off a peer or a runtime that connects in, change the token and restart `rutis-host` (a restart drops every connection). Cutting off one identity at runtime is the identity layer's revocation hook (`Revocations` in rutis-bridge, [design](../design-remote-runtime-dial-2026-10-14.en.md#5-identity-layer)), for the future management service and for Rust programs that embed rutis: only the connections accepted as that identity close, calls in flight on them fail with a transport error, and later connections are refused as with a wrong token (403, or close code 4003), retried every 30 s.
 - `host: true` lets a peer run any plugin installed on this node. Enable it only for trusted peers. It can load installed plugins, not file paths.
-- Nodes share services by name, and only services listed in `export` are shared.
+- Nodes share services and events by name, and only those listed in `export` are shared; an event also needs the far end to list it in `import`.

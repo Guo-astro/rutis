@@ -2,12 +2,17 @@ use rutis::{BoxFuture, CordisError, Ctx, Effect, Event, FiberState, Plugin, Type
 use std::sync::{Arc, Mutex};
 use tokio::sync::{oneshot, Notify};
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Ping;
 impl Event for Ping {
     const NAME: &'static str = "ping";
     type Value = ();
 }
-fn listener<'a>(_: &'a Ctx, _: &'a Ping) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
+fn listener<'a>(
+    _: &'a Ctx,
+    _: &'a Ping,
+    _: rutis::Call<'a, ()>,
+) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
     Box::pin(async { Ok(None) })
 }
 

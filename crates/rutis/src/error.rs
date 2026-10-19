@@ -146,10 +146,115 @@ pub enum CordisError {
     ServiceExists(String),
     #[error("instance {instance} is outside the caller's fiber subtree")]
     InstanceOutOfScope { instance: InstanceId },
-    #[error("synchronous event {key:?} reentered on the same bus")]
-    ReentrantEvent { key: TypeKey },
+    /// `parallel` had failures: one per failed listener, in registration
+    /// order (`AggregateError`, also for a single failure).
+    #[error("{} listeners of {name} failed", errors.len())]
+    ListenersFailed {
+        name: String,
+        errors: Vec<Arc<CordisError>>,
+    },
+    /// `bail` / `waterfall-sync` met an asynchronous listener.
+    #[error(
+        "listener of {name} in {listener} is asynchronous and cannot run in a synchronous {mode}"
+    )]
+    AsyncListener {
+        name: String,
+        listener: String,
+        mode: crate::Mode,
+    },
+    /// A waterfall's `next` was misused.
+    #[error("{}", misuse.message(name))]
+    WaterfallNext { name: String, misuse: NextMisuse },
+    /// A plugin emitted a `rutis/*` event.
+    #[error("rutis/* events are emitted by rutis only: {name}")]
+    ReservedEvent { name: String },
+    /// An `emit` listener failed; reported to the error sink, never to the
+    /// emitter (protocol spec §5.6).
+    #[error("listener of {name} in {listener} failed: {error}")]
+    ListenerFailed {
+        name: String,
+        listener: String,
+        error: Arc<CordisError>,
+    },
+    /// An `emit` filter failed; reported to the error sink.
+    #[error("filter of {name} from {emitter} failed: {error}")]
+    FilterFailed {
+        name: String,
+        emitter: String,
+        error: Arc<CordisError>,
+    },
+    /// The entry is no longer in the listener table.
+    #[error("listener {id} of {name} is withdrawn")]
+    ListenerWithdrawn { id: u64, name: String },
+    /// An event or result did not convert to or from a Rust type.
+    #[error("event value of type {type_name}: {message}")]
+    EventValue {
+        type_name: &'static str,
+        message: String,
+    },
     #[error(transparent)]
     SyncEventPanicked(Arc<CordisError>),
+    /// The key of an event type with no name of its own (an empty `NAME`,
+    /// `rutis_bridge::events::Args`) was not given one: `EventKey::of()`
+    /// where `EventKey::dynamic(name)` is needed (protocol spec §12.1).
+    #[error("{event} events need a name: EventKey::dynamic(name)")]
+    EventNeedsName { event: String },
+    /// An unload waited `seconds` (`RUTIS_SHUTDOWN_TIMEOUT`) for the event
+    /// calls of `listeners` (`row <id>` or `plugin <name>`) still running,
+    /// and went on without them (protocol spec §7.1); reported to the error
+    /// sink.
+    #[error("listeners of {listeners} still running after {seconds}s; unloading anyway")]
+    ListenersStillRunning { listeners: String, seconds: f64 },
+}
+
+/// How a waterfall's `next` was misused (protocol spec §11 `WaterfallNext`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NextMisuse {
+    /// A second call.
+    AlreadyCalled,
+    /// After its waterfall ended or was cancelled.
+    Ended,
+    /// Outside a waterfall.
+    NotWaterfall(crate::Mode),
+    /// By a synchronous listener in an asynchronous waterfall.
+    SyncInAsync,
+    /// A remote synchronous `next` called off the dispatching thread.
+    OtherThread,
+}
+
+impl NextMisuse {
+    fn message(&self, name: &str) -> String {
+        match self {
+            NextMisuse::AlreadyCalled => format!("next of {name} was already called"),
+            NextMisuse::Ended => format!("next of {name} was called after its waterfall ended"),
+            NextMisuse::NotWaterfall(mode) => {
+                format!("next is available only in a waterfall (this is {mode})")
+            }
+            NextMisuse::SyncInAsync => "a synchronous listener cannot call next in an \
+                 asynchronous waterfall; register it with on"
+                .to_owned(),
+            NextMisuse::OtherThread => {
+                format!("next of {name} was called off the thread of its waterfall")
+            }
+        }
+    }
+}
+
+impl CordisError {
+    /// The cross-language error name of an event error (protocol spec §11):
+    /// `AggregateError`, `AsyncListener`, `WaterfallNext`, `ReservedEvent`;
+    /// `None` for every other error.
+    pub fn wire_name(&self) -> Option<&'static str> {
+        match self {
+            CordisError::ListenersFailed { .. } => Some("AggregateError"),
+            CordisError::AsyncListener { .. } => Some("AsyncListener"),
+            CordisError::WaterfallNext { .. } => Some("WaterfallNext"),
+            CordisError::ReservedEvent { .. } => Some("ReservedEvent"),
+            CordisError::EventNeedsName { .. } => Some("BindingError"),
+            _ => None,
+        }
+    }
 }
 
 /// 错误汇聚点。默认实现输出到 stderr(设计 §二)。
@@ -158,7 +263,9 @@ pub enum CordisError {
 /// (D25),而 `CordisError` 刻意不 Clone(D11),见 §八 实现记录。
 pub type ErrorSink = Arc<dyn Fn(Arc<CordisError>) + Send + Sync>;
 
-pub(crate) fn default_sink() -> ErrorSink {
+/// The sink `Ctx::root` / `Ctx::root_with` install: one `[rutis] ...` line on
+/// stderr per error. A host installing its own sink can delegate to it.
+pub fn default_sink() -> ErrorSink {
     Arc::new(|e: Arc<CordisError>| eprintln!("[rutis] {}", format_for_sink(&e)))
 }
 
@@ -220,18 +327,7 @@ fn format_for_sink(error: &CordisError) -> String {
     out
 }
 
-/// 单错原样、多错聚合不压平;返回 `None` 表示无错。
-pub(crate) fn aggregate_errors(errors: Vec<CordisError>) -> Option<CordisError> {
-    match errors.len() {
-        0 => None,
-        1 => errors.into_iter().next(),
-        _ => Some(CordisError::Aggregate {
-            errors: errors.into_iter().map(Arc::new).collect(),
-        }),
-    }
-}
-
-/// 同 [`aggregate_errors`],成员已是共享 identity 的 `Arc`。
+/// 单错原样、多错聚合不压平,成员是共享 identity 的 `Arc`;返回 `None` 表示无错。
 pub(crate) fn aggregate_arcs(errors: Vec<Arc<CordisError>>) -> Option<Arc<CordisError>> {
     match errors.len() {
         0 => None,

@@ -38,7 +38,7 @@ pub const GO_MARKER: &[u8] = b"rutis-go-runtime:1";
 
 /// The plugin API of Go binaries this host runs, read from their manifests.
 /// The one definition: `rutis-host` uses it for the same check.
-pub const PLUGIN_API: u64 = 2;
+pub const PLUGIN_API: u64 = 3;
 
 /// How often [`GoRuntimes`] looks for runtimes to start or stop.
 const SWEEP: Duration = Duration::from_millis(100);
@@ -361,6 +361,10 @@ struct State {
     /// Files in directories found not to be Go binaries, as they were then:
     /// not read again while unchanged.
     rejected: HashMap<PathBuf, Stamp>,
+    /// The runtimes whose binary the session refused (events protocol
+    /// §2.2: it lacks `events-v2`), the binary as it was then and why: its
+    /// rows fail with why, and it is not started again while unchanged.
+    refused: HashMap<String, (Option<Stamp>, String)>,
 }
 
 /// Which manifests a scan reads again although their files did not change.
@@ -622,6 +626,35 @@ impl GoResolver {
         self.state.lock().unwrap().launched.remove(runtime);
     }
 
+    /// The session refused the binary of `runtime` (`stamp`, as it started)
+    /// for `why`: record it, unless it was already. `true` when it is new.
+    fn refuse(&self, runtime: &str, stamp: Option<Stamp>, why: &str) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state
+            .refused
+            .get(runtime)
+            .is_some_and(|(at, _)| *at == stamp)
+        {
+            return false;
+        }
+        state
+            .refused
+            .insert(runtime.to_owned(), (stamp, why.to_owned()));
+        true
+    }
+
+    /// Why the binary of `runtime` is refused, while it is the file the
+    /// session refused; a changed file is tried again.
+    fn refusal(&self, runtime: &str, stamp: &Stamp) -> Option<String> {
+        let mut state = self.state.lock().unwrap();
+        let (at, why) = state.refused.get(runtime)?;
+        if at.as_ref() == Some(stamp) {
+            return Some(why.clone());
+        }
+        state.refused.remove(runtime);
+        None
+    }
+
     fn take_stale(&self, runtime: &str) -> HashSet<String> {
         self.state
             .lock()
@@ -764,6 +797,12 @@ impl GoResolver {
         manifest: &GoManifest,
         plugin: &str,
     ) -> Result<Resolved, LoaderError> {
+        if let Some(why) = self.refusal(&binary.runtime, &binary.stamp) {
+            return Err(LoaderError::Resolve {
+                name: name.to_owned(),
+                message: why,
+            });
+        }
         if manifest.plugin_api > PLUGIN_API {
             return Err(LoaderError::Resolve {
                 name: name.to_owned(),
@@ -834,6 +873,13 @@ impl RowsSource for GoRows {
     fn take_stale(&self) -> HashSet<String> {
         self.resolver.take_stale(&self.runtime)
     }
+}
+
+/// Whether a runtime is down because its session was refused (events
+/// protocol §2.2: `incompatible session: …`), which starting the same
+/// binary again would only repeat.
+fn refused(why: &str) -> bool {
+    why.starts_with("incompatible session: ")
 }
 
 // ── GoRuntimes ───────────────────────────────────────────────────
@@ -1208,6 +1254,50 @@ impl Inner {
         Ok(())
     }
 
+    /// The runtimes the session refused (events protocol §2.2), as a local
+    /// runtime refused is: their binaries are marked refused, and their
+    /// rows, which would wait for them for ever, resolve again and fail
+    /// with why.
+    fn fail_refused(&self, loader: &Loader) {
+        let refused: Vec<String> = {
+            let slots = self.slots.lock().unwrap();
+            slots
+                .running
+                .iter()
+                .filter_map(|(name, slot)| {
+                    let why = slot.stopped.as_deref().filter(|why| refused(why))?;
+                    self.resolver
+                        .refuse(name, slot.stamp.clone(), why)
+                        .then(|| name.clone())
+                })
+                .collect()
+        };
+        if refused.is_empty() {
+            return;
+        }
+        let rows: Vec<String> = loader
+            .entries()
+            .into_iter()
+            .filter(|entry| entry.meta.get("source").and_then(Value::as_str) == Some("go"))
+            .filter(|entry| {
+                entry
+                    .meta
+                    .get("runtime")
+                    .and_then(Value::as_str)
+                    .is_some_and(|runtime| refused.iter().any(|name| name == runtime))
+            })
+            .map(|entry| entry.id)
+            .collect();
+        let loader = loader.clone();
+        // Not here: resolving again takes the loader's lock.
+        tokio::spawn(async move {
+            for id in rows {
+                // It fails, and its status says why.
+                let _ = loader.refresh(&id).await;
+            }
+        });
+    }
+
     /// Start the runtimes rows wait for (a row whose resolution the loader
     /// reused asks no resolver), note the ones that crashed, and stop those
     /// no row has used for `idle`. A runtime is in use while an entry that
@@ -1268,6 +1358,7 @@ impl Inner {
             // Its process is gone: rows resolve from the file.
             self.resolver.stopped(&name);
         }
+        self.fail_refused(loader);
         for name in stopping {
             let busy = Busy::held(self, &name);
             let inner = self.clone();

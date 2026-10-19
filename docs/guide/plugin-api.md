@@ -1,6 +1,6 @@
 # 插件 API
 
-TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`）和 Go 插件（`github.com/arcships/rutis/go/rutis`，见 [写一个 Go 插件](go-plugin.md)）的写法与规则相同。当前插件 API 版本：**2**。
+TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`）和 Go 插件（`github.com/arcships/rutis/go/rutis`，见 [写一个 Go 插件](go-plugin.md)）的写法与规则相同。当前插件 API 版本：**3**。
 
 ## 声明
 
@@ -18,24 +18,206 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 | `ctx.use(name)` | `inject` 里声明的服务。同一个运行时进程里的插件提供的，是对象本身；其他进程、其他语言、其他机器提供的，是代理 |
 | `ctx.provide(name, value)` | 提供服务，直到插件卸载，或调用返回的函数。服务自动对外，别的语言、别的进程按名字使用；`provides` 没有声明它时，方法取 `value` 上的公开方法（JavaScript：自身和原型链上的函数，不含 `constructor`；Python：不以 `_` 开头的可调用属性；Go：导出方法），都按 `async` 调用，字段不算方法。推断按各语言自己的规则，同一个服务用两种语言写时方法可能不同：继承 `EventEmitter` 的 JavaScript 类也会带上 `on`、`emit` 等方法；只想对外其中几个时在 `provides` 里列出它们 |
 | `ctx.effect(cleanup)` | 插件卸载时运行 `cleanup`（可以是 async） |
-| `ctx.on(name, listener)` | 监听运行时进程共享事件总线上的事件：宿主发进来的（运行时的 `emits` 声明名字，见[在 Rust 应用里嵌入](rust-host.md)），以及进程里插件 `ctx.emit` 的。监听随插件卸载注销；返回的函数立即注销 |
-| `ctx.emit(name, ...args)` | 向本运行时进程的事件总线分发事件，供本插件和同进程的其他插件监听；同步调用监听器，不等待它们返回的 Promise / 协程（Go 的接口见下） |
-
-Node、Bun、Python 和 Go 都支持叶子插件事件（插件 API 2），并报告 `events` 运行时能力。Node 和 Bun 用 Cordis 自己的事件服务（Bun 的每个 row 持一个 Cordis fiber），因此和同进程的 Cordis 插件共享一条总线、分发语义与 Cordis 一致；Python 和 Go 的总线按同一套语义实现（对照 `cordis/src/events.ts` 与 `crates/rutis/src/bus.rs`）。Go 的接口是 `ctx.On(name, func(context.Context, ...any) error) func()` 和 `ctx.Emit(callerCtx, name, args...) error`；监听器收到保留当前调用链、随所属插件卸载取消的 context；卸载等正在执行的监听器结束后才运行清理。插件方法里发事件时传收到的 `callerCtx`，在 `Apply` 里可传 `ctx` 本身。
-
-本地发事件按注册顺序调用监听器：Node、Bun 和 Python 的 `ctx.emit` 同步抛错时停止后续监听器；返回的 Promise / 协程不等待，未处理的异步失败结束运行时进程。Go 的 `ctx.Emit` 同步执行，遇到首个错误返回；插件另起的 goroutine 沿用 `ctx.Go` 的约定。宿主 `Process::emit` 则等待全部监听器，并以 `AggregateError` 汇总错误；Go 为这些监听器启动 goroutine，因此不保证宿主事件监听器的执行顺序。与 Rust 的 `Ctx::dispose_self` 同一约定：监听器不得等待自己所属的 row 卸载完成（Go 的监听器经宿主回调同步卸载或更新自身行会等到自己），要卸载就结束监听器之后再做。
+| `ctx.on(name, listener, options?)` | 监听事件：不论在哪里发出（另一个插件、另一个运行时、宿主、相连的节点），只要发出方在本插件的作用域或其内，就送到 `listener`。随插件卸载注销；返回的函数立即注销。见下面的[事件](#事件) |
+| `ctx.emit` / `parallel` / `serial` / `waterfall` / `bail` | 发出事件的五种方式；`ctx.filter(keep)` 给出只送达部分监听器的同样五个方法。见[事件](#事件) |
+| `ctx.signal` | （JavaScript）插件卸载时中止；Python 是任务取消，Go 是 `ctx` 本身 |
 
 一个跨过会话的错误被再次抛出时，Node、Bun、Python 和 Go 都带着它完整的错误图（cause、`AggregateError` 的子错误）再跨一次，不限于聚合的情形：Node 解码出的是真正的 `Error` 对象，重新编码时自然带上整个图，Python 和 Go 的 `encode_error` / `encodeError` 把 `RemoteError` 的图拼进去（节点追加、引用偏移）以保持一致。
-
-`internal/*` 属于运行时，不能监听、发出或列在 `emits` 中。`RuntimePlugin` / `LocalRuntime` 设置了 `emits`，而运行时未报告 `events` 时，挂载失败（`lacks events`）。这项能力检查不用于直接 `Process::mount` / `attach` 的 Cordis 静态挂载：旧版 Node 已支持 Cordis 事件，却没有这项能力声明。
-
-`emits` 只声明宿主 → 运行时。叶子插件的 `ctx.emit` / `ctx.Emit` 在进程内分发；`RuntimePlugin` 没有提供 `Mount.events` / `EventSink` 配置入口，所以运行时 → Rust 宿主的方向暂不可用。
-
-Node 和 Python 的测试工具用运行时自己的那份事件实现：Node 的测试工具与运行时同样走 Cordis，Python 的测试工具用 `rutis.events`。测试工具也在加载时声明事件：Node 的 `load(plugin, { emits })`、Python 的 `load(plugin, emits=[...])`、Go 的 `rutistest.Load(t, plugin, config, services, "event", ...)`。宿主发入的入口分别是 `await t.emit(...)`、`await t.emit(...)` 和 `loaded.Emit(callerCtx, name, args...)`，都校验白名单并等待监听器。Python 测试工具在卸载时取消并收尾未完成的本地异步监听器；已有测试体或清理异常时保留原始异常，否则报告监听失败。真实运行时对未处理的异步失败退出进程。
 
 清理按注册的相反顺序运行：`apply` 返回的清理函数最先，然后是 `ctx.effect` 注册的。
 
 Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（或 `*rutis.Service`）；`ctx.Provide(name, value)`；`ctx.Effect(func(context.Context) error)`；`ctx.Go(task)` 起一个卸载时停下的 goroutine。`*rutis.Ctx` 是插件卸载时取消的 `context.Context`。
+
+## 事件
+
+一个宿主上的全部监听器——宿主里的 Rust 插件的、每个运行时进程里每个插件的（任何语言）、经节点连接引进来的——组成**一个逻辑总线**。规则只有一条：
+
+> 事件在哪里发出、监听器在哪里，结果都和所有监听器在同一个进程里一样。
+
+做不到的只有物理上不可能的情况（同步等待成环、同步等待一个已经断开的对端），这时明确报错，从不悄悄换成别的行为。设计见 [统一事件](../design-events-2026-10-18.md)，线上协议见 [协议规格](../design-events-protocol-2026-10-18.md)。
+
+- **登记是自动的**：插件照常写 `ctx.on(name, listener)`，什么都不用声明，`rutis.json` 和宿主的 Rust 代码里也不用写。运行时把监听器登记给宿主，就像服务自动对外一样。
+- **事件 = 名字 + 参数 + 作用域**。名字是字符串，所有语言、所有路径通用，惯例是 `area/verb`（`session/created`）。参数按[值怎样传递](#值怎样传递)跨边界。作用域是发出方所在的加载器实例（见下）。
+- **一张监听器表**：一个监听器登记一次，可以被下面任何一种方式调用；由发出方选择方式。
+- **只在需要时经过宿主**：一个名字的监听器都在发出方的进程里时，就在本进程分发，不经过宿主；结果相同，只是代码在哪里执行不同。
+
+### 五种方式
+
+| 方式 | 发出方得到 | 执行 | 返回值 | 监听器出错 |
+| --- | --- | --- | --- | --- |
+| `emit` | 立即返回，不等 | 按登记顺序开始每个监听器；同一发出方、同一名字的事件按发出顺序到达每个监听器 | 忽略 | 不影响发出方，也不影响其他监听器；在监听器所在的一侧报告一行（见[失败的报告](#失败的报告)），从不结束进程 |
+| `parallel` | 等全部完成 | 按登记顺序开始，异步部分重叠 | 忽略 | 全部跑完；有失败时抛出 `AggregateError`，子错误按**登记顺序**（不是完成顺序），只有一个失败也如此 |
+| `serial` | 第一个"有结果"的返回值，或没有结果 | 按登记顺序逐个等待 | 第一个有结果的返回值让分发停下并返回它 | 抛出并停止其余 |
+| `waterfall` | 最外层监听器的返回值，原样 | 由外向内，每个监听器的最后一个参数是 `next`；`next()` 执行链上其余部分，最后执行终态（terminal） | 链式传递；不调 `next` 就否决其余 | 抛到发出方；`next` 调两次、在分发结束后调用，以 `WaterfallNext` 失败 |
+| `bail`（同步） | 第一个有结果的返回值，同步 | 按登记顺序同步调用；别处的监听器作为同步调用执行，与同步服务调用参加同一套等待环检测 | 同 `serial` | 抛出并停止；等待成环（`SyncWaitCycle`）或对端断开时报错；遇到异步监听器以 `AsyncListener` 失败 |
+
+Rust 另有 `waterfall_sync`：同步的 `waterfall`，规则与 `bail` 相同。
+
+- **没有结果**：返回 `undefined` / `null`（JavaScript）、`None`（Python）、`nil`（Go）、`None`（Rust），或任何语言的 `false`（包括 Rust 的 `Some(false)`）。其余都是结果，`0` 和 `""` 也是。
+- **`waterfall` 原样返回**：不做"有没有结果"的归一，`false` 仍是 `false`。`next` 不带参数，返回链上其余部分的结果（JavaScript：Promise；Python：可 await 的对象；Go：阻塞调用；Rust：future）。终态收到事件参数；没有终态时最后一个 `next()` 得到没有结果。没有监听器时，`waterfall` 返回终态的值。
+- **异步监听器**：JavaScript 的 `async` 函数、Python 的 `async def`、Rust 用 `on` 登记的监听器不能被 `bail` / `waterfall_sync` 调用（`AsyncListener`）；普通函数返回了 Promise / 协程时也以 `AsyncListener` 失败（返回的 Promise / 协程被丢弃）。Go 的监听器都是同步的。
+
+### 各语言的写法
+
+每种语言都有这五种方式，写法是这门语言自己的：
+
+| | Rust（`rutis`） | Node / Bun 叶子插件（`@arcships/rutis`） | Cordis 插件（Node 运行时里） | Python（`rutis`） | Go（`rutis`） |
+| --- | --- | --- | --- | --- | --- |
+| 监听 | `ctx.events().on(ctx, &key, listener)`；同步监听器 `on_sync`；带选项 `on_opt` / `on_sync_opt`；前缀 `on_pattern(ctx, &EventPattern::prefix(p), ..)`；`once` | `ctx.on(name, fn, { prepend, global }?)` → `() => void` | Cordis 自己的 `ctx.on(name, fn, options?)` → `() => boolean`；`ctx.once` | `ctx.on(name, fn, *, prepend=False, global_=False)` → `Callable[[], None]` | `ctx.On(name, func(ctx context.Context, args ...any) (any, error), rutis.Prepend(), rutis.Global())` → `func()` |
+| 监听器 | `impl Listener<E>`：`call(ctx, &event, call: Call<'_, E::Value>)`，`call.mode()`、`call.next()`；`on_sync` 的闭包收到 `SyncCall` | `(...args[, next]) => 值 \| Promise` | 同左 | `fn(*args[, next])`，可以是 `async def` | `fn(ctx, args...)`；waterfall 中最后一个参数是 `rutis.Next`（`func(context.Context) (any, error)`） |
+| `emit` | `emit(ctx, &key, Arc<E>) -> Result<()>` | `ctx.emit(name, ...args): void` | `ctx.emit([thisArg,] name, ...args)` | `ctx.emit(name, *args) -> None` | `ctx.Emit(ctx, name, args...) error`（只报拒绝） |
+| `parallel` | `parallel(ctx, &key, Arc<E>).await` | `await ctx.parallel(name, ...args)` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` |
+| `serial` | `serial(ctx, &key, Arc<E>).await -> Option<E::Value>` | `await ctx.serial(name, ...args)` | `await ctx.serial([thisArg,] name, ...args)` | `await ctx.serial(name, *args)` | `ctx.Serial(ctx, name, args...) (any, error)` |
+| `waterfall` | `waterfall(ctx, &key, &e, terminal).await`（`()` 表示没有终态） | `ctx.waterfall(name, ...args)`；有终态时 `ctx.waterfall.with(terminal)(name, ...args)`（参数都是事件的，函数也是） | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)`（`terminal` 是 `rutis.Terminal`，即 `func(ctx, args ...any) (any, error)`，或 `nil`） |
+| `bail` | `bail_sync(ctx, &key, &e)`；`waterfall_sync(ctx, &key, &e, terminal)` | `ctx.bail(name, ...args)` | `ctx.bail([thisArg,] name, ...args)` | `ctx.bail(name, *args)` | `ctx.Bail(ctx, name, args...) (any, error)` |
+| 过滤 | `ctx.events().filter(\|info\| ..)`，之后同样的六个方法 | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`，`c.rutis` 是描述 | `ctx.filter(lambda d: ...)` → 带这五个方法的对象 | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter` |
+| 作用域 | `ctx.scope()` | 描述的 `scope` | `ctx.rutis.scope` | 描述的 `scope` | `ctx.Scope()` |
+| 卸载信号 | 监听器以登记它的 `ctx` 被调用，`ctx.cancelled()` | `ctx.signal` | `ctx.signal` | 监听器的任务被取消 | 监听器的 `ctx` 被取消 |
+| `parallel` 的失败 | `CordisError::ListenersFailed` | `AggregateError` | `AggregateError` | `rutis.AggregateError`（`errors`） | `*rutis.AggregateError`（`Errors`） |
+
+Node 的 `waterfall` 只要有监听器在本进程之外就返回 Promise，所以总是 `await` 它。Go 在插件方法里发出时传收到的 `ctx`（带着调用链），在 `Apply` 里传 `ctx` 本身。Rust 的发出方法在 `ctx.events()` 上，第一个参数是发出方的 `ctx`。
+
+同一个 waterfall 监听器在五种语言里：
+
+```rust
+struct Exclaim;
+impl Listener<Format> for Exclaim {            // Format: impl Event, Value = String
+    fn call<'a>(&'a self, _: &'a Ctx, _: &'a Format, call: Call<'a, String>)
+        -> BoxFuture<'a, Result<Option<String>, CordisError>> {
+        Box::pin(async move { Ok(call.next().await?.map(|text| format!("{text}!"))) })
+    }
+}
+ctx.events().on(ctx, &EventKey::<Format>::of(), Exclaim)?;
+```
+
+```ts
+// Node / Bun 叶子插件；Cordis 插件写法相同
+ctx.on('greeting/format', async (text: string, next: () => Promise<string>) => `${await next()}!`)
+```
+
+```python
+async def exclaim(text, next):
+    return f"{await next()}!"
+
+ctx.on("greeting/format", exclaim)
+```
+
+```go
+ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
+	inner, err := args[len(args)-1].(rutis.Next)(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return fmt.Sprint(inner, "!"), nil
+})
+```
+
+每种语言的完整例子在它的指南里：[TypeScript](typescript-plugin.md#事件)、[Bun](bun-plugin.md#事件)、[Python](python-plugin.md#事件)、[Go](go-plugin.md#事件)、[Cordis](cordis.md#事件)、[Rust](rust-host.md#事件)。
+
+### 作用域
+
+作用域是加载器的一个组实例（`instanced` 组的一份副本，如一个租户、一个会话），或者根。每个插件、每次发出都在一个作用域里：包含它的最内层实例，或者根。
+
+> 监听器收到自己作用域、以及其下所有作用域里发出的事件。
+
+根上的监听器收到全部事件；租户 `t1` 里的监听器收不到 `t2` 的事件；`t1` 的会话里发出的事件，`t1` 和根上的监听器都收到。发出方的作用域由宿主按发出的行确定，插件没有向别的作用域发出的 API：要进一步挑选监听器，用过滤，按描述里的 `scope` 判断。叶子插件的 `isolate` 标签（服务的作用域）与事件作用域无关。
+
+### 过滤
+
+发出时可以带一个过滤函数：它对每个候选监听器调用一次，收到这个监听器的**描述**，返回是否送达。
+
+- 在**发出方的进程里**执行，按登记顺序，在任何监听器开始之前；它看到的是已经按作用域筛过的监听器，对任何地方的监听器都一样有效。
+- 过滤函数抛出时，整次分发以这个错误失败，不开始任何监听器（`emit` 中改为报告）。
+- 用 `global` 选项登记的监听器不经过滤（仍受作用域规则）。
+
+描述（JSON 字段，没有值时为 `null`；Rust 为 `ListenerInfo`，没有值时为 `None`；Go 为 `rutis.Listener`，没有值时为 `""`）：
+
+| 字段 | 含义 |
+| --- | --- |
+| `name` | 事件名（Rust 前缀监听器为前缀） |
+| `prefix` | 是不是 Rust 的前缀监听器 |
+| `plugin` | 登记它的插件：插件声明的名字（`definePlugin({ name })`、`define_plugin(name=)`、Go 插件的名字、Cordis 插件的名字），没有声明时是它所在行的 id |
+| `row` | 它所在行的 id，即配置给这一行起的名字（组的各个实例复制出的副本共用它）；挂载方式加载的插件为 `null` |
+| `runtime` | 它所在的运行时；宿主自己的 Rust 插件为 `null` |
+| `node` | 经节点连接引进来的，是对端节点的 id；其余为 `null` |
+| `scope` | 它的作用域链，`[{ id, group }]`，最外层在前，根是 `[]` |
+| `global` | 是否用 `global` 登记 |
+
+Cordis 插件用 Cordis 自己的写法：`ctx.emit(thisArg, name, ...)`（以及其余四种）的 `thisArg[Context.filter]` 是函数时用它过滤。本进程的监听器传入它自己的 Cordis `Context`，其他监听器传入 `{ rutis: 描述 }`；Node 运行时里每个 Context 都有只读的 `ctx.rutis`，所以 `c => c.rutis.row === 'chat'` 对两者都有效。
+
+### `prepend` 与 `global`
+
+所有语言都有这两个监听器选项：`prepend` 让监听器排在这个名字已有的全部监听器之前（各处一致的"登记顺序"由宿主决定）；`global` 让它不受过滤。Rust：`EventOptions::default().prepend(true)`（还有 `.global(true)`、`.once(true)`）配 `on_opt` / `on_sync_opt`；Node / Bun：`ctx.on(name, fn, { prepend: true })`（Cordis 插件就是 Cordis 自己的选项）；Python：`ctx.on(name, fn, prepend=True, global_=True)`；Go：`ctx.On(name, fn, rutis.Prepend(), rutis.Global())`。
+
+### 生命周期
+
+- 监听器属于登记它的插件（行），插件卸载时注销；返回的函数立即注销。
+- **卸载时**：这一行的监听器先从总线上撤下（之后的事件不再到达），正在运行的监听器收到取消信号——Go 是监听器的 `context`，Python 是任务取消，JavaScript 是这一行的 `ctx.signal` 被中止，Rust 是 `ctx.cancelled()`——并被等待，最多 `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒；宿主里的 Rust 插件用宿主的关闭截止时间），然后才运行清理。超过时运行时在 stderr 写 `rutis: listeners of row <row> still running after <s>s; unloading anyway` 并继续。
+- 撤下时已经发往它的调用失败一次（`BindingError`，`listener <id> of <name> is withdrawn`，或传输错误），从不重试。
+- **发出方放弃**（Rust 丢弃 future、Python 取消任务、Go 取消 context）：不再开始新的监听器，正在运行的收到取消；发出方得到本语言的取消。`emit` 不被取消。JavaScript 没有取消一次分发的办法，JavaScript 的监听器也没有逐次调用的信号（只有卸载时的 `ctx.signal`）。
+- 监听器在哪个上下文里运行：Rust 监听器以**登记它的** `ctx` 被调用，它在里面登记的东西属于监听器的插件；Go 监听器的 `ctx` 带着发出方的调用链，发出方放弃或这一行卸载时取消，监听器里调用服务时把它传下去。
+- 与 Rust 的 `Ctx::dispose_self` 同一约定：监听器不得等待自己所属的行卸载完成，要卸载就结束监听器之后再做。
+
+### 断开
+
+运行时进程或节点连接断开时，它的监听器从总线上撤下，就像它们的插件卸载了：之后的事件不再发给它们（这是"监听器不在了"，不是静默丢失）。正在进行的分发里，发往断开一侧的调用失败一次，错误与服务调用遇到的传输错误相同（`BindingError`）：`parallel` 把它放进 `AggregateError`，`serial` / `waterfall` / `bail` 抛给发出方，`emit` 报告一行。对它的同步等待同样失败。不加调用超时，与服务调用一致。
+
+### 框架事件 `rutis/*`
+
+宿主以 `emit` 方式发布框架信息，每个事件一个参数（一个记录）。各语言的插件都可以监听，任何插件发出 `rutis/*`（任何方式）都以 `ReservedEvent` 失败。
+
+| 事件 | 参数 | 何时 | 作用域 |
+| --- | --- | --- | --- |
+| `rutis/service` | `{ name, scope, available, row }` | 一个服务名在一个作用域里有了提供方（`available: true`）、提供方被替换（再次 `true`，新的 `row`）、被撤下且不再有提供方（`false`） | 服务的作用域 |
+| `rutis/row` | `{ row, plugin, scope, state, error }`，`state` 为 `pending` / `running` / `failed` / `stopped` | 配置的行（任何语言，包括 Rust 行和组行）每次状态变化；`failed` 时带 `error` | 行的作用域 |
+| `rutis/runtime` | `{ runtime, state, reason }`，`state` 为 `running` / `down` | 运行时挂载成功（每次重连之后也是）；会话结束或挂载失败（`reason` 说明原因） | 根 |
+
+按作用域规则，根上的监听器看到所有行的 `rutis/row`，实例里的只看到自己实例里的。Rust 里对应的类型是 `rutis_loader::RowEvent`、`rutis_bridge::events::{ServiceEvent, RuntimeEvent}`。测试工具不发出 `rutis/*`。
+
+`internal/*` 是每个运行时自己的框架内部机制（Cordis 的 `internal/dispatch`、`internal/service` 等），从不跨进程：叶子插件不能监听或发出它，宿主拒绝登记它（`event <name> is internal to its runtime`）。Cordis 插件在本进程里照常使用；从别处到达的事件也经过 Cordis 自己的分发，所以 `internal/dispatch` 的校验插件照常看得到它们。
+
+### 值
+
+事件的参数、结果、`next` 与终态的结果，在每条路径上都按[值怎样传递](#值怎样传递)跨边界：十种值、函数与对象的引用、64 层的深度上限，节点之间也一样。发不出的值只让那一次调用失败（`parallel` 中是 `AggregateError` 的一个子错误，`emit` 中是一行报告）；发出方自己的参数发不出时，整次分发失败。作为参数传过去的引用，存活到那次调用结束。
+
+Rust 的类型化事件以 `Event::NAME` 作为跨语言的名字，参数按 serde 编解码，所以 `Event` 和它的 `Value` 都要派生 `Serialize` / `Deserialize`。参数个数：两个及以上字段的元组结构体（`struct Created(String, u32)`）对应同样多个参数；unit 结构体没有参数；其余（普通结构体、newtype、map、序列）是一个参数。监听器按名字查找：同名的另一个 Rust 类型的监听器也收到这个事件，经 serde 转换。按名字收发任意参数用 `rutis_bridge::events::Args`（`EventKey::<Args>::dynamic(name)`）。
+
+### 失败的报告
+
+没有人等待的失败在发生的一侧写一行（运行时写 stderr，宿主进入它的错误汇集，rutis-host 打印同样的文字）：
+
+| 何时 | 一行 |
+| --- | --- |
+| `emit` 的监听器失败 | `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>` |
+| 无法送达或得不到回复的调用（传输、值、已撤下），由分发方报告 | `rutis: listener of <name> in runtime <runtime> failed: …` 或 `… in node <peer> failed: …` |
+| `emit` 的过滤函数失败 | `rutis: filter of <name> from row <row> failed: …` |
+| 经宿主的 `emit` 被拒绝或没有回答 | `rutis: emit of <name> from row <row> failed: …`（挂载方式加载的插件：`from the mount`，过滤那一行也是） |
+| 宿主拒绝登记一个监听器（行加载期间则让加载失败） | `rutis: registration of listener of <name> in row <row> failed: …` |
+
+### 错误
+
+| 名字 | 何时 | 各语言 |
+| --- | --- | --- |
+| `AggregateError` | `parallel` 有失败；子错误按登记顺序，信息 `<n> listeners of <name> failed` | JS `AggregateError`（`errors`）；Python `rutis.AggregateError`（`errors`）；Go `*rutis.AggregateError`（`Errors`）；Rust `CordisError::ListenersFailed` |
+| `AsyncListener` | `bail` / `waterfall_sync` 遇到异步监听器 | JS 名为 `AsyncListener` 的 `Error`；Python `rutis.AsyncListener`；Go `rutis.ErrAsyncListener`；Rust `CordisError::AsyncListener` |
+| `WaterfallNext` | `next` 调两次、在分发结束或取消后调用；Rust 在 waterfall 之外调用 `call.next()`，或同步监听器在异步 waterfall 里调用它 | JS `WaterfallNext`；Python `rutis.WaterfallNext`；Go `rutis.ErrWaterfallNext`；Rust `CordisError::WaterfallNext` |
+| `ReservedEvent` | 发出 `rutis/*`，发出的 API 同步拒绝 | JS `ReservedEvent`；Python `rutis.ReservedEvent`；Go `rutis.ErrReservedEvent`；Rust `CordisError::ReservedEvent` |
+| `SyncWaitCycle` | 一次同步调用（`bail`）会使等待成环 | 同服务调用：Python `rutis.SyncWaitCycle`；Go `rutis.ErrSyncWaitCycle` |
+| `BindingError` | 传输错误、已撤下的监听器、被拒绝的帧 | Python `rutis.BindingError`；Go `rutis.ErrBinding`；Rust `CordisError::ListenerWithdrawn` 或传输错误 |
+
+Go 用 `errors.Is(err, rutis.ErrWaterfallNext)` 等判断，任何进程里同名的错误都匹配。监听器自己抛出的错误带着名字、信息与错误图跨边界，与任何调用的错误相同。
+
+**按名字匹配监听器的错误，不按类。** 收到的是什么取决于监听器在哪里运行：来自别的进程时，它是本语言的远端错误（TypeScript：同一内置类的 `Error`，或带那个 `name` 的普通 `Error`；Python：`rutis.RemoteError`，rutis 自己的名字是对应的类；Go：`*rutis.RemoteError`，先 `errors.As` 再看 `Name`），带着它的 `name`、`message` 和 `code`；所有监听器都在发出方进程里时（快速路径），可能收到监听器自己的错误对象。测试工具让插件自己的发出方法收到跨进程后的形式（严格模式下），所以按类匹配会在测试里失败；快速路径保留原对象这一点不作保证。
+
+### 与 0.12 及更早的端混用
+
+事件协议是 rutis 0.13 的，没有旧路径。0.12 及更早的运行时或节点连进 0.13 的宿主时，在加载任何东西之前就被拒绝：
+
+```text
+incompatible session: the far end (<name> <version>) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later
+```
+
+0.13 的运行时遇到旧宿主时退出（状态 1）：`rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping`。从 0.12 升级见 [迁移到 0.13](../migration-0.13.md)。
 
 ## 生命周期
 
@@ -112,7 +294,7 @@ Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（�
 - 时间：年份 0001–9999。本地日期时间没有时区，原样传递，不猜时区，也不转成时间点。时间点按接收方的精度向负无穷截断：JS 到毫秒，Python 到微秒，Go、Rust 到纳秒；Python 的本地日期时间和时刻同样截断到微秒。
 - Decimal 保留末尾零（`1.10` 与 `1.1` 不同），不用指数；NaN、无穷不能跨进程。大整数、Decimal 至多 4300 位。
 - Map 的键、Set 的元素只能是字符串、有限数字、布尔、大整数、本地日期时间、日期、时刻、Decimal、UUID；时间点、二进制、`null`、数组、对象、Map、Set、引用不行，发送方在发出前拒绝。接收方转换后两个键相等时（例如 JS `Map` 的键 `1` 和 `true` 到 Python），这次调用失败：会丢条目。字符串键的 JS `Map` 仍按 Map 传，Python 普通的字符串键 `dict` 按对象传。
-- 每种值只发给声明了它的对端。对端不支持时（例如 0.11 之前的运行时，包括超出 ±(2^53−1) 的整数），只让这次调用失败，错误说明哪种值，会话继续，其他调用不受影响。节点之间转发的事件不承载这十种值；同一运行时进程内的叶子事件照常传递。
+- 每种值只发给声明了它的对端。对端不支持时（例如 0.11 之前的运行时，包括超出 ±(2^53−1) 的整数），只让这次调用失败，错误说明哪种值，会话继续，其他调用不受影响。事件的参数与结果和调用一样承载它们，节点之间也一样。
 
 ### 测试工具与真实运行时的差异
 
@@ -124,9 +306,9 @@ Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（�
 | 不重启：配置变化、注入的服务撤销都不会让插件停下再启动 | `load` 只启动一次，生命周期由宿主决定（见上） |
 | 同步调用不阻塞，不会出现 `SyncWaitCycle`；没有取消（`AbortSignal`、协程取消） | 插件与测试在同一个事件循环里 |
 | Python：跨过边界的异常是 `RemoteError`，它的 `__cause__` 是原来的异常 | 方便调试；真实运行时的 `RemoteError` 没有 `__cause__` |
-| TypeScript：只能加载 `definePlugin` 写的插件，不能加载 Cordis 插件（事件用的是 Cordis 的事件服务，插件模型仍不是 Cordis 的） | 测试工具只挂一个插件，没有服务与依赖门控 |
-| TypeScript / Python 事件：被测插件只听到自己 `ctx.emit` 和 `t.emit` 发的事件；真实运行时整个进程共享一条事件总线，同进程其他插件（Node 上还有 Cordis 插件）发的事件也会听到 | 测试工具只加载一个插件。`t.emit` 只接受加载时 `emits` 声明的名字，与 `RuntimePlugin::emits` 相同；两边都拒绝 `internal/*` |
-| Python 工具在卸载时取消并收尾本地异步监听，测试体或清理异常优先；真实运行时在未处理的异步失败时退出进程 | 避免结束测试进程，同时让测试明确失败 |
+| 描述里的 `runtime` 是语言名（`node`、`bun`、`python`、`go`；宿主用配置里给的名字）；卸载最多等 `RUTIS_SHUTDOWN_TIMEOUT`，与运行时相同，或用工具自己的选项：TypeScript `host({ deadline })` / `load(…, { deadline, runtime })`（毫秒），Python `load(…, deadline=, runtime=)`（秒），Go `rutistest.RuntimeName` 等选项 | 各工具的选项按各自语言的习惯 |
+| TypeScript：只能加载 `definePlugin` 写的插件，不能加载 Cordis 插件 | 测试工具没有 Cordis 的插件模型、服务与依赖门控 |
+| 事件：全部监听器都在测试的进程里（总是本地分发），没有别的进程、节点，也不发出 `rutis/*` | 测试工具在一个进程里运行插件。五种方式、过滤、作用域（TypeScript `host()` 的 `scope`、Python `Bus` 与 `scope=`、Go `rutistest.InScope`）、卸载等待与取消、`emit` 失败的报告（`reported`）与真实运行时相同，对同一份[事件期望文件](../../crates/rutis-bridge/src/runtime/testing/events.expected.json)比对 |
 
 十种值在两边按同样的规则传递，这不是差异。关闭严格模式（`strict: false`）时值不经过上表，以上之外的差异都可能出现。
 
@@ -156,4 +338,4 @@ async 方法的调用方放弃等待（例如超时）时，调用被取消：�
 
 插件上标记着它所用的插件 API 版本（`definePlugin` / `define_plugin` / `rutis.Define` 自动标记）。运行时比插件旧时，加载失败并说明需要升级什么；插件依赖 SDK 的大版本范围即可，不需要与宿主版本对齐。
 
-插件 API 2 增加叶子事件。新版运行时继续接受 API 1；升级 SDK 后生成的 API 2 插件需要一起升级运行时，Go 二进制还需要支持 API 2 的宿主。协议版本和 Go manifest 格式不变。
+插件 API 3（rutis 0.13）增加 `parallel`、`serial`、`waterfall`、`bail` 与 `filter`，事件成为一个逻辑总线；0.13 的运行时继续加载 API 2 的插件，API 3 的插件被旧运行时以现有的信息拒绝。0.13 的事件协议不与 0.12 及更早的运行时、节点混用（见上面的[与 0.12 及更早的端混用](#与-012-及更早的端混用)）。插件 API 2 增加了叶子事件，API 1 的插件仍可加载。

@@ -109,12 +109,12 @@ test('the methods of an undeclared service are its functions, own and inherited'
   expect([...methodsOf(null)]).toEqual([])
 })
 
-async function eventRows(run: (runtime: Runtime, a: Context, b: Context) => Promise<void>) {
+async function eventRows(run: (runtime: Runtime, a: Context, b: Context) => Promise<void>, scopes: Record<string, unknown[]> = {}) {
   const dir = project({ 'events.ts': 'export function apply(ctx, name) { ctx.provide(name, ctx) }' })
   const runtime = new Runtime(dir)
   try {
-    runtime.dispatch('', 'mount', { emits: ['changed'] })
-    for (const key of ['a', 'b']) await runtime.load(key, './events.ts', key, null, null)
+    runtime.dispatch('', 'mount', { announce: true })
+    for (const key of ['a', 'b']) await runtime.load(key, './events.ts', key, null, null, scopes[key])
     await run(runtime, runtime.lookup('a') as Context, runtime.lookup('b') as Context)
   } finally {
     await runtime.dispose()
@@ -122,15 +122,16 @@ async function eventRows(run: (runtime: Runtime, a: Context, b: Context) => Prom
   }
 }
 
-// guarantee: sdk/leaf-events (emits gate, shared bus, disposers, unload, internal/* refused)
-test('host events require declared names; shared listeners dispose independently and unload', () => eventRows(async (runtime, a, b) => {
+// guarantee: events/bun-runtime (one bus for the rows; disposers; unload; reserved names)
+test('rows share the bus; listeners dispose independently and leave with their row', () => eventRows(async (runtime, a, b) => {
   const received: number[] = []
   const listener = (value: number) => { received.push(value) }
   a.on('changed', listener)
   const off = b.on('changed', listener)
   b.on('changed', listener)
-  await runtime.dispatch('', 'emit', ['changed', [7]])
+  await a.parallel('changed', 7)
   expect(received).toEqual([7, 7, 7])
+  off()
   off()
   expect(a.emit('changed', 8)).toBeUndefined()
   expect(received).toEqual([7, 7, 7, 8, 8])
@@ -141,61 +142,162 @@ test('host events require declared names; shared listeners dispose independently
   await runtime.unload('b')
   a.emit('changed', 10)
   expect(received).toEqual([7, 7, 7, 8, 8, 9, 10])
-  const seen: number[] = []
-  a.on('e', () => { seen.push(1); throw new Error('sync failure') })
-  a.on('e', () => { seen.push(2) })
-  expect(() => a.emit('e')).toThrow('sync failure')
-  expect(seen).toEqual([1])
+  // A plugin keeping its context past its row emits nothing (protocol §3),
+  // also once a new row took its key.
+  expect(() => b.emit('changed', 11)).toThrow('row b is not loaded in this runtime')
+  await runtime.load('b', './events.ts', 'b2', null, null)
+  expect(() => b.serial('changed')).toThrow('row b is not loaded in this runtime')
+  expect(received).toEqual([7, 7, 7, 8, 8, 9, 10])
   expect(() => a.on('internal/dispatch', () => {})).toThrow('event internal/dispatch is internal to the runtime')
   expect(() => a.emit('internal/service')).toThrow('event internal/service is internal to the runtime')
-  // A non-string name is not Cordis's `this` argument: `emit(null, 'internal/service')` does not dispatch.
   expect(() => (a as any).on(null, () => {})).toThrow(TypeError)
   expect(() => (a as any).emit(null, 'internal/service')).toThrow(TypeError)
-  expect(() => (a as any).emit({}, 'internal/service')).toThrow(TypeError)
-  // The sentence of rutis's own check (`Process::mount`), naming every internal event.
-  expect(() => runtime.dispatch('', 'mount', { emits: ['changed', 'internal/dispatch', 'internal/service'] }))
-    .toThrow('framework-internal events do not cross the boundary (mount emits): internal/dispatch, internal/service')
+  expect(a.on('rutis/row', () => {})).toBeInstanceOf(Function)
+  expect(() => a.emit('rutis/row')).toThrow('rutis/* events are emitted by rutis only: rutis/row')
+  expect(() => a.serial('rutis/row')).toThrow('rutis/* events are emitted by rutis only: rutis/row')
+  // 0.12's static forwarding is gone (#464).
+  expect(() => runtime.dispatch('', 'mount', { emits: ['changed'] }))
+    .toThrow('the config field emits was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)')
+  expect(() => runtime.dispatch('', 'mount', { events: ['changed'] })).toThrow('the config field events was removed in rutis 0.13')
 }))
 
-// guarantee: sdk/leaf-events (host emission waits; aggregate errors)
-test('host emission awaits every listener and aggregates sync and async errors', () => eventRows(async (runtime, a, b) => {
+// guarantee: events/bun-runtime (the five modes; emit's failures reported, never thrown)
+test('the five modes, prepend, global and filter', () => eventRows(async (runtime, a, b) => {
+  const write = process.stderr.write
+  const written: string[] = []
+  process.stderr.write = ((text: string) => { written.push(String(text)); return true }) as typeof write
+  try {
+    const seen: number[] = []
+    a.on('e', () => { seen.push(1); throw new Error('sync failure') })
+    b.on('e', () => { seen.push(2) })
+    expect(a.emit('e')).toBeUndefined()
+    expect(seen).toEqual([1, 2])
+    expect(written).toEqual(['rutis: listener of e in row a failed: Error: sync failure\n'])
+  } finally {
+    process.stderr.write = write
+  }
   const errors = [new TypeError('sync failure'), new RangeError('async failure')]
-  let release!: () => void
-  const pending = new Promise<void>(resolve => { release = resolve })
-  let waiting = false
-  a.on('changed', () => { throw errors[0] })
-  b.on('changed', async () => { throw errors[1] })
-  a.on('changed', async () => { waiting = true; await pending })
-  let settled = false
-  const outcome = (runtime.dispatch('', 'emit', ['changed', []]) as Promise<void>).then(
-    () => { settled = true; return null },
-    error => { settled = true; return error },
-  )
-  expect(waiting).toBe(true)
-  await Bun.sleep(0)
-  expect(settled).toBe(false)
-  release()
-  const error = await outcome
+  a.on('p', () => { throw errors[0] })
+  b.on('p', async () => { await Bun.sleep(5); throw errors[1] })
+  const error = await a.parallel('p').catch(error => error)
   expect(error).toBeInstanceOf(AggregateError)
+  expect(error.message).toBe('2 listeners of p failed')
   expect(error.errors).toEqual(errors)
+  a.on('s', () => false)
+  b.on('s', async () => 0)
+  expect(await a.serial('s')).toBe(0)
+  a.on('w', (x: string, next: () => unknown) => `a${next()}${x}`)
+  b.on('w', () => 'b', { prepend: true })
+  expect(a.waterfall.with(() => 't')('w', '!')).toBe('b')
+  b.on('b', async () => 'x')
+  expect(() => a.bail('b')).toThrow('listener of b in row b is asynchronous and cannot run in a synchronous bail')
+  b.on('g', () => 'global', { global: true })
+  a.on('g', () => 'a')
+  const descriptors: any[] = []
+  expect(await (a as any).filter((d: any) => { descriptors.push(d); return false }).serial('g')).toBe('global')
+  expect(descriptors.map(d => [d.row, d.global, d.prefix, d.node])).toEqual([['a', false, false, null]])
 }))
+
+// guarantee: events/bun-runtime (scope: up, not down)
+test('a listener hears its own scope and those under it', () => eventRows(async (_runtime, a, b) => {
+  const heard: string[] = []
+  a.on('x', () => { heard.push('a') })
+  b.on('x', () => { heard.push('b') })
+  await a.parallel('x')
+  expect(heard.splice(0)).toEqual(['a'])
+  await b.parallel('x')
+  expect(heard.splice(0)).toEqual(['a', 'b'])
+}, { b: [{ id: '17', group: 'tenant' }] }))
+
+// guarantee: events/bun-runtime (unload signals and waits)
+test('unload aborts the row signal and waits for its running listeners', () => eventRows(async (runtime, a, b) => {
+  const order: string[] = []
+  b.on('work', () => new Promise<void>(resolve => (b as any).signal.addEventListener('abort', () => { order.push('aborted'); setTimeout(resolve, 10) })).then(() => { order.push('finished') }))
+  b.effect(() => { order.push('cleanup') })
+  const running = a.parallel('work')
+  await runtime.unload('b')
+  expect(order).toEqual(['aborted', 'finished', 'cleanup'])
+  await running
+}))
+
+// guarantee: events/bun-runtime (events.call; withdrawn; the host's messages)
+test('the host registers, dispatches and calls back through the session', async () => {
+  const dir = project({ 'events.ts': 'export function apply(ctx) { ctx.on("t/x", x => `x${x}`); ctx.provide("me", ctx) }' })
+  const runtime = new Runtime(dir)
+  const sent: any[] = []
+  runtime.attach({
+    call: (_t: string, method: string, args: any) => { sent.push([method, args]); return 'B' },
+    callAsync: (_t: string, method: string, args: any) => { sent.push([method, args]); return Promise.resolve(method === 'events.dispatch' ? 'H' : undefined) },
+    callFunctionAsync: () => Promise.resolve(),
+  } as any)
+  try {
+    runtime.dispatch('', 'mount', { announce: true })
+    await runtime.dispatch('', 'rows.load', ['r', './events.ts', {}, [], [], {}, { scope: [] }])
+    const [[method, [registration]]] = sent.filter(([method]) => method === 'events.on')
+    expect([method, registration.name, registration.row, registration.kind, registration.prepend, registration.global]).toEqual(['events.on', 't/x', 'r', 'any', false, false])
+    expect(await runtime.dispatch('', 'events.call', [{ listener: registration.id, dispatch: 'd1', own: false, name: 't/x', mode: 'serial', args: [1] }])).toBe('x1')
+    const me = runtime.lookup('me') as Context
+    expect(await me.serial('t/x', 2)).toBe('x2')
+    expect(sent.some(([method]) => method === 'events.dispatch')).toBe(false)
+    runtime.dispatch('', 'events.elsewhere', [{ add: ['t/x'] }])
+    expect(await me.serial('t/x', 3)).toBe('H')
+    expect(me.bail('t/x')).toBe('B')
+    const dispatched = sent.filter(([method]) => method === 'events.dispatch').map(([, [fields]]) => [fields.row, fields.mode])
+    expect(dispatched).toEqual([['r', 'serial'], ['r', 'bail']])
+    await runtime.dispatch('', 'rows.unload', ['r'])
+    expect(() => runtime.dispatch('', 'events.call', [{ listener: registration.id, dispatch: 'd2', name: 't/x', mode: 'serial', args: [] }]))
+      .toThrow(`listener ${registration.id} of t/x is withdrawn`)
+  } finally {
+    await runtime.dispose()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// A listener the host refuses while its row loads fails the load and is
+// not reported; one registered later is reported (protocol §11).
+test('a refused registration fails the load; a later one is reported', async () => {
+  const dir = project({ 'events.ts': 'export function apply(ctx, name) { ctx.on(name, () => {}); ctx.provide("me-" + name, ctx) }' })
+  const runtime = new Runtime(dir)
+  const refused = Object.assign(new Error('refused here'), { name: 'BindingError' })
+  runtime.attach({
+    call: () => undefined,
+    callAsync: (_t: string, method: string, args: any) => method === 'events.on' && args[0].name.startsWith('t/no') ? Promise.reject(refused) : Promise.resolve(undefined),
+    callFunctionAsync: () => Promise.resolve(),
+  } as any)
+  const write = process.stderr.write
+  const written: string[] = []
+  process.stderr.write = ((text: string) => { written.push(String(text)); return true }) as typeof write
+  try {
+    runtime.dispatch('', 'mount', { announce: true })
+    await expect(runtime.dispatch('', 'rows.load', ['r', './events.ts', 't/no', [], [], {}, { scope: [] }])).rejects.toThrow('refused here')
+    await runtime.dispatch('', 'rows.load', ['ok', './events.ts', 't/yes', [], [], {}, { scope: [] }])
+    ;(runtime.lookup('me-t/yes') as Context).on('t/nope', () => {})
+    await Bun.sleep(1)
+    expect(written).toEqual(['rutis: registration of listener of t/nope in row ok failed: BindingError: refused here\n'])
+  } finally {
+    process.stderr.write = write
+    await runtime.dispose()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 // guarantee: sdk/leaf-events (failed load and update)
 test('a failed apply and an update remove the row listeners', async () => {
   const dir = project({
     'events.ts': `export function apply(ctx, config) {
       ctx.on('changed', () => { globalThis.heard.push(config.label) })
+      ctx.provide('emitter-' + config.label, ctx)
       if (config.fail) throw new Error('apply failed')
     }`,
   })
   const runtime = new Runtime(dir)
   const heard: string[] = (globalThis as any).heard = []
   try {
-    runtime.dispatch('', 'mount', { emits: ['changed'] })
+    runtime.dispatch('', 'mount', { announce: true })
     await runtime.load('a', './events.ts', { label: 'first' }, null, null)
     await runtime.update('a', { label: 'updated' })
     await expect(runtime.load('f', './events.ts', { label: 'failed', fail: true }, null, null)).rejects.toThrow('apply failed')
-    await runtime.dispatch('', 'emit', ['changed', []])
+    await (runtime.lookup('emitter-updated') as Context).parallel('changed')
     expect(heard).toEqual(['updated'])
   } finally {
     await runtime.dispose()

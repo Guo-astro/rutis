@@ -16,7 +16,7 @@ pub mod build;
 #[cfg(unix)]
 pub mod server;
 
-pub use crate::runtime::{EmitToCordis, Events, Host, Mount, Process, Projection};
+pub use crate::runtime::{Host, Mount, Process, Projection};
 /// What generated code uses, by the paths it names them with.
 pub use crate::session as rpc;
 pub use crate::session::{

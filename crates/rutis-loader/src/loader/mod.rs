@@ -198,8 +198,10 @@ pub struct ReconcileReport {
     pub failures: Vec<Failure>,
 }
 
-/// Emitted on the root bus after a reconcile or an edit completes.
-#[derive(Debug, Clone)]
+/// Emitted on the root bus after a reconcile or an edit completes. As data
+/// (an event crosses to other processes as data): `{ "type": ..., ... }`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum LoaderChanged {
     Reconciled,
@@ -238,10 +240,32 @@ impl Event for LoaderChanged {
 }
 
 /// A queued, unsaved edit no longer applied when replayed on newer content.
-#[derive(Debug, Clone)]
+/// As data, `error` is its message (read back as
+/// [`LoaderError::InvalidEntry`]).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PendingEditDropped {
     pub edit: Edit,
+    #[serde(with = "error_text")]
     pub error: LoaderError,
+}
+
+/// A [`LoaderError`] as its message.
+mod error_text {
+    use super::LoaderError;
+
+    pub(super) fn serialize<S: serde::Serializer>(
+        error: &LoaderError,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(error)
+    }
+
+    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<LoaderError, D::Error> {
+        let message: String = serde::Deserialize::deserialize(deserializer)?;
+        Ok(LoaderError::InvalidEntry(message))
+    }
 }
 
 impl Event for PendingEditDropped {

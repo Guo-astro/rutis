@@ -40,6 +40,8 @@ import (
 // Plugin declares a plugin whose configuration is C.
 type Plugin[C any] struct {
 	// Name is the plugin's name in its binary; rows name it `go:<Name>`.
+	// It is required, and is the `plugin` of its listeners' registrations
+	// and descriptors (Listener.Plugin).
 	Name string
 	// Inject lists the services it uses: it runs only while all are there.
 	Inject []string

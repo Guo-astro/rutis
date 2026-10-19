@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"os"
 	goruntime "runtime"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/arcships/rutis/go/rutis/internal/events"
 	"github.com/arcships/rutis/go/rutis/internal/peer"
 )
 
@@ -20,22 +20,11 @@ import (
 // presents first on a `tcp:` channel.
 const channelToken = "RUTIS_CHANNEL_TOKEN"
 
-// deadlineVariable sets how long cleanups may take, in total, once the
-// session ended and nobody waits for them (the host went away), in
-// seconds; rutis-host passes its own shutdown deadline on.
-const deadlineVariable = "RUTIS_SHUTDOWN_TIMEOUT"
-
-// defaultDeadline is that time when deadlineVariable does not say.
-const defaultDeadline = 10 * time.Second
-
-// endedBudget is how long cleanups may take once the session ended.
-func endedBudget() time.Duration {
-	seconds, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv(deadlineVariable)), 64)
-	if err != nil || !(seconds > 0) || math.IsInf(seconds, 1) {
-		return defaultDeadline
-	}
-	return time.Duration(seconds * float64(time.Second))
-}
+// endedBudget is how long cleanups may take, in total, once the session
+// ended and nobody waits for them (the host went away), and how long an
+// unload waits for running listeners: RUTIS_SHUTDOWN_TIMEOUT seconds
+// (rutis-host passes its own shutdown deadline on), default 10 s.
+func endedBudget() time.Duration { return events.ShutdownTimeout() }
 
 const usage = "usage: <binary> --rutis-manifest | <channel> [--id <endpoint>] [--peer <endpoint>] <project>"
 
@@ -221,15 +210,25 @@ func startSession(channel peer.Channel, endpoint *peer.Endpoint, defs []*Definit
 	rt := newRuntime(defs)
 	p, err := peer.New(channel, peer.Options{
 		Dispatch:       rt.dispatch,
+		Arrive:         rt.arrive,
 		Endpoint:       endpoint,
 		Implementation: map[string]string{"name": Implementation, "version": Version},
-		Capabilities:   append([]string{"signals", "reentrant-sync", "sync-wait"}, peer.ValueCapabilities...),
+		Capabilities:   append([]string{"signals", "reentrant-sync", "sync-wait", peer.EventsCapability}, peer.ValueCapabilities...),
+		// A host older than 0.13 is refused right after its handshake (#464 §2.2).
+		Require: []string{peer.EventsCapability},
+		Refuse:  func(string) string { return oldEventsHost },
 	})
 	if err != nil {
 		return nil, err
 	}
 	rt.session = p
 	if err := p.Start(); err != nil {
+		// The far end's hello may be read, and refused, while this side's
+		// is still being written: the refusal (set before the channel
+		// closed) is why it failed.
+		if refused := refusal(p.Err()); refused != nil {
+			return nil, p.Err()
+		}
 		return nil, err
 	}
 	return &session{peer: p, runtime: rt}, nil
@@ -256,8 +255,29 @@ func (s *session) end(reason error) error {
 func serveChannel(channel peer.Channel, endpoint *peer.Endpoint, defs []*Definition) error {
 	s, err := startSession(channel, endpoint, defs)
 	if err != nil {
+		// Refused during the handshake Start already finished.
+		if refused := refusal(err); refused != nil {
+			return refused
+		}
 		return err
 	}
 	<-s.peer.Closed()
-	return s.end(nil)
+	ended := s.end(nil)
+	if refused := refusal(s.peer.Err()); refused != nil {
+		return refused
+	}
+	return ended
+}
+
+// oldEventsHost is why a host that does not declare events-v2 is refused.
+const oldEventsHost = "this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later"
+
+// refusal is the *refusedError a session ended with when this side refused
+// the far end at its handshake, else nil.
+func refusal(err error) error {
+	var refused *peer.RefusedError
+	if errors.As(err, &refused) {
+		return &refusedError{refused.Reason}
+	}
+	return nil
 }

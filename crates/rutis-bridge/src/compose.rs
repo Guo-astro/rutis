@@ -4,30 +4,30 @@
 //! the identity it names are shared and are not.
 //!
 //! Features change one by one ([`PeerHandle::set`]): changing what is
-//! exported, imported or forwarded restarts only that feature, and the link
-//! keeps its session.
+//! exported or imported restarts only the features it concerns, and the
+//! link keeps its session.
 
 use std::sync::{Arc, Mutex};
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin};
 
+use crate::events::LinkEventsPlugin;
 use crate::runtime::RuntimeAccessPlugin;
 use crate::{
-    EventsPlugin, ExportPlugin, HostPlugin, ImportPlugin, LinkConfig, LinkPlugin, LinkState,
-    PluginCatalog, ServiceKeys,
+    ExportPlugin, HostPlugin, ImportPlugin, LinkConfig, LinkPlugin, LinkState, PluginCatalog,
+    ServiceKeys,
 };
 
 /// What a peer composition runs on its link.
 #[derive(Clone, Default)]
 pub struct Features {
-    /// Local services announced to the peer.
+    /// Local services announced to the peer, and events emitted here that
+    /// reach the peer's listeners: names, or for events also prefixes
+    /// written with a trailing `*` (`session/*`; `*` alone is every name).
     pub export: Vec<String>,
-    /// The peer's services registered here.
+    /// The peer's services registered here, and events emitted there that
+    /// this node's listeners hear (names or `*` prefixes, as `export`).
     pub import: Vec<String>,
-    /// Events forwarded to the peer.
-    pub outbound: Vec<String>,
-    /// Events the peer forwards here.
-    pub inbound: Vec<String>,
     /// Plugins this node hosts for the peer: opening a host gives the peer
     /// the management of what the catalog holds.
     pub host: Option<Arc<dyn PluginCatalog>>,
@@ -43,8 +43,18 @@ pub struct Features {
 }
 
 impl Features {
+    /// The items of `items` that name services: prefixes select events
+    /// only.
+    fn services(items: &[String]) -> Vec<String> {
+        items
+            .iter()
+            .filter(|item| !item.ends_with('*'))
+            .cloned()
+            .collect()
+    }
+
     fn events(&self) -> (&[String], &[String]) {
-        (&self.outbound, &self.inbound)
+        (&self.export, &self.import)
     }
 }
 
@@ -78,14 +88,6 @@ pub struct PeerHandle {
 
 impl PeerPlugin {
     pub fn new(link: LinkConfig, features: Features) -> Result<Self, String> {
-        // Checked now, not when the link is up.
-        if let Some(both) = features
-            .outbound
-            .iter()
-            .find(|name| features.inbound.contains(name))
-        {
-            return Err(format!("event {both} cannot be forwarded both ways"));
-        }
         Ok(Self {
             label: format!("rutis-bridge/peer#{}", link.peer),
             link,
@@ -109,29 +111,36 @@ impl PeerPlugin {
 fn spawn(ctx: &Ctx, link: &LinkConfig, features: &Features, part: Part) -> Option<FiberView> {
     let peer = link.peer.clone();
     match part {
-        Part::Export => (!features.export.is_empty()).then(|| {
-            let export = ExportPlugin::new(peer, features.export.clone());
-            ctx.plugin(match &features.services {
-                Some(keys) => export.with_keys(keys.clone()),
-                None => export,
+        Part::Export => {
+            let services = Features::services(&features.export);
+            (!services.is_empty()).then(|| {
+                let export = ExportPlugin::new(peer, services);
+                ctx.plugin(match &features.services {
+                    Some(keys) => export.with_keys(keys.clone()),
+                    None => export,
+                })
             })
-        }),
-        Part::Import => (!features.import.is_empty()).then(|| {
-            let import = ImportPlugin::new(peer, features.import.clone());
-            ctx.plugin(match &features.services {
-                Some(keys) => import.with_keys(keys.clone()),
-                None => import,
+        }
+        Part::Import => {
+            let services = Features::services(&features.import);
+            (!services.is_empty()).then(|| {
+                let import = ImportPlugin::new(peer, services);
+                ctx.plugin(match &features.services {
+                    Some(keys) => import.with_keys(keys.clone()),
+                    None => import,
+                })
             })
-        }),
+        }
         Part::Events => {
-            let (outbound, inbound) = features.events();
-            if outbound.is_empty() && inbound.is_empty() {
+            let (export, import) = features.events();
+            if export.is_empty() && import.is_empty() {
                 return None;
             }
-            // Validated when the features were set.
-            EventsPlugin::new(peer, outbound.to_vec(), inbound.to_vec())
-                .ok()
-                .map(|plugin| ctx.plugin(plugin))
+            Some(ctx.plugin(LinkEventsPlugin::new(
+                peer,
+                export.to_vec(),
+                import.to_vec(),
+            )))
         }
         Part::Host => features.host.clone().map(|catalog| {
             let host = HostPlugin::new(peer, catalog);
@@ -179,8 +188,8 @@ impl Children {
 
 fn changed(old: &Features, new: &Features, part: Part) -> bool {
     match part {
-        Part::Export => old.export != new.export,
-        Part::Import => old.import != new.import,
+        Part::Export => Features::services(&old.export) != Features::services(&new.export),
+        Part::Import => Features::services(&old.import) != Features::services(&new.import),
         Part::Events => old.events() != new.events(),
         Part::Host => match (&old.host, &new.host) {
             (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
@@ -195,13 +204,6 @@ impl PeerHandle {
     /// Replace the features: only those that changed restart; the link and
     /// its session stay.
     pub async fn set(&self, features: Features) -> Result<(), String> {
-        if let Some(both) = features
-            .outbound
-            .iter()
-            .find(|name| features.inbound.contains(name))
-        {
-            return Err(format!("event {both} cannot be forwarded both ways"));
-        }
         let old = std::mem::replace(&mut *self.features.lock().unwrap(), features.clone());
         let ctx = self.children.lock().unwrap().ctx.clone();
         let Some(ctx) = ctx else {

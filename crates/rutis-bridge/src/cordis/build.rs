@@ -58,8 +58,6 @@ pub struct Bindings {
     node_package: std::path::PathBuf,
     members: Vec<(Option<String>, std::path::PathBuf)>,
     provided: Vec<String>,
-    events: Vec<String>,
-    emits: Vec<String>,
     root: Option<std::path::PathBuf>,
 }
 
@@ -70,8 +68,6 @@ impl Bindings {
             node_package: node_package.as_ref().to_owned(),
             members: Vec::new(),
             provided: Vec::new(),
-            events: Vec::new(),
-            emits: Vec::new(),
             root: None,
         }
     }
@@ -106,37 +102,12 @@ impl Bindings {
         self
     }
 
-    /// Forward a Cordis event to rutis listeners as a generated event type.
-    /// Only notifications (events returning `void`) can be forwarded.
-    pub fn event(mut self, name: &str) -> Self {
-        self.events.push(name.to_owned());
-        self
-    }
-
-    /// Emit a rutis event into the mounted Cordis Context, for example the
-    /// change events of a service the host provides. An event is forwarded
-    /// in one direction only.
-    pub fn emit(mut self, name: &str) -> Self {
-        self.emits.push(name.to_owned());
-        self
-    }
-
     pub fn generate(self) -> Result<(), Box<dyn std::error::Error>> {
         let single = matches!(self.members.as_slice(), [(None, _)]);
         let mut args: Vec<std::ffi::OsString> = self
             .provided
             .iter()
             .map(|service| format!("--provide={service}").into())
-            .chain(
-                self.events
-                    .iter()
-                    .map(|event| format!("--event={event}").into()),
-            )
-            .chain(
-                self.emits
-                    .iter()
-                    .map(|event| format!("--emit={event}").into()),
-            )
             .collect();
         // Relocatable paths stay lexical: a symlinked package (a `file:`
         // dependency) is addressed where it sits in the npm project.
@@ -224,8 +195,6 @@ fn generate(
 /// [package.metadata.rutis-cordis.mounts.credentials]
 /// plugin = "@deepseek-ai/dsh-credentials-local"   # or path = "src/plugin.ts"
 /// version = "0.2.0-rc.1"         # optional: must match the installed package
-/// events = ["credentials/record-updated"]         # Cordis -> rutis
-/// emits = []                     # rutis -> Cordis
 /// provide = []                   # services the rutis application provides
 ///
 /// [package.metadata.rutis-cordis.mounts.workspace]
@@ -345,11 +314,12 @@ pub fn from_manifest() -> Result<(), Box<dyn std::error::Error>> {
         for service in list(mount, "provide")? {
             bindings = bindings.provide(&service);
         }
-        for event in list(mount, "events")? {
-            bindings = bindings.event(&event);
-        }
-        for event in list(mount, "emits")? {
-            bindings = bindings.emit(&event);
+        // Events need no declaration since rutis 0.13: the mount's
+        // listeners register themselves on the logical bus.
+        for field in ["events", "emits"] {
+            if mount.contains_key(field) {
+                return Err(format!("mount {name}: {}", removed_field(field)).into());
+            }
         }
         bindings
             .generate()
@@ -385,6 +355,15 @@ fn check_runtime(runtime: &Path, install: &str) -> Result<(), Box<dyn std::error
         return Err(format!("the @arcships/rutis-runtime runtime at {} has no dependencies installed: run `npm --prefix {} ci`", runtime.display(), runtime.display()).into());
     }
     Ok(())
+}
+
+/// Why the mount config field `field` (`events`, `emits`) is refused (events
+/// protocol §2.4).
+pub(crate) fn removed_field(field: &str) -> String {
+    format!(
+        "the config field {field} was removed in rutis 0.13: listeners register themselves; \
+         emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)"
+    )
 }
 
 #[cfg(test)]

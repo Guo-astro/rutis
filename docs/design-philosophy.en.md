@@ -29,7 +29,7 @@ Once a program accepts plugins, it has to answer the questions an operating syst
 
 | Operating system | rutis |
 | --- | --- |
-| Kernel: small, stable, rarely changed | The `rutis` core, depending only on tokio, tokio-util and thiserror |
+| Kernel: small, stable, rarely changed | The `rutis` core, depending only on tokio, tokio-util, thiserror, serde and serde_json |
 | Processes | Plugins; language runtimes, remote nodes and dylibs are plugins too |
 | System calls | Services, provided and used by name or by type |
 | Drivers | Mounts and bridges: language runtimes, node links, Cordis mounts |
@@ -99,12 +99,12 @@ The fundamental difference is that rutis is designed around the idea of a harnes
 | Where the parts are | One Node process | Different languages, processes and machines |
 | What it may rely on | A single JS thread, shared objects, language features such as Proxy | Only explicit contracts: once a process boundary is crossed, implicit conventions break |
 
-So rutis is not a translation of Cordis. Mechanisms that only hold within one process (Proxy property access, rewriting the context per caller, `Context.filter`, the `internal/*` hooks) are not carried over; problems that only appear across processes (ordering across threads, withdrawing services across processes, reconnecting after a drop, protocol versions) are treated as first-class.
+So rutis is not a translation of Cordis. Mechanisms that only hold within one process (Proxy property access, rewriting the context per caller, the `internal/*` hooks) are not carried over; problems that only appear across processes (ordering across threads, withdrawing services across processes, reconnecting after a drop, protocol versions) are treated as first-class.
 
 ## 6. Costs
 
 - **Processes and latency**: each language needs at least one process, and a synchronous cross-language call takes about 30µs (measured on the Node side), far slower than a call within a process. Capabilities called often should eventually be solidified in Rust or placed in the same runtime.
-- **Weaker semantics**: across a process boundary, events can only be notifications, waterfalls are not forwarded, and `instanceof` does not hold; see the [boundary rules](requirements-protocol-plugins.en.md) §5.
+- **Synchronous waits are limited**: the five event modes mean the same across a process boundary ([unified events](design-events-2026-10-18.en.md)); only synchronous waits cannot do what they do in one process: a synchronous `bail` / `waterfall_sync` waiting on a listener elsewhere fails with `SyncWaitCycle` when the wait forms a cycle and fails on an asynchronous listener, as a synchronous service call does; services provided by the host are proxies, so `instanceof` does not hold; see the [boundary rules](requirements-protocol-plugins.en.md) §5.
 - **Failure scope**: plugins in one runtime share a process; if one crashes the process, the others in it stop too. Isolation means more runtime instances.
 - **Environment requirements**: each language used needs its environment (Node 22+, Python 3.10+), deployed along with it.
 - **More verbose code**: obtaining services and passing the context explicitly takes a few more words than Cordis's `ctx.foo`.

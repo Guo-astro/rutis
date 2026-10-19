@@ -19,12 +19,12 @@ pub struct RuntimeDiagnostics {
 }
 
 /// The `emit`s of one event key that were accepted and have not finished.
-/// Same-key emits are dispatched one after another, so a slow listener holds
-/// up the ones behind it; `emit` itself never waits for them.
+/// An emit stays here until every listener call it started has finished;
+/// `emit` itself never waits for them.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct EventBacklog {
-    pub key: TypeKey,
+    pub name: String,
     /// Accepted dispatches not finished, including the one running.
     pub pending: usize,
     /// How long ago the oldest of them was emitted.
@@ -129,13 +129,43 @@ pub struct ServiceChanged {
     pub provider: PluginId,
     pub generation: u64,
     pub change: ServiceChange,
+    /// The provider's scope chain on the logical bus ([`Ctx::scope`](crate::Ctx::scope)).
+    pub chain: Vec<crate::Scope>,
+    /// The row the provider belongs to ([`Ctx::row`](crate::Ctx::row)).
+    pub row: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum ServiceChange {
     Provided,
     Removed,
+}
+
+/// Serialized with its key described as text. It is a process-local
+/// diagnostic (its key is a Rust type): decoding one fails.
+impl serde::Serialize for ServiceChanged {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("ServiceChanged", 7)?;
+        s.serialize_field("key", &self.key.describe())?;
+        s.serialize_field("scope", &self.scope)?;
+        s.serialize_field("provider", &self.provider)?;
+        s.serialize_field("generation", &self.generation)?;
+        s.serialize_field("change", &self.change)?;
+        s.serialize_field("chain", &self.chain)?;
+        s.serialize_field("row", &self.row)?;
+        s.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ServiceChanged {
+    fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+        Err(serde::de::Error::custom(
+            "rutis::ServiceChanged names a Rust type key and cannot be decoded; \
+             listen to rutis/service instead",
+        ))
+    }
 }
 
 impl crate::Event for ServiceChanged {

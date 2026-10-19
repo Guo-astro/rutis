@@ -59,6 +59,20 @@ A node row's (`rutis-bridge/peer`) state only says that the row runs; whether it
 - Whole seconds are written `30s`; other waits to a tenth of a second.
 - States are checked every 200 ms and only changes are printed: a line the same as the last one is not printed again (the same refusal every 30 seconds is printed once), and a state lasting less than 200 ms may not be printed. Nothing is printed while a dialing side has no result yet (connecting), nor while a listening side has no far end yet.
 
+A listener that fails in an `emit` (the emitter does not wait, so nobody else hears of it) prints one line on stderr, where it ran: `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>` for the host's own, the same line from the runtime for a runtime's; a call the host could not deliver names where it went (`in runtime <name>`, `in node <peer>`). A failing filter of an `emit` prints `rutis: filter of <name> from row <row> failed: …` (`from the mount` for a plugin a mount loaded).
+
+### Events
+
+Every row's listeners, in any language and on linked nodes, are on one event bus, with one set of rules ([Unified events](../design-events-2026-10-18.en.md)): nothing is declared in `rutis.json`. A row inside an instance of an `instanced` group hears the events emitted in that instance and above it, never another instance's. `rutis-host` also emits, and plugins of every language may listen to:
+
+| Event | When |
+| --- | --- |
+| `rutis/row` | each state change of a row: `{ row, plugin, scope, state: "pending" \| "running" \| "failed" \| "stopped", error }` |
+| `rutis/runtime` | a runtime runs (`running`) or ended (`down`, with `reason`) |
+| `rutis/service` | a service a runtime's row provides appeared, was replaced or went (`available`) |
+
+A runtime of rutis 0.12 or older (or a node) is refused when it connects: `incompatible session: the far end (…) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later`.
+
 ## Checking a configuration
 
 For each row (except disabled ones), `check` verifies that:

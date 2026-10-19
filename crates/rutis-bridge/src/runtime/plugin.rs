@@ -26,11 +26,6 @@ use crate::runtime::{Mount, Process};
 /// mounts use neither, so only [`RuntimePlugin`] checks them.
 const ROW_FEATURES: [&str; 2] = ["rows.v2", "hosts"];
 
-/// What [`RuntimePlugin::emits`] needs from a runtime: delivering host events
-/// to its leaf plugins. Checked at mount, so a runtime without it fails there
-/// (boundary rule §5) rather than on the first `emit`.
-const EVENTS_FEATURE: &str = "events";
-
 /// The service a running runtime provides.
 pub struct Runtime {
     process: Arc<Process>,
@@ -149,12 +144,55 @@ pub struct RuntimePlugin {
     remote: bool,
     anchor: PathBuf,
     hosts: Arc<HashMap<String, Value>>,
-    /// Events the host may emit into the runtime's process.
-    emits: Vec<String>,
     state: Arc<watch::Sender<RuntimeState>>,
+    /// `rutis/runtime` follows the state (once started, [`RuntimePlugin::announce`]).
+    announcing: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl RuntimePlugin {
+    /// Emit `rutis/runtime` on `ctx`'s bus at each change of the runtime's
+    /// state from now on, for as long as the runtime exists (events
+    /// protocol §8): `running` once mounted, `down` with why when its
+    /// session ended or its mount failed (or `stopped` when it was
+    /// stopped).
+    pub(crate) fn announce(&self, ctx: &Ctx) {
+        use std::sync::atomic::Ordering;
+        if self.announcing.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Ok(tasks) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let mut states = self.state.subscribe();
+        let ctx = ctx.root_ctx();
+        let name = self.runtime.clone();
+        tasks.spawn(async move {
+            use crate::events::RuntimeEventState::{Down, Running};
+            let mut running = false;
+            loop {
+                let state = states.borrow_and_update().clone();
+                match state {
+                    RuntimeState::Ready(_) if !running => {
+                        running = true;
+                        crate::events::emit_runtime(&ctx, &name, Running, None);
+                    }
+                    RuntimeState::Down(reason) => {
+                        running = false;
+                        crate::events::emit_runtime(&ctx, &name, Down, Some(reason));
+                    }
+                    RuntimeState::Idle if running => {
+                        running = false;
+                        crate::events::emit_runtime(&ctx, &name, Down, Some("stopped".into()));
+                    }
+                    _ => {}
+                }
+                if states.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
     fn with(runtime: String, anchor: PathBuf, remote: bool) -> Self {
         Self {
             label: format!("{runtime}-runtime"),
@@ -163,16 +201,9 @@ impl RuntimePlugin {
             runtime,
             anchor,
             hosts: Arc::default(),
-            emits: Vec::new(),
             state: Arc::new(watch::channel(RuntimeState::Idle).0),
+            announcing: Arc::default(),
         }
-    }
-
-    /// Declare events the host may send with [`Process::emit`]; other names
-    /// are rejected. Set before mounting.
-    pub fn emits(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.emits = names.into_iter().map(Into::into).collect();
-        self
     }
 
     /// A runtime that runs elsewhere: its session is `RuntimeSession#<name>`,
@@ -249,6 +280,7 @@ impl Plugin for RuntimePlugin {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
         Box::pin(async move {
+            self.announce(ctx);
             self.state.send_replace(RuntimeState::Starting);
             // The runtime may hang before it answers; dispose or restart
             // cancels this generation.
@@ -261,8 +293,11 @@ impl Plugin for RuntimePlugin {
                             self.runtime
                         ))
                     })?;
+                // The runtime's listeners join this context's logical bus;
+                // its rows get their scopes when loaded.
                 let mount = Mount {
-                    emits: self.emits.clone(),
+                    ctx: Some(ctx.clone()),
+                    runtime: Some(self.runtime.clone()),
                     ..Mount::default()
                 };
                 Process::over(session, mount).await
@@ -302,17 +337,6 @@ impl Plugin for RuntimePlugin {
                      (or a runtime speaking its row contract) is required",
                     self.runtime,
                     missing.join(" and ")
-                ));
-                self.state
-                    .send_replace(RuntimeState::Down(error.to_string()));
-                return Err(error.into());
-            }
-            if !self.emits.is_empty() && !process.supports(EVENTS_FEATURE) {
-                let error = crate::runtime::Error::Value(format!(
-                    "the {} runtime lacks {EVENTS_FEATURE}: it cannot deliver {} to its plugins; \
-                     upgrade to a runtime supporting leaf events",
-                    self.runtime,
-                    self.emits.join(", ")
                 ));
                 self.state
                     .send_replace(RuntimeState::Down(error.to_string()));

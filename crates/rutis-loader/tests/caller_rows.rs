@@ -136,12 +136,18 @@ async fn rows_are_callers(
         .await
         .unwrap();
     assert!(report.failures.is_empty(), "{report:?}");
-    COLD.eventually_with(
-        || (ledger.registered("a").is_some() && ledger.registered("b").is_some()).then_some(()),
-        "both rows registered",
-        || format!("{:?}", loader.entries()),
-    )
-    .await;
+    // A row registers while it starts: it runs a little later.
+    let b_generation = COLD
+        .eventually_with(
+            || {
+                (ledger.registered("a").is_some() && ledger.registered("b").is_some())
+                    .then(|| active(loader, "b"))
+                    .flatten()
+            },
+            "both rows registered, b running",
+            || format!("{:?}", loader.entries()),
+        )
+        .await;
 
     // Two rows of one plugin in one runtime are two callers.
     let a = ledger.registered("a").unwrap().expect("a names its row");
@@ -150,7 +156,6 @@ async fn rows_are_callers(
     assert_ne!(a.1, b.1, "the rows' keys");
     assert_ne!(a.2, b.2, "the rows' fibers");
     assert_eq!((a.3, b.3), (None, None), "outside any scope");
-    let b_generation = active(loader, "b").expect("b runs");
 
     // Row a goes while the runtime keeps running: so does what it
     // registered, and only that.

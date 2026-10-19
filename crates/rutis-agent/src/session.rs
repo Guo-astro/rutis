@@ -20,7 +20,7 @@ static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 /// 分代设计:`identity` 首次分配后稳定(落盘跨重启不变 = 对齐凭据),
 /// `generation` 标识"第几代"(重启 +1)。`as_u64()` 保留(返回
 /// identity),兼容现有消费点(`Agent::id()`、`agent/*` 事件载荷)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SessionId {
     identity: u64,
     generation: u32,

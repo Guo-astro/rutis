@@ -35,6 +35,7 @@ impl rutis::Listener<AgentTextDelta> for TextL {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a AgentTextDelta,
+        _call: rutis::Call<'a, ()>,
     ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
         let text = self.0.clone();
         let d = e.delta.clone();
@@ -52,6 +53,7 @@ impl rutis::Listener<AgentToolCall> for ToolFlagL {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a AgentToolCall,
+        _call: rutis::Call<'a, ()>,
     ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
         let flag = self.0.clone();
         let name = e.name.clone();

@@ -15,6 +15,43 @@
 
 pub mod profile;
 
+/// The events the launcher (`dsh/launcher.ts`) emits from the [`web`]
+/// mount. They reach Rust listeners by name, as every event does since
+/// rutis 0.13 (no declaration in the mount).
+pub mod events {
+    use serde::{Deserialize, Serialize};
+
+    /// `rutis-dsh/ready`: the profile started; the dsh-llm routes now
+    /// available.
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    pub struct Ready(pub Vec<String>);
+
+    impl rutis::Event for Ready {
+        const NAME: &'static str = "rutis-dsh/ready";
+        type Value = ();
+    }
+
+    /// `rutis-dsh/startup-failed`: the profile failed to start, and why; the
+    /// mount stays up until the host disposes it.
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    pub struct StartupFailed(pub String);
+
+    impl rutis::Event for StartupFailed {
+        const NAME: &'static str = "rutis-dsh/startup-failed";
+        type Value = ();
+    }
+
+    /// `rutis-dsh/exit`: the dsh app asked to exit with this code (`--help`,
+    /// a usage error).
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    pub struct Exit(pub f64);
+
+    impl rutis::Event for Exit {
+        const NAME: &'static str = "rutis-dsh/exit";
+        type Value = ();
+    }
+}
+
 #[cfg(all(unix, dsh_installed))]
 rutis_bridge::include_mounts!();
 

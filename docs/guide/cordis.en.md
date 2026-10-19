@@ -2,7 +2,7 @@
 
 rutis and Cordis (the Node plugin framework) interoperate in two ways:
 
-- **Use a Cordis application as a node:** connect an existing Cordis application to a rutis node so they can use each other's services, forward events, and let rutis run plugins inside it. Use `@arcships/rutis-runtime/bridge`.
+- **Use a Cordis application as a node:** connect an existing Cordis application to a rutis node so they can use each other's services, share events, and let rutis run plugins inside it. Use `@arcships/rutis-runtime/bridge`.
 - **Mount Cordis plugins in a Rust application:** run published Cordis plugins in a real Cordis context without changing their source, and use Rust types generated at build time from their type declarations. Enable the `cordis` feature of `rutis-bridge`.
 
 A Cordis plugin can also run as a row in rutis-loader: name its package in `rutis.json`, with the package unchanged; see [Write a TypeScript plugin](typescript-plugin.en.md#existing-cordis-plugins):
@@ -11,6 +11,30 @@ A Cordis plugin can also run as a row in rutis-loader: name its package in `ruti
 - The services a row provides reach rutis by themselves: rows of other runtimes, other nodes and Rust plugins use them by name. The methods are the functions of the service object (its own and its prototype chain's, not `constructor`), all called as `async`. When the package's `package.json` declares `rutis.provides`, that declaration applies (to mark some methods `sync`, say).
 - When a service of the same name already has another provider (a row of another runtime, a Rust plugin, an import from a node), the row providing it later fails, also when it provides it after loading, and the error names both, for example `service storage is already provided by row prompts: row storage cannot provide it too`.
 - `rutis-host check` runs no plugin, so it does not see undeclared services: a service a row depends on that only such rows may provide is a warning, `nothing declares <service>; it may be provided at runtime by …`, not a failure (with `check --strict`, one).
+
+## Events
+
+A Cordis plugin uses Cordis's own event API as before, and it is rutis's event API: `ctx.on`, `ctx.emit`, `ctx.parallel`, `ctx.serial`, `ctx.waterfall`, `ctx.bail`. Cordis listeners register themselves on the host's logical bus, so whether a Cordis plugin runs as a row of rutis.json, mounted in a Rust application, or in a Cordis application acting as a node, its events reach listeners in any language and process by the same rules (by scope), and events emitted elsewhere reach its listeners. A Cordis application acting as a node shares with its peer only the names its `Events` lists in `export` / `import` ([below](#use-a-cordis-application-as-a-node)). The rules are in [plugin API: events](plugin-api.en.md#events).
+
+```ts
+export function apply(ctx: Context) {
+  // waterfall: next is the last argument; listeners elsewhere (Python, Go, Rust) are on the same chain
+  ctx.on('chat/before-send', async (message: string, next: () => Promise<string>) => (await next()).trim())
+
+  ctx.on('chat/sent', (message: string) => { /* a failure here does not reach the emitter */ })
+}
+
+// Emit from anywhere in the plugin:
+const out = await ctx.waterfall('chat/before-send', text, (text: string) => text)  // the last argument is the terminal
+await ctx.parallel('chat/sent', out)       // waits for every listener, wherever it is
+```
+
+- **Filters**: Cordis's `Context.filter` is wired to rutis's filters. In `ctx.emit(thisArg, name, ...)` (and the other four), when `thisArg[Context.filter]` is a function it is the filter: a listener in this process is passed its own Context, a listener elsewhere `{ rutis: descriptor }`. Every Context has a read-only `ctx.rutis`, so `c => c.rutis.row === 'chat'` works for both. The descriptor's fields are in [filter](plugin-api.en.md#filter).
+- **`prepend` / `global`** are Cordis's own listener options, ordering and exempting listeners elsewhere the same way.
+- **Synchronous `bail`**: listeners elsewhere run as synchronous calls; an `async` function or a listener returning a Promise fails it with `AsyncListener` (before, Cordis took the Promise as the result).
+- **`parallel`** failures are always an `AggregateError`, its errors in registration order (as in Cordis), with the message `<n> listeners of <name> failed`, including failures of listeners elsewhere. A failing `emit` listener is reported in one line where it runs and does not reach the emitter.
+- **`internal/*`** stays each runtime's own: `internal/dispatch` and `internal/service` are local to the process and never cross. Before an event arriving from elsewhere first calls a listener in this process, the runtime fires `internal/dispatch` once for that dispatch, with rutis's mode name (`emit`, `parallel`, `serial`, `waterfall`, `bail`), so `internal/dispatch` validators still see such events.
+- **Unload**: the row's `ctx.signal` is aborted and its running listeners are waited for before the cleanups run.
 
 ## Use a Cordis application as a node
 
@@ -25,12 +49,13 @@ ctx.plugin(Link, { peer: 'main', id: 'mac', dial: 'wss://main.example.com/rutis'
 ctx.plugin(Export, { peer: 'main', services: { calendar: { today: 'sync', later: 'async' } } })
 ctx.plugin(Import, { peer: 'main', services: ['clock'] })
 ctx.plugin(Host, { peer: 'main' })                     // let main run npm plugins installed here
-ctx.plugin(Events, { peer: 'main', out: ['tock'], in: ['tick'] })
+ctx.plugin(Events, { peer: 'main', export: ['tock'], import: ['session/*'] })
 ```
 
 - `Link` maintains a connection to one peer and exposes it as `rutisPeer.<id>`. Other features depend on it and are recreated after every reconnect.
 - `Export` exposes Cordis services to the peer with the declared method shapes. `Import` registers peer services as Cordis services and rejects a name already used locally.
 - `Host` lets the peer load npm plugins installed here, running them with the row's `isolate` and `inject` settings. Enable it only for trusted peers.
+- `Events` shares events with the peer by the rules between nodes ([events between nodes](nodes.en.md#events-between-nodes)): for the names in `export`, events this application emits reach the peer's listeners; for the names in `import`, this application's listeners receive the events the peer emits. An item is a name, or a prefix ending in `*`. The five modes, filters and every value type work; events travel one hop. The `out` / `in` of before 0.13 are refused.
 - Credentials can also come from `RUTIS_TOKEN`, `RUTIS_CA`, `RUTIS_CERT`, and `RUTIS_KEY`.
 
 For the rutis node configuration, see [Connect nodes](nodes.en.md).
@@ -80,8 +105,6 @@ npm = "cordis"                   # npm project from step 1, relative to Cargo.to
 [package.metadata.rutis-cordis.mounts.credentials]
 plugin = "@deepseek-ai/dsh-credentials-local"   # npm package, or path = "src/plugin.ts"
 version = "0.2.0-rc.1"           # optional: build fails if the installed version differs
-events = ["credentials/record-updated"]         # Cordis events forwarded to rutis listeners
-# emits = ["…"]                  # events sent by rutis to Cordis listeners
 # provide = ["…"]                # services provided to the plugin by the rutis application
 
 # Combined mount: dependent plugins share a single Cordis Context
@@ -133,7 +156,7 @@ store.set(&credentials::CredentialRef::from("app/api-key"), "s3cret").await?;
 | Live objects | Objects with methods (such as `Workspace`) are proxies: property getters read live values, methods call the original object, and passing them back restores the original object. Unions of live objects become `ObjectRef`; unions mixing data and live objects become enums. |
 | Callbacks | Function arguments take Rust closures. Returned functions (such as unsubscribe functions) become `RemoteFunction`. |
 | Cancellation / timeout | Dropping the returned future cancels the call; Cordis methods receive an `AbortSignal` and abort. For example: `tokio::time::timeout(d, store.read_record(&key)).await`. |
-| Events | Events in `events` generate rutis event types and can be subscribed to with `ctx.events().on(&ctx, &EventKey::<CredentialsRecordUpdated>::of(), listener)`. Events in `emits` are sent from rutis to Cordis through `emit` / `parallel`. |
+| Events | Nothing to declare: the mount's Cordis listeners and Rust listeners are on one logical bus. On the Rust side define an event type of the same name (`impl Event` with `NAME` the Cordis event's name, deriving serde), or send and receive by name with `EventKey::<rutis_bridge::events::Args>::dynamic(name)`; all five modes work ([embedding in Rust: events](rust-host.en.md#events)). `events` / `emits` of the manifest were removed in 0.13. |
 | Host services | Services in `provide` generate traits (such as `SystemPromptHost`). Implement the trait and register it with the generated `provide_system_prompt(&ctx, host)` function. The mount waits until the service is ready. |
 
 ### Deployment
@@ -149,10 +172,8 @@ If unset, the build-time location is used, so development needs no extra configu
 
 ### 4. Cordis plugin boundaries
 
-Some behavior provided by the JavaScript call stack cannot be preserved across processes. The rules are in [Requirements §5](../requirements-protocol-plugins.en.md). The main points are:
+Some behavior provided by the JavaScript call stack cannot be preserved across processes. The rules are in [Requirements §5](../requirements-protocol-plugins.en.md). Events are not among them: the five modes work across processes as in one (see [events](#events) above), and the only thing they cannot do, a synchronous `bail` waiting in a cycle or on a far end that went away, fails with an error. The main points are:
 
-- Cross-boundary `emit` is a notification; rutis is not guaranteed to have processed it when `emit` returns. Use `parallel` when you need to wait.
-- Event order is guaranteed only within one side. Waterfall events and events with return values are not forwarded.
 - After direct `ctx.set` replacement, rutis switches to the new object on the next call to that service.
 - A synchronous method cannot wait during execution for a result that requires the Node event loop; this returns `SyncWaitCycle`.
 - A host-provided service is a proxy on the Cordis side, so `instanceof` checks fail.

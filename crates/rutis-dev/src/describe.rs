@@ -40,7 +40,7 @@ pub fn diagnostics(d: &RuntimeDiagnostics) -> Value {
             "removing": b.removing,
         })).collect::<Vec<_>>(),
         "eventBacklogs": d.event_backlogs.iter().map(|b| json!({
-            "key": b.key.describe(),
+            "key": b.name,
             "pending": b.pending,
             "oldestMs": b.oldest.as_millis() as u64,
         })).collect::<Vec<_>>(),

@@ -21,6 +21,7 @@ import { takeToken } from './channel.ts'
 import { dialOut, serve } from './remote.ts'
 import { Runtime } from './runner.ts'
 import { MANIFEST } from './session.ts'
+import { EVENTS_V2, NO_EVENTS_V2 } from './events.mjs'
 
 const USAGE = 'usage: bun --no-install --no-env-file <rutis-bun>/src/main.ts <channel> [--id <endpoint>] [--peer <endpoint>] <project>'
 
@@ -52,6 +53,9 @@ for (const event of ['uncaughtException', 'unhandledRejection'] as const) {
     process.exit(1)
   })
 }
+// What was written to stderr, written out: a pipe takes it asynchronously,
+// and exiting at once can lose the last lines (a refusal, say).
+const flushed = () => new Promise<void>(resolve => { process.stderr.write('', () => resolve()) })
 const [channel, ...rest] = process.argv.slice(2)
 const flags: Record<string, string> = {}
 while (rest[0]?.startsWith('--')) {
@@ -70,6 +74,7 @@ if (channel.startsWith('listen:')) {
 }
 if (channel.startsWith('dial:')) {
   const code = await dialOut(channel.slice('dial:'.length), { id: flags.id, peer: flags.peer, project })
+  await flushed()
   process.exit(code)
 }
 // A runner is a runtime: the controller manages its rows.
@@ -86,13 +91,20 @@ const runtime = new Runtime(project)
 const alive = setInterval(() => {}, 1 << 30)
 let client: Client
 try {
-  client = await Client.connect(channel, { dispatch: runtime.dispatch, token, endpoint })
+  // The logical bus (#464): `events.elsewhere` runs as its frame arrives;
+  // a host older than 0.13 (no events-v2) is refused (protocol §2.2).
+  client = await Client.connect(channel, { dispatch: runtime.dispatch, token, endpoint, inline: ['events.elsewhere'], requires: [EVENTS_V2] })
 } catch (error: any) {
+  if (error?.message === NO_EVENTS_V2) {
+    process.stderr.write(`rutis: refused: incompatible (${NO_EVENTS_V2}); stopping\n`)
+    await flushed()
+    process.exit(1)
+  }
   // The supervisor ended the session before it greeted, and said why.
   if (dialed) process.exit(1)
   fail(`cannot connect on ${channel}: ${error.message}`)
 }
-runtime.client = client
+runtime.attach(client)
 if (dialed) {
   // Stopped: the rows go while rutis still hears from this end, then the
   // session ends (and so does this process, below).
@@ -110,6 +122,7 @@ process.on('exit', code => {
 })
 await client.closed()
 ended = true
+runtime.ended()
 clearInterval(alive)
 // The host ending the session is the normal end; anything else is said.
 if (client.reason && client.reason !== 'the rutis host disconnected') {

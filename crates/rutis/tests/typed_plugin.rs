@@ -378,6 +378,7 @@ impl Listener<FiberStatusChanged> for States {
         &'a self,
         _: &'a Ctx,
         event: &'a FiberStatusChanged,
+        _: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         self.0.lock().unwrap().push(event.to);
         Box::pin(async { Ok(None) })

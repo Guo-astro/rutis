@@ -2,10 +2,11 @@ import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isAbsolute } from 'node:path'
 import { statSync } from 'node:fs'
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { Process } from './client.mjs'
 import { toJsonSchema } from './schema.mjs'
-import { isLeaf, oncePerName, refuseInternal, supported, toCordis } from './leaf.mjs'
+import { isLeaf, oncePerName, supported, toCordis } from './leaf.mjs'
+import { Bus, EVENTS_V2, NO_EVENTS_V2, refuseRemoved } from './events.mjs'
+import { install } from './cordis-events.mjs'
 
 // `<channel> [--id <endpoint>] [--peer <endpoint>] [--format endpoint] <first plugin or anchor>`.
 // Local channels (`fd:3`, a socket path) speak the compat protocol unless
@@ -56,22 +57,53 @@ let mounted = false
 let closing = false
 let disposing
 let version = 0
-let emits = new Set() // events the rutis side may emit here
 // The host takes the services rows provide without declaring them, each
 // announced with its methods (mount `announce`, feature `rows.announce`).
 // A host that did not ask (0.11) hears only the declared ones.
 let announce = false
 // Rows: plugins rutis-loader manages one by one in this Context (`rows.*`).
-const rows = new Map() // key -> { fiber, inner, config, exports, loading, scope, labelOf }
+const rows = new Map() // key -> { fiber, inner, config, exports, loading, scope, labelOf, chain, abort }
 // rutis services registered one by one (`hosts.*`): id -> withdraw
 const hosts = new Map()
 // What this runner supports beyond protocol 2, reported by `mount`.
-// events: leaf plugins receive what rutis emits (RuntimePlugin::emits).
 // rows.announce: the services a row provides (a Cordis plugin's, or a leaf
 // plugin's `ctx.provide`) reach rutis without a declaration, announced with
 // the methods they have (`service` with a fourth argument, to a host whose
 // mount asked for it).
-const FEATURES = ['rows.v2', 'hosts', 'leaf.js', 'scopes', 'events', 'rows.announce']
+const FEATURES = ['rows.v2', 'hosts', 'leaf.js', 'scopes', 'rows.announce']
+
+// The logical event bus (#464, ./events.mjs, ./cordis-events.mjs): every
+// Cordis listener that is not internal/* is registered with the host, and
+// every emission runs by the bus's rules. The plugins `mount` loads are in
+// its `scope`, with a signal of their own; each row has its scope chain
+// (`rows.load`'s seventh argument) and signal.
+let mountScope = []
+const mountAbort = new AbortController()
+// The row whose plugin is being created (its fiber not known yet).
+let creating
+// The fibers of rows unloaded, with their row: a plugin keeping its
+// context past its row emits from that row, which the bus refuses (§3).
+const unloaded = new WeakMap()
+const bus = new Bus({ loading: key => key === null ? !mounted : Boolean(rows.get(key)?.loading) })
+function whose(context) {
+  const owner = rowOf(context?.fiber) ?? (creating ? [creating.key, creating] : undefined)
+  if (!owner) {
+    const gone = goneRowOf(context?.fiber)
+    if (gone) return { row: gone.key, scope: gone.chain, signal: gone.abort.signal, gone: true }
+    return { row: null, scope: mountScope, signal: mountAbort.signal }
+  }
+  const [key, row] = owner
+  return { row: key, scope: row.chain, signal: row.abort.signal }
+}
+function goneRowOf(fiber) {
+  for (let current = fiber; current; current = current.runtime ? current.parent?.fiber : undefined) {
+    const row = unloaded.get(current)
+    if (row) return row
+  }
+}
+install(ctx, Context, bus, whose)
+// How long an unloading row's listeners are waited for (§7.1).
+const deadline = shutdownDeadline()
 // Test support, not part of the protocol: with RUTIS_TEST_INSPECT set, the
 // control method `inspect` reports what this runner holds (rows, host
 // proxies, export slots, object handles, Cordis plugins, fibers and
@@ -289,8 +321,16 @@ ctx.on('internal/set', (_ctx, _name, _value, _error, next) => {
 function dispose() {
   return disposing ??= (async () => {
     for (const slot of slots.values()) await slot.exporter?.dispose()
-    for (const { fiber } of [...rows.values()].reverse()) await fiber.dispose()
+    for (const [key, row] of [...rows].reverse()) {
+      bus.withdraw(key)
+      row.abort.abort(new DOMException('the row is unloading', 'AbortError'))
+      await bus.settle(key, deadline)
+      await row.fiber.dispose()
+    }
     rows.clear()
+    bus.withdraw(null)
+    mountAbort.abort(new DOMException('the plugins are unloading', 'AbortError'))
+    await bus.settle(null, deadline)
     for (const fiber of [...(fibers ?? [])].reverse()) await fiber.dispose()
   })()
 }
@@ -362,7 +402,7 @@ const fiberOf = wrapped => Object.hasOwn(wrapped, 'then') ? Object.getPrototypeO
 // One row: `isolate` as [name, label] pairs (rows naming a label share its
 // scope), `inject` as extra service names gating the row. With `inject`, the
 // plugin runs inside a gate fiber (`inner`), from the row's latest config.
-async function loadRow([key, entry, config, isolate, inject, exports]) {
+async function loadRow([key, entry, config, isolate, inject, exports, place]) {
   if (rows.has(key)) throw new Error(`row ${key} is already loaded`)
   const names = Object.keys(exports ?? {})
   // A name the row isolates is exported in the scope of its label.
@@ -380,10 +420,15 @@ async function loadRow([key, entry, config, isolate, inject, exports]) {
     scopedId(name, label)
     scope = scope.isolate(name, isolated(name, label))
   }
-  const row = { fiber: undefined, inner: undefined, config, exports: ids, loading: true, scope, labelOf }
-  const fiber = fiberOf(inject?.length
-    ? scope.plugin({ name: `row:${key}`, inject, apply(gated) { row.inner = fiberOf(gated.plugin(plugin, row.config)) } })
-    : scope.plugin(plugin, config))
+  const row = { key, fiber: undefined, inner: undefined, config, exports: ids, loading: true, scope, labelOf, chain: chainOf(place?.scope), abort: new AbortController() }
+  bus.nameRow(key, place?.id)
+  let fiber
+  creating = row
+  try {
+    fiber = fiberOf(inject?.length
+      ? scope.plugin({ name: `row:${key}`, inject, apply(gated) { row.inner = fiberOf(gated.plugin(plugin, row.config)) } })
+      : scope.plugin(plugin, config))
+  } finally { creating = undefined }
   row.fiber = fiber
   if (!inject?.length) row.inner = fiber
   rows.set(key, row)
@@ -402,8 +447,10 @@ async function loadRow([key, entry, config, isolate, inject, exports]) {
     const announced = row.exports.map(id => slots.get(id)).filter(slot => slot?.row === key)
     await Promise.all(announced.map(slot => slot.exporter.await()))
     // rutis has published them (or refused one, which fails the row there)
-    // before it hears that the row loaded.
+    // before it hears that the row loaded; so are the listeners it
+    // registered (§4.4 2).
     await Promise.all(announced.map(slot => slot.announcing))
+    await Promise.all(bus.registrations(key))
   } catch (error) {
     await unloadRow(key)
     throw error
@@ -419,15 +466,29 @@ async function loadRow([key, entry, config, isolate, inject, exports]) {
 async function unloadRow(key) {
   const row = rows.get(key)
   if (!row) return null
+  // Its listeners are off the bus at once; those running are signalled
+  // and waited for, at most the shutdown deadline (§7.1).
+  bus.withdraw(key)
   rows.delete(key)
+  for (const fiber of [row.fiber, row.inner]) if (fiber) unloaded.set(fiber, row)
   for (const id of row.exports) {
     const slot = slots.get(id)
     await slot?.exporter?.dispose()
     if (slot) retire(slot.handle)
     slots.delete(id)
   }
+  row.abort.abort(new DOMException('the row is unloading', 'AbortError'))
+  await bus.settle(key, deadline)
   await row.fiber.dispose()
+  bus.forgetRow(key)
   return null
+}
+
+// A scope chain as rows.load and mount give it: [{ id, group }], root [].
+function chainOf(scope) {
+  if (scope === undefined || scope === null) return []
+  if (!Array.isArray(scope) || scope.some(item => typeof item?.id !== 'string' || typeof item?.group !== 'string')) throw new TypeError('a scope is a list of { id, group }')
+  return scope.map(({ id, group }) => ({ id, group }))
 }
 
 // What rutis-loader needs before loading a plugin: its config schema, the
@@ -490,8 +551,22 @@ async function updateRow([key, config]) {
     return null
   }
   if (commitVolatile(fiber, config)) return null
-  fiber.update(config, true)
+  // A restart is an unload and a load, as in every runtime: the row's
+  // listeners leave (here and on the host), those running are signalled
+  // and waited for (§7.1); then the plugin applies again, and the update
+  // is answered once its new listeners are registered (§4.3, §4.4 2).
+  bus.withdraw(key, { restart: true })
+  row.abort.abort(new DOMException('the row is unloading', 'AbortError'))
+  await bus.settle(key, deadline)
+  row.abort = new AbortController()
+  row.loading = true
+  try {
+    fiber.update(config, true)
     await fiber.await()
+    await Promise.all(bus.registrations(key))
+  } finally {
+    row.loading = false
+  }
   return null
 }
 
@@ -542,51 +617,22 @@ function hostProxy(id, methods) {
   })
 }
 
-// How each forwarded event is being dispatched, from `internal/dispatch`,
-// which Cordis emits before it calls the listeners. The record follows the
-// dispatch's own execution (a serial or waterfall may reach the forwarding
-// listener after an await), and other dispatches running meanwhile keep
-// theirs: event name -> { type, values }. `values` is the dispatch's own
-// argument array, which a waterfall extends with its `next` before calling
-// the listeners.
-const dispatches = new AsyncLocalStorage()
-const sameValues = (a, b) => a.length === b.length && a.every((value, index) => Object.is(value, b[index]))
-
-// The forwarding listener of a Cordis event: the rutis listeners as one
-// group (boundary rule 4). `emit` ignores the returned Promise (fire and
-// forget); parallel / serial wait for the rutis listeners. A synchronous
-// bail cannot wait for them, so it fails; in a waterfall the rutis group is
-// one asynchronous link that calls `next` once when it is done. A listener
-// before this one dispatching the same event again with the same arguments
-// leaves that dispatch's record, so a bail then gets the Promise (#340).
-function forward(name, values) {
-  const record = dispatches.getStore()?.get(name)
-  const type = record && sameValues(record.values, values) ? record.type : 'emit'
-  if (type === 'bail') {
-    throw new Error(`event ${name} is forwarded to rutis, whose listeners run asynchronously: a synchronous bail cannot wait for them (use serial)`)
-  }
-  const next = type === 'waterfall' ? values.at(-1) : undefined
-  const done = peer.callAsync('', 'event', [name, next ? values.slice(0, -1) : values])
-  if (next) return done.then(() => next())
-  done.catch(() => {}) // an ignored emit must not become an unhandled rejection
-  return done
-}
-
 // A mount is a group of plugins sharing one Context, so dependencies between
 // them resolve natively. `args.plugins` lists [{ entry, config }] in load
 // order; a single-plugin mount passes only `args.config`.
 function mount(args) {
-  // Boundary rule 5: Cordis's own events stay on the Cordis side.
-  refuseInternal('emits', args.emits)
-  refuseInternal('events', args.events)
+  // Listeners register themselves (#464): the static forwarding is gone.
+  refuseRemoved(args)
   if (fibers) throw new Error('plugins are already mounted')
+  mountScope = chainOf(args.scope)
+  // This runtime's name on the host, for descriptors, when it says.
+  if (typeof args.runtime === 'string') bus.runtime = args.runtime
   fibers = []
   for (const [name, methods] of Object.entries(args.services ?? {})) {
     if (name.includes('#')) throw new Error(`service name ${name} cannot be projected`)
     slots.set(name, { name, methods: new Set(methods), scope: undefined, object: undefined, identity: undefined, handle: null, generation: 0, version: 0 })
   }
   const plugins = args.plugins ?? [{ entry: pluginPath, config: args.config }]
-  emits = new Set(args.emits ?? [])
   announce = args.announce === true
   // Services the rutis application provides are registered before the
   // plugins load, so the plugins' dependencies on them resolve natively.
@@ -610,17 +656,9 @@ function mount(args) {
     ])
     if (unresolved.length) throw new Error(`native plugin dependencies are unresolved: ${unresolved.join('; ')}`)
     refresh()
+    // The listeners the plugins registered are on the host's bus first.
+    await Promise.all(bus.registrations(null))
     mounted = true
-    // Forward selected Cordis events to rutis. Registered after the plugins
-    // started, so the rutis side runs as one group after the listeners the
-    // plugins registered while starting (boundary rules 3 and 4).
-    const forwarded = new Set(args.events ?? [])
-    if (forwarded.size) {
-      ctx.on('internal/dispatch', (type, name, values) => {
-        if (forwarded.has(name)) dispatches.enterWith(new Map(dispatches.getStore()).set(name, { type, values }))
-      })
-    }
-    for (const name of forwarded) ctx.on(name, (...values) => forward(name, values))
     return { services: Object.fromEntries([...slots].map(([name, slot]) => [name, [slot.handle, slot.version]])), features: FEATURES }
   })()
 }
@@ -633,12 +671,10 @@ function dispatch(target, method, args) {
       case 'dispose':
         closing = true
         return Promise.all([dispose(), peer.drain()]).then(() => null)
-      case 'emit': {
-        // A rutis event re-emitted for the Cordis listeners.
-        const [name, values] = args ?? []
-        if (!emits.has(name)) throw new Error(`event ${name} is not declared for emission from rutis`)
-        return ctx.parallel(name, ...(values ?? []))
-      }
+      // The logical bus (#464): `events.elsewhere` runs as its frame
+      // arrives (the session's `inline`); `events.call` runs a listener.
+      case 'events.elsewhere': bus.elsewhere(args?.[0] ?? {}); return undefined
+      case 'events.call': return bus.call(args?.[0] ?? {})
       case 'get': {
         // A live read of a declared service property.
         const [handle, property] = args ?? []
@@ -706,11 +742,24 @@ function dispatch(target, method, args) {
 
 // Calls on exported objects and functions may replace services too.
 try {
-  peer = await Process.connect(channelSpec, dispatch, () => { if (slots.size && !closing) refresh() }, endpoint)
+  peer = await Process.connect(channelSpec, dispatch, () => { if (slots.size && !closing) refresh() }, endpoint, {
+    inline: ['events.elsewhere'],
+    requires: [EVENTS_V2],
+  })
 } catch (error) {
+  // A host older than 0.13 (protocol §2.2).
+  if (error?.message === NO_EVENTS_V2) {
+    process.stderr.write(`rutis: refused: incompatible (${NO_EVENTS_V2}); stopping\n`)
+    process.exit(1)
+  }
   // The supervisor ended the session before it greeted, and said why.
   if (dialed) process.exit(1)
   throw error
+}
+bus.peer = {
+  call: (target, method, args) => peer.call(target, method, args),
+  callAsync: (target, method, args) => peer.callAsync(target, method, args),
+  callFunctionAsync: (fn, args) => peer.callFunctionAsync(fn, args),
 }
 if (dialed) {
   // Stopped: the rows go while rutis still hears from this end, then the
@@ -727,6 +776,7 @@ if (dialed) {
 delete process.env.RUTIS_CHANNEL_TOKEN
 await peer.closed()
 closing = true
+bus.ended()
 // A session this side ended because the far end broke the protocol is a
 // failure, said on stderr and in the exit status: ending normally made the
 // host report "exited normally" and nothing else (#225).
@@ -738,7 +788,6 @@ if (peer.fault) {
 // was killed, say) and nothing else ends this process. Cleanups that do not
 // finish within the deadline are given up (exit status 1). Then the process
 // exits, also when a plugin left a timer or a socket that would keep it.
-const deadline = shutdownDeadline()
 const late = setTimeout(() => {
   console.error(`rutis runtime: cleanups did not finish within ${deadline / 1000} s after the session ended; exiting`)
   process.exit(1)

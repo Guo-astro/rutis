@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use rutis::{Ctx, Event, Listener};
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct ProbeEvent {
     seq: usize,
 }
@@ -28,6 +28,7 @@ impl Listener<ProbeEvent> for Recorder {
         &'a self,
         _ctx: &'a Ctx,
         e: &'a ProbeEvent,
+        _call: rutis::Call<'a, ()>,
     ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
         let log = self.0.clone();
         let seq = e.seq;

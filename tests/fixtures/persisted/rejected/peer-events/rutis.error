@@ -1,0 +1,1 @@
+<dir>/rutis.json: rows[0] (id "office"): the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)

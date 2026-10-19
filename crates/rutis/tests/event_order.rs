@@ -2,8 +2,10 @@
 //! 同类型 emit 按发出顺序投递(D31)、事件不按 isolate 过滤(D29)、
 //! 异步 waterfall 回调 panic 传给调用者(design-rust-port §八 第 4 条)。
 //!
-//! 监听器先让出若干轮调度再记录:顺序保证一旦失效,后发的事件会超车,
-//! 断言因此能看到乱序。让出的轮数由事件内容确定,不用随机数,也不用
+//! #464 起同名 emit 的调用只按发出顺序*开始*,彼此并发运行(慢调用不再
+//! 挡住后面的 emit),完成顺序不作契约。所以监听器在调用开始时记录,
+//! 然后再让出若干轮调度,让各次调用真正重叠:链一旦分叉,开始顺序就会
+//! 乱,断言因此能看到。让出的轮数由事件内容确定,不用随机数,也不用
 //! 固定时长的等待;等待一律有 `HANG_GUARD` 兜底(质量规范 §7)。
 
 use std::collections::BTreeMap;
@@ -11,16 +13,17 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use rutis::{
-    BoxFuture, CordisError, Ctx, Effect, Event, EventKey, FiberState, FiberStatusChanged, Listener,
-    Next, Plugin, PluginId, Terminal, TypeKey, WaterfallListener,
+    BoxFuture, Call, CordisError, Ctx, Effect, Event, EventKey, FiberState, FiberStatusChanged,
+    Listener, Plugin, PluginId, Terminal, TypeKey,
 };
 use rutis_test_support::within;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 // ── 测试助手 ─────────────────────────────────────────────────────
 
 /// 带发射者编号的序号事件。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 struct Seq {
     emitter: usize,
     n: usize,
@@ -35,7 +38,7 @@ fn seq(emitter: usize, n: usize) -> Arc<Seq> {
     Arc::new(Seq { emitter, n })
 }
 
-/// 监听器:先让出 `delay(e)` 轮调度,再执行 `body`。
+/// 监听器:调用开始时执行 `body`,然后让出 `delay(e)` 轮调度。
 struct Slow<E, D, B> {
     delay: D,
     body: B,
@@ -65,12 +68,13 @@ where
         &'a self,
         ctx: &'a Ctx,
         e: &'a E,
+        _call: Call<'a, E::Value>,
     ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
         Box::pin(async move {
+            (self.body)(ctx, e);
             for _ in 0..(self.delay)(e) {
                 tokio::task::yield_now().await;
             }
-            (self.body)(ctx, e);
             Ok(None)
         })
     }
@@ -103,9 +107,9 @@ impl Plugin for Noop {
 // ── D24 状态事件按提交顺序分发 ────────────────────────────────────
 
 /// 多个 fiber 在多个工作线程上同时装载、重启、卸载:每个 fiber 的状态
-/// 事件按提交顺序到达——到达序列里 seq 从 1 起连续递增,且每条的 `from`
-/// 是上一条的 `to`。监听器按 seq 让出不同轮数,派发若不按提交顺序串行,
-/// 后提交的事件会超车。
+/// 事件按提交顺序到达(调用按提交顺序开始)——到达序列里 seq 从 1 起
+/// 连续递增,且每条的 `from` 是上一条的 `to`。监听器按 seq 让出不同轮数,
+/// 各次调用因此重叠;派发若不按提交顺序开始,后提交的事件会超车。
 ///
 /// guarantee: core/D24
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -178,8 +182,8 @@ async fn status_events_arrive_in_commit_order_across_concurrent_fibers() {
 
 // ── D31 同类型 emit 按发出顺序投递 ────────────────────────────────
 
-/// 多个任务在多个工作线程上同时 emit 同一类型:每个发射者的事件按它
-/// 发出的顺序到达。监听器按序号让出不同轮数,链若分叉,同一发射者的
+/// 多个任务在多个工作线程上同时 emit 同一名字:每个发射者的事件按它
+/// 发出的顺序开始。监听器按序号让出不同轮数,链若分叉,同一发射者的
 /// 后一个事件会超车。
 ///
 /// guarantee: core/D31
@@ -291,9 +295,9 @@ async fn emit_after_listener_panic_is_still_delivered() {
     assert!(sink_rx.try_recv().is_err(), "panic 被重复报告");
 }
 
-/// 监听器在处理中再 emit 同一类型:新事件排在已发出的事件之后,不会
+/// 监听器在处理中再 emit 同一名字:新事件排在已发出的事件之后,不会
 /// 插队,也不会死锁。前三个事件在任何监听器运行之前已经发出,所以
-/// 期望的到达顺序是 0、1、2,然后才是监听器发出的 100、101。
+/// 期望的开始顺序是 0、1、2,然后才是监听器发出的 100、101。
 ///
 /// guarantee: core/D31
 #[tokio::test]
@@ -307,7 +311,7 @@ async fn emit_inside_listener_goes_to_the_back() {
             &root,
             &key,
             slow(
-                // 事件 0 的监听器最慢:链若分叉,1、2 会先到
+                // 事件 0 的调用最慢(#464 起它不再挡住 1、2,只是开始在前)
                 |e: &Seq| if e.n == 0 { 8 } else { 0 },
                 move |ctx: &Ctx, e: &Seq| {
                     if e.n == 0 {
@@ -331,7 +335,6 @@ async fn emit_inside_listener_goes_to_the_back() {
 
 // ── D29 事件不按 isolate 过滤 ─────────────────────────────────────
 
-#[derive(Debug)]
 struct Scoped;
 
 /// 在装载时注册一个监听器的插件:收到的事件连同自己的名字一起发出。
@@ -365,7 +368,8 @@ impl Plugin for ListenIn {
 
 /// isolate 只隔离注册表,不隔离事件:在两个不同 isolate 里装载的插件、
 /// 以及根上的监听器,收到从根、从任一 isolate 发出的全部事件。这是
-/// 明确的"不做"(作用域事件由用户自建子总线);本测试防止有人加上过滤。
+/// 明确的"不做"(作用域事件用 `Ctx::mark_scope`,与 isolate 无关);本测试
+/// 防止有人加上过滤。
 ///
 /// guarantee: core/D29
 #[tokio::test]
@@ -408,8 +412,9 @@ async fn events_are_not_filtered_by_isolate() {
             .emit(ctx, &EventKey::of(), seq(emitter, 0))
             .unwrap();
     }
-    // 栅栏:根上的监听器最先注册,它收到栅栏时,之前的派发都已结束
-    // (同类型串行,D31)。之后只看收到了什么,少收时立即失败。
+    // 栅栏:根上的监听器最先注册,它收到栅栏时,之前各次 emit 的调用都
+    // 已开始,而监听器在开始时就记录(同名按顺序开始,D31)。之后只看
+    // 收到了什么,少收时立即失败。
     const FENCE: usize = 99;
     root.events()
         .emit(&root, &EventKey::of(), seq(FENCE, 0))
@@ -440,7 +445,7 @@ async fn events_are_not_filtered_by_isolate() {
 
 // ── 异步 waterfall 回调 panic 传给调用者 ──────────────────────────
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Wf;
 
 impl Event for Wf {
@@ -448,30 +453,30 @@ impl Event for Wf {
     type Value = u32;
 }
 
-/// 中间件:调用 next,结果加一。
+/// 中间件:调用 next,结果加一(next 没有结果时当 0)。
 struct AddOne;
 
-impl WaterfallListener<Wf> for AddOne {
+impl Listener<Wf> for AddOne {
     fn call<'a>(
         &'a self,
         _ctx: &'a Ctx,
         _e: &'a Wf,
-        next: Next<'a, Wf>,
-    ) -> BoxFuture<'a, Result<u32, CordisError>> {
-        Box::pin(async move { Ok(next.call().await? + 1) })
+        call: Call<'a, u32>,
+    ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
+        Box::pin(async move { Ok(Some(call.next().await?.unwrap_or(0) + 1)) })
     }
 }
 
 /// 让出一轮后 panic 的中间件(panic 发生在 poll 中,不在构造 future 时)。
 struct PanicsAfterYield;
 
-impl WaterfallListener<Wf> for PanicsAfterYield {
+impl Listener<Wf> for PanicsAfterYield {
     fn call<'a>(
         &'a self,
         _ctx: &'a Ctx,
         _e: &'a Wf,
-        _next: Next<'a, Wf>,
-    ) -> BoxFuture<'a, Result<u32, CordisError>> {
+        _call: Call<'a, u32>,
+    ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
         Box::pin(async move {
             tokio::task::yield_now().await;
             panic!("async waterfall listener panic")
@@ -482,52 +487,56 @@ impl WaterfallListener<Wf> for PanicsAfterYield {
 struct Zero;
 
 impl Terminal<Wf> for Zero {
-    fn call<'a>(&'a self, _ctx: &'a Ctx, _e: &'a Wf) -> BoxFuture<'a, Result<u32, CordisError>> {
-        Box::pin(async { Ok(0) })
+    fn call<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        _e: &'a Wf,
+    ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
+        Box::pin(async { Ok(Some(0)) })
     }
 }
 
 struct PanicTerminal;
 
 impl Terminal<Wf> for PanicTerminal {
-    fn call<'a>(&'a self, _ctx: &'a Ctx, _e: &'a Wf) -> BoxFuture<'a, Result<u32, CordisError>> {
+    fn call<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        _e: &'a Wf,
+    ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
         Box::pin(async { panic!("async waterfall terminal panic") })
     }
 }
 
-/// 在独立任务里调用 waterfall,返回该任务的 panic 信息(没有 panic 时
-/// 测试失败,并给出 waterfall 的返回值)。
+/// 调用 waterfall,返回 panic 转成的错误信息(waterfall 没有失败时测试
+/// 失败,并给出它的返回值)。
 async fn waterfall_panic(root: &Ctx, terminal: impl Terminal<Wf>) -> String {
-    let root = root.clone();
-    let caller = tokio::spawn(async move {
+    let result = within(
+        "waterfall caller",
         root.events()
-            .waterfall(&root, &EventKey::of(), &Wf, terminal)
-            .await
-    });
-    match within("waterfall caller", caller).await {
-        Ok(result) => panic!("panic did not reach the caller; waterfall returned {result:?}"),
-        Err(join) => {
-            let payload = join.into_panic();
-            payload
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_default()
-        }
+            .waterfall(root, &EventKey::of(), &Wf, terminal),
+    )
+    .await;
+    match result {
+        Err(CordisError::PluginFailed(message)) => message.to_string(),
+        other => panic!("panic did not reach the caller as an error; waterfall returned {other:?}"),
     }
 }
 
-/// 异步 waterfall 里的监听器或终态续延 panic:panic 原样传给调用
-/// waterfall 的任务(穿过外层中间件),不被转换成错误,也不被吞掉。
-/// 同步版见 typed_dispatch.rs(`SyncEventPanicked`)。出处:design-rust-port
-/// §八 第 4 条"waterfall 监听器 panic 向分发者传播";登记表记在 D30 的备注里。
+/// 异步 waterfall 里的监听器或终态续延 panic:传给调用 waterfall 的一方
+/// (穿过外层中间件),不被吞掉。出处:design-rust-port §八 第 4 条
+/// "waterfall 监听器 panic 向分发者传播";登记表记在 D30 的备注里。
+///
+/// #464 起内核捕获每个监听器和终态的 panic,调用方收到的是
+/// `PluginFailed(<panic 信息>)` 错误,不再是原样的 panic(调用方任务不再
+/// panic)。
 ///
 /// guarantee: core/D30
 #[tokio::test]
 async fn async_waterfall_panic_reaches_the_caller() {
     let root = Ctx::root().unwrap();
     let key = EventKey::<Wf>::of();
-    root.events().on_waterfall(&root, &key, AddOne).unwrap();
+    root.events().on(&root, &key, AddOne).unwrap();
 
     // 没有 panic 时链正常:0 + 1
     assert_eq!(
@@ -535,7 +544,7 @@ async fn async_waterfall_panic_reaches_the_caller() {
             .waterfall(&root, &key, &Wf, Zero)
             .await
             .unwrap(),
-        1
+        Some(1)
     );
 
     // 终态续延 panic,穿过外层中间件
@@ -545,10 +554,7 @@ async fn async_waterfall_panic_reaches_the_caller() {
     );
 
     // 内层监听器 panic,穿过外层中间件
-    let inner = root
-        .events()
-        .on_waterfall(&root, &key, PanicsAfterYield)
-        .unwrap();
+    let inner = root.events().on(&root, &key, PanicsAfterYield).unwrap();
     assert_eq!(
         waterfall_panic(&root, Zero).await,
         "async waterfall listener panic"

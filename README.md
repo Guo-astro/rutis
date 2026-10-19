@@ -169,7 +169,7 @@ rutis is a small application operating system. The core is the kernel; everythin
 
 | Operating system | rutis |
 | --- | --- |
-| Kernel: small, stable, rarely changed | The `rutis` core, depending only on tokio, tokio-util and thiserror |
+| Kernel: small, stable, rarely changed | The `rutis` core, depending only on tokio, tokio-util, thiserror, serde and serde_json |
 | Processes | Plugins; language runtimes, remote nodes and dylibs are plugins too |
 | System calls | Services, provided and used by name or by type |
 | Drivers | Language runtimes, node links, Cordis mounts |
@@ -208,12 +208,12 @@ stateDiagram-v2
     Disposed --> [*]
 ```
 
-Services are registered by type in Rust and by name across languages. The event bus dispatches in four ways: emit, parallel, serial and waterfall. `rutis-loader` describes the plugins to run as layered configuration and keeps reconciling the running system toward it. Hosts link over WebSocket and TLS to share services, run plugins on another machine, forward events and reconnect after a drop.
+Services are registered by type in Rust and by name across languages. Events are one logical bus across languages, processes and machines, dispatched in five ways (emit, parallel, serial, waterfall and synchronous bail) that mean the same wherever the listeners are. `rutis-loader` describes the plugins to run as layered configuration and keeps reconciling the running system toward it. Hosts link over WebSocket and TLS to share services, run plugins on another machine, share events and reconnect after a drop.
 
 ## Trade-offs
 
 - **Processes and latency**: each language needs at least one process, and a synchronous cross-language call takes about 30 µs (measured on the Node side). Hot paths belong in Rust or in one runtime.
-- **Weaker semantics across a boundary**: events become notifications and waterfalls are not forwarded; what cannot cross a boundary is a [written rule](docs/requirements-protocol-plugins.en.md), not a silent degradation.
+- **Waiting across a boundary has limits**: events and services keep their semantics across processes and machines ([unified events](docs/design-events-2026-10-18.en.md)), but a synchronous wait cannot form a cycle or outlive the far end: a synchronous call or `bail` that would is refused with an error. What cannot cross a boundary is a [written rule](docs/requirements-protocol-plugins.en.md), not a silent degradation.
 - **Shared failure**: plugins in one runtime share its process. Isolation means more runtime instances.
 
 The [design philosophy](docs/design-philosophy.en.md) explains these choices, and how rutis differs from Cordis.
@@ -256,7 +256,7 @@ All of these form a release train: released together at one version, currently 0
 
 rutis is at 0.x and its API is still evolving. Breaking changes are listed in the release notes and come with a migration guide.
 
-- **The core** is pure Rust with tokio, tokio-util and thiserror as its only dependencies; it needs Rust 1.88 or later.
+- **The core** is pure Rust with tokio, tokio-util, thiserror, serde and serde_json as its only dependencies; it needs Rust 1.88 or later.
 - **Language runtimes and rutis-host** (Node, Bun, Python and Go rows, remote runtimes, shared services, peers, Cordis mounts) run on Linux, macOS and Windows x64 (MSVC); they need Node 22+, Bun 1.4+ or Python 3.10+; Go plugins are compiled binaries, built with Go 1.24+. The Bun runtime is not tested on Windows yet.
 - **dylib plugins** load on Linux, macOS and Windows x64 (MSVC).
 

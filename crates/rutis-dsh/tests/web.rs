@@ -25,6 +25,7 @@ impl<E: Event + Clone> Listener<E> for First<E> {
         &'a self,
         _: &'a Ctx,
         event: &'a E,
+        _: rutis::Call<'a, E::Value>,
     ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
         if let Some(sender) = self.0.lock().unwrap().take() {
             let _ = sender.send(event.clone());
@@ -86,13 +87,13 @@ async fn the_web_ui_starts_reports_failures_and_stops_with_its_mount() {
     // Starts: the profile is up with the aimux route, and the UI answers
     // (without the startup token it refuses the request).
     let ctx = Ctx::root().unwrap();
-    let ready = first::<web::RutisDshReady>(&ctx);
+    let ready = first::<rutis_dsh::events::Ready>(&ctx);
     start(&ctx, "rutis-web", port, workspace.path()).await;
     let ready = DSH_START.within("dsh started", ready).await.unwrap();
     assert!(
-        ready.providers.iter().any(|provider| provider == "aimux"),
+        ready.0.iter().any(|provider| provider == "aimux"),
         "{:?}",
-        ready.providers
+        ready.0
     );
     assert!(home.path().join("profiles/rutis-web").is_dir());
     let line = status(port).await.expect("the web UI listens");
@@ -100,17 +101,17 @@ async fn the_web_ui_starts_reports_failures_and_stops_with_its_mount() {
 
     // A second profile on the same port fails to start, and says why.
     let busy = Ctx::root().unwrap();
-    let failed = first::<web::RutisDshStartupFailed>(&busy);
+    let failed = first::<rutis_dsh::events::StartupFailed>(&busy);
     start(&busy, "rutis-web-busy", port, workspace.path()).await;
     let failed = DSH_START.within("failure reported", failed).await.unwrap();
-    assert!(failed.message.contains("EADDRINUSE"), "{}", failed.message);
+    assert!(failed.0.contains("EADDRINUSE"), "{}", failed.0);
     busy.shutdown().await.unwrap();
 
     // An exit request while starting (help, a usage error) reaches rutis
     // with its code, and the mount then stops promptly.
     for (arg, code) in [("--help", 0.0), ("--no-such-option", 1.0)] {
         let quitting = Ctx::root().unwrap();
-        let exit = first::<web::RutisDshExit>(&quitting);
+        let exit = first::<rutis_dsh::events::Exit>(&quitting);
         rutis_dsh::provide_web_aimux(&quitting, Arc::new(Scripted::default())).unwrap();
         let view = quitting.plugin(web::Plugin::new(web::Config {
             profile: Some("rutis-web-quit".into()),
@@ -119,7 +120,7 @@ async fn the_web_ui_starts_reports_failures_and_stops_with_its_mount() {
         }));
         (&view).await.unwrap();
         let exit = DSH_START.within("exit requested", exit).await.unwrap();
-        assert_eq!(exit.code, code, "{arg}");
+        assert_eq!(exit.0, code, "{arg}");
         // Without the launcher disposing the tree at once, the startup it
         // waits for never comes and the mount never stops: a hang, not a
         // slow stop.

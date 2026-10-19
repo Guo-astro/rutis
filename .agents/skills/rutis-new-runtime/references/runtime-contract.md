@@ -49,7 +49,7 @@ The first control operation from rutis. Reply:
 ```json
 {
   "services": {},
-  "features": ["rows.v2", "hosts", "leaf", "scopes", "events"],
+  "features": ["rows.v2", "hosts", "leaf", "scopes"],
   "implementation": { "name": "<package name>", "version": "<SDK version>" },
   "engine": { "name": "<language>", "version": "<language / VM version>" }
 }
@@ -110,7 +110,7 @@ Full specification: https://github.com/arcships/rutis/blob/main/docs/design-even
 | you → host | `events.on [{ id, name, row, plugin, kind, prepend, global }]` | Register a listener when a plugin calls `ctx.on`. `id`: a string unique in the session, never reused. `kind`: `"sync"` (known synchronous), `"async"` (async function / `async def`), `"any"` (known only from what it returns). Never register `internal/*` |
 | you → host | `events.off [[id, …]]` | A listener's disposer was called |
 | host → you | `events.elsewhere [{ add, remove, addPrefixes, removePrefixes }]` | Names / prefixes that have listeners outside your process: the full set first (before `mount`), then differences. Treat it as empty when the session ends |
-| you → host | `events.dispatch [{ row, name, mode, args, filter?, terminal? }]` | An emission that is not on the fast path. `mode`: `emit` / `parallel` / `serial` / `waterfall` / `bail` (`bail` is a synchronous call). `filter`: a function reference to a selector taking the list of descriptors and returning a list of booleans, running the plugin's filter on each in your process. `terminal`: `waterfall`'s innermost function, called with the event arguments |
+| you → host | `events.dispatch [{ row, name, mode, args, filter?, terminal? }]` | An emission that is not on the fast path. `mode`: `emit` / `parallel` / `serial` / `waterfall` / `bail` (`bail` is a synchronous call). `filter`: a function reference to a selector taking the list of descriptors and returning a list of booleans, running the plugin's filter on each in your process; the descriptors of your own listeners also carry `listener`, your `events.on` id: find the listener by it (never by the other fields: two copies of a row can have equal descriptors) and remove it before calling the plugin's filter. `terminal`: `waterfall`'s innermost function, called with the event arguments |
 | host → you | `events.call [{ listener, dispatch, own, name, mode, args, next?, signal }]` | Run one listener: call it with `args`, plus `next` as the last argument in `waterfall` / `waterfall-sync`; answer its return value as is, or `throw` its error. In `emit` mode answer `undefined` after it finished and report a failure yourself (below). An unknown or withdrawn `listener`: `throw` `BindingError` `listener <id> of <name> is withdrawn` |
 
 **Fast path**: dispatch an emission of `name` in your own process when `name` is not in elsewhere, no prefix in it matches, and (for `emit`) no earlier `emit` of `name` you sent through the host is still unanswered. Otherwise send `events.dispatch`.
@@ -127,11 +127,17 @@ Full specification: https://github.com/arcships/rutis/blob/main/docs/design-even
 
 "No result" is `undefined` / `null` / `None` / `nil` / `false`; anything else is a result. Start `emit` invocations in arrival order (one execution unit per call: queue them per listener and run them one after another). Refuse emitting `rutis/*` synchronously with `ReservedEvent` (`rutis/* events are emitted by rutis only: <name>`); `rutis/*` can be listened to.
 
-**Scope**: each row's chain arrives as the seventh `rows.load` argument `{ scope: [{ id, group }, …] }` (root `[]`); mount-mode plugins get `mount`'s `scope`. Your emissions name their `row`; the host never takes a scope from you.
+**Scope**: each row's chain arrives as the seventh `rows.load` argument `{ scope: [{ id, group }, …], id }` (root `[]`); mount-mode plugins get `mount`'s `scope`. `mount` also carries `runtime`, your runtime's name as the host's descriptors give it: use it in the descriptors of your own listeners on the fast path, so a filter sees the same on both paths. Your emissions name their `row` (the key); the host never takes a scope from you. `id` is the row's id in the configuration: descriptors (`row`) and every reported line call the row by it, never by its key (the key without an `id`).
 
 **Filter API**: Cordis plugins use `thisArg[Context.filter]`, called with the real `Context` for listeners in your process and `{ rutis: descriptor }` for others; give every Context a read-only `ctx.rutis` (its descriptor). Other plugins: `ctx.filter(predicate)` returns an emitter with the five methods. A descriptor is `{ name, prefix, plugin, row, runtime, node, scope, global }`.
 
 **Unload and disconnection**: the host withdraws a row's listeners when it sends `rows.unload` (or gets `rows.ended`); refuse the row's `events.call` from then on, withdraw provides, signal cancellation to its running listeners (Go context, Python task cancellation, JavaScript the row's `ctx.signal`) and wait for them at most `RUTIS_SHUTDOWN_TIMEOUT` (then write `rutis: listeners of row <row> still running after <s>s; unloading anyway`), then run cleanups. A `cancel` for an `events.call` aborts its `signal`. When the session ends, unload every row as before.
+
+**Reporting** (failures nobody waits for, one stderr line each, §5.6 and §11): `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>` (an `emit` listener), `rutis: filter of <name> from row <row> failed: …` (the filter of an `emit`), `rutis: emit of <name> from row <row> failed: …` (an `events.dispatch` in `emit` mode refused or unanswered), `rutis: registration of listener of <name> in row <row> failed: …` (an `events.on` refused outside a row load; during a load, fail the load instead).
+
+**Errors** (§11; names and messages exact): `AggregateError` (`<n> listeners of <name> failed`, children in registration order, encoded as JavaScript encodes an `AggregateError`), `AsyncListener`, `WaterfallNext`, `ReservedEvent`, `SyncWaitCycle`, `BindingError`. Refuse registering `internal/*` (the host answers `BindingError` `event <name> is internal to its runtime`).
+
+**An old host**: when the host's `hello` lacks `events-v2`, end the session right after the handshake, write `rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping` and exit with status 1 (a dialing runtime does not retry).
 
 **API per language** (§12.2): `on`, `emit`, `parallel`, `serial`, `waterfall` (terminal last), `bail`, `filter`, in the language's native style; a `waterfall` listener receives `next` as its last argument. Plugin API version 3.
 
@@ -140,7 +146,7 @@ Full specification: https://github.com/arcships/rutis/blob/main/docs/design-even
 - The executable answers `--rutis-manifest` by printing its manifest to stdout and exiting (no channel, no `apply`):
 
   ```json
-  { "manifest": 1, "sdk": "<version>", "pluginApi": 2, "runtime": "rutis-<language>-runtime:1",
+  { "manifest": 1, "sdk": "<version>", "pluginApi": 3, "runtime": "rutis-<language>-runtime:1",
     "platform": "<os>/<arch>", "plugins": { "<name>": { "config": {}, "inject": [], "provides": {}, "version": null } } }
   ```
 

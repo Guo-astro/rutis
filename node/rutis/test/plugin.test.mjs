@@ -77,8 +77,8 @@ test('a plugin that needs a newer plugin API is refused', async () => {
   await assert.rejects(load(future, { services: { llm: {} } }), /needs plugin API/)
 })
 
-// guarantee: sdk/leaf-events (host emission waits; aggregate errors)
-test('host emission waits for every listener and aggregates failures', async () => {
+// guarantee: sdk/leaf-events (parallel waits; aggregate errors in registration order)
+test('parallel from the test waits for every listener and aggregates failures', async () => {
   const gate = Promise.withResolvers()
   const payload = { n: 1 }
   const t = await load(definePlugin({
@@ -92,9 +92,9 @@ test('host emission waits for every listener and aggregates failures', async () 
         throw new RangeError('async failure')
       })
     },
-  }), { emits: ['tick'] })
+  }))
   let settled = false
-  const done = t.emit('tick', payload)
+  const done = t.parallel('tick', payload)
     .finally(() => { settled = true })
     .catch(error => error)
   assert.equal(payload.n, 1, 'event data is copied across the boundary')
@@ -128,16 +128,17 @@ test('duplicate listeners dispose independently and failed unload clears listene
       ctx.on('tick', handler)
       ctx.effect(() => { cleaned.push('last') })
     },
-  }), { emits: ['tick'] })
-  await t.emit('tick', 1)
+  }))
+  await t.parallel('tick', 1)
   assert.deepEqual(received, [1, 1])
   off()
   off()
   assert.equal(context.emit('tick', 2), undefined)
   assert.deepEqual(received, [1, 1, 2], 'the other registration remains active')
   await assert.rejects(t.unload(), /cleanup failed/)
-  context.emit('tick', 3)
-  context.emit('early', 4)
+  // Unloaded, the row emits nothing, as on the real runtimes.
+  assert.throws(() => context.emit('tick', 3), { name: 'BindingError', message: 'row row1 is not loaded in this runtime' })
+  await t.host.parallel('early', 4)
   assert.deepEqual(received, [1, 1, 2], 'even the listener before the failed cleanup is removed')
   assert.deepEqual(cleaned, ['last', 'middle', 'first'], 'manual off skips no cleanup')
 })
@@ -149,15 +150,19 @@ test('internal/* events are refused, as on the real runtimes', async () => {
   const t = await load(plugin)
   assert.throws(() => context.on('internal/dispatch', () => {}), /event internal\/dispatch is internal to the runtime/)
   assert.throws(() => context.emit('internal/service'), /event internal\/service is internal to the runtime/)
-  await assert.rejects(t.emit('internal/status'), /event internal\/status is internal to the runtime/)
+  assert.throws(() => t.emit('internal/status'), /event internal\/status is internal to the runtime/)
   // A non-string name is not Cordis's `this` argument: `emit(null, 'internal/service')` does not dispatch.
   assert.throws(() => context.on(null, () => {}), TypeError)
   assert.throws(() => context.emit(null, 'internal/service'), TypeError)
   assert.throws(() => context.emit({}, 'internal/service'), TypeError)
-  await assert.rejects(t.emit(null, 'internal/status'), TypeError)
+  assert.throws(() => t.emit(null, 'internal/status'), TypeError)
+  // rutis/* can be listened to, never emitted (ReservedEvent).
+  assert.ok(context.on('rutis/row', () => {}))
+  assert.throws(() => context.emit('rutis/row', {}), { name: 'ReservedEvent', message: 'rutis/* events are emitted by rutis only: rutis/row' })
+  assert.throws(() => t.serial('rutis/row'), { name: 'ReservedEvent' })
   await t.unload()
-  // The sentence of the runtimes' mount (`Process::mount`), naming every internal event.
-  await assert.rejects(load(plugin, { emits: ['tick', 'internal/service', 'internal/status'] }), {
-    message: 'framework-internal events do not cross the boundary (mount emits): internal/service, internal/status',
+  // 0.12's `emits` is gone (#464): listeners register themselves.
+  await assert.rejects(load(plugin, { emits: ['tick'] }), {
+    message: 'the config field emits was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)',
   })
 })

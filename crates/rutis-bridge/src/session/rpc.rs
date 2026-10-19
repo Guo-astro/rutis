@@ -146,6 +146,18 @@ impl Value {
     pub fn future(future: impl Future<Output = Reply> + Send + 'static) -> Self {
         Self::future_inner(future, true)
     }
+    /// [`Value::future`] that stops (is dropped) when every wait for it
+    /// is given up before it finished: a far end that cancels its `await`
+    /// cancels the work, not only its wait for it.
+    pub fn cancellable_future(future: impl Future<Output = Reply> + Send + 'static) -> Self {
+        let value = Self::future_inner(future, true);
+        if let Self::Reference(Reference(ReferenceInner::Local(object))) = &value {
+            if let Body::Future(state) = &object.body {
+                state.future.lock().unwrap().cancellable = true;
+            }
+        }
+        value
+    }
     #[cfg(all(unix, feature = "cordis"))]
     pub(crate) fn control_future(future: impl Future<Output = Reply> + Send + 'static) -> Self {
         Self::future_inner(future, false)
@@ -166,6 +178,8 @@ impl Value {
                 future: Mutex::new(FutureState {
                     pending: Some(Box::pin(future)),
                     task: None,
+                    cancellable: false,
+                    waiters: 0,
                 }),
                 result: watch::channel(None).0,
             }),
@@ -376,6 +390,25 @@ struct AsyncResult {
 struct FutureState {
     pending: Option<BoxFuture<'static, Reply>>,
     task: Option<tokio::task::AbortHandle>,
+    /// Aborted when its last waiter gives up ([`Value::cancellable_future`]).
+    cancellable: bool,
+    /// The waits under way.
+    waiters: usize,
+}
+
+/// One wait for a future: when the last one is given up before the result,
+/// a cancellable future's task is aborted.
+struct Waiter<'a>(&'a AsyncResult);
+impl Drop for Waiter<'_> {
+    fn drop(&mut self) {
+        let mut state = self.0.future.lock().unwrap();
+        state.waiters -= 1;
+        if state.waiters == 0 && state.cancellable && self.0.result.borrow().is_none() {
+            if let Some(task) = state.task.take() {
+                task.abort();
+            }
+        }
+    }
 }
 impl Drop for AsyncResult {
     fn drop(&mut self) {
@@ -453,7 +486,9 @@ impl Object {
                     }));
                 pending.task = Some(task.abort_handle());
             }
+            pending.waiters += 1;
         }
+        let _waiter = Waiter(state);
         let mut result = state.result.subscribe();
         loop {
             if let Some(result) = result.borrow().clone() {
@@ -493,11 +528,43 @@ fn panic_error(panic: Box<dyn std::any::Any + Send>) -> Error {
 tokio::task_local! { static ASYNC_PATH: Vec<String>; }
 thread_local! { static SYNC_PATH: RefCell<Option<Vec<String>>> = const { RefCell::new(None) }; }
 thread_local! { static CALLER: RefCell<Option<Connection>> = const { RefCell::new(None) }; }
+thread_local! {
+    /// The invocation this thread runs: its session's tag and its sequence.
+    static INVOKING: RefCell<Option<(String, u64)>> = const { RefCell::new(None) };
+}
+
+/// The invocation of a host service this thread is running, as its
+/// session's tag and its sequence in that session: invocations of one
+/// session were sent in sequence order, whatever order they run in.
+#[cfg_attr(not(feature = "testing"), allow(dead_code))]
+pub(crate) fn invocation() -> Option<(String, u64)> {
+    INVOKING.with(|invoking| invoking.borrow().clone())
+}
 /// The session whose call (an `invoke`, or a call of a function this side
 /// exported) is being dispatched on this thread, if any. Code that calls
 /// another session on its behalf passes it to [`Connection::forward`].
 pub fn caller() -> Option<Connection> {
     CALLER.with(|caller| caller.borrow().clone())
+}
+/// Run `call` outside any invocation chain: what it sends is not part of
+/// the call being handled here (a notification another session's call
+/// happens to trigger), so it carries no chain of that session.
+pub(crate) fn unchained<R>(call: impl FnOnce() -> R) -> R {
+    let _path = PathGuard::enter(Vec::new());
+    call()
+}
+/// Poll `future` with `source` as the [`caller`]: what it calls in other
+/// sessions on that session's behalf is forwarded from it (its chain
+/// rebased), however long after the call it runs.
+pub(crate) async fn with_caller<F: Future>(source: Connection, future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    std::future::poll_fn(|cx| {
+        let previous = CALLER.with(|caller| caller.replace(Some(source.clone())));
+        let polled = future.as_mut().poll(cx);
+        CALLER.with(|caller| caller.replace(previous));
+        polled
+    })
+    .await
 }
 thread_local! { static PUMPING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 /// Marks a thread that runs an invocation pumped by its own synchronous
@@ -615,11 +682,18 @@ const VALUE_CAPABILITIES: [&str; 10] = [
     "value-decimal",
     "value-uuid",
 ];
+/// The event protocol of rutis 0.13 (#464): mandatory, declared by every
+/// endpoint in both formats; a far end that does not declare it is refused
+/// right after the handshake (`docs/design-events-protocol-2026-10-18.md`
+/// §2).
+pub const EVENTS_CAPABILITY: &str = "events-v2";
+
 /// What this side declares in a compat-format handshake: it marks its
 /// synchronous waits, and takes such marks (#228); it takes every tagged
-/// value (#308).
-const COMPAT_CAPABILITIES: [&str; 11] = [
+/// value (#308); it speaks the event protocol of 0.13 (#464).
+const COMPAT_CAPABILITIES: [&str; 12] = [
     "sync-wait",
+    EVENTS_CAPABILITY,
     "value-instant",
     "value-datetime",
     "value-date",
@@ -633,8 +707,9 @@ const COMPAT_CAPABILITIES: [&str; 11] = [
 ];
 /// What a compat-format handshake may declare that means anything here; any
 /// other capability there is ignored, as before the format had any.
-const COMPAT_DECLARED: [&str; 13] = [
+const COMPAT_DECLARED: [&str; 14] = [
     "sync-wait",
+    EVENTS_CAPABILITY,
     "sync-stack",
     "reentrant-sync",
     "value-instant",
@@ -861,6 +936,7 @@ impl Endpoint {
                 "reentrant-sync",
                 "forwarding",
                 "sync-wait",
+                EVENTS_CAPABILITY,
             ]
             .into_iter()
             .chain(VALUE_CAPABILITIES)
@@ -903,6 +979,49 @@ fn version_mismatch(far: u32, local: u32, implementation: Option<&Implementation
     }
 }
 
+/// Why a far end that does not declare [`EVENTS_CAPABILITY`] is refused
+/// (`docs/design-events-protocol-2026-10-18.md` §2.2): `far` names it.
+fn without_events(far: &str) -> String {
+    format!(
+        "the far end ({far}) does not declare events-v2 (the event protocol of rutis 0.13): \
+         upgrade it to rutis 0.13 or later"
+    )
+}
+
+/// Whether the control operation `method` is handled on the reader, before
+/// the next frame (events protocol §4.1, §5.5): the event table changes
+/// (`events.on`, `events.off`, `events.elsewhere`), and the `emit`
+/// dispatches and invocations, which start in arrival order.
+fn inline_event_op(method: &str, args: &Value) -> bool {
+    match method {
+        "events.on" | "events.off" | "events.elsewhere" => true,
+        "events.dispatch" | "events.call" => {
+            let first = match args {
+                Value::List(items) => items.first(),
+                _ => None,
+            };
+            let mode = match first {
+                Some(Value::Record(fields)) => match fields.get("mode") {
+                    Some(Value::Data(Json::String(mode))) => Some(mode.as_str()),
+                    _ => None,
+                },
+                Some(Value::Data(Json::Object(fields))) => {
+                    fields.get("mode").and_then(Json::as_str)
+                }
+                _ => match args {
+                    Value::Data(Json::Array(items)) => items
+                        .first()
+                        .and_then(|first| first.get("mode"))
+                        .and_then(Json::as_str),
+                    _ => None,
+                },
+            };
+            mode == Some("emit")
+        }
+        _ => false,
+    }
+}
+
 /// One session's state. The session is reached through [`Connection`];
 /// the channel underneath is any [`Channel`].
 struct SessionState {
@@ -930,6 +1049,19 @@ struct SessionState {
     ready: watch::Sender<Option<Result<(), Error>>>,
     ended: watch::Sender<bool>,
     activity: Arc<Activity>,
+    /// The far end's `events.*` operations, run one after another in
+    /// arrival order by one task, never on the reader ([`Ordered`]).
+    ordered: Mutex<Ordered>,
+}
+
+/// The event operations of a session waiting for their turn (events
+/// protocol §4.1, §5.5): each is the id of an admitted call, and whether it
+/// runs in its turn (table changes, `emit`) or only starts there, as a task
+/// of its own (the other modes, which wait for results).
+#[derive(Default)]
+struct Ordered {
+    busy: bool,
+    queue: std::collections::VecDeque<(String, bool)>,
 }
 impl Drop for SessionState {
     fn drop(&mut self) {
@@ -939,7 +1071,23 @@ impl Drop for SessionState {
 
 #[derive(Clone)]
 pub struct Connection(Arc<SessionState>);
+
+/// A [`Connection`] that does not keep its session alive: for what the
+/// session's own dispatch holds (a cycle otherwise).
+#[derive(Clone)]
+pub struct WeakConnection(Weak<SessionState>);
+impl WeakConnection {
+    /// The session, while something else keeps it.
+    pub fn upgrade(&self) -> Option<Connection> {
+        self.0.upgrade().map(Connection)
+    }
+}
+
 impl Connection {
+    /// This session, held weakly.
+    pub fn downgrade(&self) -> WeakConnection {
+        WeakConnection(Arc::downgrade(&self.0))
+    }
     /// Start a session on `channel`: sends `hello` and reads frames on a
     /// thread of its own. When the channel ends, the session closes with
     /// `peer disconnected` (a normal end) or the channel's reason.
@@ -1008,6 +1156,7 @@ impl Connection {
                 count: Mutex::new(0),
                 changed: Notify::new(),
             }),
+            ordered: Mutex::default(),
         }));
         // Greet before reading (#239). A side that finds the far end's
         // greeting incompatible closes the channel; had it not greeted yet,
@@ -1210,6 +1359,63 @@ impl Connection {
     pub async fn invoke_async(&self, target: &str, method: &str, args: Value) -> Reply {
         self.request_async(Operation::Invoke(target.into(), method.into(), args))
             .await
+    }
+    /// [`Connection::invoke_async`], its frame written before this returns:
+    /// calls started one after another reach the far end in that order,
+    /// whenever their replies are awaited. Dropping the returned future
+    /// cancels the call (`cancel`), as dropping `invoke_async`'s does.
+    pub fn invoke_started(
+        &self,
+        target: &str,
+        method: &str,
+        args: Value,
+    ) -> Result<impl Future<Output = Reply> + Send + 'static, Error> {
+        let (sender, receiver) = oneshot::channel();
+        let id = self.send(
+            Operation::Invoke(target.into(), method.into(), args),
+            Waiting::Async(sender),
+        )?;
+        let guard = CancelOnDrop {
+            peer: Arc::downgrade(&self.0),
+            id,
+            done: false,
+        };
+        Ok(async move {
+            let mut guard = guard;
+            let result = receiver.await.map_err(transport);
+            guard.done = true;
+            result?
+        })
+    }
+    /// [`Connection::invoke_started`], settled: a future the far end answers
+    /// with is awaited too. Dropped before that, the call is cancelled,
+    /// also after the far end answered with its future (it is still
+    /// running it).
+    pub fn invoke_settled(
+        &self,
+        target: &str,
+        method: &str,
+        args: Value,
+    ) -> Result<impl Future<Output = Reply> + Send + 'static, Error> {
+        let (sender, receiver) = oneshot::channel();
+        let id = self.send(
+            Operation::Invoke(target.into(), method.into(), args),
+            Waiting::Async(sender),
+        )?;
+        let guard = CancelOnDrop {
+            peer: Arc::downgrade(&self.0),
+            id,
+            done: false,
+        };
+        Ok(async move {
+            let mut guard = guard;
+            let settled = match receiver.await.map_err(transport) {
+                Ok(Ok(value)) => settle(value).await,
+                Ok(Err(error)) | Err(error) => Err(error),
+            };
+            guard.done = true;
+            settled
+        })
     }
     pub async fn drain(&self) {
         loop {
@@ -1761,14 +1967,17 @@ impl Connection {
                     implementation.as_ref(),
                 )));
             }
-            if let Some(capabilities) = capabilities {
-                let _ = self.0.compat_capabilities.set(
-                    capabilities
-                        .into_iter()
-                        .filter(|c| COMPAT_DECLARED.contains(&c.as_str()))
-                        .collect(),
-                );
+            let capabilities: Vec<String> = capabilities
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|c| COMPAT_DECLARED.contains(&c.as_str()))
+                .collect();
+            if !capabilities.iter().any(|c| c == EVENTS_CAPABILITY) {
+                return Err(incompatible(without_events(
+                    "a runtime older than rutis 0.13",
+                )));
             }
+            let _ = self.0.compat_capabilities.set(capabilities);
             self.record_profile();
             return Ok(());
         };
@@ -1801,11 +2010,19 @@ impl Connection {
                 "the far end greeted as this endpoint ({endpoint})"
             ))));
         }
+        let capabilities = capabilities.unwrap_or_default();
+        if !capabilities.iter().any(|c| c == EVENTS_CAPABILITY) {
+            let named = match &implementation {
+                Some(Implementation { name, version }) => format!("{name} {version}"),
+                None => endpoint.to_string(),
+            };
+            return Err(incompatible(without_events(&named)));
+        }
         let _ = self.0.remote_prefix.set(format!("{endpoint}:"));
         let _ = self.0.greeting.set(Greeting {
             endpoint,
             implementation,
-            capabilities: capabilities.unwrap_or_default(),
+            capabilities,
         });
         self.record_profile();
         Ok(())
@@ -2071,6 +2288,18 @@ impl Connection {
             | Accepted::Get(object, _) => object.executor.handle.clone(),
             Accepted::Invoke(..) => self.0.executor.clone(),
         };
+        // Event operations run in frame order (events protocol §4.1, §5.5):
+        // table changes and emits each in its turn, the rest started in it.
+        // Never here: a reader runs no plugin code (a listener, an
+        // observer), which could wait for a frame only this reader reads.
+        let event_op = matches!(
+            &incoming.call,
+            Accepted::Invoke(target, method, _) if target.is_empty() && method.starts_with("events.")
+        );
+        let inline = matches!(
+            &incoming.call,
+            Accepted::Invoke(target, method, args) if target.is_empty() && inline_event_op(method, args)
+        );
         // Its caller waits for it synchronously: what it forwards to another
         // session is checked for wait cycles. Marked before anything can run
         // or answer it, and outside this session's locks (the table is the
@@ -2111,7 +2340,9 @@ impl Connection {
                 Err(id)
             }
         };
-        if let Err(id) = delivery {
+        if let (Err(id), true) = (&delivery, event_op) {
+            self.run_ordered(id.clone(), inline);
+        } else if let Err(id) = delivery {
             let peer = self.clone();
             handle.spawn(async move {
                 let incoming = peer.0.calls.lock().unwrap().incoming.remove(&id);
@@ -2125,6 +2356,50 @@ impl Connection {
             waiter.send(Message::Invoke(incoming)).map_err(transport)?;
         }
         Ok(())
+    }
+    /// Queue the admitted event operation `id` behind the session's others;
+    /// the session's ordered task takes it in its turn.
+    fn run_ordered(&self, id: String, inline: bool) {
+        {
+            let mut ordered = self.0.ordered.lock().unwrap();
+            ordered.queue.push_back((id, inline));
+            if ordered.busy {
+                return;
+            }
+            ordered.busy = true;
+        }
+        let peer = self.clone();
+        self.0.executor.spawn(async move { peer.drain_ordered() });
+    }
+    /// The session's ordered task: each queued event operation in arrival
+    /// order, run (`inline`) or started as a task, until none is left.
+    fn drain_ordered(&self) {
+        loop {
+            let (id, inline) = {
+                let mut ordered = self.0.ordered.lock().unwrap();
+                match ordered.queue.pop_front() {
+                    Some(next) => next,
+                    None => {
+                        ordered.busy = false;
+                        return;
+                    }
+                }
+            };
+            if inline {
+                let incoming = self.0.calls.lock().unwrap().incoming.remove(&id);
+                if let Some(incoming) = incoming {
+                    self.execute(incoming, false);
+                }
+            } else {
+                let peer = self.clone();
+                self.0.executor.spawn(async move {
+                    let incoming = peer.0.calls.lock().unwrap().incoming.remove(&id);
+                    if let Some(incoming) = incoming {
+                        peer.execute(incoming, false);
+                    }
+                });
+            }
+        }
     }
     fn execute(&self, incoming: Incoming, sync: bool) {
         if self.0.calls.lock().unwrap().closed.is_some() {
@@ -2210,9 +2485,15 @@ impl Connection {
             }
             Accepted::Invoke(target, method, args) => {
                 let previous = CALLER.with(|caller| caller.replace(Some(self.clone())));
+                let sequence = id
+                    .strip_prefix(self.remote_prefix())
+                    .and_then(|n| n.parse::<u64>().ok());
+                let invoking = sequence.map(|n| (self.0.tag.clone(), n));
+                let outer = INVOKING.with(|cell| cell.replace(invoking));
                 let result = crate::session::with_caller_row(None, || {
                     protected(|| self.0.dispatch.invoke(self, &target, &method, args))
                 });
+                INVOKING.with(|cell| cell.replace(outer));
                 CALLER.with(|caller| caller.replace(previous));
                 self.respond(id, result);
                 drop(_flight);

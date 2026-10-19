@@ -66,7 +66,7 @@ Rust's `waterfall_sync` works the same way as sync `bail`.
 **One listener table.** A listener is registered once and can be dispatched by any mode; the emitter chooses the mode (as Cordis already does). In `waterfall`, a listener gets `next` from its arguments. Rust drops the separate waterfall registration (`on_waterfall*`), and listeners become uniformly:
 
 ```rust
-ctx.events().on(&key, |ctx, event: &E, call: Call<E::Value>| async move {
+ctx.events().on(&ctx, &key, |ctx, event: &E, call: Call<E::Value>| async move {
     // call.mode(): which mode this is; call.next(..): waterfall only, an error in any other mode
     Ok(None) // or Ok(Some(v))
 })
@@ -80,8 +80,8 @@ Every language has all five modes, written the language's native way:
 
 | | Listen | Emit |
 | --- | --- | --- |
-| Rust | `ctx.events().on(key, ..)`, `on_sync` | `emit` / `parallel` / `serial` / `waterfall` / `bail_sync` / `waterfall_sync` |
-| Node / Bun (including Cordis plugins) | `ctx.on(name, fn)` | `ctx.emit` / `await ctx.parallel` / `await ctx.serial` / `ctx.waterfall` / `ctx.bail` (Cordis's own API) |
+| Rust | `ctx.events().on(&ctx, &key, ..)`, `on_sync` | `emit` / `parallel` / `serial` / `waterfall` / `bail_sync` / `waterfall_sync` |
+| Node (including Cordis plugins), Bun | `ctx.on(name, fn)` | `ctx.emit` / `await ctx.parallel` / `await ctx.serial` / `ctx.waterfall` / `ctx.bail` (for Cordis plugins, Cordis's own API; Bun has no Cordis, only leaf plugins) |
 | Python | `ctx.on(name, fn)` | `ctx.emit` / `await ctx.parallel` / `await ctx.serial` / `await ctx.waterfall` / `ctx.bail` |
 | Go | `ctx.On(name, fn)` | `ctx.Emit` / `ctx.Parallel` / `ctx.Serial` / `ctx.Waterfall` / `ctx.Bail` |
 
@@ -111,7 +111,7 @@ Framework information needed across languages is published as ordinary events un
 | `rutis/row` | row id, scope, state (Pending / Running / Failed / Stopped) |
 | `rutis/runtime` | runtime name, state (running / down + reason) |
 
-Plugins cannot emit `rutis/*`, only listen to it. The `internal/dispatch` and `internal/service` that Cordis plugins use in-process are unchanged; events arriving from elsewhere go through Cordis's own dispatch, so validation plugins on `internal/dispatch` still see them.
+Plugins cannot emit `rutis/*`, only listen to it. The `internal/dispatch` and `internal/service` that Cordis plugins use in-process are unchanged; before an event arriving from elsewhere calls a listener in this process, the Node runtime fires `internal/dispatch` once with rutis's mode name, so validation plugins on it still see such events.
 
 ### 8. Between nodes
 
@@ -135,7 +135,7 @@ Only sync waits: when sync `bail` / `waterfall_sync` waits on listeners elsewher
 Done in one go, merged together, released in one version:
 
 1. **Protocol specification first**: frame format, capabilities, listener descriptions, calls and cancellation, `rutis/*` events. Written into `design-protocol-plugins` and the runtime contract (`.agents/skills/rutis-new-runtime/references/runtime-contract.md`) as the common basis for every implementation.
-2. **Implemented together**: Rust core and bridge (logical bus, entries for listeners elsewhere, one listener table, filters, scope, fixing the inconsistencies); Node / Bun (registration through Cordis `internal/listener`, using Cordis's five modes directly); Python, Go (five modes, filters, waiting on unload, test tools); node links (`export` / `import` covering events).
+2. **Implemented together**: Rust core and bridge (logical bus, entries for listeners elsewhere, one listener table, filters, scope, fixing the inconsistencies); Node (Cordis plugins registering through Cordis `internal/listener`, using Cordis's five modes directly) and Bun; Python, Go (five modes, filters, waiting on unload, test tools); node links (`export` / `import` covering events).
 3. **One test suite**: an event expectation file that the real runtimes and test tools of all five languages are compared against; a matrix covering "emitter × listener location × mode × scope × filter × disconnect"; events added to the two-node and netem scenarios; the old boundary rule tests deleted or rewritten.
 4. **Documentation**: an "Events" section in each language guide; plugin API, migration notes, guarantee registry, agent skills.
 5. **Overall review, release gate rehearsal, release.**

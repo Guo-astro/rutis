@@ -1,19 +1,21 @@
 //! Node feature plugins between two applications in one process: services
-//! exported and imported, plugins hosted for a peer, events forwarded.
+//! exported and imported, plugins hosted for a peer, events shared.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Listener, Plugin, PluginFactory};
+use rutis::{
+    BoxFuture, Call, CordisError, Ctx, Effect, EventKey, FiberView, Listener, Plugin, PluginFactory,
+};
 use rutis_bridge::channel::PeerId;
+use rutis_bridge::events::{ArgValue, Args, LinkEventsPlugin};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value};
 use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
-    node_event, peer_key, Credential, Described, EventsPlugin, ExportPlugin, HostPlugin,
-    IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin, NodeEvent, Peer, Retry, StaticCatalog,
-    StaticIdentity,
+    peer_key, Credential, Described, ExportPlugin, HostPlugin, IdentityPlugin, ImportPlugin,
+    LinkConfig, LinkPlugin, Peer, Retry, StaticCatalog, StaticIdentity,
 };
 use rutis_test_support::{eventually, within};
 use serde_json::{json, Value as Json};
@@ -383,65 +385,122 @@ async fn a_host_loads_installed_plugins_for_its_peer() {
     .await;
 }
 
-struct Record(Arc<Mutex<Vec<Json>>>);
-impl Listener<NodeEvent> for Record {
+fn node_event(name: &str) -> EventKey<Args> {
+    EventKey::dynamic(name.to_owned())
+}
+
+/// Records each event's arguments after a while, and answers `answer`.
+struct Record(Arc<Mutex<Vec<Value>>>, Option<&'static str>);
+impl Listener<Args> for Record {
     fn call<'a>(
         &'a self,
         _: &'a Ctx,
-        event: &'a NodeEvent,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
+        event: &'a Args,
+        _: Call<'a, ArgValue>,
+    ) -> BoxFuture<'a, Result<Option<ArgValue>, CordisError>> {
         Box::pin(async move {
             tokio::time::sleep(Duration::from_millis(30)).await;
-            self.0.lock().unwrap().push(event.args.clone());
-            Ok(None)
+            self.0.lock().unwrap().push(Value::List(event.0.clone()));
+            Ok(self.1.map(|answer| ArgValue(Value::Data(json!(answer)))))
         })
     }
 }
 
+/// `serial` of `name` from `ctx`, until its result is not none.
+async fn serial_until_heard(ctx: &Ctx, name: &str, args: Vec<Value>) -> Value {
+    for _ in 0..500 {
+        let result = ctx
+            .events()
+            .serial(ctx, &node_event(name), Arc::new(Args(args.clone())))
+            .await
+            .unwrap();
+        if let Some(ArgValue(value)) = result {
+            return value;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("nobody answered {name}");
+}
+
+/// guarantee: events/node-links
+///
+/// A node's listener is an entry of the other node's bus when one exports
+/// and the other imports its name (events protocol §9): the emitter waits
+/// for it in `parallel`, gets its result in `serial`, its arguments cross
+/// as tagged values; a name the link does not share stays on its node;
+/// when the link goes, so do the entries.
 #[tokio::test(flavor = "multi_thread")]
-async fn events_go_one_way_and_the_sender_waits_for_the_listeners() {
-    let (main, mac, _) = linked().await;
+async fn node_listeners_are_entries_of_the_other_bus() {
+    let (main, mac, mac_link) = linked().await;
     let heard = Arc::new(Mutex::new(Vec::new()));
     mac.events()
-        .on(&mac, &node_event("tick"), Record(heard.clone()))
-        .unwrap();
-    (&mac.plugin(EventsPlugin::new(id("main"), Vec::<String>::new(), ["tick"]).unwrap()))
-        .await
-        .unwrap();
-    (&main.plugin(EventsPlugin::new(id("mac"), ["tick"], Vec::<String>::new()).unwrap()))
-        .await
-        .unwrap();
-    let at_main = main.get_as::<Peer>(peer_key(&id("mac"))).unwrap();
-    let mut offers = at_main.offers();
-    eventually(
-        || {
-            offers
-                .borrow_and_update()
-                .families
-                .contains("events")
-                .then_some(())
-        },
-        "events offered",
-    )
-    .await;
-
-    main.events()
-        .parallel(
-            &main,
-            &node_event("tick"),
-            Arc::new(NodeEvent {
-                args: json!([1, "a"]),
-            }),
+        .on(
+            &mac,
+            &node_event("t/tick"),
+            Record(heard.clone(), Some("pong")),
         )
+        .unwrap();
+    mac.events()
+        .on(
+            &mac,
+            &node_event("n/kept"),
+            Record(heard.clone(), Some("leaked")),
+        )
+        .unwrap();
+    // mac hears main's `t/*`; main's emissions of every name reach mac.
+    (&mac.plugin(LinkEventsPlugin::new(
+        id("main"),
+        Vec::<String>::new(),
+        ["t/*"],
+    )))
         .await
         .unwrap();
+    (&main.plugin(LinkEventsPlugin::new(
+        id("mac"),
+        ["*"],
+        Vec::<String>::new(),
+    )))
+        .await
+        .unwrap();
+
+    let bytes = Value::Bytes(b"payload".to_vec());
+    let answer = serial_until_heard(&main, "t/tick", vec![json!(1).into(), bytes.clone()]).await;
+    assert_eq!(answer, Value::Data(json!("pong")));
     assert_eq!(
-        *heard.lock().unwrap(),
-        vec![json!([1, "a"])],
-        "parallel waited for mac"
+        heard.lock().unwrap().last().unwrap(),
+        &Value::List(vec![Value::Data(json!(1)), bytes]),
+        "a tagged value crossed as itself"
     );
 
-    assert!(EventsPlugin::new(id("mac"), ["tick"], ["tick"]).is_err());
+    heard.lock().unwrap().clear();
+    main.events()
+        .parallel(&main, &node_event("t/tick"), Arc::new(Args(vec![])))
+        .await
+        .unwrap();
+    assert_eq!(heard.lock().unwrap().len(), 1, "parallel waited for mac");
+
+    let kept = main
+        .events()
+        .serial(&main, &node_event("n/kept"), Arc::new(Args(vec![])))
+        .await
+        .unwrap();
+    assert!(kept.is_none(), "mac does not import n/kept");
+
+    // The link goes: so does mac's entry on main's bus.
+    mac_link.dispose().await.unwrap();
+    let mut gone = false;
+    for _ in 0..500 {
+        let result = main
+            .events()
+            .serial(&main, &node_event("t/tick"), Arc::new(Args(vec![])))
+            .await;
+        if matches!(result, Ok(None)) {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(gone, "mac's listener left main's bus with the link");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -516,14 +575,6 @@ async fn a_composition_changes_one_feature_and_keeps_its_session() {
     let still = main.get_as::<Peer>(peer_key(&id("mac"))).unwrap();
     assert_eq!(still.generation(), session.generation());
     assert!(Arc::ptr_eq(&still, &session), "the link kept its session");
-    assert!(handle
-        .set(Features {
-            outbound: vec!["x".into()],
-            inbound: vec!["x".into()],
-            ..Features::default()
-        })
-        .await
-        .is_err());
 }
 
 /// Provides `host_key("svc")`; counts its starts.
@@ -816,4 +867,149 @@ async fn an_export_changed_to_another_list_keeps_what_it_still_exports() {
         "clock again",
     )
     .await;
+}
+
+/// The names of the entries a link imported into `ctx`'s bus.
+fn imported_names(ctx: &Ctx) -> Vec<String> {
+    let mut names: Vec<String> = ctx
+        .events()
+        .subscriptions()
+        .into_iter()
+        .filter(|entry| entry.remote)
+        .map(|entry| entry.name)
+        .collect();
+    names.sort();
+    names
+}
+
+/// guarantee: events/node-links
+///
+/// The importer's events feature restarts on a session that stays (its
+/// link's events plugin replaced): what it announced before goes with that
+/// offer. The exporter keeps only what the new offer announces, even though
+/// the new feature counts its ids from the start again; a dispatch never
+/// reaches an entry the importer no longer has.
+#[tokio::test(flavor = "multi_thread")]
+async fn entries_of_an_events_feature_that_restarted_are_replaced() {
+    let (main, mac, _mac_link) = linked().await;
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    mac.events()
+        .on(&mac, &node_event("t/a"), Record(heard.clone(), Some("a")))
+        .unwrap();
+    let b = mac
+        .events()
+        .on(&mac, &node_event("t/b"), Record(heard.clone(), Some("b")))
+        .unwrap();
+    let mac_events = mac.plugin(LinkEventsPlugin::new(
+        id("main"),
+        Vec::<String>::new(),
+        ["t/*"],
+    ));
+    (&mac_events).await.unwrap();
+    (&main.plugin(LinkEventsPlugin::new(
+        id("mac"),
+        ["*"],
+        Vec::<String>::new(),
+    )))
+        .await
+        .unwrap();
+    eventually(
+        || (imported_names(&main) == ["t/a", "t/b"]).then_some(()),
+        "both of mac's entries on main",
+    )
+    .await;
+
+    // mac's events feature stops, mac's `t/b` goes meanwhile, and the
+    // feature starts again on the same session.
+    mac_events.dispose().await.unwrap();
+    b.dispose().await.unwrap();
+    (&mac.plugin(LinkEventsPlugin::new(
+        id("main"),
+        Vec::<String>::new(),
+        ["t/*"],
+    )))
+        .await
+        .unwrap();
+    eventually(
+        || (imported_names(&main) == ["t/a"]).then_some(()),
+        "only the new offer's entry on main",
+    )
+    .await;
+    // Nothing stale answers, or fails, for `t/b`.
+    within(
+        "parallel of t/b",
+        main.events()
+            .parallel(&main, &node_event("t/b"), Arc::new(Args(vec![]))),
+    )
+    .await
+    .unwrap();
+    let answer = serial_until_heard(&main, "t/a", vec![]).await;
+    assert_eq!(answer, Value::Data(json!("a")));
+}
+
+/// guarantee: events/node-links
+///
+/// An entry that would be called twice for one event through two prefixes
+/// of the link's lists (`t/*` and `t/a/*`) is one entry on the other bus:
+/// an event under both reaches it once.
+#[tokio::test(flavor = "multi_thread")]
+async fn nested_prefixes_of_a_link_deliver_once() {
+    use rutis::EventPattern;
+    let (main, mac, _mac_link) = linked().await;
+    /// Records every event under its prefix.
+    struct Every(Arc<Mutex<Vec<Value>>>);
+    impl rutis::PatternListener<Args> for Every {
+        fn call<'a>(
+            &'a self,
+            _: &'a Ctx,
+            _: EventKey<Args>,
+            event: &'a Args,
+            _: Call<'a, ArgValue>,
+        ) -> BoxFuture<'a, Result<Option<ArgValue>, CordisError>> {
+            self.0.lock().unwrap().push(Value::List(event.0.clone()));
+            Box::pin(async { Ok(None) })
+        }
+    }
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    mac.events()
+        .on_pattern(
+            &mac,
+            &EventPattern::<Args>::prefix("t/"),
+            Every(heard.clone()),
+        )
+        .unwrap();
+    (&mac.plugin(LinkEventsPlugin::new(
+        id("main"),
+        Vec::<String>::new(),
+        ["t/*", "t/a/*"],
+    )))
+        .await
+        .unwrap();
+    (&main.plugin(LinkEventsPlugin::new(
+        id("mac"),
+        ["t/*", "t/a/*"],
+        Vec::<String>::new(),
+    )))
+        .await
+        .unwrap();
+    eventually(
+        || (!imported_names(&main).is_empty()).then_some(()),
+        "mac's entry on main",
+    )
+    .await;
+    assert_eq!(imported_names(&main), ["t/"], "one entry, the wider prefix");
+    main.events()
+        .parallel(
+            &main,
+            &node_event("t/a/x"),
+            Arc::new(Args(vec![json!(1).into()])),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        heard.lock().unwrap().len(),
+        1,
+        "{:?}",
+        heard.lock().unwrap()
+    );
 }

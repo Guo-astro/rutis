@@ -144,8 +144,6 @@ impl HostDispatch for Tools {
 - Read it in `invoke` itself: a future that `invoke` returns runs later, elsewhere, and does not see it.
 - It comes from how rutis-loader's rows lease services (`Process::lease_host_for`): each row has the services it leases registered in a scope of its own (besides the registration shared by all rows, as before), so the wire is unchanged and it works with Node, Bun, Python and Go runtimes, 0.11 ones included. When you load rows with `Process` yourself, lease with `lease_host_for` and isolate the name under `HostLease::label()`; calls through `lease_host` / `lease_host_in` are `None`.
 
-Declare host events through `emits` on the Rust API below; `rutis-host` JSON configuration does not yet expose this setting. Local events between plugins in one process do not need it.
-
 ## Runtime and loader
 
 ```rust
@@ -160,13 +158,8 @@ use rutis_loader::{
 let mut catalog = ServiceCatalog::new();
 
 // Local Node runtime: the directory containing @arcships/rutis-runtime and the package.json used for resolution.
-// `emits` names the events the host may emit into the runtime (`Process::emit`):
-// the runtime rejects an event it was not named, and plugins receive the
-// named ones with `ctx.on` (the same event bus). Set before the runtime is mounted.
-// Only runtimes reporting the `events` feature (Node, Bun, Python, Go) accept `emits`; others
-// fail at mount. `internal/*` cannot be declared.
-let node = LocalRuntime::node("app/node_modules/@arcships/rutis-runtime", "app/package.json")
-    .emits(["file-changed", "active-leaf-changed"]);
+// Events need no configuration: listeners in the runtime register themselves on the host's bus (see "Events" below).
+let node = LocalRuntime::node("app/node_modules/@arcships/rutis-runtime", "app/package.json");
 let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
 // Local Python runtime: plugin module directory and an interpreter with rutis installed.
 let python = LocalRuntime::python("app/plugins").interpreter("app/.venv/bin/python");
@@ -248,6 +241,73 @@ root.plugin(PeerPlugin::new(
 ```
 
 For rutis-loader configuration, `rutis_loader::register_peer_node` registers the `rutis-bridge/peer` row (the same format as `rutis.json`), and `PeerResolver` resolves `peer:` rows. For a remote runtime, add `RuntimePlugin::remote(name)` and a node row whose `runtime` is the same name; `RuntimeResolver::modules(handle)` resolves row names as `<name>:<module>`. See [Connect nodes](nodes.en.md) for concepts and security.
+
+## Events
+
+The host's Rust plugins, the plugins in every runtime (any language) and the listeners on linked nodes are on one logical bus ([plugin API: events](plugin-api.en.md#events)). Runtime listeners register themselves and the host side configures nothing: what you emit on `ctx.events()` reaches listeners in every language, and what they emit reaches the Rust listeners here.
+
+An event type is named across languages by `Event::NAME` and its arguments are serde-encoded, so it and its `Value` derive `Serialize` / `Deserialize`. A tuple struct of two or more fields is that many arguments, so `Created` below is `emit("session/created", id, size)` in other languages:
+
+```rust
+use std::sync::Arc;
+use rutis::{BoxFuture, Call, CordisError, Ctx, Event, EventKey, Listener, Mode, SyncCall};
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+struct Created(String, u32);
+impl Event for Created {
+    const NAME: &'static str = "session/created";
+    type Value = String;
+}
+
+struct Audit;
+impl Listener<Created> for Audit {
+    fn call<'a>(&'a self, _ctx: &'a Ctx, event: &'a Created, call: Call<'a, String>)
+        -> BoxFuture<'a, Result<Option<String>, CordisError>> {
+        Box::pin(async move {
+            if call.mode() == Mode::Waterfall {
+                // middleware: run the rest of the chain, then rewrite its result
+                let inner = call.next().await?;
+                return Ok(inner.map(|text| format!("[{text}]")));
+            }
+            Ok(Some(format!("audited {}", event.0)))      // Ok(None) is no result
+        })
+    }
+}
+
+fn terminal<'a>(_: &'a Ctx, e: &'a Created) -> BoxFuture<'a, Result<Option<String>, CordisError>> {
+    Box::pin(async move { Ok(Some(format!("saved {}", e.0))) })
+}
+
+let key = EventKey::<Created>::of();
+let events = ctx.events();
+let off = events.on(&ctx, &key, Audit)?;                                   // the listener is called with this ctx
+events.on_sync(&ctx, &key, |_: &Ctx, e: &Created, _: SyncCall<'_, String>| Ok(Some(format!("sync {}", e.1))))?;
+
+events.emit(&ctx, &key, Arc::new(Created("s1".into(), 3)))?;              // returns at once
+events.parallel(&ctx, &key, Arc::new(Created("s1".into(), 3))).await?;    // waits for all; ListenersFailed
+let first: Option<String> = events.serial(&ctx, &key, Arc::new(Created("s1".into(), 3))).await?;
+let out = events.waterfall(&ctx, &key, &Created("s1".into(), 3), terminal).await?;   // `()`: no terminal
+let sync = events.bail_sync(&ctx, &key, &Created("s1".into(), 3));        // meets Audit (async): AsyncListener
+let python_only = events
+    .filter(|l| l.runtime.as_deref() == Some("py"))                       // ListenerInfo
+    .serial(&ctx, &key, Arc::new(Created("s1".into(), 3)))
+    .await?;
+off.dispose().await?;
+```
+
+| Topic | Rule |
+| --- | --- |
+| Listeners | A listener registered once can be called by all five modes; `call.mode()` is this call's mode, `call.next()` works only in a `waterfall` (otherwise `WaterfallNext`). `on_sync` registers a synchronous listener, callable by every mode but unable to call `next` in an asynchronous `waterfall`; an (asynchronous) `on` listener cannot be called by `bail_sync` / `waterfall_sync` (`AsyncListener`) |
+| Options and prefixes | `on_opt` / `on_sync_opt` take an `EventOptions`, written with its builders: `EventOptions::default().prepend(true)` (also `.once(true)`, `.global(true)`); `on_pattern(&ctx, &EventPattern::prefix("session/"), ..)` receives every name under the prefix |
+| By name | Without a type, use `rutis_bridge::events::Args`: `EventKey::<Args>::dynamic("file-changed")`, arguments `Args(vec![Value::Data(json!(…))])`, results `ArgValue`. Typed and `Args` listeners of one name receive each other's events, converted through serde |
+| Scope | The emitter's scope is `ctx.scope()`: the loader calls `Ctx::mark_scope` for each group instance, and a listener receives the events of its scope and those inside it. There is no API to emit into another scope; filter on `ListenerInfo::scope` |
+| Failures | A failing `emit` listener reaches the error sink as `CordisError::ListenerFailed` (`Ctx::root_with_sink`), and `rutis_bridge::events::report_line` gives the line rutis-host prints; `parallel` gives `CordisError::ListenersFailed` (registration order); errors of listeners elsewhere arrive with their name and message |
+| Unload and cancellation | When a plugin unloads, its listeners leave the bus, running calls see `ctx.cancelled()`, and the unload waits for them (up to the shutdown deadline). Dropping the future of `parallel` / `serial` / `waterfall` cancels the dispatch |
+| Framework events | `rutis_loader::RowEvent` (`rutis/row`), `rutis_bridge::events::{ServiceEvent, RuntimeEvent}` (`rutis/service`, `rutis/runtime`): listen with `on`; emitting `rutis/*` fails with `ReservedEvent` |
+| Nodes | `Features { export, import }` of `PeerPlugin` select events too (names or `*` prefixes), see [nodes](#nodes) and [connecting nodes](nodes.en.md#events-between-nodes) |
+
+Tests need no separate tool: in a `#[tokio::test]`, take `Ctx::root()` (or `Ctx::root_with_sink` to collect `emit` failures), load the plugins, and emit and assert as above. Listeners in runtimes need a real runtime (`LocalRuntime`), as in production.
 
 ## Exported services: reference
 

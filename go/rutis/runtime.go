@@ -12,15 +12,18 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/arcships/rutis/go/rutis/internal/convert"
+	"github.com/arcships/rutis/go/rutis/internal/events"
 	"github.com/arcships/rutis/go/rutis/internal/peer"
 )
 
 // features are what this runtime supports of the runtime contract.
 // rows.announce: services rows provide without declaring them are announced
-// with their methods, to a host whose mount says `announce`.
-var features = []string{"rows.v2", "hosts", "leaf", "scopes", "events", "rows.announce"}
+// with their methods, to a host whose mount says `announce`. Events are the
+// capability events-v2 (#464), no longer a feature.
+var features = []string{"rows.v2", "hosts", "leaf", "scopes", "rows.announce"}
 
 // Future is an asynchronous result of another process.
 type Future = convert.Future
@@ -94,7 +97,10 @@ type handleEntry struct {
 }
 
 type row struct {
-	key      string
+	key string
+	// The row's id in the configuration (rows.load's `id`; the key when
+	// not given): descriptors and reported lines call the row so.
+	name     string
 	entry    string
 	def      *Definition
 	config   any
@@ -105,12 +111,18 @@ type row struct {
 	cleanups []func(context.Context) error
 	provided []string
 	tasks    sync.WaitGroup
-	order    int64
+	// The listener invocations running or queued: unload waits for them,
+	// up to the shutdown deadline.
+	listening sync.WaitGroup
+	// Its scope chain, outermost first (rows.load).
+	scope []Scope
+	order int64
 	// Ids of the slots of services it announced.
 	announced []string
-	// Announcements the host has yet to answer, while the row loads; nil
-	// once it loaded.
-	pending []<-chan struct{}
+	// Announcements the host has yet to answer, while the row loads: each
+	// waits for its answer, and an error is a refusal that fails the load.
+	// Nil once it loaded.
+	pending []func() error
 	loading bool
 }
 
@@ -137,14 +149,68 @@ type runtimeState struct {
 	version  int64
 	loaded   int64
 	closing  bool
-	events   map[string][]*listener
-	emits    map[string]bool
+	// The listeners of each name, in position order, and by id.
+	listeners   map[string][]*listener
+	byID        map[string]*listener
+	listenerSeq int64
+	// The lowest and highest positions given (Prepend takes one below).
+	first, last int64
+	// The names and prefixes with listeners outside this process
+	// (events.elsewhere), and the emits through the host not answered yet.
+	elsewhere         map[string]bool
+	elsewherePrefixes map[string]bool
+	hostEmits         map[string]int
+	// What the host calls this runtime (mount `runtime`), for descriptors.
+	runtimeName string
 	// The host takes announced services (mount `announce`).
 	announce bool
 	// Mounted by a host; one without `announce` is older than 0.12.
 	mounted bool
 	// The undeclared names a plugin was told such a host does not take.
 	told map[string]bool
+
+	// Frames for the host, queued under mu in the order they are taken and
+	// sent by flush once mu is released: a write blocked by a far end that
+	// does not read then never holds mu, which the session's reader needs.
+	// outMu guards the queue; sendMu keeps the sends in queue order.
+	outMu  sync.Mutex
+	outbox []func()
+	sendMu sync.Mutex
+}
+
+// post queues `send`, which writes to the session, behind every frame
+// queued before; rt.mu is held. The caller flushes after releasing rt.mu.
+func (rt *runtimeState) post(send func()) {
+	rt.outMu.Lock()
+	rt.outbox = append(rt.outbox, send)
+	rt.outMu.Unlock()
+}
+
+// flush sends the queued frames in order; rt.mu is not held. Once it
+// returns, every frame queued before the call is sent.
+func (rt *runtimeState) flush() {
+	rt.sendMu.Lock()
+	defer rt.sendMu.Unlock()
+	for {
+		rt.outMu.Lock()
+		if len(rt.outbox) == 0 {
+			rt.outMu.Unlock()
+			return
+		}
+		send := rt.outbox[0]
+		rt.outbox[0] = nil
+		rt.outbox = rt.outbox[1:]
+		rt.outMu.Unlock()
+		send()
+	}
+}
+
+// relay closes `to` once `from` is closed.
+func relay(from <-chan struct{}, to chan struct{}) {
+	go func() {
+		<-from
+		close(to)
+	}()
 }
 
 // Where a plugin is told that the host does not take an undeclared
@@ -170,9 +236,13 @@ func newRuntime(defs []*Definition) *runtimeState {
 		hosts:    map[string]map[string]string{},
 		slots:    map[string]*slot{},
 		handles:  map[string]*handleEntry{},
-		events:   map[string][]*listener{},
-		emits:    map[string]bool{},
 		told:     map[string]bool{},
+
+		listeners:         map[string][]*listener{},
+		byID:              map[string]*listener{},
+		elsewhere:         map[string]bool{},
+		elsewherePrefixes: map[string]bool{},
+		hostEmits:         map[string]int{},
 	}
 }
 
@@ -210,7 +280,7 @@ func same(a, b any) bool {
 }
 
 // refresh reports the object now in an exported slot under a new handle;
-// rt.mu is held.
+// rt.mu is held, and the report is queued (post).
 func (rt *runtimeState) refresh(id string) {
 	s := rt.slots[id]
 	if s == nil {
@@ -245,23 +315,28 @@ func (rt *runtimeState) refresh(id string) {
 	}
 	rt.version++
 	if rt.session != nil && !rt.closing {
+		session := rt.session
 		var handle any
 		if s.handle != "" {
 			handle = s.handle
 		}
 		if !s.announced {
-			rt.session.Notify("", "service", []any{id, handle, rt.version})
+			args := []any{id, handle, rt.version}
+			rt.post(func() { session.Notify("", "service", args) })
 			return
 		}
 		// An announced service says whose it is and what it offers, and a
-		// row loading answers once rutis has heard it.
+		// row loading answers once rutis has heard it (a refusal fails the
+		// row there).
 		methods := map[string]any{}
 		for wire := range s.methods {
 			methods[wire] = "async"
 		}
-		answered := rt.session.Announce("", "service", []any{id, handle, rt.version, map[string]any{"row": s.row, "methods": methods}})
+		args := []any{id, handle, rt.version, map[string]any{"row": s.row, "methods": methods}}
+		answered := make(chan struct{})
+		rt.post(func() { relay(session.Announce("", "service", args), answered) })
 		if r := rt.rows[s.row]; r != nil && r.loading {
-			r.pending = append(r.pending, answered)
+			r.pending = append(r.pending, func() error { <-answered; return nil })
 		}
 	}
 }
@@ -288,8 +363,8 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 		panic(fmt.Sprintf("rutis: provide %s: %T is not the %s Provides declares", name, value, shape.typ))
 	}
 	rt.mu.Lock()
-	defer rt.mu.Unlock()
 	if existing, ok := rt.services[id]; ok {
+		rt.mu.Unlock()
 		panic(fmt.Sprintf("rutis: service %s is already provided by row %s", printable(id), existing.row))
 	}
 	rt.services[id] = providedService{row: r.key, value: value, shape: shape}
@@ -306,9 +381,10 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 		}
 	}
 	rt.refresh(id)
+	rt.mu.Unlock()
+	rt.flush()
 	return func() {
 		rt.mu.Lock()
-		defer rt.mu.Unlock()
 		if existing, ok := rt.services[id]; ok && existing.row == r.key && same(existing.value, value) {
 			delete(rt.services, id)
 			for i, provided := range r.provided {
@@ -319,6 +395,8 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 			}
 			rt.refresh(id)
 		}
+		rt.mu.Unlock()
+		rt.flush()
 	}
 }
 
@@ -326,12 +404,20 @@ func printable(id string) string { return strings.ReplaceAll(id, "\x00", "@") }
 
 // ── Rows ─────────────────────────────────────────────────────────
 
-func (rt *runtimeState) load(ctx context.Context, key, entry string, config any, exports map[string]map[string]string, isolate map[string]string) error {
+func (rt *runtimeState) load(ctx context.Context, key, entry string, config any, exports map[string]map[string]string, isolate map[string]string, scope []Scope) error {
+	return rt.loadNamed(ctx, key, key, entry, config, exports, isolate, scope)
+}
+
+// loadNamed loads row key, whose id in the configuration is name.
+func (rt *runtimeState) loadNamed(ctx context.Context, key, name, entry string, config any, exports map[string]map[string]string, isolate map[string]string, scope []Scope) error {
 	def, err := rt.definition(entry)
 	if err != nil {
 		return err
 	}
-	r := &row{key: key, entry: entry, def: def, config: config, exports: exports, isolate: isolate, loading: true}
+	if name == "" {
+		name = key
+	}
+	r := &row{key: key, name: name, entry: entry, def: def, config: config, exports: exports, isolate: isolate, scope: scope, loading: true}
 	rt.mu.Lock()
 	if _, loaded := rt.rows[key]; loaded {
 		rt.mu.Unlock()
@@ -382,10 +468,21 @@ func (rt *runtimeState) load(ctx context.Context, key, entry string, config any,
 	pending := r.pending
 	r.pending, r.loading = nil, false
 	rt.mu.Unlock()
+	rt.flush()
 	// rutis has published the announced services (or refused one, which
-	// fails the row there) before it hears that the row loaded.
-	for _, answered := range pending {
-		<-answered
+	// fails the row there) and registered the row's listeners before it
+	// hears that the row loaded. A refused listener fails the load (§4.4).
+	var refused error
+	for _, wait := range pending {
+		if err := wait(); err != nil && refused == nil {
+			refused = err
+		}
+	}
+	if refused != nil {
+		if unloadErr := rt.unload(ctx, key); unloadErr != nil {
+			return errors.Join(refused, unloadErr)
+		}
+		return refused
 	}
 	return nil
 }
@@ -421,7 +518,9 @@ func (rt *runtimeState) unload(ctx context.Context, key string) error {
 	}
 	r.announced = nil
 	rt.mu.Unlock()
+	rt.flush()
 	r.cancel()
+	waitListeners(r)
 	r.tasks.Wait()
 	var errs []error
 	for i := len(r.cleanups) - 1; i >= 0; i-- {
@@ -444,7 +543,22 @@ func (rt *runtimeState) update(ctx context.Context, key string, config any) erro
 	if err := rt.unload(ctx, key); err != nil {
 		return err
 	}
-	return rt.load(ctx, key, r.entry, config, r.exports, r.isolate)
+	return rt.loadNamed(ctx, key, r.name, r.entry, config, r.exports, r.isolate, r.scope)
+}
+
+// waitListeners waits for the row's running listeners, cancelled, at most
+// the shutdown deadline; then it gives them up (§7.1).
+func waitListeners(r *row) {
+	done := make(chan struct{})
+	go func() { r.listening.Wait(); close(done) }()
+	budget := endedBudget()
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		events.Report(fmt.Sprintf("rutis: listeners of row %s still running after %ss; unloading anyway", r.name, strconv.FormatFloat(budget.Seconds(), 'f', -1, 64)))
+	}
 }
 
 // dispose unloads every row, latest first. It returns ctx's error when it
@@ -514,27 +628,17 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 	switch method {
 	case "mount":
 		mount, err := argument[struct {
-			Emits    []string
 			Announce bool
+			// The name the host gives this runtime, which descriptors of
+			// its listeners carry; optional.
+			Runtime string
 		}](args, 0)
 		if err != nil {
 			return nil, fmt.Errorf("mount: %w", err)
 		}
-		var internal []string
-		emits := map[string]bool{}
-		for _, name := range mount.Emits {
-			if strings.HasPrefix(name, "internal/") {
-				internal = append(internal, name)
-			}
-			emits[name] = true
-		}
-		if len(internal) != 0 {
-			// The sentence of rutis's own check (Process::mount, #337), naming every one.
-			return nil, fmt.Errorf("framework-internal events do not cross the boundary (mount emits): %s", strings.Join(internal, ", "))
-		}
 		rt.mu.Lock()
-		rt.emits = emits
 		rt.announce = mount.Announce
+		rt.runtimeName = mount.Runtime
 		rt.mounted = true
 		rt.mu.Unlock()
 		return map[string]any{
@@ -543,25 +647,10 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 			"implementation": map[string]string{"name": Implementation, "version": Version},
 			"engine":         map[string]string{"name": "go", "version": goruntime.Version()},
 		}, nil
-	case "emit":
-		name, err := argument[string](args, 0)
-		if err != nil {
-			return nil, err
-		}
-		if err := checkEventName(name); err != nil {
-			return nil, err
-		}
-		rt.mu.Lock()
-		declared := rt.emits[name]
-		rt.mu.Unlock()
-		if !declared {
-			return nil, fmt.Errorf("event %s is not declared for emission from rutis", name)
-		}
-		values, err := argument[[]any](args, 1)
-		if err != nil {
-			return nil, err
-		}
-		return nil, rt.emit(ctx, name, values)
+	case "events.elsewhere", "events.call":
+		// Served by arrive on the reading goroutine; here only when called
+		// directly.
+		return rt.arrive(ctx, method, args)()
 	case "dispose":
 		rt.mu.Lock()
 		rt.closing = true
@@ -599,7 +688,15 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 		if err != nil {
 			return nil, fmt.Errorf("exports: %w", err)
 		}
-		return nil, rt.load(ctx, key, entry, config, exports, isolate)
+		// The seventh, from rutis 0.13: the row's scope chain and its id.
+		placed, err := argument[struct {
+			Scope []Scope
+			ID    string `json:"id"`
+		}](args, 6)
+		if err != nil {
+			return nil, fmt.Errorf("scope: %w", err)
+		}
+		return nil, rt.loadNamed(ctx, key, placed.ID, entry, config, exports, isolate, placed.Scope)
 	case "rows.update":
 		key, err := argument[string](args, 0)
 		if err != nil {

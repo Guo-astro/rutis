@@ -147,6 +147,7 @@ async fn services_a_row_does_not_declare_are_announced_with_their_methods() {
             &[],
             &serde_json::Map::new(),
             projection.clone(),
+            &[],
         )
         .await
         .unwrap();
@@ -196,6 +197,7 @@ async fn row_services_reach_rutis_and_hosts_are_leased() {
             &[],
             shape,
             row_projection(shape),
+            &[],
         )
         .await
         .unwrap();
@@ -234,6 +236,7 @@ async fn row_services_reach_rutis_and_hosts_are_leased() {
             &[],
             provides,
             projection.clone(),
+            &[],
         )
         .await
         .unwrap();
@@ -271,6 +274,7 @@ async fn row_services_reach_rutis_and_hosts_are_leased() {
             &[],
             provides,
             projection.clone(),
+            &[],
         )
         .await
         .unwrap_err();
@@ -330,6 +334,7 @@ impl Listener<ServiceChanged> for Published {
         &'a self,
         _ctx: &'a Ctx,
         changed: &'a ServiceChanged,
+        _: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         if changed.change == ServiceChange::Provided {
             self.0.fetch_add(1, Ordering::SeqCst);
@@ -361,6 +366,7 @@ async fn load_held(
                     &[],
                     provides.as_object().unwrap(),
                     projection,
+                    &[],
                 )
                 .await
         })

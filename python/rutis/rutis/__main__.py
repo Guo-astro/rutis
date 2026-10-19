@@ -24,8 +24,8 @@ import sys
 import threading
 import traceback
 
-from .peer import Peer
-from .runner import Runtime
+from .peer import EVENTS_REFUSAL, Incompatible, Peer
+from .runner import Runtime, shutdown_deadline
 
 
 TOKEN = "RUTIS_CHANNEL_TOKEN"
@@ -86,7 +86,11 @@ class Session:
     def __init__(self, channel, endpoint: dict | None):
         self.channel = channel
         self.runtime = Runtime()
-        self.peer = Peer(channel, self.runtime.dispatch, settled=None, endpoint=endpoint)
+        # A host older than rutis 0.13 does not speak its event protocol: the
+        # session ends right after the handshake (§2.2).
+        self.peer = Peer(
+            channel, self.runtime.dispatch, settled=None, endpoint=endpoint, require={"events-v2": EVENTS_REFUSAL}
+        )
         self.runtime.peer = self.peer
 
     def start(self) -> None:
@@ -123,6 +127,10 @@ async def run(channel: str, endpoint: dict | None, project: str) -> int:
     session = Session(open_channel(channel), endpoint)
     session.start()
     await session.peer.closed
+    if isinstance(session.peer.closed_error, Incompatible):
+        # A host this runtime cannot work with: nothing was loaded.
+        print(f"rutis: refused: incompatible ({session.peer.closed_error}); stopping", file=sys.stderr, flush=True)
+        return 1
     # The rows go now, unless the host disposed them first: it went away
     # (it was killed, say) and nothing else ends this process. Cleanups that
     # do not finish within the deadline are given up (exit status 1), also
@@ -130,20 +138,6 @@ async def run(channel: str, endpoint: dict | None, project: str) -> int:
     give_up_after(shutdown_deadline())
     await session.end()
     return 0
-
-
-DEADLINE = "RUTIS_SHUTDOWN_TIMEOUT"
-
-
-def shutdown_deadline() -> float:
-    """How long cleanups may take once the session ended, in seconds:
-    RUTIS_SHUTDOWN_TIMEOUT (rutis-host passes its own deadline on), 10 by
-    default."""
-    try:
-        seconds = float(os.environ.get(DEADLINE, ""))
-    except ValueError:
-        return 10.0
-    return seconds if 0 < seconds < float("inf") else 10.0
 
 
 def give_up_after(seconds: float) -> None:

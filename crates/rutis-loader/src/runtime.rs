@@ -847,6 +847,8 @@ impl JsRow {
             // Already unloading or restarted: nothing left to end.
             let _ = ending.dispose_self();
         });
+        // Its listeners' descriptions and failure reports name it by its id.
+        process.name_row(&key, &id);
         if let Err(error) = process
             .load_row_exporting(
                 &key,
@@ -856,6 +858,7 @@ impl JsRow {
                 &inject,
                 &self.provides,
                 projection.clone(),
+                &ctx.scope(),
             )
             .await
         {
@@ -936,6 +939,7 @@ impl Listener<VolatileUpdate> for Forward {
         &'a self,
         _ctx: &'a Ctx,
         update: &'a VolatileUpdate,
+        _: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async move {
             self.process

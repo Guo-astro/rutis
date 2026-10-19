@@ -420,6 +420,8 @@ impl Projection {
                 return failure.map_or(Ok(()), Err);
             };
             attempted.insert((name.clone(), handle.clone()));
+            // `rutis/service` (events protocol §8) follows the kernel's
+            // `ServiceChanged` of the binding (`events::framework`).
             let result = apply(&ctx, &process, handle.clone());
             let mut state = self.state.lock().unwrap();
             let runtime = state.runtime.clone();

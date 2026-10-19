@@ -439,8 +439,6 @@ struct NodeConfig {
     export: Vec<String>,
     #[serde(default)]
     import: Vec<String>,
-    #[serde(default)]
-    events: NodeEvents,
     /// Host the plugins this loader resolves for the peer.
     #[serde(default)]
     host: bool,
@@ -452,17 +450,16 @@ struct NodeConfig {
     rows: bool,
 }
 
-#[derive(serde::Deserialize, Clone, Debug, Default, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct NodeEvents {
-    #[serde(default)]
-    out: Vec<String>,
-    #[serde(default, rename = "in")]
-    inbound: Vec<String>,
-}
+/// Why a peer config with `events` is refused: events are shared through
+/// `export` and `import` since rutis 0.13 (events protocol §2.4, §9).
+pub const REMOVED_EVENTS: &str = "the peer config field events was removed in rutis 0.13: list \
+     events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)";
 
 impl NodeConfig {
     fn parse(config: &Value) -> Result<Self, CordisError> {
+        if config.get("events").is_some() {
+            return Err(failed(REMOVED_EVENTS));
+        }
         let config: Self = serde_json::from_value(config.clone())
             .map_err(|error| failed(format!("invalid peer config: {error}")))?;
         let peer = PeerId::new(&config.peer).map_err(failed)?;
@@ -474,14 +471,17 @@ impl NodeConfig {
                 )))
             }
         }
-        if let Some(both) = config
-            .events
-            .out
+        // `*` only ends an item: a prefix of event names (events protocol
+        // §9).
+        if let Some(item) = config
+            .export
             .iter()
-            .find(|name| config.events.inbound.contains(name))
+            .chain(&config.import)
+            .find(|item| item.is_empty() || item[..item.len() - 1].contains('*'))
         {
             return Err(failed(format!(
-                "event {both} cannot be forwarded both ways"
+                "invalid export or import item {item:?}: a name, or a prefix of event names \
+                 ending in *"
             )));
         }
         Ok(config)
@@ -509,8 +509,6 @@ impl NodeConfig {
         rutis_bridge::Features {
             export: self.export.clone(),
             import: self.import.clone(),
-            outbound: self.events.out.clone(),
-            inbound: self.events.inbound.clone(),
             host: (self.host)
                 .then(|| loader.cloned())
                 .flatten()
@@ -554,7 +552,11 @@ impl NodeConfig {
             }
         }
         if let Some(loader) = loader {
+            // Prefixes select events only.
             for name in self.export.iter().chain(&self.import) {
+                if name.ends_with('*') {
+                    continue;
+                }
                 loader.shared_key_in(name, build).map_err(failed)?;
             }
         }
@@ -562,8 +564,9 @@ impl NodeConfig {
     }
 }
 
-/// The schema of a `rutis-bridge/peer` row. What is exported, imported and
-/// forwarded is volatile: changing it restarts only that feature and keeps
+/// The schema of a `rutis-bridge/peer` row. `export` and `import` select
+/// services by name and events by name or `*` prefix. What is exported and
+/// imported is volatile: changing it restarts only that feature and keeps
 /// the session.
 pub fn node_schema() -> Value {
     let names = json!({ "type": "array", "items": { "type": "string" }, "x-volatile": true });
@@ -580,10 +583,6 @@ pub fn node_schema() -> Value {
             "declare": { "type": "array", "items": { "type": "string" } },
             "export": names,
             "import": names,
-            "events": {
-                "type": "object",
-                "properties": { "out": names, "in": names }
-            },
             "host": { "type": "boolean" },
             "runtime": { "type": "string" },
             "rows": { "type": "boolean" }
@@ -684,6 +683,7 @@ impl rutis::Listener<crate::VolatileUpdate> for Reconfigure {
         &'a self,
         _: &'a Ctx,
         update: &'a crate::VolatileUpdate,
+        _: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async move {
             let config = NodeConfig::parse(&update.config)?;
@@ -963,5 +963,30 @@ mod tests {
             "the row active",
         )
         .await;
+    }
+
+    /// guarantee: events/node-config
+    ///
+    /// `events: { out, in }` is gone (events protocol §2.4): writing it is
+    /// refused, naming the replacement; `export` / `import` take `*`
+    /// prefixes, which select events only, and nothing else with a `*`.
+    #[test]
+    fn link_config_shares_events_through_export_and_import() {
+        let base = json!({ "peer": "mac", "transport": "memory", "identity": "main", "dial": "x" });
+        let with = |field: &str, value: Value| {
+            let mut config = base.clone();
+            config[field] = value;
+            NodeConfig::parse(&config)
+        };
+        let refused = with("events", json!({ "out": ["tick"] })).err().unwrap();
+        assert!(refused.to_string().contains(REMOVED_EVENTS), "{refused}");
+        let config = with("export", json!(["clock", "session/*", "*"])).unwrap();
+        let features = config.features(None, &Build::default());
+        assert_eq!(features.export, ["clock", "session/*", "*"]);
+        let refused = with("import", json!(["a*b"])).err().unwrap();
+        assert!(
+            refused.to_string().contains("a prefix of event names"),
+            "{refused}"
+        );
     }
 }

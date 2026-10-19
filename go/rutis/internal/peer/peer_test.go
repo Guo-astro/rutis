@@ -253,6 +253,37 @@ func TestANotificationGoesOutBeforeTheReply(t *testing.T) {
 	}
 }
 
+// An announcement the session's end leaves unanswered is not a refusal:
+// `failed` hears only of the far end's.
+func TestAnAnnouncementTheSessionEndsIsNotRefused(t *testing.T) {
+	held := make(chan struct{})
+	defer close(held)
+	_, runtime := pair(t,
+		func(ctx context.Context, target, method string, args []any) (any, error) {
+			if method == "refused" {
+				return nil, Errorf("BindingError", "no")
+			}
+			<-held
+			return nil, nil
+		}, nil)
+	var mu sync.Mutex
+	var failures []string
+	failed := func(err error) {
+		mu.Lock()
+		failures = append(failures, err.Error())
+		mu.Unlock()
+	}
+	testwait.Within(t, "the refusal is answered", runtime.AnnounceReporting("", "refused", nil, failed))
+	unanswered := runtime.AnnounceReporting("", "held", nil, failed)
+	runtime.Close(nil)
+	testwait.Within(t, "the session's end settles it", unanswered)
+	mu.Lock()
+	defer mu.Unlock()
+	if fmt.Sprint(failures) != "[BindingError: no]" {
+		t.Fatalf("failures %v", failures)
+	}
+}
+
 func TestErrorsCrossWithTheirNames(t *testing.T) {
 	host, _ := pair(t, nil, func(ctx context.Context, target, method string, args []any) (any, error) {
 		switch method {
@@ -339,7 +370,7 @@ func TestSynchronousCallsSayTheyWaitToAFarEndThatAsked(t *testing.T) {
 		hello    string
 		declares string
 	}{
-		{"compat", Options{}, `{"op":"hello","version":2,"capabilities":%s}`, `["reentrant-sync","sync-wait","value-instant","value-datetime","value-date","value-time","value-bytes","value-map","value-set","value-bigint","value-decimal","value-uuid"]`},
+		{"compat", Options{}, `{"op":"hello","version":2,"capabilities":%s}`, `["reentrant-sync","sync-wait","events-v2","value-instant","value-datetime","value-date","value-time","value-bytes","value-map","value-set","value-bigint","value-decimal","value-uuid"]`},
 		{
 			"endpoint",
 			Options{Endpoint: &Endpoint{Local: "go", Expected: "main"}, Capabilities: []string{"signals", "reentrant-sync", "sync-wait"}},

@@ -32,7 +32,7 @@ from __future__ import annotations
 import inspect
 from dataclasses import dataclass, field
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 
 class Context:
@@ -52,18 +52,63 @@ class Context:
         """Run `cleanup` (sync or async) when the plugin unloads."""
         raise NotImplementedError
 
-    def on(self, name: str, listener: Callable) -> Callable[[], None]:
-        """Listen on the process event bus until disposal or plugin unload."""
+    def on(self, name: str, listener: Callable, *, prepend: bool = False, global_: bool = False) -> Callable[[], None]:
+        """Listen to the event `name` until the returned function is called
+        or the plugin unloads; wherever the event is emitted (another
+        plugin, another runtime, the host, a linked node), it reaches
+        `listener(*args)` when the emitter's scope is this plugin's or
+        inside it. `listener` may be `async def`; in a waterfall it gets
+        `next` as its last argument. Its return value is what `serial`,
+        `bail` and `waterfall` see.
+
+        `prepend`: before every listener registered so far. `global_`:
+        exempt from emitters' filters (never from the scope rule).
+        `rutis/*` events (published by rutis) can be listened to;
+        `internal/*` cannot.
+
+        On unload, a running listener's task is cancelled and waited for,
+        at most RUTIS_SHUTDOWN_TIMEOUT."""
         raise NotImplementedError
 
     def emit(self, name: str, *args: Any) -> None:
-        """Call listeners synchronously; schedule awaitables without waiting."""
+        """Start every listener of `name` and return at once. A listener's
+        failure is reported where it runs, never raised here."""
+        raise NotImplementedError
+
+    def parallel(self, name: str, *args: Any) -> Awaitable[None]:
+        """`await ctx.parallel(name, *args)`: run every listener, wait for
+        all; failures raise `rutis.AggregateError` in registration order."""
+        raise NotImplementedError
+
+    def serial(self, name: str, *args: Any) -> Awaitable[Any]:
+        """`await ctx.serial(name, *args)`: run the listeners one at a time
+        and return the first result (anything but None and False), or None.
+        An error stops and is raised."""
+        raise NotImplementedError
+
+    def waterfall(self, name: str, *args: Any, terminal: Callable | None = None) -> Awaitable[Any]:
+        """`await ctx.waterfall(name, *args, terminal=...)`: the outermost
+        listener's return value, as is. Each listener gets `next` last;
+        `await next()` runs the rest of the chain and finally
+        `terminal(*args)`. Calling `next` twice raises WaterfallNext."""
+        raise NotImplementedError
+
+    def bail(self, name: str, *args: Any) -> Any:
+        """`serial`, synchronously. An asynchronous listener fails it with
+        `rutis.AsyncListener`."""
+        raise NotImplementedError
+
+    def filter(self, predicate: Callable[[dict], Any]) -> Any:
+        """An emitter with the same five methods that delivers only to the
+        listeners `predicate(descriptor)` keeps. A descriptor is a dict:
+        name, prefix, plugin, row, runtime, node, scope, global."""
         raise NotImplementedError
 
 
 # The plugin API this SDK writes plugins against. A runtime refuses a plugin
-# that needs a newer one, naming both.
-PLUGIN_API = 2
+# that needs a newer one, naming both. 3: parallel, serial, waterfall, bail
+# and filter (rutis 0.13); runtimes still load plugins of API 2.
+PLUGIN_API = 3
 
 
 @dataclass
@@ -77,6 +122,9 @@ class Plugin:
     # What it provides beyond `provides` reaches rutis by itself, known once
     # it runs: true of every plugin of this SDK.
     announces: bool = True
+    # Its declared name: what descriptors and registrations call it
+    # (`plugin`); None: its row's id.
+    name: str | None = None
 
 
 def define_plugin(
@@ -85,8 +133,15 @@ def define_plugin(
     inject: list | tuple = (),
     provides: dict | None = None,
     config: dict | None = None,
+    name: str | None = None,
 ) -> Plugin:
-    return Plugin(apply, list(inject), shapes(provides or {}), config)
+    """The plugin `apply(ctx, config)`. `inject`, `provides`, `config`: as
+    the module attributes above. `name`: what the event descriptors filters
+    see, and the host, call the plugin (`plugin`); without it, the id of
+    the row it runs in (the row's name in the configuration)."""
+    if name is not None and (not isinstance(name, str) or not name):
+        raise TypeError("a plugin name is a non-empty string")
+    return Plugin(apply, list(inject), shapes(provides or {}), config, name=name)
 
 
 def shapes(provides: dict) -> dict:

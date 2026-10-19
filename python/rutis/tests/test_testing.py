@@ -1,14 +1,16 @@
 """rutis.testing: plugins tested without a host."""
 
 import asyncio
+import contextlib
 import functools
+import io
 import unittest
 from dataclasses import dataclass
 
 import background
 
-from rutis import AggregateError, PLUGIN_API, RemoteError, define_plugin
-from rutis.testing import PluginTestError, load
+from rutis import AggregateError, BindingError, PLUGIN_API, RemoteError, ReservedEvent, define_plugin
+from rutis.testing import Bus, PluginTestError, load
 
 
 @dataclass
@@ -144,8 +146,9 @@ class Testing(background.TestCase):
         with self.assertRaisesRegex(PluginTestError, "needs plugin API"):
             run(go())
 
-    # guarantee: sdk/leaf-events (host emission waits; aggregate crosses)
-    def test_host_events_wait_for_all_listeners_and_cross_aggregate_errors(self):
+    def test_the_five_modes_from_the_test_cross_values_and_errors(self):
+        # #464 §12.2: the tool has the five ways to emit; with strict, what
+        # the test sends and gets back crosses as between processes.
         async def go():
             gate, started = asyncio.Event(), asyncio.Event()
             called = []
@@ -160,77 +163,65 @@ class Testing(background.TestCase):
                     await gate.wait()
                     raise TypeError("async")
 
-                ctx.on("tick", fail)
                 ctx.on("tick", wait)
+                ctx.on("tick", fail)
                 ctx.on("tick", lambda value: called.append(value["n"]))
+                ctx.on("reading", lambda: Reading("Oslo", 3))
+                ctx.on("wrap", lambda city, next: next())
 
-            async with load(define_plugin(apply), emits=["tick"]) as t:
+            async with load(define_plugin(apply)) as t:
                 value = {"n": 1}
-                done = asyncio.create_task(t.emit("tick", value))
+                done = asyncio.ensure_future(t.parallel("tick", value))
                 await started.wait()
                 self.assertEqual((called, value, done.done()), ([2], {"n": 1}, False))
                 gate.set()
-                with self.assertRaises(RemoteError) as failure:
+                with self.assertRaises(AggregateError) as failure:
                     await done
                 error = failure.exception
-                self.assertEqual(error.name, "AggregateError")
-                self.assertEqual(error.message, "", "it crosses as Cordis's AggregateError")
-                nodes = error.graph["nodes"]
-                errors = nodes[error.graph["root"]["value"]]["errors"]
-                self.assertEqual([(nodes[ref["value"]]["name"], nodes[ref["value"]]["message"]) for ref in errors],
-                                 [("ValueError", "sync"), ("TypeError", "async")])
+                self.assertEqual(error.message, "2 listeners of tick failed")
+                # Registration order, not the order they failed in.
+                self.assertEqual([(e.name, e.message) for e in error.errors], [("TypeError", "async"), ("ValueError", "sync")])
+                self.assertTrue(all(isinstance(e, RemoteError) for e in error.errors))
+                self.assertEqual(await t.serial("reading"), {"city": "Oslo", "degrees": 3}, "a dataclass crosses as a dict")
+                self.assertEqual(t.bail("reading"), {"city": "Oslo", "degrees": 3})
+                self.assertEqual(await t.waterfall("wrap", "Bergen", terminal=lambda city: city.upper()), "BERGEN")
+                self.assertEqual(await t.filter(lambda d: False).serial("reading"), None)
 
         run(go())
 
-    # guarantee: sdk/leaf-events (internal/* refused; the host emits declared names only)
-    def test_the_host_emits_declared_names_only_and_never_internal_ones(self):
+    def test_names_are_strings_internal_is_refused_rutis_is_reserved(self):
         async def go():
             saved = []
-            async with load(define_plugin(lambda ctx, config: saved.append(ctx)), emits=["tick"]) as t:
-                # The same wording as the Node test tool and the real runtimes, as a PluginTestError.
-                with self.assertRaisesRegex(PluginTestError, "^event internal/test is internal to the runtime$"):
-                    await t.emit("internal/test")
-                with self.assertRaisesRegex(PluginTestError, "^event other is not declared for emission from rutis$"):
-                    await t.emit("other")
-                # A name is a string on every side of the bus (on Node, a non-string
-                # would be Cordis's `this` argument).
-                for operation in (saved[0].on, saved[0].emit):
+            async with load(define_plugin(lambda ctx, config: saved.append(ctx))) as t:
+                ctx = saved[0]
+                for operation in (ctx.on, ctx.emit, t.emit):
                     with self.assertRaisesRegex(TypeError, "^an event name is a string, not NoneType$"):
                         operation(None, "internal/test")
-                with self.assertRaisesRegex(TypeError, "^an event name is a string, not NoneType$"):
-                    await t.emit(None, "internal/test")
-                await t.emit("tick")
-            # The sentence of the runtimes' mount (`Process::mount`), naming every internal event.
-            with self.assertRaisesRegex(PluginTestError, r"^framework-internal events do not cross the boundary \(mount emits\): internal/service, internal/status$"):
-                async with load(define_plugin(lambda ctx, config: None), emits=["tick", "internal/service", "internal/status"]):
+                    with self.assertRaisesRegex(ValueError, "^event internal/test is internal to the runtime$"):
+                        operation("internal/test", lambda: None)
+                ctx.on("rutis/row", lambda record: None)
+                for emitter in (ctx, t):
+                    for mode in ("emit", "parallel", "serial", "waterfall", "bail"):
+                        with self.assertRaisesRegex(ReservedEvent, "^rutis/\\* events are emitted by rutis only: rutis/row$"):
+                            getattr(emitter, mode)("rutis/row")
+            with self.assertRaisesRegex(PluginTestError, "^the load option emits was removed in rutis 0.13: listeners register themselves"):
+                async with load(define_plugin(lambda ctx, config: None), emits=["tick"]):
                     pass
 
         run(go())
 
-    # guarantee: sdk/leaf-events (the host emits declared names only)
-    def test_emits_is_a_list_of_event_names(self):
-        async def go():
-            # As the Node test tool: a bare string or a non-string entry is refused,
-            # not read as characters or skipped.
-            for emits in ("tick", ["tick", None], {"tick": 1}):
-                with self.assertRaisesRegex(PluginTestError, "^emits must be a list of event names$"):
-                    async with load(define_plugin(lambda ctx, config: None), emits=emits):
-                        pass
-            async with load(define_plugin(lambda ctx, config: None), emits=("tick",)) as t:
-                await t.emit("tick")
-
-        run(go())
-
-    # guarantee: sdk/leaf-events (disposers; a failed cleanup removes listeners)
     def test_event_disposers_and_failed_cleanup_remove_every_listener(self):
         async def go():
-            seen, saved = [], []
+            seen, saved, refused = [], [], []
 
             def apply(ctx, config):
                 callback = lambda value: seen.append(value)
                 ctx.on("early", callback)
                 def cleanup():
-                    ctx.emit("early", 99)
+                    try:
+                        ctx.emit("early", 99)
+                    except BindingError as error:
+                        refused.append(str(error))
                     raise asyncio.CancelledError()
                 ctx.effect(cleanup)
                 off = ctx.on("tick", callback)
@@ -238,24 +229,25 @@ class Testing(background.TestCase):
                 saved.extend([ctx, off])
 
             with self.assertRaises(asyncio.CancelledError):
-                async with load(define_plugin(apply), emits=["tick"]) as t:
-                    await t.emit("tick", 1)
+                async with load(define_plugin(apply)) as t:
+                    await t.parallel("tick", 1)
                     saved[1]()
                     saved[1]()
                     self.assertIsNone(saved[0].emit("tick", 2))
                     self.assertEqual(seen, [1, 1, 2])
-                    for operation in (saved[0].on, saved[0].emit):
-                        with self.assertRaisesRegex(ValueError, "internal"):
-                            operation("internal/test", lambda: None)
-            saved[0].emit("early", 3)
+            # An unloaded row emits nothing: refused at once (#464 §3).
+            self.assertEqual(refused, ["row test_testing is not loaded in this runtime"])
+            for mode in ("emit", "parallel", "serial", "waterfall", "bail"):
+                with self.assertRaisesRegex(BindingError, "^row test_testing is not loaded in this runtime$"):
+                    getattr(saved[0], mode)("early", 3)
             self.assertEqual(seen, [1, 1, 2], "cleanup emissions cannot reach the unloading plugin")
             with self.assertRaisesRegex(PluginTestError, "unloaded"):
                 saved[0].on("tick", lambda: None)
 
         run(go())
 
-    # guarantee: sdk/leaf-events (local failures surface at unload)
-    def test_unhandled_async_emission_fails_the_test_at_unload(self):
+    def test_a_failing_emit_listener_is_reported_never_raised(self):
+        # #464 §5.6, as on the runtime: in `reported` and on stderr.
         order = []
 
         async def fail():
@@ -265,19 +257,58 @@ class Testing(background.TestCase):
         async def go():
             def apply(ctx, config):
                 ctx.on("tick", fail)
+                ctx.on("tick", lambda: order.append("other"))
                 ctx.emit("tick")
                 order.append("emitter")
 
-            with self.assertRaises(AggregateError) as failure:
-                async with load(define_plugin(apply)):
-                    pass
-            self.assertEqual(str(failure.exception.errors[0]), "async event")
-            self.assertEqual(str(failure.exception), "multiple errors: [ValueError('async event')]")
-            self.assertEqual(order, ["listener", "emitter"], "ctx.emit starts async listeners eagerly")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                async with load(define_plugin(apply), row="ticker") as t:
+                    await asyncio.sleep(0)
+                    reported = list(t.reported)
+            self.assertEqual(order, ["listener", "other", "emitter"], "ctx.emit starts async listeners eagerly")
+            self.assertEqual([(r.kind, r.name, r.row, str(r.error)) for r in reported], [("listener", "tick", "ticker", "async event")])
+            self.assertEqual(stderr.getvalue(), "rutis: listener of tick in row ticker failed: ValueError: async event\n")
 
         run(go())
 
-    # guarantee: sdk/leaf-events (unload cancels unfinished local listeners)
+    def test_plugins_on_one_bus_hear_each_other_by_scope_and_filter(self):
+        # #464 §3, §4.3, §6 in the tool: a shared bus, scopes, prepend,
+        # global, the filter seeing descriptors.
+        async def go():
+            log = []
+
+            def listener(label, **options):
+                def apply(ctx, config):
+                    ctx.on("t/x", lambda: log.append(label), **options)
+                return define_plugin(apply)
+
+            bus = Bus(scopes={"t1": "tenant", "t1/s1": "session"})
+            async with load(listener("r"), bus=bus, row="r") as root, \
+                    load(listener("u"), bus=bus, row="u", scope="t1") as tenant, \
+                    load(listener("s", prepend=True), bus=bus, row="s", scope="t1/s1") as session, \
+                    load(listener("v", global_=True), bus=bus, row="v", scope="t2"):
+                await session.parallel("t/x")
+                self.assertEqual(log, ["s", "r", "u"])
+                log.clear()
+                await tenant.parallel("t/x")
+                self.assertEqual(log, ["r", "u"])
+                log.clear()
+                seen = []
+                await bus.emitter("t1/s1").filter(lambda d: seen.append(d) or d["row"] == "u").parallel("t/x")
+                self.assertEqual(log, ["u"])
+                self.assertEqual([d["row"] for d in seen], ["s", "r", "u"])
+                self.assertEqual(seen[0]["scope"], [{"id": "t1", "group": "tenant"}, {"id": "t1/s1", "group": "session"}])
+                log.clear()
+                await bus.emitter("t2").filter(lambda d: False).parallel("t/x")
+                self.assertEqual(log, ["v"], "global skips the filter")
+                with self.assertRaisesRegex(PluginTestError, "already loaded"):
+                    async with load(listener("x"), bus=bus, row="r"):
+                        pass
+                self.assertEqual(root.row, "r")
+
+        run(go())
+
     def test_unload_cancels_unfinished_local_listeners(self):
         async def go():
             cancelled = asyncio.Event()
@@ -301,7 +332,6 @@ class Testing(background.TestCase):
 
         run(go())
 
-    # guarantee: sdk/leaf-events (a body or cleanup error is kept)
     def test_local_failures_do_not_replace_body_or_cleanup_errors(self):
         async def fail():
             raise ValueError("async event")
@@ -318,11 +348,98 @@ class Testing(background.TestCase):
                             raise cleanup
                         ctx.effect(stop)
 
-                with self.assertRaises(type(primary)) as failure:
+                with self.assertRaises(type(primary)) as failure, contextlib.redirect_stderr(io.StringIO()):
                     async with load(define_plugin(apply)):
                         if cleanup is None:
                             raise primary
                 self.assertIs(failure.exception, primary)
+
+        run(go())
+
+    def test_errors_reach_a_plugins_own_emitter_as_from_another_process(self):
+        # #464 §11: matched by name, never by class; AggregateError children
+        # in registration order; rutis's own names keep their classes.
+        class Refused(Exception):
+            code = "Refused"
+
+        async def go():
+            outcomes = {}
+
+            def listener(ctx, config):
+                def refuse():
+                    raise Refused("no")
+
+                ctx.on("t/err", refuse)
+                ctx.on("t/err", lambda: (_ for _ in ()).throw(BindingError("gone")))
+
+            def emitter(ctx, config):
+                async def emit():
+                    for mode in ("parallel", "serial"):
+                        try:
+                            await getattr(ctx, mode)("t/err")
+                        except Exception as error:  # noqa: BLE001
+                            outcomes[mode] = error
+                    try:
+                        ctx.bail("t/err")
+                    except Exception as error:  # noqa: BLE001
+                        outcomes["bail"] = error
+
+                saved.append(emit)
+
+            saved = []
+            bus = Bus()
+            async with load(define_plugin(listener), bus=bus, row="l"), load(define_plugin(emitter), bus=bus, row="e"):
+                await saved[0]()
+            aggregate = outcomes["parallel"]
+            self.assertIsInstance(aggregate, AggregateError)
+            self.assertEqual([(type(e), e.name, e.message) for e in aggregate.errors], [
+                (RemoteError, "Refused", "no"), (BindingError, "BindingError", "gone"),
+            ])
+            self.assertEqual(aggregate.errors[0].code, "Refused")
+            for mode in ("serial", "bail"):
+                self.assertIs(type(outcomes[mode]), RemoteError, mode)
+                self.assertEqual((outcomes[mode].name, outcomes[mode].code), ("Refused", "Refused"))
+
+        run(go())
+
+    def test_descriptors_name_the_declared_plugin_and_python(self):
+        # #464 §4.2: `plugin` is the declared name, else the row; `runtime`
+        # "python" unless load(runtime=) says otherwise.
+        async def go():
+            on = lambda ctx, config: ctx.on("t/d", lambda: None)
+            bus = Bus()
+            async with load(define_plugin(on, name="chat-ui"), bus=bus), \
+                    load(define_plugin(on), bus=bus, row="audit"), \
+                    load(define_plugin(on), bus=bus, row="other", runtime="go"):
+                seen = [(d["plugin"], d["row"], d["runtime"]) for d in bus.listeners("t/d")]
+            self.assertEqual(seen, [("chat-ui", "chat-ui", "python"), ("audit", "audit", "python"), ("other", "other", "go")])
+
+        run(go())
+
+    def test_unload_waits_at_most_its_deadline(self):
+        async def go():
+            release = asyncio.Event()
+
+            async def stubborn():
+                while not release.is_set():
+                    try:
+                        await release.wait()
+                    except asyncio.CancelledError:
+                        pass
+
+            def apply(ctx, config):
+                ctx.on("tick", stubborn)
+                ctx.emit("tick")
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                async with load(define_plugin(apply), row="slow", deadline=0.05):
+                    pass
+            release.set()
+            self.assertEqual(stderr.getvalue(), "rutis: listeners of row slow still running after 0.05s; unloading anyway\n")
+            with self.assertRaisesRegex(PluginTestError, "deadline"):
+                async with load(define_plugin(apply), deadline=-1):
+                    pass
 
         run(go())
 

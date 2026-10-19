@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Event, FiberState, Listener, Plugin, TypeKey};
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Ping;
 
 impl Event for Ping {
@@ -21,6 +22,7 @@ impl Listener<Ping> for Nop {
         &'a self,
         _ctx: &'a Ctx,
         _e: &'a Ping,
+        _call: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         Box::pin(async { Ok(None) })
     }

@@ -158,13 +158,6 @@ impl LocalRuntime {
         self
     }
 
-    /// Declare events the host may send with [`Process::emit`](crate::runtime::Process::emit),
-    /// as [`RuntimePlugin::emits`]. Set before mounting.
-    pub fn emits(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.runtime = self.runtime.emits(names);
-        self
-    }
-
     /// Name the runtime: its services are keyed by the name.
     pub fn named(mut self, name: impl Into<String>) -> Self {
         let name: String = name.into();
@@ -243,6 +236,7 @@ impl Plugin for LocalRuntime {
                 LinkConfig::dial(peer.clone(), &kind, &kind, "spawn:runtime").local_runtime(),
             );
             let mut link_state = link.state();
+            self.runtime.announce(ctx);
             self.runtime.starting();
             ctx.plugin(link);
             ctx.plugin(RuntimeAccessPlugin::new(peer, &self.runtime_name));

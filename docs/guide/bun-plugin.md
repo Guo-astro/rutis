@@ -37,6 +37,45 @@ test('greets', async () => {
 
 不用 SDK 时，模块也可以直接导出 `apply(ctx, config)`，以及 `inject`、`provides`（可选，每个方法写明 `'sync'` 或 `'async'`）、`config`（JSON Schema）。`provides` 不写也行：`ctx.provide` 提供的服务自动对外，方法取对象上的函数，按 `async` 调用，规则和 Node 相同（见 [插件 API](plugin-api.md)）。
 
+### 事件
+
+与 TypeScript 插件相同（[TypeScript 插件：事件](typescript-plugin.md#事件)）：`ctx.on` 监听，`ctx.emit` / `ctx.parallel` / `ctx.serial` / `ctx.waterfall` / `ctx.bail` 发出，`ctx.filter` 挑选监听器。监听器自动登记给宿主，Node、Python、Go 插件和宿主里的 Rust 代码发出的事件同样到达 Bun 里的监听器，反过来也一样。卸载时这一行的 `ctx.signal` 被中止，正在运行的监听器被等待。
+
+```ts
+import { definePlugin } from '@arcships/rutis'
+
+export default definePlugin({
+  apply(ctx) {
+    ctx.on('greeting/pick', (lang: string) => (lang === 'sv' ? 'Hej' : undefined))   // 没有结果时返回 undefined
+    ctx.on('greeting/format', async (text: string, next: () => Promise<string>) => `${await next()}!`)
+    ctx.provide('greeter', {
+      async hello(name: string, lang: string) {
+        const word = (await ctx.serial<string>('greeting/pick', lang)) ?? 'Hello'
+        const text = await ctx.waterfall<string>('greeting/format', `${word}, ${name}`, (text: string) => text)
+        ctx.emit('greeting/said', name)                                               // 立即返回
+        return text
+      },
+    })
+  },
+})
+```
+
+测试用同一个测试工具，`bun test` 照常运行；几个插件共享一条总线用 `host()`：
+
+```ts
+import { expect, test } from 'bun:test'
+import { host } from '@arcships/rutis/testing'
+import plugin from '../src/index.ts'
+
+test('greets through events', async () => {
+  const h = host()
+  const t = await h.load(plugin)
+  expect(await t.service('greeter').hello('Ada', 'sv')).toBe('Hej, Ada!')
+  expect(await h.serial('greeting/pick', 'en')).toBeUndefined()
+  await h.unload()
+})
+```
+
 ## 3. 在宿主里运行
 
 ```bash

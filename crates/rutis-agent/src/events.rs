@@ -15,13 +15,14 @@ use aimux_core::language_model_message::LanguageModelPromptMessage;
 use aimux_core::options::Tool;
 use aimux_core::tool::ToolCall;
 use rutis::Event;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::session::SessionId;
 use crate::tools::ToolOutput;
 
 /// 模型文本增量(流式逐块,经 EventBus 广播)。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTextDelta {
     pub session: SessionId,
     pub step: usize,
@@ -38,7 +39,7 @@ impl Event for AgentTextDelta {
 /// 由 driver 收到 `StreamPart::ReasoningDelta` 时发出;TUI 侧渲染为
 /// rutui 的 `ThinkingBlock`(reasoning 折叠块),与正文 `AgentTextDelta`
 /// 区分开。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct AgentReasoning {
     pub session: SessionId,
@@ -52,7 +53,7 @@ impl Event for AgentReasoning {
 }
 
 /// 工具调用开始。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentToolCall {
     pub session: SessionId,
     pub name: String,
@@ -65,7 +66,7 @@ impl Event for AgentToolCall {
 }
 
 /// 工具结果(ok=false 时 output 为 `error: ...` 回喂文本)。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentToolResult {
     pub session: SessionId,
     pub name: String,
@@ -79,7 +80,7 @@ impl Event for AgentToolResult {
 }
 
 /// turn 终态(result 不 Clone,走 Err 摘要;Ok 记空串)。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTurnEnd {
     pub session: SessionId,
     pub ok: bool,
@@ -92,7 +93,7 @@ impl Event for AgentTurnEnd {
 }
 
 /// 每步模型响应后的摘要:步号、内容、工具调用数。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentStepEvent {
     pub session: SessionId,
     pub step: usize,
@@ -113,7 +114,7 @@ impl Event for AgentStepEvent {
 ///
 /// waterfall 值:`Err(reason)` = 拒绝本步(turn 以 `Pipeline(reason)`
 /// 失败收尾),`Ok((prompt, tools))` = 放行(可被中间件改写)。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentPreStep {
     pub session: SessionId,
     pub step: usize,
@@ -135,7 +136,7 @@ pub type PreStepDecision = Result<(Vec<LanguageModelPromptMessage>, Vec<Tool>), 
 ///
 /// waterfall 值:`Some(reason)` = 拒绝执行(reason 转为模型可见的
 /// `error: ...` 结果回喂),`None` = 放行。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolPreExecute {
     pub session: SessionId,
     pub call: ToolCall,
@@ -150,7 +151,7 @@ impl Event for ToolPreExecute {
 /// 中间件语义决定;失败也到这——`ok=false` 时同样可改写)。
 ///
 /// waterfall 值:替换后的结果(默认原样 accept)。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolPostExecute {
     pub session: SessionId,
     pub call: ToolCall,

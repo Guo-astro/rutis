@@ -11,7 +11,6 @@ import unittest
 import background
 
 from rutis.runner import Runtime, handle_of, scoped_id
-from rutis import AggregateError
 from support import HANG_GUARD
 
 
@@ -70,55 +69,8 @@ class ScopedIds(background.TestCase):
             asyncio.run(runtime.load("p", provider, {}, None, {"x": ""}))
         self.assertNotIn("x", runtime.services)
 
-    # guarantee: sdk/leaf-events (shared rows, update, failed apply, unload)
-    def test_events_share_rows_and_leave_on_update_failure_and_unload(self):
-        seen, contexts = [], []
-
-        def apply(ctx, config):
-            contexts.append(ctx)
-            ctx.on("tick", lambda value: seen.append([config.get("label"), value]))
-            if config.get("fail"):
-                raise ValueError("apply failed")
-            if config.get("cancel"):
-                async def cleanup():
-                    raise asyncio.CancelledError()
-                ctx.effect(cleanup)
-
-        runtime = Runtime()
-        entry = module("event_rows", apply)
-
-        async def go():
-            self.assertIn("events", runtime.dispatch("", "mount", {"emits": ["tick", "failure"]})["features"])
-            # The sentence of rutis's own check (`Process::mount`), naming every internal event.
-            with self.assertRaisesRegex(ValueError, r"^framework-internal events do not cross the boundary \(mount emits\): internal/test, internal/other$"):
-                runtime.dispatch("", "mount", {"emits": ["tick", "internal/test", "internal/other"]})
-            await runtime.load("a", entry, {"label": "first"}, None)
-            await runtime.load("b", entry, {"label": "other"}, None)
-            await runtime.update("a", {"label": "updated"})
-            with self.assertRaisesRegex(RuntimeError, "not active"):
-                contexts[0].on("tick", lambda: None)
-            with self.assertRaisesRegex(ValueError, "apply failed"):
-                await runtime.load("failed", entry, {"fail": True}, None)
-            await runtime.dispatch("", "emit", ["tick", [1]])
-            self.assertEqual(seen, [["other", 1], ["updated", 1]])
-            def fail():
-                raise ValueError("host listener failed")
-            contexts[1].on("failure", fail)
-            with self.assertRaises(AggregateError):
-                await runtime.dispatch("", "emit", ["failure", []])
-            await runtime.load("cancelled", entry, {"cancel": True}, None)
-            with self.assertRaises(asyncio.CancelledError):
-                await runtime.unload("cancelled")
-            await runtime.dispatch("", "emit", ["tick", [2]])
-            self.assertEqual(seen, [["other", 1], ["updated", 1], ["other", 2], ["updated", 2]])
-            await runtime.dispose()
-            contexts[1].emit("tick", 3)
-            self.assertEqual(len(seen), 4)
-
-        asyncio.run(go())
-
-    # guarantee: sdk/leaf-events (an unhandled async listener ends the process)
-    def test_unhandled_async_plugin_event_exits_the_runtime_process(self):
+    def test_a_failing_async_emit_listener_is_reported_and_the_process_goes_on(self):
+        # #464 §5.6: no longer the end of the runtime process (0.12 exited).
         script = """
 import asyncio, sys, types
 from rutis.runner import Runtime
@@ -133,12 +85,15 @@ plugin.apply = apply
 sys.modules[plugin.__name__] = plugin
 async def run():
     await Runtime().load('fatal', plugin.__name__, {}, None)
-    await asyncio.Event().wait()
+    for _ in range(3):
+        await asyncio.sleep(0)
+    print('still running')
 asyncio.run(run())
 """
         result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=HANG_GUARD)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("ValueError: unhandled leaf event", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "still running\n")
+        self.assertEqual(result.stderr, "rutis: listener of tick in row fatal failed: ValueError: unhandled leaf event\n")
 
 
 class Inspect(background.TestCase):

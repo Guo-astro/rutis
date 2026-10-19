@@ -169,15 +169,15 @@ provider's key variable, e.g. DEEPSEEK_API_KEY.";
 
         let (stop, mut stopped) = mpsc::unbounded_channel();
         let events = root.events();
-        events.on(root, &EventKey::<web::RutisDshReady>::of(), Ready)?;
+        events.on(root, &EventKey::<rutis_dsh::events::Ready>::of(), Ready)?;
         events.on(
             root,
-            &EventKey::<web::RutisDshStartupFailed>::of(),
+            &EventKey::<rutis_dsh::events::StartupFailed>::of(),
             Forward(stop.clone()),
         )?;
         events.on(
             root,
-            &EventKey::<web::RutisDshExit>::of(),
+            &EventKey::<rutis_dsh::events::Exit>::of(),
             Forward(stop.clone()),
         )?;
 
@@ -205,16 +205,17 @@ provider's key variable, e.g. DEEPSEEK_API_KEY.";
     }
 
     struct Ready;
-    impl Listener<web::RutisDshReady> for Ready {
+    impl Listener<rutis_dsh::events::Ready> for Ready {
         fn call<'a>(
             &'a self,
             _: &'a Ctx,
-            event: &'a web::RutisDshReady,
+            event: &'a rutis_dsh::events::Ready,
+            _: rutis::Call<'a, ()>,
         ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
             Box::pin(async move {
                 eprintln!(
                     "[rutis-dsh] dsh is up; model routes: {}",
-                    event.providers.join(", ")
+                    event.0.join(", ")
                 );
                 Ok(None)
             })
@@ -222,23 +223,25 @@ provider's key variable, e.g. DEEPSEEK_API_KEY.";
     }
 
     struct Forward(mpsc::UnboundedSender<Stop>);
-    impl Listener<web::RutisDshStartupFailed> for Forward {
+    impl Listener<rutis_dsh::events::StartupFailed> for Forward {
         fn call<'a>(
             &'a self,
             _: &'a Ctx,
-            event: &'a web::RutisDshStartupFailed,
+            event: &'a rutis_dsh::events::StartupFailed,
+            _: rutis::Call<'a, ()>,
         ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-            let _ = self.0.send(Stop::StartupFailed(event.message.clone()));
+            let _ = self.0.send(Stop::StartupFailed(event.0.clone()));
             Box::pin(async { Ok(None) })
         }
     }
-    impl Listener<web::RutisDshExit> for Forward {
+    impl Listener<rutis_dsh::events::Exit> for Forward {
         fn call<'a>(
             &'a self,
             _: &'a Ctx,
-            event: &'a web::RutisDshExit,
+            event: &'a rutis_dsh::events::Exit,
+            _: rutis::Call<'a, ()>,
         ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-            let _ = self.0.send(Stop::Exit(event.code as i32));
+            let _ = self.0.send(Stop::Exit(event.0 as i32));
             Box::pin(async { Ok(None) })
         }
     }

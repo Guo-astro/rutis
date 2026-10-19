@@ -585,6 +585,7 @@ impl Listener<ServiceChanged> for Provides {
         &'a self,
         _ctx: &'a Ctx,
         changed: &'a ServiceChanged,
+        _: rutis::Call<'a, ()>,
     ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
         if changed.change == ServiceChange::Provided && changed.key == self.key {
             *self.count.lock().unwrap() += 1;

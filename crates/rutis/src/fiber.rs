@@ -11,12 +11,12 @@ use crate::ctx::{Ctx, Shared};
 use crate::diagnostics::ServiceAccess;
 use crate::effect::{Effect, EffectMeta, EffectRecord};
 use crate::error::{aggregate_arcs, panic_error, CordisError, ServiceReadFailure};
-use crate::event::{CatchUnwind, Event};
+use crate::events::{CatchUnwind, Event};
 use crate::key::{InstanceId, ScopeId, TypeKey};
 use crate::{BoxFuture, Plugin, PluginFactory};
 
 /// 六态状态机(§四:保留 TS 六态)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FiberState {
     /// 等待声明的依赖就绪。
     Pending,
@@ -41,7 +41,9 @@ pub struct Snapshot {
 }
 
 /// 插件身份(D10:注册返回的显式 id,非闭包指针)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct PluginId(pub u64);
 
 /// 等待卸载的结果。超时只结束本次等待；驱动继续执行清理，再次调用
@@ -63,7 +65,7 @@ pub enum DisposeWaitError {
 
 /// fiber 状态迁移事件(D24:锁内 FIFO 入队、锁外分发;
 /// `seq` 保证提交顺序可识别,不保证 listener 完成顺序)。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct FiberStatusChanged {
     pub plugin_id: PluginId,
@@ -238,6 +240,10 @@ pub(crate) struct FiberInner {
     /// 失败的 fiber 因此也算消费者:驱逐时对它重查,依赖缺失则保持 Failed。
     pub last_deps: Mutex<Option<HashSet<(PluginId, u64, TypeKey, Option<crate::key::ScopeId>)>>>,
     pub accesses: Mutex<Vec<ServiceAccess>>,
+    /// The loader group this fiber is an instance of (`Ctx::mark_scope`).
+    pub scope_group: std::sync::OnceLock<Arc<str>>,
+    /// The row this fiber is (`Ctx::mark_row`).
+    pub row: std::sync::OnceLock<Arc<str>>,
 }
 
 /// 工厂擦除面(D32):泛型 `PluginFactory<C>` 的类型擦除适配层内部协议。
@@ -370,14 +376,60 @@ impl FiberInner {
         let _ = self.event_flights_tx.send(*count);
     }
 
+    /// Wait for the event calls counted on this fiber (listener calls,
+    /// observer calls) to finish, at most the shutdown deadline
+    /// (`RUTIS_SHUTDOWN_TIMEOUT`, protocol spec §7.1): past it, the
+    /// `listeners of … still running after <s>s; unloading anyway` error
+    /// goes to the error sink and the unload goes on without them.
     pub(crate) async fn wait_events(&self) {
         let mut rx = self.event_flights_tx.subscribe();
-        loop {
-            if *rx.borrow_and_update() == 0 {
-                return;
+        if *rx.borrow_and_update() == 0 {
+            return;
+        }
+        let settled = async move {
+            loop {
+                if *rx.borrow_and_update() == 0 {
+                    return;
+                }
+                if rx.changed().await.is_err() {
+                    return;
+                }
             }
-            if rx.changed().await.is_err() {
-                return;
+        };
+        let limit = shutdown_deadline();
+        // A thread keeps the time, not the runtime's timer: the kernel runs
+        // on whatever runtime it is given, timers enabled or not. It ends as
+        // soon as the calls finish (`done` dropped).
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        let (late, past) = tokio::sync::oneshot::channel::<()>();
+        let timer = std::thread::Builder::new()
+            .name("rutis-unload-deadline".into())
+            .spawn(move || {
+                if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                    finished.recv_timeout(limit)
+                {
+                    let _ = late.send(());
+                }
+            });
+        if timer.is_err() {
+            settled.await;
+            return;
+        }
+        tokio::select! {
+            () = settled => drop(done),
+            Ok(()) = past => {
+                let listeners = match self.ctx.row() {
+                    Some(row) => format!("row {row}"),
+                    None => format!("plugin {}", self.ctx.plugin_name()),
+                };
+                let error = CordisError::ListenersStillRunning {
+                    listeners,
+                    seconds: limit.as_secs_f64(),
+                };
+                let sink = self.ctx.error_sink();
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    sink(Arc::new(error))
+                }));
             }
         }
     }
@@ -431,6 +483,16 @@ impl FiberInner {
 
     pub(crate) fn state(&self) -> FiberState {
         self.transition.lock().unwrap().state
+    }
+
+    pub(crate) fn sequenced_snapshot(&self) -> (u64, Snapshot) {
+        let tr = self.transition.lock().unwrap();
+        let snapshot = Snapshot {
+            generation: tr.generation,
+            state: tr.state,
+            error: tr.error.clone(),
+        };
+        (tr.seq, snapshot)
     }
 
     pub(crate) fn state_snapshot(&self) -> Snapshot {
@@ -781,6 +843,19 @@ impl FiberInner {
         }
         this.flush_status();
     }
+}
+
+/// How long an unload waits for the event calls still running on a fiber
+/// (protocol spec §7.1): `RUTIS_SHUTDOWN_TIMEOUT` in seconds (fractions
+/// allowed, above 0; rutis-host sets it from `--shutdown-timeout`), 10 s
+/// otherwise.
+pub(crate) fn shutdown_deadline() -> Duration {
+    std::env::var("RUTIS_SHUTDOWN_TIMEOUT")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
+        .unwrap_or(Duration::from_secs(10))
 }
 
 /// fiber 驱动任务:意图串行处理(Loading→Unloading→Loading 不丢唤醒;
@@ -1180,6 +1255,8 @@ fn spawn_fiber_inner(
             provided: Mutex::new(Vec::new()),
             last_deps: Mutex::new(None),
             accesses: Mutex::new(Vec::new()),
+            scope_group: std::sync::OnceLock::new(),
+            row: std::sync::OnceLock::new(),
             shutdown_task: Mutex::new(None),
             shutdown_inner: Mutex::new(None),
             driver: Mutex::new(None),
@@ -1233,6 +1310,12 @@ impl FiberView {
     /// 当前快照。
     pub fn state(&self) -> Snapshot {
         self.inner.state_snapshot()
+    }
+
+    /// 当前快照,及造成它的 `FiberStatusChanged` 的 `seq`(尚无变化时为 0):
+    /// 与事件对照,可知哪些事件早于这份快照。
+    pub fn sequenced_state(&self) -> (u64, Snapshot) {
+        self.inner.sequenced_snapshot()
     }
 
     /// Current cleanup ownership tree for this fiber. Records being drained

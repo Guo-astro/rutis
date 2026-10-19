@@ -59,6 +59,20 @@ rutis-host: listening on <监听器名> <地址:端口>
 - 等待时间整秒写成 `30s`，否则保留一位小数。
 - 状态每 200 毫秒检查一次，只打印变化：和上一行一样的不再打印（例如每 30 秒一次的同一个拒绝只打印一次）；持续不到 200 毫秒的状态可能不打印。拨号方还没有结果（正在连接）、监听方还没有对端连进来时不打印。
 
+在 `emit` 里失败的监听器（发出方不等待，所以没有别人知道）在它运行的地方往 stderr 打一行：宿主自己的是 `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>`，运行时的由运行时打同样的一行；宿主没能送达的调用写明去了哪里（`in runtime <name>`、`in node <peer>`）。`emit` 的过滤函数失败打 `rutis: filter of <name> from row <row> failed: …`（挂载方式加载的插件写作 `from the mount`）。
+
+### 事件
+
+所有行的监听器，不论什么语言、是否在相连的节点上，都在一个事件总线上，规则只有一套（[统一事件](../design-events-2026-10-18.md)）：`rutis.json` 里什么都不用声明。`instanced` 组的某个实例里的行，听得到这个实例里和它之上发出的事件，听不到别的实例的。`rutis-host` 还会发出下面这些事件，各语言的插件都可以监听：
+
+| 事件 | 何时 |
+| --- | --- |
+| `rutis/row` | 行的每次状态变化：`{ row, plugin, scope, state: "pending" \| "running" \| "failed" \| "stopped", error }` |
+| `rutis/runtime` | 运行时运行起来（`running`）或结束（`down`，带 `reason`） |
+| `rutis/service` | 运行时的行提供的服务出现、被替换或撤走（`available`） |
+
+rutis 0.12 及更早的运行时（或节点）连进来时被拒绝：`incompatible session: the far end (…) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later`。
+
 ## 检查配置
 
 `check` 对每一行（被禁用的行除外）检查：

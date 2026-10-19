@@ -917,6 +917,111 @@ async fn a_failed_manifest_read_of_a_listed_binary_is_read_again_once_it_stood()
     assert_eq!(runs(&count), 2);
 }
 
+/// A Go binary (a script with the SDK's marker) at `path` built against a
+/// Go SDK older than 0.13: its manifest has the plugin `old`, and its
+/// session greets in the format of 0.12, without `events-v2`; each start
+/// adds a line to the file `runs`. It takes its channel as a Go binary
+/// does (its first argument): `fd:3`, a socket path to dial, or, with
+/// `RUTIS_LOCAL_HANDOVER=loopback`, `tcp:<address>` presenting the token of
+/// `RUTIS_CHANNEL_TOKEN` first.
+#[cfg(unix)]
+fn old_sdk(path: &Path, runs: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let script = format!(
+        r#"#!/usr/bin/env python3
+# rutis-go-runtime:1
+import os, socket, sys
+if sys.argv[1] == "--rutis-manifest":
+    print('{{"pluginApi":1,"plugins":{{"old":{{"inject":[],"provides":{{}}}}}}}}')
+    sys.exit(0)
+with open({runs:?}, "a") as runs:
+    runs.write("run\n")
+channel = sys.argv[1]
+if channel.startswith("fd:"):
+    conn = socket.socket(fileno=int(channel[3:]))
+elif channel.startswith("tcp:"):
+    host, port = channel[4:].rsplit(":", 1)
+    conn = socket.create_connection((host, int(port)))
+    conn.sendall((os.environ["RUTIS_CHANNEL_TOKEN"] + "\n").encode())
+else:
+    conn = socket.socket(socket.AF_UNIX)
+    conn.connect(channel.removeprefix("unix:"))
+conn.sendall(b'{{"op":"hello","version":2}}\n')
+while conn.recv(4096):
+    pass
+"#,
+        runs = runs.display().to_string()
+    );
+    std::fs::write(path, script).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A binary of a Go SDK older than 0.13 is refused at the handshake (events
+/// protocol §2.2), as a local runtime of Node, Bun or Python is: its runtime
+/// is down saying why, its binary is marked refused and is not started
+/// again, and its rows fail with the same message instead of waiting for
+/// it. A new binary in its place is tried.
+///
+/// guarantee: events/old-peer-refused, loader/go-runtimes
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_binary_of_an_old_sdk_is_refused_and_its_rows_fail() {
+    let fixture = fixture(None, &[]).await;
+    let plugins = fixture.dir.path().join("plugins");
+    let count = fixture.dir.path().join("runs");
+    old_sdk(&plugins.join("legacy"), &count);
+    let refusal = "incompatible session: the far end (a runtime older than rutis 0.13) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later";
+    fixture
+        .loader
+        .reconcile(
+            layer(vec![row("first", "go:old"), row("second", "go-legacy:old")]),
+            None,
+        )
+        .await
+        .unwrap();
+    let loader = fixture.loader.clone();
+    COLD.eventually_with(
+        || {
+            ["first", "second"]
+                .iter()
+                .all(|id| unresolved(&loader, id).is_some_and(|why| why.contains(refusal)))
+                .then_some(())
+        },
+        "the rows fail with the refusal",
+        || situation(&fixture, &["first", "second"]),
+    )
+    .await;
+    match runtime_state(&fixture.runtimes, "go-legacy") {
+        Some(GoRuntimeState::Stopped(why)) => assert!(why.contains(refusal), "{why}"),
+        other => panic!("the runtime: {other:?}"),
+    }
+    // Not started again: by sweeps, by its rows resolving again, by a new
+    // row.
+    fixture.loader.reload("first").await.unwrap_err();
+    fixture
+        .loader
+        .reconcile(
+            layer(vec![
+                row("first", "go:old"),
+                row("second", "go-legacy:old"),
+                row("third", "go:old"),
+            ]),
+            None,
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(runs(&count), 1, "started again");
+    assert!(unresolved(&fixture.loader, "third").is_some_and(|why| why.contains(refusal)));
+    // A new binary in its place is tried.
+    std::fs::remove_file(plugins.join("legacy")).unwrap();
+    old_sdk(&plugins.join("legacy"), &count);
+    let _ = fixture.loader.reload("third").await;
+    COLD.until(|| runs(&count) == 2, "the new binary started")
+        .await;
+    fixture.root.shutdown().await.unwrap();
+}
+
 /// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn names_of_other_resolvers_are_not_claimed() {

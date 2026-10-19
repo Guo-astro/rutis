@@ -91,6 +91,93 @@ In short:
 
 **Always pass ctx on.** The call chain (`path`) lives in `context.Context`: when Node calls your method synchronously and your method calls back into Node synchronously, Node recognizes the chain it is waiting on only if the call carries the ctx you received; with `context.Background()` both sides wait for each other. Under `rutis-host dev`, a call that lost its chain is reported once on stderr.
 
+### Events
+
+Every listener on a host, in any language and any process, is on one event bus ([design](../design-events-2026-10-18.en.md)): where an event is emitted and where its listeners are does not change the result.
+
+```go
+off := ctx.On("session/created", func(ctx context.Context, args ...any) (any, error) {
+	return nil, nil // nil and false are no result; anything else is one
+}, rutis.Prepend()) // options: rutis.Prepend(), rutis.Global()
+
+err := ctx.Emit(callerCtx, "session/created", id)          // returns at once; err only for a refused emission
+err = ctx.Parallel(callerCtx, "session/created", id)        // waits for all; *rutis.AggregateError in registration order
+value, err := ctx.Serial(callerCtx, "config/resolve", key)   // the first result
+value, err = ctx.Bail(callerCtx, "config/resolve", key)      // Serial as a synchronous call
+value, err = ctx.Waterfall(callerCtx, "chat/reply", terminal, msg) // terminal may be nil; terminal is a rutis.Terminal, func(ctx context.Context, args ...any) (any, error), called with the event's arguments
+value, err = ctx.Filter(func(l rutis.Listener) (bool, error) { return l.Row == "chat", nil }).Serial(callerCtx, "config/resolve", key)
+```
+
+A complete example: the plugin answers `greeting/pick` and adds a link to the `greeting/format` waterfall; the service it provides takes the first result with `Serial`, lets other plugins (in any language) rewrite the greeting with `Waterfall`, and notifies with `Emit`:
+
+```go
+package greeter
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/arcships/rutis/go/rutis"
+)
+
+type Greeter struct{ ctx *rutis.Ctx }
+
+func (g *Greeter) Hello(ctx context.Context, name, lang string) (string, error) {
+	word, err := g.ctx.Serial(ctx, "greeting/pick", lang) // the first result; nil when none
+	if err != nil {
+		return "", err
+	}
+	if word == nil {
+		word = "Hello"
+	}
+	text, err := g.ctx.Waterfall(ctx, "greeting/format", func(_ context.Context, args ...any) (any, error) {
+		return args[0], nil // the terminal: the innermost end of the chain
+	}, fmt.Sprintf("%v, %s", word, name))
+	if err != nil {
+		return "", err
+	}
+	if err := g.ctx.Emit(ctx, "greeting/said", name); err != nil { // returns at once
+		return "", err
+	}
+	return text.(string), nil
+}
+
+var Plugin = rutis.Define(rutis.Plugin[struct{}]{
+	Name: "greeter",
+	Apply: func(ctx *rutis.Ctx, _ struct{}) error {
+		ctx.On("greeting/pick", func(_ context.Context, args ...any) (any, error) {
+			if args[0] == "sv" {
+				return "Hej", nil
+			}
+			return nil, nil // no result: the next listener goes on
+		})
+		ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
+			next := args[len(args)-1].(rutis.Next) // waterfall: next is the last argument
+			inner, err := next(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return fmt.Sprintf("%v!", inner), nil
+		})
+		ctx.Provide("greeter", &Greeter{ctx: ctx})
+		return nil
+	},
+})
+```
+
+Python or TypeScript plugins, or Rust code in the host, listening to the same names join the same chain; see [plugin API: events](plugin-api.en.md#events).
+
+| Topic | Rule |
+| --- | --- |
+| Waterfall | The listener gets `next` (a `rutis.Next`, `func(context.Context) (any, error)`) as its last argument; calling it runs the rest of the chain, not calling it vetoes the rest; a second call fails with `WaterfallNext`. The outermost value is returned as it is |
+| Failures | A failing `Emit` listener never reaches the emitter or the other listeners: it is reported where the listener runs (`rutis: listener of <name> in row <row> failed: …` on stderr). `Parallel` runs all and returns an `*rutis.AggregateError` (even for one failure); `Serial`, `Bail` and `Waterfall` stop at the first error and return it |
+| Scope | A row hears what is emitted in its scope (`ctx.Scope()`, the loader instances around it) and in every scope inside it, never from beside or above |
+| Filter | `Filter(keep)` asks `keep` once per listener, in registration order, before any runs, with its `rutis.Listener` (`Name`, `Prefix`, `Plugin`, `Row`, `Runtime`, `Node`, `Scope`, `Global`); `keep` returns `(bool, error)`: an error it returns (or a panic) fails the dispatch before any listener runs, with that error (`Emit` does not return it but reports a line `rutis: filter of <name> from row <row> failed: …`); listeners registered with `rutis.Global()` skip filters |
+| Context | A listener's `ctx` is the emitter's (its call chain), cancelled when the row unloads, and when the emitter of a `Parallel`, `Serial`, `Waterfall` or `Bail` gives up; an `Emit` listener is not cancelled when the emitter gives up. Unloading waits for running listeners, at most `RUTIS_SHUTDOWN_TIMEOUT` |
+| Names | `internal/*` is the runtime's own; `rutis/*` (`rutis/service`, `rutis/row`, `rutis/runtime`) can be listened to but not emitted (`ReservedEvent`) |
+
+Pass on the context your caller gave you, as with service calls. `errors.Is(err, rutis.ErrWaterfallNext)` (and `ErrReservedEvent`, `ErrAsyncListener`, `ErrBinding`) matches an error of that name from any process.
+
 ## 3. Test
 
 `rutistest` needs no host, but the plugin runs in its real runtime and values cross a real session:
@@ -110,6 +197,30 @@ go test ./...
 ```
 
 `Provides` is optional: what `ctx.Provide` provides reaches rutis by itself, its methods the value's exported ones, all called as `async`. When present it applies (`Sync` marks synchronous methods, `Rename` renames them), and `rutis-host check` knows before running what the plugin provides.
+
+Events in tests: the test side is the host of the bus. `loaded.Emit`, `Parallel`, `Serial`, `Waterfall`, `Bail` and `Filter` emit from the row's scope; `loaded.On(name, fn)` listens as the host does (the plugin's emissions of that name then go through the test side, as they go through rutis); `loaded.Load(config, rutistest.InScope("t1/s1"))` loads another row in a scope; `loaded.Update(config)` changes a row's config as rutis does (the row loads again, its listeners registered anew, after the others); `loaded.Reported()` is what the runtime reported of failed `Emit` listeners. A test of the `greeter` above:
+
+```go
+func TestEvents(t *testing.T) {
+	loaded := rutistest.Load(t, Plugin, struct{}{}, nil)
+	said := make(chan any, 1)
+	loaded.On("greeting/said", func(_ context.Context, args ...any) (any, error) {
+		said <- args[0] // the test side listens as the host does
+		return nil, nil
+	})
+	var text string
+	if err := loaded.Service("greeter").Call(context.Background(), "hello", &text, "Ada", "sv"); err != nil {
+		t.Fatal(err)
+	}
+	if text != "Hej, Ada!" || <-said != "Ada" {
+		t.Fatalf("got %q", text)
+	}
+	word, err := loaded.Serial(context.Background(), "greeting/pick", "en") // the test emits too
+	if err != nil || word != nil {
+		t.Fatalf("got %v, %v", word, err)
+	}
+}
+```
 
 `Load` checks what a host would: the plugin uses only the services `Inject` declares; provided services are of the type `Provides` declares (an undeclared service is called as rutis calls it, by its exported methods, all async); cleanups succeed on unload. What works only within one process (passing a struct as an object, relying on shared memory) fails here.
 

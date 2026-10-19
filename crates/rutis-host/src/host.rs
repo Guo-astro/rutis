@@ -162,7 +162,21 @@ impl Host {
                 ));
             }
         }
-        let root = Ctx::root().map_err(|error| error.to_string())?;
+        // Event failures print as the protocol says (`rutis: listener of
+        // <name> in <where> failed: <ErrorName>: <message>`); the rest as
+        // the kernel prints them.
+        let fallback = rutis::default_sink();
+        let sink: rutis::ErrorSink =
+            std::sync::Arc::new(
+                move |error| match rutis_bridge::events::report_line(&error) {
+                    Some(line) => eprintln!("{line}"),
+                    None => fallback(error),
+                },
+            );
+        let root = Ctx::root_with_sink(
+            tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?,
+            sink,
+        );
         let mut catalog = ServiceCatalog::new();
         catalog.share_by_name();
 
