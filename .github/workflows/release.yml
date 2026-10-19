@@ -297,9 +297,10 @@ jobs:
 
   # After publishing: each channel from its registry, on Linux, and the
   # crate and the Go module (Q6.15.3). The registries can take minutes to
-  # serve a new version; this waits for them first, every npm platform
-  # package included. On a dry run it is skipped with what it needs. A failure opens an issue; whether to deprecate or
-  # yank is the maintainer's decision (docs/release.md, Q13.2).
+  # serve a new version; this waits for them first, every npm package of
+  # the train included. On a dry run it is skipped with what it needs. A
+  # failure opens an issue; whether to deprecate or yank is the maintainer's
+  # decision (docs/release.md, Q13.2).
   published:
     needs: [verify, github, go]
     runs-on: ubuntu-24.04
@@ -312,25 +313,21 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
-      # Every npm platform package too, and whatever the launcher's
-      # optionalDependencies name: npm installs @arcships/rutis-host without
-      # a platform package it cannot fetch yet, and the launcher then fails.
+      # Every npm package of the train (scripts/train.mjs --npm), the
+      # platform packages included: npm installs @arcships/rutis-host without
+      # a platform package it cannot fetch yet, and the launcher then fails;
+      # a package not served yet fails its install (ETARGET).
       - name: wait for the registries
         env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
+          packages=$(node scripts/train.mjs --npm)
           served() { npm view "$1" version --prefer-online >/dev/null 2>&1; }
           # What the registries do not serve yet, one line each.
           missing() {
-            served "@arcships/rutis-host@$VERSION" || echo "npm @arcships/rutis-host@$VERSION"
-            for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
-              served "@arcships/rutis-host-$platform@$VERSION" || echo "npm @arcships/rutis-host-$platform@$VERSION"
+            for package in $packages; do
+              served "$package@$VERSION" || echo "npm $package@$VERSION"
             done
-            if deps=$(npm view "@arcships/rutis-host@$VERSION" optionalDependencies --json --prefer-online 2>/dev/null) && [ -n "$deps" ]; then
-              for dep in $(node -e 'for (const [n, v] of Object.entries(JSON.parse(process.argv[1]))) console.log(`${n}@${v}`)' "$deps"); do
-                served "$dep" || echo "npm $dep (an optional dependency of @arcships/rutis-host@$VERSION)"
-              done
-            fi
             curl -sf "https://pypi.org/pypi/rutis-host/$VERSION/json" >/dev/null || echo "PyPI rutis-host $VERSION"
             curl -sf -A "rutis release (github.com/arcships/rutis)" "https://crates.io/api/v1/crates/rutis-host/$VERSION" >/dev/null \
               || echo "crates.io rutis-host $VERSION"
