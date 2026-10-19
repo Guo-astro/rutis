@@ -93,6 +93,7 @@ jobs:
       bun-matrix: ${{ steps.select.outputs.bun-matrix }}
       go: ${{ steps.select.outputs.go }}
       go-matrix: ${{ steps.select.outputs.go-matrix }}
+      swift: ${{ steps.select.outputs.swift }}
       repro: ${{ steps.select.outputs.repro }}
       specs: ${{ steps.select.outputs.specs }}
     steps:
@@ -148,6 +149,14 @@ jobs:
               - crates/rutis-bridge/**
               - crates/rutis-loader/**
               - crates/rutis-host/**
+            # The Swift SDK (the root Package.swift and swift/), and the Rust
+            # crates that start and run its runtimes.
+            swift:
+              - Package.swift
+              - swift/**
+              - crates/rutis-bridge/**
+              - crates/rutis-loader/**
+              - crates/rutis-host/**
             # What decides whether the SDK builds reproducibly. Kernel
             # changes reach the SDK too, but are checked in full runs
             # (Q12.6.3).
@@ -183,6 +192,7 @@ jobs:
           DOCS: ${{ steps.paths.outputs.docs }}
           BUN: ${{ steps.paths.outputs.bun }}
           GO: ${{ steps.paths.outputs.go }}
+          SWIFT: ${{ steps.paths.outputs.swift }}
           REPRO: ${{ steps.paths.outputs.repro }}
           SPECS: ${{ steps.paths.outputs.specs }}
           # JSON, as runs-on takes it.
@@ -203,6 +213,7 @@ jobs:
             echo "bun=$(pick "$BUN")"
             echo "repro=$(pick "$REPRO")"
             echo "go=$(pick "$GO")"
+            echo "swift=$(pick "$SWIFT")"
             echo "specs=$(pick "$SPECS")"
             # Pull requests: the oldest supported Bun and Go, on Linux only
             # (the minimum must be verified; network-macos runs the latest).
@@ -775,6 +786,54 @@ jobs:
       # Only rutis-host's Go tests: the other runtimes run in their own jobs.
       - name: cargo test (rutis-host, Go)
         run: cargo test -p rutis-host go
+      - name: self-hosted runner, end
+        if: always() && runner.environment == 'self-hosted'
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: bash tools/ci-self-hosted.sh end
+
+  # The Swift SDK (swift/rutis, the root Package.swift): its own tests,
+  # the library built for iOS where the runner has the iOS SDK, and the Rust
+  # tests that run its session and runtimes. macOS only (design §13), on the
+  # self-hosted Macs (MACOS_RUNNER) with their Xcode.
+  runtimes-swift:
+    needs: changes
+    if: needs.changes.outputs.swift == 'true'
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
+        if: runner.environment == 'self-hosted'
+        env:
+          RUTIS_CI_JOBS: ${{ vars.RUTIS_CI_JOBS }}
+        run: bash tools/ci-self-hosted.sh start
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Swift toolchain
+        run: swift --version
+      # The SDK's own tests run as a program (swift/rutis/Tests/SelfTest):
+      # the runners' Command Line Tools have no XCTest, and not every
+      # version has Swift Testing's macros.
+      - name: swift build and the SDK's tests
+        run: |
+          swift build
+          swift run RutisSelfTest
+      # The library for iOS (design §13: its core is iOS too), when this
+      # toolchain has the iOS SDK (Xcode).
+      - name: iOS build of the library
+        run: |
+          if sdk=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null); then
+            swift build --target Rutis --triple arm64-apple-ios17.0 --sdk "$sdk" --build-path .build/ios
+          else
+            echo "no iOS SDK on this runner: skipped"
+          fi
+      # Only the Swift tests of the contract suites: the other runtimes run
+      # in their own jobs.
+      - name: cargo test (the contract suites with Swift)
+        run: cargo test -p rutis-bridge --features testing,websocket,swift --test runtime_conformance --test value_roundtrip swift_
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
         env:
@@ -1552,6 +1611,7 @@ jobs:
       - dylib-macos
       - runtimes-windows
       - runtimes-go
+      - runtimes-swift
       - sdk-repro
       - sdk-repro-macos
       - sdk-repro-compare

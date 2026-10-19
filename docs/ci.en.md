@@ -96,6 +96,7 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 | `runtimes-windows` | Windows | `code`: only the tests that depend on the platform | All bridge and loader tests | The same on Windows (processes start over loopback); the Go SDK tests; the E2E harness and the E2E scenarios not limited to Unix (`rutis-e2e`: Job Objects, Ctrl-Break, residue checks); a build check of the whole workspace |
 | `runtimes-bun` | Linux | `bun`: Bun 1.4.0 | Linux latest; macOS 1.4.0 | Every Bun runtime test, with the reruns over loopback |
 | `runtimes-go` | Linux | `go`: Go oldstable | Linux stable; macOS oldstable; the reruns over loopback on Linux | Every Go SDK and Go runtime test |
+| `runtimes-swift` | macOS (self-hosted, §10) | `swift`: the toolchain of the runner's Xcode | — | The Swift SDK's own tests (`swift run RutisSelfTest`), its library built for iOS where the runner has the iOS SDK, and the Rust contract suites with the Swift session and runtimes |
 | `semver-rutis` | macOS (self-hosted, §10) | `packaging` | The whole job | Whether the public API changed incompatibly since the last release (warning only) |
 | `dylib-linux-launcher`, `dylib-linux-sdk-bundle` | Linux | `dylib` | — | Dylib tests, split into two jobs that run at the same time |
 | `dylib-linux-repro` | Linux | `repro` | The whole job | Reproducible SDK builds (built twice on one machine, in two directories) |

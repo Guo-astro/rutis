@@ -10,3 +10,8 @@ node_modules/
 /assets/logo/r2/
 /assets/logo/r3/
 /assets/logo/vector/
+
+# SwiftPM (the root Package.swift: swift/rutis)
+/.build/
+/.swiftpm/
+/Package.resolved
