@@ -273,6 +273,16 @@ fn bun() -> tokio::process::Command {
     command
 }
 
+#[cfg(feature = "kotlin")]
+mod kotlin;
+
+/// The Kotlin session fixture (`kotlin/rutis/rutis-conformance`, the jvm
+/// target), endpoint `kotlin`.
+#[cfg(feature = "kotlin")]
+fn kotlin() -> tokio::process::Command {
+    kotlin::session()
+}
+
 /// The session contract against `command`'s implementation, on `via`.
 async fn contract(command: tokio::process::Command, via: Via, far: &str) {
     let (channel, _child) = connect(command, via).await;
@@ -475,4 +485,40 @@ async fn go_ends_the_session_on_malformed_frames_on_loopback() {
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_ends_the_session_on_malformed_frames() {
     ends_on_malformed(bun, Via::UnixSocket).await;
+}
+
+// Kotlin (feature `kotlin`): the session of the Kotlin SDK's jvm target, on a
+// socket path it dials back and on loopback. No WebSocket cell: listening
+// is K-P2 (docs/design-android-runtime-2026-10-12.md §九).
+
+#[cfg(feature = "kotlin")]
+#[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(
+    windows,
+    ignore = "Unix socket column: Windows runtimes connect on loopback TCP"
+)]
+async fn kotlin_meets_the_session_contract_on_a_unix_socket() {
+    contract(kotlin(), Via::UnixSocket, "kotlin").await;
+}
+
+#[cfg(feature = "kotlin")]
+#[tokio::test(flavor = "multi_thread")]
+async fn kotlin_meets_the_session_contract_on_loopback() {
+    contract(kotlin(), Via::Loopback, "kotlin").await;
+}
+
+#[cfg(feature = "kotlin")]
+#[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(
+    windows,
+    ignore = "Unix socket column: Windows runtimes connect on loopback TCP"
+)]
+async fn kotlin_ends_the_session_on_malformed_frames_on_a_unix_socket() {
+    ends_on_malformed(kotlin, Via::UnixSocket).await;
+}
+
+#[cfg(feature = "kotlin")]
+#[tokio::test(flavor = "multi_thread")]
+async fn kotlin_ends_the_session_on_malformed_frames_on_loopback() {
+    ends_on_malformed(kotlin, Via::Loopback).await;
 }

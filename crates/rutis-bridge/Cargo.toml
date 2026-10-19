@@ -56,6 +56,10 @@ python = []
 go = []
 # Local Bun runtimes.
 bun = []
+# Tests only: the conformance suites with the Kotlin SDK (kotlin/rutis, its
+# jvm target), started through the generic `Launcher`; no Kotlin runtime is
+# configured in rutis-host (docs/design-android-runtime-2026-10-12.md K-P1).
+kotlin = []
 # The WebSocket transport.
 websocket = [
     "dep:futures-util",
