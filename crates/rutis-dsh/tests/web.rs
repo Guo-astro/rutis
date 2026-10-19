@@ -75,6 +75,47 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// How many ports [`started`] tries.
+const ATTEMPTS: usize = 5;
+
+/// Mounts the web profile `profile` in a new root context on a free port
+/// and waits until it is ready: the context, the port, what it reported.
+///
+/// dsh takes the port to listen on and reports no address, so the test
+/// picks a free one; another process may take it before dsh binds it
+/// (#455). A start that fails on a port in use (`EADDRINUSE`, or
+/// `EACCES` for a port Windows reserved) is retried on another.
+async fn started(
+    profile: &str,
+    workspace: &std::path::Path,
+) -> (Ctx, u16, rutis_dsh::events::Ready) {
+    let mut failures = Vec::new();
+    for _ in 0..ATTEMPTS {
+        let port = free_port();
+        let ctx = Ctx::root().unwrap();
+        let ready = first::<rutis_dsh::events::Ready>(&ctx);
+        let failed = first::<rutis_dsh::events::StartupFailed>(&ctx);
+        start(&ctx, profile, port, workspace).await;
+        let failure = DSH_START
+            .within("dsh started", async {
+                tokio::select! {
+                    ready = ready => Ok(ready.unwrap()),
+                    failed = failed => Err(failed.unwrap().0),
+                }
+            })
+            .await;
+        match failure {
+            Ok(ready) => return (ctx, port, ready),
+            Err(failure) if failure.contains("EADDRINUSE") || failure.contains("EACCES") => {
+                ctx.shutdown().await.unwrap();
+                failures.push(format!("port {port}: {failure}"));
+            }
+            Err(failure) => panic!("dsh failed to start: {failure}"),
+        }
+    }
+    panic!("dsh found no free port in {ATTEMPTS} tries: {failures:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_web_ui_starts_reports_failures_and_stops_with_its_mount() {
     // dsh keeps profiles and settings under DSH_HOME; the Node process
@@ -82,14 +123,10 @@ async fn the_web_ui_starts_reports_failures_and_stops_with_its_mount() {
     let home = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
     std::env::set_var("DSH_HOME", home.path());
-    let port = free_port();
 
     // Starts: the profile is up with the aimux route, and the UI answers
     // (without the startup token it refuses the request).
-    let ctx = Ctx::root().unwrap();
-    let ready = first::<rutis_dsh::events::Ready>(&ctx);
-    start(&ctx, "rutis-web", port, workspace.path()).await;
-    let ready = DSH_START.within("dsh started", ready).await.unwrap();
+    let (ctx, port, ready) = started("rutis-web", workspace.path()).await;
     assert!(
         ready.0.iter().any(|provider| provider == "aimux"),
         "{:?}",

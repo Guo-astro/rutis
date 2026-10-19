@@ -89,9 +89,10 @@ fn loopback(port: u16) -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], port))
 }
 
-/// Start node B on `port` with `token`: `ws://`, or `wss://` with the
-/// certificate `cert` (a name for [`tls`]). Returns once it listens.
-fn node(s: &Scenario, port: u16, token: &str, cert: Option<&str>) -> Host {
+/// Start node B with `token`: `ws://`, or `wss://` with the certificate
+/// `cert` (a name for [`tls`]), on a port it picks (`:0`). Returns once it
+/// listens, with the port it reported.
+fn node(s: &Scenario, token: &str, cert: Option<&str>) -> (Host, u16) {
     s.write("gpu/infer.py", INFER);
     let scheme = if cert.is_some() { "wss" } else { "ws" };
     let pythonpath = repo().join("python/rutis").display().to_string();
@@ -112,7 +113,7 @@ fn node(s: &Scenario, port: u16, token: &str, cert: Option<&str>) -> Host {
         [
             "-m".into(),
             "rutis".into(),
-            format!("listen:{scheme}://127.0.0.1:{port}/rutis"),
+            format!("listen:{scheme}://127.0.0.1:0/rutis"),
             "--id".into(),
             "gpu".into(),
             "--peer".into(),
@@ -121,8 +122,8 @@ fn node(s: &Scenario, port: u16, token: &str, cert: Option<&str>) -> Host {
         ],
         &env,
     );
-    b.expect("rutis: listening on");
-    b
+    let (_, port) = s.announced(&mut b);
+    (b, port)
 }
 
 /// Start host A dialing B at `dial` with `token` (and, for `wss://`,
@@ -196,8 +197,7 @@ fn stop(mut a: Host, mut b: Host) -> Host {
 fn a_cut_fails_the_call_in_progress_once_and_the_link_comes_back() {
     let s = Scenario::new("node-cut");
     let token = s.secret();
-    let port = s.port();
-    let mut b = node(&s, port, &token, None);
+    let (mut b, port) = node(&s, &token, None);
     let proxy = s.proxy(loopback(port));
     let (mut a, probe) = main_ready(&s, &format!("ws://{}/rutis", proxy.addr()), &token);
 
@@ -253,9 +253,11 @@ fn a_cut_fails_the_call_in_progress_once_and_the_link_comes_back() {
 fn a_node_killed_and_started_again_gives_a_new_lease() {
     let s = Scenario::new("node-restart");
     let token = s.secret();
-    let port = s.port();
-    let mut b = node(&s, port, &token, None);
-    let (mut a, probe) = main_ready(&s, &format!("ws://127.0.0.1:{port}/rutis"), &token);
+    let (mut b, port) = node(&s, &token, None);
+    // A dials one address throughout; the new B gets a port of its own
+    // (#455), which the proxy then relays to.
+    let proxy = s.proxy(loopback(port));
+    let (mut a, probe) = main_ready(&s, &format!("ws://{}/rutis", proxy.addr()), &token);
     assert_eq!(
         probe.call(&mut a, "infer", "run", json!(["first"])),
         Ok(json!("inferred first"))
@@ -267,7 +269,8 @@ fn a_node_killed_and_started_again_gives_a_new_lease() {
     a.expect("infer: waiting for its services");
     probe.event(&mut a, "stopped");
 
-    let mut b2 = node(&s, port, &token, None);
+    let (mut b2, port) = node(&s, &token, None);
+    proxy.retarget(loopback(port));
     a.expect("infer: running");
     probe.started(&mut a);
     assert_eq!(
@@ -294,8 +297,7 @@ fn a_node_killed_and_started_again_gives_a_new_lease() {
 fn refused_by_another_token(s: &Scenario) -> (Host, Host) {
     let token = s.secret();
     let other = s.secret();
-    let port = s.port();
-    let mut b = node(s, port, &token, None);
+    let (mut b, port) = node(s, &token, None);
     let proxy = s.proxy(loopback(port));
     let (mut a, probe) = main_ready(s, &format!("ws://{}/rutis", proxy.addr()), &token);
     assert_eq!(
@@ -305,7 +307,8 @@ fn refused_by_another_token(s: &Scenario) -> (Host, Host) {
 
     b.kill();
     b.wait_exit();
-    let b2 = node(s, port, &other, None);
+    let (b2, port) = node(s, &other, None);
+    proxy.retarget(loopback(port));
     // Connection 1 was the session with the first B; 2 is the first one
     // to reach the new B, which refuses it.
     proxy.wait_closed(2);
@@ -356,8 +359,7 @@ fn a_refused_reconnect_is_reported_by_its_category() {
 /// be refused keeps the connection open: the wait fails at the hang guard.
 fn over_tls(s: &Scenario, cert: &str, refused: bool) -> (Host, Host) {
     let token = s.secret();
-    let port = s.port();
-    let b = node(s, port, &token, Some(cert));
+    let (b, port) = node(s, &token, Some(cert));
     let proxy = s.proxy(loopback(port));
     let dial = format!("wss://localhost:{}/rutis", proxy.addr().port());
     let (mut a, probe) = main_host(s, &dial, &token);

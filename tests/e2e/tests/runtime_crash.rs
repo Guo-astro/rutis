@@ -91,8 +91,6 @@ struct Project {
     /// Declares no service, so it keeps running while the others wait; it
     /// looks the service up at each call.
     watch: Probe,
-    /// The host's listener: a port the second host binds again (B10).
-    port: u16,
 }
 
 fn project(s: &Scenario) -> Project {
@@ -123,17 +121,17 @@ fn project_with(s: &Scenario, py: serde_json::Value) -> Project {
     let probe = s.probe("probe", Lang::Node, &uses);
     let watch = s.probe("watch", Lang::Node, &[]);
     rows.extend([probe.row(), watch.row()]);
-    let port = s.port();
+    // Port 0: the first host picks it and reports it (#455).
     s.write_json(
         "rutis.json",
         &json!({
             "id": "e2e",
             "runtimes": runtimes,
-            "listen": [{ "name": "local", "address": format!("127.0.0.1:{port}") }],
+            "listen": [{ "name": "local", "address": "127.0.0.1:0" }],
             "rows": rows,
         }),
     );
-    Project { probe, watch, port }
+    Project { probe, watch }
 }
 
 /// The rows other than the probes.
@@ -217,14 +215,15 @@ fn stop(host: &mut Host) {
 fn a_killed_runtime_fails_its_calls_and_a_restart_recovers() {
     let s = Scenario::new("runtime-crash");
     let project = project(&s);
-    let Project { probe, watch, port } = &project;
+    let Project { probe, watch } = &project;
 
     // 1. Every row runs; calls cross Node → Python, and Bun → Node →
     //    Python. A held call answers once its gate opens.
     let mut host = start(&s, &project);
+    let port = s.listening(&mut host, "local").port();
     calls_work(&mut host, &project);
     assert!(
-        TcpStream::connect(("127.0.0.1", *port)).is_ok(),
+        TcpStream::connect(("127.0.0.1", port)).is_ok(),
         "the host does not listen on {port}"
     );
     let gate = s.dir().join("gate-1");
@@ -288,13 +287,18 @@ fn a_killed_runtime_fails_its_calls_and_a_restart_recovers() {
         .collect();
     assert!(failed.is_empty(), "rows failed: {failed:?}");
 
-    // 3. Stopped, and started again at once with the same configuration
-    //    (B10: the listener's port and the runtimes' channels are free).
+    // 3. Stopped, and started again at once with the same configuration,
+    //    its listener on the port the first host got (B10: the listener's
+    //    port and the runtimes' channels are free).
     stop(&mut host);
+    s.edit("rutis.json", |text| {
+        text.replace("127.0.0.1:0", &format!("127.0.0.1:{port}"))
+    });
     let mut host = start(&s, &project);
+    assert_eq!(s.listening(&mut host, "local").port(), port);
     calls_work(&mut host, &project);
     assert!(
-        TcpStream::connect(("127.0.0.1", *port)).is_ok(),
+        TcpStream::connect(("127.0.0.1", port)).is_ok(),
         "the restarted host does not listen on {port}"
     );
 

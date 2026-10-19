@@ -72,7 +72,9 @@ On the remote machine:
 
    A Go plugin binary accepts `listen:wss://…` as its channel the same way.
 
-   The Python runtime reports on stderr: `rutis: listening on …`; when a session ends, `rutis: session ended (<reason>); waiting for a controller` (reason such as `heartbeat timeout`, `connection lost`, `closed (1001): …`), or `rutis: session ended (replaced by a new connection)` when a new connection takes over.
+   Every remote runtime (Python, Node, Bun, a Go binary) reports on stderr the address it actually bound: `rutis: listening on <address>`. With port 0 (`listen:ws://127.0.0.1:0/rutis`) the system picks a free port; a script or test reads it from this line instead of picking a port first and passing it on (another process can take that port before the runtime binds it). `rutis-host run` does the same for its listeners: `rutis-host: listening on <name> <address>`.
+
+   The Python runtime also reports on stderr: when a session ends, `rutis: session ended (<reason>); waiting for a controller` (reason such as `heartbeat timeout`, `connection lost`, `closed (1001): …`), or `rutis: session ended (replaced by a new connection)` when a new connection takes over.
 
 ## 4b. Or let the runtime connect in (dialing out)
 
