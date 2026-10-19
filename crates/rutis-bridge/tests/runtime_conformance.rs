@@ -1,5 +1,5 @@
 //! The session conformance suite against every implementation of the
-//! session: Rust, Node, Python, Go and Bun, each serving `conformance` as
+//! session: Rust, Node, Python, Go, Bun and (feature `swift`) Swift, each serving `conformance` as
 //! endpoint of an endpoint-format session, on each channel it can take: a
 //! Unix socket path, a loopback TCP address it presents a token on (how
 //! runtimes are started on Windows), and a loopback WebSocket it listens on. Risk C10: the matrix, with
@@ -261,6 +261,32 @@ fn go() -> tokio::process::Command {
     tokio::process::Command::new(binary)
 }
 
+/// A product of the Swift package (the repository's root `Package.swift`),
+/// built with the `swift` on PATH.
+#[cfg(feature = "swift")]
+fn swift_product(product: &str) -> PathBuf {
+    let status = std::process::Command::new("swift")
+        .args(["build", "--product", product])
+        .current_dir(repo())
+        .status()
+        .expect("swift is on PATH");
+    assert!(status.success(), "swift build --product {product}");
+    let output = std::process::Command::new("swift")
+        .args(["build", "--show-bin-path"])
+        .current_dir(repo())
+        .output()
+        .expect("swift is on PATH");
+    PathBuf::from(String::from_utf8(output.stdout).unwrap().trim()).join(product)
+}
+
+/// The Swift session fixture (`swift/rutis/Sources/RutisSessionFixture`),
+/// built once per test binary.
+#[cfg(feature = "swift")]
+fn swift() -> tokio::process::Command {
+    static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    tokio::process::Command::new(BINARY.get_or_init(|| swift_product("RutisSessionFixture")))
+}
+
 /// Bun: Unix only, as the whole Bun runtime is (Bun on Windows is not a
 /// declared platform; docs/ci.md).
 #[cfg(all(unix, feature = "bun"))]
@@ -322,7 +348,8 @@ async fn python_meets_the_session_contract_on_a_websocket() {
 // No Go cell on a WebSocket: the Go SDK's WebSocket listener is internal to
 // the runtime (package rutis, `listen.go`), and the session fixture is a
 // separate program; the Go runtime's WebSocket column is in
-// session_matrix.rs. No Bun cell either: the Bun runtime's WebSocket
+// session_matrix.rs. No Swift cell: listening is a later phase of the
+// Swift SDK (A1, docs/design-swift-sdk-2026-10-12.md §15). No Bun cell either: the Bun runtime's WebSocket
 // listener is in its supervising process (`src/remote.ts`), and its
 // WebSocket column is in session_matrix.rs too.
 
@@ -340,6 +367,18 @@ async fn go_meets_the_session_contract_on_a_unix_socket() {
 #[tokio::test(flavor = "multi_thread")]
 async fn go_meets_the_session_contract_on_loopback() {
     contract(go(), Via::Loopback, "go").await;
+}
+
+#[cfg(feature = "swift")]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_meets_the_session_contract_on_a_unix_socket() {
+    contract(swift(), Via::UnixSocket, "swift").await;
+}
+
+#[cfg(feature = "swift")]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_meets_the_session_contract_on_loopback() {
+    contract(swift(), Via::Loopback, "swift").await;
 }
 
 #[cfg(all(unix, feature = "bun"))]
@@ -469,6 +508,19 @@ async fn go_ends_the_session_on_malformed_frames_on_a_unix_socket() {
 #[tokio::test(flavor = "multi_thread")]
 async fn go_ends_the_session_on_malformed_frames_on_loopback() {
     ends_on_malformed(go, Via::Loopback).await;
+}
+
+/// Swift ends the session on the same malformed and dangling frames.
+#[cfg(feature = "swift")]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_ends_the_session_on_malformed_frames_on_a_unix_socket() {
+    ends_on_malformed(swift, Via::UnixSocket).await;
+}
+
+#[cfg(feature = "swift")]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_ends_the_session_on_malformed_frames_on_loopback() {
+    ends_on_malformed(swift, Via::Loopback).await;
 }
 
 #[cfg(all(unix, feature = "bun"))]

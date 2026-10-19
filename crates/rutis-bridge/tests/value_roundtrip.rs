@@ -1224,6 +1224,69 @@ async fn go_tagged_values_round_trip() {
     .unwrap();
 }
 
+// ── Swift: values, tagged values, depth and release counts ───────────
+
+/// The Swift session fixture (`swift/rutis/Sources/RutisSessionFixture`),
+/// built once per test binary with the `swift` on PATH. Its echo returns
+/// the value as the session received it, so tagged values come back
+/// exactly as sent.
+#[cfg(feature = "swift")]
+async fn swift_far_end() -> (Connection, tokio::process::Child) {
+    static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let binary = BINARY.get_or_init(|| {
+        let product = "RutisSessionFixture";
+        let status = std::process::Command::new("swift")
+            .args(["build", "--product", product])
+            .current_dir(repo())
+            .status()
+            .expect("swift is on PATH");
+        assert!(status.success(), "swift build --product {product}");
+        let output = std::process::Command::new("swift")
+            .args(["build", "--show-bin-path"])
+            .current_dir(repo())
+            .output()
+            .expect("swift is on PATH");
+        PathBuf::from(String::from_utf8(output.stdout).unwrap().trim()).join(product)
+    });
+    far_end(tokio::process::Command::new(binary), "swift").await
+}
+
+#[cfg(feature = "swift")]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_values_round_trip() {
+    let (near, _child) = swift_far_end().await;
+    tokio::task::spawn_blocking(move || round_trip(&near, "swift", Numbers::Exact))
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "swift")]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_tagged_values_round_trip() {
+    let (near, _child) = swift_far_end().await;
+    tokio::task::spawn_blocking(move || tagged_round_trip(&near, "swift"))
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "swift")]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_depth_limit() {
+    let (near, _child) = swift_far_end().await;
+    tokio::task::spawn_blocking(move || depth_limit(&near, "swift"))
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "swift")]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_releases_balance() {
+    let (near, _child) = swift_far_end().await;
+    tokio::task::spawn_blocking(move || releases_balance(&near, "swift"))
+        .await
+        .unwrap();
+}
+
 #[cfg(feature = "bun")]
 async fn bun_far_end() -> (Connection, tokio::process::Child) {
     let mut command = tokio::process::Command::new("bun");
