@@ -837,6 +837,34 @@ jobs:
         run: cargo test -p rutis-bridge --features testing,websocket,swift --test runtime_conformance --test value_roundtrip --test session_matrix swift_
       - name: cargo test (the Swift runtime in the bridge)
         run: cargo test -p rutis-bridge --features testing,swift --test swift_runtime
+      # Swift rows beside Node and Python ones: their runtimes too.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm --prefix node/rutis-runtime ci
+      - uses: astral-sh/setup-uv@v6
+        if: runner.environment == 'self-hosted'
+      - name: Python 3.10 (self-hosted macOS)
+        if: runner.environment == 'self-hosted'
+        run: |
+          uv python install 3.10
+          uv venv --seed --python-preference only-managed --python 3.10 "$RUNNER_TEMP/python"
+          echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-python@v5
+        if: runner.environment == 'github-hosted'
+        with:
+          python-version: '3.10'
+      - name: cargo test (Swift rows)
+        run: |
+          cargo test -p rutis-loader --features node,python,swift --test swift_rows --test multilang_swift
+          cargo test -p rutis-loader --features node,python,swift --test caller_rows --test sync_cycles swift
+      # The events conformance with X a Swift plugin, in the placements a
+      # pull request runs (written; full runs sample more).
+      - name: cargo test (events conformance, X Swift)
+        env:
+          RUTIS_EVENTS_REQUIRE: swift
+          RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
+        run: cargo test -p rutis-loader --features node,python,swift --test events_conformance events_with_x_a_swift_plugin
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'
         env:

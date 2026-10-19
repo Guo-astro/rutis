@@ -1,15 +1,15 @@
 # Plugin API
 
-TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) and Go plugins (`github.com/arcships/rutis/go/rutis`, see [Go plugins](go-plugin.en.md)) use the same conventions. The current plugin API version is **3**.
+TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) and Go plugins (`github.com/arcships/rutis/go/rutis`, see [Go plugins](go-plugin.en.md)) use the same conventions; so do Swift plugins (the Swift package `Rutis` of this repository, a preview until its guide: [swift/README.md](../../swift/README.md)). The current plugin API version is **3**.
 
 ## Declarations
 
-| Declaration | TypeScript (`definePlugin({...})`) | Python (`define_plugin(apply, ...)` or module variable) | Go (`rutis.Define(rutis.Plugin[C]{...})`) | Meaning |
-| --- | --- | --- | --- | --- |
-| Services used | `inject: ['llm']` | `inject=["llm"]` | `Inject: []string{"llm"}` | The plugin starts when all are ready. If any is revoked, the plugin stops and waits for it to return. |
-| Services provided (optional) | `provides: { weather: { today: 'sync' } }` | `provides={"weather": Weather}` or `{"weather": {"today": "sync"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}` (exported methods, `async` unless `Sync` names them) | Not needed: what `ctx.provide` provides reaches rutis by itself (see below). When present it applies: it marks methods `sync` and lets `rutis-host check` know before running who provides what; a declared service offers only its declared methods. |
-| Configuration | `config: { type: 'object', ... }` | `config={...}` (module variable: `Config`) | the type `C` (schema derived from it), or `Schema` | JSON Schema used by the host to validate and display configuration. |
-| Startup | `apply(ctx, config)` | `apply(ctx, config)` | `Apply: func(ctx *rutis.Ctx, config C) error` | May be async; returns a cleanup function or nothing (Go: an error fails the load). |
+| Declaration | TypeScript (`definePlugin({...})`) | Python (`define_plugin(apply, ...)` or module variable) | Go (`rutis.Define(rutis.Plugin[C]{...})`) | Swift (`Rutis.define(Plugin(...))`, preview) | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| Services used | `inject: ['llm']` | `inject=["llm"]` | `Inject: []string{"llm"}` | `inject: ["llm"]` | The plugin starts when all are ready. If any is revoked, the plugin stops and waits for it to return. |
+| Services provided (optional) | `provides: { weather: { today: 'sync' } }` | `provides={"weather": Weather}` or `{"weather": {"today": "sync"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}` (exported methods, `async` unless `Sync` names them) | `provides: ["weather": .of(Weather.self, sync: ["unit"])]` (the methods of a `@RutisService` type, `async` unless `sync` names them) | Not needed: what `ctx.provide` provides reaches rutis by itself (see below). When present it applies: it marks methods `sync` and lets `rutis-host check` know before running who provides what; a declared service offers only its declared methods. |
+| Configuration | `config: { type: 'object', ... }` | `config={...}` (module variable: `Config`) | the type `C` (schema derived from it), or `Schema` | the `Decodable` type of `config:` (schema from `@RutisConfig`, or `static let rutisSchema`) | JSON Schema used by the host to validate and display configuration. |
+| Startup | `apply(ctx, config)` | `apply(ctx, config)` | `Apply: func(ctx *rutis.Ctx, config C) error` | `apply: { ctx, config in ... }` (`async throws`) | May be async; returns a cleanup function or nothing (Go: an error fails the load). |
 
 ## `ctx`
 
@@ -61,19 +61,19 @@ Rust also has `waterfall_sync`: a synchronous `waterfall`, under the same rules 
 
 Each language has the five modes, written the language's own way:
 
-| | Rust (`rutis`) | Node / Bun leaf plugin (`@arcships/rutis`) | Cordis plugin (in the Node runtime) | Python (`rutis`) | Go (`rutis`) |
-| --- | --- | --- | --- | --- | --- |
-| Listen | `ctx.events().on(ctx, &key, listener)`; a synchronous listener `on_sync`; with options `on_opt` / `on_sync_opt`; a prefix `on_pattern(ctx, &EventPattern::prefix(p), ..)`; `once` | `ctx.on(name, fn, { prepend, global }?)` → `() => void` | Cordis's own `ctx.on(name, fn, options?)` → `() => boolean`; `ctx.once` | `ctx.on(name, fn, *, prepend=False, global_=False)` → `Callable[[], None]` | `ctx.On(name, func(ctx context.Context, args ...any) (any, error), rutis.Prepend(), rutis.Global())` → `func()` |
-| Listener | `impl Listener<E>`: `call(ctx, &event, call: Call<'_, E::Value>)`, with `call.mode()`, `call.next()`; an `on_sync` closure gets a `SyncCall` | `(...args[, next]) => value \| Promise` | The same | `fn(*args[, next])`, may be `async def` | `fn(ctx, args...)`; in a waterfall the last argument is a `rutis.Next` (`func(context.Context) (any, error)`) |
-| `emit` | `emit(ctx, &key, Arc<E>) -> Result<()>` | `ctx.emit(name, ...args): void` | `ctx.emit([thisArg,] name, ...args)` | `ctx.emit(name, *args) -> None` | `ctx.Emit(ctx, name, args...) error` (refusals only) |
-| `parallel` | `parallel(ctx, &key, Arc<E>).await` | `await ctx.parallel(name, ...args)` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` |
-| `serial` | `serial(ctx, &key, Arc<E>).await -> Option<E::Value>` | `await ctx.serial(name, ...args)` | `await ctx.serial([thisArg,] name, ...args)` | `await ctx.serial(name, *args)` | `ctx.Serial(ctx, name, args...) (any, error)` |
-| `waterfall` | `waterfall(ctx, &key, &e, terminal).await` (`()`: no terminal) | `ctx.waterfall(name, ...args)`; with a terminal `ctx.waterfall.with(terminal)(name, ...args)` (every argument is the event's, functions too) | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)` (`terminal` a `rutis.Terminal`, `func(ctx, args ...any) (any, error)`, or `nil`) |
-| `bail` | `bail_sync(ctx, &key, &e)`; `waterfall_sync(ctx, &key, &e, terminal)` | `ctx.bail(name, ...args)` | `ctx.bail([thisArg,] name, ...args)` | `ctx.bail(name, *args)` | `ctx.Bail(ctx, name, args...) (any, error)` |
-| Filter | `ctx.events().filter(\|info\| ..)`, then the same six methods | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`, `c.rutis` is the descriptor | `ctx.filter(lambda d: ...)` → an object with the five methods | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter` |
-| Scope | `ctx.scope()` | the descriptor's `scope` | `ctx.rutis.scope` | the descriptor's `scope` | `ctx.Scope()` |
-| Unload signal | a listener is called with the `ctx` that registered it: `ctx.cancelled()` | `ctx.signal` | `ctx.signal` | the listener's task is cancelled | the listener's `ctx` is cancelled |
-| `parallel` failures | `CordisError::ListenersFailed` | `AggregateError` | `AggregateError` | `rutis.AggregateError` (`errors`) | `*rutis.AggregateError` (`Errors`) |
+| | Rust (`rutis`) | Node / Bun leaf plugin (`@arcships/rutis`) | Cordis plugin (in the Node runtime) | Python (`rutis`) | Go (`rutis`) | Swift (`Rutis`, preview) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Listen | `ctx.events().on(ctx, &key, listener)`; a synchronous listener `on_sync`; with options `on_opt` / `on_sync_opt`; a prefix `on_pattern(ctx, &EventPattern::prefix(p), ..)`; `once` | `ctx.on(name, fn, { prepend, global }?)` → `() => void` | Cordis's own `ctx.on(name, fn, options?)` → `() => boolean`; `ctx.once` | `ctx.on(name, fn, *, prepend=False, global_=False)` → `Callable[[], None]` | `ctx.On(name, func(ctx context.Context, args ...any) (any, error), rutis.Prepend(), rutis.Global())` → `func()` | `ctx.on(name, prepend:, global:) { (args...) in ... }` → `() -> Void` |
+| Listener | `impl Listener<E>`: `call(ctx, &event, call: Call<'_, E::Value>)`, with `call.mode()`, `call.next()`; an `on_sync` closure gets a `SyncCall` | `(...args[, next]) => value \| Promise` | The same | `fn(*args[, next])`, may be `async def` | `fn(ctx, args...)`; in a waterfall the last argument is a `rutis.Next` (`func(context.Context) (any, error)`) | a closure of any parameters, decoded by their types; in a waterfall the last one is a `Rutis.Next<R>` (`async throws -> R?`) |
+| `emit` | `emit(ctx, &key, Arc<E>) -> Result<()>` | `ctx.emit(name, ...args): void` | `ctx.emit([thisArg,] name, ...args)` | `ctx.emit(name, *args) -> None` | `ctx.Emit(ctx, name, args...) error` (refusals only) | `try ctx.emit(name, args...)` (refusals only) |
+| `parallel` | `parallel(ctx, &key, Arc<E>).await` | `await ctx.parallel(name, ...args)` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` | `try await ctx.parallel(name, args...)` |
+| `serial` | `serial(ctx, &key, Arc<E>).await -> Option<E::Value>` | `await ctx.serial(name, ...args)` | `await ctx.serial([thisArg,] name, ...args)` | `await ctx.serial(name, *args)` | `ctx.Serial(ctx, name, args...) (any, error)` | `try await ctx.serial(name, args..., as: R.self)` |
+| `waterfall` | `waterfall(ctx, &key, &e, terminal).await` (`()`: no terminal) | `ctx.waterfall(name, ...args)`; with a terminal `ctx.waterfall.with(terminal)(name, ...args)` (every argument is the event's, functions too) | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)` (`terminal` a `rutis.Terminal`, `func(ctx, args ...any) (any, error)`, or `nil`) | `try await ctx.waterfall(name, args..., as: R.self) { terminal }` |
+| `bail` | `bail_sync(ctx, &key, &e)`; `waterfall_sync(ctx, &key, &e, terminal)` | `ctx.bail(name, ...args)` | `ctx.bail([thisArg,] name, ...args)` | `ctx.bail(name, *args)` | `ctx.Bail(ctx, name, args...) (any, error)` | `try await ctx.bail(name, args..., as: R.self)` (synchronous on the wire) |
+| Filter | `ctx.events().filter(\|info\| ..)`, then the same six methods | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`, `c.rutis` is the descriptor | `ctx.filter(lambda d: ...)` → an object with the five methods | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter` | `ctx.filter { (l: Rutis.Listener) in ... }` → `Rutis.Emitter` |
+| Scope | `ctx.scope()` | the descriptor's `scope` | `ctx.rutis.scope` | the descriptor's `scope` | `ctx.Scope()` | `ctx.scope` |
+| Unload signal | a listener is called with the `ctx` that registered it: `ctx.cancelled()` | `ctx.signal` | `ctx.signal` | the listener's task is cancelled | the listener's `ctx` is cancelled | the listener's Task is cancelled |
+| `parallel` failures | `CordisError::ListenersFailed` | `AggregateError` | `AggregateError` | `rutis.AggregateError` (`errors`) | `*rutis.AggregateError` (`Errors`) | `RutisError` named `AggregateError` (`errors`) |
 
 In Node, `waterfall` returns a Promise whenever a listener is outside the process, so always `await` it. In Go, pass the `ctx` you received when emitting from a plugin method (it carries the call chain), and `ctx` itself in `Apply`. Rust's emitting methods are on `ctx.events()` and take the emitter's `ctx` first.
 
@@ -275,18 +275,18 @@ Values are not copied within one process. Code that mutates an object after pass
 
 ### The ten values
 
-| Value | JS (Node, Bun) | Python | Go | Rust (`rutis-bridge`) |
-| --- | --- | --- | --- | --- |
-| Point in time | `Date` | `datetime` with a time zone (received in UTC) | `time.Time` (received in UTC) | `Instant` |
-| Local date and time | String `"2026-10-15T14:30:05"` | `datetime` without a time zone | `rutis.DateTime` | `DateTime` |
-| Date | String `"2026-10-15"` | `date` | `rutis.Date` | `Date` |
-| Time of day | String `"14:30:05"` | `time` without a time zone | `rutis.TimeOfDay` | `TimeOfDay` |
-| Binary data | `Uint8Array` (`Buffer`, `ArrayBuffer`, `DataView` can be sent too) | `bytes` (`bytearray`, `memoryview` can be sent too) | `[]byte` | `Vec<u8>` (`Bytes` in generated code) |
-| Map | `Map` | `dict` with a key that is not a string (received as a subclass of `dict`) | A map whose keys are not strings (`map[any]any` decoded into `any`) | `Vec<(Value, Value)>` (`ValueMap` in generated code) |
-| Set | `Set` | `set` (`frozenset` can be sent too) | `map[K]struct{}`, or a slice (a slice decoded into `any`) | `Vec<Value>` (`ValueSet` in generated code) |
-| Big integer | `bigint` | `int` (received as a subclass of `int`) | `*big.Int`, or an integer type that holds it | `BigInt`, or an integer type that holds it |
-| Decimal | String `"12.30"` | `Decimal` | `rutis.Decimal` | `Decimal` |
-| UUID | String (lowercase) | `UUID` | `rutis.UUID` | `Uuid` |
+| Value | JS (Node, Bun) | Python | Go | Rust (`rutis-bridge`) | Swift (preview) |
+| --- | --- | --- | --- | --- | --- |
+| Point in time | `Date` | `datetime` with a time zone (received in UTC) | `time.Time` (received in UTC) | `Instant` | `Date` (to the microsecond) |
+| Local date and time | String `"2026-10-15T14:30:05"` | `datetime` without a time zone | `rutis.DateTime` | `DateTime` | `Rutis.DateTime` |
+| Date | String `"2026-10-15"` | `date` | `rutis.Date` | `Date` | `Rutis.CalendarDate` |
+| Time of day | String `"14:30:05"` | `time` without a time zone | `rutis.TimeOfDay` | `TimeOfDay` | `Rutis.TimeOfDay` |
+| Binary data | `Uint8Array` (`Buffer`, `ArrayBuffer`, `DataView` can be sent too) | `bytes` (`bytearray`, `memoryview` can be sent too) | `[]byte` | `Vec<u8>` (`Bytes` in generated code) | `Data` |
+| Map | `Map` | `dict` with a key that is not a string (received as a subclass of `dict`) | A map whose keys are not strings (`map[any]any` decoded into `any`) | `Vec<(Value, Value)>` (`ValueMap` in generated code) | A `Dictionary` whose keys are not `String` (`[AnyHashable: Any?]` decoded into `Any`) |
+| Set | `Set` | `set` (`frozenset` can be sent too) | `map[K]struct{}`, or a slice (a slice decoded into `any`) | `Vec<Value>` (`ValueSet` in generated code) | `Set` |
+| Big integer | `bigint` | `int` (received as a subclass of `int`) | `*big.Int`, or an integer type that holds it | `BigInt`, or an integer type that holds it | `Rutis.BigInt`, or an integer type that holds it |
+| Decimal | String `"12.30"` | `Decimal` | `rutis.Decimal` | `Decimal` | `Decimal` (38 digits, no trailing zeros; declare `String` for the text) |
+| UUID | String (lowercase) | `UUID` | `rutis.UUID` | `Uuid` | `UUID` |
 
 - Plugins write their language's native code; rutis does the conversion. A received big integer or map is, in Python, a subclass of `int` or `dict`, used as usual; passed on as it is, it is still a big integer or map.
 - JS has no type for local date-times, dates, times of day, decimals or UUIDs: they arrive as plain strings, their content complete, and `===` works as usual. Passed on from JS as they are, such values lose their type (a `date` sent by Python comes back through JS as a `str`). To create one of these five values from nothing in JS, or to pass one on as its type, use the constructors of `@arcships/rutis`: `rutis.datetime('2026-10-15T14:30')`, `rutis.date('2026-10-15')`, `rutis.time('14:30')`, `rutis.decimal('1.10')`, `rutis.uuid('…')`; a plain string is still a string. Go can also decode these five values into a `string`.
