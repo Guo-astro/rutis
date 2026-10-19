@@ -1,0 +1,6 @@
+{
+  "format": 1,
+  "rows": [
+    { "id": "{{id}}", "config": { "greeting": "Hello" } }
+  ]
+}

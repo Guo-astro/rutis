@@ -117,7 +117,12 @@ fn normalized(config: &HostConfig, dir: &Path) -> Value {
         restart(bun.restart, &mut fields);
         runtimes.insert("bun".into(), fields.into());
     }
-    if let Some(go) = &config.runtimes.go {
+    // `swift` (0.14): the same settings as `go`.
+    for (key, go) in [
+        ("go", &config.runtimes.go),
+        ("swift", &config.runtimes.swift),
+    ] {
+        let Some(go) = go else { continue };
         let mut fields = Map::new();
         paths(&[&go.dir], &["dir"], &mut fields);
         let binaries: Vec<Value> = go.binaries.iter().map(|b| path(b, dir)).collect();
@@ -133,7 +138,7 @@ fn normalized(config: &HostConfig, dir: &Path) -> Value {
         fields.insert("project".into(), path(&go.project, dir));
         // `restart` (0.14) likewise.
         restart(go.restart, &mut fields);
-        runtimes.insert("go".into(), fields.into());
+        runtimes.insert(key.into(), fields.into());
     }
     let remote: Vec<Value> = config
         .runtimes

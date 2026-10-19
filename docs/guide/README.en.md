@@ -8,6 +8,7 @@ Choose a guide based on what you want to do:
 | Write a plugin in TypeScript / JavaScript, run by Bun | [Write a Bun plugin](bun-plugin.en.md) |
 | Write a plugin in Python | [Write a Python plugin](python-plugin.en.md) |
 | Write a plugin in Go | [Write a Go plugin](go-plugin.en.md) |
+| Write a macOS plugin in Swift | [Write a Swift plugin](swift-plugin.en.md) |
 | Look up the plugin API and value passing rules | [Plugin API](plugin-api.en.md) |
 | Send and receive events between plugins (any language, process or node) | [Plugin API: events](plugin-api.en.md#events) |
 | Run plugins without writing Rust | [rutis-host and rutis.json](rutis-host.en.md) |
@@ -17,11 +18,11 @@ Choose a guide based on what you want to do:
 
 ## Packages
 
-| User | Rust (crates.io) | Node (npm) | Python (PyPI) | Go |
-| --- | --- | --- | --- | --- |
-| Plugin author | `rutis-sdk` (dylib plugins) | `@arcships/rutis` | `rutis` | `github.com/arcships/rutis/go/rutis` |
-| Host (runs plugins) | `rutis`, `rutis-loader`, `rutis-bridge`, `rutis-dylib` | `@arcships/rutis-runtime` (Node), `@arcships/rutis-bun` (Bun) | `rutis` | (a plugin binary has its runtime) |
-| Host without Rust | `rutis-host` | `@arcships/rutis-host` | `rutis-host` | |
+| User | Rust (crates.io) | Node (npm) | Python (PyPI) | Go | Swift (SwiftPM) |
+| --- | --- | --- | --- | --- | --- |
+| Plugin author | `rutis-sdk` (dylib plugins) | `@arcships/rutis` | `rutis` | `github.com/arcships/rutis/go/rutis` | `https://github.com/arcships/rutis` (products `Rutis`, `RutisTest`) |
+| Host (runs plugins) | `rutis`, `rutis-loader`, `rutis-bridge`, `rutis-dylib` | `@arcships/rutis-runtime` (Node), `@arcships/rutis-bun` (Bun) | `rutis` | (a plugin binary has its runtime) | (a plugin binary has its runtime) |
+| Host without Rust | `rutis-host` | `@arcships/rutis-host` | `rutis-host` | | |
 
 All of these packages, the `rutis` core and the dylib toolchain included, are released together with matching version numbers (a release train, currently 0.13). Use the same version for every rutis package.
 
@@ -33,4 +34,5 @@ Upgrading from 0.13: see [migrating to 0.14](../migration-0.14.en.md) (no code c
 - Node 22 or later, or Bun 1.4 or later, for TypeScript / JavaScript plugins.
 - Python 3.10 or later for Python plugins.
 - Go 1.24 or later only to write Go plugins and build their binaries; running a Go plugin binary needs no Go.
+- macOS 14 or later and a Swift 6 toolchain only to write Swift plugins and build their binaries; running a Swift plugin binary needs no toolchain, and runs on macOS only.
 - Rust 1.88 or later, only when embedding rutis in Rust. This version is verified with the repository's `Cargo.lock`; when an older Rust resolves dependencies itself, setting `resolver.incompatible-rust-versions = "fallback"` in the Cargo configuration makes Cargo pick dependency versions that work.

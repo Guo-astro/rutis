@@ -2,21 +2,19 @@
 //! (`go-<binary>`), started when a row uses it (or with the host); rows
 //! `go:<plugin>` and `go-<binary>:<plugin>`.
 //!
-//! Unlike the other languages it has no single runtime: it overrides
-//! [`Language::start`] to add the binaries' resolver to the chain, and
-//! mounts the runtimes once the loader runs ([`super::Later`]).
+//! Unlike the interpreted languages it has no single runtime: it overrides
+//! [`Language::start`] with what the compiled languages share
+//! ([`super::binary`]).
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use rutis::Ctx;
-use rutis_bridge::runtime::Stdio;
-use rutis_loader::{GoBinaries, GoResolver, GoRuntimes, ServiceCatalog};
+use rutis::BoxFuture;
 use serde_json::{json, Value};
 
-use super::{id_of, Language, Mount, LANGUAGES};
-use crate::config::{GoRuntime, GoStart, HostConfig, Restart, Runtimes};
-use crate::host::{Error, GoHost};
+use super::binary::{self, DevBuild};
+use super::{id_of, Language, Mount};
+use crate::config::{BinaryStart, GoRuntime, HostConfig, Restart, Runtimes};
+use crate::host::Error;
 
 pub struct Go;
 
@@ -54,13 +52,7 @@ impl Language for Go {
 
     fn rebase(&self, runtimes: &mut Runtimes, at: &dyn Fn(&mut PathBuf)) {
         if let Some(go) = &mut runtimes.go {
-            if let Some(dir) = &mut go.dir {
-                at(dir);
-            }
-            for binary in &mut go.binaries {
-                at(binary);
-            }
-            at(&mut go.project);
+            rebase(go, at);
         }
     }
 
@@ -72,11 +64,7 @@ impl Language for Go {
 
     /// `go:<plugin>` and `go-<binary>:<plugin>` are the Go runtimes' rows.
     fn claims(&self, name: &str) -> Option<String> {
-        (name == "go" || name.starts_with("go-")).then(|| {
-            format!(
-                "remote runtime {name}: go and names starting with go- are the local Go runtimes'"
-            )
-        })
+        binary::claims("go", "Go", name)
     }
 
     fn remote_names(&self) -> &'static [&'static str] {
@@ -85,30 +73,10 @@ impl Language for Go {
 
     /// The binaries' resolver now; their runtimes once the loader runs.
     fn start(&self, config: &HostConfig, mount: &mut Mount<'_>) -> Result<(), Error> {
-        let Some(go) = &config.runtimes.go else {
-            return Ok(());
-        };
-        let resolver = Arc::new(resolver(config, go, mount.catalog)?);
-        mount.resolve(resolver.clone());
-        let (project, start, idle) = (go.project.clone(), go.start, go.idle);
-        mount.later.push(Box::new(move |root: Ctx| {
-            Box::pin(async move {
-                let mut plugin =
-                    GoRuntimes::new(resolver.clone(), &project).output(Stdio::Lines, Stdio::Lines);
-                plugin = match start {
-                    GoStart::Eager => plugin.eager(),
-                    GoStart::OnDemand => {
-                        plugin.idle(Some(std::time::Duration::from_secs(idle.unwrap_or(60))))
-                    }
-                };
-                let runtimes = plugin.handle();
-                (&root.plugin(plugin))
-                    .await
-                    .map_err(|error| format!("the Go runtimes: {error}"))?;
-                Ok(Some(GoHost { resolver, runtimes }))
-            })
-        }));
-        Ok(())
+        match &config.runtimes.go {
+            Some(go) => binary::start::<rutis_loader::Go>(self, go, config, mount),
+            None => Ok(()),
+        }
     }
 
     fn new_names(&self) -> &'static [&'static str] {
@@ -136,66 +104,62 @@ impl Language for Go {
     fn dev(&self, dir: &Path) -> Result<(Vec<Value>, Runtimes), String> {
         let go = GoDev::of(dir).ok_or_else(|| format!("{}: no go.mod", dir.display()))?;
         let binary = go.build(1)?;
-        let manifest = rutis_loader::read_go_manifest(&binary)
-            .map_err(|error| format!("{}: {error}", binary.display()))?;
-        let rows: Vec<Value> = manifest
-            .plugins
-            .keys()
-            .map(|plugin| json!({ "id": id_of(plugin), "name": format!("{}:{plugin}", go.runtime), "config": {} }))
-            .collect();
-        if rows.is_empty() {
-            return Err(format!("{} serves no plugins", go.package));
-        }
-        let runtimes = Runtimes {
-            go: Some(GoRuntime {
-                dir: None,
-                binaries: Vec::new(),
-                start: GoStart::OnDemand,
-                idle: None,
-                project: go.dir.clone(),
-                restart: Restart::No,
+        let (rows, settings) = dev_rows(&binary, &go.runtime, &go.dir, &go.package)?;
+        Ok((
+            rows,
+            Runtimes {
+                go: Some(settings),
+                ..Runtimes::default()
+            },
+        ))
+    }
 
-                dev: Some((binary, go.runtime.clone())),
-            }),
-            ..Runtimes::default()
-        };
-        Ok((rows, runtimes))
+    fn dev_build(&self, dir: &Path) -> Option<Box<dyn DevBuild>> {
+        GoDev::of(dir).map(|go| Box::new(go) as Box<dyn DevBuild>)
     }
 }
 
-/// The resolver of the Go binaries `go` names. A Go runtime may not take
-/// another runtime's name: another language's, or a remote runtime's.
-fn resolver(
-    config: &HostConfig,
-    go: &GoRuntime,
-    catalog: &ServiceCatalog,
-) -> Result<GoResolver, Error> {
-    go.validate()?;
-    let mut binaries = GoBinaries::new();
-    if let Some(dir) = &go.dir {
-        binaries = binaries.dir(dir);
+/// Make the paths of a compiled language's settings absolute with `at`.
+pub(super) fn rebase(settings: &mut GoRuntime, at: &dyn Fn(&mut PathBuf)) {
+    if let Some(dir) = &mut settings.dir {
+        at(dir);
     }
-    for binary in &go.binaries {
-        binaries = binaries.file(binary);
+    for binary in &mut settings.binaries {
+        at(binary);
     }
-    if let Some((binary, name)) = &go.dev {
-        binaries = binaries.file_named(binary, name);
+    at(&mut settings.project);
+}
+
+/// The rows of a compiled language's development build `binary`, one per
+/// plugin of its manifest named with its runtime (`<runtime>:<plugin>`),
+/// and the settings that run it from `project`; `what` names it when it
+/// serves nothing.
+pub(super) fn dev_rows(
+    binary: &Path,
+    runtime: &str,
+    project: &Path,
+    what: &str,
+) -> Result<(Vec<Value>, GoRuntime), String> {
+    let manifest = rutis_loader::read_binary_manifest(binary)
+        .map_err(|error| format!("{}: {error}", binary.display()))?;
+    let rows: Vec<Value> = manifest
+        .plugins
+        .keys()
+        .map(|plugin| json!({ "id": id_of(plugin), "name": format!("{runtime}:{plugin}"), "config": {} }))
+        .collect();
+    if rows.is_empty() {
+        return Err(format!("{what} serves no plugins"));
     }
-    let reserved = LANGUAGES
-        .iter()
-        .map(|language| language.key())
-        .filter(|key| *key != Go.key())
-        .map(str::to_owned)
-        .chain(
-            config
-                .runtimes
-                .remote
-                .iter()
-                .map(|remote| remote.name.clone()),
-        );
-    Ok(GoResolver::new(binaries)
-        .with_catalog(catalog)
-        .reserve(reserved))
+    let settings = GoRuntime {
+        dir: None,
+        binaries: Vec::new(),
+        start: BinaryStart::OnDemand,
+        idle: None,
+        project: project.to_owned(),
+        restart: Restart::No,
+        dev: Some((binary.to_owned(), runtime.to_owned())),
+    };
+    Ok((rows, settings))
 }
 
 /// A Go plugin project as `rutis-host dev` builds it: its main package and
@@ -252,26 +216,12 @@ impl GoDev {
         built(command.output(), binary)
     }
 
-    /// [`GoDev::build`], without blocking; dropped, it kills the go
-    /// command.
-    pub async fn rebuild(&self, n: u32) -> Result<PathBuf, String> {
-        let (command, binary) = self.build_command(n)?;
-        let output = tokio::process::Command::from(command)
-            .kill_on_drop(true)
-            .output()
-            .await;
-        built(output, binary)
-    }
-
     /// The command that builds #`n`, and the binary it writes.
     fn build_command(&self, n: u32) -> Result<(std::process::Command, PathBuf), String> {
-        let builds = self.dir.join(".rutis").join("go");
-        std::fs::create_dir_all(&builds).map_err(|error| error.to_string())?;
-        let file = match cfg!(windows) {
-            true => format!("{}-{n}.exe", self.name),
-            false => format!("{}-{n}", self.name),
-        };
-        let binary = builds.join(file);
+        let binary = self.binary(n);
+        if let Some(builds) = binary.parent() {
+            std::fs::create_dir_all(builds).map_err(|error| error.to_string())?;
+        }
         let mut command = std::process::Command::new("go");
         command
             .args(["build", "-o"])
@@ -279,6 +229,33 @@ impl GoDev {
             .arg(&self.package)
             .current_dir(&self.dir);
         Ok((command, binary))
+    }
+}
+
+impl DevBuild for GoDev {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn runtime(&self) -> &str {
+        &self.runtime
+    }
+
+    /// [`GoDev::build`], without blocking; dropped, it kills the go
+    /// command.
+    fn rebuild(&self, n: u32) -> BoxFuture<'_, Result<PathBuf, String>> {
+        Box::pin(async move {
+            let (command, binary) = self.build_command(n)?;
+            built(binary::run(command).await, binary)
+        })
+    }
+
+    fn binary(&self, n: u32) -> PathBuf {
+        let file = match cfg!(windows) {
+            true => format!("{}-{n}.exe", self.name),
+            false => format!("{}-{n}", self.name),
+        };
+        self.dir.join(".rutis").join("go").join(file)
     }
 }
 

@@ -1,10 +1,10 @@
 # 插件 API
 
-TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`）和 Go 插件（`github.com/arcships/rutis/go/rutis`，见 [写一个 Go 插件](go-plugin.md)）的写法与规则相同；Swift 插件（本仓库的 Swift 包 `Rutis`，指南发布前为预览，见 [swift/README.zh-CN.md](../../swift/README.zh-CN.md)）也一样。当前插件 API 版本：**3**。
+TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`）和 Go 插件（`github.com/arcships/rutis/go/rutis`，见 [写一个 Go 插件](go-plugin.md)）的写法与规则相同；Swift 插件（本仓库的 Swift 包 `Rutis`，见 [写一个 Swift 插件](swift-plugin.md)）也一样。当前插件 API 版本：**3**。
 
 ## 声明
 
-| 声明 | TypeScript（`definePlugin({...})`） | Python（`define_plugin(apply, ...)` 或模块变量） | Go（`rutis.Define(rutis.Plugin[C]{...})`） | Swift（`Rutis.define(Plugin(...))`，预览） | 含义 |
+| 声明 | TypeScript（`definePlugin({...})`） | Python（`define_plugin(apply, ...)` 或模块变量） | Go（`rutis.Define(rutis.Plugin[C]{...})`） | Swift（`Rutis.define(Plugin(...))`） | 含义 |
 | --- | --- | --- | --- | --- | --- |
 | 用到的服务 | `inject: ['llm']` | `inject=["llm"]` | `Inject: []string{"llm"}` | `inject: ["llm"]` | 都就绪才启动；任何一个撤销，插件停下，等它回来再启动 |
 | 提供的服务（可选） | `provides: { weather: { today: 'sync' } }` | `provides={"weather": Weather}` 或 `{"weather": {"today": "sync"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}`（导出方法，除 `Sync` 列出的外都是 `async`） | `provides: ["weather": .of(Weather.self, sync: ["unit"])]`（`@RutisService` 类型的方法，除 `sync` 列出的外都是 `async`） | 不写也行：`ctx.provide` 提供的服务自动对外（见下）。写了就按声明：把方法标成 `sync`，并让 `rutis-host check` 在运行前就知道谁提供什么；声明过的服务只能调用声明过的方法 |
@@ -61,7 +61,7 @@ Rust 另有 `waterfall_sync`：同步的 `waterfall`，规则与 `bail` 相同�
 
 每种语言都有这五种方式，写法是这门语言自己的：
 
-| | Rust（`rutis`） | Node / Bun 叶子插件（`@arcships/rutis`） | Cordis 插件（Node 运行时里） | Python（`rutis`） | Go（`rutis`） | Swift（`Rutis`，预览） |
+| | Rust（`rutis`） | Node / Bun 叶子插件（`@arcships/rutis`） | Cordis 插件（Node 运行时里） | Python（`rutis`） | Go（`rutis`） | Swift（`Rutis`） |
 | --- | --- | --- | --- | --- | --- | --- |
 | 监听 | `ctx.events().on(ctx, &key, listener)`；同步监听器 `on_sync`；带选项 `on_opt` / `on_sync_opt`；前缀 `on_pattern(ctx, &EventPattern::prefix(p), ..)`；`once` | `ctx.on(name, fn, { prepend, global }?)` → `() => void` | Cordis 自己的 `ctx.on(name, fn, options?)` → `() => boolean`；`ctx.once` | `ctx.on(name, fn, *, prepend=False, global_=False)` → `Callable[[], None]` | `ctx.On(name, func(ctx context.Context, args ...any) (any, error), rutis.Prepend(), rutis.Global())` → `func()` | `ctx.on(name, prepend:, global:) { (参数...) in ... }` → `() -> Void` |
 | 监听器 | `impl Listener<E>`：`call(ctx, &event, call: Call<'_, E::Value>)`，`call.mode()`、`call.next()`；`on_sync` 的闭包收到 `SyncCall` | `(...args[, next]) => 值 \| Promise` | 同左 | `fn(*args[, next])`，可以是 `async def` | `fn(ctx, args...)`；waterfall 中最后一个参数是 `rutis.Next`（`func(context.Context) (any, error)`） | 任意参数的闭包，按声明类型解码；waterfall 中最后一个参数是 `Rutis.Next<R>`（`async throws -> R?`） |
@@ -275,7 +275,7 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 
 ### 十种值
 
-| 值 | JS（Node、Bun） | Python | Go | Rust（`rutis-bridge`） | Swift（预览） |
+| 值 | JS（Node、Bun） | Python | Go | Rust（`rutis-bridge`） | Swift |
 | --- | --- | --- | --- | --- | --- |
 | 时间点 | `Date` | 带时区的 `datetime`（收到为 UTC） | `time.Time`（收到为 UTC） | `Instant` | `Date`（到微秒） |
 | 本地日期时间 | 字符串 `"2026-10-15T14:30:05"` | 无时区的 `datetime` | `rutis.DateTime` | `DateTime` | `Rutis.DateTime` |

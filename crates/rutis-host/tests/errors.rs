@@ -80,7 +80,7 @@ async fn a_configuration_that_is_not_there_or_not_valid() {
         ),
         (
             r#"{ "runtimes": { "remote": [{ "name": "gpu", "language": "ruby" }] } }"#,
-            "remote runtime gpu: the language is node, bun, python or go, not ruby",
+            "remote runtime gpu: the language is node, bun, python, go or swift, not ruby",
         ),
     ];
     for (text, expected) in cases {

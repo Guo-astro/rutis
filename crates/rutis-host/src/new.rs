@@ -1,4 +1,4 @@
-//! `rutis-host new <name> --lang node|bun|python|go`: a plugin project from a
+//! `rutis-host new <name> --lang node|bun|python|go|swift`: a plugin project from a
 //! template, with a working plugin, its test, a dev configuration and a
 //! publish workflow.
 
@@ -46,16 +46,29 @@ pub fn create(parent: &Path, name: &str, lang: &str) -> Result<(), String> {
     let module = name.replace('-', "_");
     // A Go package name has no `-` or `_`.
     let package = name.replace('-', "");
+    // A Swift type name: `net-probe` is `NetProbe`.
+    let type_name: String = name
+        .split('-')
+        .map(|part| {
+            let mut chars = part.chars();
+            chars
+                .next()
+                .map(|first| first.to_ascii_uppercase().to_string() + chars.as_str())
+                .unwrap_or_default()
+        })
+        .collect();
     let next = next_minor(VERSION);
     for (path, text) in files {
         let path = path
             .replace("__module__", &module)
+            .replace("__Type__", &type_name)
             .replace("__name__", name);
         let text = text
             .replace("{{package}}", &package)
             .replace("{{name}}", name)
             .replace("{{id}}", name)
             .replace("{{module}}", &module)
+            .replace("{{Type}}", &type_name)
             .replace("{{version}}", VERSION)
             .replace("{{next}}", &next);
         let target = dir.join(&path);
@@ -125,8 +138,34 @@ mod tests {
         assert!(
             plugin.starts_with("// Package netprobe") && plugin.contains("Name: \"net-probe\"")
         );
+        create(dir.path(), "mac-kit", "swift").unwrap();
+        let manifest = std::fs::read_to_string(dir.path().join("mac-kit/Package.swift")).unwrap();
+        assert!(
+            manifest.contains(&format!(
+                ".package(url: \"https://github.com/arcships/rutis\", from: \"{VERSION}\")"
+            )) && manifest.contains("name: \"MacKitPlugin\"")
+                && manifest.contains("__info_plist"),
+            "{manifest}"
+        );
+        let plugin =
+            std::fs::read_to_string(dir.path().join("mac-kit/Sources/MacKitPlugin/Plugin.swift"))
+                .unwrap();
+        assert!(plugin.contains("name: \"mac-kit\""), "{plugin}");
+        for file in [
+            "Sources/mac-kit/main.swift",
+            "Tests/MacKitPluginTests/PluginTests.swift",
+            "Info.plist",
+        ] {
+            assert!(dir.path().join("mac-kit").join(file).exists(), "{file}");
+        }
         // Each project's dev configuration names its format (risk J3).
-        for project in ["weather-plugin", "greeter", "bun-greeter", "net-probe"] {
+        for project in [
+            "weather-plugin",
+            "greeter",
+            "bun-greeter",
+            "net-probe",
+            "mac-kit",
+        ] {
             let path = dir.path().join(project).join("rutis.dev.json");
             let text = std::fs::read_to_string(&path).unwrap();
             let value: serde_json::Value = serde_json::from_str(&text).unwrap();

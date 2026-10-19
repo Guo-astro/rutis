@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Linked into the {{name}} binary (Package.swift, linkerSettings). macOS
+  names the binary by these in its access prompts, and shows the usage
+  description of what the plugin asks for, e.g.:
+    NSCalendarsFullAccessUsageDescription   EventKit, calendars
+    NSRemindersFullAccessUsageDescription   EventKit, reminders
+    NSContactsUsageDescription              Contacts
+    NSAppleEventsUsageDescription           Apple events (automation)
+  Without the one it needs, the request fails instead of asking.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.example.{{name}}</string>
+    <key>CFBundleName</key>
+    <string>{{name}}</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+</dict>
+</plist>

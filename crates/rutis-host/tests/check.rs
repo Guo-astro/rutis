@@ -120,7 +120,7 @@ async fn check_passes_what_can_run() {
     assert_eq!(checked.stderr, "");
     assert_eq!(
         checked.stdout,
-        "plugin API for Go binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
+        "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
          greeter (file://<dir>/plugins/greeter.mjs): ok\n  \
          inject: []\n  \
          provides: {\"greeter\":{\"hello\":\"sync\"}}\n\
@@ -170,7 +170,7 @@ async fn check_fails_what_cannot_run() {
     .await;
     assert_eq!(
         checked.stdout,
-        "plugin API for Go binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
+        "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
          greeter (file://<dir>/greeter.mjs): ok\n  \
          inject: []\n  \
          provides: {}\n\
@@ -214,7 +214,7 @@ async fn check_refuses_a_configuration_that_is_not_valid() {
     let checked = check(dir.path(), &["rutis.json"], &[]).await;
     assert_eq!(
         checked.stdout,
-        "plugin API for Go binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
+        "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
          w (weather): no plugin named \"weather\"\n  \
          install it where its runtime finds it (a runtime under runtimes), or correct the row's name\n"
     );
@@ -257,7 +257,7 @@ async fn check_without_a_configuration_checks_the_project() {
     assert_eq!(checked.stderr, "");
     assert_eq!(
         checked.stdout,
-        "plugin API for Go binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
+        "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
          weather (file://<dir>/src/index.mjs): ok\n  \
          inject: []\n  \
          provides: {\"weather\":{\"now\":\"async\"}}\n"
@@ -323,7 +323,7 @@ async fn check_fails_on_a_service_nothing_provides() {
     assert_eq!(
         stdout,
         [
-            "plugin API for Go binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
+            "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
             "chat (file://<dir>/chat.mjs): cannot run: nothing provides index, llm",
             "  inject: [\"llm\",\"index\",\"calendar\"]",
             "  provides: {}",
@@ -361,7 +361,7 @@ async fn check_fails_on_a_service_nothing_provides() {
     assert_eq!(
         stdout,
         [
-            "plugin API for Go binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
+            "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
             "chat (file://<dir>/chat.mjs): ok",
             "  inject: [\"llm\",\"index\",\"calendar\"]",
             "  provides: {}",
@@ -447,7 +447,7 @@ async fn check_passes_what_cordis_rows_may_provide_at_runtime() {
     assert_eq!(
         stdout,
         [
-            "plugin API for Go binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
+            "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
             "storage (file://<dir>/storage.mjs): ok",
             "  inject: []",
             "  provides: {}",
@@ -493,7 +493,7 @@ async fn check_passes_what_cordis_rows_may_provide_at_runtime() {
     assert_eq!(
         stdout,
         [
-            "plugin API for Go binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
+            "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
             "storage (file://<dir>/storage.mjs): ok",
             "domain (file://<dir>/domain.mjs): cannot run with --strict: nothing declares storage",
             "workspace (file://<dir>/workspace.mjs): cannot run with --strict: nothing declares storageDomain",
@@ -547,7 +547,7 @@ async fn check_passes_a_service_that_may_come_from_a_remote_runtime() {
     assert_eq!(
         stdout,
         [
-            "plugin API for Go binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
+            "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
             "chat (file://<dir>/chat.mjs): ok",
             "  inject: [\"embeddings\"]",
             "  provides: {}",

@@ -183,7 +183,7 @@ fn which_kind_of_project() {
     let error = dev_config(project).unwrap_err();
     assert_eq!(
         normalize(&error, project),
-        "<dir> has no package.json, pyproject.toml or go.mod: run rutis-host dev in a plugin project"
+        "<dir> has no package.json, pyproject.toml, go.mod or Package.swift: run rutis-host dev in a plugin project"
     );
     let error = dev_config(&project.join("absent")).unwrap_err();
     assert_eq!(normalize(&error, project), "<dir>/absent: not a directory");

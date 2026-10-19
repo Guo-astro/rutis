@@ -17,13 +17,13 @@ use rutis_bridge::{
     PeerId, Presented, SharedToken,
 };
 use rutis_loader::{
-    register_peer_node, Builtins, Chain, GoResolver, GoRuntimesHandle, Layer, Loader,
-    LoaderOptions, LoaderPlugin, Patch, PeerResolver, RuntimeEnd, RuntimeInstances,
-    RuntimeResolver, RuntimeRows, RuntimeRowsPlugin, ServiceCatalog,
+    register_peer_node, Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch,
+    PeerResolver, RuntimeEnd, RuntimeInstances, RuntimeResolver, RuntimeRows, RuntimeRowsPlugin,
+    ServiceCatalog,
 };
 
 use crate::config::{token, HostConfig, Restart};
-use crate::languages::{self, Mount, LANGUAGES};
+use crate::languages::{self, BinaryHost, Mount, LANGUAGES};
 use crate::{errln, outln};
 
 pub struct Host {
@@ -33,8 +33,9 @@ pub struct Host {
     pub runtimes: Vec<(String, RuntimeHandle)>,
     /// The resolvers of the runtimes' rows, to invalidate after a change.
     pub resolvers: Vec<Arc<RuntimeResolver>>,
-    /// The Go binaries and their runtimes, when the configuration has them.
-    pub go: Option<GoHost>,
+    /// The compiled languages' binaries and runtimes (Go, Swift), those
+    /// the configuration has.
+    pub binaries: Vec<BinaryHost>,
     /// The local runtimes' plugins, by name, to stop one
     /// ([`Host::stop_runtime`]).
     fibers: Vec<(String, FiberView)>,
@@ -55,8 +56,6 @@ pub struct Host {
     accepted: Option<Accepted>,
     /// What each local runtime's `restart` says, by name.
     restarts: Vec<(String, Restart)>,
-    /// What `runtimes.go.restart` says, for every Go runtime.
-    go_restart: Restart,
     /// The tasks watching the local runtimes ([`Host::supervise`]), by
     /// name.
     supervisors: Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
@@ -90,12 +89,6 @@ pub struct Embedding {
     /// environment. A host with one of its own does not change it on
     /// [`Host::reload`].
     pub identity: Option<IdentityPlugin>,
-}
-
-/// The Go side of a host.
-pub struct GoHost {
-    pub resolver: Arc<GoResolver>,
-    pub runtimes: GoRuntimesHandle,
 }
 
 pub type Error = String;
@@ -316,23 +309,18 @@ impl Host {
                 )
             })
             .collect();
-        // Go's runtimes are many, and come and go: their plugin supervises
-        // them ([`Host::supervise`]).
-        let go_restart = LANGUAGES
-            .iter()
-            .find(|language| language.key() == "go")
-            .map_or(Restart::No, |go| go.restart(&config.runtimes));
-        // What waits for the loader: Go's runtimes.
-        let mut go = None;
+        // What waits for the loader: the compiled languages' runtimes, many,
+        // coming and going: their plugins supervise them ([`Host::supervise`]).
+        let mut binaries = Vec::new();
         for later in later {
-            go = later(root.clone()).await?.or(go);
+            binaries.extend(later(root.clone()).await?);
         }
         Ok(Self {
             root,
             loader,
             runtimes,
             resolvers,
-            go,
+            binaries,
             fibers,
             processes,
             peers,
@@ -340,7 +328,6 @@ impl Host {
             config: config.clone(),
             accepted,
             restarts,
-            go_restart,
             supervisors: Mutex::default(),
         })
     }
@@ -349,15 +336,20 @@ impl Host {
     /// ([`crate::restart::supervise`]): `on-failure` starts it again when
     /// its process ends on its own; one whose `restart` is `exit` comes out
     /// of the [`Exits`] returned when it ends, for the host to stop. The
-    /// Go runtimes, which start and stop as rows use them, are supervised
-    /// by their plugin ([`rutis_loader::GoRuntimesHandle::supervise`]),
-    /// each on its own, with the same numbers and lines.
+    /// runtimes of compiled languages (Go, Swift), which start and stop as
+    /// rows use them, are supervised by their plugin
+    /// ([`rutis_loader::BinaryRuntimesHandle::supervise`]), each on its
+    /// own, with the same numbers and lines.
     pub fn supervise(&self) -> Exits {
         let (send, exits) = tokio::sync::mpsc::unbounded_channel();
-        if let (Some(go), Restart::OnFailure | Restart::Exit) = (&self.go, self.go_restart) {
+        for binaries in &self.binaries {
+            if let Restart::No = binaries.restart {
+                continue;
+            }
             let send = send.clone();
-            go.runtimes
-                .supervise(self.go_restart.into(), move |end| match end {
+            binaries.supervise(
+                binaries.restart.into(),
+                Box::new(move |end| match end {
                     RuntimeEnd::Exit { runtime, why } => {
                         let _ = send.send((runtime, why));
                     }
@@ -366,7 +358,8 @@ impl Host {
                             outln!("{line}");
                         }
                     }
-                });
+                }),
+            );
         }
         let mut supervisors = self.supervisors.lock().unwrap();
         for (name, restart) in &self.restarts {
@@ -398,8 +391,10 @@ impl Host {
     /// Stop watching the runtime `name`, or every runtime: the host is
     /// about to stop it.
     fn unsupervise(&self, name: Option<&str>) {
-        if let (None, Some(go)) = (name, &self.go) {
-            go.runtimes.unsupervise();
+        if name.is_none() {
+            for binaries in &self.binaries {
+                binaries.unsupervise();
+            }
         }
 
         self.supervisors.lock().unwrap().retain(|(runtime, task)| {
@@ -491,7 +486,8 @@ impl Host {
     ///
     /// - What a running host cannot change refuses it, saying to restart
     ///   the host: `format`, `id`, `listen`, `runtimes.remote`, and a local
-    ///   runtime added or changed (`runtimes.go` in any way).
+    ///   runtime added or changed (`runtimes.go` and `runtimes.swift` in any
+    ///   way).
     /// - The new rows are checked first ([`Loader::check`]): a row that
     ///   would fail, and does not fail now, refuses it.
     /// - Then they replace the old ones in one reconcile; a row failing
@@ -712,6 +708,12 @@ impl Host {
         )
     }
 
+    /// The binaries and runtimes of the compiled language `key` (`go`,
+    /// `swift`), when the configuration has it.
+    pub fn binaries_of(&self, key: &str) -> Option<&BinaryHost> {
+        self.binaries.iter().find(|binaries| binaries.key == key)
+    }
+
     /// What the status lines follow ([`crate::status::follow`]): the rows,
     /// their links, and the runtimes.
     pub fn followed(&self) -> crate::status::Followed {
@@ -719,7 +721,7 @@ impl Host {
             loader: self.loader.clone(),
             peers: self.peers.clone(),
             runtimes: self.runtimes.clone(),
-            go: self.go.as_ref().map(|go| go.runtimes.clone()),
+            binaries: self.binaries.clone(),
         }
     }
 
@@ -1623,8 +1625,8 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(reply.json().unwrap(), json!("netkit pong go"));
-        let go = host.go.as_ref().unwrap();
-        assert_eq!(go.runtimes.runtimes()[0].name, "go-netkit");
+        let go = host.binaries_of("go").unwrap();
+        assert_eq!(go.runtimes()[0].name, "go-netkit");
     }
 
     /// A Go binary on another machine (here, listening on loopback): a peer
