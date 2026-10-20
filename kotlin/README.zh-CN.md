@@ -95,7 +95,7 @@ rutis.stop()    // 全部插件逆序清理，然后断开；之后可再 start(
 rutis.state     // StateFlow<RutisState>：Stopped(reason) / Connecting(retrying) / Connected(address)
 ```
 
-何时 start / stop（跟随界面、在前台服务里）是应用的业务；SDK 不据 `state` 做任何决定。`trust` 是系统之外额外信任的 CA（PEM），用于自签证书的接入点。等待 rutis 的调用（`@RutisClient` 接口的非 `suspend` 方法）在主线程上被拒绝：用 `suspend` 调用或换个线程。rutis 一侧 `runtimes.remote[]` 写 `language: "kotlin"`、`listen` 与 `instances`，每条连接是一个实例（[连接节点](../docs/guide/nodes.md)）。`rutis/android-sample` 是这样做的应用，设备测试也用它。
+何时 start / stop（跟随界面、在前台服务里）是应用的业务；SDK 不据 `state` 做任何决定。`trust` 是系统之外额外信任的 CA（PEM），用于自签证书的接入点。等待 rutis 的调用（`@RutisClient` 接口的非 `suspend` 方法）在主线程上被拒绝：用 `suspend` 调用或换个线程。rutis 一侧 `runtimes.remote[]` 写 `language: "kotlin"`、`listen` 与 `instances`，每条连接是一个实例（[连接节点](../docs/guide/nodes.md)）。`rutis/android-sample` 是这样做的应用，设备测试也用它。完整的指南（权限、前台服务、电池优化、真机清单）：[Android 应用托管插件](../docs/guide/kotlin-app.md)。
 
 ## 桌面测试入口
 

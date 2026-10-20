@@ -1,6 +1,9 @@
 package arcships.rutis.sample
 
+import android.Manifest
 import android.app.Activity
+import android.content.pm.PackageManager
+import android.os.Build
 import android.content.Intent
 import android.os.Bundle
 import android.text.InputType
@@ -11,6 +14,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import arcships.rutis.RutisApp
+import arcships.rutis.RutisState
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
@@ -80,6 +84,7 @@ class MainActivity : Activity() {
     }
 
     private fun start() {
+        ask()
         val app = holder.rutis ?: try {
             Samples.app(this, address.text.toString().trim(), name.text.toString().trim(), token.text.toString())
         } catch (e: IllegalArgumentException) {
@@ -88,6 +93,26 @@ class MainActivity : Activity() {
         }.also { holder.rutis = it }
         watch(app)
         app.start()
+    }
+
+    /**
+     * Asks the user for what the plugins need and is not granted yet. The
+     * prompt is this application's: rutis never asks; a plugin without
+     * its permission fails, and rutis is told why.
+     */
+    private fun ask() {
+        val missing = PERMISSIONS.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), ASKED)
+    }
+
+    /** Granted now: connect again, so that rutis loads the plugins that failed for want of it. */
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        val app = holder.rutis ?: return
+        if (requestCode == ASKED && grantResults.any { it == PackageManager.PERMISSION_GRANTED } && app.state.value !is RutisState.Stopped) {
+            app.stop()
+            app.start()
+        }
     }
 
     private fun watch(app: RutisApp) {
@@ -101,6 +126,11 @@ class MainActivity : Activity() {
     }
 
     private companion object {
+        const val ASKED = 1
+        val PERMISSIONS: List<String> = listOfNotNull(
+            Manifest.permission.READ_CONTACTS,
+            if (Build.VERSION.SDK_INT >= 33) Manifest.permission.POST_NOTIFICATIONS else null,
+        )
         val MatchWidth = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
     }
 }

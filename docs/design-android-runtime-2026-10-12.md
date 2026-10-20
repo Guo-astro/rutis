@@ -2,7 +2,7 @@
 
 [English](design-android-runtime-2026-10-12.en.md)
 
-状态：定稿；K-P1 已实现（#390，`kotlin/rutis`），K-P2 已实现（#391，见 §十三），K-P3 未实现。日期：2026-10-12，2026-10-14 定稿修订（改为按 [应用接入](design-app-integration-2026-10-14.md)，见 §十），2026-10-19 对齐 rutis 0.13 的运行时契约（值、自动对外、错误、调用方的行、统一事件、开发者无感，见 §十一）。基准：`main` `028783f`（0.13.0）。
+状态：定稿；K-P1 已实现（#390，`kotlin/rutis`），K-P2 已实现（#391，见 §十三），K-P3 已实现（#388：示例插件 `contacts`、`notify`、`device` 在 `kotlin/rutis/android-sample`，指南 [Android 应用托管插件](guide/kotlin-app.md)；授权提示与拒绝在模拟器上自动验证，真机清单见指南 §8）。日期：2026-10-12，2026-10-14 定稿修订（改为按 [应用接入](design-app-integration-2026-10-14.md)，见 §十），2026-10-19 对齐 rutis 0.13 的运行时契约（值、自动对外、错误、调用方的行、统一事件、开发者无感，见 §十一）。基准：`main` `028783f`（0.13.0）。
 依据：[运行时契约](../.agents/skills/rutis-new-runtime/references/runtime-contract.md)（实现以它为准）、[应用接入](design-app-integration-2026-10-14.md)（通用模型）、[远程运行时：拨出与动态接入](design-remote-runtime-dial-2026-10-14.md)（连接）、[跨语言值类型](design-value-types-2026-10-15.md)、[统一事件的协议规格](design-events-protocol-2026-10-18.md)、[多语言总体稿](design-multilang-runtimes-2026-10-03.md)、[插件 API](guide/plugin-api.md)、[Swift SDK](design-swift-sdk-2026-10-12.md)（形态②的 Swift 对应物）、[Go 插件运行时](design-go-runtime-2026-10-10.md)（每调用一个执行单元的先例）。
 
 定位：Android 应用把自身能力与所在设备的能力作为 rutis 插件提供；插件用 Kotlin 编写、编进应用，由 rutis 驱动。本文是 Kotlin SDK 的唯一现行设计：桌面 JVM 运行时（[Kotlin 运行时](design-kotlin-runtime-2026-10-12.md)）挂起，不是本文的前提；K-P1 的 jvm target 只用于在桌面上跑一致性测试。

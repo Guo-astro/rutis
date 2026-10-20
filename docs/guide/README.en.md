@@ -9,6 +9,7 @@ Choose a guide based on what you want to do:
 | Write a plugin in Python | [Write a Python plugin](python-plugin.en.md) |
 | Write a plugin in Go | [Write a Go plugin](go-plugin.en.md) |
 | Write a macOS plugin in Swift | [Write a Swift plugin](swift-plugin.en.md) |
+| Provide plugins in Kotlin from an Android application | [Hosting plugins in an Android application](kotlin-app.en.md) |
 | Look up the plugin API and value passing rules | [Plugin API](plugin-api.en.md) |
 | Send and receive events between plugins (any language, process or node) | [Plugin API: events](plugin-api.en.md#events) |
 | Run plugins without writing Rust | [rutis-host and rutis.json](rutis-host.en.md) |
@@ -35,4 +36,5 @@ Upgrading from 0.13: see [migrating to 0.14](../migration-0.14.en.md) (no code c
 - Python 3.10 or later for Python plugins.
 - Go 1.24 or later only to write Go plugins and build their binaries; running a Go plugin binary needs no Go.
 - macOS 14 or later and a Swift 6 toolchain only to write Swift plugins and build their binaries; running a Swift plugin binary needs no toolchain, and runs on macOS only.
+- JDK 17 and Android 10 (API 29) or later for Kotlin plugins, compiled into an Android application (the packages are `io.github.arcships:rutis` on Maven Central and, at compile time, `io.github.arcships:rutis-ksp`).
 - Rust 1.88 or later, only when embedding rutis in Rust. This version is verified with the repository's `Cargo.lock`; when an older Rust resolves dependencies itself, setting `resolver.incompatible-rust-versions = "fallback"` in the Cargo configuration makes Cargo pick dependency versions that work.

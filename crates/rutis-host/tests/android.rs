@@ -125,8 +125,9 @@ async fn install(names: &[&str]) {
 }
 
 /// The host: the group `phone`, an instance per connection of the
-/// application, with its `device` row and the Python `watcher` using it;
-/// forwarded to the device at the same port.
+/// application, with the rows `rows` (by default its `device` row and the
+/// Python `watcher` using it) and the Python files `files`; forwarded to
+/// the device at the same port.
 struct Rutis {
     host: Host,
     port: u16,
@@ -135,8 +136,19 @@ struct Rutis {
 
 impl Rutis {
     async fn start() -> Self {
+        Self::with(
+            json!([
+                { "id": "device", "name": "phone:device" },
+                { "id": "watcher", "name": "py:watcher" }
+            ]),
+            &[("watcher.py", WATCHER)],
+        )
+        .await
+    }
+
+    async fn with(rows: serde_json::Value, files: &[(&str, &str)]) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), &[("watcher.py", WATCHER)]);
+        write(dir.path(), files);
         std::env::set_var("RUTIS_TOKEN_PHONE", "shared");
         std::env::set_var("RUTIS_PYTHON_PATH", repo().join("python/rutis"));
         let python = std::env::var_os("RUTIS_PYTHON").map(PathBuf::from);
@@ -147,10 +159,7 @@ impl Rutis {
                 "py": { "project": dir.path(), "python": python },
                 "remote": [{ "name": "phone", "language": "kotlin", "listen": "public", "instances": "phone" }]
             },
-            "rows": [{ "id": "phone", "group": true, "instanced": true, "config": [
-                { "id": "device", "name": "phone:device" },
-                { "id": "watcher", "name": "py:watcher" }
-            ] }]
+            "rows": [{ "id": "phone", "group": true, "instanced": true, "config": rows }]
         }))
         .unwrap();
         config.rebase(dir.path());
@@ -192,6 +201,21 @@ impl Rutis {
     /// Instances whose `device` row runs, and whose watcher uses it.
     fn instances(&self) -> (usize, usize) {
         (self.active("device"), self.active("watcher"))
+    }
+
+    /// Waits until each row of `want` runs in that many instances.
+    async fn reach_rows(&self, want: &[(&str, usize)]) {
+        DEVICE
+            .eventually_with(
+                || {
+                    want.iter()
+                        .all(|(id, count)| self.active(id) == *count)
+                        .then_some(())
+                },
+                &format!("{want:?}"),
+                || self.rows(),
+            )
+            .await
     }
 
     /// The rows of the instances, for a failure.
@@ -240,30 +264,13 @@ impl Rutis {
 async fn the_release_build_dials_in_and_stops_and_starts_again() {
     let _environment = environment();
     install(&["android-sample-release.apk"]).await;
+    // Granted already: the screen asks for nothing.
+    grant(&[
+        "android.permission.READ_CONTACTS",
+        "android.permission.POST_NOTIFICATIONS",
+    ]);
     let rutis = Rutis::start().await;
-    let activity = format!("{PACKAGE}/.MainActivity");
-    let command = |command: &str| {
-        run(&[
-            "shell",
-            "am",
-            "start",
-            "-W",
-            "-n",
-            &activity,
-            "--es",
-            "connect",
-            &rutis.address(),
-            "--es",
-            "id",
-            "pixel",
-            "--es",
-            "token",
-            "shared",
-            "--es",
-            "command",
-            command,
-        ]);
-    };
+    let command = |command: &str| press(&rutis.address(), command);
 
     command("start");
     rutis
@@ -277,6 +284,23 @@ async fn the_release_build_dials_in_and_stops_and_starts_again() {
     rutis.reach((0, 0), "its instance closed", || None).await;
     let _ = adb().args(["shell", "am", "force-stop", PACKAGE]).status();
     rutis.stop().await;
+}
+
+/// Presses a button of the application's screen (`start`, `stop`), with an
+/// intent that also fills in where rutis is.
+fn press(address: &str, command: &str) {
+    let activity = format!("{PACKAGE}/.MainActivity");
+    run(&[
+        "shell", "am", "start", "-W", "-n", &activity, "--es", "connect", address, "--es", "id",
+        "pixel", "--es", "token", "shared", "--es", "command", command,
+    ]);
+}
+
+/// Grants the application `permissions`, as its user would.
+fn grant(permissions: &[&str]) {
+    for permission in permissions {
+        run(&["shell", "pm", "grant", PACKAGE, permission]);
+    }
 }
 
 /// Tells the device test that `step` is checked.
@@ -370,5 +394,207 @@ async fn connections_of_an_application_are_instances() {
     let said = said.lock().unwrap().clone();
     assert!(status.success(), "{said}");
     assert!(said.contains("OK (1 test)"), "the device test: {said}");
+    rutis.stop().await;
+}
+
+/// Uses the connection's `contacts`: it loads once a call answered.
+const READER: &str = r#"
+inject = ["contacts"]
+
+
+async def apply(ctx, config):
+    await ctx.use("contacts").count()
+"#;
+
+/// Posts through the connection's `notify`, and says what came of it
+/// (`caller.outcome()`): `posted`, or the error's code and permission.
+const CALLER: &str = r#"
+import rutis
+
+inject = ["notify"]
+
+
+class Caller:
+    def __init__(self, said):
+        self.said = said
+
+    def outcome(self):
+        return self.said
+
+
+provides = {"caller": Caller}
+
+
+async def apply(ctx, config):
+    try:
+        await ctx.use("notify").post("rutis", "from the caller")
+        said = "posted"
+    except rutis.RemoteError as error:
+        said = "%s %s" % (error.code, (error.data or {}).get("permission"))
+    ctx.provide("caller", Caller(said))
+"#;
+
+/// The screen as uiautomator sees it.
+fn screen() -> String {
+    run(&["shell", "uiautomator", "dump", "/sdcard/rutis-ui.xml"]);
+    run(&["shell", "cat", "/sdcard/rutis-ui.xml"])
+}
+
+/// The centre of the node `resource-id` on `screen`, if it is there.
+fn find(screen: &str, id: &str) -> Option<(i32, i32)> {
+    let node = &screen[screen.find(&format!("resource-id=\"{id}\""))?..];
+    let bounds = &node[node.find("bounds=\"[")? + 9..];
+    let numbers: Vec<i32> = bounds[..bounds.find("]\"")?]
+        .split(['[', ']', ','])
+        .filter(|n| !n.is_empty())
+        .map(|n| n.parse().unwrap())
+        .collect();
+    Some(((numbers[0] + numbers[2]) / 2, (numbers[1] + numbers[3]) / 2))
+}
+
+/// The text of the node `resource-id` on `screen`.
+fn text(screen: &str, id: &str) -> String {
+    let Some(at) = screen.find(&format!("resource-id=\"{id}\"")) else {
+        return String::new();
+    };
+    let open = screen[..at].rfind("<node").unwrap_or(0);
+    let node = &screen[open..];
+    let node = &node[..node.find('>').unwrap_or(node.len())];
+    let Some(start) = node.find(" text=\"") else {
+        return String::new();
+    };
+    let value = &node[start + 7..];
+    value[..value.find('"').unwrap_or(value.len())].to_owned()
+}
+
+/// The prompt for a plugin's permission is the application's, naming it;
+/// the user denying it fails the plugin that needs it at load, rutis seeing
+/// the error with the permission named, and a call needing it fails with
+/// `permission-denied` at the caller (a Python row) with the permission in
+/// its data. Granted, the plugins load and the calls go through.
+/// guarantee: loader/runtime-connection-instances
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_permission_fails_the_plugin_and_reaches_the_caller() {
+    let _environment = environment();
+    // Installed afresh: nothing granted, nothing denied before.
+    let _ = adb().args(["uninstall", PACKAGE]).output();
+    install(&["android-sample-release.apk"]).await;
+    let rutis = Rutis::with(
+        json!([
+            { "id": "contacts", "name": "phone:contacts" },
+            { "id": "notify", "name": "phone:notify" },
+            { "id": "reader", "name": "py:reader" },
+            { "id": "caller", "name": "py:caller" }
+        ]),
+        &[("reader.py", READER), ("caller.py", CALLER)],
+    )
+    .await;
+    let sdk: u32 = run(&["shell", "getprop", "ro.build.version.sdk"])
+        .trim()
+        .parse()
+        .unwrap();
+    // READ_CONTACTS, and POST_NOTIFICATIONS from Android 13.
+    let prompts = if sdk >= 33 { 2 } else { 1 };
+
+    press(&rutis.address(), "start");
+    let deny = "com.android.permissioncontroller:id/permission_deny_button";
+    let message = "com.android.permissioncontroller:id/permission_message";
+    let mut denied = Vec::new();
+    while denied.len() < prompts {
+        let (screen, at) = DEVICE
+            .eventually(
+                || {
+                    let screen = screen();
+                    find(&screen, deny).map(|at| (screen, at))
+                },
+                "the application's permission prompt",
+            )
+            .await;
+        let asked = text(&screen, message);
+        assert!(
+            asked.contains("rutis sample"),
+            "the prompt names the application: {asked}"
+        );
+        if denied.last() == Some(&asked) {
+            continue;
+        }
+        eprintln!("denying: {asked}");
+        run(&[
+            "shell",
+            "input",
+            "tap",
+            &at.0.to_string(),
+            &at.1.to_string(),
+        ]);
+        denied.push(asked);
+    }
+
+    // `contacts` failed to load, saying which permission; `notify` loaded,
+    // and the caller got the denial with its code and permission.
+    let failed = |id: &str| {
+        rutis.host.loader.entries().into_iter().find_map(|entry| {
+            match (&entry.status, entry.instance.is_some() && entry.id == id) {
+                (rutis_loader::EntryStatus::Running(snapshot), true)
+                    if snapshot.state == rutis::FiberState::Failed =>
+                {
+                    snapshot.error.as_ref().map(|error| error.to_string())
+                }
+                _ => None,
+            }
+        })
+    };
+    let why = DEVICE
+        .eventually_with(|| failed("contacts"), "contacts failing", || rutis.rows())
+        .await;
+    assert!(
+        why.contains("android.permission.READ_CONTACTS is not granted to this application"),
+        "{why}"
+    );
+    DEVICE
+        .eventually_with(
+            || (rutis.active("notify") == 1 && rutis.active("caller") == 1).then_some(()),
+            "notify and its caller",
+            || rutis.rows(),
+        )
+        .await;
+    assert_eq!(rutis.active("reader"), 0);
+    let outcome = |want: &'static str| {
+        let host = &rutis.host;
+        move || {
+            let caller = host.service("caller")?;
+            let said = caller
+                .invoke("outcome", json!([]).into())
+                .ok()?
+                .json()
+                .ok()?;
+            (said == json!(want)).then_some(())
+        }
+    };
+    if sdk >= 33 {
+        DEVICE
+            .eventually(
+                outcome("permission-denied android.permission.POST_NOTIFICATIONS"),
+                "the caller told why",
+            )
+            .await;
+    }
+
+    // Granted (as in the application's settings): connected again, every
+    // plugin loads, and the calls go through.
+    grant(&["android.permission.READ_CONTACTS"]);
+    if sdk >= 33 {
+        grant(&["android.permission.POST_NOTIFICATIONS"]);
+    }
+    press(&rutis.address(), "stop");
+    rutis.reach_rows(&[("contacts", 0), ("notify", 0)]).await;
+    press(&rutis.address(), "start");
+    rutis
+        .reach_rows(&[("contacts", 1), ("notify", 1), ("reader", 1), ("caller", 1)])
+        .await;
+    DEVICE
+        .eventually(outcome("posted"), "the caller posted")
+        .await;
+    press(&rutis.address(), "stop");
+    let _ = adb().args(["shell", "am", "force-stop", PACKAGE]).status();
     rutis.stop().await;
 }
