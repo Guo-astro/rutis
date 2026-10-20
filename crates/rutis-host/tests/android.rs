@@ -352,7 +352,9 @@ async fn connections_of_an_application_are_instances() {
         .reach((2, 2), "the started one's instance back", device_ended)
         .await;
     checked("started");
-    rutis.reach((0, 0), "both stopped", device_ended).await;
+    // The device test ends once it stopped both: rutis sees the instances
+    // close just after.
+    rutis.reach((0, 0), "both stopped", || None).await;
 
     let status = DEVICE
         .within("the device test's end", instrument.wait())
