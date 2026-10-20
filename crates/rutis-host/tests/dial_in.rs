@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{environment, repo, write};
+use rutis_bridge::session::settle;
 use rutis_host::config::HostConfig;
 use rutis_host::host::Host;
 use rutis_test_support::{Guard, HANG_GUARD};
@@ -39,6 +40,18 @@ def apply(ctx, config):
     ctx.provide("contacts", Contacts())
 "#;
 
+/// The same plugin providing `contacts` without declaring it: the
+/// runtime announces it, and it reaches rutis all the same.
+const CONTACTS_UNDECLARED: &str = r#"
+class Contacts:
+    def owner(self):
+        return "pixel"
+
+
+def apply(ctx, config):
+    ctx.provide("contacts", Contacts())
+"#;
+
 /// The host's own row in the same instance, using the connection's
 /// `contacts`.
 const DIGEST: &str = r#"
@@ -51,6 +64,27 @@ class Digest:
 
     def summary(self):
         return "contacts of " + self.contacts.owner()
+
+
+provides = {"digest": Digest}
+
+
+def apply(ctx, config):
+    ctx.provide("digest", Digest(ctx.use("contacts")))
+"#;
+
+/// `digest` for an undeclared `contacts`, whose methods rutis sees as
+/// async: it awaits `owner()`.
+const DIGEST_AWAITING: &str = r#"
+inject = ["contacts"]
+
+
+class Digest:
+    def __init__(self, contacts):
+        self.contacts = contacts
+
+    async def summary(self):
+        return "contacts of " + await self.contacts.owner()
 
 
 provides = {"digest": Digest}
@@ -92,14 +126,29 @@ fn remote_python(project: &Path, address: &str) -> tokio::process::Child {
 /// guarantee: loader/runtime-connection-instances
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_that_dials_in_is_an_instance() {
+    dials_in_with(CONTACTS, DIGEST).await;
+}
+
+/// The connection's plugin provides `contacts` without declaring it: the
+/// host's row in the instance uses it as if it were declared, and it is
+/// still the instance's own.
+/// guarantee: loader/runtime-connection-instances
+#[tokio::test(flavor = "multi_thread")]
+async fn an_undeclared_service_of_a_runtime_that_dials_in_is_its_instances() {
+    dials_in_with(CONTACTS_UNDECLARED, DIGEST_AWAITING).await;
+}
+
+/// The `phone` instance of the runtime dialing in with `contacts` as its
+/// plugin, used by the host's `digest` there; then the connection goes.
+async fn dials_in_with(contacts: &str, digest: &str) {
     let _environment = environment();
     let dir = tempfile::tempdir().unwrap();
     let remote = dir.path().join("remote");
     write(
         dir.path(),
         &[
-            ("remote/contacts_plugin.py", CONTACTS),
-            ("digest.py", DIGEST),
+            ("remote/contacts_plugin.py", contacts),
+            ("digest.py", digest),
         ],
     );
 
@@ -134,6 +183,7 @@ async fn a_runtime_that_dials_in_is_an_instance() {
         .eventually(|| host.service("digest"), "the digest of the instance")
         .await;
     let summary = digest.invoke("summary", json!([]).into()).unwrap();
+    let summary = settle(summary).await.unwrap();
     assert_eq!(summary.json().unwrap(), json!("contacts of pixel"));
     drop(digest);
     assert!(host.service("contacts").is_none());

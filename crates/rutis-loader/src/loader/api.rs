@@ -415,6 +415,33 @@ impl Loader {
         self.resolve_again(id, true).await
     }
 
+    /// What rebuilds, in the background, the copies whose keys are no
+    /// longer the ones they were built with: a name a runtime connection
+    /// provides without declaring it is its instance's own from when it
+    /// announces it, so the copies there that gate on it, built with the
+    /// global key, are rebuilt with the instance's (`RuntimeInstances`).
+    /// A reconcile of the current layers, under the operation lock, which
+    /// replaces only the copies whose keys changed; nothing once the loader
+    /// is gone.
+    #[cfg(feature = "runtimes")]
+    pub(crate) fn rekeying(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let inner = Arc::downgrade(&self.inner);
+        Arc::new(move || {
+            let Some(inner) = inner.upgrade() else {
+                return;
+            };
+            let Ok(tasks) = tokio::runtime::Handle::try_current() else {
+                return;
+            };
+            tasks.spawn(async move {
+                let _op = inner.op.lock().await;
+                if inner.check_open().is_ok() {
+                    inner.reconcile_inner().await;
+                }
+            });
+        })
+    }
+
     async fn resolve_again(
         &self,
         id: &str,
