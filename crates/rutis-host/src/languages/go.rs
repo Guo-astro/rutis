@@ -103,7 +103,7 @@ impl Language for Go {
     /// runtime (`go-<name>:<plugin>`).
     fn dev(&self, dir: &Path) -> Result<(Vec<Value>, Runtimes), String> {
         let go = GoDev::of(dir).ok_or_else(|| format!("{}: no go.mod", dir.display()))?;
-        let binary = go.build(1)?;
+        let binary = binary::building(&go.name, || go.build(1))?;
         let (rows, settings) = dev_rows(&binary, &go.runtime, &go.dir, &go.package)?;
         Ok((
             rows,

@@ -107,7 +107,7 @@ impl Language for Swift {
     fn dev(&self, dir: &Path) -> Result<(Vec<Value>, Runtimes), String> {
         let swift =
             SwiftDev::of(dir).ok_or_else(|| format!("{}: no Package.swift", dir.display()))?;
-        let binary = swift.build(1)?;
+        let binary = binary::building(&swift.product, || swift.build(1))?;
         let (rows, settings) = dev_rows(&binary, &swift.runtime, &swift.dir, &swift.product)?;
         Ok((
             rows,

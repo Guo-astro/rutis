@@ -5,8 +5,8 @@
 //! point observes and what the runtime says on stderr.
 //!
 //! A column per language: Python, Go, Node and Bun (Unix only, as the whole
-//! Bun runtime is); Swift and Kotlin with their SDKs (Swift A1, Android
-//! K-P2). A language joins by a
+//! Bun runtime is), Swift (macOS, as its plugin binaries are); Kotlin with
+//! its SDK (Android K-P2). A language joins by a
 //! [`Language`] variant (the command that dials, the conformance plugin in
 //! its project) and a `column!` line. What every dialer must do:
 //!
@@ -71,6 +71,9 @@ enum Language {
     Bun,
     #[cfg(feature = "go")]
     Go,
+    /// macOS only, as Swift plugin binaries are.
+    #[cfg(all(feature = "swift", target_os = "macos"))]
+    Swift,
 }
 
 /// The conformance plugin as the npm package `marker` in `project`, which
@@ -112,6 +115,28 @@ fn go_dialer() -> &'static Path {
             .expect("go is on PATH");
         assert!(status.success(), "go build ./internal/fixtures/dial");
         binary
+    })
+}
+
+/// The Swift conformance dialer (the product `RutisDial` of the root
+/// `Package.swift`, the plugin `marker` in it), built once per test binary
+/// with the `swift` on PATH.
+#[cfg(all(feature = "swift", target_os = "macos"))]
+fn swift_dialer() -> &'static Path {
+    static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BINARY.get_or_init(|| {
+        let status = std::process::Command::new("swift")
+            .args(["build", "--product", "RutisDial"])
+            .current_dir(repo())
+            .status()
+            .expect("swift is on PATH");
+        assert!(status.success(), "swift build --product RutisDial");
+        let output = std::process::Command::new("swift")
+            .args(["build", "--show-bin-path"])
+            .current_dir(repo())
+            .output()
+            .expect("swift is on PATH");
+        PathBuf::from(String::from_utf8(output.stdout).unwrap().trim()).join("RutisDial")
     })
 }
 
@@ -169,6 +194,15 @@ impl Language {
             #[cfg(feature = "go")]
             Language::Go => {
                 let mut command = tokio::process::Command::new(go_dialer());
+                command
+                    .arg(format!("dial:{address}"))
+                    .args(["--id", id, "--peer", "main"])
+                    .arg(project);
+                command
+            }
+            #[cfg(all(feature = "swift", target_os = "macos"))]
+            Language::Swift => {
+                let mut command = tokio::process::Command::new(swift_dialer());
                 command
                     .arg(format!("dial:{address}"))
                     .args(["--id", id, "--peer", "main"])
@@ -626,4 +660,6 @@ column!(node, Language::Node);
 column!(bun, Language::Bun);
 #[cfg(feature = "go")]
 column!(go, Language::Go);
-// Swift and Kotlin: with their SDKs (Swift A1, Android K-P2).
+#[cfg(all(feature = "swift", target_os = "macos"))]
+column!(swift, Language::Swift);
+// Kotlin: with its SDK (Android K-P2).

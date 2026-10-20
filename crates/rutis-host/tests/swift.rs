@@ -193,3 +193,128 @@ fn sdk_version() -> String {
     let rest = &rest[rest.find('"').unwrap() + 1..];
     rest[..rest.find('"').unwrap()].to_owned()
 }
+
+/// The Swift binary `product` running remotely on `channel` (`listen:` or
+/// `dial:`) as the endpoint `id`, for the host `test`, presenting or
+/// expecting `token`; its stderr lines come out of the receiver.
+fn remote(
+    product: &str,
+    channel: &str,
+    id: &str,
+    token: &str,
+) -> (
+    tokio::process::Child,
+    tokio::sync::mpsc::UnboundedReceiver<String>,
+) {
+    use tokio::io::AsyncBufReadExt;
+    let dir = tempfile::tempdir().unwrap().keep();
+    let binary = install(product, &dir, "netkit");
+    let mut child = tokio::process::Command::new(binary)
+        .arg(channel)
+        .args(["--id", id, "--peer", "test"])
+        .arg(&dir)
+        .env("RUTIS_TOKEN", token)
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut stderr = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
+    let (send, lines) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = stderr.next_line().await {
+            eprintln!("runtime: {line}");
+            let _ = send.send(line);
+        }
+    });
+    (child, lines)
+}
+
+/// A Swift binary listening on another machine (here, on loopback): a
+/// peer row links to it, `language: "swift"`, and its rows are
+/// `<runtime>:<plugin>`.
+/// guarantee: loader/remote-runtime-rows
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remote_swift_runtime_runs_rows_named_after_it() {
+    let (_child, mut lines) = remote(
+        "RutisPing",
+        "listen:ws://127.0.0.1:0/rutis",
+        "edge",
+        "edge-token",
+    );
+    let address = COLD
+        .within("the runtime's address", async {
+            loop {
+                let line = lines.recv().await.expect("the runtime's address");
+                if let Some(address) = line.strip_prefix("rutis: listening on ") {
+                    break address.to_owned();
+                }
+            }
+        })
+        .await;
+    std::env::set_var("RUTIS_TOKEN_EDGE", "edge-token");
+    let config: HostConfig = serde_json::from_value(json!({
+        "id": "test",
+        "runtimes": { "remote": [{ "name": "edge", "language": "swift" }] },
+        "rows": [
+            { "id": "edge", "name": "rutis-bridge/peer", "config": { "peer": "edge", "dial": address, "runtime": "edge" } },
+            { "id": "ping", "name": "edge:ping" }
+        ]
+    }))
+    .unwrap();
+    let host = Host::start(&config).await.unwrap();
+    host.load(config.rows()).await.unwrap();
+    let service = COLD
+        .eventually(|| host.service("ping"), "the ping service")
+        .await;
+    assert_eq!(
+        call(service, "echo", json!(["far"])).await.unwrap(),
+        json!("netkit pong far")
+    );
+    host.shut_down(HANG_GUARD).await.ok();
+}
+
+/// A Swift binary that dials in to the host's listener: each connection is
+/// an instance of the group `runtimes.remote[].instances` names, its rows
+/// `<name>:<plugin>` on that connection; the connection going closes it.
+/// guarantee: loader/runtime-connection-instances
+#[tokio::test(flavor = "multi_thread")]
+async fn a_swift_runtime_that_dials_in_is_an_instance() {
+    std::env::set_var("RUTIS_TOKEN_PHONE", "shared");
+    let config: HostConfig = serde_json::from_value(json!({
+        "id": "test",
+        "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
+        "runtimes": {
+            "remote": [{ "name": "phone", "language": "swift", "listen": "public", "instances": "phone" }]
+        },
+        "rows": [{ "id": "phone", "group": true, "instanced": true, "config": [
+            { "id": "ping", "name": "phone:ping" }
+        ] }]
+    }))
+    .unwrap();
+    let host = Host::start(&config).await.unwrap();
+    host.load(config.rows()).await.unwrap();
+    let address = format!("ws://{}/rutis", host.listening[0].1);
+    let (mut child, mut lines) = remote("RutisPing", &format!("dial:{address}"), "pixel", "shared");
+    COLD.within("connected", async {
+        loop {
+            let line = lines.recv().await.expect("connected");
+            if line.starts_with("rutis: connected to ") {
+                break;
+            }
+        }
+    })
+    .await;
+    let running = |id: &str| {
+        host.loader
+            .entries()
+            .into_iter()
+            .filter(|entry| entry.id == id && entry.instance.is_some())
+            .count()
+    };
+    COLD.until(|| running("ping") == 1, "the row of the instance")
+        .await;
+    child.kill().await.unwrap();
+    COLD.until(|| running("ping") == 0, "the instance closed")
+        .await;
+    host.shut_down(HANG_GUARD).await.ok();
+}

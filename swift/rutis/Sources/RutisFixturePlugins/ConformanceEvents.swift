@@ -125,9 +125,16 @@ final class ParticipantRow: @unchecked Sendable {
         self.waiter = waiter
     }
 
+    /// Logs `entry` with the host. Not with the caller's cancellation: a
+    /// listener cancelled at its row's unload still says it was (`b:cancelled`),
+    /// as Go's fixture logs with `context.WithoutCancel`. A call from the
+    /// cancelled Task itself is sent and then cancelled at once, and whether
+    /// the host logged it before the cancel arrived was a race (#387). An
+    /// unstructured Task keeps the call chain and drops the cancellation.
     func add(_ entry: String) async {
         Logged.shared.note(entry)
-        try? await log.add(entry)
+        let log = self.log
+        await Task { try? await log.add(entry) }.value
     }
 
     /// Waits until `entry` is logged, by any participant.

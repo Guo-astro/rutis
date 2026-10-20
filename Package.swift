@@ -75,6 +75,12 @@ let package = Package(
             dependencies: ["Rutis", "RutisFixturePlugins"],
             path: "swift/rutis/Sources/RutisPing"
         ),
+        // The dial conformance plugin `marker` (dial_conformance.rs).
+        .executableTarget(
+            name: "RutisDial",
+            dependencies: ["Rutis", "RutisFixturePlugins"],
+            path: "swift/rutis/Sources/RutisDial"
+        ),
         // The session conformance target (rutis_bridge::session::testing).
         .executableTarget(
             name: "RutisSessionFixture",

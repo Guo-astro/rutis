@@ -82,7 +82,7 @@ public let plugin = Rutis.define(Plugin(
 | 使用服务 | 带 `@RutisClient` 的协议（方法须 `async throws`）；`ctx.use("llm", LLMProxy.self)` 返回 `any LLM`，提供者在同一进程且实现了这个协议时就是它本身。也可以按名字调用：`try await ctx.use("llm").call("ask", values: ["q"], as: String.self)` |
 | 调用链 | 随 Task 传递（`@TaskLocal`）：插件代码不传任何上下文。插件用 `ctx.spawn { ... }` 起的 Task 带着它，卸载时被取消 |
 | 并发 | 每个进来的调用在自己的 Task 里运行：提供的对象要能并发使用 |
-| 取消 | 调用方放弃时取消方法的 Task（`Task.checkCancellation()` 抛 `CancellationError`）；在已取消的 Task 里发出的调用抛 `CancellationError` |
+| 取消 | 调用方放弃时取消方法的 Task（`Task.checkCancellation()` 抛 `CancellationError`）；在已取消的 Task 里发出的调用抛 `CancellationError`；取消后仍要调用（比如报告自己已停下）时在 `Task { … }` 里调用，它带着调用链、不带取消 |
 | 值 | 数据（`Codable` 结构体、数组、字典、数字、字符串）按值复制，用 SDK 自己的编码器与解码器；`Date`、`Data`、`Decimal`、`UUID`、`Set`、键不是 `String` 的字典，以及 `Rutis.DateTime`、`Rutis.CalendarDate`、`Rutis.TimeOfDay`、`Rutis.BigInt` 按各自的值传递（见下表）；超出 ±(2^53−1) 的整数（`Int64`、`UInt64` 等）自动按大整数传递；`@RutisService` 类型的实例和闭包按引用传递；类型为 `Any` 的参数收到原生值 |
 | 错误 | 抛出的错误带着类型名（`QuotaError`）、消息（`LocalizedError` 的 `errorDescription`，否则它的描述），以及存储属性 `code`、`data`（有的话）跨过去，调用方读到的错误带同样的 `code`、`data`。收到的错误是 `RutisError`（`name`、`message`、`code`、`data`、`errors`、`cause`），按 `name` 匹配 |
 | `fatalError`、`try!`、强制解包 | Swift 里不可捕获：运行时进程结束、它的行停止，宿主按 `restart` 处理（[运行时结束时](rutis-host.md#运行时结束时)） |
@@ -178,7 +178,7 @@ swift test
 rutis-host dev
 ```
 
-`dev` 用 `swift build` 构建包的可执行产品，把它的每个插件作为运行时 `swift-weather` 运行；源码、`Package.swift` 或 `Package.resolved` 变化时重新构建，只重启这个运行时，构建失败时旧的继续运行（打印编译器的错误）。每次构建复制到 `.rutis/swift/<产品>-<序号>`，每次一个新文件。插件需要的其他服务写在 `rutis.dev.json` 里；它们可以是 Python 或 TypeScript 插件（带上它们的 `runtimes`）。`rutis-host check` 列出每一行和每个 Swift 二进制，带平台、SDK、插件 API 和插件；用 rutis 0.13 以前的 SDK 构建的二进制不能运行，`check` 提示重新构建。
+`dev` 用 `swift build` 构建包的可执行产品，把它的每个插件作为运行时 `swift-weather` 运行；源码、`Package.swift` 或 `Package.resolved` 变化时重新构建，只重启这个运行时，构建失败时旧的继续运行（打印编译器的错误）。每次构建先打印 `weather: building`，完成后打印 `weather: built in 12.3s`：第一次要编译依赖（包括 SDK 的宏），可能要几分钟。每次构建复制到 `.rutis/swift/<产品>-<序号>`，每次一个新文件。插件需要的其他服务写在 `rutis.dev.json` 里；它们可以是 Python 或 TypeScript 插件（带上它们的 `runtimes`）。`rutis-host check` 列出每一行和每个 Swift 二进制，带平台、SDK、插件 API 和插件；用 rutis 0.13 以前的 SDK 构建的二进制不能运行，`check` 提示重新构建。
 
 ## 5. 系统权限
 
@@ -229,3 +229,20 @@ public final class Calendar: @unchecked Sendable {
 ```
 
 从 Release 下载二进制放进这个目录（下载的二进制带隔离属性：`rutis-host check` 会提示，信任它之后用 `xattr -d com.apple.quarantine <文件>` 清除）。宿主在所有二进制里找 `swift:<插件>`；两个二进制有同名插件时写 `swift-<二进制名>:<插件>`。设置与 `runtimes.go` 相同：二进制在第一次有行用到时启动，空闲 `idle` 秒（60）后停下，`"start": "eager"` 全部启动并一直运行，`restart`（默认 `no`、`on-failure`、`exit`）对每个运行时各自生效，换了二进制在它的运行时重启后生效。运行 Swift 二进制不需要 Swift 工具链。见 [rutis-host 与 rutis.json](rutis-host.md)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)（rutis-loader 的 `SwiftResolver`、`SwiftRuntimes`）。
+
+## 8. 在另一台机器上运行
+
+插件二进制也可以在另一台 Mac 上作为远程运行时运行，`language` 写 `swift`。两种方式，参数、环境变量和规则与 Python、Go 运行时相同；见 [连接节点](nodes.md#别的机器上的语言运行时)：
+
+```bash
+# 监听，由 rutis 连过来（证书和私钥在 RUTIS_CERT、RUTIS_KEY）
+RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
+  ./weather listen:wss://0.0.0.0:7443/rutis --id gpu --peer main .
+
+# 拨出到 rutis 的接入点，断开后按固定规则重连
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  ./weather dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
+```
+
+- 监听：非回环地址必须用 `wss://`；私钥可以是 EC（P-256、P-384、P-521）或 RSA，PKCS#8、SEC1 或 PKCS#1，PEM 格式。一次一个控制方，新连接接管；绑定后打印 `rutis: listening on <地址>`。
+- 拨出：在 stderr 报告状态（`rutis: connected to …`、`rutis: connection lost (…); retrying in 1s`、`rutis: refused: auth-rejected (…); retrying in 30s`）；SIGTERM 或 Ctrl-C 卸载全部行后退出；接入点不兼容时以状态 1 退出（`rutis: refused: incompatible (…); stopping`）。规则见 [连进来的运行时](nodes.md#连进来的运行时)。

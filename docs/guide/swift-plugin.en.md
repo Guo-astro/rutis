@@ -82,7 +82,7 @@ In short:
 | Using services | A protocol with `@RutisClient` (its methods `async throws`); `ctx.use("llm", LLMProxy.self)` returns an `any LLM`, the provider itself when it is in the same process and implements the protocol. Or call by name: `try await ctx.use("llm").call("ask", values: ["q"], as: String.self)` |
 | Call chain | It travels with the Task (`@TaskLocal`): plugin code passes no context. Tasks a plugin starts with `ctx.spawn { ... }` carry it and are cancelled at unload |
 | Concurrency | Every incoming call runs in a Task of its own: provided objects must be safe for concurrent use |
-| Cancellation | A caller that gives up cancels the method's Task (`Task.checkCancellation()` throws `CancellationError`); a call the plugin makes from a cancelled Task throws `CancellationError` |
+| Cancellation | A caller that gives up cancels the method's Task (`Task.checkCancellation()` throws `CancellationError`); a call the plugin makes from a cancelled Task throws `CancellationError`; to still call once cancelled (to report that it stopped, say), call from `Task { … }`, which keeps the call chain and not the cancellation |
 | Values | Data (`Codable` structs, arrays, dictionaries, numbers, strings) is copied, by the SDK's own encoder and decoder; `Date`, `Data`, `Decimal`, `UUID`, `Set`, dictionaries whose keys are not `String`, and `Rutis.DateTime`, `Rutis.CalendarDate`, `Rutis.TimeOfDay`, `Rutis.BigInt` cross as their own values (table below); integers beyond ±(2^53−1) (`Int64`, `UInt64`, ...) cross as big integers by themselves; instances of `@RutisService` types and closures cross by reference; a parameter of type `Any` receives native values |
 | Errors | A thrown error crosses with its type's name (`QuotaError`), its message (`LocalizedError`'s `errorDescription`, else its description), and the stored properties `code` and `data` when it has them, which the caller reads as its error's `code` and `data`. An error received is a `RutisError` (`name`, `message`, `code`, `data`, `errors`, `cause`), matched by `name` |
 | `fatalError`, `try!`, a force unwrap | Not catchable in Swift: the runtime process ends, its rows stop, and the host does what `restart` says ([When a runtime ends](rutis-host.en.md#when-a-runtime-ends)) |
@@ -178,7 +178,7 @@ Events in tests: `loaded.emit`, `parallel`, `serial`, `waterfall`, `bail` emit f
 rutis-host dev
 ```
 
-`dev` builds the package's executable product with `swift build` and runs each of its plugins as the runtime `swift-weather`; a change to the sources, `Package.swift` or `Package.resolved` rebuilds it and restarts only that runtime, and a failed build keeps the old one running (the compiler's errors are printed). Each build is copied to `.rutis/swift/<product>-<n>`, a new file each time. Other services the plugin needs go in `rutis.dev.json`; they may be Python or TypeScript plugins (with their `runtimes`). `rutis-host check` lists every row and every Swift binary with its platform, SDK, plugin API and plugins; a binary built with an SDK older than rutis 0.13 cannot run, and `check` says to rebuild it.
+`dev` builds the package's executable product with `swift build` and runs each of its plugins as the runtime `swift-weather`; a change to the sources, `Package.swift` or `Package.resolved` rebuilds it and restarts only that runtime, and a failed build keeps the old one running (the compiler's errors are printed). Each build says `weather: building`, then `weather: built in 12.3s`: the first one compiles the dependencies, the SDK's macros among them, and can take minutes. Each build is copied to `.rutis/swift/<product>-<n>`, a new file each time. Other services the plugin needs go in `rutis.dev.json`; they may be Python or TypeScript plugins (with their `runtimes`). `rutis-host check` lists every row and every Swift binary with its platform, SDK, plugin API and plugins; a binary built with an SDK older than rutis 0.13 cannot run, and `check` says to rebuild it.
 
 ## 5. System access
 
@@ -229,3 +229,20 @@ A host names a Swift plugin directory in `rutis.json` and puts binaries there:
 ```
 
 Download the binary from a release into the directory (a downloaded binary is quarantined: `rutis-host check` says so, and `xattr -d com.apple.quarantine <file>` clears it once you trust it). The host finds `swift:<plugin>` in all binaries; when two binaries have a plugin of the same name, write `swift-<binary name>:<plugin>`. The settings are those of `runtimes.go`: a binary starts when a row first uses it and stops after `idle` seconds (60) without one, `"start": "eager"` starts all and keeps them running, `restart` (`no` by default, `on-failure`, `exit`) applies to each runtime on its own, and a replaced binary takes effect when its runtime restarts. Running Swift binaries needs no Swift toolchain. See [rutis-host and rutis.json](rutis-host.en.md); for Rust hosts, [embedding in a Rust application](rust-host.en.md) (`SwiftResolver`, `SwiftRuntimes` in rutis-loader).
+
+## 8. Run it on another machine
+
+A plugin binary can also run on another Mac as a remote runtime, with `language` set to `swift`. Two ways, with the same arguments, environment variables and rules as the Python and Go runtimes; see [Connect nodes](nodes.en.md#a-language-runtime-on-another-machine):
+
+```bash
+# Listen, and rutis connects (certificate and key in RUTIS_CERT, RUTIS_KEY)
+RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
+  ./weather listen:wss://0.0.0.0:7443/rutis --id gpu --peer main .
+
+# Dial out to a rutis access point, reconnecting by fixed rules after a disconnect
+RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
+  ./weather dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
+```
+
+- Listening: a non-loopback address needs `wss://`; the key may be an EC (P-256, P-384, P-521) or RSA key, PKCS#8, SEC1 or PKCS#1, in PEM. One controller at a time, a newer connection taking over; the runtime says `rutis: listening on <address>` once bound.
+- Dialing out: it reports its state on stderr (`rutis: connected to …`, `rutis: connection lost (…); retrying in 1s`, `rutis: refused: auth-rejected (…); retrying in 30s`); SIGTERM or Ctrl-C unloads all rows and exits; an incompatible access point makes it exit with status 1 (`rutis: refused: incompatible (…); stopping`). For the rules, see [Runtimes that connect in](nodes.en.md#runtimes-that-connect-in).

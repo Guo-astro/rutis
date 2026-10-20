@@ -345,6 +345,16 @@ fn prepare(s: &Scenario, kind: Kind) {
                     &manifest[end..]
                 )
             });
+            // Warm the build: the package's dependencies (swift-syntax for
+            // the SDK's macros) and the binary, before any timed step. A
+            // cold first build takes minutes on a runner.
+            let started = std::time::Instant::now();
+            let mut warm = s.program("demo", "swift", ["build", "--product", "demo"], &[]);
+            assert!(
+                warm.wait_exit_within(build_guard()).success(),
+                "the first swift build"
+            );
+            eprintln!("first build took {:.1}s", started.elapsed().as_secs_f64());
         }
     }
 }
@@ -377,9 +387,9 @@ fn template_tests(s: &Scenario, kind: Kind) -> Host {
         Kind::Go => s.program("demo", "go", ["test", "./..."], GO_ENV),
         // The Command Line Tools (the self-hosted runners' toolchain) have
         // neither XCTest nor Swift Testing's macro plugin: there the test
-        // target cannot build, and only the plugin is built.
+        // target cannot build, and only the plugin and its binary are built.
         Kind::Swift if command_line_tools() => {
-            s.program("demo", "swift", ["build", "--target", "DemoPlugin"], &[])
+            s.program("demo", "swift", ["build", "--product", "demo"], &[])
         }
         Kind::Swift => s.program("demo", "swift", ["test"], &[]),
     }
@@ -405,6 +415,12 @@ fn greet(probe: &Probe, host: &mut Host) -> Value {
 /// again (it is reloaded with every row; a Go project's restarts with the
 /// Go runtime its service lives in).
 fn edited(kind: Kind, host: &mut Host, probe: &Probe) {
+    if kind.compiled() {
+        // A build's time, not a hang's: incremental, but the runners are slow.
+        host.wait_for_within(build_guard(), "the build", |line| {
+            line.starts_with("demo: built in ")
+        });
+    }
     match kind {
         Kind::Go => {
             host.expect("go-demo: rebuilt and restarted");
@@ -429,7 +445,10 @@ fn failed(kind: Kind, host: &mut Host) -> String {
         ),
         _ => ("the failed reload", "demo: cannot reload: "),
     };
-    let line = host.wait_for(what, |line| line.starts_with(prefix));
+    let line = match kind.compiled() {
+        true => host.wait_for_within(build_guard(), what, |line| line.starts_with(prefix)),
+        false => host.wait_for(what, |line| line.starts_with(prefix)),
+    };
     if !kind.compiled() {
         // Every row reloads; the probe's does, and it starts again.
         host.expect("probe: reloaded");
@@ -463,8 +482,13 @@ fn dev_loop(kind: Kind) {
     );
 
     // 3. check, on the template project as generated.
+    // A compiled language's check builds the binary first: a build's time.
     let mut check = s.host_in_with("demo", ["check"], GO_ENV);
-    assert!(check.wait_exit().success(), "rutis-host check");
+    let checked = match kind.compiled() {
+        true => check.wait_exit_within(build_guard()),
+        false => check.wait_exit(),
+    };
+    assert!(checked.success(), "rutis-host check");
     // The template declares no `provides`: its greeter is known once it
     // runs.
     check.expect("demo");
@@ -480,6 +504,14 @@ fn dev_loop(kind: Kind) {
     }
     s.write_json("demo/rutis.dev.json", &dev_json);
     let mut dev = s.host_in_with("demo", ["dev"], GO_ENV);
+    if kind.compiled() {
+        // `dev` builds first, and says so; the build's time is its own wait.
+        dev.expect("demo: building");
+        let built = dev.wait_for_within(build_guard(), "the first build", |line| {
+            line.starts_with("demo: built in ")
+        });
+        eprintln!("rutis-host dev: {built}");
+    }
     dev.expect("rutis-host dev: running demo; changes reload it (Ctrl-C ends)");
     probe.started(&mut dev);
     assert_eq!(greet(&probe, &mut dev), json!("Hello, Ada!"));

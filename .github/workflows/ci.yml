@@ -938,6 +938,12 @@ jobs:
       # in their own jobs.
       - name: cargo test (the contract suites with Swift)
         run: cargo test -p rutis-bridge --features testing,websocket,swift --test runtime_conformance --test value_roundtrip --test session_matrix swift_
+      # Remote: the dial-out column, and the listener's and dialer's own
+      # rules (statuses, frames, heartbeat, takeover, TLS both ways).
+      - name: cargo test (the Swift runtime remotely)
+        run: |
+          cargo test -p rutis-bridge --features testing,websocket,swift --test dial_conformance swift::
+          cargo test -p rutis-bridge --features testing,websocket,swift --test swift_remote
       - name: cargo test (the Swift runtime in the bridge)
         run: cargo test -p rutis-bridge --features testing,swift --test swift_runtime
       # Swift rows beside Node and Python ones: their runtimes too.

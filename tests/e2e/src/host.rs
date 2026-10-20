@@ -226,7 +226,18 @@ impl Host {
     /// output so far, when the output ends or the hang guard expires
     /// first; `what` names the wait in that message.
     pub fn wait_for(&mut self, what: &str, matches: impl Fn(&str) -> bool) -> String {
-        let deadline = Instant::now() + hang_guard();
+        self.wait_for_within(hang_guard(), what, matches)
+    }
+
+    /// [`Host::wait_for`], waiting up to `guard` instead of the hang guard:
+    /// for a step whose length is its work's (a build), not a hang's.
+    pub fn wait_for_within(
+        &mut self,
+        guard: Duration,
+        what: &str,
+        matches: impl Fn(&str) -> bool,
+    ) -> String {
+        let deadline = Instant::now() + guard;
         let mut state = self.output.state.lock().unwrap();
         loop {
             // A probe's line with something else inside it, or inside
@@ -252,7 +263,7 @@ impl Host {
             let now = Instant::now();
             if now >= deadline {
                 drop(state);
-                self.fail(&format!("no {what} within {:?} (hang guard)", hang_guard()));
+                self.fail(&format!("no {what} within {guard:?}"));
             }
             state = self
                 .output
