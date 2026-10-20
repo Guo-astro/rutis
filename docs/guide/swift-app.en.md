@@ -212,3 +212,29 @@ What the system asks the user (health data, location, contacts, photos) belongs 
 ## 7. Mac apps
 
 The same `RutisApp` runs in a Mac app; a sandboxed Mac app needs the `com.apple.security.network.client` entitlement to dial (and `network.server` to listen). Mac apps are not suspended in the background, so a menu bar app or login item can stay connected. A plugin that is not part of an app is better served as a [plugin binary](swift-plugin.en.md): rutis starts it on demand.
+
+## 8. The sample app
+
+[`swift/examples/HealthApp`](../../swift/examples/HealthApp) is an Xcode project of an iOS app hosting the `health` and `device` plugins of §2, with the start-in-front, stop-in-the-background business layer of §3. It depends on the SDK in this checkout (a local package), and reads where to connect from launch arguments (`-RutisConnect`, `-RutisID`, `-RutisToken`, and `-RutisCA`, a CA certificate in base64 DER), which Xcode's scheme sets.
+
+On the simulator, against a `rutis-host` on the same Mac (the simulator reaches the Mac's loopback):
+
+```bash
+cargo test -p rutis-e2e --test ios_app -- --ignored
+```
+
+builds the app with `xcodebuild`, runs it on two new simulators with ids of their own and a `rutis-host run` with the group of §4 and a Python row using the app's services, and checks: each simulator is an instance whose Python row sees its own app's `device`; the app going to the background stops its row and coming back starts it again, while the other simulator's runs on; before the user decides, reading steps fails with the plugin's `HealthAccessDenied` (`code` `not-determined`) at the Python caller; asking shows the Health sheet over the app, naming it (read off a screenshot). It needs an iOS simulator runtime (`xcodebuild -downloadPlatform iOS`). The simulator cannot answer the sheet, and `simctl privacy` has no HealthKit service, so those are checked by hand, below.
+
+### Manual checklist (a real device)
+
+What only a person and a device can check. With an iPhone (iOS 17 or later) on the same network as a Mac running rutis:
+
+1. On the Mac, make a certificate for its LAN address (any tool that makes a CA and a server certificate with the IP in its subject alternative names, for example `mkcert 192.168.1.10`), and run rutis with the configuration of §4, its listener `0.0.0.0:7443` with that certificate and key, and `RUTIS_TOKEN_PHONE` set; a Python row such as the e2e's `coach` (in `tests/e2e/tests/ios_app.rs`) shows what each instance sees.
+2. Open `swift/examples/HealthApp/HealthApp.xcodeproj`, set your team in Signing & Capabilities (HealthKit stays enabled), and in the scheme's arguments set `-RutisConnect wss://<the Mac's IP>:7443/rutis`, `-RutisToken <the token>`, and `-RutisCA` to the CA certificate (`base64 -i rootCA.der`, after `openssl x509 -in rootCA.pem -outform der -out rootCA.der`). Run it on the iPhone.
+3. **Local network:** iOS asks whether Rutis Health may find devices on the local network, with the sentence of `NSLocalNetworkUsageDescription`. Decline: the app shows `connecting` and the console `rutis: cannot connect (…); retrying in …`. Allow it in Settings → Privacy & Security → Local Network: the next try connects (`connected`), and rutis loads the plugins (the Python row runs).
+4. **The prompt is the app's:** call `health.authorize()` (the e2e's `coach` does when `<dir>/authorize` exists, on the next connection): the Health sheet names Rutis Health and shows its usage descriptions.
+5. **A denial reaches the caller:** turn everything off and tap Allow (or Don't Allow): `authorize()` returns `false`, and `stepsToday()` fails at the Python caller with `HealthAccessDenied: step counts are not shared with this app (denied)`, `code` `denied`.
+6. **A grant:** in Settings → Health → Data Access & Devices → Rutis Health, turn steps on: `stepsToday()` returns today's steps.
+7. **Background and foreground:** press Home: the console shows the plugins unloading and `stopped`, and rutis's row for this phone stops; open the app again: `connected`, and the row runs again.
+8. **Two devices:** run the app on a second device (or a simulator) with another `-RutisID`: two instances, each row seeing its own device (`device.id()`).
+9. **Network loss:** turn on Airplane Mode while in front: rutis's row stops; turn it off: the app reconnects by itself and the row comes back.

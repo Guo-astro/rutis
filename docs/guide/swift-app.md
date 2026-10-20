@@ -212,3 +212,29 @@ let rutis = RutisApp(plugins: [health, device], listen: "wss://0.0.0.0:7443/ruti
 ## 7. Mac 应用
 
 同一个 `RutisApp` 也在 Mac 应用里运行；沙盒里的 Mac 应用拨出需要 entitlement `com.apple.security.network.client`（监听需要 `network.server`）。Mac 应用在后台不会被挂起，菜单栏应用或登录项可以一直连着。不属于某个应用的插件更适合做成 [插件二进制](swift-plugin.md)：由 rutis 按需启动。
+
+## 8. 示例应用
+
+[`swift/examples/HealthApp`](../../swift/examples/HealthApp) 是一个 iOS 应用的 Xcode 项目，托管 §2 的 `health` 与 `device` 插件，业务层按 §3 在前台开始、进入后台停止。它依赖本仓库里的 SDK（本地包），连接到哪里由启动参数给出（`-RutisConnect`、`-RutisID`、`-RutisToken`，以及 `-RutisCA`：base64 的 DER 格式 CA 证书），在 Xcode 的 scheme 里设置。
+
+在模拟器上，连同一台 Mac 上的 `rutis-host`（模拟器能访问 Mac 的回环地址）：
+
+```bash
+cargo test -p rutis-e2e --test ios_app -- --ignored
+```
+
+它用 `xcodebuild` 构建应用，在两台新建的模拟器上以各自的 id 运行，`rutis-host run` 带 §4 的分组和一个使用应用服务的 Python 行，检查：每台模拟器是一个实例，其中的 Python 行看到的是自己那个应用的 `device`；应用进入后台时它的行停下、回到前台时重新开始，另一台的行不受影响；用户决定之前读步数失败，Python 调用方收到插件的 `HealthAccessDenied`（`code` 为 `not-determined`）；请求授权时"健康"的授权页显示在应用之上、写着应用的名字（从截图里读出）。需要 iOS 模拟器运行时（`xcodebuild -downloadPlatform iOS`）。模拟器上无法点击授权页，`simctl privacy` 也没有 HealthKit，这些由下面的人工清单检查。
+
+### 人工验收清单（真机）
+
+只有人和真机能检查的部分。iPhone（iOS 17 以上）与运行 rutis 的 Mac 在同一网络：
+
+1. 在 Mac 上为它的局域网地址签一张证书（任何能生成 CA 和服务器证书、把 IP 写进 subject alternative names 的工具，例如 `mkcert 192.168.1.10`），按 §4 的配置运行 rutis，监听器 `0.0.0.0:7443` 用这张证书和私钥，设置 `RUTIS_TOKEN_PHONE`；一个 Python 行（例如 e2e 的 `coach`，在 `tests/e2e/tests/ios_app.rs` 里）显示每个实例看到什么。
+2. 打开 `swift/examples/HealthApp/HealthApp.xcodeproj`，在 Signing & Capabilities 里选你的 team（HealthKit 保持开启），在 scheme 的参数里设 `-RutisConnect wss://<Mac 的 IP>:7443/rutis`、`-RutisToken <token>`，`-RutisCA` 设为 CA 证书（先 `openssl x509 -in rootCA.pem -outform der -out rootCA.der`，再 `base64 -i rootCA.der`）。在 iPhone 上运行。
+3. **本地网络：** iOS 询问是否允许 Rutis Health 查找本地网络上的设备，说明是 `NSLocalNetworkUsageDescription` 的那句话。拒绝：应用显示 `connecting`，控制台是 `rutis: cannot connect (…); retrying in …`。到"设置 → 隐私与安全性 → 本地网络"里允许：下一次重试连上（`connected`），rutis 装载插件（Python 行运行）。
+4. **提示属于应用：** 调用 `health.authorize()`（e2e 的 `coach` 在 `<dir>/authorize` 存在时、下一次连接时调用）："健康"的授权页写着 Rutis Health，显示它的用途说明。
+5. **拒绝传回调用方：** 全部关掉后点"允许"（或"不允许"）：`authorize()` 返回 `false`，`stepsToday()` 在 Python 调用方失败，`HealthAccessDenied: step counts are not shared with this app (denied)`，`code` 为 `denied`。
+6. **授权：** 在"设置 → 健康 → 数据访问与设备 → Rutis Health"里打开步数：`stepsToday()` 返回今天的步数。
+7. **后台与前台：** 回到主屏幕：控制台显示插件卸载、`stopped`，rutis 上这部手机的行停下；再打开应用：`connected`，行重新运行。
+8. **两台设备：** 在第二台设备（或模拟器）上以另一个 `-RutisID` 运行：两个实例，各自的行看到自己的设备（`device.id()`）。
+9. **断网：** 在前台时打开飞行模式：rutis 的行停下；关闭飞行模式：应用自己重连，行恢复。
