@@ -82,7 +82,7 @@ public let plugin = Rutis.define(Plugin(
 | 使用服务 | 带 `@RutisClient` 的协议（方法须 `async throws`）；`ctx.use("llm", LLMProxy.self)` 返回 `any LLM`，提供者在同一进程且实现了这个协议时就是它本身。也可以按名字调用：`try await ctx.use("llm").call("ask", values: ["q"], as: String.self)` |
 | 调用链 | 随 Task 传递（`@TaskLocal`）：插件代码不传任何上下文。插件用 `ctx.spawn { ... }` 起的 Task 带着它，卸载时被取消 |
 | 并发 | 每个进来的调用在自己的 Task 里运行：提供的对象要能并发使用 |
-| 取消 | 调用方放弃时取消方法的 Task（`Task.checkCancellation()` 抛 `CancellationError`）；在已取消的 Task 里发出的调用抛 `CancellationError` |
+| 取消 | 调用方放弃时取消方法的 Task（`Task.checkCancellation()` 抛 `CancellationError`）；在已取消的 Task 里发出的调用抛 `CancellationError`；取消后仍要调用（比如报告自己已停下）时在 `Task { … }` 里调用，它带着调用链、不带取消 |
 | 值 | 数据（`Codable` 结构体、数组、字典、数字、字符串）按值复制，用 SDK 自己的编码器与解码器；`Date`、`Data`、`Decimal`、`UUID`、`Set`、键不是 `String` 的字典，以及 `Rutis.DateTime`、`Rutis.CalendarDate`、`Rutis.TimeOfDay`、`Rutis.BigInt` 按各自的值传递（见下表）；超出 ±(2^53−1) 的整数（`Int64`、`UInt64` 等）自动按大整数传递；`@RutisService` 类型的实例和闭包按引用传递；类型为 `Any` 的参数收到原生值 |
 | 错误 | 抛出的错误带着类型名（`QuotaError`）、消息（`LocalizedError` 的 `errorDescription`，否则它的描述），以及存储属性 `code`、`data`（有的话）跨过去，调用方读到的错误带同样的 `code`、`data`。收到的错误是 `RutisError`（`name`、`message`、`code`、`data`、`errors`、`cause`），按 `name` 匹配 |
 | `fatalError`、`try!`、强制解包 | Swift 里不可捕获：运行时进程结束、它的行停止，宿主按 `restart` 处理（[运行时结束时](rutis-host.md#运行时结束时)） |
