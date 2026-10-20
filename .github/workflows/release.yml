@@ -8,6 +8,8 @@
 #              @arcships/rutis-host
 #              (and its platform packages @arcships/rutis-host-<os>-<cpu>)
 #   PyPI       rutis, rutis-host (a wheel per platform)
+#   Maven      io.github.arcships:rutis, io.github.arcships:rutis-ksp (the
+#              Kotlin SDK; skipped without the environment `maven`'s secrets)
 #   Go         github.com/arcships/rutis/go/rutis (the tag go/rutis/vX.Y.Z;
 #              the Go module proxy serves it from there)
 #   GitHub     rutis-host binaries
@@ -248,6 +250,51 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true
+
+  # Maven Central: the Kotlin SDK, io.github.arcships:rutis (jvm and
+  # android) and io.github.arcships:rutis-ksp, under the namespace
+  # io.github.arcships of the Central Portal. Its credentials are the
+  # secrets of the environment `maven` (docs/release.md): without them the
+  # job says so in the summary and skips, and the rest of the train is not
+  # held up. A version Maven Central already has is skipped too.
+  maven:
+    needs: [verify, ci, install, dylib-windows]
+    if: needs.verify.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    environment: maven
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: publish to Maven Central
+        working-directory: kotlin/rutis
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_SIGNING_KEY_PASSWORD }}
+        run: |
+          missing=
+          [ -n "$ORG_GRADLE_PROJECT_mavenCentralUsername" ] || missing="$missing MAVEN_CENTRAL_USERNAME"
+          [ -n "$ORG_GRADLE_PROJECT_mavenCentralPassword" ] || missing="$missing MAVEN_CENTRAL_PASSWORD"
+          [ -n "$ORG_GRADLE_PROJECT_signingInMemoryKey" ] || missing="$missing MAVEN_SIGNING_KEY"
+          if [ -n "$missing" ]; then
+            message="Maven Central skipped: the environment maven has no$missing (docs/release.md)"
+            echo "::warning title=Maven Central skipped::$message"
+            echo "$message" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if curl -sf "https://repo1.maven.org/maven2/io/github/arcships/rutis/$VERSION/rutis-$VERSION.pom" > /dev/null; then
+            echo "Maven Central has io.github.arcships:rutis $VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # The android variant is built only with an Android SDK, which
+          # GitHub's Ubuntu image has.
+          [ -d "${ANDROID_HOME:-}/platforms" ] || { echo "no Android SDK (ANDROID_HOME): the android variant would be missing" >&2; exit 1; }
+          ./gradlew --no-daemon :rutis:publishAndReleaseToMavenCentral :rutis-ksp:publishAndReleaseToMavenCentral
 
   # A Go module in a subdirectory is released by a tag with its path; the
   # tag is a publication, so it waits for the whole gate too.

@@ -183,7 +183,7 @@ private fun dial(address: String, endpoint: Endpoint, plugins: List<Plugin>): En
     val retry = Retry.from(System.getenv("RUTIS_RETRY"))
     val heartbeat = Heartbeat.from(System.getenv("RUTIS_HEARTBEAT"))
     val dialer = WebSocketDialer(address, PROTOCOL, System.getenv("RUTIS_TOKEN"), trust, retry, heartbeat)
-    val dialing = Dialing("$address as ${endpoint.local}", endpoint, plugins, retry, dialer::dial, say = { System.err.println("rutis: $it") })
+    val dialing = Dialing(address, endpoint, plugins, retry, dialer::dial, say = { System.err.println("rutis: $it") })
     onStop(dialing::stop)
     return dialing.run()
 }

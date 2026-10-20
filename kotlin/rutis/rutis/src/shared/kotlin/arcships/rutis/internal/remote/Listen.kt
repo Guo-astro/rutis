@@ -214,6 +214,7 @@ class Listening(
     private val endpoint: Endpoint,
     private val plugins: List<Plugin>,
     private val status: (Status) -> Unit = {},
+    private val shutdownMillis: Long? = null,
 ) {
     private sealed class Event {
         class Accepted(val connection: FrameConnection) : Event()
@@ -251,7 +252,7 @@ class Listening(
                             it.end()
                         }
                         val started = try {
-                            RuntimeSession.start(event.connection, endpoint, plugins)
+                            RuntimeSession.start(event.connection, endpoint, plugins, shutdownMillis)
                         } catch (e: Exception) {
                             event.connection.closeWith(CloseCode.GOING_AWAY, e.message ?: "the session did not start")
                             null

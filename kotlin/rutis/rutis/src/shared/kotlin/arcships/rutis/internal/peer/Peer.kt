@@ -741,6 +741,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
      * as an asynchronous call, which an interrupt cancels.
      */
     fun call(target: String, method: String, args: List<Any?>, sync: Boolean): Any? {
+        refuseOnMainThread("$method")
         val (id, waiter) = request("invoke", waiting(invokeFields(target, method), sync), args, emptyList(), CallChain.current())
         return settle(waitBlocking(id, waiter, !sync))
     }
@@ -791,8 +792,20 @@ class Peer(private val channel: Channel, private val opts: Options) {
         return done
     }
 
+    /**
+     * A call that waits for rutis is refused on an application's main
+     * thread (design §11.3 #3): it would freeze the interface, and rutis may
+     * need that thread to answer. A `suspend` function waits without it.
+     */
+    private fun refuseOnMainThread(what: String) {
+        if (arcships.rutis.internal.onMainThread()) {
+            throw IllegalStateException("$what waits for rutis: not on the main thread; call it as a suspend function or from another thread")
+        }
+    }
+
     /** Calls a function of the far end synchronously, blocking this thread. */
     fun callFunction(function: RemoteFunction, args: List<Any?>, sync: Boolean = true): Any? {
+        refuseOnMainThread("a function of the far end")
         synchronized(lock) { check(function.record) }
         val fields = waiting(mapOf("reference" to JsonPrimitive(function.record.id)), sync)
         val (id, waiter) = request("call", fields, args, emptyList(), CallChain.current())
@@ -814,6 +827,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
 
     /** Waits for `value` while it is a future, blocking. */
     fun settle(value: Any?): Any? {
+        if (value is RemoteFuture) refuseOnMainThread("a result of the far end")
         var current = value
         while (current is RemoteFuture) {
             val future = current

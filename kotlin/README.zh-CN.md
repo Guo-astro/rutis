@@ -4,7 +4,7 @@
 
 用 Kotlin 写 [rutis](https://github.com/arcships/rutis) 插件。SDK（`kotlin/rutis`，Maven 坐标 `io.github.arcships:rutis` 与 `io.github.arcships:rutis-ksp`，随 rutis 发布线）是 Kotlin Multiplatform 库，两个 target：**android**，供托管插件的 Android 应用（K-P2 阶段）；**jvm**，在桌面上运行同一份代码：一致性测试与测试入口 `Rutis.serve`。设计：[docs/design-android-runtime-2026-10-12.md](../docs/design-android-runtime-2026-10-12.md)。
 
-状态：K-P1 阶段，SDK 核心。插件、服务、值、错误、统一事件与测试工具在 jvm target 上可用，与其他运行时过同样的一致性套件。应用接入 rutis（`RutisApp`，WebSocket 拨出与监听）是 K-P2；尚未发布到 Maven Central。
+状态：K-P2。插件、服务、值、错误、统一事件与测试工具在两个 target 上可用，与其他运行时过同样的一致性套件；应用用 `RutisApp` 接入 rutis（WebSocket 拨出与监听），在 Android 模拟器上测过（含 R8 的 release 构建）。随 0.15 起发布到 Maven Central。
 
 ```kotlin
 import arcships.rutis.*
@@ -79,6 +79,24 @@ RutisTest.load(weather, Config("Oslo"), services = mapOf("llm" to FakeLlm())).us
 
 测试给的服务是 `@RutisService` 类的实例。`loaded.on`、`emit`、`parallel` 等以宿主身份监听和发出；`loaded.load(config, row, scope)` 装载更多行；`loaded.reported()` 是运行时报告的行。
 
+## 在应用里托管插件
+
+应用用 `RutisApp` 把它带的插件交给 rutis（设计 §五）：装哪些、用什么配置、何时卸载由 rutis 决定。
+
+```kotlin
+val rutis = RutisApp(
+    plugins = listOf(contacts(context), notify(context), device(context)),
+    connect = "wss://rutis.example.com:7443/rutis",   // 或 listen = "wss://0.0.0.0:7443/rutis", certificate = pem
+    id = "kim-pixel",                                 // 这条连接的 id，即它在 rutis 里的实例名
+    token = secrets.rutisToken,
+)
+rutis.start()   // 立即返回；断线自动重连，直到 stop()
+rutis.stop()    // 全部插件逆序清理，然后断开；之后可再 start()
+rutis.state     // StateFlow<RutisState>：Stopped(reason) / Connecting(retrying) / Connected(address)
+```
+
+何时 start / stop（跟随界面、在前台服务里）是应用的业务；SDK 不据 `state` 做任何决定。`trust` 是系统之外额外信任的 CA（PEM），用于自签证书的接入点。等待 rutis 的调用（`@RutisClient` 接口的非 `suspend` 方法）在主线程上被拒绝：用 `suspend` 调用或换个线程。rutis 一侧 `runtimes.remote[]` 写 `language: "kotlin"`、`listen` 与 `instances`，每条连接是一个实例（[连接节点](../docs/guide/nodes.md)）。`rutis/android-sample` 是这样做的应用，设备测试也用它。
+
 ## 桌面测试入口
 
 jvm target 上，`Rutis.serve(args, plugins…)` 把插件作为 rutis 运行时运行：`<channel> <project>`，通道是 Unix socket 路径（`unix:<path>` 或裸路径）或 `tcp:127.0.0.1:<port>`（先发 `RUTIS_CHANNEL_TOKEN`）。Rust 一致性测试经 rutis-bridge 的通用 `Launcher` 以 `java -jar` 启动它（不在 rutis-host 里配置本地 Kotlin 运行时）。
@@ -102,4 +120,11 @@ cargo test -p rutis-bridge --features testing,websocket,kotlin --test dial_confo
 cargo test -p rutis-bridge --features testing,websocket,kotlin --test kotlin_remote
 cargo test -p rutis-bridge --features testing,kotlin --test kotlin_runtime
 cargo test -p rutis-loader --features node,python,kotlin --test events_conformance --test multilang_kotlin
+```
+
+在 Android 设备或模拟器上（`adb`；`tools/android-emulator.sh start` 像 CI 那样起一个）：SDK 的设备测试，以及示例应用拨出到 rutis-host（它的另一行要 Python 3.10+）：
+
+```sh
+./gradlew :rutis:connectedDebugAndroidTest
+cargo test -p rutis-host --features android --test android -- --test-threads 1
 ```

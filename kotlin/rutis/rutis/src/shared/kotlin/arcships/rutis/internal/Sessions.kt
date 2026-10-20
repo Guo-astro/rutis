@@ -30,7 +30,7 @@ class RuntimeSession private constructor(val peer: Peer, val runtime: RuntimeSta
     fun end(): Boolean {
         peer.close(null)
         runtime.closing = true
-        return runBlocking { runtime.dispose(Shutdown.millis()) }
+        return runBlocking { runtime.dispose(runtime.shutdownMillis) }
     }
 
     /**
@@ -41,16 +41,20 @@ class RuntimeSession private constructor(val peer: Peer, val runtime: RuntimeSta
      */
     fun stop(reason: String): Boolean {
         runtime.closing = true
-        val disposed = runBlocking { runtime.dispose(Shutdown.millis()) }
+        val disposed = runBlocking { runtime.dispose(runtime.shutdownMillis) }
         peer.shutdown(reason)
         return disposed
     }
 
     companion object {
-        /** Starts serving `plugins` on `channel`: compat (no endpoint) or endpoint format. */
-        fun start(channel: Channel, endpoint: Endpoint?, plugins: List<Plugin>): RuntimeSession {
+        /**
+         * Starts serving `plugins` on `channel`: compat (no endpoint) or
+         * endpoint format; `shutdownMillis` overrides `RUTIS_SHUTDOWN_TIMEOUT`.
+         */
+        fun start(channel: Channel, endpoint: Endpoint?, plugins: List<Plugin>, shutdownMillis: Long? = null): RuntimeSession {
             checkPlugins(plugins)
             val runtime = RuntimeState(plugins)
+            if (shutdownMillis != null) runtime.shutdownMillis = shutdownMillis
             val peer = Peer(
                 channel,
                 Options(
