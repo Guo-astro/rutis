@@ -246,3 +246,5 @@ RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
 
 - Listening: a non-loopback address needs `wss://`; the key may be an EC (P-256, P-384, P-521) or RSA key, PKCS#8, SEC1 or PKCS#1, in PEM. One controller at a time, a newer connection taking over; the runtime says `rutis: listening on <address>` once bound.
 - Dialing out: it reports its state on stderr (`rutis: connected to …`, `rutis: connection lost (…); retrying in 1s`, `rutis: refused: auth-rejected (…); retrying in 30s`); SIGTERM or Ctrl-C unloads all rows and exits; an incompatible access point makes it exit with status 1 (`rutis: refused: incompatible (…); stopping`). For the rules, see [Runtimes that connect in](nodes.en.md#runtimes-that-connect-in).
+
+To offer the plugins from an iOS, iPadOS or macOS app instead, see [Host plugins in an app](swift-app.en.md).

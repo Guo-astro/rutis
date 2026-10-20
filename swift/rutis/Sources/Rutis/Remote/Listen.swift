@@ -167,16 +167,15 @@ final class WebSocketListener: @unchecked Sendable {
     private let protocolName: String
     private let queue = DispatchQueue(label: "rutis.listen")
 
-    init(_ spec: String, protocol protocolName: String, token: String, cert: String?, key: String?) throws {
+    /// `identity` gives the TLS identity of a wss:// address, or says why
+    /// there is none.
+    init(_ spec: String, protocol protocolName: String, token: String, identity: () throws -> sec_identity_t) throws {
         address = try ListenAddress(spec)
         self.token = Array(token.utf8)
         self.protocolName = protocolName
         let parameters: NWParameters
         if address.secure {
-            guard let cert, !cert.isEmpty, let key, !key.isEmpty else {
-                throw ChannelError("\(spec): wss needs a certificate and key (RUTIS_CERT, RUTIS_KEY)")
-            }
-            let identity = try tlsIdentity(cert: cert, key: key)
+            let identity = try identity()
             let tls = NWProtocolTLS.Options()
             sec_protocol_options_set_local_identity(tls.securityProtocolOptions, identity)
             sec_protocol_options_set_min_tls_protocol_version(tls.securityProtocolOptions, .TLSv12)
@@ -317,7 +316,7 @@ final class ControllerSession: @unchecked Sendable {
     /// from this end, then the connection closes.
     func stop() async throws {
         runtime.lock.withLock { runtime.closing = true }
-        let budget = Events.shutdownTimeout
+        let budget = runtime.settings.shutdownTimeout
         let finished = await runtime.dispose(within: budget)
         peer.close(ChannelError("the runtime stopped"))
         socket.close()
@@ -333,51 +332,4 @@ final class ControllerSession: @unchecked Sendable {
     }
 }
 
-extension Rutis {
-    /// Serves `plugins` to one controller at a time on `spec`, until a
-    /// controller is refused (an old host).
-    static func listen(_ spec: String, endpoint: Endpoint, project: String, _ plugins: [Definition]) async throws {
-        let environment = ProcessInfo.processInfo.environment
-        let listener = try WebSocketListener(spec, protocol: "rutis.\(endpointProtocol)", token: environment["RUTIS_TOKEN"] ?? "",
-                                             cert: environment["RUTIS_CERT"], key: environment["RUTIS_KEY"])
-        let (events, continuation) = AsyncStream<ListenEvent>.makeStream()
-        let address = try listener.start { socket in continuation.yield(.accepted(socket)) }
-        FileHandle.standardError.write(Data("rutis: listening on \(address)\n".utf8))
-        defer { listener.stop() }
-        var current: (id: Int, session: ControllerSession)?
-        var next = 0
-        for await event in events {
-            switch event {
-            case let .accepted(socket):
-                if let (_, session) = current {
-                    (session.socket as? WebSocket)?.closeWith(CloseCode.replaced, "replaced by a new connection")
-                    await session.end()
-                    current = nil
-                }
-                do {
-                    let (peer, runtime) = try startSession(channel: socket, project: project, plugins, endpoint: endpoint)
-                    next += 1
-                    let id = next
-                    current = (id, ControllerSession(peer: peer, runtime: runtime, socket: socket))
-                    Task {
-                        await peer.closed()
-                        continuation.yield(.closed(id))
-                    }
-                } catch {
-                    (socket as WebSocket).closeWith(CloseCode.goingAway, "\(error)")
-                }
-            case let .closed(id):
-                guard let (currentID, session) = current, currentID == id else { continue }
-                await session.end()
-                current = nil
-                if let refused = session.refused { throw refused }
-            }
-        }
-    }
-}
-
-enum ListenEvent {
-    case accepted(WebSocket)
-    case closed(Int)
-}
 #endif

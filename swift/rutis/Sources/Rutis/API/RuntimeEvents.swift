@@ -69,7 +69,7 @@ final class LocalListener: EventEntry, @unchecked Sendable {
     func failed(_ error: Error) {
         // Cancelled because its row unloads (§7.1): not a failure.
         if error is CancellationError, row.isCancelled { return }
-        Events.report("rutis: listener of \(name) in row \(row.name) failed: \(Events.failure(error))")
+        Events.report("rutis: listener of \(name) in row \(row.name) failed: \(Events.failure(error))", to: row.settings.log)
     }
 
     /// Calls the listener in a Task of its row's: cancelled when the
@@ -122,6 +122,7 @@ extension Runtime {
             let answered = Event()
             let refusal = ErrorBox()
             let rowName = row.name
+            let log = row.settings.log
             post {
                 do {
                     let call = try session.send(target: "", method: "events.on", args: registration, sync: false)
@@ -133,7 +134,7 @@ extension Runtime {
                                 if loading {
                                     refusal.set(error)
                                 } else {
-                                    Events.report("rutis: registration of listener of \(name) in row \(rowName) failed: \(Events.failure(error))")
+                                    Events.report("rutis: registration of listener of \(name) in row \(rowName) failed: \(Events.failure(error))", to: log)
                                 }
                             }
                         }
@@ -231,7 +232,7 @@ extension Runtime {
             do {
                 try await CallChain.$path.withValue(chain) { try await dispatch.emit(args) }
             } catch {
-                Events.report("rutis: filter of \(name) from row \(row.name) failed: \(Events.failure(error))")
+                Events.report("rutis: filter of \(name) from row \(row.name) failed: \(Events.failure(error))", to: row.settings.log)
             }
         }
         return .undefined
@@ -298,7 +299,7 @@ extension Runtime {
                 if self.hostEmits[name]! <= 0 { self.hostEmits[name] = nil }
             }
             if let error {
-                Events.report("rutis: emit of \(name) from row \(row.name) failed: \(Events.failure(error))")
+                Events.report("rutis: emit of \(name) from row \(row.name) failed: \(Events.failure(error))", to: row.settings.log)
             }
         }
         switch sent.get() {

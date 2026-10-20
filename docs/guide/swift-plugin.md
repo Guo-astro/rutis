@@ -246,3 +246,5 @@ RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
 
 - 监听：非回环地址必须用 `wss://`；私钥可以是 EC（P-256、P-384、P-521）或 RSA，PKCS#8、SEC1 或 PKCS#1，PEM 格式。一次一个控制方，新连接接管；绑定后打印 `rutis: listening on <地址>`。
 - 拨出：在 stderr 报告状态（`rutis: connected to …`、`rutis: connection lost (…); retrying in 1s`、`rutis: refused: auth-rejected (…); retrying in 30s`）；SIGTERM 或 Ctrl-C 卸载全部行后退出；接入点不兼容时以状态 1 退出（`rutis: refused: incompatible (…); stopping`）。规则见 [连进来的运行时](nodes.md#连进来的运行时)。
+
+要从 iOS、iPadOS 或 macOS 应用里提供插件，见 [在应用里托管插件](swift-app.md)。

@@ -22,7 +22,7 @@ Keep one sentence in mind: **rutis has no such thing as a "remote plugin" — on
 | A language runtime on another machine; **this rutis** loads, configures, starts and stops its plugins | Remote runtime (link + `runtime`) | `<runtime name>:<plugin>` |
 | Another full rutis host that manages its own plugins and only shares services and events | Node link (`export` / `import`) | No new row; imported services are available by name |
 | Another full rutis host on which this side wants to run rows it writes | Node link (`host: true` there, `rows: true` here) | `peer:<peer>/<plugin>` |
-| A phone or desktop app offering its own capabilities as plugins | App hosting (designed, not implemented) | `<runtime name>:<plugin>`, one instance per connection |
+| A phone or desktop app offering its own capabilities as plugins | App hosting (Swift apps; Android designed) | `<runtime name>:<plugin>`, one instance per connection |
 
 When unsure, ask one question: **who decides whether the plugin is loaded and with what configuration?** This rutis → remote runtime / app hosting. The other side → node link.
 
@@ -35,7 +35,8 @@ When unsure, ask one question: **who decides whether the plugin is loaded and wi
 | Go | ✅ | ✅ ([#384](https://github.com/arcships/rutis/issues/384)) |
 | Bun | ✅ (#384) | ✅ (#384) |
 | Swift (macOS plugin binaries) | ✅ ([#387](https://github.com/arcships/rutis/issues/387)) | ✅ ([#387](https://github.com/arcships/rutis/issues/387)) |
-| Swift / Kotlin apps (plugins hosted in an iOS / Android app) | Designed, not implemented ([#389](https://github.com/arcships/rutis/issues/389), [#391](https://github.com/arcships/rutis/issues/391)) | Same |
+| Swift apps (plugins hosted in an iOS / iPadOS / macOS app, `RutisApp`) | ✅ ([#389](https://github.com/arcships/rutis/issues/389)) | ✅ ([#389](https://github.com/arcships/rutis/issues/389)) |
+| Kotlin apps (plugins hosted in an Android app) | Designed, not implemented ([#391](https://github.com/arcships/rutis/issues/391)) | Same |
 
 "One access point accepting many connections, one instance per connection" (many devices, autoscaled workers) works on the rutis side ([#382](https://github.com/arcships/rutis/issues/382): `listen` and `instances` on a `runtimes.remote` entry); of the language runtimes Python, Go, Swift, Node and Bun can connect to it so far (step 4b). Tracking issue: [#392](https://github.com/arcships/rutis/issues/392).
 
@@ -113,6 +114,24 @@ RUTIS_TOKEN=… RUTIS_CA=ca.pem \
   ```
 
   Every connection is one instance of the group: its rows run on it, and the services they provide are seen only in that instance.
+
+## 4c. Or host the plugins in an app (Swift: iOS, iPadOS, macOS)
+
+The plugins are compiled into the app (the Swift package `https://github.com/arcships/rutis`, product `Rutis`, from `0.15.0`); the app only starts and stops the connection, and rutis loads the plugins its configuration names. The rutis side is the same as 4b, with `"language": "swift"`.
+
+```swift
+let rutis = RutisApp(plugins: [health, device], connect: "wss://main.example.com:7443/rutis",
+                     id: "kim-iphone", token: token)   // optional: peer:, trust: [SecCertificate], shutdownTimeout:, log:
+try await rutis.start()   // returns once dialing started; reconnects by the 4b rules until stop()
+await rutis.stop()        // unloads every plugin (latest first), then disconnects; start() may follow
+// rutis.state: .stopped(reason:) / .connecting / .connected — Observable, and rutis.states (AsyncStream)
+```
+
+- When to start and stop is the app's business (on iOS, typically start in the foreground and stop on entering the background); a suspended app is, to rutis, a lost connection: its instance closes and its users stop.
+- Permissions (HealthKit, location, contacts) belong to the app: entitlements and usage descriptions in the app; a denial is an error the plugin throws, which reaches the caller.
+- Connecting to a local-network address asks the user for the local network permission (`NSLocalNetworkUsageDescription` in Info.plist); until allowed, the app keeps retrying.
+- A device at a fixed address can listen instead: `RutisApp(plugins:, listen: "wss://0.0.0.0:7443/rutis", id:, token:, certificate: <SecIdentity>)`, linked to from rutis like any remote runtime (step 5).
+- Guide: https://github.com/arcships/rutis/blob/main/docs/guide/swift-app.en.md
 
 ## 5. Configure the rutis side
 

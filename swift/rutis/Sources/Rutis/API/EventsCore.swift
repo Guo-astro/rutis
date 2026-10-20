@@ -173,6 +173,21 @@ package enum Events {
         return seconds
     }
 
+    /// Where a runtime's lines go and how long its cleanups may take once
+    /// its session ends: a binary's are stderr and RUTIS_SHUTDOWN_TIMEOUT,
+    /// an app's are RutisApp's `log` and `shutdownTimeout`.
+    package struct Settings: Sendable {
+        package var log: @Sendable (String) -> Void
+        package var shutdownTimeout: Double
+
+        package init(log: @escaping @Sendable (String) -> Void = Events.standardError,
+                     shutdownTimeout: Double = Events.shutdownTimeout)
+        {
+            self.log = log
+            self.shutdownTimeout = shutdownTimeout
+        }
+    }
+
     /// The seconds as the report lines write them (`10`, `0.5`).
     package static func seconds(_ value: Double) -> String {
         value == value.rounded() && abs(value) < 1e15 ? String(Int64(value)) : String(value)
@@ -182,11 +197,17 @@ package enum Events {
     nonisolated(unsafe) private static var reporters: [Int: (String) -> Void] = [:]
     nonisolated(unsafe) private static var nextReporter = 0
 
-    /// Writes one line of §5.6 on stderr, and to every hook.
-    package static func report(_ line: String) {
+    /// Writes one line of §5.6 to `log` (stderr unless an app gave its
+    /// own), and to every hook.
+    package static func report(_ line: String, to log: (String) -> Void = standardError) {
         let hooks = reportLock.withLock { Array(reporters.values) }
-        FileHandle.standardError.write(Data((line + "\n").utf8))
+        log(line)
         for hook in hooks { hook(line) }
+    }
+
+    /// Writes `line` on stderr: where a binary's lines go.
+    @Sendable package static func standardError(_ line: String) {
+        FileHandle.standardError.write(Data((line + "\n").utf8))
     }
 
     /// Hears every line reported until the returned function is called.
