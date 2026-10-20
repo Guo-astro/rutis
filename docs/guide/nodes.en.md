@@ -162,6 +162,8 @@ RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
 
 Node and Bun run each session in a child process: on a disconnect the child unloads every row and exits, and a reconnection starts a new one. `RUTIS_CA` is trusted together with the roots Node and Bun trust by default.
 
+Kotlin plugins usually ship inside an Android application, which dials out to rutis ([Android app hosting](../design-android-runtime-2026-10-12.en.md) §5). The SDK's jvm target takes the same `dial:` and `listen:` channels, environment variables and rules in `Rutis.serve` (its listener serving `wss://` with `RUTIS_CERT` and `RUTIS_KEY`), with `language` set to `kotlin` (or `kt`).
+
 ## Connect a Cordis application as a node
 
 An existing Cordis application can become a node through `@arcships/rutis-runtime/bridge`; see [Cordis](cordis.en.md).

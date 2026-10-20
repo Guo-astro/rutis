@@ -1,13 +1,28 @@
 package arcships.rutis
 
 import arcships.rutis.internal.RuntimeSession
+import arcships.rutis.internal.peer.ENDPOINT_PROTOCOL
+import arcships.rutis.internal.peer.Endpoint
 import arcships.rutis.internal.peer.LocalChannels
+import arcships.rutis.internal.peer.validId
 import arcships.rutis.internal.refusedLine
+import arcships.rutis.internal.remote.Dialing
+import arcships.rutis.internal.remote.Ended
+import arcships.rutis.internal.remote.Heartbeat
+import arcships.rutis.internal.remote.ListenAddress
+import arcships.rutis.internal.remote.Listening
+import arcships.rutis.internal.remote.Retry
+import arcships.rutis.internal.remote.Tls
+import arcships.rutis.internal.remote.WebSocketDialer
+import arcships.rutis.internal.remote.WebSocketServer
+import arcships.rutis.internal.remote.dialHost
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.io.File
+import java.io.IOException
 import kotlin.system.exitProcess
 
 private const val USAGE = "usage: <program> --rutis-manifest | <channel> [--id <endpoint>] [--peer <endpoint>] <project>"
@@ -19,12 +34,17 @@ private var projectDir: String = ""
 val Rutis.project: String get() = projectDir
 
 /**
- * The desktop test entry (jvm target): runs `plugins` as a rutis runtime as
- * the command line says, and exits the process. `<channel> <project>`: the
- * channel is `unix:<path>` (or a bare path) or `tcp:127.0.0.1:<port>`;
- * `--rutis-manifest` prints what the plugins declare. Exit status 0 when the
- * session ended and the rows unloaded; 1 when the host was refused (it does
- * not declare events-v2) or cleanups did not finish within
+ * The desktop entry (jvm target): runs `plugins` as a rutis runtime as the
+ * command line says, and exits the process. `<channel> <project>`: the
+ * channel is `unix:<path>` (or a bare path) or `tcp:127.0.0.1:<port>`, a
+ * local channel rutis made; or, with `--id <endpoint>` (and `--peer
+ * <endpoint>`, the controller's id, when known), `dial:<ws or wss address>`
+ * to dial a rutis access point and stay connected, or `listen:<ws or wss
+ * address>` to wait for rutis to dial in. `--rutis-manifest` prints what the
+ * plugins declare. Exit status 0 when the session ended (or, remotely, the
+ * runtime was stopped: SIGTERM, Ctrl-C) and the rows unloaded; 1 when the
+ * host was refused (it does not declare events-v2, or the access point is
+ * otherwise incompatible) or cleanups did not finish within
  * `RUTIS_SHUTDOWN_TIMEOUT`.
  */
 fun Rutis.serve(args: Array<String>, vararg plugins: Plugin): Nothing {
@@ -76,9 +96,35 @@ private fun serveArgs(args: List<String>, plugins: List<Plugin>): Int {
     }
     if (rest.size != 1) throw IllegalArgumentException(USAGE)
     projectDir = rest[0]
-    if (channel.startsWith("listen:") || channel.startsWith("dial:") || channel.startsWith("ws:") || channel.startsWith("wss:")) {
-        throw IllegalArgumentException("network channels come with the Kotlin SDK's next phase (K-P2): $channel")
+    val network = channel.startsWith("listen:") || channel.startsWith("dial:")
+    if (!network && (channel.startsWith("ws:") || channel.startsWith("wss:"))) {
+        throw IllegalArgumentException("a WebSocket channel is listen:<address> or dial:<address>: $channel")
     }
+    if (!network) return serveLocal(channel, plugins)
+    val id = flags["id"] ?: throw IllegalArgumentException("a network channel needs --id <endpoint>: $channel")
+    if (!validId(id)) throw IllegalArgumentException("invalid endpoint id $id: use lower-case letters, digits and -")
+    val endpoint = Endpoint(id, flags["peer"], listOf("runtime"))
+    val ended = if (channel.startsWith("dial:")) {
+        dial(channel.removePrefix("dial:"), endpoint, plugins)
+    } else {
+        listen(channel.removePrefix("listen:"), endpoint, plugins)
+    }
+    return when (ended) {
+        is Ended.Refused -> {
+            System.err.println("rutis: " + refusedLine(ended.reason))
+            1
+        }
+        is Ended.Stopped -> if (ended.clean) {
+            0
+        } else {
+            System.err.println("rutis: cleanups did not finish within the shutdown deadline after the runtime stopped")
+            1
+        }
+    }
+}
+
+/** A local channel rutis made: one session, then the process ends. */
+private fun serveLocal(channel: String, plugins: List<Plugin>): Int {
     val session = RuntimeSession.start(LocalChannels.open(channel), null, plugins)
     session.peer.closedFuture.join()
     val ended = session.end()
@@ -93,3 +139,73 @@ private fun serveArgs(args: List<String>, plugins: List<Plugin>): Int {
     return 0
 }
 
+/** The session protocol of the WebSocket channels. */
+private const val PROTOCOL = "rutis.$ENDPOINT_PROTOCOL"
+
+/** Runs `stop` on SIGTERM or Ctrl-C instead of ending the process at once: a remote runtime stops by unloading its rows. */
+private fun onStop(stop: () -> Unit) {
+    for (name in listOf("TERM", "INT")) {
+        try {
+            sun.misc.Signal.handle(sun.misc.Signal(name)) { stop() }
+        } catch (_: IllegalArgumentException) {
+            // A signal this platform does not have.
+        }
+    }
+}
+
+/** The file `path` that the environment variable `variable` names, read. */
+private fun readNamed(variable: String, path: String): String = try {
+    File(path).readText()
+} catch (e: IOException) {
+    throw IllegalArgumentException("$variable $path: ${e.message}")
+}
+
+/**
+ * `dial:<address>`: dials a rutis access point and stays connected (the
+ * dial-out rules, design-remote-runtime-dial §六), presenting
+ * `RUTIS_TOKEN`; a wss:// one is trusted by the system's CAs and those in
+ * the PEM file `RUTIS_CA`.
+ */
+private fun dial(address: String, endpoint: Endpoint, plugins: List<Plugin>): Ended {
+    dialHost(address)
+    val trust = if (address.startsWith("wss:")) {
+        val extra = System.getenv("RUTIS_CA")?.takeIf { it.isNotEmpty() }?.let { ca ->
+            try {
+                Tls.certificates(readNamed("RUTIS_CA", ca))
+            } catch (e: IllegalArgumentException) {
+                throw IllegalArgumentException("RUTIS_CA $ca: ${e.message}")
+            }
+        }
+        Tls.trust(extra ?: emptyList())
+    } else {
+        null
+    }
+    val retry = Retry.from(System.getenv("RUTIS_RETRY"))
+    val heartbeat = Heartbeat.from(System.getenv("RUTIS_HEARTBEAT"))
+    val dialer = WebSocketDialer(address, PROTOCOL, System.getenv("RUTIS_TOKEN"), trust, retry, heartbeat)
+    val dialing = Dialing("$address as ${endpoint.local}", endpoint, plugins, retry, dialer::dial, say = { System.err.println("rutis: $it") })
+    onStop(dialing::stop)
+    return dialing.run()
+}
+
+/**
+ * `listen:<address>`: serves one controller at a time on a WebSocket
+ * address, taking `RUTIS_TOKEN`; a wss:// one serves the PEM certificate
+ * and key in `RUTIS_CERT` and `RUTIS_KEY`.
+ */
+private fun listen(address: String, endpoint: Endpoint, plugins: List<Plugin>): Ended {
+    val at = ListenAddress.parse(address)
+    val tls = if (at.secure) {
+        val certificate = System.getenv("RUTIS_CERT")?.takeIf { it.isNotEmpty() }
+        val key = System.getenv("RUTIS_KEY")?.takeIf { it.isNotEmpty() }
+        if (certificate == null || key == null) throw IllegalArgumentException("$address: wss needs a certificate and key (RUTIS_CERT, RUTIS_KEY)")
+        Tls.server(readNamed("RUTIS_CERT", certificate), readNamed("RUTIS_KEY", key))
+    } else {
+        null
+    }
+    val server = WebSocketServer(at, PROTOCOL, System.getenv("RUTIS_TOKEN"), tls, Heartbeat.from(System.getenv("RUTIS_HEARTBEAT")))
+    System.err.println("rutis: listening on ${server.address}")
+    val listening = Listening(server, endpoint, plugins)
+    onStop(listening::stop)
+    return listening.run()
+}

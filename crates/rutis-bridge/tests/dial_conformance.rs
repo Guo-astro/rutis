@@ -5,8 +5,9 @@
 //! point observes and what the runtime says on stderr.
 //!
 //! A column per language: Python, Go, Node and Bun (Unix only, as the whole
-//! Bun runtime is), Swift (macOS, as its plugin binaries are); Kotlin with
-//! its SDK (Android K-P2). A language joins by a
+//! Bun runtime is), Swift (macOS, as its plugin binaries are), Kotlin
+//! (feature `kotlin`: the SDK's jvm target, the same code an Android
+//! application dials with, K-P2). A language joins by a
 //! [`Language`] variant (the command that dials, the conformance plugin in
 //! its project) and a `column!` line. What every dialer must do:
 //!
@@ -74,7 +75,15 @@ enum Language {
     /// macOS only, as Swift plugin binaries are.
     #[cfg(all(feature = "swift", target_os = "macos"))]
     Swift,
+    /// The Kotlin SDK's jvm target (`Rutis.serve` in the conformance jar).
+    #[cfg(feature = "kotlin")]
+    Kotlin,
 }
+
+/// The Kotlin programs (`tests/kotlin`); `kotlin` is the column.
+#[cfg(feature = "kotlin")]
+#[path = "kotlin/mod.rs"]
+mod kotlin_programs;
 
 /// The conformance plugin as the npm package `marker` in `project`, which
 /// the Node and Bun runtimes resolve the row's entry `marker` to.
@@ -204,6 +213,18 @@ impl Language {
             Language::Swift => {
                 let mut command = tokio::process::Command::new(swift_dialer());
                 command
+                    .arg(format!("dial:{address}"))
+                    .args(["--id", id, "--peer", "main"])
+                    .arg(project);
+                command
+            }
+            #[cfg(feature = "kotlin")]
+            Language::Kotlin => {
+                let mut command = tokio::process::Command::new("java");
+                command
+                    .args(kotlin_programs::JVM_OPTIONS)
+                    .arg("-jar")
+                    .arg(kotlin_programs::jar())
                     .arg(format!("dial:{address}"))
                     .args(["--id", id, "--peer", "main"])
                     .arg(project);
@@ -662,4 +683,5 @@ column!(bun, Language::Bun);
 column!(go, Language::Go);
 #[cfg(all(feature = "swift", target_os = "macos"))]
 column!(swift, Language::Swift);
-// Kotlin: with its SDK (Android K-P2).
+#[cfg(feature = "kotlin")]
+column!(kotlin, Language::Kotlin);

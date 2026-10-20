@@ -33,6 +33,19 @@ class RuntimeSession private constructor(val peer: Peer, val runtime: RuntimeSta
         return runBlocking { runtime.dispose(Shutdown.millis()) }
     }
 
+    /**
+     * Stops for good, this side's own decision: every row goes while the
+     * controller still hears from this end (its cleanups in reverse), then
+     * the session and its channel close. Returns false when cleanups were
+     * given up.
+     */
+    fun stop(reason: String): Boolean {
+        runtime.closing = true
+        val disposed = runBlocking { runtime.dispose(Shutdown.millis()) }
+        peer.shutdown(reason)
+        return disposed
+    }
+
     companion object {
         /** Starts serving `plugins` on `channel`: compat (no endpoint) or endpoint format. */
         fun start(channel: Channel, endpoint: Endpoint?, plugins: List<Plugin>): RuntimeSession {

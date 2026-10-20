@@ -399,3 +399,17 @@ rutis.stop()    // 全部插件逆序清理，然后断开
 | `--rutis-manifest` | jvm 入口也答复（同 Go 的形状，`runtime` 为 `rutis-kotlin-runtime:1`） | 便于检查；K-P1 不由宿主读取 |
 | 多语言列 | `crates/rutis-loader/tests/multilang_kotlin.rs`（同 `multilang_go.rs`），含经 Kotlin 的交叉同步环 | 自成一体，不改其他语言共用的测试 |
 | 发出方取消 | 在一致性期望里 Kotlin 的取消是 `CancellationException` | 协程的取消 |
+
+## 十三、K-P2 实现记录（2026-10-20，#391）
+
+远程通道在共用源码 `rutis/src/shared` 的 `arcships.rutis.internal.remote` 里，android 与 jvm 两个 target 是同一份代码；jvm 的 `Rutis.serve` 接受 `dial:` / `listen:`（`--id`、`--peer`、`RUTIS_TOKEN`、`RUTIS_CA`、`RUTIS_CERT` / `RUTIS_KEY`、`RUTIS_RETRY`、`RUTIS_HEARTBEAT`，同其他语言），一致性测试经它跑。与上文不同或上文没写的地方：
+
+| 项 | 实现 | 原因 |
+| --- | --- | --- |
+| 监听 | 不用 Java-WebSocket（K8），SDK 自带：在 `java.net.ServerSocket`（`wss://` 为 `SSLServerSocket`）上自己处理升级请求与帧（`Listen.kt`、`Frames.kt`），同 Go 的 `listen.go`、Swift 的 `Remote/WebSocket.swift` | Java-WebSocket 拒绝握手只能回 404 或 500，而 rutis 的拨号方按状态码分类（401 / 403 重试，400 / 404 停止）；它不检查客户端帧的掩码；心跳以秒计、失联以 1006 关闭。三条都达不到与 Go 的监听同一套断言（§九）。SDK 的运行时依赖因此少一个 |
+| 拨出 | OkHttp 5（K8）；状态码、`Sec-WebSocket-Protocol` 与证书错误按类型分类；Android 的网络安全配置拒绝明文（`UnknownServiceException`）算不兼容 | 重试修不好 |
+| 发送 | 等 OkHttp 的发送队列有空间再交给它 | OkHttp 的队列将超过 16 MiB 时直接关闭连接 |
+| 对端以别的 id 问候 | `EndpointMismatchException`（`IncompatibleException` 的子类）；拨出方据此归为凭据被拒 | 同 Go 的 `ErrEndpointMismatch`：按类型分类，不看文字 |
+| PEM | 证书经 `CertificateFactory`；私钥 PKCS#8、PKCS#1（RSA）、SEC1（EC），后两种由 SDK 包成 PKCS#8 交给 `KeyFactory`；只在进程内，不进 Android Keystore | 平台 API 只认 PKCS#8 |
+| SIGTERM / Ctrl-C | jvm 入口经 `sun.misc.Signal` 接住，卸载全部行后以 0 退出 | JVM 默认的关闭钩子以 143 退出，钩子里也做不了有序停止 |
+| rutis-host | `runtimes.remote[].language` 的 `kotlin` / `kt` 是只在远程运行的语言：没有本地运行时、模板与项目，行名 `<运行时名>:<插件>` | Kotlin 运行在应用里，桌面运行时挂起 |

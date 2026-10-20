@@ -65,6 +65,13 @@ fun tooDeep(): ValueException =
 /** The far end greeted in a way this side cannot speak: retrying cannot fix it. */
 open class IncompatibleException(message: String) : IOException(message)
 
+/**
+ * The far end greeted as another endpoint than the expected one, or as this
+ * one: who it is was not accepted (a dialer waits and retries, as for
+ * refused credentials).
+ */
+class EndpointMismatchException(message: String) : IncompatibleException(message)
+
 /** The far end lacks a capability [Options.require] lists; the message is the reason alone. */
 class RefusedException(val reason: String) : IncompatibleException(reason)
 
@@ -981,9 +988,9 @@ class Peer(private val channel: Channel, private val opts: Options) {
         val far = (frame["endpoint"] as? JsonPrimitive)?.takeIf { it.isString }?.content
         if (far == null || !endpointId.matches(far)) throw IncompatibleException("incompatible session: the far end named no valid endpoint")
         if (endpoint.expected != null && endpoint.expected != far) {
-            throw IncompatibleException("endpoint mismatch: the far end greeted as $far, but ${endpoint.expected} is the expected endpoint")
+            throw EndpointMismatchException("endpoint mismatch: the far end greeted as $far, but ${endpoint.expected} is the expected endpoint")
         }
-        if (far == endpoint.local) throw IncompatibleException("endpoint mismatch: the far end greeted as this endpoint ($far)")
+        if (far == endpoint.local) throw EndpointMismatchException("endpoint mismatch: the far end greeted as this endpoint ($far)")
         remote = "$far:"
         val capabilities = capabilitiesOf(frame)
         greeting = Greeting(far, frame["implementation"], capabilities)
