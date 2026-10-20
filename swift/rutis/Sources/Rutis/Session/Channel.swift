@@ -106,6 +106,19 @@ package final class LineChannel: Channel, @unchecked Sendable {
             if buffer.count - start > maxMessage + 1 {
                 throw ChannelError("a message exceeds the limit of \(maxMessage) bytes")
             }
+            // Wait in poll, not in read: on macOS a read blocked on this
+            // (non-main) thread is now and then not woken when the far end
+            // shuts the socket down, and the process would wait forever for
+            // a session that ended (#387). poll is woken; its timeout looks
+            // again all the same.
+            var ready = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let polled = poll(&ready, 1, 1000)
+            if polled == 0 { continue }
+            if polled < 0 {
+                if errno == EINTR { continue }
+                if isShut { return nil }
+                throw errnoText("poll")
+            }
             var chunk = [UInt8](repeating: 0, count: 65536)
             let count = chunk.withUnsafeMutableBytes { raw in read(fd, raw.baseAddress!, raw.count) }
             if count < 0 {

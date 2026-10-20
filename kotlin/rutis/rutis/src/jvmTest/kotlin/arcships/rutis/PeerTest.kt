@@ -1,0 +1,173 @@
+package arcships.rutis
+
+import arcships.rutis.internal.peer.CallChain
+import arcships.rutis.internal.peer.Exported
+import arcships.rutis.internal.peer.MemoryChannel
+import arcships.rutis.internal.peer.Options
+import arcships.rutis.internal.peer.Peer
+import arcships.rutis.internal.peer.Signal
+import arcships.rutis.internal.peer.Undefined
+import arcships.rutis.internal.peer.ValueException
+import arcships.rutis.internal.peer.WireSet
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import java.math.BigInteger
+import java.time.Instant
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+
+/** An exception with a code and data, as a plugin writes one. */
+class Stormy(val code: String, val data: Any?) : RuntimeException("too windy")
+
+/**
+ * The session (design §4): a host and a runtime side over memory channels,
+ * one thread per incoming call.
+ */
+class PeerTest {
+    private val aborted = AtomicBoolean(false)
+    private val seenChain = AtomicReference<List<String>>()
+    private lateinit var host: Peer
+    private lateinit var runtime: Peer
+
+    private suspend fun serve(target: String, method: String, args: List<Any?>): Any? = when (method) {
+        "echo" -> args.firstOrNull() ?: Undefined
+        "apply" -> runtime.callFunctionSuspend(args[0] as RemoteFunction, listOf(args[1]))
+        "applyBlocking" -> runtime.callFunction(args[0] as RemoteFunction, listOf(args[1]))
+        "abortable" -> {
+            try {
+                (args[0] as Signal).await()
+            } finally {
+                aborted.set(true)
+            }
+        }
+        "chain" -> withContext(Dispatchers.IO) {
+            // The chain follows the coroutine onto another thread.
+            seenChain.set(CallChain.current())
+            runtime.callSuspend("", "inner", emptyList(), true)
+        }
+        "fail" -> throw Stormy("Stormy", mapOf("wind" to (1L shl 60), "gusts" to listOf(1, 2)))
+        "rethrow" -> runtime.callFunctionSuspend(args[0] as RemoteFunction, emptyList())
+        "function" -> Exported("double") { a -> ((a[0] as JsonPrimitive).content.toLong() * 2) }
+        "slow" -> {
+            delay(20)
+            args.firstOrNull()
+        }
+        else -> throw IllegalArgumentException("no method $method")
+    }
+
+    private fun start(): Pair<Peer, Peer> {
+        val (a, b) = MemoryChannel.pair()
+        runtime = Peer(a, Options(dispatch = ::serve))
+        host = Peer(b, Options(host = true, dispatch = { _, method, _ ->
+            if (method == "inner") CallChain.current() else throw IllegalArgumentException("host has no $method")
+        }))
+        runtime.start()
+        host.start()
+        host.readyFuture.get(5, TimeUnit.SECONDS)
+        runtime.readyFuture.get(5, TimeUnit.SECONDS)
+        return host to runtime
+    }
+
+    @AfterTest
+    fun stop() {
+        if (::host.isInitialized) host.shutdown("done")
+    }
+
+    @Test
+    fun valuesCrossUnchanged() {
+        start()
+        val values = listOf(
+            JsonPrimitive("a\nb ✓"), JsonPrimitive(9007199254740991), Instant.parse("2026-10-15T03:22:15.123456789Z"),
+            BigInteger("-123456789012345678901"), WireSet(listOf(JsonPrimitive(1), JsonPrimitive("1"))), listOf(Instant.EPOCH, JsonPrimitive(1)),
+        )
+        for (value in values) assertEquals(value, host.call("t", "echo", listOf(value), true))
+    }
+
+    @Test
+    fun aCallbackRunsDuringTheSyncCallThatPassedIt() {
+        start()
+        val double = Exported("double") { a -> (a[0] as JsonPrimitive).content.toLong() * 2 }
+        assertEquals(JsonPrimitive(42), host.call("t", "apply", listOf(double, 21L), true))
+        assertEquals(JsonPrimitive(42), host.call("t", "applyBlocking", listOf(double, 21L), true))
+        // Many at once: each incoming call has a thread of its own.
+        runBlocking {
+            val replies = (1..50).map { n -> async(Dispatchers.IO) { host.callSuspend("t", "apply", listOf(double, n.toLong()), false) } }.awaitAll()
+            assertEquals((1..50).map { JsonPrimitive(it * 2L) }, replies)
+        }
+    }
+
+    @Test
+    fun aReceivedFunctionIsCalledAndReleased() {
+        start()
+        val function = host.call("t", "function", emptyList(), true) as RemoteFunction
+        assertEquals(JsonPrimitive(10), host.callFunction(function, listOf(5L)))
+        assertEquals(1, runtime.references().first)
+        function.release()
+        val deadline = System.currentTimeMillis() + 5000
+        while (runtime.references().first != 0 && System.currentTimeMillis() < deadline) Thread.sleep(5)
+        assertEquals(0, runtime.references().first, "the export is gone once released")
+    }
+
+    @Test
+    fun cancellingAnAsyncCallAbortsItsSignal() = runBlocking<Unit> {
+        start()
+        // A signal argument is the wire's `signal`.
+        val call = async(Dispatchers.IO) {
+            host.callSuspend("t", "abortable", listOf(arcships.rutis.internal.peer.SignalArgument), false)
+        }
+        delay(100)
+        call.cancel()
+        withTimeout(5000) { while (!aborted.get()) delay(5) }
+        assertTrue(aborted.get())
+    }
+
+    @Test
+    fun theChainFollowsCoroutinesAcrossThreads() {
+        start()
+        val inner = host.call("t", "chain", emptyList(), true)
+        val chain = seenChain.get()
+        assertEquals(1, chain.size, "the incoming call's id: $chain")
+        // The nested call carried the chain: the host saw its own call in it.
+        assertEquals(JsonArray(listOf(JsonPrimitive(chain[0]), JsonPrimitive("node:1"))), inner)
+    }
+
+    @Test
+    fun errorsCrossWithCodeAndDataAndAgainWhenThrownOn() {
+        start()
+        val error = assertFailsWith<RutisException> { host.call("t", "fail", emptyList(), true) }
+        assertEquals("Stormy", error.name)
+        assertEquals("too windy", error.message)
+        assertEquals("Stormy", error.code)
+        assertEquals(mapOf("wind" to BigInteger.ONE.shiftLeft(60), "gusts" to listOf(1L, 2L)), error.data)
+        // A received error thrown on crosses whole.
+        val thrower = Exported("thrower") { throw error }
+        val again = assertFailsWith<RutisException> { host.call("t", "rethrow", listOf(thrower), true) }
+        assertEquals("Stormy", again.name)
+        assertEquals("Stormy", again.code)
+        assertEquals(error.data, again.data)
+    }
+
+    @Test
+    fun aValueTooDeepFailsOnlyItsCall() {
+        start()
+        var deep: Any? = JsonPrimitive("bottom")
+        repeat(65) { deep = listOf(deep, Instant.EPOCH) }
+        val error = assertFailsWith<ValueException> { host.call("t", "echo", listOf(deep), true) }
+        assertTrue(error.message!!.contains("64 levels"), error.message)
+        assertEquals(JsonPrimitive("after"), host.call("t", "echo", listOf(JsonPrimitive("after")), true))
+    }
+}

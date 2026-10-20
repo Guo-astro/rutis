@@ -251,6 +251,25 @@ pub trait DevBuild: Send + Sync {
     fn binary(&self, n: u32) -> PathBuf;
 }
 
+/// Says that `name` is being built, runs `build`, and on success says how
+/// long it took: a first build (dependencies, macros) can take minutes, and
+/// whoever waits sees that it is working.
+pub(super) fn building<T>(
+    name: &str,
+    build: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    crate::outln!("{name}: building");
+    let started = std::time::Instant::now();
+    let built = build()?;
+    crate::outln!("{name}: built in {}", seconds(started.elapsed()));
+    Ok(built)
+}
+
+/// `elapsed` as the build lines say it: `0.4s`, `12.3s`.
+pub(super) fn seconds(elapsed: Duration) -> String {
+    format!("{:.1}s", elapsed.as_secs_f64())
+}
+
 /// Run `command` without blocking, killed when dropped: its output.
 pub(super) async fn run(command: std::process::Command) -> std::io::Result<std::process::Output> {
     tokio::process::Command::from(command)

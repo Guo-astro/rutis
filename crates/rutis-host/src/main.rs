@@ -335,6 +335,8 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
             // A Go or Swift plugin is a binary: build it again, then restart
             // its runtime on the new build. A failed build keeps the old one.
             // Nor does a build: a signal ends it (and the build command).
+            outln!("{}: building", project.name());
+            let started = std::time::Instant::now();
             let built = tokio::select! {
                 built = project.rebuild(build + 1) => built,
                 signal = signals.next() => {
@@ -343,6 +345,11 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
             };
             match built {
                 Ok(binary) => {
+                    outln!(
+                        "{}: built in {:.1}s",
+                        project.name(),
+                        started.elapsed().as_secs_f64()
+                    );
                     build += 1;
                     running.replace(project.runtime(), &binary);
                     // A runtime that hangs starting does not keep a signal out.

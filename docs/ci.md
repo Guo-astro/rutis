@@ -76,6 +76,7 @@
 | `docs` | 任何 `.md` 文件 |
 | `bun` | `bun/**`、`node/rutis/**`、`crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host` |
 | `go` | `go/**`、`crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host` |
+| `kotlin` | `kotlin/**`、`crates/rutis-bridge`、`crates/rutis-loader` |
 | `repro` | `crates/rutis-sdk`、`crates/rutis-cli/build.rs`、`tools/test-dylib-repro.sh`、`tools/build-dylib-bundle.sh`、`tools/lib/**`。内核改动也会影响 SDK，但它的可复现检查放在完整运行里 |
 | `specs` | `specs/**`（TLA+ 模型、配置、预期结果，以及记录结果的 README） |
 
@@ -96,6 +97,7 @@
 | `runtimes-windows` | Windows | `code`：只跑和平台有关的测试 | bridge、loader 全部测试 | 同上，在 Windows 上（进程用 loopback 方式启动）；Go SDK 测试；E2E harness 和不限于 Unix 的 E2E 场景（`rutis-e2e`：Job Object、Ctrl-Break、残余检查）；整个工作区的编译检查 |
 | `runtimes-bun` | Linux | `bun`：Bun 1.4.0 | Linux 最新版；macOS 1.4.0 | Bun 运行时的全部测试，包括 loopback 方式启动的重跑 |
 | `runtimes-go` | Linux | `go`：Go oldstable | Linux stable；macOS oldstable；Linux 上 loopback 方式启动的重跑 | Go SDK 与 Go 运行时的全部测试 |
+| `runtimes-kotlin` | Linux | `kotlin`：JDK 17 | — | Kotlin SDK（`kotlin/rutis`）的 Gradle 构建与测试：jvm target 的单元测试、测试工具对两份期望文件；runner 有 Android SDK 时还编译 android target、出 AAR。然后跑带 Kotlin 的 Rust 套件（feature `kotlin`：会话与值、运行时契约、事件一致性中 Kotlin 作 X 与 Y、`kotlin_runtime`、多语言 `multilang_kotlin`），Gradle 在 cargo 之前。`rust`、`network-macos`、`runtimes-windows` 的 bridge 全部 feature 也包含 `kotlin`：它们装 JDK 17，先用 Gradle 构建一致性 jar（`RUTIS_KOTLIN_JAR`） |
 | `runtimes-swift` | macOS（自托管，§10） | `swift`：runner 上 Xcode 的工具链 | — | Swift SDK 自己的测试（`swift run RutisSelfTest`）、runner 有 iOS SDK 时为 iOS 构建库、带 Swift 会话与运行时的 Rust 契约套件、Swift 行与 Node / Python 行一起（`swift_rows`、`multilang_swift`、调用方的行、等待环）、远程的 Swift 运行时（`dial_conformance`、`swift_remote`）、rutis-host 的 `runtimes.swift` 与 Swift 插件开发循环（`rutis-host --test swift`、`rutis-e2e --test dev_loop`）、EventKit 插件的授权归属于二进制（`rutis-e2e --test tcc`），以及 X 为 Swift 插件的 `events_conformance`（PR 跑写定的组合，完整运行抽样） |
 | `semver-rutis` | macOS（自托管，§10） | `packaging` | 整个任务 | 公开 API 和上次发布相比有没有不兼容的改动（只提示） |
 | `dylib-linux-launcher`、`dylib-linux-sdk-bundle` | Linux | `dylib` | — | dylib 测试，分两个任务同时跑 |
@@ -125,8 +127,11 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 | Node、Python | loopback TCP（带一次性令牌） | 运行 | 运行 | 运行 |
 | Go | Unix socket | 运行 | 运行 | 跳过：同上 |
 | Go | loopback TCP | 运行 | 运行 | 运行 |
+| Kotlin（jvm target） | Unix socket | 运行 | 运行 | 跳过：同上 |
+| Kotlin（jvm target） | loopback TCP | 运行 | 运行 | 运行 |
 | Node、Python | WebSocket（夹具监听，Rust 拨入） | 运行 | 运行 | 运行 |
 | Go | WebSocket | 不跑：Go SDK 的 WebSocket 监听在运行时内部（`package rutis`），会话夹具是单独的程序用不到；Go 运行时的 WebSocket 列在运行时契约里 | 同 Linux | 同 Linux |
+| Kotlin | WebSocket | 不跑：Kotlin SDK 的拨出与监听属于 K-P2（`docs/design-android-runtime-2026-10-12.md` §九） | 同 Linux | 同 Linux |
 | Bun | Unix socket、loopback TCP | 运行（畸形帧检查只在 Unix socket 上） | 运行 | 不编译：Bun 在 Windows 上不是声明支持的平台 |
 | Bun | WebSocket | 不跑：Bun 运行时的 WebSocket 监听在它的监督进程里（`src/remote.ts`），会话夹具是单独的程序用不到；Bun 运行时的 WebSocket 列在运行时契约里 | 同 Linux | 同 Linux |
 
@@ -142,6 +147,10 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 | Bun | loopback TCP | 不跑单独的列：由上一行的重跑覆盖 | 同 Linux | 不编译：同上 |
 | Bun | WebSocket（运行时监听，Rust 拨入） | 运行 | 运行 | 不编译：同上 |
 | Swift | `fd:3`、回拨 socket 路径、loopback TCP、WebSocket（运行时监听，Rust 拨入） | 不编译：Swift 插件二进制只在 macOS | 运行（`runtimes-swift`；监听与拨出自己的规则，含 TLS，在 `tests/swift_remote.rs`） | 不编译：同 Linux |
+| Kotlin（jvm target 的 `Rutis.serve`，经通用 `Launcher` 以 `java -jar` 启动） | 回拨 socket 路径 | 运行 | 运行 | 跳过：Windows 只有 loopback |
+| Kotlin | loopback TCP | 运行 | 运行 | 运行 |
+| Kotlin | `fd:3` | 不跑：JDK 没有包装继承描述符的公开 API（设计 §4.3） | 同 Linux | 同 Linux |
+| Kotlin | WebSocket | 不跑：监听属于 K-P2 | 同 Linux | 同 Linux |
 | 不声明 `fd` 的 Node 包回退到回拨 | — | 运行 | 运行 | 跳过：Windows 只有 loopback |
 
 前两列和最后一行经 `Process` 门面启动进程，契约还检查崩溃后的退出状态；loopback、WebSocket 两列接到通道上，只检查崩溃结束会话。Windows 上 `Process` 门面的 loopback 启动由 `python_runtime.rs`、`go_runtime.rs` 等覆盖。
@@ -172,7 +181,8 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 | --- | --- | --- |
 | 只有文档 | `changes`、`links` | 约 1 分钟 |
 | 内核 `crates/rutis` | `rust`、`e2e`、`js-py`、`lint`、`network-macos`、`runtimes-windows` | 约 5–8 分钟 |
-| bridge、loader、host | 再加 `runtimes-bun`、`runtimes-go`（Linux 各一个版本） | 约 6–9 分钟 |
+| bridge、loader、host | 再加 `runtimes-bun`、`runtimes-go`（Linux 各一个版本）和 `runtimes-kotlin`（host 除外） | 约 6–9 分钟 |
+| 只有 Kotlin SDK（`kotlin/**`） | `rust`、`e2e`、`js-py`、`lint`、`network-macos`、`runtimes-windows`、`runtimes-kotlin` | 约 5–8 分钟 |
 | 只有 Python 包 | `rust`、`e2e`、`js-py`、`lint`、`network-macos`、`runtimes-windows` | 约 5–8 分钟 |
 | 改了 `package.json`、`pyproject.toml`、`crates/*/Cargo.toml` | 再加 `release-dry-run` 和 `semver-rutis`；改了包的 `package.json`、`pyproject.toml` 时还有 `install.yml`（Linux x64） | 不变，打包任务与测试并行 |
 | dylib | 再加 dylib 任务；`dylib-windows.yml` | 约 20–25 分钟（dylib 的预算） |
@@ -253,6 +263,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 | websockets | `python/rutis/pyproject.toml` 的 `network` extra | `==<下限>.*` | `>=<下限>` |
 | Bun | `bun/rutis-bun/package.json` 的 `engines.bun` | 声明的最低版本 | `latest` |
 | Go | `go/rutis/go.mod` | `oldstable` | `stable` |
+| JDK | `kotlin/rutis` 各模块的 `jvmToolchain(17)` | 17（`runtimes-kotlin`、`rust`） | 17 |
 | Rust 工具链 | `rust-toolchain.toml` | 所有 workflow 的 `dtolnay/rust-toolchain@<版本>` 与它相同 | 同左 |
 | MSRV | 根 `Cargo.toml` 的 `rust-version` | `msrv` 任务（完整运行） | — |
 

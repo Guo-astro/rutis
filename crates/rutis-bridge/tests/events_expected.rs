@@ -116,7 +116,7 @@ fn every_case_runs_somewhere() {
     let tools: Vec<&str> = expected.tool_cases.keys().map(String::as_str).collect();
     assert_eq!(
         tools,
-        ["bun", "go", "node-leaf", "python", "swift"],
+        ["bun", "go", "kotlin", "node-leaf", "python", "swift"],
         "toolCases"
     );
     let counted: std::collections::BTreeMap<String, usize> = tools

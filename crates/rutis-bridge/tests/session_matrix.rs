@@ -30,7 +30,15 @@ enum Runtime {
     /// Unix only: Bun on Windows is not a declared platform.
     #[cfg(all(unix, feature = "bun"))]
     Bun,
+    /// The Kotlin SDK's jvm target (`Rutis.serve`), started by the generic
+    /// launcher: a socket path it dials back, and loopback (K-P1; the
+    /// WebSocket column comes with K-P2).
+    #[cfg(feature = "kotlin")]
+    Kotlin,
 }
+
+#[cfg(feature = "kotlin")]
+mod kotlin;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Via {
@@ -127,6 +135,12 @@ async fn start(runtime: Runtime, via: Via, dir: &Path, ctx: &Ctx) -> (Arc<Proces
             launcher.inherit_fd = false;
             (launcher, dir.to_owned(), entry)
         }
+        #[cfg(feature = "kotlin")]
+        Runtime::Kotlin => (
+            kotlin::launcher().cwd(dir),
+            dir.to_owned(),
+            PathBuf::from("weather"),
+        ),
     };
     match via {
         Via::WebSocket => return (listening(launcher, &anchor, ctx).await, entry),
@@ -483,4 +497,20 @@ async fn bun_dialing_a_socket_path() {
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_listening_on_a_websocket() {
     semantics(Runtime::Bun, Via::WebSocket).await;
+}
+
+#[cfg(feature = "kotlin")]
+#[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(
+    windows,
+    ignore = "socket path column: Windows has no Unix sockets (loopback handover only)"
+)]
+async fn kotlin_dialing_a_socket_path() {
+    semantics(Runtime::Kotlin, Via::DialBack).await;
+}
+
+#[cfg(feature = "kotlin")]
+#[tokio::test(flavor = "multi_thread")]
+async fn kotlin_dialing_a_loopback_address() {
+    semantics(Runtime::Kotlin, Via::Loopback).await;
 }

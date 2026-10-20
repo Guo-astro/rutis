@@ -178,7 +178,7 @@ swift test
 rutis-host dev
 ```
 
-`dev` 用 `swift build` 构建包的可执行产品，把它的每个插件作为运行时 `swift-weather` 运行；源码、`Package.swift` 或 `Package.resolved` 变化时重新构建，只重启这个运行时，构建失败时旧的继续运行（打印编译器的错误）。每次构建复制到 `.rutis/swift/<产品>-<序号>`，每次一个新文件。插件需要的其他服务写在 `rutis.dev.json` 里；它们可以是 Python 或 TypeScript 插件（带上它们的 `runtimes`）。`rutis-host check` 列出每一行和每个 Swift 二进制，带平台、SDK、插件 API 和插件；用 rutis 0.13 以前的 SDK 构建的二进制不能运行，`check` 提示重新构建。
+`dev` 用 `swift build` 构建包的可执行产品，把它的每个插件作为运行时 `swift-weather` 运行；源码、`Package.swift` 或 `Package.resolved` 变化时重新构建，只重启这个运行时，构建失败时旧的继续运行（打印编译器的错误）。每次构建先打印 `weather: building`，完成后打印 `weather: built in 12.3s`：第一次要编译依赖（包括 SDK 的宏），可能要几分钟。每次构建复制到 `.rutis/swift/<产品>-<序号>`，每次一个新文件。插件需要的其他服务写在 `rutis.dev.json` 里；它们可以是 Python 或 TypeScript 插件（带上它们的 `runtimes`）。`rutis-host check` 列出每一行和每个 Swift 二进制，带平台、SDK、插件 API 和插件；用 rutis 0.13 以前的 SDK 构建的二进制不能运行，`check` 提示重新构建。
 
 ## 5. 系统权限
 
