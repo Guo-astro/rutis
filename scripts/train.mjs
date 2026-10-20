@@ -38,6 +38,11 @@ const versions = {
   // The Go SDK (module go/rutis, released by the tag go/rutis/v<version>):
   // what its runtime and manifests say it is.
   'go github.com/arcships/rutis/go/rutis': read('go/rutis/version.go').match(/^const Version = "([^"]+)"/m)?.[1],
+  // The Kotlin SDK (kotlin/rutis, Maven io.github.arcships:rutis and
+  // io.github.arcships:rutis-ksp; not published to Maven Central yet): its
+  // Gradle version, and what its runtime says it is when it greets.
+  'maven io.github.arcships:rutis': read('kotlin/rutis/gradle.properties').match(/^version=(.+)$/m)?.[1],
+  'maven io.github.arcships:rutis (implementation)': read('kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/Rutis.kt').match(/const val VERSION: String = "([^"]+)"/)?.[1],
   // The Swift SDK (the root Package.swift, released by the train's own
   // v<version> tag): what its runtime and manifests say it is.
   'swift github.com/arcships/rutis (Rutis)': read('swift/rutis/Sources/Rutis/Version.swift').match(/^ {4}public static let sdkVersion = "([^"]+)"/m)?.[1],
