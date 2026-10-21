@@ -65,3 +65,4 @@ Rust 服务在 `impl` 块上加 `#[rutis::service]`，照常 `provide`，各语�
 - `rutis_loader::Loader::waiting_for(&entry)`：一行在等哪些服务；等的是一个没标注的 Rust 服务时说明怎么改。
 - `rutis-host types`。
 - `rutis-host` 的 `rutis-bridge` 依赖开了 `exports` feature。
+- 新 crate `rutis-macros` 放这个宏；`rutis` 依赖并重新导出它，`Cargo.toml` 不用加。dylib 插件经 `rutis_sdk::rutis::service` 用它。

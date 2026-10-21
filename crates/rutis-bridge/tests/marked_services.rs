@@ -245,6 +245,13 @@ async fn a_second_service_of_the_same_name_is_refused() {
         error.to_string().contains("`notebook`") && error.to_string().contains("Notes"),
         "{error}"
     );
+    // Refused before anything is registered: the native service is not
+    // provided either.
+    assert!(root.get::<Clash>().is_none());
+    // A keyed binding of a marked type is a second value of it, not served
+    // by name (it would clash with the first).
+    root.provide_as(TypeKey::keyed::<Notes>("second"), Arc::new(Notes))
+        .unwrap();
     root.shutdown().await.unwrap();
     other.shutdown().await.unwrap();
 }

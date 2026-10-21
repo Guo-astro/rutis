@@ -44,6 +44,10 @@ pub use fiber::{DisposeWaitError, FiberState, FiberStatusChanged, FiberView, Plu
 pub use intercept::{ServiceIntercept, ServiceWriter};
 pub use key::{EventKey, EventPattern, InstanceId, Key, ServiceKey, TypeKey};
 pub use plugin::{Plugin, PluginFactory};
+/// `service` for crates that reach rutis through the dylib SDK
+/// (`rutis_sdk::rutis::service`); see `rutis-sdk`.
+#[doc(hidden)]
+pub use rutis_macros::sdk_service as __sdk_service;
 /// Serve a type's methods to the plugins of other languages by name.
 ///
 /// On an inherent `impl` block: its public `&self` methods are callable

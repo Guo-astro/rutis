@@ -65,3 +65,4 @@ New (existing code is not affected):
 - `rutis_loader::Loader::waiting_for(&entry)`: which services a row waits for, and how to fix it when one is an unmarked Rust service.
 - `rutis-host types`.
 - `rutis-host`'s `rutis-bridge` dependency enables the `exports` feature.
+- The new crate `rutis-macros` holds the macro; `rutis` depends on it and re-exports it, so nothing is added to `Cargo.toml`. A dylib plugin reaches it as `rutis_sdk::rutis::service`.

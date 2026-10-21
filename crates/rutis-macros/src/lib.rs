@@ -20,8 +20,24 @@ use syn::{
 /// See `rutis::service`.
 #[proc_macro_attribute]
 pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
+    run(quote!(::rutis), attr, item)
+}
+
+/// `rutis::service` as the dylib SDK re-exports it
+/// (`rutis_sdk::rutis::service`): the same macro, whose generated code
+/// reaches rutis through `::rutis_sdk::rutis`. A dylib plugin depends on
+/// `rutis-sdk` only, or on nothing at all when it is built against an
+/// sdk-bundle (`rutis_sdk` is then injected with `--extern`), so the path
+/// the macro was reached by is what tells which crate to name.
+#[doc(hidden)]
+#[proc_macro_attribute]
+pub fn sdk_service(attr: TokenStream, item: TokenStream) -> TokenStream {
+    run(quote!(::rutis_sdk::rutis), attr, item)
+}
+
+fn run(rutis: Tokens, attr: TokenStream, item: TokenStream) -> TokenStream {
     let item: Tokens = item.into();
-    match expand(attr.into(), item.clone()) {
+    match expand(rutis, attr.into(), item.clone()) {
         Ok(tokens) => tokens.into(),
         Err(error) => {
             // The block as written, so the only errors are the macro's.
@@ -105,31 +121,6 @@ fn skipped(method: &ImplItemFn) -> syn::Result<bool> {
     Ok(skip)
 }
 
-/// The path generated code reaches rutis by: `::rutis`, or, in a crate that
-/// depends on the dylib SDK instead, `::rutis_sdk::rutis`.
-fn rutis_path(given: Option<syn::Path>) -> Tokens {
-    if let Some(path) = given {
-        return quote!(#path);
-    }
-    let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
-        .map(|dir| std::path::PathBuf::from(dir).join("Cargo.toml"))
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .unwrap_or_default();
-    let names = |name: &str| {
-        manifest.lines().any(|line| {
-            let line = line.trim();
-            line.strip_prefix(name)
-                .is_some_and(|rest| rest.trim_start().starts_with(['=', '.']))
-                || line == format!("[dependencies.{name}]")
-        })
-    };
-    if !names("rutis") && names("rutis-sdk") {
-        quote!(::rutis_sdk::rutis)
-    } else {
-        quote!(::rutis)
-    }
-}
-
 /// The service name a type is exported as by default: its name with the
 /// first word lowercased (`Calendar` is `calendar`, `TreeCommands`
 /// `treeCommands`, `HTTPClient` `httpClient`).
@@ -175,7 +166,7 @@ fn camel(name: &str) -> String {
         .unwrap_or_default()
 }
 
-fn expand(attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
+fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
     let options = options(attr)?;
     let mut block: ItemImpl = syn::parse2(item).map_err(|error| {
         syn::Error::new(
@@ -212,7 +203,7 @@ fn expand(attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
             ))
         }
     };
-    let rutis = rutis_path(options.krate);
+    let rutis = options.krate.map(|path| quote!(#path)).unwrap_or(default);
     let (name, named) = match &options.name {
         Some(name) => (name.value(), true),
         None => (default_name(&ident), false),
@@ -272,7 +263,14 @@ fn expand(attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
                 arms.push(arm);
                 methods.push(js);
             }
-            Err(error) => push(error),
+            Err(error) => {
+                for error in error {
+                    push(syn::Error::new(
+                        error.span(),
+                        format!("{error}; or mark it #[service(skip)] to leave it out"),
+                    ));
+                }
+            }
         }
     }
     if let Some(errors) = errors {
@@ -769,7 +767,7 @@ mod tests {
     fn only_methods_that_cross_are_exported() {
         let refused = |source: &str| {
             let item: Tokens = source.parse().unwrap();
-            expand(Tokens::new(), item)
+            expand(quote!(::rutis), Tokens::new(), item)
                 .err()
                 .map(|error| error.to_string())
         };
@@ -805,5 +803,34 @@ mod tests {
         assert!(refused("impl Trait for A { fn a(&self) {} }")
             .unwrap()
             .contains("trait impl"));
+    }
+
+    /// R5: the error points at the method that cannot be bound (its line),
+    /// names it, and suggests `#[service(skip)]`; the others still compile.
+    #[test]
+    fn a_method_that_cannot_be_bound_is_an_error_at_that_method() {
+        let source = "impl A {\n    pub fn fine(&self) -> u32 { 1 }\n    pub fn borrowed(&self) -> &str { \"\" }\n    pub fn mutable(&mut self) {}\n}";
+        let item: Tokens = source.parse().unwrap();
+        let found: Vec<(usize, String)> = expand(quote!(::rutis), Tokens::new(), item)
+            .unwrap_err()
+            .into_iter()
+            .map(|error| (error.span().start().line, error.to_string()))
+            .collect();
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0].0, 3, "{found:?}");
+        assert!(
+            found[0].1.starts_with("`borrowed` cannot be called"),
+            "{found:?}"
+        );
+        assert!(
+            found[0].1.ends_with("#[service(skip)] to leave it out"),
+            "{found:?}"
+        );
+        assert_eq!(found[1].0, 4, "{found:?}");
+        assert!(
+            found[1].1.starts_with("`mutable` cannot be called"),
+            "{found:?}"
+        );
+        assert!(found[1].1.contains("#[service(skip)]"), "{found:?}");
     }
 }

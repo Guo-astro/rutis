@@ -58,6 +58,11 @@ impl Calendar {
             .ok_or(CalendarError::Missing { day })
     }
 
+    /// The row calling, from its context.
+    pub fn caller(&self, ctx: &Ctx) -> Option<String> {
+        ctx.row()
+    }
+
     /// Calls back into the caller for each day.
     pub async fn each(
         &self,
@@ -97,6 +102,7 @@ export default definePlugin({
     await calendar.add({ title: 'js', day: 1 })
     const entry = await calendar.onDay(1)
     const days = await calendar.each([1, 2], (day) => `d${day}`)
+    probe.record(`js caller: ${await calendar.caller()}`)
     try {
       await calendar.onDay(99)
     } catch (error) {
@@ -116,6 +122,7 @@ async def apply(ctx, config):
     calendar = ctx.use("calendar")
     await calendar.add({"title": "py", "day": 2})
     entry = await calendar.onDay(2)
+    probe.record(f"py caller: {await calendar.caller()}")
     try:
         await calendar.onDay(99)
     except Exception as error:
@@ -334,6 +341,10 @@ async fn rows_of_every_language_call_a_marked_rust_service() {
     fixture
         .expect("go calendar: true go / CalendarError Missing no entry on day 99")
         .await;
+    // A method taking `&Ctx` gets the calling row's.
+    for line in ["js caller: jc", "py caller: pc", "go caller: gc"] {
+        fixture.expect(line).await;
+    }
 
     // The service goes with the native one, and its users stop first.
     fixture.calendar.take().unwrap().dispose().await.unwrap();

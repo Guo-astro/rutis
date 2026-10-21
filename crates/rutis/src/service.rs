@@ -9,6 +9,33 @@
 //! the object-safe traits here, with values crossing as erased serde. So a
 //! marked type in a crate that depends on `rutis` alone (a dylib plugin, a
 //! dependency crate) is served by whichever bridge the host links.
+//!
+//! A public method that cannot be bound is a compile error at that method
+//! (R5):
+//!
+//! ```compile_fail
+//! pub struct Counter(std::sync::atomic::AtomicU32);
+//!
+//! #[rutis::service]
+//! impl Counter {
+//!     pub fn bump(&mut self) {} // a shared service takes `&self`
+//! }
+//! ```
+//!
+//! Left out with `#[service(skip)]`, the rest is served:
+//!
+//! ```
+//! pub struct Counter(std::sync::atomic::AtomicU32);
+//!
+//! #[rutis::service]
+//! impl Counter {
+//!     #[service(skip)]
+//!     pub fn bump(&mut self) {}
+//!     pub fn get(&self) -> u32 {
+//!         self.0.load(std::sync::atomic::Ordering::Relaxed)
+//!     }
+//! }
+//! ```
 
 use std::any::{Any, TypeId};
 use std::cell::Cell;

@@ -2562,6 +2562,39 @@ mod tests {
         assert!(!generated.rust.contains("Clock"), "{}", generated.rust);
     }
 
+    /// Marking a type writes exactly the declarations listing it wrote
+    /// (§8): the same type, its blocks marked (the methods build.rs left
+    /// out skipped, as the marker requires), against `.service(..)`.
+    #[test]
+    fn a_marked_type_is_declared_as_listing_it_was() {
+        let listed = store().unwrap().typescript;
+        let marked_inner = INNER
+            .replace(
+                "        impl Store {",
+                "        #[rutis::service(name = \"store\")]\n        impl Store {",
+            )
+            .replace(
+                "            impl super::Store {",
+                "            #[rutis::service]\n            impl super::Store {",
+            )
+            .replace(
+                "pub fn reset(&mut self)",
+                "#[service(skip)] pub fn reset(&mut self)",
+            )
+            .replace("pub fn borrowing(", "#[service(skip)] pub fn borrowing(");
+        let marked = generate(
+            Exports::new(),
+            &[
+                ("lib.rs", LIB),
+                ("inner.rs", &marked_inner),
+                ("types.rs", TYPES),
+            ],
+        )
+        .unwrap()
+        .typescript;
+        assert_eq!(marked, listed);
+    }
+
     /// A marked type listed in build.rs as well is an error naming the fix.
     #[test]
     fn a_marked_type_listed_too_is_an_error() {

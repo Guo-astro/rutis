@@ -48,13 +48,13 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 
 - **对外的方法**：带标注的 `impl` 块里公开的 `&self` 方法；一个类型可以有几个带标注的块。对调用方都是 `async`（JavaScript 里是 Promise，Python 里是 awaitable），Node、Bun、Python、Go 的行调用的是同一个 dispatcher。方法名按 camelCase 对外（`add_entry` 是 `addEntry`）。
 - **名字**：默认是类型名、第一个词小写（`Calendar` 是 `calendar`，`TreeCommands` 是 `treeCommands`，`HTTPClient` 是 `httpClient`）；`#[service(name = "cal")]` 改名。
-- **提供即对外**：`ctx.provide(value)`（以及键是这个类型自己的 `provide_as`）同时按名字提供它，同一个撤销函数撤下两者，插件卸载时一起撤下；依赖它的行随之停止，与其他服务相同。`provide_mut_as` 提供的可变绑定不对外。
+- **提供即对外**：`ctx.provide(value)`（以及键是这个类型自己的 `provide_as`）同时按名字提供它，同一个撤销函数撤下两者，插件卸载时一起撤下；依赖它的行随之停止，与其他服务相同。`provide_mut_as` 提供的可变绑定不对外，带限定名的（`TypeKey::keyed`）也不对外：同一类型的第二个值会占用同一个名字。
 - **作用域跟着提供的位置**：在实例里提供（`TypeKey::instance::<Notes>(build.instance("session")?)`），就是那个实例自己的，实例里的行拿到它；在实例外提供就是全局的。不用写实例组。
 - **能传什么、错误怎么抛**：与下面"第三方类型"的生成规则相同（[参考](#导出服务参考)）：serde 参数与返回值、按引用的回调、`&Ctx` 调用方行、`Err(e)` 抛出时带 `name`、`code`、`message`、`data`。
 - **编译期报错**：带标注的块里有公开方法绑定不了（`&mut self`、返回借用、可变引用参数、不是函数的泛型参数等），是指到那个方法的编译错误；不想对外的，在方法上加 `#[service(skip)]`。
-- **重名**：同一作用域里两个类型对外名字相同，后一个 `provide` 失败，错误写明双方。
+- **重名**：同一作用域里两个类型对外名字相同，后一个 `provide` 失败，错误写明双方；它什么都没提供，原生服务也不提供。
 - **没标注的不对外**：宿主内部的服务（存储、锁、数据库句柄等）不会暴露给插件。一行等着的名字恰好是某个没标注的 Rust 服务的名字时，`Loader::waiting_for(&entry)` 列出这一行等的名字，并说明在那个类型的 `impl` 上加 `#[rutis::service]`。
-- **dylib 插件**：dylib 里带标注的类型（crate 只依赖 `rutis-sdk`）加载后同样对外，宿主不需要知道它；换代时旧代的入口随旧代的服务撤下，新代提供时重新出现。宿主要链接 `rutis-bridge`。
+- **dylib 插件**：dylib 里带标注的类型（crate 只依赖 `rutis-sdk`，写 `#[rutis_sdk::rutis::service]` 或 `use rutis_sdk::rutis::service`）加载后同样对外，宿主不需要知道它；换代时旧代的入口随旧代的服务撤下，新代提供时重新出现。宿主要链接 `rutis-bridge`。
 - **TypeScript 声明**：`rutis-host types <crate 目录> -o services.d.ts` 从源码里找出这个 crate 和它用到的、依赖 rutis 的 crate 里全部带标注的类型，写出声明（`Services['calendar']`、各数据类型、`<Name>Thrown`）。想每次构建都更新，`build.rs` 里写 `rutis_bridge::build::Exports::new().typescript("rows/services.d.ts").generate()`，不用列类型。调用本身不需要声明。
 
 完整示例：[`examples/marked-services`](../../examples/marked-services)。
@@ -402,4 +402,4 @@ Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名�
 
 - 宏只看到 `impl` 块本身，类型上的判断（是不是 `Result`、错误怎么取 `code`、参数是不是函数）交给展开后的具体代码，所以类型别名照样识别。异步方法写成 `async fn`，或返回 `BoxFuture<'_, T>`、`Pin<Box<dyn Future<Output = T> + Send>>`、`impl Future<Output = T>`；返回 future 的别名是编译错误。`&Ctx` 参数按名字 `Ctx` 识别。
 - 错误的 `code` 在抛出时由值得出，规则同上表；内部或相邻标签枚举的变体用 `#[serde(rename = "...")]` 改成与 Rust 名无关的名字时，`code` 是 Rust 名。
-- 宏生成的代码只依赖 `rutis`（只依赖 `rutis-sdk` 的 crate 经 `rutis_sdk::rutis`，宏从 `Cargo.toml` 认出；别的路径写 `#[service(crate = "my::rutis")]`）；值经宿主链接的 `rutis-bridge` 编解码，比 `build.rs` 生成的多一层动态分发，相对跨进程的开销可以忽略。
+- 宏生成的代码只依赖 `rutis`（dylib 插件写 `#[rutis_sdk::rutis::service]` 或 `use rutis_sdk::rutis::service`，生成的代码就经 `rutis_sdk::rutis`：按标注是从哪条路径拿到的来定，所以对着 sdk-bundle 构建、没写依赖的插件也一样；别的路径写 `#[service(crate = "my::rutis")]`）；值经宿主链接的 `rutis-bridge` 编解码，比 `build.rs` 生成的多一层动态分发，相对跨进程的开销可以忽略。

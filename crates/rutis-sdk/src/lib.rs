@@ -4,7 +4,16 @@
 #[cfg(panic = "abort")]
 compile_error!("rutis-sdk requires panic = unwind");
 
-pub use rutis;
+/// The rutis kernel, as plugins reach it.
+///
+/// Everything of `rutis`, but `service`, the `#[rutis::service]` marker:
+/// here its generated code names `::rutis_sdk::rutis`, since a plugin depends
+/// on this crate only (or, built against an sdk-bundle, on nothing: the
+/// packer injects `rutis_sdk` with `--extern`).
+pub mod rutis {
+    pub use ::rutis::__sdk_service as service;
+    pub use ::rutis::*;
+}
 pub use serde_json;
 pub use tokio;
 

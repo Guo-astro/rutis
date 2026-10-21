@@ -65,7 +65,7 @@ await calendar.add({ title: 'Standup', startsAt: new Date() })
 | R5 | **出错在编译期：** 带标注的 `impl` 里有一个公开方法绑定不了（`&mut self`、借用返回值、不支持的参数），是**编译错误**，指到那个方法，提示改法或在方法上加 `#[service(skip)]`。今天是构建警告并悄悄跳过。 |
 | R6 | **重名：** 同一作用域里两个类型对外名字相同，后提供的那个 `provide` 失败，错误写明双方的类型。与叶子插件的重名规则一致。 |
 | R7 | **没标注的诊断：** 行按名字依赖 `x`，运行时里没有叫 `x` 的服务，但有一个按默认规则命名为 `x` 的未标注 Rust 服务时，`Loader::waiting_for(&entry)` 列出这一行等的名字，并写明："`x` 是未对外的 Rust 服务 `crate::X`，在它的 `impl` 上加 `#[rutis::service]`"。 |
-| R8 | **dylib 插件：** dylib 里带标注的类型在加载后同样对外，宿主不需要知道它（插件 crate 只依赖 `rutis-sdk`，宏从 `Cargo.toml` 认出，生成的代码经 `rutis_sdk::rutis`）。换代时旧代的对外入口随旧代的服务一起撤销，新代提供时重新对外，消费者按现有规则重载。宿主要链接 `rutis-bridge`。 |
+| R8 | **dylib 插件：** dylib 里带标注的类型在加载后同样对外，宿主不需要知道它（插件 crate 只依赖 `rutis-sdk`，对着 sdk-bundle 构建时连依赖都不写；它经 `rutis_sdk::rutis::service` 拿到标注，那样生成的代码经 `rutis_sdk::rutis`）。换代时旧代的对外入口随旧代的服务一起撤销，新代提供时重新对外，消费者按现有规则重载。宿主要链接 `rutis-bridge`。 |
 | R9 | **TypeScript 声明：** `rutis-host types <crate 目录> -o services.d.ts` 从源码里找出全部带标注的类型，写出与今天相同的声明（同一个生成器）。想每次构建自动更新的，`build.rs` 里写一行 `rutis_bridge::build::Exports::new().typescript("services.d.ts").generate()`，不用列类型。调用本身不需要声明。 |
 | R10 | **兼容：** `build.rs` 的 `.service(…)` / `.service_in(…)` 继续可用，用于改不了源码的第三方类型。一个类型既有标注又在清单里，构建报错，提示删掉清单里那一行。手写 `HostDispatch` 继续可用。 |
 
@@ -74,7 +74,7 @@ await calendar.add({ title: 'Standup', startsAt: new Date() })
 三部分，都在 rutis 里，用户代码只看到 R1 的一行标注。
 
 1. **编译期：`#[rutis::service]` 过程宏**（新 crate `rutis-macros`，由 `rutis` 再导出）。它读 `impl` 块里的方法签名，在块旁边生成一个分发函数：解码参数、调用、编码结果、映射错误。需要按类型做的判断（是不是 `Result`、错误怎么取 `code`、参数是不是函数）在展开后的具体代码里交给 trait 去选，所以类型别名（`io::Result`、自定义 `Result<T>`）照样能识别。生成的代码只依赖 `rutis`：值经 `rutis::service` 里的对象安全接口（`Wire`，以 erased-serde 传值）交给宿主的 `rutis-bridge` 编解码，所以只依赖 `rutis-sdk` 的 dylib 插件也能用。
-2. **登记：** 宏为每个带标注的块生成一个静态登记项（`TypeId`、对外名字、方法名、分发函数），放进程序或动态库的初始化段（Linux `.init_array`、macOS `__mod_init_func`、Windows `.CRT$XCU`），在加载时挂到 `rutis` 的无锁登记表上，不需要任何人列出来。dylib 的类型各版本 `TypeId` 不同（crate 的版本在其中），旧版本永不卸载，所以各代的登记项各自有效。`rutis-bridge` 用同样的方式在加载时把它的 `Exposer` 装进 `rutis`。
+2. **登记：** 宏为每个带标注的块生成一个静态登记项（`TypeId`、对外名字、方法名、分发函数），放进程序或动态库的初始化段（Linux `.init_array`、macOS `__mod_init_func`、Windows `.CRT$XCU`），在加载时加进 `rutis` 的登记表，不需要任何人列出来。dylib 的类型各版本 `TypeId` 不同（crate 的版本在其中），旧版本永不卸载，所以各代的登记项各自有效。`rutis-bridge` 用同样的方式在加载时把它的 `Exposer` 装进 `rutis`。
 3. **提供时挂上：** `Ctx::provide_as` 提供一个类型时，按它的 `TypeId` 查登记表；有登记就交给 `Exposer`，在同一作用域、同一实例里多提供一个 `host_key(name)`（实例里为 `host_key_in(name, id)`）的 dispatcher，并把它并入同一个撤销函数（R2、R3）。在实例里提供时，这个实例**认领**这个名字：rutis-loader 解析实例里的行的名字时先看认领（与运行时连接通告的名字同一套规则），新的认领会让已按全局键建好的副本重建。`rutis` 核心只保存登记表、钩子和接口，不依赖 `rutis-bridge`。
 
 值规则、错误规则、`caller_row` 与 `build.rs` 生成的完全相同；TypeScript 声明仍由读源码的生成器写出，它在依赖 rutis 的 crate 里找带标注的块（R9）。

@@ -30,6 +30,8 @@ Cleanups run in reverse registration order: the function returned by `apply` run
 
 In Go: `ctx.Use(name, &target)` binds the service to a struct of function fields (or a `*rutis.Service`); `ctx.Provide(name, value)`; `ctx.Effect(func(context.Context) error)`; `ctx.Go(task)` runs a goroutine stopped at unload. `*rutis.Ctx` is a `context.Context` cancelled when the plugin unloads.
 
+Rust plugins in the host (built in, or dylib plugins): add `#[rutis::service]` to the service type's `impl` block, and once `ctx.provide(value)` provides it, it reaches other languages by name (by default the type's name, first word lowercased); rows of every language call it with `ctx.use(name)`. Unmarked Rust types are not served. See [Rust host](https://github.com/arcships/rutis/blob/main/docs/guide/rust-host.en.md#mark-the-type-rutisservice).
+
 ## Events
 
 Every listener on a host — of the host's Rust plugins, of every plugin in every runtime process (any language), of what node links bring in — is on **one logical bus**. There is one rule:

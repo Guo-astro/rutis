@@ -215,8 +215,9 @@ var CalendarUser = rutis.Define(rutis.Plugin[rutis.NoConfig]{
 			return err
 		}
 		var calendar struct {
-			Add   func(ctx context.Context, entry map[string]any) (int, error)
-			OnDay func(ctx context.Context, day int) (map[string]any, error)
+			Add    func(ctx context.Context, entry map[string]any) (int, error)
+			OnDay  func(ctx context.Context, day int) (map[string]any, error)
+			Caller func(ctx context.Context) (string, error)
 		}
 		if err := ctx.Use("calendar", &calendar); err != nil {
 			return err
@@ -227,6 +228,13 @@ var CalendarUser = rutis.Define(rutis.Plugin[rutis.NoConfig]{
 		}
 		entry, err := calendar.OnDay(ctx, 4)
 		if err != nil {
+			return err
+		}
+		caller, err := calendar.Caller(ctx)
+		if err != nil {
+			return err
+		}
+		if err := p.Record(ctx, "go caller: "+caller); err != nil {
 			return err
 		}
 		_, err = calendar.OnDay(ctx, 99)
