@@ -94,7 +94,6 @@ jobs:
       go: ${{ steps.select.outputs.go }}
       go-matrix: ${{ steps.select.outputs.go-matrix }}
       kotlin: ${{ steps.select.outputs.kotlin }}
-      android: ${{ steps.select.outputs.android }}
       swift: ${{ steps.select.outputs.swift }}
       repro: ${{ steps.select.outputs.repro }}
       specs: ${{ steps.select.outputs.specs }}
@@ -158,13 +157,6 @@ jobs:
               - crates/rutis-bridge/**
               - crates/rutis-loader/**
               - crates/rutis-host/**
-            # An Android application hosting plugins, on an emulator: the
-            # Kotlin SDK and the sample, the Rust test driving them, the
-            # emulator script.
-            android:
-              - kotlin/**
-              - crates/rutis-host/tests/android.rs
-              - tools/android-emulator.sh
             # The Swift SDK (the root Package.swift and swift/), and the Rust
             # crates that start and run its runtimes.
             swift:
@@ -174,7 +166,6 @@ jobs:
               - crates/rutis-loader/**
               - crates/rutis-host/**
               - tests/e2e/tests/dev_loop.rs
-              - tests/e2e/tests/tcc.rs
             # What decides whether the SDK builds reproducibly. Kernel
             # changes reach the SDK too, but are checked in full runs
             # (Q12.6.3).
@@ -211,7 +202,6 @@ jobs:
           BUN: ${{ steps.paths.outputs.bun }}
           GO: ${{ steps.paths.outputs.go }}
           KOTLIN: ${{ steps.paths.outputs.kotlin }}
-          ANDROID: ${{ steps.paths.outputs.android }}
           SWIFT: ${{ steps.paths.outputs.swift }}
           REPRO: ${{ steps.paths.outputs.repro }}
           SPECS: ${{ steps.paths.outputs.specs }}
@@ -234,7 +224,6 @@ jobs:
             echo "repro=$(pick "$REPRO")"
             echo "go=$(pick "$GO")"
             echo "kotlin=$(pick "$KOTLIN")"
-            echo "android=$(pick "$ANDROID")"
             echo "swift=$(pick "$SWIFT")"
             echo "specs=$(pick "$SPECS")"
             # Pull requests: the oldest supported Bun and Go, on Linux only
@@ -915,78 +904,6 @@ jobs:
           JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
-  # Android app hosting on an emulator (docs/design-android-runtime-2026-10-12.md
-  # §九): the SDK's device tests (ART: the main-thread rule), and
-  # kotlin/rutis/android-sample dialing a rutis-host — its release build
-  # (R8) started and stopped by intents, and its device test with two
-  # connections (crates/rutis-host/tests/android.rs). An arm64 emulator needs
-  # a hypervisor, which the self-hosted Macs (MACOS_RUNNER, Apple silicon)
-  # have and GitHub's hosted macOS runners do not. The Android SDK and the
-  # system image are kept between jobs (tools/android-emulator.sh).
-  android:
-    needs: changes
-    if: needs.changes.outputs.android == 'true'
-    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
-        if: runner.environment == 'self-hosted'
-        env:
-          RUTIS_CI_JOBS: ${{ vars.RUTIS_CI_JOBS }}
-        run: bash tools/ci-self-hosted.sh start
-      - uses: dtolnay/rust-toolchain@1.98.1
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      # The SDK, an AVD of this job's own, booted (ANDROID_HOME,
-      # ANDROID_SERIAL for the steps after).
-      - name: Android emulator
-        run: bash tools/android-emulator.sh start
-      - uses: astral-sh/setup-uv@v6
-        if: runner.environment == 'self-hosted'
-      - name: Python 3.10 (self-hosted macOS)
-        if: runner.environment == 'self-hosted'
-        run: |
-          uv python install 3.10
-          uv venv --seed --python-preference only-managed --python 3.10 "$RUNNER_TEMP/python"
-          echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
-      - uses: actions/setup-python@v5
-        if: runner.environment == 'github-hosted'
-        with:
-          python-version: '3.10'
-      - name: gradle (the APKs; the SDK's device tests)
-        working-directory: kotlin/rutis
-        run: |
-          for attempt in 1 2 3; do
-            ./gradlew --no-daemon --quiet :android-sample:assembleRelease :android-sample:assembleDebug :android-sample:assembleDebugAndroidTest && break
-            [ "$attempt" = 3 ] && exit 1
-            sleep 20
-          done
-          ./gradlew --no-daemon :rutis:connectedDebugAndroidTest
-          apks="$RUNNER_TEMP/apks"
-          mkdir -p "$apks"
-          cp android-sample/build/outputs/apk/release/android-sample-release.apk \
-             android-sample/build/outputs/apk/debug/android-sample-debug.apk \
-             android-sample/build/outputs/apk/androidTest/debug/android-sample-debug-androidTest.apk "$apks"
-          echo "RUTIS_ANDROID_APKS=$apks" >> "$GITHUB_ENV"
-      - name: cargo test (the sample application dialing rutis-host)
-        run: cargo test -p rutis-host --features android --test android -- --test-threads 1
-      - name: emulator log
-        if: failure()
-        run: |
-          tail -100 "$RUNNER_TEMP/rutis-android-emulator.log" || true
-          adb logcat -d | grep -E "rutis|AndroidRuntime" | tail -200 || true
-      - name: Android emulator, end
-        if: always()
-        run: bash tools/android-emulator.sh stop
-      - name: self-hosted runner, end
-        if: always() && runner.environment == 'self-hosted'
-        env:
-          JOB_STATUS: ${{ job.status }}
-        run: bash tools/ci-self-hosted.sh end
-
   # The Swift SDK (swift/rutis, the root Package.swift): its own tests,
   # the library built for iOS where the runner has the iOS SDK, and the Rust
   # tests that run its session and runtimes. macOS only (design §13), on the
@@ -1061,15 +978,15 @@ jobs:
           cargo test -p rutis-loader --features node,python,swift --test caller_rows --test sync_cycles swift
       # runtimes.swift in rutis-host (rows, restart, check), and the plugin
       # author's loop: new --lang swift, swift test, check, dev rebuilding;
-      # an EventKit plugin's access belonging to its binary (tcc); apps
-      # hosting plugins with RutisApp (an executable standing in for one).
+      # apps hosting plugins with RutisApp (an executable standing in for one).
+      # Tests that need system permission prompts (tcc, the Android emulator,
+      # the iOS simulator) are run locally, not here (docs/ci.md §12).
       - name: cargo test (rutis-host with Swift, the Swift development loop)
         env:
           RUTIS_E2E_DIR: /tmp/rutis-e2e
         run: |
           cargo test -p rutis-host --test swift --test swift_app
           cargo test -p rutis-e2e --test dev_loop the_swift_plugin_development_loop
-          cargo test -p rutis-e2e --test tcc
       # The events conformance with X a Swift plugin, in the placements a
       # pull request runs (written; full runs sample more).
       - name: cargo test (events conformance, X Swift)
@@ -1888,7 +1805,6 @@ jobs:
       - runtimes-windows
       - runtimes-go
       - runtimes-kotlin
-      - android
       - runtimes-swift
       - sdk-repro
       - sdk-repro-macos
