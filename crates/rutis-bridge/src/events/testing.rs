@@ -3,6 +3,8 @@
 //!
 //! - [`Tap::dispatches`]: how many `events.dispatch` requests the host
 //!   received from its runtimes (`viaHost`);
+//! - [`Tap::answered`]: wait until the host has written its reply to each
+//!   of them (`answered`);
 //! - [`Tap::hold`]: keep the next `n` of them until all `n` arrived, so they
 //!   run at the same time (`hold`);
 //! - [`Tap::reported`]: the lines the host printed for event failures its
@@ -28,6 +30,10 @@ pub struct Tap(Arc<TapState>);
 #[derive(Default)]
 pub(crate) struct TapState {
     dispatches: AtomicU64,
+    /// The dispatches whose reply was written.
+    replies: AtomicU64,
+    /// Woken at each reply.
+    replied: tokio::sync::Notify,
     hold: Mutex<Hold>,
     released: Condvar,
     reported: Mutex<Vec<String>>,
@@ -76,6 +82,31 @@ impl Tap {
         self.0.dispatches.load(Ordering::SeqCst)
     }
 
+    /// Wait until the host has written its reply to every `events.dispatch`
+    /// it received so far: a frame the suite has sent to a runtime after
+    /// this returns reaches it after those replies, so an emitter that
+    /// takes its replies in frame order (events protocol §5.5) has every
+    /// earlier emit through the host answered when that frame starts
+    /// another. Fails after `within`.
+    pub async fn answered(&self, within: Duration) -> Result<(), String> {
+        let wanted = self.dispatches();
+        let waited = tokio::time::timeout(within, async {
+            loop {
+                let replied = self.0.replied.notified();
+                if self.0.replies.load(Ordering::SeqCst) >= wanted {
+                    return;
+                }
+                replied.await;
+            }
+        });
+        waited.await.map_err(|_| {
+            format!(
+                "the host answered {} of {wanted} events.dispatch within {within:?}",
+                self.0.replies.load(Ordering::SeqCst)
+            )
+        })
+    }
+
     /// Hold the next `n` dispatches until all `n` arrived.
     pub fn hold(&self, n: usize) {
         let mut hold = self.0.hold.lock().unwrap();
@@ -95,6 +126,12 @@ impl TapState {
     /// emitter's) finds it counted.
     pub(crate) fn received(&self) {
         self.dispatches.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The reply to an `events.dispatch` was written.
+    pub(crate) fn replied(&self) {
+        self.replies.fetch_add(1, Ordering::SeqCst);
+        self.replied.notify_waiters();
     }
 
     /// An `events.dispatch` is about to run: held if a hold waits for it

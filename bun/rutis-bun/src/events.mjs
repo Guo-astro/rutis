@@ -487,12 +487,23 @@ export class Bus {
       const count = this.#unanswered.get(name) - 1
       if (count > 0) this.#unanswered.set(name, count); else this.#unanswered.delete(name)
     }
-    let sent
-    try { sent = peer.callAsync('', 'events.dispatch', [fields]) } catch (error) { answered(); this.report(`rutis: emit of ${name} from ${this.#from(row)} failed: ${errorText(error)}`); return undefined }
-    sent.then(answered, error => {
+    const failed = error => {
       answered()
       this.report(`rutis: emit of ${name} from ${this.#from(row)} failed: ${errorText(error)}`)
-    })
+    }
+    try {
+      if (peer.callAnswered) {
+        // The reply is taken as its frame is read, before the next one: an
+        // emit a later frame starts sees it answered (§5.5).
+        peer.callAnswered('', 'events.dispatch', [fields], ({ ok, value }) => {
+          if (!ok) failed(value)
+          else if (typeof value?.then === 'function') value.then(answered, failed)
+          else answered()
+        })
+      } else {
+        peer.callAsync('', 'events.dispatch', [fields]).then(answered, failed)
+      }
+    } catch (error) { failed(error) }
     return undefined
   }
 

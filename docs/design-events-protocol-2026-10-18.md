@@ -198,6 +198,7 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 - 宿主按顺序处理一个会话的 `events.dispatch` 帧，先开始同一进程同一名字前一次 emit 的调用，再开始后一次的；它自己的 Rust 监听器保留内核按键排队的链。
 - 发往同一会话的帧按序到达，运行时**必须**按到达顺序开始 `emit` 方式的调用：Node / Bun / Python 在处理下一帧之前调用监听器（同步执行到它的第一个 `await`）；Go 按监听器排队，一个接一个执行（不同的监听器并发执行）。
 - 运行时经宿主发出了 N 的一次 `emit`，在它得到回复之前，N 的后续 emit 都继续经宿主（§5.2）。宿主在开始各调用之后才回复，所以这次 emit 的 `events.call` 先于任何后来的 N 的快速路径 emit 到达运行时。
+- 回复是普通值（`undefined`），不是 future：宿主在各调用开始之后写出它。运行时像处理 `events.elsewhere` 一样（§4.1）**就地**、按帧的顺序接收它：读到回复的那一帧时就把这次 emit 记为已得到回复，处理完再读下一帧，而不是放到之后的任务、tick 或线程里。所以后面的帧引起的操作（比如调用它的一个服务、在那里发出 N）都看到它已得到回复；宿主在发出那一帧之前已回复的 dispatch，不再让 N 留在经宿主的路径上（2026-10-21 修订）。
 
 ### 5.6 `emit` 中的错误
 
@@ -507,7 +508,7 @@ impl EventBus {
 - **发出说明**（spec）：`from`（位置）、`row`（发出方 label，默认 `e`）、`scope`（默认 `root`）、`mode`、`name`（默认用例的）、`args`（值；值标记写作 `{"$<tag>": …}`，同 `weather.expected.json`；`{"$callback":"upper"}` 是把参数转成大写的函数）、`filter`（`{ "keep": [labels] }`：送达 `row` 在列表中的条目；探针对它被调用时的每个描述记 `filter:<row>`）、`via`（`"thisArg"`：Cordis 的 `Context.filter`，只用于 Node 的 Cordis 发出方）、`terminal`（文字：记 `terminal` 并返回这段文字的终态；`{ "echo": true }`：记 `terminal` 并返回它的第一个参数，即事件的第一个参数）、`cancel`（`{ "when": "<label>" }`：那个监听器记下开始后，发出方取消这次分发）。
 - **发出方的行**：运行器在 spec 的 `from` 位置与 `scope` 创建它写明的发出方（`row`，默认 `e`）；监听器的 `emits` 从监听器自己的行发出。
 - **步骤**，按顺序：`{ "emit": spec, "expect": … }`（`"background": true`：这一步不等分发结束；下一个 `unload` / `kill` 步骤的 `expect` 说的是这次分发的结果与日志）、`{ "load": listener }`（新的一行；`provides`：它另外提供一个这个名字的空服务）、`{ "unload": label }`、`{ "kill": "Y" | "node" }`（结束那个进程 / 那条连接；在 `restart` 步骤之前不恢复）、`{ "restart": "Y" }`、`{ "concurrent": [steps], "hold": true }`（`hold`：宿主的测试钩子扣住这些分发直到全部到达；之后 `expect` 适用于每一个，`throws` 表示至少一个）。`unload` 与 `kill` 可带 `"when": "<label>"`：先等那个监听器开始。
-- **期望**：`returns`（值；`null` = 没有结果）、`throws`（`{}` 任意错误，或 `name`、`message`（子串）、`errors`（按顺序的子错误，每个为 `{}` / `name` / `message`））、`log`（确切顺序）、`logUnordered`、`logContains`（按此顺序出现，中间可有其他）、`reported`（`[{ "label", "name" }]`，§5.6）、`filterSees`（过滤函数被调用时的行，按顺序；运行器按每个参与者实际所在核对描述的 `runtime`、`node` 与 `scope`）、`viaHost`（是否有 `events.dispatch` 到达宿主）、`settles`（`true`：这一步在 5 秒内结束，无论成败）、`logLacks`（日志里不得出现的条目）。日志在整个用例中累积；每个日志期望说的都是到此为止的全部日志。运行器最多等 5 秒让日志完整。
+- **期望**：`returns`（值；`null` = 没有结果）、`throws`（`{}` 任意错误，或 `name`、`message`（子串）、`errors`（按顺序的子错误，每个为 `{}` / `name` / `message`））、`log`（确切顺序）、`logUnordered`、`logContains`（按此顺序出现，中间可有其他）、`reported`（`[{ "label", "name" }]`，§5.6）、`filterSees`（过滤函数被调用时的行，按顺序；运行器按每个参与者实际所在核对描述的 `runtime`、`node` 与 `scope`）、`viaHost`（是否有 `events.dispatch` 到达宿主）、`settles`（`true`：这一步在 5 秒内结束，无论成败）、`answered`（`true`：运行器等到宿主对它收到的每个 `events.dispatch` 都写出了回复，最多 5 秒；之后发给运行时的帧都在这些回复之后到达，按 §5.5 发出方已把这些经宿主的 emit 记为已得到回复，用于其后断言 `viaHost: false` 的步骤）、`logLacks`（日志里不得出现的条目）。日志在整个用例中累积；每个日志期望说的都是到此为止的全部日志。运行器最多等 5 秒让日志完整。
 - **`vary`**：位置要变化的参与者（label，发出方为 `e`），运行器取所有位置的组合（笛卡尔积），`at` / `from` 是第一种组合。`node` 不被分配到 `root` 以外的作用域。
 - **`only` / `except`**：`{ "<label>": [语言] }`（`rust`、`node`、`bun`、`python`、`go`）限定 / 排除组合，带 `why`。
 - **`tool`**：测试工具不运行该用例时为 `false`（它需要其他进程、`rutis/*` 或宿主）。测试工具把其余每个用例的全部位置都设为 `X` 运行。
@@ -544,7 +545,7 @@ impl EventBus {
         { "label": "a", "at": "X", "log": "arg", "does": { "returns": null } },
         { "label": "b", "at": "Y", "log": false, "does": { "returns": null } } ],
       "steps": [
-        { "emit": { "from": "X", "mode": "emit", "args": [1] }, "expect": { "viaHost": true } },
+        { "emit": { "from": "X", "mode": "emit", "args": [1] }, "expect": { "viaHost": true, "answered": true } },
         { "unload": "b" },
         { "emit": { "from": "X", "mode": "emit", "args": [2] }, "expect": { "log": ["a:1", "a:2"], "viaHost": false } } ] },
 

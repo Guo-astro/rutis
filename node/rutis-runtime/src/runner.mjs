@@ -759,6 +759,7 @@ try {
 bus.peer = {
   call: (target, method, args) => peer.call(target, method, args),
   callAsync: (target, method, args) => peer.callAsync(target, method, args),
+  callAnswered: (target, method, args, answered) => peer.callAnswered(target, method, args, answered),
   callFunctionAsync: (fn, args) => peer.callFunctionAsync(fn, args),
 }
 if (dialed) {

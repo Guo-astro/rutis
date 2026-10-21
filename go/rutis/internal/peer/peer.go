@@ -178,7 +178,10 @@ type Peer struct {
 	// What the far end declared (either format), once it greeted.
 	declared []string
 
-	pending    map[string]chan result
+	pending map[string]chan result
+	// Told on the reading goroutine when a call is answered (request's
+	// `answered`), by call id.
+	answered   map[string]func(result)
 	exports    map[int64]*export
 	identities map[any]int64
 	imports    map[int64]*imported
@@ -201,6 +204,7 @@ func New(channel Channel, opts Options) (*Peer, error) {
 		channel:    channel,
 		opts:       opts,
 		pending:    map[string]chan result{},
+		answered:   map[string]func(result){},
 		exports:    map[int64]*export{},
 		identities: map[any]int64{},
 		imports:    map[int64]*imported{},
@@ -372,6 +376,8 @@ func (p *Peer) Close(err error) {
 	p.closeErr = err
 	pending := p.pending
 	p.pending = map[string]chan result{}
+	answered := p.answered
+	p.answered = map[string]func(result){}
 	p.exports = map[int64]*export{}
 	p.identities = map[any]int64{}
 	p.imports = map[int64]*imported{}
@@ -383,6 +389,9 @@ func (p *Peer) Close(err error) {
 		close(p.ready)
 	}
 	p.mu.Unlock()
+	for _, told := range answered {
+		_, _ = protect(func() (any, error) { told(result{err: err, ended: true}); return nil, nil })
+	}
 	for _, waiter := range pending {
 		waiter <- result{err: err, ended: true}
 	}
@@ -966,7 +975,7 @@ func (p *Peer) Send(ctx context.Context, target, method string, args []any, sync
 	if ctx == nil {
 		panic("rutis: a nil context: pass the context.Context your caller gave you")
 	}
-	id, waiter, err := p.request(ctx, "invoke", p.waiting(map[string]any{"target": target, "method": method}, sync), args, true, nil)
+	id, waiter, err := p.request(ctx, "invoke", p.waiting(map[string]any{"target": target, "method": method}, sync), args, true, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -987,10 +996,49 @@ func (p *Peer) Send(ctx context.Context, target, method string, args []any, sync
 	}, nil
 }
 
+// SendAnswered sends a call nobody waits for, not cancelled, and tells
+// `answered` its outcome on the reading goroutine, in frame order: before
+// the frame after the answer is read (an answer that is a future: the
+// frame after its settlement), or when the session ends, with its error.
+// The call is sent before SendAnswered returns.
+func (p *Peer) SendAnswered(ctx context.Context, target, method string, args []any, answered func(error)) error {
+	if ctx == nil {
+		panic("rutis: a nil context: pass the context.Context your caller gave you")
+	}
+	_, _, err := p.request(context.WithoutCancel(ctx), "invoke", map[string]any{"target": target, "method": method}, args, true, nil, p.settled(answered))
+	return err
+}
+
+// settled tells `answered` an outcome once it is no future: a future is
+// awaited, and its settlement told on the reading goroutine in turn.
+func (p *Peer) settled(answered func(error)) func(result) {
+	var told func(result)
+	told = func(outcome result) {
+		future, ok := outcome.value.(*RemoteFuture)
+		if outcome.err != nil || !ok {
+			answered(outcome.err)
+			return
+		}
+		// Sent off the reading goroutine, which must not wait to write.
+		go func() {
+			p.mu.Lock()
+			err := future.record.check()
+			p.mu.Unlock()
+			if err == nil {
+				_, _, err = p.request(context.Background(), "await", map[string]any{"reference": future.record.id}, nil, false, future.record.origin, told)
+			}
+			if err != nil {
+				answered(err)
+			}
+		}()
+	}
+	return told
+}
+
 // Notify sends a call whose result nobody awaits. It is sent before Notify
 // returns, so it goes out ahead of anything sent later.
 func (p *Peer) Notify(target, method string, args []any) {
-	id, _, err := p.request(context.Background(), "invoke", map[string]any{"target": target, "method": method}, args, true, nil)
+	id, _, err := p.request(context.Background(), "invoke", map[string]any{"target": target, "method": method}, args, true, nil, nil)
 	if err == nil {
 		// Its reply, when it comes, is a late one: dropped.
 		p.mu.Lock()
@@ -1009,7 +1057,7 @@ func (p *Peer) Announce(target, method string, args []any) <-chan struct{} {
 // refuses the call or it cannot be sent (not when the session ends first).
 func (p *Peer) AnnounceReporting(target, method string, args []any, failed func(error)) <-chan struct{} {
 	done := make(chan struct{})
-	_, waiter, err := p.request(context.Background(), "invoke", map[string]any{"target": target, "method": method}, args, true, nil)
+	_, waiter, err := p.request(context.Background(), "invoke", map[string]any{"target": target, "method": method}, args, true, nil, nil)
 	if err != nil {
 		if failed != nil {
 			failed(err)
@@ -1036,7 +1084,7 @@ func (p *Peer) call(ctx context.Context, op string, fields map[string]any, args 
 	if ctx == nil {
 		panic("rutis: a nil context: pass the context.Context your caller gave you")
 	}
-	id, waiter, err := p.request(ctx, op, fields, args, hasArgs, origin)
+	id, waiter, err := p.request(ctx, op, fields, args, hasArgs, origin, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1055,7 +1103,10 @@ func (p *Peer) call(ctx context.Context, op string, fields map[string]any, args 
 	}
 }
 
-func (p *Peer) request(ctx context.Context, op string, fields map[string]any, args []any, hasArgs bool, origin []string) (string, chan result, error) {
+// request sends a call. `answered`, when given, is told the call's outcome
+// on the reading goroutine, before the next frame is read (or when the
+// session ends), ahead of the waiter.
+func (p *Peer) request(ctx context.Context, op string, fields map[string]any, args []any, hasArgs bool, origin []string, answered func(result)) (string, chan result, error) {
 	chain := ChainOf(ctx)
 	// Identities go out in the order they are taken: the far end refuses
 	// one not above the last it received, so the write lock spans both.
@@ -1103,10 +1154,14 @@ func (p *Peer) request(ctx context.Context, op string, fields map[string]any, ar
 	}
 	waiter := make(chan result, 1)
 	p.pending[id] = waiter
+	if answered != nil {
+		p.answered[id] = answered
+	}
 	p.mu.Unlock()
 	if err := p.writeLocked(data); err != nil {
 		p.mu.Lock()
 		delete(p.pending, id)
+		delete(p.answered, id)
 		p.rollback(grants)
 		p.mu.Unlock()
 		return "", nil, err
@@ -1234,7 +1289,13 @@ func (p *Peer) receive(f *frame) error {
 			return errors.New("response for unknown call")
 		}
 		delete(p.pending, id)
+		answered := p.answered[id]
+		delete(p.answered, id)
 		p.mu.Unlock()
+		if answered != nil {
+			// Here, before the next frame: what that frame starts sees it.
+			_, _ = protect(func() (any, error) { answered(outcome); return nil, nil })
+		}
 		waiter <- outcome
 		return nil
 	case "cancel":

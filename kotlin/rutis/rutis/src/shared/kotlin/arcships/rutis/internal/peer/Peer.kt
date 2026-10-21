@@ -654,7 +654,14 @@ class Peer(private val channel: Channel, private val opts: Options) {
      * Sends a call now and returns its id and the wait for its result: frames
      * of successive requests go out in that order.
      */
-    private fun request(op: String, fields: Map<String, JsonElement>, args: List<Any?>?, origin: List<String>, chain: List<String>): Pair<String, CompletableFuture<Outcome>> {
+    private fun request(
+        op: String,
+        fields: Map<String, JsonElement>,
+        args: List<Any?>?,
+        origin: List<String>,
+        chain: List<String>,
+        answered: ((Outcome) -> Unit)? = null,
+    ): Pair<String, CompletableFuture<Outcome>> {
         synchronized(lock) {
             closeError?.let { throw it }
             if (!handshake) throw IOException("protocol handshake incomplete")
@@ -690,6 +697,9 @@ class Peer(private val channel: Channel, private val opts: Options) {
                 throw ValueException("message of ${data.size} bytes exceeds the limit of $MAX_MESSAGE")
             }
             val waiter = CompletableFuture<Outcome>()
+            // Attached before the frame goes out: it runs on the thread that
+            // completes the waiter, the reader as it takes the reply.
+            if (answered != null) waiter.thenAccept(answered)
             pending[id] = waiter
             outbox.offer(data)
             return id to waiter
@@ -759,6 +769,17 @@ class Peer(private val channel: Channel, private val opts: Options) {
     fun send(target: String, method: String, args: List<Any?>, sync: Boolean): suspend () -> Any? {
         val (id, waiter) = request("invoke", waiting(invokeFields(target, method), sync), args, emptyList(), CallChain.current())
         return { settleSuspend(waitSuspend(id, waiter, !sync)) }
+    }
+
+    /**
+     * Sends a call nobody waits for, ahead of anything sent later, and tells
+     * `answered` its reply as the reply's frame is taken, before the next
+     * frame (or at the session's end): the reply's value, or why it failed.
+     */
+    fun sendAnswered(target: String, method: String, args: List<Any?>, answered: (Any?, Throwable?) -> Unit) {
+        request("invoke", invokeFields(target, method), args, emptyList(), CallChain.current()) { outcome ->
+            answered(outcome.value, outcome.error)
+        }
     }
 
     /** Sends a call whose result nobody awaits, ahead of anything sent later. */

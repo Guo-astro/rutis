@@ -660,19 +660,35 @@ class Runtime:
 
     def _emit_via_host(self, row: str, name: str, request: dict) -> None:
         self.unanswered[name] = self.unanswered.get(name, 0) + 1
-        try:
-            sent = self.peer.request("", "events.dispatch", [request])
-        except Exception as error:  # noqa: BLE001 - contained and reported
+
+        def failed(error: BaseException) -> None:
             self._answered(name)
             self.bus.report("emit", name, row, error)
-            return
 
-        def answered(done) -> None:
-            self._answered(name)
+        def settled(done) -> None:
             if not done.cancelled() and done.exception() is not None:
-                self.bus.report("emit", name, row, done.exception())
+                failed(done.exception())
+            else:
+                self._answered(name)
 
-        sent.add_done_callback(answered)
+        def answered(ok: bool, value: Any) -> None:
+            # Taken as the reply's frame is read, before the next one: an
+            # emit a later frame starts sees it answered (§5.5).
+            if not ok:
+                failed(value)
+            elif isinstance(value, RemoteFuture):
+                # An older host answers with a future: its settlement.
+                async def awaited() -> Any:
+                    return await value
+
+                self.peer.loop.create_task(awaited()).add_done_callback(settled)
+            else:
+                self._answered(name)
+
+        try:
+            self.peer.request_answered("", "events.dispatch", [request], answered)
+        except Exception as error:  # noqa: BLE001 - contained and reported
+            failed(error)
 
     def _answered(self, name: str) -> None:
         left = self.unanswered.get(name, 1) - 1

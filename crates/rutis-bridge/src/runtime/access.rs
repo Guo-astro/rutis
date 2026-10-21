@@ -77,6 +77,10 @@ impl crate::Handler for Routed {
     fn arrived(&self, peer: &Connection, method: &str) {
         self.0.arrived(peer, method)
     }
+
+    fn replied(&self, peer: &Connection, method: &str) {
+        self.0.replied(peer, method)
+    }
 }
 
 impl RuntimeSession for PeerSession {
