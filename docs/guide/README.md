@@ -10,6 +10,7 @@
 | 用 Go 写插件 | [写一个 Go 插件](go-plugin.md) |
 | 用 Swift 写 macOS 插件 | [写一个 Swift 插件](swift-plugin.md) |
 | 把 iOS / iPadOS / macOS 应用的能力提供给 rutis | [在应用里托管插件（Swift）](swift-app.md) |
+| 在 Android 应用里用 Kotlin 提供插件 | [Android 应用托管插件](kotlin-app.md) |
 | 查插件能做什么、值怎样传递 | [插件 API](plugin-api.md) |
 | 在插件之间（任何语言、任何进程、任何节点）收发事件 | [插件 API：事件](plugin-api.md#事件) |
 | 不写 Rust，直接运行插件 | [rutis-host 与 rutis.json](rutis-host.md) |
@@ -36,4 +37,5 @@
 - Python 3.10 或更高（Python 插件）。
 - Go 1.24 或更高（只在写 Go 插件、构建二进制时需要；运行 Go 插件二进制不需要）。
 - macOS 14 或更高与 Swift 6 工具链（只在写 Swift 插件、构建二进制时需要；运行 Swift 插件二进制不需要工具链，但只在 macOS 上运行）。
+- JDK 17 与 Android 10（API 29）或更高（Kotlin 插件，编进 Android 应用；包是 Maven Central 上的 `io.github.arcships:rutis` 与编译期的 `io.github.arcships:rutis-ksp`）。
 - Rust 1.88 或更高（只在 Rust 里嵌入时需要）。这个版本是按仓库的 `Cargo.lock` 验证的；用更旧的 Rust 自己解析依赖时，可以在 Cargo 配置里设 `resolver.incompatible-rust-versions = "fallback"`，让 Cargo 选能用的依赖版本。

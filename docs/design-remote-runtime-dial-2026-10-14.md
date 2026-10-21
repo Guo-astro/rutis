@@ -123,7 +123,8 @@
 | Node | 拨出客户端，紧随 Python | 已实现（#384），`dial_conformance` Node 列通过 |
 | Go | 拨出客户端，紧随 Python | 已实现（#384），`dial_conformance` Go 列通过 |
 | Bun | 监听与拨出都要补，紧随 Python | 已实现（#384），`dial_conformance` Bun 列、`session_matrix::bun_listening_on_a_websocket` 通过 |
-| Swift、Kotlin | 监听与拨出都实现（Swift SDK §六、Android 稿 §五） | 未实现 |
+| Swift | 监听与拨出都实现（Swift SDK §六） | 未实现 |
+| Kotlin | 监听与拨出都实现（Android 稿 §五） | 已实现（#391），`dial_conformance` Kotlin 列、`session_matrix::kotlin_listening_on_a_websocket` 通过 |
 | 文档 | 连接节点指南加拨出与动态接入；推荐方式改为拨出 | 已写拨出与动态接入（Python、Node、Bun）；推荐方式待各语言都能拨出后再改 |
 
 ## 八、兼容

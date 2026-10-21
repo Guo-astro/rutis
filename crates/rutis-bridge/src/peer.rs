@@ -26,6 +26,12 @@ use tokio::sync::watch;
 /// Serves one family of operations on a peer's session.
 pub trait Handler: Send + Sync + 'static {
     fn invoke(&self, peer: &Connection, target: &str, method: &str, args: Value) -> Reply;
+
+    /// [`Dispatch::arrived`] for this family's event operations.
+    fn arrived(&self, _peer: &Connection, _method: &str) {}
+
+    /// [`Dispatch::replied`] for this family's event operations.
+    fn replied(&self, _peer: &Connection, _method: &str) {}
 }
 
 impl<F> Handler for F
@@ -148,6 +154,22 @@ impl Operations {
 }
 
 impl Dispatch for Operations {
+    fn arrived(&self, peer: &Connection, method: &str) {
+        let handler = (self.handlers.lock().unwrap().get(family("", method)))
+            .map(|family| family.handler.clone());
+        if let Some(handler) = handler {
+            handler.arrived(peer, method);
+        }
+    }
+
+    fn replied(&self, peer: &Connection, method: &str) {
+        let handler = (self.handlers.lock().unwrap().get(family("", method)))
+            .map(|family| family.handler.clone());
+        if let Some(handler) = handler {
+            handler.replied(peer, method);
+        }
+    }
+
     fn invoke(&self, peer: &Connection, target: &str, method: &str, args: Value) -> Reply {
         if target.is_empty() && method == "link.offers" {
             let announced = args

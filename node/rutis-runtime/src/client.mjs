@@ -66,6 +66,7 @@ export class Process {
   get fault() { return this.#session.fault }
   call(target, method, args) { return this.#session.invoke(target, method, args) }
   callAsync(target, method, args) { return this.#session.invokeAsync(target, method, args) }
+  callAnswered(target, method, args, answered) { this.#session.invokeAnswered(target, method, args, answered) }
   callFunctionAsync(fn, args) { return this.#session.callFunctionAsync(fn, args) }
   declares(capability) { return this.#session.declares(capability) }
   release(value) { this.#session.release(value) }

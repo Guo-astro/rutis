@@ -76,7 +76,8 @@ The first job of `ci.yml`, `changes`, looks at the files the pull request change
 | `docs` | Any `.md` file |
 | `bun` | `bun/**`, `node/rutis/**`, `crates/rutis-bridge`, `crates/rutis-loader`, `crates/rutis-host` |
 | `go` | `go/**`, `crates/rutis-bridge`, `crates/rutis-loader`, `crates/rutis-host` |
-| `kotlin` | `kotlin/**`, `crates/rutis-bridge`, `crates/rutis-loader` |
+| `kotlin` | `kotlin/**`, `crates/rutis-bridge`, `crates/rutis-loader`, `crates/rutis-host` |
+| `android` | `kotlin/**`, `crates/rutis-host/tests/android.rs`, `tools/android-emulator.sh` |
 | `repro` | `crates/rutis-sdk`, `crates/rutis-cli/build.rs`, `tools/test-dylib-repro.sh`, `tools/build-dylib-bundle.sh`, `tools/lib/**`. Kernel changes reach the SDK too, but its reproducibility check for them runs in full runs |
 | `specs` | `specs/**` (the TLA+ models, their configurations, expected outcomes, and the READMEs that record the results) |
 
@@ -97,7 +98,8 @@ The "Pull requests" column says when a job runs on a pull request and what it ru
 | `runtimes-windows` | Windows | `code`: only the tests that depend on the platform | All bridge and loader tests | The same on Windows (processes start over loopback); the Go SDK tests; the E2E harness and the E2E scenarios not limited to Unix (`rutis-e2e`: Job Objects, Ctrl-Break, residue checks); a build check of the whole workspace |
 | `runtimes-bun` | Linux | `bun`: Bun 1.4.0 | Linux latest; macOS 1.4.0 | Every Bun runtime test, with the reruns over loopback |
 | `runtimes-go` | Linux | `go`: Go oldstable | Linux stable; macOS oldstable; the reruns over loopback on Linux | Every Go SDK and Go runtime test |
-| `runtimes-kotlin` | Linux | `kotlin`: JDK 17 | — | The Kotlin SDK's (`kotlin/rutis`) Gradle build and tests: the jvm target's unit tests, the testing tool against both expectation files; where the runner has an Android SDK, the android target and its AAR too. Then the Rust suites with Kotlin (feature `kotlin`: session and values, the runtime contract, the events conformance with Kotlin as X and as Y, `kotlin_runtime`, the multilang `multilang_kotlin`), Gradle before cargo. The bridge's all-features runs in `rust`, `network-macos` and `runtimes-windows` include `kotlin`: they install JDK 17 and build the conformance jar with Gradle first (`RUTIS_KOTLIN_JAR`) |
+| `runtimes-kotlin` | Linux | `kotlin`: JDK 17 | — | The Kotlin SDK's (`kotlin/rutis`) Gradle build and tests: the jvm target's unit tests, the testing tool against both expectation files; where the runner has an Android SDK, the android target and its AAR too. Then the Rust suites with Kotlin (feature `kotlin`: session and values, the runtime contract, the events conformance with Kotlin as X and as Y, `kotlin_runtime`, the multilang `multilang_kotlin`; remotely: the dial-out contract's Kotlin column, `kotlin_remote`, rutis-host's `--features kotlin --test kotlin`), Gradle before cargo. The bridge's all-features runs in `rust`, `network-macos` and `runtimes-windows` include `kotlin`: they install JDK 17 and build the conformance jar with Gradle first (`RUTIS_KOTLIN_JAR`) |
+| `android` | macOS (self-hosted, §10) | `android` | — | An Android emulator (`tools/android-emulator.sh`: the Android SDK and system image kept on the runner, an AVD of each job's own): the SDK's device tests (`:rutis:connectedDebugAndroidTest`), and the sample application `kotlin/rutis/android-sample` dialing a rutis-host (`rutis-host --features android --test android`: the release build through R8 stopped and started; two connections each an instance; the permission prompt being the application's, a denial reaching rutis and the caller). An arm64 emulator needs virtualization, which GitHub's hosted macOS runners lack |
 | `runtimes-swift` | macOS (self-hosted, §10) | `swift`: the toolchain of the runner's Xcode | — | The Swift SDK's own tests (`swift run RutisSelfTest`), its library built for iOS where the runner has the iOS SDK, the Rust contract suites with the Swift session and runtimes, Swift rows with Node and Python ones (`swift_rows`, `multilang_swift`, caller rows, wait cycles), the Swift runtime remotely (`dial_conformance` and `swift_remote`), `runtimes.swift` in rutis-host and the Swift plugin development loop (`rutis-host --test swift`, `rutis-e2e --test dev_loop`), an EventKit plugin's access belonging to its binary (`rutis-e2e --test tcc`), apps hosting plugins with `RutisApp` (`rutis-host --test swift_app`, an executable standing in for the app), and `events_conformance` with X a Swift plugin (written placements on pull requests, sampled in full runs) |
 | `ios` | macOS (self-hosted, §10), full runs and pull requests changing `swift/examples/**` or the iOS e2e | Xcode (`/Applications/Xcode.app`) with an iOS simulator runtime, downloaded once when missing | — | The SDK's own tests on the iOS simulator (`tools/ios-selftest.sh`), and the sample app on two simulators against `rutis-host` (`rutis-e2e --test ios_app`: instances, background and foreground, HealthKit access) |
 | `semver-rutis` | macOS (self-hosted, §10) | `packaging` | The whole job | Whether the public API changed incompatibly since the last release (warning only) |
@@ -132,7 +134,7 @@ The session contract (`session::testing::session` and the malformed-frame checks
 | Kotlin (jvm target) | loopback TCP | Runs | Runs | Runs |
 | Node, Python | WebSocket (the fixture listens, Rust dials) | Runs | Runs | Runs |
 | Go | WebSocket | Not run: the Go SDK's WebSocket listener is internal to the runtime (`package rutis`), out of reach of the session fixture, a separate program; the Go runtime's WebSocket column is in the runtime contract | As Linux | As Linux |
-| Kotlin | WebSocket | Not run: the Kotlin SDK's dialing and listening are K-P2 (`docs/design-android-runtime-2026-10-12.md` §9) | As Linux | As Linux |
+| Kotlin | WebSocket | Not run: as for Go, the Kotlin SDK's WebSocket listener is inside the runtime (`Rutis.serve`), which the separate session fixture does not use; Kotlin's WebSocket column is in the runtime contract | As Linux | As Linux |
 | Bun | Unix socket, loopback TCP | Runs (malformed frames on the Unix socket only) | Runs | Not compiled: Bun on Windows is not a declared platform |
 | Bun | WebSocket | Not run: the Bun runtime's WebSocket listener is in its supervising process (`src/remote.ts`), out of reach of the session fixture, a separate program; the Bun runtime's WebSocket column is in the runtime contract | As Linux | As Linux |
 
@@ -151,7 +153,7 @@ The runtime contract (`runtime::testing::runtime`, `tests/session_matrix.rs`):
 | Kotlin (the jvm target's `Rutis.serve`, started by the generic `Launcher` as `java -jar`) | socket path dialed back | Runs | Runs | Skipped: Windows has loopback only |
 | Kotlin | loopback TCP | Runs | Runs | Runs |
 | Kotlin | `fd:3` | Not run: the JDK has no public API to wrap an inherited descriptor (design §4.3) | As Linux | As Linux |
-| Kotlin | WebSocket | Not run: listening is K-P2 | As Linux | As Linux |
+| Kotlin | WebSocket (the runtime listens, Rust dials in) | Runs | Runs | Runs (the bridge's all-features run in `rust`, `runtimes-windows`); the listener's and dialer's own rules (statuses, broken frames, heartbeat, takeover, TLS both ways) in `tests/kotlin_remote.rs` |
 | A Node package without `fd` falls back to dialing back | — | Runs | Runs | Skipped: Windows has loopback only |
 
 The first two columns and the last row start the process through the `Process` facade, and the contract also checks the exit status after the crash; the loopback and WebSocket columns attach to a channel and check only that the crash ends the session. On Windows, `python_runtime.rs`, `go_runtime.rs` and others cover the facade's loopback start.
@@ -173,6 +175,7 @@ The dial-out contract (`tests/dial_conformance.rs`: rutis runs an access point, 
 | Node | Runs | Runs | Runs; the own-stop case is skipped: as above |
 | Bun | Runs | Runs | Not compiled: Bun on Windows is not a declared platform |
 | Swift | Not compiled: Swift plugin binaries are macOS only | Runs (`runtimes-swift`) | Not compiled: as Linux |
+| Kotlin (jvm target, the same code as Android applications) | Runs (`runtimes-kotlin`, `rust`) | Runs (`rust`, `network-macos`) | Runs; the stopping case is skipped: it sends SIGTERM, which Windows lacks |
 
 Other bridge test files compiled on Unix only (each says why next to its `cfg`): `bun_runtime.rs`, `bun_channel.rs` (Bun); `local_spawn.rs` (the `fd:3` and dial-back handovers; `local_loopback.rs` covers Windows' loopback handover); `local_plugin.rs`, `value_roundtrip.rs` (Unix sockets); `local_stdio.rs` (`dup2`); `concurrent_launch.rs` (descriptors inherited across fork/exec); the two soaks on Linux only (they read `/proc`).
 
@@ -182,7 +185,7 @@ Other bridge test files compiled on Unix only (each says why next to its `cfg`):
 | --- | --- | --- |
 | Documentation only | `changes`, `links` | About 1 minute |
 | Kernel `crates/rutis` | `rust`, `e2e`, `js-py`, `lint`, `network-macos`, `runtimes-windows` | About 5–8 minutes |
-| Bridge, loader, host | Adds `runtimes-bun`, `runtimes-go` (one version each, Linux) and `runtimes-kotlin` (not for host) | About 6–9 minutes |
+| Bridge, loader, host | Adds `runtimes-bun`, `runtimes-go` (one version each, Linux) and `runtimes-kotlin` | About 6–9 minutes |
 | The Kotlin SDK only (`kotlin/**`) | `rust`, `e2e`, `js-py`, `lint`, `network-macos`, `runtimes-windows`, `runtimes-kotlin` | About 5–8 minutes |
 | Python package only | `rust`, `e2e`, `js-py`, `lint`, `network-macos`, `runtimes-windows` | About 5–8 minutes |
 | `package.json`, `pyproject.toml`, `crates/*/Cargo.toml` | Adds `release-dry-run` and `semver-rutis`; `install.yml` (Linux x64) when a package's `package.json` or `pyproject.toml` changes | Unchanged; they run beside the tests |

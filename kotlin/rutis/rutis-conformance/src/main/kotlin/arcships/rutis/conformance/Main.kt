@@ -10,11 +10,12 @@ import arcships.rutis.conformance.plugins.ktGated
 import arcships.rutis.conformance.plugins.ktLocal
 import arcships.rutis.conformance.plugins.ktProvider
 import arcships.rutis.conformance.plugins.ktRelay
+import arcships.rutis.conformance.plugins.marker
 import arcships.rutis.conformance.plugins.probe
 import arcships.rutis.conformance.plugins.registrant
 import arcships.rutis.conformance.plugins.weather
 import arcships.rutis.serve
 
 fun main(args: Array<String>) {
-    Rutis.serve(args, weather, conformanceEvents, ktProvider, ktConsumer, ktLocal, ktGated, ktForecast, ktRelay, probe, registrant)
+    Rutis.serve(args, weather, conformanceEvents, ktProvider, ktConsumer, ktLocal, ktGated, ktForecast, ktRelay, probe, registrant, marker)
 }

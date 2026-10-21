@@ -23,6 +23,7 @@ plugins {
     kotlin("plugin.serialization")
     id("com.google.devtools.ksp")
     id("com.android.library") apply false
+    id("com.vanniktech.maven.publish")
 }
 
 if (androidSdk) {
@@ -59,6 +60,8 @@ kotlin {
                 api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
                 api("org.jetbrains.kotlinx:kotlinx-serialization-core:1.9.0")
                 implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+                // The WebSocket client of `dial:` (design K8).
+                implementation("com.squareup.okhttp3:okhttp:5.3.2")
             }
         }
         val jvmTest by getting {
@@ -76,6 +79,17 @@ kotlin {
                     api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
                     api("org.jetbrains.kotlinx:kotlinx-serialization-core:1.9.0")
                     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+                    // The WebSocket client of `dial:` (design K8).
+                    implementation("com.squareup.okhttp3:okhttp:5.3.2")
+                }
+            }
+            // The device tests of what only Android has (on an emulator:
+            // `connectedAndroidTest`).
+            val androidInstrumentedTest by getting {
+                dependencies {
+                    implementation(kotlin("test"))
+                    implementation("androidx.test:runner:1.6.2")
+                    implementation("androidx.test.ext:junit:1.2.1")
                 }
             }
         }
@@ -86,6 +100,7 @@ kotlin {
 // the processor, as in an application.
 dependencies {
     add("kspJvmTest", project(":rutis-ksp"))
+    if (androidSdk) add("kspAndroidAndroidTest", project(":rutis-ksp"))
 }
 
 if (androidSdk) {
@@ -94,6 +109,7 @@ if (androidSdk) {
         compileSdk = 34
         defaultConfig {
             minSdk = 29
+            testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
             // Keeps the generated tables, proxies and what errors cross with
             // in applications that shrink (R8).
             consumerProguardFiles("consumer-rules.pro")
@@ -103,4 +119,15 @@ if (androidSdk) {
             targetCompatibility = JavaVersion.VERSION_17
         }
     }
+}
+
+// Maven Central (release.yml `maven`): io.github.arcships:rutis, with the
+// jvm and android (release) variants; the android one only where an
+// Android SDK is installed, which the release job checks. Credentials and
+// the signing key come as Gradle properties (ORG_GRADLE_PROJECT_mavenCentralUsername,
+// …Password, …signingInMemoryKey, …signingInMemoryKeyPassword); without a
+// key nothing is signed, which only publishing needs.
+mavenPublishing {
+    publishToMavenCentral(automaticRelease = true)
+    if (providers.gradleProperty("signingInMemoryKey").isPresent) signAllPublications()
 }

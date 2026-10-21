@@ -131,6 +131,14 @@ internal class Row(
 class RuntimeState(plugins: List<Plugin>) {
     internal val plugins: Map<String, Plugin> = plugins.associateBy { it.name }
 
+    /**
+     * How long a row's listeners and cleanups may take when it goes, and
+     * the whole unloading when the session ends (`RUTIS_SHUTDOWN_TIMEOUT`,
+     * or what an application gives `RutisApp`).
+     */
+    @Volatile
+    var shutdownMillis: Long = Shutdown.millis()
+
     @Volatile
     var session: Peer? = null
 
@@ -372,7 +380,7 @@ class RuntimeState(plugins: List<Plugin>) {
         // for, at most the shutdown deadline (§7.1); then its cleanups run,
         // latest first.
         row.job.cancel()
-        val budget = Shutdown.millis()
+        val budget = shutdownMillis
         if (!row.listening.await(budget)) {
             Report.line("rutis: listeners of row ${row.name} still running after ${Shutdown.shown(budget)}s; unloading anyway")
         }

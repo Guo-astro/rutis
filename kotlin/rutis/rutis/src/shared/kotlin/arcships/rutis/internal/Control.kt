@@ -38,7 +38,7 @@ internal object Control {
         "dispose" -> {
             rt.closing = true
             rt.dispose()
-            rt.session?.drain(Shutdown.millis())
+            rt.session?.drain(rt.shutdownMillis)
             null
         }
         "rows.load" -> {

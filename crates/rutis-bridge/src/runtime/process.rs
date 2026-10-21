@@ -450,6 +450,18 @@ impl Imports {
     }
 }
 impl Dispatch for Imports {
+    fn arrived(&self, _connection: &Connection, method: &str) {
+        if let Some(events) = self.bus.get() {
+            events.arrived(method);
+        }
+    }
+
+    fn replied(&self, _connection: &Connection, method: &str) {
+        if let Some(events) = self.bus.get() {
+            events.replied(method);
+        }
+    }
+
     fn invoke(&self, connection: &Connection, target: &str, method: &str, args: RpcValue) -> Reply {
         if let Some(name) = target.strip_prefix("host:") {
             let (host, row) = self

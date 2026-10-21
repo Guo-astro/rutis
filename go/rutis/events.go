@@ -486,13 +486,6 @@ func (rt *runtimeState) dispatchViaHost(ctx context.Context, r *row, name string
 		// emits of `name` follow it through the host until it is answered
 		// (§5.5). The emitter does not wait, nor cancel it.
 		rt.hostEmits[name]++
-		rt.post(func() {
-			wait, err := session.Send(context.WithoutCancel(ctx), "", "events.dispatch", []any{record}, false)
-			result <- sent{wait, err}
-		})
-		rt.mu.Unlock()
-		rt.flush()
-		s := <-result
 		answered := func(err error) {
 			rt.mu.Lock()
 			if rt.hostEmits[name]--; rt.hostEmits[name] <= 0 {
@@ -503,14 +496,18 @@ func (rt *runtimeState) dispatchViaHost(ctx context.Context, r *row, name string
 				events.Report(fmt.Sprintf("rutis: emit of %s from row %s failed: %s", name, r.name, events.Failure(err)))
 			}
 		}
-		if s.err != nil {
+		// The answer is taken in frame order (§5.5): an emit that a later
+		// frame starts already sees it.
+		failed := make(chan error, 1)
+		rt.post(func() {
+			failed <- session.SendAnswered(ctx, "", "events.dispatch", []any{record}, answered)
+		})
+		rt.mu.Unlock()
+		rt.flush()
+		if err := <-failed; err != nil {
 			answered(nil)
-			return nil, s.err
+			return nil, err
 		}
-		go func() {
-			_, err := s.wait()
-			answered(err)
-		}()
 		return nil, nil
 	}
 	rt.post(func() {

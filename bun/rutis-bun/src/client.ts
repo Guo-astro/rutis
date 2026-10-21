@@ -65,6 +65,7 @@ export class Client {
   get session() { return this.#session }
   call(target: string, method: string, args: unknown) { return this.#session.invoke(target, method, args) }
   callAsync(target: string, method: string, args: unknown) { return this.#session.invokeAsync(target, method, args) }
+  callAnswered(target: string, method: string, args: unknown, answered: (result: { ok: boolean, value: unknown }) => void) { this.#session.invokeAnswered(target, method, args, answered) }
   callFunctionAsync(fn: unknown, args: unknown[]) { return this.#session.callFunctionAsync(fn, args) }
   release(value: unknown) { this.#session.release(value) }
   drain() { return this.#session.drain() }
