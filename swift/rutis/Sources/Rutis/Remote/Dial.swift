@@ -330,6 +330,10 @@ final class DialedSocket: NSObject, Channel, URLSessionWebSocketDelegate, @unche
         task.cancel(with: code, reason: Data(reason.utf8.prefix(123)))
         session.finishTasksAndInvalidate()
     }
+
+    deinit {
+        close("deinitialized")
+    }
 }
 
 /// Becomes true once, when the runtime is told to stop; tasks wait for it.
