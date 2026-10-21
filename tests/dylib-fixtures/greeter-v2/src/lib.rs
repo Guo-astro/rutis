@@ -12,15 +12,35 @@ use rutis_sdk::rutis::{
 use rutis_sdk::ConfigValue;
 
 struct Factory;
-struct Greeter;
+/// `scope`: provide everything in this isolation scope (`{"scope": "b"}`),
+/// for a second build to run beside the first.
+struct Greeter {
+    scope: Option<String>,
+}
 
 /// Served by name to the plugins of other languages once provided (#510).
-pub struct Greeting(&'static str);
+///
+/// Built with `RUTIS_GREETER_REBUILT` set (tools/test-dylib.sh), this is
+/// another build of the plugin under the same version, features and path,
+/// so `Greeting` keeps its `TypeId`; it lays the value out differently and
+/// answers differently, to show each build's values run that build's code.
+pub struct Greeting(&'static str, [u64; EXTRA]);
+
+const REBUILT: bool = option_env!("RUTIS_GREETER_REBUILT").is_some();
+const EXTRA: usize = if REBUILT { 3 } else { 0 };
+
+fn greeting() -> Greeting {
+    Greeting("hello v2", [7; EXTRA])
+}
 
 #[rutis_sdk::rutis::service]
 impl Greeting {
     pub fn text(&self) -> String {
-        self.0.to_owned()
+        if REBUILT {
+            format!("{} rebuilt {}", self.0, self.1.iter().sum::<u64>())
+        } else {
+            self.0.to_owned()
+        }
     }
 }
 
@@ -37,8 +57,10 @@ impl PluginFactory<ConfigValue> for Factory {
         #[cfg(not(feature = "changed_identity"))]
         &[]
     }
-    fn build(&self, _: &ConfigValue) -> Result<Box<dyn Plugin>, CordisError> {
-        Ok(Box::new(Greeter))
+    fn build(&self, config: &ConfigValue) -> Result<Box<dyn Plugin>, CordisError> {
+        Ok(Box::new(Greeter {
+            scope: config["scope"].as_str().map(str::to_owned),
+        }))
     }
 }
 #[cfg(feature = "changed_identity")]
@@ -52,8 +74,15 @@ impl Plugin for Greeter {
             rutis_sdk::tokio::spawn(async {})
                 .await
                 .map_err(|e| CordisError::PluginFailed(e.into()))?;
+            let ctx = match &self.scope {
+                Some(scope) => ctx
+                    .isolate(TypeKey::of::<String>(), scope)
+                    .isolate(TypeKey::of::<Greeting>(), scope)
+                    .isolate(TypeKey::of::<Snapshot>(), scope),
+                None => ctx.clone(),
+            };
             ctx.provide("hello v2".to_string())?;
-            ctx.provide(Greeting("hello v2"))?;
+            ctx.provide(greeting())?;
             ctx.provide(Snapshot {
                 generation: 2,
                 state: FiberState::Active,

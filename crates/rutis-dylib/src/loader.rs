@@ -9,6 +9,7 @@
 compile_error!("rutis-dylib requires panic = unwind");
 
 use crate::platform::{self, Handle};
+use rutis::service::Generation;
 use rutis::{CordisError, Ctx, FiberView, Plugin, PluginFactory, TypeKey};
 use rutis_sdk::{ConfigValue, PluginMeta, BOOT_MAGIC, BOOT_SIZE, SDK_ID};
 use serde::Deserialize;
@@ -88,7 +89,24 @@ struct Retained {
     bytes: u64,
     loaded_at: SystemTime,
     module: Option<Arc<Module>>,
+    generation: Generation,
     _handle: Handle,
+}
+
+/// The generation each library mapped in this process was loaded as
+/// (`rutis::service::loading`), by its handle: opening a library again
+/// returns the mapping already there, whose initializers do not run again,
+/// so its blocks stay those of the first opening.
+static GENERATIONS: Mutex<Vec<(usize, Generation)>> = Mutex::new(Vec::new());
+
+fn generation_of(handle: Handle, opened: Generation) -> Generation {
+    let key = handle.as_ptr() as usize;
+    let mut known = GENERATIONS.lock().unwrap();
+    if let Some((_, generation)) = known.iter().find(|(handle, _)| *handle == key) {
+        return *generation;
+    }
+    known.push((key, opened));
+    opened
 }
 
 // Library handles are process-global, remain mapped forever, and may be used
@@ -298,30 +316,14 @@ impl Loader {
         let existing_slot = retained
             .iter()
             .position(|entry| entry.id == *id && entry.hash == actual_hash);
-        let (handle, slot) = if let Some(slot) = existing_slot {
+        let (handle, generation, slot) = if let Some(slot) = existing_slot {
             if let Some(module) = &retained[slot].module {
                 return Ok(module.clone());
             }
             // A previous entry/metadata attempt failed after dlopen. Retry on
             // the retained mapping without consuming another version slot.
-            (retained[slot]._handle, slot)
+            (retained[slot]._handle, retained[slot].generation, slot)
         } else {
-            // A rebuild under the same version keeps its types' TypeIds
-            // (they depend on the crate's name and metadata, not its
-            // source): the two generations could not be told apart, and
-            // one's code would run on the other's values.
-            if let Some(earlier) = retained
-                .iter()
-                .find(|entry| entry.id == *id && entry.version == *version)
-            {
-                return Err(fail(
-                    "version",
-                    format!(
-                        "version {version} of {id} is already loaded from another build (sha256 {}): bump the plugin's version for every rebuild",
-                        earlier.hash
-                    ),
-                ));
-            }
             if retained.iter().filter(|entry| entry.id == *id).count() >= self.max_versions {
                 return Err(fail(
                     "retention",
@@ -347,9 +349,12 @@ impl Loader {
                 }
             }
             // The library's initializers register its #[rutis::service]
-            // blocks as a new generation.
-            let handle = rutis::service::loading(|| platform::open_library(&cached))
-                .map_err(|e| fail(platform::OPEN_STEP, e))?;
+            // blocks as a generation of their own: two builds of one
+            // plugin keep their types' TypeIds, and each serves its values
+            // with its own blocks.
+            let (opened, generation) = rutis::service::loading(|| platform::open_library(&cached));
+            let handle = opened.map_err(|e| fail(platform::OPEN_STEP, e))?;
+            let generation = generation_of(handle, generation);
             // Every successfully opened library remains mapped, even if entry fails.
             retained.push(Retained {
                 id: id.clone(),
@@ -358,9 +363,10 @@ impl Loader {
                 bytes: bytes.len() as u64,
                 loaded_at: SystemTime::now(),
                 module: None,
+                generation,
                 _handle: handle,
             });
-            (handle, retained.len() - 1)
+            (handle, generation, retained.len() - 1)
         };
         let meta_fn: unsafe fn() -> PluginMeta =
             symbol(handle, b"rutis_plugin_meta\0").map_err(|e| fail("metadata", e))?;
@@ -413,6 +419,7 @@ impl Loader {
             injects,
             schema,
             factory,
+            generation,
             _handle: handle,
         });
         retained[slot].module = Some(module.clone());
@@ -480,6 +487,7 @@ pub struct Module {
     injects: Vec<TypeKey>,
     schema: Option<rutis_sdk::serde_json::Value>,
     factory: Box<dyn PluginFactory<ConfigValue>>,
+    generation: Generation,
     _handle: Handle,
 }
 unsafe impl Send for Module {}
@@ -506,9 +514,52 @@ impl Module {
     pub fn schema(&self) -> Option<&rutis_sdk::serde_json::Value> {
         self.schema.as_ref()
     }
-    /// The plugin's factory over JSON config.
+    /// The plugin's factory over JSON config. Build plugins with
+    /// [`Module::build`]: a plugin built here directly is not marked as
+    /// this library's code, and what it provides of a `#[rutis::service]`
+    /// type is served with the latest build's blocks of that type.
     pub fn factory(&self) -> &dyn PluginFactory<ConfigValue> {
         self.factory.as_ref()
+    }
+    /// The generation the library was loaded as (`rutis::service::loading`).
+    pub fn generation(&self) -> Generation {
+        self.generation
+    }
+    /// Build the plugin for `config`, its fiber marked as this library's
+    /// code (`rutis::service::set_generation`): a `#[rutis::service]` value
+    /// it provides is served with this library's blocks, even when another
+    /// build of the same plugin, with the same `TypeId`s, is loaded too.
+    pub fn build(&self, config: &ConfigValue) -> Result<Box<dyn Plugin>, CordisError> {
+        Ok(Box::new(InGeneration {
+            plugin: self.factory.build(config)?,
+            generation: self.generation,
+        }))
+    }
+}
+
+/// A plugin of a loaded library, which marks its fiber as that library's
+/// code when it is applied.
+struct InGeneration {
+    plugin: Box<dyn Plugin>,
+    generation: Generation,
+}
+
+impl Plugin for InGeneration {
+    fn name(&self) -> &str {
+        self.plugin.name()
+    }
+    fn injects(&self) -> &[TypeKey] {
+        self.plugin.injects()
+    }
+    fn validate(&self) -> Result<(), CordisError> {
+        self.plugin.validate()
+    }
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+    ) -> rutis::BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+        rutis::service::set_generation(ctx, self.generation);
+        self.plugin.apply(ctx)
     }
 }
 
@@ -552,7 +603,7 @@ impl PluginFactory<DylibConfig> for DylibFactory {
     }
     fn build(&self, config: &DylibConfig) -> Result<Box<dyn Plugin>, CordisError> {
         self.check_module(&config.module)?;
-        config.module.factory.build(&config.value)
+        config.module.build(&config.value)
     }
 }
 

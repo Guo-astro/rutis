@@ -244,6 +244,9 @@ pub(crate) struct FiberInner {
     pub scope_group: std::sync::OnceLock<Arc<str>>,
     /// The row this fiber is (`Ctx::mark_row`).
     pub row: std::sync::OnceLock<Arc<str>>,
+    /// The generation of the library whose code this fiber runs
+    /// (`service::set_generation`); 0 when none was set.
+    pub code_generation: std::sync::atomic::AtomicU64,
 }
 
 /// 工厂擦除面(D32):泛型 `PluginFactory<C>` 的类型擦除适配层内部协议。
@@ -1257,6 +1260,7 @@ fn spawn_fiber_inner(
             accesses: Mutex::new(Vec::new()),
             scope_group: std::sync::OnceLock::new(),
             row: std::sync::OnceLock::new(),
+            code_generation: std::sync::atomic::AtomicU64::new(0),
             shutdown_task: Mutex::new(None),
             shutdown_inner: Mutex::new(None),
             driver: Mutex::new(None),

@@ -173,13 +173,6 @@ mod imp {
         assert_eq!(rejected.step, "retention");
         assert_eq!(limited.diagnostics().len(), 1);
         if let Some(retry_dir) = args.get(4) {
-            // Another build of v2 (fail_once) under v2's version: refused
-            // before it is mapped, since its types would keep v2's TypeIds.
-            let before = loader.diagnostics().len();
-            let rebuilt = unsafe { loader.load(retry_dir) }.err().unwrap();
-            assert_eq!(rebuilt.step, "version", "{rebuilt:?}");
-            assert!(rebuilt.reason.contains("bump"), "{rebuilt:?}");
-            assert_eq!(loader.diagnostics().len(), before);
             let retry = Loader::new(
                 expected,
                 std::env::var_os("RUTIS_PLUGIN_CACHE")
@@ -195,6 +188,47 @@ mod imp {
             unsafe { retry.load(retry_dir)? };
             assert_eq!(retry.diagnostics().len(), 1);
             assert!(retry.diagnostics()[0].usable);
+        }
+        if let Some(rebuilt_dir) = args.get(5) {
+            // Another build of v2 under v2's version, features and path,
+            // loaded beside it: its `Greeting` has v2's TypeId but another
+            // layout and other code. Each value is served with the code of
+            // the build that provided it, whichever was loaded last.
+            let rebuilt = unsafe { loader.load(rebuilt_dir)? };
+            assert_eq!(rebuilt.version(), v2.version());
+            assert_ne!(rebuilt.library_sha256(), v2.library_sha256());
+            assert_ne!(rebuilt.generation(), v2.generation());
+            let scoped = |scope: &str| {
+                let ctx = root.isolate(rutis_bridge::session::host_key("greeting"), scope);
+                async move {
+                    greeting(&ctx)
+                        .await
+                        .map_err(|e| e as Box<dyn std::error::Error>)
+                }
+            };
+            let beside = loader.spawn(
+                &root,
+                &rebuilt,
+                rutis_sdk::serde_json::json!({ "scope": "rebuilt" }),
+            )?;
+            (&beside).await?;
+            // v2 again, provided after the rebuilt build was loaded.
+            let again = loader.spawn(
+                &root,
+                &v2,
+                rutis_sdk::serde_json::json!({ "scope": "again" }),
+            )?;
+            (&again).await?;
+            assert_eq!(scoped("rebuilt").await?, "hello v2 rebuilt 21");
+            assert_eq!(scoped("again").await?, "hello v2");
+            assert_eq!(
+                greeting(&root)
+                    .await
+                    .map_err(|e| e as Box<dyn std::error::Error>)?,
+                "hello v2"
+            );
+            beside.dispose().await?;
+            again.dispose().await?;
         }
         consumer.dispose().await?;
         by_name.dispose().await?;

@@ -99,6 +99,6 @@ impl PluginFactory<Value> for ModuleFactory {
     }
 
     fn build(&self, config: &Value) -> Result<Box<dyn Plugin>, CordisError> {
-        self.module.factory().build(config)
+        self.module.build(config)
     }
 }
