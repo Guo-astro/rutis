@@ -899,6 +899,12 @@ pub trait Dispatch: Send + Sync + 'static {
     /// `events.dispatch` requests here for its test hooks (feature
     /// `testing`); nothing else needs it.
     fn arrived(&self, _peer: &Connection, _method: &str) {}
+
+    /// The reply to the event operation `method` was written: what the far
+    /// end reads after it was sent after the reply. It must not block. The
+    /// host's bus counts the answered `events.dispatch` requests here for
+    /// its test hooks (feature `testing`).
+    fn replied(&self, _peer: &Connection, _method: &str) {}
 }
 /// How a session identifies itself and its calls.
 #[derive(Clone, Debug, Default)]
@@ -2507,12 +2513,34 @@ impl Connection {
                     .and_then(|n| n.parse::<u64>().ok());
                 let invoking = sequence.map(|n| (self.0.tag.clone(), n));
                 let outer = INVOKING.with(|cell| cell.replace(invoking));
+                let event_op = target.is_empty() && method.starts_with("events.");
+                // An `emit` dispatch is answered once its calls started
+                // (events protocol §5.5): with a plain value, never a future
+                // the emitter would have to await.
+                let emit =
+                    event_op && method == "events.dispatch" && inline_event_op(&method, &args);
                 let result = crate::session::with_caller_row(None, || {
                     protected(|| self.0.dispatch.invoke(self, &target, &method, args))
                 });
                 INVOKING.with(|cell| cell.replace(outer));
                 CALLER.with(|caller| caller.replace(previous));
+                if let (true, Ok(Value::Reference(reference))) = (emit, &result) {
+                    if reference.is_future() {
+                        let future = result.unwrap();
+                        let peer = self.clone();
+                        self.0.executor.spawn(async move {
+                            let settled = settle(future).await;
+                            peer.respond(id, settled);
+                            peer.0.dispatch.replied(&peer, &method);
+                            drop(_flight);
+                        });
+                        return;
+                    }
+                }
                 self.respond(id, result);
+                if event_op {
+                    self.0.dispatch.replied(self, &method);
+                }
                 drop(_flight);
             }
         }

@@ -37,7 +37,7 @@ All listeners on one host — those of Rust plugins, of every plugin in every ru
 
 - **Registration is automatic.** Plugins write `ctx.on(name, listener)` as usual, with nothing to declare.
 - **Dispatch follows the global listener table.** When an event is emitted, rutis runs all listeners for that name in registration order. Listeners in this process are called directly; those elsewhere are sent one call each, made according to the dispatch mode.
-- **Local fast path.** When all listeners for a name are in the emitter's process, dispatch happens locally without going through the host. The host pushes to each runtime "which names also have listeners elsewhere", and the runtime uses that to decide between local dispatch and going through the host.
+- **Local fast path.** When all listeners for a name are in the emitter's process, dispatch happens locally without going through the host. The host pushes to each runtime "which names also have listeners elsewhere", and the runtime uses that to decide between local dispatch and going through the host. Until an emit sent through the host is answered, later emits of that name keep going through the host; the runtime takes that answer in frame order, as it reads the reply (2026-10-21 revision), so an emit started by a call that arrives after the host answered goes local again.
 
 ### 2. Event = name + arguments + scope
 

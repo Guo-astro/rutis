@@ -426,6 +426,10 @@ export class Session {
   // Promise assimilation here is intentional: this is the generated async
   // method API. Synchronous invoke returns the Promise reference itself.
   invokeAsync(target, method, args) { return this.#requestAsync('invoke', { target, method }, args) }
+  // Send a call nobody waits for; `answered({ ok, value })` is told its
+  // reply as the reply's frame is taken, before the next frame (or the
+  // session's end), not on a later tick (events protocol §5.5).
+  invokeAnswered(target, method, args, answered) { this.#request('invoke', { target, method }, args, answered) }
   // Call an imported function asynchronously (a waterfall's `next`, #464);
   // calling the function itself waits synchronously.
   callFunctionAsync(proxy, args) {

@@ -354,7 +354,7 @@ pub enum Step {
 
 /// The keys of a step's `expect` (the first [`STEP_EXPECTATIONS`]), then
 /// the fields of `throws`.
-pub const EXPECTATIONS: [&str; 14] = [
+pub const EXPECTATIONS: [&str; 15] = [
     "returns",
     "throws",
     "cancelled",
@@ -366,13 +366,14 @@ pub const EXPECTATIONS: [&str; 14] = [
     "filterSees",
     "viaHost",
     "settles",
+    "answered",
     "why",
     "errors",
     "message",
 ];
 
 /// How many of [`EXPECTATIONS`] are keys of `expect`.
-pub const STEP_EXPECTATIONS: usize = 11;
+pub const STEP_EXPECTATIONS: usize = 12;
 
 impl Step {
     pub fn parse(raw: &Json) -> Result<Self, String> {
@@ -1158,6 +1159,13 @@ pub trait World: Send + Sync {
         None
     }
 
+    /// Wait until the host has written its reply to every `events.dispatch`
+    /// it received (`answered`): the frames the suite sends afterwards
+    /// reach each emitter after those replies.
+    fn answered(&self) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(async { Err("answered: this world cannot see the host's replies".into()) })
+    }
+
     /// Hold the next `n` dispatches at the host until all arrived (`hold`).
     fn hold(&self, _n: usize) -> Result<(), String> {
         Err("this world cannot hold dispatches".into())
@@ -1343,6 +1351,12 @@ async fn run_step(
                 after - before
             ));
         }
+    }
+    // The emits through the host are answered before the next step: an
+    // emitter takes its replies in frame order (§5.5), so its next emit of
+    // the name may take the fast path again.
+    if expect.get("answered").and_then(Json::as_bool) == Some(true) {
+        world.answered().await?;
     }
     check_log(world, log, expect, viewer, &event_of(case, step)).await
 }

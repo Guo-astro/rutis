@@ -1054,6 +1054,10 @@ impl World for Host {
         Some(self.rust.dispatches())
     }
 
+    fn answered(&self) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(self.rust.answered())
+    }
+
     fn hold(&self, n: usize) -> Result<(), String> {
         self.rust.hold(n)
     }

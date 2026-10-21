@@ -29,6 +29,9 @@ pub trait Handler: Send + Sync + 'static {
 
     /// [`Dispatch::arrived`] for this family's event operations.
     fn arrived(&self, _peer: &Connection, _method: &str) {}
+
+    /// [`Dispatch::replied`] for this family's event operations.
+    fn replied(&self, _peer: &Connection, _method: &str) {}
 }
 
 impl<F> Handler for F
@@ -156,6 +159,14 @@ impl Dispatch for Operations {
             .map(|family| family.handler.clone());
         if let Some(handler) = handler {
             handler.arrived(peer, method);
+        }
+    }
+
+    fn replied(&self, peer: &Connection, method: &str) {
+        let handler = (self.handlers.lock().unwrap().get(family("", method)))
+            .map(|family| family.handler.clone());
+        if let Some(handler) = handler {
+            handler.replied(peer, method);
         }
     }
 

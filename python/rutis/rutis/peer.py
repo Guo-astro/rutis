@@ -1194,6 +1194,26 @@ class Peer:
             result = await result
         return result
 
+    def request_answered(self, target: str, method: str, args: list, answered: Callable[[bool, Any], None]) -> None:
+        """Send a call nobody waits for; `answered(ok, value)` is told its
+        reply as the reply's frame is taken, before the next frame (or the
+        session's end), not on a later turn of the loop (events protocol
+        §5.5). From another thread it is sent from the session's loop."""
+
+        def finish(result: tuple) -> None:
+            answered(*result)
+
+        def send() -> None:
+            try:
+                self._request("invoke", {"target": target, "method": method}, args, finish)
+            except BaseException as error:  # noqa: BLE001 - told as the answer
+                answered(False, error)
+
+        if threading.get_ident() != self._thread:
+            self.loop.call_soon_threadsafe(send)
+            return
+        self._request("invoke", {"target": target, "method": method}, args, finish)
+
     def request(self, target: str, method: str, args: list):
         """Send a call now, before this returns, so it goes out ahead of
         anything sent later; the future of its reply. From another thread

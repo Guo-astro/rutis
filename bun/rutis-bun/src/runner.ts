@@ -151,6 +151,7 @@ export class Runtime {
     this.#bus.peer = {
       call: (target: string, method: string, args: unknown) => client.call(target, method, args),
       callAsync: (target: string, method: string, args: unknown) => client.callAsync(target, method, args),
+      callAnswered: (target: string, method: string, args: unknown, answered: (result: { ok: boolean, value: unknown }) => void) => client.callAnswered(target, method, args, answered),
       callFunctionAsync: (fn: unknown, args: unknown[]) => client.callFunctionAsync(fn, args),
     }
   }

@@ -287,11 +287,7 @@ extension Runtime {
         }
         let record = record(row, name, .emit, args, keep: keep, terminal: nil)
         hostEmits[name, default: 0] += 1
-        let sent = SentBox()
-        post { sent.set(Result { try session.send(target: "", method: "events.dispatch", args: [record], sync: false) }) }
-        lock.unlock()
-        flush()
-        let answered: (Error?) -> Void = { [weak self] error in
+        let answered: @Sendable (Error?) -> Void = { [weak self] error in
             guard let self else { return }
             lock.withLock {
                 self.hostEmits[name, default: 1] -= 1
@@ -301,19 +297,33 @@ extension Runtime {
                 Events.report("rutis: emit of \(name) from row \(row.name) failed: \(Events.failure(error))")
             }
         }
-        switch sent.get() {
-        case let .failure(error):
+        // The answer is taken as its frame is read, before the next one: an
+        // emit a later frame starts sees it answered (§5.5).
+        let taken: @Sendable (Result<Value, Error>) -> Void = { result in
+            switch result {
+            case let .failure(error):
+                answered(error)
+            case let .success(.remoteFuture(future)):
+                // An older host answers with a future: its settlement.
+                Task.detached {
+                    do {
+                        _ = try await settle(.remoteFuture(future))
+                        answered(nil)
+                    } catch {
+                        answered(error)
+                    }
+                }
+            case .success:
+                answered(nil)
+            }
+        }
+        let sent = SentBox<Void>()
+        post { sent.set(Result { try session.sendAnswered(target: "", method: "events.dispatch", args: [record], answered: taken) }) }
+        lock.unlock()
+        flush()
+        if case let .failure(error) = sent.get() {
             answered(nil)
             throw error
-        case let .success(call):
-            Task.detached {
-                do {
-                    _ = try await call.value()
-                    answered(nil)
-                } catch {
-                    answered(error)
-                }
-            }
         }
     }
 
@@ -328,7 +338,7 @@ extension Runtime {
             throw RutisError.binding("the runtime has no session")
         }
         let record = record(row, name, mode, args, keep: keep, terminal: terminal)
-        let sent = SentBox()
+        let sent = SentBox<OutgoingCall>()
         let chain = CallChain.path
         post {
             sent.set(Result {
@@ -434,11 +444,11 @@ final class ErrorBox: @unchecked Sendable {
     func get() -> Error? { lock.withLock { error } }
 }
 
-final class SentBox: @unchecked Sendable {
+final class SentBox<Sent>: @unchecked Sendable {
     private let lock = Lock()
-    private var result: Result<OutgoingCall, Error> = .failure(RutisError.binding("not sent"))
-    func set(_ value: Result<OutgoingCall, Error>) { lock.withLock { result = value } }
-    func get() -> Result<OutgoingCall, Error> { lock.withLock { result } }
+    private var result: Result<Sent, Error> = .failure(RutisError.binding("not sent"))
+    func set(_ value: Result<Sent, Error>) { lock.withLock { result = value } }
+    func get() -> Result<Sent, Error> { lock.withLock { result } }
 }
 
 /// An event carrying an optional error.

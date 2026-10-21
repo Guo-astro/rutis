@@ -8,6 +8,7 @@ import arcships.rutis.RutisException
 import arcships.rutis.Scope
 import arcships.rutis.internal.peer.CallChain
 import arcships.rutis.internal.peer.Exported
+import arcships.rutis.internal.peer.RemoteFuture
 import arcships.rutis.internal.peer.Undefined
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -299,21 +300,23 @@ internal object EventsRuntime {
                 }
                 if (error != null) Report.line("rutis: emit of $name from row ${row.name} failed: ${Report.failure(error)}")
             }
-            val wait = try {
-                session.send("", "events.dispatch", listOf(record), false)
+            try {
+                // The reply is taken as its frame is read, before the next
+                // one: an emit a later frame starts sees it answered (§5.5).
+                session.sendAnswered("", "events.dispatch", listOf(record)) { value, error ->
+                    if (error == null && value is RemoteFuture) {
+                        // An older host answers with a future: its settlement.
+                        Thread({
+                            answered(runCatching { session.settle(value) }.exceptionOrNull())
+                        }, "rutis-emit").apply { isDaemon = true }.start()
+                    } else {
+                        answered(error)
+                    }
+                }
             } catch (e: Throwable) {
                 answered(null)
                 throw e
             }
-            Thread({
-                val error = try {
-                    runBlocking { wait() }
-                    null
-                } catch (e: Throwable) {
-                    e
-                }
-                answered(error)
-            }, "rutis-emit").apply { isDaemon = true }.start()
             return { null }
         }
         val wait = session.send("", "events.dispatch", listOf(record), mode == Mode.Bail)
