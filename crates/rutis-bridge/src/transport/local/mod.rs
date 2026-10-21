@@ -44,7 +44,7 @@ pub fn framed(
 mod output;
 pub(crate) mod spawn;
 #[cfg(unix)]
-mod unix;
+pub(crate) mod unix;
 
 pub use output::{output_ended, write_line, OutputStream, MAX_LINE};
 pub use spawn::{

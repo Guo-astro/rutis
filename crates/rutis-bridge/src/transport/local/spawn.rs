@@ -486,7 +486,7 @@ impl Loopback {
         stream.set_nonblocking(false)?;
         let _ = stream.set_nodelay(true);
         let reader = stream.try_clone()?;
-        let closer = Arc::new(ShutTcp(stream.try_clone()?));
+        let closer = Arc::new(ShutTcp(Mutex::new(Some(stream.try_clone()?))));
         Ok(lines::channel(
             reader,
             stream,
@@ -523,11 +523,20 @@ async fn read_line(stream: &mut tokio::net::TcpStream) -> std::io::Result<String
     }
 }
 
-struct ShutTcp(std::net::TcpStream);
+/// Shuts a loopback connection down, then lets go of its handle of it, as
+/// `unix::Shut` does.
+struct ShutTcp(Mutex<Option<std::net::TcpStream>>);
 
 impl Closer for ShutTcp {
     fn close(&self, _reason: &str) {
-        let _ = self.0.shutdown(std::net::Shutdown::Both);
+        let stream = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(stream) = stream {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
     }
 }
 
@@ -546,7 +555,7 @@ fn cannot_start(spawn: &Spawn, error: std::io::Error) -> ConnectError {
 fn socket(stream: UnixStream, transport: &'static str) -> Result<Channel, ConnectError> {
     stream.set_nonblocking(false).map_err(retryable)?;
     let reader = stream.try_clone().map_err(retryable)?;
-    let closer = Arc::new(crate::transport::local::unix::Shut(
+    let closer = Arc::new(crate::transport::local::unix::Shut::new(
         stream.try_clone().map_err(retryable)?,
     ));
     Ok(lines::channel(

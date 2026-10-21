@@ -6,7 +6,7 @@
 
 use std::io::{BufRead, BufReader, IoSlice, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::channel::{Channel, ChannelError, ChannelInfo, Closer, Receiver, Sender};
 
@@ -17,7 +17,8 @@ pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 
 /// Frame a byte stream as a [`Channel`]. `read` and `write` are the two
 /// directions of one stream (for a socket, two handles of it); `closer`
-/// must wake a thread blocked on either.
+/// must wake a thread blocked on either. Once the channel is closed, or its
+/// receiver saw the end, it lets go of `write` and `read` ([`Releasing`]).
 pub fn channel(
     read: impl Read + Send + 'static,
     write: impl Write + Send + 'static,
@@ -35,6 +36,11 @@ pub(crate) fn limited(
     info: ChannelInfo,
     max_message: usize,
 ) -> Channel {
+    let write = Arc::new(Mutex::new(Some(write)));
+    let closer: Arc<dyn Closer> = Arc::new(Releasing {
+        closer,
+        write: write.clone(),
+    });
     let end = End {
         ended: Arc::new(AtomicBool::new(false)),
         closer: closer.clone(),
@@ -42,9 +48,52 @@ pub(crate) fn limited(
     };
     Channel {
         sender: Box::new(LineSender(write, end.clone())),
-        receiver: Box::new(LineReceiver(BufReader::new(read), end)),
+        receiver: Box::new(LineReceiver(Some(BufReader::new(read)), end)),
         closer,
         info,
+    }
+}
+
+/// Closes the stream, then lets go of the handle this side writes with;
+/// the receiver lets go of its own once its thread sees the end, and the
+/// closer of a socket of its own as it closes. The far end learns that the
+/// channel ended from the stream's end, and a shutdown does not always tell
+/// it: on macOS, a Unix socket shut down while its far end takes in what
+/// was just sent to it, and a thread here waits to read, can be left
+/// disconnected without the far end ever seeing its end (a runtime whose
+/// host closed the session ran on). Closing its last handle always tells
+/// it.
+struct Releasing<W> {
+    closer: Arc<dyn Closer>,
+    write: Arc<Mutex<Option<W>>>,
+}
+
+impl<W> Releasing<W> {
+    fn release(&self) {
+        // A send in progress was woken by the close, and fails.
+        let write = self
+            .write
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        drop(write);
+    }
+}
+
+impl<W: Send> Closer for Releasing<W> {
+    fn close(&self, reason: &str) {
+        self.closer.close(reason);
+        self.release();
+    }
+
+    fn replaced(&self) {
+        self.closer.replaced();
+        self.release();
+    }
+
+    fn rejected(&self, reason: &str) {
+        self.closer.rejected(reason);
+        self.release();
     }
 }
 
@@ -77,7 +126,7 @@ impl End {
 /// The channel has no half-close: once its receiver saw the end, sending
 /// fails too. A stream does not say so by itself everywhere: on macOS a
 /// socket whose far end shut it down still takes writes, and drops them.
-struct LineSender<W>(W, End);
+struct LineSender<W>(Arc<Mutex<Option<W>>>, End);
 
 impl<W: Write + Send> Sender for LineSender<W> {
     fn send(&mut self, message: &[u8]) -> Result<(), ChannelError> {
@@ -94,32 +143,42 @@ impl<W: Write + Send> Sender for LineSender<W> {
         if message.contains(&b'\n') {
             return Err(closed("message contains a raw newline"));
         }
+        // Taken only now: refusing a message over the limit closes the
+        // channel, which takes the stream.
+        let mut write = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(stream) = write.as_mut() else {
+            return Err(closed("the channel ended"));
+        };
         // The message and its newline in one write where the stream takes
         // both, without copying the message.
         let mut parts = [IoSlice::new(message), IoSlice::new(b"\n")];
         let mut parts = &mut parts[..];
         while !parts.is_empty() {
-            match self.0.write_vectored(parts) {
+            match stream.write_vectored(parts) {
                 Ok(0) => return Err(closed("stream closed while sending")),
                 Ok(written) => IoSlice::advance_slices(&mut parts, written),
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(closed(error)),
             }
         }
-        self.0.flush().map_err(closed)
+        stream.flush().map_err(closed)
     }
 }
 
-struct LineReceiver<R>(BufReader<R>, End);
+/// The stream, until the receiver saw its end.
+struct LineReceiver<R>(Option<BufReader<R>>, End);
 
 impl<R: Read + Send> LineReceiver<R> {
     /// The next line, failing as soon as it outgrows the limit: never more
     /// than the limit and one buffer is read ahead of a newline.
     fn line(&mut self) -> Result<Option<Vec<u8>>, ChannelError> {
         let max = self.1.max_message;
+        let Some(stream) = self.0.as_mut() else {
+            return Ok(None);
+        };
         let mut line = Vec::new();
         loop {
-            let available = match self.0.fill_buf() {
+            let available = match stream.fill_buf() {
                 Ok(available) => available,
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(closed(error)),
@@ -139,7 +198,7 @@ impl<R: Read + Send> LineReceiver<R> {
             }
             line.extend_from_slice(part);
             let used = part.len() + usize::from(newline.is_some());
-            self.0.consume(used);
+            stream.consume(used);
             if newline.is_some() {
                 return Ok(Some(line));
             }
@@ -152,6 +211,8 @@ impl<R: Read + Send> Receiver for LineReceiver<R> {
         let received = self.line();
         if !matches!(received, Ok(Some(_))) {
             self.1.ended.store(true, Ordering::SeqCst);
+            // All the stream had left to say ([`Releasing`]).
+            self.0 = None;
         }
         received
     }
@@ -202,18 +263,20 @@ mod tests {
 
     #[test]
     fn appends_the_newline_and_refuses_raw_ones() {
+        let stream = Arc::new(Mutex::new(Some(Vec::new())));
         let mut sender = LineSender(
-            Vec::new(),
+            stream.clone(),
             End {
                 ended: Arc::default(),
                 closer: Arc::new(Nothing),
                 max_message: MAX_MESSAGE,
             },
         );
+        let written = || stream.lock().unwrap().clone().unwrap();
         sender.send(b"{}").unwrap();
-        assert_eq!(sender.0, b"{}\n");
+        assert_eq!(written(), b"{}\n");
         assert!(sender.send(b"a\nb").is_err());
-        assert_eq!(sender.0, b"{}\n");
+        assert_eq!(written(), b"{}\n");
     }
 
     /// Bytes from `prefix`, then `x` for ever, counting what was read.
@@ -382,5 +445,50 @@ mod tests {
         channel.sender.send(b"{}").unwrap();
         assert_eq!(channel.receiver.recv().unwrap(), None);
         assert!(channel.sender.send(b"{}").is_err());
+    }
+
+    /// A handle of the stream, which says when it was let go of.
+    struct Handle<T>(T, Arc<AtomicBool>);
+    impl<T> Drop for Handle<T> {
+        fn drop(&mut self) {
+            self.1.store(true, Ordering::SeqCst);
+        }
+    }
+    impl<T: Read> Read for Handle<T> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.0.read(buffer)
+        }
+    }
+    impl<T: Write> Write for Handle<T> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.write(bytes)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0.flush()
+        }
+    }
+
+    /// The far end of a stream hears that the channel ended when this side's
+    /// last handle of it goes (a shutdown does not always tell it, on
+    /// macOS): the channel lets go of its writing handle once closed, and of
+    /// its reading one once the receiver saw the end.
+    #[test]
+    fn the_stream_is_let_go_of_once_the_channel_ended() {
+        let (read, written) = (Arc::default(), Arc::default());
+        let mut channel = channel(
+            Handle(Cursor::new(b"{}\n".to_vec()), Arc::clone(&read)),
+            Handle(Vec::new(), Arc::clone(&written)),
+            Arc::new(Nothing),
+            ChannelInfo::default(),
+        );
+        channel.sender.send(b"{}").unwrap();
+        assert_eq!(channel.receiver.recv().unwrap().unwrap(), b"{}");
+        assert!(!read.load(Ordering::SeqCst) && !written.load(Ordering::SeqCst));
+        channel.closer.close("done");
+        assert!(written.load(Ordering::SeqCst), "the writing handle went");
+        assert!(channel.sender.send(b"{}").is_err());
+        assert_eq!(channel.receiver.recv().unwrap(), None);
+        assert!(read.load(Ordering::SeqCst), "the reading handle went");
+        assert_eq!(channel.receiver.recv().unwrap(), None, "and it stays ended");
     }
 }
