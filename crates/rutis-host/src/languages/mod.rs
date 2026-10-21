@@ -170,12 +170,46 @@ pub fn by_new_name(name: &str) -> Option<&'static dyn Language> {
         .find(|language| language.new_names().contains(&name))
 }
 
+/// The names `runtimes.remote[].language` takes for a language that runs
+/// only remotely, its SDK in an application (no runtime, project or
+/// template on this machine): Kotlin, in Android applications
+/// (docs/design-android-runtime-2026-10-12.md §八).
+const REMOTE_ONLY: &[&[&str]] = &[&["kotlin", "kt"]];
+
+/// A language `runtimes.remote[].language` names.
+#[derive(Clone, Copy)]
+pub enum RemoteLanguage {
+    /// One of [`LANGUAGES`].
+    Local(&'static dyn Language),
+    /// One that runs only remotely.
+    RemoteOnly,
+}
+
+impl RemoteLanguage {
+    /// The resolver of the rows of its remote runtime `runtime`: a local
+    /// language's own; `<runtime>:<plugin>` for one that runs only
+    /// remotely.
+    pub fn rows(&self, runtime: RuntimeHandle) -> RuntimeResolver {
+        match self {
+            RemoteLanguage::Local(language) => language.rows(runtime),
+            RemoteLanguage::RemoteOnly => RuntimeResolver::modules(runtime),
+        }
+    }
+}
+
 /// The language `runtimes.remote[].language` names `name`.
-pub fn by_remote_name(name: &str) -> Option<&'static dyn Language> {
-    LANGUAGES
+pub fn by_remote_name(name: &str) -> Option<RemoteLanguage> {
+    if let Some(language) = LANGUAGES
         .iter()
         .copied()
         .find(|language| language.remote_names().contains(&name))
+    {
+        return Some(RemoteLanguage::Local(language));
+    }
+    REMOTE_ONLY
+        .iter()
+        .any(|names| names.contains(&name))
+        .then_some(RemoteLanguage::RemoteOnly)
 }
 
 /// The language of the project in `dir`.
@@ -199,6 +233,7 @@ pub fn remote_names() -> Vec<&'static str> {
     LANGUAGES
         .iter()
         .filter_map(|language| language.remote_names().first().copied())
+        .chain(REMOTE_ONLY.iter().map(|names| names[0]))
         .collect()
 }
 
@@ -341,6 +376,7 @@ mod tests {
             LANGUAGES
                 .iter()
                 .map(|l| l.remote_names().to_vec())
+                .chain(REMOTE_ONLY.iter().map(|names| names.to_vec()))
                 .collect(),
             LANGUAGES.iter().map(|l| l.new_names().to_vec()).collect(),
         ] {
@@ -357,7 +393,7 @@ mod tests {
         let names: Vec<String> = new_names().iter().map(|n| n.to_string()).collect();
         assert_eq!(either(&names), "node, bun, python, go or swift");
         let remote: Vec<String> = remote_names().iter().map(|n| n.to_string()).collect();
-        assert_eq!(either(&remote), "node, bun, python, go or swift");
+        assert_eq!(either(&remote), "node, bun, python, go, swift or kotlin");
         let files: Vec<String> = project_files().iter().map(|f| f.to_string()).collect();
         assert_eq!(
             either(&files),

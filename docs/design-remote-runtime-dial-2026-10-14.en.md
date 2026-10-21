@@ -123,7 +123,8 @@ Conformance tests: `rutis-bridge/tests/dial_conformance.rs`, shaped like `websoc
 | Node | Dial-out client, right after Python | Implemented (#384); the `dial_conformance` Node column passes |
 | Go | Dial-out client, right after Python | Implemented (#384); the Go column of `dial_conformance` passes |
 | Bun | Both listening and dialing out, right after Python | Implemented (#384); the `dial_conformance` Bun column and `session_matrix::bun_listening_on_a_websocket` pass |
-| Swift, Kotlin | Both listening and dialing out (Swift SDK §6, Android design §5) | Not implemented |
+| Swift | Both listening and dialing out (Swift SDK §6) | Not implemented |
+| Kotlin | Both listening and dialing out (Android design §5) | Implemented (#391); the Kotlin column of `dial_conformance` and `session_matrix::kotlin_listening_on_a_websocket` pass |
 | Docs | Add dialing out and dynamic connections to the Connect Nodes guide; change the recommended approach to dialing out | Dialing out and dynamic connections written (Python, Node, Bun); the recommendation changes once every language dials out |
 
 ## 8. Compatibility

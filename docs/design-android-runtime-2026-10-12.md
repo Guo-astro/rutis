@@ -2,7 +2,7 @@
 
 [English](design-android-runtime-2026-10-12.en.md)
 
-状态：定稿；K-P1 已实现（#390，`kotlin/rutis`），K-P2、K-P3 未实现。日期：2026-10-12，2026-10-14 定稿修订（改为按 [应用接入](design-app-integration-2026-10-14.md)，见 §十），2026-10-19 对齐 rutis 0.13 的运行时契约（值、自动对外、错误、调用方的行、统一事件、开发者无感，见 §十一）。基准：`main` `028783f`（0.13.0）。
+状态：定稿；K-P1 已实现（#390，`kotlin/rutis`），K-P2 已实现（#391，见 §十三），K-P3 已实现（#388：示例插件 `contacts`、`notify`、`device` 在 `kotlin/rutis/android-sample`，指南 [Android 应用托管插件](guide/kotlin-app.md)；授权提示与拒绝在模拟器上自动验证，真机清单见指南 §8）。日期：2026-10-12，2026-10-14 定稿修订（改为按 [应用接入](design-app-integration-2026-10-14.md)，见 §十），2026-10-19 对齐 rutis 0.13 的运行时契约（值、自动对外、错误、调用方的行、统一事件、开发者无感，见 §十一）。基准：`main` `028783f`（0.13.0）。
 依据：[运行时契约](../.agents/skills/rutis-new-runtime/references/runtime-contract.md)（实现以它为准）、[应用接入](design-app-integration-2026-10-14.md)（通用模型）、[远程运行时：拨出与动态接入](design-remote-runtime-dial-2026-10-14.md)（连接）、[跨语言值类型](design-value-types-2026-10-15.md)、[统一事件的协议规格](design-events-protocol-2026-10-18.md)、[多语言总体稿](design-multilang-runtimes-2026-10-03.md)、[插件 API](guide/plugin-api.md)、[Swift SDK](design-swift-sdk-2026-10-12.md)（形态②的 Swift 对应物）、[Go 插件运行时](design-go-runtime-2026-10-10.md)（每调用一个执行单元的先例）。
 
 定位：Android 应用把自身能力与所在设备的能力作为 rutis 插件提供；插件用 Kotlin 编写、编进应用，由 rutis 驱动。本文是 Kotlin SDK 的唯一现行设计：桌面 JVM 运行时（[Kotlin 运行时](design-kotlin-runtime-2026-10-12.md)）挂起，不是本文的前提；K-P1 的 jvm target 只用于在桌面上跑一致性测试。
@@ -272,7 +272,7 @@ rutis.stop()    // 全部插件逆序清理，然后断开
 
 | 项 | 规则 |
 | --- | --- |
-| 坐标 | `io.github.arcships:rutis`（Kotlin Multiplatform：android + jvm）与 `io.github.arcships:rutis-ksp`（KSP 处理器）；发布 Maven Central；版本跟主发布线，进 `scripts/train.mjs`；首个版本 0.14.0 |
+| 坐标 | `io.github.arcships:rutis`（Kotlin Multiplatform：android + jvm）与 `io.github.arcships:rutis-ksp`（KSP 处理器）；发布 Maven Central；版本跟主发布线，进 `scripts/train.mjs`；首个版本 0.15.0（0.14 不单独发布） |
 | 仓库位置 | `kotlin/rutis`（Gradle 项目：`rutis`、`rutis-ksp`、一致性入口 `rutis-conformance`） |
 | 包 | `arcships.rutis`（API）；会话层 `arcships.rutis.internal.peer`；测试工具 `arcships.rutis.testing` |
 | 依赖 | K8；插件作者只依赖本库（与编译期的 KSP 处理器） |
@@ -399,3 +399,22 @@ rutis.stop()    // 全部插件逆序清理，然后断开
 | `--rutis-manifest` | jvm 入口也答复（同 Go 的形状，`runtime` 为 `rutis-kotlin-runtime:1`） | 便于检查；K-P1 不由宿主读取 |
 | 多语言列 | `crates/rutis-loader/tests/multilang_kotlin.rs`（同 `multilang_go.rs`），含经 Kotlin 的交叉同步环 | 自成一体，不改其他语言共用的测试 |
 | 发出方取消 | 在一致性期望里 Kotlin 的取消是 `CancellationException` | 协程的取消 |
+
+## 十三、K-P2 实现记录（2026-10-20，#391）
+
+远程通道在共用源码 `rutis/src/shared` 的 `arcships.rutis.internal.remote` 里，android 与 jvm 两个 target 是同一份代码；jvm 的 `Rutis.serve` 接受 `dial:` / `listen:`（`--id`、`--peer`、`RUTIS_TOKEN`、`RUTIS_CA`、`RUTIS_CERT` / `RUTIS_KEY`、`RUTIS_RETRY`、`RUTIS_HEARTBEAT`，同其他语言），一致性测试经它跑。与上文不同或上文没写的地方：
+
+| 项 | 实现 | 原因 |
+| --- | --- | --- |
+| 监听 | 不用 Java-WebSocket（K8），SDK 自带：在 `java.net.ServerSocket`（`wss://` 为 `SSLServerSocket`）上自己处理升级请求与帧（`Listen.kt`、`Frames.kt`），同 Go 的 `listen.go`、Swift 的 `Remote/WebSocket.swift` | Java-WebSocket 拒绝握手只能回 404 或 500，而 rutis 的拨号方按状态码分类（401 / 403 重试，400 / 404 停止）；它不检查客户端帧的掩码；心跳以秒计、失联以 1006 关闭。三条都达不到与 Go 的监听同一套断言（§九）。SDK 的运行时依赖因此少一个 |
+| 拨出 | OkHttp 5（K8）；状态码、`Sec-WebSocket-Protocol` 与证书错误按类型分类；Android 的网络安全配置拒绝明文（`UnknownServiceException`）算不兼容 | 重试修不好 |
+| 发送 | 等 OkHttp 的发送队列有空间再交给它 | OkHttp 的队列将超过 16 MiB 时直接关闭连接 |
+| 对端以别的 id 问候 | `EndpointMismatchException`（`IncompatibleException` 的子类）；拨出方据此归为凭据被拒 | 同 Go 的 `ErrEndpointMismatch`：按类型分类，不看文字 |
+| PEM | 证书经 `CertificateFactory`；私钥 PKCS#8、PKCS#1（RSA）、SEC1（EC），后两种由 SDK 包成 PKCS#8 交给 `KeyFactory`；只在进程内，不进 Android Keystore | 平台 API 只认 PKCS#8 |
+| SIGTERM / Ctrl-C | jvm 入口经 `sun.misc.Signal` 接住，卸载全部行后以 0 退出 | JVM 默认的关闭钩子以 143 退出，钩子里也做不了有序停止 |
+| rutis-host | `runtimes.remote[].language` 的 `kotlin` / `kt` 是只在远程运行的语言：没有本地运行时、模板与项目，行名 `<运行时名>:<插件>` | Kotlin 运行在应用里，桌面运行时挂起 |
+| `RutisApp` | 在共用源码里（jvm 上同样可用、可测）；`start()` / `stop()` 都立即返回，结果看 `state`；`stop` 后的 `start` 等上一轮卸载完再连；`trust` 与 `certificate` 是 PEM 文本（`certificate` 含证书链与私钥）；不读环境变量，退避与心跳用默认值 | 应用在主线程上调用它们；应用的配置不在环境里 |
+| 状态 | `Stopped(reason)`、`Connecting(retrying)`、`Connected(address)`：`Connecting` 带上一次失败的状态行（如 `refused: auth-rejected (…)`） | 业务层显示"为什么还没连上" |
+| 主线程 | 等待 rutis 的调用（会话上的阻塞调用、远程函数、远程 future）在 Android 主线程上抛 `IllegalStateException`，说明改用 `suspend` 或换线程；判断在 `src/androidMain`，jvm 上不拒绝 | §11.3 #3 |
+| OkHttp | 5.3.2：5.4 起 AAR 要求应用以 compileSdk 36 以上编译 | 不替应用抬高 compileSdk |
+| 设备测试 | SDK 自己的（`src/androidInstrumentedTest`：主线程规则）；示例应用 `kotlin/rutis/android-sample` 由 `crates/rutis-host/tests/android.rs` 驱动：release 构建（R8，应用不加任何规则）经 intent 启停，debug 构建的设备测试开两条连接；rutis 一侧 Python 行经应用的服务装载 | 测 R8 时设备测试不能对 release 跑：测试 APK 与应用共享的依赖（kotlin、androidx.tracing）被应用的 R8 删掉 |
