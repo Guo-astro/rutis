@@ -542,6 +542,27 @@ impl Ctx {
         Ok(())
     }
 
+    /// Mark this context's fiber as running the code of the library loaded
+    /// as `generation` ([`crate::service::set_generation`]).
+    pub(crate) fn set_code_generation(&self, generation: u64) {
+        if let Some(fiber) = self.0.fiber.upgrade() {
+            fiber.code_generation.store(generation, Ordering::SeqCst);
+        }
+    }
+
+    /// The generation of the library whose code runs in this context's
+    /// fiber or its nearest marked ancestor.
+    pub(crate) fn code_generation(&self) -> Option<u64> {
+        let mut current = self.0.fiber.upgrade();
+        while let Some(fiber) = current {
+            match fiber.code_generation.load(Ordering::SeqCst) {
+                0 => current = fiber.parent_fiber.as_ref().and_then(Weak::upgrade),
+                generation => return Some(generation),
+            }
+        }
+        None
+    }
+
     /// The nearest marked row of this context's fiber or its ancestors.
     pub fn row(&self) -> Option<String> {
         let mut current = self.0.fiber.upgrade();
@@ -980,7 +1001,7 @@ impl Ctx {
         let marked = if mutable || key.name().is_some() {
             None
         } else {
-            crate::service::marked::<T>()
+            crate::service::marked::<T>(self)
         };
         let Some(entries) = marked else {
             return self.provide_native(key, value, check, mutable);

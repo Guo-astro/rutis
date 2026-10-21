@@ -136,6 +136,12 @@ struct Registered {
 
 static ENTRIES: Mutex<Vec<Registered>> = Mutex::new(Vec::new());
 
+/// The generation of a loaded library ([`loading`]): which image the
+/// marked blocks it registered, and the code of the plugins it builds, come
+/// from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Generation(u64);
+
 /// The generation the next [`loading`] call gives the image it loads; the
 /// program's own entries are generation 0.
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -146,13 +152,14 @@ thread_local! {
 }
 
 /// Run `load`, which loads a library (`dlopen`, `LoadLibraryExW`): the
-/// marked blocks its initializers register are a new generation, and
-/// replace the blocks earlier images registered for the same types. A
-/// rebuilt dylib keeps its types' `TypeId`s (they depend on the crate's
-/// name and metadata, not its source), so without this an older image's
-/// dispatch would run on the new image's values. Loaders of plugin
-/// libraries call this around the call that maps one.
-pub fn loading<R>(load: impl FnOnce() -> R) -> R {
+/// marked blocks its initializers register belong to the returned
+/// generation. Two builds of one plugin crate keep their types' `TypeId`s
+/// (they depend on the crate's name and metadata, not its source), so the
+/// registry tells their blocks apart by generation, and a plugin's fiber
+/// marked with its library's generation ([`set_generation`]) serves what it
+/// provides with that library's blocks. Loaders of plugin libraries call
+/// this around the call that maps one.
+pub fn loading<R>(load: impl FnOnce() -> R) -> (R, Generation) {
     let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
     let outer = LOADING.with(|loading| loading.replace(generation));
     struct Restore(u64);
@@ -162,26 +169,25 @@ pub fn loading<R>(load: impl FnOnce() -> R) -> R {
         }
     }
     let _restore = Restore(outer);
-    load()
+    (load(), Generation(generation))
+}
+
+/// The code running in `ctx`'s fiber, and in the fibers it starts, comes
+/// from the library loaded as `generation`: a marked value it provides is
+/// served with that library's blocks. Loaders call this when a plugin built
+/// by a library's factory is applied.
+pub fn set_generation(ctx: &Ctx, generation: Generation) {
+    ctx.set_code_generation(generation.0);
 }
 
 /// Add `entry`; the macro's generated code calls this when the binary or
-/// library holding it is loaded. Entries of the same type from an earlier
-/// generation ([`loading`]) are forgotten: services already provided keep
-/// the entries they were served with.
+/// library holding it is loaded.
 pub fn register(entry: &'static Entry) {
     let generation = LOADING.with(Cell::get);
-    let type_id = (entry.type_id)();
-    let mut entries = ENTRIES.lock().unwrap_or_else(|poison| poison.into_inner());
-    if entries
-        .iter()
-        .any(|known| (known.entry.type_id)() == type_id && known.generation > generation)
-    {
-        // A newer image registered the type already.
-        return;
-    }
-    entries.retain(|known| (known.entry.type_id)() != type_id || known.generation >= generation);
-    entries.push(Registered { entry, generation });
+    ENTRIES
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .push(Registered { entry, generation });
 }
 
 fn entries() -> Vec<&'static Entry> {
@@ -193,20 +199,26 @@ fn entries() -> Vec<&'static Entry> {
         .collect()
 }
 
-/// The marked blocks of the type `type_id`, in the order they were added:
-/// those of the latest generation that registered the type.
-pub fn entries_of(type_id: TypeId) -> Vec<&'static Entry> {
+/// The marked blocks of the type `type_id` registered by the image of
+/// `generation`, in the order they were added; without a generation, or
+/// when that image registered none, those of the latest image that
+/// registered the type.
+pub fn entries_of(type_id: TypeId, generation: Option<Generation>) -> Vec<&'static Entry> {
     let entries = ENTRIES.lock().unwrap_or_else(|poison| poison.into_inner());
     let of_type = || {
         entries
             .iter()
             .filter(|known| (known.entry.type_id)() == type_id)
     };
-    let Some(latest) = of_type().map(|known| known.generation).max() else {
+    let chosen = generation
+        .map(|generation| generation.0)
+        .filter(|generation| of_type().any(|known| known.generation == *generation))
+        .or_else(|| of_type().map(|known| known.generation).max());
+    let Some(chosen) = chosen else {
         return Vec::new();
     };
     of_type()
-        .filter(|known| known.generation == latest)
+        .filter(|known| known.generation == chosen)
         .map(|known| known.entry)
         .collect()
 }
@@ -293,9 +305,12 @@ pub fn install(exposer: &'static dyn Exposer) {
 
 /// The marked blocks of `T`: `None` when `T` is not marked or nothing
 /// serves marked services.
-pub(crate) fn marked<T: ?Sized + 'static>() -> Option<Vec<&'static Entry>> {
+pub(crate) fn marked<T: ?Sized + 'static>(ctx: &Ctx) -> Option<Vec<&'static Entry>> {
     EXPOSER.get()?;
-    let entries = entries_of(TypeId::of::<T>());
+    // The blocks of the library whose code provides it: a value of one
+    // build is never served with another build's code.
+    let generation = ctx.code_generation().map(Generation);
+    let entries = entries_of(TypeId::of::<T>(), generation);
     (!entries.is_empty()).then_some(entries)
 }
 
@@ -1188,32 +1203,35 @@ mod tests {
     static SECOND_B: Entry = block("second");
     static OLDER: Entry = block("older");
 
-    fn names() -> Vec<&'static str> {
-        entries_of(rebuilt_id())
+    fn names(generation: Option<Generation>) -> Vec<&'static str> {
+        entries_of(rebuilt_id(), generation)
             .iter()
             .map(|entry| entry.name())
             .collect()
     }
 
-    /// A later image's blocks for a type replace an earlier image's, so an
-    /// older image's dispatch never runs on a newer image's value, and the
-    /// earlier generation is forgotten; blocks of one image stay together.
+    /// Two images registering blocks for one `TypeId` (two builds of one
+    /// plugin crate) are both kept and told apart by generation: each
+    /// image's values are served with its own blocks; with no generation,
+    /// or one that registered none, the latest image's.
     #[test]
-    fn a_later_image_replaces_the_blocks_of_the_same_type() {
-        loading(|| register(&FIRST));
-        assert_eq!(names(), ["first"]);
-        loading(|| {
+    fn each_images_blocks_are_its_own() {
+        let ((), first) = loading(|| register(&FIRST));
+        let ((), second) = loading(|| {
             register(&SECOND_A);
             register(&SECOND_B);
         });
-        assert_eq!(names(), ["second", "second"]);
-        assert!(!is_exported("first"), "the earlier generation is forgotten");
+        let ((), empty) = loading(|| {});
+        assert_eq!(names(Some(first)), ["first"]);
+        assert_eq!(names(Some(second)), ["second", "second"]);
+        assert_eq!(names(None), ["second", "second"]);
+        assert_eq!(names(Some(empty)), ["second", "second"]);
+        assert!(is_exported("first") && is_exported("second"));
         assert_eq!(exported_as("second"), Some("Rebuilt"));
-        // Initializers run outside `loading` (the program's own) are the
-        // oldest generation: they replace nothing.
+        // The program's own initializers are generation 0, the oldest.
         register(&OLDER);
-        assert_eq!(names(), ["second", "second"]);
-        assert!(!is_exported("older"));
+        assert_eq!(names(None), ["second", "second"]);
+        assert_eq!(names(Some(first)), ["first"]);
     }
 
     #[derive(Debug, Serialize)]
