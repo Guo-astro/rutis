@@ -1083,6 +1083,9 @@ struct Slots {
     /// Runtimes a row asked for while they were busy: wanted again once
     /// that is over (a stop in progress is followed by a start).
     rewanted: HashSet<String>,
+    /// A failed start waits until this time before trying again: a bad or
+    /// missing binary is not retried on every sweep (every 100 ms).
+    retry_after: HashMap<String, Instant>,
     /// The last start's generation.
     generation: u64,
 }
@@ -1384,12 +1387,24 @@ impl<L: BinaryLanguage> Inner<L> {
                     match &slot.stopped {
                         None => None,
                         // Crashed: only a new binary is worth another try
-                        // here; its restart policy may start it again.
-                        Some(_) if stamp(&slot.binary) != slot.stamp => Some(Transition::Restart),
-                        Some(_) => None,
+                        // here; its restart policy may start it again. A
+                        // binary that disappeared is not "changed".
+                        Some(_) => {
+                            let now = stamp(&slot.binary);
+                            (now.is_some() && now != slot.stamp).then_some(Transition::Restart)
+                        }
                     }
                 }
-                None => Some(Transition::Start),
+                None => {
+                    if slots
+                        .retry_after
+                        .get(runtime)
+                        .is_some_and(|until| Instant::now() < *until)
+                    {
+                        return;
+                    }
+                    Some(Transition::Start)
+                }
             };
             if transition.is_some() {
                 slots.busy.insert(runtime.to_owned());
@@ -1405,6 +1420,11 @@ impl<L: BinaryLanguage> Inner<L> {
             Some(Transition::Start) => {
                 let _busy = Busy::held(self, runtime);
                 if let Err(error) = self.start(runtime) {
+                    self.slots
+                        .lock()
+                        .unwrap()
+                        .retry_after
+                        .insert(runtime.to_owned(), Instant::now() + Duration::from_secs(1));
                     eprintln!(
                         "rutis-loader: cannot start the {} runtime {runtime}: {error}",
                         L::TITLE
@@ -1463,6 +1483,7 @@ impl<L: BinaryLanguage> Inner<L> {
         let mut slots = self.slots.lock().unwrap();
         slots.generation += 1;
         let generation = slots.generation;
+        slots.retry_after.remove(runtime);
         slots.running.insert(
             runtime.to_owned(),
             Slot {
