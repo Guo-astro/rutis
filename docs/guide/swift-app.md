@@ -223,7 +223,7 @@ let rutis = RutisApp(plugins: [health, device], listen: "wss://0.0.0.0:7443/ruti
 cargo test -p rutis-e2e --test ios_app -- --ignored
 ```
 
-它用 `xcodebuild` 构建应用，在两台新建的模拟器上以各自的 id 运行，`rutis-host run` 带 §4 的分组和一个使用应用服务的 Python 行，检查：每台模拟器是一个实例，其中的 Python 行看到的是自己那个应用的 `device`；应用进入后台时它的行停下、回到前台时重新开始，另一台的行不受影响；用户决定之前读步数失败，Python 调用方收到插件的 `HealthAccessDenied`（`code` 为 `not-determined`）；请求授权时"健康"的授权页显示在应用之上、写着应用的名字（从截图里读出）。需要 iOS 模拟器运行时（`xcodebuild -downloadPlatform iOS`）。模拟器上无法点击授权页，`simctl privacy` 也没有 HealthKit，这些由下面的人工清单检查。
+它用 `xcodebuild` 构建应用，在两台新建的模拟器上以各自的 id 运行，`rutis-host run` 带 §4 的分组和一个使用应用服务的 Python 行，检查：每台模拟器是一个实例，其中的 Python 行看到的是自己那个应用的 `device`；应用进入后台时它的行停下、回到前台时重新开始，另一台的行不受影响；用户决定之前读步数失败，Python 调用方收到插件的 `HealthAccessDenied`（`code` 为 `not-determined`）；请求授权时"健康"的授权页显示在应用之上、写着应用的名字（从截图里读出）。需要 Xcode 与 iOS 模拟器运行时（`xcodebuild -downloadPlatform iOS`），只在本地运行，`bash tools/ios-selftest.sh`（SDK 自己的测试在模拟器里运行）也一样：CI 不运行需要模拟器、设备或授权提示的测试。模拟器上无法点击授权页，`simctl privacy` 也没有 HealthKit，这些由下面的人工清单检查。
 
 ### 人工验收清单（真机）
 

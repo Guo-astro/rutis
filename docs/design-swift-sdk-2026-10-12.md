@@ -632,7 +632,7 @@ A1 按 §七 实现。实现时定下的：
 | 监听的二进制收到 SIGTERM | 卸载全部行后以 0 退出，与拨出相同 | 底下是同一个 `RutisApp` |
 | 应用里的 `ctx.project` | 应用包的路径 | 应用没有项目目录；包是它的资源所在 |
 | 示例应用与它的测试 | `swift/examples/HealthApp`，一个 Xcode 项目（SDK 作本地包，Info.plist 由构建设置生成）；`rutis-e2e --test ios_app` 用 `xcodebuild` 构建，在它新建的两台模拟器上运行、连 `rutis-host run`，把"设置"切到前台让它进入后台，用 Vision 从截图读出"健康"授权页（`tests/e2e/ios/text.swift`） | 开发者打开的就是被测试的；模拟器上没有什么能点击授权页，`simctl privacy` 也没有 HealthKit（Xcode 26.5），所以拒绝与授权是人工清单（指南 §8） |
-| CI | job `ios`：完整运行，以及改动示例或其测试的 PR；SDK 自己的测试在模拟器上运行（`tools/ios-selftest.sh`：`swift build --triple arm64-apple-ios17.0-simulator`、`simctl spawn`）与 e2e | 启动模拟器、Xcode 构建都要几分钟；Swift SDK 的 PR 由 `runtimes-swift` 在 macOS 上检查（`swift_app.rs` 直接驱动 `RutisApp`） |
+| 在哪里运行 | 只在本地：SDK 自己的测试在模拟器上运行（`tools/ios-selftest.sh`：`swift build --triple arm64-apple-ios17.0-simulator`、`simctl spawn`）与 e2e；CI 在 macOS 上跑同样的 SDK 测试（`runtimes-swift`，`swift_app.rs` 直接驱动 `RutisApp`） | 需要模拟器、设备或系统授权提示的测试不在 CI 里跑：在 runner 上会带来一堆权限问题（docs/ci.md 的本地测试） |
 
 ## 附录
 

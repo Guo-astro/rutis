@@ -96,7 +96,6 @@ jobs:
       kotlin: ${{ steps.select.outputs.kotlin }}
       android: ${{ steps.select.outputs.android }}
       swift: ${{ steps.select.outputs.swift }}
-      ios: ${{ steps.select.outputs.ios }}
       repro: ${{ steps.select.outputs.repro }}
       specs: ${{ steps.select.outputs.specs }}
     steps:
@@ -176,13 +175,6 @@ jobs:
               - crates/rutis-host/**
               - tests/e2e/tests/dev_loop.rs
               - tests/e2e/tests/tcc.rs
-            # The iOS sample app and its test on the simulator: the parts only
-            # the ios job checks (the SDK itself is checked on macOS by
-            # runtimes-swift, on the simulator by full runs).
-            ios:
-              - swift/examples/**
-              - tests/e2e/ios/**
-              - tests/e2e/tests/ios_app.rs
             # What decides whether the SDK builds reproducibly. Kernel
             # changes reach the SDK too, but are checked in full runs
             # (Q12.6.3).
@@ -221,7 +213,6 @@ jobs:
           KOTLIN: ${{ steps.paths.outputs.kotlin }}
           ANDROID: ${{ steps.paths.outputs.android }}
           SWIFT: ${{ steps.paths.outputs.swift }}
-          IOS: ${{ steps.paths.outputs.ios }}
           REPRO: ${{ steps.paths.outputs.repro }}
           SPECS: ${{ steps.paths.outputs.specs }}
           # JSON, as runs-on takes it.
@@ -245,7 +236,6 @@ jobs:
             echo "kotlin=$(pick "$KOTLIN")"
             echo "android=$(pick "$ANDROID")"
             echo "swift=$(pick "$SWIFT")"
-            echo "ios=$(pick "$IOS")"
             echo "specs=$(pick "$SPECS")"
             # Pull requests: the oldest supported Bun and Go, on Linux only
             # (the minimum must be verified; network-macos runs the latest).
@@ -1093,68 +1083,6 @@ jobs:
           JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
 
-  # An iOS app hosting plugins (Swift A1), on the iOS simulator: the sample
-  # app (swift/examples/HealthApp) built with Xcode, run on two simulators
-  # dialing a rutis-host (rutis-e2e --test ios_app), and the SDK's own tests
-  # run on the simulator. Full runs (nightly) and pull requests changing the
-  # sample app or its test. Needs Xcode with an iOS simulator runtime; one
-  # missing is downloaded once (about 8 GB) and stays on the runner.
-  ios:
-    needs: changes
-    if: needs.changes.outputs.ios == 'true'
-    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-      - name: self-hosted runner, start (tools/ci-self-hosted.sh)
-        if: runner.environment == 'self-hosted'
-        env:
-          RUTIS_CI_JOBS: ${{ vars.RUTIS_CI_JOBS }}
-        run: bash tools/ci-self-hosted.sh start
-      - uses: dtolnay/rust-toolchain@1.98.1
-      - uses: Swatinem/rust-cache@v2
-        if: runner.environment == 'github-hosted'
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      # The runner's Xcode, even where xcode-select names the Command Line
-      # Tools.
-      - name: Xcode and an iOS simulator runtime
-        run: |
-          if [ -d /Applications/Xcode.app ]; then
-            echo "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer" >> "$GITHUB_ENV"
-            export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-          fi
-          xcodebuild -version
-          if ! xcrun simctl list runtimes | grep -q '^iOS '; then
-            xcodebuild -downloadPlatform iOS
-          fi
-          xcrun simctl list runtimes
-      - uses: astral-sh/setup-uv@v6
-        if: runner.environment == 'self-hosted'
-      - name: Python 3.10 (self-hosted macOS)
-        if: runner.environment == 'self-hosted'
-        run: |
-          uv python install 3.10
-          uv venv --seed --python-preference only-managed --python 3.10 "$RUNNER_TEMP/python"
-          echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
-      - uses: actions/setup-python@v5
-        if: runner.environment == 'github-hosted'
-        with:
-          python-version: '3.10'
-      # The library's core and RutisTest on iOS: the SDK's tests, built
-      # for the simulator and run in one.
-      - name: the SDK's tests on the iOS simulator
-        run: bash tools/ios-selftest.sh
-      - name: cargo test (an iOS app on the simulator)
-        env:
-          RUTIS_E2E_DIR: /tmp/rutis-e2e
-        run: cargo test -p rutis-e2e --test ios_app -- --ignored
-      - name: self-hosted runner, end
-        if: always() && runner.environment == 'self-hosted'
-        env:
-          JOB_STATUS: ${{ job.status }}
-        run: bash tools/ci-self-hosted.sh end
-
   # The Bun runtime: its own tests, and the Rust tests that run it, on the
   # oldest Bun it supports (package.json engines.bun); also on loopback
   # channels, as processes start on Windows (no Bun job runs on Windows).
@@ -1962,7 +1890,6 @@ jobs:
       - runtimes-kotlin
       - android
       - runtimes-swift
-      - ios
       - sdk-repro
       - sdk-repro-macos
       - sdk-repro-compare

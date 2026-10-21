@@ -633,7 +633,7 @@ A1 follows §7. Decided while implementing:
 | A listening binary on SIGTERM | Unloads its rows and exits 0, as a dialing one | The same `RutisApp` underneath |
 | `ctx.project` in an app | The app bundle's path | An app has no project directory; the bundle is where its resources are |
 | The sample app and its test | `swift/examples/HealthApp`, an Xcode project (the SDK as a local package, the Info.plist generated from build settings); `rutis-e2e --test ios_app` builds it with `xcodebuild`, runs it on two simulators it creates against `rutis-host run`, backgrounds it by bringing Settings to the front, and reads the Health sheet off a screenshot with Vision (`tests/e2e/ios/text.swift`) | What a developer opens is what is tested; nothing on the simulator can tap the sheet, and `simctl privacy` has no HealthKit service (Xcode 26.5), so a denial and a grant are a manual checklist (guide §8) |
-| CI | Job `ios`: full runs and pull requests changing the sample or its test; the SDK's own tests on the simulator (`tools/ios-selftest.sh`: `swift build --triple arm64-apple-ios17.0-simulator`, `simctl spawn`) and the e2e | A simulator boot and an Xcode build take minutes; Swift SDK pull requests are checked on macOS by `runtimes-swift` (`swift_app.rs` drives `RutisApp` itself) |
+| Where they run | Locally only: the SDK's own tests on the simulator (`tools/ios-selftest.sh`: `swift build --triple arm64-apple-ios17.0-simulator`, `simctl spawn`) and the e2e; CI runs the same SDK tests on macOS (`runtimes-swift`, with `swift_app.rs` driving `RutisApp` itself) | Tests that need a simulator, a device or system permission prompts do not run in CI: on the runners they bring permission problems of their own (docs/ci.md, local tests) |
 
 ## Appendix
 
