@@ -22,7 +22,7 @@ TLC explores every interleaving of language runtimes calling each other synchron
   - a call runs immediately when the runtime is idle; while waiting, a reentrant runtime runs every call nested, a non-reentrant one only calls whose `path` names one of its waits, and puts the others aside until its stack is empty;
   - a top that is running (not waiting) reads nothing.
 - **Rust** reads each session in order. It forwards a synchronous call to the target runtime's session with the call id appended and the `path` rewritten by `rebase`, and sends a returned result back to the caller. Rust never makes a runtime wait longer: each forwarded call runs on its own thread or on the thread already waiting for its chain.
-- **Posts**: Rust may also send a call nobody waits for (an emit's `events.call` from its own bus), `MaxPosts` in total, with no chain. The runtime handles it like any call: run at once when idle; while waiting, nested by a reentrant runtime and put aside by a non-reentrant one. While a forwarded call is in progress Rust records it as an **entry** (`waits.rs`).
+- **Emits and posts**: a running activation may emit an event (`MaxPosts` in total): an `events.dispatch` nobody waits for, and the activation goes on. Rust then posts the listener's call (`events.call`) to the listener's runtime, with the emitter's chain, rebased, as the host's bus does. The runtime handles it like any call: run at once when idle; while waiting, nested by a reentrant runtime and put aside by a non-reentrant one. While a forwarded call is in progress Rust records it as an **entry** (`waits.rs`).
 - **Call ids** are numbered per session (`node:n` by the runtime, `rust:n` by Rust), so `node:1` exists on two sessions at once. The model also keeps each call's true ancestry (used only by invariants), separately from the wire `path`, so it can check what the runtimes and Rust conclude from the path.
 - **Policies** (constant `Policy`):
   - `current`: today's behaviour, no detection;
@@ -40,7 +40,7 @@ Nodes are calls Rust forwarded that have not returned; an edge c → d means c c
 | put aside | c entered a non-reentrant runtime y that is waiting and c is not on its chain; c waits for every call y has out | yes: y's outstanding calls are Rust's own state; reentrancy comes from capability `reentrant-sync` |
 | stack order | c and then d entered the same runtime y, and d has started there (some call out of y names d); c waits for d because the stack is LIFO | yes: frames of a session are ordered. Had c returned first, its reply would reach Rust before any frame made under d |
 
-Entries are nodes too. Stack order holds for an entry: c waits for an entry that entered after it and has started. An entry waits for the synchronous calls made under it. Nothing waits for an entry by its chain, because its caller does not wait for it.
+Entries are nodes too. Stack order holds for an entry: c waits for an entry that entered after it and has started. An entry waits for the synchronous calls made under it. An entry is a boundary of chains: what it was made under does not wait for it, nor for what is made under it, although its chain names them. A chain edge c → d holds only when no entry lies between c and d in d's chain (`ChainFree`; in the real graph the same, with every post).
 
 The model has two graphs: `TrueSucc` from the runtimes' real stacks and queues (only for judging), and `RustSucc` from Rust's own state (what policy B can do).
 
@@ -48,7 +48,7 @@ The model has two graphs: `TrueSucc` from the runtimes' real stacks and queues (
 
 ## Simplifications
 
-- Every call a runtime makes is synchronous; Rust's posts are the only asynchronous ones. An asynchronous call does not block its caller, but a reentrant runtime runs it on top of a waiting call, and the synchronous calls made under it can close a cycle (`current-posts`). An implementation of B must tell them apart; see "Open questions".
+- Every call a runtime makes is synchronous, but for emits; Rust's posts of them are the only asynchronous calls. An asynchronous call does not block its caller, but a reentrant runtime runs it on top of a waiting call, and the synchronous calls made under it can close a cycle (`current-posts`). An implementation of B must tell them apart; see "Open questions".
 - Calls inside one runtime do not cross Rust and are not modelled.
 - Service calls and function (callback) calls are one action: both are "forward from one session to another" in Rust. `await`, reference counts, cancellation and session close are not modelled.
 - Rust threads are not a bounded resource: a forwarded call runs on the thread waiting for its chain or on a new thread. In the implementation a synchronous `RowService` forward occupies a worker of the session's executor; with a `current_thread` or small executor Rust itself can become the bottleneck. Not covered.
@@ -91,9 +91,9 @@ TLC 2.19 (tla2tools v1.7.4), Temurin 21, 16 cores; `MaxRoots = 2`, `MaxDepth = 3
 | `policy-b-1node-3roots` | n, p1, p2; 3 top-level | pass | 2,468,607 | 16 s |
 | `policy-b-2node-seq` | n1, n2, p; 2 calls per activation, chains ≤ 2 | pass | 2,549,258 | 19 s |
 | `policy-b-acts` | n1, n2, p | `NeverCycle` violated (expected: B fires) | 408 | <1 s |
-| `current-posts` | n, p, q (p, q reentrant); 1 top-level call, 1 post | **deadlock** (counterexample 5) | 21,702 | <1 s |
-| `policy-b-posts` | as `current-posts`, policy B with entries | pass | 253,235 | 1 s |
-| `policy-b-posts-node` | n, p, q (p non-reentrant, `q` reentrant), policy B | pass | 152,438 | 1 s |
+| `current-posts` | n, p, q (p, q reentrant); 2 top-level calls, 1 emit | **deadlock** (counterexample 5) | 334,773 | 2 s |
+| `policy-b-posts` | as `current-posts`, policy B with entries | pass | 14,429,655 | 2 min |
+| `policy-b-posts-node` | n, p, q (p non-reentrant, `q` reentrant), policy B | pass | 6,361,544 | 39 s |
 
 "Pass" means exhaustive: no deadlock, all listed invariants hold; state counts on these rows are exact. On deadlock and violation rows TLC stops at the first counterexample, so the count depends on the order of the multi-threaded search and varies between runs (for example 977 or 984 for `current-2node`); treat it as indicative. `current-1node-1python` backs the statement in §9 of the multi-language design that one Node and one Python runtime do not deadlock. With chains ≤ 3, `policy-b-2node-seq` passed 44 million states in 10 minutes and was still growing, so it runs with chains ≤ 2.
 
@@ -111,7 +111,7 @@ TLC 2.19 (tla2tools v1.7.4), Temurin 21, 16 cores; `MaxRoots = 2`, `MaxDepth = 3
 3. **No `path` rewriting** (`current-norebase`). n1 and n2 each wait for their own `node:1`; n1's call reaches n2 with `path = ["node:1"]`, and n2 takes it for a call on its own `node:1` chain and runs it nested. This is what today's `rebase` prevents; with rewriting on, `RoutingSound` holds in every configuration.
 4. **A refuses a call that cannot deadlock** (`policy-a-refusals`). n1 synchronously calls n2 while n2 is idle and nothing else runs; A refuses it.
 
-5. **A post on top of a wait** (`current-posts`; 2026-10-21). n synchronously calls `x` in p, and `x` synchronously calls q. Meanwhile Rust posts an emit's listener call to p. p is reentrant, so it runs the call on top of `x`. The listener synchronously calls n; n is waiting for `x` and puts the call aside. `x` is buried: n waits for `x`, `x` for the listener, the listener for n. No caller waits for the post, so the old graph does not have it and misses the cycle. Recorded as an entry (`policy-b-posts`), the listener's call is refused. Without entries, the same configuration still deadlocks under policy B. A non-reentrant p (Node) puts the post aside until `x` returns, and this cycle does not form (`policy-b-posts-node`).
+5. **A post on top of a wait** (`current-posts`; 2026-10-21). n synchronously calls `x` in p, and `x` synchronously calls q. Meanwhile q, on its own (a timer, say), emits an event whose listener is in p, and Rust posts the listener's call to p. p is reentrant, so it runs the call on top of `x`. The listener synchronously calls n; n is waiting for `x` and puts the call aside. `x` is buried: n waits for `x`, `x` for the listener, the listener for n. No caller waits for the post, so the old graph does not have it and misses the cycle. Recorded as an entry (`policy-b-posts`), the listener's call is refused. Without entries policy B misses this cycle and, as a listener's call carries its emitter's chain, also reports cycles that are not there (`NoFalseCycle` is violated); entries that are not boundaries of chains also violate `NoFalseCycle`. A non-reentrant p (Node) puts the post aside until `x` returns, and this cycle does not form (`policy-b-posts-node`).
 
 ## Recommendation: policy B (with stack order)
 

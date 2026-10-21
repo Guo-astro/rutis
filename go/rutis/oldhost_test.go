@@ -54,8 +54,8 @@ func TestAnUndeclaredServiceUnderAnOlderHostIsToldOncePerName(t *testing.T) {
 	}
 }
 
-// A task of an unloaded row that provides is refused and reported (the
-// service would outlive the row), and the row loads again.
+// A task of an unloaded row that provides or listens is refused and
+// reported (the service would outlive the row), and the row loads again.
 func TestAnUnloadedRowCannotProvide(t *testing.T) {
 	var saved *Ctx
 	plugin := Define(Plugin[NoConfig]{
@@ -84,6 +84,16 @@ func TestAnUnloadedRowCannotProvide(t *testing.T) {
 	go func() { done <- saved.Provide("svc", oldHostService{}) }()
 	(<-done)()
 	if want := "rutis: row a is not active: service svc is not provided\n"; written.String() != want {
+		t.Fatalf("reported %q, want %q", written.String(), want)
+	}
+	// Listening likewise.
+	written.Reset()
+	listened := make(chan func())
+	go func() {
+		listened <- saved.On("t/late", func(context.Context, ...any) (any, error) { return nil, nil })
+	}()
+	(<-listened)()
+	if want := "rutis: row a is not active: listener of t/late is not registered\n"; written.String() != want {
 		t.Fatalf("reported %q, want %q", written.String(), want)
 	}
 	if err := rt.load(ctx, "a", "late-provider", nil, nil, nil, nil); err != nil {

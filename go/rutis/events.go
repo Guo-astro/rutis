@@ -187,9 +187,12 @@ func (c *Ctx) On(name string, fn func(ctx context.Context, args ...any) (any, er
 	}
 	rt := c.rt
 	rt.mu.Lock()
+	// An unloaded row's task listening: reported, not a panic (a plain
+	// goroutine or timer calling it recovers nothing), as Provide.
 	if rt.rows[c.row.key] != c.row {
 		rt.mu.Unlock()
-		panic(fmt.Sprintf("rutis: row %s is not active", c.row.key))
+		fmt.Fprintf(rowOutput, "rutis: row %s is not active: listener of %s is not registered\n", c.row.key, name)
+		return func() {}
 	}
 	rt.listenerSeq++
 	l := &listener{rt: rt, id: strconv.FormatInt(rt.listenerSeq, 10), name: name, row: c.row, fn: fn, prepend: o.Prepend, global: o.Global}
