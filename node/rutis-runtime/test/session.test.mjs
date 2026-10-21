@@ -124,6 +124,32 @@ test('an emit-mode listener call waits while an unrelated synchronous call does'
   peer.close()
 })
 
+// §5.5: a later emit of a name does not start ahead of an earlier emit of
+// it that is held by a synchronous wait, even when its path is on that
+// wait's chain.
+test('a related later emit waits behind the earlier held emit of its name', async () => {
+  const log = []
+  const holds = (method, args) => method === 'events.call' && args?.[0]?.mode === 'emit' ? args[0].name : undefined
+  const { peer, incoming, fault } = harness((_, method, args) => {
+    if (method === 'events.call') log.push(`${args[0].name}:${args[0].args[0]}`)
+    return undefined
+  }, { holds })
+  const call = (id, name, n, path = []) => ({
+    op: 'invoke', id: `rust:${id}`, path, target: '', method: 'events.call',
+    args: data([{ listener: '1', mode: 'emit', name, args: [n] }]),
+  })
+  incoming.push(
+    call(1, 'n', 1),
+    call(2, 'n', 2, ['node:1']),
+    { op: 'return', id: 'node:1', value: data(7) },
+  )
+  assert.equal(peer.invoke('test', 'sync', []), 7)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(log, ['n:1', 'n:2'])
+  assert.equal(fault(), undefined)
+  peer.close()
+})
+
 // §5.5: a local emit of a name goes behind the held listener calls of an
 // earlier emit of it, in frame order; with none held it runs at once.
 test('behind runs local work after the held calls of its key, in frame order', async () => {

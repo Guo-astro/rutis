@@ -181,7 +181,7 @@ let rutis = RutisApp(plugins: [health, device], listen: "wss://0.0.0.0:7443/ruti
                      id: "lab-ipad", token: token, certificate: identity)   // 一个 SecIdentity
 ```
 
-`certificate` 是 TLS 身份（用 `SecPKCS12Import` 从 PKCS#12 文件得到，或取自钥匙串）；`ws://` 只限回环。一次一个连接，新连接接管；没有 rutis 连着时 `state` 是 `.connecting`，连接上的 rutis 问候之后才是 `.connected`（10 秒内没有问候就关闭这个连接）。连接须在 10 秒内发来升级请求，同时升级的连接至多 32 个。监听器之后失败时（网络断了）按退避重新绑定（`rutis: listening failed (…); listening again in 1s`），已连着的 rutis 不受影响。rutis 一侧用一个节点行连接它，与 [别的机器上的语言运行时](nodes.md#别的机器上的语言运行时) 相同，`language` 为 `"swift"`：
+`certificate` 是 TLS 身份（用 `SecPKCS12Import` 从 PKCS#12 文件得到，或取自钥匙串）；`ws://` 只限回环。端口写 `0` 表示取一个空闲端口：`log` 的 `rutis: listening on …` 一行给出是哪个，之后的每次开始都再绑定这个端口，地址保持不变。一次一个连接，新连接接管；没有 rutis 连着时 `state` 是 `.connecting`，连接上的 rutis 问候之后才是 `.connected`（10 秒内没有问候就关闭这个连接）。连接须在 10 秒内发来升级请求，同时升级的连接至多 32 个。监听器之后失败时（网络断了）按退避重新绑定（`rutis: listening failed (…); listening again in 1s`），已连着的 rutis 不受影响。rutis 一侧用一个节点行连接它，与 [别的机器上的语言运行时](nodes.md#别的机器上的语言运行时) 相同，`language` 为 `"swift"`：
 
 ```json
 {
