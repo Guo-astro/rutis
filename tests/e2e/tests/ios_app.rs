@@ -117,8 +117,7 @@ fn runtime() -> (String, String) {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|kind| kind["productFamily"] == "iPhone")
-        .last()
+        .rfind(|kind| kind["productFamily"] == "iPhone")
         .expect("an iPhone the runtime supports");
     (
         runtime["identifier"].as_str().unwrap().to_owned(),
