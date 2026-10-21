@@ -45,7 +45,7 @@ fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { c
 ```
 
 - 插件要 `Context` 时，像上面这样把插件写成一个接 `Context` 的函数，传 `applicationContext`。
-- `provides` 不用写：提供的服务自动让 rutis 知道。（暂时的例外：rutis 一侧、同一实例里的行要用应用的服务时，现在还要在 `provides` 里声明它，见 §9。）
+- `provides` 不用写：提供的服务自动让 rutis 知道，rutis 一侧同一实例里的行照样能用。
 - 等待 rutis 的调用（`@RutisClient` 接口里的非 `suspend` 方法）不能在主线程上调用，会抛 `IllegalStateException`：在协程里用 `suspend` 方法，或换个线程。rutis 调进应用的方法本来就在后台线程上运行。
 
 ## 3. 接入 rutis
@@ -171,6 +171,5 @@ SDK 只连接；前后台、保活、唤醒是应用自己的事。常见做法�
 
 ## 9. 已知限制
 
-- 应用插件没在 `provides` 里声明的服务，rutis 一侧同一实例里的行暂时找不到（rutis-loader 只按声明认连接的服务，正在修）。修好之前，这样的服务在 `provides` 里声明一下：`provides = mapOf("contacts" to service<Contacts>())`；示例插件现在也这样做。
 - 不能在设备上装载新代码：换插件就发新版本应用。
 - 身份是过渡方案：共享 token 加自报 id，rutis 不核实 id。

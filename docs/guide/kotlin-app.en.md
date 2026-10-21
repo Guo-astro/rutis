@@ -45,7 +45,7 @@ fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { c
 ```
 
 - A plugin that needs a `Context` is a function taking it, as above, given the `applicationContext`.
-- `provides` is not needed: the services a plugin provides reach rutis by themselves. (A temporary exception: a rutis-side row in the same instance using the application's service needs it declared in `provides` for now; see §9.)
+- `provides` is not needed: the services a plugin provides reach rutis by themselves, and rutis-side rows in the same instance use them as they are.
 - A call that waits for rutis (a non-`suspend` method of a `@RutisClient` interface) cannot be made on the main thread: it throws `IllegalStateException`. Call the `suspend` method from a coroutine, or call from another thread. What rutis calls in the application runs on background threads already.
 
 ## 3. Connecting to rutis
@@ -171,6 +171,5 @@ The flows above are checked automatically on an emulator. Walk through these by 
 
 ## 9. Known limitations
 
-- A service an application's plugin does not declare in `provides` is not found yet by rutis-side rows in the same instance (rutis-loader recognizes a connection's services by their declarations only; a fix is under way). Until then, declare such a service: `provides = mapOf("contacts" to service<Contacts>())`; the sample plugins do so for now.
 - New code is not loaded on the device: new plugins come with a new version of the application.
 - Identity is interim: a shared token and a self-reported id, which rutis does not verify.

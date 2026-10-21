@@ -7,7 +7,6 @@ import android.os.BatteryManager
 import android.os.Build
 import arcships.rutis.Rutis
 import arcships.rutis.RutisService
-import arcships.rutis.service
 import kotlinx.serialization.Serializable
 
 /** What a device is. rutis does not model devices: this plugin says it, for whoever injects `device`. */
@@ -46,12 +45,6 @@ class Device(private val context: Context) {
 }
 
 /** The plugin `device`: what this device is, and its battery. Needs no permission. */
-fun device(context: Context) = Rutis.define<Rutis.NoConfig>(
-    name = "device",
-    // Temporary: an undeclared service of a connection is not yet found by
-    // the other rows of its instance in rutis-loader; this goes once that
-    // is fixed (declarations are optional).
-    provides = mapOf("device" to service<Device>()),
-) { ctx, _ ->
+fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { ctx, _ ->
     ctx.provide("device", Device(context.applicationContext))
 }

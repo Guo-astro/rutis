@@ -418,4 +418,3 @@ rutis.stop()    // 全部插件逆序清理，然后断开
 | 主线程 | 等待 rutis 的调用（会话上的阻塞调用、远程函数、远程 future）在 Android 主线程上抛 `IllegalStateException`，说明改用 `suspend` 或换线程；判断在 `src/androidMain`，jvm 上不拒绝 | §11.3 #3 |
 | OkHttp | 5.3.2：5.4 起 AAR 要求应用以 compileSdk 36 以上编译 | 不替应用抬高 compileSdk |
 | 设备测试 | SDK 自己的（`src/androidInstrumentedTest`：主线程规则）；示例应用 `kotlin/rutis/android-sample` 由 `crates/rutis-host/tests/android.rs` 驱动：release 构建（R8，应用不加任何规则）经 intent 启停，debug 构建的设备测试开两条连接；rutis 一侧 Python 行经应用的服务装载 | 测 R8 时设备测试不能对 release 跑：测试 APK 与应用共享的依赖（kotlin、androidx.tracing）被应用的 R8 删掉 |
-| 未声明的服务 | 应用插件提供、没有声明的服务，同实例里 rutis 一侧的行暂时找不到（rutis-loader 只按声明的 `provides` 认连接的服务）；示例插件临时声明 `provides`，修复后去掉 | 另行修复（rutis-loader），声明仍是可选的 |

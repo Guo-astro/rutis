@@ -8,7 +8,6 @@ import android.content.Context
 import android.os.Build
 import arcships.rutis.Rutis
 import arcships.rutis.RutisService
-import arcships.rutis.service
 import java.util.concurrent.atomic.AtomicInteger
 
 /** The `notify` service: notifications on this device, from rutis. */
@@ -46,11 +45,7 @@ class Notify(private val context: Context) {
  * notifications (Android 13 and later ask for it): a post without it fails,
  * and the caller gets `permission-denied` (design §六, the call-time case).
  */
-fun notify(context: Context) = Rutis.define<Rutis.NoConfig>(
-    name = "notify",
-    // Temporary, as for `contacts`.
-    provides = mapOf("notify" to service<Notify>()),
-) { ctx, _ ->
+fun notify(context: Context) = Rutis.define<Rutis.NoConfig>(name = "notify") { ctx, _ ->
     val app = context.applicationContext
     app.getSystemService(NotificationManager::class.java)
         .createNotificationChannel(NotificationChannel(Notify.CHANNEL, "rutis", NotificationManager.IMPORTANCE_DEFAULT))

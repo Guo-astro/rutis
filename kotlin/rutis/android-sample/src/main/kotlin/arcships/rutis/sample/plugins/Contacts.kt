@@ -6,7 +6,6 @@ import android.provider.ContactsContract.CommonDataKinds.Phone
 import android.provider.ContactsContract.Contacts as Table
 import arcships.rutis.Rutis
 import arcships.rutis.RutisService
-import arcships.rutis.service
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -47,13 +46,7 @@ class Contacts(private val context: Context) {
  * the user for: without it the plugin does not load, and rutis says why
  * (design §六, the load-time case).
  */
-fun contacts(context: Context) = Rutis.define<Rutis.NoConfig>(
-    name = "contacts",
-    // Temporary: an undeclared service of a connection is not yet found by
-    // the other rows of its instance in rutis-loader; this goes once that
-    // is fixed (declarations are optional).
-    provides = mapOf("contacts" to service<Contacts>()),
-) { ctx, _ ->
+fun contacts(context: Context) = Rutis.define<Rutis.NoConfig>(name = "contacts") { ctx, _ ->
     context.require(Manifest.permission.READ_CONTACTS)
     ctx.provide("contacts", Contacts(context.applicationContext))
 }
