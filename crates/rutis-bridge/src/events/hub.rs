@@ -307,7 +307,8 @@ struct Registered {
 #[derive(Default)]
 struct Emits {
     busy: bool,
-    queue: VecDeque<BoxFuture<'static, ()>>,
+    /// The row that emitted each queued dispatch (its key), and the run.
+    queue: VecDeque<(Option<String>, BoxFuture<'static, ()>)>,
 }
 
 /// `events.on`'s argument (events protocol §4.2).
@@ -391,6 +392,7 @@ impl SessionEvents {
             hub.leave(self.origin);
         }
         self.rows.lock().unwrap().clear();
+        self.emits.lock().unwrap().queue.clear();
         let entries: Vec<Registered> = self
             .entries
             .lock()
@@ -415,6 +417,13 @@ impl SessionEvents {
     /// (events protocol §7.1).
     pub(crate) fn row_ended(&self, key: &str) {
         self.rows.lock().unwrap().remove(key);
+        // Its queued emits are dropped (§5.5); the ones already started
+        // are left to finish.
+        self.emits
+            .lock()
+            .unwrap()
+            .queue
+            .retain(|(row, _)| row.as_deref() != Some(key));
         let gone: Vec<Registered> = {
             let mut entries = self.entries.lock().unwrap();
             let ids: Vec<String> = entries
@@ -612,6 +621,7 @@ impl SessionEvents {
             None | Some(Value::Undefined) | Some(Value::Data(Json::Null)) => None,
             Some(row) => Some(crate::session::decode::<String>(row.json()?)?),
         };
+        let row_key = row.clone();
         if name.starts_with(rutis::events::RESERVED_PREFIX) {
             return Err(Error::Remote {
                 name: "ReservedEvent".into(),
@@ -668,7 +678,7 @@ impl SessionEvents {
                         }
                         let _ = started.send(());
                     }));
-                match self.run_emit(run) {
+                match self.run_emit(row_key, run) {
                     true => Ok(Value::Undefined),
                     false => Ok(Value::future(async move {
                         let _ = answered.await;
@@ -695,11 +705,11 @@ impl SessionEvents {
     /// Start an `emit` dispatch after those of the session before it
     /// started (events protocol §5.5): here, when none waits and it starts
     /// at once (`true`); otherwise in turn, on a task.
-    fn run_emit(self: &Arc<Self>, mut run: BoxFuture<'static, ()>) -> bool {
+    fn run_emit(self: &Arc<Self>, row: Option<String>, mut run: BoxFuture<'static, ()>) -> bool {
         {
             let mut emits = self.emits.lock().unwrap();
             if emits.busy {
-                emits.queue.push_back(run);
+                emits.queue.push_back((row, run));
                 return false;
             }
             emits.busy = true;
@@ -711,7 +721,8 @@ impl SessionEvents {
                 emits.busy = false;
                 return true;
             }
-            run = emits.queue.pop_front().expect("a queued emit");
+            let (_, next) = emits.queue.pop_front().expect("a queued emit");
+            run = next;
         }
         let session = self.clone();
         match tokio::runtime::Handle::try_current() {
@@ -722,7 +733,7 @@ impl SessionEvents {
                         run.await;
                         let mut emits = session.emits.lock().unwrap();
                         match emits.queue.pop_front() {
-                            Some(next) => run = next,
+                            Some((_, next)) => run = next,
                             None => {
                                 emits.busy = false;
                                 return;
