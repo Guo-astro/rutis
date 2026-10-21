@@ -126,6 +126,14 @@ impl App {
         .await
     }
 
+    /// Until `text` has been said `times` times in all: stdout and stderr
+    /// interleave as they come, so it may have been read already.
+    async fn said(&mut self, text: &str, times: usize) {
+        while self.seen.iter().filter(|line| *line == text).count() < times {
+            self.line(text, |line| (line == text).then_some(())).await;
+        }
+    }
+
     /// Runs `command` (`start`, `stop`) to its end.
     async fn command(&mut self, command: &str) {
         self.stdin
@@ -213,10 +221,7 @@ async fn apps_that_dial_in_are_instances_their_users_stop_and_start_with_them() 
     kim.command("start").await;
     COLD.until(|| running("kim-iphone"), "kim's user back")
         .await;
-    kim.line("connected again", |line| {
-        (line == "state: connected").then_some(())
-    })
-    .await;
+    kim.said("state: connected", 2).await;
     assert_eq!(
         kim.states(),
         [
@@ -266,8 +271,7 @@ async fn an_app_that_listens_is_linked_to_and_comes_back_after_stop_and_start() 
             line.strip_prefix("rutis: listening on ").map(str::to_owned)
         })
         .await;
-    app.line("started", |line| (line == "done start").then_some(()))
-        .await;
+    app.said("done start", 1).await;
     std::env::set_var("RUTIS_TOKEN_PAD", "pad-token");
     let config: HostConfig = serde_json::from_value(json!({
         "id": "test",
@@ -288,10 +292,7 @@ async fn an_app_that_listens_is_linked_to_and_comes_back_after_stop_and_start() 
     };
     let named = COLD.eventually(name, "the app's device").await;
     assert_eq!(named, json!("pad"));
-    app.line("connected", |line| {
-        (line == "state: connected").then_some(())
-    })
-    .await;
+    app.said("state: connected", 1).await;
 
     app.command("stop").await;
     COLD.until(|| host.service("device").is_none(), "the device gone")
