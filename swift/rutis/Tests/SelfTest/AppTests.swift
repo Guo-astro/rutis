@@ -12,6 +12,8 @@ final class LateService: @unchecked Sendable {
     func name() -> String { "late" }
 }
 
+private struct LetGo: Error {}
+
 final class SavedCtx: @unchecked Sendable {
     private let lock = NSLock()
     private var saved: Rutis.Ctx?
@@ -67,6 +69,30 @@ struct AppTests {
 
     /// A task of a row that was unloaded provides: refused, and the row
     /// loads again (its service is not taken).
+    func aLetGoFilterThatFailsIsNotReported() async throws {
+        let lines = Lines()
+        let saved = SavedCtx()
+        let listener = Rutis.define(Plugin(name: "hears") { ctx in
+            ctx.on("t/let-go") { (n: Int) in lines.add("got \(n)") }
+        })
+        let emitter = Rutis.define(Plugin(name: "emits") { ctx in saved.ctx = ctx })
+        let runtime = Runtime([listener, emitter], project: "", settings: Events.Settings(log: { lines.add($0) }))
+        for (key, entry) in [("l", "hears"), ("e", "emits")] {
+            try await runtime.load(key: key, name: nil, entry: entry, config: .undefined, exports: [:], isolate: [:], scope: [])
+        }
+        // Ignores cancellation, then fails with an error of its own.
+        try XCTUnwrap(saved.ctx).filter { _ in
+            for _ in 0..<6 { try? await Task.sleep(nanoseconds: 50_000_000) }
+            throw LetGo()
+        }.emit("t/let-go", 1)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try await runtime.unload("e")
+        try await Task.sleep(nanoseconds: 600_000_000)
+        XCTAssertFalse(lines.all.contains { $0.contains("filter of") }, "let go: nothing reported: \(lines.all)")
+        XCTAssertFalse(lines.all.contains("got 1"), "\(lines.all)")
+        try await runtime.unload("l")
+    }
+
     func anUnloadedRowCannotProvide() async throws {
         let saved = SavedCtx()
         let plugin = Rutis.define(Plugin(name: "late") { ctx in

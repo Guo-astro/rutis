@@ -275,7 +275,9 @@ extension Runtime {
         do {
             // Its row unloading while the filter ran: nothing starts.
             try await dispatch.emit(args, unlessCancelled: true)
-        } catch is CancellationError where row.isCancelled {
+        } catch where row.isCancelled {
+            // Let go as its row unloaded: whatever it ended with, nothing
+            // is reported.
         } catch {
             Events.report("rutis: filter of \(name) from row \(row.name) failed: \(Events.failure(error))", to: row.settings.log)
         }

@@ -30,6 +30,7 @@ let registry: [(String, () async throws -> Void)] = [
     ("LifetimeTests.aClosedChannelLeavesItsDescriptorsNumberAlone", { try LifetimeTests().aClosedChannelLeavesItsDescriptorsNumberAlone() }),
     ("LifetimeTests.queuedListenerInvocationsOutliveTheRuntime", { try await LifetimeTests().queuedListenerInvocationsOutliveTheRuntime() }),
     ("AppTests.anUnloadedRowsHeldEmitLetsTheQueueGo", { try await AppTests().anUnloadedRowsHeldEmitLetsTheQueueGo() }),
+    ("AppTests.aLetGoFilterThatFailsIsNotReported", { try await AppTests().aLetGoFilterThatFailsIsNotReported() }),
     ("AppTests.anUnloadedRowCannotProvide", { try await AppTests().anUnloadedRowCannotProvide() }),
     ("AppTests.silentConnectionsAreDropped", { try AppTests().silentConnectionsAreDropped() }),
     ("AppTests.aListeningAppIsConnectedOnceGreeted", { try await AppTests().aListeningAppIsConnectedOnceGreeted() }),
