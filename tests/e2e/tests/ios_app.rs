@@ -78,7 +78,8 @@ async def apply(ctx, config):
             await asyncio.sleep(0.2)
         try:
             answer = {"granted": await health.authorize()}
-        except Exception as error:
+        # The row unloading (the app gone) cancels the call: that ends it too.
+        except (Exception, asyncio.CancelledError) as error:
             answer = failure(error)
         write(os.path.join(out, me + ".authorize.json"), answer)
 
