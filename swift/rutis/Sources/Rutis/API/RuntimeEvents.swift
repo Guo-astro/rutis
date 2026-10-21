@@ -7,7 +7,10 @@ import Foundation
 
 /// A listener of a row of this process.
 final class LocalListener: EventEntry, @unchecked Sendable {
-    unowned let runtime: Runtime
+    /// Held: an invocation queued before the runtime ended still runs (and
+    /// finds the listener withdrawn). Withdrawing it, as every unload does,
+    /// lets the runtime go.
+    let runtime: Runtime
     let id: String
     let name: String
     let row: Row

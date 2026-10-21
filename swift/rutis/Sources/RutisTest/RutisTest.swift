@@ -51,7 +51,8 @@ public enum RutisTest {
 /// A listener on the test side's bus: one of the runtime's (by its id) or
 /// one of the test's own.
 final class BusEntry: EventEntry, @unchecked Sendable {
-    unowned let harness: Harness
+    /// Held, as a runtime's listeners hold their runtime.
+    let harness: Harness
     let id: String
     let name: String
     let row: String?
@@ -219,8 +220,11 @@ final class Harness: @unchecked Sendable {
         }
         var options = PeerOptions()
         options.host = true
-        options.dispatch = { [unowned harness] target, method, args in try await harness.dispatch(target, method, args) }
-        options.arrive = { [unowned harness] method, args in harness.arrive(method, args) }
+        options.dispatch = { [weak harness] target, method, args in
+            guard let harness else { throw RutisError(name: "Error", message: "the test host is closed") }
+            return try await harness.dispatch(target, method, args)
+        }
+        options.arrive = { [weak harness] method, args in harness?.arrive(method, args) }
         let session = try Peer(channel: hostSide, options: options)
         harness.session = session
         harness.stopHearing = Events.hear { [weak harness] line in harness?.lock.withLock { harness?.reported.append(line) } }
