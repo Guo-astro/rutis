@@ -87,7 +87,7 @@ Rutis.serve(WeatherKits.calendar, WeatherKits.contacts)
 ```json
 {
   "manifest": 1,
-  "sdk": "0.14.0",
+  "sdk": "0.15.0",
   "pluginApi": 3,
   "runtime": "rutis-swift-runtime:1",
   "platform": "macos/arm64",
@@ -448,7 +448,7 @@ Acceptance: an EventKit plugin runs in a signed binary and the prompt points at 
 | Conformance: the event expectation file's languages gain `swift` (usable in `only` / `except`); `events_conformance.rs` and `session_matrix.rs` gain the Swift runtime (feature `swift`) | `rutis-bridge/src/runtime/testing/events.rs`, tests |
 | `scripts/train.mjs`'s version regex adds `swift/rutis/Sources/Rutis/Version.swift` | `scripts/train.mjs` |
 
-Implementation note (0.14, the extraction is done): `binary.rs` has the `BinaryLanguage` trait (constants `PREFIX`, `TITLE`, `MARKER`, `PLUGIN_API`; functions `runtime_name` and `launch`) and, taking it as their parameter, `Binaries`, `BinaryManifest`, `BinaryResolver<L>`, `BinaryRuntimes<L>`, `BinaryRuntimesHandle<L>`, `BinaryRuntimeState`, `BinaryRuntimeInfo` and `read_binary_manifest`, under the feature `binary` (which `go` enables, and `swift` should: `swift = ["binary", "rutis-bridge/swift"]`). `go.rs` is now only `struct Go`'s implementation and type aliases such as `GoResolver = BinaryResolver<Go>`; Go users' code is unchanged. `swift.rs` follows it: `struct Swift` implementing `BinaryLanguage` (`swift_runtime_name`, `LocalRuntime::swift`) plus aliases. Crash restarts are in the shared module too: `BinaryRuntimesHandle::supervise(RestartPolicy, callback)`, with the backoff of `rutis_loader::backoff` (the same one rutis-host uses for node/py/bun); rutis-host's `runtimes.go.restart` is built on it, and `runtimes.swift.restart` can copy it.
+Implementation note (0.15, the extraction is done): `binary.rs` has the `BinaryLanguage` trait (constants `PREFIX`, `TITLE`, `MARKER`, `PLUGIN_API`; functions `runtime_name` and `launch`) and, taking it as their parameter, `Binaries`, `BinaryManifest`, `BinaryResolver<L>`, `BinaryRuntimes<L>`, `BinaryRuntimesHandle<L>`, `BinaryRuntimeState`, `BinaryRuntimeInfo` and `read_binary_manifest`, under the feature `binary` (which `go` enables, and `swift` should: `swift = ["binary", "rutis-bridge/swift"]`). `go.rs` is now only `struct Go`'s implementation and type aliases such as `GoResolver = BinaryResolver<Go>`; Go users' code is unchanged. `swift.rs` follows it: `struct Swift` implementing `BinaryLanguage` (`swift_runtime_name`, `LocalRuntime::swift`) plus aliases. Crash restarts are in the shared module too: `BinaryRuntimesHandle::supervise(RestartPolicy, callback)`, with the backoff of `rutis_loader::backoff` (the same one rutis-host uses for node/py/bun); rutis-host's `runtimes.go.restart` is built on it, and `runtimes.swift.restart` can copy it.
 
 
 ## 10. rutis-host
@@ -479,8 +479,8 @@ As Go §12: `dev` watches `.swift`, `Package.swift`, `Package.resolved` → `swi
 | --- | --- |
 | Location | `swift/rutis`: targets `Rutis` (core + API), `RutisMacros` (the macro plugin), `RutisTest`; the session layer in `Sources/Rutis/Internal/Peer`; the conformance executable target `RutisConformance` (the plugins `conformance-weather` and `conformance-events`) |
 | Manifest | a **root** `Package.swift` whose targets point at `swift/rutis/Sources/...` via `path:`; platforms `.macOS(.v14)`, `.iOS(.v17)`. SwiftPM git dependencies only see the repository root (appendix E.1); the packed repository is about 18 MiB (2026-10-14), an acceptable clone cost for dependents |
-| Version | `Rutis.sdkVersion` follows the main release line: the existing `v0.x.y` tags are exactly the form SwiftPM accepts (appendix E.2), so no new tag namespace; `from:` starts at the first release with a root `Package.swift` (0.14.0) |
-| How dependents write it | plugin authors and apps alike: `.package(url: "https://github.com/arcships/rutis", from: "0.14.0")` + `.product(name: "Rutis", package: "rutis")`; apps add the package directly in Xcode (Xcode asks to trust the macros on the first build; CI uses `-skipMacroValidation`; in the guide) |
+| Version | `Rutis.sdkVersion` follows the main release line: the existing `v0.x.y` tags are exactly the form SwiftPM accepts (appendix E.2), so no new tag namespace; `from:` starts at the first release with a root `Package.swift` (0.15.0) |
+| How dependents write it | plugin authors and apps alike: `.package(url: "https://github.com/arcships/rutis", from: "0.15.0")` + `.product(name: "Rutis", package: "rutis")`; apps add the package directly in Xcode (Xcode asks to trust the macros on the first build; CI uses `-skipMacroValidation`; in the guide) |
 | Dependencies | `Rutis`: Foundation and the system's Network.framework (listening) only; `RutisMacros` depends on swift-syntax at compile time (a version range following the two supported toolchains); no uniffi / swift-bridge (appendix B) |
 | Compatibility | within one protocol version, binaries / apps built with any SDK version run on any host version, provided the plugin API is not newer than the host supports and both sides declare `events-v2` (rutis 0.13 on) |
 | Language mode | Swift 5 mode to start, with a Sendable-friendly API; the toolchain policy matches Go: "the two current stable releases" (today 6.3 and 6.4) |
@@ -565,7 +565,7 @@ Later (on demand): downloading prebuilt binaries (`swift add <URL>`), receiving 
 | Error names from `String(reflecting:)`, carrying only name and message | simple names; `code` / `data` both ways; received errors are `RutisError` | the 0.12 error contract; names consistent with other languages |
 | Cleanup at most 5 seconds when the session ends, shape ① `exit(0)` | `RUTIS_SHUTDOWN_TIMEOUT` (10 seconds by default), exit 1 past it | contract §4 |
 | No automatic restart after a crash | by `restart`, `no` by default, implemented in `binary.rs` for Go and Swift | #274 maintainer decision (0.12) |
-| First SDK version 0.11.0 | 0.14.0 | milestone 0.14 |
+| First SDK version 0.11.0 | 0.15.0 | milestone 0.15 (0.14 was not released on its own) |
 
 ### 17.2 Where rutis-specific code is still needed
 

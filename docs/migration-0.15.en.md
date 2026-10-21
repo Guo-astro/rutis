@@ -1,6 +1,6 @@
-# Migrating to 0.14
+# Migrating to 0.15
 
-[中文](migration-0.14.md)
+[中文](migration-0.15.md)
 
 ## rutis-loader: the Go runtime types are aliases
 
