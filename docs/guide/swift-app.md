@@ -232,7 +232,7 @@ cargo test -p rutis-e2e --test ios_app -- --ignored
 1. 在 Mac 上为它的局域网地址签一张证书（任何能生成 CA 和服务器证书、把 IP 写进 subject alternative names 的工具，例如 `mkcert 192.168.1.10`），按 §4 的配置运行 rutis，监听器 `0.0.0.0:7443` 用这张证书和私钥，设置 `RUTIS_TOKEN_PHONE`；一个 Python 行（例如 e2e 的 `coach`，在 `tests/e2e/tests/ios_app.rs` 里）显示每个实例看到什么。
 2. 打开 `swift/examples/HealthApp/HealthApp.xcodeproj`，在 Signing & Capabilities 里选你的 team（HealthKit 保持开启），在 scheme 的参数里设 `-RutisConnect wss://<Mac 的 IP>:7443/rutis`、`-RutisToken <token>`，`-RutisCA` 设为 CA 证书（先 `openssl x509 -in rootCA.pem -outform der -out rootCA.der`，再 `base64 -i rootCA.der`）。在 iPhone 上运行。
 3. **本地网络：** iOS 询问是否允许 Rutis Health 查找本地网络上的设备，说明是 `NSLocalNetworkUsageDescription` 的那句话。拒绝：应用显示 `connecting`，控制台是 `rutis: cannot connect (…); retrying in …`。到"设置 → 隐私与安全性 → 本地网络"里允许：下一次重试连上（`connected`），rutis 装载插件（Python 行运行）。
-4. **提示属于应用：** 调用 `health.authorize()`（e2e 的 `coach` 在 `<dir>/authorize` 存在时、下一次连接时调用）："健康"的授权页写着 Rutis Health，显示它的用途说明。
+4. **提示属于应用：** 调用 `health.authorize()`（e2e 的 `coach` 在 `<dir>/<id>.authorize` 出现后调用）："健康"的授权页写着 Rutis Health，显示它的用途说明。
 5. **拒绝传回调用方：** 全部关掉后点"允许"（或"不允许"）：`authorize()` 返回 `false`，`stepsToday()` 在 Python 调用方失败，`HealthAccessDenied: step counts are not shared with this app (denied)`，`code` 为 `denied`。
 6. **授权：** 在"设置 → 健康 → 数据访问与设备 → Rutis Health"里打开步数：`stepsToday()` 返回今天的步数。
 7. **后台与前台：** 回到主屏幕：控制台显示插件卸载、`stopped`，rutis 上这部手机的行停下；再打开应用：`connected`，行重新运行。

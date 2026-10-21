@@ -7,10 +7,9 @@ import Foundation
 
 /// A listener of a row of this process.
 final class LocalListener: EventEntry, @unchecked Sendable {
-    /// Held: an invocation queued before the runtime ended still runs (and
-    /// finds the listener withdrawn). Withdrawing it, as every unload does,
-    /// lets the runtime go.
-    let runtime: Runtime
+    /// Weak: an invocation queued before the runtime ended may run after
+    /// it is gone, and then starts nothing.
+    weak var runtime: Runtime?
     let id: String
     let name: String
     let row: Row
@@ -32,17 +31,18 @@ final class LocalListener: EventEntry, @unchecked Sendable {
     }
 
     var info: Rutis.Listener {
-        let runtimeName = runtime.lock.withLock { runtime.runtimeName }
+        let runtimeName = runtime.flatMap { runtime in runtime.lock.withLock { runtime.runtimeName } }
         return Rutis.Listener(name: name, plugin: row.definition.name, row: row.name, runtime: runtimeName, scope: row.scope,
                               global: global)
     }
 
     /// Whether invocations may start; runtime.lock is held.
-    var live: Bool { !withdrawn && runtime.rows[row.key] === row }
+    var live: Bool { !withdrawn && runtime?.rows[row.key] === row }
 
     /// Counts an invocation in the row's, unless withdrawn.
     func reserve() -> Bool {
-        runtime.lock.withLock { live } && row.reserve()
+        guard let runtime else { return false }
+        return runtime.lock.withLock { live } && row.reserve()
     }
 
     func begin() -> EventCall? {
@@ -58,7 +58,7 @@ final class LocalListener: EventEntry, @unchecked Sendable {
         let chain = CallChain.path
         queue.push { [self] in
             defer { row.release() }
-            guard runtime.lock.withLock({ live }) else { return }
+            guard let runtime, runtime.lock.withLock({ live }) else { return }
             do {
                 _ = try await CallChain.$path.withValue(chain) { try await run(args, nil) }
             } catch {

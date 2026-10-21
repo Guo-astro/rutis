@@ -34,8 +34,9 @@ const BUNDLE: &str = "dev.rutis.example.health";
 
 /// The Python row in each app's instance: records what it sees (its app's
 /// id, HealthKit's status, the steps or the error reading them) in
-/// `<dir>/<id>.json` while it runs; with `<dir>/authorize` there, it asks
-/// for access (the sheet), recording the answer in `<id>.authorize.json`.
+/// `<dir>/<id>.json` while it runs; once `<dir>/<id>.authorize` appears,
+/// it asks for access (the sheet), recording the answer in
+/// `<id>.authorize.json`.
 const COACH: &str = r#"
 import asyncio
 import json
@@ -70,17 +71,21 @@ async def apply(ctx, config):
     path = os.path.join(out, me + ".json")
     write(path, record)
     ctx.effect(lambda: os.remove(path))
-    if os.path.exists(os.path.join(out, "authorize")):
-        async def ask():
-            try:
-                answer = {"granted": await health.authorize()}
-            except Exception as error:
-                answer = failure(error)
-            write(os.path.join(out, me + ".authorize.json"), answer)
 
-        task = asyncio.ensure_future(ask())
-        asking.add(task)
-        task.add_done_callback(asking.discard)
+    # Asked to (`<dir>/<id>.authorize` appears), it asks for access once.
+    async def ask():
+        while not os.path.exists(os.path.join(out, me + ".authorize")):
+            await asyncio.sleep(0.2)
+        try:
+            answer = {"granted": await health.authorize()}
+        except Exception as error:
+            answer = failure(error)
+        write(os.path.join(out, me + ".authorize.json"), answer)
+
+    task = asyncio.ensure_future(ask())
+    asking.add(task)
+    task.add_done_callback(asking.discard)
+    ctx.effect(task.cancel)
 "#;
 
 fn xcrun(args: &[&str]) -> Output {
@@ -368,14 +373,10 @@ fn an_ios_app_hosts_plugins_per_instance_stops_in_the_background_and_its_health_
     eventually(hang_guard(), "sim-a's row back", || seen("sim-a"));
 
     // Asking for access shows the system's sheet over the app, naming it.
-    std::fs::write(records.join("authorize"), "").unwrap();
-    a.background();
-    eventually(hang_guard(), "sim-a's row stopped", || {
-        seen("sim-a").is_none().then_some(())
-    });
-    a.foreground();
-    eventually(hang_guard(), "sim-a's row back", || seen("sim-a"));
-    std::fs::remove_file(records.join("authorize")).unwrap();
+    // The app in front for a moment first: HealthKit times the request out
+    // when the app is not active yet (iOS 27).
+    std::thread::sleep(Duration::from_secs(2));
+    std::fs::write(records.join("sim-a.authorize"), "").unwrap();
     let text = eventually(hang_guard(), "the HealthKit sheet", || {
         let text = a.text(s.dir());
         (text.contains("Rutis Health") && text.contains("Rutis Health records steps"))

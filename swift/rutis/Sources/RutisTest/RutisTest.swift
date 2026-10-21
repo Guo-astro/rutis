@@ -51,8 +51,9 @@ public enum RutisTest {
 /// A listener on the test side's bus: one of the runtime's (by its id) or
 /// one of the test's own.
 final class BusEntry: EventEntry, @unchecked Sendable {
-    /// Held, as a runtime's listeners hold their runtime.
-    let harness: Harness
+    /// Weak: an invocation queued before the test host closed may run after
+    /// it is gone, and then starts nothing.
+    weak var harness: Harness?
     let id: String
     let name: String
     let row: String?
@@ -74,11 +75,20 @@ final class BusEntry: EventEntry, @unchecked Sendable {
 
     var info: Rutis.Listener {
         if local != nil { return Rutis.Listener(name: name, plugin: "rutistest", row: nil, runtime: nil, scope: [], global: global) }
-        let scope = harness.lock.withLock { harness.scopes[row ?? ""] ?? [] }
-        return Rutis.Listener(name: name, plugin: plugin, row: row, runtime: harness.runtimeName, scope: scope, global: global)
+        let scope = harness.map { harness in harness.lock.withLock { harness.scopes[row ?? ""] ?? [] } } ?? []
+        return Rutis.Listener(name: name, plugin: plugin, row: row, runtime: harness?.runtimeName, scope: scope, global: global)
     }
 
-    var live: Bool { harness.lock.withLock { !withdrawn } }
+    var live: Bool {
+        guard let harness else { return false }
+        return harness.lock.withLock { !withdrawn }
+    }
+
+    /// The test host, unless it is closed.
+    func host() throws -> Harness {
+        guard let harness else { throw RutisError.binding("the test host is closed") }
+        return harness
+    }
 
     func begin() -> EventCall? { live ? call : nil }
 
@@ -88,7 +98,7 @@ final class BusEntry: EventEntry, @unchecked Sendable {
 
     func call(_ mode: Mode, _ args: [Value], _ next: NextFunction?) async throws -> Value {
         if let local { return try await local(args, next) }
-        let value = try await harness.session.call(target: "", method: "events.call", args: [record(mode, args, next)],
+        let value = try await host().session.call(target: "", method: "events.call", args: [record(mode, args, next)],
                                                    sync: mode == .bail || mode == .waterfallSync)
         return try await settle(value)
     }
@@ -118,11 +128,11 @@ final class BusEntry: EventEntry, @unchecked Sendable {
             return true
         }
         // Sent now, in order: the runtime starts them in arrival order.
-        let report: (Error) -> Void = { [name, harness] error in
-            Events.report("rutis: listener of \(name) in runtime \(harness.runtimeName) failed: \(Events.failure(error))")
+        let report: (Error) -> Void = { [name, runtimeName = harness?.runtimeName ?? ""] error in
+            Events.report("rutis: listener of \(name) in runtime \(runtimeName) failed: \(Events.failure(error))")
         }
         do {
-            let call = try harness.session.send(target: "", method: "events.call", args: [record(.emit, args, nil)], sync: false)
+            let call = try host().session.send(target: "", method: "events.call", args: [record(.emit, args, nil)], sync: false)
             Task.detached {
                 do { _ = try await call.value() } catch { report(error) }
             }
@@ -151,7 +161,7 @@ final class Invocation: EventEntry, @unchecked Sendable {
         guard entry.live else { return nil }
         return { [self] mode, args, next in
             if let local = entry.local { return try await local(args, next) }
-            let value = try await entry.harness.session.call(target: "", method: "events.call", args: [record(mode, args, next)],
+            let value = try await entry.host().session.call(target: "", method: "events.call", args: [record(mode, args, next)],
                                                              sync: mode == .bail || mode == .waterfallSync)
             return try await settle(value)
         }
