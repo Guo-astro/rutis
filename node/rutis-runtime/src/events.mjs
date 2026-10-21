@@ -334,9 +334,14 @@ export class Bus {
       }
     }
     switch (mode) {
-      case 'emit':
-        for (const entry of snapshot) if (entry.live) this.#emitTo(entry, args, thisArg, name)
+      case 'emit': {
+        const run = () => { for (const entry of snapshot) if (entry.live) this.#emitTo(entry, args, thisArg, name) }
+        // Behind the host's calls of an earlier emit of the name that this
+        // process has not run yet (a synchronous call of it waits): they
+        // start first, in frame order (§5.5).
+        if (!this.peer?.behind?.(name, run)) run()
         return undefined
+      }
       case 'parallel': return this.#parallel(name, snapshot, args, thisArg)
       case 'serial': return this.#serial(name, snapshot, args, thisArg)
       case 'waterfall': return this.#waterfall(name, snapshot, args, thisArg, terminal)

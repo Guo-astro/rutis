@@ -16,3 +16,7 @@ policy-b-2node-seq ok
 policy-b-2node-3roots ok
 policy-b-1node-3roots ok
 policy-b-2node-depth4 ok
+current-posts deadlock
+current-posts-node ok
+policy-b-posts ok
+policy-b-posts-node ok

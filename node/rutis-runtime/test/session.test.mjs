@@ -91,18 +91,63 @@ test('invokeAnswered tells the reply as its frame is read, before the next frame
   peer.close()
 })
 
-test('an inline predicate runs emit-mode listener calls in frame order while a sync call waits', async () => {
-  const seen = []
-  const inline = (method, args) => method === 'events.elsewhere' || (method === 'events.call' && args?.[0]?.mode === 'emit')
-  const { peer, incoming, fault } = harness((_, method, args) => { seen.push(`${method}:${args?.[0]?.mode ?? ''}`); return null }, { inline })
-  const call = (id, mode) => ({ op: 'invoke', id: `rust:${id}`, path: [], target: '', method: 'events.call', args: data([{ mode }]) })
-  // While `invoke` waits: an emit-mode call (in place), a serial one (held
-  // back: not of the waiting chain), a table change (in place).
-  incoming.push(call(1, 'emit'), call(2, 'serial'), { op: 'invoke', id: 'rust:3', path: [], target: '', method: 'events.elsewhere', args: data([{}]) }, { op: 'return', id: 'node:1', value: data(7) })
-  assert.equal(peer.invoke('test', 'sync', []), 7)
-  assert.deepEqual(seen, ['events.call:emit', 'events.elsewhere:'])
+// Not reentrant (multi-language design §9): an emit-mode listener call
+// that arrives while a synchronous call waits, not of its chain, waits for
+// it to return, so it never sees the caller's state half updated and never
+// makes a call the host's wait-cycle check cannot see (the call it makes
+// goes out after the wait).
+test('an emit-mode listener call waits while an unrelated synchronous call does', async () => {
+  const log = []
+  let state = 'idle'
+  const holds = (method, args) => method === 'events.call' && args?.[0]?.mode === 'emit' ? args[0].name : undefined
+  const { peer, incoming, sent, fault } = harness((_, method) => {
+    if (method === 'x') {
+      state = 'half-updated'
+      log.push(`x got ${peer.invoke('b', 'slow', [])}`)
+      state = 'done'
+      return 'x-result'
+    }
+    if (method === 'events.call') log.push(`listener sees ${state}`)
+    return undefined
+  }, { inline: ['events.elsewhere'], holds })
+  incoming.push(
+    { op: 'invoke', id: 'rust:2', path: [], target: '', method: 'events.call', args: data([{ listener: '1', mode: 'emit', name: 'n', args: [] }]) },
+    { op: 'return', id: 'node:1', value: data('slow') },
+  )
+  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'x', args: data([]), sync: true })
   await Promise.resolve()
-  assert.deepEqual(seen, ['events.call:emit', 'events.elsewhere:', 'events.call:serial'])
+  assert.deepEqual(log, ['x got slow'])
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(log, ['x got slow', 'listener sees done'])
+  assert.deepEqual(sent.filter(frame => frame.op === 'return').map(frame => frame.id), ['rust:1', 'rust:2'])
+  assert.equal(fault(), undefined)
+  peer.close()
+})
+
+// §5.5: a local emit of a name goes behind the held listener calls of an
+// earlier emit of it, in frame order; with none held it runs at once.
+test('behind runs local work after the held calls of its key, in frame order', async () => {
+  const log = []
+  const holds = (method, args) => method === 'events.call' && args?.[0]?.mode === 'emit' ? args[0].name : undefined
+  const { peer, incoming, fault } = harness((_, method, args) => { log.push(`call ${args[0].name}:${args[0].args[0]}`); return undefined }, { holds })
+  const call = (id, name, n) => ({ op: 'invoke', id: `rust:${id}`, path: [], target: '', method: 'events.call', args: data([{ listener: '1', mode: 'emit', name, args: [n] }]) })
+  assert.equal(peer.behind('n', () => log.push('local n:0')), false, 'nothing held: the caller runs it')
+  incoming.push(call(1, 'n', 1), call(2, 'm', 1), { op: 'return', id: 'node:1', value: data(7) })
+  assert.equal(peer.invoke('test', 'sync', []), 7)
+  // Right after the wait, before the held calls ran: behind them.
+  assert.equal(peer.behind('n', () => log.push('local n:2')), true)
+  assert.equal(peer.behind('m', () => log.push('local m:2')), true)
+  assert.equal(peer.behind('other', () => {}), false)
+  assert.deepEqual(log, [])
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(log, ['call n:1', 'call m:1', 'local n:2', 'local m:2'])
+  // Behind a queued local run too.
+  incoming.push(call(3, 'n', 3), { op: 'return', id: 'node:2', value: data(8) })
+  assert.equal(peer.invoke('test', 'sync', []), 8)
+  assert.equal(peer.behind('n', () => log.push('local n:4')), true)
+  assert.equal(peer.behind('n', () => log.push('local n:5')), true)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(log.slice(4), ['call n:3', 'local n:4', 'local n:5'])
   assert.equal(fault(), undefined)
   peer.close()
 })
