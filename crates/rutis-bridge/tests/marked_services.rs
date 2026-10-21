@@ -299,3 +299,60 @@ async fn an_unmarked_service_is_named_in_the_diagnostic() {
     assert!(rutis_bridge::exports::unexported(&root, "other").is_none());
     root.shutdown().await.unwrap();
 }
+
+/// A plugin gated on `keys`, as a row of another language is gated on a
+/// name.
+struct Gated(Vec<TypeKey>);
+
+impl rutis::Plugin for Gated {
+    fn name(&self) -> &str {
+        "gated"
+    }
+    fn injects(&self) -> &[TypeKey] {
+        &self.0
+    }
+    fn apply<'a>(&'a self, _: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+        Box::pin(async { Ok(rutis::Effect::Done) })
+    }
+}
+
+async fn reach(view: &rutis::FiberView, state: rutis::FiberState) {
+    for _ in 0..1000 {
+        if view.state().state == state {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("{state:?} not reached: {:?}", view.state());
+}
+
+/// Provided with a `check()` predicate, a marked service's entry by name is
+/// gated by it as the native binding is: its users stop while it fails and
+/// start again when it passes.
+#[tokio::test]
+async fn the_check_gates_the_name_as_it_gates_the_native_service() {
+    use rutis::FiberState::{Active, Pending};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let root = Ctx::root().unwrap();
+    let up = Arc::new(AtomicBool::new(true));
+    let flag = up.clone();
+    root.provide_as_with_check(TypeKey::of::<Notes>(), Arc::new(Notes), move || {
+        flag.load(Ordering::SeqCst)
+    })
+    .unwrap();
+    let by_name = root.plugin(Gated(vec![host_key("notebook")]));
+    let native = root.plugin(Gated(vec![TypeKey::of::<Notes>()]));
+    reach(&by_name, Active).await;
+    reach(&native, Active).await;
+
+    up.store(false, Ordering::SeqCst);
+    root.refresh();
+    reach(&by_name, Pending).await;
+    reach(&native, Pending).await;
+
+    up.store(true, Ordering::SeqCst);
+    root.refresh();
+    reach(&by_name, Active).await;
+    reach(&native, Active).await;
+    root.shutdown().await.unwrap();
+}

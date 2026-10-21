@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, Weak};
 
 use rutis::service::{
-    erased_serde, exported_name, Answer, CallError, Encoded, Entry, Exposer, Function, Wire,
+    erased_serde, exported_name, Answer, CallError, Check, Encoded, Entry, Exposer, Function, Wire,
 };
 use rutis::{BoxFuture, CordisError, Ctx, Disposer, Effect, InstanceId, TypeKey};
 
@@ -86,6 +86,7 @@ impl Exposer for BridgeExposer {
         native: &TypeKey,
         service: Arc<dyn Any + Send + Sync>,
         entries: Vec<&'static Entry>,
+        check: Option<Check>,
     ) -> Result<Disposer, CordisError> {
         let name = exported_name(&entries)?;
         let type_name = entries.first().map_or("", |entry| entry.type_name());
@@ -99,21 +100,26 @@ impl Exposer for BridgeExposer {
             entries,
             type_name,
         });
-        let served = ctx
-            .provide_as::<dyn HostDispatch>(key.clone(), marked)
-            .map_err(|error| match error {
-                CordisError::ServiceExists(_) => {
-                    let by = ctx
-                        .get_as::<dyn HostDispatch>(key.clone())
-                        .and_then(|other| other.provider())
-                        .map(|other| format!(" by {other}"))
-                        .unwrap_or_default();
-                    CordisError::ServiceExists(format!(
-                        "`{name}` ({type_name}): the name is already provided here{by}"
-                    ))
-                }
-                error => error,
-            })?;
+        // The native binding's `check()` gates the name as well.
+        let served = match check {
+            Some(check) => {
+                ctx.provide_as_with_check::<dyn HostDispatch>(key.clone(), marked, move || check())
+            }
+            None => ctx.provide_as::<dyn HostDispatch>(key.clone(), marked),
+        };
+        let served = served.map_err(|error| match error {
+            CordisError::ServiceExists(_) => {
+                let by = ctx
+                    .get_as::<dyn HostDispatch>(key.clone())
+                    .and_then(|other| other.provider())
+                    .map(|other| format!(" by {other}"))
+                    .unwrap_or_default();
+                CordisError::ServiceExists(format!(
+                    "`{name}` ({type_name}): the name is already provided here{by}"
+                ))
+            }
+            error => error,
+        })?;
         let Some(instance) = instance else {
             return Ok(served);
         };

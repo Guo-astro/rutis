@@ -187,16 +187,23 @@ pub fn exported_name(entries: &[&'static Entry]) -> Result<&'static str, CordisE
 /// What serves marked services to other languages: the bridge installs it.
 pub trait Exposer: Send + Sync + 'static {
     /// `service`, just provided at `native` by `ctx`, is of a marked type
-    /// whose blocks are `entries`: serve it by name in the same scope. The
-    /// returned disposer stops serving it.
+    /// whose blocks are `entries`: serve it by name in the same scope,
+    /// gated by `check` when the native binding is
+    /// ([`Ctx::provide_as_with_check`]). The returned disposer stops
+    /// serving it.
     fn expose(
         &self,
         ctx: &Ctx,
         native: &TypeKey,
         service: Arc<dyn Any + Send + Sync>,
         entries: Vec<&'static Entry>,
+        check: Option<Check>,
     ) -> Result<Disposer, CordisError>;
 }
+
+/// The `check()` predicate a service was provided with
+/// ([`Ctx::provide_as_with_check`]): the entry by name is gated by it too.
+pub type Check = Arc<dyn Fn() -> bool + Send + Sync>;
 
 static EXPOSER: OnceLock<&'static dyn Exposer> = OnceLock::new();
 
@@ -225,9 +232,10 @@ pub(crate) fn expose(
     native: &TypeKey,
     service: Arc<dyn Any + Send + Sync>,
     entries: Vec<&'static Entry>,
+    check: Option<Check>,
 ) -> Option<Result<Disposer, CordisError>> {
     let exposer = EXPOSER.get()?;
-    Some(exposer.expose(ctx, native, service, entries))
+    Some(exposer.expose(ctx, native, service, entries, check))
 }
 
 /// One disposer for both: `first` is disposed, then `then`.

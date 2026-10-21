@@ -987,7 +987,7 @@ impl Ctx {
         // and no consumer sees a native service that is then withdrawn.
         let exposed = match marked {
             Some((service, entries)) => {
-                crate::service::expose(self, &key, service, entries).transpose()?
+                crate::service::expose(self, &key, service, entries, check.clone()).transpose()?
             }
             None => None,
         };
