@@ -18,7 +18,11 @@
 //! - The services a connection's plugins provide are its instance's own
 //!   (`host_key_in(name, instance)`): two connections with the same plugin
 //!   do not collide, and in each instance a row using the name gets its own
-//!   connection's service. Rows outside the group cannot use them.
+//!   connection's service. Rows outside the group cannot use them. So are
+//!   the ones they provide without declaring them, from when a row
+//!   announces one: the copies in the instance that gate on the name were
+//!   built with the global key, and are rebuilt with the instance's
+//!   ([`Loader::rekeying`]), as if it had been declared.
 //!
 //! The connection's process belongs to its instance: a row of it holds the
 //! process directly and does not wait for a runtime service, and the
@@ -55,6 +59,11 @@ struct Connected {
     process: Arc<Process>,
     /// What each plugin a row named declares on this connection.
     described: Mutex<HashMap<String, Described>>,
+    /// The names its rows provide without declaring them, as they announce
+    /// them: this instance's own from then on, as declared ones are.
+    announced: Mutex<BTreeSet<String>>,
+    /// Rebuilds the copies whose keys a new announced name changes.
+    rekeying: Arc<dyn Fn() + Send + Sync>,
 }
 
 #[derive(Clone)]
@@ -84,8 +93,11 @@ impl RuntimeConnection {
 
     /// Whether a plugin of this connection that a row runs provides `name`:
     /// of the plugins described for rows, not of every plugin it lists, so a
-    /// plugin no row runs claims no name.
+    /// plugin no row runs claims no name; or a row of it announced `name`.
     fn provides(&self, name: &str) -> bool {
+        if self.inner.announced.lock().unwrap().contains(name) {
+            return true;
+        }
         self.inner
             .described
             .lock()
@@ -99,7 +111,8 @@ impl RuntimeConnection {
 
     /// Every name [`RuntimeConnection::provides`].
     fn provided(&self) -> BTreeSet<String> {
-        self.inner
+        let mut names: BTreeSet<String> = self
+            .inner
             .described
             .lock()
             .unwrap()
@@ -109,7 +122,19 @@ impl RuntimeConnection {
                 _ => None,
             })
             .flatten()
-            .collect()
+            .collect();
+        names.extend(self.inner.announced.lock().unwrap().iter().cloned());
+        names
+    }
+
+    /// A row of this connection announces `name`, which it did not
+    /// declare: from now on it is the instance's own, and the copies that
+    /// gate on it with the global key are rebuilt.
+    fn announced(&self, name: &str) {
+        let new = self.inner.announced.lock().unwrap().insert(name.to_owned());
+        if new {
+            (self.inner.rekeying)();
+        }
     }
 
     /// Read what `plugin` declares on this connection, once.
@@ -147,11 +172,14 @@ impl RuntimeConnection {
 /// The instance enclosing a copy in `build` whose connection provides the
 /// shared name `name`, innermost first: there `name` is that instance's own.
 ///
-/// What a connection provides is read when its rows are resolved. A row of
-/// the runtime added to the group later, by a loader edit, claims its names
-/// for copies built from then on; copies already running keep the keys they
-/// were built with until they are rebuilt (rutis-host reads its rows once,
-/// before any connection, so it does not meet this).
+/// What a connection provides is read when its rows are resolved, and
+/// grows as its rows announce names they do not declare. A row of the
+/// runtime added to the group later, by a loader edit, claims its declared
+/// names for copies built from then on; copies already running keep the
+/// keys they were built with until they are rebuilt (rutis-host reads its
+/// rows once, before any connection, so it does not meet this). An
+/// announced name rebuilds the copies it changes the keys of itself
+/// ([`RuntimeConnection::announced`]).
 pub(crate) fn claimed(name: &str, build: &Build) -> Option<InstanceId> {
     connections(build)
         .find(|(connection, _)| connection.provides(name))
@@ -320,8 +348,12 @@ impl RuntimeInstances {
                 provided,
                 Vec::new(),
             )
-            // So are the ones it announces.
-            .announcing(Arc::new(move |name| host_key(name).with_instance(instance))),
+            // So are the ones it announces, which from then on are the
+            // instance's own for every copy there.
+            .announcing(Arc::new(move |name| {
+                connection.announced(name);
+                host_key(name).with_instance(instance)
+            })),
         );
         Ok(factory)
     }
@@ -437,6 +469,8 @@ impl Accept for AcceptInstances {
                     id: accepted.id().clone(),
                     process,
                     described: Mutex::default(),
+                    announced: Mutex::default(),
+                    rekeying: self.loader.rekeying(),
                 }),
             };
             // Live first, then the plugins named so far: a row added

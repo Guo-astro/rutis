@@ -34,27 +34,38 @@ type Log = Arc<Mutex<Vec<String>>>;
 
 /// A runtime with `plugins`, each providing a service of its name whose
 /// `whoami()` answers the runtime's id. It lists them in its `mount` reply
-/// when `lists`; otherwise rutis asks for each (`rows.schema`).
+/// when `lists`; otherwise rutis asks for each (`rows.schema`). When
+/// `undeclared`, its plugins declare nothing and it announces each one's
+/// service as the row loads (`rows.announce`).
 struct Runtime {
     name: String,
     plugins: Vec<&'static str>,
     lists: bool,
+    undeclared: bool,
     tokio: tokio::runtime::Handle,
     version: AtomicU64,
     /// The services each loaded row exports, by row key.
     exports: Mutex<HashMap<String, Vec<String>>>,
 }
 
-fn schema(plugin: &str) -> Value {
-    json!({ "inject": [], "provides": { plugin: { "whoami": "async" } } })
-}
-
 impl Runtime {
-    /// Tell rutis what the slot `name` now holds.
-    fn announce(&self, peer: &Connection, name: &str, handle: Option<String>) {
+    fn schema(&self, plugin: &str) -> Value {
+        match self.undeclared {
+            true => json!({ "inject": [], "provides": {} }),
+            false => json!({ "inject": [], "provides": { plugin: { "whoami": "async" } } }),
+        }
+    }
+
+    /// Tell rutis what the slot `name` now holds; `row` for a service the
+    /// row did not declare, with its methods.
+    fn announce(&self, peer: &Connection, name: &str, handle: Option<String>, row: Option<&str>) {
         let version = self.version.fetch_add(1, Ordering::SeqCst) + 1;
         let peer = peer.clone();
-        let args = json!([name, handle, version]);
+        let mut args = json!([name, handle, version]);
+        if let (Some(row), Some(_)) = (row, &handle) {
+            let announced = json!({ "row": row, "methods": { "whoami": "async" } });
+            args.as_array_mut().unwrap().push(announced);
+        }
         self.tokio.spawn(async move {
             let _ = peer.invoke_async("", "service", args.into()).await;
         });
@@ -66,12 +77,15 @@ impl Dispatch for Runtime {
         let args = args.json().unwrap_or(Value::Null);
         match (target, method) {
             ("", "mount") => {
-                let mut reply = json!({ "services": {}, "features": ["rows.v2", "hosts", "leaf"] });
+                let mut reply = json!({
+                    "services": {},
+                    "features": ["rows.v2", "hosts", "leaf", "rows.announce"]
+                });
                 if self.lists {
                     let plugins: serde_json::Map<String, Value> = self
                         .plugins
                         .iter()
-                        .map(|plugin| (plugin.to_string(), schema(plugin)))
+                        .map(|plugin| (plugin.to_string(), self.schema(plugin)))
                         .collect();
                     reply["plugins"] = Value::Object(plugins);
                 }
@@ -80,7 +94,7 @@ impl Dispatch for Runtime {
             ("", "rows.schema") => {
                 let plugin = args[0].as_str().unwrap_or_default();
                 match self.plugins.contains(&plugin) {
-                    true => Ok(schema(plugin).into()),
+                    true => Ok(self.schema(plugin).into()),
                     false => Err(Error::Remote {
                         name: "NotFound".into(),
                         message: format!("no plugin {plugin}"),
@@ -90,12 +104,17 @@ impl Dispatch for Runtime {
             }
             ("", "rows.load") => {
                 let key = args[0].as_str().unwrap().to_owned();
-                let names: Vec<String> = args[5]
-                    .as_object()
-                    .map(|exports| exports.keys().cloned().collect())
-                    .unwrap_or_default();
+                let names: Vec<String> = match self.undeclared {
+                    // The plugin provides the service of its name.
+                    true => vec![args[1].as_str().unwrap().to_owned()],
+                    false => args[5]
+                        .as_object()
+                        .map(|exports| exports.keys().cloned().collect())
+                        .unwrap_or_default(),
+                };
+                let row = self.undeclared.then_some(key.as_str());
                 for name in &names {
-                    self.announce(peer, name, Some(format!("{name}@{key}")));
+                    self.announce(peer, name, Some(format!("{name}@{key}")), row);
                 }
                 self.exports.lock().unwrap().insert(key, names);
                 Ok(RpcValue::Undefined)
@@ -103,7 +122,7 @@ impl Dispatch for Runtime {
             ("", "rows.unload") => {
                 let key = args[0].as_str().unwrap();
                 for name in self.exports.lock().unwrap().remove(key).unwrap_or_default() {
-                    self.announce(peer, &name, None);
+                    self.announce(peer, &name, None, None);
                 }
                 Ok(RpcValue::Undefined)
             }
@@ -117,6 +136,18 @@ impl Dispatch for Runtime {
 
 /// `name` dialing in with `plugins`, its session ready.
 async fn dial(main: &Main, name: &str, plugins: &[&'static str], lists: bool) -> Connection {
+    dial_with(main, name, plugins, lists, false).await
+}
+
+/// [`dial`], its plugins providing their services without declaring them
+/// when `undeclared`.
+async fn dial_with(
+    main: &Main,
+    name: &str,
+    plugins: &[&'static str],
+    lists: bool,
+    undeclared: bool,
+) -> Connection {
     let identity: Arc<dyn Identity> = Arc::new(
         StaticIdentity::new(id(name)).present(id("main"), Credential::Bearer("shared".into())),
     );
@@ -136,6 +167,7 @@ async fn dial(main: &Main, name: &str, plugins: &[&'static str], lists: bool) ->
         name: name.into(),
         plugins: plugins.to_vec(),
         lists,
+        undeclared,
         tokio: tokio::runtime::Handle::current(),
         version: AtomicU64::new(0),
         exports: Mutex::default(),
@@ -553,5 +585,29 @@ async fn a_listed_plugin_no_row_runs_claims_no_name() {
     let _pixel = dial(&main, "pixel", &["contacts", "weather"], true).await;
     main.connected("pixel").await;
     main.heard("reader in pixel hears pixel").await;
+    main.heard("reader in pixel hears global").await;
+}
+
+/// Plugins that provide `contacts` without declaring it: the name is still
+/// each instance's own, from when the row announces it, and the row using
+/// it there, built before that with the global key, is rebuilt with the
+/// instance's and hears its own connection, as with a declared one.
+/// guarantee: loader/runtime-connection-instances
+#[tokio::test(flavor = "multi_thread")]
+async fn undeclared_services_are_each_instances_own() {
+    let mut main = main().await;
+    let _pixel = dial_with(&main, "pixel", &["contacts"], true, true).await;
+    main.connected("pixel").await;
+    let _tablet = dial_with(&main, "tablet", &["contacts"], false, true).await;
+    main.connected("tablet").await;
+    main.heard("reader in pixel hears pixel").await;
+    main.heard("reader in tablet hears tablet").await;
+    assert_eq!(main.states("contacts"), (2, Vec::new()));
+    assert_eq!(main.states("reader"), (2, Vec::new()));
+    assert!(main
+        ._root
+        .get_as::<dyn HostDispatch>(rutis_bridge::session::host_key("contacts"))
+        .is_none());
+    // A name no row of the connection announces stays global.
     main.heard("reader in pixel hears global").await;
 }
