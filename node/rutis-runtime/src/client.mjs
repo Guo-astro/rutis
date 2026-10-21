@@ -8,7 +8,7 @@ export class Process {
   #exited
   #session
 
-  constructor(executable, { channel, dispatch, settled, endpoint, inline, requires } = {}) {
+  constructor(executable, { channel, dispatch, settled, endpoint, inline, requires, holds } = {}) {
     const { port1, port2 } = new MessageChannel()
     this.#port = port1
     this.#session = new Session({
@@ -19,6 +19,7 @@ export class Process {
       endpoint,
       inline,
       requires,
+      holds,
       pump: done => {
         const sequence = Atomics.load(this.#signal, 0)
         let packet
@@ -55,7 +56,7 @@ export class Process {
     }
   }
   // `endpoint` ({ local, expected? }) selects the endpoint format;
-  // `options`: the session's `inline` and `requires`.
+  // `options`: the session's `inline`, `requires` and `holds`.
   static async connect(channel, dispatch, settled, endpoint, options = {}) {
     const process = new Process(undefined, { channel, dispatch, settled, endpoint, ...options })
     try { await process.#session.ready; return process }
@@ -68,6 +69,7 @@ export class Process {
   callAsync(target, method, args) { return this.#session.invokeAsync(target, method, args) }
   callAnswered(target, method, args, answered) { this.#session.invokeAnswered(target, method, args, answered) }
   callFunctionAsync(fn, args) { return this.#session.callFunctionAsync(fn, args) }
+  behind(key, run) { return this.#session.behind(key, run) }
   declares(capability) { return this.#session.declares(capability) }
   release(value) { this.#session.release(value) }
   references() { return this.#session.references() }

@@ -20,7 +20,14 @@
 //!
 //! The last two hold only for a runtime with one thread and one stack (it
 //! declared `sync-stack`); its reentrancy is `reentrant-sync`, and a
-//! runtime that does not declare it is taken as non-reentrant. A session whose far end does not mark its
+//! runtime that does not declare it is taken as non-reentrant.
+//!
+//! An *entry* is any other call sent into such a runtime while some call
+//! is marked: nobody waits for it synchronously (an `emit`'s
+//! `events.call`, an asynchronous call), but a reentrant runtime runs it on
+//! top of the call that waits there, so stack order holds for it like for a
+//! hop, and it waits for the synchronous calls made under it. Nothing waits
+//! for an entry by its chain: its caller does not wait for it. A session whose far end does not mark its
 //! synchronous waits makes no hops: it is outside the check.
 
 use std::collections::HashMap;
@@ -50,6 +57,8 @@ struct Hop {
     seq: u64,
     /// The forwarded call's chain, the call itself last.
     chain: Vec<Global>,
+    /// An entry: no caller waits for it (`src` and `sid` are empty).
+    entry: bool,
 }
 
 impl Hop {
@@ -156,14 +165,33 @@ pub(super) fn forward(
         return Ok(false);
     }
     let mut waits = WAITS.lock().unwrap();
-    let chain = decode(path, dst);
-    let Some((src, sid)) = chain.last().cloned() else {
-        return Ok(false);
+    let mut chain = decode(path, dst);
+    let caller = chain
+        .last()
+        .cloned()
+        .filter(|(src, sid)| src != dst && waits.marked.contains(&(src.clone(), sid.clone())));
+    let Some((src, sid)) = caller else {
+        // Not a hop: an entry, where stack order holds.
+        if !waits
+            .profiles
+            .get(dst)
+            .is_some_and(|profile| profile.stacked)
+        {
+            return Ok(false);
+        }
+        chain.push((dst.to_owned(), did.to_owned()));
+        waits.hops.push(Hop {
+            src: String::new(),
+            sid: String::new(),
+            dst: dst.to_owned(),
+            did: did.to_owned(),
+            seq,
+            chain,
+            entry: true,
+        });
+        waits.counted();
+        return Ok(true);
     };
-    if src == dst || !waits.marked.contains(&(src.clone(), sid.clone())) {
-        return Ok(false);
-    }
-    let mut chain = chain;
     chain.push((dst.to_owned(), did.to_owned()));
     let hop = Hop {
         src,
@@ -172,6 +200,7 @@ pub(super) fn forward(
         did: did.to_owned(),
         seq,
         chain,
+        entry: false,
     };
     if let Some(cycle) = cycle(&waits.hops, &hop, &waits.profiles) {
         return Err(cycle);
@@ -245,8 +274,8 @@ fn successors(
         if d == h {
             continue;
         }
-        // Chain: made under this hop.
-        if other.chain.contains(&gid) {
+        // Chain: made under this hop (and waited for: not an entry).
+        if !other.entry && other.chain.contains(&gid) {
             next.push(d);
         }
     }
@@ -286,7 +315,66 @@ mod tests {
             did,
             seq,
             chain,
+            entry: false,
         }
+    }
+
+    fn entry(dst: &str, seq: u64, path: &[&str]) -> Hop {
+        let path: Vec<String> = path.iter().map(|s| s.to_string()).collect();
+        let did = format!("rust:{seq}");
+        let mut chain = decode(&path, dst);
+        chain.push((dst.into(), did.clone()));
+        Hop {
+            src: String::new(),
+            sid: String::new(),
+            dst: dst.into(),
+            did,
+            seq,
+            chain,
+            entry: true,
+        }
+    }
+
+    /// A reentrant runtime runs an emit's listener (an entry: nobody waits
+    /// for it) on top of a call that waits there; the listener's call into
+    /// a non-reentrant runtime waiting on that call closes a cycle.
+    /// guarantee: bridge/sync-wait-cycle-refused
+    #[test]
+    fn a_listener_run_on_top_of_a_wait() {
+        let p = profiles(&[("c", true, false), ("a", true, true), ("b", false, false)]);
+        // c's node:1 → a (x, rust:1); x calls b (slow).
+        let x = hop("c", "node:1", "a", 1, &["c/node:1"]);
+        let slow = hop("a", "py:1", "b", 1, &["c/node:1", "a/rust:1", "a/py:1"]);
+        // The host's events.call to a (rust:2), run on top of x; its
+        // listener calls c (y).
+        let listener = entry("a", 2, &[]);
+        let y = hop("a", "py:2", "c", 1, &["a/rust:2", "a/py:2"]);
+        let found = cycle(&[x.clone(), slow.clone(), listener.clone()], &y, &p).expect("a cycle");
+        assert_eq!(found, ["c/rust:1", "a/rust:1", "a/rust:2"]);
+        // In a non-reentrant runtime the listener has not started (it waits
+        // for x): no call names it, and the call it makes later is no cycle.
+        let p = profiles(&[("c", true, false), ("a", true, false), ("b", false, false)]);
+        assert_eq!(
+            cycle(
+                &[x.clone(), slow.clone(), listener.clone()],
+                &hop("c", "node:2", "b", 2, &["c/node:2"]),
+                &p
+            ),
+            None
+        );
+        // Nothing waits for an entry by its chain: an emit made under x
+        // whose listener runs elsewhere and waits for x does not wait for x
+        // to return.
+        let p = profiles(&[("c", true, false), ("a", true, true), ("d", true, true)]);
+        let emitted = entry("d", 1, &["c/node:1", "a/rust:1", "a/py:1"]);
+        let back = hop(
+            "d",
+            "js:1",
+            "a",
+            3,
+            &["c/node:1", "a/rust:1", "a/py:1", "d/rust:1", "d/js:1"],
+        );
+        assert_eq!(cycle(&[x, emitted], &back, &p), None);
     }
 
     fn profiles(list: &[(&str, bool, bool)]) -> HashMap<String, Profile> {

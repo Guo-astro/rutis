@@ -120,7 +120,7 @@ class RemotePromise extends Promise {
 // The transport owns I/O; every decoder, reference table and callback stays on
 // the owning JS thread, including while a synchronous caller pumps its chain.
 export class Session {
-  #send; #pump; #dispatch; #abort; #settled; #inline; #requires
+  #send; #pump; #dispatch; #abort; #settled; #inline; #requires; #holds
   #next = 0; #received = 0; #ref = 0; #pending = new Map(); #exports = new Map(); #identities = new WeakMap()
   #imports = new Map(); #proxies = new WeakMap(); #finalizer
   #closed; #handshake = false; #resolveReady; #rejectReady
@@ -138,18 +138,16 @@ export class Session {
   // `endpoint` ({ local, expected?, verified?, declare? }) selects the
   // endpoint format (`declare`: capabilities beyond the session's, such as
   // the contract); without it the session speaks the compat protocol.
-  constructor({ send, pump, dispatch, abort, settled, endpoint, inline, requires }) {
+  constructor({ send, pump, dispatch, abort, settled, endpoint, inline, requires, holds }) {
     this.#send = send; this.#pump = pump; this.#dispatch = dispatch; this.#abort = abort; this.#settled = settled
     // `inline`: control methods (empty target) run as their frame arrives,
     // in frame order, before the next frame is read, also while a
-    // synchronous call waits (`events.elsewhere`, an `emit`-mode
-    // `events.call`): a list of method names, or `(method, args) => bool`.
-    // Every other call waiting on a synchronous call is held back until
-    // the wait ends unless it belongs to the waiting call's chain.
+    // synchronous call waits (`events.on`, `events.off`, `events.elsewhere`).
     // `requires`: capabilities the far end must declare (`events-v2`).
-    const names = new Set(Array.isArray(inline) ? inline : [])
-    this.#inline = typeof inline === 'function' ? inline : method => names.has(method)
-    this.#requires = requires ?? endpoint?.requires
+    // `holds(method, args)`: the key of a control call (empty target) that
+    // later local work may have to wait behind (`behind`), or undefined.
+    this.#holds = holds
+    this.#inline = new Set(inline ?? []); this.#requires = requires ?? endpoint?.requires
     if (endpoint) {
       if (!ENDPOINT_ID.test(endpoint.local)) throw new Error(`invalid endpoint id ${endpoint.local}`)
       this.#endpoint = endpoint; this.#local = `${endpoint.local}:`; this.#remote = undefined
@@ -497,9 +495,10 @@ export class Session {
       const args = decoded.value
       const business = entry?.business ?? frame.target !== ''
       if (business) this.#active++
-      const job = { frame, args, entry, business }
+      const key = frame.op === 'invoke' && frame.target === '' ? this.#holds?.(frame.method, args) : undefined
+      const job = { frame, args, entry, business, key }
       this.#queued.add(job)
-      if (frame.op === 'invoke' && frame.target === '' && this.#inline(frame.method, args)) {
+      if (frame.op === 'invoke' && frame.target === '' && this.#inline.has(frame.method)) {
         this.#queued.delete(job)
         this.#execute(frame, args, entry, business)
         return
@@ -508,8 +507,31 @@ export class Session {
       else queueMicrotask(() => this.#run(job))
     } catch (error) { this.#fault(error) }
   }
+  // Run `run` behind every call of `key` (`holds`) that arrived and has not
+  // run yet, in turn: such calls wait while a synchronous call of this side
+  // waits, unless they are of its chain, and run, in frame order, once it
+  // returns. Whether there was one; if not, the caller runs `run` itself.
+  // An `emit`'s local listeners go behind the host's `events.call` of an
+  // earlier emit of the name this way (events protocol §5.5): this side is
+  // not reentrant, and they would otherwise overtake them.
+  behind(key, run) {
+    let held = false
+    for (const job of this.#queued) if (job.key === key) { held = true; break }
+    if (!held) return false
+    const job = { key, run }
+    this.#queued.add(job)
+    if (!this.#waiting.length) queueMicrotask(() => this.#run(job))
+    return true
+  }
   #run(job) {
     if (!this.#queued.has(job)) return
+    if (job.run) {
+      // Local work: never on top of a wait.
+      if (this.#waiting.length) return
+      this.#queued.delete(job)
+      try { job.run() } catch (error) { queueMicrotask(() => { throw error }) }
+      return
+    }
     if (this.#waiting.length && !this.#waiting.some(id => job.frame.path.includes(id))) return
     this.#queued.delete(job)
     this.#execute(job.frame, job.args, job.entry, job.business)

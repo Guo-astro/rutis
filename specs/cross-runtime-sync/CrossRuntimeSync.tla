@@ -26,12 +26,14 @@ CONSTANTS
     Rebase,     \* TRUE: Rust rewrites `path` as rpc.rs `rebase`; FALSE: verbatim
     MaxRoots,   \* top-level activations (timers, events) over the whole run
     MaxDepth,   \* hops in one call chain
-    MaxCalls    \* synchronous calls one activation makes, one after another
+    MaxCalls,   \* synchronous calls one activation makes, one after another
+    MaxPosts    \* calls Rust sends that nobody waits for (an emit's events.call)
 
 ASSUME Reentrant \subseteq Runtimes
 ASSUME Policy \in {"current", "A", "B", "Bchain"}
 ASSUME Rebase \in BOOLEAN
 ASSUME MaxRoots \in Nat /\ MaxDepth \in Nat /\ MaxCalls \in Nat \ {0}
+ASSUME MaxPosts \in Nat
 
 VARIABLES
     stack,     \* stack[r]: activations on r's thread, bottom first
@@ -42,9 +44,11 @@ VARIABLES
     nodeCtr,   \* nodeCtr[r]: last `node:n` id runtime r allocated
     rustCtr,   \* rustCtr[r]: last `rust:n` id Rust allocated on r's session
     roots,     \* top-level activations started so far
+    posts,     \* entries: posted calls Rust recorded, not answered yet
+    postCtr,   \* calls posted so far
     ghost      \* observations for the invariants, not part of any process
 
-vars == <<stack, toRt, deferred, toRust, hops, nodeCtr, rustCtr, roots, ghost>>
+vars == <<stack, toRt, deferred, toRust, hops, nodeCtr, rustCtr, roots, posts, postCtr, ghost>>
 
 NonReentrant == Runtimes \ Reentrant
 
@@ -104,7 +108,7 @@ StartRoot(r) ==
     /\ stack' = [stack EXCEPT ![r] = <<[path |-> <<>>, truth |-> <<>>, depth |-> 0,
                                         st |-> "fresh", w |-> 0, n |-> 0, from |-> 0]>>]
     /\ roots' = roots + 1
-    /\ UNCHANGED <<toRt, deferred, toRust, hops, nodeCtr, rustCtr, ghost>>
+    /\ UNCHANGED <<toRt, deferred, toRust, hops, nodeCtr, rustCtr, posts, postCtr, ghost>>
 
 \* A synchronous call (host service, or a function owned by t) from the
 \* running activation. Calls inside one runtime do not cross Rust.
@@ -120,7 +124,7 @@ Call(r, t) ==
                          truth |-> Top(r).truth, depth |-> Top(r).depth, target |-> t])]
        /\ stack' = WithTop(r, [Top(r) EXCEPT !.st = "wait", !.w = k, !.n = @ + 1])
        /\ nodeCtr' = [nodeCtr EXCEPT ![r] = k]
-    /\ UNCHANGED <<toRt, deferred, hops, rustCtr, roots, ghost>>
+    /\ UNCHANGED <<toRt, deferred, hops, rustCtr, roots, posts, postCtr, ghost>>
 
 \* The pump loop of the top activation exits; it goes on running.
 Resume(r) ==
@@ -128,7 +132,7 @@ Resume(r) ==
     /\ Top(r).st = "ready"
     /\ Top(r).n < MaxCalls
     /\ stack' = WithTop(r, [Top(r) EXCEPT !.st = "fresh", !.w = 0])
-    /\ UNCHANGED <<toRt, deferred, toRust, hops, nodeCtr, rustCtr, roots, ghost>>
+    /\ UNCHANGED <<toRt, deferred, toRust, hops, nodeCtr, rustCtr, roots, posts, postCtr, ghost>>
 
 \* Read the next frame: only when idle or pumping (a running activation
 \* does not read). session.mjs `receive`/`#run`, peer.py `_receive`/`_run`:
@@ -157,7 +161,7 @@ Receive(r) ==
                \* Put aside although it belongs to a waiting chain.
                /\ ghost' = IF TruthRelated(r, f.truth)
                            THEN [ghost EXCEPT !.missed = TRUE] ELSE ghost
-    /\ UNCHANGED <<toRust, hops, nodeCtr, rustCtr, roots>>
+    /\ UNCHANGED <<toRust, hops, nodeCtr, rustCtr, roots, posts, postCtr>>
 
 \* Calls put aside run once the stack is empty.
 RunDeferred(r, f) ==
@@ -165,7 +169,7 @@ RunDeferred(r, f) ==
     /\ stack[r] = <<>>
     /\ deferred' = [deferred EXCEPT ![r] = @ \ {f}]
     /\ stack' = [stack EXCEPT ![r] = <<Activation(r, f)>>]
-    /\ UNCHANGED <<toRt, toRust, hops, nodeCtr, rustCtr, roots, ghost>>
+    /\ UNCHANGED <<toRt, toRust, hops, nodeCtr, rustCtr, roots, posts, postCtr, ghost>>
 
 \* Only the top of the stack runs; it returns before anything below resumes.
 Return(r) ==
@@ -174,13 +178,15 @@ Return(r) ==
     /\ stack' = [stack EXCEPT ![r] = SubSeq(@, 1, Len(@) - 1)]
     /\ toRust' = IF Top(r).from = 0 THEN toRust
                  ELSE [toRust EXCEPT ![r] = Append(@, [op |-> "ret", id |-> Top(r).from])]
-    /\ UNCHANGED <<toRt, deferred, hops, nodeCtr, rustCtr, roots, ghost>>
+    /\ UNCHANGED <<toRt, deferred, hops, nodeCtr, rustCtr, roots, posts, postCtr, ghost>>
 
 (***************************************************************************)
 (* Wait graphs. Nodes are forwarded calls (hops); an edge c -> d means c   *)
 (* cannot finish before d does. A cycle is a deadlock.                     *)
 (***************************************************************************)
 Gid(h) == <<h.dst, "rust", h.did>>
+\* A call out of runtime y: a hop (an entry has no caller).
+Out(d, y) == ~d.entry /\ d.src = y
 
 RECURSIVE Reach(_, _)
 Reach(E, S) == LET S2 == S \cup {e[2] : e \in {x \in E : x[1] \in S}}
@@ -206,13 +212,13 @@ TrueSucc(h, N, new) ==
         defer == waiting /\ y \in NonReentrant /\ stack[y] /= <<>>
                  /\ ~PathRelated(y, h.path)
     IN {c \in N : InSeq(Gid(h), c.truth)}
-       \cup (IF defer THEN {d \in N : d.src = y \/ (d.dst = y /\ OnStack(y, d))} ELSE {})
-       \cup {d \in N : d.src = y /\ \E i \in idx : \E j \in i..Len(stack[y]) :
+       \cup (IF defer THEN {d \in N : Out(d, y) \/ (d.dst = y /\ OnStack(y, d))} ELSE {})
+       \cup {d \in N : Out(d, y) /\ \E i \in idx : \E j \in i..Len(stack[y]) :
                                       stack[y][j].w = d.sid}
        \cup {d \in N : d.dst = y /\ \E i \in idx : \E j \in (i + 1)..Len(stack[y]) :
                                       stack[y][j].from = d.did}
 TrueCycle(new) ==
-    LET N == hops \cup {new}
+    LET N == hops \cup posts \cup {new}
     IN OnCycle({<<a, b>> \in N \X N : b \in TrueSucc(a, N, new)}, new)
 
 \* Policy B: the graph Rust can build from what it sees itself: the hops,
@@ -228,19 +234,21 @@ TrueCycle(new) ==
 \*    into the same runtime that has started there (some call out of that
 \*    runtime names d in its path). Had c returned first, its reply would
 \*    have reached Rust before any frame made under d.
-Started(d, N) == \E e \in N : e.src = d.dst /\ InSeq(Gid(d), e.chain)
+\*  - entries (waits.rs): a posted call nobody waits for; nothing waits for
+\*    it by its chain, but stack order holds for it like for a hop.
+Started(d, N) == \E e \in N : Out(e, d.dst) /\ InSeq(Gid(d), e.chain)
 RustSucc(h, N) ==
     LET y == h.dst
-        busy == \E d \in N : d.src = y
-        related == \E d \in N : d.src = y /\ InSeq(<<y, "node", d.sid>>, h.chain)
+        busy == \E d \in N : Out(d, y)
+        related == \E d \in N : Out(d, y) /\ InSeq(<<y, "node", d.sid>>, h.chain)
         defer == y \in NonReentrant /\ busy /\ ~related /\ ~Started(h, N)
-    IN {c \in N : InSeq(Gid(h), c.chain)}
-       \cup (IF defer THEN {d \in N : d.src = y} ELSE {})
+    IN {c \in N : ~c.entry /\ InSeq(Gid(h), c.chain)}
+       \cup (IF defer THEN {d \in N : Out(d, y)} ELSE {})
        \cup (IF Policy = "B"
              THEN {d \in N : d.dst = y /\ h.did < d.did /\ Started(d, N)}
              ELSE {})
 RustCycle(new) ==
-    LET N == hops \cup {new}
+    LET N == hops \cup posts \cup {new}
     IN OnCycle({<<a, b>> \in N \X N : b \in RustSucc(a, N)}, new)
 
 (***************************************************************************)
@@ -259,7 +267,7 @@ RustForward(s) ==
            m == rustCtr[t] + 1
            new == [src |-> s, sid |-> f.id, dst |-> t, did |-> m,
                    chain |-> Decode(full, s), truth |-> truth,
-                   path |-> RebasePath(full, s, t)]
+                   path |-> RebasePath(full, s, t), entry |-> FALSE]
            \* rpc.rs `receive`: the Rust thread waiting for the last id of
            \* the path that it waits for gets the call.
            waiters == {h \in hops : h.dst = s /\ InSeq(<<"rust", h.did>>, full)}
@@ -288,7 +296,33 @@ RustForward(s) ==
                               truth |-> truth, depth |-> f.depth + 1])]
                /\ rustCtr' = [rustCtr EXCEPT ![t] = m]
                /\ ghost' = [ghost EXCEPT !.misrouted = @ \/ misrouted]
-    /\ UNCHANGED <<stack, deferred, nodeCtr, roots>>
+    /\ UNCHANGED <<stack, deferred, nodeCtr, roots, posts, postCtr>>
+
+\* A call nobody waits for (an emit's events.call, from Rust's own bus): it
+\* carries no chain. While some forwarded call is in progress Rust records
+\* it (waits.rs entries), otherwise it only sends it.
+RustPost(t) ==
+    /\ postCtr < MaxPosts
+    /\ LET m == rustCtr[t] + 1 IN
+       /\ toRt' = [toRt EXCEPT ![t] = Append(@,
+                      [op |-> "call", id |-> m, path |-> <<>>, truth |-> <<>>, depth |-> 0])]
+       /\ rustCtr' = [rustCtr EXCEPT ![t] = m]
+       /\ posts' = IF hops /= {}
+                   THEN posts \cup {[src |-> "", sid |-> 0, dst |-> t, did |-> m,
+                                     chain |-> <<>>, truth |-> <<>>, path |-> <<>>,
+                                     entry |-> TRUE]}
+                   ELSE posts
+    /\ postCtr' = postCtr + 1
+    /\ UNCHANGED <<stack, deferred, toRust, hops, nodeCtr, roots, ghost>>
+
+\* The answer to a posted call: nobody waits for it.
+RustAnswered(t) ==
+    /\ toRust[t] /= <<>>
+    /\ Head(toRust[t]).op = "ret"
+    /\ ~\E h \in hops : h.dst = t /\ h.did = Head(toRust[t]).id
+    /\ posts' = {e \in posts : ~(e.dst = t /\ e.did = Head(toRust[t]).id)}
+    /\ toRust' = [toRust EXCEPT ![t] = Tail(@)]
+    /\ UNCHANGED <<stack, deferred, toRt, hops, nodeCtr, rustCtr, roots, postCtr, ghost>>
 
 RustReturn(t) ==
     /\ toRust[t] /= <<>>
@@ -299,10 +333,10 @@ RustReturn(t) ==
           /\ toRt' = [toRt EXCEPT ![h.src] = Append(@,
                          [op |-> "ret", id |-> h.sid, outcome |-> "ok"])]
     /\ toRust' = [toRust EXCEPT ![t] = Tail(@)]
-    /\ UNCHANGED <<stack, deferred, nodeCtr, rustCtr, roots, ghost>>
+    /\ UNCHANGED <<stack, deferred, nodeCtr, rustCtr, roots, posts, postCtr, ghost>>
 
 (***************************************************************************)
-Quiet == /\ hops = {}
+Quiet == /\ hops = {} /\ posts = {}
          /\ \A r \in Runtimes : /\ stack[r] = <<>> /\ deferred[r] = {}
                                 /\ toRt[r] = <<>> /\ toRust[r] = <<>>
 
@@ -319,6 +353,8 @@ Init ==
     /\ nodeCtr = [r \in Runtimes |-> 0]
     /\ rustCtr = [r \in Runtimes |-> 0]
     /\ roots = 0
+    /\ posts = {}
+    /\ postCtr = 0
     /\ ghost = [misrouted |-> FALSE, missed |-> FALSE, refusedLegit |-> FALSE,
                 falseCycle |-> FALSE, refused |-> FALSE, cycled |-> FALSE]
 
@@ -332,6 +368,8 @@ Next ==
           \/ \E f \in deferred[r] : RunDeferred(r, f)
           \/ RustForward(r)
           \/ RustReturn(r)
+          \/ RustPost(r)
+          \/ RustAnswered(r)
     \/ Done
 
 Spec == Init /\ [][Next]_vars

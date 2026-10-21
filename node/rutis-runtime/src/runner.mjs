@@ -671,9 +671,8 @@ function dispatch(target, method, args) {
       case 'dispose':
         closing = true
         return Promise.all([dispose(), peer.drain()]).then(() => null)
-      // The logical bus (#464): `events.elsewhere` and an `emit`-mode
-      // `events.call` run as their frame arrives (the session's `inline`);
-      // `events.call` runs a listener.
+      // The logical bus (#464): `events.elsewhere` runs as its frame
+      // arrives (the session's `inline`); `events.call` runs a listener.
       case 'events.elsewhere': bus.elsewhere(args?.[0] ?? {}); return undefined
       case 'events.call': return bus.call(args?.[0] ?? {})
       case 'get': {
@@ -744,11 +743,11 @@ function dispatch(target, method, args) {
 // Calls on exported objects and functions may replace services too.
 try {
   peer = await Process.connect(channelSpec, dispatch, () => { if (slots.size && !closing) refresh() }, endpoint, {
-    // Table changes, and `emit`-mode listener calls: an emit's listeners
-    // start in frame order, before the next frame (events protocol §5.5),
-    // also while a synchronous call waits (it would hold them back, and a
-    // later emit could take the fast path past them).
-    inline: (method, args) => method === 'events.elsewhere' || (method === 'events.call' && args?.[0]?.mode === 'emit'),
+    inline: ['events.elsewhere'],
+    // An `emit`-mode `events.call` waits while a synchronous call of this
+    // process does, as every call not of its chain does; a local emit of
+    // the name goes behind it (the bus's `behind`, §5.5).
+    holds: (method, args) => method === 'events.call' && args?.[0]?.mode === 'emit' ? args[0].name : undefined,
     requires: [EVENTS_V2],
   })
 } catch (error) {
@@ -766,6 +765,7 @@ bus.peer = {
   callAsync: (target, method, args) => peer.callAsync(target, method, args),
   callAnswered: (target, method, args, answered) => peer.callAnswered(target, method, args, answered),
   callFunctionAsync: (fn, args) => peer.callFunctionAsync(fn, args),
+  behind: (name, run) => peer.behind(name, run),
 }
 if (dialed) {
   // Stopped: the rows go while rutis still hears from this end, then the
