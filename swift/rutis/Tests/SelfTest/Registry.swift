@@ -25,6 +25,8 @@ let registry: [(String, () async throws -> Void)] = [
     ("CodecTests.testOptionalsAndMissingFields", { try CodecTests().testOptionalsAndMissingFields() }),
     ("ErrorGraphTests.testAnErrorCrossesWithItsCodeAndData", { ErrorGraphTests().testAnErrorCrossesWithItsCodeAndData() }),
     ("ErrorGraphTests.testAnAggregateKeepsItsChildrenInOrder", { ErrorGraphTests().testAnAggregateKeepsItsChildrenInOrder() }),
+    ("LifetimeTests.aClosedChannelLeavesItsDescriptorsNumberAlone", { try LifetimeTests().aClosedChannelLeavesItsDescriptorsNumberAlone() }),
+    ("LifetimeTests.queuedListenerInvocationsOutliveTheRuntime", { try await LifetimeTests().queuedListenerInvocationsOutliveTheRuntime() }),
     ("WeatherConformanceTests.rutisTestMeetsTheRuntimeExpectations", { try await WeatherConformanceTests().rutisTestMeetsTheRuntimeExpectations() }),
     ("EventsConformanceTests.rutisTestMeetsTheEventExpectations", { try await EventsConformanceTests().rutisTestMeetsTheEventExpectations() }),
     ("ServiceMacroTests.aMethodTableFromTheTypesMethods", { ServiceMacroTests().aMethodTableFromTheTypesMethods() }),

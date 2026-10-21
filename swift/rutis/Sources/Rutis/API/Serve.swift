@@ -135,8 +135,12 @@ extension Rutis {
         let runtime = Runtime(plugins, project: project, settings: settings)
         var options = PeerOptions()
         options.endpoint = endpoint
-        options.dispatch = { [unowned runtime] target, method, args in try await runtime.dispatch(target, method, args) }
-        options.arrive = { [unowned runtime] method, args in runtime.arrive(method, args) }
+        // Weak: a frame that arrives once the runtime is gone finds it gone.
+        options.dispatch = { [weak runtime] target, method, args in
+            guard let runtime else { throw RutisError(name: "Error", message: "runtime is closed") }
+            return try await runtime.dispatch(target, method, args)
+        }
+        options.arrive = { [weak runtime] method, args in runtime?.arrive(method, args) }
         options.require = [eventsCapability]
         options.refuse = { _ in oldEventsHost }
         let session = try Peer(channel: channel, options: options)

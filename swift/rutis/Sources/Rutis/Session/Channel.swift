@@ -66,6 +66,8 @@ package final class LineChannel: Channel, @unchecked Sendable {
         line.append(0x0A)
         writeLock.lock()
         defer { writeLock.unlock() }
+        // Once released, the descriptor's number may be another socket's.
+        if stateLock.withLock({ released }) { throw ChannelError("the channel is closed") }
         var offset = 0
         while offset < line.count {
             let written = line.withUnsafeBytes { raw in
@@ -81,6 +83,13 @@ package final class LineChannel: Channel, @unchecked Sendable {
 
     package func receive() throws -> [UInt8]? {
         stateLock.lock()
+        // Closed between two reads: the descriptor is released, and its
+        // number may already be another socket's (a new session's), whose
+        // messages this must not read.
+        if released {
+            stateLock.unlock()
+            return nil
+        }
         reading = true
         stateLock.unlock()
         defer {
@@ -147,11 +156,13 @@ package final class LineChannel: Channel, @unchecked Sendable {
             return
         }
         shut = true
+        // Wakes a blocked read; the descriptor itself goes once nothing
+        // reads it. Under the lock: a read ending now releases the
+        // descriptor, and its number may at once be another socket's (a
+        // new session's), which this must not shut down.
+        if !released { shutdown(fd, Int32(SHUT_RDWR)) }
         let busy = reading
         stateLock.unlock()
-        // Wakes a blocked read; the descriptor itself goes once nothing
-        // reads it.
-        shutdown(fd, Int32(SHUT_RDWR))
         if !busy { release() }
     }
 
@@ -163,7 +174,10 @@ package final class LineChannel: Channel, @unchecked Sendable {
         }
         released = true
         stateLock.unlock()
+        // After any write under way: a later one sees `released`.
+        writeLock.lock()
         _ = Darwin.close(fd)
+        writeLock.unlock()
     }
 }
 
