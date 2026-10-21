@@ -69,7 +69,9 @@ impl Tap {
         Ok(())
     }
 
-    /// The `events.dispatch` requests received so far.
+    /// The `events.dispatch` requests received so far: each is counted as
+    /// its session reads it, so one a runtime sent before answering a call
+    /// is counted once that answer is.
     pub fn dispatches(&self) -> u64 {
         self.0.dispatches.load(Ordering::SeqCst)
     }
@@ -88,10 +90,16 @@ impl Tap {
 }
 
 impl TapState {
-    /// An `events.dispatch` arrived: counted, and held if a hold waits for
-    /// it (the thread blocks until the hold is complete).
-    pub(crate) fn arrived(&self) {
+    /// An `events.dispatch` was read: counted on the session's reader,
+    /// before its next frame, so a reply the runtime sent after it (the
+    /// emitter's) finds it counted.
+    pub(crate) fn received(&self) {
         self.dispatches.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// An `events.dispatch` is about to run: held if a hold waits for it
+    /// (the thread blocks until the hold is complete).
+    pub(crate) fn starting(&self) {
         let mut hold = self.hold.lock().unwrap();
         if hold.want == 0 {
             return;

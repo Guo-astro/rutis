@@ -891,6 +891,14 @@ impl Drop for Flight {
 
 pub trait Dispatch: Send + Sync + 'static {
     fn invoke(&self, peer: &Connection, target: &str, method: &str, args: Value) -> Reply;
+
+    /// The event operation `method` (an `events.*` control call) was read
+    /// and admitted: called on the reader, before the next frame is taken,
+    /// whereas [`Dispatch::invoke`] runs it later, in the session's order
+    /// of event operations. It must not block. The host's bus counts the
+    /// `events.dispatch` requests here for its test hooks (feature
+    /// `testing`); nothing else needs it.
+    fn arrived(&self, _peer: &Connection, _method: &str) {}
 }
 /// How a session identifies itself and its calls.
 #[derive(Clone, Debug, Default)]
@@ -2292,10 +2300,14 @@ impl Connection {
         // table changes and emits each in its turn, the rest started in it.
         // Never here: a reader runs no plugin code (a listener, an
         // observer), which could wait for a frame only this reader reads.
-        let event_op = matches!(
-            &incoming.call,
-            Accepted::Invoke(target, method, _) if target.is_empty() && method.starts_with("events.")
-        );
+        let event_op = match &incoming.call {
+            Accepted::Invoke(target, method, _)
+                if target.is_empty() && method.starts_with("events.") =>
+            {
+                Some(method.clone())
+            }
+            _ => None,
+        };
         let inline = matches!(
             &incoming.call,
             Accepted::Invoke(target, method, args) if target.is_empty() && inline_event_op(method, args)
@@ -2340,7 +2352,12 @@ impl Connection {
                 Err(id)
             }
         };
-        if let (Err(id), true) = (&delivery, event_op) {
+        if let Some(method) = &event_op {
+            // Arrived now, in frame order: before any later frame of the
+            // session (a reply among them) is read.
+            self.0.dispatch.arrived(self, method);
+        }
+        if let (Err(id), true) = (&delivery, event_op.is_some()) {
             self.run_ordered(id.clone(), inline);
         } else if let Err(id) = delivery {
             let peer = self.clone();
