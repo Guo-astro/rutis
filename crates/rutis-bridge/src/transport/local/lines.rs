@@ -6,7 +6,7 @@
 
 use std::io::{BufRead, BufReader, IoSlice, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 
 use crate::channel::{Channel, ChannelError, ChannelInfo, Closer, Receiver, Sender};
 
@@ -36,7 +36,7 @@ pub(crate) fn limited(
     info: ChannelInfo,
     max_message: usize,
 ) -> Channel {
-    let write = Arc::new(Mutex::new(Some(write)));
+    let write = Arc::new(Writer::new(write));
     let closer: Arc<dyn Closer> = Arc::new(Releasing {
         closer,
         write: write.clone(),
@@ -65,18 +65,56 @@ pub(crate) fn limited(
 /// it.
 struct Releasing<W> {
     closer: Arc<dyn Closer>,
-    write: Arc<Mutex<Option<W>>>,
+    write: Arc<Writer<W>>,
 }
 
 impl<W> Releasing<W> {
     fn release(&self) {
-        // A send in progress was woken by the close, and fails.
-        let write = self
-            .write
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        drop(write);
+        self.write.release();
+    }
+}
+
+/// The handle the sender writes with, until the channel lets go of it.
+struct Writer<W> {
+    stream: Mutex<Option<W>>,
+    released: AtomicBool,
+}
+
+impl<W> Writer<W> {
+    fn new(stream: W) -> Self {
+        Self {
+            stream: Mutex::new(Some(stream)),
+            released: AtomicBool::new(false),
+        }
+    }
+
+    /// Let go of the handle now, or, while a send holds it, once that send
+    /// returns. Closing never waits for a send: one blocked on a far end
+    /// that stopped reading need not wake when the stream is shut down
+    /// (Winsock), and whoever closes may be what ends it (a process closer
+    /// ends the process next).
+    fn release(&self) {
+        self.released.store(true, Ordering::SeqCst);
+        let stream = match self.stream.try_lock() {
+            Ok(mut stream) => stream.take(),
+            Err(TryLockError::Poisoned(stream)) => stream.into_inner().take(),
+            // The send checks `released` after it lets go of the lock.
+            Err(TryLockError::WouldBlock) => None,
+        };
+        drop(stream);
+    }
+
+    /// After a send let go of the lock: a release that found it held left
+    /// the handle to the send.
+    fn released_meanwhile(&self) {
+        if self.released.load(Ordering::SeqCst) {
+            let stream = self
+                .stream
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            drop(stream);
+        }
     }
 }
 
@@ -126,7 +164,7 @@ impl End {
 /// The channel has no half-close: once its receiver saw the end, sending
 /// fails too. A stream does not say so by itself everywhere: on macOS a
 /// socket whose far end shut it down still takes writes, and drops them.
-struct LineSender<W>(Arc<Mutex<Option<W>>>, End);
+struct LineSender<W>(Arc<Writer<W>>, End);
 
 impl<W: Write + Send> Sender for LineSender<W> {
     fn send(&mut self, message: &[u8]) -> Result<(), ChannelError> {
@@ -145,24 +183,34 @@ impl<W: Write + Send> Sender for LineSender<W> {
         }
         // Taken only now: refusing a message over the limit closes the
         // channel, which takes the stream.
-        let mut write = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(stream) = write.as_mut() else {
-            return Err(closed("the channel ended"));
-        };
-        // The message and its newline in one write where the stream takes
-        // both, without copying the message.
-        let mut parts = [IoSlice::new(message), IoSlice::new(b"\n")];
-        let mut parts = &mut parts[..];
-        while !parts.is_empty() {
-            match stream.write_vectored(parts) {
-                Ok(0) => return Err(closed("stream closed while sending")),
-                Ok(written) => IoSlice::advance_slices(&mut parts, written),
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(error) => return Err(closed(error)),
-            }
-        }
-        stream.flush().map_err(closed)
+        let sent = write_line(&self.0, message);
+        self.0.released_meanwhile();
+        sent
     }
+}
+
+/// `message` and its newline, on the writer's handle while it has one.
+fn write_line<W: Write>(writer: &Writer<W>, message: &[u8]) -> Result<(), ChannelError> {
+    let mut write = writer.stream.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(stream) = write
+        .as_mut()
+        .filter(|_| !writer.released.load(Ordering::SeqCst))
+    else {
+        return Err(closed("the channel ended"));
+    };
+    // The message and its newline in one write where the stream takes
+    // both, without copying the message.
+    let mut parts = [IoSlice::new(message), IoSlice::new(b"\n")];
+    let mut parts = &mut parts[..];
+    while !parts.is_empty() {
+        match stream.write_vectored(parts) {
+            Ok(0) => return Err(closed("stream closed while sending")),
+            Ok(written) => IoSlice::advance_slices(&mut parts, written),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(closed(error)),
+        }
+    }
+    stream.flush().map_err(closed)
 }
 
 /// The stream, until the receiver saw its end.
@@ -263,7 +311,7 @@ mod tests {
 
     #[test]
     fn appends_the_newline_and_refuses_raw_ones() {
-        let stream = Arc::new(Mutex::new(Some(Vec::new())));
+        let stream = Arc::new(Writer::new(Vec::new()));
         let mut sender = LineSender(
             stream.clone(),
             End {
@@ -272,7 +320,7 @@ mod tests {
                 max_message: MAX_MESSAGE,
             },
         );
-        let written = || stream.lock().unwrap().clone().unwrap();
+        let written = || stream.stream.lock().unwrap().clone().unwrap();
         sender.send(b"{}").unwrap();
         assert_eq!(written(), b"{}\n");
         assert!(sender.send(b"a\nb").is_err());
@@ -490,5 +538,84 @@ mod tests {
         assert_eq!(channel.receiver.recv().unwrap(), None);
         assert!(read.load(Ordering::SeqCst), "the reading handle went");
         assert_eq!(channel.receiver.recv().unwrap(), None, "and it stays ended");
+    }
+
+    /// A write that blocks until `go` says so, as a send to a far end that
+    /// stopped reading does where shutting the stream down does not wake it.
+    struct Stuck(std::sync::mpsc::Receiver<()>, Arc<AtomicBool>);
+    impl Write for Stuck {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            self.1.store(true, Ordering::SeqCst);
+            let _ = self.0.recv();
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Closing does not wait for a blocked send: the handle goes once the
+    /// send returns (what closes may be what ends it, as a process closer
+    /// ending its process).
+    #[test]
+    fn closing_does_not_wait_for_a_blocked_send() {
+        let (go, wait) = std::sync::mpsc::channel();
+        let (blocked, written) = (Arc::new(AtomicBool::new(false)), Arc::default());
+        let Channel {
+            mut sender, closer, ..
+        } = channel(
+            Cursor::new(Vec::new()),
+            Handle(Stuck(wait, blocked.clone()), Arc::clone(&written)),
+            Arc::new(Nothing),
+            ChannelInfo::default(),
+        );
+        let sending = std::thread::spawn(move || sender.send(b"{}"));
+        while !blocked.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        closer.close("done");
+        assert!(!written.load(Ordering::SeqCst), "the send still holds it");
+        go.send(()).unwrap();
+        assert!(sending.join().unwrap().is_err());
+        assert!(written.load(Ordering::SeqCst), "the send let go of it");
+    }
+
+    /// A far end that stopped reading, on the loopback connection a spawned
+    /// process gets on Windows: with the send blocked on a full buffer,
+    /// closing returns at once.
+    #[test]
+    fn closing_returns_while_a_send_waits_on_a_far_end_that_does_not_read() {
+        use std::net::{Shutdown, TcpListener, TcpStream};
+        struct ShutTcp(TcpStream);
+        impl Closer for ShutTcp {
+            fn close(&self, _: &str) {
+                let _ = self.0.shutdown(Shutdown::Both);
+            }
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (far_end, _) = listener.accept().unwrap();
+        let Channel {
+            mut sender, closer, ..
+        } = channel(
+            stream.try_clone().unwrap(),
+            stream.try_clone().unwrap(),
+            Arc::new(ShutTcp(stream)),
+            ChannelInfo::default(),
+        );
+        let message = vec![b'x'; 1 << 20];
+        let sending = std::thread::spawn(move || while sender.send(&message).is_ok() {});
+        // Long enough for the buffers to fill and the send to block.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let (closed, closing) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            closer.close("done");
+            let _ = closed.send(());
+        });
+        let returned = closing.recv_timeout(std::time::Duration::from_secs(5));
+        // The far end going ends the send either way.
+        drop(far_end);
+        sending.join().unwrap();
+        assert!(returned.is_ok(), "close waited for the blocked send");
     }
 }
