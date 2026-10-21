@@ -13,7 +13,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, Weak};
 
 use rutis::service::{
-    erased_serde, exported_name, Answer, CallError, Encoded, Entry, Exposer, Function, Wire,
+    erased_serde, exported_name, Answer, CallError, Encoded, Entry, Exposer, Exposure, Function,
+    Wire,
 };
 use rutis::{BoxFuture, CordisError, Ctx, Disposer, Effect, InstanceId, TypeKey};
 
@@ -32,9 +33,13 @@ pub fn install() {
 
 rutis::__on_load!(install);
 
-/// A marked service, served by name: the methods of all its blocks.
+/// A marked service, served by name: the methods of all its blocks. Each
+/// call reads the native service through the providing context's strict
+/// read path ([`Entry::resolve`]), so its read interceptors and `check()`
+/// apply as they do to Rust readers.
 struct Marked {
-    service: Arc<dyn Any + Send + Sync>,
+    ctx: Ctx,
+    native: TypeKey,
     entries: Vec<&'static Entry>,
     type_name: &'static str,
 }
@@ -51,7 +56,10 @@ impl HostDispatch for Marked {
                 short(self.type_name)
             )));
         };
-        match entry.invoke(&self.service, method, Encoded(Box::new(args)), &WIRE) {
+        let service = entry.resolve(&self.ctx, &self.native).map_err(|why| {
+            Error::Value(format!("{} is not available: {why}", short(self.type_name)))
+        })?;
+        match entry.invoke(&service, method, Encoded(Box::new(args)), &WIRE) {
             Ok(Answer::Ready(value)) => Ok(value_of(value)),
             Ok(Answer::Later(future)) => Ok(Value::future(async move {
                 future.await.map(value_of).map_err(error_of)
@@ -80,13 +88,15 @@ fn short(type_name: &str) -> &str {
 }
 
 impl Exposer for BridgeExposer {
-    fn expose(
-        &self,
-        ctx: &Ctx,
-        native: &TypeKey,
-        service: Arc<dyn Any + Send + Sync>,
-        entries: Vec<&'static Entry>,
-    ) -> Result<Disposer, CordisError> {
+    fn expose(&self, exposure: Exposure<'_>) -> Result<Disposer, CordisError> {
+        let Exposure {
+            ctx,
+            native,
+            scope,
+            entries,
+            check,
+            ..
+        } = exposure;
         let name = exported_name(&entries)?;
         let type_name = entries.first().map_or("", |entry| entry.type_name());
         let instance = native.instance_id();
@@ -95,37 +105,57 @@ impl Exposer for BridgeExposer {
             None => host_key(name),
         };
         let marked = Arc::new(Marked {
-            service,
+            ctx: ctx.clone(),
+            native: native.clone(),
             entries,
             type_name,
         });
-        let served = ctx
-            .provide_as::<dyn HostDispatch>(key.clone(), marked)
-            .map_err(|error| match error {
-                CordisError::ServiceExists(_) => {
-                    let by = ctx
-                        .get_as::<dyn HostDispatch>(key.clone())
-                        .and_then(|other| other.provider())
-                        .map(|other| format!(" by {other}"))
-                        .unwrap_or_default();
-                    CordisError::ServiceExists(format!(
-                        "`{name}` ({type_name}): the name is already provided here{by}"
-                    ))
-                }
-                error => error,
-            })?;
+        // In the isolation scope of the native service (R3): two isolated
+        // scopes each serve their own.
+        let serving = match scope {
+            Some(scope) => ctx.isolate(key.clone(), scope),
+            None => ctx.clone(),
+        };
+        // The native binding's `check()` gates the name as well.
+        let served = match check {
+            Some(check) => {
+                serving
+                    .provide_as_with_check::<dyn HostDispatch>(key.clone(), marked, move || check())
+            }
+            None => serving.provide_as::<dyn HostDispatch>(key.clone(), marked),
+        };
+        let served = served.map_err(|error| match error {
+            CordisError::ServiceExists(_) => {
+                let by = serving
+                    .get_as::<dyn HostDispatch>(key.clone())
+                    .and_then(|other| other.provider())
+                    .map(|other| format!(" by {other}"))
+                    .unwrap_or_default();
+                CordisError::ServiceExists(format!(
+                    "`{name}` ({type_name}): the name is already provided here{by}"
+                ))
+            }
+            error => error,
+        })?;
         let Some(instance) = instance else {
             return Ok(served);
         };
         let name = name.to_owned();
-        let claim = ctx.effect_named(format!("rutis-service claim: {name}"), move || {
+        let claimed = ctx.effect_named(format!("rutis-service claim: {name}"), move || {
             claim(instance, &name);
             Effect::Disposer(Box::new(move || {
                 unclaim(instance, &name);
                 Ok(())
             }))
-        })?;
-        Ok(rutis::service::chain(claim, served))
+        });
+        match claimed {
+            Ok(claimed) => Ok(rutis::service::chain(claimed, served)),
+            Err(error) => {
+                // Not claimed: not served either.
+                ctx.handle().spawn(served.dispose());
+                Err(error)
+            }
+        }
     }
 }
 

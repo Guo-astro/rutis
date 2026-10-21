@@ -12,7 +12,7 @@
 use std::collections::HashSet;
 
 use rutis_host::{config, errln, host, languages, new, outln, project, status};
-use rutis_loader::{RowStatus, Supply};
+use rutis_loader::{Provider, RowStatus, Supply};
 
 mod reload;
 mod stop;
@@ -646,6 +646,23 @@ fn supply_line(service: &str, supply: &Supply) -> Option<String> {
         Supply::Missing { .. } => Some(format!(
             "{service}: add a row that provides it, or import it from a peer (import: [\"{service}\"])"
         )),
+        Supply::Provided(by)
+            if by
+                .iter()
+                .all(|provider| matches!(provider, Provider::Marked(_))) =>
+        {
+            let types: Vec<&str> = by
+                .iter()
+                .filter_map(|provider| match provider {
+                    Provider::Marked(type_name) => Some(type_name.as_str()),
+                    _ => None,
+                })
+                .collect();
+            Some(format!(
+                "{service}: served by the host's #[rutis::service] type {} once it is provided",
+                types.join(", ")
+            ))
+        }
         Supply::Unknown(sources) => Some(format!(
             "{service}: not known to be provided; it may come from {}",
             sources

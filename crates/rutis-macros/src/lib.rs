@@ -121,6 +121,70 @@ fn skipped(method: &ImplItemFn) -> syn::Result<bool> {
     Ok(skip)
 }
 
+/// The `#[cfg]` attributes of a method, and the `cfg` parts of its
+/// `#[cfg_attr]`s, for what is generated for it: a method the build leaves
+/// out is not served either.
+fn cfgs(attrs: &[syn::Attribute]) -> Vec<Tokens> {
+    attrs
+        .iter()
+        .filter_map(|attr| {
+            if attr.path().is_ident("cfg") {
+                return Some(quote!(#attr));
+            }
+            if !attr.path().is_ident("cfg_attr") {
+                return None;
+            }
+            let nested = attr
+                .parse_args_with(
+                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+                )
+                .ok()?;
+            let mut nested = nested.into_iter();
+            let predicate = nested.next()?;
+            let cfgs: Vec<syn::Meta> = nested.filter(|meta| meta.path().is_ident("cfg")).collect();
+            (!cfgs.is_empty()).then(|| quote!(#[cfg_attr(#predicate, #(#cfgs),*)]))
+        })
+        .collect()
+}
+
+/// A parameter type as the generated code can name it, outside the `impl`
+/// and the method: its named lifetimes elided (`'_`, inferred), `Self` the
+/// marked type.
+fn nameable(ty: &Type, self_ty: &Type) -> Type {
+    struct Rewrite<'a>(&'a Type);
+    impl syn::visit_mut::VisitMut for Rewrite<'_> {
+        fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+            if lifetime.ident != "static" {
+                lifetime.ident = proc_macro2::Ident::new("_", lifetime.ident.span());
+            }
+        }
+        fn visit_type_mut(&mut self, ty: &mut Type) {
+            if let Type::Path(path) = ty {
+                if path.qself.is_none()
+                    && path
+                        .path
+                        .segments
+                        .first()
+                        .is_some_and(|segment| segment.ident == "Self")
+                {
+                    let self_ty = self.0;
+                    if path.path.segments.len() == 1 {
+                        *ty = self_ty.clone();
+                        return;
+                    }
+                    let rest: Vec<_> = path.path.segments.iter().skip(1).collect();
+                    *ty = syn::parse_quote!(<#self_ty>::#(#rest)::*);
+                    return;
+                }
+            }
+            syn::visit_mut::visit_type_mut(self, ty);
+        }
+    }
+    let mut ty = ty.clone();
+    syn::visit_mut::VisitMut::visit_type_mut(&mut Rewrite(self_ty), &mut ty);
+    ty
+}
+
 /// The service name a type is exported as by default: its name with the
 /// first word lowercased (`Calendar` is `calendar`, `TreeCommands`
 /// `treeCommands`, `HTTPClient` `httpClient`).
@@ -251,7 +315,15 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
             }
         }
         let js = camel(&method.sig.ident.to_string());
-        if methods.contains(&js) {
+        let cfgs = cfgs(&method.attrs);
+        // Two methods of one name for other languages: only when `#[cfg]`
+        // keeps one of them out of each build.
+        if methods
+            .iter()
+            .any(|(known, known_cfgs): &(String, Vec<Tokens>)| {
+                *known == js && (known_cfgs.is_empty() || cfgs.is_empty())
+            })
+        {
             push(syn::Error::new(
                 method.sig.ident.span(),
                 format!("two methods are `{js}` for other languages"),
@@ -260,8 +332,8 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
         }
         match arm(&rutis, ty, method, &js) {
             Ok(arm) => {
-                arms.push(arm);
-                methods.push(js);
+                arms.push(quote!(#(#cfgs)* #arm));
+                methods.push((js, cfgs));
             }
             Err(error) => {
                 for error in error {
@@ -278,6 +350,9 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
     }
     strip(&mut block);
     let type_name = &ident;
+    let listed = methods
+        .iter()
+        .map(|(js, cfgs)| quote!(#(#cfgs)* methods.push(#js);));
     Ok(quote! {
         #block
 
@@ -289,13 +364,23 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
             fn __rutis_type_name() -> &'static str {
                 ::std::any::type_name::<#ty>()
             }
-            fn __rutis_erase(
-                provided: ::std::boxed::Box<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>,
-            ) -> ::std::option::Option<::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>> {
-                provided
-                    .downcast::<::std::sync::Arc<#ty>>()
-                    .ok()
-                    .map(|service| *service as ::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>)
+            fn __rutis_methods() -> &'static [&'static str] {
+                static METHODS: ::std::sync::OnceLock<::std::vec::Vec<&'static str>> =
+                    ::std::sync::OnceLock::new();
+                METHODS.get_or_init(|| {
+                    #[allow(unused_mut)]
+                    let mut methods = ::std::vec::Vec::new();
+                    #(#listed)*
+                    methods
+                })
+            }
+            fn __rutis_resolve(
+                ctx: &#rutis::Ctx,
+                key: &#rutis::TypeKey,
+            ) -> ::std::result::Result<::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>, ::std::string::String> {
+                ctx.require_as::<#ty>(key.clone())
+                    .map(|service| service as ::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>)
+                    .map_err(|error| ::std::string::ToString::to_string(&error))
             }
             #[allow(unused_variables, unused_mut, clippy::all)]
             fn __rutis_invoke(
@@ -322,8 +407,8 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
                 __rutis_type_name,
                 #name,
                 #named,
-                &[#(#methods),*],
-                __rutis_erase,
+                __rutis_methods,
+                __rutis_resolve,
                 __rutis_invoke,
             );
             fn __rutis_register() {
@@ -395,7 +480,7 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
         let FnArg::Typed(input) = input else {
             unreachable!("only the first input is a receiver")
         };
-        params.push(param(rust, &input.ty, &bounds)?);
+        params.push(param(rust, &nameable(&input.ty, ty), &bounds)?);
     }
     let count = params
         .iter()

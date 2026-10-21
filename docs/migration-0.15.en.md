@@ -65,4 +65,9 @@ New (existing code is not affected):
 - `rutis_loader::Loader::waiting_for(&entry)`: which services a row waits for, and how to fix it when one is an unmarked Rust service.
 - `rutis-host types`.
 - `rutis-host`'s `rutis-bridge` dependency enables the `exports` feature.
+- `rutis_loader::Provider::Marked(type)`: `Loader::check` reports a marked type's name with it (served once provided). `Provider` is `#[non_exhaustive]`, so matches already have a catch-all.
 - The new crate `rutis-macros` holds the macro; `rutis` depends on it and re-exports it, so nothing is added to `Cargo.toml`. A dylib plugin reaches it as `rutis_sdk::rutis::service`.
+
+## rutis-dylib: a rebuild needs a new version
+
+The loader refuses a plugin build whose id and version it already loaded from another build (`LoadError` step `version`, "bump the plugin's version for every rebuild"): a rebuild keeps its types' `TypeId`s, so the two could not be told apart. Bump the version in the plugin's `Cargo.toml` for every build you load into a running host; restarting the host also clears it. Loading the same build again still returns the module already loaded.

@@ -173,6 +173,13 @@ mod imp {
         assert_eq!(rejected.step, "retention");
         assert_eq!(limited.diagnostics().len(), 1);
         if let Some(retry_dir) = args.get(4) {
+            // Another build of v2 (fail_once) under v2's version: refused
+            // before it is mapped, since its types would keep v2's TypeIds.
+            let before = loader.diagnostics().len();
+            let rebuilt = unsafe { loader.load(retry_dir) }.err().unwrap();
+            assert_eq!(rebuilt.step, "version", "{rebuilt:?}");
+            assert!(rebuilt.reason.contains("bump"), "{rebuilt:?}");
+            assert_eq!(loader.diagnostics().len(), before);
             let retry = Loader::new(
                 expected,
                 std::env::var_os("RUTIS_PLUGIN_CACHE")

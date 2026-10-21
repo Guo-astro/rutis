@@ -65,4 +65,9 @@ Rust 服务在 `impl` 块上加 `#[rutis::service]`，照常 `provide`，各语�
 - `rutis_loader::Loader::waiting_for(&entry)`：一行在等哪些服务；等的是一个没标注的 Rust 服务时说明怎么改。
 - `rutis-host types`。
 - `rutis-host` 的 `rutis-bridge` 依赖开了 `exports` feature。
+- `rutis_loader::Provider::Marked(类型)`：`Loader::check` 用它报告标注类型的名字（提供后才对外）。`Provider` 是 `#[non_exhaustive]`，已有的 match 本来就有兜底分支。
 - 新 crate `rutis-macros` 放这个宏；`rutis` 依赖并重新导出它，`Cargo.toml` 不用加。dylib 插件经 `rutis_sdk::rutis::service` 用它。
+
+## rutis-dylib：重新构建要换版本号
+
+加载器拒绝 id 与版本已从另一次构建加载过的插件（`LoadError` 的步骤 `version`，"bump the plugin's version for every rebuild"）：重新构建不改变类型的 `TypeId`，两者无法区分。往运行中的宿主加载的每次构建都要提升插件 `Cargo.toml` 里的版本号；重启宿主也会清掉。再次加载同一次构建仍返回已加载的模块。
