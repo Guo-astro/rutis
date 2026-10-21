@@ -96,17 +96,40 @@ struct Retained {
 /// The generation each library mapped in this process was loaded as
 /// (`rutis::service::loading`), by its handle: opening a library again
 /// returns the mapping already there, whose initializers do not run again,
-/// so its blocks stay those of the first opening.
+/// so its blocks stay those of the first opening. One entry per library
+/// mapped, which is never unmapped: bounded, like the libraries, by the
+/// loaders' version limits.
 static GENERATIONS: Mutex<Vec<(usize, Generation)>> = Mutex::new(Vec::new());
 
-fn generation_of(handle: Handle, opened: Generation) -> Generation {
+/// Open `path`, its initializers registering its `#[rutis::service]`
+/// blocks as a generation of their own (two builds of one plugin keep their
+/// types' TypeIds; each serves its values with its own blocks). The lock is
+/// held across the opening and the recording, so two loaders opening the
+/// same file at once agree on the generation of its one mapping.
+///
+/// # Safety
+///
+/// As `platform::open_library`: the library's initializers run in this
+/// process.
+unsafe fn open_generation(path: &Path) -> Result<(Handle, Generation), String> {
+    open_generation_with(|| unsafe { platform::open_library(path) })
+}
+
+/// [`open_generation`] with `open` mapping the library.
+fn open_generation_with(
+    open: impl FnOnce() -> Result<Handle, String>,
+) -> Result<(Handle, Generation), String> {
+    let mut known = GENERATIONS
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let (opened, generation) = rutis::service::loading(open);
+    let handle = opened?;
     let key = handle.as_ptr() as usize;
-    let mut known = GENERATIONS.lock().unwrap();
     if let Some((_, generation)) = known.iter().find(|(handle, _)| *handle == key) {
-        return *generation;
+        return Ok((handle, *generation));
     }
-    known.push((key, opened));
-    opened
+    known.push((key, generation));
+    Ok((handle, generation))
 }
 
 // Library handles are process-global, remain mapped forever, and may be used
@@ -348,13 +371,17 @@ impl Loader {
                         .map_err(|e| fail("code signature", e))?;
                 }
             }
-            // The library's initializers register its #[rutis::service]
-            // blocks as a generation of their own: two builds of one
-            // plugin keep their types' TypeIds, and each serves its values
-            // with its own blocks.
-            let (opened, generation) = rutis::service::loading(|| platform::open_library(&cached));
-            let handle = opened.map_err(|e| fail(platform::OPEN_STEP, e))?;
-            let generation = generation_of(handle, generation);
+            let (handle, generation) =
+                open_generation(&cached).map_err(|e| fail(platform::OPEN_STEP, e))?;
+            // This is the plugin's newest build: names are looked up in it,
+            // not in the earlier ones, whose blocks keep serving the values
+            // they provided.
+            rutis::service::supersede(
+                retained
+                    .iter()
+                    .filter(|entry| entry.id == *id && entry.generation != generation)
+                    .map(|entry| entry.generation),
+            );
             // Every successfully opened library remains mapped, even if entry fails.
             retained.push(Retained {
                 id: id.clone(),
@@ -517,7 +544,8 @@ impl Module {
     /// The plugin's factory over JSON config. Build plugins with
     /// [`Module::build`]: a plugin built here directly is not marked as
     /// this library's code, and what it provides of a `#[rutis::service]`
-    /// type is served with the latest build's blocks of that type.
+    /// type of the library is not served by name (only the program's own
+    /// marked types are, for code of no library).
     pub fn factory(&self) -> &dyn PluginFactory<ConfigValue> {
         self.factory.as_ref()
     }
@@ -677,4 +705,39 @@ unsafe fn symbol<T>(handle: Handle, name: &[u8]) -> Result<T, String> {
         std::mem::size_of::<*mut std::ffi::c_void>()
     );
     platform::find_symbol(handle, name).map(|ptr| std::mem::transmute_copy(&ptr))
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use super::*;
+    use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    /// Two loaders opening one file at once agree on the generation its
+    /// initializers ran in: the first opening runs them (slowly here), the
+    /// second gets the mapping already there.
+    #[test]
+    fn concurrent_openings_record_the_generation_the_initializers_ran_in() {
+        static INITIALIZED: AtomicBool = AtomicBool::new(false);
+        static RAN_IN: AtomicU64 = AtomicU64::new(0);
+        let fake = NonNull::new(0x5eed_usize as *mut std::ffi::c_void).unwrap();
+        let handle = fake.as_ptr() as usize;
+        let open = move || -> Result<Handle, String> {
+            if !INITIALIZED.swap(true, Ordering::SeqCst) {
+                // The initializers: they register as the current generation.
+                let generation = rutis::service::current_loading().expect("inside loading");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                RAN_IN.store(generation.id(), Ordering::SeqCst);
+            }
+            Ok(NonNull::new(handle as *mut std::ffi::c_void).unwrap())
+        };
+        let (a, b) = std::thread::scope(|scope| {
+            let a = scope.spawn(|| open_generation_with(open).unwrap().1);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let b = scope.spawn(|| open_generation_with(open).unwrap().1);
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        assert_eq!(a, b);
+        assert_eq!(a.id(), RAN_IN.load(Ordering::SeqCst));
+    }
 }
