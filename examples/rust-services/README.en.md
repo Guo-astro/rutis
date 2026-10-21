@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-An application whose TypeScript and Python rows use its existing Rust services by name, with no `HostDispatch` written ([#440](https://github.com/arcships/rutis/issues/440)). The services are in a dependency crate that knows nothing of rutis-bridge: [`calendar`](calendar/src), with `Calendar` (for every row) and `Notes` (one per `session` instance).
+An application whose TypeScript and Python rows use its existing Rust services by name, with no `HostDispatch` written ([#440](https://github.com/arcships/rutis/issues/440)). This is the form for **types whose source you cannot change**: listed in `build.rs`. Your own types only need `#[rutis::service]` on their `impl`, with no `build.rs`: see [`examples/marked-services`](../marked-services). The services are in a dependency crate that knows nothing of rutis-bridge: [`calendar`](calendar/src), with `Calendar` (for every row) and `Notes` (one per `session` instance).
 
 | File | What it shows |
 | --- | --- |
@@ -22,4 +22,4 @@ python3 -m pip install "websockets==15.*"
 cargo test -p rust-services-example
 ```
 
-Usage: [Embed rutis in a Rust application](../../docs/guide/rust-host.en.md#export-an-existing-rust-service); what crosses and the limits: [Cordis](../../docs/guide/rust-host.en.md#exported-services-reference).
+Usage: [Embed rutis in a Rust application](../../docs/guide/rust-host.en.md#third-party-types-list-them-in-buildrs); what crosses and the limits: [Cordis](../../docs/guide/rust-host.en.md#exported-services-reference).

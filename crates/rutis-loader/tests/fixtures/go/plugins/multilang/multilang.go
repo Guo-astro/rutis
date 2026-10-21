@@ -6,6 +6,8 @@ package multilang
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/arcships/rutis/go/rutis"
@@ -199,5 +201,39 @@ var Registrant = rutis.Define(rutis.Plugin[RegistrantConfig]{
 			return err
 		}
 		return ledger.Register(ctx, config.Name)
+	},
+})
+
+// CalendarUser calls the host's `calendar`, a Rust type marked
+// #[rutis::service] (crates/rutis-loader/tests/marked_services.rs).
+var CalendarUser = rutis.Define(rutis.Plugin[rutis.NoConfig]{
+	Name:   "go_calendar",
+	Inject: []string{"calendar", "probe"},
+	Apply: func(ctx *rutis.Ctx, _ rutis.NoConfig) error {
+		p, err := probe(ctx)
+		if err != nil {
+			return err
+		}
+		var calendar struct {
+			Add   func(ctx context.Context, entry map[string]any) (int, error)
+			OnDay func(ctx context.Context, day int) (map[string]any, error)
+		}
+		if err := ctx.Use("calendar", &calendar); err != nil {
+			return err
+		}
+		count, err := calendar.Add(ctx, map[string]any{"title": "go", "day": 4})
+		if err != nil {
+			return err
+		}
+		entry, err := calendar.OnDay(ctx, 4)
+		if err != nil {
+			return err
+		}
+		_, err = calendar.OnDay(ctx, 99)
+		var remote *rutis.RemoteError
+		if !errors.As(err, &remote) {
+			return fmt.Errorf("expected a remote error, got %v", err)
+		}
+		return p.Record(ctx, fmt.Sprintf("go calendar: %t %v / %s %s %s", count >= 1, entry["title"], remote.Name, remote.Code, remote.Message))
 	},
 })

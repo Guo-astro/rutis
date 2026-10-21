@@ -30,6 +30,8 @@ In Go: `ctx.Use(name, &target)` binds the service to a struct of function fields
 
 In Kotlin: `ctx.use<I>(name)` uses the service through the `@RutisClient` interface `I` (the provider's own object when one in this process implements `I`); `ctx.provide(name, obj)` takes an instance of a `@RutisService` class, whose method table the KSP processor generates at compile time; `ctx.effect { }`; `ctx` is a coroutine scope cancelled when the plugin unloads, and coroutines started with `ctx.launch { }` are cancelled and waited for then. A received error is a `RutisException`, matched by `name`.
 
+Rust plugins in the host (built in, or dylib plugins): add `#[rutis::service]` to the service type's `impl` block, and once `ctx.provide(value)` provides it, it reaches other languages by name (by default the type's name, first word lowercased); rows of every language call it with `ctx.use(name)`. Unmarked Rust types are not served. See [Rust host](rust-host.en.md#mark-the-type-rutisservice).
+
 ## Events
 
 Every listener on a host — of the host's Rust plugins, of every plugin in every runtime process (any language), of what node links bring in — is on **one logical bus**. There is one rule:

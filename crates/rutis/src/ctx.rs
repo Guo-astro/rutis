@@ -972,6 +972,12 @@ impl Ctx {
                 )],
             });
         }
+        // A `#[rutis::service]` type is also served by name (R2).
+        let marked = if mutable {
+            None
+        } else {
+            crate::service::marked(&value)
+        };
         let scope = self.scope_for(&key);
         let event_key = key.clone();
         let event_scope = scope.clone();
@@ -1035,6 +1041,21 @@ impl Ctx {
             &binding,
             crate::ServiceChange::Provided,
         );
+        if let Some((service, entries)) = marked {
+            match crate::service::expose(self, &event_key, service, entries) {
+                Some(Ok(exposed)) => {
+                    return Ok((crate::service::chain(exposed, disposer), binding));
+                }
+                Some(Err(error)) => {
+                    // Not served by name: not provided either.
+                    if let Ok(tasks) = tokio::runtime::Handle::try_current() {
+                        tasks.spawn(disposer.dispose());
+                    }
+                    return Err(error);
+                }
+                None => {}
+            }
+        }
         Ok((disposer, binding))
     }
 

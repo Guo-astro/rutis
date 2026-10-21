@@ -31,6 +31,9 @@ use serde_json::json;
 
 use crate::session::{host_key, Error, HostDispatch, Reference, Reply, Value};
 
+#[doc(hidden)]
+pub use crate::marked::{claimed_in, claims_in, install, on_claim, unexported};
+
 type Wrap = dyn Fn(&Ctx, &TypeKey) -> Result<Arc<dyn HostDispatch>, CordisError> + Send + Sync;
 
 /// A Rust service exported by name: the native service of type `T`, and the

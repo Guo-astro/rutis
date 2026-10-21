@@ -6,6 +6,7 @@
 //! rutis-host check [rutis.json]    describe every row, and fail on what cannot run
 //! rutis-host new <name> --lang node|bun|python|go|swift
 //! rutis-host go add <module>@<version> [rutis.json]
+//! rutis-host types [crate dir] [-o file]
 //! ```
 
 use std::collections::HashSet;
@@ -51,6 +52,10 @@ usage:
   rutis-host go add <module>@<version> [rutis.json]
                                               install a Go plugin binary into runtimes.go.dir
                                               (go install; needs the Go toolchain)
+  rutis-host types [dir] [-o file]            write the TypeScript declarations of the Rust
+                                              services marked #[rutis::service] in the crate in
+                                              dir (default .) and the crates it uses (to stdout,
+                                              or to file)
   rutis-host --version
 
 Credentials for links come from RUTIS_TOKEN (or RUTIS_TOKEN_<PEER>), RUTIS_CA,
@@ -67,6 +72,7 @@ fn main() {
     let result = match args.first().map(String::as_str) {
         Some("new") => new_project(&args[1..]).map(|()| Stopped::Done),
         Some("go") => go_command(&args[1..]).map(|()| Stopped::Done),
+        Some("types") => types(&args[1..]).map(|()| Stopped::Done),
         Some("--version" | "-V") => {
             outln!("rutis-host {}", env!("CARGO_PKG_VERSION"));
             Ok(Stopped::Done)
@@ -111,6 +117,38 @@ fn quarantine_hint(path: &std::path::Path) -> Option<String> {
             path.display()
         )
     })
+}
+
+/// `rutis-host types [dir] [-o file]`: the declarations of the marked Rust
+/// services, as `build::Exports` writes them.
+fn types(args: &[String]) -> Result<(), String> {
+    let mut dir = None;
+    let mut output = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-o" | "--output" => output = Some(args.next().ok_or("-o needs a file")?.to_owned()),
+            other if dir.is_none() && !other.starts_with('-') => dir = Some(other.to_owned()),
+            other => return Err(format!("unexpected argument {other}")),
+        }
+    }
+    let dir = std::path::PathBuf::from(dir.unwrap_or_else(|| ".".into()));
+    if !dir.join("Cargo.toml").is_file() {
+        return Err(format!(
+            "{} has no Cargo.toml: name the Rust crate's directory",
+            dir.display()
+        ));
+    }
+    let typescript = rutis_bridge::build::Exports::new()
+        .declarations(&dir)
+        .map_err(|error| error.to_string())?;
+    match output {
+        Some(file) => std::fs::write(&file, typescript).map_err(|error| format!("{file}: {error}")),
+        None => {
+            outln!("{}", typescript.trim_end());
+            Ok(())
+        }
+    }
 }
 
 fn new_project(args: &[String]) -> Result<(), String> {

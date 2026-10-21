@@ -52,6 +52,7 @@ mod compose;
 mod host;
 mod identity;
 mod link;
+mod marked;
 mod peer;
 mod registration;
 mod services;

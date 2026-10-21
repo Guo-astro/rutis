@@ -14,6 +14,16 @@ use rutis_sdk::ConfigValue;
 struct Factory;
 struct Greeter;
 
+/// Served by name to the plugins of other languages once provided (#510).
+pub struct Greeting(&'static str);
+
+#[rutis_sdk::rutis::service]
+impl Greeting {
+    pub fn text(&self) -> String {
+        self.0.to_owned()
+    }
+}
+
 impl PluginFactory<ConfigValue> for Factory {
     fn name(&self) -> &str {
         #[cfg(feature = "changed_identity")]
@@ -43,6 +53,7 @@ impl Plugin for Greeter {
                 .await
                 .map_err(|e| CordisError::PluginFailed(e.into()))?;
             ctx.provide("hello v2".to_string())?;
+            ctx.provide(Greeting("hello v2"))?;
             ctx.provide(Snapshot {
                 generation: 2,
                 state: FiberState::Active,

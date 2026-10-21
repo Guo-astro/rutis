@@ -21,9 +21,47 @@ rutis-bridge = { version = "0.13", features = ["python", "websocket"] }   # node
 
 ## 给插件提供 Rust 服务
 
-### 导出已有的 Rust 服务
+### 在类型上标注 `#[rutis::service]`
 
-已有的 Rust 服务（包括依赖 crate 里的）可以直接由各语言的行按名字使用，不用写任何绑定：在 `build.rs` 里写出它的类型，构建时从 Rust 定义生成它的 dispatcher 和 TypeScript 声明（[#440](https://github.com/arcships/rutis/issues/440)）。
+Rust 服务在它的 `impl` 块上加 `#[rutis::service]`，照常 `provide`，各语言的行就能按名字调用它（[#510](https://github.com/arcships/rutis/issues/510)）。不用清单、不用 `build.rs`、不用 `export_all`、不用写 `HostDispatch`；定义服务的 crate 只依赖 `rutis`。
+
+```rust
+use rutis::{service, BoxFuture, CordisError};
+
+#[service]                         // 对外名字 "calendar"：类型名，第一个词小写
+impl Calendar {
+    pub fn new() -> Self { /* … */ }                          // 没有 self：不对外
+    pub async fn add(&self, entry: NewEntry) -> Result<Entry, CalendarError> { /* … */ }
+    pub fn get(&self, id: u64) -> Result<Entry, CalendarError> { /* … */ }
+    pub async fn subscribe(&self, ctx: &rutis::Ctx, handler: impl Fn(Change) -> BoxFuture<'static, Result<(), CordisError>>) { /* … */ }
+    #[service(skip)]
+    pub fn compact(&mut self) { /* … */ }                     // 留在 Rust 里
+}
+
+root.provide(Calendar::new())?;    // 就这些
+```
+
+```ts
+const calendar = ctx.use<Services['calendar']>('calendar')
+const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
+```
+
+- **对外的方法**：带标注的 `impl` 块里公开的 `&self` 方法；一个类型可以有几个带标注的块。对调用方都是 `async`（JavaScript 里是 Promise，Python 里是 awaitable），Node、Bun、Python、Go 的行调用的是同一个 dispatcher。方法名按 camelCase 对外（`add_entry` 是 `addEntry`）。
+- **名字**：默认是类型名、第一个词小写（`Calendar` 是 `calendar`，`TreeCommands` 是 `treeCommands`，`HTTPClient` 是 `httpClient`）；`#[service(name = "cal")]` 改名。
+- **提供即对外**：`ctx.provide(value)`（以及键是这个类型自己的 `provide_as`）同时按名字提供它，同一个撤销函数撤下两者，插件卸载时一起撤下；依赖它的行随之停止，与其他服务相同。`provide_mut_as` 提供的可变绑定不对外。
+- **作用域跟着提供的位置**：在实例里提供（`TypeKey::instance::<Notes>(build.instance("session")?)`），就是那个实例自己的，实例里的行拿到它；在实例外提供就是全局的。不用写实例组。
+- **能传什么、错误怎么抛**：与下面"第三方类型"的生成规则相同（[参考](#导出服务参考)）：serde 参数与返回值、按引用的回调、`&Ctx` 调用方行、`Err(e)` 抛出时带 `name`、`code`、`message`、`data`。
+- **编译期报错**：带标注的块里有公开方法绑定不了（`&mut self`、返回借用、可变引用参数、不是函数的泛型参数等），是指到那个方法的编译错误；不想对外的，在方法上加 `#[service(skip)]`。
+- **重名**：同一作用域里两个类型对外名字相同，后一个 `provide` 失败，错误写明双方。
+- **没标注的不对外**：宿主内部的服务（存储、锁、数据库句柄等）不会暴露给插件。一行等着的名字恰好是某个没标注的 Rust 服务的名字时，`Loader::waiting_for(&entry)` 列出这一行等的名字，并说明在那个类型的 `impl` 上加 `#[rutis::service]`。
+- **dylib 插件**：dylib 里带标注的类型（crate 只依赖 `rutis-sdk`）加载后同样对外，宿主不需要知道它；换代时旧代的入口随旧代的服务撤下，新代提供时重新出现。宿主要链接 `rutis-bridge`。
+- **TypeScript 声明**：`rutis-host types <crate 目录> -o services.d.ts` 从源码里找出这个 crate 和它用到的、依赖 rutis 的 crate 里全部带标注的类型，写出声明（`Services['calendar']`、各数据类型、`<Name>Thrown`）。想每次构建都更新，`build.rs` 里写 `rutis_bridge::build::Exports::new().typescript("rows/services.d.ts").generate()`，不用列类型。调用本身不需要声明。
+
+完整示例：[`examples/marked-services`](../../examples/marked-services)。
+
+### 第三方类型：在 `build.rs` 里列出
+
+改不了源码的类型（别人 crate 里的），在 `build.rs` 里写出它的类型，构建时从 Rust 定义生成它的 dispatcher 和 TypeScript 声明（[#440](https://github.com/arcships/rutis/issues/440)）。带标注的类型不要再列：列了会构建报错。
 
 ```toml
 [dependencies]
@@ -58,29 +96,8 @@ root.provide(Calendar::new())?;
 // 实例的 Notes：由组内的行提供，在 TypeKey::instance::<Notes>(build.instance("session")?) 下。
 ```
 
-```ts
-import { definePlugin } from '@arcships/rutis'
-import type { CalendarErrorThrown, Services } from './services.js'
-
-export default definePlugin({
-  inject: ['calendar'],
-  async apply(ctx) {
-    const calendar = ctx.use<Services['calendar']>('calendar')
-    const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
-    try {
-      await calendar.get(99_999)
-    } catch (error) {
-      const thrown = error as CalendarErrorThrown   // name 'CalendarError'，code 'NotFound'，data { NotFound: { id: 99999 } }
-    }
-    // 按引用传的函数：返回的 Promise settle 之后，Rust 一侧的 future 才完成。
-    await calendar.subscribe(async change => { /* ... */ })
-  },
-})
-```
-
 - 原生服务在时，加载器就提供这个导出：`inject` 这个名字的行等它出现、随它撤下而停止，与其他服务相同。实例内的导出按 `register_shared_instance` 的规则解析：行拿到离它最近的那个组实例的服务。不用加载器时，自己挂上 `exports::calendar().plugin(None)`。
-- 每个公开的 `&self` 方法都会导出，对调用方是 `async`（JavaScript 里是 Promise，Python 里是 awaitable）；Python 和 Go 的行调用同一个 dispatcher。`&Ctx` 参数是调用方那一行的上下文，不是给调用方的参数：方法在上面登记的东西随该行卸载而移除。生成器绑定不了的方法会被跳过，构建警告写明位置和原因。
-- `Err(e)` 在调用方语言里作为错误抛出，带 `name`（`e` 的类型）、`code`（变体）、`message`（`Display`）和 `data`（serde 值）。能传什么、依赖 crate 的源码怎么找、有哪些限制：见 [Cordis](#导出服务参考)。完整示例：[`examples/rust-services`](../../examples/rust-services)。
+- 每个公开的 `&self` 方法都会导出，规则与标注的相同；生成器绑定不了的方法会被跳过，构建警告写明位置和原因。完整示例：[`examples/rust-services`](../../examples/rust-services)。
 
 ### 手写 `HostDispatch`
 
@@ -314,7 +331,7 @@ off.dispose().await?;
 
 ## 导出服务：参考
 
-已有的 Rust 服务，由各语言的行（TypeScript、JavaScript、Python、Go）按名字使用；dispatcher 和 TypeScript 声明在构建时从 Rust 定义生成。`build.rs` 用 `rutis_bridge::build::Exports` 列出类型（构建依赖开 `exports` feature）；应用用 `rutis_bridge::include_exports!()` 声明生成的模块，再用 `ServiceCatalog::export_all` 登记 `exports::all()`。用法见[上文](#导出已有的-rust-服务)；完整示例：[`examples/rust-services`](../../examples/rust-services)。
+Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名字使用。带 `#[rutis::service]` 的类型，dispatcher 由宏在编译期生成，提供即对外（[上文](#在类型上标注-rutisservice)）；改不了源码的类型，`build.rs` 用 `rutis_bridge::build::Exports` 列出（构建依赖开 `exports` feature），应用用 `rutis_bridge::include_exports!()` 声明生成的模块，再用 `ServiceCatalog::export_all` 登记 `exports::all()`（[上文](#第三方类型在-buildrs-里列出)）。两者能传什么、错误怎么抛都按下面的规则；TypeScript 声明都由生成器从源码写出。完整示例：[`examples/marked-services`](../../examples/marked-services)、[`examples/rust-services`](../../examples/rust-services)。
 
 | `Exports` | 作用 |
 | --- | --- |
@@ -371,7 +388,7 @@ off.dispose().await?;
 
 ### 声明
 
-`rutis_exports.d.ts` 包含每个服务类型的接口、它用到的数据类型、`RustError`、各 `<Name>Thrown` 类型，以及按名字列出服务的 `Services`：`ctx.use<Services['calendar']>('calendar')`。它能通过 `tsc --strict`（`examples/rust-services` 会检查）。`.typescript(…)` 写出的那份要提交：Rust 一侧变了，构建会改写它。
+`rutis_exports.d.ts`（以及 `rutis-host types` 写出的文件）包含每个服务类型的接口、它用到的数据类型、`RustError`、各 `<Name>Thrown` 类型，以及按名字列出服务的 `Services`：`ctx.use<Services['calendar']>('calendar')`。它能通过 `tsc --strict`（`examples/rust-services` 会检查）。`.typescript(…)` 写出的那份要提交：Rust 一侧变了，构建会改写它。
 
 ### 限制
 
@@ -380,3 +397,9 @@ off.dispose().await?;
 - 数据类型需要生成器能读懂的 serde derive：手写的 `Serialize`、`#[serde(with / serialize_with / into / remote)]`，或者不读源码的 crate 的类型（`std`、`serde_json`、`chrono`、`uuid`、`url` 和带标签的值除外）需要 `.declared(path, typescript)`；在那之前用到它的方法被跳过，警告里写明类型。
 - `#[cfg]` 按上面的规则求值；构建脚本看不到的 `cfg` 视为关闭。
 - 方法的 future 必须是 `Send`（否则编译失败）。
+
+带 `#[rutis::service]` 的类型另外：
+
+- 宏只看到 `impl` 块本身，类型上的判断（是不是 `Result`、错误怎么取 `code`、参数是不是函数）交给展开后的具体代码，所以类型别名照样识别。异步方法写成 `async fn`，或返回 `BoxFuture<'_, T>`、`Pin<Box<dyn Future<Output = T> + Send>>`、`impl Future<Output = T>`；返回 future 的别名是编译错误。`&Ctx` 参数按名字 `Ctx` 识别。
+- 错误的 `code` 在抛出时由值得出，规则同上表；内部或相邻标签枚举的变体用 `#[serde(rename = "...")]` 改成与 Rust 名无关的名字时，`code` 是 Rust 名。
+- 宏生成的代码只依赖 `rutis`（只依赖 `rutis-sdk` 的 crate 经 `rutis_sdk::rutis`，宏从 `Cargo.toml` 认出；别的路径写 `#[service(crate = "my::rutis")]`）；值经宿主链接的 `rutis-bridge` 编解码，比 `build.rs` 生成的多一层动态分发，相对跨进程的开销可以忽略。

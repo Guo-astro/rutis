@@ -827,6 +827,29 @@ pub(crate) fn decode_data<T: DeserializeOwned>(value: Value) -> Result<T, Error>
     result.map_err(|error| Error::Value(error.to_string()))
 }
 
+/// [`decode_data`] with `consume`, which deserializes from the JSON it is
+/// given: how a `#[rutis::service]` dispatch decodes its parameters.
+pub(crate) fn decode_data_with(
+    value: Value,
+    consume: impl FnOnce(Json) -> Result<(), String>,
+) -> Result<(), Error> {
+    let mut taken = std::collections::HashSet::new();
+    value_keys(&value, &mut taken);
+    let keys = Keys::avoiding(&taken);
+    let mut references = Vec::new();
+    let mut tagged = Vec::new();
+    let json = marked(value, &keys, &mut references, &mut tagged);
+    if !references.is_empty() {
+        return Err(Error::Value(
+            "a function or object reference was passed where data is expected".into(),
+        ));
+    }
+    let previous = DECODING_TAGGED.with(|current| current.replace(tagged));
+    let result = with_keys(&keys, || consume(json));
+    DECODING_TAGGED.with(|current| current.replace(previous));
+    result.map_err(Error::Value)
+}
+
 /// Serialize `value` as an argument is encoded: the references it holds in
 /// its `ObjectRef`s and `RemoteFunction`s, and its tagged values.
 fn encoding<T: Serialize + ?Sized>(

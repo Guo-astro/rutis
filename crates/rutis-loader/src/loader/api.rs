@@ -162,6 +162,36 @@ impl Loader {
         out
     }
 
+    /// What the copy `entry` (one of [`Loader::entries`]) waits for: each
+    /// service it injects that is missing, by name, with why when rutis
+    /// knows more (a Rust service of that name whose type is not marked
+    /// `#[rutis::service]`, so not served to other languages).
+    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    pub fn waiting_for(&self, entry: &EntryInfo) -> Vec<String> {
+        let Some(plugin) = entry.plugin else {
+            return Vec::new();
+        };
+        let Some(ctx) = self.inner.state.lock().unwrap().last_root.clone() else {
+            return Vec::new();
+        };
+        let diagnostics = ctx.diagnostics();
+        let Some(found) = diagnostics.plugins.iter().find(|found| found.id == plugin) else {
+            return Vec::new();
+        };
+        found
+            .injects
+            .iter()
+            .filter(|inject| inject.status == rutis::DependencyStatus::Missing)
+            .map(|inject| match inject.key.name() {
+                Some(name) => match rutis_bridge::exports::unexported(&ctx, name) {
+                    Some(why) => format!("{name}: {why}"),
+                    None => name.to_owned(),
+                },
+                None => inject.key.describe(),
+            })
+            .collect()
+    }
+
     /// The row `id` itself (for a row inside instanced groups, without a
     /// copy's state; see [`Loader::entries`]).
     pub fn get(&self, id: &str) -> Option<EntryInfo> {

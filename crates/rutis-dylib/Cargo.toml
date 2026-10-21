@@ -35,6 +35,8 @@ loader = ["dep:rutis-loader"]
 
 [dev-dependencies]
 tokio = { workspace = true }
+# greeter_host: a #[rutis::service] type in a plugin is served by name.
+rutis-bridge = { path = "../rutis-bridge", default-features = false }
 
 [[example]]
 name = "loader_host"

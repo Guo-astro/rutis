@@ -27,6 +27,19 @@ mod imp {
         }
     }
 
+    /// What the plugin's `#[rutis::service]` `Greeting` answers by name,
+    /// as a row of another language calls it.
+    async fn greeting(root: &Ctx) -> Result<String, Box<dyn std::error::Error>> {
+        use rutis_bridge::session::{host_key, settle, HostDispatch, Value};
+        let service = root
+            .get_as::<dyn HostDispatch>(host_key("greeting"))
+            .ok_or("the plugin's Greeting is not served by name")?;
+        match settle(service.invoke("text", Value::List(Vec::new()))?).await? {
+            Value::Data(rutis_sdk::serde_json::Value::String(text)) => Ok(text),
+            other => Err(format!("unexpected {other:?}").into()),
+        }
+    }
+
     #[tokio::main]
     pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let args: Vec<String> = std::env::args().collect();
@@ -59,6 +72,7 @@ mod imp {
             Some("hello v1")
         );
         assert_eq!(root.get::<Snapshot>().unwrap().generation, 1);
+        assert_eq!(greeting(&root).await?, "hello v1");
         if let Some(changed_dir) = args.get(3) {
             let changed = unsafe { loader.load(changed_dir)? };
             assert!(loader
@@ -91,6 +105,8 @@ mod imp {
             Some("hello v2")
         );
         assert_eq!(root.get::<Snapshot>().unwrap().generation, 2);
+        // The new version's own type, served by name in its place.
+        assert_eq!(greeting(&root).await?, "hello v2");
         if let Some(path) = std::env::var_os("RUTIS_PLUGIN_DROP_MARKER") {
             assert_eq!(std::fs::read_to_string(path)?, "drop\n");
         }

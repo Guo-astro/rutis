@@ -8,6 +8,16 @@ use rutis_sdk::ConfigValue;
 struct Factory;
 struct Greeter;
 
+/// Served by name to the plugins of other languages once provided (#510).
+pub struct Greeting(&'static str);
+
+#[rutis_sdk::rutis::service]
+impl Greeting {
+    pub fn text(&self) -> String {
+        self.0.to_owned()
+    }
+}
+
 impl Drop for Greeter {
     fn drop(&mut self) {
         if let Some(path) = std::env::var_os("RUTIS_PLUGIN_DROP_MARKER") {
@@ -40,6 +50,7 @@ impl Plugin for Greeter {
                 .await
                 .map_err(|e| CordisError::PluginFailed(e.into()))?;
             ctx.provide("hello v1".to_string())?;
+            ctx.provide(Greeting("hello v1"))?;
             ctx.provide(Snapshot {
                 generation: 1,
                 state: FiberState::Active,

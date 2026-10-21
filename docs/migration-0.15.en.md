@@ -51,3 +51,17 @@ For authors of runtimes and testing tools (protocol §5.5, [runtime contract](..
 - **`events.expected.json`.** It has the step expectation `answered`: wait until the host has replied to every `events.dispatch` it received. It also adds the spec field `then` (`{until, args}`), the `unload` step's `then`, and the sync method `events-log.until(entry)`. A testing tool that reads the file must accept these keys. The cases that use `then` are `tool: false`.
 - **`Tap::answered`** (`rutis_bridge::events::testing`, feature `testing`): waits for those replies, for your own host-side tests.
 - **Compatibility.** A 0.13 runtime still works with a 0.15 host but keeps its timing-dependent order: it counts the answer on a later tick. A 0.15 runtime still settles a 0.13 host's future answer, and with such a host keeps 0.13's order.
+
+## Rust services: mark the type `#[rutis::service]`
+
+Add `#[rutis::service]` to a Rust service's `impl` block and provide it as usual: the rows of every language call it by name ([#510](https://github.com/arcships/rutis/issues/510), [Rust host guide](guide/rust-host.en.md#mark-the-type-rutisservice)). No `build.rs` list, `export_all` or hand-written `HostDispatch`; built-in and dylib plugins alike.
+
+**No code changes needed**: `build.rs` `Exports::service(..)` / `service_in(..)` and hand-written `HostDispatch`es keep working. To switch a type to the marker: mark its `impl` and remove its line from `build.rs` (having both is a build error); a service provided in an instance needs no instance group any more. When `build.rs` only writes declarations, write `Exports::new().typescript("…").generate()`, or use `rutis-host types <crate dir> -o services.d.ts` instead.
+
+New (existing code is not affected):
+
+- `rutis::service` (the macro) and `rutis::CallError`: what a function a marked method was passed fails with; a function parameter's error type converts from it (`CordisError`, `anyhow::Error` and boxed errors do).
+- `rutis::TypeKey::type_name()` is public.
+- `rutis_loader::Loader::waiting_for(&entry)`: which services a row waits for, and how to fix it when one is an unmarked Rust service.
+- `rutis-host types`.
+- `rutis-host`'s `rutis-bridge` dependency enables the `exports` feature.
