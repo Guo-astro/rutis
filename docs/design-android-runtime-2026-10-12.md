@@ -2,7 +2,7 @@
 
 [English](design-android-runtime-2026-10-12.en.md)
 
-状态：定稿；K-P1 已实现（#390，`kotlin/rutis`），K-P2 已实现（#391，见 §十三），K-P3 未实现。日期：2026-10-12，2026-10-14 定稿修订（改为按 [应用接入](design-app-integration-2026-10-14.md)，见 §十），2026-10-19 对齐 rutis 0.13 的运行时契约（值、自动对外、错误、调用方的行、统一事件、开发者无感，见 §十一）。基准：`main` `028783f`（0.13.0）。
+状态：定稿；K-P1 已实现（#390，`kotlin/rutis`），K-P2 已实现（#391，见 §十三），K-P3 已实现（#388：示例插件 `contacts`、`notify`、`device` 在 `kotlin/rutis/android-sample`，指南 [Android 应用托管插件](guide/kotlin-app.md)；授权提示与拒绝在模拟器上自动验证，真机清单见指南 §8）。日期：2026-10-12，2026-10-14 定稿修订（改为按 [应用接入](design-app-integration-2026-10-14.md)，见 §十），2026-10-19 对齐 rutis 0.13 的运行时契约（值、自动对外、错误、调用方的行、统一事件、开发者无感，见 §十一）。基准：`main` `028783f`（0.13.0）。
 依据：[运行时契约](../.agents/skills/rutis-new-runtime/references/runtime-contract.md)（实现以它为准）、[应用接入](design-app-integration-2026-10-14.md)（通用模型）、[远程运行时：拨出与动态接入](design-remote-runtime-dial-2026-10-14.md)（连接）、[跨语言值类型](design-value-types-2026-10-15.md)、[统一事件的协议规格](design-events-protocol-2026-10-18.md)、[多语言总体稿](design-multilang-runtimes-2026-10-03.md)、[插件 API](guide/plugin-api.md)、[Swift SDK](design-swift-sdk-2026-10-12.md)（形态②的 Swift 对应物）、[Go 插件运行时](design-go-runtime-2026-10-10.md)（每调用一个执行单元的先例）。
 
 定位：Android 应用把自身能力与所在设备的能力作为 rutis 插件提供；插件用 Kotlin 编写、编进应用，由 rutis 驱动。本文是 Kotlin SDK 的唯一现行设计：桌面 JVM 运行时（[Kotlin 运行时](design-kotlin-runtime-2026-10-12.md)）挂起，不是本文的前提；K-P1 的 jvm target 只用于在桌面上跑一致性测试。
@@ -418,4 +418,3 @@ rutis.stop()    // 全部插件逆序清理，然后断开
 | 主线程 | 等待 rutis 的调用（会话上的阻塞调用、远程函数、远程 future）在 Android 主线程上抛 `IllegalStateException`，说明改用 `suspend` 或换线程；判断在 `src/androidMain`，jvm 上不拒绝 | §11.3 #3 |
 | OkHttp | 5.3.2：5.4 起 AAR 要求应用以 compileSdk 36 以上编译 | 不替应用抬高 compileSdk |
 | 设备测试 | SDK 自己的（`src/androidInstrumentedTest`：主线程规则）；示例应用 `kotlin/rutis/android-sample` 由 `crates/rutis-host/tests/android.rs` 驱动：release 构建（R8，应用不加任何规则）经 intent 启停，debug 构建的设备测试开两条连接；rutis 一侧 Python 行经应用的服务装载 | 测 R8 时设备测试不能对 release 跑：测试 APK 与应用共享的依赖（kotlin、androidx.tracing）被应用的 R8 删掉 |
-| 未声明的服务 | 应用插件提供、没有声明的服务，同实例里 rutis 一侧的行暂时找不到（rutis-loader 只按声明的 `provides` 认连接的服务）；示例插件临时声明 `provides`，修复后去掉 | 另行修复（rutis-loader），声明仍是可选的 |

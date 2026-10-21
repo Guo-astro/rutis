@@ -95,7 +95,7 @@ rutis.stop()    // every plugin's cleanups in reverse, then disconnects; start()
 rutis.state     // StateFlow<RutisState>: Stopped(reason) / Connecting(retrying) / Connected(address)
 ```
 
-When to start and stop (with the screen, in a foreground service) is the application's business; the SDK decides nothing by `state`. `trust` takes the PEM of a CA trusted besides the system's, for a self-signed access point. A call that waits for rutis (a non-`suspend` method of a `@RutisClient` interface) is refused on the main thread: call it as a `suspend` function or from another thread. On rutis's side, `runtimes.remote[]` with `language: "kotlin"`, `listen` and `instances` makes each connection an instance ([nodes](../docs/guide/nodes.en.md)). `rutis/android-sample` is an application doing this, and the device tests run with it.
+When to start and stop (with the screen, in a foreground service) is the application's business; the SDK decides nothing by `state`. `trust` takes the PEM of a CA trusted besides the system's, for a self-signed access point. A call that waits for rutis (a non-`suspend` method of a `@RutisClient` interface) is refused on the main thread: call it as a `suspend` function or from another thread. On rutis's side, `runtimes.remote[]` with `language: "kotlin"`, `listen` and `instances` makes each connection an instance ([nodes](../docs/guide/nodes.en.md)). `rutis/android-sample` is an application doing this, and the device tests run with it. The whole guide (permissions, foreground services, battery optimization, a real-device checklist): [Hosting plugins in an Android application](../docs/guide/kotlin-app.en.md).
 
 ## The desktop test entry
 

@@ -3,6 +3,9 @@
 
     <!-- rutis is reached over the network. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The sample plugins': the application asks the user for them (MainActivity). -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name=".SampleApplication"
