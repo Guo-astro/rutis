@@ -141,7 +141,7 @@ struct AppTests {
         let plugin = Rutis.define(Plugin(name: "late") { ctx in ctx.provide("late", LateService()) })
         let app = RutisApp(plugins: [plugin], listen: "ws://127.0.0.1:0/rutis", id: "pad", token: "secret", log: { lines.add($0) })
         try await app.start()
-        let address = try XCTUnwrap(lines.all.compactMap { $0.components(separatedBy: "listening on ").last }.first)
+        let address = try XCTUnwrap(lines.all.compactMap { $0.components(separatedBy: "listening on ").dropFirst().first }.first)
         let port = try XCTUnwrap(self.port(of: address))
         let socket = connectLoopback(port)
         defer { close(socket) }
@@ -153,15 +153,13 @@ struct AppTests {
     }
 
     /// A listening app started right after it stopped binds its address
-    /// again: `stop()` returns once the port is free.
+    /// again: `stop()` returns once the port is free; asked for `:0`, it
+    /// keeps the port it got first, as a device keeps its address.
     func aListeningAppStartsAgainRightAfterItStopped() async throws {
         let plugin = Rutis.define(Plugin(name: "late") { ctx in ctx.provide("late", LateService()) })
-        // A port of its own, the same every time, as a device's.
-        let probe = try WebSocketListener("ws://127.0.0.1:0/rutis", protocol: "rutis.3", token: "t",
-                                          identity: { throw ChannelError("no TLS") })
-        let port = try XCTUnwrap(self.port(of: try probe.start { $0.close() }))
-        probe.stop()
-        let app = RutisApp(plugins: [plugin], listen: "ws://127.0.0.1:\(port)/rutis", id: "pad", token: "secret", log: { _ in })
+        let lines = Lines()
+        let app = RutisApp(plugins: [plugin], listen: "ws://127.0.0.1:0/rutis", id: "pad", token: "secret", log: { lines.add($0) })
+        var port: UInt16 = 0
         for round in 0..<20 {
             do {
                 try await app.start()
@@ -169,6 +167,11 @@ struct AppTests {
                 record("round \(round): \(error)")
                 return
             }
+            let said = lines.all.compactMap { $0.components(separatedBy: "listening on ").dropFirst().first }
+            XCTAssertEqual(said.count, round + 1)
+            let bound = try XCTUnwrap(said.last.flatMap(self.port(of:)))
+            if round == 0 { port = bound }
+            XCTAssertTrue(bound != 0 && bound == port, "round \(round): \(said)")
             // A connection the app closes as it stops: its end of it stays
             // in TIME_WAIT on the listening port.
             let socket = connectLoopback(port)
