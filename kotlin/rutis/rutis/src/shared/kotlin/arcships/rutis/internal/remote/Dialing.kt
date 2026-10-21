@@ -190,6 +190,7 @@ class Dialing(
     private val dial: () -> Connection,
     private val say: (String) -> Unit,
     private val status: (Status) -> Unit = {},
+    private val shutdownMillis: Long? = null,
 ) {
     private val stopping = CompletableFuture<Unit>()
 
@@ -215,8 +216,8 @@ class Dialing(
     /** Dials, serves and dials again; returns when stopped or refused. */
     fun run(): Ended {
         val backoff = Backoff(retry)
+        status(Status.Connecting(null))
         while (true) {
-            status(Status.Connecting(null))
             val failed = when (val outcome = once(backoff)) {
                 is Ended -> return outcome
                 else -> outcome as Failed
@@ -260,7 +261,7 @@ class Dialing(
             return Failed(Failure.Retryable, cause.message ?: cause.toString(), "cannot connect")
         }
         val session = try {
-            RuntimeSession.start(connection, endpoint, plugins)
+            RuntimeSession.start(connection, endpoint, plugins, shutdownMillis)
         } catch (e: Exception) {
             connection.close("the session did not start")
             return Failed(Failure.Retryable, "the session did not start: ${e.message}", "cannot connect")
@@ -270,7 +271,7 @@ class Dialing(
             if (stopping.isDone) return Ended.Stopped(session.stop("the runtime stopped"))
             peer.shutdown("the access point did not greet in time")
         } else if (peer.error == null) {
-            say("connected to $address")
+            say("connected to $address as ${endpoint.local}")
             status(Status.Connected(address))
             val since = System.nanoTime()
             if (!await(peer.closedFuture)) return Ended.Stopped(session.stop("the runtime stopped"))

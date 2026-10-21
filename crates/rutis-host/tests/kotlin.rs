@@ -160,3 +160,149 @@ async fn kotlin_runtimes_that_dial_in_are_instances() {
         .await;
     host.shut_down(HANG_GUARD).await.ok();
 }
+
+/// The host's row in each instance, using its connection's `work`: it
+/// loads only once a call through it answered.
+const WATCHER: &str = r#"
+inject = ["work"]
+
+
+def apply(ctx, config):
+    if ctx.use("work").ping() != "pong":
+        raise RuntimeError("the work service did not answer")
+"#;
+
+/// An application hosting the test plugins through `RutisApp`
+/// (`arcships.rutis.conformance.AppKt`), told `start` and `stop` on its
+/// stdin; the states it goes through come out of the receiver.
+struct App {
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    states: tokio::sync::mpsc::UnboundedReceiver<String>,
+}
+
+impl App {
+    fn start(address: &str, id: &str, token: &str) -> Self {
+        let mut child = tokio::process::Command::new("java")
+            .args(kotlin::JVM_OPTIONS)
+            .arg("-cp")
+            .arg(kotlin::jar())
+            .arg("arcships.rutis.conformance.AppKt")
+            .args(["connect", address, id])
+            .env("RUTIS_TOKEN", token)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let mut stdout = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let (send, states) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok(Some(line)) = stdout.next_line().await {
+                eprintln!("app: {line}");
+                if let Some(state) = line.strip_prefix("state: ") {
+                    let _ = send.send(state.to_owned());
+                }
+            }
+        });
+        Self {
+            child,
+            stdin,
+            states,
+        }
+    }
+
+    async fn tell(&mut self, command: &str) {
+        use tokio::io::AsyncWriteExt;
+        self.stdin
+            .write_all(format!("{command}\n").as_bytes())
+            .await
+            .unwrap();
+    }
+
+    /// Waits for a state starting with `prefix`.
+    async fn reaches(&mut self, prefix: &str) {
+        COLD.within(prefix, async {
+            loop {
+                let state = self.states.recv().await.expect(prefix);
+                if state.starts_with(prefix) {
+                    break;
+                }
+            }
+        })
+        .await
+    }
+}
+
+/// `RutisApp` (design §五) on the desktop JVM: `start` dials in and rutis
+/// loads the rows of its instance, a Python row there using the
+/// application's service; `stop` unloads them and the instance closes, its
+/// user stopping too; `start` again brings both back. The state follows:
+/// connecting, connected, stopped.
+/// guarantee: loader/runtime-connection-instances
+#[tokio::test(flavor = "multi_thread")]
+async fn an_application_stops_and_starts_again() {
+    let _environment = common::environment();
+    let dir = tempfile::tempdir().unwrap();
+    common::write(dir.path(), &[("watcher.py", WATCHER)]);
+    std::env::set_var("RUTIS_TOKEN_PHONE", "shared");
+    std::env::set_var("RUTIS_PYTHON_PATH", common::repo().join("python/rutis"));
+    let python = std::env::var_os("RUTIS_PYTHON").map(std::path::PathBuf::from);
+    let mut config: HostConfig = serde_json::from_value(json!({
+        "id": "test",
+        "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
+        "runtimes": {
+            "py": { "project": dir.path(), "python": python },
+            "remote": [{ "name": "phone", "language": "kotlin", "listen": "public", "instances": "phone" }]
+        },
+        "rows": [{ "id": "phone", "group": true, "instanced": true, "config": [
+            { "id": "probe", "name": "phone:probe" },
+            { "id": "watcher", "name": "py:watcher" }
+        ] }]
+    }))
+    .unwrap();
+    config.rebase(dir.path());
+    let host = Host::start(&config).await.unwrap();
+    COLD.within("the Python runtime", host.runtimes_ready())
+        .await
+        .unwrap();
+    host.load(config.rows()).await.unwrap();
+    let active = |id: &str| {
+        host.loader
+            .entries()
+            .into_iter()
+            .filter(|entry| entry.id == id && entry.instance.is_some())
+            .filter(|entry| {
+                matches!(&entry.status, rutis_loader::EntryStatus::Running(snapshot)
+                    if snapshot.state == rutis::FiberState::Active)
+            })
+            .count()
+    };
+
+    let mut app = App::start(
+        &format!("ws://{}/rutis", host.listening[0].1),
+        "pixel",
+        "shared",
+    );
+    app.reaches("Stopped(").await;
+    app.tell("start").await;
+    app.reaches("Connected(").await;
+    COLD.until(|| active("watcher") == 1, "the watcher using the app")
+        .await;
+
+    app.tell("stop").await;
+    app.reaches("Stopped(reason=null)").await;
+    COLD.until(
+        || active("watcher") == 0 && active("probe") == 0,
+        "the instance closed",
+    )
+    .await;
+
+    app.tell("start").await;
+    app.reaches("Connected(").await;
+    COLD.until(|| active("watcher") == 1, "the watcher back")
+        .await;
+    app.child.kill().await.unwrap();
+    host.shut_down(HANG_GUARD).await.ok();
+}

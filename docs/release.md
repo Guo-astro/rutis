@@ -10,17 +10,27 @@
 | npm | `@arcships/rutis`、`@arcships/rutis-runtime`、`@arcships/rutis-bun`、`@arcships/rutis-host`（及 `@arcships/rutis-host-{linux,darwin}-{x64,arm64}`、`@arcships/rutis-host-win32-x64`） |
 | PyPI | `rutis`、`rutis-host`（各平台的 wheel） |
 | Go | `github.com/arcships/rutis/go/rutis`（tag `go/rutis/vX.Y.Z`，由 release.yml 打） |
+| Maven Central | `io.github.arcships:rutis`（Kotlin Multiplatform：jvm、android）、`io.github.arcships:rutis-ksp`（没有凭据时跳过，见下文） |
 | GitHub Release | `rutis-host` 二进制 |
 
 ## 步骤
 
-1. 改版本号：`scripts/train.mjs` 里 `crates` 列出的每个 crate 的 Cargo.toml（以及它们之间、和工作区其他 crate 对它们的依赖版本），`node/rutis`、`node/rutis-runtime`、`bun/rutis-bun`、`node/rutis-host` 的 package.json（`@arcships/rutis-host` 依赖的运行时和平台包版本），`python/rutis/pyproject.toml` 和 `python/rutis/rutis/peer.py` 的 `IMPLEMENTATION`，`go/rutis/version.go` 的 `Version`，`kotlin/rutis/gradle.properties` 的 `version` 和 `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/Rutis.kt` 的 `VERSION`（Kotlin SDK 进发布线，还不发布到 Maven Central），`crates/rutis-host/pyproject.toml` 里 `rutis` 的范围。`node scripts/train.mjs` 检查它们一致，CI 也会跑。指南里写出的版本号（`README.md`、`README.zh-CN.md`、`docs/guide/` 的 `rust-host`、`cordis`、`typescript-plugin`、`python-plugin`、`README` 等，搜上一个版本号）也在这个 PR 里改，两种语言都改。同一个 PR 里保存本版本的持久化样本（`tests/fixtures/persisted/`，见下文[持久化样本](#持久化样本)）。
+1. 改版本号：`scripts/train.mjs` 里 `crates` 列出的每个 crate 的 Cargo.toml（以及它们之间、和工作区其他 crate 对它们的依赖版本），`node/rutis`、`node/rutis-runtime`、`bun/rutis-bun`、`node/rutis-host` 的 package.json（`@arcships/rutis-host` 依赖的运行时和平台包版本），`python/rutis/pyproject.toml` 和 `python/rutis/rutis/peer.py` 的 `IMPLEMENTATION`，`go/rutis/version.go` 的 `Version`，`kotlin/rutis/gradle.properties` 的 `version` 和 `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/Rutis.kt` 的 `VERSION`（Kotlin SDK，发布到 Maven Central），`crates/rutis-host/pyproject.toml` 里 `rutis` 的范围。`node scripts/train.mjs` 检查它们一致，CI 也会跑。指南里写出的版本号（`README.md`、`README.zh-CN.md`、`docs/guide/` 的 `rust-host`、`cordis`、`typescript-plugin`、`python-plugin`、`README` 等，搜上一个版本号）也在这个 PR 里改，两种语言都改。同一个 PR 里保存本版本的持久化样本（`tests/fixtures/persisted/`，见下文[持久化样本](#持久化样本)）。
 2. 合并 release PR（PR 上 CI 的 `release-dry-run` 通过，各包都能打包）。不用再等 main 上或每晚的运行：打 tag 后 release.yml 自己跑全部 CI 任务（第 4 步）。想在打 tag 前把整个发布门先走一遍，在分支上运行 `gh workflow run release.yml --ref <分支> -f dry-run=true`（可加 `-f tag=vX.Y.Z` 核对版本号）：发布门的任务都跑，发布、GitHub Release 和发布后验证都跳过，不用到任何 secret 和 environment。
 3. 发布前在两台机器上跑一次网络冒烟（下文）。
 4. 打 tag `vX.Y.Z` 并推送。release.yml：核对版本 → **发布门**，以下同时开始，全部通过才发布：全部 CI 任务（调用 `ci.yml`，`all=true`、`release=true`；各任务跑在 `ci.yml` 给它的 runner 上：Linux 任务按仓库变量 `LINUX_RUNNER`，没设置时是 GitHub 的 runner，macOS、Windows 任务见 [CI](ci.md) §10、§11；跨版本测试只和比这个版本旧的发布版本对接，见下文）；构建五个平台的二进制、wheel 和 npm 包（package.yml，与每晚的运行同一份构建步骤），再在五个平台上从这些文件安装并运行（install.yml）；Windows 上的 dylib 测试（dylib-windows.yml，含 SDK 可复现检查）。有一项不通过就什么都不发布 → 对已发布过的 crate 做 semver 检查，按依赖顺序（`node scripts/train.mjs --crates`）发布 crate，再发布 npm 包、PyPI 包（发布的就是发布门装过的文件），Go 模块的 tag `go/rutis/vX.Y.Z` 也等发布门通过才打 → 创建 GitHub Release（说明取自 `docs/releases/X.Y.Z.en.md`，打 tag 前要写好）→ **发布后验证**：等注册表能取到这个版本（`node scripts/train.mjs --npm` 列出的每个 npm 包都要能取到：`@arcships/rutis`、`@arcships/rutis-runtime`、`@arcships/rutis-bun`、`@arcships/rutis-host` 和 `@arcships/rutis-host` 的 optionalDependencies 列出的五个平台包；最多等 15 分钟，超时时列出还取不到的包），在 Linux 上从注册表安装 npm、PyPI、二进制三种渠道并运行，`cargo install` 和 Go 模块，再照着指南里标记过的示例走一遍。各步只发布注册表里还没有的版本，中途失败时修好后重新运行即可（重新运行失败的任务，或 `gh workflow run release.yml --ref vX.Y.Z -f dry-run=false`：`dry-run=false` 只能在 tag 上运行）。重新运行时这个版本可能已经发布了一部分：发布门里的跨版本测试（`tests/e2e/tests/cross_version.rs`）因此设了 `RUTIS_E2E_ONLY_OLDER=1`，不和这个版本本身对接，只和更早的发布版本对接。
 5. 发布后验证失败时，release.yml 自动开一个 issue（指派给维护者）。看运行的日志，判断是包本身坏了还是验证或注册表的问题：包坏了时，npm 上 `npm deprecate @arcships/<包>@X.Y.Z "<原因>"`，PyPI 上在项目页面 yank 这个版本，crates.io 上 `cargo yank --version X.Y.Z <crate>`，然后发布修正版本 X.Y.(Z+1)；不撤回已经发布的文件。
 
 需要的配置：GitHub environment `release`（`CARGO_TOKEN`、`NPM_TOKEN`）、`pypi` 和 `pypi-host`。PyPI 上 `rutis` 的 trusted publisher 指向 release.yml 与 environment `pypi`，`rutis-host` 的指向 environment `pypi-host`：两个项目的 publisher 不能完全相同，否则一次发布拿到的令牌只对其中一个有效。
+
+Maven Central（release.yml 的 `maven` 任务，vanniktech maven-publish 插件）用 GitHub environment `maven` 的四个 secret；缺任何一个，这一步在运行摘要里写明缺哪些并跳过，其余照常发布。维护者一次性配置：
+
+1. 用 GitHub 账号登录 [Central Portal](https://central.sonatype.com)，在 Namespaces 里添加 `io.github.arcships`，按页面给的验证码在 arcships 组织下建一个同名的公开空仓库完成验证（验证后可删）。
+2. 在 Account → Generate User Token 生成用户令牌：其 username、password 分别是 `MAVEN_CENTRAL_USERNAME`、`MAVEN_CENTRAL_PASSWORD`。
+3. 生成签名用的 PGP 密钥并公开公钥：`gpg --quick-gen-key "arcships rutis" rsa4096 sign 0`，`gpg --keyserver keyserver.ubuntu.com --send-keys <密钥 id>`。`gpg --armor --export-secret-keys <密钥 id>` 的全部输出是 `MAVEN_SIGNING_KEY`，口令是 `MAVEN_SIGNING_KEY_PASSWORD`。
+4. 写入 environment：`gh secret set MAVEN_CENTRAL_USERNAME --env maven`，其余三个同样（`gh secret set MAVEN_SIGNING_KEY --env maven < key.asc`）。
+
+发布的是 `io.github.arcships:rutis`（含 `rutis-jvm`、`rutis-android`）与 `io.github.arcships:rutis-ksp`，自动 release；Maven Central 已有这个版本时跳过，所以重跑安全。Maven Central 同步到搜索页可能要几十分钟，发布后验证不等它。
 
 插件 API（`PLUGIN_API`，SDK 与运行时各有一份）只在插件看到的接口不兼容时增加；会话协议版本（`rutisProtocol` 与 `rutis_bridge::session::PROTOCOL`）在线格式不兼容时增加。
 
