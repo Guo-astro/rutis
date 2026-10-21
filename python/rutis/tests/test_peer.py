@@ -55,6 +55,24 @@ class PeerTests(background.IsolatedAsyncioTestCase):
         future.cancel()
 
 
+    async def test_request_answered_tells_the_reply_as_its_frame_is_taken(self):
+        # Events protocol §5.5: in place, before the next frame, not on a
+        # later turn of the loop.
+        told = []
+        self.peer.request_answered("", "events.dispatch", [{"mode": "emit"}], lambda ok, value: told.append((ok, value)))
+        sent = self.read()
+        self.assertEqual((sent["op"], sent["method"]), ("invoke", "events.dispatch"))
+        self.peer._receive({"op": "return", "id": sent["id"], "value": {"type": "undefined"}})
+        self.assertEqual(len(told), 1)
+        self.assertTrue(told[0][0])
+        # A throw is told the same way.
+        self.peer.request_answered("", "events.dispatch", [{"mode": "emit"}], lambda ok, value: told.append((ok, value)))
+        sent = self.read()
+        self.peer._receive({"op": "throw", "id": sent["id"], "error": {"name": "BindingError", "message": "refused"}})
+        self.assertEqual(len(told), 2)
+        self.assertFalse(told[1][0])
+        self.assertEqual(told[1][1].name, "BindingError")
+
 
 class AsyncMethodTests(background.IsolatedAsyncioTestCase):
     """`async def` methods start at once, like JS async functions (#196):

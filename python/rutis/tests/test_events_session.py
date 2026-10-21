@@ -375,6 +375,42 @@ class ThroughTheHost(Session):
         ctx.emit("t/e", 3)
         self.assertEqual(log, [3], "the fast path again")
 
+    async def test_an_emit_reply_is_taken_before_the_next_frame(self):
+        # §5.5 (2026-10-21): the reply counts the emit as answered as its
+        # frame is read, so a call the host sends right after sees it.
+        await self.mount({"add": ["t/e"]})
+        seen = []
+        runtime = self.host.runtime
+        registered = await self.load(
+            "a", lambda ctx, config: ctx.on("t/e", lambda n: seen.append((n, dict(runtime.unanswered)))), registrations=1
+        )
+        self.contexts["a"].emit("t/e", 1)
+        frame = await self.host.request("events.dispatch")
+        self.assertEqual(runtime.unanswered, {"t/e": 1})
+        # The host's listener call for it, its reply, a call after both.
+        self.host.invoke("events.call", data([{"listener": registered[0]["id"], "dispatch": "d1", "own": True, "name": "t/e", "mode": "emit", "args": [1]}]))
+        self.host.answer(frame)
+        self.host.invoke("events.call", data([{"listener": registered[0]["id"], "dispatch": "d2", "own": False, "name": "t/e", "mode": "emit", "args": [2]}]))
+        await eventually("both listener calls", lambda: len(seen) == 2)
+        # In frame order; the call after the reply sees the emit answered.
+        self.assertEqual([n for n, _ in seen], [1, 2])
+        self.assertEqual(seen[1], (2, {}))
+
+    async def test_a_0_13_hosts_future_answer_counts_once_it_settles(self):
+        # A 0.13 host answers a queued emit with a future: the emit stays
+        # unanswered until it settles.
+        await self.mount({"add": ["t/e"]})
+        await self.load("a")
+        runtime = self.host.runtime
+        self.contexts["a"].emit("t/e", 1)
+        frame = await self.host.request("events.dispatch")
+        self.host.send({"op": "return", "id": frame["id"], "value": {"type": "reference", "value": {"id": 1, "kind": "future", "home": False, "origin": []}}})
+        waited = await self.host.next(lambda f: f["op"] == "await")
+        self.assertEqual(waited["reference"], 1)
+        self.assertEqual(runtime.unanswered, {"t/e": 1})
+        self.host.send({"op": "return", "id": waited["id"], "value": {"type": "undefined"}})
+        await eventually("answered once settled", lambda: not runtime.unanswered)
+
     async def test_a_failed_emit_through_the_host_is_reported(self):
         await self.mount({"add": ["t/e"]})
         await self.load("a")

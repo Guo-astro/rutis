@@ -671,8 +671,9 @@ function dispatch(target, method, args) {
       case 'dispose':
         closing = true
         return Promise.all([dispose(), peer.drain()]).then(() => null)
-      // The logical bus (#464): `events.elsewhere` runs as its frame
-      // arrives (the session's `inline`); `events.call` runs a listener.
+      // The logical bus (#464): `events.elsewhere` and an `emit`-mode
+      // `events.call` run as their frame arrives (the session's `inline`);
+      // `events.call` runs a listener.
       case 'events.elsewhere': bus.elsewhere(args?.[0] ?? {}); return undefined
       case 'events.call': return bus.call(args?.[0] ?? {})
       case 'get': {
@@ -743,7 +744,11 @@ function dispatch(target, method, args) {
 // Calls on exported objects and functions may replace services too.
 try {
   peer = await Process.connect(channelSpec, dispatch, () => { if (slots.size && !closing) refresh() }, endpoint, {
-    inline: ['events.elsewhere'],
+    // Table changes, and `emit`-mode listener calls: an emit's listeners
+    // start in frame order, before the next frame (events protocol §5.5),
+    // also while a synchronous call waits (it would hold them back, and a
+    // later emit could take the fast path past them).
+    inline: (method, args) => method === 'events.elsewhere' || (method === 'events.call' && args?.[0]?.mode === 'emit'),
     requires: [EVENTS_V2],
   })
 } catch (error) {

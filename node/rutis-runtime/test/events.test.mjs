@@ -249,6 +249,50 @@ test('an emit through the host keeps later emits of the name there until it is a
   assert.ok(bus.local('emit', 'o'))
 })
 
+// §5.5 (2026-10-21): with a session that tells the reply as its frame is
+// read (`callAnswered`), a plain answer counts the emit as answered at
+// once, in that call; a 0.13 host's future answer once it settles.
+test('an emit reply taken in frame order: a plain answer at once, a 0.13 host\'s future once settled', async () => {
+  const replies = []
+  const sent = []
+  const host = {
+    callAnswered(target, method, args, answered) { sent.push(method); replies.push(answered) },
+    callAsync(target, method) { sent.push(method); return Promise.resolve() },
+  }
+  const reported = []
+  const bus = new Bus({ runtime: 'node', peer: host, report: line => reported.push(line) })
+  bus.on({ name: 'o', callback: () => {}, row: 'r' })
+  bus.elsewhere({ add: ['o'] })
+  bus.dispatch('emit', 'o', [1])
+  bus.elsewhere({ remove: ['o'] })
+  assert.ok(!bus.local('emit', 'o'), 'unanswered until the reply')
+  // The reply's frame: counted in the same call, no tick in between.
+  replies.shift()({ ok: true, value: undefined })
+  assert.ok(bus.local('emit', 'o'))
+
+  // A 0.13 host answers a queued emit with a future.
+  bus.elsewhere({ add: ['o'] })
+  bus.dispatch('emit', 'o', [2])
+  bus.elsewhere({ remove: ['o'] })
+  let settle
+  replies.shift()({ ok: true, value: new Promise(resolve => { settle = resolve }) })
+  assert.ok(!bus.local('emit', 'o'), 'a future answer counts once it settles')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.ok(!bus.local('emit', 'o'))
+  settle()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.ok(bus.local('emit', 'o'))
+
+  // A refused emit is answered too, and reported.
+  bus.elsewhere({ add: ['o'] })
+  bus.dispatch('emit', 'o', [3])
+  bus.elsewhere({ remove: ['o'] })
+  replies.shift()({ ok: false, value: Object.assign(new Error('refused'), { name: 'BindingError' }) })
+  assert.ok(bus.local('emit', 'o'))
+  assert.deepEqual(reported, ['rutis: emit of o from the mount failed: BindingError: refused'])
+  assert.deepEqual(sent.filter(method => method === 'events.dispatch').length, 3)
+})
+
 // §11: failures nobody waits for are reported, one line each: an emit the
 // host refuses or that cannot be sent, a registration the host refuses.
 test('a refused or unsent emit through the host and a refused registration are reported', async () => {

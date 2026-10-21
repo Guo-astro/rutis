@@ -111,11 +111,21 @@ function thisArgOf(filter, log) {
   }
 }
 
+// Emit `spec`; with `then` ({ until, args }), wait synchronously in
+// `events-log.until(until)` and emit the same again with `args` (the frames
+// that arrive during that wait are what the case is about).
+function dispatch(ctx, log, spec) {
+  const result = dispatchOnce(ctx, log, spec)
+  if (!spec.then) return result
+  log.until(spec.then.until)
+  return dispatchOnce(ctx, log, { ...spec, args: spec.then.args, then: undefined })
+}
+
 // Emit `spec` from `ctx` with Cordis's methods and return the result.
 // JavaScript cannot give up a dispatch, so `cancel` fails at once. A filter
 // is always passed as `thisArg` (`via: "thisArg"` says so; there is no
 // other way in Cordis).
-function dispatch(ctx, log, spec) {
+function dispatchOnce(ctx, log, spec) {
   if (spec.cancel) throw new Error('JavaScript cannot cancel a dispatch')
   const thisArg = thisArgOf(spec.filter, log)
   const head = thisArg ? [thisArg, spec.name] : [spec.name]

@@ -142,9 +142,14 @@ export class Session {
     this.#send = send; this.#pump = pump; this.#dispatch = dispatch; this.#abort = abort; this.#settled = settled
     // `inline`: control methods (empty target) run as their frame arrives,
     // in frame order, before the next frame is read, also while a
-    // synchronous call waits (`events.on`, `events.off`, `events.elsewhere`).
+    // synchronous call waits (`events.elsewhere`, an `emit`-mode
+    // `events.call`): a list of method names, or `(method, args) => bool`.
+    // Every other call waiting on a synchronous call is held back until
+    // the wait ends unless it belongs to the waiting call's chain.
     // `requires`: capabilities the far end must declare (`events-v2`).
-    this.#inline = new Set(inline ?? []); this.#requires = requires ?? endpoint?.requires
+    const names = new Set(Array.isArray(inline) ? inline : [])
+    this.#inline = typeof inline === 'function' ? inline : method => names.has(method)
+    this.#requires = requires ?? endpoint?.requires
     if (endpoint) {
       if (!ENDPOINT_ID.test(endpoint.local)) throw new Error(`invalid endpoint id ${endpoint.local}`)
       this.#endpoint = endpoint; this.#local = `${endpoint.local}:`; this.#remote = undefined
@@ -494,7 +499,7 @@ export class Session {
       if (business) this.#active++
       const job = { frame, args, entry, business }
       this.#queued.add(job)
-      if (frame.op === 'invoke' && frame.target === '' && this.#inline.has(frame.method)) {
+      if (frame.op === 'invoke' && frame.target === '' && this.#inline(frame.method, args)) {
         this.#queued.delete(job)
         this.#execute(frame, args, entry, business)
         return
