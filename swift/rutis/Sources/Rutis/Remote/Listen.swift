@@ -166,11 +166,23 @@ final class WebSocketListener: @unchecked Sendable {
     private let token: [UInt8]
     private let protocolName: String
     private let queue = DispatchQueue(label: "rutis.listen")
+    /// How long a connection may take to present its upgrade request
+    /// (TLS included), as Go's ReadHeaderTimeout: then it is dropped.
+    let upgradeTimeout: Double
+    /// At most this many connections upgrading at once (each reads on a
+    /// thread of its own); more are dropped at once.
+    let maxUpgrading: Int
+    private let upgradingLock = Lock()
+    private var upgrading = 0
 
     /// `identity` gives the TLS identity of a wss:// address, or says why
     /// there is none.
-    init(_ spec: String, protocol protocolName: String, token: String, identity: () throws -> sec_identity_t) throws {
+    init(_ spec: String, protocol protocolName: String, token: String, identity: () throws -> sec_identity_t,
+         upgradeTimeout: Double = 10, maxUpgrading: Int = 32) throws
+    {
         address = try ListenAddress(spec)
+        self.upgradeTimeout = upgradeTimeout
+        self.maxUpgrading = maxUpgrading
         self.token = Array(token.utf8)
         self.protocolName = protocolName
         let parameters: NWParameters
@@ -193,27 +205,58 @@ final class WebSocketListener: @unchecked Sendable {
     }
 
     /// Starts listening; returns the address it is bound to once it is.
-    func start(_ accepted: @escaping @Sendable (WebSocket) -> Void) throws -> String {
+    /// `failed` hears of the listener failing after that.
+    func start(failed: @escaping @Sendable (Error) -> Void = { _ in },
+               _ accepted: @escaping @Sendable (WebSocket) -> Void) throws -> String
+    {
         let ready = DispatchSemaphore(value: 0)
         let failure = ErrorBox()
+        let bound = Flag()
         listener.stateUpdateHandler = { state in
             switch state {
-            case .ready: ready.signal()
+            case .ready:
+                bound.set()
+                ready.signal()
             case let .failed(error), let .waiting(error):
+                if bound.isSet {
+                    if case .failed = state { failed(ChannelError("\(error)")) }
+                    return
+                }
                 failure.set(ChannelError("\(error)"))
                 ready.signal()
             default: break
             }
         }
         listener.newConnectionHandler = { [self] connection in
+            // Room for it, and a deadline for its upgrade request: a
+            // connection presenting none is dropped, so that unauthenticated
+            // ones cannot hold the app's threads.
+            guard reserve() else {
+                connection.start(queue: queue)
+                connection.cancel()
+                return
+            }
+            let attempt = UpgradeAttempt { [self] in release() }
+            queue.asyncAfter(deadline: .now() + upgradeTimeout) {
+                if attempt.finish() { connection.cancel() }
+            }
             connection.stateUpdateHandler = { [self] state in
                 switch state {
                 case .ready:
                     connection.stateUpdateHandler = nil
-                    Thread.detachNewThread { [self] in upgrade(connection, accepted) }
+                    Thread.detachNewThread { [self] in
+                        let socket = upgrade(connection)
+                        guard attempt.finish() else {
+                            // Too late: the deadline dropped it.
+                            connection.cancel()
+                            return
+                        }
+                        if let socket { accepted(socket) }
+                    }
                 case .failed, .cancelled:
                     connection.stateUpdateHandler = nil
                     connection.cancel()
+                    _ = attempt.finish()
                 default: break
                 }
             }
@@ -228,17 +271,30 @@ final class WebSocketListener: @unchecked Sendable {
         return address.bound(listener.port?.rawValue ?? address.port)
     }
 
+    private func reserve() -> Bool {
+        upgradingLock.withLock {
+            guard upgrading < maxUpgrading else { return false }
+            upgrading += 1
+            return true
+        }
+    }
+
+    private func release() { upgradingLock.withLock { upgrading -= 1 } }
+
+    /// Connections upgrading now.
+    var pendingUpgrades: Int { upgradingLock.withLock { upgrading } }
+
     func stop() { listener.cancel() }
 
     /// Reads the upgrade request on `connection` and answers it: a refusal
-    /// with its status, or the switch to the session protocol.
-    private func upgrade(_ connection: NWConnection, _ accepted: (WebSocket) -> Void) {
+    /// with its status (nil), or the switch to the session protocol.
+    private func upgrade(_ connection: NWConnection) -> WebSocket? {
         let stream = ByteStream(connection)
         guard let head = try? stream.read(until: Array("\r\n\r\n".utf8), limit: 16384),
               let text = String(data: Data(head), encoding: .utf8)
         else {
             stream.close()
-            return
+            return nil
         }
         var lines = text.components(separatedBy: "\r\n")
         let requestLine = lines.removeFirst().split(separator: " ")
@@ -248,12 +304,13 @@ final class WebSocketListener: @unchecked Sendable {
             headers.append((line[..<colon].lowercased(), line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)))
         }
         func header(_ name: String) -> String? { headers.first { $0.0 == name }?.1 }
-        func refuse(_ status: Int, _ phrase: String, _ body: String) {
+        func refuse(_ status: Int, _ phrase: String, _ body: String) -> WebSocket? {
             let content = Array((body + "\n").utf8)
             let response = "HTTP/1.1 \(status) \(phrase)\r\nContent-Type: text/plain; charset=utf-8\r\n" +
                 "Content-Length: \(content.count)\r\nConnection: close\r\n\r\n"
             try? stream.write(Array(response.utf8) + content)
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { stream.close() }
+            return nil
         }
         guard requestLine.count >= 2, requestLine[0] == "GET" else {
             return refuse(405, "Method Not Allowed", "a WebSocket upgrade is required")
@@ -281,9 +338,29 @@ final class WebSocketListener: @unchecked Sendable {
             "Sec-WebSocket-Protocol: \(protocolName)\r\n\r\n"
         guard (try? stream.write(Array(response.utf8))) != nil else {
             stream.close()
-            return
+            return nil
         }
-        accepted(WebSocket(stream, client: false))
+        return WebSocket(stream, client: false)
+    }
+}
+
+/// One connection's upgrade: ended once, by its deadline, its failure or
+/// its answer; the first to end it acts.
+final class UpgradeAttempt: @unchecked Sendable {
+    private let lock = Lock()
+    private var ended = false
+    private let done: () -> Void
+
+    init(_ done: @escaping () -> Void) { self.done = done }
+
+    /// Whether this call ended it.
+    func finish() -> Bool {
+        let first: Bool = lock.withLock {
+            defer { ended = true }
+            return !ended
+        }
+        if first { done() }
+        return first
     }
 }
 

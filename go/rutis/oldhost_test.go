@@ -53,3 +53,37 @@ func TestAnUndeclaredServiceUnderAnOlderHostIsToldOncePerName(t *testing.T) {
 		t.Fatalf("a host taking them: %q", got)
 	}
 }
+
+// A task of an unloaded row that provides is refused (it would outlive the
+// row), and the row loads again.
+func TestAnUnloadedRowCannotProvide(t *testing.T) {
+	var saved *Ctx
+	plugin := Define(Plugin[NoConfig]{
+		Name: "late-provider",
+		Apply: func(ctx *Ctx, _ NoConfig) error {
+			saved = ctx
+			ctx.Provide("svc", oldHostService{})
+			return nil
+		},
+	})
+	rt := newRuntime([]*Definition{plugin})
+	ctx := context.Background()
+	if err := rt.load(ctx, "a", "late-provider", nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.unload(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	late := saved
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("an unloaded row provided")
+			}
+		}()
+		late.Provide("svc", oldHostService{})
+	}()
+	if err := rt.load(ctx, "a", "late-provider", nil, nil, nil, nil); err != nil {
+		t.Fatalf("the row loads again: %v", err)
+	}
+}

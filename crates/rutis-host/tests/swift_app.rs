@@ -303,3 +303,65 @@ async fn an_app_that_listens_is_linked_to_and_comes_back_after_stop_and_start() 
     app.command("quit").await;
     host.shut_down(HANG_GUARD).await.ok();
 }
+
+/// `start()` and `stop()` called each in a Task of its own, as an app does
+/// on its scene phase, take effect in call order: a start called while a
+/// stop is under way (the user came back during the cleanup) starts again
+/// once the stop is done, and a stop called right after a start undoes it.
+/// guarantee: swift/app-start-stop
+#[tokio::test(flavor = "multi_thread")]
+async fn an_apps_start_and_stop_take_effect_in_call_order() {
+    let _environment = environment();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let listen = format!("ws://127.0.0.1:{port}/rutis");
+    let mut app = App::new("listen", &listen, "pad", "pad-token");
+    app.command("start").await;
+    std::env::set_var("RUTIS_TOKEN_PAD", "pad-token");
+    let config: HostConfig = serde_json::from_value(json!({
+        "id": "test",
+        "runtimes": { "remote": [{ "name": "pad", "language": "swift" }] },
+        "rows": [
+            { "id": "pad", "name": "rutis-bridge/peer", "config": { "peer": "pad", "dial": listen, "runtime": "pad" } },
+            { "id": "device", "name": "pad:device" }
+        ]
+    }))
+    .unwrap();
+    let host = Host::start(&config).await.unwrap();
+    host.load(config.rows()).await.unwrap();
+    COLD.until(|| host.service("device").is_some(), "the app's device")
+        .await;
+    app.said("state: connected", 1).await;
+
+    // To the background, and back during the stop's cleanup (300 ms).
+    app.stdin.write_all(b"stop&\nstart&\n").await.unwrap();
+    app.said("done stop&", 1).await;
+    app.said("done start&", 1).await;
+    app.said("state: connected", 2).await;
+    COLD.until(|| host.service("device").is_some(), "the device back")
+        .await;
+    assert_eq!(
+        app.states().last(),
+        Some(&"connected"),
+        "started again: {:?}",
+        app.states()
+    );
+
+    // Stopped; then started and at once stopped: it stays stopped.
+    app.command("stop").await;
+    app.stdin.write_all(b"start&\nstop&\n").await.unwrap();
+    app.said("done start&", 2).await;
+    app.said("done stop&", 2).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        app.states().last(),
+        Some(&"stopped"),
+        "stopped in the end: {:?}",
+        app.states()
+    );
+    app.command("quit").await;
+    host.shut_down(HANG_GUARD).await.ok();
+}

@@ -101,6 +101,7 @@ await rutis.stop()        // 全部插件逆序清理，然后断开
 
 - `start()` 开始拨出后即返回；重试修不好的（不合法的 id 或地址）直接抛出。此后它自己保持连接：连不上或断开时重试（从 0.5 秒起翻倍，最长 30 秒）；token 被拒每 30 秒重试；每次连接都是新的，rutis 重新装载插件。已经开始时再调用 `start()` 什么也不做。
 - `stop()` 在 rutis 还能收到的时候卸载全部插件，然后关闭连接，不再重连；完成后返回，之后可以再 `start()`。
+- `start()` 与 `stop()` 按调用的先后生效，各在自己的 `Task` 里调用也一样：停止进行中调用的 `start()` 等它完成后再开始（用户在清理期间回到前台，应用照样连上）；开始进行中调用的 `stop()` 撤销它（不会在后台继续拨出）。
 - `state` 是 `.stopped(reason:)`、`.connecting` 或 `.connected`。`RutisApp` 遵循 `Observable`，显示 `rutis.state` 的 SwiftUI 视图会自己更新；别处用 `for await state in rutis.states { … }` 跟随。`.stopped(reason: "…")` 表示它自己停下了：rutis 不兼容（例如早于 0.13），重试修不好。
 - `log` 收到的行与所有 Swift 运行时相同：`rutis: connected to …`、`rutis: connection lost (…); retrying in 1s`、`rutis: refused: auth-rejected (…); retrying in 30s`、`rutis: refused: incompatible (…); stopping`，以及插件的失败。
 
@@ -180,7 +181,7 @@ let rutis = RutisApp(plugins: [health, device], listen: "wss://0.0.0.0:7443/ruti
                      id: "lab-ipad", token: token, certificate: identity)   // 一个 SecIdentity
 ```
 
-`certificate` 是 TLS 身份（用 `SecPKCS12Import` 从 PKCS#12 文件得到，或取自钥匙串）；`ws://` 只限回环。一次一个连接，新连接接管；没有 rutis 连着时 `state` 是 `.connecting`。rutis 一侧用一个节点行连接它，与 [别的机器上的语言运行时](nodes.md#别的机器上的语言运行时) 相同，`language` 为 `"swift"`：
+`certificate` 是 TLS 身份（用 `SecPKCS12Import` 从 PKCS#12 文件得到，或取自钥匙串）；`ws://` 只限回环。一次一个连接，新连接接管；没有 rutis 连着时 `state` 是 `.connecting`，连接上的 rutis 问候之后才是 `.connected`（10 秒内没有问候就关闭这个连接）。连接须在 10 秒内发来升级请求，同时升级的连接至多 32 个。监听器之后失败时（网络断了）按退避重新绑定（`rutis: listening failed (…); listening again in 1s`），已连着的 rutis 不受影响。rutis 一侧用一个节点行连接它，与 [别的机器上的语言运行时](nodes.md#别的机器上的语言运行时) 相同，`language` 为 `"swift"`：
 
 ```json
 {

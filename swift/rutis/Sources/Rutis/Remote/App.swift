@@ -70,6 +70,8 @@ public final class RutisApp: Observable, @unchecked Sendable {
         var task: Task<Ending, Never>?
         /// Wakes the listening loop, to see the stop.
         var wake: (() -> Void)?
+        /// Its body returned (`lock`): it is publishing its last state.
+        var ending = false
     }
 
     let plugins: [Rutis.Definition]
@@ -87,8 +89,12 @@ public final class RutisApp: Observable, @unchecked Sendable {
     /// The run going on, and the latest one (going on or ended).
     private var run: Run?
     private var latest: Run?
-    /// A `start()` is under way.
-    private var starting = false
+    /// The last `start()` or `stop()` called: each runs once the ones
+    /// called before it are done.
+    private var tail: Task<Void, Never>?
+    /// How many times `stop()` was called: a start that sees it change
+    /// while it waited or ran was stopped, and starts nothing.
+    private var stops = 0
 
     /// Dials the rutis access point at `connect` (`wss://…`; `ws://` only
     /// on loopback) as `id` (lower-case letters, digits and `-`), presenting
@@ -193,51 +199,13 @@ public final class RutisApp: Observable, @unchecked Sendable {
     /// throws what retrying cannot fix (an invalid id or address, no
     /// certificate for `wss://`, an address taken); a connection that
     /// fails is retried, as `state` shows. Nothing when started already.
+    ///
+    /// `start()` and `stop()` take effect in the order they are called: a
+    /// start called while a stop is under way starts once it is done, and a
+    /// stop called while a start is under way undoes it.
     public func start() async throws {
-        let first: Bool = lock.withLock {
-            if run != nil || starting { return false }
-            starting = true
-            return true
-        }
-        guard first else { return }
-        defer { lock.withLock { starting = false } }
-        try Rutis.check(plugins)
-        guard validEndpointID(id) else {
-            throw RutisError(name: "Error", message: "invalid endpoint id \(id): use lower-case letters, digits and -")
-        }
-        let started = Run()
-        let body: @Sendable () async -> Ending
-        switch mode {
-        case let .dial(spec, trust):
-            do {
-                _ = try dialHost(spec)
-            } catch {
-                throw RutisError(name: "Error", message: "\(error)")
-            }
-            body = { [self] in await dial(spec, anchors: spec.hasPrefix("wss:") ? trust : [], stop: started.stop) }
-        case let .listen(spec, identity):
-            let listener = try WebSocketListener(spec, protocol: "rutis.\(endpointProtocol)", token: token, identity: identity)
-            let (events, continuation) = AsyncStream<ListenEvent>.makeStream()
-            let address = try listener.start { socket in continuation.yield(.accepted(socket)) }
-            say("listening on \(address)")
-            started.wake = { continuation.yield(.stop) }
-            body = { [self] in await listen(listener, events, continuation, stop: started.stop) }
-        }
-        publish(.connecting)
-        lock.withLock {
-            run = started
-            latest = started
-            started.task = Task.detached { [self] in
-                let ending = await body()
-                lock.withLock { if run === started { run = nil } }
-                if case let .refused(reason) = ending {
-                    publish(.stopped(reason: reason))
-                } else {
-                    publish(.stopped(reason: nil))
-                }
-                return ending
-            }
-        }
+        let stopsBefore = lock.withLock { stops }
+        try await inOrder { [self] in try await begin(unlessStoppedSince: stopsBefore) }
     }
 
     /// Stops: every plugin cleans up (latest first, rutis still connected
@@ -249,6 +217,93 @@ public final class RutisApp: Observable, @unchecked Sendable {
 
     /// Stops; how the run ended (nil: not started).
     func stopped() async -> Ending? {
+        lock.withLock { stops += 1 }
+        return try? await inOrder { [self] in await end() }
+    }
+
+    /// Runs `operation` once every `start()` and `stop()` called before
+    /// has returned.
+    private func inOrder<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        let task: Task<T, Error> = lock.withLock {
+            let previous = tail
+            let task = Task.detached { () async throws -> T in
+                await previous?.value
+                return try await operation()
+            }
+            tail = Task.detached { _ = try? await task.value }
+            return task
+        }
+        return try await task.value
+    }
+
+    private func begin(unlessStoppedSince stopsBefore: Int) async throws {
+        if let current = lock.withLock({ run }) {
+            // Ended by itself, and still saying so: started once it did.
+            guard lock.withLock({ current.ending }) else { return }
+            _ = await current.task?.value
+        }
+        if lock.withLock({ stops != stopsBefore }) { return }
+        try Rutis.check(plugins)
+        guard validEndpointID(id) else {
+            throw RutisError(name: "Error", message: "invalid endpoint id \(id): use lower-case letters, digits and -")
+        }
+        let started = Run()
+        let body: @Sendable () async -> Ending
+        var undo: () -> Void = {}
+        switch mode {
+        case let .dial(spec, trust):
+            do {
+                _ = try dialHost(spec)
+            } catch {
+                throw RutisError(name: "Error", message: "\(error)")
+            }
+            body = { [self] in await dial(spec, anchors: spec.hasPrefix("wss:") ? trust : [], stop: started.stop) }
+        case let .listen(spec, identity):
+            let (events, continuation) = AsyncStream<ListenEvent>.makeStream()
+            let bind = { [token] () throws -> WebSocketListener in
+                let listener = try WebSocketListener(spec, protocol: "rutis.\(endpointProtocol)", token: token, identity: identity)
+                let failing = ObjectIdentifier(listener)
+                let address = try listener.start(failed: { error in continuation.yield(.failed(failing, error)) }) { socket in
+                    continuation.yield(.accepted(socket))
+                }
+                self.say("listening on \(address)")
+                return listener
+            }
+            let listener = try bind()
+            started.wake = { continuation.yield(.stop) }
+            undo = {
+                listener.stop()
+                continuation.finish()
+            }
+            body = { [self] in await listen(listener, bind, events, continuation, stop: started.stop) }
+        }
+        // A stop called meanwhile: this start is undone.
+        let committed: Bool = lock.withLock {
+            guard stops == stopsBefore else { return false }
+            run = started
+            latest = started
+            return true
+        }
+        guard committed else { return undo() }
+        publish(.connecting)
+        lock.withLock {
+            started.task = Task.detached { [self] in
+                let ending = await body()
+                lock.withLock { started.ending = true }
+                // Its last state, before a start may follow and say its own.
+                if case let .refused(reason) = ending {
+                    publish(.stopped(reason: reason))
+                } else {
+                    publish(.stopped(reason: nil))
+                }
+                lock.withLock { if run === started { run = nil } }
+                return ending
+            }
+        }
+    }
+
+    /// Stops the run going on, if any; how it ended.
+    private func end() async -> Ending? {
         guard let started = lock.withLock({ run }) else { return nil }
         started.stop.stop()
         started.wake?()
@@ -343,19 +398,32 @@ public final class RutisApp: Observable, @unchecked Sendable {
 
     // ── Listening ────────────────────────────────────────────────────
 
-    /// Serves one controller at a time on `listener`, until stopped or a
-    /// controller is refused (an old host).
-    private func listen(_ listener: WebSocketListener, _ events: AsyncStream<ListenEvent>,
-                        _ continuation: AsyncStream<ListenEvent>.Continuation, stop: StopSignal) async -> Ending
+    /// Serves one controller at a time on `first`, until stopped or a
+    /// controller is refused (an old host). A listener that fails (the
+    /// network went away, …) is bound again by `bind`, with backoff; the
+    /// session going on, if any, stays.
+    private func listen(_ first: WebSocketListener, _ bind: @escaping () throws -> WebSocketListener,
+                        _ events: AsyncStream<ListenEvent>, _ continuation: AsyncStream<ListenEvent>.Continuation,
+                        stop: StopSignal) async -> Ending
     {
         let endpoint = Endpoint(local: id, expected: peer, declare: ["runtime"])
+        let retry = Retry()
+        var backoff = Backoff(retry)
+        var listener: WebSocketListener? = first
         defer {
-            listener.stop()
+            listener?.stop()
             continuation.finish()
         }
         if stop.isStopped { return .stopped }
         var current: (id: Int, session: ControllerSession)?
         var next = 0
+        func failed(_ error: Error) {
+            listener?.stop()
+            listener = nil
+            let wait = backoff.wait()
+            say("listening failed (\(error)); listening again in \(stateSeconds(wait))")
+            DispatchQueue.global().asyncAfter(deadline: .now() + wait) { continuation.yield(.rebind) }
+        }
         for await event in events {
             switch event {
             case .stop:
@@ -370,6 +438,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
                     (session.socket as? WebSocket)?.closeWith(CloseCode.replaced, "replaced by a new connection")
                     await session.end()
                     current = nil
+                    publish(.connecting)
                 }
                 do {
                     let (peer, runtime) = try Rutis.startSession(channel: socket, project: project, plugins, endpoint: endpoint,
@@ -377,14 +446,29 @@ public final class RutisApp: Observable, @unchecked Sendable {
                     next += 1
                     let id = next
                     current = (id, ControllerSession(peer: peer, runtime: runtime, socket: socket))
-                    publish(.connected)
+                    let handshake = retry.handshake
                     Task {
+                        // Connected once rutis greeted, within the
+                        // handshake's time, as dialing.
+                        let late = StopSignal()
+                        DispatchQueue.global().asyncAfter(deadline: .now() + handshake) { late.stop() }
+                        let greeted = try? await late.race { await peer.ready(); return true }
+                        if greeted == nil {
+                            peer.close(ChannelError("rutis did not greet in time"))
+                            socket.closeWith(CloseCode.goingAway, "no greeting")
+                        } else if peer.error == nil {
+                            continuation.yield(.greeted(id))
+                        }
                         await peer.closed()
                         continuation.yield(.closed(id))
                     }
                 } catch {
                     socket.closeWith(CloseCode.goingAway, "\(error)")
                 }
+            case let .greeted(id):
+                guard let (currentID, _) = current, currentID == id, !stop.isStopped else { continue }
+                backoff.reset()
+                publish(.connected)
             case let .closed(id):
                 guard let (currentID, session) = current, currentID == id else { continue }
                 await session.end()
@@ -394,6 +478,16 @@ public final class RutisApp: Observable, @unchecked Sendable {
                     say("\(refused)")
                     return .refused(refused.reason)
                 }
+            case let .failed(failing, error):
+                guard let bound = listener, ObjectIdentifier(bound) == failing else { continue }
+                failed(error)
+            case .rebind:
+                guard !stop.isStopped, listener == nil else { continue }
+                do {
+                    listener = try bind()
+                } catch {
+                    failed(error)
+                }
             }
         }
         return .stopped
@@ -402,7 +496,12 @@ public final class RutisApp: Observable, @unchecked Sendable {
 
 enum ListenEvent {
     case accepted(WebSocket)
+    /// The session of that number: rutis greeted, or it closed.
+    case greeted(Int)
     case closed(Int)
+    /// That listener failed after it was bound; and the time to bind again.
+    case failed(ObjectIdentifier, Error)
+    case rebind
     case stop
 }
 #endif

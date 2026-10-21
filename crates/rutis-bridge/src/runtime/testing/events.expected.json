@@ -12,7 +12,7 @@
   "languages": ["rust", "node", "node-leaf", "bun", "python", "go", "swift", "kotlin"],
   "scopes": {"t1": "tenant", "t1/s1": "session", "t2": "team"},
   "locations": ["X", "Y", "host", "node"],
-  "toolCases": {"node-leaf": 53, "bun": 53, "python": 54, "go": 50, "swift": 50, "kotlin": 51},
+  "toolCases": {"node-leaf": 54, "bun": 54, "python": 55, "go": 51, "swift": 51, "kotlin": 52},
   "cases": [
     { "case": "emit/reaches-all", "rule": "5.4 emit", "name": "t/emit", "vary": ["a", "b", "c", "e"],
       "listeners": [
@@ -32,6 +32,20 @@
         {"emit": {"from": "X", "mode": "emit", "args": [1]}},
         {"emit": {"from": "X", "mode": "emit", "args": [2]}},
         {"emit": {"from": "X", "mode": "emit", "args": [3]}, "expect": {"log": ["c:1", "c:2", "c:3"]}}
+      ] },
+
+    { "case": "emit/order-filtered-then-unfiltered", "rule": "5.5, 6", "name": "t/order-filter", "vary": ["d", "e"],
+      "listeners": [
+        {"label": "a", "at": "X", "log": false, "does": {"returns": null}},
+        {"label": "b", "at": "X", "log": false, "does": {"returns": null}},
+        {"label": "c", "at": "X", "log": false, "does": {"returns": null}},
+        {"label": "d", "at": "Y", "log": "arg", "does": {"returns": null}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "emit", "args": [1], "filter": {"keep": ["d"]}}},
+        {"emit": {"from": "X", "mode": "emit", "args": [2]}},
+        {"emit": {"from": "X", "mode": "emit", "args": [3], "filter": {"keep": ["d"]}}},
+        {"emit": {"from": "X", "mode": "emit", "args": [4]}, "expect": {"logContains": ["d:1", "d:2", "d:3", "d:4"]}}
       ] },
 
     { "case": "emit/order-across-fast-path", "rule": "5.2, 5.5", "name": "t/switch", "tool": false,
