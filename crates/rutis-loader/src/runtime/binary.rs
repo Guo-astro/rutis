@@ -72,6 +72,17 @@ const SWEEP: Duration = Duration::from_millis(100);
 /// takes seconds when several start at once.
 const MANIFEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The most a manifest may print, and the most of its errors kept: a
+/// binary that floods its pipes is stopped at this size, not buffered
+/// without bound.
+const MANIFEST_OUTPUT: u64 = 16 * 1024 * 1024;
+const MANIFEST_ERRORS: u64 = 64 * 1024;
+
+/// How long disposing a runtime may take before the loader lets its busy
+/// mark go: the runtime's own cleanups are not limited by design, but the
+/// control plane cannot wait for them for ever.
+const DISPOSE: Duration = Duration::from_secs(10);
+
 /// How long a failed manifest read stands before a row asking for a plugin
 /// no binary has gets it read again: a failure may pass, but a binary that
 /// keeps failing (or hangs until [`MANIFEST_TIMEOUT`]) is not run again on
@@ -236,12 +247,18 @@ fn read_manifest(path: &Path) -> Result<BinaryManifest, String> {
     let mut stderr = child.stderr.take().expect("piped");
     let reading = std::thread::spawn(move || {
         let mut out = Vec::new();
-        let _ = stdout.read_to_end(&mut out);
+        let _ = stdout
+            .by_ref()
+            .take(MANIFEST_OUTPUT + 1)
+            .read_to_end(&mut out);
         out
     });
     let errors = std::thread::spawn(move || {
         let mut out = Vec::new();
-        let _ = stderr.read_to_end(&mut out);
+        let _ = stderr
+            .by_ref()
+            .take(MANIFEST_ERRORS + 1)
+            .read_to_end(&mut out);
         out
     });
     let started = Instant::now();
@@ -266,6 +283,12 @@ fn read_manifest(path: &Path) -> Result<BinaryManifest, String> {
     };
     let out = reading.join().unwrap_or_default();
     let err = errors.join().unwrap_or_default();
+    if out.len() as u64 > MANIFEST_OUTPUT {
+        return Err(format!(
+            "it printed more than {} MiB of manifest",
+            MANIFEST_OUTPUT / (1024 * 1024)
+        ));
+    }
     if !status.success() {
         let err = String::from_utf8_lossy(&err);
         let tail: String = err
@@ -1433,7 +1456,12 @@ impl<L: BinaryLanguage> Inner<L> {
     async fn restart_now(self: Arc<Self>, runtime: &str, _busy: Busy<L>) -> Result<(), String> {
         let previous = self.slots.lock().unwrap().running.remove(runtime);
         if let Some(previous) = previous {
-            let _ = previous.view.dispose().await;
+            if let Err(error) = previous.view.dispose_with_timeout(DISPOSE).await {
+                eprintln!(
+                    "rutis-loader: stopping the {} runtime {runtime}: {error}",
+                    L::TITLE
+                );
+            }
         }
         self.resolver.stopped(runtime);
         self.start(runtime)
@@ -1700,7 +1728,12 @@ impl<L: BinaryLanguage> Inner<L> {
                 let _busy = busy;
                 let previous = inner.slots.lock().unwrap().running.remove(&name);
                 if let Some(previous) = previous {
-                    let _ = previous.view.dispose().await;
+                    if let Err(error) = previous.view.dispose_with_timeout(DISPOSE).await {
+                        eprintln!(
+                            "rutis-loader: stopping the {} runtime {name}: {error}",
+                            L::TITLE
+                        );
+                    }
                 }
                 inner.resolver.stopped(&name);
             });
