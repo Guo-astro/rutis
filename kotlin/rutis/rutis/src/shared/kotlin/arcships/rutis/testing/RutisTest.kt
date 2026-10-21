@@ -154,7 +154,9 @@ internal class Harness(val plugin: Plugin, private val services: Map<String, Any
         synchronized(lock) {
             key = row ?: if (rows.isEmpty()) "test" else "test-${rows.size + 1}"
             if (key in scopes) throw IllegalStateException("RutisTest: a row $key is already loaded")
-            if (rows.isEmpty()) for ((name, kinds) in declared) exports[name] = LinkedHashMap<String, Any?>(kinds)
+            // Every row gets the plugin's declared service slots, as a host
+            // passes them for each `rows.load`.
+            for ((name, kinds) in declared) exports[name] = LinkedHashMap<String, Any?>(kinds)
             scopes[key] = scope
         }
         val loaded = Loaded(this, key, scope)

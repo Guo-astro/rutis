@@ -98,6 +98,22 @@ class RuntimeTest {
     }
 
     @Test
+    fun everyRowGetsItsDeclaredServiceSlots() = runBlocking<Unit> {
+        val plugin = Rutis.define<Rutis.NoConfig>(
+            name = "rows",
+            provides = mapOf("hello" to service<Hello>(sync = setOf("greet"))),
+        ) { ctx, _ ->
+            ctx.provide("hello", Hello("row"))
+        }
+        RutisTest.load(plugin).use { first ->
+            val second = first.load()
+            val hello = second.service("hello")
+            assertEquals(mapOf("greet" to "sync", "greetLater" to "async"), hello.methods)
+            assertEquals("row Kim", hello.call("greet", "Kim"))
+        }
+    }
+
+    @Test
     fun listenersHearEmissionsInEveryMode() = runBlocking<Unit> {
         val plugin = Rutis.define<Rutis.NoConfig>(name = "events") { ctx, _ ->
             ctx.on("t/greet") { args -> "${args[0]}!" }
