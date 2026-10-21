@@ -22,12 +22,13 @@
 //! declared `sync-stack`); its reentrancy is `reentrant-sync`, and a
 //! runtime that does not declare it is taken as non-reentrant.
 //!
-//! An *entry* is any other call sent into such a runtime while some call
-//! is marked: nobody waits for it synchronously (an `emit`'s
-//! `events.call`, an asynchronous call), but a reentrant runtime runs it on
-//! top of the call that waits there, so stack order holds for it like for a
-//! hop, and it waits for the synchronous calls made under it. Nothing waits
-//! for an entry by its chain: its caller does not wait for it. A session whose far end does not mark its
+//! An *entry* is any other call sent while some call is marked: nobody
+//! waits for it synchronously (an `emit`'s `events.call`, an asynchronous
+//! call). It is a boundary of chains: it waits for the synchronous calls
+//! made under it, but what it was made under does not wait for them (an
+//! `events.call` carries its emitter's chain). In a runtime with one stack
+//! a reentrant runtime runs it on top of the call that waits there, so
+//! stack order holds for it like for a hop. A session whose far end does not mark its
 //! synchronous waits makes no hops: it is outside the check.
 
 use std::collections::HashMap;
@@ -69,7 +70,8 @@ impl Hop {
 
 #[derive(Default)]
 struct Waits {
-    hops: Vec<Hop>,
+    /// Hops and entries in progress, by the call's id where it went.
+    hops: HashMap<Global, Hop>,
     /// Calls received with `sync`, not answered yet.
     marked: std::collections::HashSet<Global>,
     profiles: HashMap<String, Profile>,
@@ -123,7 +125,7 @@ pub(super) fn returned(session: &str, id: &str) {
         return;
     }
     let mut waits = WAITS.lock().unwrap();
-    waits.hops.retain(|hop| hop.dst != session || hop.did != id);
+    waits.hops.remove(&(session.to_owned(), id.to_owned()));
     waits.counted();
 }
 
@@ -132,7 +134,7 @@ pub(super) fn ended(session: &str) {
     let mut waits = WAITS.lock().unwrap();
     waits
         .hops
-        .retain(|hop| hop.src != session && hop.dst != session);
+        .retain(|_, hop| hop.src != session && hop.dst != session);
     waits.marked.retain(|(tag, _)| tag != session);
     waits.profiles.remove(session);
     waits.counted();
@@ -154,7 +156,9 @@ fn decode(path: &[String], dst: &str) -> Vec<Global> {
 /// with chain `path`. When the chain's last call came from another session
 /// and its caller waits synchronously, the call is a hop: if it would close
 /// a wait cycle, nothing is recorded and the cycle is returned, each call as
-/// `session/id`. Returns whether a hop was recorded.
+/// `session/id`. When nobody waits for it synchronously (the chain's last
+/// call is not marked: an emit's `events.call`, an asynchronous call), it is
+/// an entry. Returns whether either was recorded.
 pub(super) fn forward(
     dst: &str,
     did: &str,
@@ -169,18 +173,24 @@ pub(super) fn forward(
     let caller = chain
         .last()
         .cloned()
-        .filter(|(src, sid)| src != dst && waits.marked.contains(&(src.clone(), sid.clone())));
-    let Some((src, sid)) = caller else {
-        // Not a hop: an entry, where stack order holds.
-        if !waits
-            .profiles
-            .get(dst)
-            .is_some_and(|profile| profile.stacked)
-        {
-            return Ok(false);
-        }
-        chain.push((dst.to_owned(), did.to_owned()));
-        waits.hops.push(Hop {
+        .filter(|caller| waits.marked.contains(caller));
+    chain.push((dst.to_owned(), did.to_owned()));
+    let hop = match caller {
+        // A synchronous call back into the session it came from: on its
+        // caller's chain, which runs it; not recorded.
+        Some((src, _)) if src == dst => return Ok(false),
+        Some((src, sid)) => Hop {
+            src,
+            sid,
+            dst: dst.to_owned(),
+            did: did.to_owned(),
+            seq,
+            chain,
+            entry: false,
+        },
+        // Nobody waits for it: a boundary of the chains made under it, and,
+        // in a runtime with one stack, a call stack order holds for.
+        None => Hop {
             src: String::new(),
             sid: String::new(),
             dst: dst.to_owned(),
@@ -188,46 +198,122 @@ pub(super) fn forward(
             seq,
             chain,
             entry: true,
-        });
-        waits.counted();
-        return Ok(true);
+        },
     };
-    chain.push((dst.to_owned(), did.to_owned()));
-    let hop = Hop {
-        src,
-        sid,
-        dst: dst.to_owned(),
-        did: did.to_owned(),
-        seq,
-        chain,
-        entry: false,
-    };
-    if let Some(cycle) = cycle(&waits.hops, &hop, &waits.profiles) {
-        return Err(cycle);
+    if !hop.entry {
+        if let Some(cycle) = cycle_among(waits.hops.values(), &hop, &waits.profiles) {
+            return Err(cycle);
+        }
     }
-    waits.hops.push(hop);
+    waits.hops.insert(hop.gid(), hop);
     waits.counted();
     Ok(true)
 }
 
 /// The cycle that `new` would close among `hops`, if any.
+#[cfg(test)]
 fn cycle(hops: &[Hop], new: &Hop, profiles: &HashMap<String, Profile>) -> Option<Vec<String>> {
-    let mut all: Vec<&Hop> = hops.iter().collect();
+    cycle_among(hops.iter(), new, profiles)
+}
+
+/// A call of this process, borrowed.
+type Gid<'a> = (&'a str, &'a str);
+
+fn gid_of(hop: &Hop) -> Gid<'_> {
+    (&hop.dst, &hop.did)
+}
+
+/// The cycle that `new` would close among `hops`, if any. Linear in the
+/// calls and the lengths of their chains, but for the put-aside edges (each
+/// hop into a non-reentrant runtime, for each call out of it).
+fn cycle_among<'a>(
+    hops: impl Iterator<Item = &'a Hop>,
+    new: &'a Hop,
+    profiles: &HashMap<String, Profile>,
+) -> Option<Vec<String>> {
+    // In a stable order (session, then sequence), `new` last.
+    let mut all: Vec<&Hop> = hops.collect();
+    all.sort_unstable_by(|a, b| (&a.dst, a.seq).cmp(&(&b.dst, b.seq)));
     all.push(new);
     let last = all.len() - 1;
-    // Whether each hop has started where it went: a call out of that
-    // session names it.
-    let started: Vec<bool> = all
+    let index: HashMap<Gid, usize> = all
         .iter()
-        .map(|d| {
-            let gid = d.gid();
-            all.iter().any(|e| e.src == d.dst && e.chain.contains(&gid))
-        })
+        .enumerate()
+        .map(|(i, h)| (gid_of(h), i))
         .collect();
-    let successors: Vec<Vec<usize>> = (0..all.len())
-        .map(|h| successors(&all, &started, h, profiles))
-        .collect();
-    // Depth-first from `new`, remembering how each hop was reached.
+    let is_entry = |gid: &Gid| index.get(gid).is_some_and(|&i| all[i].entry);
+    // Started where it went: a call out of that session names it.
+    let mut named: std::collections::HashSet<Gid> = std::collections::HashSet::new();
+    for hop in all.iter().filter(|hop| !hop.entry) {
+        for (session, id) in &hop.chain {
+            if *session == hop.src {
+                named.insert((session, id));
+            }
+        }
+    }
+    let started: Vec<bool> = all.iter().map(|hop| named.contains(&gid_of(hop))).collect();
+    let mut successors: Vec<Vec<usize>> = vec![Vec::new(); all.len()];
+    // Chain: c waits for a hop d made under it, unless an entry is between
+    // them (nobody waits for an entry; it waits for what is made under it).
+    for (d, hop) in all.iter().enumerate() {
+        if hop.entry {
+            continue;
+        }
+        for (session, id) in hop.chain[..hop.chain.len() - 1].iter().rev() {
+            let gid = (session.as_str(), id.as_str());
+            if let Some(&c) = index.get(&gid) {
+                successors[c].push(d);
+            }
+            if is_entry(&gid) {
+                break;
+            }
+        }
+    }
+    // By runtime: the calls into it in order, and the hops out of it.
+    let mut into: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut out: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, hop) in all.iter().enumerate() {
+        into.entry(&hop.dst).or_default().push(i);
+        if !hop.entry {
+            out.entry(&hop.src).or_default().push(i);
+        }
+    }
+    for (y, calls) in &mut into {
+        let profile = profiles.get(*y).copied().unwrap_or_default();
+        if !profile.stacked {
+            continue;
+        }
+        calls.sort_unstable_by_key(|&i| all[i].seq);
+        // Put aside: a hop not started in a non-reentrant runtime with calls
+        // out, none of them on its chain, waits for all of them. (An entry
+        // not started has nothing waiting for it.)
+        if let Some(outs) = out.get(y).filter(|_| !profile.reentrant) {
+            let sids: std::collections::HashSet<&str> =
+                outs.iter().map(|&o| all[o].sid.as_str()).collect();
+            for &h in calls.iter() {
+                let hop = all[h];
+                let related = hop
+                    .chain
+                    .iter()
+                    .any(|(session, id)| session == y && sids.contains(id.as_str()));
+                if !hop.entry && !related && !started[h] {
+                    successors[h].extend(outs.iter().copied().filter(|&o| o != h));
+                }
+            }
+        }
+        // Stack order: c waits for every later call into y that started
+        // there; through the next one that did, which waits for the rest.
+        let mut next_started = None;
+        for &c in calls.iter().rev() {
+            if let Some(d) = next_started {
+                successors[c].push(d);
+            }
+            if started[c] {
+                next_started = Some(c);
+            }
+        }
+    }
+    // Depth-first from `new`, remembering how each call was reached.
     let mut from: Vec<Option<usize>> = vec![None; all.len()];
     let mut stack = vec![last];
     let mut seen = vec![false; all.len()];
@@ -256,47 +342,6 @@ fn cycle(hops: &[Hop], new: &Hop, profiles: &HashMap<String, Profile>) -> Option
 
 fn name(hop: &Hop) -> String {
     format!("{}/{}", hop.dst, hop.did)
-}
-
-/// What hop `h` waits for (`RustSucc` in the model).
-fn successors(
-    all: &[&Hop],
-    started: &[bool],
-    h: usize,
-    profiles: &HashMap<String, Profile>,
-) -> Vec<usize> {
-    let hop = all[h];
-    let y = &hop.dst;
-    let gid = hop.gid();
-    let profile = profiles.get(y).copied().unwrap_or_default();
-    let mut next = Vec::new();
-    for (d, other) in all.iter().enumerate() {
-        if d == h {
-            continue;
-        }
-        // Chain: made under this hop (and waited for: not an entry).
-        if !other.entry && other.chain.contains(&gid) {
-            next.push(d);
-        }
-    }
-    if !profile.stacked {
-        return next;
-    }
-    let out: Vec<usize> = (0..all.len()).filter(|&d| all[d].src == *y).collect();
-    let related = out
-        .iter()
-        .any(|&d| hop.chain.contains(&(y.clone(), all[d].sid.clone())));
-    if !profile.reentrant && !out.is_empty() && !related && !started[h] {
-        next.extend(out.iter().copied().filter(|&d| d != h));
-    }
-    for (d, other) in all.iter().enumerate() {
-        if d != h && other.dst == *y && hop.seq < other.seq && started[d] {
-            next.push(d);
-        }
-    }
-    next.sort_unstable();
-    next.dedup();
-    next
 }
 
 #[cfg(test)]
@@ -494,6 +539,93 @@ mod tests {
                 started.elapsed() / rounds
             );
         }
+    }
+
+    /// An `events.call` carries its emitter's chain, but what the emitter
+    /// ran under does not wait for the listener: p (Node) waits on h into
+    /// a (Python); x, from c, runs on top of h, emits n and waits on a slow
+    /// call into b; n's listener calls p (y). b returns, then x, h, and p
+    /// runs y: no cycle, whether the listener's runtime has one stack or not.
+    /// guarantee: bridge/sync-wait-cycle-refused
+    #[test]
+    fn an_emitters_chain_is_not_waited_for() {
+        for stacked in [false, true] {
+            let p = profiles(&[
+                ("p", true, false),
+                ("a", true, true),
+                ("c", false, true),
+                ("d", stacked, true),
+                ("b", false, true),
+            ]);
+            let h = hop("p", "node:1", "a", 1, &["p/node:1"]);
+            let x = hop("c", "go:1", "a", 2, &["c/go:1"]);
+            let slow = hop("a", "py:1", "b", 1, &["c/go:1", "a/rust:2", "a/py:1"]);
+            // The listener's call, with the emit's chain (a/py:2 is x's
+            // events.dispatch).
+            let listener = entry("d", 1, &["c/go:1", "a/rust:2", "a/py:2"]);
+            let y = hop(
+                "d",
+                "py:5",
+                "p",
+                2,
+                &["c/go:1", "a/rust:2", "a/py:2", "d/rust:1", "d/py:5"],
+            );
+            assert_eq!(
+                cycle(&[h, x, slow, listener], &y, &p),
+                None,
+                "stacked: {stacked}"
+            );
+        }
+    }
+
+    /// The listener run on top of a wait still closes its cycle with the
+    /// emitter's chain in its path.
+    /// guarantee: bridge/sync-wait-cycle-refused
+    #[test]
+    fn a_listener_with_its_emitters_chain_on_top_of_a_wait() {
+        let p = profiles(&[("c", true, false), ("a", true, true), ("e", true, true)]);
+        let x = hop("c", "node:1", "a", 1, &["c/node:1"]);
+        // e's own activity emits; its listener in a runs on top of x and
+        // calls c.
+        let listener = entry("a", 2, &["e/js:1", "e/js:2"]);
+        let y = hop(
+            "a",
+            "py:2",
+            "c",
+            1,
+            &["e/js:1", "e/js:2", "a/rust:2", "a/py:2"],
+        );
+        let found = cycle(&[x, listener], &y, &p).expect("a cycle");
+        assert_eq!(found, ["c/rust:1", "a/rust:1", "a/rust:2"]);
+    }
+
+    /// The check stays near linear in the calls in progress: many entries
+    /// (asynchronous calls and emits while a synchronous call waits) cost
+    /// in proportion. Quadratic, four times the entries took about sixteen
+    /// times as long (1,000: 5.9 ms, 3,000: 57 ms).
+    #[test]
+    fn the_check_is_near_linear_in_entries() {
+        let p = profiles(&[("n", true, false), ("py", true, true), ("g", false, true)]);
+        let time = |count: usize| {
+            let mut hops = vec![hop("n", "node:1", "py", 1, &["n/node:1"])];
+            for i in 0..count {
+                hops.push(entry("py", 2 + i as u64, &["g/go:1", "g/go:2", "g/go:3"]));
+            }
+            let new = hop("py", "py:1", "g", 1, &["n/node:1", "py/rust:1", "py/py:1"]);
+            (0..5)
+                .map(|_| {
+                    let start = std::time::Instant::now();
+                    std::hint::black_box(cycle(&hops, &new, &p));
+                    start.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+        let (small, large) = (time(1_000), time(4_000));
+        assert!(
+            large < small * 8,
+            "4,000 entries took {large:?}, 1,000 took {small:?}: not near linear"
+        );
     }
 
     #[test]
