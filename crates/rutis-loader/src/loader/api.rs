@@ -422,9 +422,12 @@ impl Loader {
     /// global key, are rebuilt with the instance's (`RuntimeInstances`).
     /// A reconcile of the current layers, under the operation lock, which
     /// replaces only the copies whose keys changed; nothing once the loader
-    /// is gone.
+    /// is gone. One at a time is waiting: names announced before it reads
+    /// the keys are rebuilt by it (many connections announcing at once
+    /// queue one reconcile, not one each).
     #[cfg(feature = "runtimes")]
     pub(crate) fn rekeying(&self) -> Arc<dyn Fn() + Send + Sync> {
+        use std::sync::atomic::Ordering;
         let inner = Arc::downgrade(&self.inner);
         Arc::new(move || {
             let Some(inner) = inner.upgrade() else {
@@ -433,8 +436,14 @@ impl Loader {
             let Ok(tasks) = tokio::runtime::Handle::try_current() else {
                 return;
             };
+            if inner.rekey_pending.swap(true, Ordering::AcqRel) {
+                return;
+            }
             tasks.spawn(async move {
                 let _op = inner.op.lock().await;
+                // Before reading the keys: a name announced from now on
+                // spawns another.
+                inner.rekey_pending.swap(false, Ordering::AcqRel);
                 if inner.check_open().is_ok() {
                     inner.reconcile_inner().await;
                 }
@@ -569,4 +578,34 @@ fn isolate_value(isolate: &BTreeMap<String, Isolate>) -> Value {
             .map(|(name, iso)| (name.clone(), iso.to_value()))
             .collect(),
     )
+}
+
+#[cfg(all(test, feature = "runtimes"))]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use crate::{Chain, LoaderOptions, LoaderPlugin};
+
+    /// Names announced while a rekeying reconcile waits for the operation
+    /// lock queue no other: it reads the keys once it runs. One announced
+    /// after it started spawns the next.
+    #[tokio::test(flavor = "current_thread")]
+    async fn announcements_while_a_rekeying_waits_queue_no_other() {
+        let loader = LoaderPlugin::new(Chain::new(), LoaderOptions::default()).handle();
+        let rekey = loader.rekeying();
+        let metrics = tokio::runtime::Handle::current().metrics();
+        let before = metrics.num_alive_tasks();
+        let op = loader.inner.op.lock().await;
+        for _ in 0..100 {
+            rekey();
+        }
+        assert_eq!(metrics.num_alive_tasks(), before + 1);
+        drop(op);
+        while metrics.num_alive_tasks() > before {
+            tokio::task::yield_now().await;
+        }
+        assert!(!loader.inner.rekey_pending.load(Ordering::Acquire));
+        rekey();
+        assert_eq!(metrics.num_alive_tasks(), before + 1);
+    }
 }

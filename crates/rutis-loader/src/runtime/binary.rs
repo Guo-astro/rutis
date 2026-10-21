@@ -1052,6 +1052,11 @@ struct Inner<L: BinaryLanguage> {
     early: Mutex<HashSet<String>>,
     /// The restart policy in force, while supervising.
     supervision: Mutex<Option<Supervision>>,
+    /// The ends noted before supervising first started (a runtime that
+    /// crashed as it started, while the application was still starting),
+    /// for [`BinaryRuntimesHandle::supervise`] to handle; `None` once it
+    /// did, or supervising stopped. Locked under `supervision`.
+    unreported: Mutex<Option<Vec<Ended>>>,
     /// Each runtime's restarts so far, kept across its starts and stops.
     backoffs: Mutex<HashMap<String, Backoff>>,
     /// The restarts waiting out their backoff: aborted when supervising
@@ -1165,6 +1170,7 @@ impl<L: BinaryLanguage> BinaryRuntimes<L> {
                 slots: Mutex::default(),
                 early: Mutex::default(),
                 supervision: Mutex::new(None),
+                unreported: Mutex::new(Some(Vec::new())),
                 backoffs: Mutex::default(),
                 pending: Mutex::default(),
             }),
@@ -1247,16 +1253,37 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
     /// from 1 s), and give up once it was restarted [`LIMIT`] times within
     /// [`WINDOW`]; with [`RestartPolicy::Exit`], only report it. Replaces
     /// an earlier call's policy and report. A runtime stopped (idle, a
-    /// restart, the plugin disposed) did not end on its own.
+    /// restart, the plugin disposed) did not end on its own. The first
+    /// call also handles the runtimes that ended before it and are still
+    /// down (one that crashed as it started, while the application was
+    /// starting).
     pub fn supervise(
         &self,
         policy: RestartPolicy,
         report: impl Fn(RuntimeEnd) + Send + Sync + 'static,
     ) {
-        *self.inner.supervision.lock().unwrap() = Some(Supervision {
-            policy,
-            report: Arc::new(report),
-        });
+        let earlier = {
+            let mut supervision = self.inner.supervision.lock().unwrap();
+            *supervision = Some(Supervision {
+                policy,
+                report: Arc::new(report),
+            });
+            self.inner.unreported.lock().unwrap().take()
+        };
+        for ended in earlier.unwrap_or_default() {
+            // Unless something started or stopped it since.
+            let still = self
+                .inner
+                .slots
+                .lock()
+                .unwrap()
+                .running
+                .get(&ended.runtime)
+                .is_some_and(|slot| slot.generation == ended.generation && slot.stopped.is_some());
+            if still {
+                self.inner.ended(ended);
+            }
+        }
     }
 
     /// Stop supervising: a restart waiting out its backoff does not happen
@@ -1448,7 +1475,10 @@ impl<L: BinaryLanguage> Inner<L> {
     }
 
     fn unsupervise(&self) {
-        *self.supervision.lock().unwrap() = None;
+        let mut supervision = self.supervision.lock().unwrap();
+        *supervision = None;
+        *self.unreported.lock().unwrap() = None;
+        drop(supervision);
         for pending in self.pending.lock().unwrap().drain(..) {
             pending.abort();
         }
@@ -1461,8 +1491,18 @@ impl<L: BinaryLanguage> Inner<L> {
         if refused(&ended.why) {
             return;
         }
-        let Some(supervision) = self.supervision.lock().unwrap().clone() else {
-            return;
+        let supervision = {
+            let supervision = self.supervision.lock().unwrap();
+            match &*supervision {
+                Some(supervision) => supervision.clone(),
+                None => {
+                    // Not yet supervising: for `supervise` to handle.
+                    if let Some(unreported) = &mut *self.unreported.lock().unwrap() {
+                        unreported.push(ended);
+                    }
+                    return;
+                }
+            }
         };
         let Ended {
             runtime,

@@ -314,6 +314,10 @@ struct Inner {
     expressions: Option<Arc<dyn Expressions>>,
     /// Serializes reconcile and edits.
     op: tokio::sync::Mutex<()>,
+    /// A rekeying reconcile is spawned and has not read the keys yet
+    /// ([`Loader::rekeying`]): announcements meanwhile need no other.
+    #[cfg(feature = "runtimes")]
+    rekey_pending: std::sync::atomic::AtomicBool,
     state: Mutex<State>,
 }
 

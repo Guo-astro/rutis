@@ -1233,3 +1233,52 @@ async fn exit_reports_the_end_and_unsupervised_runtimes_stay_down() {
     ));
     fixture.root.shutdown().await.unwrap();
 }
+
+/// A Go runtime that ended before supervising started (it crashed as it
+/// started, while the application was still starting) is handled once
+/// supervising starts: `on-failure` starts it again, `exit` reports it.
+/// guarantee: loader/go-runtimes, host/runtime-restart
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_that_ended_before_supervising_is_handled_once_it_starts() {
+    for policy in [RestartPolicy::OnFailure, RestartPolicy::Exit] {
+        let fixture = fixture(None, &[("netkit", "netkit")]).await;
+        fixture
+            .loader
+            .reconcile(layer(vec![row("ping", "go:ping")]), None)
+            .await
+            .unwrap();
+        crash_ping(&fixture).await;
+        let runtimes = fixture.runtimes.clone();
+        COLD.until(
+            || {
+                matches!(
+                    runtime_state(&runtimes, "go-netkit"),
+                    Some(GoRuntimeState::Stopped(_))
+                )
+            },
+            "the crashed runtime",
+        )
+        .await;
+        // A sweep (every 100 ms) has noted the end, with no one to tell.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let ends = supervise(&fixture.runtimes, policy);
+        let (end, _) = nth_end(&ends, 0, Duration::from_secs(1)).await;
+        match (policy, &end) {
+            (RestartPolicy::OnFailure, RuntimeEnd::Restarting { runtime }) => {
+                assert_eq!(runtime, "go-netkit");
+                let loader = fixture.loader.clone();
+                COLD.until(
+                    || row_state(&loader, "ping") == Some(FiberState::Active),
+                    "ping again",
+                )
+                .await;
+            }
+            (RestartPolicy::Exit, RuntimeEnd::Exit { runtime, .. }) => {
+                assert_eq!(runtime, "go-netkit");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(ends.lock().unwrap().len(), 1, "{:?}", ends.lock().unwrap());
+        fixture.root.shutdown().await.unwrap();
+    }
+}

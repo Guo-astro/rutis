@@ -169,8 +169,23 @@ impl SwiftDev {
 
     /// Build #`n`: its binary, or the compiler's errors.
     pub fn build(&self, n: u32) -> Result<PathBuf, String> {
-        let built = self.build_command().output();
-        self.copied(built, n)
+        built(self.build_command().output())?;
+        let bin = bin_path(self.bin_path_command().output())?;
+        self.copied(&bin, n)
+    }
+
+    /// [`SwiftDev::build`] with these commands, without blocking: `swift
+    /// build`, then `swift build --show-bin-path`, each killed when
+    /// dropped.
+    async fn rebuilt(
+        &self,
+        build: std::process::Command,
+        show_bin_path: std::process::Command,
+        n: u32,
+    ) -> Result<PathBuf, String> {
+        built(binary::run(build).await)?;
+        let bin = bin_path(binary::run(show_bin_path).await)?;
+        self.copied(&bin, n)
     }
 
     /// `swift build` of the product, in the debug configuration: what the
@@ -183,42 +198,18 @@ impl SwiftDev {
         command
     }
 
-    /// Where `swift build` puts the products.
-    fn bin_path(&self) -> Result<PathBuf, String> {
-        let output = std::process::Command::new("swift")
+    /// What says where `swift build` puts the products.
+    fn bin_path_command(&self) -> std::process::Command {
+        let mut command = std::process::Command::new("swift");
+        command
             .args(["build", "--show-bin-path"])
-            .current_dir(&self.dir)
-            .output()
-            .map_err(|error| format!("cannot run swift: {error}"))?;
-        match output.status.success() {
-            true => Ok(PathBuf::from(
-                String::from_utf8_lossy(&output.stdout).trim(),
-            )),
-            false => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
-        }
+            .current_dir(&self.dir);
+        command
     }
 
-    /// Build #`n` at its own path, once `built` (the build's output) says
-    /// it succeeded; else the compiler's errors.
-    fn copied(
-        &self,
-        built: std::io::Result<std::process::Output>,
-        n: u32,
-    ) -> Result<PathBuf, String> {
-        let output = built.map_err(|error| {
-            format!("cannot run swift (is a Swift toolchain on PATH?): {error}")
-        })?;
-        if !output.status.success() {
-            // The compiler's errors are on stdout, the build system's on
-            // stderr.
-            let mut errors = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if !stderr.trim().is_empty() {
-                errors = format!("{errors}\n{}", stderr.trim()).trim().to_owned();
-            }
-            return Err(errors);
-        }
-        let product = self.bin_path()?.join(&self.product);
+    /// Build #`n` at its own path, copied from the products in `bin`.
+    fn copied(&self, bin: &Path, n: u32) -> Result<PathBuf, String> {
+        let product = bin.join(&self.product);
         let binary = self.binary(n);
         if let Some(builds) = binary.parent() {
             std::fs::create_dir_all(builds).map_err(|error| error.to_string())?;
@@ -227,6 +218,35 @@ impl SwiftDev {
         std::fs::copy(&product, &binary)
             .map_err(|error| format!("{}: {error}", product.display()))?;
         Ok(binary)
+    }
+}
+
+/// Whether `swift build` (its output) succeeded: if not, the compiler's
+/// errors.
+fn built(output: std::io::Result<std::process::Output>) -> Result<(), String> {
+    let output = output
+        .map_err(|error| format!("cannot run swift (is a Swift toolchain on PATH?): {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    // The compiler's errors are on stdout, the build system's on stderr.
+    let mut errors = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        errors = format!("{errors}\n{}", stderr.trim()).trim().to_owned();
+    }
+    Err(errors)
+}
+
+/// Where `swift build` puts the products, from what `--show-bin-path`
+/// printed.
+fn bin_path(output: std::io::Result<std::process::Output>) -> Result<PathBuf, String> {
+    let output = output.map_err(|error| format!("cannot run swift: {error}"))?;
+    match output.status.success() {
+        true => Ok(PathBuf::from(
+            String::from_utf8_lossy(&output.stdout).trim(),
+        )),
+        false => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
     }
 }
 
@@ -239,13 +259,10 @@ impl DevBuild for SwiftDev {
         &self.runtime
     }
 
-    /// [`SwiftDev::build`], without blocking; dropped, it kills `swift
-    /// build`.
+    /// [`SwiftDev::build`], without blocking (`swift build`, then where
+    /// its products are); dropped, it kills the command running.
     fn rebuild(&self, n: u32) -> BoxFuture<'_, Result<PathBuf, String>> {
-        Box::pin(async move {
-            let built = binary::run(self.build_command()).await;
-            self.copied(built, n)
-        })
+        Box::pin(self.rebuilt(self.build_command(), self.bin_path_command(), n))
     }
 
     fn binary(&self, n: u32) -> PathBuf {
@@ -302,6 +319,8 @@ const TEMPLATE: &[(&str, &str)] = &[
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -332,5 +351,46 @@ mod tests {
         std::fs::write(dir.path().join("Sources/kits/main.swift"), "").unwrap();
         assert_eq!(SwiftDev::of(dir.path()).unwrap().product, "kits");
         assert!(swift.binary(3).ends_with(".rutis/swift/Alpha-3"));
+    }
+
+    fn sh(script: &str) -> std::process::Command {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", script]);
+        command
+    }
+
+    /// A rebuild asks where the products are without blocking: on a
+    /// single thread, a slow `--show-bin-path` still lets other work run
+    /// (Ctrl-C), and dropping the rebuild ends it. Once it answers, the
+    /// product is copied to the build's own path.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_rebuild_finds_its_products_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Package.swift"),
+            "let package = Package(name: \"probe\")",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("Sources/probe")).unwrap();
+        std::fs::write(dir.path().join("Sources/probe/main.swift"), "").unwrap();
+        let swift = SwiftDev::of(dir.path()).unwrap();
+
+        let started = std::time::Instant::now();
+        let slow = swift.rebuilt(sh("true"), sh("sleep 30"), 1);
+        let ended = tokio::time::timeout(Duration::from_millis(300), slow).await;
+        assert!(ended.is_err());
+        assert!(started.elapsed() < Duration::from_secs(10));
+
+        let bin = dir.path().join("products");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("probe"), "built").unwrap();
+        let printed = format!("echo {}", bin.display());
+        let binary = swift.rebuilt(sh("true"), sh(&printed), 2).await.unwrap();
+        assert_eq!(binary, swift.binary(2));
+        assert_eq!(std::fs::read_to_string(&binary).unwrap(), "built");
+
+        let failed = swift.rebuilt(sh("echo 'error: nope'; exit 1"), sh("true"), 3);
+        assert_eq!(failed.await.unwrap_err(), "error: nope");
     }
 }
