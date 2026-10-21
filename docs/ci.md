@@ -324,5 +324,6 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 | --- | --- | --- |
 | Swift 插件的系统授权（EventKit，授权归属二进制） | `cargo test -p rutis-e2e --test tcc` | macOS、Xcode；第一次运行时在弹窗里选择 |
 | Android 应用托管（SDK 设备测试、示例应用拨出、两条连接、授权流程） | `tools/android-emulator.sh start`，再 `./gradlew :rutis:connectedDebugAndroidTest`（`kotlin/rutis`）与 `cargo test -p rutis-host --features android --test android -- --test-threads 1` | Android SDK、JDK 17、Python 3.10+；见 [Kotlin README](../kotlin/README.zh-CN.md) |
+| iOS 应用托管（SDK 自己的测试在模拟器里运行；示例应用在两台模拟器上连 `rutis-host`：实例、后台与前台、HealthKit 授权） | `bash tools/ios-selftest.sh` 与 `cargo test -p rutis-e2e --test ios_app -- --ignored` | macOS、带 iOS 模拟器运行时的 Xcode（`xcodebuild -downloadPlatform iOS`）、Python 3.10+ |
 
-真机上的检查清单在各自的指南里（Android：[Kotlin 应用](guide/kotlin-app.md) §8）。
+真机上的检查清单在各自的指南里（Android：[Kotlin 应用](guide/kotlin-app.md) §8；iOS：[Swift 应用](guide/swift-app.md#8-示例应用) §8）。

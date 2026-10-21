@@ -324,5 +324,6 @@ Tests that need system permission prompts, a device or a simulator are not run i
 | --- | --- | --- |
 | A Swift plugin's system access (EventKit, access belonging to the binary) | `cargo test -p rutis-e2e --test tcc` | macOS, Xcode; answer the prompt on the first run |
 | Android app hosting (the SDK's device tests, the sample dialing in, two connections, the permission flow) | `tools/android-emulator.sh start`, then `./gradlew :rutis:connectedDebugAndroidTest` (in `kotlin/rutis`) and `cargo test -p rutis-host --features android --test android -- --test-threads 1` | Android SDK, JDK 17, Python 3.10+; see the [Kotlin README](../kotlin/README.md) |
+| iOS app hosting (the SDK's own tests inside a simulator; the sample app on two simulators against `rutis-host`: instances, background and foreground, HealthKit access) | `bash tools/ios-selftest.sh` and `cargo test -p rutis-e2e --test ios_app -- --ignored` | macOS, Xcode with an iOS simulator runtime (`xcodebuild -downloadPlatform iOS`), Python 3.10+ |
 
-The real-device checklists are in the guides (Android: [Kotlin apps](guide/kotlin-app.en.md) §8).
+The real-device checklists are in the guides (Android: [Kotlin apps](guide/kotlin-app.en.md) §8; iOS: [Swift apps](guide/swift-app.en.md#8-the-sample-app) §8).
