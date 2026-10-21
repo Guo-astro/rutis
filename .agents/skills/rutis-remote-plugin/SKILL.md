@@ -1,6 +1,6 @@
 ---
 name: rutis-remote-plugin
-description: Use when a rutis plugin must run on another machine, device or app instead of next to the host — "remote plugin", running a Python/Node/Go plugin on a GPU box, connecting two rutis hosts, exposing a phone app's capabilities to rutis. Walks through choosing a node link vs a remote runtime vs app hosting, writing the plugin in the rutis paradigm, deploying, configuring rutis.json, verifying, and the rules that keep it inside the rutis design. Self-contained; reference material is in references/.
+description: Use when a rutis plugin must run on another machine, device or app instead of next to the host — "remote plugin", running a Python/Node/Go/Swift plugin on a GPU box or a Mac, connecting two rutis hosts, exposing a phone app's capabilities to rutis. Walks through choosing a node link vs a remote runtime vs app hosting, writing the plugin in the rutis paradigm, deploying, configuring rutis.json, verifying, and the rules that keep it inside the rutis design. Self-contained; reference material is in references/.
 ---
 
 # Adding a remote plugin to rutis
@@ -26,7 +26,7 @@ Keep one sentence in mind: **rutis has no such thing as a "remote plugin" — on
 
 When unsure, ask one question: **who decides whether the plugin is loaded and with what configuration?** This rutis → remote runtime / app hosting. The other side → node link.
 
-## 2. What works today (2026-10-15; check the repository before relying on it)
+## 2. What works today (2026-10-19; check the repository before relying on it)
 
 | Language | Remote listening `listen:` (rutis dials in) | Dialing out `dial:` (runtime connects to rutis) |
 | --- | --- | --- |
@@ -34,9 +34,10 @@ When unsure, ask one question: **who decides whether the plugin is loaded and wi
 | Node / TypeScript | ✅ | ✅ ([#384](https://github.com/arcships/rutis/issues/384)) |
 | Go | ✅ | ✅ ([#384](https://github.com/arcships/rutis/issues/384)) |
 | Bun | ✅ (#384) | ✅ (#384) |
-| Swift / Kotlin apps | Designed, not implemented ([#389](https://github.com/arcships/rutis/issues/389), [#391](https://github.com/arcships/rutis/issues/391)) | Same |
+| Swift (macOS plugin binaries) | ✅ ([#387](https://github.com/arcships/rutis/issues/387)) | ✅ ([#387](https://github.com/arcships/rutis/issues/387)) |
+| Swift / Kotlin apps (plugins hosted in an iOS / Android app) | Designed, not implemented ([#389](https://github.com/arcships/rutis/issues/389), [#391](https://github.com/arcships/rutis/issues/391)) | Same |
 
-"One access point accepting many connections, one instance per connection" (many devices, autoscaled workers) works on the rutis side ([#382](https://github.com/arcships/rutis/issues/382): `listen` and `instances` on a `runtimes.remote` entry); of the language runtimes Python, Go, Node and Bun can connect to it so far (step 4b). Tracking issue: [#392](https://github.com/arcships/rutis/issues/392).
+"One access point accepting many connections, one instance per connection" (many devices, autoscaled workers) works on the rutis side ([#382](https://github.com/arcships/rutis/issues/382): `listen` and `instances` on a `runtimes.remote` entry); of the language runtimes Python, Go, Swift, Node and Bun can connect to it so far (step 4b). Tracking issue: [#392](https://github.com/arcships/rutis/issues/392).
 
 ## 3. Write the plugin: the paradigm, same as local
 
@@ -53,7 +54,7 @@ Details in `references/plugin-api.md`. The essentials:
 
 On the remote machine:
 
-1. **Install** the plugin there: Python `pip install` into the interpreter the runtime uses; Node `npm install` in the project; Bun `bun add` in the project; Go, build the binary. A remote runtime loads only plugins already deployed there — **there is no code upload**.
+1. **Install** the plugin there: Python `pip install` into the interpreter the runtime uses; Node `npm install` in the project; Bun `bun add` in the project; Go, build the binary; Swift (macOS), build the binary with `swift build` (its Info.plist linked in when the plugin uses calendars, contacts and the like: macOS asks the user on that machine, for that binary). A remote runtime loads only plugins already deployed there — **there is no code upload**.
 2. Prepare TLS: non-loopback addresses must be `wss://`. Point `RUTIS_CERT` / `RUTIS_KEY` at the certificate and key; with a self-signed certificate, give the issuing CA to `RUTIS_CA` on the rutis side.
 3. Set the token: `RUTIS_TOKEN` on the remote side, equal to `RUTIS_TOKEN_<RUNTIME NAME>` on the rutis side.
 4. Start it listening. `--id` is this runtime's name, `--peer` is the name of the rutis that controls it:
@@ -70,9 +71,9 @@ On the remote machine:
    bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts listen:wss://0.0.0.0:7443/rutis --id gpu --peer main .
    ```
 
-   A Go plugin binary accepts `listen:wss://…` as its channel the same way.
+   A Go or Swift plugin binary accepts `listen:wss://…` as its channel the same way.
 
-   Every remote runtime (Python, Node, Bun, a Go binary) reports on stderr the address it actually bound: `rutis: listening on <address>`. With port 0 (`listen:ws://127.0.0.1:0/rutis`) the system picks a free port; a script or test reads it from this line instead of picking a port first and passing it on (another process can take that port before the runtime binds it). `rutis-host run` does the same for its listeners: `rutis-host: listening on <name> <address>`.
+   Every remote runtime (Python, Node, Bun, a Go or Swift binary) reports on stderr the address it actually bound: `rutis: listening on <address>`. With port 0 (`listen:ws://127.0.0.1:0/rutis`) the system picks a free port; a script or test reads it from this line instead of picking a port first and passing it on (another process can take that port before the runtime binds it). `rutis-host run` does the same for its listeners: `rutis-host: listening on <name> <address>`.
 
    The Python runtime also reports on stderr: when a session ends, `rutis: session ended (<reason>); waiting for a controller` (reason such as `heartbeat timeout`, `connection lost`, `closed (1001): …`), or `rutis: session ended (replaced by a new connection)` when a new connection takes over.
 
@@ -93,7 +94,7 @@ RUTIS_TOKEN=… RUTIS_CA=ca.pem \
 RUTIS_TOKEN=… RUTIS_CA=ca.pem \
   bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
 
-# Go: the plugin binary takes the same channel, flags and environment
+# Go or Swift: the plugin binary takes the same channel, flags and environment
 RUTIS_TOKEN=… RUTIS_CA=ca.pem \
   ./weather dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
 ```
@@ -128,7 +129,7 @@ Details in `references/rutis-json.md` and `references/nodes.md`.
 }
 ```
 
-- `language`: `python` / `py` / `go` / `node` / `bun`.
+- `language`: `python` / `py` / `go` / `swift` / `node` / `bun`.
 - The link row must have `"runtime": "<name>"`; without it the other side is not treated as a runtime and `<name>:*` rows never become ready.
 - Rows are named `<runtime name>:<plugin>`; the plugin is resolved on the remote machine.
 

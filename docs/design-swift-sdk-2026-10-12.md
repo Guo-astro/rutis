@@ -601,6 +601,22 @@ A1 只依赖 S1 的会话层，可与 S2 并行。
 | 12 | 拨出用 `URLSessionWebSocketTask`（升级被拒的状态码取自任务的 `response`），监听用 Network.framework；形态②的环境变量对应为 `RutisApp` 参数 |
 | 13 | 不声明 `objects`（不接收对象引用），同 Go；有需求时再加 |
 
+### 17.4 S2 的实现记录（2026-10-19，#387）
+
+S2 按 §十、§十一 实现，另把 A1 里与形态①共用的远程连接（`listen:` / `dial:`）一并做了。实现时定下的：
+
+| 项 | 做法 | 原因 |
+| --- | --- | --- |
+| 授权归属（§八） | `Rutis.serve` 开始服务前，若 macOS 认定的负责进程不是自己，用 `posix_spawn(POSIX_SPAWN_SETEXEC)` 加 `responsibility_spawnattrs_setdisclaim` 原地重新执行自己（同一 pid、同样的描述符），之后为自己负责；两个函数运行时查找，缺失时不变 | 子进程默认继承父进程（终端、宿主）的负责进程，提示会指向终端，授权也给了终端；放在 SDK 里，不论谁启动二进制都成立，宿主不用改 |
+| `dev` 的构建 | `swift build --product <产品>`（debug），复制到 `.rutis/swift/<产品>-<n>` | 开发循环要快；新文件避免运行中被改写的二进制与签名不符。§十一 原写 `-c release`，发布工作流用 release |
+| 模板的测试 | Swift Testing（`@Test`）+ `RutisTest` | Xcode 16 起的默认；只有 Command Line Tools 时没有测试框架（e2e 在那里只构建插件，指南写明 `swift test` 要 Xcode） |
+| `check` | 插件 API 低于 3 的二进制报"用 0.13 以后的 SDK 重新构建"并失败，Go 同样 | §3.3 |
+| 宿主的编译型语言 | rutis-host 的 Go 专用部分抽成 `languages/binary.rs`（`BinaryHost`、`DevBuild`），Go、Swift 各一个文件 | 注册表"一个文件加一行"对编译型语言也成立 |
+| 监听的 WebSocket 层 | 升级与帧由 SDK 处理，监听用 `NWListener`（TCP / TLS） | `NWProtocolWebSocket` 拒绝时一律 400、看不到路径，而拨号方按状态码分类（401 / 403 重试，400 停止） |
+| `RUTIS_KEY` | EC（P-256/384/521）或 RSA，PKCS#8 / SEC1 / PKCS#1；身份由 `SecIdentityCreate` 组成，不进钥匙串 | `SecItemImport` 不接受未加密的 PKCS#8 |
+
+验收（§十五 S2，即总体稿 M3 的原始验收）：按需启动与重启策略（`swift_rows.rs`）；`dev` 改代码只重启本运行时（e2e `dev_loop`）；授权提示指向二进制、拒绝错误传回（e2e `tcc.rs`：负责进程是二进制自己、签名标识来自 Info.plist、未授权时 Python 调用方收到插件的错误；提示本身与授权后的情形为人工验收）。
+
 ## 附录
 
 ### A. 为什么不用 dlopen 辅助程序（对总体稿 M3 的修订）

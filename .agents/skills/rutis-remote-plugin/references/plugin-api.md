@@ -2,7 +2,7 @@
 
 # Plugin API
 
-TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) and Go plugins (`github.com/arcships/rutis/go/rutis`, see [Go plugins](https://github.com/arcships/rutis/blob/main/docs/guide/go-plugin.en.md)) use the same conventions. The current plugin API version is **3**.
+TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) and Go plugins (`github.com/arcships/rutis/go/rutis`, see [Go plugins](https://github.com/arcships/rutis/blob/main/docs/guide/go-plugin.en.md)) use the same conventions; so do Swift plugins (the Swift package `Rutis` of https://github.com/arcships/rutis, see [Swift plugins](https://github.com/arcships/rutis/blob/main/docs/guide/swift-plugin.en.md)). The current plugin API version is **3**.
 
 ## Declarations
 
