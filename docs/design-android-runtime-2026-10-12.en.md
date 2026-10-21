@@ -399,3 +399,17 @@ The implementation is in `kotlin/rutis` (`rutis`, `rutis-ksp`, `rutis-conformanc
 | `--rutis-manifest` | The jvm entry answers it too (Go's shape, `runtime` `rutis-kotlin-runtime:1`) | Handy for checks; no host reads it in K-P1 |
 | The multilang column | `crates/rutis-loader/tests/multilang_kotlin.rs` (as `multilang_go.rs`), the crossing synchronous calls through Kotlin included | Self-contained, leaving the tests other languages share unchanged |
 | An emitter giving up | Kotlin's cancellation in the expectations is `CancellationException` | A coroutine's cancellation |
+
+## 13. K-P2 implementation notes (2026-10-20, #391)
+
+The remote channels are in the shared sources, `arcships.rutis.internal.remote` in `rutis/src/shared`: the android and jvm targets run the same code. The jvm `Rutis.serve` takes `dial:` / `listen:` (`--id`, `--peer`, `RUTIS_TOKEN`, `RUTIS_CA`, `RUTIS_CERT` / `RUTIS_KEY`, `RUTIS_RETRY`, `RUTIS_HEARTBEAT`, as the other languages), and the conformance tests run through it. Where it differs from the above, or the above says nothing:
+
+| Item | Implementation | Why |
+| --- | --- | --- |
+| Listening | Not Java-WebSocket (K8) but the SDK's own: the upgrade request and the frames handled on a `java.net.ServerSocket` (an `SSLServerSocket` for `wss://`; `Listen.kt`, `Frames.kt`), as Go's `listen.go` and Swift's `Remote/WebSocket.swift` do | Java-WebSocket can refuse a handshake only with 404 or 500, while rutis's dialer classifies by status (401 / 403 retried, 400 / 404 stop); it does not check that client frames are masked; its heartbeat counts in seconds and drops a silent peer with 1006. None of the three meets the assertions Go's listener meets (§9). The SDK has one runtime dependency less |
+| Dialing | OkHttp 5 (K8); statuses, `Sec-WebSocket-Protocol` and certificate errors classified by type; Android's network security config refusing cleartext (`UnknownServiceException`) is incompatible | Retrying cannot fix it |
+| Sending | Waits for room in OkHttp's send queue before handing a message over | OkHttp closes the connection when its queue would exceed 16 MiB |
+| The far end greeting as another endpoint | `EndpointMismatchException` (a subclass of `IncompatibleException`); a dialer counts it as refused credentials | As Go's `ErrEndpointMismatch`: classified by type, not by text |
+| PEM | Certificates through `CertificateFactory`; private keys in PKCS#8, PKCS#1 (RSA) or SEC1 (EC), the latter two wrapped as PKCS#8 by the SDK for `KeyFactory`; in the process only, never in the Android Keystore | The platform APIs take PKCS#8 only |
+| SIGTERM / Ctrl-C | The jvm entry catches them through `sun.misc.Signal`, unloads every row and exits 0 | The JVM's default shutdown hooks exit 143, and an orderly stop cannot run inside a hook |
+| rutis-host | `kotlin` / `kt` in `runtimes.remote[].language` is a language that runs only remotely: no local runtime, template or project, rows `<runtime>:<plugin>` | Kotlin runs in applications; the desktop runtime is suspended |

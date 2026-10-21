@@ -151,11 +151,12 @@ jobs:
               - crates/rutis-loader/**
               - crates/rutis-host/**
             # The Kotlin SDK, and the Rust crates whose conformance suites
-            # run it.
+            # run it, and rutis-host, whose remote runtimes it is.
             kotlin:
               - kotlin/**
               - crates/rutis-bridge/**
               - crates/rutis-loader/**
+              - crates/rutis-host/**
             # The Swift SDK (the root Package.swift and swift/), and the Rust
             # crates that start and run its runtimes.
             swift:
@@ -878,6 +879,14 @@ jobs:
         run: |
           cargo test -p rutis-bridge --features testing,websocket,kotlin --test runtime_conformance --test value_roundtrip --test session_matrix kotlin_
           cargo test -p rutis-bridge --features testing,kotlin --test kotlin_runtime
+      # Remote: the dial-out column, the listener's and dialer's own rules
+      # (statuses, frames, heartbeat, takeover, TLS both ways), and
+      # rutis-host's `runtimes.remote[].language: "kotlin"`.
+      - name: cargo test (the Kotlin runtime remotely)
+        run: |
+          cargo test -p rutis-bridge --features testing,websocket,kotlin --test dial_conformance kotlin::
+          cargo test -p rutis-bridge --features testing,websocket,kotlin --test kotlin_remote
+          cargo test -p rutis-host --features kotlin --test kotlin
       # Kotlin rows among Node and Python ones (the multilang Kotlin column).
       - name: cargo test (Kotlin rows)
         run: cargo test -p rutis-loader --features node,python,kotlin --test multilang_kotlin

@@ -31,8 +31,8 @@ enum Runtime {
     #[cfg(all(unix, feature = "bun"))]
     Bun,
     /// The Kotlin SDK's jvm target (`Rutis.serve`), started by the generic
-    /// launcher: a socket path it dials back, and loopback (K-P1; the
-    /// WebSocket column comes with K-P2).
+    /// launcher: a socket path it dials back, loopback, and a WebSocket it
+    /// listens on (K-P2: the listener an Android application has too).
     #[cfg(feature = "kotlin")]
     Kotlin,
 }
@@ -513,4 +513,10 @@ async fn kotlin_dialing_a_socket_path() {
 #[tokio::test(flavor = "multi_thread")]
 async fn kotlin_dialing_a_loopback_address() {
     semantics(Runtime::Kotlin, Via::Loopback).await;
+}
+
+#[cfg(feature = "kotlin")]
+#[tokio::test(flavor = "multi_thread")]
+async fn kotlin_listening_on_a_websocket() {
+    semantics(Runtime::Kotlin, Via::WebSocket).await;
 }

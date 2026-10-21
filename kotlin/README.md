@@ -81,7 +81,9 @@ Services the test gives are instances of `@RutisService` classes. `loaded.on`, `
 
 ## The desktop test entry
 
-On the jvm target, `Rutis.serve(args, plugins…)` runs plugins as a rutis runtime: `<channel> <project>`, the channel a Unix socket path (`unix:<path>` or bare) or `tcp:127.0.0.1:<port>` (presenting `RUTIS_CHANNEL_TOKEN`). The Rust conformance tests start it with `java -jar` through rutis-bridge's generic `Launcher` (no Kotlin runtime is configured in rutis-host in K-P1).
+On the jvm target, `Rutis.serve(args, plugins…)` runs plugins as a rutis runtime: `<channel> <project>`, the channel a Unix socket path (`unix:<path>` or bare) or `tcp:127.0.0.1:<port>` (presenting `RUTIS_CHANNEL_TOKEN`). The Rust conformance tests start it with `java -jar` through rutis-bridge's generic `Launcher` (no local Kotlin runtime is configured in rutis-host).
+
+The remote channels are those of the other languages ([nodes](../docs/guide/nodes.en.md)): `dial:wss://… --id <id> --peer <rutis's id>` dials a rutis access point and stays connected, `listen:wss://… --id <id>` waits for rutis to dial in; `RUTIS_TOKEN`, `RUTIS_CA` (a CA trusted besides the system's when dialing), `RUTIS_CERT` / `RUTIS_KEY` (the certificate and key of a `wss://` listener, PEM: PKCS#8, PKCS#1 or SEC1); the reconnection rules and state lines of [dialing out](../docs/design-remote-runtime-dial-2026-10-14.en.md) §6; SIGTERM / Ctrl-C unloads every row and exits 0. On the rutis side, `runtimes.remote[].language` is `kotlin` (or `kt`). Dialing uses OkHttp, listening the SDK's own WebSocket server; both are in the shared sources, the same code an Android application runs.
 
 ## Building and testing the SDK
 
@@ -96,6 +98,8 @@ The android target is built only where an Android SDK is installed (`ANDROID_HOM
 
 ```sh
 cargo test -p rutis-bridge --features testing,websocket,kotlin --test runtime_conformance --test value_roundtrip --test session_matrix kotlin_
+cargo test -p rutis-bridge --features testing,websocket,kotlin --test dial_conformance kotlin::
+cargo test -p rutis-bridge --features testing,websocket,kotlin --test kotlin_remote
 cargo test -p rutis-bridge --features testing,kotlin --test kotlin_runtime
 cargo test -p rutis-loader --features node,python,kotlin --test events_conformance --test multilang_kotlin
 ```
