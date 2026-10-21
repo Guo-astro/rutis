@@ -117,7 +117,7 @@ fn normalized(config: &HostConfig, dir: &Path) -> Value {
         restart(bun.restart, &mut fields);
         runtimes.insert("bun".into(), fields.into());
     }
-    // `swift` (0.14): the same settings as `go`.
+    // `swift` (0.15): the same settings as `go`.
     for (key, go) in [
         ("go", &config.runtimes.go),
         ("swift", &config.runtimes.swift),
@@ -136,7 +136,7 @@ fn normalized(config: &HostConfig, dir: &Path) -> Value {
             fields.insert("idle".into(), json!(idle));
         }
         fields.insert("project".into(), path(&go.project, dir));
-        // `restart` (0.14) likewise.
+        // `restart` (0.15) likewise.
         restart(go.restart, &mut fields);
         runtimes.insert(key.into(), fields.into());
     }

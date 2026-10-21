@@ -87,7 +87,7 @@ Rutis.serve(WeatherKits.calendar, WeatherKits.contacts)
 ```json
 {
   "manifest": 1,
-  "sdk": "0.14.0",
+  "sdk": "0.15.0",
   "pluginApi": 3,
   "runtime": "rutis-swift-runtime:1",
   "platform": "macos/arm64",
@@ -448,7 +448,7 @@ await rutis.stop()        // 全部插件逆序清理，然后断开
 | 一致性：事件期望文件的语言加 `swift`（`only` / `except` 可用）；`events_conformance.rs` 与 `session_matrix.rs` 加 Swift 运行时（feature `swift`） | `rutis-bridge/src/runtime/testing/events.rs`、测试 |
 | `scripts/train.mjs` 版本正则加 `swift/rutis/Sources/Rutis/Version.swift` | `scripts/train.mjs` |
 
-实现记录（0.14，抽取已完成）：`binary.rs` 提供 `BinaryLanguage` trait（`PREFIX`、`TITLE`、`MARKER`、`PLUGIN_API` 常量，`runtime_name`、`launch` 两个函数）和以它为参数的 `Binaries`、`BinaryManifest`、`BinaryResolver<L>`、`BinaryRuntimes<L>`、`BinaryRuntimesHandle<L>`、`BinaryRuntimeState`、`BinaryRuntimeInfo`、`read_binary_manifest`，feature `binary`（`go` 开启它，`swift` 也应开启：`swift = ["binary", "rutis-bridge/swift"]`）。`go.rs` 只剩 `struct Go` 的实现和 `GoResolver = BinaryResolver<Go>` 等类型别名，Go 用户的代码不用改。`swift.rs` 照此写：`struct Swift` 实现 `BinaryLanguage`（`swift_runtime_name`、`LocalRuntime::swift`）加别名。崩溃重启也在共用模块里：`BinaryRuntimesHandle::supervise(RestartPolicy, 回调)`，退避用 `rutis_loader::backoff`（与 rutis-host 的 node/py/bun 同一份）；rutis-host 的 `runtimes.go.restart` 经它实现，`runtimes.swift.restart` 照搬即可。
+实现记录（0.15，抽取已完成）：`binary.rs` 提供 `BinaryLanguage` trait（`PREFIX`、`TITLE`、`MARKER`、`PLUGIN_API` 常量，`runtime_name`、`launch` 两个函数）和以它为参数的 `Binaries`、`BinaryManifest`、`BinaryResolver<L>`、`BinaryRuntimes<L>`、`BinaryRuntimesHandle<L>`、`BinaryRuntimeState`、`BinaryRuntimeInfo`、`read_binary_manifest`，feature `binary`（`go` 开启它，`swift` 也应开启：`swift = ["binary", "rutis-bridge/swift"]`）。`go.rs` 只剩 `struct Go` 的实现和 `GoResolver = BinaryResolver<Go>` 等类型别名，Go 用户的代码不用改。`swift.rs` 照此写：`struct Swift` 实现 `BinaryLanguage`（`swift_runtime_name`、`LocalRuntime::swift`）加别名。崩溃重启也在共用模块里：`BinaryRuntimesHandle::supervise(RestartPolicy, 回调)`，退避用 `rutis_loader::backoff`（与 rutis-host 的 node/py/bun 同一份）；rutis-host 的 `runtimes.go.restart` 经它实现，`runtimes.swift.restart` 照搬即可。
 
 ## 十、rutis-host
 
@@ -478,8 +478,8 @@ await rutis.stop()        // 全部插件逆序清理，然后断开
 | --- | --- |
 | 位置 | `swift/rutis`：目标 `Rutis`（核心 + API）、`RutisMacros`（宏插件）、`RutisTest`；会话层 `Sources/Rutis/Internal/Peer`；一致性可执行目标 `RutisConformance`（`conformance-weather`、`conformance-events` 两个插件） |
 | 清单 | **仓库根** `Package.swift`，目标用 `path:` 指向 `swift/rutis/Sources/...`；平台 `.macOS(.v14)`、`.iOS(.v17)`。SwiftPM git 依赖只认仓库根（附录 E.1）；仓库打包体积约 18 MiB（2026-10-14），依赖方克隆代价可接受 |
-| 版本 | `Rutis.sdkVersion` 跟主发布线：现有 `v0.x.y` tag 正是 SwiftPM 认的形式（附录 E.2），无需新 tag 命名空间；`from:` 从首个含根 `Package.swift` 的 release（0.14.0）起 |
-| 依赖方写法 | 插件作者与应用同一条：`.package(url: "https://github.com/arcships/rutis", from: "0.14.0")` + `.product(name: "Rutis", package: "rutis")`；应用在 Xcode 里直接添加包（第一次构建时 Xcode 要求信任宏，CI 用 `-skipMacroValidation`，写进指南） |
+| 版本 | `Rutis.sdkVersion` 跟主发布线：现有 `v0.x.y` tag 正是 SwiftPM 认的形式（附录 E.2），无需新 tag 命名空间；`from:` 从首个含根 `Package.swift` 的 release（0.15.0）起 |
+| 依赖方写法 | 插件作者与应用同一条：`.package(url: "https://github.com/arcships/rutis", from: "0.15.0")` + `.product(name: "Rutis", package: "rutis")`；应用在 Xcode 里直接添加包（第一次构建时 Xcode 要求信任宏，CI 用 `-skipMacroValidation`，写进指南） |
 | 依赖 | `Rutis` 仅 Foundation 与系统的 Network.framework（监听）；`RutisMacros` 编译期依赖 swift-syntax（版本范围跟两个支持的工具链）；不引入 uniffi / swift-bridge（附录 B） |
 | 兼容 | 同一协议版本内，任意 SDK 版本的二进制 / 应用可在任意宿主版本运行，前提是插件 API 不高于宿主支持、双方都声明 `events-v2`（rutis 0.13 起） |
 | 语言模式 | Swift 5 模式起步，API 按 Sendable 友好设计；工具链策略同 Go："当前两个稳定版"（今日为 6.3、6.4） |
@@ -564,7 +564,7 @@ A1 只依赖 S1 的会话层，可与 S2 并行。
 | 错误名 `String(reflecting:)`，只带名字与消息 | 简名；`code` / `data` 两个方向；收到的为 `RutisError` | 0.12 错误契约；与其他语言的名字一致 |
 | 会话结束清理至多 5 秒，形态① `exit(0)` | `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒），超时以 1 退出 | 契约 §4 |
 | 崩溃不自动重启 | 按 `restart`，默认 `no`，`binary.rs` 为 Go 与 Swift 实现 | #274 维护者决定（0.12） |
-| SDK 首个版本 0.11.0 | 0.14.0 | 里程碑 0.14 |
+| SDK 首个版本 0.11.0 | 0.15.0 | 里程碑 0.15（0.14 未单独发布） |
 
 ### 17.2 仍需要 rutis 专用代码的地方
 
