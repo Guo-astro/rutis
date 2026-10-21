@@ -122,7 +122,7 @@ cargo test -p rutis-bridge --features testing,kotlin --test kotlin_runtime
 cargo test -p rutis-loader --features node,python,kotlin --test events_conformance --test multilang_kotlin
 ```
 
-On an Android device or emulator (`adb`; `tools/android-emulator.sh start` boots one as CI does): the SDK's device tests, and the sample application dialing a rutis-host (Python 3.10+ for its other row):
+On an Android device or emulator (`adb`; `tools/android-emulator.sh start` boots one): the SDK's device tests, and the sample application dialing a rutis-host (Python 3.10+ for its other row):
 
 ```sh
 ./gradlew :rutis:connectedDebugAndroidTest
