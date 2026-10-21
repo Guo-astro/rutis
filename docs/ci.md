@@ -77,7 +77,6 @@
 | `bun` | `bun/**`、`node/rutis/**`、`crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host` |
 | `go` | `go/**`、`crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host` |
 | `kotlin` | `kotlin/**`、`crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host` |
-| `android` | `kotlin/**`、`crates/rutis-host/tests/android.rs`、`tools/android-emulator.sh` |
 | `repro` | `crates/rutis-sdk`、`crates/rutis-cli/build.rs`、`tools/test-dylib-repro.sh`、`tools/build-dylib-bundle.sh`、`tools/lib/**`。内核改动也会影响 SDK，但它的可复现检查放在完整运行里 |
 | `specs` | `specs/**`（TLA+ 模型、配置、预期结果，以及记录结果的 README） |
 
@@ -99,8 +98,7 @@
 | `runtimes-bun` | Linux | `bun`：Bun 1.4.0 | Linux 最新版；macOS 1.4.0 | Bun 运行时的全部测试，包括 loopback 方式启动的重跑 |
 | `runtimes-go` | Linux | `go`：Go oldstable | Linux stable；macOS oldstable；Linux 上 loopback 方式启动的重跑 | Go SDK 与 Go 运行时的全部测试 |
 | `runtimes-kotlin` | Linux | `kotlin`：JDK 17 | — | Kotlin SDK（`kotlin/rutis`）的 Gradle 构建与测试：jvm target 的单元测试、测试工具对两份期望文件；runner 有 Android SDK 时还编译 android target、出 AAR。然后跑带 Kotlin 的 Rust 套件（feature `kotlin`：会话与值、运行时契约、事件一致性中 Kotlin 作 X 与 Y、`kotlin_runtime`、多语言 `multilang_kotlin`；远程：拨出契约的 Kotlin 列、`kotlin_remote`、rutis-host 的 `--features kotlin --test kotlin`），Gradle 在 cargo 之前。`rust`、`network-macos`、`runtimes-windows` 的 bridge 全部 feature 也包含 `kotlin`：它们装 JDK 17，先用 Gradle 构建一致性 jar（`RUTIS_KOTLIN_JAR`） |
-| `android` | macOS（自托管，§10） | `android` | — | Android 模拟器（`tools/android-emulator.sh`：Android SDK 与系统镜像留在 runner 上，每个任务自己的 AVD）：SDK 的设备测试（`:rutis:connectedDebugAndroidTest`），以及示例应用 `kotlin/rutis/android-sample` 拨出到 rutis-host（`rutis-host --features android --test android`：release 构建经 R8 启停；两条连接各成实例；授权提示指向应用、拒绝后错误传回 rutis 与调用方）。arm64 模拟器要虚拟化，GitHub 托管的 macOS runner 没有 |
-| `runtimes-swift` | macOS（自托管，§10） | `swift`：runner 上 Xcode 的工具链 | — | Swift SDK 自己的测试（`swift run RutisSelfTest`）、runner 有 iOS SDK 时为 iOS 构建库、带 Swift 会话与运行时的 Rust 契约套件、Swift 行与 Node / Python 行一起（`swift_rows`、`multilang_swift`、调用方的行、等待环）、远程的 Swift 运行时（`dial_conformance`、`swift_remote`）、rutis-host 的 `runtimes.swift` 与 Swift 插件开发循环（`rutis-host --test swift`、`rutis-e2e --test dev_loop`）、EventKit 插件的授权归属于二进制（`rutis-e2e --test tcc`），以及 X 为 Swift 插件的 `events_conformance`（PR 跑写定的组合，完整运行抽样） |
+| `runtimes-swift` | macOS（自托管，§10） | `swift`：runner 上 Xcode 的工具链 | — | Swift SDK 自己的测试（`swift run RutisSelfTest`）、runner 有 iOS SDK 时为 iOS 构建库、带 Swift 会话与运行时的 Rust 契约套件、Swift 行与 Node / Python 行一起（`swift_rows`、`multilang_swift`、调用方的行、等待环）、远程的 Swift 运行时（`dial_conformance`、`swift_remote`）、rutis-host 的 `runtimes.swift` 与 Swift 插件开发循环（`rutis-host --test swift`、`rutis-e2e --test dev_loop`），以及 X 为 Swift 插件的 `events_conformance`（PR 跑写定的组合，完整运行抽样） |
 | `semver-rutis` | macOS（自托管，§10） | `packaging` | 整个任务 | 公开 API 和上次发布相比有没有不兼容的改动（只提示） |
 | `dylib-linux-launcher`、`dylib-linux-sdk-bundle` | Linux | `dylib` | — | dylib 测试，分两个任务同时跑 |
 | `dylib-linux-repro` | Linux | `repro` | 整个任务 | SDK 可复现构建（在一台机器上用两个目录各构建一次） |
@@ -317,3 +315,14 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 - `setup-python` 在自托管的 Linux 上可以用，Python 照旧由它装。
 
 `runtimes-windows` 和 `dylib-windows.yml` 同样由仓库变量 `WINDOWS_RUNNER` 决定：没设置时是 `"windows-2025"`，设成 `["self-hosted","Windows"]` 就跑在组织的自托管 Windows runner 上（一台 16 核的机器上 4 个实例，以 `NETWORK SERVICE` 运行；Rust 在 `C:\Rust`，有 VS Build Tools、Git、Node、Go、Python）。步骤用 Git 的 bash：机器的系统 `PATH` 里要有 `C:\Program Files\Git\bin`（改了以后重启 runner 服务）。自托管时，每个实例的编译目录和场景目录在 `_work/_rutis-ci/` 下（`checkout` 会清掉检出目录里的 `target`）；Python 不用 `setup-python`（它的 Windows 安装程序要管理员权限），用机器上的 Python，在 `runner.temp` 里建虚拟环境；并行数是 CPU 数除以 4，仓库变量 `WINDOWS_CI_JOBS` 可以改。`dylib-windows` 和 `runtimes-windows` 用同一个实例的编译目录；它的脚本把临时文件放在 `mktemp -d /tmp/rutis-*` 里，用完不删（可复现检查在里面放两份源码和两份 release 构建）；Git 的 bash 把 `/tmp` 映射到服务账户的临时目录，所有实例共用，设 `TMP`、`TEMP` 也不会改变它。所以和自托管的 Mac 一样，任务开头删掉其中超过 12 小时的 `rutis-*` 目录。`tools/test-dylib-launcher.sh` 的 Job Object 检查按进程名在整台机器上找宿主进程，所以宿主副本每次用不同的名字，别的实例同时跑这个检查不会互相干扰。机器要开长路径：注册表 `LongPathsEnabled` = 1，`git config --system core.longpaths true`。
+
+## 12. 本地测试
+
+要系统授权弹窗或真机、模拟器的测试不在 CI 里跑：CI 机器上授权弹窗没人点，权限状态也会在任务之间残留。改动这些部分时在本地跑一遍，PR 里写明跑过：
+
+| 测试 | 命令 | 要什么 |
+| --- | --- | --- |
+| Swift 插件的系统授权（EventKit，授权归属二进制） | `cargo test -p rutis-e2e --test tcc` | macOS、Xcode；第一次运行时在弹窗里选择 |
+| Android 应用托管（SDK 设备测试、示例应用拨出、两条连接、授权流程） | `tools/android-emulator.sh start`，再 `./gradlew :rutis:connectedDebugAndroidTest`（`kotlin/rutis`）与 `cargo test -p rutis-host --features android --test android -- --test-threads 1` | Android SDK、JDK 17、Python 3.10+；见 [Kotlin README](../kotlin/README.zh-CN.md) |
+
+真机上的检查清单在各自的指南里（Android：[Kotlin 应用](guide/kotlin-app.md) §8）。

@@ -122,7 +122,7 @@ cargo test -p rutis-bridge --features testing,kotlin --test kotlin_runtime
 cargo test -p rutis-loader --features node,python,kotlin --test events_conformance --test multilang_kotlin
 ```
 
-在 Android 设备或模拟器上（`adb`；`tools/android-emulator.sh start` 像 CI 那样起一个）：SDK 的设备测试，以及示例应用拨出到 rutis-host（它的另一行要 Python 3.10+）：
+在 Android 设备或模拟器上（`adb`；`tools/android-emulator.sh start` 起一个）：SDK 的设备测试，以及示例应用拨出到 rutis-host（它的另一行要 Python 3.10+）：
 
 ```sh
 ./gradlew :rutis:connectedDebugAndroidTest
