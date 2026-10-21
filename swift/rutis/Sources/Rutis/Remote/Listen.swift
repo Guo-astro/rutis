@@ -172,6 +172,7 @@ final class WebSocketListener: @unchecked Sendable {
     /// At most this many connections upgrading at once (each reads on a
     /// thread of its own); more are dropped at once.
     let maxUpgrading: Int
+    private let stopped = Flag()
     private let upgradingLock = Lock()
     private var upgrading = 0
 
@@ -212,6 +213,7 @@ final class WebSocketListener: @unchecked Sendable {
         let ready = DispatchSemaphore(value: 0)
         let failure = ErrorBox()
         let bound = Flag()
+        let shown = address.bound(address.port)
         listener.stateUpdateHandler = { state in
             switch state {
             case .ready:
@@ -222,7 +224,7 @@ final class WebSocketListener: @unchecked Sendable {
                     if case .failed = state { failed(ChannelError("\(error)")) }
                     return
                 }
-                failure.set(ChannelError("\(error)"))
+                failure.set(ChannelError("\(shown): \(error)"))
                 ready.signal()
             default: break
             }
@@ -284,7 +286,18 @@ final class WebSocketListener: @unchecked Sendable {
     /// Connections upgrading now.
     var pendingUpgrades: Int { upgradingLock.withLock { upgrading } }
 
-    func stop() { listener.cancel() }
+    /// Stops listening; returns once the listener is cancelled (its port
+    /// free, so that a `start()` right after a `stop()` binds it again),
+    /// or after 2 s. Never from the listener's queue.
+    func stop() {
+        guard !stopped.testAndSet() else { return }
+        let cancelled = DispatchSemaphore(value: 0)
+        listener.stateUpdateHandler = { state in
+            if case .cancelled = state { cancelled.signal() }
+        }
+        listener.cancel()
+        _ = cancelled.wait(timeout: .now() + 2)
+    }
 
     /// Reads the upgrade request on `connection` and answers it: a refusal
     /// with its status (nil), or the switch to the session protocol.

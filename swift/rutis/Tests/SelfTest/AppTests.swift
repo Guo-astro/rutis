@@ -126,6 +126,32 @@ struct AppTests {
         XCTAssertEqual(app.state, .stopped(reason: nil))
     }
 
+    /// A listening app started right after it stopped binds its address
+    /// again: `stop()` returns once the port is free.
+    func aListeningAppStartsAgainRightAfterItStopped() async throws {
+        let plugin = Rutis.define(Plugin(name: "late") { ctx in ctx.provide("late", LateService()) })
+        // A port of its own, the same every time, as a device's.
+        let probe = try WebSocketListener("ws://127.0.0.1:0/rutis", protocol: "rutis.3", token: "t",
+                                          identity: { throw ChannelError("no TLS") })
+        let port = try XCTUnwrap(self.port(of: try probe.start { $0.close() }))
+        probe.stop()
+        let app = RutisApp(plugins: [plugin], listen: "ws://127.0.0.1:\(port)/rutis", id: "pad", token: "secret", log: { _ in })
+        for round in 0..<20 {
+            do {
+                try await app.start()
+            } catch {
+                record("round \(round): \(error)")
+                return
+            }
+            // A connection the app closes as it stops: its end of it stays
+            // in TIME_WAIT on the listening port.
+            let socket = connectLoopback(port)
+            XCTAssertTrue(sendUpgrade(socket).hasPrefix("HTTP/1.1 101"), "round \(round)")
+            await app.stop()
+            close(socket)
+        }
+    }
+
     // ── Sockets ──────────────────────────────────────────────────────
 
     private func port(of address: String) -> UInt16? {

@@ -145,6 +145,16 @@ impl App {
             .await;
     }
 
+    /// Reads every line the app says for `duration`. The fixture says
+    /// `done …` and `state: …` from different tasks, so a state may come
+    /// after the `done` line of the call that caused it.
+    async fn settle(&mut self, duration: Duration) {
+        let until = tokio::time::Instant::now() + duration;
+        while let Ok(Some(line)) = tokio::time::timeout_at(until, self.lines.recv()).await {
+            self.seen.push(line);
+        }
+    }
+
     /// The states it reported so far, in order.
     fn states(&self) -> Vec<&str> {
         self.seen
@@ -355,7 +365,8 @@ async fn an_apps_start_and_stop_take_effect_in_call_order() {
     app.stdin.write_all(b"start&\nstop&\n").await.unwrap();
     app.said("done start&", 2).await;
     app.said("done stop&", 2).await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Every state it says meanwhile is read: the last one counts.
+    app.settle(Duration::from_millis(500)).await;
     assert_eq!(
         app.states().last(),
         Some(&"stopped"),

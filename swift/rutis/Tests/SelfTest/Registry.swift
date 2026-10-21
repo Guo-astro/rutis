@@ -33,6 +33,7 @@ let registry: [(String, () async throws -> Void)] = [
     ("AppTests.anUnloadedRowCannotProvide", { try await AppTests().anUnloadedRowCannotProvide() }),
     ("AppTests.silentConnectionsAreDropped", { try AppTests().silentConnectionsAreDropped() }),
     ("AppTests.aListeningAppIsConnectedOnceGreeted", { try await AppTests().aListeningAppIsConnectedOnceGreeted() }),
+    ("AppTests.aListeningAppStartsAgainRightAfterItStopped", { try await AppTests().aListeningAppStartsAgainRightAfterItStopped() }),
     ("WeatherConformanceTests.rutisTestMeetsTheRuntimeExpectations", { try await WeatherConformanceTests().rutisTestMeetsTheRuntimeExpectations() }),
     ("EventsConformanceTests.rutisTestMeetsTheEventExpectations", { try await EventsConformanceTests().rutisTestMeetsTheEventExpectations() }),
     ("ServiceMacroTests.aMethodTableFromTheTypesMethods", { ServiceMacroTests().aMethodTableFromTheTypesMethods() }),
