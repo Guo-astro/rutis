@@ -229,7 +229,7 @@ The [design philosophy](docs/design-philosophy.en.md) explains these choices, an
 
 Go plugins use the module [`github.com/arcships/rutis/go/rutis`](go/rutis): the SDK, and the runtime each plugin binary carries. Swift plugins (macOS) use the Swift package of this repository, [`Rutis`](swift/README.md) (`.package(url: "https://github.com/arcships/rutis", from: "0.15.0")`), the same way.
 
-All of these form a release train: released together at one version, currently 0.13. Use the same version for every rutis package.
+All of these form a release train: released together at one version, currently 0.15. Use the same version for every rutis package.
 
 ## Built with rutis
 

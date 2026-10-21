@@ -6,9 +6,9 @@
 
 ```toml
 [dependencies]
-rutis = "0.13"
-rutis-loader = { version = "0.13", features = ["node", "python", "peer"] }
-rutis-bridge = { version = "0.13", features = ["python", "websocket"] }   # node 默认开
+rutis = "0.15"
+rutis-loader = { version = "0.15", features = ["node", "python", "peer"] }
+rutis-bridge = { version = "0.15", features = ["python", "websocket"] }   # node 默认开
 ```
 
 | crate / feature | 内容 |
@@ -65,10 +65,10 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 
 ```toml
 [dependencies]
-rutis-bridge = "0.13"
+rutis-bridge = "0.15"
 
 [build-dependencies]
-rutis-bridge = { version = "0.13", features = ["exports"] }
+rutis-bridge = { version = "0.15", features = ["exports"] }
 ```
 
 ```rust
