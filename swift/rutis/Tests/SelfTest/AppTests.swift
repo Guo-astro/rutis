@@ -12,6 +12,8 @@ final class LateService: @unchecked Sendable {
     func name() -> String { "late" }
 }
 
+private struct LetGo: Error {}
+
 final class SavedCtx: @unchecked Sendable {
     private let lock = NSLock()
     private var saved: Rutis.Ctx?
@@ -67,6 +69,30 @@ struct AppTests {
 
     /// A task of a row that was unloaded provides: refused, and the row
     /// loads again (its service is not taken).
+    func aLetGoFilterThatFailsIsNotReported() async throws {
+        let lines = Lines()
+        let saved = SavedCtx()
+        let listener = Rutis.define(Plugin(name: "hears") { ctx in
+            ctx.on("t/let-go") { (n: Int) in lines.add("got \(n)") }
+        })
+        let emitter = Rutis.define(Plugin(name: "emits") { ctx in saved.ctx = ctx })
+        let runtime = Runtime([listener, emitter], project: "", settings: Events.Settings(log: { lines.add($0) }))
+        for (key, entry) in [("l", "hears"), ("e", "emits")] {
+            try await runtime.load(key: key, name: nil, entry: entry, config: .undefined, exports: [:], isolate: [:], scope: [])
+        }
+        // Ignores cancellation, then fails with an error of its own.
+        try XCTUnwrap(saved.ctx).filter { _ in
+            for _ in 0..<6 { try? await Task.sleep(nanoseconds: 50_000_000) }
+            throw LetGo()
+        }.emit("t/let-go", 1)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try await runtime.unload("e")
+        try await Task.sleep(nanoseconds: 600_000_000)
+        XCTAssertFalse(lines.all.contains { $0.contains("filter of") }, "let go: nothing reported: \(lines.all)")
+        XCTAssertFalse(lines.all.contains("got 1"), "\(lines.all)")
+        try await runtime.unload("l")
+    }
+
     func anUnloadedRowCannotProvide() async throws {
         let saved = SavedCtx()
         let plugin = Rutis.define(Plugin(name: "late") { ctx in
@@ -124,6 +150,32 @@ struct AppTests {
         XCTAssertEqual(app.state, .connecting, "upgraded, not greeted")
         await app.stop()
         XCTAssertEqual(app.state, .stopped(reason: nil))
+    }
+
+    /// A listening app started right after it stopped binds its address
+    /// again: `stop()` returns once the port is free.
+    func aListeningAppStartsAgainRightAfterItStopped() async throws {
+        let plugin = Rutis.define(Plugin(name: "late") { ctx in ctx.provide("late", LateService()) })
+        // A port of its own, the same every time, as a device's.
+        let probe = try WebSocketListener("ws://127.0.0.1:0/rutis", protocol: "rutis.3", token: "t",
+                                          identity: { throw ChannelError("no TLS") })
+        let port = try XCTUnwrap(self.port(of: try probe.start { $0.close() }))
+        probe.stop()
+        let app = RutisApp(plugins: [plugin], listen: "ws://127.0.0.1:\(port)/rutis", id: "pad", token: "secret", log: { _ in })
+        for round in 0..<20 {
+            do {
+                try await app.start()
+            } catch {
+                record("round \(round): \(error)")
+                return
+            }
+            // A connection the app closes as it stops: its end of it stays
+            // in TIME_WAIT on the listening port.
+            let socket = connectLoopback(port)
+            XCTAssertTrue(sendUpgrade(socket).hasPrefix("HTTP/1.1 101"), "round \(round)")
+            await app.stop()
+            close(socket)
+        }
     }
 
     // ── Sockets ──────────────────────────────────────────────────────
