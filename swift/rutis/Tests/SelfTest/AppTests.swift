@@ -1,0 +1,146 @@
+// An app's listener and a row's lifetime (the 0.15 review): a connection
+// that never presents its upgrade request is dropped, and only so many
+// upgrade at once; a listening app is connected once rutis greeted, not
+// when a connection is upgraded; a task of an unloaded row cannot provide.
+// `start()` and `stop()` in call order: crates/rutis-host/tests/swift_app.rs.
+import Darwin
+import Foundation
+@testable import Rutis
+
+@RutisService
+final class LateService: @unchecked Sendable {
+    func name() -> String { "late" }
+}
+
+final class SavedCtx: @unchecked Sendable {
+    private let lock = NSLock()
+    private var saved: Rutis.Ctx?
+    var ctx: Rutis.Ctx? {
+        get { lock.withLock { saved } }
+        set { lock.withLock { saved = newValue } }
+    }
+}
+
+final class Lines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func add(_ line: String) { lock.withLock { lines.append(line) } }
+    var all: [String] { lock.withLock { lines } }
+}
+
+struct AppTests {
+    /// A task of a row that was unloaded provides: refused, and the row
+    /// loads again (its service is not taken).
+    func anUnloadedRowCannotProvide() async throws {
+        let saved = SavedCtx()
+        let plugin = Rutis.define(Plugin(name: "late") { ctx in
+            saved.ctx = ctx
+            ctx.provide("late", LateService())
+        })
+        let lines = Lines()
+        let runtime = Runtime([plugin], project: "", settings: Events.Settings(log: { lines.add($0) }))
+        try await runtime.load(key: "a", name: nil, entry: "late", config: .undefined, exports: [:], isolate: [:], scope: [])
+        try await runtime.unload("a")
+        let late = try XCTUnwrap(saved.ctx)
+        _ = late.provide("late", LateService())
+        XCTAssertTrue(lines.all.contains { $0.contains("row a is not active") }, "\(lines.all)")
+        try await runtime.load(key: "a", name: nil, entry: "late", config: .undefined, exports: [:], isolate: [:], scope: [])
+        try await runtime.unload("a")
+    }
+
+    /// Connections that send no upgrade request are dropped after the
+    /// deadline, those beyond the cap at once; then a real upgrade works.
+    func silentConnectionsAreDropped() throws {
+        let listener = try WebSocketListener("ws://127.0.0.1:0/rutis", protocol: "rutis.3", token: "secret",
+                                             identity: { throw ChannelError("no TLS") }, upgradeTimeout: 0.5, maxUpgrading: 2)
+        let address = try listener.start { socket in socket.close() }
+        defer { listener.stop() }
+        let port = try XCTUnwrap(port(of: address))
+        let first = connectLoopback(port), second = connectLoopback(port)
+        defer { close(first); close(second) }
+        Thread.sleep(forTimeInterval: 0.1)
+        XCTAssertEqual(listener.pendingUpgrades, 2)
+        let third = connectLoopback(port)
+        defer { close(third) }
+        XCTAssertTrue(closedWithin(third, 0.3), "beyond the cap: dropped at once")
+        XCTAssertTrue(closedWithin(first, 2), "silent: dropped at the deadline")
+        XCTAssertTrue(closedWithin(second, 2), "silent: dropped at the deadline")
+        Thread.sleep(forTimeInterval: 0.1)
+        XCTAssertEqual(listener.pendingUpgrades, 0)
+        let upgraded = connectLoopback(port)
+        defer { close(upgraded) }
+        XCTAssertTrue(sendUpgrade(upgraded).hasPrefix("HTTP/1.1 101"), "an upgrade after them")
+    }
+
+    /// A listening app is `connected` once rutis greeted, not when a
+    /// connection is upgraded.
+    func aListeningAppIsConnectedOnceGreeted() async throws {
+        let lines = Lines()
+        let plugin = Rutis.define(Plugin(name: "late") { ctx in ctx.provide("late", LateService()) })
+        let app = RutisApp(plugins: [plugin], listen: "ws://127.0.0.1:0/rutis", id: "pad", token: "secret", log: { lines.add($0) })
+        try await app.start()
+        let address = try XCTUnwrap(lines.all.compactMap { $0.components(separatedBy: "listening on ").last }.first)
+        let port = try XCTUnwrap(self.port(of: address))
+        let socket = connectLoopback(port)
+        defer { close(socket) }
+        XCTAssertTrue(sendUpgrade(socket).hasPrefix("HTTP/1.1 101"))
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(app.state, .connecting, "upgraded, not greeted")
+        await app.stop()
+        XCTAssertEqual(app.state, .stopped(reason: nil))
+    }
+
+    // ── Sockets ──────────────────────────────────────────────────────
+
+    private func port(of address: String) -> UInt16? {
+        guard let url = URLComponents(string: address), let port = url.port else { return nil }
+        return UInt16(port)
+    }
+}
+
+/// A TCP connection to 127.0.0.1:`port`.
+private func connectLoopback(_ port: UInt16) -> Int32 {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    var address = sockaddr_in()
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = port.bigEndian
+    address.sin_addr.s_addr = inet_addr("127.0.0.1")
+    let connected = withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    }
+    return connected == 0 ? fd : -1
+}
+
+/// Whether the far end closed `fd` within `seconds`.
+private func closedWithin(_ fd: Int32, _ seconds: Double) -> Bool {
+    let deadline = Date().addingTimeInterval(seconds)
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while Date() < deadline {
+        var polled = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        let wait = Int32(max(1, deadline.timeIntervalSinceNow * 1000))
+        if poll(&polled, 1, wait) > 0, recv(fd, &buffer, buffer.count, 0) <= 0 { return true }
+    }
+    return false
+}
+
+/// Sends a valid upgrade request on `fd`; the response's head.
+private func sendUpgrade(_ fd: Int32) -> String {
+    let request = "GET /rutis HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n" +
+        "Sec-WebSocket-Protocol: rutis.3\r\nAuthorization: Bearer secret\r\n\r\n"
+    _ = Array(request.utf8).withUnsafeBytes { send(fd, $0.baseAddress, $0.count, 0) }
+    var head: [UInt8] = []
+    var byte: UInt8 = 0
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline, !head.ends(with: Array("\r\n\r\n".utf8)) {
+        var polled = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        guard poll(&polled, 1, 100) > 0 else { continue }
+        guard recv(fd, &byte, 1, 0) == 1 else { break }
+        head.append(byte)
+    }
+    return String(decoding: head, as: UTF8.self)
+}
+
+private extension Array where Element == UInt8 {
+    func ends(with suffix: [UInt8]) -> Bool { count >= suffix.count && Array(self[(count - suffix.count)...]) == suffix }
+}

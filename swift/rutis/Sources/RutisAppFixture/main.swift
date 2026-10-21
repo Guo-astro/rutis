@@ -5,9 +5,13 @@
 //   RutisAppFixture dial <ws://…> <id>     dials rutis as <id>
 //   RutisAppFixture listen <ws://…> <id>   listens for rutis
 //
-// The token is RUTIS_TOKEN. stdin: `start`, `stop`, `quit`. stdout: every
-// state (`state: connected`), a line when the observation saw a change
-// (`observed`), and `done <command>` once a command returned.
+// The token is RUTIS_TOKEN. stdin: `start`, `stop`, `quit`; `start&` and
+// `stop&` call it in a Task of its own and go on, as an app reacting to
+// its scene phase does. stdout: every state (`state: connected`), a line
+// when the observation saw a change (`observed`), and `done <command>` once
+// a command returned (for `start&`, `stop&`: once that call returned). The
+// device's cleanup takes 300 ms, so that a stop takes a while, as an app's
+// plugins' may.
 import Foundation
 import Observation
 import Rutis
@@ -45,7 +49,10 @@ let token = ProcessInfo.processInfo.environment["RUTIS_TOKEN"] ?? ""
 let device = Rutis.define(Plugin(
     name: "device",
     provides: ["device": .of(Device.self, sync: ["name"])],
-    apply: { ctx in ctx.provide("device", Device(id: id)) }))
+    apply: { ctx in
+        ctx.provide("device", Device(id: id))
+        ctx.effect { try? await Task.sleep(nanoseconds: 300_000_000) }
+    }))
 
 let app = mode == "dial"
     ? RutisApp(plugins: [device], connect: address, id: id, token: token, peer: "test")
@@ -78,6 +85,25 @@ while let command = readLine() {
         }
     case "stop":
         blocking { await app.stop() }
+    case "start&":
+        Task.detached {
+            do {
+                try await app.start()
+            } catch {
+                say("error: \(error)")
+            }
+            say("done start&")
+        }
+        // The call made before the next command's.
+        usleep(50000)
+        continue
+    case "stop&":
+        Task.detached {
+            await app.stop()
+            say("done stop&")
+        }
+        usleep(50000)
+        continue
     case "quit":
         blocking { await app.stop() }
         say("done quit")

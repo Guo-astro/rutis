@@ -363,6 +363,12 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 		panic(fmt.Sprintf("rutis: provide %s: %T is not the %s Provides declares", name, value, shape.typ))
 	}
 	rt.mu.Lock()
+	// A task of an unloaded row providing: refused, or the service would
+	// outlive its row and the row's next load find it taken.
+	if rt.rows[r.key] != r {
+		rt.mu.Unlock()
+		panic(fmt.Sprintf("rutis: row %s is not active", r.key))
+	}
 	if existing, ok := rt.services[id]; ok {
 		rt.mu.Unlock()
 		panic(fmt.Sprintf("rutis: service %s is already provided by row %s", printable(id), existing.row))

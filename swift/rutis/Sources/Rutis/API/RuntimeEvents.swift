@@ -217,28 +217,64 @@ extension Runtime {
             lock.unlock()
             throw RutisError(name: RutisError.Name.bindingError, message: "row \(row.key) is not loaded in this runtime")
         }
-        if viaHost(name, .emit) {
-            try emitViaHost(row, name, args, keep: keep)
-            return .undefined
+        if held[name] == nil {
+            if viaHost(name, .emit) {
+                try emitViaHost(row, name, args, keep: keep)
+                return .undefined
+            }
+            if keep == nil {
+                // Started now, in order (§5.5).
+                let dispatch = snapshot(row, name, keep: nil)
+                lock.unlock()
+                for entry in dispatch.entries { entry.emit(args) }
+                return .undefined
+            }
         }
-        let dispatch = snapshot(row, name, keep: keep)
+        // A filter may wait (it is async), and runs before any start: this
+        // emit, and every later one of `name` from this process until it
+        // started, waits in the name's queue, so they start in emission
+        // order (§5.5). Each takes its path and listeners when its turn
+        // comes.
+        var waiting = held[name] ?? (SerialQueue(), 0)
+        waiting.count += 1
+        held[name] = waiting
         lock.unlock()
-        if keep == nil {
-            // Started now, in order (§5.5).
-            for entry in dispatch.entries { entry.emit(args) }
-            return .undefined
-        }
-        // A filter may wait (it is async): it runs before any start, in a
-        // queue of this row's, so this row's emits still start in order.
         let chain = CallChain.path
-        row.emits.push {
-            do {
-                try await CallChain.$path.withValue(chain) { try await dispatch.emit(args) }
-            } catch {
-                Events.report("rutis: filter of \(name) from row \(row.name) failed: \(Events.failure(error))", to: row.settings.log)
+        waiting.queue.push { [self] in
+            await CallChain.$path.withValue(chain) { await emitInTurn(row, name, args, keep: keep) }
+            lock.withLock {
+                if let entry = held[name] {
+                    held[name] = entry.count <= 1 ? nil : (entry.queue, entry.count - 1)
+                }
             }
         }
         return .undefined
+    }
+
+    /// A queued `emit`, its turn come: through the host or started here,
+    /// after its filter.
+    private func emitInTurn(_ row: Row, _ name: String, _ args: [Value], keep: ((Rutis.Listener) async throws -> Bool)?) async {
+        lock.lock()
+        // Its row gone meanwhile: nothing to emit from.
+        guard rows[row.key] === row else {
+            lock.unlock()
+            return
+        }
+        if viaHost(name, .emit) {
+            do {
+                try emitViaHost(row, name, args, keep: keep)
+            } catch {
+                Events.report("rutis: emit of \(name) from row \(row.name) failed: \(Events.failure(error))", to: row.settings.log)
+            }
+            return
+        }
+        let dispatch = snapshot(row, name, keep: keep)
+        lock.unlock()
+        do {
+            try await dispatch.emit(args)
+        } catch {
+            Events.report("rutis: filter of \(name) from row \(row.name) failed: \(Events.failure(error))", to: row.settings.log)
+        }
     }
 
     /// A dispatch other than `emit`.

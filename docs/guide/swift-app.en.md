@@ -101,6 +101,7 @@ await rutis.stop()        // every plugin cleans up, latest first; then it disco
 
 - `start()` returns once dialing has started; what retrying cannot fix (an invalid id or address) it throws. From then on it stays connected by itself: a connection that fails or drops is tried again (from 0.5 s, doubling up to 30 s); a refused token every 30 s; every connection is a new one, and rutis loads the plugins again. Calling `start()` when started does nothing.
 - `stop()` unloads every plugin while rutis still hears it, closes the connection, and does not reconnect; it returns once done, and `start()` may follow.
+- `start()` and `stop()` take effect in the order they are called, each in a `Task` of its own too: a `start()` called during a stop starts once the stop is done (the user came back during the cleanup: the app connects again); a `stop()` called during a start undoes it (nothing keeps dialing in the background).
 - `state` is `.stopped(reason:)`, `.connecting` or `.connected`. `RutisApp` is `Observable`, so SwiftUI views showing `rutis.state` update by themselves; `for await state in rutis.states { … }` follows it elsewhere. `.stopped(reason: "…")` means it stopped by itself: rutis is incompatible (older than 0.13, say), which retrying cannot fix.
 - The lines in `log` are those of every Swift runtime: `rutis: connected to …`, `rutis: connection lost (…); retrying in 1s`, `rutis: refused: auth-rejected (…); retrying in 30s`, `rutis: refused: incompatible (…); stopping`, and the plugins' failures.
 
@@ -180,7 +181,7 @@ let rutis = RutisApp(plugins: [health, device], listen: "wss://0.0.0.0:7443/ruti
                      id: "lab-ipad", token: token, certificate: identity)   // a SecIdentity
 ```
 
-`certificate` is the TLS identity (from a PKCS#12 file with `SecPKCS12Import`, or the Keychain); `ws://` is allowed on loopback only. One connection at a time, a newer one taking over; `state` is `.connecting` while no rutis is connected. On the rutis side, a node row links to it, as to [a runtime on another machine](nodes.en.md#a-language-runtime-on-another-machine), with `language: "swift"`:
+`certificate` is the TLS identity (from a PKCS#12 file with `SecPKCS12Import`, or the Keychain); `ws://` is allowed on loopback only. One connection at a time, a newer one taking over; `state` is `.connecting` while no rutis is connected, and `.connected` once a connection's rutis greeted (within 10 s, or the connection is closed). A connection must present its upgrade request within 10 s, and at most 32 upgrade at once. If the listener fails later (the network went away), it is bound again with backoff (`rutis: listening failed (…); listening again in 1s`), a connected rutis staying connected. On the rutis side, a node row links to it, as to [a runtime on another machine](nodes.en.md#a-language-runtime-on-another-machine), with `language: "swift"`:
 
 ```json
 {

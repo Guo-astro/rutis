@@ -626,6 +626,8 @@ A1 按 §七 实现。实现时定下的：
 | 远程通道只有一份实现 | 拨出循环与监听循环在 `RutisApp` 里；二进制的 `dial:`、`listen:`（§6.1）就是一个 `RutisApp`，设置取自环境变量（`RUTIS_TOKEN`、`RUTIS_CA`、`RUTIS_CERT` / `RUTIS_KEY`），SIGTERM、Ctrl-C 让它停止，因不兼容停下时以状态 1 退出 | `dial_conformance`、`session_matrix`、`swift_remote.rs` 的列同时检查应用的连接，没有两份要保持一致 |
 | `start()` | 开始拨出或地址绑定后即返回；只抛出重试修不好的（不合法的 id 或地址、`wss://` 没有证书、地址被占用）；已经开始时什么也不做 | 等第一次连上会让离线时启动的应用卡住；连接的情况看 `state` |
 | `stop()` | 在控制方还能收到时卸载全部行（与 SIGTERM 相同），关闭连接，完成后返回 | 应用停止、断网、被杀，rutis 侧看到的是同一件事（应用接入 §四） |
+| `start()` 与 `stop()` 的先后 | 按调用顺序依次生效（2026-10-21 修订）：停止进行中调用的 `start()` 等它完成后开始；开始进行中调用的 `stop()` 撤销它；一次运行自己结束时先发布它最后的状态，再让后来的 `start()` 开始 | 应用在前台开始、进后台停止，各在自己的 `Task` 里；用户在清理期间回来时应用要连上，不能停在 `stopped`，也不能在后台继续拨出 |
+| 监听的连接 | 连接上的 rutis 问候之后才是 `connected`，问候时限同拨出（10 秒）；升级请求须在 10 秒内到达（含 TLS，同 Go 的 `ReadHeaderTimeout`），同时升级的连接至多 32 个；监听器绑定后失败时按退避重新绑定，已有会话不受影响（2026-10-21 修订） | 未认证的连接不能占住应用的线程；网络切换后监听自己恢复 |
 | `state` | 用手写的 `ObservationRegistrar` 遵循 `Observable`（不用 `@Observable` 宏），读写都在 SDK 的锁内；`states` 每个调用方一个 `AsyncStream`，先给出当前状态 | 状态在 SDK 自己的线程上变化：宏生成的存储没有保护；任何线程都可以读 |
 | 报告行与清理时限 | 每个运行时一份（`Events.Settings`：`log`、`shutdownTimeout`），不再到处写 stderr、读 `RUTIS_SHUTDOWN_TIMEOUT` | §七 的 `log`、`shutdownTimeout`；应用的 stderr 没有人看 |
 | 监听的证书 | `certificate: SecIdentity` | iOS 没有公开的办法在钥匙串之外把 PEM 私钥和证书配成身份（`SecIdentityCreate` 只在 macOS）；应用从 PKCS#12 文件或钥匙串得到 `SecIdentity`。二进制仍用 `RUTIS_CERT` / `RUTIS_KEY` |

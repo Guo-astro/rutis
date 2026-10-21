@@ -123,8 +123,6 @@ final class Row: @unchecked Sendable {
     var failure: Error?
     var order = 0
     var unloading = false
-    /// Its filtered emits on the fast path, started in order.
-    let emits = SerialQueue()
 
     // The invocations of its listeners running, and its spawned tasks: an
     // unload cancels them and waits for them.
@@ -284,6 +282,9 @@ final class Runtime: @unchecked Sendable {
     var elsewhere = Set<String>()
     var elsewherePrefixes = Set<String>()
     var hostEmits: [String: Int] = [:]
+    /// Per name, the emits waiting behind a filtered one (§5.5): a filter
+    /// may wait, and a later emit of the name must not start before it.
+    var held: [String: (queue: SerialQueue, count: Int)] = [:]
     /// What the host calls this runtime (mount `runtime`), for descriptors.
     var runtimeName: String?
     /// The host takes announced services (mount `announce`).
@@ -405,6 +406,13 @@ final class Runtime: @unchecked Sendable {
         let id = row.id(name)
         let shape = row.definition.provides[name]
         lock.lock()
+        // A task of an unloaded row providing: refused, or the service would
+        // outlive its row and the row's next load find it taken.
+        guard rows[row.key] === row else {
+            lock.unlock()
+            fail(row, RutisError(name: "Error", message: "row \(row.key) is not active"))
+            return {}
+        }
         if let existing = services[id] {
             lock.unlock()
             fail(row, RutisError(name: "Error", message: "service \(printable(id)) is already provided by row \(existing.row)"))
