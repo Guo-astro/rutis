@@ -153,26 +153,27 @@ fn decode(path: &[String], dst: &str) -> Vec<Global> {
 }
 
 /// Record that call `did` (number `seq`) on session `dst` is being sent
-/// with chain `path`. When the chain's last call came from another session
-/// and its caller waits synchronously, the call is a hop: if it would close
-/// a wait cycle, nothing is recorded and the cycle is returned, each call as
-/// `session/id`. When nobody waits for it synchronously (the chain's last
-/// call is not marked: an emit's `events.call`, an asynchronous call), it is
-/// an entry. Returns whether either was recorded.
+/// with chain `path`. When the call is synchronous and the chain's last call
+/// came from another session whose caller waits synchronously, the call is a
+/// hop: if it would close a wait cycle, nothing is recorded and the cycle is
+/// returned, each call as `session/id`. When nobody waits for it
+/// synchronously (an asynchronous call, or the chain's last call is not
+/// marked), it is an entry. Returns whether either was recorded.
 pub(super) fn forward(
     dst: &str,
     did: &str,
     seq: u64,
     path: &[String],
+    sync: bool,
 ) -> Result<bool, Vec<String>> {
     if MARKS.load(Ordering::SeqCst) == 0 {
         return Ok(false);
     }
     let mut waits = WAITS.lock().unwrap();
     let mut chain = decode(path, dst);
-    let caller = chain
-        .last()
-        .cloned()
+    let caller = sync
+        .then(|| chain.last().cloned())
+        .flatten()
         .filter(|caller| waits.marked.contains(caller));
     chain.push((dst.to_owned(), did.to_owned()));
     let hop = match caller {
