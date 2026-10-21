@@ -234,14 +234,16 @@ extension Runtime {
         // emit, and every later one of `name` from this process until it
         // started, waits in the name's queue, so they start in emission
         // order (§5.5). Each takes its path and listeners when its turn
-        // comes.
+        // comes, in a task of its emitter row's: when that row unloads,
+        // its emits still queued are dropped and the one in its filter is
+        // let go (cancelled, starting nothing), so the queue moves on.
         var waiting = held[name] ?? (SerialQueue(), 0)
         waiting.count += 1
         held[name] = waiting
         lock.unlock()
         let chain = CallChain.path
         waiting.queue.push { [self] in
-            await CallChain.$path.withValue(chain) { await emitInTurn(row, name, args, keep: keep) }
+            await row.held { await CallChain.$path.withValue(chain) { await self.emitInTurn(row, name, args, keep: keep) } }
             lock.withLock {
                 if let entry = held[name] {
                     held[name] = entry.count <= 1 ? nil : (entry.queue, entry.count - 1)
@@ -271,7 +273,9 @@ extension Runtime {
         let dispatch = snapshot(row, name, keep: keep)
         lock.unlock()
         do {
-            try await dispatch.emit(args)
+            // Its row unloading while the filter ran: nothing starts.
+            try await dispatch.emit(args, unlessCancelled: true)
+        } catch is CancellationError where row.isCancelled {
         } catch {
             Events.report("rutis: filter of \(name) from row \(row.name) failed: \(Events.failure(error))", to: row.settings.log)
         }

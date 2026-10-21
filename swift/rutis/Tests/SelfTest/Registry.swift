@@ -29,6 +29,7 @@ let registry: [(String, () async throws -> Void)] = [
     ("ErrorGraphTests.testAnAggregateKeepsItsChildrenInOrder", { ErrorGraphTests().testAnAggregateKeepsItsChildrenInOrder() }),
     ("LifetimeTests.aClosedChannelLeavesItsDescriptorsNumberAlone", { try LifetimeTests().aClosedChannelLeavesItsDescriptorsNumberAlone() }),
     ("LifetimeTests.queuedListenerInvocationsOutliveTheRuntime", { try await LifetimeTests().queuedListenerInvocationsOutliveTheRuntime() }),
+    ("AppTests.anUnloadedRowsHeldEmitLetsTheQueueGo", { try await AppTests().anUnloadedRowsHeldEmitLetsTheQueueGo() }),
     ("AppTests.anUnloadedRowCannotProvide", { try await AppTests().anUnloadedRowCannotProvide() }),
     ("AppTests.silentConnectionsAreDropped", { try AppTests().silentConnectionsAreDropped() }),
     ("AppTests.aListeningAppIsConnectedOnceGreeted", { try await AppTests().aListeningAppIsConnectedOnceGreeted() }),

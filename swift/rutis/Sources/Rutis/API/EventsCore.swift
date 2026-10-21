@@ -255,8 +255,12 @@ package struct Dispatch {
 
     /// Starts every invocation in order and waits for none. A filter's
     /// failure is thrown, for the dispatcher to report (§5.6).
-    package func emit(_ args: [Value]) async throws {
-        for entry in try await selected() { entry.emit(args) }
+    /// `unlessCancelled`: the dispatching task cancelled once the filter
+    /// decided, nothing starts.
+    package func emit(_ args: [Value], unlessCancelled: Bool = false) async throws {
+        let entries = try await selected()
+        if unlessCancelled, Task.isCancelled { return }
+        for entry in entries { entry.emit(args) }
     }
 
     /// Starts every invocation in order and waits for all; failures are an

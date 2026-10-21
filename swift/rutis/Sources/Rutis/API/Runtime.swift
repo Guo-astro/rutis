@@ -133,6 +133,8 @@ final class Row: @unchecked Sendable {
     private var spawned: [Int: Task<Void, Never>] = [:]
     private var nextTask = 0
     private var cancelled = false
+    /// What waits on a task of the row's that the unload lets go (`held`).
+    private var letGo: [Int: Event] = [:]
 
     init(key: String, name: String, entry: String, definition: Rutis.Definition, config: Value,
          exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Scope],
@@ -202,6 +204,31 @@ final class Row: @unchecked Sendable {
         return try result.get()
     }
 
+    /// Runs `body` in a Task of the row's, cancelled when the row unloads,
+    /// and returns once it ended or the row unloads, whichever comes
+    /// first: a body that does not heed cancellation (a filter that never
+    /// answers) holds neither the caller nor the unload. Nothing runs when
+    /// the row unloads already.
+    func held(_ body: @escaping () async -> Void) async {
+        let done = Event()
+        let id: Int? = lock.withLock {
+            if cancelled { return nil }
+            nextTask += 1
+            running[nextTask] = Task {
+                await body()
+                done.fire()
+            }
+            letGo[nextTask] = done
+            return nextTask
+        }
+        guard let id else { return }
+        await done.wait()
+        lock.withLock {
+            running[id] = nil
+            letGo[id] = nil
+        }
+    }
+
     /// Runs `body` until the row unloads (ctx.spawn).
     func spawn(_ body: @escaping () async throws -> Void) {
         lock.lock()
@@ -228,15 +255,17 @@ final class Row: @unchecked Sendable {
     /// Cancels its listeners and tasks; waits for the listeners at most the
     /// shutdown deadline (then reports so, §7.1), and for its tasks.
     func stop() async {
-        let (tasks, waiting): ([Task<Void, Never>], Event?) = lock.withLock {
+        let (tasks, waiting, released): ([Task<Void, Never>], Event?, [Event]) = lock.withLock {
             cancelled = true
             let tasks = Array(running.values) + Array(spawned.values)
-            guard listening > 0 else { return (tasks, nil) }
+            let released = Array(letGo.values)
+            guard listening > 0 else { return (tasks, nil, released) }
             let event = Event()
             idle.append(event)
-            return (tasks, event)
+            return (tasks, event, released)
         }
         for task in tasks { task.cancel() }
+        for event in released { event.fire() }
         if let waiting {
             let budget = settings.shutdownTimeout
             if await !waiting.wait(seconds: budget) {
