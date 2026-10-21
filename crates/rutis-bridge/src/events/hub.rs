@@ -431,6 +431,41 @@ impl SessionEvents {
         }
     }
 
+    /// The `events.*` operation `method` was read, on the session's reader
+    /// (before its next frame; [`SessionEvents::invoke`] runs it later, in
+    /// its turn): the tap counts the dispatches here.
+    pub(crate) fn arrived(&self, method: &str) {
+        #[cfg(feature = "testing")]
+        if method == "events.dispatch" {
+            if let Some(tap) = self
+                .hub
+                .as_ref()
+                .and_then(|hub| hub.tap.lock().unwrap().clone())
+            {
+                tap.received();
+            }
+        }
+        #[cfg(not(feature = "testing"))]
+        let _ = method;
+    }
+
+    /// The reply to the `events.*` operation `method` was written: the tap
+    /// counts the answered dispatches here.
+    pub(crate) fn replied(&self, method: &str) {
+        #[cfg(feature = "testing")]
+        if method == "events.dispatch" {
+            if let Some(tap) = self
+                .hub
+                .as_ref()
+                .and_then(|hub| hub.tap.lock().unwrap().clone())
+            {
+                tap.replied();
+            }
+        }
+        #[cfg(not(feature = "testing"))]
+        let _ = method;
+    }
+
     /// The `events.*` operations a runtime sends.
     pub(crate) fn invoke(
         self: &Arc<Self>,
@@ -449,7 +484,7 @@ impl SessionEvents {
                     .as_ref()
                     .and_then(|hub| hub.tap.lock().unwrap().clone())
                 {
-                    tap.arrived();
+                    tap.starting();
                 }
                 self.dispatch(connection, first)
             }

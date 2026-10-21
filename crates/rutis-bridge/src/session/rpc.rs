@@ -891,6 +891,20 @@ impl Drop for Flight {
 
 pub trait Dispatch: Send + Sync + 'static {
     fn invoke(&self, peer: &Connection, target: &str, method: &str, args: Value) -> Reply;
+
+    /// The event operation `method` (an `events.*` control call) was read
+    /// and admitted: called on the reader, before the next frame is taken,
+    /// whereas [`Dispatch::invoke`] runs it later, in the session's order
+    /// of event operations. It must not block. The host's bus counts the
+    /// `events.dispatch` requests here for its test hooks (feature
+    /// `testing`); nothing else needs it.
+    fn arrived(&self, _peer: &Connection, _method: &str) {}
+
+    /// The reply to the event operation `method` was written: what the far
+    /// end reads after it was sent after the reply. It must not block. The
+    /// host's bus counts the answered `events.dispatch` requests here for
+    /// its test hooks (feature `testing`).
+    fn replied(&self, _peer: &Connection, _method: &str) {}
 }
 /// How a session identifies itself and its calls.
 #[derive(Clone, Debug, Default)]
@@ -2292,10 +2306,14 @@ impl Connection {
         // table changes and emits each in its turn, the rest started in it.
         // Never here: a reader runs no plugin code (a listener, an
         // observer), which could wait for a frame only this reader reads.
-        let event_op = matches!(
-            &incoming.call,
-            Accepted::Invoke(target, method, _) if target.is_empty() && method.starts_with("events.")
-        );
+        let event_op = match &incoming.call {
+            Accepted::Invoke(target, method, _)
+                if target.is_empty() && method.starts_with("events.") =>
+            {
+                Some(method.clone())
+            }
+            _ => None,
+        };
         let inline = matches!(
             &incoming.call,
             Accepted::Invoke(target, method, args) if target.is_empty() && inline_event_op(method, args)
@@ -2340,7 +2358,12 @@ impl Connection {
                 Err(id)
             }
         };
-        if let (Err(id), true) = (&delivery, event_op) {
+        if let Some(method) = &event_op {
+            // Arrived now, in frame order: before any later frame of the
+            // session (a reply among them) is read.
+            self.0.dispatch.arrived(self, method);
+        }
+        if let (Err(id), true) = (&delivery, event_op.is_some()) {
             self.run_ordered(id.clone(), inline);
         } else if let Err(id) = delivery {
             let peer = self.clone();
@@ -2490,12 +2513,34 @@ impl Connection {
                     .and_then(|n| n.parse::<u64>().ok());
                 let invoking = sequence.map(|n| (self.0.tag.clone(), n));
                 let outer = INVOKING.with(|cell| cell.replace(invoking));
+                let event_op = target.is_empty() && method.starts_with("events.");
+                // An `emit` dispatch is answered once its calls started
+                // (events protocol §5.5): with a plain value, never a future
+                // the emitter would have to await.
+                let emit =
+                    event_op && method == "events.dispatch" && inline_event_op(&method, &args);
                 let result = crate::session::with_caller_row(None, || {
                     protected(|| self.0.dispatch.invoke(self, &target, &method, args))
                 });
                 INVOKING.with(|cell| cell.replace(outer));
                 CALLER.with(|caller| caller.replace(previous));
+                if let (true, Ok(Value::Reference(reference))) = (emit, &result) {
+                    if reference.is_future() {
+                        let future = result.unwrap();
+                        let peer = self.clone();
+                        self.0.executor.spawn(async move {
+                            let settled = settle(future).await;
+                            peer.respond(id, settled);
+                            peer.0.dispatch.replied(&peer, &method);
+                            drop(_flight);
+                        });
+                        return;
+                    }
+                }
                 self.respond(id, result);
+                if event_op {
+                    self.0.dispatch.replied(self, &method);
+                }
                 drop(_flight);
             }
         }

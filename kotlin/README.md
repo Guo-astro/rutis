@@ -4,7 +4,7 @@
 
 Write [rutis](https://github.com/arcships/rutis) plugins in Kotlin. The SDK (`kotlin/rutis`, Maven coordinates `io.github.arcships:rutis` and `io.github.arcships:rutis-ksp`, released with the rutis train) is a Kotlin Multiplatform library with two targets: **android**, for Android applications that host plugins (phase K-P2), and **jvm**, which runs the same code on the desktop: the conformance tests and the test entry `Rutis.serve`. Design: [docs/design-android-runtime-2026-10-12.md](../docs/design-android-runtime-2026-10-12.md).
 
-Status: phase K-P1, the SDK core. Plugins, services, values, errors, unified events and the testing tool work on the jvm target and pass the same conformance suites as the other runtimes. Connecting an application to rutis (`RutisApp`, dialing out and listening over WebSocket) is K-P2; nothing is published to Maven Central yet.
+Status: phase K-P2. Plugins, services, values, errors, unified events and the testing tool work on both targets and pass the same conformance suites as the other runtimes; an application connects to rutis with `RutisApp` (dialing out and listening over WebSocket), tested on an Android emulator (the R8 release build included). Published to Maven Central from 0.15.
 
 ```kotlin
 import arcships.rutis.*
@@ -79,9 +79,29 @@ RutisTest.load(weather, Config("Oslo"), services = mapOf("llm" to FakeLlm())).us
 
 Services the test gives are instances of `@RutisService` classes. `loaded.on`, `emit`, `parallel`, … listen and emit as the host; `loaded.load(config, row, scope)` loads more rows; `loaded.reported()` is what the runtime reported.
 
+## Hosting plugins in an application
+
+An application brings its plugins to rutis with `RutisApp` (design §5): rutis decides which of them load, with what configuration, and when they unload.
+
+```kotlin
+val rutis = RutisApp(
+    plugins = listOf(contacts(context), notify(context), device(context)),
+    connect = "wss://rutis.example.com:7443/rutis",   // or listen = "wss://0.0.0.0:7443/rutis", certificate = pem
+    id = "kim-pixel",                                 // this connection's id, its instance's name in rutis
+    token = secrets.rutisToken,
+)
+rutis.start()   // returns at once; reconnects by itself until stop()
+rutis.stop()    // every plugin's cleanups in reverse, then disconnects; start() again later
+rutis.state     // StateFlow<RutisState>: Stopped(reason) / Connecting(retrying) / Connected(address)
+```
+
+When to start and stop (with the screen, in a foreground service) is the application's business; the SDK decides nothing by `state`. `trust` takes the PEM of a CA trusted besides the system's, for a self-signed access point. A call that waits for rutis (a non-`suspend` method of a `@RutisClient` interface) is refused on the main thread: call it as a `suspend` function or from another thread. On rutis's side, `runtimes.remote[]` with `language: "kotlin"`, `listen` and `instances` makes each connection an instance ([nodes](../docs/guide/nodes.en.md)). `rutis/android-sample` is an application doing this, and the device tests run with it. The whole guide (permissions, foreground services, battery optimization, a real-device checklist): [Hosting plugins in an Android application](../docs/guide/kotlin-app.en.md).
+
 ## The desktop test entry
 
-On the jvm target, `Rutis.serve(args, plugins…)` runs plugins as a rutis runtime: `<channel> <project>`, the channel a Unix socket path (`unix:<path>` or bare) or `tcp:127.0.0.1:<port>` (presenting `RUTIS_CHANNEL_TOKEN`). The Rust conformance tests start it with `java -jar` through rutis-bridge's generic `Launcher` (no Kotlin runtime is configured in rutis-host in K-P1).
+On the jvm target, `Rutis.serve(args, plugins…)` runs plugins as a rutis runtime: `<channel> <project>`, the channel a Unix socket path (`unix:<path>` or bare) or `tcp:127.0.0.1:<port>` (presenting `RUTIS_CHANNEL_TOKEN`). The Rust conformance tests start it with `java -jar` through rutis-bridge's generic `Launcher` (no local Kotlin runtime is configured in rutis-host).
+
+The remote channels are those of the other languages ([nodes](../docs/guide/nodes.en.md)): `dial:wss://… --id <id> --peer <rutis's id>` dials a rutis access point and stays connected, `listen:wss://… --id <id>` waits for rutis to dial in; `RUTIS_TOKEN`, `RUTIS_CA` (a CA trusted besides the system's when dialing), `RUTIS_CERT` / `RUTIS_KEY` (the certificate and key of a `wss://` listener, PEM: PKCS#8, PKCS#1 or SEC1); the reconnection rules and state lines of [dialing out](../docs/design-remote-runtime-dial-2026-10-14.en.md) §6; SIGTERM / Ctrl-C unloads every row and exits 0. On the rutis side, `runtimes.remote[].language` is `kotlin` (or `kt`). Dialing uses OkHttp, listening the SDK's own WebSocket server; both are in the shared sources, the same code an Android application runs.
 
 ## Building and testing the SDK
 
@@ -96,6 +116,15 @@ The android target is built only where an Android SDK is installed (`ANDROID_HOM
 
 ```sh
 cargo test -p rutis-bridge --features testing,websocket,kotlin --test runtime_conformance --test value_roundtrip --test session_matrix kotlin_
+cargo test -p rutis-bridge --features testing,websocket,kotlin --test dial_conformance kotlin::
+cargo test -p rutis-bridge --features testing,websocket,kotlin --test kotlin_remote
 cargo test -p rutis-bridge --features testing,kotlin --test kotlin_runtime
 cargo test -p rutis-loader --features node,python,kotlin --test events_conformance --test multilang_kotlin
+```
+
+On an Android device or emulator (`adb`; `tools/android-emulator.sh start` boots one as CI does): the SDK's device tests, and the sample application dialing a rutis-host (Python 3.10+ for its other row):
+
+```sh
+./gradlew :rutis:connectedDebugAndroidTest
+cargo test -p rutis-host --features android --test android -- --test-threads 1
 ```

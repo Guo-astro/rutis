@@ -250,8 +250,14 @@ final class Pending: @unchecked Sendable {
     private let lock = Lock()
     private var outcome: Result<Value, Error>?
     private var continuation: CheckedContinuation<Value, Error>?
+    /// Told the answer where it is taken (the reader, as it reads the
+    /// reply's frame), before the waiter.
+    private let answered: (@Sendable (Result<Value, Error>) -> Void)?
 
-    init(id: String) { self.id = id }
+    init(id: String, answered: (@Sendable (Result<Value, Error>) -> Void)? = nil) {
+        self.id = id
+        self.answered = answered
+    }
 
     /// Answers the call; false if it already was.
     @discardableResult
@@ -265,6 +271,7 @@ final class Pending: @unchecked Sendable {
         let continuation = self.continuation
         self.continuation = nil
         lock.unlock()
+        answered?(result)
         continuation?.resume(with: result)
         return true
     }
@@ -785,6 +792,16 @@ package final class Peer: @unchecked Sendable {
         return OutgoingCall(peer: self, pending: pending, cancellable: !sync)
     }
 
+    /// Sends a call nobody waits for, and tells `answered` its answer as the
+    /// reply's frame is taken, before the next frame (or at the session's
+    /// end): frames sent by successive calls go out in that order.
+    package func sendAnswered(target: String, method: String, args: [Value],
+                              answered: @escaping @Sendable (Result<Value, Error>) -> Void) throws
+    {
+        _ = try request(op: "invoke", fields: [("target", .string(target)), ("method", .string(method))],
+                        args: args, origin: [], chain: CallChain.path, answered: answered)
+    }
+
     /// Sends a call whose answer nobody awaits.
     package func notify(target: String, method: String, args: [Value]) {
         if let pending = try? request(op: "invoke", fields: [("target", .string(target)), ("method", .string(method))],
@@ -814,7 +831,9 @@ package final class Peer: @unchecked Sendable {
         }
     }
 
-    private func request(op: String, fields: [(String, JSON)], args: [Value]?, origin: [String], chain: [String]) throws -> Pending {
+    private func request(op: String, fields: [(String, JSON)], args: [Value]?, origin: [String], chain: [String],
+                         answered: (@Sendable (Result<Value, Error>) -> Void)? = nil) throws -> Pending
+    {
         writeLock.lock()
         defer { writeLock.unlock() }
         lock.lock()
@@ -848,7 +867,7 @@ package final class Peer: @unchecked Sendable {
             }
         }
         let data = JSONWriter.write(.object(frame))
-        let waiter = Pending(id: id)
+        let waiter = Pending(id: id, answered: answered)
         pending[id] = waiter
         lock.unlock()
         do {

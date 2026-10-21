@@ -162,6 +162,8 @@ RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
 
 Node、Bun 的每个会话由一个子进程运行：断开时子进程卸载全部行后退出，重连起新的子进程。`RUTIS_CA` 与 Node、Bun 默认信任的根证书一起信任。
 
+Kotlin 插件一般编进 Android 应用，由应用拨出到 rutis（[Android 应用托管](../design-android-runtime-2026-10-12.md) §五）。SDK 的 jvm target 的 `Rutis.serve` 接受同样的 `dial:`、`listen:` 通道、环境变量和规则（监听 `wss://` 用 `RUTIS_CERT`、`RUTIS_KEY`），`language` 写 `kotlin`（或 `kt`）。
+
 ## 把 Cordis 应用接成节点
 
 已有的 Cordis 应用用 `@arcships/rutis-runtime/bridge` 成为一个节点，见 [Cordis](cordis.md)。

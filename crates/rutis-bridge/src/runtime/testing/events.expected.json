@@ -40,7 +40,7 @@
         {"label": "b", "at": "Y", "log": false, "does": {"returns": null}}
       ],
       "steps": [
-        {"emit": {"from": "X", "mode": "emit", "args": [1]}, "expect": {"viaHost": true}},
+        {"emit": {"from": "X", "mode": "emit", "args": [1]}, "expect": {"viaHost": true, "answered": true}},
         {"unload": "b"},
         {"emit": {"from": "X", "mode": "emit", "args": [2]}, "expect": {"log": ["a:1", "a:2"], "viaHost": false}}
       ] },
