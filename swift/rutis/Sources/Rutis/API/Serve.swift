@@ -9,6 +9,8 @@ let serveUsage = "usage: <binary> --rutis-manifest | <channel> [--id <endpoint>]
 /// stops, and does not retry.
 struct Refused: Error, CustomStringConvertible {
     let reason: String
+    /// Its line is written already.
+    var said = false
     var description: String { "refused: incompatible (\(reason)); stopping" }
 }
 
@@ -22,7 +24,9 @@ extension Rutis {
             try serveArgs(Array(CommandLine.arguments.dropFirst()), plugins)
             exit(0)
         } catch {
-            FileHandle.standardError.write(Data("rutis: \(error is Refused ? "\(error)" : errorMessage(error))\n".utf8))
+            if (error as? Refused)?.said != true {
+                FileHandle.standardError.write(Data("rutis: \(error is Refused ? "\(error)" : errorMessage(error))\n".utf8))
+            }
             exit(1)
         }
     }
@@ -40,13 +44,7 @@ extension Rutis {
         if let endpoint, channel.hasPrefix("listen:") || channel.hasPrefix("dial:") {
             #if canImport(Network)
             let remote = String(channel.drop(while: { $0 != ":" }).dropFirst())
-            try block {
-                if channel.hasPrefix("listen:") {
-                    try await listen(remote, endpoint: endpoint, project: project, plugins)
-                } else {
-                    try await dialOut(remote, endpoint: endpoint, project: project, plugins)
-                }
-            }
+            try block { try await serveRemote(channel, remote, endpoint: endpoint, project: project, plugins) }
             return
             #else
             throw RutisError(name: "Error", message: "remote channels need Network.framework: \(channel)")
@@ -88,10 +86,53 @@ extension Rutis {
         try await end(session, runtime)
     }
 
+    #if canImport(Network)
+    /// Serves `plugins` on `listen:<remote>` or `dial:<remote>` as an app
+    /// would, its settings from the environment: RUTIS_TOKEN (spent once
+    /// read when dialing), RUTIS_CA, RUTIS_CERT and RUTIS_KEY; SIGTERM and
+    /// Ctrl-C stop it. Returns once stopped; an incompatible rutis throws
+    /// (status 1), as do cleanups that did not finish.
+    static func serveRemote(_ channel: String, _ remote: String, endpoint: Endpoint, project: String,
+                            _ plugins: [Definition]) async throws
+    {
+        let environment = ProcessInfo.processInfo.environment
+        let token = environment["RUTIS_TOKEN"] ?? ""
+        let mode: RutisApp.Mode
+        if channel.hasPrefix("listen:") {
+            let (cert, key) = (environment["RUTIS_CERT"] ?? "", environment["RUTIS_KEY"] ?? "")
+            mode = .listen(remote, identity: {
+                guard !cert.isEmpty, !key.isEmpty else {
+                    throw ChannelError("\(remote): wss needs a certificate and key (RUTIS_CERT, RUTIS_KEY)")
+                }
+                return try tlsIdentity(cert: cert, key: key)
+            })
+        } else {
+            // Spent once read: what this process starts does not inherit it.
+            unsetenv("RUTIS_TOKEN")
+            let ca = environment["RUTIS_CA"] ?? ""
+            mode = .dial(remote, trust: remote.hasPrefix("wss:") && !ca.isEmpty ? try caCertificates(ca) : [])
+        }
+        let app = RutisApp(plugins: plugins, mode: mode, id: endpoint.local, peer: endpoint.expected, token: token,
+                           project: project, settings: Events.Settings())
+        let stop = StopSignal()
+        let sources = onTermination(stop)
+        defer { sources.forEach { $0.cancel() } }
+        try await app.start()
+        Task { await stop.wait(); await app.stop() }
+        switch await app.ended() {
+        case let .refused(reason): throw Refused(reason: reason, said: true)
+        case let .failed(error): throw error
+        case .stopped, nil: return
+        }
+    }
+    #endif
+
     /// Starts a session serving `plugins`: a host older than 0.13 is
     /// refused right after its handshake.
-    static func startSession(channel: Channel, project: String, _ plugins: [Definition], endpoint: Endpoint? = nil) throws -> (Peer, Runtime) {
-        let runtime = Runtime(plugins, project: project)
+    static func startSession(channel: Channel, project: String, _ plugins: [Definition], endpoint: Endpoint? = nil,
+                             settings: Events.Settings = Events.Settings()) throws -> (Peer, Runtime)
+    {
+        let runtime = Runtime(plugins, project: project, settings: settings)
         var options = PeerOptions()
         options.endpoint = endpoint
         options.dispatch = { [unowned runtime] target, method, args in try await runtime.dispatch(target, method, args) }
@@ -109,7 +150,7 @@ extension Rutis {
     static func end(_ session: Peer, _ runtime: Runtime) async throws {
         session.close()
         runtime.lock.withLock { runtime.closing = true }
-        let budget = Events.shutdownTimeout
+        let budget = runtime.settings.shutdownTimeout
         if await !runtime.dispose(within: budget) {
             throw RutisError(name: "Error", message: "cleanups did not finish within \(Events.seconds(budget))s after the session ended")
         }

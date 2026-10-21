@@ -617,6 +617,21 @@ S2 按 §十、§十一 实现，另把 A1 里与形态①共用的远程连接�
 
 验收（§十五 S2，即总体稿 M3 的原始验收）：按需启动与重启策略（`swift_rows.rs`）；`dev` 改代码只重启本运行时（e2e `dev_loop`）；授权提示指向二进制、拒绝错误传回（e2e `tcc.rs`：负责进程是二进制自己、签名标识来自 Info.plist、未授权时 Python 调用方收到插件的错误；提示本身与授权后的情形为人工验收）。
 
+### 17.5 A1 的实现记录（2026-10-20，#389）
+
+A1 按 §七 实现。实现时定下的：
+
+| 项 | 做法 | 原因 |
+| --- | --- | --- |
+| 远程通道只有一份实现 | 拨出循环与监听循环在 `RutisApp` 里；二进制的 `dial:`、`listen:`（§6.1）就是一个 `RutisApp`，设置取自环境变量（`RUTIS_TOKEN`、`RUTIS_CA`、`RUTIS_CERT` / `RUTIS_KEY`），SIGTERM、Ctrl-C 让它停止，因不兼容停下时以状态 1 退出 | `dial_conformance`、`session_matrix`、`swift_remote.rs` 的列同时检查应用的连接，没有两份要保持一致 |
+| `start()` | 开始拨出或地址绑定后即返回；只抛出重试修不好的（不合法的 id 或地址、`wss://` 没有证书、地址被占用）；已经开始时什么也不做 | 等第一次连上会让离线时启动的应用卡住；连接的情况看 `state` |
+| `stop()` | 在控制方还能收到时卸载全部行（与 SIGTERM 相同），关闭连接，完成后返回 | 应用停止、断网、被杀，rutis 侧看到的是同一件事（应用接入 §四） |
+| `state` | 用手写的 `ObservationRegistrar` 遵循 `Observable`（不用 `@Observable` 宏），读写都在 SDK 的锁内；`states` 每个调用方一个 `AsyncStream`，先给出当前状态 | 状态在 SDK 自己的线程上变化：宏生成的存储没有保护；任何线程都可以读 |
+| 报告行与清理时限 | 每个运行时一份（`Events.Settings`：`log`、`shutdownTimeout`），不再到处写 stderr、读 `RUTIS_SHUTDOWN_TIMEOUT` | §七 的 `log`、`shutdownTimeout`；应用的 stderr 没有人看 |
+| 监听的证书 | `certificate: SecIdentity` | iOS 没有公开的办法在钥匙串之外把 PEM 私钥和证书配成身份（`SecIdentityCreate` 只在 macOS）；应用从 PKCS#12 文件或钥匙串得到 `SecIdentity`。二进制仍用 `RUTIS_CERT` / `RUTIS_KEY` |
+| 监听的二进制收到 SIGTERM | 卸载全部行后以 0 退出，与拨出相同 | 底下是同一个 `RutisApp` |
+| 应用里的 `ctx.project` | 应用包的路径 | 应用没有项目目录；包是它的资源所在 |
+
 ## 附录
 
 ### A. 为什么不用 dlopen 辅助程序（对总体稿 M3 的修订）

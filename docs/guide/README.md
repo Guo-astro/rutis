@@ -9,6 +9,7 @@
 | 用 Python 写插件 | [写一个 Python 插件](python-plugin.md) |
 | 用 Go 写插件 | [写一个 Go 插件](go-plugin.md) |
 | 用 Swift 写 macOS 插件 | [写一个 Swift 插件](swift-plugin.md) |
+| 把 iOS / iPadOS / macOS 应用的能力提供给 rutis | [在应用里托管插件（Swift）](swift-app.md) |
 | 在 Android 应用里用 Kotlin 提供插件 | [Android 应用托管插件](kotlin-app.md) |
 | 查插件能做什么、值怎样传递 | [插件 API](plugin-api.md) |
 | 在插件之间（任何语言、任何进程、任何节点）收发事件 | [插件 API：事件](plugin-api.md#事件) |

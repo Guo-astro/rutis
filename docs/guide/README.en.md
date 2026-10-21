@@ -9,6 +9,7 @@ Choose a guide based on what you want to do:
 | Write a plugin in Python | [Write a Python plugin](python-plugin.en.md) |
 | Write a plugin in Go | [Write a Go plugin](go-plugin.en.md) |
 | Write a macOS plugin in Swift | [Write a Swift plugin](swift-plugin.en.md) |
+| Offer an iOS / iPadOS / macOS app's capabilities to rutis | [Host plugins in an app (Swift)](swift-app.en.md) |
 | Provide plugins in Kotlin from an Android application | [Hosting plugins in an Android application](kotlin-app.en.md) |
 | Look up the plugin API and value passing rules | [Plugin API](plugin-api.en.md) |
 | Send and receive events between plugins (any language, process or node) | [Plugin API: events](plugin-api.en.md#events) |

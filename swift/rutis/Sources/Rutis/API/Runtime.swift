@@ -109,6 +109,8 @@ final class Row: @unchecked Sendable {
     let exports: [String: [String: String]]
     let isolate: [String: String]
     let scope: [Rutis.Scope]
+    /// Its runtime's: where its lines go, how long its listeners may take.
+    let settings: Events.Settings
     var cleanups: [() async throws -> Void] = []
     var provided: [String] = []
     var announced: [String] = []
@@ -135,8 +137,10 @@ final class Row: @unchecked Sendable {
     private var cancelled = false
 
     init(key: String, name: String, entry: String, definition: Rutis.Definition, config: Value,
-         exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Scope])
+         exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Scope],
+         settings: Events.Settings = Events.Settings())
     {
+        self.settings = settings
         self.key = key
         self.name = name
         self.entry = entry
@@ -211,7 +215,7 @@ final class Row: @unchecked Sendable {
                 try await body()
             } catch is CancellationError {
             } catch {
-                FileHandle.standardError.write(Data("rutis: a task of row \(name) failed: \(Events.failure(error))\n".utf8))
+                self.settings.log("rutis: a task of row \(name) failed: \(Events.failure(error))")
             }
         }
         spawned[id] = task
@@ -236,9 +240,9 @@ final class Row: @unchecked Sendable {
         }
         for task in tasks { task.cancel() }
         if let waiting {
-            let budget = Events.shutdownTimeout
+            let budget = settings.shutdownTimeout
             if await !waiting.wait(seconds: budget) {
-                Events.report("rutis: listeners of row \(name) still running after \(Events.seconds(budget))s; unloading anyway")
+                Events.report("rutis: listeners of row \(name) still running after \(Events.seconds(budget))s; unloading anyway", to: settings.log)
             }
         }
         let rest = lock.withLock { Array(spawned.values) }
@@ -258,6 +262,7 @@ final class Runtime: @unchecked Sendable {
     let definitions: [String: Rutis.Definition]
     var session: Peer?
     let project: String
+    let settings: Events.Settings
 
     let lock = Lock()
     var rows: [String: Row] = [:]
@@ -293,7 +298,8 @@ final class Runtime: @unchecked Sendable {
     private var outbox: [() -> Void] = []
     private let sendLock = Lock()
 
-    init(_ definitions: [Rutis.Definition], project: String) {
+    init(_ definitions: [Rutis.Definition], project: String, settings: Events.Settings = Events.Settings()) {
+        self.settings = settings
         var byName: [String: Rutis.Definition] = [:]
         for definition in definitions { byName[definition.name] = definition }
         self.definitions = byName
@@ -414,7 +420,7 @@ final class Runtime: @unchecked Sendable {
                 row.announced.append(id)
             } else if mounted, !told.contains(name) {
                 told.insert(name)
-                FileHandle.standardError.write(Data("rutis: service \(name) is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host\n".utf8))
+                settings.log("rutis: service \(name) is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host")
             }
         }
         refresh(id)
@@ -441,7 +447,7 @@ final class Runtime: @unchecked Sendable {
             return row.loading
         }
         if !loading {
-            FileHandle.standardError.write(Data("rutis: row \(row.name): \(Events.failure(error))\n".utf8))
+            settings.log("rutis: row \(row.name): \(Events.failure(error))")
         }
     }
 
@@ -453,7 +459,7 @@ final class Runtime: @unchecked Sendable {
         let definition = try definition(entry)
         let name = (name?.isEmpty ?? true) ? key : name!
         let row = Row(key: key, name: name, entry: entry, definition: definition, config: config, exports: exports,
-                      isolate: isolate, scope: scope)
+                      isolate: isolate, scope: scope, settings: settings)
         try lock.withLock {
             if rows[key] != nil { throw RutisError(name: "Error", message: "row \(key) is already loaded") }
             for (service, label) in isolate { _ = try scopedID(service, label) }
@@ -559,7 +565,7 @@ final class Runtime: @unchecked Sendable {
             }
             if let seconds {
                 if await !done.wait(seconds: seconds) {
-                    FileHandle.standardError.write(Data("rutis: gave up the cleanups of row \(row.key) and those after it: they did not finish within \(Events.seconds(seconds))s\n".utf8))
+                    settings.log("rutis: gave up the cleanups of row \(row.key) and those after it: they did not finish within \(Events.seconds(seconds))s")
                     return false
                 }
             } else {

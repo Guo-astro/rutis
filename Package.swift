@@ -81,6 +81,13 @@ let package = Package(
             dependencies: ["Rutis", "RutisFixturePlugins"],
             path: "swift/rutis/Sources/RutisDial"
         ),
+        // An app hosting a plugin with RutisApp, on macOS (rutis-host's
+        // tests/swift.rs).
+        .executableTarget(
+            name: "RutisAppFixture",
+            dependencies: ["Rutis"],
+            path: "swift/rutis/Sources/RutisAppFixture"
+        ),
         // The session conformance target (rutis_bridge::session::testing).
         .executableTarget(
             name: "RutisSessionFixture",

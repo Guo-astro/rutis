@@ -618,6 +618,21 @@ S2 follows §10 and §11, and also brings the remote connections form ① shares
 
 Acceptance (§15 S2, which is the master plan's original M3 acceptance): on-demand start and restart policies (`swift_rows.rs`); a code change in `dev` restarts only its runtime (e2e `dev_loop`); the access prompt names the binary and a refusal reaches the caller (e2e `tcc.rs`: the binary is responsible for itself, its signing identifier comes from its Info.plist, and without access the Python caller gets the plugin's error; the prompt itself and a granted access are a manual check).
 
+### 17.5 Implementation notes of A1 (2026-10-20, #389)
+
+A1 follows §7. Decided while implementing:
+
+| Item | How | Why |
+| --- | --- | --- |
+| One implementation of the remote channels | `RutisApp` holds the dialing loop and the listener's; a binary's `dial:` and `listen:` (§6.1) are a `RutisApp` whose settings come from the environment (`RUTIS_TOKEN`, `RUTIS_CA`, `RUTIS_CERT` / `RUTIS_KEY`), stopped by SIGTERM and Ctrl-C, exiting with status 1 when it stopped as incompatible | The columns of `dial_conformance`, `session_matrix` and `swift_remote.rs` check the app's connection too, with nothing to keep in step |
+| `start()` | Returns once dialing has started or the address is bound; throws only what retrying cannot fix (an invalid id or address, `wss://` without a certificate, an address taken); does nothing when started | Waiting for the first connection would hang an app that starts offline; how the connection goes is `state` |
+| `stop()` | Unloads every row while the controller still hears (as SIGTERM does), closes, and returns once done | The rutis side sees one thing whether the app stops, loses the network or is killed (app integration §4) |
+| `state` | `Observable` through an `ObservationRegistrar` kept by hand (not the `@Observable` macro), read and written under the SDK's lock; `states` is an `AsyncStream` per caller, starting with the current state | The state changes on the SDK's threads: the macro's storage is not guarded; any thread reads it |
+| Report lines and the cleanup deadline | Per runtime (`Events.Settings`: `log`, `shutdownTimeout`) instead of stderr and `RUTIS_SHUTDOWN_TIMEOUT` read anywhere | §7's `log` and `shutdownTimeout`; an app has no stderr worth reading |
+| Listening certificate | `certificate: SecIdentity` | iOS has no public way to pair a PEM key with a certificate outside the Keychain (`SecIdentityCreate` is macOS-only); an app gets a `SecIdentity` from a PKCS#12 file or the Keychain. Binaries keep `RUTIS_CERT` / `RUTIS_KEY` |
+| A listening binary on SIGTERM | Unloads its rows and exits 0, as a dialing one | The same `RutisApp` underneath |
+| `ctx.project` in an app | The app bundle's path | An app has no project directory; the bundle is where its resources are |
+
 ## Appendix
 
 ### A. Why not a dlopen auxiliary program (the revision of the master plan's M3)

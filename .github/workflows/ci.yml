@@ -977,14 +977,15 @@ jobs:
           cargo test -p rutis-loader --features node,python,swift --test swift_rows --test multilang_swift
           cargo test -p rutis-loader --features node,python,swift --test caller_rows --test sync_cycles swift
       # runtimes.swift in rutis-host (rows, restart, check), and the plugin
-      # author's loop: new --lang swift, swift test, check, dev rebuilding.
+      # author's loop: new --lang swift, swift test, check, dev rebuilding;
+      # apps hosting plugins with RutisApp (an executable standing in for one).
       # Tests that need system permission prompts (tcc, the Android emulator,
       # the iOS simulator) are run locally, not here (docs/ci.md §12).
       - name: cargo test (rutis-host with Swift, the Swift development loop)
         env:
           RUTIS_E2E_DIR: /tmp/rutis-e2e
         run: |
-          cargo test -p rutis-host --test swift
+          cargo test -p rutis-host --test swift --test swift_app
           cargo test -p rutis-e2e --test dev_loop the_swift_plugin_development_loop
       # The events conformance with X a Swift plugin, in the placements a
       # pull request runs (written; full runs sample more).
