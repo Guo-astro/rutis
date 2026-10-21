@@ -163,10 +163,13 @@ class RutisApp(
         if (run.stopping) stop()
     }
 
-    /** What `run` reports, unless a later start took over. */
+    /**
+     * What `run` reports, unless a later start took over or it is stopping:
+     * a session greeted as it stops says nothing (it ends at Stopped).
+     */
     private fun status(run: Run): (Status) -> Unit = { status ->
         synchronized(lock) {
-            if (current === run) {
+            if (current === run && !run.stopping) {
                 states.value = when (status) {
                     is Status.Connected -> RutisState.Connected(status.address)
                     is Status.Connecting -> RutisState.Connecting(status.retry)

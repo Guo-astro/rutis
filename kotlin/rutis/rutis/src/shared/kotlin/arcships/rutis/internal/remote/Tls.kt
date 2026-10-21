@@ -2,6 +2,7 @@ package arcships.rutis.internal.remote
 
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.net.Socket
 import java.security.KeyFactory
 import java.security.KeyStore
 import java.security.PrivateKey
@@ -12,7 +13,9 @@ import java.security.spec.PKCS8EncodedKeySpec
 import java.util.Base64
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLEngine
 import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509ExtendedTrustManager
 import javax.net.ssl.X509TrustManager
 
 /**
@@ -93,24 +96,65 @@ object Tls {
         val store = KeyStore.getInstance(KeyStore.getDefaultType())
         store.load(null, null)
         extra.forEachIndexed { i, certificate -> store.setCertificateEntry("rutis-ca-$i", certificate) }
-        val own = trustManager(store)
-        return object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<out X509Certificate>, authType: String) = system.checkClientTrusted(chain, authType)
+        return Either(system, trustManager(store))
+    }
 
-            override fun checkServerTrusted(chain: Array<out X509Certificate>, authType: String) {
+    /**
+     * Trusts what `system` trusts, else what `own` does. It is an
+     * [X509ExtendedTrustManager] passing the socket or engine on: Android's
+     * system trust under a network security config with a `<domain-config>`
+     * refuses every chain checked without one, needing the host it names.
+     */
+    internal class Either(private val system: X509TrustManager, private val own: X509TrustManager) : X509ExtendedTrustManager() {
+        private inline fun either(first: () -> Unit, second: () -> Unit) {
+            try {
+                first()
+            } catch (e: CertificateException) {
                 try {
-                    system.checkServerTrusted(chain, authType)
-                } catch (e: CertificateException) {
-                    try {
-                        own.checkServerTrusted(chain, authType)
-                    } catch (_: CertificateException) {
-                        throw e
-                    }
+                    second()
+                } catch (_: CertificateException) {
+                    throw e
                 }
             }
-
-            override fun getAcceptedIssuers(): Array<X509Certificate> = system.acceptedIssuers + own.acceptedIssuers
         }
+
+        private fun X509TrustManager.server(chain: Array<out X509Certificate>, authType: String, socket: Socket?, engine: SSLEngine?) {
+            when {
+                this !is X509ExtendedTrustManager -> checkServerTrusted(chain, authType)
+                socket != null -> checkServerTrusted(chain, authType, socket)
+                engine != null -> checkServerTrusted(chain, authType, engine)
+                else -> checkServerTrusted(chain, authType)
+            }
+        }
+
+        private fun X509TrustManager.client(chain: Array<out X509Certificate>, authType: String, socket: Socket?, engine: SSLEngine?) {
+            when {
+                this !is X509ExtendedTrustManager -> checkClientTrusted(chain, authType)
+                socket != null -> checkClientTrusted(chain, authType, socket)
+                engine != null -> checkClientTrusted(chain, authType, engine)
+                else -> checkClientTrusted(chain, authType)
+            }
+        }
+
+        override fun checkServerTrusted(chain: Array<out X509Certificate>, authType: String) =
+            either({ system.server(chain, authType, null, null) }, { own.server(chain, authType, null, null) })
+
+        override fun checkServerTrusted(chain: Array<out X509Certificate>, authType: String, socket: Socket?) =
+            either({ system.server(chain, authType, socket, null) }, { own.server(chain, authType, socket, null) })
+
+        override fun checkServerTrusted(chain: Array<out X509Certificate>, authType: String, engine: SSLEngine?) =
+            either({ system.server(chain, authType, null, engine) }, { own.server(chain, authType, null, engine) })
+
+        override fun checkClientTrusted(chain: Array<out X509Certificate>, authType: String) =
+            system.client(chain, authType, null, null)
+
+        override fun checkClientTrusted(chain: Array<out X509Certificate>, authType: String, socket: Socket?) =
+            system.client(chain, authType, socket, null)
+
+        override fun checkClientTrusted(chain: Array<out X509Certificate>, authType: String, engine: SSLEngine?) =
+            system.client(chain, authType, null, engine)
+
+        override fun getAcceptedIssuers(): Array<X509Certificate> = system.acceptedIssuers + own.acceptedIssuers
     }
 
     private fun trustManager(store: KeyStore?): X509TrustManager {

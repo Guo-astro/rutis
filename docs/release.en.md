@@ -30,7 +30,7 @@ Maven Central (release.yml's `maven` job, the vanniktech maven-publish plugin) u
 3. Generate a PGP key for signing and publish its public half: `gpg --quick-gen-key "arcships rutis" rsa4096 sign 0`, `gpg --keyserver keyserver.ubuntu.com --send-keys <key id>`. The whole output of `gpg --armor --export-secret-keys <key id>` is `MAVEN_SIGNING_KEY`, its passphrase `MAVEN_SIGNING_KEY_PASSWORD`.
 4. Store them in the environment: `gh secret set MAVEN_CENTRAL_USERNAME --env maven`, the other three likewise (`gh secret set MAVEN_SIGNING_KEY --env maven < key.asc`).
 
-What is published is `io.github.arcships:rutis` (with `rutis-jvm` and `rutis-android`) and `io.github.arcships:rutis-ksp`, released automatically; a version Maven Central already has is skipped, so a rerun is safe. Maven Central can take tens of minutes to show a version in its search; the checks after publishing do not wait for it.
+What is published is `io.github.arcships:rutis` (with `rutis-jvm` and `rutis-android`) and `io.github.arcships:rutis-ksp`, released automatically; a module the Central Portal has published at this version is skipped (asked through the Portal's publisher API, not repo1.maven.org, which lags behind), so a rerun is safe. Maven Central can take tens of minutes to show a version in its search; the checks after publishing do not wait for it.
 
 Increment `PLUGIN_API` (present in both the SDK and runtime) only when the interface visible to plugins becomes incompatible. Increment the session protocol version (`rutisProtocol` and `rutis_bridge::session::PROTOCOL`) when the wire format becomes incompatible.
 

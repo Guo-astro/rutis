@@ -16,7 +16,11 @@ import java.net.URI
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 
 /**
  * Why a dialer that offered none of this endpoint's session protocol is
@@ -72,6 +76,11 @@ class ListenAddress(val host: String, val port: Int, val path: String, val secur
  * for another path, 401 without credentials, 403 for a wrong token, 400
  * without the session protocol (the refusal's words in the body). What it
  * accepts comes out of [accepted].
+ *
+ * A connection has `headMillis` in all for its TLS handshake and request
+ * head (as Go's ReadHeaderTimeout), and at most `maxPending` upgrades wait
+ * at once, more connections closed as they come: slow clients cannot hold
+ * threads or sockets for long.
  */
 class WebSocketServer(
     private val at: ListenAddress,
@@ -79,8 +88,16 @@ class WebSocketServer(
     private val token: String?,
     tls: SSLContext?,
     private val heartbeat: Heartbeat,
+    /** How long a connection may take to present its request head, TLS handshake included. */
+    private val headMillis: Long = HEAD_MILLIS,
+    /** How many upgrades may be under way at once. */
+    private val maxPending: Int = MAX_PENDING,
 ) {
-    private val server: ServerSocket = (tls?.serverSocketFactory?.createServerSocket() ?: ServerSocket()).apply {
+    // TLS is layered over each accepted TCP socket, which then closes
+    // without waiting for TLS's locks (a deadline, a blocked write).
+    private val layered: SSLSocketFactory? = tls?.socketFactory
+
+    private val server: ServerSocket = ServerSocket().apply {
         reuseAddress = true
         bind(InetSocketAddress(InetAddress.getByName(at.host), at.port))
     }
@@ -92,8 +109,14 @@ class WebSocketServer(
         "${if (at.secure) "wss" else "ws"}://$shown:${server.localPort}${at.path}"
     }
 
-    /** The upgraded connections, in the order they came. */
+    /** The upgraded connections, in the order they came; closed ones once it closed. */
     val accepted = LinkedBlockingQueue<FrameConnection>()
+
+    @Volatile
+    private var closed = false
+
+    /** Upgrades under way. */
+    private val pending = AtomicInteger()
 
     init {
         Thread({
@@ -103,17 +126,34 @@ class WebSocketServer(
                 } catch (_: IOException) {
                     return@Thread
                 }
-                Thread({ upgrade(socket) }, "rutis-upgrade").apply { isDaemon = true }.start()
+                if (pending.incrementAndGet() > maxPending) {
+                    pending.decrementAndGet()
+                    FrameConnection.quietly { socket.close() }
+                    continue
+                }
+                Thread({
+                    try {
+                        upgrade(socket)
+                    } finally {
+                        pending.decrementAndGet()
+                    }
+                }, "rutis-upgrade").apply { isDaemon = true }.start()
             }
         }, "rutis-listen").apply { isDaemon = true }.start()
     }
 
-    /** Stops accepting. */
+    /** Stops accepting; connections accepted and not taken close. */
     fun close() {
+        closed = true
         try {
             server.close()
         } catch (_: IOException) {
         }
+        drain()
+    }
+
+    private fun drain() {
+        while (true) accepted.poll()?.close("the listener closed") ?: return
     }
 
     private class Request(val target: String, val headers: Map<String, List<String>>) {
@@ -157,10 +197,15 @@ class WebSocketServer(
         FrameConnection.quietly { socket.close() }
     }
 
-    private fun upgrade(socket: Socket) {
+    private fun upgrade(tcp: Socket) {
+        // The handshake and the head, in all: past it, the socket closes.
+        val deadline = FrameConnection.timers.schedule({ FrameConnection.quietly { tcp.close() } }, headMillis, TimeUnit.MILLISECONDS)
         try {
-            socket.soTimeout = 10_000
-            socket.tcpNoDelay = true
+            tcp.soTimeout = headMillis.toInt()
+            tcp.tcpNoDelay = true
+            val socket = layered?.let {
+                (it.createSocket(tcp, tcp.inetAddress.hostAddress, tcp.port, true) as SSLSocket).apply { useClientMode = false }
+            } ?: tcp
             val input = BufferedInputStream(socket.getInputStream())
             val request = readHead(input)
             if (request == null) {
@@ -190,15 +235,24 @@ class WebSocketServer(
             val output = socket.getOutputStream()
             output.write(response.toByteArray(Charsets.ISO_8859_1))
             output.flush()
-            socket.soTimeout = 0
-            accepted.put(FrameConnection(socket, input, output, heartbeat))
+            // Past the deadline, the socket is closed already.
+            if (!deadline.cancel(false)) throw IOException("the upgrade took too long")
+            tcp.soTimeout = 0
+            accepted.put(FrameConnection(socket, input, output, heartbeat, tcp))
+            if (closed) drain()
         } catch (_: IOException) {
-            FrameConnection.quietly { socket.close() }
+            FrameConnection.quietly { tcp.close() }
+        } finally {
+            deadline.cancel(false)
         }
     }
 
     companion object {
         private const val GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+        const val HEAD_MILLIS: Long = 10_000
+
+        const val MAX_PENDING: Int = 64
     }
 }
 
@@ -226,21 +280,36 @@ class Listening(
 
     private val events = LinkedBlockingQueue<Event>()
 
+    @Volatile
+    private var done = false
+
     fun stop() {
         events.put(Event.Stop)
     }
 
+    /** Closes the connections accepted and not served: it is done. */
+    private fun drain() {
+        while (true) {
+            val event = events.poll() ?: return
+            if (event is Event.Accepted) event.connection.close("the runtime stopped")
+        }
+    }
+
     fun run(): Ended {
-        Thread({
-            while (true) {
+        val forwarding = Thread({
+            while (!done) {
                 val connection = try {
                     server.accepted.take()
                 } catch (_: InterruptedException) {
                     return@Thread
                 }
-                events.put(Event.Accepted(connection))
+                events.offer(Event.Accepted(connection))
+                if (done) drain()
             }
-        }, "rutis-accepted").apply { isDaemon = true }.start()
+        }, "rutis-accepted").apply {
+            isDaemon = true
+            start()
+        }
         var current: RuntimeSession? = null
         var connection: FrameConnection? = null
         try {
@@ -276,7 +345,10 @@ class Listening(
                 }
             }
         } finally {
+            done = true
+            forwarding.interrupt()
             server.close()
+            drain()
         }
     }
 }

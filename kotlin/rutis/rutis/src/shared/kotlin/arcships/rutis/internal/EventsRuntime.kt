@@ -319,6 +319,14 @@ internal object EventsRuntime {
             }
             return { null }
         }
+        if (mode == Mode.Bail && onMainThread()) {
+            // A bail blocks its thread until the host answers (design
+            // §11.3 #3): not the main thread, whose freezing it would be, and
+            // which the answer may need.
+            throw IllegalStateException(
+                "bail of $name waits for rutis: not on the main thread; call it from another thread, or use serial, a suspend function",
+            )
+        }
         val wait = session.send("", "events.dispatch", listOf(record), mode == Mode.Bail)
         return {
             val value = wait()

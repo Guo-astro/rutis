@@ -6,6 +6,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okhttp3.internal.ws.RealWebSocket
 import okio.ByteString
 import java.io.IOException
 import java.net.UnknownServiceException
@@ -15,6 +16,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import javax.net.ssl.SSLContext
@@ -44,6 +46,13 @@ internal fun closeReason(reason: String): String {
  * authentication failure; 400, 404, 405, 426, a session protocol the
  * access point did not choose, and a platform refusing cleartext are
  * incompatible; the rest is retryable.
+ *
+ * The heartbeat is the SDK's own, as in the other runtimes: every
+ * [Heartbeat.pingMillis] it looks whether anything came from the access
+ * point (a message, a ping or a pong; the access point pings every ping
+ * interval) and drops the connection once nothing came for
+ * [Heartbeat.timeoutMillis]. OkHttp's ping is off: it fails a connection
+ * whose pong is late by one ping interval.
  */
 class WebSocketDialer(
     private val spec: String,
@@ -51,14 +60,13 @@ class WebSocketDialer(
     private val token: String?,
     trust: X509TrustManager?,
     private val retry: Retry,
-    heartbeat: Heartbeat,
+    private val heartbeat: Heartbeat,
 ) {
     private val host = dialHost(spec)
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(retry.handshakeMillis, TimeUnit.MILLISECONDS)
         .readTimeout(retry.handshakeMillis, TimeUnit.MILLISECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
-        .pingInterval(heartbeat.pingMillis, TimeUnit.MILLISECONDS)
         .retryOnConnectionFailure(false)
         .followRedirects(false)
         .apply {
@@ -77,7 +85,7 @@ class WebSocketDialer(
             .header("Sec-WebSocket-Protocol", protocol)
             .apply { if (!token.isNullOrEmpty()) header("Authorization", "Bearer $token") }
             .build()
-        val connection = OkHttpConnection(host, protocol)
+        val connection = OkHttpConnection(host, protocol, heartbeat)
         val socket = client.newWebSocket(request, connection.listener)
         try {
             return connection.opened.get(retry.handshakeMillis * 2, TimeUnit.MILLISECONDS)
@@ -98,7 +106,11 @@ class WebSocketDialer(
 }
 
 /** One dialed WebSocket connection: OkHttp's callbacks turned into a [Connection]. */
-private class OkHttpConnection(private val host: String, private val protocol: String) : Connection {
+private class OkHttpConnection(
+    private val host: String,
+    private val protocol: String,
+    private val heartbeat: Heartbeat,
+) : Connection {
     val opened = CompletableFuture<Connection>()
     private val inbox = LinkedBlockingQueue<Any>()
     private var socket: WebSocket? = null
@@ -116,7 +128,48 @@ private class OkHttpConnection(private val host: String, private val protocol: S
     private fun end(error: IOException?) {
         if (ended) return
         ended = true
+        beating?.cancel(false)
         inbox.put(End(error))
+    }
+
+    /** When something last came from the far end (System.nanoTime). */
+    @Volatile
+    private var lastSeen = System.nanoTime()
+
+    /** The pings and pongs received when the heartbeat last looked. */
+    private var frames = 0
+
+    private var beating: ScheduledFuture<*>? = null
+
+    /**
+     * The pings and pongs received on `ws` so far; null when this OkHttp
+     * does not say (another version than the SDK's): the heartbeat cannot
+     * tell a quiet access point from a lost one, and leaves it to TCP.
+     */
+    private fun controlFrames(ws: WebSocket): Int? = try {
+        (ws as? RealWebSocket)?.let { it.receivedPingCount() + it.receivedPongCount() }
+    } catch (_: LinkageError) {
+        null
+    }
+
+    private fun beat(ws: WebSocket) {
+        if (ended) return
+        val count = controlFrames(ws)
+        if (count == null || count != frames) {
+            frames = count ?: 0
+            lastSeen = System.nanoTime()
+        }
+        val silent = (System.nanoTime() - lastSeen) / 1_000_000
+        if (silent > heartbeat.timeoutMillis) {
+            end(IOException("no message from the access point for ${seconds(silent)}: heartbeat timeout"))
+            ws.cancel()
+            return
+        }
+        // An unsolicited pong (RFC 6455 §5.5.3): the access point hears this side.
+        try {
+            (ws as? RealWebSocket)?.pong(ByteString.EMPTY)
+        } catch (_: LinkageError) {
+        }
     }
 
     val listener = object : WebSocketListener() {
@@ -129,10 +182,18 @@ private class OkHttpConnection(private val host: String, private val protocol: S
                 opened.completeExceptionally(DialException(Failure.Incompatible, "$host: session protocol: $said"))
                 return
             }
+            lastSeen = System.nanoTime()
+            beating = timers.scheduleWithFixedDelay(
+                { beat(webSocket) },
+                heartbeat.pingMillis,
+                heartbeat.pingMillis,
+                TimeUnit.MILLISECONDS,
+            )
             opened.complete(this@OkHttpConnection)
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            lastSeen = System.nanoTime()
             val bytes = text.toByteArray(Charsets.UTF_8)
             if (bytes.size > MAX_MESSAGE) {
                 webSocket.close(CloseCode.TOO_BIG, "message too big")
@@ -149,7 +210,7 @@ private class OkHttpConnection(private val host: String, private val protocol: S
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
             farClose = code
-            webSocket.close(code, null)
+            webSocket.close(echoedCloseCode(code), null)
             end(
                 when (code) {
                     CloseCode.NORMAL, CloseCode.NO_STATUS -> IOException("the access point closed the connection")
@@ -252,13 +313,13 @@ private class OkHttpConnection(private val host: String, private val protocol: S
         ws.close(CloseCode.GOING_AWAY, closeReason(reason))
         end(null)
         // The far end's close frame is not waited for long.
-        cancels.schedule({ ws.cancel() }, 1, TimeUnit.SECONDS)
+        timers.schedule({ ws.cancel() }, 1, TimeUnit.SECONDS)
     }
 
     companion object {
         private const val MAX_QUEUE: Long = 16L * 1024 * 1024
-        private val cancels = Executors.newSingleThreadScheduledExecutor { r ->
-            Thread(r, "rutis-dial-close").apply { isDaemon = true }
+        private val timers = Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "rutis-dial-timer").apply { isDaemon = true }
         }
     }
 }
