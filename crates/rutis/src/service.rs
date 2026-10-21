@@ -42,7 +42,7 @@ use std::cell::Cell;
 use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -66,10 +66,37 @@ pub struct Entry {
     invoke: Invoke,
 }
 
-/// Read the marked service provided at `key` through `ctx` by the strict
-/// read path ([`Ctx::require_as`]), so read interceptors and `check()`
-/// apply to every call by name, as they do to Rust readers.
-pub type Resolve = fn(ctx: &Ctx, key: &TypeKey) -> Result<Arc<dyn Any + Send + Sync>, String>;
+/// Read the marked service `provision` provided at `key` through `ctx`, by
+/// the strict read path ([`Ctx::require_provided_as`]): `check()` applies,
+/// read interceptors apply with `actor` (the calling row) as the reader,
+/// and a read that finds another binding than the one provided (the slot
+/// provided again, by another build after a swap, say) is refused.
+pub type Resolve = fn(
+    ctx: &Ctx,
+    key: &TypeKey,
+    provision: &Provision,
+    actor: Option<&Ctx>,
+) -> Result<Arc<dyn Any + Send + Sync>, String>;
+
+/// The native binding a marked service was provided as: the entry by name
+/// serves that binding only. Filled once the binding is registered; empty
+/// before (the entry is served first, R6) and never another one.
+pub struct Provision(OnceLock<Weak<crate::registry::Binding>>);
+
+impl Provision {
+    pub(crate) fn new() -> Self {
+        Self(OnceLock::new())
+    }
+    pub(crate) fn fill(&self, binding: &Arc<crate::registry::Binding>) {
+        let _ = self.0.set(Arc::downgrade(binding));
+    }
+    /// Whether `binding` is the one provided.
+    pub(crate) fn is(&self, binding: &Arc<crate::registry::Binding>) -> bool {
+        self.0
+            .get()
+            .is_some_and(|provided| std::ptr::eq(provided.as_ptr(), Arc::as_ptr(binding)))
+    }
+}
 
 /// A marked block's dispatch: call `method` of `service` with `args`.
 pub type Invoke = fn(
@@ -113,8 +140,14 @@ impl Entry {
         (self.methods)()
     }
     /// The service provided at `key`, read through `ctx` ([`Resolve`]).
-    pub fn resolve(&self, ctx: &Ctx, key: &TypeKey) -> Result<Arc<dyn Any + Send + Sync>, String> {
-        (self.resolve)(ctx, key)
+    pub fn resolve(
+        &self,
+        ctx: &Ctx,
+        key: &TypeKey,
+        provision: &Provision,
+        actor: Option<&Ctx>,
+    ) -> Result<Arc<dyn Any + Send + Sync>, String> {
+        (self.resolve)(ctx, key, provision, actor)
     }
     /// Call `method`, one of [`Entry::methods`].
     pub fn invoke(
@@ -172,6 +205,23 @@ pub fn loading<R>(load: impl FnOnce() -> R) -> (R, Generation) {
     (load(), Generation(generation))
 }
 
+/// The generation whose initializers run on this thread now, inside
+/// [`loading`]; `None` outside.
+#[doc(hidden)]
+pub fn current_loading() -> Option<Generation> {
+    match LOADING.with(Cell::get) {
+        0 => None,
+        generation => Some(Generation(generation)),
+    }
+}
+
+impl Generation {
+    /// A number for this generation, for diagnostics and tests.
+    pub fn id(self) -> u64 {
+        self.0
+    }
+}
+
 /// The code running in `ctx`'s fiber, and in the fibers it starts, comes
 /// from the library loaded as `generation`: a marked value it provides is
 /// served with that library's blocks. Loaders call this when a plugin built
@@ -200,27 +250,51 @@ fn entries() -> Vec<&'static Entry> {
 }
 
 /// The marked blocks of the type `type_id` registered by the image of
-/// `generation`, in the order they were added; without a generation, or
-/// when that image registered none, those of the latest image that
-/// registered the type.
+/// `generation`, in the order they were added. When that image registered
+/// none for the type (its build left the marker out), or for code of no
+/// loaded library (`None`), those of the program itself (generation 0, the
+/// host and the SDK), or none: never another library's, whose code would
+/// not match the value's layout.
 pub fn entries_of(type_id: TypeId, generation: Option<Generation>) -> Vec<&'static Entry> {
     let entries = ENTRIES.lock().unwrap_or_else(|poison| poison.into_inner());
-    let of_type = || {
+    let of = |generation: u64| -> Vec<&'static Entry> {
         entries
             .iter()
-            .filter(|known| (known.entry.type_id)() == type_id)
+            .filter(|known| known.generation == generation && (known.entry.type_id)() == type_id)
+            .map(|known| known.entry)
+            .collect()
     };
-    let chosen = generation
-        .map(|generation| generation.0)
-        .filter(|generation| of_type().any(|known| known.generation == *generation))
-        .or_else(|| of_type().map(|known| known.generation).max());
-    let Some(chosen) = chosen else {
-        return Vec::new();
-    };
-    of_type()
-        .filter(|known| known.generation == chosen)
-        .map(|known| known.entry)
-        .collect()
+    match generation {
+        Some(Generation(generation)) if generation != 0 => {
+            let own = of(generation);
+            if own.is_empty() {
+                of(0)
+            } else {
+                own
+            }
+        }
+        _ => of(0),
+    }
+}
+
+/// Generations a newer load of the same plugin replaced
+/// ([`supersede`]): their blocks still serve the values they provided,
+/// but their names are no longer what the program exports.
+static SUPERSEDED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+/// `older` are earlier loads of the plugin just loaded as a newer
+/// generation: name lookups ([`exported_as`], [`is_exported`]) consider the
+/// newest only, so a name a newer build renamed or dropped is no longer
+/// exported. Loaders call this when they load a new build of a plugin.
+pub fn supersede(older: impl IntoIterator<Item = Generation>) {
+    let mut superseded = SUPERSEDED
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    for Generation(generation) in older {
+        if generation != 0 && !superseded.contains(&generation) {
+            superseded.push(generation);
+        }
+    }
 }
 
 /// Whether some marked type is exported as `name`.
@@ -231,11 +305,18 @@ pub fn is_exported(name: &str) -> bool {
 /// The type marked to be exported as `name` (its type name), if any. A
 /// type is served only once provided: this says the program can serve it.
 pub fn exported_as(name: &str) -> Option<&'static str> {
-    entries()
-        .into_iter()
+    let superseded = SUPERSEDED
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone();
+    ENTRIES
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .iter()
         .rev()
-        .find(|entry| entry.name == name)
-        .map(Entry::type_name)
+        .filter(|known| !superseded.contains(&known.generation))
+        .find(|known| known.entry.name == name)
+        .map(|known| known.entry.type_name())
 }
 
 /// Whether the type `type_id` is marked.
@@ -283,6 +364,8 @@ pub struct Exposure<'a> {
     /// The `check()` predicate the native binding is gated by
     /// ([`Ctx::provide_as_with_check`]): it gates the name too.
     pub check: Option<Check>,
+    /// The native binding being provided, for [`Entry::resolve`].
+    pub provision: Arc<Provision>,
 }
 
 /// What serves marked services to other languages: the bridge installs it.
@@ -1176,7 +1259,12 @@ mod tests {
     fn no_methods() -> &'static [&'static str] {
         &[]
     }
-    fn no_resolve(_: &Ctx, _: &TypeKey) -> Result<Arc<dyn Any + Send + Sync>, String> {
+    fn no_resolve(
+        _: &Ctx,
+        _: &TypeKey,
+        _: &Provision,
+        _: Option<&Ctx>,
+    ) -> Result<Arc<dyn Any + Send + Sync>, String> {
         Err("unused".into())
     }
     fn no_invoke(
@@ -1212,8 +1300,10 @@ mod tests {
 
     /// Two images registering blocks for one `TypeId` (two builds of one
     /// plugin crate) are both kept and told apart by generation: each
-    /// image's values are served with its own blocks; with no generation,
-    /// or one that registered none, the latest image's.
+    /// image's values are served with its own blocks. An image that
+    /// registered none for the type (its build dropped the marker) never
+    /// borrows another image's: only the program's own (generation 0), or
+    /// nothing.
     #[test]
     fn each_images_blocks_are_its_own() {
         let ((), first) = loading(|| register(&FIRST));
@@ -1221,17 +1311,57 @@ mod tests {
             register(&SECOND_A);
             register(&SECOND_B);
         });
-        let ((), empty) = loading(|| {});
+        let ((), unmarked) = loading(|| {});
         assert_eq!(names(Some(first)), ["first"]);
         assert_eq!(names(Some(second)), ["second", "second"]);
-        assert_eq!(names(None), ["second", "second"]);
-        assert_eq!(names(Some(empty)), ["second", "second"]);
-        assert!(is_exported("first") && is_exported("second"));
-        assert_eq!(exported_as("second"), Some("Rebuilt"));
-        // The program's own initializers are generation 0, the oldest.
+        assert!(names(Some(unmarked)).is_empty(), "no other build's blocks");
+        assert!(
+            names(None).is_empty(),
+            "no library's blocks for the program"
+        );
+        // The program's own blocks (generation 0) are the fallback.
         register(&OLDER);
-        assert_eq!(names(None), ["second", "second"]);
+        assert_eq!(names(Some(unmarked)), ["older"]);
+        assert_eq!(names(None), ["older"]);
         assert_eq!(names(Some(first)), ["first"]);
+    }
+
+    struct Renamed;
+    fn renamed_id() -> TypeId {
+        TypeId::of::<Renamed>()
+    }
+    static OLD_NAME: Entry = Entry::new(
+        renamed_id,
+        rebuilt_name,
+        "oldName",
+        true,
+        no_methods,
+        no_resolve,
+        no_invoke,
+    );
+    static NEW_NAME: Entry = Entry::new(
+        renamed_id,
+        rebuilt_name,
+        "newName",
+        true,
+        no_methods,
+        no_resolve,
+        no_invoke,
+    );
+
+    /// Once a newer build of a plugin supersedes the older, names are
+    /// looked up in the newer only: a name it renamed is no longer
+    /// exported, while the older build's blocks still serve its values.
+    #[test]
+    fn a_name_a_newer_build_renamed_is_no_longer_exported() {
+        let ((), older) = loading(|| register(&OLD_NAME));
+        assert!(is_exported("oldName"));
+        let ((), newer) = loading(|| register(&NEW_NAME));
+        supersede([older]);
+        assert!(!is_exported("oldName"));
+        assert!(is_exported("newName"));
+        assert_eq!(entries_of(renamed_id(), Some(older)).len(), 1);
+        assert_eq!(entries_of(renamed_id(), Some(newer)).len(), 1);
     }
 
     #[derive(Debug, Serialize)]
