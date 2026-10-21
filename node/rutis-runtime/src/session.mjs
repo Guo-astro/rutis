@@ -525,6 +525,15 @@ export class Session {
   }
   #run(job) {
     if (!this.#queued.has(job)) return
+    // A later call of a name whose earlier emit has not run yet waits behind
+    // it too, even when its path is on the waiting chain: starting it now
+    // would let it overtake the earlier emit (§5.5).
+    if (job.key !== undefined) {
+      for (const other of this.#queued) {
+        if (other === job) break
+        if (other.key === job.key) return
+      }
+    }
     if (job.run) {
       // Local work: never on top of a wait.
       if (this.#waiting.length) return
