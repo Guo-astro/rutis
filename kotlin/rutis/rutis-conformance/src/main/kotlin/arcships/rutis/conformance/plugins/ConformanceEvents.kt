@@ -62,6 +62,10 @@ data class FilterSpec(val keep: List<String> = emptyList(), val throws: Thrown? 
 @Serializable
 data class CancelSpec(val `when`: String)
 
+/** After the dispatch, wait in events-log.until([until]), then emit the same again with [args]. */
+@Serializable
+data class ThenSpec(val until: String, val args: List<@Contextual Any?> = emptyList())
+
 /** An emission (§13.2). */
 @Serializable
 data class Spec(
@@ -72,6 +76,8 @@ data class Spec(
     /** A text it returns, or {"echo": true}: its first argument. */
     val terminal: JsonElement? = null,
     val cancel: CancelSpec? = null,
+    /** The frames that reach the emitter while it waits are what the case is about. */
+    val then: ThenSpec? = null,
 )
 
 @RutisClient
@@ -86,6 +92,12 @@ interface EventsLog {
 @RutisClient
 interface EventsLogWait {
     suspend fun wait(entry: String)
+}
+
+/** The host's synchronous events-log.until, where it has one: logs `until:<entry>`, returns once entry is logged. */
+@RutisClient
+interface EventsLogUntil {
+    fun until(entry: String)
 }
 
 /** What this process logged, so that an emitter of it can wait for a listener of it. */
@@ -124,6 +136,7 @@ class ParticipantRow internal constructor(
     private val p: Participant,
     private val log: EventsLog,
     private val wait: EventsLogWait?,
+    private val until: EventsLogUntil? = null,
 ) {
     /** Logs `entry`, whatever cancelled the code that logs it. */
     suspend fun add(entry: String) {
@@ -156,6 +169,14 @@ class ParticipantRow internal constructor(
     }
 
     suspend fun dispatch(spec: Spec): Any? {
+        val then = spec.then ?: return dispatchOnce(spec)
+        val until = until ?: throw IllegalStateException("conformance-events: then needs the host's events-log.until")
+        dispatchOnce(spec)
+        until.until(then.until)
+        return dispatchOnce(spec.copy(args = then.args, then = null))
+    }
+
+    private suspend fun dispatchOnce(spec: Spec): Any? {
         val cancel = spec.cancel ?: return emit(spec)
         return coroutineScope {
             val dispatching = async { emit(spec) }
@@ -301,7 +322,12 @@ val conformanceEvents = Rutis.define<Participant>(
     } catch (_: IllegalArgumentException) {
         null
     }
-    val row = ParticipantRow(ctx, p, ctx.use<EventsLog>("events-log"), wait)
+    val until = try {
+        ctx.use<EventsLogUntil>("events-log")
+    } catch (_: IllegalArgumentException) {
+        null
+    }
+    val row = ParticipantRow(ctx, p, ctx.use<EventsLog>("events-log"), wait, until)
     if (p.emitter) {
         ctx.provide("emitter-${p.label}", EventEmitter(row))
     } else {

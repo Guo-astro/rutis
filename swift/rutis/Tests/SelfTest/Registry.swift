@@ -6,6 +6,8 @@ let registry: [(String, () async throws -> Void)] = [
     ("PeerTests.testCancellingAnAsyncCallAbortsTheCallee", { try await PeerTests().testCancellingAnAsyncCallAbortsTheCallee() }),
     ("PeerTests.testAValueTooDeepFailsOnlyItsCall", { try await PeerTests().testAValueTooDeepFailsOnlyItsCall() }),
     ("PeerTests.testTheSessionEndsWhenTheFarEndGoes", { try await PeerTests().testTheSessionEndsWhenTheFarEndGoes() }),
+    ("EmitReplyTests.theReplyIsToldBeforeTheNextFrameIsHandled", { try await EmitReplyTests().theReplyIsToldBeforeTheNextFrameIsHandled() }),
+    ("EmitReplyTests.aFutureAnswerOfA013HostSettles", { try await EmitReplyTests().aFutureAnswerOfA013HostSettles() }),
     ("JSONTests.testReadsAndWritesData", { try JSONTests().testReadsAndWritesData() }),
     ("JSONTests.testRefusesWhatIsNotJSON", { JSONTests().testRefusesWhatIsNotJSON() }),
     ("JSONTests.testSurrogatePairs", { try JSONTests().testSurrogatePairs() }),

@@ -64,7 +64,19 @@ def _rest(text, result):
 
 def dispatch(ctx, log, spec):
     """Emit `spec` from `ctx`'s row: the value for `emit` (None) and `bail`,
-    a coroutine for the others."""
+    a coroutine for the others. With `then` ({until, args}, `emit` only):
+    wait synchronously in `events-log.until(until)`, then emit the same
+    again with `args` (the frames that arrive during that wait are what the
+    case is about)."""
+    then = spec.get("then")
+    if then is None:
+        return _dispatch_once(ctx, log, spec)
+    _dispatch_once(ctx, log, spec)
+    log.until(then["until"])
+    return _dispatch_once(ctx, log, {**spec, "args": then["args"], "then": None})
+
+
+def _dispatch_once(ctx, log, spec):
     name, mode, args = spec["name"], spec["mode"], list(spec.get("args", []))
     emitter = ctx
     chosen = spec.get("filter")

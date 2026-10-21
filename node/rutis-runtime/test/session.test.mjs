@@ -6,10 +6,11 @@ import { decode } from '../src/codec.mjs'
 
 const PROTOCOL = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).rutisProtocol
 const data = value => ({ type: 'data', value })
-function harness(dispatch) {
+function harness(dispatch, options = {}) {
   const sent = [], incoming = []
   let fault
   const peer = new Session({
+    ...options,
     dispatch,
     send: line => sent.push(JSON.parse(line)),
     pump: () => { assert.ok(incoming.length, 'sync caller must not strand'); peer.receive(incoming.shift()) },
@@ -66,6 +67,42 @@ test('sync wait only pumps related calls and admits a prequeued related callback
   await Promise.resolve()
   assert.deepEqual(seen, ['queued', 'related', 'unrelated'])
   assert.equal(sent.filter(frame => frame.id === 'rust:1').length, 1)
+  assert.equal(fault(), undefined)
+  peer.close()
+})
+
+// Events protocol §5.5: an emit's reply is taken as its frame is read,
+// before the next frame is handled, not on a later tick.
+test('invokeAnswered tells the reply as its frame is read, before the next frame', async () => {
+  const seen = []
+  const { peer, sent, fault } = harness((_, method) => { seen.push(method); return null }, { inline: ['events.elsewhere'] })
+  peer.invokeAnswered('', 'events.dispatch', [{ mode: 'emit' }], result => seen.push(['answered', result.ok, result.value]))
+  assert.equal(sent.at(-1).method, 'events.dispatch')
+  const id = sent.at(-1).id
+  peer.receive({ op: 'return', id, value: { type: 'undefined' } })
+  assert.deepEqual(seen, [['answered', true, undefined]], 'in the same call, no tick in between')
+  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: '', method: 'events.elsewhere', args: data([{}]) })
+  assert.deepEqual(seen, [['answered', true, undefined], 'events.elsewhere'])
+  // A throw is told the same way.
+  peer.invokeAnswered('', 'events.dispatch', [{ mode: 'emit' }], result => seen.push(['failed', result.ok, result.value.name]))
+  peer.receive({ op: 'throw', id: sent.at(-1).id, error: { name: 'BindingError', message: 'refused' } })
+  assert.deepEqual(seen.at(-1), ['failed', false, 'BindingError'])
+  assert.equal(fault(), undefined)
+  peer.close()
+})
+
+test('an inline predicate runs emit-mode listener calls in frame order while a sync call waits', async () => {
+  const seen = []
+  const inline = (method, args) => method === 'events.elsewhere' || (method === 'events.call' && args?.[0]?.mode === 'emit')
+  const { peer, incoming, fault } = harness((_, method, args) => { seen.push(`${method}:${args?.[0]?.mode ?? ''}`); return null }, { inline })
+  const call = (id, mode) => ({ op: 'invoke', id: `rust:${id}`, path: [], target: '', method: 'events.call', args: data([{ mode }]) })
+  // While `invoke` waits: an emit-mode call (in place), a serial one (held
+  // back: not of the waiting chain), a table change (in place).
+  incoming.push(call(1, 'emit'), call(2, 'serial'), { op: 'invoke', id: 'rust:3', path: [], target: '', method: 'events.elsewhere', args: data([{}]) }, { op: 'return', id: 'node:1', value: data(7) })
+  assert.equal(peer.invoke('test', 'sync', []), 7)
+  assert.deepEqual(seen, ['events.call:emit', 'events.elsewhere:'])
+  await Promise.resolve()
+  assert.deepEqual(seen, ['events.call:emit', 'events.elsewhere:', 'events.call:serial'])
   assert.equal(fault(), undefined)
   peer.close()
 })

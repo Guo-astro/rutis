@@ -196,7 +196,7 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 对每个（发出的进程，名字），每个监听器上 `emit` 分发的调用按发出顺序**开始**：
 
 - 宿主按顺序处理一个会话的 `events.dispatch` 帧，先开始同一进程同一名字前一次 emit 的调用，再开始后一次的；它自己的 Rust 监听器保留内核按键排队的链。
-- 发往同一会话的帧按序到达，运行时**必须**按到达顺序开始 `emit` 方式的调用：Node / Bun / Python 在处理下一帧之前调用监听器（同步执行到它的第一个 `await`）；Go 按监听器排队，一个接一个执行（不同的监听器并发执行）。
+- 发往同一会话的帧按序到达，运行时**必须**按到达顺序开始 `emit` 方式的调用：Node / Bun / Python 在处理下一帧之前调用监听器（同步执行到它的第一个 `await`），进程的一个同步调用正在等待时也是这样（等待期间扣住其他调用的运行时，对 `emit` 方式的 `events.call` 仍就地处理；2026-10-21 修订）；Go 按监听器排队，一个接一个执行（不同的监听器并发执行）。
 - 运行时经宿主发出了 N 的一次 `emit`，在它得到回复之前，N 的后续 emit 都继续经宿主（§5.2）。宿主在开始各调用之后才回复，所以这次 emit 的 `events.call` 先于任何后来的 N 的快速路径 emit 到达运行时。
 - 回复是普通值（`undefined`），不是 future：宿主在各调用开始之后写出它。运行时像处理 `events.elsewhere` 一样（§4.1）**就地**、按帧的顺序接收它：读到回复的那一帧时就把这次 emit 记为已得到回复，处理完再读下一帧，而不是放到之后的任务、tick 或线程里。所以后面的帧引起的操作（比如调用它的一个服务、在那里发出 N）都看到它已得到回复；宿主在发出那一帧之前已回复的 dispatch，不再让 N 留在经宿主的路径上（2026-10-21 修订）。
 
@@ -474,7 +474,7 @@ impl EventBus {
 
 ### 13.1 一致性插件
 
-每种语言提供插件 `conformance-events`（Rust 宿主提供同名的 Rust 插件）。每个监听器、每个发出方都是它的一行；行键是参与者的 `label`。它的配置是一个参与者（一个监听器，或 `{ "emitter": true }`）。监听器行按配置登记一个监听器；发出方行提供服务 `emitter-<label>`，方法 `dispatch(spec)`（异步；`bail` 用同步方法 `dispatch_sync(spec)`），用本语言原生的 API 发出并返回结果或抛出。每次调用开始、过滤调用与取消，都通过调用宿主的同步服务 `events-log.add(entry)` 记录。
+每种语言提供插件 `conformance-events`（Rust 宿主提供同名的 Rust 插件）。每个监听器、每个发出方都是它的一行；行键是参与者的 `label`。它的配置是一个参与者（一个监听器，或 `{ "emitter": true }`）。监听器行按配置登记一个监听器；发出方行提供服务 `emitter-<label>`，方法 `dispatch(spec)`（异步；`bail` 用同步方法 `dispatch_sync(spec)`），用本语言原生的 API 发出并返回结果或抛出。每次调用开始、过滤调用与取消，都通过调用宿主的同步服务 `events-log.add(entry)` 记录。`events-log.until(entry)`（同步）记下 `until:<entry>`，等到 `entry` 被记下后返回（spec 的 `then` 用它）。
 
 ### 13.2 格式
 
@@ -505,9 +505,9 @@ impl EventBus {
   | `{ "calls": 0 }` | 以 `"x"` 调用 `args[0]`（一个函数），返回它的结果 |
   | `{ "emits": spec }` | 从自己这一行发出 `spec`（见下），返回结果 |
 
-- **发出说明**（spec）：`from`（位置）、`row`（发出方 label，默认 `e`）、`scope`（默认 `root`）、`mode`、`name`（默认用例的）、`args`（值；值标记写作 `{"$<tag>": …}`，同 `weather.expected.json`；`{"$callback":"upper"}` 是把参数转成大写的函数）、`filter`（`{ "keep": [labels] }`：送达 `row` 在列表中的条目；探针对它被调用时的每个描述记 `filter:<row>`）、`via`（`"thisArg"`：Cordis 的 `Context.filter`，只用于 Node 的 Cordis 发出方）、`terminal`（文字：记 `terminal` 并返回这段文字的终态；`{ "echo": true }`：记 `terminal` 并返回它的第一个参数，即事件的第一个参数）、`cancel`（`{ "when": "<label>" }`：那个监听器记下开始后，发出方取消这次分发）。
+- **发出说明**（spec）：`from`（位置）、`row`（发出方 label，默认 `e`）、`scope`（默认 `root`）、`mode`、`name`（默认用例的）、`args`（值；值标记写作 `{"$<tag>": …}`，同 `weather.expected.json`；`{"$callback":"upper"}` 是把参数转成大写的函数）、`filter`（`{ "keep": [labels] }`：送达 `row` 在列表中的条目；探针对它被调用时的每个描述记 `filter:<row>`）、`via`（`"thisArg"`：Cordis 的 `Context.filter`，只用于 Node 的 Cordis 发出方）、`terminal`（文字：记 `terminal` 并返回这段文字的终态；`{ "echo": true }`：记 `terminal` 并返回它的第一个参数，即事件的第一个参数）、`cancel`（`{ "when": "<label>" }`：那个监听器记下开始后，发出方取消这次分发）、`then`（`{ "until": "<entry>", "args": [..] }`，只用于 `emit`：分发之后发出方同步调用 `events-log.until(entry)`，返回后用这些参数再发出一次同样的事件；用例关心的是这次等待期间到达它的帧）。
 - **发出方的行**：运行器在 spec 的 `from` 位置与 `scope` 创建它写明的发出方（`row`，默认 `e`）；监听器的 `emits` 从监听器自己的行发出。
-- **步骤**，按顺序：`{ "emit": spec, "expect": … }`（`"background": true`：这一步不等分发结束；下一个 `unload` / `kill` 步骤的 `expect` 说的是这次分发的结果与日志）、`{ "load": listener }`（新的一行；`provides`：它另外提供一个这个名字的空服务）、`{ "unload": label }`、`{ "kill": "Y" | "node" }`（结束那个进程 / 那条连接；在 `restart` 步骤之前不恢复）、`{ "restart": "Y" }`、`{ "concurrent": [steps], "hold": true }`（`hold`：宿主的测试钩子扣住这些分发直到全部到达；之后 `expect` 适用于每一个，`throws` 表示至少一个）。`unload` 与 `kill` 可带 `"when": "<label>"`：先等那个监听器开始。
+- **步骤**，按顺序：`{ "emit": spec, "expect": … }`（`"background": true`：这一步不等分发结束；下一个 `unload` / `kill` 步骤的 `expect` 说的是这次分发的结果与日志）、`{ "load": listener }`（新的一行；`provides`：它另外提供一个这个名字的空服务）、`{ "unload": label }`、`{ "kill": "Y" | "node" }`（结束那个进程 / 那条连接；在 `restart` 步骤之前不恢复）、`{ "restart": "Y" }`、`{ "concurrent": [steps], "hold": true }`（`hold`：宿主的测试钩子扣住这些分发直到全部到达；之后 `expect` 适用于每一个，`throws` 表示至少一个）。`unload` 与 `kill` 可带 `"when": "<label>"`：先等那个监听器开始。`unload` 可带 `"then": "<entry>"`：那一行卸载后（带 `answered` 时还要等宿主回复了收到的分发），执行器记下这一条，再去等后台的分发（`then.until` 等的就是它）。
 - **期望**：`returns`（值；`null` = 没有结果）、`throws`（`{}` 任意错误，或 `name`、`message`（子串）、`errors`（按顺序的子错误，每个为 `{}` / `name` / `message`））、`log`（确切顺序）、`logUnordered`、`logContains`（按此顺序出现，中间可有其他）、`reported`（`[{ "label", "name" }]`，§5.6）、`filterSees`（过滤函数被调用时的行，按顺序；运行器按每个参与者实际所在核对描述的 `runtime`、`node` 与 `scope`）、`viaHost`（是否有 `events.dispatch` 到达宿主）、`settles`（`true`：这一步在 5 秒内结束，无论成败）、`answered`（`true`：运行器等到宿主对它收到的每个 `events.dispatch` 都写出了回复，最多 5 秒；之后发给运行时的帧都在这些回复之后到达，按 §5.5 发出方已把这些经宿主的 emit 记为已得到回复，用于其后断言 `viaHost: false` 的步骤）、`logLacks`（日志里不得出现的条目）。日志在整个用例中累积；每个日志期望说的都是到此为止的全部日志。运行器最多等 5 秒让日志完整。
 - **`vary`**：位置要变化的参与者（label，发出方为 `e`），运行器取所有位置的组合（笛卡尔积），`at` / `from` 是第一种组合。`node` 不被分配到 `root` 以外的作用域。
 - **`only` / `except`**：`{ "<label>": [语言] }`（`rust`、`node`、`bun`、`python`、`go`）限定 / 排除组合，带 `why`。
@@ -548,6 +548,15 @@ impl EventBus {
         { "emit": { "from": "X", "mode": "emit", "args": [1] }, "expect": { "viaHost": true, "answered": true } },
         { "unload": "b" },
         { "emit": { "from": "X", "mode": "emit", "args": [2] }, "expect": { "log": ["a:1", "a:2"], "viaHost": false } } ] },
+
+    { "case": "emit/order-across-fast-path-sync-wait", "rule": "5.2, 5.5", "name": "t/switch-wait", "tool": false,
+      "listeners": [
+        { "label": "a", "at": "X", "log": "arg", "does": { "returns": null } },
+        { "label": "b", "at": "Y", "log": false, "does": { "returns": null } } ],
+      "steps": [
+        { "emit": { "from": "X", "mode": "emit", "args": [1], "then": { "until": "resume", "args": [2] } }, "background": true,
+          "expect": { "logContains": ["until:resume"] } },
+        { "unload": "b", "then": "resume", "expect": { "answered": true, "returns": null, "viaHost": false, "logContains": ["a:1", "a:2"] } } ] },
 
     { "case": "emit/error-isolated", "rule": "5.6", "name": "t/emit-error",
       "listeners": [
@@ -891,7 +900,7 @@ impl EventBus {
 实现宿主侧时（#464，`events/host`）定下的：
 
 28. **`mount` 写明运行时的名字**（`runtime`），快速路径上的描述与宿主的相同。
-29. **宿主按顺序处理一个会话的 `emit` 分发，而不阻塞它的读线程**：能马上开始的 `emit`（没有待回的过滤选择器）在读下一帧之前就答 `undefined`；不能马上开始的（它的选择器调用要从同一个会话回来），连同这个会话之后的每个 `emit`，进入队列，各自在调用都开始后作答（这时答的是一个运行时去等待的 future）。两种情况下 §5.5 的保证都成立。
+29. **宿主按顺序处理一个会话的 `emit` 分发，而不阻塞它的读线程**：能马上开始的 `emit`（没有待回的过滤选择器）在会话的有序任务上轮到时开始，并在那里作答（第 30 条）；不能马上开始的（它的选择器调用要从同一个会话回来），连同这个会话之后的每个 `emit`，进入队列，各自在调用都开始后作答。两种情况下回复都是普通值（`undefined`），不是 future，在各调用开始之后写出；运行时就地、按帧的顺序接收它（§5.5）。两种情况下 §5.5 的保证都成立。（2026-10-21 修订：原先排队的 `emit` 答的是一个运行时去等待的 future，运行时何时把这次 emit 记为已得到回复取决于时序。0.13 的宿主仍这样答；运行时仍会等这样的 future，对这种宿主保持 0.13 那种依赖时序的顺序。）
 30. **宿主按帧序处理一个会话的事件操作，但不在它的读线程上**：会话层把收到的 `events.*` 依次交给这个会话的一个有序任务；`events.on`、`events.off`、`events.elsewhere` 以及 `emit` 方式的 `events.dispatch` / `events.call` 在轮到时就地执行，其余事件操作在轮到时作为各自的任务开始。读线程从不执行插件代码（监听器、分发观察者）：它们可能同步调用同一个会话，而回复只有这个读线程能读到。
 31. **节点按自己的条目每匹配一个 `import` 项就宣告一次**（按 §9 收窄），每次宣告有自己的 id；对端宣告的条目同样按每匹配一个 `export` 项接受一次。宣告在对端提供 `events` 这一族时开始，对端每次重新提供时从头再来。
 32. **线上的 `AggregateError`** 在错误图里带着子错误（§11），各语言都按登记顺序还原子错误。

@@ -72,3 +72,26 @@ test('a far end of another protocol version is refused, saying which end to upgr
     }
   }
 })
+
+// Events protocol §5.5: an emit's reply is taken as its frame is read,
+// before the next frame is handled, not on a later tick.
+test('invokeAnswered tells the reply as its frame is read, before the next frame', () => {
+  const { Session } = require('../src/session.ts')
+  const PROTOCOL = require('../package.json').rutisProtocol
+  const sent: any[] = [], seen: any[] = []
+  const peer = new Session({
+    dispatch: (_: string, method: string) => { seen.push(method); return null },
+    send: (line: string) => sent.push(JSON.parse(line)), abort: () => {}, pump: () => {},
+    inline: ['events.elsewhere'],
+  })
+  peer.receive({ op: 'hello', version: PROTOCOL })
+  peer.invokeAnswered('', 'events.dispatch', [{ mode: 'emit' }], (result: any) => seen.push(['answered', result.ok]))
+  peer.receive({ op: 'return', id: sent.at(-1).id, value: { type: 'undefined' } })
+  expect(seen).toEqual([['answered', true]])
+  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: '', method: 'events.elsewhere', args: { type: 'data', value: [{}] } })
+  expect(seen).toEqual([['answered', true], 'events.elsewhere'])
+  peer.invokeAnswered('', 'events.dispatch', [{ mode: 'emit' }], (result: any) => seen.push(['failed', result.ok, result.value.name]))
+  peer.receive({ op: 'throw', id: sent.at(-1).id, error: { name: 'BindingError', message: 'refused' } })
+  expect(seen.at(-1)).toEqual(['failed', false, 'BindingError'])
+  peer.close()
+})

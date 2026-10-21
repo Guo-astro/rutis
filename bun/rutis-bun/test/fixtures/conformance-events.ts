@@ -115,7 +115,17 @@ function perform(ctx: any, log: Log, label: string, does: any, args: any[], next
   throw new Error(`unknown listener behaviour ${JSON.stringify(does)}`)
 }
 
+// Emit `spec`; with `then` ({ until, args }), wait synchronously in
+// `events-log.until(until)` and emit the same again with `args` (the frames
+// that arrive during that wait are what the case is about).
 function emit(ctx: any, log: Log, spec: any): any {
+  const result = emitOnce(ctx, log, spec)
+  if (!spec.then) return result
+  ctx.use('events-log').until(spec.then.until)
+  return emitOnce(ctx, log, { ...spec, args: spec.then.args, then: undefined })
+}
+
+function emitOnce(ctx: any, log: Log, spec: any): any {
   const args = made(spec.args ?? [])
   let emitter = ctx
   if (spec.filter?.throws) {

@@ -45,6 +45,16 @@
         {"emit": {"from": "X", "mode": "emit", "args": [2]}, "expect": {"log": ["a:1", "a:2"], "viaHost": false}}
       ] },
 
+    { "case": "emit/order-across-fast-path-sync-wait", "rule": "5.2, 5.5", "name": "t/switch-wait", "tool": false,
+      "listeners": [
+        {"label": "a", "at": "X", "log": "arg", "does": {"returns": null}},
+        {"label": "b", "at": "Y", "log": false, "does": {"returns": null}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "emit", "args": [1], "then": {"until": "resume", "args": [2]}}, "background": true, "expect": {"logContains": ["until:resume"]}},
+        {"unload": "b", "then": "resume", "expect": {"answered": true, "returns": null, "viaHost": false, "logContains": ["a:1", "a:2"]}}
+      ] },
+
     { "case": "emit/error-isolated", "rule": "5.6", "name": "t/emit-error", "vary": ["a", "b", "e"],
       "listeners": [
         {"label": "a", "at": "Y", "does": {"throws": {"name": "Boom", "message": "a failed"}}},

@@ -32,10 +32,14 @@
 //!
 //! It injects `events-log` ([`EventsLog`]): `add(entry)` (sync),
 //! `filter(description)` (sync: logs `filter:<row>` and keeps the
-//! description) and `wait(entry)` (async: resolves once `entry` is logged).
+//! description), `wait(entry)` (async: resolves once `entry` is logged)
+//! and `until(entry)` (sync: logs `until:<entry>`, returns once `entry` is
+//! logged).
 //! A spec given to `dispatch` has `mode`, `name`, `args`, and optionally
 //! `filter` (`{keep}` or `{throws}`), `via`, `terminal` (a text it returns,
-//! or `{echo: true}`: it returns its first argument) and `cancel`.
+//! or `{echo: true}`: it returns its first argument), `cancel` and `then`
+//! (`{until, args}`: after the dispatch, `events-log.until(until)`, then
+//! the same emit again with `args`).
 //! Logged values: strings as they are, numbers and booleans as JSON.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -214,6 +218,19 @@ pub struct Spec {
     /// its first argument, the event's first argument); logs `terminal`.
     pub terminal: Option<Json>,
     pub cancel: Option<String>,
+    /// `{ "until": entry, "args": [..] }`: after its dispatch the emitter
+    /// calls `events-log.until(entry)` (a synchronous host call that logs
+    /// `until:<entry>` and returns once `entry` is logged), then emits the
+    /// same name in the same mode again with these arguments. The frames
+    /// that reach it during that wait are what the case is about.
+    pub then: Option<Box<Then>>,
+}
+
+/// A spec's `then`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Then {
+    pub until: String,
+    pub args: Vec<Json>,
 }
 
 pub const MODES: [&str; 6] = [
@@ -229,6 +246,7 @@ impl Spec {
     fn parse(raw: &Json) -> Result<Self, String> {
         let known = [
             "from", "row", "scope", "mode", "name", "args", "filter", "via", "terminal", "cancel",
+            "then",
         ];
         unknown_keys("emit", raw, &known)?;
         let mode = raw["mode"]
@@ -280,6 +298,22 @@ impl Spec {
                         .ok_or_else(|| format!("cancel without `when`: {cancel}"))
                 })
                 .transpose()?,
+            then: raw
+                .get("then")
+                .map(|then| -> Result<Box<Then>, String> {
+                    unknown_keys("then", then, &["until", "args"])?;
+                    Ok(Box::new(Then {
+                        until: then["until"]
+                            .as_str()
+                            .ok_or_else(|| format!("then without `until`: {then}"))?
+                            .to_owned(),
+                        args: then["args"]
+                            .as_array()
+                            .ok_or_else(|| format!("then without args: {then}"))?
+                            .clone(),
+                    }))
+                })
+                .transpose()?,
         })
     }
 
@@ -307,6 +341,15 @@ impl Spec {
         if let Some(when) = &self.cancel {
             record.insert("cancel".to_owned(), Value::Data(json!({ "when": when })));
         }
+        if let Some(then) = &self.then {
+            let mut inner = BTreeMap::new();
+            inner.insert("until".to_owned(), Value::Data(json!(then.until)));
+            inner.insert(
+                "args".to_owned(),
+                Value::List(then.args.iter().map(argument).collect()),
+            );
+            record.insert("then".to_owned(), Value::Record(inner));
+        }
         Value::Record(record)
     }
 
@@ -318,6 +361,7 @@ impl Spec {
 
 /// One step of a case.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)] // a handful per case, read once
 pub enum Step {
     Emit {
         spec: Spec,
@@ -331,6 +375,11 @@ pub enum Step {
     Unload {
         label: String,
         when: Option<String>,
+        /// An entry the runner logs once the row is gone (and, with
+        /// `answered`, once the host answered its dispatches), before it
+        /// joins the background dispatch: what an emitter's `then.until`
+        /// waits for.
+        then: Option<String>,
         expect: Option<Json>,
     },
     Update {
@@ -405,10 +454,11 @@ impl Step {
             });
         }
         if let Some(label) = raw.get("unload") {
-            unknown_keys("step", raw, &["unload", "when", "expect"])?;
+            unknown_keys("step", raw, &["unload", "when", "then", "expect"])?;
             return Ok(Step::Unload {
                 label: label.as_str().ok_or("unload names a label")?.to_owned(),
                 when,
+                then: raw["then"].as_str().map(str::to_owned),
                 expect,
             });
         }
@@ -1001,6 +1051,8 @@ struct LogState {
 pub struct EventsLog {
     state: Mutex<LogState>,
     changed: tokio::sync::Notify,
+    /// For the synchronous `until`, which blocks its caller's thread.
+    added: std::sync::Condvar,
 }
 
 impl EventsLog {
@@ -1032,6 +1084,7 @@ impl EventsLog {
             state.senders.insert(at, sender);
         }
         self.changed.notify_waiters();
+        self.added.notify_all();
     }
 
     /// What `events-log.filter(description)` does: log `filter:<row>` and
@@ -1078,9 +1131,29 @@ impl EventsLog {
         })
     }
 
+    /// What `events-log.until(entry)` does: log `until:<entry>`, then block
+    /// the calling thread until `entry` is logged, at most `within`.
+    pub fn until(&self, entry: &str, within: Duration) -> Result<(), String> {
+        self.add(format!("until:{entry}"));
+        let state = self.state.lock().unwrap();
+        let (state, timeout) = self
+            .added
+            .wait_timeout_while(state, within, |state| {
+                !state.entries.iter().any(|logged| logged == entry)
+            })
+            .unwrap();
+        if timeout.timed_out() {
+            return Err(format!(
+                "{entry:?} was not logged within {within:?}: {:?}",
+                state.entries
+            ));
+        }
+        Ok(())
+    }
+
     /// The methods as the plugins see them.
     pub fn methods() -> Json {
-        json!({ "add": "sync", "filter": "sync", "wait": "async" })
+        json!({ "add": "sync", "filter": "sync", "wait": "async", "until": "sync" })
     }
 }
 
@@ -1115,6 +1188,30 @@ impl HostDispatch for EventsLogService {
                             graph: None,
                         })
                 }))
+            }
+            "until" => {
+                let entry: String = crate::session::decode_value(first)?;
+                // A synchronous call: the caller's thread waits, and so
+                // does this one (outside the executor's own workers when
+                // it can).
+                let log = self.0.clone();
+                let wait = move || log.until(&entry, PATIENCE);
+                let waited = match tokio::runtime::Handle::try_current() {
+                    Ok(handle)
+                        if handle.runtime_flavor()
+                            == tokio::runtime::RuntimeFlavor::MultiThread =>
+                    {
+                        tokio::task::block_in_place(wait)
+                    }
+                    _ => wait(),
+                };
+                waited
+                    .map(|()| Value::Undefined)
+                    .map_err(|message| Error::Remote {
+                        name: "Timeout".into(),
+                        message,
+                        graph: None,
+                    })
             }
             other => Err(Error::Value(format!("events-log has no method {other}"))),
         }
@@ -1296,11 +1393,19 @@ async fn run_step(
             let row = Row::listener(case, combo, participant);
             world.load(&row).await?;
         }
-        Step::Unload { label, when, .. } => {
+        Step::Unload {
+            label, when, then, ..
+        } => {
             if let Some(when) = when {
                 log.wait(when, scaled(SETTLE)).await?;
             }
             world.unload(label).await?;
+            if let Some(then) = then {
+                if expect.get("answered").and_then(Json::as_bool) == Some(true) {
+                    world.answered().await?;
+                }
+                log.add(then.clone());
+            }
             if let Some(handle) = pending.take() {
                 outcomes.push(joined(handle, settles).await);
             }
@@ -1981,8 +2086,8 @@ pub fn problems(expected: &Expected) -> Vec<String> {
                         .starts_with("rutis/")
                 });
                 let more = steps.iter().any(|step| {
-                    matches!(step, Step::Kill { .. } | Step::Restart { .. } | Step::Concurrent { .. })
-                        || step.emits().iter().any(|spec| spec.mode == "waterfall-sync")
+                    matches!(step, Step::Kill { .. } | Step::Restart { .. } | Step::Concurrent { .. } | Step::Unload { then: Some(_), .. })
+                        || step.emits().iter().any(|spec| spec.mode == "waterfall-sync" || spec.then.is_some())
                         || matches!(step, Step::Load { participant, .. } if participant.raw["name"].as_str().unwrap_or(&case.name).starts_with("rutis/"))
                 });
                 if typed || rutis || more {

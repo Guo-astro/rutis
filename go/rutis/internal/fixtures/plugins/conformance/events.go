@@ -53,6 +53,13 @@ type Spec struct {
 	Cancel   *struct {
 		When string `json:"when"`
 	} `json:"cancel"`
+	// After the dispatch, wait in events-log.until(Until), then emit the
+	// same again with Args (the frames that arrive during that wait are
+	// what the case is about).
+	Then *struct {
+		Until string `json:"until"`
+		Args  []any  `json:"args"`
+	} `json:"then"`
 }
 
 type logService struct {
@@ -105,6 +112,10 @@ type row struct {
 	// a listener of another process to log (cancel.when).
 	wait *struct {
 		Wait func(ctx context.Context, entry string) error
+	}
+	// The host's synchronous events-log.until, where it has one (then).
+	until *struct {
+		Until func(ctx context.Context, entry string) error
 	}
 }
 
@@ -161,6 +172,24 @@ type Present struct{}
 func (Present) Ping() string { return "pong" }
 
 func (r *row) dispatch(ctx context.Context, spec Spec) (any, error) {
+	if spec.Then == nil {
+		return r.dispatchOnce(ctx, spec)
+	}
+	if r.until == nil {
+		return nil, fmt.Errorf("conformance-events: then needs the host's events-log.until")
+	}
+	if _, err := r.dispatchOnce(ctx, spec); err != nil {
+		return nil, err
+	}
+	if err := r.until.Until(ctx, spec.Then.Until); err != nil {
+		return nil, err
+	}
+	again := spec
+	again.Args, again.Then = spec.Then.Args, nil
+	return r.dispatchOnce(ctx, again)
+}
+
+func (r *row) dispatchOnce(ctx context.Context, spec Spec) (any, error) {
 	if spec.Cancel != nil {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(ctx)
@@ -391,6 +420,12 @@ var Plugin = rutis.Define(rutis.Plugin[Participant]{
 		}{}
 		if c.Use("events-log", wait) == nil {
 			r.wait = wait
+		}
+		until := &struct {
+			Until func(ctx context.Context, entry string) error
+		}{}
+		if c.Use("events-log", until) == nil {
+			r.until = until
 		}
 		if p.Emitter {
 			c.Provide("emitter-"+p.Label, &Emitter{r})

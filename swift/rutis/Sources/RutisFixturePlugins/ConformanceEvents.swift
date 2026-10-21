@@ -94,6 +94,13 @@ public protocol EventsWait {
     func wait(_ entry: String) async throws
 }
 
+/// The host's synchronous events-log.until, where it has one: logs
+/// `until:<entry>` and returns once `entry` is logged (a spec's `then`).
+@RutisClient
+public protocol EventsUntil {
+    func until(_ entry: String) async throws
+}
+
 /// What listeners of this process logged: an emitter of this process waits
 /// for one of them (cancel.when) when the host has no events-log.wait.
 final class Logged: @unchecked Sendable {
@@ -117,12 +124,14 @@ final class ParticipantRow: @unchecked Sendable {
     let participant: Participant
     let log: any EventsLog
     let waiter: (any EventsWait)?
+    let until: (any EventsUntil)?
 
-    init(ctx: Rutis.Ctx, participant: Participant, log: any EventsLog, waiter: (any EventsWait)?) {
+    init(ctx: Rutis.Ctx, participant: Participant, log: any EventsLog, waiter: (any EventsWait)?, until: (any EventsUntil)? = nil) {
         self.ctx = ctx
         self.participant = participant
         self.log = log
         self.waiter = waiter
+        self.until = until
     }
 
     /// Logs `entry` with the host. Not with the caller's cancellation: a
@@ -242,8 +251,22 @@ final class ParticipantRow: @unchecked Sendable {
         return (native(spec) as? [String: Any?]) ?? [:]
     }
 
-    /// Emits `spec` from the row, natively, and returns the result.
+    /// Emits `spec` from the row, natively, and returns the result. With
+    /// `then` ({until, args}): waits in events-log.until(until), then emits
+    /// the same again with `args` (the frames that reach the emitter during
+    /// that wait are what the case is about).
     func dispatch(_ spec: [String: Any?]) async throws -> Any? {
+        guard let then = (spec["then"] ?? nil) as? [String: Any?] else { return try await dispatchOnce(spec) }
+        guard let until else { throw RutisError(name: "Error", message: "conformance-events: then needs the host's events-log.until") }
+        _ = try await dispatchOnce(spec)
+        try await until.until((then["until"] ?? nil) as? String ?? "")
+        var again = spec
+        again["args"] = (then["args"] ?? nil) as? [Any?] ?? []
+        again["then"] = nil
+        return try await dispatchOnce(again)
+    }
+
+    private func dispatchOnce(_ spec: [String: Any?]) async throws -> Any? {
         let mode = (spec["mode"] ?? nil) as? String ?? ""
         let name = (spec["name"] ?? nil) as? String ?? (participant.name ?? "")
         let args = ((spec["args"] ?? nil) as? [Any?]) ?? []
@@ -346,7 +369,8 @@ public let conformanceEventsPlugin = Rutis.define(Plugin(
         if let fails = participant.fails { throw RutisError(name: fails.name, message: fails.message) }
         let log = try ctx.use("events-log", EventsLogProxy.self)
         let waiter = try? ctx.use("events-log", EventsWaitProxy.self)
-        let row = ParticipantRow(ctx: ctx, participant: participant, log: log, waiter: waiter)
+        let until = try? ctx.use("events-log", EventsUntilProxy.self)
+        let row = ParticipantRow(ctx: ctx, participant: participant, log: log, waiter: waiter, until: until)
         if participant.emitter == true {
             ctx.provide("emitter-" + participant.label, EventsEmitter(row: row))
         } else {
