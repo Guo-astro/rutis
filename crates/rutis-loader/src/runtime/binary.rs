@@ -1054,9 +1054,11 @@ struct Inner<L: BinaryLanguage> {
     supervision: Mutex<Option<Supervision>>,
     /// The ends noted before supervising first started (a runtime that
     /// crashed as it started, while the application was still starting),
-    /// for [`BinaryRuntimesHandle::supervise`] to handle; `None` once it
-    /// did, or supervising stopped. Locked under `supervision`.
-    unreported: Mutex<Option<Vec<Ended>>>,
+    /// for [`BinaryRuntimesHandle::supervise`] to handle: the latest of
+    /// each runtime, so at most one per runtime. `None` once it did, or
+    /// once [`BinaryRuntimesHandle::unsupervise`] said it will not come.
+    /// Locked under `supervision`.
+    unreported: Mutex<Option<HashMap<String, Ended>>>,
     /// Each runtime's restarts so far, kept across its starts and stops.
     backoffs: Mutex<HashMap<String, Backoff>>,
     /// The restarts waiting out their backoff: aborted when supervising
@@ -1170,7 +1172,7 @@ impl<L: BinaryLanguage> BinaryRuntimes<L> {
                 slots: Mutex::default(),
                 early: Mutex::default(),
                 supervision: Mutex::new(None),
-                unreported: Mutex::new(Some(Vec::new())),
+                unreported: Mutex::new(Some(HashMap::new())),
                 backoffs: Mutex::default(),
                 pending: Mutex::default(),
             }),
@@ -1270,7 +1272,7 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
             });
             self.inner.unreported.lock().unwrap().take()
         };
-        for ended in earlier.unwrap_or_default() {
+        for ended in earlier.unwrap_or_default().into_values() {
             // Unless something started or stopped it since.
             let still = self
                 .inner
@@ -1287,7 +1289,10 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
     }
 
     /// Stop supervising: a restart waiting out its backoff does not happen
-    /// (the application is stopping). One already starting goes on.
+    /// (the application is stopping). One already starting goes on. Called
+    /// before any [`BinaryRuntimesHandle::supervise`], it says none is
+    /// coming (restart `no`): the ends noted so far are dropped, and no
+    /// more are kept for it.
     pub fn unsupervise(&self) {
         self.inner.unsupervise();
     }
@@ -1497,8 +1502,10 @@ impl<L: BinaryLanguage> Inner<L> {
                 Some(supervision) => supervision.clone(),
                 None => {
                     // Not yet supervising: for `supervise` to handle.
+                    // An earlier end of the same runtime is over: a later
+                    // start replaced it.
                     if let Some(unreported) = &mut *self.unreported.lock().unwrap() {
-                        unreported.push(ended);
+                        unreported.insert(ended.runtime.clone(), ended);
                     }
                     return;
                 }
@@ -1859,5 +1866,54 @@ mod tests {
         });
         assert!(started.is_err());
         assert_eq!(tries, 1);
+    }
+
+    #[cfg(feature = "go")]
+    fn ended(runtime: &str, generation: u64) -> Ended {
+        Ended {
+            runtime: runtime.into(),
+            why: "crashed".into(),
+            ran: Duration::ZERO,
+            generation,
+        }
+    }
+
+    #[cfg(feature = "go")]
+    fn kept(runtimes: &crate::GoRuntimesHandle) -> Option<Vec<(String, u64)>> {
+        let unreported = runtimes.inner.unreported.lock().unwrap();
+        unreported.as_ref().map(|ends| {
+            let mut kept: Vec<_> = ends
+                .values()
+                .map(|end| (end.runtime.clone(), end.generation))
+                .collect();
+            kept.sort();
+            kept
+        })
+    }
+
+    /// Ends noted before supervising are kept for it, only the latest of
+    /// each runtime; once `unsupervise` says supervising will not come
+    /// (restart `no`, or an application that never supervises and says
+    /// so), none are kept.
+    #[cfg(feature = "go")]
+    #[test]
+    fn ends_kept_for_supervising_are_bounded_and_dropped_when_it_will_not_come() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolver = Arc::new(crate::GoResolver::new(
+            crate::GoBinaries::new().dir(dir.path()),
+        ));
+        let runtimes = crate::GoRuntimes::new(resolver, dir.path()).handle();
+        for generation in 1..=100 {
+            runtimes.inner.ended(ended("go-a", generation));
+            runtimes.inner.ended(ended("go-b", generation));
+        }
+        assert_eq!(
+            kept(&runtimes),
+            Some(vec![("go-a".into(), 100), ("go-b".into(), 100)])
+        );
+        runtimes.unsupervise();
+        assert_eq!(kept(&runtimes), None);
+        runtimes.inner.ended(ended("go-a", 101));
+        assert_eq!(kept(&runtimes), None);
     }
 }

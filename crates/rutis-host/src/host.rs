@@ -344,6 +344,9 @@ impl Host {
         let (send, exits) = tokio::sync::mpsc::unbounded_channel();
         for binaries in &self.binaries {
             if let Restart::No = binaries.restart {
+                // None will come: the ends noted while starting are not
+                // kept for it.
+                binaries.unsupervise();
                 continue;
             }
             let send = send.clone();
