@@ -20,7 +20,7 @@ The first build compiles the SDK's macros (swift-syntax, at build time only), an
 
 ## 2. Write the plugins
 
-As in the [Swift plugin guide](swift-plugin.en.md#2-write-the-plugin): a plugin declares what it uses and provides, provides its services in `apply`, and registers its cleanups. Plugins that use the device's capabilities call the system APIs directly:
+As in the [Swift plugin guide](swift-plugin.en.md#2-write-the-plugin): a plugin declares what it uses, provides its services in `apply` (they reach rutis by themselves, no `provides` needed), and registers its cleanups. Plugins that use the device's capabilities call the system APIs directly:
 
 ```swift
 import HealthKit

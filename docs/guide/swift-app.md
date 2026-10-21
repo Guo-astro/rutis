@@ -20,7 +20,7 @@ iOS、iPadOS 或 macOS 应用可以把它自己和所在设备的能力（健康
 
 ## 2. 写插件
 
-与 [Swift 插件指南](swift-plugin.md#2-写插件) 相同：插件声明它用什么、提供什么，在 `apply` 里提供服务、登记清理。用到设备能力的插件直接调用系统 API：
+与 [Swift 插件指南](swift-plugin.md#2-写插件) 相同：插件声明它用什么，在 `apply` 里提供服务（服务自动对外，不需要写 `provides`）、登记清理。用到设备能力的插件直接调用系统 API：
 
 ```swift
 import HealthKit

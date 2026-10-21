@@ -60,8 +60,9 @@ def failure(error):
 async def apply(ctx, config):
     out = config["dir"]
     health = ctx.use("health")
-    me = ctx.use("device").id()
-    record = {"id": me, "status": health.status()}
+    # Services the app provides without declaring them: every method async.
+    me = await ctx.use("device").id()
+    record = {"id": me, "status": await health.status()}
     try:
         record["steps"] = await health.stepsToday()
     except Exception as error:

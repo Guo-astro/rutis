@@ -67,18 +67,13 @@ final class Device: @unchecked Sendable {
     }
 }
 
-// `provides` is optional (what `ctx.provide` provides reaches rutis by
-// itself); declared here for now: a service of a dialed-in connection that
-// is not declared does not yet reach a row of rutis's own in the same
-// instance (a loader fix is under way), and goes once it lands.
-let health = Rutis.define(Plugin(
-    name: "health",
-    provides: ["health": .of(Health.self, sync: ["status"])],
-    apply: { ctx in ctx.provide("health", Health()) }))
+// What `ctx.provide` provides reaches rutis by itself: no `provides` needed.
+let health = Rutis.define(Plugin(name: "health") { ctx in
+    ctx.provide("health", Health())
+})
 
 func device(installation: String) -> Rutis.Definition {
-    Rutis.define(Plugin(
-        name: "device",
-        provides: ["device": .of(Device.self, sync: ["id"])],
-        apply: { ctx in ctx.provide("device", Device(installation: installation)) }))
+    Rutis.define(Plugin(name: "device") { ctx in
+        ctx.provide("device", Device(installation: installation))
+    })
 }
