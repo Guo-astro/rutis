@@ -269,45 +269,92 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: publish to Maven Central
-        working-directory: kotlin/rutis
+      # Set once an upload of this version started, before Gradle runs: a
+      # re-run then knows a deployment of it may still be publishing.
+      - name: earlier upload of this version
+        id: uploaded
+        uses: actions/cache/restore@v4
+        with:
+          path: .maven-uploaded
+          key: maven-uploaded-${{ needs.verify.outputs.version }}
+      - name: what Maven Central lacks
+        id: lacking
         env:
           VERSION: ${{ needs.verify.outputs.version }}
-          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
-          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
-          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_SIGNING_KEY }}
-          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_SIGNING_KEY_PASSWORD }}
+          UPLOADED: ${{ steps.uploaded.outputs.cache-hit }}
+          USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          SIGNING_KEY: ${{ secrets.MAVEN_SIGNING_KEY }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.MAVEN_SIGNING_KEY_PASSWORD }}
         run: |
           missing=
-          [ -n "$ORG_GRADLE_PROJECT_mavenCentralUsername" ] || missing="$missing MAVEN_CENTRAL_USERNAME"
-          [ -n "$ORG_GRADLE_PROJECT_mavenCentralPassword" ] || missing="$missing MAVEN_CENTRAL_PASSWORD"
-          [ -n "$ORG_GRADLE_PROJECT_signingInMemoryKey" ] || missing="$missing MAVEN_SIGNING_KEY"
-          [ -n "$ORG_GRADLE_PROJECT_signingInMemoryKeyPassword" ] || missing="$missing MAVEN_SIGNING_KEY_PASSWORD"
+          [ -n "$USERNAME" ] || missing="$missing MAVEN_CENTRAL_USERNAME"
+          [ -n "$PASSWORD" ] || missing="$missing MAVEN_CENTRAL_PASSWORD"
+          [ -n "$SIGNING_KEY" ] || missing="$missing MAVEN_SIGNING_KEY"
+          [ -n "$SIGNING_KEY_PASSWORD" ] || missing="$missing MAVEN_SIGNING_KEY_PASSWORD"
           if [ -n "$missing" ]; then
             message="Maven Central skipped: the environment maven has no$missing (docs/release.md)"
             echo "::warning title=Maven Central skipped::$message"
             echo "$message" >> "$GITHUB_STEP_SUMMARY"
+            echo "tasks=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # What the Central Portal published already, from its publisher
-          # API: repo1.maven.org lags behind it, and a re-run must not
-          # publish a version twice.
-          auth=$(printf '%s:%s' "$ORG_GRADLE_PROJECT_mavenCentralUsername" "$ORG_GRADLE_PROJECT_mavenCentralPassword" | base64 -w0)
-          tasks=()
-          for artifact in rutis rutis-ksp; do
+          # What the Central Portal published, from its publisher API
+          # (repo1.maven.org lags behind it). It says so only once a
+          # deployment finished publishing (10 to 30 minutes after the
+          # upload): after an earlier upload of this version, what is not
+          # published yet is waited for, up to 45 minutes, instead of uploaded
+          # again, which the Portal would refuse as a duplicate.
+          auth=$(printf '%s:%s' "$USERNAME" "$PASSWORD" | base64 -w0)
+          published() {
+            local answer
             answer=$(curl -sfS --retry 3 -H "Authorization: Bearer $auth" \
-              "https://central.sonatype.com/api/v1/publisher/published?namespace=io.github.arcships&name=$artifact&version=$VERSION") \
-              || { echo "the Central Portal did not say whether io.github.arcships:$artifact $VERSION is published" >&2; exit 1; }
-            if echo "$answer" | jq -e '.published == true' > /dev/null; then
+              "https://central.sonatype.com/api/v1/publisher/published?namespace=io.github.arcships&name=$1&version=$VERSION") \
+              || { echo "the Central Portal did not say whether io.github.arcships:$1 $VERSION is published" >&2; exit 1; }
+            echo "$answer" | jq -e '.published == true' > /dev/null
+          }
+          tasks=
+          for artifact in rutis rutis-ksp; do
+            if [ "$UPLOADED" = true ] && ! published "$artifact"; then
+              echo "an earlier run uploaded $VERSION: waiting for io.github.arcships:$artifact to finish publishing"
+              for _ in $(seq 90); do
+                published "$artifact" && break
+                sleep 30
+              done
+            fi
+            if published "$artifact"; then
               echo "Maven Central has io.github.arcships:$artifact $VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
             else
-              tasks+=(":$artifact:publishAndReleaseToMavenCentral")
+              [ "$UPLOADED" = true ] && echo "::warning title=Maven Central::io.github.arcships:$artifact $VERSION was uploaded before but is not published 45 minutes on (a failed deployment, or an upload that never started): uploading it again"
+              tasks="$tasks :$artifact:publishAndReleaseToMavenCentral"
             fi
           done
-          [ "${#tasks[@]}" -gt 0 ] || exit 0
+          echo "tasks=$tasks" >> "$GITHUB_OUTPUT"
+      - name: mark the upload
+        if: steps.lacking.outputs.tasks != '' && steps.uploaded.outputs.cache-hit != 'true'
+        run: date -u > .maven-uploaded
+      - if: steps.lacking.outputs.tasks != '' && steps.uploaded.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .maven-uploaded
+          key: maven-uploaded-${{ needs.verify.outputs.version }}
+      - name: publish to Maven Central
+        if: steps.lacking.outputs.tasks != ''
+        working-directory: kotlin/rutis
+        env:
+          TASKS: ${{ steps.lacking.outputs.tasks }}
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_SIGNING_KEY_PASSWORD }}
+          # The plugin waits until the deployment is published; publishing
+          # can take longer than its default 15 minutes.
+          ORG_GRADLE_PROJECT_SONATYPE_CLOSE_TIMEOUT_SECONDS: '3600'
+        run: |
           # The android variant is built only with an Android SDK, which
           # GitHub's Ubuntu image has.
           [ -d "${ANDROID_HOME:-}/platforms" ] || { echo "no Android SDK (ANDROID_HOME): the android variant would be missing" >&2; exit 1; }
+          read -ra tasks <<< "$TASKS"
           ./gradlew --no-daemon "${tasks[@]}"
 
   # A Go module in a subdirectory is released by a tag with its path; the
