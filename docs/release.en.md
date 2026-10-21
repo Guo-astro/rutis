@@ -6,7 +6,7 @@ Except for `rutis-cli` (`cli-v*`, `release-cli.yml`), these packages share a ver
 
 | Registry | Packages |
 | --- | --- |
-| crates.io | `rutis` (the core), `rutis-bridge`, `rutis-loader`, `rutis-host`; the dylib toolchain `rutis-sdk`, `rutis-dylib`, `rutis-dylib-meta`, `rutis-dylib-launcher` |
+| crates.io | `rutis` (the core) and its macros `rutis-macros`, `rutis-bridge`, `rutis-loader`, `rutis-host`; the dylib toolchain `rutis-sdk`, `rutis-dylib`, `rutis-dylib-meta`, `rutis-dylib-launcher` |
 | npm | `@arcships/rutis`, `@arcships/rutis-runtime`, `@arcships/rutis-bun`, `@arcships/rutis-host` and `@arcships/rutis-host-{linux,darwin}-{x64,arm64}`, `@arcships/rutis-host-win32-x64` |
 | PyPI | `rutis`, `rutis-host` (wheels for each platform) |
 | Go | `github.com/arcships/rutis/go/rutis` (the tag `go/rutis/vX.Y.Z`, pushed by release.yml) |
@@ -70,6 +70,10 @@ Expected behavior: the dialer prints `clock: <n>` every second. After a network 
 [Write a TypeScript plugin](guide/typescript-plugin.en.md) and [Write a Python plugin](guide/python-plugin.en.md) are both followed by the check after publishing (their marked examples, `tools/doc-examples.mjs`).
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
+
+## 0.15.0
+
+`rutis-macros` (`#[rutis::service]`, #510) is published to crates.io for the first time, first in the train (`rutis` depends on it): `CARGO_TOKEN` must be able to publish new crates.
 
 ## 0.13.0
 

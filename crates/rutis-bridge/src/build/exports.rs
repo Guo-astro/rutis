@@ -35,6 +35,13 @@ type Result<T> = std::result::Result<T, String>;
 /// through `cargo metadata`. Its public `&self` methods are exported, each
 /// `async` for the caller (a Promise / awaitable); one the generator cannot
 /// bind is left out with a build warning saying why.
+///
+/// Types marked `#[rutis::service]` need no line here: they are served by
+/// name when provided. The declarations cover them too, found in the
+/// package and every crate it uses that depends on rutis, so
+/// `Exports::new().typescript("services.d.ts").generate()` keeps their
+/// declarations current; listing a marked type is an error. List only
+/// types whose source you cannot change.
 #[derive(Default)]
 pub struct Exports {
     services: Vec<Wanted>,
@@ -120,6 +127,22 @@ impl Exports {
         Ok(())
     }
 
+    /// The TypeScript declarations of the services of the crate in
+    /// `crate_dir` (its `Cargo.toml`): the types it lists here and those
+    /// marked `#[rutis::service]`. What `rutis-host types` writes, outside
+    /// a build script.
+    pub fn declarations(
+        self,
+        crate_dir: impl AsRef<Path>,
+    ) -> std::result::Result<String, Box<dyn std::error::Error>> {
+        let mut sources = Sources::of_crate(crate_dir.as_ref())?;
+        let generated = self.generate_from(&mut sources)?;
+        for warning in &generated.warnings {
+            eprintln!("warning: {warning}");
+        }
+        Ok(generated.typescript)
+    }
+
     pub(super) fn generate_from(&self, sources: &mut Sources) -> Result<Generated> {
         let root = sources.host_root()?;
         let mut generator = Generator {
@@ -184,11 +207,17 @@ impl Exports {
                 }
                 _ => return Err(format!("{} is not a struct or enum", wanted.path)),
             };
+            if generator.marked(module, index)?.is_some() {
+                return Err(format!(
+                    "{} is marked #[rutis::service], so it is served by name when provided: remove its .service(...) line from build.rs",
+                    wanted.path
+                ));
+            }
             let interface = match interfaces.get(&(module, index)) {
                 Some(interface) => interface.clone(),
                 None => {
                     let (interface, dispatch) =
-                        generator.service(module, index, &ident, &wanted.path)?;
+                        generator.service(module, index, &ident, &wanted.path, false)?;
                     rust.push_str(&dispatch);
                     interfaces.insert((module, index), interface.clone());
                     interface
@@ -212,6 +241,24 @@ impl Exports {
             ));
             all.push(format!("{function}()"));
             services_ts.push_str(&format!("  {}: {interface}\n", ts_key(&wanted.name)));
+        }
+        // The types marked `#[rutis::service]`: declarations only, since
+        // they are served when provided.
+        for (module, index, ident, name) in generator.marked_types()? {
+            if !names.insert(name.clone()) {
+                return Err(format!(
+                    "the service name {name} is exported twice (one of them is {ident}, marked #[rutis::service])"
+                ));
+            }
+            let interface = match interfaces.get(&(module, index)) {
+                Some(interface) => interface.clone(),
+                None => {
+                    let (interface, _) = generator.service(module, index, &ident, &ident, true)?;
+                    interfaces.insert((module, index), interface.clone());
+                    interface
+                }
+            };
+            services_ts.push_str(&format!("  {}: {interface}\n", ts_key(&name)));
         }
         rust.push_str(&format!(
             "/// Every export.\npub fn all() -> ::std::vec::Vec<::rutis_bridge::exports::Export> {{\n    vec![{}]\n}}\n/// The TypeScript declarations of the exported services.\npub const TYPESCRIPT: &str = include_str!(concat!(env!(\"OUT_DIR\"), \"/rutis_exports.d.ts\"));\n",
@@ -958,12 +1005,110 @@ impl Generator<'_> {
 
     /// The dispatcher and the TypeScript interface of the service type at
     /// `(module, index)`; returns the interface's name and the Rust.
+    /// The `#[rutis::service]` name of the type at `module`/`index`, when
+    /// one of its blocks is marked: the name a block gives, or the derived
+    /// one.
+    fn marked(&mut self, module: usize, index: usize) -> Result<Option<String>> {
+        let ident = match self.sources.item(module, index) {
+            Item::Struct(item) => item.ident.to_string(),
+            Item::Enum(item) => item.ident.to_string(),
+            _ => return Ok(None),
+        };
+        let mut marked = false;
+        let mut named: Option<String> = None;
+        for candidate in self.sources.crate_modules(module) {
+            let impls: Vec<syn::ItemImpl> = self.sources.modules[candidate]
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Impl(item) if item.trait_.is_none() => Some(item.clone()),
+                    _ => None,
+                })
+                .collect();
+            for implementation in impls {
+                let Some(options) = marker(&implementation.attrs)? else {
+                    continue;
+                };
+                let Type::Path(self_ty) = implementation.self_ty.as_ref() else {
+                    continue;
+                };
+                if self.sources.resolve(candidate, &self_ty.path)?
+                    != Some(Res::Item { module, index })
+                {
+                    continue;
+                }
+                marked = true;
+                if let Some(name) = options.name {
+                    if let Some(known) = named.as_ref().filter(|known| **known != name) {
+                        return Err(format!(
+                            "two #[rutis::service] blocks of {ident} name it `{known}` and `{name}`"
+                        ));
+                    }
+                    named = Some(name);
+                }
+            }
+        }
+        Ok(marked.then(|| named.unwrap_or_else(|| default_name(&ident))))
+    }
+
+    /// Every type marked `#[rutis::service]` in the crates that can hold
+    /// one ([`Sources::marked_roots`]), with its ident and service name.
+    fn marked_types(&mut self) -> Result<Vec<(usize, usize, String, String)>> {
+        let mut found = Vec::new();
+        let mut seen = HashSet::new();
+        for root in self.sources.marked_roots()? {
+            for candidate in self.sources.crate_modules(root) {
+                let impls: Vec<syn::ItemImpl> = self.sources.modules[candidate]
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        Item::Impl(item) if item.trait_.is_none() => Some(item.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                for implementation in impls {
+                    if marker(&implementation.attrs)?.is_none()
+                        || !self
+                            .sources
+                            .enabled(self.sources.package_of(candidate), &implementation.attrs)
+                    {
+                        continue;
+                    }
+                    let Type::Path(self_ty) = implementation.self_ty.as_ref() else {
+                        continue;
+                    };
+                    let Some(Res::Item { module, index }) =
+                        self.sources.resolve(candidate, &self_ty.path)?
+                    else {
+                        continue;
+                    };
+                    if !seen.insert((module, index)) {
+                        continue;
+                    }
+                    let ident = match self.sources.item(module, index) {
+                        Item::Struct(item) => item.ident.to_string(),
+                        Item::Enum(item) => item.ident.to_string(),
+                        _ => continue,
+                    };
+                    if let Some(name) = self.marked(module, index)? {
+                        found.push((module, index, ident, name));
+                    }
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    /// The interface of the service type at `module`/`index` and its
+    /// dispatcher; `marked`: only its `#[rutis::service]` blocks, without
+    /// their `#[service(skip)]` methods.
     fn service(
         &mut self,
         module: usize,
         index: usize,
         ident: &str,
         path: &str,
+        marked: bool,
     ) -> Result<(String, String)> {
         let interface = self.unique(ident);
         let item = self.sources.item(module, index).clone();
@@ -1002,10 +1147,16 @@ impl Generator<'_> {
                 {
                     continue;
                 }
+                if marked && marker(&implementation.attrs)?.is_none() {
+                    continue;
+                }
                 for member in &implementation.items {
                     let ImplItem::Fn(method) = member else {
                         continue;
                     };
+                    if marked && marker(&method.attrs)?.is_some_and(|options| options.skip) {
+                        continue;
+                    }
                     if !matches!(method.vis, syn::Visibility::Public(_))
                         || !self
                             .sources
@@ -1874,6 +2025,69 @@ fn future_bound<'a>(bounds: impl IntoIterator<Item = &'a TypeParamBound>) -> Opt
     })
 }
 
+/// What a `#[rutis::service]` (or `#[service]`) attribute among `attrs`
+/// says, when there is one.
+struct Marker {
+    name: Option<String>,
+    skip: bool,
+}
+
+fn marker(attrs: &[syn::Attribute]) -> Result<Option<Marker>> {
+    let Some(attr) = attrs.iter().find(|attr| {
+        let path = attr.path();
+        path.segments
+            .last()
+            .is_some_and(|segment| segment.ident == "service")
+            && (path.segments.len() == 1
+                || path.segments.iter().any(|segment| segment.ident == "rutis"))
+    }) else {
+        return Ok(None);
+    };
+    let mut marker = Marker {
+        name: None,
+        skip: false,
+    };
+    if matches!(attr.meta, syn::Meta::List(_)) {
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("name") {
+                let name: syn::LitStr = meta.value()?.parse()?;
+                marker.name = Some(name.value());
+            } else if meta.path.is_ident("skip") {
+                marker.skip = true;
+            } else if meta.path.is_ident("crate") {
+                let _: syn::LitStr = meta.value()?.parse()?;
+            }
+            Ok(())
+        })
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(Some(marker))
+}
+
+/// The service name `#[rutis::service]` gives a type by default: its name
+/// with the first word lowercased (`Calendar` is `calendar`, `HTTPClient`
+/// `httpClient`), as the macro does.
+fn default_name(ident: &str) -> String {
+    let chars: Vec<char> = ident.chars().collect();
+    let upper = chars.iter().take_while(|c| c.is_uppercase()).count();
+    let lower = if upper > 1 && upper < chars.len() && chars[upper].is_lowercase() {
+        upper - 1
+    } else {
+        upper.max(1).min(chars.len())
+    };
+    chars
+        .iter()
+        .enumerate()
+        .flat_map(|(index, c)| {
+            if index < lower {
+                c.to_lowercase().collect::<Vec<_>>()
+            } else {
+                vec![*c]
+            }
+        })
+        .collect()
+}
+
 fn derives(attrs: &[syn::Attribute], name: &str) -> bool {
     attrs
         .iter()
@@ -2200,6 +2414,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("host")).unwrap();
         std::fs::write(dir.path().join("host/lib.rs"), "").unwrap();
+        // Another package of the workspace, which the host does not use: a
+        // marked type there is not the host's.
+        std::fs::create_dir_all(dir.path().join("other")).unwrap();
+        std::fs::write(
+            dir.path().join("other/lib.rs"),
+            "pub struct Clock;\n#[rutis::service]\nimpl Clock { pub fn now(&self) -> u32 { 0 } }\n",
+        )
+        .unwrap();
         for (path, text) in files {
             let path = dir.path().join("dep").join(path);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -2213,10 +2435,12 @@ mod tests {
                 lib("dep", "dep_crate", dir.path().join("dep/lib.rs")),
                 lib("rutis", "rutis", dir.path().join("none.rs")),
                 lib("serde", "serde", dir.path().join("none.rs")),
+                lib("other", "other_crate", dir.path().join("other/lib.rs")),
             ],
             "resolve": { "root": "host", "nodes": [
                 { "id": "host", "deps": [{ "name": "dep_crate", "pkg": "dep" }, { "name": "rutis", "pkg": "rutis" }], "features": [] },
                 { "id": "dep", "deps": [{ "name": "rutis", "pkg": "rutis" }, { "name": "serde", "pkg": "serde" }], "features": ["extra"] },
+                { "id": "other", "deps": [{ "name": "rutis", "pkg": "rutis" }], "features": [] },
             ] },
         });
         let sources = Sources::from_metadata(&metadata, "host").unwrap();
@@ -2296,6 +2520,100 @@ mod tests {
         #[serde(tag = "kind", content = "detail", rename_all = "kebab-case")]
         pub enum Problem { NotThere, TooBig(u64) }
     "#;
+
+    const MARKED: &str = r#"
+        use rutis::service;
+
+        /// The clock.
+        pub struct Clock;
+
+        #[service]
+        impl Clock {
+            pub fn new() -> Self { Clock }
+            pub fn now(&self) -> u32 { 0 }
+            #[service(skip)]
+            pub fn reset(&self) {}
+        }
+
+        impl Clock {
+            pub fn unmarked(&self) -> u8 { 0 }
+        }
+
+        pub struct Named;
+
+        #[rutis::service(name = "board")]
+        impl Named {
+            pub fn read(&self) -> String { String::new() }
+        }
+    "#;
+
+    /// Types marked `#[rutis::service]` are declared with no list: only
+    /// their marked blocks, without their skipped methods, and no Rust is
+    /// generated for them (they are served when provided).
+    #[test]
+    fn marked_types_are_declared_without_a_list() {
+        let generated = generate(Exports::new(), &[("lib.rs", MARKED)]).unwrap();
+        let ts = &generated.typescript;
+        assert!(ts.contains("  clock: Clock\n"), "{ts}");
+        assert!(ts.contains("  board: Named\n"), "{ts}");
+        assert!(ts.contains("now(): Promise<number>"), "{ts}");
+        assert!(ts.contains("read(): Promise<string>"), "{ts}");
+        assert!(!ts.contains("unmarked") && !ts.contains("reset"), "{ts}");
+        assert!(!generated.rust.contains("Clock"), "{}", generated.rust);
+    }
+
+    /// Marking a type writes exactly the declarations listing it wrote
+    /// (§8): the same type, its blocks marked (the methods build.rs left
+    /// out skipped, as the marker requires), against `.service(..)`.
+    #[test]
+    fn a_marked_type_is_declared_as_listing_it_was() {
+        let listed = store().unwrap().typescript;
+        let marked_inner = INNER
+            .replace(
+                "        impl Store {",
+                "        #[rutis::service(name = \"store\")]\n        impl Store {",
+            )
+            .replace(
+                "            impl super::Store {",
+                "            #[rutis::service]\n            impl super::Store {",
+            )
+            .replace(
+                "pub fn reset(&mut self)",
+                "#[service(skip)] pub fn reset(&mut self)",
+            )
+            .replace("pub fn borrowing(", "#[service(skip)] pub fn borrowing(");
+        let marked = generate(
+            Exports::new(),
+            &[
+                ("lib.rs", LIB),
+                ("inner.rs", &marked_inner),
+                ("types.rs", TYPES),
+            ],
+        )
+        .unwrap()
+        .typescript;
+        assert_eq!(marked, listed);
+    }
+
+    /// A marked type listed in build.rs as well is an error naming the fix.
+    #[test]
+    fn a_marked_type_listed_too_is_an_error() {
+        let error = generate(
+            Exports::new().service("clock", "dep_crate::Clock"),
+            &[("lib.rs", MARKED)],
+        )
+        .unwrap_err();
+        assert!(error.contains("remove its .service(...) line"), "{error}");
+        let error = generate(
+            Exports::new().service("board", "dep_crate::Other"),
+            &[(
+                "lib.rs",
+                &format!("{MARKED}\npub struct Other;\nimpl Other {{ pub fn a(&self) {{}} }}"),
+            )],
+        )
+        .unwrap_err();
+        assert!(error.contains("exported twice"), "{error}");
+    }
 
     fn store() -> Result<Generated> {
         generate(

@@ -972,6 +972,53 @@ impl Ctx {
                 )],
             });
         }
+        // A `#[rutis::service]` type is also served by name (R2), when it
+        // is provided at the type itself (in an instance or not): a keyed
+        // binding (`TypeKey::keyed`) is a second value of the type, which
+        // would claim the same name, and a mutable binding is replaced by
+        // its writer while the name would keep serving the first value.
+        let marked = if mutable || key.name().is_some() {
+            None
+        } else {
+            crate::service::marked(&value)
+        };
+        // Served by name first: a name taken in this scope (R6) refuses the
+        // provide before anything is registered, so nothing is left to undo
+        // and no consumer sees a native service that is then withdrawn.
+        let exposed = match marked {
+            Some((service, entries)) => {
+                crate::service::expose(self, &key, service, entries).transpose()?
+            }
+            None => None,
+        };
+        let registered = self.provide_native(key, value, check, mutable);
+        match (registered, exposed) {
+            (Ok((disposer, binding)), Some(exposed)) => {
+                // One disposer for both, the name going first.
+                Ok((crate::service::chain(exposed, disposer), binding))
+            }
+            (Ok(registered), None) => Ok(registered),
+            (Err(error), exposed) => {
+                if let Some(exposed) = exposed {
+                    // Unreachable for a type the name was free for, short of
+                    // a race with another provide of the same type; the
+                    // name must not outlive the refusal.
+                    if let Ok(tasks) = tokio::runtime::Handle::try_current() {
+                        tasks.spawn(exposed.dispose());
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn provide_native<T: ?Sized + Send + Sync + 'static>(
+        &self,
+        key: TypeKey,
+        value: Arc<T>,
+        check: Option<CheckFn>,
+        mutable: bool,
+    ) -> Result<(Disposer, Arc<Binding>), CordisError> {
         let scope = self.scope_for(&key);
         let event_key = key.clone();
         let event_scope = scope.clone();

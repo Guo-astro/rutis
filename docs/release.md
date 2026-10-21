@@ -6,7 +6,7 @@
 
 | 注册表 | 包 |
 | --- | --- |
-| crates.io | `rutis`（内核）、`rutis-bridge`、`rutis-loader`、`rutis-host`；dylib 工具链 `rutis-sdk`、`rutis-dylib`、`rutis-dylib-meta`、`rutis-dylib-launcher` |
+| crates.io | `rutis`（内核）及其宏 `rutis-macros`、`rutis-bridge`、`rutis-loader`、`rutis-host`；dylib 工具链 `rutis-sdk`、`rutis-dylib`、`rutis-dylib-meta`、`rutis-dylib-launcher` |
 | npm | `@arcships/rutis`、`@arcships/rutis-runtime`、`@arcships/rutis-bun`、`@arcships/rutis-host`（及 `@arcships/rutis-host-{linux,darwin}-{x64,arm64}`、`@arcships/rutis-host-win32-x64`） |
 | PyPI | `rutis`、`rutis-host`（各平台的 wheel） |
 | Go | `github.com/arcships/rutis/go/rutis`（tag `go/rutis/vX.Y.Z`，由 release.yml 打） |
@@ -70,6 +70,10 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 [写一个 TypeScript 插件](guide/typescript-plugin.md) 和 [写一个 Python 插件](guide/python-plugin.md) 都由发布后验证照着走（标记过的示例，`tools/doc-examples.mjs`）。
 
 每晚的 stress 工作流还跑两个浸泡测试（link 反复断开重连、进程反复拉起结束），检查文件描述符、线程数不增长、进程都被回收。
+
+## 0.15.0
+
+`rutis-macros`（`#[rutis::service]`，#510）首次发布到 crates.io，在列车里排在 `rutis` 之前（`rutis` 依赖它）：`CARGO_TOKEN` 要能发布新的 crate。
 
 ## 0.13.0
 

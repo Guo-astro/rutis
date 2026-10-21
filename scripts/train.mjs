@@ -14,6 +14,7 @@ const dependency = (path, name) => read(path).match(new RegExp(`^${name} = \\{[^
 
 // The crates, in the order they are published (each after those it depends on).
 export const crates = [
+  'rutis-macros',
   'rutis',
   'rutis-dylib-meta',
   'rutis-sdk',

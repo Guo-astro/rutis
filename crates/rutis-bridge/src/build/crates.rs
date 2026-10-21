@@ -72,6 +72,9 @@ struct Package {
     name: String,
     entry: Option<PathBuf>,
     deps: HashMap<String, String>,
+    /// The ids of its normal (not dev- or build-) dependencies: what its
+    /// library can use.
+    normal: Vec<String>,
     features: HashSet<String>,
 }
 
@@ -89,6 +92,9 @@ pub(super) struct Sources {
     /// one of them is a cycle.
     loading: Vec<PathBuf>,
     lookups: Lookups,
+    /// The target's `cfg`s when not run by Cargo as a build script (which
+    /// says them in `CARGO_CFG_*`): `rustc --print cfg`.
+    cfgs: Option<HashMap<String, Vec<String>>>,
 }
 
 /// A name looked up in a module; `scope`: as a path's first segment.
@@ -126,6 +132,43 @@ impl Sources {
             std::env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is not set")?,
         )
         .join("Cargo.toml");
+        Self::of_manifest(&manifest, std::env::var("TARGET").ok())
+    }
+
+    /// The crates of the package whose manifest is in `dir`, for this
+    /// machine's target, outside a build script.
+    pub(super) fn of_crate(dir: &Path) -> Result<Self> {
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+        let run = |args: &[&str]| {
+            std::process::Command::new(&rustc)
+                .args(args)
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+                .ok_or_else(|| format!("cannot run rustc {}", args.join(" ")))
+        };
+        let target = run(&["-vV"])?
+            .lines()
+            .find_map(|line| line.strip_prefix("host: ").map(str::to_owned));
+        let mut cfgs: HashMap<String, Vec<String>> = HashMap::new();
+        for line in run(&["--print", "cfg"])?.lines() {
+            match line.split_once('=') {
+                Some((key, value)) => cfgs
+                    .entry(key.to_owned())
+                    .or_default()
+                    .push(value.trim_matches('"').to_owned()),
+                None => {
+                    cfgs.entry(line.to_owned()).or_default();
+                }
+            }
+        }
+        let mut sources = Self::of_manifest(&dir.join("Cargo.toml"), target)?;
+        sources.cfgs = Some(cfgs);
+        Ok(sources)
+    }
+
+    fn of_manifest(manifest: &Path, target: Option<String>) -> Result<Self> {
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
         // Only the crates of the target being built: those are downloaded
         // already. Offline first; should Cargo still miss a package (one
@@ -134,9 +177,9 @@ impl Sources {
             let mut command = std::process::Command::new(&cargo);
             command
                 .args(["metadata", "--format-version", "1", "--manifest-path"])
-                .arg(&manifest);
-            if let Ok(target) = std::env::var("TARGET") {
-                command.args(["--filter-platform", &target]);
+                .arg(manifest);
+            if let Some(target) = &target {
+                command.args(["--filter-platform", target]);
             }
             if offline {
                 command.arg("--offline");
@@ -211,6 +254,18 @@ impl Sources {
                     ))
                 })
                 .collect();
+            let normal = node
+                .and_then(|node| node["deps"].as_array())
+                .into_iter()
+                .flatten()
+                .filter(|dep| {
+                    // No `dep_kinds` (older Cargo, test metadata): normal.
+                    dep["dep_kinds"]
+                        .as_array()
+                        .is_none_or(|kinds| kinds.iter().any(|kind| kind["kind"].is_null()))
+                })
+                .filter_map(|dep| dep["pkg"].as_str().map(str::to_owned))
+                .collect();
             let features = node
                 .and_then(|node| node["features"].as_array())
                 .into_iter()
@@ -222,6 +277,7 @@ impl Sources {
                 name,
                 entry,
                 deps,
+                normal,
                 features,
             });
         }
@@ -238,7 +294,53 @@ impl Sources {
             warnings: Vec::new(),
             loading: Vec::new(),
             lookups: Lookups::default(),
+            cfgs: None,
         })
+    }
+
+    /// The root modules of the crates a `#[rutis::service]` type can be
+    /// in: the package being built and every other that depends on rutis
+    /// (or the dylib SDK), but not rutis's own.
+    pub(super) fn marked_roots(&mut self) -> Result<Vec<usize>> {
+        // What the package being built uses: its normal dependencies,
+        // transitively (a workspace lists other packages too).
+        let mut reachable = HashSet::from([self.host]);
+        let mut pending = vec![self.host];
+        while let Some(package) = pending.pop() {
+            for id in &self.packages[package].normal {
+                if let Some(&dep) = self.by_id.get(id) {
+                    if reachable.insert(dep) {
+                        pending.push(dep);
+                    }
+                }
+            }
+        }
+        let packages: Vec<usize> = (0..self.packages.len())
+            .filter(|package| reachable.contains(package))
+            .filter(|&package| {
+                let found = &self.packages[package];
+                package == self.host
+                    || (found.entry.is_some()
+                        && found.name != "rutis"
+                        && !found.name.starts_with("rutis_")
+                        && (found.deps.contains_key("rutis")
+                            || found.deps.contains_key("rutis_sdk")))
+            })
+            .collect();
+        packages
+            .into_iter()
+            .map(|package| self.root(package))
+            .collect()
+    }
+
+    /// The values of the `cfg` `key` for this build (`None`: not set).
+    fn cfg(&self, key: &str) -> Option<Vec<String>> {
+        match &self.cfgs {
+            Some(cfgs) => cfgs.get(key).cloned(),
+            None => std::env::var(format!("CARGO_CFG_{}", key.to_uppercase()))
+                .ok()
+                .map(|values| values.split(',').map(str::to_owned).collect()),
+        }
     }
 
     /// The crate root module of the package being built.
@@ -434,9 +536,7 @@ impl Sources {
                     .unwrap_or_default();
                 match name.as_str() {
                     "test" | "doc" | "doctest" | "miri" => false,
-                    name => {
-                        std::env::var_os(format!("CARGO_CFG_{}", name.to_uppercase())).is_some()
-                    }
+                    name => self.cfg(name).is_some(),
                 }
             }
             syn::Meta::NameValue(pair) => {
@@ -457,8 +557,8 @@ impl Sources {
                 if key == "feature" {
                     return self.packages[package].features.contains(&value);
                 }
-                std::env::var(format!("CARGO_CFG_{}", key.to_uppercase()))
-                    .is_ok_and(|values| values.split(',').any(|v| v == value))
+                self.cfg(&key)
+                    .is_some_and(|values| values.iter().any(|v| v == &value))
             }
             syn::Meta::List(list) => {
                 let name = list

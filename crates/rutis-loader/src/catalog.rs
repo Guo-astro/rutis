@@ -28,18 +28,33 @@ pub(crate) enum NameKey {
     Instance { group: String, base: TypeKey },
 }
 
+/// The innermost instance enclosing a copy in `build` in which a marked
+/// Rust service is served as `name` ([`rutis_bridge::exports::claimed_in`]).
+#[cfg(feature = "runtimes")]
+pub(crate) fn marked_claim(name: &str, build: &Build) -> Option<rutis::InstanceId> {
+    build
+        .chain
+        .iter()
+        .map(|link| link.instance)
+        .find(|instance| rutis_bridge::exports::claimed_in(*instance, name))
+}
+
 impl NameKey {
     /// The key for a copy that runs in `build`'s instances.
     pub(crate) fn key(&self, name: &str, build: &Build) -> Result<TypeKey, LoaderError> {
         match self {
             // A shared name a runtime connection enclosing the copy
             // provides is that connection's instance's own.
+            // or that a `#[rutis::service]` type provided in an enclosing
+            // instance is served as, is that instance's own.
             #[cfg(feature = "runtimes")]
             NameKey::Global(key) if key == &rutis_bridge::session::host_key(name) => {
-                Ok(crate::runtime::claimed(name, build).map_or_else(
-                    || key.clone(),
-                    |instance| key.clone().with_instance(instance),
-                ))
+                Ok(crate::runtime::claimed(name, build)
+                    .or_else(|| marked_claim(name, build))
+                    .map_or_else(
+                        || key.clone(),
+                        |instance| key.clone().with_instance(instance),
+                    ))
             }
             NameKey::Global(key) => Ok(key.clone()),
             NameKey::Instance { group, base } => build
@@ -358,6 +373,11 @@ impl ServiceCatalog {
     /// Whether the application registered `name` for a service of its own
     /// (a Rust service under its key), not a name rows share.
     pub(crate) fn registered_by_host(&self, name: &str) -> bool {
+        // A marked Rust service in this program is the application's own.
+        #[cfg(any(feature = "runtimes", feature = "peer"))]
+        if rutis::service::is_exported(name) && self.shared_key(name).is_some() {
+            return true;
+        }
         let Some(service) = self.services.get(name) else {
             return false;
         };
@@ -399,8 +419,17 @@ impl ServiceCatalog {
                 Some((name.clone(), link.instance))
             })
             .collect();
-        // And the shared names the enclosing runtime connections provide.
-        for (name, instance) in crate::runtime::claimed_names(build) {
+        // And the shared names the enclosing runtime connections provide,
+        // and those marked Rust services are served as in them.
+        let mut claimed = crate::runtime::claimed_names(build);
+        for link in &build.chain {
+            for name in rutis_bridge::exports::claims_in(link.instance) {
+                if !claimed.iter().any(|(known, _)| known == &name) {
+                    claimed.push((name, link.instance));
+                }
+            }
+        }
+        for (name, instance) in claimed {
             let global = self
                 .name_key(&name)
                 .is_some_and(|key| key == NameKey::Global(rutis_bridge::session::host_key(&name)));
@@ -419,9 +448,12 @@ impl ServiceCatalog {
         }
     }
 
+    /// Every name is shared when sharing by name, and the names of marked
+    /// Rust services ([`rutis::service`]) always are.
     #[cfg(any(feature = "runtimes", feature = "peer"))]
     fn shared_key(&self, name: &str) -> Option<TypeKey> {
-        self.by_name.then(|| rutis_bridge::session::host_key(name))
+        (self.by_name || rutis::service::is_exported(name))
+            .then(|| rutis_bridge::session::host_key(name))
     }
 
     #[cfg(not(any(feature = "runtimes", feature = "peer")))]

@@ -176,6 +176,14 @@ impl Plugin for LoaderPlugin {
             for export in self.loader.inner.catalog.exports_in(None) {
                 ctx.plugin(export.plugin(None));
             }
+            // A marked Rust service served in an instance makes its name
+            // that instance's own: the copies there gating on it are rebuilt.
+            #[cfg(feature = "runtimes")]
+            let rekeying = {
+                let rekeying = self.loader.rekeying();
+                rutis_bridge::exports::on_claim(&rekeying);
+                rekeying
+            };
             // `rutis/service` for the rows' services, Rust ones included
             // (events protocol §8).
             #[cfg(any(feature = "runtimes", feature = "peer"))]
@@ -186,6 +194,8 @@ impl Plugin for LoaderPlugin {
             Ok(Effect::Disposer(Box::new(move || {
                 #[cfg(any(feature = "runtimes", feature = "peer"))]
                 drop(bus);
+                #[cfg(feature = "runtimes")]
+                drop(rekeying);
                 if let Some(inner) = weak.upgrade() {
                     inner.detach(None, token);
                     // Instances live in the loader's tree: they go with it.

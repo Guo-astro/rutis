@@ -1,0 +1,21 @@
+[package]
+name = "marked-services-example"
+description = "Rust services marked #[rutis::service]: rows of other languages call them by name, with no build.rs, list or binding"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rutis = { path = "../../crates/rutis" }
+serde = { version = "1", features = ["derive"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Only to check rows/services.d.ts is current; the service needs none of it.
+rutis-bridge = { path = "../../crates/rutis-bridge", features = ["exports"] }
+rutis-loader = { path = "../../crates/rutis-loader", features = ["node", "python"] }
+rutis-test-support = { path = "../../crates/rutis-test-support" }
+serde_json = "1"
+tempfile = "3"
+tokio.workspace = true

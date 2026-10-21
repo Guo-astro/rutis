@@ -30,6 +30,8 @@ Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（�
 
 Kotlin 里：`ctx.use<I>(name)` 经 `@RutisClient` 接口 `I` 使用服务（同进程提供者实现了 `I` 时就是对象本身）；`ctx.provide(name, obj)` 的 `obj` 是 `@RutisService` 类的实例，方法表由 KSP 处理器在编译期生成；`ctx.effect { }`；`ctx` 是插件卸载时取消的协程作用域，`ctx.launch { }` 起的协程卸载时取消并等待。收到的错误是 `RutisException`，按 `name` 匹配。
 
+宿主里的 Rust 插件（编进宿主的和 dylib 插件）：服务类型的 `impl` 块上加 `#[rutis::service]`，`ctx.provide(value)` 之后它就按名字自动对外（名字默认是类型名、第一个词小写），各语言的行用 `ctx.use(name)` 调用它；没标注的 Rust 类型不对外。见 [Rust 宿主](rust-host.md#在类型上标注-rutisservice)。
+
 ## 事件
 
 一个宿主上的全部监听器——宿主里的 Rust 插件的、每个运行时进程里每个插件的（任何语言）、经节点连接引进来的——组成**一个逻辑总线**。规则只有一条：

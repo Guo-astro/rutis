@@ -20,6 +20,8 @@ mod intercept;
 mod key;
 mod plugin;
 mod registry;
+#[doc(hidden)]
+pub mod service;
 mod sync;
 mod typed;
 
@@ -42,6 +44,20 @@ pub use fiber::{DisposeWaitError, FiberState, FiberStatusChanged, FiberView, Plu
 pub use intercept::{ServiceIntercept, ServiceWriter};
 pub use key::{EventKey, EventPattern, InstanceId, Key, ServiceKey, TypeKey};
 pub use plugin::{Plugin, PluginFactory};
+/// `service` for crates that reach rutis through the dylib SDK
+/// (`rutis_sdk::rutis::service`); see `rutis-sdk`.
+#[doc(hidden)]
+pub use rutis_macros::sdk_service as __sdk_service;
+/// Serve a type's methods to the plugins of other languages by name.
+///
+/// On an inherent `impl` block: its public `&self` methods are callable
+/// from rows of every language, as the service named after the type in
+/// camelCase (`Calendar` is `calendar`) or `#[service(name = "...")]`,
+/// wherever and as long as the type is provided ([`Ctx::provide`]). A
+/// method marked `#[service(skip)]` is left out. See the Rust host guide,
+/// "Provide Rust services to plugins".
+pub use rutis_macros::service;
+pub use service::CallError;
 pub use typed::{
     DepKey, Deps, Gate, Keyed, KeyedGate, Typed, TypedFactory, TypedPlugin, TypedPluginFactory,
 };

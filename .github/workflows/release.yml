@@ -1,7 +1,8 @@
 # The release train, tag vX.Y.Z: everything released together at one version
 # (scripts/train.mjs checks it).
 #
-#   crates.io  rutis (the kernel), rutis-bridge, rutis-loader, rutis-host,
+#   crates.io  rutis (the kernel) and its macros rutis-macros, rutis-bridge,
+#              rutis-loader, rutis-host,
 #              and the dylib toolchain: rutis-sdk, rutis-dylib,
 #              rutis-dylib-meta, rutis-dylib-launcher
 #   npm        @arcships/rutis, @arcships/rutis-runtime, @arcships/rutis-bun,

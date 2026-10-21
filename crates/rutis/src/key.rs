@@ -127,7 +127,8 @@ impl TypeKey {
         self.type_id == TypeId::of::<T>()
     }
 
-    pub(crate) fn type_name(&self) -> &'static str {
+    /// The name of the key's type, for diagnostics.
+    pub fn type_name(&self) -> &'static str {
         self.type_name
     }
 

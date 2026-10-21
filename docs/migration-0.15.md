@@ -51,3 +51,18 @@
 - **`events.expected.json`**：步骤期望里有 `answered`，表示等宿主回复了收到的每个 `events.dispatch`。另外新增 spec 字段 `then`（`{until, args}`）、`unload` 步骤的 `then`，以及同步方法 `events-log.until(entry)`。读这个文件的测试工具要接受这些键。用 `then` 的用例都是 `tool: false`。
 - **`Tap::answered`**（`rutis_bridge::events::testing`，feature `testing`）：等这些回复，供你自己的宿主侧测试使用。
 - **兼容**：0.13 的运行时仍可接 0.15 的宿主，但保持依赖时序的顺序，因为它在之后的 tick 才记下回复。0.15 的运行时仍会结算 0.13 宿主回的 future，与这种宿主对接时保持 0.13 的顺序。
+
+## Rust 服务：在类型上标注 `#[rutis::service]`
+
+Rust 服务在 `impl` 块上加 `#[rutis::service]`，照常 `provide`，各语言的行就能按名字调用（[#510](https://github.com/arcships/rutis/issues/510)，[Rust 宿主指南](guide/rust-host.md#在类型上标注-rutisservice)）。不用 `build.rs` 清单、`export_all` 或手写 `HostDispatch`；内置插件和 dylib 插件一样。
+
+**不用改代码**：`build.rs` 的 `Exports::service(..)` / `service_in(..)` 和手写的 `HostDispatch` 照旧可用。想换成标注的：在类型的 `impl` 上加标注，删掉 `build.rs` 里那一行（两者都有时构建报错）；在实例里提供的服务不用再写实例组。`build.rs` 只剩声明时，写 `Exports::new().typescript("…").generate()`，或者改用 `rutis-host types <crate 目录> -o services.d.ts`。
+
+新增（不影响已有代码）：
+
+- `rutis::service`（宏）与 `rutis::CallError`：标注的方法收到的函数参数调用失败时的错误；函数参数的错误类型要能从它转换（`CordisError`、`anyhow::Error`、装箱的错误都可以）。
+- `rutis::TypeKey::type_name()` 公开。
+- `rutis_loader::Loader::waiting_for(&entry)`：一行在等哪些服务；等的是一个没标注的 Rust 服务时说明怎么改。
+- `rutis-host types`。
+- `rutis-host` 的 `rutis-bridge` 依赖开了 `exports` feature。
+- 新 crate `rutis-macros` 放这个宏；`rutis` 依赖并重新导出它，`Cargo.toml` 不用加。dylib 插件经 `rutis_sdk::rutis::service` 用它。

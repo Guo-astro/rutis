@@ -2,7 +2,7 @@
 
 [English](README.en.md)
 
-一个应用的 TypeScript 和 Python 行按名字使用它已有的 Rust 服务，不写任何 `HostDispatch`（[#440](https://github.com/arcships/rutis/issues/440)）。服务在一个对 rutis-bridge 一无所知的依赖 crate 里：[`calendar`](calendar/src)，其中 `Calendar` 给所有行用，`Notes` 每个 `session` 实例一份。
+一个应用的 TypeScript 和 Python 行按名字使用它已有的 Rust 服务，不写任何 `HostDispatch`（[#440](https://github.com/arcships/rutis/issues/440)）。这是给**改不了源码的类型**的写法：在 `build.rs` 里列出。自己的类型在 `impl` 上加 `#[rutis::service]` 就行，不用 `build.rs`，见 [`examples/marked-services`](../marked-services)。服务在一个对 rutis-bridge 一无所知的依赖 crate 里：[`calendar`](calendar/src)，其中 `Calendar` 给所有行用，`Notes` 每个 `session` 实例一份。
 
 | 文件 | 展示什么 |
 | --- | --- |
@@ -22,4 +22,4 @@ python3 -m pip install "websockets==15.*"
 cargo test -p rust-services-example
 ```
 
-用法：[在 Rust 应用里嵌入](../../docs/guide/rust-host.md#导出已有的-rust-服务)；能传什么、有哪些限制：[Cordis](../../docs/guide/rust-host.md#导出服务参考)。
+用法：[在 Rust 应用里嵌入](../../docs/guide/rust-host.md#第三方类型在-buildrs-里列出)；能传什么、有哪些限制：[Cordis](../../docs/guide/rust-host.md#导出服务参考)。
