@@ -230,12 +230,30 @@ pub fn is_exported(name: &str) -> bool {
 
 /// The type marked to be exported as `name` (its type name), if any. A
 /// type is served only once provided: this says the program can serve it.
+/// Entries of one type in one generation are one block set: the name is
+/// the one [`exported_name`] gives it, not each entry's own name.
 pub fn exported_as(name: &str) -> Option<&'static str> {
-    entries()
-        .into_iter()
-        .rev()
-        .find(|entry| entry.name == name)
-        .map(Entry::type_name)
+    type_groups().into_iter().find_map(|group| {
+        let exported = exported_name(&group).ok()?;
+        (exported == name).then(|| group.first().map(|entry| entry.type_name()))?
+    })
+}
+
+/// The registered blocks grouped by (type, generation).
+fn type_groups() -> Vec<Vec<&'static Entry>> {
+    let entries = ENTRIES.lock().unwrap_or_else(|poison| poison.into_inner());
+    let mut groups: Vec<(TypeId, u64, Vec<&'static Entry>)> = Vec::new();
+    for known in entries.iter() {
+        let type_id = (known.entry.type_id)();
+        match groups
+            .iter_mut()
+            .find(|(id, generation, _)| *id == type_id && *generation == known.generation)
+        {
+            Some((_, _, group)) => group.push(known.entry),
+            None => groups.push((type_id, known.generation, vec![known.entry])),
+        }
+    }
+    groups.into_iter().map(|(_, _, group)| group).collect()
 }
 
 /// Whether the type `type_id` is marked.
@@ -1203,6 +1221,20 @@ mod tests {
     static SECOND_B: Entry = block("second");
     static OLDER: Entry = block("older");
 
+    const fn derived(name: &'static str) -> Entry {
+        Entry::new(
+            rebuilt_id,
+            rebuilt_name,
+            name,
+            false,
+            no_methods,
+            no_resolve,
+            no_invoke,
+        )
+    }
+    static DERIVED: Entry = derived("t");
+    static GIVEN: Entry = block("tt");
+
     fn names(generation: Option<Generation>) -> Vec<&'static str> {
         entries_of(rebuilt_id(), generation)
             .iter()
@@ -1232,6 +1264,17 @@ mod tests {
         register(&OLDER);
         assert_eq!(names(None), ["second", "second"]);
         assert_eq!(names(Some(first)), ["first"]);
+    }
+
+    #[test]
+    fn one_type_in_one_generation_has_one_exported_name() {
+        let ((), _) = loading(|| {
+            register(&DERIVED);
+            register(&GIVEN);
+        });
+        assert!(is_exported("tt"));
+        assert!(!is_exported("t"), "the derived name is not served");
+        assert_eq!(exported_as("tt"), Some("Rebuilt"));
     }
 
     #[derive(Debug, Serialize)]
