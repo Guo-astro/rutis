@@ -406,15 +406,20 @@ rutis.stop()    // 全部插件逆序清理，然后断开
 
 | 项 | 实现 | 原因 |
 | --- | --- | --- |
-| 监听 | 不用 Java-WebSocket（K8），SDK 自带：在 `java.net.ServerSocket`（`wss://` 为 `SSLServerSocket`）上自己处理升级请求与帧（`Listen.kt`、`Frames.kt`），同 Go 的 `listen.go`、Swift 的 `Remote/WebSocket.swift` | Java-WebSocket 拒绝握手只能回 404 或 500，而 rutis 的拨号方按状态码分类（401 / 403 重试，400 / 404 停止）；它不检查客户端帧的掩码；心跳以秒计、失联以 1006 关闭。三条都达不到与 Go 的监听同一套断言（§九）。SDK 的运行时依赖因此少一个 |
+| 监听 | 不用 Java-WebSocket（K8），SDK 自带：在 `java.net.ServerSocket` 上自己处理升级请求与帧（`wss://` 在接受的 TCP 连接上叠一层 `SSLSocket`）（`Listen.kt`、`Frames.kt`），同 Go 的 `listen.go`、Swift 的 `Remote/WebSocket.swift` | Java-WebSocket 拒绝握手只能回 404 或 500，而 rutis 的拨号方按状态码分类（401 / 403 重试，400 / 404 停止）；它不检查客户端帧的掩码；心跳以秒计、失联以 1006 关闭。三条都达不到与 Go 的监听同一套断言（§九）。SDK 的运行时依赖因此少一个 |
 | 拨出 | OkHttp 5（K8）；状态码、`Sec-WebSocket-Protocol` 与证书错误按类型分类；Android 的网络安全配置拒绝明文（`UnknownServiceException`）算不兼容 | 重试修不好 |
+| 监听的写 | 每条连接一个写线程，帧按序写（ping、pong 插在排队的消息前面）；`send` 等自己的帧写完。一次写阻塞超过心跳超时就关 socket；关闭帧最多等 1 秒，到时不论写没写出都关。强制关闭关的是 TLS 下面的 TCP socket，不等 TLS 的锁 | 对端不读时，原来写在锁里阻塞：读线程回 pong 也卡住，共用的心跳定时器线程卡住后所有连接都没了心跳，`stop()` 与下一次 `start()` 一起挂住 |
+| 监听的请求头 | TLS 握手加请求头总共 10 秒（同 Go 的 `ReadHeaderTimeout`），到时关闭；同时最多 64 个升级在进行，再来的连接直接关 | 原来每次读各有 10 秒，一字节一字节地滴就能一直占着线程 |
+| 拨出的心跳 | SDK 自己的，同其他运行时：每个 ping 间隔看接入点有没有来过东西（消息、ping、pong；接入点每个间隔 ping 一次），`timeoutMillis`（30 秒）什么都没来就断开；关掉 OkHttp 的 ping，改发不要求回答的 pong（RFC 6455 §5.5.3）让接入点知道这一端还在。ping、pong 的计数取自 OkHttp 的 `RealWebSocket`；取不到（应用换了别的 OkHttp 版本）时不判超时，交给 TCP | OkHttp 的 ping 在下一次 ping 时还没收到 pong 就判失败：实际超时是 ping 间隔（10～20 秒），不是 30 秒 |
+| 关闭码 | 回应对端的关闭帧时，1005、1006 和不在定义范围内的码回 1000 | RFC 6455 §7.4.1 不许在线上发 1005；OkHttp 拒绝 `close(1005)` |
+| `trust` | 系统信任加额外 CA 的 trust manager 是 `X509ExtendedTrustManager`，把带 socket / engine 的检查原样交给系统的 | Android 的网络安全配置有 `<domain-config>` 时，系统信任拒绝不带主机名的检查：原来系统 CA 签的服务端证书在设了 `trust` 后反而被拒 |
 | 发送 | 等 OkHttp 的发送队列有空间再交给它 | OkHttp 的队列将超过 16 MiB 时直接关闭连接 |
 | 对端以别的 id 问候 | `EndpointMismatchException`（`IncompatibleException` 的子类）；拨出方据此归为凭据被拒 | 同 Go 的 `ErrEndpointMismatch`：按类型分类，不看文字 |
 | PEM | 证书经 `CertificateFactory`；私钥 PKCS#8、PKCS#1（RSA）、SEC1（EC），后两种由 SDK 包成 PKCS#8 交给 `KeyFactory`；只在进程内，不进 Android Keystore | 平台 API 只认 PKCS#8 |
 | SIGTERM / Ctrl-C | jvm 入口经 `sun.misc.Signal` 接住，卸载全部行后以 0 退出 | JVM 默认的关闭钩子以 143 退出，钩子里也做不了有序停止 |
 | rutis-host | `runtimes.remote[].language` 的 `kotlin` / `kt` 是只在远程运行的语言：没有本地运行时、模板与项目，行名 `<运行时名>:<插件>` | Kotlin 运行在应用里，桌面运行时挂起 |
 | `RutisApp` | 在共用源码里（jvm 上同样可用、可测）；`start()` / `stop()` 都立即返回，结果看 `state`；`stop` 后的 `start` 等上一轮卸载完再连；`trust` 与 `certificate` 是 PEM 文本（`certificate` 含证书链与私钥）；不读环境变量，退避与心跳用默认值 | 应用在主线程上调用它们；应用的配置不在环境里 |
-| 状态 | `Stopped(reason)`、`Connecting(retrying)`、`Connected(address)`：`Connecting` 带上一次失败的状态行（如 `refused: auth-rejected (…)`） | 业务层显示"为什么还没连上" |
-| 主线程 | 等待 rutis 的调用（会话上的阻塞调用、远程函数、远程 future）在 Android 主线程上抛 `IllegalStateException`，说明改用 `suspend` 或换线程；判断在 `src/androidMain`，jvm 上不拒绝 | §11.3 #3 |
+| 状态 | `Stopped(reason)`、`Connecting(retrying)`、`Connected(address)`：`Connecting` 带上一次失败的状态行（如 `refused: auth-rejected (…)`）；`stop()` 之后这一轮报的状态不再采用，最后总是 `Stopped` | 业务层显示"为什么还没连上" |
+| 主线程 | 等待 rutis 的调用（会话上的阻塞调用、远程函数、远程 future、经 rutis 分发的 `bail`）在 Android 主线程上抛 `IllegalStateException`，说明改用 `suspend` 或换线程；判断在 `src/androidMain`，jvm 上不拒绝 | §11.3 #3 |
 | OkHttp | 5.3.2：5.4 起 AAR 要求应用以 compileSdk 36 以上编译 | 不替应用抬高 compileSdk |
-| 设备测试 | SDK 自己的（`src/androidInstrumentedTest`：主线程规则）；示例应用 `kotlin/rutis/android-sample` 由 `crates/rutis-host/tests/android.rs` 驱动：release 构建（R8，应用不加任何规则）经 intent 启停，debug 构建的设备测试开两条连接；rutis 一侧 Python 行经应用的服务装载 | 测 R8 时设备测试不能对 release 跑：测试 APK 与应用共享的依赖（kotlin、androidx.tracing）被应用的 R8 删掉 |
+| 设备测试 | SDK 自己的（`src/androidInstrumentedTest`：主线程规则；`trust` 在带 `<domain-config>` 的网络安全配置下的真实 TLS 握手）；示例应用 `kotlin/rutis/android-sample` 由 `crates/rutis-host/tests/android.rs` 驱动：release 构建（R8，应用不加任何规则）经 intent 启停，debug 构建的设备测试开两条连接；rutis 一侧 Python 行经应用的服务装载 | 测 R8 时设备测试不能对 release 跑：测试 APK 与应用共享的依赖（kotlin、androidx.tracing）被应用的 R8 删掉 |

@@ -281,20 +281,33 @@ jobs:
           [ -n "$ORG_GRADLE_PROJECT_mavenCentralUsername" ] || missing="$missing MAVEN_CENTRAL_USERNAME"
           [ -n "$ORG_GRADLE_PROJECT_mavenCentralPassword" ] || missing="$missing MAVEN_CENTRAL_PASSWORD"
           [ -n "$ORG_GRADLE_PROJECT_signingInMemoryKey" ] || missing="$missing MAVEN_SIGNING_KEY"
+          [ -n "$ORG_GRADLE_PROJECT_signingInMemoryKeyPassword" ] || missing="$missing MAVEN_SIGNING_KEY_PASSWORD"
           if [ -n "$missing" ]; then
             message="Maven Central skipped: the environment maven has no$missing (docs/release.md)"
             echo "::warning title=Maven Central skipped::$message"
             echo "$message" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          if curl -sf "https://repo1.maven.org/maven2/io/github/arcships/rutis/$VERSION/rutis-$VERSION.pom" > /dev/null; then
-            echo "Maven Central has io.github.arcships:rutis $VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
+          # What the Central Portal published already, from its publisher
+          # API: repo1.maven.org lags behind it, and a re-run must not
+          # publish a version twice.
+          auth=$(printf '%s:%s' "$ORG_GRADLE_PROJECT_mavenCentralUsername" "$ORG_GRADLE_PROJECT_mavenCentralPassword" | base64 -w0)
+          tasks=()
+          for artifact in rutis rutis-ksp; do
+            answer=$(curl -sfS --retry 3 -H "Authorization: Bearer $auth" \
+              "https://central.sonatype.com/api/v1/publisher/published?namespace=io.github.arcships&name=$artifact&version=$VERSION") \
+              || { echo "the Central Portal did not say whether io.github.arcships:$artifact $VERSION is published" >&2; exit 1; }
+            if echo "$answer" | jq -e '.published == true' > /dev/null; then
+              echo "Maven Central has io.github.arcships:$artifact $VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              tasks+=(":$artifact:publishAndReleaseToMavenCentral")
+            fi
+          done
+          [ "${#tasks[@]}" -gt 0 ] || exit 0
           # The android variant is built only with an Android SDK, which
           # GitHub's Ubuntu image has.
           [ -d "${ANDROID_HOME:-}/platforms" ] || { echo "no Android SDK (ANDROID_HOME): the android variant would be missing" >&2; exit 1; }
-          ./gradlew --no-daemon :rutis:publishAndReleaseToMavenCentral :rutis-ksp:publishAndReleaseToMavenCentral
+          ./gradlew --no-daemon "${tasks[@]}"
 
   # A Go module in a subdirectory is released by a tag with its path; the
   # tag is a publication, so it waits for the whole gate too.

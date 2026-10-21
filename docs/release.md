@@ -30,7 +30,7 @@ Maven Central（release.yml 的 `maven` 任务，vanniktech maven-publish 插件
 3. 生成签名用的 PGP 密钥并公开公钥：`gpg --quick-gen-key "arcships rutis" rsa4096 sign 0`，`gpg --keyserver keyserver.ubuntu.com --send-keys <密钥 id>`。`gpg --armor --export-secret-keys <密钥 id>` 的全部输出是 `MAVEN_SIGNING_KEY`，口令是 `MAVEN_SIGNING_KEY_PASSWORD`。
 4. 写入 environment：`gh secret set MAVEN_CENTRAL_USERNAME --env maven`，其余三个同样（`gh secret set MAVEN_SIGNING_KEY --env maven < key.asc`）。
 
-发布的是 `io.github.arcships:rutis`（含 `rutis-jvm`、`rutis-android`）与 `io.github.arcships:rutis-ksp`，自动 release；Maven Central 已有这个版本时跳过，所以重跑安全。Maven Central 同步到搜索页可能要几十分钟，发布后验证不等它。
+发布的是 `io.github.arcships:rutis`（含 `rutis-jvm`、`rutis-android`）与 `io.github.arcships:rutis-ksp`，自动 release；Central Portal 已发布这个版本的模块跳过（经 Portal 的 publisher API 查询，不看会滞后的 repo1.maven.org），所以重跑安全。Maven Central 同步到搜索页可能要几十分钟，发布后验证不等它。
 
 插件 API（`PLUGIN_API`，SDK 与运行时各有一份）只在插件看到的接口不兼容时增加；会话协议版本（`rutisProtocol` 与 `rutis_bridge::session::PROTOCOL`）在线格式不兼容时增加。
 

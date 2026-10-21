@@ -50,6 +50,17 @@ object CloseCode {
     const val REJECTED: Int = 4003
 }
 
+/**
+ * The code a close frame answering the far end's `code` carries: the same,
+ * unless a close frame may not carry it (RFC 6455 §7.4.1: 1005 "no status"
+ * and 1006 are never sent, nor anything outside the defined ranges), then
+ * 1000.
+ */
+fun echoedCloseCode(code: Int): Int = when (code) {
+    in 1000..1003, in 1007..1014, in 3000..4999 -> code
+    else -> CloseCode.NORMAL
+}
+
 /** A connection the session runs on: what the far end closed it with, once it did. */
 interface Connection : arcships.rutis.internal.peer.Channel {
     /** The code of the far end's close frame; 0 until it closed with one. */
