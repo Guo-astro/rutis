@@ -54,8 +54,8 @@ func TestAnUndeclaredServiceUnderAnOlderHostIsToldOncePerName(t *testing.T) {
 	}
 }
 
-// A task of an unloaded row that provides is refused (it would outlive the
-// row), and the row loads again.
+// A task of an unloaded row that provides is refused and reported (the
+// service would outlive the row), and the row loads again.
 func TestAnUnloadedRowCannotProvide(t *testing.T) {
 	var saved *Ctx
 	plugin := Define(Plugin[NoConfig]{
@@ -74,15 +74,18 @@ func TestAnUnloadedRowCannotProvide(t *testing.T) {
 	if err := rt.unload(ctx, "a"); err != nil {
 		t.Fatal(err)
 	}
-	late := saved
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Fatal("an unloaded row provided")
-			}
-		}()
-		late.Provide("svc", oldHostService{})
-	}()
+	var written bytes.Buffer
+	savedOutput := rowOutput
+	rowOutput = &written
+	defer func() { rowOutput = savedOutput }()
+	// From a plain goroutine, as a timer or `go func()` calls it: no panic
+	// to take the runtime down, a line, and a disposer that does nothing.
+	done := make(chan func())
+	go func() { done <- saved.Provide("svc", oldHostService{}) }()
+	(<-done)()
+	if want := "rutis: row a is not active: service svc is not provided\n"; written.String() != want {
+		t.Fatalf("reported %q, want %q", written.String(), want)
+	}
 	if err := rt.load(ctx, "a", "late-provider", nil, nil, nil, nil); err != nil {
 		t.Fatalf("the row loads again: %v", err)
 	}

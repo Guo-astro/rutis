@@ -29,6 +29,42 @@ final class Lines: @unchecked Sendable {
 }
 
 struct AppTests {
+    /// A filtered emit whose filter does not answer (and ignores
+    /// cancellation) holds the later emits of its name only while its row
+    /// is loaded: unloading the row lets the queue move on, and the emit
+    /// starts nothing even once its filter answers.
+    func anUnloadedRowsHeldEmitLetsTheQueueGo() async throws {
+        let lines = Lines()
+        let stuck = SavedCtx(), other = SavedCtx()
+        let listener = Rutis.define(Plugin(name: "hears") { ctx in
+            ctx.on("t/held") { (n: Int) in lines.add("got \(n)") }
+        })
+        let stuckPlugin = Rutis.define(Plugin(name: "stuck") { ctx in stuck.ctx = ctx })
+        let otherPlugin = Rutis.define(Plugin(name: "other") { ctx in other.ctx = ctx })
+        let runtime = Runtime([listener, stuckPlugin, otherPlugin], project: "", settings: Events.Settings(log: { lines.add($0) }))
+        for (key, entry) in [("l", "hears"), ("s", "stuck"), ("o", "other")] {
+            try await runtime.load(key: key, name: nil, entry: entry, config: .undefined, exports: [:], isolate: [:], scope: [])
+        }
+        let started = Date()
+        // About a second, cancelled or not; then it would keep everyone.
+        try XCTUnwrap(stuck.ctx).filter { _ in
+            for _ in 0..<20 { try? await Task.sleep(nanoseconds: 50_000_000) }
+            return true
+        }.emit("t/held", 1)
+        try XCTUnwrap(other.ctx).emit("t/held", 2)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertFalse(lines.all.contains("got 2"), "behind the filtered emit (§5.5): \(lines.all)")
+        try await runtime.unload("s")
+        for _ in 0..<50 where !lines.all.contains("got 2") { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertTrue(lines.all.contains("got 2"), "the queue moved on: \(lines.all)")
+        XCTAssertTrue(Date().timeIntervalSince(started) < 0.8, "before the filter answered")
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        XCTAssertFalse(lines.all.contains("got 1"), "the unloaded row's emit started nothing: \(lines.all)")
+        XCTAssertFalse(lines.all.contains { $0.contains("filter of") }, "a let-go filter is no failure: \(lines.all)")
+        try await runtime.unload("o")
+        try await runtime.unload("l")
+    }
+
     /// A task of a row that was unloaded provides: refused, and the row
     /// loads again (its service is not taken).
     func anUnloadedRowCannotProvide() async throws {
