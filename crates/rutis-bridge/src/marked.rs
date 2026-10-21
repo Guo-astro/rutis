@@ -254,11 +254,17 @@ pub fn unexported(ctx: &Ctx, name: &str) -> Option<String> {
             return None;
         }
         let short = short(type_name);
-        (default_name(short) == name).then(|| {
-            format!(
-                "`{name}` is the Rust service {type_name}, which is not exported: add #[rutis::service] to its impl"
-            )
-        })
+        if default_name(short) != name {
+            return None;
+        }
+        if rutis::service::is_marked(key.type_id()) {
+            return Some(format!(
+                "`{name}` is the Rust service {type_name}, but it is not visible here: it may be provided in another instance or isolation scope"
+            ));
+        }
+        Some(format!(
+            "`{name}` is the Rust service {type_name}, which is not exported: add #[rutis::service] to its impl"
+        ))
     })
 }
 
