@@ -28,3 +28,18 @@
 ## rutis-host
 
 `runtimes.go` 新增 `restart`（`"no"` 默认、`"on-failure"`、`"exit"`），与 `node`、`py`、`bun` 的相同，见 [rutis-host](guide/rutis-host.md)「运行时结束时」。只是新增字段：已有的 `rutis.json` 照旧读取，不用改。
+
+新增（不影响已有配置）：
+
+- `runtimes.swift`：Swift 插件二进制（macOS），设置与 `runtimes.go` 相同（`start`、`idle`、`restart`），见 [Swift 插件](guide/swift-plugin.md)。
+- 远程运行时的 `language` 接受 `"swift"`、`"kotlin"` / `"kt"`：应用托管（[Swift 应用](guide/swift-app.md)、[Kotlin 应用](guide/kotlin-app.md)）。
+
+`rutis-host check` 对 Go / Swift 插件二进制检查它们的插件 API：低于 3（rutis 0.13 之前的 SDK 构建的）报错，退出码非 0。这样的二进制在 0.13 起本来就连不上（统一事件），现在在 `check` 时就指出来，重新用新 SDK 构建即可。
+
+## rutis-bridge
+
+`session::Dispatch` 与 `peer::Handler` 各加了带默认实现的方法（事件测试钩子用）：已有的实现照旧编译，不用改。
+
+## 事件
+
+运行时按帧的顺序接收 emit 的回复，rutis 对 emit 的转发总是回一个普通值（[事件协议](design-events-protocol-2026-10-18.md) §5.5）。插件代码不用改；与 0.13 的宿主、运行时照常对接。
