@@ -91,10 +91,9 @@ TLC 2.19（tla2tools v1.7.4），Temurin 21，16 核；`MaxRoots = 2`、`MaxDept
 | `policy-b-1node-3roots` | n, p1, p2；3 个顶层 | 通过 | 2,468,607 | 16 s |
 | `policy-b-2node-seq` | n1, n2, p；每个活动 2 次调用，链 ≤ 2 | 通过 | 2,549,258 | 19 s |
 | `policy-b-acts` | n1, n2, p | 违反 `NeverCycle`（预期：B 会触发） | 408 | <1 s |
-| `current-posts` | n, p, q（p、q 可重入）；1 个顶层调用、1 次投递 | **卡死**（反例 5） | | <1 s |
-| `current-posts-node` | n, p, q（p 不可重入，`q` 可重入） | 通过 | | <1 s |
-| `policy-b-posts` | 同 `current-posts`，策略 B 带入口 | 通过 | | <1 s |
-| `policy-b-posts-node` | 同 `current-posts-node`，策略 B | 通过 | | <1 s |
+| `current-posts` | n, p, q（p、q 可重入）；1 个顶层调用、1 次投递 | **卡死**（反例 5） | 21,702 | <1 s |
+| `policy-b-posts` | 同 `current-posts`，策略 B 带入口 | 通过 | 253,235 | 1 s |
+| `policy-b-posts-node` | n, p, q（p 不可重入，`q` 可重入），策略 B | 通过 | 152,438 | 1 s |
 
 "通过"指穷举完成：无死锁，所列不变式全部成立；这些行的状态数是确定的。死锁和不变式被违反的行，TLC 找到第一个反例就停，状态数取决于多线程搜索的先后，每次运行都可能不同（例如 `current-2node` 复跑得到 977 或 984），只作参考。`current-1node-1python` 支持多语言设计 §九 里"一个 Node 和一个 Python 之间不会卡死"的说法。`policy-b-2node-seq` 在链 ≤ 3 时 10 分钟内状态数超过 4,400 万仍在增长，所以缩到链 ≤ 2。
 
@@ -112,7 +111,7 @@ TLC 2.19（tla2tools v1.7.4），Temurin 21，16 核；`MaxRoots = 2`、`MaxDept
 3. **不改写 `path`**（`current-norebase`）。n1 和 n2 都在等各自的 `node:1`；n1 的调用转到 n2 时 `path` 是 `["node:1"]`，n2 把它当成自己的 `node:1` 链上的调用，嵌套执行了。现在的 `rebase` 防止的正是这个；`current-2node` 等配置在改写开着时 `RoutingSound` 成立。
 4. **A 拒绝不会卡死的调用**（`policy-a-refusals`）。n1 同步调用 n2，n2 空闲，没有任何别的调用，A 仍然拒绝。
 
-5. **投递压在等待上面**（`current-posts`；2026-10-21）。n 同步调用 p 的 `x`，`x` 同步调用 q；这时 Rust 向 p 投递一个 emit 的监听器调用，p 可重入，把它压在 `x` 上面执行；监听器同步调用 n，n 在等 `x`，把它放到一边。`x` 被压在下面，n 等 `x`、`x` 等监听器、监听器等 n。没有调用方等这次投递，旧的图里没有它，环查不出来；把它记为入口后（`policy-b-posts`），监听器的调用被拒绝。不可重入的 p（Node）把投递放到一边，到 `x` 返回后才执行，不成环（`current-posts-node`）。
+5. **投递压在等待上面**（`current-posts`；2026-10-21）。n 同步调用 p 的 `x`，`x` 同步调用 q；这时 Rust 向 p 投递一个 emit 的监听器调用，p 可重入，把它压在 `x` 上面执行；监听器同步调用 n，n 在等 `x`，把它放到一边。`x` 被压在下面，n 等 `x`、`x` 等监听器、监听器等 n。没有调用方等这次投递，旧的图里没有它，环查不出来；把它记为入口后（`policy-b-posts`），监听器的调用被拒绝；不记入口时，同一配置在策略 B 下仍会卡死。不可重入的 p（Node）把投递放到一边，到 `x` 返回后才执行，这个环不会出现（`policy-b-posts-node`）。
 
 ## 推荐：策略 B（含栈顺序）
 

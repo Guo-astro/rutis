@@ -91,10 +91,9 @@ TLC 2.19 (tla2tools v1.7.4), Temurin 21, 16 cores; `MaxRoots = 2`, `MaxDepth = 3
 | `policy-b-1node-3roots` | n, p1, p2; 3 top-level | pass | 2,468,607 | 16 s |
 | `policy-b-2node-seq` | n1, n2, p; 2 calls per activation, chains ≤ 2 | pass | 2,549,258 | 19 s |
 | `policy-b-acts` | n1, n2, p | `NeverCycle` violated (expected: B fires) | 408 | <1 s |
-| `current-posts` | n, p, q (p, q reentrant); 1 top-level call, 1 post | **deadlock** (counterexample 5) | | <1 s |
-| `current-posts-node` | n, p, q (p non-reentrant, `q` reentrant) | pass | | <1 s |
-| `policy-b-posts` | as `current-posts`, policy B with entries | pass | | <1 s |
-| `policy-b-posts-node` | as `current-posts-node`, policy B | pass | | <1 s |
+| `current-posts` | n, p, q (p, q reentrant); 1 top-level call, 1 post | **deadlock** (counterexample 5) | 21,702 | <1 s |
+| `policy-b-posts` | as `current-posts`, policy B with entries | pass | 253,235 | 1 s |
+| `policy-b-posts-node` | n, p, q (p non-reentrant, `q` reentrant), policy B | pass | 152,438 | 1 s |
 
 "Pass" means exhaustive: no deadlock, all listed invariants hold; state counts on these rows are exact. On deadlock and violation rows TLC stops at the first counterexample, so the count depends on the order of the multi-threaded search and varies between runs (for example 977 or 984 for `current-2node`); treat it as indicative. `current-1node-1python` backs the statement in §9 of the multi-language design that one Node and one Python runtime do not deadlock. With chains ≤ 3, `policy-b-2node-seq` passed 44 million states in 10 minutes and was still growing, so it runs with chains ≤ 2.
 
@@ -112,7 +111,7 @@ TLC 2.19 (tla2tools v1.7.4), Temurin 21, 16 cores; `MaxRoots = 2`, `MaxDepth = 3
 3. **No `path` rewriting** (`current-norebase`). n1 and n2 each wait for their own `node:1`; n1's call reaches n2 with `path = ["node:1"]`, and n2 takes it for a call on its own `node:1` chain and runs it nested. This is what today's `rebase` prevents; with rewriting on, `RoutingSound` holds in every configuration.
 4. **A refuses a call that cannot deadlock** (`policy-a-refusals`). n1 synchronously calls n2 while n2 is idle and nothing else runs; A refuses it.
 
-5. **A post on top of a wait** (`current-posts`; 2026-10-21). n synchronously calls `x` in p, and `x` synchronously calls q. Meanwhile Rust posts an emit's listener call to p. p is reentrant, so it runs the call on top of `x`. The listener synchronously calls n; n is waiting for `x` and puts the call aside. `x` is buried: n waits for `x`, `x` for the listener, the listener for n. No caller waits for the post, so the old graph does not have it and misses the cycle. Recorded as an entry (`policy-b-posts`), the listener's call is refused. A non-reentrant p (Node) puts the post aside until `x` returns, and no cycle forms (`current-posts-node`).
+5. **A post on top of a wait** (`current-posts`; 2026-10-21). n synchronously calls `x` in p, and `x` synchronously calls q. Meanwhile Rust posts an emit's listener call to p. p is reentrant, so it runs the call on top of `x`. The listener synchronously calls n; n is waiting for `x` and puts the call aside. `x` is buried: n waits for `x`, `x` for the listener, the listener for n. No caller waits for the post, so the old graph does not have it and misses the cycle. Recorded as an entry (`policy-b-posts`), the listener's call is refused. Without entries, the same configuration still deadlocks under policy B. A non-reentrant p (Node) puts the post aside until `x` returns, and this cycle does not form (`policy-b-posts-node`).
 
 ## Recommendation: policy B (with stack order)
 
