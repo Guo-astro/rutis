@@ -41,6 +41,7 @@ use std::any::{Any, TypeId};
 use std::cell::Cell;
 use std::convert::Infallible;
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::de::DeserializeOwned;
@@ -60,13 +61,15 @@ pub struct Entry {
     name: &'static str,
     /// Whether `name` was given (`#[service(name = "...")]`), not derived.
     named: bool,
-    methods: &'static [&'static str],
-    erase: Erase,
+    methods: fn() -> &'static [&'static str],
+    resolve: Resolve,
     invoke: Invoke,
 }
 
-/// A provided `Arc<T>` of the marked type, boxed, as the `Arc` served.
-pub type Erase = fn(Box<dyn Any + Send + Sync>) -> Option<Arc<dyn Any + Send + Sync>>;
+/// Read the marked service provided at `key` through `ctx` by the strict
+/// read path ([`Ctx::require_as`]), so read interceptors and `check()`
+/// apply to every call by name, as they do to Rust readers.
+pub type Resolve = fn(ctx: &Ctx, key: &TypeKey) -> Result<Arc<dyn Any + Send + Sync>, String>;
 
 /// A marked block's dispatch: call `method` of `service` with `args`.
 pub type Invoke = fn(
@@ -77,16 +80,16 @@ pub type Invoke = fn(
 ) -> Result<Answer, CallError>;
 
 impl Entry {
-    /// What the macro builds; `erase` takes the boxed `Arc<T>` of the
-    /// marked type `T` provided.
+    /// What the macro builds. `methods` lists the block's methods the
+    /// build includes (those whose `#[cfg]` holds).
     #[allow(clippy::too_many_arguments)]
     pub const fn new(
         type_id: fn() -> TypeId,
         type_name: fn() -> &'static str,
         name: &'static str,
         named: bool,
-        methods: &'static [&'static str],
-        erase: Erase,
+        methods: fn() -> &'static [&'static str],
+        resolve: Resolve,
         invoke: Invoke,
     ) -> Self {
         Self {
@@ -95,7 +98,7 @@ impl Entry {
             name,
             named,
             methods,
-            erase,
+            resolve,
             invoke,
         }
     }
@@ -107,7 +110,11 @@ impl Entry {
         self.name
     }
     pub fn methods(&self) -> &'static [&'static str] {
-        self.methods
+        (self.methods)()
+    }
+    /// The service provided at `key`, read through `ctx` ([`Resolve`]).
+    pub fn resolve(&self, ctx: &Ctx, key: &TypeKey) -> Result<Arc<dyn Any + Send + Sync>, String> {
+        (self.resolve)(ctx, key)
     }
     /// Call `method`, one of [`Entry::methods`].
     pub fn invoke(
@@ -121,38 +128,102 @@ impl Entry {
     }
 }
 
-static ENTRIES: Mutex<Vec<&'static Entry>> = Mutex::new(Vec::new());
+/// An entry and the generation of the image that registered it.
+struct Registered {
+    entry: &'static Entry,
+    generation: u64,
+}
+
+static ENTRIES: Mutex<Vec<Registered>> = Mutex::new(Vec::new());
+
+/// The generation the next [`loading`] call gives the image it loads; the
+/// program's own entries are generation 0.
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    /// The generation of the image whose initializers run on this thread.
+    static LOADING: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Run `load`, which loads a library (`dlopen`, `LoadLibraryExW`): the
+/// marked blocks its initializers register are a new generation, and
+/// replace the blocks earlier images registered for the same types. A
+/// rebuilt dylib keeps its types' `TypeId`s (they depend on the crate's
+/// name and metadata, not its source), so without this an older image's
+/// dispatch would run on the new image's values. Loaders of plugin
+/// libraries call this around the call that maps one.
+pub fn loading<R>(load: impl FnOnce() -> R) -> R {
+    let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+    let outer = LOADING.with(|loading| loading.replace(generation));
+    struct Restore(u64);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LOADING.with(|loading| loading.set(self.0));
+        }
+    }
+    let _restore = Restore(outer);
+    load()
+}
 
 /// Add `entry`; the macro's generated code calls this when the binary or
-/// library holding it is loaded.
+/// library holding it is loaded. Entries of the same type from an earlier
+/// generation ([`loading`]) are forgotten: services already provided keep
+/// the entries they were served with.
 pub fn register(entry: &'static Entry) {
-    ENTRIES
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .push(entry);
+    let generation = LOADING.with(Cell::get);
+    let type_id = (entry.type_id)();
+    let mut entries = ENTRIES.lock().unwrap_or_else(|poison| poison.into_inner());
+    if entries
+        .iter()
+        .any(|known| (known.entry.type_id)() == type_id && known.generation > generation)
+    {
+        // A newer image registered the type already.
+        return;
+    }
+    entries.retain(|known| (known.entry.type_id)() != type_id || known.generation >= generation);
+    entries.push(Registered { entry, generation });
 }
 
 fn entries() -> Vec<&'static Entry> {
     ENTRIES
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
-        .clone()
+        .iter()
+        .map(|known| known.entry)
+        .collect()
 }
 
-/// The marked blocks of the type `type_id`, in the order they were added.
+/// The marked blocks of the type `type_id`, in the order they were added:
+/// those of the latest generation that registered the type.
 pub fn entries_of(type_id: TypeId) -> Vec<&'static Entry> {
-    ENTRIES
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .iter()
-        .copied()
-        .filter(|entry| (entry.type_id)() == type_id)
+    let entries = ENTRIES.lock().unwrap_or_else(|poison| poison.into_inner());
+    let of_type = || {
+        entries
+            .iter()
+            .filter(|known| (known.entry.type_id)() == type_id)
+    };
+    let Some(latest) = of_type().map(|known| known.generation).max() else {
+        return Vec::new();
+    };
+    of_type()
+        .filter(|known| known.generation == latest)
+        .map(|known| known.entry)
         .collect()
 }
 
 /// Whether some marked type is exported as `name`.
 pub fn is_exported(name: &str) -> bool {
-    entries().iter().any(|entry| entry.name == name)
+    exported_as(name).is_some()
+}
+
+/// The type marked to be exported as `name` (its type name), if any. A
+/// type is served only once provided: this says the program can serve it.
+pub fn exported_as(name: &str) -> Option<&'static str> {
+    entries()
+        .into_iter()
+        .rev()
+        .find(|entry| entry.name == name)
+        .map(Entry::type_name)
 }
 
 /// Whether the type `type_id` is marked.
@@ -184,21 +255,29 @@ pub fn exported_name(entries: &[&'static Entry]) -> Result<&'static str, CordisE
 
 // ── Exposure at provide time ────────────────────────────────────
 
+/// A marked service being provided, for the [`Exposer`] to serve by name.
+#[non_exhaustive]
+pub struct Exposure<'a> {
+    /// The context providing it: serve the name there, and read the service
+    /// through it on every call ([`Entry::resolve`]).
+    pub ctx: &'a Ctx,
+    /// Where the native service is provided.
+    pub native: &'a TypeKey,
+    /// The isolation scope ([`Ctx::isolate`]) the native service is
+    /// provided in, if any: the name is served in the same one.
+    pub scope: Option<&'a str>,
+    /// The marked blocks of its type.
+    pub entries: Vec<&'static Entry>,
+    /// The `check()` predicate the native binding is gated by
+    /// ([`Ctx::provide_as_with_check`]): it gates the name too.
+    pub check: Option<Check>,
+}
+
 /// What serves marked services to other languages: the bridge installs it.
 pub trait Exposer: Send + Sync + 'static {
-    /// `service`, just provided at `native` by `ctx`, is of a marked type
-    /// whose blocks are `entries`: serve it by name in the same scope,
-    /// gated by `check` when the native binding is
-    /// ([`Ctx::provide_as_with_check`]). The returned disposer stops
-    /// serving it.
-    fn expose(
-        &self,
-        ctx: &Ctx,
-        native: &TypeKey,
-        service: Arc<dyn Any + Send + Sync>,
-        entries: Vec<&'static Entry>,
-        check: Option<Check>,
-    ) -> Result<Disposer, CordisError>;
+    /// Serve the marked service `exposure` describes by name, in the same
+    /// scope as the native one. The returned disposer stops serving it.
+    fn expose(&self, exposure: Exposure<'_>) -> Result<Disposer, CordisError>;
 }
 
 /// The `check()` predicate a service was provided with
@@ -212,30 +291,18 @@ pub fn install(exposer: &'static dyn Exposer) {
     let _ = EXPOSER.set(exposer);
 }
 
-/// `value`, of type `T`, as the `Arc` the marked blocks of `T` serve, with
-/// those blocks: `None` when `T` is not marked or nothing serves marked
-/// services.
-pub(crate) fn marked<T: ?Sized + Send + Sync + 'static>(
-    value: &Arc<T>,
-) -> Option<(Arc<dyn Any + Send + Sync>, Vec<&'static Entry>)> {
+/// The marked blocks of `T`: `None` when `T` is not marked or nothing
+/// serves marked services.
+pub(crate) fn marked<T: ?Sized + 'static>() -> Option<Vec<&'static Entry>> {
     EXPOSER.get()?;
     let entries = entries_of(TypeId::of::<T>());
-    let first = entries.first()?;
-    // The same TypeId: the box holds the `Arc` of the type `erase` takes.
-    let service = (first.erase)(Box::new(value.clone()))?;
-    Some((service, entries))
+    (!entries.is_empty()).then_some(entries)
 }
 
-/// Serve the marked `service` just provided at `native` ([`marked`]).
-pub(crate) fn expose(
-    ctx: &Ctx,
-    native: &TypeKey,
-    service: Arc<dyn Any + Send + Sync>,
-    entries: Vec<&'static Entry>,
-    check: Option<Check>,
-) -> Option<Result<Disposer, CordisError>> {
+/// Serve a marked service by name ([`marked`]).
+pub(crate) fn expose(exposure: Exposure<'_>) -> Option<Result<Disposer, CordisError>> {
     let exposer = EXPOSER.get()?;
-    Some(exposer.expose(ctx, native, service, entries, check))
+    Some(exposer.expose(exposure))
 }
 
 /// One disposer for both: `first` is disposed, then `then`.
@@ -1080,6 +1147,74 @@ macro_rules! __on_load {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A type "rebuilt" by later images, as a dylib rebuilt without a version
+    /// bump keeps its `TypeId`.
+    struct Rebuilt;
+
+    fn rebuilt_id() -> TypeId {
+        TypeId::of::<Rebuilt>()
+    }
+    fn rebuilt_name() -> &'static str {
+        "Rebuilt"
+    }
+    fn no_methods() -> &'static [&'static str] {
+        &[]
+    }
+    fn no_resolve(_: &Ctx, _: &TypeKey) -> Result<Arc<dyn Any + Send + Sync>, String> {
+        Err("unused".into())
+    }
+    fn no_invoke(
+        _: &Arc<dyn Any + Send + Sync>,
+        _: &str,
+        _: Encoded,
+        _: &'static dyn Wire,
+    ) -> Result<Answer, CallError> {
+        Err(CallError::new("unused"))
+    }
+    const fn block(name: &'static str) -> Entry {
+        Entry::new(
+            rebuilt_id,
+            rebuilt_name,
+            name,
+            true,
+            no_methods,
+            no_resolve,
+            no_invoke,
+        )
+    }
+    static FIRST: Entry = block("first");
+    static SECOND_A: Entry = block("second");
+    static SECOND_B: Entry = block("second");
+    static OLDER: Entry = block("older");
+
+    fn names() -> Vec<&'static str> {
+        entries_of(rebuilt_id())
+            .iter()
+            .map(|entry| entry.name())
+            .collect()
+    }
+
+    /// A later image's blocks for a type replace an earlier image's, so an
+    /// older image's dispatch never runs on a newer image's value, and the
+    /// earlier generation is forgotten; blocks of one image stay together.
+    #[test]
+    fn a_later_image_replaces_the_blocks_of_the_same_type() {
+        loading(|| register(&FIRST));
+        assert_eq!(names(), ["first"]);
+        loading(|| {
+            register(&SECOND_A);
+            register(&SECOND_B);
+        });
+        assert_eq!(names(), ["second", "second"]);
+        assert!(!is_exported("first"), "the earlier generation is forgotten");
+        assert_eq!(exported_as("second"), Some("Rebuilt"));
+        // Initializers run outside `loading` (the program's own) are the
+        // oldest generation: they replace nothing.
+        register(&OLDER);
+        assert_eq!(names(), ["second", "second"]);
+        assert!(!is_exported("older"));
+    }
 
     #[derive(Debug, Serialize)]
     enum External {

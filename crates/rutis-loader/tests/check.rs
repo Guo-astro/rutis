@@ -320,3 +320,33 @@ async fn a_foreign_rows_own_inject_counts_only_names_rutis_shares() {
     assert_eq!(supplies(&report, "cordis"), []);
     assert_eq!(report.failing().count(), 0);
 }
+
+/// A `#[rutis::service]` type of the application nothing has provided is
+/// not reported as provided by the host: it serves its name once provided.
+#[cfg(any(feature = "runtimes", feature = "peer"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_marked_type_serves_its_name_once_provided() {
+    pub struct Weather;
+    #[rutis::service]
+    impl Weather {
+        pub fn today(&self) -> u32 {
+            1
+        }
+    }
+    let applied = Arc::new(AtomicUsize::new(0));
+    let (_root, loader) = loader(&applied).await;
+    let report = loader
+        .check(&layers(json!([
+            { "id": "user", "name": "plain", "config": { "requires": ["weather"] } },
+        ])))
+        .await;
+    let supplies = supplies(&report, "user");
+    let [(service, Supply::Provided(by))] = supplies.as_slice() else {
+        panic!("{supplies:?}");
+    };
+    assert_eq!(service, "weather");
+    assert!(
+        matches!(by.as_slice(), [Provider::Marked(name)] if name.ends_with("Weather")),
+        "{by:?}"
+    );
+}

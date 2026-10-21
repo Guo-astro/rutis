@@ -306,6 +306,22 @@ impl Loader {
             // the retained mapping without consuming another version slot.
             (retained[slot]._handle, slot)
         } else {
+            // A rebuild under the same version keeps its types' TypeIds
+            // (they depend on the crate's name and metadata, not its
+            // source): the two generations could not be told apart, and
+            // one's code would run on the other's values.
+            if let Some(earlier) = retained
+                .iter()
+                .find(|entry| entry.id == *id && entry.version == *version)
+            {
+                return Err(fail(
+                    "version",
+                    format!(
+                        "version {version} of {id} is already loaded from another build (sha256 {}): bump the plugin's version for every rebuild",
+                        earlier.hash
+                    ),
+                ));
+            }
             if retained.iter().filter(|entry| entry.id == *id).count() >= self.max_versions {
                 return Err(fail(
                     "retention",
@@ -330,8 +346,10 @@ impl Loader {
                         .map_err(|e| fail("code signature", e))?;
                 }
             }
-            let handle =
-                platform::open_library(&cached).map_err(|e| fail(platform::OPEN_STEP, e))?;
+            // The library's initializers register its #[rutis::service]
+            // blocks as a new generation.
+            let handle = rutis::service::loading(|| platform::open_library(&cached))
+                .map_err(|e| fail(platform::OPEN_STEP, e))?;
             // Every successfully opened library remains mapped, even if entry fails.
             retained.push(Retained {
                 id: id.clone(),

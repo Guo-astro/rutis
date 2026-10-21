@@ -59,8 +59,8 @@ await calendar.add({ title: 'Standup', startsAt: new Date() })
 | # | 决定 |
 | --- | --- |
 | R1 | **对外的范围：** 带 `#[service]` 的 `impl` 块里的公开 `&self` 方法。一个类型可以有多个带标注的 `impl` 块，合起来就是它的方法。没有标注的类型不对外。宿主内部服务（存储、锁、数据库句柄等）默认不暴露，这是有意保留的边界。 |
-| R2 | **提供即对外：** `ctx.provide(value)`（以及 `provide_as`，键是这个类型本身时）在同一个作用域里同时提供它的对外入口，两者由同一个撤销函数撤销，一起随插件卸载。不需要 `export_all`，也没有单独的"导出插件"。`provide_mut_as` 的可变绑定不对外（入口持有的是提供时的值）。 |
-| R3 | **作用域跟着提供的位置：** 在实例里提供，就只在那个实例里对外（等同今天的 `.service_in(…, group)`）；在实例外提供就是全局的。不再需要写实例组。 |
+| R2 | **提供即对外：** `ctx.provide(value)`（以及 `provide_as`，键是这个类型本身时）在同一个作用域里同时提供它的对外入口，两者由同一个撤销函数撤销，一起随插件卸载。不需要 `export_all`，也没有单独的"导出插件"。`provide_mut_as` 的可变绑定不对外（入口持有的是提供时的值），带限定名的（`TypeKey::keyed`）也不对外。带 `check()` 谓词（`provide_as_with_check`）时，入口与原生绑定一样受它门控；每次调用都经提供方上下文的严格读取路径（`require_as`）取服务，读取拦截器照样生效。因原生槽位被占而被拒的 provide 什么都不提供。 |
+| R3 | **作用域跟着提供的位置：** 在实例里提供，就只在那个实例里对外（等同今天的 `.service_in(…, group)`）；在实例外提供就是全局的。在隔离作用域里提供（对它的键 `Ctx::isolate`）时，名字在同一个作用域里对外，两个隔离作用域各自对外。不再需要写实例组。提供了它的实例里的行用这个实例自己的，不退回同名的全局服务。 |
 | R4 | **能传什么：** 与今天的 `Exports` 完全相同：serde 参数与返回值、`async` 与同步方法（对调用方都是 `Promise`）、按引用的回调、`&Ctx` 调用方行、`Result` 错误抛出（`name` / `code` / `data`）、带标签的值。规则写在 [Rust 宿主指南](guide/rust-host.md#导出服务参考)，不变。 |
 | R5 | **出错在编译期：** 带标注的 `impl` 里有一个公开方法绑定不了（`&mut self`、借用返回值、不支持的参数），是**编译错误**，指到那个方法，提示改法或在方法上加 `#[service(skip)]`。今天是构建警告并悄悄跳过。 |
 | R6 | **重名：** 同一作用域里两个类型对外名字相同，后提供的那个 `provide` 失败，错误写明双方的类型。与叶子插件的重名规则一致。 |
@@ -74,8 +74,8 @@ await calendar.add({ title: 'Standup', startsAt: new Date() })
 三部分，都在 rutis 里，用户代码只看到 R1 的一行标注。
 
 1. **编译期：`#[rutis::service]` 过程宏**（新 crate `rutis-macros`，由 `rutis` 再导出）。它读 `impl` 块里的方法签名，在块旁边生成一个分发函数：解码参数、调用、编码结果、映射错误。需要按类型做的判断（是不是 `Result`、错误怎么取 `code`、参数是不是函数）在展开后的具体代码里交给 trait 去选，所以类型别名（`io::Result`、自定义 `Result<T>`）照样能识别。生成的代码只依赖 `rutis`：值经 `rutis::service` 里的对象安全接口（`Wire`，以 erased-serde 传值）交给宿主的 `rutis-bridge` 编解码，所以只依赖 `rutis-sdk` 的 dylib 插件也能用。
-2. **登记：** 宏为每个带标注的块生成一个静态登记项（`TypeId`、对外名字、方法名、分发函数），放进程序或动态库的初始化段（Linux `.init_array`、macOS `__mod_init_func`、Windows `.CRT$XCU`），在加载时加进 `rutis` 的登记表，不需要任何人列出来。dylib 的类型各版本 `TypeId` 不同（crate 的版本在其中），旧版本永不卸载，所以各代的登记项各自有效。`rutis-bridge` 用同样的方式在加载时把它的 `Exposer` 装进 `rutis`。
-3. **提供时挂上：** `Ctx::provide_as` 提供一个类型时，按它的 `TypeId` 查登记表；有登记就交给 `Exposer`，在同一作用域、同一实例里多提供一个 `host_key(name)`（实例里为 `host_key_in(name, id)`）的 dispatcher，并把它并入同一个撤销函数（R2、R3）。在实例里提供时，这个实例**认领**这个名字：rutis-loader 解析实例里的行的名字时先看认领（与运行时连接通告的名字同一套规则），新的认领会让已按全局键建好的副本重建。`rutis` 核心只保存登记表、钩子和接口，不依赖 `rutis-bridge`。
+2. **登记：** 宏为每个带标注的块生成一个静态登记项（`TypeId`、对外名字、方法名、分发函数），放进程序或动态库的初始化段（Linux `.init_array`、macOS `__mod_init_func`、Windows `.CRT$XCU`），在加载时加进 `rutis` 的登记表，不需要任何人列出来。dylib 类型的 `TypeId` 取决于 crate 的名字和元数据（含版本），不取决于源码：同一个版本重新构建的插件 `TypeId` 不变。所以 dylib 加载器拒绝已加载过的插件 id 与版本的另一次构建（"提升版本号"），并在 `rutis::service::loading` 里加载每个库，让它的登记项成为新的一代：它们替换先前的映像为同一类型登记的项，登记表忘掉旧的。旧库永不卸载，所以之前提供的服务继续用它当时的登记项。`rutis-bridge` 用同样的方式在加载时把它的 `Exposer` 装进 `rutis`。
+3. **提供时挂上：** `Ctx::provide_as` 提供一个类型时，按它的 `TypeId` 查登记表；有登记就交给 `Exposer`，在同一作用域、同一隔离作用域、同一实例里多提供一个 `host_key(name)`（实例里为 `host_key_in(name, id)`）的 dispatcher，并把它并入同一个撤销函数（R2、R3）；先检查原生槽位，被拒的 provide 什么都不提供。在实例里提供时，这个实例**认领**这个名字：rutis-loader 解析实例里的行的名字时先看认领（与运行时连接通告的名字同一套规则），新的认领会让已按全局键建好的副本重建。`rutis` 核心只保存登记表、钩子和接口，不依赖 `rutis-bridge`。
 
 值规则、错误规则、`caller_row` 与 `build.rs` 生成的完全相同；TypeScript 声明仍由读源码的生成器写出，它在依赖 rutis 的 crate 里找带标注的块（R9）。
 

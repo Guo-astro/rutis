@@ -980,17 +980,34 @@ impl Ctx {
         let marked = if mutable || key.name().is_some() {
             None
         } else {
-            crate::service::marked(&value)
+            crate::service::marked::<T>()
         };
-        // Served by name first: a name taken in this scope (R6) refuses the
-        // provide before anything is registered, so nothing is left to undo
-        // and no consumer sees a native service that is then withdrawn.
-        let exposed = match marked {
-            Some((service, entries)) => {
-                crate::service::expose(self, &key, service, entries, check.clone()).transpose()?
+        let Some(entries) = marked else {
+            return self.provide_native(key, value, check, mutable);
+        };
+        // The native slot first: a provide refused for it must not serve
+        // the name, even for a moment.
+        let scope = self.scope_for(&key);
+        if let Some(existing) = self.0.shared.registry.lookup(&key, scope.as_ref()) {
+            if !existing.removing.load(Ordering::SeqCst) {
+                return Err(CordisError::ServiceExists(format!(
+                    "{} in scope {}",
+                    key.describe(),
+                    scope.as_deref().unwrap_or("<default>")
+                )));
             }
-            None => None,
-        };
+        }
+        // Then the name: one taken in this scope (R6) refuses the provide
+        // before the native service is registered, so no consumer sees a
+        // native service that is then withdrawn.
+        let exposed = crate::service::expose(crate::service::Exposure {
+            ctx: self,
+            native: &key,
+            scope: scope.as_deref(),
+            entries,
+            check: check.clone(),
+        })
+        .transpose()?;
         let registered = self.provide_native(key, value, check, mutable);
         match (registered, exposed) {
             (Ok((disposer, binding)), Some(exposed)) => {
@@ -999,13 +1016,11 @@ impl Ctx {
             }
             (Ok(registered), None) => Ok(registered),
             (Err(error), exposed) => {
+                // Only a race with another provide of the same key gets
+                // here: the name goes with the refusal, on this root's
+                // runtime whether or not the caller runs on one.
                 if let Some(exposed) = exposed {
-                    // Unreachable for a type the name was free for, short of
-                    // a race with another provide of the same type; the
-                    // name must not outlive the refusal.
-                    if let Ok(tasks) = tokio::runtime::Handle::try_current() {
-                        tasks.spawn(exposed.dispose());
-                    }
+                    self.handle().spawn(exposed.dispose());
                 }
                 Err(error)
             }

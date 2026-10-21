@@ -356,3 +356,147 @@ async fn the_check_gates_the_name_as_it_gates_the_native_service() {
     reach(&native, Active).await;
     root.shutdown().await.unwrap();
 }
+
+/// A greeting, for the tests below.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Greeter {
+    text: String,
+}
+
+#[rutis::service]
+impl Greeter {
+    pub fn text(&self) -> String {
+        self.text.clone()
+    }
+
+    /// Named lifetimes and `Self` in parameter types.
+    pub fn joined<'a>(&self, other: std::borrow::Cow<'a, str>, more: Vec<Self>) -> String {
+        let mut text = format!("{}{other}", self.text);
+        for greeter in more {
+            text.push_str(&greeter.text);
+        }
+        text
+    }
+
+    /// Not in this build, so not served (it would not compile).
+    #[cfg(any())]
+    pub fn never(&self) -> u32 {
+        missing_function()
+    }
+
+    /// One name, one method per build.
+    #[cfg(unix)]
+    pub fn platform(&self) -> &'static str {
+        "unix"
+    }
+    #[cfg(not(unix))]
+    pub fn platform(&self) -> &'static str {
+        "other"
+    }
+
+    #[cfg_attr(any(), cfg(any()))]
+    pub fn kept(&self) -> bool {
+        true
+    }
+}
+
+fn greeter(text: &str) -> Greeter {
+    Greeter { text: text.into() }
+}
+
+/// Parameter types with named lifetimes or `Self`, and methods under
+/// `#[cfg]`: served as the build has them.
+#[tokio::test]
+async fn cfg_lifetimes_and_self_are_as_the_build_has_them() {
+    let root = Ctx::root().unwrap();
+    root.provide(greeter("a")).unwrap();
+    let service = served(&root, "greeter").unwrap();
+    let methods = service.methods().unwrap();
+    assert!(methods.get("never").is_none(), "{methods}");
+    assert_eq!(methods["platform"], "async");
+    assert_eq!(methods["kept"], "async");
+    assert_eq!(
+        call(&service, "joined", json!(["b", [{ "text": "c" }]]))
+            .await
+            .unwrap(),
+        json!("abc")
+    );
+    let platform = if cfg!(unix) { "unix" } else { "other" };
+    assert_eq!(
+        call(&service, "platform", json!([])).await.unwrap(),
+        json!(platform)
+    );
+    assert!(call(&service, "never", json!([])).await.is_err());
+    root.shutdown().await.unwrap();
+}
+
+/// Provided in two isolated scopes, a marked type is served in each, by
+/// name in the same scope.
+#[tokio::test]
+async fn each_isolated_scope_serves_its_own() {
+    let root = Ctx::root().unwrap();
+    let native = TypeKey::of::<Greeter>();
+    let name = host_key("greeter");
+    let a = root.isolate(native.clone(), "a");
+    let b = root.isolate(native.clone(), "b");
+    a.provide(greeter("in a")).unwrap();
+    b.provide(greeter("in b")).unwrap();
+    for (ctx, text) in [(&a, "in a"), (&b, "in b")] {
+        let readers = ctx.isolate(name.clone(), if text == "in a" { "a" } else { "b" });
+        let service = readers.get_as::<dyn HostDispatch>(name.clone()).unwrap();
+        assert_eq!(
+            call(&service, "text", json!([])).await.unwrap(),
+            json!(text)
+        );
+    }
+    assert!(served(&root, "greeter").is_none());
+    root.shutdown().await.unwrap();
+}
+
+/// A provide refused for its native slot serves nothing by name.
+#[tokio::test]
+async fn a_provide_refused_for_its_native_slot_serves_nothing() {
+    let root = Ctx::root().unwrap();
+    // A mutable binding is not served by name, but holds the native slot.
+    let (_disposer, _writer) = root
+        .provide_mut_as(TypeKey::of::<Greeter>(), Arc::new(greeter("first")))
+        .unwrap();
+    let error = root.provide(greeter("refused")).unwrap_err();
+    assert!(matches!(error, CordisError::ServiceExists(_)), "{error}");
+    assert!(served(&root, "greeter").is_none());
+    root.shutdown().await.unwrap();
+}
+
+/// Calls by name read the service through the strict read path: read
+/// interceptors deny or replace it, as for Rust readers.
+#[tokio::test]
+async fn calls_by_name_go_through_read_interceptors() {
+    use rutis::ServiceIntercept;
+    use std::sync::atomic::{AtomicU8, Ordering};
+    let root = Ctx::root().unwrap();
+    root.provide(greeter("native")).unwrap();
+    let service = served(&root, "greeter").unwrap();
+    let policy = Arc::new(AtomicU8::new(0));
+    let read = policy.clone();
+    root.intercept_require_as::<Greeter>(TypeKey::of::<Greeter>(), move |_| {
+        match read.load(Ordering::SeqCst) {
+            0 => ServiceIntercept::Continue,
+            1 => ServiceIntercept::Replace(Arc::new(greeter("replaced"))),
+            _ => ServiceIntercept::Deny,
+        }
+    })
+    .unwrap();
+    assert_eq!(
+        call(&service, "text", json!([])).await.unwrap(),
+        json!("native")
+    );
+    policy.store(1, Ordering::SeqCst);
+    assert_eq!(
+        call(&service, "text", json!([])).await.unwrap(),
+        json!("replaced")
+    );
+    policy.store(2, Ordering::SeqCst);
+    let error = call(&service, "text", json!([])).await.unwrap_err();
+    assert!(error.to_string().contains("not available"), "{error}");
+    root.shutdown().await.unwrap();
+}
