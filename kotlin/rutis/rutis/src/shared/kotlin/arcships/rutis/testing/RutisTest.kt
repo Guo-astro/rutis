@@ -274,7 +274,10 @@ internal class Harness(val plugin: Plugin, private val services: Map<String, Any
         synchronized(lock) {
             while (true) {
                 val handle = handles[name]
-                if (handle != null) return handle to (declared[name] ?: announced[name] ?: emptyMap())
+                if (handle != null) {
+                    val bare = name.substringBefore('?')
+                    return handle to (declared[name] ?: declared[bare] ?: announced[name] ?: announced[bare] ?: emptyMap())
+                }
                 val left = deadline - System.currentTimeMillis()
                 if (left <= 0) throw IllegalStateException("RutisTest: the plugin does not provide $name (now)")
                 lock.wait(left)

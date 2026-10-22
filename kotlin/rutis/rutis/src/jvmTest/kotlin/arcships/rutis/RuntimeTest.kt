@@ -114,7 +114,7 @@ class RuntimeTest {
             first.unload()
             late!!.provide("hello", Hello("late"))
             late!!.effect { }
-            val again = first.load(isolate = mapOf("hello" to "again"))
+            val again = first.load()
             assertEquals("row Kim", again.service("hello").call("greet", "Kim"))
         }
     }
