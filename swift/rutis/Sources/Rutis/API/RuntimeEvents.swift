@@ -240,7 +240,6 @@ extension Runtime {
         var waiting = held[name] ?? (SerialQueue(), 0)
         waiting.count += 1
         held[name] = waiting
-        lock.unlock()
         let chain = CallChain.path
         waiting.queue.push { [self] in
             await row.held { await CallChain.$path.withValue(chain) { await self.emitInTurn(row, name, args, keep: keep) } }
@@ -250,6 +249,7 @@ extension Runtime {
                 }
             }
         }
+        lock.unlock()
         return .undefined
     }
 

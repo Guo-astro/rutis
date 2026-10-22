@@ -343,9 +343,16 @@ public final class RutisApp: Observable, @unchecked Sendable {
             do {
                 guard let socket = try await stop.race({ [token] in
                     try await DialedSocket.dial(spec, protocol: protocolName, token: token, anchors: anchors, timeout: retry.handshake)
-                }) else { return .stopped }
-                let (peer, runtime) = try Rutis.startSession(channel: socket, project: project, plugins, endpoint: endpoint,
-                                                             settings: settings)
+                }, discard: { $0.close("stopped") }) else { return .stopped }
+                let started: (Peer, Runtime)
+                do {
+                    started = try Rutis.startSession(channel: socket, project: project, plugins, endpoint: endpoint,
+                                                     settings: settings)
+                } catch {
+                    socket.close("starting the session failed")
+                    throw error
+                }
+                let (peer, runtime) = started
                 let session = ControllerSession(peer: peer, runtime: runtime, socket: socket)
                 // The greeting, within the handshake's time.
                 let late = StopSignal()
