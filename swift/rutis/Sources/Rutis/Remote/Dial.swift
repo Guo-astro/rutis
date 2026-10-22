@@ -118,6 +118,24 @@ func caCertificates(_ path: String) throws -> [SecCertificate] {
 
 /// A dialed WebSocket: URLSession's task as the session's channel.
 final class DialedSocket: NSObject, Channel, URLSessionWebSocketDelegate, @unchecked Sendable {
+    /// What dialed sockets hold that their `close()` lets go: URLSessions
+    /// not yet invalidated (each holds its socket as its delegate) and
+    /// heartbeat timers running. A stopped app leaves none (#542).
+    final class Live: @unchecked Sendable {
+        private let lock = Lock()
+        private var sessionCount = 0
+        private var heartbeatCount = 0
+
+        var sessions: Int { lock.withLock { sessionCount } }
+        var heartbeats: Int { lock.withLock { heartbeatCount } }
+        fileprivate func sessionCreated() { lock.withLock { sessionCount += 1 } }
+        fileprivate func sessionInvalidated() { lock.withLock { sessionCount -= 1 } }
+        fileprivate func heartbeatStarted() { lock.withLock { heartbeatCount += 1 } }
+        fileprivate func heartbeatStopped() { lock.withLock { heartbeatCount -= 1 } }
+    }
+
+    static let live = Live()
+
     private let lock = Lock()
     private var session: URLSession!
     private var task: URLSessionWebSocketTask!
@@ -153,6 +171,7 @@ final class DialedSocket: NSObject, Channel, URLSessionWebSocketDelegate, @unche
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = timeout
         socket.session = URLSession(configuration: configuration, delegate: socket, delegateQueue: nil)
+        live.sessionCreated()
         var request = URLRequest(url: URL(string: spec)!, timeoutInterval: timeout)
         if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         request.setValue(protocolName, forHTTPHeaderField: "Sec-WebSocket-Protocol")
@@ -190,6 +209,11 @@ final class DialedSocket: NSObject, Channel, URLSessionWebSocketDelegate, @unche
         task.cancel(with: .protocolError, reason: Data("no session protocol".utf8))
         let said = chosen.map { "the access point chose \"\($0)\"" } ?? "the access point chose none"
         continuation?.resume(throwing: DialError(failure: .incompatible, reason: "\(host): session protocol: \(said)"))
+    }
+
+    /// The session let go of its delegate, this socket.
+    func urlSession(_: URLSession, didBecomeInvalidWithError _: Error?) {
+        Self.live.sessionInvalidated()
     }
 
     func urlSession(_: URLSession, webSocketTask _: URLSessionWebSocketTask, didCloseWith code: URLSessionWebSocketTask.CloseCode, reason: Data?) {
@@ -251,20 +275,27 @@ final class DialedSocket: NSObject, Channel, URLSessionWebSocketDelegate, @unche
 
     private func startHeartbeat() {
         let (ping, timeout) = heartbeat()
-        let timer = DispatchSource.makeTimerSource(queue: .global())
-        timer.schedule(deadline: .now() + ping, repeating: ping)
-        timer.setEventHandler { [weak self] in
-            guard let self else { return }
-            if Date().timeIntervalSince(lock.withLock { self.lastSeen }) > timeout {
-                close("the far end stopped answering")
-                return
+        // A socket closed before its heartbeat started (the dial was
+        // cancelled as it returned) gets none. Made and resumed under the
+        // lock, so `close()` sees it: a timer let go unresumed would trap.
+        lock.withLock {
+            if shut { return }
+            let timer = DispatchSource.makeTimerSource(queue: .global())
+            timer.schedule(deadline: .now() + ping, repeating: ping)
+            timer.setEventHandler { [weak self] in
+                guard let self else { return }
+                if Date().timeIntervalSince(lock.withLock { self.lastSeen }) > timeout {
+                    close("the far end stopped answering")
+                    return
+                }
+                task.sendPing { [weak self] error in
+                    if error == nil { self?.lock.withLock { self?.lastSeen = Date() } }
+                }
             }
-            task.sendPing { [weak self] error in
-                if error == nil { self?.lock.withLock { self?.lastSeen = Date() } }
-            }
+            heart = timer
+            Self.live.heartbeatStarted()
+            timer.resume()
         }
-        lock.withLock { heart = timer }
-        timer.resume()
     }
 
     /// The far end's close code, once it closed with one.
@@ -327,7 +358,10 @@ final class DialedSocket: NSObject, Channel, URLSessionWebSocketDelegate, @unche
             return true
         }
         guard first else { return }
-        lock.withLock { heart }?.cancel()
+        if let heart = lock.withLock({ heart }) {
+            heart.cancel()
+            Self.live.heartbeatStopped()
+        }
         task.cancel(with: code, reason: Data(reason.utf8.prefix(123)))
         session.finishTasksAndInvalidate()
     }
@@ -369,8 +403,12 @@ final class StopSignal: @unchecked Sendable {
     }
 
     /// The first of `operation` and the stop: nil when the stop came first.
-    /// The loser is cancelled, and not waited for.
-    func race<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T? {
+    /// The loser is cancelled, and not waited for. A result `operation`
+    /// still returns after the stop won goes to `discard` (a dialed socket
+    /// is closed there), since nobody else will see it.
+    func race<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T,
+                           discard: @escaping @Sendable (T) -> Void = { _ in }) async throws -> T?
+    {
         let decided = Lock()
         var done = false
         func first() -> Bool {
@@ -385,7 +423,10 @@ final class StopSignal: @unchecked Sendable {
             let work = Task {
                 let result: Result<T, Error>
                 do { result = .success(try await operation()) } catch { result = .failure(error) }
-                guard first() else { return }
+                guard first() else {
+                    if case let .success(value) = result { discard(value) }
+                    return
+                }
                 tasks.withLock { other }?.cancel()
                 continuation.resume(with: result.map { Optional($0) })
             }

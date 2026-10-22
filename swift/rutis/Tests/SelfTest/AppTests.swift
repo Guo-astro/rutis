@@ -1,7 +1,8 @@
 // An app's listener and a row's lifetime (the 0.15 review): a connection
 // that never presents its upgrade request is dropped, and only so many
 // upgrade at once; a listening app is connected once rutis greeted, not
-// when a connection is upgraded; a task of an unloaded row cannot provide.
+// when a connection is upgraded; a task of an unloaded row cannot provide;
+// a stopped dialing app leaves no socket open (#542).
 // `start()` and `stop()` in call order: crates/rutis-host/tests/swift_app.rs.
 import Darwin
 import Foundation
@@ -178,12 +179,88 @@ struct AppTests {
         }
     }
 
+    /// A result the operation returns after the stop won the race goes to
+    /// `discard`, as nobody else sees it (#542: a dialed socket is closed).
+    func aRaceLostToTheStopDiscardsItsResult() async throws {
+        let stop = StopSignal()
+        let discarded = Lines()
+        let raced = try await stop.race({ () -> String in
+            stop.stop()
+            // Returns after the stop, ignoring the cancellation.
+            await Task.detached { try? await Task.sleep(nanoseconds: 50_000_000) }.value
+            return "socket"
+        }, discard: { discarded.add($0) })
+        XCTAssertNil(raced)
+        for _ in 0..<100 where discarded.all.isEmpty { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(discarded.all, ["socket"])
+        let won = try await StopSignal().race({ "socket" }, discard: { discarded.add("won: \($0)") })
+        XCTAssertEqual(won, "socket")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(discarded.all, ["socket"], "the winner is not discarded")
+    }
+
+    /// Stopping a dialing app, while it dials, as the dial returns or
+    /// while it waits for the greeting, leaves no URLSession, delegate
+    /// cycle or heartbeat behind: repeated stop/start does not grow them
+    /// (#542).
+    func aDialingAppLeavesNoSocketOpenWhenStopped() async throws {
+        let accepted = Accepted()
+        let listener = try WebSocketListener("ws://127.0.0.1:0/rutis", protocol: "rutis.\(endpointProtocol)", token: "secret",
+                                             identity: { throw ChannelError("no TLS") })
+        let address = try listener.start { accepted.add($0) }
+        defer { listener.stop() }
+        let sessions = DialedSocket.live.sessions, heartbeats = DialedSocket.live.heartbeats
+        let plugin = Rutis.define(Plugin(name: "late") { ctx in ctx.provide("late", LateService()) })
+        let app = RutisApp(plugins: [plugin], connect: address, id: "pad", token: "secret", log: { _ in })
+        for round in 0..<60 {
+            let before = accepted.count
+            try await app.start()
+            switch round % 3 {
+            case 0: break // while dialing
+            case 1: // as the dial returns: stopped once upgraded
+                let delay = Double(round % 7) * 0.0003
+                accepted.then = { DispatchQueue.global().asyncAfter(deadline: .now() + delay) { Task { await app.stop() } } }
+                for _ in 0..<500 where accepted.count == before { try await Task.sleep(nanoseconds: 1_000_000) }
+                accepted.then = nil
+            default: // waiting for the greeting
+                for _ in 0..<500 where accepted.count == before { try await Task.sleep(nanoseconds: 1_000_000) }
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            await app.stop()
+        }
+        XCTAssertTrue(accepted.count > 0, "the app dialed")
+        accepted.closeAll()
+        for _ in 0..<300 where DialedSocket.live.sessions != sessions || DialedSocket.live.heartbeats != heartbeats {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(DialedSocket.live.sessions, sessions, "URLSessions left")
+        XCTAssertEqual(DialedSocket.live.heartbeats, heartbeats, "heartbeats left")
+    }
+
     // ── Sockets ──────────────────────────────────────────────────────
 
     private func port(of address: String) -> UInt16? {
         guard let url = URLComponents(string: address), let port = url.port else { return nil }
         return UInt16(port)
     }
+}
+
+/// The connections a listener accepted, kept open until `closeAll()`.
+private final class Accepted: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sockets: [WebSocket] = []
+    private var next: (@Sendable () -> Void)?
+    /// Run as a connection is accepted.
+    var then: (@Sendable () -> Void)? {
+        get { lock.withLock { next } }
+        set { lock.withLock { next = newValue } }
+    }
+    func add(_ socket: WebSocket) {
+        lock.withLock { sockets.append(socket) }
+        then?()
+    }
+    var count: Int { lock.withLock { sockets.count } }
+    func closeAll() { for socket in lock.withLock({ sockets }) { socket.close() } }
 }
 
 /// A TCP connection to 127.0.0.1:`port`.
