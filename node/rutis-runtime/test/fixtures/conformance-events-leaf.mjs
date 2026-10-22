@@ -60,6 +60,9 @@ function perform(does, args, row) {
   // The second call fails with WaterfallNext, which propagates.
   if (does.nextTwice) return then(next(), () => next())
   if (does.waits) {
+    // A `sync` listener blocks its thread until its process ends: nothing
+    // can wake it.
+    if (row.sync) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)
     return aborted(row.ctx.signal).then(() => {
       row.log.add(`${row.label}:cancelled`)
       return null

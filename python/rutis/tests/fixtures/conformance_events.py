@@ -20,6 +20,7 @@ whose `dispatch(spec)` / `dispatch_sync(spec)` emit with the native API.
 import asyncio
 import inspect
 import json
+import threading
 import time
 
 from rutis import define_plugin
@@ -196,6 +197,10 @@ def listener(ctx, log, config):
             return args[does["calls"]]("x")
         if "emits" in does:
             return dispatch(ctx, log, does["emits"])
+        if "waits" in does:
+            # Blocks its thread until its process ends: a synchronous
+            # listener is not cancelled.
+            threading.Event().wait()
         raise ValueError(f"a synchronous Python listener cannot do {does}")
 
     async def later(does, args):
