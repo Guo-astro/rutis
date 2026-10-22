@@ -108,6 +108,14 @@ impl RuntimeHandle {
         }
     }
 
+    /// End the running process now, if there is one: a disposal that does
+    /// not finish is not waited for any longer.
+    pub fn kill(&self) {
+        if let RuntimeState::Ready(process) = &*self.state.borrow() {
+            process.kill();
+        }
+    }
+
     /// The running process. Waits while a generation is starting; `None`
     /// when no generation is running.
     pub async fn ready(&self) -> Option<Arc<Process>> {

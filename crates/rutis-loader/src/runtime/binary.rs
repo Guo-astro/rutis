@@ -30,7 +30,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
+use rutis::{shutdown_deadline, BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
 use rutis_bridge::runtime::{
     LocalRuntime, RowSchema, RuntimeHandle, RuntimeState, Stdio as RuntimeStdio,
 };
@@ -73,15 +73,24 @@ const SWEEP: Duration = Duration::from_millis(100);
 const MANIFEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The most a manifest may print, and the most of its errors kept: a
-/// binary that floods its pipes is stopped at this size, not buffered
-/// without bound.
+/// binary that floods its stdout is stopped at this size, not buffered
+/// without bound. Errors beyond the kept part are read and dropped, so a
+/// chatty binary keeps running.
 const MANIFEST_OUTPUT: u64 = 16 * 1024 * 1024;
 const MANIFEST_ERRORS: u64 = 64 * 1024;
 
-/// How long disposing a runtime may take before the loader lets its busy
-/// mark go: the runtime's own cleanups are not limited by design, but the
-/// control plane cannot wait for them for ever.
-const DISPOSE: Duration = Duration::from_secs(10);
+/// Wait for a runtime whose process was killed to report that it is down.
+async fn wait_down(handle: &RuntimeHandle, limit: Duration) {
+    let down = async {
+        loop {
+            if matches!(handle.state(), RuntimeState::Down(_)) {
+                return;
+            }
+            handle.changed().await;
+        }
+    };
+    let _ = tokio::time::timeout(limit, down).await;
+}
 
 /// How long a failed manifest read stands before a row asking for a plugin
 /// no binary has gets it read again: a failure may pass, but a binary that
@@ -259,6 +268,9 @@ fn read_manifest(path: &Path) -> Result<BinaryManifest, String> {
             .by_ref()
             .take(MANIFEST_ERRORS + 1)
             .read_to_end(&mut out);
+        // Read the rest and drop it: closing the pipe would kill a binary
+        // that writes more than we keep.
+        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
         out
     });
     let started = Instant::now();
@@ -1456,11 +1468,20 @@ impl<L: BinaryLanguage> Inner<L> {
     async fn restart_now(self: Arc<Self>, runtime: &str, _busy: Busy<L>) -> Result<(), String> {
         let previous = self.slots.lock().unwrap().running.remove(runtime);
         if let Some(previous) = previous {
-            if let Err(error) = previous.view.dispose_with_timeout(DISPOSE).await {
+            let limit = shutdown_deadline();
+            if let Err(error) = previous.view.dispose_with_timeout(limit).await {
                 eprintln!(
                     "rutis-loader: stopping the {} runtime {runtime}: {error}",
                     L::TITLE
                 );
+                if matches!(&error, rutis::DisposeWaitError::TimedOut { .. }) {
+                    previous.handle.kill();
+                    wait_down(&previous.handle, limit).await;
+                    eprintln!(
+                        "rutis-loader: the {} runtime {runtime} did not stop in time; killed it",
+                        L::TITLE
+                    );
+                }
             }
         }
         self.resolver.stopped(runtime);
@@ -1728,11 +1749,20 @@ impl<L: BinaryLanguage> Inner<L> {
                 let _busy = busy;
                 let previous = inner.slots.lock().unwrap().running.remove(&name);
                 if let Some(previous) = previous {
-                    if let Err(error) = previous.view.dispose_with_timeout(DISPOSE).await {
+                    let limit = shutdown_deadline();
+                    if let Err(error) = previous.view.dispose_with_timeout(limit).await {
                         eprintln!(
                             "rutis-loader: stopping the {} runtime {name}: {error}",
                             L::TITLE
                         );
+                        if matches!(&error, rutis::DisposeWaitError::TimedOut { .. }) {
+                            previous.handle.kill();
+                            wait_down(&previous.handle, limit).await;
+                            eprintln!(
+                                "rutis-loader: the {} runtime {name} did not stop in time; killed it",
+                                L::TITLE
+                            );
+                        }
                     }
                 }
                 inner.resolver.stopped(&name);
@@ -1899,6 +1929,42 @@ mod tests {
         });
         assert!(started.is_err());
         assert_eq!(tries, 1);
+    }
+
+    #[cfg(unix)]
+    fn manifest_script(dir: &Path, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join("runtime");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+
+    /// A manifest that floods stdout is refused at 16 MiB instead of being
+    /// buffered without bound.
+    #[cfg(unix)]
+    #[test]
+    fn a_manifest_that_prints_more_than_the_cap_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = manifest_script(
+            dir.path(),
+            "dd if=/dev/zero bs=1048576 count=17 2>/dev/null",
+        );
+        let error = read_manifest(&path).unwrap_err();
+        assert!(error.contains("more than 16 MiB"), "{error}");
+    }
+
+    /// Errors beyond the kept 64 KiB are read and dropped: a binary that
+    /// writes them keeps running and its manifest is read.
+    #[cfg(unix)]
+    #[test]
+    fn a_manifest_may_write_more_errors_than_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = manifest_script(dir.path(), "printf '{}'\nhead -c 100000 /dev/zero >&2");
+        assert_eq!(read_manifest(&path).unwrap().plugin_api, 0);
     }
 
     #[cfg(feature = "go")]
