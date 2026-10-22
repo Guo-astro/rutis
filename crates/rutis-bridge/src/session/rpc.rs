@@ -550,11 +550,15 @@ pub fn caller() -> Option<Connection> {
 /// the call being handled here (a notification another session's call
 /// happens to trigger), so it carries no chain of that session.
 pub(crate) fn unchained<R>(call: impl FnOnce() -> R) -> R {
-    let previous = UNCHAINED.with(|flag| flag.replace(true));
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            UNCHAINED.with(|flag| flag.set(self.0));
+        }
+    }
+    let _restore = Restore(UNCHAINED.with(|flag| flag.replace(true)));
     let _path = PathGuard::enter(Vec::new());
-    let result = call();
-    UNCHAINED.with(|flag| flag.set(previous));
-    result
+    call()
 }
 
 /// Whether this thread is in [`unchained`]: what it sends is a
