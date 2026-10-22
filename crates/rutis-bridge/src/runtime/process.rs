@@ -1181,14 +1181,6 @@ impl Process {
             .is_some_and(|features| features.iter().any(|f| f == feature))
     }
 
-    /// End the runtime's process now, if this side started it. The session
-    /// ends and its state turns `Down`; an attached runtime is left alone.
-    pub fn kill(&self) {
-        if let Some(child) = &self.child {
-            child.kill();
-        }
-    }
-
     fn require(&self, feature: &str) -> Result<(), Error> {
         match self.supports(feature) {
             true => Ok(()),

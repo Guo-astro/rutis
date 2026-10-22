@@ -34,6 +34,7 @@ use rutis::{shutdown_deadline, BoxFuture, CordisError, Ctx, Effect, FiberView, P
 use rutis_bridge::runtime::{
     LocalRuntime, RowSchema, RuntimeHandle, RuntimeState, Stdio as RuntimeStdio,
 };
+use rutis_bridge::transport::local::Processes;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -79,15 +80,15 @@ const MANIFEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MANIFEST_OUTPUT: u64 = 16 * 1024 * 1024;
 const MANIFEST_ERRORS: u64 = 64 * 1024;
 
-/// Wait for a runtime whose process was killed to report that it is down.
-async fn wait_down(handle: &RuntimeHandle, limit: Duration) {
-    let _ = tokio::time::timeout(limit, async {
-        while !matches!(handle.state(), RuntimeState::Down(_)) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-}
+/// Added to the shutdown deadline when the loader waits for a runtime to
+/// stop: the runtime's own cleanups have that deadline too, and one that
+/// uses all of it is not killed just as it finishes.
+const STOP_MARGIN: Duration = Duration::from_secs(2);
+
+/// How long a runtime's process may take to be gone once it was disposed
+/// (the local transport kills it 2 s after closing its channel), or once
+/// it was killed, before the loader goes on without it.
+const STOP_EXIT: Duration = Duration::from_secs(5);
 
 /// How long a failed manifest read stands before a row asking for a plugin
 /// no binary has gets it read again: a failure may pass, but a binary that
@@ -1039,6 +1040,8 @@ pub struct BinaryRuntimeInfo {
 struct Slot {
     view: FiberView,
     handle: RuntimeHandle,
+    /// Its process, to wait for it to be gone, or kill it.
+    processes: Processes,
     /// The file it started from, to tell a changed binary after a crash.
     stamp: Option<Stamp>,
     binary: PathBuf,
@@ -1384,6 +1387,56 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
     }
 }
 
+/// Stop a runtime taken out of the slots, and return once its process is
+/// gone: another one may start under its name then (#307). Its cleanups
+/// get the shutdown deadline and a margin; a runtime still stopping by
+/// then is killed, and the rest of its stop, which no longer waits for the
+/// process, is waited for, so it withdraws nothing of the next one's.
+async fn stop<L: BinaryLanguage>(runtime: &str, slot: Slot) {
+    let limit = shutdown_deadline() + STOP_MARGIN;
+    let disposed = slot.view.dispose_with_timeout(limit).await;
+    let timed_out = matches!(disposed, Err(rutis::DisposeWaitError::TimedOut { .. }));
+    if let Err(error) = &disposed {
+        eprintln!(
+            "rutis-loader: stopping the {} runtime {runtime}: {error}",
+            L::TITLE
+        );
+    }
+    // Disposed, the process ends once its channel closes, or the transport
+    // kills it; here it is killed at the latest.
+    let exited = !timed_out
+        && tokio::time::timeout(STOP_EXIT, slot.processes.ended())
+            .await
+            .is_ok();
+    if exited {
+        return;
+    }
+    slot.processes.kill();
+    if tokio::time::timeout(STOP_EXIT, slot.processes.ended())
+        .await
+        .is_err()
+    {
+        eprintln!(
+            "rutis-loader: the process of the {} runtime {runtime} still runs after it was killed",
+            L::TITLE
+        );
+    }
+    eprintln!(
+        "rutis-loader: the {} runtime {runtime} did not stop within {:.1}s; killed it",
+        L::TITLE,
+        limit.as_secs_f64()
+    );
+    if timed_out {
+        // Its process gone, its calls into it fail, and its stop ends.
+        if let Err(error) = slot.view.dispose_with_timeout(STOP_EXIT).await {
+            eprintln!(
+                "rutis-loader: stopping the {} runtime {runtime} after killing it: {error}",
+                L::TITLE
+            );
+        }
+    }
+}
+
 impl<L: BinaryLanguage> Inner<L> {
     /// A row resolved to `runtime`, or waits for it: start it unless it
     /// runs, or stopped after a crash with its binary unchanged.
@@ -1465,21 +1518,7 @@ impl<L: BinaryLanguage> Inner<L> {
     async fn restart_now(self: Arc<Self>, runtime: &str, _busy: Busy<L>) -> Result<(), String> {
         let previous = self.slots.lock().unwrap().running.remove(runtime);
         if let Some(previous) = previous {
-            let limit = shutdown_deadline();
-            if let Err(error) = previous.view.dispose_with_timeout(limit).await {
-                eprintln!(
-                    "rutis-loader: stopping the {} runtime {runtime}: {error}",
-                    L::TITLE
-                );
-                if matches!(&error, rutis::DisposeWaitError::TimedOut { .. }) {
-                    previous.handle.kill();
-                    wait_down(&previous.handle, limit).await;
-                    eprintln!(
-                        "rutis-loader: the {} runtime {runtime} did not stop in time; killed it",
-                        L::TITLE
-                    );
-                }
-            }
+            stop::<L>(runtime, previous).await;
         }
         self.resolver.stopped(runtime);
         self.start(runtime)
@@ -1504,6 +1543,7 @@ impl<L: BinaryLanguage> Inner<L> {
         };
         let local = runtime_plugin.local();
         let handle = local.handle();
+        let processes = local.processes();
         runtime_plugin.first = Mutex::new(Some(local));
         let view = ctx.plugin(runtime_plugin);
         let mut slots = self.slots.lock().unwrap();
@@ -1514,6 +1554,7 @@ impl<L: BinaryLanguage> Inner<L> {
             Slot {
                 view,
                 handle,
+                processes,
                 stamp: stamp(&binary),
                 binary,
                 last_used: Instant::now(),
@@ -1746,21 +1787,7 @@ impl<L: BinaryLanguage> Inner<L> {
                 let _busy = busy;
                 let previous = inner.slots.lock().unwrap().running.remove(&name);
                 if let Some(previous) = previous {
-                    let limit = shutdown_deadline();
-                    if let Err(error) = previous.view.dispose_with_timeout(limit).await {
-                        eprintln!(
-                            "rutis-loader: stopping the {} runtime {name}: {error}",
-                            L::TITLE
-                        );
-                        if matches!(&error, rutis::DisposeWaitError::TimedOut { .. }) {
-                            previous.handle.kill();
-                            wait_down(&previous.handle, limit).await;
-                            eprintln!(
-                                "rutis-loader: the {} runtime {name} did not stop in time; killed it",
-                                L::TITLE
-                            );
-                        }
-                    }
+                    stop::<L>(&name, previous).await;
                 }
                 inner.resolver.stopped(&name);
             });

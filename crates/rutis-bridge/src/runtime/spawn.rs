@@ -367,14 +367,13 @@ pub(crate) fn node_inherits(package: &Path) -> bool {
 }
 
 /// The Node process, owned by a task that records how it ended. Dropping
-/// `kill` ends the process.
+/// `_kill` ends the process.
 pub(crate) struct Child {
     exit: watch::Receiver<Option<String>>,
     /// The same status for the reader thread, which must not depend on the
     /// runtime: a current-thread runtime may be blocked in a synchronous call.
     ended: Arc<(Mutex<Option<String>>, Condvar)>,
-    /// Sending ends the process; taken so it is sent once.
-    kill: Mutex<Option<oneshot::Sender<()>>>,
+    _kill: oneshot::Sender<()>,
 }
 
 impl Child {
@@ -408,14 +407,7 @@ impl Child {
         Self {
             exit,
             ended,
-            kill: Mutex::new(Some(kill)),
-        }
-    }
-
-    /// End the process now, if it still runs.
-    pub(crate) fn kill(&self) {
-        if let Some(kill) = self.kill.lock().unwrap().take() {
-            let _ = kill.send(());
+            _kill: kill,
         }
     }
 
