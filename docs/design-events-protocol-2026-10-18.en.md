@@ -503,7 +503,7 @@ A **case**: `case` (id), `rule` (the section of this document), `name` (default 
   | `{ "next": "<text>" }` | returns `"<text>" + r`, `r` = `next()`'s result (`""` when no result) |
   | `{ "veto": v }` | returns `v` without calling `next` |
   | `{ "nextTwice": true }` | calls `next()` twice, returns the second's result |
-  | `{ "waits": true }` | waits for cancellation, then logs `label:cancelled` and returns `null` |
+  | `{ "waits": true }` | waits for cancellation, then logs `label:cancelled` and returns `null`; a `sync` listener that cannot be woken (JavaScript, Python) blocks its thread until its process ends |
   | `{ "calls": 0 }` | calls `args[0]` (a function) with `"x"`, returns its result |
   | `{ "emits": spec }` | emits `spec` (§ below) from its own row and returns the result |
 
