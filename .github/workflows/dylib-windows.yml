@@ -89,7 +89,10 @@ jobs:
             echo "GOCACHE=$dir/go-build"
           } >> "$GITHUB_ENV"
           echo "/tmp is $(cygpath -w /tmp)"
-          find /tmp/ -maxdepth 1 -name 'rutis-*' -mmin +720 -print 2>/dev/null |
+          # find exits non-zero when it cannot read an entry (one still in
+          # use, or another account's); under pipefail that failed the job
+          # before it started. The cleanup is best effort.
+          { find /tmp/ -maxdepth 1 -name 'rutis-*' -mmin +720 -print 2>/dev/null || true; } |
             while IFS= read -r old; do rm -rf "$old" || true; done
       - uses: dtolnay/rust-toolchain@1.98.1
       # Self-hosted runners keep their target directory instead.
