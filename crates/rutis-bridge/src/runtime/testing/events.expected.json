@@ -726,7 +726,7 @@
 
     { "case": "disconnect/bail-in-flight", "rule": "7.2, 4", "name": "t/gone-bail", "tool": false,
       "listeners": [
-        {"label": "b", "at": "Y", "kind": "sync", "does": {"after": 3000, "then": {"returns": "late"}}}
+        {"label": "b", "at": "Y", "kind": "sync", "does": {"waits": true}}
       ],
       "steps": [
         {"emit": {"from": "X", "mode": "bail", "args": []}, "background": true},
