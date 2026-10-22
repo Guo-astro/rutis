@@ -385,6 +385,9 @@ internal class Harness(val plugin: Plugin, private val services: Map<String, Any
         }
     }
 
+    /** Unloads every row under one budget, as the runtime's `dispose` does. */
+    suspend fun dispose(budgetMillis: Long): Boolean = served.runtime.dispose(budgetMillis)
+
     fun close() {
         val all = synchronized(lock) { rows.toList() }
         for (row in all.asReversed()) row.unload()

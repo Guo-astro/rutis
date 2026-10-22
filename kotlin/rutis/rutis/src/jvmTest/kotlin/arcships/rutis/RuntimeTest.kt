@@ -1,7 +1,9 @@
 package arcships.rutis
 
 import arcships.rutis.internal.Schema
+import arcships.rutis.testing.Harness
 import arcships.rutis.testing.RutisTest
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -9,6 +11,7 @@ import java.util.Collections
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 @Serializable
@@ -113,6 +116,26 @@ class RuntimeTest {
             late!!.effect { }
             val again = first.load(isolate = mapOf("hello" to "again"))
             assertEquals("row Kim", again.service("hello").call("greet", "Kim"))
+        }
+    }
+
+    @Test
+    fun disposeGivesEveryRowTheSameBudget() = runBlocking<Unit> {
+        val plugin = Rutis.define<Rutis.NoConfig>(name = "slow-cleanups") { ctx, _ ->
+            ctx.effect { delay(5_000) }
+        }
+        val harness = Harness(plugin, emptyMap(), "kotlin")
+        harness.start()
+        try {
+            harness.load(null, null, emptyList())
+            harness.load(null, null, emptyList())
+            val started = System.nanoTime()
+            val finished = harness.dispose(200)
+            val elapsed = (System.nanoTime() - started) / 1_000_000
+            assertFalse(finished)
+            assertTrue(elapsed < 2_000, "dispose took ${elapsed}ms for two rows")
+        } finally {
+            harness.close()
         }
     }
 
