@@ -322,6 +322,6 @@ B2 随[远程运行时拨出](design-remote-runtime-dial-2026-10-14.md)一起实
 | --- | --- | --- |
 | §3.2 `ws://…` 启动时报错 "the Bun runtime only listens" | 远程运行时监听（`listen:`）或拨出（`dial:`）；单独的 `ws://…` 仍不是会话通道 | 拨出设计 R1：每种远程运行时都支持监听与拨出 |
 | §4 租约在进程内清理，模块缓存跨租约保留 | 每个会话一个子运行时进程（`src/main.ts` 走回环通道，先出示一次性 token），父进程（`src/remote.ts`）在 WebSocket 与子进程之间逐条转发；会话结束即子进程退出 | 与 Node 运行时监听、拨出的做法相同；`Client` 的 I/O 在 worker 里按通道地址建立连接，WebSocket 无法交给 worker，父进程只转发、从不阻塞；会话之间不留任何状态 |
-| 拨出的客户端 | Bun 内置的 `ws` 客户端（`import { WebSocket } from 'ws'`，不安装 npm 包） | Bun 的 `WebSocket` 不报告升级被拒的状态码，无法区分 401 / 403 与 400；内置的 `ws` 客户端报告（`unexpected-response`）。TLS 握手失败只有关闭码 1015，按凭据被拒处理 |
+| 拨出的客户端 | Bun 内置的 `ws` 客户端（`import { WebSocket } from 'ws'`，不安装 npm 包） | Bun 的 `WebSocket` 不报告升级被拒的状态码，无法区分 401 / 403 与 400；内置的 `ws` 客户端报告（`unexpected-response`）；有这个监听时客户端不自己关闭连接（Bun 1.4.4 起，同 npm `ws`），读完响应体由拨出方结束连接。证书被拒按凭据被拒处理：Bun 1.4.4 起是带 Node 错误码（`UNABLE_TO_VERIFY_LEAF_SIGNATURE` 等）的错误，之前只有关闭码 1015 |
 | 远程运行时的参数 | `<通道> [--id <端点>] [--peer <控制方>] <项目>`；子进程另带 `--format endpoint` 与（拨出时）`--supervisor dial` | 与 Node 运行时相同 |
 | `remote` 的 `language: "bun"` | 接受，行名 `<远程运行时名>:<模块>`（`Naming::Modules`） | §5.1；`rutis-host/src/host.rs::tests::a_remote_bun_runtime_runs_rows_named_after_it` |
