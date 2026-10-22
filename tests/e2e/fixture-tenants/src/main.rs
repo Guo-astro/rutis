@@ -31,12 +31,13 @@
 //!
 //! The Node runtime is `RUTIS_NODE_RUNTIME`; `RUTIS_PYTHON_PATH`, when set,
 //! goes ahead on the Python runtime's path. With `RUTIS_TEST_INSPECT` set
-//! the runtimes answer `inspect` (test support).
+//! the runtimes answer `inspect`; `RUTIS_TEST_ROWS_LATE_MS` releases the
+//! runtimes' rows that much later (test support).
 //!
 //! Commands on stdin, one per line; each is answered with one JSON line
 //! `{"answer": "<command>", …}` on stdout, with `"error"` when it failed.
-//! Once started it prints `{"answer": "ready", "restored": [..], "rows":
-//! {..}}`.
+//! Once started, its global rows too, it prints `{"answer": "ready",
+//! "restored": [..], "rows": {..}}`.
 //!
 //! - `create <tenant> [greeting]`: add or enable `cfg-<tenant>`, then create
 //!   the tenant's instance; answers once its door is open;
@@ -59,7 +60,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, InstanceId, Plugin, PluginFactory, TypeKey};
+use rutis::{
+    BoxFuture, CordisError, Ctx, Effect, FiberState, InstanceId, Plugin, PluginFactory, TypeKey,
+};
 use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle, Stdio};
 use rutis_bridge::session::{
     host_key_in, settle, Error as CallError, HostDispatch, Reply, Value as CallValue,
@@ -77,6 +80,8 @@ use serde_json::{json, Value};
 const SHUTDOWN: Duration = Duration::from_secs(10);
 /// How long a tenant's door may take to open after its rows settled.
 const DOOR: Duration = Duration::from_secs(60);
+/// How long the global rows may take to start after `reconcile` returned.
+const STARTED: Duration = Duration::from_secs(60);
 /// The instanced group of a tenant's rows.
 const TENANT: &str = "tenant";
 /// The admin layer, which edits change.
@@ -232,8 +237,26 @@ impl App {
         root.plugin(plugin)
             .await
             .map_err(|e| failed(&root, format!("the loader: {e}")))?;
-        root.plugin(RuntimeRowsPlugin::new(node_rows));
-        root.plugin(RuntimeRowsPlugin::new(python_rows));
+        // `RUTIS_TEST_ROWS_LATE_MS`: the runtimes' rows are released that
+        // much later, as on a loaded machine (test support, #568).
+        let late = std::env::var("RUTIS_TEST_ROWS_LATE_MS")
+            .ok()
+            .and_then(|ms| ms.parse().ok())
+            .map(Duration::from_millis);
+        match late {
+            None => {
+                root.plugin(RuntimeRowsPlugin::new(node_rows));
+                root.plugin(RuntimeRowsPlugin::new(python_rows));
+            }
+            Some(late) => {
+                let root = root.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(late).await;
+                    root.plugin(RuntimeRowsPlugin::new(node_rows));
+                    root.plugin(RuntimeRowsPlugin::new(python_rows));
+                });
+            }
+        }
 
         let (edits, version) = store
             .load(ADMIN)
@@ -274,6 +297,7 @@ impl App {
                 .map_err(|e| failed(&root, format!("tenant {tenant}: {e}")))?;
             restored.push(tenant.to_owned());
         }
+        started(&app.loader).await.map_err(|e| failed(&root, e))?;
         let rows: BTreeMap<String, String> = app
             .loader
             .entries()
@@ -583,6 +607,41 @@ async fn call(door: &Door, service: &str, method: &str, args: Value) -> Result<V
         .await
         .and_then(CallValue::json)
         .map_err(|e| e.to_string())
+}
+
+/// Wait until every global row that runs has started (or failed).
+/// `reconcile` returns once no row is in transition, but a row of a
+/// runtime waits for the runtime's rows to be released
+/// ([`RuntimeRowsPlugin`], once the runtime is up) and is `Pending` until
+/// then: `ready` reports the rows as they run (#568).
+async fn started(loader: &Loader) -> Result<(), String> {
+    for entry in loader.entries() {
+        let (EntryStatus::Running(_), None, Some(view)) =
+            (&entry.status, &entry.instance, entry.view)
+        else {
+            continue;
+        };
+        let mut watch = view.watch();
+        let starting =
+            |state: &FiberState| matches!(state, FiberState::Pending | FiberState::Loading);
+        let waited = tokio::time::timeout(
+            STARTED,
+            watch.wait_for(|snapshot| !starting(&snapshot.state)),
+        )
+        .await;
+        match waited {
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) => return Err(format!("row {} ended while it started", entry.id)),
+            Err(_) => {
+                return Err(format!(
+                    "row {} did not start within {STARTED:?}: {:?}",
+                    entry.id,
+                    view.state().state
+                ))
+            }
+        }
+    }
+    Ok(())
 }
 
 fn status(status: &EntryStatus) -> String {
