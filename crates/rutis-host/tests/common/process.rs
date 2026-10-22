@@ -230,6 +230,18 @@ impl Host {
         }
     }
 
+    /// Read lines until each of `lines` was read, in any order: the state
+    /// lines are printed every 200 ms, apart from what a reload or a stop
+    /// prints, so a row's change and the reload that made it come either
+    /// way round.
+    pub fn wait_lines(&mut self, lines: &[&str]) {
+        let mut missing: Vec<&str> = lines.to_vec();
+        while !missing.is_empty() {
+            let index = self.wait_line(|line| missing.iter().position(|want| *want == line));
+            missing.remove(index);
+        }
+    }
+
     /// The process of each row as it starts, in the order of `rows`, once
     /// every row runs.
     pub fn started(&mut self, rows: &[&str]) -> Vec<i32> {

@@ -623,6 +623,15 @@ impl Running {
         }
     }
 
+    /// Read lines until each of `lines` was read, in any order.
+    fn lines_in_any_order(&mut self, lines: &[&str]) {
+        let mut missing: Vec<&str> = lines.to_vec();
+        while !missing.is_empty() {
+            let line = self.line("");
+            missing.retain(|want| *want != line);
+        }
+    }
+
     /// The first line, not read before, starting with `prefix`.
     fn line(&mut self, prefix: &str) -> String {
         loop {
@@ -684,12 +693,9 @@ fn a_watched_configuration_reloads_when_it_changes() {
     drop(closed);
     let rows = json!([{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": format!("ws://{address}/rutis") } }]);
     std::fs::write(&file, config(rows)).unwrap();
-    let reloaded = host.line("rutis-host: reloaded ");
-    assert_eq!(
-        reloaded,
-        format!("rutis-host: reloaded {} (1 row changed)", file.display())
-    );
-    host.line("office: running");
+    // The row's state line and the reload's come either way round.
+    let reloaded = format!("rutis-host: reloaded {} (1 row changed)", file.display());
+    host.lines_in_any_order(&[&reloaded, "office: running"]);
 }
 
 /// The binary on Unix: SIGUSR1 reloads, the host runs on in the same
@@ -704,6 +710,12 @@ mod sigusr1 {
     fn sigusr1_reloads_and_the_host_runs_on() {
         let dir = tempfile::tempdir().unwrap();
         let file = run_project(dir.path(), false);
+        // The Node row's cleanup takes a while: the row is gone from the
+        // state lines before the reload that removes it ends.
+        let mut config: Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        config["rows"][1]["config"]["delay"] = json!(1000);
+        std::fs::write(&file, config.to_string()).unwrap();
         let mut host = Host::start(&["run", file.to_str().unwrap()], dir.path());
         let pids = host.started(&["py-row", "node-row"]);
 
@@ -726,8 +738,7 @@ mod sigusr1 {
         std::fs::write(&file, config.to_string()).unwrap();
         signal(&host, libc::SIGUSR1, false);
         let expected = format!("rutis-host: reloaded {} (1 row changed)", file.display());
-        host.wait_line(|line| (line == expected).then_some(()));
-        host.wait_line(|line| (line == "node-row: removed").then_some(()));
+        host.wait_lines(&[&expected, "node-row: removed"]);
         assert_eq!(cleanups(dir.path(), "node-row"), 1);
         assert!(host.child.try_wait().unwrap().is_none(), "the host exited");
         assert!(pids.iter().all(|pid| alive(*pid)), "a runtime ended");
