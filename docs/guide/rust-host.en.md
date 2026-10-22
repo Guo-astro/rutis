@@ -376,7 +376,7 @@ A method returning `Result<T, E>` (`std::result::Result`, an alias of it, `anyho
 
 | `E` | `name` | `code` | `data` |
 | --- | --- | --- | --- |
-| An enum with serde | its type name | its variant as serde writes it: the string it serializes to, the one key of an externally tagged variant, the `tag` field of an internally or adjacently tagged one | its serde value |
+| An enum with serde | its type name | its variant as serde writes it: the string it serializes to, the one key of an externally tagged variant, the `tag` field of an internally or adjacently tagged one (except, for a `#[rutis::service]` type, a tagged variant given its own `rename`: see [Limits](#limits)) | its serde value |
 | An enum without serde (or `untagged`) | its type name | the variant's Rust name (from its derived `Debug`) | its serde value if it has one |
 | A struct with serde | its type name | the string it serializes to, else its type name | its serde value |
 | `String` | `Error` | `Error` (the string is the `message`) | — |

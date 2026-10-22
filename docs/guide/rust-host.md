@@ -376,7 +376,7 @@ Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名�
 
 | `E` | `name` | `code` | `data` |
 | --- | --- | --- | --- |
-| 有 serde 的枚举 | 类型名 | serde 写出的变体：序列化成的字符串、外部标签变体的唯一键、内部或相邻标签变体的 `tag` 字段 | serde 值 |
+| 有 serde 的枚举 | 类型名 | serde 写出的变体：序列化成的字符串、外部标签变体的唯一键、内部或相邻标签变体的 `tag` 字段（`#[rutis::service]` 类型里单独 `rename` 的标签变体例外，见[限制](#限制)） | serde 值 |
 | 没有 serde（或 `untagged`）的枚举 | 类型名 | 变体的 Rust 名（取自 derive 的 `Debug`） | 有 serde 时为 serde 值 |
 | 有 serde 的结构体 | 类型名 | 序列化成的字符串，否则为类型名 | serde 值 |
 | `String` | `Error` | `Error`（字符串是 `message`） | — |

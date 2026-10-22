@@ -186,7 +186,9 @@ impl Ctx {
         Ok(())
     }
 
-    pub(crate) fn in_instance_key(&self, key: &TypeKey) -> bool {
+    /// False when `key` names an instance this context is not inside (its
+    /// fiber is neither that instance's fiber nor a descendant of it).
+    pub fn in_instance_key(&self, key: &TypeKey) -> bool {
         key.instance_id().is_none_or(|id| self.in_instance(id))
     }
 
@@ -584,13 +586,13 @@ impl Ctx {
             .unwrap_or_default()
     }
 
-    /// scope 解析:沿 Ctx 父链回溯,取该键最近的 isolate 覆盖(§四:保留父链查找)。
     /// The isolation label under which this context reads `key`, if any
     /// (the label of its nearest [`Ctx::isolate`] for it).
     pub fn isolate_label(&self, key: &TypeKey) -> Option<String> {
         self.scope_for(key).map(|scope| scope.to_string())
     }
 
+    /// scope 解析:沿 Ctx 父链回溯,取该键最近的 isolate 覆盖(§四:保留父链查找)。
     pub(crate) fn scope_for(&self, key: &TypeKey) -> Option<ScopeId> {
         let mut current = Some(self.clone());
         while let Some(ctx) = current {

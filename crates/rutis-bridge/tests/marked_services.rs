@@ -317,45 +317,104 @@ async fn a_service_provided_here_is_not_described_as_out_of_scope() {
     root.shutdown().await.unwrap();
 }
 
-/// A marked service provided in another scope says where it is, and in that
-/// scope it is not described as out of scope either.
-#[tokio::test]
-async fn a_service_in_another_scope_names_the_scope() {
-    let root = Ctx::root().unwrap();
-    let (scope_tx, scope_rx) = std::sync::mpsc::channel::<Ctx>();
-    struct Scoped(std::sync::mpsc::Sender<Ctx>);
-    impl rutis::Plugin for Scoped {
+/// A child plugin of `parent`, optionally marked as a scope; its context.
+async fn child_ctx(parent: &Ctx, scope: Option<&'static str>) -> Ctx {
+    struct Child(Option<&'static str>, std::sync::mpsc::Sender<Ctx>);
+    impl rutis::Plugin for Child {
         fn name(&self) -> &str {
-            "scoped"
+            "child"
         }
         fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
             Box::pin(async move {
-                ctx.mark_scope("chat")?;
-                self.0.send(ctx.clone()).unwrap();
+                if let Some(scope) = self.0 {
+                    ctx.mark_scope(scope)?;
+                }
+                self.1.send(ctx.clone()).unwrap();
                 Ok(rutis::Effect::Done)
             })
         }
     }
-    root.plugin(Scoped(scope_tx)).await.unwrap();
-    let scope = scope_rx.recv().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<Ctx>();
+    parent.plugin(Child(scope, tx)).await.unwrap();
+    rx.recv().unwrap()
+}
+
+/// Provide a Calendar under `key` from `ctx` whose check fails, so it is
+/// bound but not served.
+fn unserved(ctx: &Ctx, key: TypeKey) -> rutis::Disposer {
+    ctx.provide_as_with_check(key, Arc::new(Calendar::default()), || false)
+        .unwrap()
+}
+
+fn here() -> String {
+    format!(
+        "`calendar` is the Rust service {}, provided here but not served",
+        std::any::type_name::<Calendar>()
+    )
+}
+
+fn elsewhere(place: &str) -> String {
+    format!(
+        "`calendar` is the Rust service {}, provided in {place}, not visible here",
+        std::any::type_name::<Calendar>()
+    )
+}
+
+/// A marked service isolated under a label is described as provided here
+/// only to contexts reading it under that label; everywhere else, marked
+/// scope or not, it names the label.
+#[tokio::test]
+async fn a_service_in_another_scope_names_the_scope() {
+    let root = Ctx::root().unwrap();
+    let scope = child_ctx(&root, Some("chat")).await;
+    let plain = child_ctx(&root, None).await;
     let isolated = scope.isolate(TypeKey::of::<Calendar>(), "chat");
-    let provided = isolated
-        .provide_as_with_check(
-            TypeKey::of::<Calendar>(),
-            Arc::new(Calendar::default()),
-            || false,
-        )
-        .unwrap();
-    let hint = rutis_bridge::exports::unexported(&root, "calendar").unwrap();
-    assert!(
-        hint.contains("scope `chat`") && hint.contains("not visible here"),
-        "{hint}"
-    );
-    let here = rutis_bridge::exports::unexported(&isolated, "calendar").unwrap();
-    assert!(
-        here.contains("provided here but not served") || here.contains("not exported"),
-        "{here}"
-    );
+    let provided = unserved(&isolated, TypeKey::of::<Calendar>());
+    let unexported = |ctx: &Ctx| rutis_bridge::exports::unexported(ctx, "calendar").unwrap();
+    assert_eq!(unexported(&isolated), here());
+    assert_eq!(unexported(&root), elsewhere("scope `chat`"));
+    assert_eq!(unexported(&scope), elsewhere("scope `chat`"));
+    assert_eq!(unexported(&plain), elsewhere("scope `chat`"));
+    let other = root.isolate(TypeKey::of::<Calendar>(), "mail");
+    assert_eq!(unexported(&other), elsewhere("scope `chat`"));
+    provided.dispose().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
+/// A service of the root is visible from a child that marks its own scope,
+/// through the parent chain, so it is provided there too.
+#[tokio::test]
+async fn a_root_service_is_provided_here_in_a_child_scope() {
+    let root = Ctx::root().unwrap();
+    let provided = unserved(&root, TypeKey::of::<Calendar>());
+    let scope = child_ctx(&root, Some("chat")).await;
+    let nested = child_ctx(&scope, None).await;
+    let unexported = |ctx: &Ctx| rutis_bridge::exports::unexported(ctx, "calendar").unwrap();
+    assert_eq!(unexported(&root), here());
+    assert_eq!(unexported(&scope), here());
+    assert_eq!(unexported(&nested), here());
+    let isolated = scope.isolate(TypeKey::of::<Calendar>(), "chat");
+    assert_eq!(unexported(&isolated), elsewhere("the default scope"));
+    provided.dispose().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
+/// A service bound to an instance is provided inside that instance and
+/// names the instance outside it, whether or not the instance marks a scope.
+#[tokio::test]
+async fn an_instance_service_names_the_instance_outside_it() {
+    let root = Ctx::root().unwrap();
+    let owner = child_ctx(&root, None).await;
+    let inner = child_ctx(&owner, Some("chat")).await;
+    let sibling = child_ctx(&root, None).await;
+    let key = TypeKey::instance::<Calendar>(owner.instance());
+    let provided = unserved(&owner, key);
+    let unexported = |ctx: &Ctx| rutis_bridge::exports::unexported(ctx, "calendar").unwrap();
+    assert_eq!(unexported(&owner), here());
+    assert_eq!(unexported(&inner), here());
+    let outside = elsewhere(&format!("instance {}", owner.instance()));
+    assert_eq!(unexported(&sibling), outside);
+    assert_eq!(unexported(&root), outside);
     provided.dispose().await.unwrap();
     root.shutdown().await.unwrap();
 }
