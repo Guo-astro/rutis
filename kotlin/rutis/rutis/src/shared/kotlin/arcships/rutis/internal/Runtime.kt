@@ -365,9 +365,23 @@ class RuntimeState(plugins: List<Plugin>) {
         }
     }
 
+    /**
+     * Unloads row `key`. Returns false when it gave up (listeners or
+     * cleanups still running at the deadline); a failing cleanup does not
+     * stop the others, and the first failure is thrown once they ran.
+     */
     internal suspend fun unload(key: String, deadlineNanos: Long? = null): Boolean {
+        val (done, failure) = unloadRow(key, deadlineNanos)
+        failure?.let { throw it }
+        return done
+    }
+
+    /** How a row unloaded: whether it finished in time, and its cleanups' failure. */
+    private data class Unloaded(val done: Boolean, val failure: Throwable?)
+
+    private suspend fun unloadRow(key: String, deadlineNanos: Long?): Unloaded {
         val row = synchronized(lock) {
-            val row = rows.remove(key) ?: return false
+            val row = rows.remove(key) ?: return Unloaded(true, null)
             EventsRuntime.forgetListeners(this, row)
             // Withdrawals first: rutis hears them before the plugin goes away.
             for (id in row.provided.toList()) {
@@ -435,8 +449,7 @@ class RuntimeState(plugins: List<Plugin>) {
                 if (failure == null) failure = e else failure.addSuppressed(e)
             }
         }
-        failure?.let { throw it }
-        return !gaveUp
+        return Unloaded(!gaveUp, failure)
     }
 
     internal suspend fun update(key: String, config: Any?) {
@@ -458,29 +471,37 @@ class RuntimeState(plugins: List<Plugin>) {
      * cleanups at the deadline. The deadline bounds waiting for listeners
      * and suspending cleanups; a cleanup that blocks its thread without
      * suspending cannot be interrupted, so plugins should not do that.
+     * Only the deadline gives up: a failing cleanup is reported and the
+     * other rows still unload.
      */
     suspend fun dispose(budgetMillis: Long? = null): Boolean {
         val ordered = synchronized(lock) { rows.values.sortedBy { it.order } }
         val deadline = budgetMillis?.let { System.nanoTime() + it * 1_000_000 }
+        var all = true
         for (row in ordered.asReversed()) {
             val left = deadline?.let { ((it - System.nanoTime()) / 1_000_000).coerceAtLeast(0) }
             if (deadline != null && left == 0L) {
                 System.err.println("rutis: gave up the cleanups of row ${row.key} and those after it")
                 return false
             }
-            val done = if (deadline == null) {
-                runCatching { unload(row.key) }.getOrNull() ?: false
+            val outcome = if (deadline == null) {
+                unloadRow(row.key, null)
             } else {
-                withTimeoutOrNull(left!!) {
-                    runCatching { unload(row.key, deadline) }.getOrNull() ?: false
-                } ?: false
+                withTimeoutOrNull(left!!) { unloadRow(row.key, deadline) } ?: Unloaded(false, null)
             }
-            if (!done) {
-                System.err.println("rutis: gave up the cleanups of row ${row.key} and those after it")
-                return false
+            outcome.failure?.let {
+                System.err.println("rutis: a cleanup of row ${row.key} failed: ${Report.failure(it)}")
+            }
+            if (!outcome.done) {
+                all = false
+                // Without a deadline every row has its own budget: go on.
+                if (deadline != null) {
+                    System.err.println("rutis: gave up the cleanups of row ${row.key} and those after it")
+                    return false
+                }
             }
         }
-        return true
+        return all
     }
 
     // ── Dispatch ─────────────────────────────────────────────────

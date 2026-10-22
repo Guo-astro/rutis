@@ -1,9 +1,8 @@
 package arcships.rutis
 
+import arcships.rutis.internal.RuntimeState
 import arcships.rutis.internal.Schema
-import arcships.rutis.testing.Harness
 import arcships.rutis.testing.RutisTest
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -103,6 +102,7 @@ class RuntimeTest {
     @Test
     fun aTaskOfAnUnloadedRowCannotProvideOrRegisterACleanup() = runBlocking<Unit> {
         var late: Ctx? = null
+        var lateCleanupRan = false
         val plugin = Rutis.define<Rutis.NoConfig>(
             name = "late",
             provides = mapOf("hello" to service<Hello>(sync = setOf("greet"))),
@@ -112,31 +112,52 @@ class RuntimeTest {
         }
         RutisTest.load(plugin).use { first ->
             first.unload()
-            late!!.provide("hello", Hello("late"))
-            late!!.effect { }
+            val stale = late!!
+            stale.provide("hello", Hello("late"))
+            stale.effect { lateCleanupRan = true }
+            assertTrue(stale.row.cleanups.isEmpty(), "the unloaded row registered a cleanup")
             val again = first.load()
             assertEquals("row Kim", again.service("hello").call("greet", "Kim"))
         }
+        assertFalse(lateCleanupRan, "the cleanup of an unloaded row ran")
+    }
+
+    /** A runtime with `rows` rows of `plugin`, loaded straight into its state. */
+    private suspend fun loadRows(plugin: Plugin, rows: Int, shutdownMillis: Long = 5_000): RuntimeState {
+        val rt = RuntimeState(listOf(plugin))
+        rt.shutdownMillis = shutdownMillis
+        for (n in 1..rows) rt.load("row-$n", "row-$n", plugin.name, null, emptyMap(), emptyMap(), emptyList())
+        return rt
     }
 
     @Test
-    fun disposeGivesEveryRowTheSameBudget() = runBlocking<Unit> {
-        val plugin = Rutis.define<Rutis.NoConfig>(name = "slow-cleanups") { ctx, _ ->
-            ctx.effect { delay(5_000) }
+    fun disposeBoundsListenersStuckInSeveralRowsByOneBudget() = runBlocking<Unit> {
+        // Every row has a listener invocation that never finishes: unload
+        // blocks in Counter.await. Without one deadline for all of them, each
+        // row waits its own shutdown deadline (3 x 3s here).
+        val plugin = Rutis.define<Rutis.NoConfig>(name = "stuck-listeners") { ctx, _ ->
+            ctx.row.listening.add()
         }
-        val harness = Harness(plugin, emptyMap(), "kotlin")
-        harness.start()
-        try {
-            harness.load(null, null, emptyList())
-            harness.load(null, null, emptyList())
-            val started = System.nanoTime()
-            val finished = harness.dispose(200)
-            val elapsed = (System.nanoTime() - started) / 1_000_000
-            assertFalse(finished)
-            assertTrue(elapsed < 2_000, "dispose took ${elapsed}ms for two rows")
-        } finally {
-            harness.close()
+        val rt = loadRows(plugin, rows = 3, shutdownMillis = 3_000)
+        val started = System.nanoTime()
+        val finished = rt.dispose(300)
+        val elapsed = (System.nanoTime() - started) / 1_000_000
+        assertFalse(finished)
+        assertTrue(elapsed < 1_500, "dispose(300) took ${elapsed}ms for three rows")
+    }
+
+    @Test
+    fun aFailingCleanupDoesNotStopTheOtherRowsCleanups() = runBlocking<Unit> {
+        val ran = Collections.synchronizedList(mutableListOf<String>())
+        var loads = 0
+        val plugin = Rutis.define<Rutis.NoConfig>(name = "failing-cleanup") { ctx, _ ->
+            val n = ++loads
+            ctx.effect { ran.add("row $n") }
+            if (n == 2) ctx.effect { throw IllegalStateException("row 2 cleanup fails") }
         }
+        val rt = loadRows(plugin, rows = 2)
+        assertTrue(rt.dispose(5_000))
+        assertEquals(listOf("row 2", "row 1"), ran)
     }
 
     @Test
