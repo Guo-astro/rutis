@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use rutis::service::{
     erased_serde, exported_name, Answer, CallError, Encoded, Entry, Exposer, Exposure, Function,
-    Wire,
+    Provision, Wire,
 };
 use rutis::{BoxFuture, CordisError, Ctx, Disposer, Effect, InstanceId, TypeKey};
 
@@ -40,6 +40,7 @@ rutis::__on_load!(install);
 struct Marked {
     ctx: Ctx,
     native: TypeKey,
+    provision: Arc<Provision>,
     entries: Vec<&'static Entry>,
     type_name: &'static str,
 }
@@ -56,9 +57,16 @@ impl HostDispatch for Marked {
                 short(self.type_name)
             )));
         };
-        let service = entry.resolve(&self.ctx, &self.native).map_err(|why| {
-            Error::Value(format!("{} is not available: {why}", short(self.type_name)))
-        })?;
+        // Read interceptors apply with the calling row as the reader, as
+        // for a Rust reader in its place; with no row (a Rust or peer
+        // caller), with the provider.
+        let caller = caller_row();
+        let actor = caller.as_ref().map(|row| row.ctx());
+        let service = entry
+            .resolve(&self.ctx, &self.native, &self.provision, actor)
+            .map_err(|why| {
+                Error::Value(format!("{} is not available: {why}", short(self.type_name)))
+            })?;
         match entry.invoke(&service, method, Encoded(Box::new(args)), &WIRE) {
             Ok(Answer::Ready(value)) => Ok(value_of(value)),
             Ok(Answer::Later(future)) => Ok(Value::future(async move {
@@ -95,6 +103,7 @@ impl Exposer for BridgeExposer {
             scope,
             entries,
             check,
+            provision,
             ..
         } = exposure;
         let name = exported_name(&entries)?;
@@ -107,6 +116,7 @@ impl Exposer for BridgeExposer {
         let marked = Arc::new(Marked {
             ctx: ctx.clone(),
             native: native.clone(),
+            provision,
             entries,
             type_name,
         });
@@ -437,5 +447,95 @@ mod tests {
         assert_eq!(default_name("Calendar"), "calendar");
         assert_eq!(default_name("HTTPClient"), "httpClient");
         assert_eq!(default_name("IO"), "io");
+    }
+
+    pub struct Guarded;
+
+    #[rutis::service]
+    impl Guarded {
+        pub fn ping(&self) -> u32 {
+            1
+        }
+    }
+
+    /// A plugin that hands out its context, and runs `then` on it first.
+    struct Probe<F>(std::sync::mpsc::Sender<Ctx>, F);
+
+    impl<F: Fn(&Ctx) + Send + Sync + 'static> rutis::Plugin for Probe<F> {
+        fn name(&self) -> &str {
+            "probe"
+        }
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+            (self.1)(ctx);
+            self.0.send(ctx.clone()).unwrap();
+            Box::pin(async { Ok(Effect::Done) })
+        }
+    }
+
+    async fn child(parent: &Ctx, then: impl Fn(&Ctx) + Send + Sync + 'static) -> Ctx {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (&parent.plugin(Probe(tx, then))).await.unwrap();
+        rx.recv().unwrap()
+    }
+
+    fn call_as(service: &Arc<dyn HostDispatch>, caller: Option<&Ctx>) -> Result<(), Error> {
+        let row = caller.map(|ctx| crate::session::CallerRow::new("row", "row", ctx.clone()));
+        crate::session::with_caller_row(row, || service.invoke("ping", Value::List(Vec::new())))
+            .map(|_| ())
+    }
+
+    /// Read interceptors of a call by name are those a Rust reader in the
+    /// calling row's place gets: the ones of the row's ancestors, not of
+    /// the provider's.
+    #[tokio::test]
+    async fn read_interceptors_are_the_calling_rows() {
+        use rutis::ServiceIntercept;
+        let root = Ctx::root().unwrap();
+        root.provide(Guarded).unwrap();
+        let service = root
+            .get_as::<dyn HostDispatch>(host_key("guarded"))
+            .unwrap();
+        // A plugin below the root denies reads of `Guarded` in its subtree.
+        let guard = child(&root, |ctx| {
+            ctx.intercept_require_as::<Guarded>(TypeKey::of::<Guarded>(), |_| {
+                ServiceIntercept::Deny
+            })
+            .unwrap();
+        })
+        .await;
+        let inside = child(&guard, |_| {}).await;
+        let outside = child(&root, |_| {}).await;
+        assert!(
+            call_as(&service, Some(&inside)).is_err(),
+            "denied in the guard's subtree"
+        );
+        assert!(call_as(&service, Some(&outside)).is_ok());
+        assert!(
+            call_as(&service, None).is_ok(),
+            "no row: the provider reads"
+        );
+        root.shutdown().await.unwrap();
+    }
+
+    /// A reference to the entry kept after its service went serves nothing,
+    /// even once the slot is provided again (by another build, say): it
+    /// never runs on a value it was not provided with.
+    #[tokio::test]
+    async fn a_kept_entry_serves_only_the_binding_it_was_provided_with() {
+        let root = Ctx::root().unwrap();
+        let first = root.provide(Guarded).unwrap();
+        let kept = root
+            .get_as::<dyn HostDispatch>(host_key("guarded"))
+            .unwrap();
+        assert!(call_as(&kept, None).is_ok());
+        first.dispose().await.unwrap();
+        root.provide(Guarded).unwrap();
+        let error = call_as(&kept, None).unwrap_err();
+        assert!(error.to_string().contains("not available"), "{error}");
+        let current = root
+            .get_as::<dyn HostDispatch>(host_key("guarded"))
+            .unwrap();
+        assert!(call_as(&current, None).is_ok());
+        root.shutdown().await.unwrap();
     }
 }

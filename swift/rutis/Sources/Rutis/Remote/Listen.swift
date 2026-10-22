@@ -397,9 +397,10 @@ final class ControllerSession: @unchecked Sendable {
     }
 
     /// Ends the lease: nothing more is read, then every row goes, within
-    /// the shutdown deadline.
+    /// the shutdown deadline, then the connection closes.
     func end() async {
         try? await Rutis.end(peer, runtime)
+        socket.close()
     }
 
     /// Stops for good: every row goes while the controller still hears
