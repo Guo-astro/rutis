@@ -556,19 +556,24 @@ pub(crate) fn unchained<R>(call: impl FnOnce() -> R) -> R {
 /// Poll `future` with `source` as the [`caller`]: what it calls in other
 /// sessions on that session's behalf is forwarded from it (its chain
 /// rebased), however long after the call it runs.
-pub(crate) async fn with_caller<F: Future>(source: Connection, future: F) -> F::Output {
+pub(crate) fn with_caller<F: Future>(
+    source: Connection,
+    future: F,
+) -> impl Future<Output = F::Output> {
     let path = current_path();
-    let mut future = std::pin::pin!(future);
-    with_path(
-        path,
-        std::future::poll_fn(|cx| {
-            let previous = CALLER.with(|caller| caller.replace(Some(source.clone())));
-            let polled = future.as_mut().poll(cx);
-            CALLER.with(|caller| caller.replace(previous));
-            polled
-        }),
-    )
-    .await
+    async move {
+        let mut future = std::pin::pin!(future);
+        with_path(
+            path,
+            std::future::poll_fn(|cx| {
+                let previous = CALLER.with(|caller| caller.replace(Some(source.clone())));
+                let polled = future.as_mut().poll(cx);
+                CALLER.with(|caller| caller.replace(previous));
+                polled
+            }),
+        )
+        .await
+    }
 }
 thread_local! { static PUMPING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 /// Marks a thread that runs an invocation pumped by its own synchronous
@@ -1479,10 +1484,9 @@ impl Connection {
         };
         let (id, sequence) = id;
         let mut path = current_path();
-        let sync = matches!(waiting, Waiting::Sync { .. }) && self.supports("sync-wait");
         // A call forwarded for a caller that waits synchronously: refused,
         // not sent, if it would close a cycle of synchronous waits (#228).
-        let hop = waits::forward(&self.0.tag, &id, sequence, &path, sync).map_err(|cycle| {
+        let hop = waits::forward(&self.0.tag, &id, sequence, &path).map_err(|cycle| {
             Error::SyncWaitCycle(format!(
                 "this synchronous call would wait on itself: {}",
                 cycle.join(" -> ")
@@ -1490,6 +1494,7 @@ impl Connection {
         })?;
         // Leaves the wait graph if the call is not sent after all.
         let unsent = Unsent(hop.then(|| (self.0.tag.clone(), id.clone())));
+        let sync = matches!(waiting, Waiting::Sync { .. }) && self.supports("sync-wait");
         if let Operation::Await(_, origin) = &call {
             if let Waiting::Sync { origins, .. } = &mut waiting {
                 *origins = origin.clone();
@@ -2192,7 +2197,7 @@ impl Connection {
                 // The caller no longer waits for it. A synchronous call
                 // already started keeps its mark: it still runs on that
                 // stack and may forward calls.
-                if incoming.is_some() {
+                if incoming.is_some() || awaiting.is_some() {
                     waits::answered(&self.0.tag, &id);
                 }
                 drop((awaiting, incoming));
