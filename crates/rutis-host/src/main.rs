@@ -392,24 +392,34 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
                         project.name(),
                         started.elapsed().as_secs_f64()
                     );
-                    build += 1;
                     running.replace(project.runtime(), &binary);
                     // A runtime that hangs starting does not keep a signal out.
                     let restarted = tokio::select! {
                         restarted = running.restart_runtime(project.runtime()) => restarted,
                         signal = signals.next() => {
-                            stale.push(project.binary(build - 1));
                             break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
                         }
                     };
                     match restarted {
-                        Ok(()) => outln!("{}: rebuilt and restarted", project.runtime()),
-                        Err(error) => outln!("{}: cannot restart: {error}", project.runtime()),
+                        Ok(()) => {
+                            build += 1;
+                            outln!("{}: rebuilt and restarted", project.runtime());
+                            // Not the build the next start uses: once nothing
+                            // runs it, it can go.
+                            stale.push(project.binary(build - 1));
+                            remove_builds(&mut stale);
+                        }
+                        Err(error) => {
+                            // The new binary did not run: keep it and the
+                            // previous build, and point the runtime back at
+                            // the previous one, so a later change can retry.
+                            running.replace(project.runtime(), &project.binary(build));
+                            outln!(
+                                "{}: cannot restart: {error}; the previous build is kept",
+                                project.runtime()
+                            );
+                        }
                     }
-                    // Not the build the next start uses: once nothing runs
-                    // it, it can go.
-                    stale.push(project.binary(build - 1));
-                    remove_builds(&mut stale);
                 }
                 Err(errors) => outln!(
                     "{}: the build failed; the last build keeps running\n{errors}",

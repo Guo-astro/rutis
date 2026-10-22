@@ -390,6 +390,9 @@ enum Failure {
     Serde {
         name: String,
         tag: Option<String>,
+        /// An enum variant: its serde form names it. A struct's serde form
+        /// does not, even when it is one field.
+        variant: bool,
     },
     /// An enum serde does not name the variants of: the code from `Debug`.
     Variant {
@@ -1167,8 +1170,7 @@ impl Generator<'_> {
                     let location = self.sources.location(impl_module, &method.sig);
                     let rust_name = method.sig.ident.to_string();
                     match method.sig.inputs.first() {
-                        Some(FnArg::Receiver(receiver))
-                            if receiver.reference.is_some() && receiver.mutability.is_none() => {}
+                        Some(FnArg::Receiver(receiver)) if shared_receiver(receiver) => {}
                         // Constructors and associated functions are not
                         // the service's methods.
                         None | Some(FnArg::Typed(_)) => continue,
@@ -1403,8 +1405,8 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
             None => format!("let result = {invoke}; {encode_ok}"),
             Some(failure) => {
                 let thrown = match failure {
-                    Failure::Serde { name, tag } => format!(
-                        "::rutis_bridge::exports::serde_failure({name:?}, {}, &error)",
+                    Failure::Serde { name, tag, variant } => format!(
+                        "::rutis_bridge::exports::serde_failure({name:?}, {}, {variant}, &error)",
                         tag.as_ref()
                             .map_or("None".to_owned(), |tag| format!("Some({tag:?})"))
                     ),
@@ -1663,6 +1665,7 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                             Failure::Serde {
                                 name: ident.clone(),
                                 tag: serde.tag.clone(),
+                                variant: true,
                             }
                         } else if derives(&item.attrs, "Debug") {
                             Failure::Variant {
@@ -1680,6 +1683,7 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                         Failure::Serde {
                             name: ident.clone(),
                             tag: None,
+                            variant: false,
                         },
                         "string".to_owned(),
                         self.ty(scope, error)?.ts(),
@@ -1988,6 +1992,19 @@ fn single_ident(ty: &Type) -> Option<String> {
         .arguments
         .is_empty()
         .then(|| segment.ident.to_string())
+}
+
+/// A shared receiver: `&self`, or `self: &Self` / `self: &'a Self`.
+fn shared_receiver(receiver: &syn::Receiver) -> bool {
+    receiver.mutability.is_none()
+        && if receiver.colon_token.is_some() {
+            matches!(receiver.ty.as_ref(), Type::Reference(reference)
+                if reference.mutability.is_none()
+                    && matches!(reference.elem.as_ref(), Type::Path(path)
+                        if path.qself.is_none() && path.path.is_ident("Self")))
+        } else {
+            receiver.reference.is_some()
+        }
 }
 
 fn fn_bound(bounds: &[TypeParamBound]) -> Option<&syn::TraitBound> {
@@ -2463,7 +2480,7 @@ mod tests {
     "#;
 
     const INNER: &str = r#"
-        use crate::types::{Item, Problem, Res};
+        use crate::types::{Item, Problem, Res, Single};
         use rutis::{BoxFuture, CordisError};
 
         /// The store.
@@ -2477,6 +2494,7 @@ mod tests {
             pub fn watch(&self, each: impl Fn(Item, u8) -> BoxFuture<'static, Result<bool, CordisError>> + Send) {}
             pub fn reset(&mut self) {}
             pub fn tied(&self, ctx: &rutis::Ctx, n: u8) {}
+            pub fn single(&self) -> Result<(), Single> { Ok(()) }
             pub fn borrowing(&self, each: impl Fn(&Item) -> BoxFuture<'static, Result<(), CordisError>>) {}
             #[cfg(feature = "extra")]
             pub fn extra(&self) -> String { String::new() }
@@ -2519,6 +2537,15 @@ mod tests {
         #[derive(Debug, Serialize)]
         #[serde(tag = "kind", content = "detail", rename_all = "kebab-case")]
         pub enum Problem { NotThere, TooBig(u64) }
+
+        #[derive(Debug, Serialize)]
+        pub struct Single { pub message: String }
+
+        impl std::fmt::Display for Single {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(&self.message)
+            }
+        }
     "#;
 
     const MARKED: &str = r#"
@@ -2531,6 +2558,7 @@ mod tests {
         impl Clock {
             pub fn new() -> Self { Clock }
             pub fn now(&self) -> u32 { 0 }
+            pub fn explicit(self: &Self) -> u32 { 0 }
             #[service(skip)]
             pub fn reset(&self) {}
         }
@@ -2557,6 +2585,9 @@ mod tests {
         assert!(ts.contains("  clock: Clock\n"), "{ts}");
         assert!(ts.contains("  board: Named\n"), "{ts}");
         assert!(ts.contains("now(): Promise<number>"), "{ts}");
+        assert!(ts.contains("explicit(): Promise<number>"), "{ts}");
+        // `self: &Self` is `&self`: no warning that it cannot be bound.
+        assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
         assert!(ts.contains("read(): Promise<string>"), "{ts}");
         assert!(!ts.contains("unmarked") && !ts.contains("reset"), "{ts}");
         assert!(!generated.rust.contains("Clock"), "{}", generated.rust);
@@ -2654,7 +2685,11 @@ mod tests {
         );
         assert!(rust.contains("let a0: ::std::string::String"), "{rust}");
         assert!(
-            rust.contains("serde_failure(\"Problem\", Some(\"kind\"), &error)"),
+            rust.contains("serde_failure(\"Problem\", Some(\"kind\"), true, &error)"),
+            "{rust}"
+        );
+        assert!(
+            rust.contains("serde_failure(\"Single\", None, false, &error)"),
             "{rust}"
         );
         assert!(rust.contains("string_failure(&error)"), "{rust}");

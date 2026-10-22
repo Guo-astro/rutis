@@ -852,7 +852,7 @@ impl FiberInner {
 /// (protocol spec §7.1): `RUTIS_SHUTDOWN_TIMEOUT` in seconds (fractions
 /// allowed, above 0; rutis-host sets it from `--shutdown-timeout`), 10 s
 /// otherwise.
-pub(crate) fn shutdown_deadline() -> Duration {
+pub fn shutdown_deadline() -> Duration {
     std::env::var("RUTIS_SHUTDOWN_TIMEOUT")
         .ok()
         .and_then(|value| value.trim().parse::<f64>().ok())

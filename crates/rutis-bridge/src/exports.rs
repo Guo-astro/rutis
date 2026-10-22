@@ -386,15 +386,18 @@ fn graph_value(data: Json, nodes: &mut Vec<Json>) -> Json {
 pub fn serde_failure<E: Serialize + std::fmt::Display + ?Sized>(
     name: &str,
     tag: Option<&str>,
+    variant: bool,
     error: &E,
 ) -> Error {
     let data = serde_json::to_value(error).ok();
-    let code = match (&data, tag) {
-        (Some(Json::String(code)), _) => Some(code.clone()),
-        (Some(Json::Object(fields)), Some(tag)) => {
+    let code = match (&data, tag, variant) {
+        (Some(Json::String(code)), _, _) => Some(code.clone()),
+        (Some(Json::Object(fields)), Some(tag), true) => {
             fields.get(tag).and_then(Json::as_str).map(str::to_owned)
         }
-        (Some(Json::Object(fields)), None) if fields.len() == 1 => fields.keys().next().cloned(),
+        (Some(Json::Object(fields)), None, true) if fields.len() == 1 => {
+            fields.keys().next().cloned()
+        }
         _ => None,
     };
     failure(
@@ -453,9 +456,20 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Serialize)]
+    struct Single {
+        message: String,
+    }
+
+    impl std::fmt::Display for Single {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.message)
+        }
+    }
+
     #[test]
     fn errors_carry_their_code_message_and_data() {
-        let error = serde_failure("Problem", None, &Problem::Missing);
+        let error = serde_failure("Problem", None, true, &Problem::Missing);
         assert_eq!(error.code(), Some("Missing"));
         assert_eq!(error.data(), Some(json!("Missing")));
         assert_eq!(error.to_string(), "Problem: problem Missing");
@@ -463,6 +477,7 @@ mod tests {
         let error = serde_failure(
             "Problem",
             None,
+            true,
             &Problem::Invalid {
                 field: "title".into(),
             },
@@ -474,12 +489,24 @@ mod tests {
         );
 
         // Beyond 2^53 it crosses as a bigint, and reads back exactly.
-        let error = serde_failure("Problem", None, &Problem::Big(u64::MAX));
+        let error = serde_failure("Problem", None, true, &Problem::Big(u64::MAX));
         assert_eq!(error.data(), Some(json!({ "Big": u64::MAX })));
         let Error::Remote { graph, .. } = &error else {
             panic!()
         };
         assert!(graph.as_ref().unwrap().to_string().contains("\"bigint\""));
+
+        // One field is still a struct, not an externally tagged variant.
+        let error = serde_failure(
+            "Single",
+            None,
+            false,
+            &Single {
+                message: "one".into(),
+            },
+        );
+        assert_eq!(error.code(), Some("Single"));
+        assert_eq!(error.data(), Some(json!({ "message": "one" })));
 
         let error = variant_failure("Problem", &Problem::Invalid { field: "x".into() }, None);
         assert_eq!((error.code(), error.data()), (Some("Invalid"), None));

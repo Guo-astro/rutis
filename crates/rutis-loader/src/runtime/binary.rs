@@ -30,10 +30,11 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
+use rutis::{shutdown_deadline, BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
 use rutis_bridge::runtime::{
     LocalRuntime, RowSchema, RuntimeHandle, RuntimeState, Stdio as RuntimeStdio,
 };
+use rutis_bridge::transport::local::Processes;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -71,6 +72,23 @@ const SWEEP: Duration = Duration::from_millis(100);
 /// run of a new binary on macOS waits for the system to assess it, which
 /// takes seconds when several start at once.
 const MANIFEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The most a manifest may print, and the most of its errors kept: a
+/// binary that floods its stdout is stopped at this size, not buffered
+/// without bound. Errors beyond the kept part are read and dropped, so a
+/// chatty binary keeps running.
+const MANIFEST_OUTPUT: u64 = 16 * 1024 * 1024;
+const MANIFEST_ERRORS: u64 = 64 * 1024;
+
+/// Added to the shutdown deadline when the loader waits for a runtime to
+/// stop: the runtime's own cleanups have that deadline too, and one that
+/// uses all of it is not killed just as it finishes.
+const STOP_MARGIN: Duration = Duration::from_secs(2);
+
+/// How long a runtime's process may take to be gone once it was disposed
+/// (the local transport kills it 2 s after closing its channel), or once
+/// it was killed, before the loader goes on without it.
+const STOP_EXIT: Duration = Duration::from_secs(5);
 
 /// How long a failed manifest read stands before a row asking for a plugin
 /// no binary has gets it read again: a failure may pass, but a binary that
@@ -236,12 +254,21 @@ fn read_manifest(path: &Path) -> Result<BinaryManifest, String> {
     let mut stderr = child.stderr.take().expect("piped");
     let reading = std::thread::spawn(move || {
         let mut out = Vec::new();
-        let _ = stdout.read_to_end(&mut out);
+        let _ = stdout
+            .by_ref()
+            .take(MANIFEST_OUTPUT + 1)
+            .read_to_end(&mut out);
         out
     });
     let errors = std::thread::spawn(move || {
         let mut out = Vec::new();
-        let _ = stderr.read_to_end(&mut out);
+        let _ = stderr
+            .by_ref()
+            .take(MANIFEST_ERRORS + 1)
+            .read_to_end(&mut out);
+        // Read the rest and drop it: closing the pipe would kill a binary
+        // that writes more than we keep.
+        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
         out
     });
     let started = Instant::now();
@@ -266,6 +293,12 @@ fn read_manifest(path: &Path) -> Result<BinaryManifest, String> {
     };
     let out = reading.join().unwrap_or_default();
     let err = errors.join().unwrap_or_default();
+    if out.len() as u64 > MANIFEST_OUTPUT {
+        return Err(format!(
+            "it printed more than {} MiB of manifest",
+            MANIFEST_OUTPUT / (1024 * 1024)
+        ));
+    }
     if !status.success() {
         let err = String::from_utf8_lossy(&err);
         let tail: String = err
@@ -1022,6 +1055,8 @@ pub struct BinaryRuntimeInfo {
 struct Slot {
     view: FiberView,
     handle: RuntimeHandle,
+    /// Its process, to wait for it to be gone, or kill it.
+    processes: Processes,
     /// The file it started from, to tell a changed binary after a crash.
     stamp: Option<Stamp>,
     binary: PathBuf,
@@ -1410,6 +1445,56 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
     }
 }
 
+/// Stop a runtime taken out of the slots, and return once its process is
+/// gone: another one may start under its name then (#307). Its cleanups
+/// get the shutdown deadline and a margin; a runtime still stopping by
+/// then is killed, and the rest of its stop, which no longer waits for the
+/// process, is waited for, so it withdraws nothing of the next one's.
+async fn stop<L: BinaryLanguage>(runtime: &str, slot: Slot) {
+    let limit = shutdown_deadline() + STOP_MARGIN;
+    let disposed = slot.view.dispose_with_timeout(limit).await;
+    let timed_out = matches!(disposed, Err(rutis::DisposeWaitError::TimedOut { .. }));
+    if let Err(error) = &disposed {
+        eprintln!(
+            "rutis-loader: stopping the {} runtime {runtime}: {error}",
+            L::TITLE
+        );
+    }
+    // Disposed, the process ends once its channel closes, or the transport
+    // kills it; here it is killed at the latest.
+    let exited = !timed_out
+        && tokio::time::timeout(STOP_EXIT, slot.processes.ended())
+            .await
+            .is_ok();
+    if exited {
+        return;
+    }
+    slot.processes.kill();
+    if tokio::time::timeout(STOP_EXIT, slot.processes.ended())
+        .await
+        .is_err()
+    {
+        eprintln!(
+            "rutis-loader: the process of the {} runtime {runtime} still runs after it was killed",
+            L::TITLE
+        );
+    }
+    eprintln!(
+        "rutis-loader: the {} runtime {runtime} did not stop within {:.1}s; killed it",
+        L::TITLE,
+        limit.as_secs_f64()
+    );
+    if timed_out {
+        // Its process gone, its calls into it fail, and its stop ends.
+        if let Err(error) = slot.view.dispose_with_timeout(STOP_EXIT).await {
+            eprintln!(
+                "rutis-loader: stopping the {} runtime {runtime} after killing it: {error}",
+                L::TITLE
+            );
+        }
+    }
+}
+
 impl<L: BinaryLanguage> Inner<L> {
     /// A row resolved to `runtime`, or waits for it: start it unless it
     /// runs, or stopped after a crash with its binary unchanged.
@@ -1548,13 +1633,11 @@ impl<L: BinaryLanguage> Inner<L> {
     ) {
         let stamp = Some(launched.stamp.clone());
         self.resolver.launched(runtime, launched);
-        let handle = runtime_plugin
-            .first
-            .lock()
-            .unwrap()
-            .as_ref()
-            .expect("the first runtime was just made")
-            .handle();
+        let (handle, processes) = {
+            let first = runtime_plugin.first.lock().unwrap();
+            let local = first.as_ref().expect("the first runtime was just made");
+            (local.handle(), local.processes())
+        };
         let view = ctx.plugin(runtime_plugin);
         let mut slots = self.slots.lock().unwrap();
         slots.generation += 1;
@@ -1565,6 +1648,7 @@ impl<L: BinaryLanguage> Inner<L> {
             Slot {
                 view,
                 handle,
+                processes,
                 stamp,
                 binary,
                 last_used: Instant::now(),
@@ -1587,7 +1671,7 @@ impl<L: BinaryLanguage> Inner<L> {
         })?;
         let previous = self.slots.lock().unwrap().running.remove(runtime);
         if let Some(previous) = previous {
-            let _ = previous.view.dispose().await;
+            stop::<L>(runtime, previous).await;
         }
         self.resolver.stopped(runtime);
         self.install(runtime, ctx, plugin, binary, launched);
@@ -1825,7 +1909,7 @@ impl<L: BinaryLanguage> Inner<L> {
                 let _busy = busy;
                 let previous = inner.slots.lock().unwrap().running.remove(&name);
                 if let Some(previous) = previous {
-                    let _ = previous.view.dispose().await;
+                    stop::<L>(&name, previous).await;
                 }
                 inner.resolver.stopped(&name);
             });
@@ -2014,6 +2098,42 @@ mod tests {
     fn a_failed_start_without_a_file_is_not_retried() {
         let failed = FailedStart::of(None, "there is no runtime".into());
         assert!(!failed.retry());
+    }
+
+    #[cfg(unix)]
+    fn manifest_script(dir: &Path, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join("runtime");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+
+    /// A manifest that floods stdout is refused at 16 MiB instead of being
+    /// buffered without bound.
+    #[cfg(unix)]
+    #[test]
+    fn a_manifest_that_prints_more_than_the_cap_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = manifest_script(
+            dir.path(),
+            "dd if=/dev/zero bs=1048576 count=17 2>/dev/null",
+        );
+        let error = read_manifest(&path).unwrap_err();
+        assert!(error.contains("more than 16 MiB"), "{error}");
+    }
+
+    /// Errors beyond the kept 64 KiB are read and dropped: a binary that
+    /// writes them keeps running and its manifest is read.
+    #[cfg(unix)]
+    #[test]
+    fn a_manifest_may_write_more_errors_than_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = manifest_script(dir.path(), "printf '{}'\nhead -c 100000 /dev/zero >&2");
+        assert_eq!(read_manifest(&path).unwrap().plugin_api, 0);
     }
 
     #[cfg(feature = "go")]

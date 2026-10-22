@@ -186,7 +186,9 @@ impl Ctx {
         Ok(())
     }
 
-    pub(crate) fn in_instance_key(&self, key: &TypeKey) -> bool {
+    /// False when `key` names an instance this context is not inside (its
+    /// fiber is neither that instance's fiber nor a descendant of it).
+    pub fn in_instance_key(&self, key: &TypeKey) -> bool {
         key.instance_id().is_none_or(|id| self.in_instance(id))
     }
 
@@ -584,6 +586,12 @@ impl Ctx {
             .unwrap_or_default()
     }
 
+    /// The isolation label under which this context reads `key`, if any
+    /// (the label of its nearest [`Ctx::isolate`] for it).
+    pub fn isolate_label(&self, key: &TypeKey) -> Option<String> {
+        self.scope_for(key).map(|scope| scope.to_string())
+    }
+
     /// scope 解析:沿 Ctx 父链回溯,取该键最近的 isolate 覆盖(§四:保留父链查找)。
     pub(crate) fn scope_for(&self, key: &TypeKey) -> Option<ScopeId> {
         let mut current = Some(self.clone());
@@ -674,8 +682,36 @@ impl Ctx {
         &self,
         key: impl Into<TypeKey>,
     ) -> Result<Arc<T>, ServiceReadError> {
-        let location = std::panic::Location::caller();
-        let key = key.into();
+        self.require_inner(key.into(), std::panic::Location::caller(), None, None)
+    }
+
+    /// The strict read a marked service's entry by name makes on every call
+    /// ([`crate::service::Entry::resolve`]): [`Ctx::require_as`] by the
+    /// providing context, of the binding `provision` provided only, with
+    /// read interceptors selected for `actor` (the calling row; this
+    /// context when there is none), as for a Rust reader in its place.
+    #[track_caller]
+    pub fn require_provided_as<T: ?Sized + Send + Sync + 'static>(
+        &self,
+        key: impl Into<TypeKey>,
+        provision: &crate::service::Provision,
+        actor: Option<&Ctx>,
+    ) -> Result<Arc<T>, ServiceReadError> {
+        self.require_inner(
+            key.into(),
+            std::panic::Location::caller(),
+            Some(provision),
+            actor,
+        )
+    }
+
+    fn require_inner<T: ?Sized + Send + Sync + 'static>(
+        &self,
+        key: TypeKey,
+        location: &'static std::panic::Location<'static>,
+        provision: Option<&crate::service::Provision>,
+        actor: Option<&Ctx>,
+    ) -> Result<Arc<T>, ServiceReadError> {
         let scope = self.scope_for(&key);
         let caller = self.0.fiber.upgrade();
         let own_service = caller.as_ref().is_some_and(|fiber| {
@@ -736,6 +772,18 @@ impl Ctx {
         }
 
         let binding = self.0.shared.registry.lookup(&key, scope.as_ref());
+        // A marked service's entry serves the binding it was provided as:
+        // another one in the slot (provided again, by another build) is not
+        // the value its code was chosen for.
+        if let Some(provision) = provision {
+            if !binding
+                .as_ref()
+                .is_some_and(|binding| provision.is(binding))
+            {
+                let reason = ServiceReadFailure::Unavailable(DependencyStatus::Missing);
+                return Err(self.read_error(key, reason, location));
+            }
+        }
         // The cached status is read-only: this path never invokes user check().
         // Self-provided services retain the existing loading/cleanup exemption.
         if !own_service {
@@ -823,7 +871,8 @@ impl Ctx {
             })
         });
         let result = match value {
-            Some(value) => self
+            Some(value) => actor
+                .unwrap_or(self)
                 .apply_read_interceptors(&key, scope.as_ref(), value)
                 .map_err(|failure| {
                     reason = Some(failure);
@@ -1021,15 +1070,20 @@ impl Ctx {
         // Then the name: one taken in this scope (R6) refuses the provide
         // before the native service is registered, so no consumer sees a
         // native service that is then withdrawn.
+        let provision = Arc::new(crate::service::Provision::new());
         let exposed = crate::service::expose(crate::service::Exposure {
             ctx: self,
             native: &key,
             scope: scope.as_deref(),
             entries,
             check: check.clone(),
+            provision: provision.clone(),
         })
         .transpose()?;
         let registered = self.provide_native(key, value, check, mutable);
+        if let Ok((_, binding)) = &registered {
+            provision.fill(binding);
+        }
         match (registered, exposed) {
             (Ok((disposer, binding)), Some(exposed)) => {
                 // One disposer for both, the name going first.
