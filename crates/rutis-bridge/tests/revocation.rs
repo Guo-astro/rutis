@@ -31,7 +31,7 @@ use rutis_bridge::{
     Peer, Registration, Release, Retry, Revocable, Revocations, SharedToken, StaticIdentity,
     Transport,
 };
-use rutis_test_support::{eventually, within, HANG_GUARD};
+use rutis_test_support::{eventually, scaled, within, HANG_GUARD};
 use serde_json::json;
 use tokio::sync::{broadcast, watch};
 
@@ -116,7 +116,8 @@ async fn main() -> Main {
         .unwrap();
     let kept = Kept::default();
     let access = AccessPointPlugin::new(
-        AccessPointConfig::new(id("phone"), "websocket", "phone", "public").handshake(HANG_GUARD),
+        AccessPointConfig::new(id("phone"), "websocket", "phone", "public")
+            .handshake(scaled(HANG_GUARD)),
     )
     .accept(kept.clone());
     let events = access.events();
@@ -226,7 +227,7 @@ fn hang(
             Arc::new(move |_: &Connection, _: &str, _: &str, _: Value| {
                 *runs.lock().unwrap() += 1;
                 let _ = started.send(());
-                let _ = gate.lock().unwrap().recv_timeout(HANG_GUARD);
+                let _ = gate.lock().unwrap().recv_timeout(scaled(HANG_GUARD));
                 Ok(Value::Data(json!("done")))
             }),
         )
@@ -758,7 +759,8 @@ async fn an_id_revoked_while_its_connection_takes_over_is_not_accepted() {
         gate: Arc::default(),
     };
     let access = AccessPointPlugin::new(
-        AccessPointConfig::new(id("phone"), "websocket", "phone", "public").handshake(HANG_GUARD),
+        AccessPointConfig::new(id("phone"), "websocket", "phone", "public")
+            .handshake(scaled(HANG_GUARD)),
     )
     .accept(gated.clone());
     let mut events = access.events();

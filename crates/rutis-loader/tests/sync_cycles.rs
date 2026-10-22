@@ -213,7 +213,7 @@ impl HostDispatch for Gate {
         state.waiting.push(name.clone());
         changed.notify_all();
         let (state, timeout) = changed
-            .wait_timeout_while(state, COLD.0, |state| {
+            .wait_timeout_while(state, COLD.limit(), |state| {
                 !state.open.contains(&name)
                     && !(state.parties > 0 && state.waiting.len() >= state.parties)
             })
@@ -277,7 +277,7 @@ fn call(root: &Ctx, name: &str, method: &str) -> mpsc::Receiver<Result<Value, St
 
 fn answer(result: &mpsc::Receiver<Result<Value, String>>, what: &str) -> Value {
     result
-        .recv_timeout(COLD.0)
+        .recv_timeout(COLD.limit())
         .unwrap_or_else(|_| panic!("{what} hangs: the runtimes wait on each other"))
         .unwrap_or_else(|error| panic!("{what} failed: {error}"))
 }

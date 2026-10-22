@@ -24,7 +24,7 @@ use rutis_loader::{
     Builtins, Chain, Editable, EntryInfo, EntryStatus, Layer, Loader, LoaderOptions, LoaderPlugin,
     NewEntry, Patch, RuntimeConnection, RuntimeInstances, ServiceCatalog, Version,
 };
-use rutis_test_support::{eventually, within, HANG_GUARD};
+use rutis_test_support::{eventually, scaled, within, HANG_GUARD};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
@@ -365,7 +365,7 @@ async fn main() -> Main {
     let access = AccessPointPlugin::new(
         AccessPointConfig::new(id("phone"), "memory", "phone", "main-in")
             .require("runtime")
-            .handshake(HANG_GUARD),
+            .handshake(scaled(HANG_GUARD)),
     )
     .accept(instances.accept(loader.clone(), root.clone()));
     let events = access.events();

@@ -27,7 +27,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use common::repo;
-use rutis_test_support::HANG_GUARD;
+use rutis_test_support::{scaled, HANG_GUARD};
 use serde_json::json;
 
 /// Only against a hang: the host starts a Python and a Node runtime cold.
@@ -161,7 +161,7 @@ impl Host {
     /// Read lines until one satisfies `want`; that line.
     fn wait_line(&mut self, want: impl Fn(&str) -> bool) -> String {
         loop {
-            match self.lines.recv_timeout(GUARD) {
+            match self.lines.recv_timeout(scaled(GUARD)) {
                 Ok(line) => {
                     self.seen.push(line.clone());
                     if want(&line) {
@@ -182,19 +182,19 @@ impl Host {
         std::thread::spawn(move || {
             let _ = send.send(child.wait());
         });
-        let Ok(status) = exited.recv_timeout(GUARD) else {
+        let Ok(status) = exited.recv_timeout(scaled(GUARD)) else {
             // SAFETY: plain kill(2) of the host's group.
             unsafe { libc::kill(-pid, libc::SIGKILL) };
             panic!("rutis-host did not exit; its output: {:#?}", self.seen);
         };
         loop {
-            match self.lines.recv_timeout(GUARD) {
+            match self.lines.recv_timeout(scaled(GUARD)) {
                 Ok(line) => self.seen.push(line),
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(error) => panic!("the output did not end: {error}; {:#?}", self.seen),
             }
         }
-        let stderr = self.stderr.recv_timeout(GUARD).unwrap_or_default();
+        let stderr = self.stderr.recv_timeout(scaled(GUARD)).unwrap_or_default();
         (status.unwrap(), stderr, self.seen)
     }
 
@@ -203,7 +203,7 @@ impl Host {
         // groups of their own, end with their channels.
         unsafe { libc::kill(-(self.child.id() as i32), libc::SIGKILL) };
         let _ = self.child.wait();
-        let stderr = self.stderr.recv_timeout(GUARD).unwrap_or_default();
+        let stderr = self.stderr.recv_timeout(scaled(GUARD)).unwrap_or_default();
         panic!("{what}; output: {:#?}; stderr: {stderr}", self.seen);
     }
 }

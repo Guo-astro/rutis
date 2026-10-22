@@ -132,13 +132,24 @@ impl LinkConfig {
         self
     }
 
-    /// A local runtime process: the compat protocol, and no reconnecting.
+    /// A local runtime process: the compat protocol, no reconnecting, and
+    /// 30 s to greet (`LOCAL_RUNTIME_GREETING`).
     pub fn local_runtime(mut self) -> Self {
         self.compat = true;
         self.reconnect = false;
+        self.retry.handshake = LOCAL_RUNTIME_GREETING;
         self
     }
 }
+
+/// How long a local runtime process may take to greet, counted from its
+/// spawn: the interpreter starting (a JVM, Python with its imports, Node or
+/// Bun loading their modules) is part of it, and a healthy one on a busy or
+/// slow machine (several runtimes starting at once at boot, a small board)
+/// can take longer than the network's 10 s. A process that ends is noticed
+/// at once, by its channel closing; this only bounds one that lives and says
+/// nothing.
+const LOCAL_RUNTIME_GREETING: Duration = Duration::from_secs(30);
 
 /// Why the link is not ready, by what it means for retrying.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

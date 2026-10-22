@@ -21,7 +21,7 @@ use rutis_bridge::{
     Peer, Presented, Refusal, Registered, Registration, RegistrationError, Registrations, Retry,
     StaticIdentity, Transport,
 };
-use rutis_test_support::{recv_within, HANG_GUARD};
+use rutis_test_support::{recv_within, scaled, HANG_GUARD};
 
 /// Messages a logical channel may have in flight before the far end
 /// consumed them.
@@ -511,9 +511,10 @@ impl Transport for Mux {
                 .map_err(|error| ConnectError::Retryable {
                     reason: error.to_string(),
                 })?;
-            let answer = tokio::task::spawn_blocking(move || answer.recv_timeout(HANG_GUARD))
-                .await
-                .unwrap();
+            let answer =
+                tokio::task::spawn_blocking(move || answer.recv_timeout(scaled(HANG_GUARD)))
+                    .await
+                    .unwrap();
             match answer {
                 Ok(Ok(_peer)) => Ok(channel),
                 Ok(Err((failure, reason))) => {
