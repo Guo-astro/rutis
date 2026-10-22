@@ -167,6 +167,7 @@ final class DialedSocket: NSObject, Channel, URLSessionWebSocketDelegate, @unche
                 }
             } onCancel: {
                 task.cancel()
+                socket.close("dial cancelled")
             }
         } catch {
             socket.session.invalidateAndCancel()
@@ -329,10 +330,6 @@ final class DialedSocket: NSObject, Channel, URLSessionWebSocketDelegate, @unche
         lock.withLock { heart }?.cancel()
         task.cancel(with: code, reason: Data(reason.utf8.prefix(123)))
         session.finishTasksAndInvalidate()
-    }
-
-    deinit {
-        close("deinitialized")
     }
 }
 
