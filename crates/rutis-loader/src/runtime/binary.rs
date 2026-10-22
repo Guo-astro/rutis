@@ -624,13 +624,14 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
 
     /// Read the binary of `runtime` again and record its manifest as the one
     /// its runtime starts with; the rows resolved to it resolve again.
-    fn launch(&self, runtime: &str) -> Result<PathBuf, String> {
+    fn launch(&self, runtime: &str) -> Result<(PathBuf, Option<Stamp>), (Option<PathBuf>, String)> {
         let binary = self
             .scan(Force::Runtime(runtime))
             .into_iter()
             .find(|binary| binary.runtime == runtime)
-            .ok_or_else(|| format!("there is no {} runtime {runtime}", L::TITLE))?;
-        let manifest = binary.manifest.clone()?;
+            .ok_or_else(|| (None, format!("there is no {} runtime {runtime}", L::TITLE)))?;
+        let path = Some(binary.path.clone());
+        let manifest = binary.manifest.clone().map_err(|why| (path.clone(), why))?;
         let mut state = self.state.lock().unwrap();
         state.launched.insert(
             runtime.to_owned(),
@@ -645,7 +646,7 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
             .entry(runtime.to_owned())
             .or_default()
             .extend(resolved);
-        Ok(binary.path)
+        Ok((binary.path, Some(binary.stamp)))
     }
 
     fn stopped(&self, runtime: &str) {
@@ -1019,6 +1020,27 @@ struct Slot {
     generation: u64,
 }
 
+/// A start that failed before there was a slot to watch: the file it
+/// failed on (`None` when it was already gone) and why. It stays Stopped
+/// until that file changes or [`BinaryRuntimesHandle::restart`] asks again.
+struct FailedStart {
+    binary: Option<PathBuf>,
+    stamp: Option<Stamp>,
+    why: String,
+}
+
+impl FailedStart {
+    fn of(binary: Option<PathBuf>, why: String) -> Self {
+        let stamp = binary.as_deref().and_then(stamp);
+        Self { binary, stamp, why }
+    }
+
+    /// Whether the file this failed on changed (or came back).
+    fn retry(&self) -> bool {
+        self.binary.as_deref().and_then(stamp) != self.stamp
+    }
+}
+
 impl Slot {
     /// Note that its process ended, if it did and that is news: why.
     fn ended(&mut self) -> Option<String> {
@@ -1040,6 +1062,9 @@ struct Ended {
     ran: Duration,
     generation: u64,
 }
+
+type StartFailure = (Option<PathBuf>, String);
+type Prepared<L> = Result<(Ctx, BinaryRuntime<L>, PathBuf, Option<Stamp>), StartFailure>;
 
 struct Inner<L: BinaryLanguage> {
     resolver: Arc<BinaryResolver<L>>,
@@ -1083,9 +1108,10 @@ struct Slots {
     /// Runtimes a row asked for while they were busy: wanted again once
     /// that is over (a stop in progress is followed by a start).
     rewanted: HashSet<String>,
-    /// A failed start waits until this time before trying again: a bad or
-    /// missing binary is not retried on every sweep (every 100 ms).
-    retry_after: HashMap<String, Instant>,
+    /// Starts that failed, and the file they failed on: a failed start is
+    /// not retried on every sweep (every 100 ms), only when the file
+    /// changes or a caller asks for a restart.
+    failed: HashMap<String, FailedStart>,
     /// The last start's generation.
     generation: u64,
 }
@@ -1228,6 +1254,8 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
+        // Asked for by hand: a failure kept for the same file is tried again.
+        self.inner.slots.lock().unwrap().failed.remove(name);
         // In a task: dropped half way, the restart would free the name while
         // the old runtime is still stopping, and the next start would run a
         // second process under it meanwhile (#307).
@@ -1311,7 +1339,13 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
                     None if slots.busy.contains(&binary.runtime) => {
                         (BinaryRuntimeState::Starting, false)
                     }
-                    None => (BinaryRuntimeState::NotStarted, false),
+                    None => match slots.failed.get(&binary.runtime) {
+                        Some(failed) => (
+                            BinaryRuntimeState::Stopped(failed.why.clone()),
+                            Some(binary.stamp.clone()) != failed.stamp,
+                        ),
+                        None => (BinaryRuntimeState::NotStarted, false),
+                    },
                     Some(slot) => {
                         let state = match (&slot.stopped, slot.handle.state()) {
                             (Some(reason), _) => BinaryRuntimeState::Stopped(reason.clone()),
@@ -1350,6 +1384,13 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
             .iter()
             .map(|(name, slot)| (name.clone(), slot.handle.state()))
             .collect();
+        states.extend(
+            slots
+                .failed
+                .iter()
+                .filter(|(name, _)| !slots.running.contains_key(*name))
+                .map(|(name, failed)| (name.clone(), RuntimeState::Down(failed.why.clone()))),
+        );
         states.sort_by(|a, b| a.0.cmp(&b.0));
         states
     }
@@ -1371,6 +1412,10 @@ impl<L: BinaryLanguage> Inner<L> {
                 slots.rewanted.insert(runtime.to_owned());
                 return;
             }
+            let quiet = slots
+                .failed
+                .get(runtime)
+                .is_some_and(|failed| !failed.retry());
             let transition = match slots.running.get_mut(runtime) {
                 Some(slot) => {
                     slot.last_used = Instant::now();
@@ -1385,23 +1430,27 @@ impl<L: BinaryLanguage> Inner<L> {
                         });
                     }
                     match &slot.stopped {
-                        None => None,
+                        None => {
+                            let now = stamp(&slot.binary);
+                            let replaced = now.is_some() && now != slot.stamp;
+                            (replaced && !quiet).then_some(Transition::Restart)
+                        }
                         // Crashed: only a new binary is worth another try
                         // here; its restart policy may start it again. A
                         // binary that disappeared is not "changed".
                         Some(_) => {
                             let now = stamp(&slot.binary);
-                            (now.is_some() && now != slot.stamp).then_some(Transition::Restart)
+                            (now.is_some() && now != slot.stamp && !quiet)
+                                .then_some(Transition::Restart)
                         }
                     }
                 }
                 None => {
-                    if slots
-                        .retry_after
-                        .get(runtime)
-                        .is_some_and(|until| Instant::now() < *until)
-                    {
-                        return;
+                    if let Some(failed) = slots.failed.get(runtime) {
+                        if !failed.retry() {
+                            return;
+                        }
+                        slots.failed.remove(runtime);
                     }
                     Some(Transition::Start)
                 }
@@ -1419,14 +1468,10 @@ impl<L: BinaryLanguage> Inner<L> {
             }
             Some(Transition::Start) => {
                 let _busy = Busy::held(self, runtime);
-                if let Err(error) = self.start(runtime) {
-                    self.slots
-                        .lock()
-                        .unwrap()
-                        .retry_after
-                        .insert(runtime.to_owned(), Instant::now() + Duration::from_secs(1));
+                if let Err((binary, why)) = self.start(runtime) {
+                    self.note_failed(runtime, binary, why.clone());
                     eprintln!(
-                        "rutis-loader: cannot start the {} runtime {runtime}: {error}",
+                        "rutis-loader: cannot start the {} runtime {runtime}: {why}",
                         L::TITLE
                     );
                 }
@@ -1447,26 +1492,26 @@ impl<L: BinaryLanguage> Inner<L> {
         }
     }
 
-    /// Stop `runtime` and start it again, holding its busy mark. The new
-    /// process starts only once the old one is gone: both use the
-    /// runtime's name.
-    async fn restart_now(self: Arc<Self>, runtime: &str, _busy: Busy<L>) -> Result<(), String> {
-        let previous = self.slots.lock().unwrap().running.remove(runtime);
-        if let Some(previous) = previous {
-            let _ = previous.view.dispose().await;
-        }
-        self.resolver.stopped(runtime);
-        self.start(runtime)
+    /// Remember a failed start until its file changes or a caller asks
+    /// again, and show it in [`BinaryRuntimesHandle::states`].
+    fn note_failed(&self, runtime: &str, binary: Option<PathBuf>, why: String) {
+        self.slots
+            .lock()
+            .unwrap()
+            .failed
+            .insert(runtime.to_owned(), FailedStart::of(binary, why));
     }
 
-    fn start(&self, runtime: &str) -> Result<(), String> {
+    /// Read the binary and start its process, before anything of an old
+    /// runtime is dropped: a restart that cannot start keeps the old one.
+    fn prepare(&self, runtime: &str) -> Prepared<L> {
         let ctx = self
             .ctx
             .lock()
             .unwrap()
             .clone()
-            .ok_or_else(|| format!("the {} runtimes are not running", L::TITLE))?;
-        let binary = self.resolver.launch(runtime)?;
+            .ok_or_else(|| (None, format!("the {} runtimes are not running", L::TITLE)))?;
+        let (binary, stamp) = self.resolver.launch(runtime)?;
         let mut runtime_plugin = BinaryRuntime::<L> {
             label: format!("{runtime} ({})", L::PREFIX),
             runtime: runtime.to_owned(),
@@ -1477,19 +1522,36 @@ impl<L: BinaryLanguage> Inner<L> {
             first: Mutex::new(None),
         };
         let local = runtime_plugin.local();
-        let handle = local.handle();
         runtime_plugin.first = Mutex::new(Some(local));
+        Ok((ctx, runtime_plugin, binary, stamp))
+    }
+
+    fn install(
+        &self,
+        runtime: &str,
+        ctx: Ctx,
+        runtime_plugin: BinaryRuntime<L>,
+        binary: PathBuf,
+        stamp: Option<Stamp>,
+    ) {
+        let handle = runtime_plugin
+            .first
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("the first runtime was just made")
+            .handle();
         let view = ctx.plugin(runtime_plugin);
         let mut slots = self.slots.lock().unwrap();
         slots.generation += 1;
         let generation = slots.generation;
-        slots.retry_after.remove(runtime);
+        slots.failed.remove(runtime);
         slots.running.insert(
             runtime.to_owned(),
             Slot {
                 view,
                 handle,
-                stamp: stamp(&binary),
+                stamp,
                 binary,
                 last_used: Instant::now(),
                 stopped: None,
@@ -1497,6 +1559,30 @@ impl<L: BinaryLanguage> Inner<L> {
                 generation,
             },
         );
+    }
+
+    /// Stop `runtime` and start it again, holding its busy mark. The new
+    /// process is started before the old one is dropped: a binary that no
+    /// longer starts leaves the old runtime running. Both processes use the
+    /// runtime's name, so the new one is not plugged in until the old one is
+    /// gone.
+    async fn restart_now(self: Arc<Self>, runtime: &str, _busy: Busy<L>) -> Result<(), String> {
+        let (ctx, plugin, binary, stamp) = self.prepare(runtime).map_err(|(binary, why)| {
+            self.note_failed(runtime, binary, why.clone());
+            why
+        })?;
+        let previous = self.slots.lock().unwrap().running.remove(runtime);
+        if let Some(previous) = previous {
+            let _ = previous.view.dispose().await;
+        }
+        self.resolver.stopped(runtime);
+        self.install(runtime, ctx, plugin, binary, stamp);
+        Ok(())
+    }
+
+    fn start(&self, runtime: &str) -> Result<(), StartFailure> {
+        let (ctx, plugin, binary, stamp) = self.prepare(runtime)?;
+        self.install(runtime, ctx, plugin, binary, stamp);
         Ok(())
     }
 
@@ -1575,6 +1661,10 @@ impl<L: BinaryLanguage> Inner<L> {
         let Some(supervision) = self.supervision.lock().unwrap().clone() else {
             return;
         };
+        // The policy may have changed while this restart waited.
+        if supervision.policy != RestartPolicy::OnFailure {
+            return;
+        }
         let Some(busy) = Busy::take(&self, &runtime) else {
             return;
         };
@@ -1887,6 +1977,29 @@ mod tests {
         });
         assert!(started.is_err());
         assert_eq!(tries, 1);
+    }
+
+    /// A failed start is retried only when its file changes, not on every
+    /// sweep.
+    #[test]
+    fn a_failed_start_waits_for_its_file_to_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runtime");
+        std::fs::write(&path, b"one").unwrap();
+        let failed = FailedStart::of(Some(path.clone()), "cannot start".into());
+        assert!(!failed.retry());
+        std::fs::write(&path, b"another").unwrap();
+        assert!(failed.retry());
+        std::fs::remove_file(&path).unwrap();
+        assert!(failed.retry());
+    }
+
+    /// A failed start whose file was already gone stays stopped until a
+    /// caller asks again.
+    #[test]
+    fn a_failed_start_without_a_file_is_not_retried() {
+        let failed = FailedStart::of(None, "there is no runtime".into());
+        assert!(!failed.retry());
     }
 
     #[cfg(feature = "go")]
