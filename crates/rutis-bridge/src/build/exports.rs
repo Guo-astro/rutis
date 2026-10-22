@@ -2571,6 +2571,8 @@ mod tests {
         assert!(ts.contains("  board: Named\n"), "{ts}");
         assert!(ts.contains("now(): Promise<number>"), "{ts}");
         assert!(ts.contains("explicit(): Promise<number>"), "{ts}");
+        // `self: &Self` is `&self`: no warning that it cannot be bound.
+        assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
         assert!(ts.contains("read(): Promise<string>"), "{ts}");
         assert!(!ts.contains("unmarked") && !ts.contains("reset"), "{ts}");
         assert!(!generated.rust.contains("Clock"), "{}", generated.rust);
