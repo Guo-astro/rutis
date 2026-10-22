@@ -73,13 +73,14 @@ object RutisTest {
         row: String? = null,
         scope: List<Scope> = emptyList(),
         runtime: String = "kotlin",
+        isolate: Map<String, String> = emptyMap(),
     ): Loaded {
         for (name in plugin.inject) {
             if (name !in services) throw IllegalArgumentException("RutisTest: the plugin injects $name: give the test a service $name")
         }
         val harness = Harness(plugin, services, runtime)
         harness.start()
-        return harness.load(config, row, scope)
+        return harness.load(config, row, scope, isolate)
     }
 
     /** A scope chain of `path` (`t1/s1`): one instance per segment, its group the segment unless `groups` says. */
@@ -148,7 +149,12 @@ internal class Harness(val plugin: Plugin, private val services: Map<String, Any
     fun call(target: String, method: String, args: List<Any?>, sync: Boolean = false): Any? =
         runBlocking { withTimeout(WAIT_MILLIS + Shutdown.millis()) { session.callSuspend(target, method, args, sync) } }
 
-    fun load(config: Any?, row: String?, scope: List<Scope>): Loaded {
+    fun load(
+        config: Any?,
+        row: String?,
+        scope: List<Scope>,
+        isolate: Map<String, String> = emptyMap(),
+    ): Loaded {
         val key: String
         val exports = LinkedHashMap<String, Any?>()
         synchronized(lock) {
@@ -163,8 +169,9 @@ internal class Harness(val plugin: Plugin, private val services: Map<String, Any
         synchronized(lock) { rows.add(loaded) }
         val configValue = if (config == null) JsonNull else Native.fromNative(config)
         val placed = linkedMapOf("scope" to scope.map { linkedMapOf("id" to it.id, "group" to it.group) })
+        val labels = isolate.map { (name, label) -> listOf(name, label) }
         try {
-            call("", "rows.load", listOf(key, plugin.name, configValue, emptyList<Any?>(), emptyList<Any?>(), exports, placed))
+            call("", "rows.load", listOf(key, plugin.name, configValue, labels, emptyList<Any?>(), exports, placed))
         } catch (e: Throwable) {
             forgetRow(key)
             throw e
@@ -513,8 +520,13 @@ class Loaded internal constructor(private val h: Harness, val row: String, val s
     @Volatile
     private var unloaded = false
 
-    /** Loads another row of the same plugin into the same runtime, in `scope`. */
-    fun load(config: Any? = null, row: String? = null, scope: List<Scope> = emptyList()): Loaded = h.load(config, row, scope)
+    /** Loads another row of the same plugin into the same runtime, in `scope` and with `isolate` labels. */
+    fun load(
+        config: Any? = null,
+        row: String? = null,
+        scope: List<Scope> = emptyList(),
+        isolate: Map<String, String> = emptyMap(),
+    ): Loaded = h.load(config, row, scope, isolate)
 
     /** The services the plugin provides now. */
     val provided: List<String> get() = h.providedNames()

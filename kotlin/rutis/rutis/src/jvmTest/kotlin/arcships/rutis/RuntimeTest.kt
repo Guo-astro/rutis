@@ -106,10 +106,23 @@ class RuntimeTest {
             ctx.provide("hello", Hello("row"))
         }
         RutisTest.load(plugin).use { first ->
-            val second = first.load()
+            val second = first.load(isolate = mapOf("hello" to "second"))
             val hello = second.service("hello")
             assertEquals(mapOf("greet" to "sync", "greetLater" to "async"), hello.methods)
             assertEquals("row Kim", hello.call("greet", "Kim"))
+        }
+    }
+
+    @Test
+    fun aSecondRowWithoutItsOwnLabelCannotProvideTheSameService() = runBlocking<Unit> {
+        val plugin = Rutis.define<Rutis.NoConfig>(
+            name = "rows-unisolated",
+            provides = mapOf("hello" to service<Hello>(sync = setOf("greet"))),
+        ) { ctx, _ ->
+            ctx.provide("hello", Hello("row"))
+        }
+        RutisTest.load(plugin).use { first ->
+            assertFailsWith<RutisException> { first.load() }
         }
     }
 
