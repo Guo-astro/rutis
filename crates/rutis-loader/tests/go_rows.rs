@@ -469,12 +469,16 @@ fn vanishing(path: &Path) {
 }
 
 /// A Go binary at `path` whose manifest read always fails; each read adds
-/// a line to the file `runs`. `version` makes a file of another size.
+/// a line to the file `runs`. `version` makes a file of another size. It
+/// is written aside and renamed into place: one change of the file, which
+/// a sweep cannot see half made (written, then made executable).
 #[cfg(unix)]
 fn always_failing(path: &Path, runs: &Path, version: usize) {
     use std::os::unix::fs::PermissionsExt;
+    // Outside the binaries' directory: not a binary of its own meanwhile.
+    let staged = runs.with_file_name("staged");
     std::fs::write(
-        path,
+        &staged,
         format!(
             "#!/bin/sh\n# rutis-go-runtime:1\n# {}\necho run >> '{}'\nexit 3\n",
             "v".repeat(version),
@@ -482,7 +486,8 @@ fn always_failing(path: &Path, runs: &Path, version: usize) {
         ),
     )
     .unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::rename(&staged, path).unwrap();
 }
 
 /// A binary a row uses that is gone when its runtime starts: the failure is
