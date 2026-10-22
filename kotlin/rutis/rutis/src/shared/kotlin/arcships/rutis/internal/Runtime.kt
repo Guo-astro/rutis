@@ -14,9 +14,11 @@ import arcships.rutis.internal.peer.CallChain
 import arcships.rutis.internal.peer.Peer
 import arcships.rutis.internal.peer.Undefined
 import kotlinx.coroutines.CompletableJob
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
@@ -238,21 +240,33 @@ class RuntimeState(plugins: List<Plugin>) {
             throw IllegalArgumentException("rutis: provide $name: ${value.javaClass.name} is not the ${type.name} provides declares")
         }
         val id = row.id(name)
+        var inactive = false
         synchronized(lock) {
-            services[id]?.let { throw IllegalStateException("rutis: service ${printable(id)} is already provided by row ${it.row}") }
-            services[id] = Provided(row.key, value, shape, table)
-            row.provided.add(id)
-            // Not declared: announced, with its methods; a host older than
-            // 0.12 does not take it, and the plugin is told, once per name.
-            if (slots[id] == null && '#' !in name) {
-                if (announce) {
-                    slots[id] = Slot(row.key, name, null, announced = true)
-                    row.announced.add(id)
-                } else if (mounted && told.add(name)) {
-                    oldHostOutput(oldHost(name))
+            if (rows[row.key] !== row) {
+                // A task of an unloaded row providing: refused, or the
+                // service would outlive its row and the next load find it
+                // taken.
+                inactive = true
+            } else {
+                services[id]?.let { throw IllegalStateException("rutis: service ${printable(id)} is already provided by row ${it.row}") }
+                services[id] = Provided(row.key, value, shape, table)
+                row.provided.add(id)
+                // Not declared: announced, with its methods; a host older than
+                // 0.12 does not take it, and the plugin is told, once per name.
+                if (slots[id] == null && '#' !in name) {
+                    if (announce) {
+                        slots[id] = Slot(row.key, name, null, announced = true)
+                        row.announced.add(id)
+                    } else if (mounted && told.add(name)) {
+                        oldHostOutput(oldHost(name))
+                    }
                 }
+                refresh(id)
             }
-            refresh(id)
+        }
+        if (inactive) {
+            Report.line("rutis: row ${row.key} is not active: service $name is not provided")
+            return {}
         }
         return {
             synchronized(lock) {
@@ -351,9 +365,23 @@ class RuntimeState(plugins: List<Plugin>) {
         }
     }
 
-    internal suspend fun unload(key: String) {
+    /**
+     * Unloads row `key`. Returns false when it gave up (listeners or
+     * cleanups still running at the deadline); a failing cleanup does not
+     * stop the others, and the first failure is thrown once they ran.
+     */
+    internal suspend fun unload(key: String, deadlineNanos: Long? = null): Boolean {
+        val (done, failure) = unloadRow(key, deadlineNanos)
+        failure?.let { throw it }
+        return done
+    }
+
+    /** How a row unloaded: whether it finished in time, and its cleanups' failure. */
+    private data class Unloaded(val done: Boolean, val failure: Throwable?)
+
+    private suspend fun unloadRow(key: String, deadlineNanos: Long?): Unloaded {
         val row = synchronized(lock) {
-            val row = rows.remove(key) ?: return
+            val row = rows.remove(key) ?: return Unloaded(true, null)
             EventsRuntime.forgetListeners(this, row)
             // Withdrawals first: rutis hears them before the plugin goes away.
             for (id in row.provided.toList()) {
@@ -380,20 +408,48 @@ class RuntimeState(plugins: List<Plugin>) {
         // for, at most the shutdown deadline (§7.1); then its cleanups run,
         // latest first.
         row.job.cancel()
-        val budget = shutdownMillis
-        if (!row.listening.await(budget)) {
+        fun leftMillis(): Long? = deadlineNanos?.let { ((it - System.nanoTime()) / 1_000_000).coerceAtLeast(0) }
+        val budget = leftMillis() ?: shutdownMillis
+        val listened = if (deadlineNanos == null) {
+            row.listening.await(budget)
+        } else {
+            withTimeoutOrNull(budget) {
+                runInterruptible(Dispatchers.IO) { row.listening.await(budget) }
+            } ?: false
+        }
+        var gaveUp = !listened
+        if (!listened) {
             Report.line("rutis: listeners of row ${row.name} still running after ${Shutdown.shown(budget)}s; unloading anyway")
         }
-        withTimeoutOrNull(budget) { row.job.cancelAndJoin() }
+        val joinBudget = leftMillis() ?: budget
+        if (joinBudget > 0) withTimeoutOrNull(joinBudget) { row.job.cancelAndJoin() }
         var failure: Throwable? = null
         for (cleanup in row.cleanups.asReversed()) {
+            val left = leftMillis()
+            if (deadlineNanos != null && left == 0L) {
+                Report.line("rutis: gave up the cleanups of row ${row.name}")
+                gaveUp = true
+                break
+            }
             try {
-                withContext(CallChain.element(row.chain)) { cleanup() }
+                val done = if (deadlineNanos == null) {
+                    withContext(CallChain.element(row.chain)) { cleanup() }
+                    true
+                } else {
+                    withTimeoutOrNull(left!!) {
+                        withContext(CallChain.element(row.chain)) { cleanup() }
+                    } != null
+                }
+                if (!done) {
+                    Report.line("rutis: gave up the cleanups of row ${row.name}")
+                    gaveUp = true
+                    break
+                }
             } catch (e: Throwable) {
                 if (failure == null) failure = e else failure.addSuppressed(e)
             }
         }
-        failure?.let { throw it }
+        return Unloaded(!gaveUp, failure)
     }
 
     internal suspend fun update(key: String, config: Any?) {
@@ -403,21 +459,49 @@ class RuntimeState(plugins: List<Plugin>) {
         load(key, row.name, row.entry, config, row.exports, row.isolate, row.scope)
     }
 
-    /** Unloads every row, latest first. Returns false when it gave up cleanups at the deadline. */
+    /** Registers a cleanup if `row` is still the loaded row with `key`. */
+    internal fun addCleanup(row: Row, cleanup: suspend () -> Unit): Boolean = synchronized(lock) {
+        if (rows[row.key] !== row) return false
+        row.cleanups.add(cleanup)
+        true
+    }
+
+    /**
+     * Unloads every row, latest first. Returns false when it gave up
+     * cleanups at the deadline. The deadline bounds waiting for listeners
+     * and suspending cleanups; a cleanup that blocks its thread without
+     * suspending cannot be interrupted, so plugins should not do that.
+     * Only the deadline gives up: a failing cleanup is reported and the
+     * other rows still unload.
+     */
     suspend fun dispose(budgetMillis: Long? = null): Boolean {
         val ordered = synchronized(lock) { rows.values.sortedBy { it.order } }
+        val deadline = budgetMillis?.let { System.nanoTime() + it * 1_000_000 }
+        var all = true
         for (row in ordered.asReversed()) {
-            if (budgetMillis == null) {
-                runCatching { unload(row.key) }
-                continue
-            }
-            val done = withTimeoutOrNull(budgetMillis) { runCatching { unload(row.key) } }
-            if (done == null) {
+            val left = deadline?.let { ((it - System.nanoTime()) / 1_000_000).coerceAtLeast(0) }
+            if (deadline != null && left == 0L) {
                 System.err.println("rutis: gave up the cleanups of row ${row.key} and those after it")
                 return false
             }
+            val outcome = if (deadline == null) {
+                unloadRow(row.key, null)
+            } else {
+                withTimeoutOrNull(left!!) { unloadRow(row.key, deadline) } ?: Unloaded(false, null)
+            }
+            outcome.failure?.let {
+                System.err.println("rutis: a cleanup of row ${row.key} failed: ${Report.failure(it)}")
+            }
+            if (!outcome.done) {
+                all = false
+                // Without a deadline every row has its own budget: go on.
+                if (deadline != null) {
+                    System.err.println("rutis: gave up the cleanups of row ${row.key} and those after it")
+                    return false
+                }
+            }
         }
-        return true
+        return all
     }
 
     // ── Dispatch ─────────────────────────────────────────────────
