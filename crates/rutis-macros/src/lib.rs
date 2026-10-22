@@ -377,8 +377,10 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
             fn __rutis_resolve(
                 ctx: &#rutis::Ctx,
                 key: &#rutis::TypeKey,
+                provision: &#rutis::service::Provision,
+                actor: ::std::option::Option<&#rutis::Ctx>,
             ) -> ::std::result::Result<::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>, ::std::string::String> {
-                ctx.require_as::<#ty>(key.clone())
+                ctx.require_provided_as::<#ty>(key.clone(), provision, actor)
                     .map(|service| service as ::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>)
                     .map_err(|error| ::std::string::ToString::to_string(&error))
             }
