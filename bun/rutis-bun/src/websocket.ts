@@ -162,9 +162,10 @@ function wrap(socket: Socket, { message, closed }: Handlers, limits: Limits) {
 // Dial `spec` (ws:// or wss://) once. A failure rejects with a
 // ConnectError, classified from its status or close code, never from its
 // text, as rutis-bridge's dialer does: 401 / 403 at the upgrade and a TLS
-// handshake this side refuses (1015: Bun reports an untrusted certificate
-// so) are an authentication failure; 400, 404, 405, 426 and a session
-// protocol refusal are incompatible; the rest is retryable.
+// handshake this side refuses (an error whose code names the certificate,
+// as Node's do, since Bun 1.4.4; close code 1015 before) are an
+// authentication failure; 400, 404, 405, 426 and a session protocol
+// refusal are incompatible; the rest is retryable.
 export function open(spec: string, handlers: Handlers, { protocol, token, ca, limits = LIMITS }: Options = {}): Promise<WebSocketChannel> {
   try { dialHost(spec) } catch (error: any) { return Promise.reject(new ConnectError('incompatible', error.message)) }
   const where = new URL(spec).host
@@ -172,6 +173,13 @@ export function open(spec: string, handlers: Handlers, { protocol, token, ca, li
     let category: ConnectError['category'] | undefined
     let refused: string | undefined
     let opened = false
+    let settled = false
+    const fail = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(new ConnectError(category ?? 'retryable', refused ?? `${where}: closed before the upgrade`))
+    }
     let wrapped: ReturnType<typeof wrap> | undefined
     const socket: any = new WebSocket(spec, protocol ? [protocol] : [], {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -188,19 +196,30 @@ export function open(spec: string, handlers: Handlers, { protocol, token, ca, li
       // The access point's own words (for a session protocol refusal,
       // which end to upgrade): the first line, bounded, for the reader only.
       refused = `${where}: upgrade refused with ${status}`
+      // Settled once the body is read, not on the socket's close: with a
+      // listener here, the client leaves the request to it, as the `ws`
+      // package does (Bun 1.4.4 does too: no close follows), so it ends
+      // the socket itself, as the Node runtime does.
+      const refuse = () => { socket.terminate(); fail() }
+      if (typeof response.once !== 'function') { refuse(); return }
       let body = ''
       response.setEncoding?.('utf8')
-      response.on?.('data', (chunk: string) => { if (body.length < 1024) body += chunk })
-      response.once?.('end', () => {
+      response.on('data', (chunk: string) => { if (body.length < 1024) body += chunk })
+      response.once('end', () => {
         const said = (body.split('\n')[0] ?? '').trim().slice(0, 200).replace(/[\u0000-\u001f\u007f]/g, '')
         if (said) refused = `${where}: upgrade refused with ${status}: ${said}`
+        refuse()
       })
+      response.once('error', refuse)
+      response.once('close', refuse)
     })
     // Bun's client may report one failure more than once: every report is
     // handled, none is thrown.
-    socket.on('error', (error: Error) => {
-      if (wrapped) wrapped.events.error(error.message)
-      else refused ??= `${where}: ${error.message}`
+    socket.on('error', (error: Error & { code?: unknown }) => {
+      if (wrapped) { wrapped.events.error(error.message); return }
+      refused ??= `${where}: ${error.message}`
+      // A certificate this side refuses (Bun 1.4.4 gives Node's codes).
+      if (typeof error.code === 'string' && /CERT|SIGNATURE|ALTNAME|ISSUER/.test(error.code)) category ??= 'auth-rejected'
     })
     socket.once('open', () => {
       clearTimeout(timer)
@@ -229,7 +248,8 @@ export function open(spec: string, handlers: Handlers, { protocol, token, ca, li
       // The body of a refusal may still be coming: settle once it is read.
       setTimeout(() => {
         if (category === undefined && code === TLS_FAILED) category = 'auth-rejected'
-        reject(new ConnectError(category ?? 'retryable', refused ?? `${where}: closed (${code}) before the upgrade`))
+        refused ??= `${where}: closed (${code}) before the upgrade`
+        fail()
       }, 0)
     })
   })
