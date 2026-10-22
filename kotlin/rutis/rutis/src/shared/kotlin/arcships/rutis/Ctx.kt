@@ -2,6 +2,7 @@ package arcships.rutis
 
 import arcships.rutis.internal.EventsRuntime
 import arcships.rutis.internal.Mode
+import arcships.rutis.internal.Report
 import arcships.rutis.internal.Row
 import arcships.rutis.internal.RuntimeState
 import arcships.rutis.internal.peer.CallChain
@@ -61,7 +62,9 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
 
     /** Registers a cleanup, run when the row unloads (latest first). */
     fun effect(cleanup: suspend () -> Unit) {
-        row.cleanups.add(cleanup)
+        if (!rt.addCleanup(row, cleanup)) {
+            Report.line("rutis: row ${row.key} is not active: cleanup is not registered")
+        }
     }
 
     /**

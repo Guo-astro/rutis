@@ -264,11 +264,38 @@ pub fn unexported(ctx: &Ctx, name: &str) -> Option<String> {
             return None;
         }
         let short = short(type_name);
-        (default_name(short) == name).then(|| {
-            format!(
-                "`{name}` is the Rust service {type_name}, which is not exported: add #[rutis::service] to its impl"
-            )
-        })
+        if default_name(short) != name {
+            return None;
+        }
+        if rutis::service::is_marked(key.type_id()) {
+            if let Some(exported) = rutis::service::name_of(key.type_id())
+                .filter(|exported| *exported != name)
+            {
+                return Some(format!(
+                    "`{name}` is the Rust service {type_name}, which is exported as `{exported}`"
+                ));
+            }
+            // Visible here when `ctx` reads the key under the binding's
+            // isolation label and, for an instance key, inside that instance.
+            let visible = ctx.in_instance_key(key)
+                && ctx.isolate_label(key).as_deref() == binding.scope.as_deref();
+            if visible {
+                return Some(format!(
+                    "`{name}` is the Rust service {type_name}, provided here but not served"
+                ));
+            }
+            let place = match (key.instance_id(), binding.scope.as_deref()) {
+                (Some(instance), _) => format!("instance {instance}"),
+                (None, Some(scope)) => format!("scope `{scope}`"),
+                (None, None) => "the default scope".to_owned(),
+            };
+            return Some(format!(
+                "`{name}` is the Rust service {type_name}, provided in {place}, not visible here"
+            ));
+        }
+        Some(format!(
+            "`{name}` is the Rust service {type_name}, which is not exported: add #[rutis::service] to its impl"
+        ))
     })
 }
 

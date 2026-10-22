@@ -551,6 +551,93 @@ async fn a_failing_filter_of_an_emit_is_reported_from_its_row() {
     .await;
 }
 
+/// guarantee: events/hub-filter
+///
+/// An `emit` whose filter never answers holds the session's later emits
+/// only while its row is loaded (events protocol §5.5): when the row
+/// unloads, that emit is let go (it runs nothing) and the row's queued emits
+/// are dropped, their replies all complete, and another row's queued emit
+/// runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unloaded_row_lets_go_of_its_emit_whose_filter_never_answers() {
+    within("filter never answers", async {
+        let lines: Arc<Mutex<Vec<String>>> = Arc::default();
+        let into = lines.clone();
+        let root = Ctx::root_with_sink(
+            tokio::runtime::Handle::current(),
+            Arc::new(move |error: Arc<CordisError>| {
+                into.lock()
+                    .unwrap()
+                    .push(rutis_bridge::events::report_line(&error).unwrap_or_default());
+            }),
+        );
+        let rig = Arc::new(rig_with(root, Endpoint::rust(id("rt"))).await.unwrap());
+        rig.load("chat", &[]).await;
+        rig.load("other", &[]).await;
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        rig.root
+            .events()
+            .on(&rig.root, &key("t/h"), Answer(None, heard.clone()))
+            .unwrap();
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = asked.clone();
+        let never = Value::callback(move |_| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Value::future(std::future::pending()))
+        });
+        let emit = |row: &'static str, arg: &'static str, filter: Option<Value>| {
+            let rig = rig.clone();
+            tokio::spawn(async move {
+                rig.dispatch(
+                    Some(row),
+                    "t/h",
+                    "emit",
+                    vec![Value::Data(json!(arg))],
+                    filter,
+                )
+                .await
+            })
+        };
+        let hung = emit("chat", "hung", Some(never));
+        eventually(
+            || asked.load(std::sync::atomic::Ordering::SeqCst) == 1,
+            "the filter's call",
+        )
+        .await;
+        let dropped = emit("chat", "dropped", None);
+        let kept = emit("other", "kept", None);
+        // Events operations run in frame order: once this one is answered,
+        // both emits are queued behind the hung one.
+        rig.send("events.off", Value::Data(json!([])))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(heard.lock().unwrap().is_empty(), "the emits are queued");
+
+        rig.process.unload_row("chat").await.unwrap();
+        for (task, what) in [(hung, "hung"), (dropped, "dropped"), (kept, "kept")] {
+            tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .unwrap_or_else(|_| panic!("the {what} emit's reply did not complete"))
+                .unwrap()
+                .unwrap();
+        }
+        eventually(|| !heard.lock().unwrap().is_empty(), "the kept emit").await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            *heard.lock().unwrap(),
+            vec![vec![Value::Data(json!("kept"))]]
+        );
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            lines.lock().unwrap().is_empty(),
+            "the emit let go is not reported: {:?}",
+            lines.lock().unwrap()
+        );
+    })
+    .await;
+}
+
 /// guarantee: events/hub-lifecycle
 ///
 /// A row's entries leave the bus when it unloads, every entry of a session

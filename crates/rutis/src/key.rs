@@ -132,6 +132,11 @@ impl TypeKey {
         self.type_name
     }
 
+    /// The `TypeId` of the key's type, for diagnostics.
+    pub fn type_id(&self) -> TypeId {
+        self.type_id
+    }
+
     /// 类型主键(默认,无限定名)。
     pub fn of<T: ?Sized + 'static>() -> Self {
         Self {
