@@ -300,6 +300,16 @@ async fn an_unmarked_service_is_named_in_the_diagnostic() {
     root.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn a_renamed_service_says_the_name_it_is_exported_as() {
+    let root = Ctx::root().unwrap();
+    root.provide(Notes).unwrap();
+    let hint = rutis_bridge::exports::unexported(&root, "notes").unwrap();
+    assert!(hint.contains("notebook"), "{hint}");
+    assert!(!hint.contains("#[rutis::service]"), "{hint}");
+    root.shutdown().await.unwrap();
+}
+
 /// A plugin gated on `keys`, as a row of another language is gated on a
 /// name.
 struct Gated(Vec<TypeKey>);

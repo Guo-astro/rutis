@@ -109,6 +109,10 @@ impl Entry {
     pub fn name(&self) -> &'static str {
         self.name
     }
+    /// Whether the name was given (`#[service(name = "...")]`), not derived.
+    pub fn named(&self) -> bool {
+        self.named
+    }
     pub fn methods(&self) -> &'static [&'static str] {
         (self.methods)()
     }
@@ -241,6 +245,21 @@ pub fn exported_as(name: &str) -> Option<&'static str> {
 /// Whether the type `type_id` is marked.
 pub fn is_marked(type_id: TypeId) -> bool {
     entries().iter().any(|entry| (entry.type_id)() == type_id)
+}
+
+/// The effective exported name of the type `type_id`, if it is marked: the
+/// name a block gave it, else the derived one.
+pub fn name_of(type_id: TypeId) -> Option<&'static str> {
+    let entries = entries();
+    let mut fallback = None;
+    let mut named = None;
+    for entry in entries.iter().filter(|entry| (entry.type_id)() == type_id) {
+        fallback.get_or_insert(entry.name());
+        if entry.named() {
+            named = Some(entry.name());
+        }
+    }
+    named.or(fallback)
 }
 
 /// The name the marked blocks `entries` of one type export it as: the one
@@ -722,7 +741,7 @@ impl<E: Serialize + std::fmt::Debug + std::fmt::Display> FailSerde for &&Failure
     fn __rutis_fail(&self, wire: &'static dyn Wire) -> CallError {
         let name = short_name::<E>();
         let debug = debug_ident(&format!("{:?}", self.0));
-        let code = serde_code(&name, &debug, capture::code(self.0));
+        let code = serde_code(name, &debug, capture::code(self.0));
         wire.failure(
             name,
             &code,
@@ -1333,15 +1352,12 @@ mod tests {
         assert_eq!(
             serde_code(
                 "Plain",
-                &debug_ident(&format!(
-                    "{:?}",
-                    Plain {
-                        message: "m".into()
-                    }
-                )),
-                capture::code(&"plain")
+                "Plain",
+                capture::code(&Plain {
+                    message: "m".into()
+                })
             ),
-            "plain"
+            "Plain"
         );
         assert_eq!(
             serde_code(

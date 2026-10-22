@@ -258,8 +258,20 @@ pub fn unexported(ctx: &Ctx, name: &str) -> Option<String> {
             return None;
         }
         if rutis::service::is_marked(key.type_id()) {
+            if let Some(exported) = rutis::service::name_of(key.type_id())
+                .filter(|exported| *exported != name)
+            {
+                return Some(format!(
+                    "`{name}` is the Rust service {type_name}, which is exported as `{exported}`"
+                ));
+            }
+            let place = match (key.instance_id(), binding.scope.as_deref()) {
+                (Some(instance), _) => format!("instance {instance}"),
+                (None, Some(scope)) => format!("scope `{scope}`"),
+                (None, None) => "the default scope".to_owned(),
+            };
             return Some(format!(
-                "`{name}` is the Rust service {type_name}, but it is not visible here: it may be provided in another instance or isolation scope"
+                "`{name}` is the Rust service {type_name}, provided in {place}, not visible here"
             ));
         }
         Some(format!(
