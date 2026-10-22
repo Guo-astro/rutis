@@ -300,6 +300,66 @@ async fn an_unmarked_service_is_named_in_the_diagnostic() {
     root.shutdown().await.unwrap();
 }
 
+/// A marked service provided in this scope but not served (its check fails)
+/// is not described as out of scope.
+#[tokio::test]
+async fn a_service_provided_here_is_not_described_as_out_of_scope() {
+    let root = Ctx::root().unwrap();
+    root.provide_as_with_check(
+        TypeKey::of::<Calendar>(),
+        Arc::new(Calendar::default()),
+        || false,
+    )
+    .unwrap();
+    let hint = rutis_bridge::exports::unexported(&root, "calendar").unwrap();
+    assert!(hint.contains("provided here but not served"), "{hint}");
+    assert!(!hint.contains("not visible here"), "{hint}");
+    root.shutdown().await.unwrap();
+}
+
+/// A marked service provided in another scope says where it is, and in that
+/// scope it is not described as out of scope either.
+#[tokio::test]
+async fn a_service_in_another_scope_names_the_scope() {
+    let root = Ctx::root().unwrap();
+    let (scope_tx, scope_rx) = std::sync::mpsc::channel::<Ctx>();
+    struct Scoped(std::sync::mpsc::Sender<Ctx>);
+    impl rutis::Plugin for Scoped {
+        fn name(&self) -> &str {
+            "scoped"
+        }
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+            Box::pin(async move {
+                ctx.mark_scope("chat")?;
+                self.0.send(ctx.clone()).unwrap();
+                Ok(rutis::Effect::Done)
+            })
+        }
+    }
+    root.plugin(Scoped(scope_tx)).await.unwrap();
+    let scope = scope_rx.recv().unwrap();
+    let isolated = scope.isolate(TypeKey::of::<Calendar>(), "chat");
+    let provided = isolated
+        .provide_as_with_check(
+            TypeKey::of::<Calendar>(),
+            Arc::new(Calendar::default()),
+            || false,
+        )
+        .unwrap();
+    let hint = rutis_bridge::exports::unexported(&root, "calendar").unwrap();
+    assert!(
+        hint.contains("scope `chat`") && hint.contains("not visible here"),
+        "{hint}"
+    );
+    let here = rutis_bridge::exports::unexported(&isolated, "calendar").unwrap();
+    assert!(
+        here.contains("provided here but not served") || here.contains("not exported"),
+        "{here}"
+    );
+    provided.dispose().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_renamed_service_says_the_name_it_is_exported_as() {
     let root = Ctx::root().unwrap();

@@ -265,6 +265,22 @@ pub fn unexported(ctx: &Ctx, name: &str) -> Option<String> {
                     "`{name}` is the Rust service {type_name}, which is exported as `{exported}`"
                 ));
             }
+            let here = ctx.scope();
+            let visible = match (key.instance_id(), binding.scope.as_deref()) {
+                (Some(instance), _) => here.iter().any(|scope| scope.id == instance.to_string()),
+                (None, Some(group)) => {
+                    ctx.isolate_label(key).as_deref() == Some(group)
+                        || here
+                            .iter()
+                            .any(|scope| scope.group == group || scope.id == group)
+                }
+                (None, None) => here.is_empty(),
+            };
+            if visible {
+                return Some(format!(
+                    "`{name}` is the Rust service {type_name}, provided here but not served"
+                ));
+            }
             let place = match (key.instance_id(), binding.scope.as_deref()) {
                 (Some(instance), _) => format!("instance {instance}"),
                 (None, Some(scope)) => format!("scope `{scope}`"),

@@ -390,6 +390,9 @@ enum Failure {
     Serde {
         name: String,
         tag: Option<String>,
+        /// An enum variant: its serde form names it. A struct's serde form
+        /// does not, even when it is one field.
+        variant: bool,
     },
     /// An enum serde does not name the variants of: the code from `Debug`.
     Variant {
@@ -1403,8 +1406,8 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
             None => format!("let result = {invoke}; {encode_ok}"),
             Some(failure) => {
                 let thrown = match failure {
-                    Failure::Serde { name, tag } => format!(
-                        "::rutis_bridge::exports::serde_failure({name:?}, {}, &error)",
+                    Failure::Serde { name, tag, variant } => format!(
+                        "::rutis_bridge::exports::serde_failure({name:?}, {}, {variant}, &error)",
                         tag.as_ref()
                             .map_or("None".to_owned(), |tag| format!("Some({tag:?})"))
                     ),
@@ -1663,6 +1666,7 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                             Failure::Serde {
                                 name: ident.clone(),
                                 tag: serde.tag.clone(),
+                                variant: true,
                             }
                         } else if derives(&item.attrs, "Debug") {
                             Failure::Variant {
@@ -1680,6 +1684,7 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                         Failure::Serde {
                             name: ident.clone(),
                             tag: None,
+                            variant: false,
                         },
                         "string".to_owned(),
                         self.ty(scope, error)?.ts(),
@@ -2463,7 +2468,7 @@ mod tests {
     "#;
 
     const INNER: &str = r#"
-        use crate::types::{Item, Problem, Res};
+        use crate::types::{Item, Problem, Res, Single};
         use rutis::{BoxFuture, CordisError};
 
         /// The store.
@@ -2477,6 +2482,7 @@ mod tests {
             pub fn watch(&self, each: impl Fn(Item, u8) -> BoxFuture<'static, Result<bool, CordisError>> + Send) {}
             pub fn reset(&mut self) {}
             pub fn tied(&self, ctx: &rutis::Ctx, n: u8) {}
+            pub fn single(&self) -> Result<(), Single> { Ok(()) }
             pub fn borrowing(&self, each: impl Fn(&Item) -> BoxFuture<'static, Result<(), CordisError>>) {}
             #[cfg(feature = "extra")]
             pub fn extra(&self) -> String { String::new() }
@@ -2519,6 +2525,15 @@ mod tests {
         #[derive(Debug, Serialize)]
         #[serde(tag = "kind", content = "detail", rename_all = "kebab-case")]
         pub enum Problem { NotThere, TooBig(u64) }
+
+        #[derive(Debug, Serialize)]
+        pub struct Single { pub message: String }
+
+        impl std::fmt::Display for Single {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(&self.message)
+            }
+        }
     "#;
 
     const MARKED: &str = r#"
@@ -2654,7 +2669,11 @@ mod tests {
         );
         assert!(rust.contains("let a0: ::std::string::String"), "{rust}");
         assert!(
-            rust.contains("serde_failure(\"Problem\", Some(\"kind\"), &error)"),
+            rust.contains("serde_failure(\"Problem\", Some(\"kind\"), true, &error)"),
+            "{rust}"
+        );
+        assert!(
+            rust.contains("serde_failure(\"Single\", None, false, &error)"),
             "{rust}"
         );
         assert!(rust.contains("string_failure(&error)"), "{rust}");
