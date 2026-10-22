@@ -622,31 +622,45 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
         }
     }
 
-    /// Read the binary of `runtime` again and record its manifest as the one
-    /// its runtime starts with; the rows resolved to it resolve again.
-    fn launch(&self, runtime: &str) -> Result<(PathBuf, Option<Stamp>), (Option<PathBuf>, String)> {
+    /// Read the binary of `runtime` again, for a start: its path and what
+    /// it starts with. Nothing is recorded until the start
+    /// ([`BinaryResolver::launched`]): a runtime still running keeps its
+    /// own meanwhile. A failure names the file it failed on, or the file
+    /// the runtime last had when it is gone.
+    fn read(&self, runtime: &str) -> Result<(PathBuf, Launched), StartFailure> {
+        let last = self
+            .state
+            .lock()
+            .unwrap()
+            .scanned
+            .values()
+            .find(|binary| binary.runtime == runtime)
+            .map(|binary| binary.path.clone());
         let binary = self
             .scan(Force::Runtime(runtime))
             .into_iter()
             .find(|binary| binary.runtime == runtime)
-            .ok_or_else(|| (None, format!("there is no {} runtime {runtime}", L::TITLE)))?;
+            .ok_or_else(|| (last, format!("there is no {} runtime {runtime}", L::TITLE)))?;
         let path = Some(binary.path.clone());
-        let manifest = binary.manifest.clone().map_err(|why| (path.clone(), why))?;
+        let manifest = binary.manifest.clone().map_err(|why| (path, why))?;
+        let launched = Launched {
+            stamp: binary.stamp,
+            manifest,
+        };
+        Ok((binary.path, launched))
+    }
+
+    /// Record `launched` as the manifest the runtime `runtime` started
+    /// with; the rows resolved to it resolve again.
+    fn launched(&self, runtime: &str, launched: Launched) {
         let mut state = self.state.lock().unwrap();
-        state.launched.insert(
-            runtime.to_owned(),
-            Launched {
-                stamp: binary.stamp.clone(),
-                manifest,
-            },
-        );
+        state.launched.insert(runtime.to_owned(), launched);
         let resolved = state.resolved.get(runtime).cloned().unwrap_or_default();
         state
             .stale
             .entry(runtime.to_owned())
             .or_default()
             .extend(resolved);
-        Ok((binary.path, Some(binary.stamp)))
     }
 
     fn stopped(&self, runtime: &str) {
@@ -1064,7 +1078,7 @@ struct Ended {
 }
 
 type StartFailure = (Option<PathBuf>, String);
-type Prepared<L> = Result<(Ctx, BinaryRuntime<L>, PathBuf, Option<Stamp>), StartFailure>;
+type Prepared<L> = Result<(Ctx, BinaryRuntime<L>, PathBuf, Launched), StartFailure>;
 
 struct Inner<L: BinaryLanguage> {
     resolver: Arc<BinaryResolver<L>>,
@@ -1430,11 +1444,9 @@ impl<L: BinaryLanguage> Inner<L> {
                         });
                     }
                     match &slot.stopped {
-                        None => {
-                            let now = stamp(&slot.binary);
-                            let replaced = now.is_some() && now != slot.stamp;
-                            (replaced && !quiet).then_some(Transition::Restart)
-                        }
+                        // Running: it keeps its process until restarted
+                        // (`replace`, `restart`).
+                        None => None,
                         // Crashed: only a new binary is worth another try
                         // here; its restart policy may start it again. A
                         // binary that disappeared is not "changed".
@@ -1502,7 +1514,7 @@ impl<L: BinaryLanguage> Inner<L> {
             .insert(runtime.to_owned(), FailedStart::of(binary, why));
     }
 
-    /// Read the binary and start its process, before anything of an old
+    /// Read the binary and make its runtime, before anything of an old
     /// runtime is dropped: a restart that cannot start keeps the old one.
     fn prepare(&self, runtime: &str) -> Prepared<L> {
         let ctx = self
@@ -1511,7 +1523,7 @@ impl<L: BinaryLanguage> Inner<L> {
             .unwrap()
             .clone()
             .ok_or_else(|| (None, format!("the {} runtimes are not running", L::TITLE)))?;
-        let (binary, stamp) = self.resolver.launch(runtime)?;
+        let (binary, launched) = self.resolver.read(runtime)?;
         let mut runtime_plugin = BinaryRuntime::<L> {
             label: format!("{runtime} ({})", L::PREFIX),
             runtime: runtime.to_owned(),
@@ -1523,7 +1535,7 @@ impl<L: BinaryLanguage> Inner<L> {
         };
         let local = runtime_plugin.local();
         runtime_plugin.first = Mutex::new(Some(local));
-        Ok((ctx, runtime_plugin, binary, stamp))
+        Ok((ctx, runtime_plugin, binary, launched))
     }
 
     fn install(
@@ -1532,8 +1544,10 @@ impl<L: BinaryLanguage> Inner<L> {
         ctx: Ctx,
         runtime_plugin: BinaryRuntime<L>,
         binary: PathBuf,
-        stamp: Option<Stamp>,
+        launched: Launched,
     ) {
+        let stamp = Some(launched.stamp.clone());
+        self.resolver.launched(runtime, launched);
         let handle = runtime_plugin
             .first
             .lock()
@@ -1561,13 +1575,13 @@ impl<L: BinaryLanguage> Inner<L> {
         );
     }
 
-    /// Stop `runtime` and start it again, holding its busy mark. The new
-    /// process is started before the old one is dropped: a binary that no
-    /// longer starts leaves the old runtime running. Both processes use the
-    /// runtime's name, so the new one is not plugged in until the old one is
-    /// gone.
+    /// Stop `runtime` and start it again, holding its busy mark. The binary
+    /// is read before the old runtime is stopped: one that cannot start
+    /// leaves the old runtime running. Both processes use the runtime's
+    /// name, so the new one starts only once the old one is gone, and
+    /// records what it started with only then.
     async fn restart_now(self: Arc<Self>, runtime: &str, _busy: Busy<L>) -> Result<(), String> {
-        let (ctx, plugin, binary, stamp) = self.prepare(runtime).map_err(|(binary, why)| {
+        let (ctx, plugin, binary, launched) = self.prepare(runtime).map_err(|(binary, why)| {
             self.note_failed(runtime, binary, why.clone());
             why
         })?;
@@ -1576,13 +1590,13 @@ impl<L: BinaryLanguage> Inner<L> {
             let _ = previous.view.dispose().await;
         }
         self.resolver.stopped(runtime);
-        self.install(runtime, ctx, plugin, binary, stamp);
+        self.install(runtime, ctx, plugin, binary, launched);
         Ok(())
     }
 
     fn start(&self, runtime: &str) -> Result<(), StartFailure> {
-        let (ctx, plugin, binary, stamp) = self.prepare(runtime)?;
-        self.install(runtime, ctx, plugin, binary, stamp);
+        let (ctx, plugin, binary, launched) = self.prepare(runtime)?;
+        self.install(runtime, ctx, plugin, binary, launched);
         Ok(())
     }
 

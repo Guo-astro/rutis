@@ -350,15 +350,19 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
     outln!("rutis-host dev: running {id}; changes reload it (Ctrl-C ends)");
     status::follow(host.followed());
     let mut exits = host.supervise();
-    loop {
+    // Builds no runtime runs any more, still to delete: Windows refuses
+    // while it still holds the image of a process that just ended.
+    let mut stale: Vec<std::path::PathBuf> = Vec::new();
+    let stopped = 'dev: loop {
+        remove_builds(&mut stale);
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(400)) => {}
             signal = signals.next() => {
-                return Ok(stop::stop(&host, signal, deadline, &mut signals).await);
+                break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
             }
             (runtime, why) = exits.next() => {
                 let ended = Ended::Runtime(runtime, why);
-                return Ok(stop::end(&host, ended, deadline, &mut signals).await);
+                break 'dev stop::end(&host, ended, deadline, &mut signals).await;
             }
         }
         let now = project::sources(&dir);
@@ -378,7 +382,7 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
             let built = tokio::select! {
                 built = project.rebuild(build + 1) => built,
                 signal = signals.next() => {
-                    return Ok(stop::stop(&host, signal, deadline, &mut signals).await);
+                    break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
                 }
             };
             match built {
@@ -394,14 +398,18 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
                     let restarted = tokio::select! {
                         restarted = running.restart_runtime(project.runtime()) => restarted,
                         signal = signals.next() => {
-                            return Ok(stop::stop(&host, signal, deadline, &mut signals).await);
+                            stale.push(project.binary(build - 1));
+                            break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
                         }
                     };
                     match restarted {
                         Ok(()) => outln!("{}: rebuilt and restarted", project.runtime()),
                         Err(error) => outln!("{}: cannot restart: {error}", project.runtime()),
                     }
-                    let _ = std::fs::remove_file(project.binary(build - 1));
+                    // Not the build the next start uses: once nothing runs
+                    // it, it can go.
+                    stale.push(project.binary(build - 1));
+                    remove_builds(&mut stale);
                 }
                 Err(errors) => outln!(
                     "{}: the build failed; the last build keeps running\n{errors}",
@@ -424,7 +432,7 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
             let reloaded = tokio::select! {
                 reloaded = host.loader.reload(&row) => reloaded,
                 signal = signals.next() => {
-                    return Ok(stop::stop(&host, signal, deadline, &mut signals).await);
+                    break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
                 }
             };
             match reloaded {
@@ -432,7 +440,20 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
                 Err(error) => outln!("{row}: cannot reload: {error}"),
             }
         }
-    }
+    };
+    // Stopped: no runtime runs them now.
+    remove_builds(&mut stale);
+    Ok(stopped)
+}
+
+/// Delete the builds in `stale`, keeping those that cannot be deleted yet
+/// (on Windows, while a process that ran one is not quite gone) for the
+/// next try.
+fn remove_builds(stale: &mut Vec<std::path::PathBuf>) {
+    stale.retain(|build| match std::fs::remove_file(build) {
+        Ok(()) => false,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    });
 }
 
 async fn check(args: &[String]) -> Result<(), String> {
