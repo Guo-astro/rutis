@@ -28,7 +28,7 @@ use rutis_bridge::{
     peer_key, transport_key, Credential, Dial, ExportPlugin, Identity, IdentityPlugin,
     ImportPlugin, LinkConfig, LinkPlugin, LinkState, Peer, Retry, StaticIdentity, Transport,
 };
-use rutis_test_support::{eventually, within, HANG_GUARD};
+use rutis_test_support::{eventually, scaled, within, HANG_GUARD};
 use serde_json::{json, Value as Json};
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -41,7 +41,7 @@ fn quick() -> Retry {
         initial: Duration::from_millis(20),
         max: Duration::from_millis(200),
         rejected: Duration::from_millis(100),
-        handshake: HANG_GUARD,
+        handshake: scaled(HANG_GUARD),
         // No jitter: the same delays every run (#231).
         jitter: 0.0,
         ..Retry::default()
@@ -272,7 +272,7 @@ async fn a_call_in_flight_when_the_link_drops_fails_and_ran_once() {
                 let _ = started.send(());
                 // Runs until the test lets it finish: the call is in flight
                 // at main when mac's connection drops.
-                let _ = gate.lock().unwrap().recv_timeout(HANG_GUARD);
+                let _ = gate.lock().unwrap().recv_timeout(scaled(HANG_GUARD));
                 Ok(Value::Data(json!("done")))
             })
         })

@@ -25,7 +25,7 @@ use rutis_bridge::session::{settle, Value as CallValue};
 use rutis_bridge::LinkState;
 use rutis_host::config::HostConfig;
 use rutis_host::host::Host;
-use rutis_test_support::{Guard, HANG_GUARD};
+use rutis_test_support::{scaled, Guard, HANG_GUARD};
 use serde_json::{json, Value};
 
 /// Twice HANG_GUARD: the Python runtime starts cold (#238).
@@ -626,7 +626,7 @@ impl Running {
     /// The first line, not read before, starting with `prefix`.
     fn line(&mut self, prefix: &str) -> String {
         loop {
-            match self.lines.recv_timeout(HANG_GUARD) {
+            match self.lines.recv_timeout(scaled(HANG_GUARD)) {
                 Ok(line) => {
                     self.seen.push(line.clone());
                     if line.starts_with(prefix) {
@@ -636,7 +636,10 @@ impl Running {
                 Err(error) => {
                     let _ = self.child.kill();
                     let _ = self.child.wait();
-                    let stderr = self.stderr.recv_timeout(HANG_GUARD).unwrap_or_default();
+                    let stderr = self
+                        .stderr
+                        .recv_timeout(scaled(HANG_GUARD))
+                        .unwrap_or_default();
                     panic!(
                         "waiting for {prefix:?}: {error}; output: {:#?}; stderr: {stderr}",
                         self.seen

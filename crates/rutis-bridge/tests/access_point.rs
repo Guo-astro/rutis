@@ -14,7 +14,7 @@ use rutis_bridge::{
     AdmissionPlugin, ConnectError, Credential, Dial, Identity, IdentityPlugin, LinkConfig,
     LinkPlugin, LinkState, Peer, Release, SharedToken, StaticIdentity, Transport,
 };
-use rutis_test_support::{eventually, within, HANG_GUARD};
+use rutis_test_support::{eventually, scaled, within, HANG_GUARD};
 use serde_json::json;
 use tokio::sync::broadcast;
 
@@ -84,7 +84,8 @@ async fn main_with(transport: Arc<MemoryTransport>) -> Main {
         .unwrap();
     let log = Log::default();
     let plugin = AccessPointPlugin::new(
-        AccessPointConfig::new(id("phone"), "memory", "phone", "main-in").handshake(HANG_GUARD),
+        AccessPointConfig::new(id("phone"), "memory", "phone", "main-in")
+            .handshake(scaled(HANG_GUARD)),
     )
     .accept(log.clone());
     let events = plugin.events();
@@ -489,7 +490,8 @@ async fn stopping_while_accepting_still_releases() {
     let proceed = Arc::new(tokio::sync::Notify::new());
     let access = root.plugin(
         AccessPointPlugin::new(
-            AccessPointConfig::new(id("phone"), "memory", "phone", "main-in").handshake(HANG_GUARD),
+            AccessPointConfig::new(id("phone"), "memory", "phone", "main-in")
+                .handshake(scaled(HANG_GUARD)),
         )
         .accept(Slow {
             entered: entered.clone(),

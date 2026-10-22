@@ -14,7 +14,7 @@ use rutis_bridge::{
     peer_key, protocol, Credential, Dial, Failure, Identity, IdentityPlugin, LinkConfig,
     LinkPlugin, LinkState, Peer, Retry, StaticIdentity, Transport,
 };
-use rutis_test_support::{eventually, HANG_GUARD};
+use rutis_test_support::{eventually, scaled, HANG_GUARD};
 use serde_json::json;
 use tokio::sync::watch;
 
@@ -27,7 +27,7 @@ fn quick() -> Retry {
         initial: Duration::from_millis(20),
         max: Duration::from_millis(200),
         rejected: Duration::from_millis(100),
-        handshake: HANG_GUARD,
+        handshake: scaled(HANG_GUARD),
         // No jitter: the same delays every run (#231).
         jitter: 0.0,
         ..Retry::default()

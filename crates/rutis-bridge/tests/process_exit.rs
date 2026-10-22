@@ -3,7 +3,7 @@ use std::path::Path;
 
 use rutis_bridge::runtime::Process;
 use rutis_bridge::session::Error;
-use rutis_test_support::{within, HANG_GUARD};
+use rutis_test_support::{scaled, within, HANG_GUARD};
 use serde_json::json;
 
 #[tokio::test(flavor = "current_thread")]
@@ -42,7 +42,7 @@ async fn cleanup_releases_an_in_flight_call() {
         process.call("lifecycle", "started", json!([])).unwrap(),
         json!(true)
     );
-    let disposed = tokio::time::timeout(HANG_GUARD, process.dispose()).await;
+    let disposed = tokio::time::timeout(scaled(HANG_GUARD), process.dispose()).await;
     if disposed.is_err() {
         pending.abort();
         let _ = pending.await;
