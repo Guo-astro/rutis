@@ -398,14 +398,41 @@ impl Greeter {
     pub fn kept(&self) -> bool {
         true
     }
+
+    /// The explicit form of `&self`.
+    #[allow(clippy::needless_arbitrary_self_type)]
+    pub fn explicit(self: &Self) -> String {
+        self.text.clone()
+    }
+}
+
+/// A marked block not in this build: nothing of it is served, and its
+/// generated entry goes with it (it names methods that would not
+/// compile; #541).
+#[rutis::service]
+#[cfg(any())]
+impl Greeter {
+    pub fn gone(&self) -> u32 {
+        missing_function()
+    }
+}
+
+/// The same, removed by a `cfg_attr`.
+#[rutis::service]
+#[cfg_attr(not(any()), cfg(any()))]
+impl Greeter {
+    pub fn also_gone(&self) -> u32 {
+        missing_function()
+    }
 }
 
 fn greeter(text: &str) -> Greeter {
     Greeter { text: text.into() }
 }
 
-/// Parameter types with named lifetimes or `Self`, and methods under
-/// `#[cfg]`: served as the build has them.
+/// Parameter types with named lifetimes or `Self`, methods and blocks
+/// under `#[cfg]`, and a `self: &Self` receiver: served as the build has
+/// them.
 #[tokio::test]
 async fn cfg_lifetimes_and_self_are_as_the_build_has_them() {
     let root = Ctx::root().unwrap();
@@ -413,6 +440,13 @@ async fn cfg_lifetimes_and_self_are_as_the_build_has_them() {
     let service = served(&root, "greeter").unwrap();
     let methods = service.methods().unwrap();
     assert!(methods.get("never").is_none(), "{methods}");
+    assert!(methods.get("gone").is_none(), "{methods}");
+    assert!(methods.get("alsoGone").is_none(), "{methods}");
+    assert_eq!(methods["explicit"], "async");
+    assert_eq!(
+        call(&service, "explicit", json!([])).await.unwrap(),
+        json!("a")
+    );
     assert_eq!(methods["platform"], "async");
     assert_eq!(methods["kept"], "async");
     assert_eq!(

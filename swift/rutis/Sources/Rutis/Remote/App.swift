@@ -95,6 +95,10 @@ public final class RutisApp: Observable, @unchecked Sendable {
     /// How many times `stop()` was called: a start that sees it change
     /// while it waited or ran was stopped, and starts nothing.
     private var stops = 0
+    /// A listening address with port 0: the address it bound first. Every
+    /// later start (and a rebind after the listener failed) binds it again,
+    /// so that the address rutis dials stays the same, as a device's does.
+    private var boundListen: String?
 
     /// Dials the rutis access point at `connect` (`wss://…`; `ws://` only
     /// on loopback) as `id` (lower-case letters, digits and `-`), presenting
@@ -261,12 +265,16 @@ public final class RutisApp: Observable, @unchecked Sendable {
         case let .listen(spec, identity):
             let (events, continuation) = AsyncStream<ListenEvent>.makeStream()
             let bind = { [token] () throws -> WebSocketListener in
-                let listener = try WebSocketListener(spec, protocol: "rutis.\(endpointProtocol)", token: token, identity: identity)
+                let address = self.lock.withLock { self.boundListen } ?? spec
+                let listener = try WebSocketListener(address, protocol: "rutis.\(endpointProtocol)", token: token, identity: identity)
                 let failing = ObjectIdentifier(listener)
-                let address = try listener.start(failed: { error in continuation.yield(.failed(failing, error)) }) { socket in
+                let bound = try listener.start(failed: { error in continuation.yield(.failed(failing, error)) }) { socket in
                     continuation.yield(.accepted(socket))
                 }
-                self.say("listening on \(address)")
+                if listener.address.port == 0 { self.lock.withLock { self.boundListen = bound } }
+                // The address with the port bound: what rutis dials (`:0`
+                // asks for a free port).
+                self.say("listening on \(bound)")
                 return listener
             }
             let listener = try bind()
@@ -335,9 +343,16 @@ public final class RutisApp: Observable, @unchecked Sendable {
             do {
                 guard let socket = try await stop.race({ [token] in
                     try await DialedSocket.dial(spec, protocol: protocolName, token: token, anchors: anchors, timeout: retry.handshake)
-                }) else { return .stopped }
-                let (peer, runtime) = try Rutis.startSession(channel: socket, project: project, plugins, endpoint: endpoint,
-                                                             settings: settings)
+                }, discard: { $0.close("stopped") }) else { return .stopped }
+                let started: (Peer, Runtime)
+                do {
+                    started = try Rutis.startSession(channel: socket, project: project, plugins, endpoint: endpoint,
+                                                     settings: settings)
+                } catch {
+                    socket.close("starting the session failed")
+                    throw error
+                }
+                let (peer, runtime) = started
                 let session = ControllerSession(peer: peer, runtime: runtime, socket: socket)
                 // The greeting, within the handshake's time.
                 let late = StopSignal()
