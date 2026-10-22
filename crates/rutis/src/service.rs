@@ -136,6 +136,10 @@ impl Entry {
     pub fn name(&self) -> &'static str {
         self.name
     }
+    /// Whether the name was given (`#[service(name = "...")]`), not derived.
+    pub fn named(&self) -> bool {
+        self.named
+    }
     pub fn methods(&self) -> &'static [&'static str] {
         (self.methods)()
     }
@@ -341,6 +345,21 @@ fn type_groups() -> Vec<Vec<&'static Entry>> {
 /// Whether the type `type_id` is marked.
 pub fn is_marked(type_id: TypeId) -> bool {
     entries().iter().any(|entry| (entry.type_id)() == type_id)
+}
+
+/// The effective exported name of the type `type_id`, if it is marked: the
+/// name a block gave it, else the derived one.
+pub fn name_of(type_id: TypeId) -> Option<&'static str> {
+    let entries = entries();
+    let mut fallback = None;
+    let mut named = None;
+    for entry in entries.iter().filter(|entry| (entry.type_id)() == type_id) {
+        fallback.get_or_insert(entry.name());
+        if entry.named() {
+            named = Some(entry.name());
+        }
+    }
+    named.or(fallback)
 }
 
 /// The name the marked blocks `entries` of one type export it as: the one
@@ -824,24 +843,33 @@ impl<E: Serialize + std::fmt::Debug + std::fmt::Display> FailSerde for &&Failure
     fn __rutis_fail(&self, wire: &'static dyn Wire) -> CallError {
         let name = short_name::<E>();
         let debug = debug_ident(&format!("{:?}", self.0));
-        let code = match capture::code(self.0) {
-            // An externally tagged variant, or a value serialized as text.
-            capture::Code::Variant(code) | capture::Code::Text(code) => code,
-            // A struct: its type names it.
-            _ if debug == name => name.to_owned(),
-            // An internally or adjacently tagged variant: its tag, which is
-            // the variant's name as serde renames it.
-            capture::Code::Tag(tag) if same_ident(&tag, &debug) => tag,
-            // Untagged: the variant's Rust name.
-            _ if !debug.is_empty() => debug,
-            _ => name.to_owned(),
-        };
+        let code = serde_code(name, &debug, capture::code(self.0));
         wire.failure(
             name,
             &code,
             self.0.to_string(),
             Some(&self.0 as &dyn erased_serde::Serialize),
         )
+    }
+}
+
+/// The code of a serde error value, matching the `build.rs` generator.
+fn serde_code(name: &str, debug: &str, captured: capture::Code) -> String {
+    match captured {
+        // An externally tagged variant.
+        capture::Code::Variant(code) => code,
+        // A struct (or a transparent value): its serialized text was the
+        // code in the generator.
+        capture::Code::Text(code) if debug == name => code,
+        // An untagged newtype variant: its Rust name, as `variant_failure`
+        // gives it, not the message it serialized to.
+        capture::Code::Text(_) if !debug.is_empty() => debug.to_owned(),
+        // An internally or adjacently tagged variant: its tag, which is
+        // the variant's name as serde renames it.
+        capture::Code::Tag(tag) if same_ident(&tag, debug) => tag,
+        // Untagged: the variant's Rust name.
+        _ if !debug.is_empty() => debug.to_owned(),
+        _ => name.to_owned(),
     }
 }
 
@@ -1433,6 +1461,12 @@ mod tests {
     }
 
     #[derive(Debug, Serialize)]
+    #[serde(untagged)]
+    enum UntaggedNewtype {
+        Message(String),
+    }
+
+    #[derive(Debug, Serialize)]
     struct Plain {
         message: String,
     }
@@ -1476,6 +1510,37 @@ mod tests {
             Some("tag m")
         );
         assert_eq!(code(&1u32), None);
+    }
+
+    #[test]
+    fn error_codes_match_the_build_generator() {
+        let untagged = UntaggedNewtype::Message("boom".into());
+        assert_eq!(
+            serde_code(
+                "UntaggedNewtype",
+                &debug_ident(&format!("{untagged:?}")),
+                capture::code(&untagged)
+            ),
+            "Message"
+        );
+        assert_eq!(
+            serde_code(
+                "Plain",
+                "Plain",
+                capture::code(&Plain {
+                    message: "m".into()
+                })
+            ),
+            "Plain"
+        );
+        assert_eq!(
+            serde_code(
+                "External",
+                &format!("{:?}", External::Missing),
+                capture::code(&External::Missing)
+            ),
+            "Missing"
+        );
     }
 
     #[test]
