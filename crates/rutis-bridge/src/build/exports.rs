@@ -1167,8 +1167,7 @@ impl Generator<'_> {
                     let location = self.sources.location(impl_module, &method.sig);
                     let rust_name = method.sig.ident.to_string();
                     match method.sig.inputs.first() {
-                        Some(FnArg::Receiver(receiver))
-                            if receiver.reference.is_some() && receiver.mutability.is_none() => {}
+                        Some(FnArg::Receiver(receiver)) if shared_receiver(receiver) => {}
                         // Constructors and associated functions are not
                         // the service's methods.
                         None | Some(FnArg::Typed(_)) => continue,
@@ -1990,6 +1989,19 @@ fn single_ident(ty: &Type) -> Option<String> {
         .then(|| segment.ident.to_string())
 }
 
+/// A shared receiver: `&self`, or `self: &Self` / `self: &'a Self`.
+fn shared_receiver(receiver: &syn::Receiver) -> bool {
+    receiver.mutability.is_none()
+        && if receiver.colon_token.is_some() {
+            matches!(receiver.ty.as_ref(), Type::Reference(reference)
+                if reference.mutability.is_none()
+                    && matches!(reference.elem.as_ref(), Type::Path(path)
+                        if path.qself.is_none() && path.path.is_ident("Self")))
+        } else {
+            receiver.reference.is_some()
+        }
+}
+
 fn fn_bound(bounds: &[TypeParamBound]) -> Option<&syn::TraitBound> {
     bounds.iter().find_map(|bound| match bound {
         TypeParamBound::Trait(bound)
@@ -2531,6 +2543,7 @@ mod tests {
         impl Clock {
             pub fn new() -> Self { Clock }
             pub fn now(&self) -> u32 { 0 }
+            pub fn explicit(self: &Self) -> u32 { 0 }
             #[service(skip)]
             pub fn reset(&self) {}
         }
@@ -2557,6 +2570,7 @@ mod tests {
         assert!(ts.contains("  clock: Clock\n"), "{ts}");
         assert!(ts.contains("  board: Named\n"), "{ts}");
         assert!(ts.contains("now(): Promise<number>"), "{ts}");
+        assert!(ts.contains("explicit(): Promise<number>"), "{ts}");
         assert!(ts.contains("read(): Promise<string>"), "{ts}");
         assert!(!ts.contains("unmarked") && !ts.contains("reset"), "{ts}");
         assert!(!generated.rust.contains("Clock"), "{}", generated.rust);
