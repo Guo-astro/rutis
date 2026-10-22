@@ -104,6 +104,9 @@ function perform(ctx: any, log: Log, label: string, does: any, args: any[], next
     return isThenable(first) ? first.then(() => next()) : next()
   }
   if (does.waits) {
+    // A `sync` listener blocks its thread until its process ends: nothing
+    // can wake it.
+    if (sync) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)
     const signal: AbortSignal = ctx.signal
     return new Promise<void>(resolve => {
       if (signal.aborted) resolve()

@@ -86,6 +86,9 @@ function perform(ctx, log, label, does, args, next, kind) {
     return first !== null && typeof first?.then === 'function' ? first.then(() => next()) : next()
   }
   if (does.waits) {
+    // A `sync` listener blocks its thread until its process ends: nothing
+    // can wake it.
+    if (kind === 'sync') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)
     const signal = ctx.signal
     return new Promise(resolve => {
       if (signal.aborted) resolve()
