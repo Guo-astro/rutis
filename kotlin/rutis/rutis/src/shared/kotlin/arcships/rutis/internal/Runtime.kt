@@ -14,9 +14,11 @@ import arcships.rutis.internal.peer.CallChain
 import arcships.rutis.internal.peer.Peer
 import arcships.rutis.internal.peer.Undefined
 import kotlinx.coroutines.CompletableJob
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
@@ -363,9 +365,9 @@ class RuntimeState(plugins: List<Plugin>) {
         }
     }
 
-    internal suspend fun unload(key: String) {
+    internal suspend fun unload(key: String, deadlineNanos: Long? = null): Boolean {
         val row = synchronized(lock) {
-            val row = rows.remove(key) ?: return
+            val row = rows.remove(key) ?: return false
             EventsRuntime.forgetListeners(this, row)
             // Withdrawals first: rutis hears them before the plugin goes away.
             for (id in row.provided.toList()) {
@@ -392,20 +394,49 @@ class RuntimeState(plugins: List<Plugin>) {
         // for, at most the shutdown deadline (§7.1); then its cleanups run,
         // latest first.
         row.job.cancel()
-        val budget = shutdownMillis
-        if (!row.listening.await(budget)) {
+        fun leftMillis(): Long? = deadlineNanos?.let { ((it - System.nanoTime()) / 1_000_000).coerceAtLeast(0) }
+        val budget = leftMillis() ?: shutdownMillis
+        val listened = if (deadlineNanos == null) {
+            row.listening.await(budget)
+        } else {
+            withTimeoutOrNull(budget) {
+                runInterruptible(Dispatchers.IO) { row.listening.await(budget) }
+            } ?: false
+        }
+        var gaveUp = !listened
+        if (!listened) {
             Report.line("rutis: listeners of row ${row.name} still running after ${Shutdown.shown(budget)}s; unloading anyway")
         }
-        withTimeoutOrNull(budget) { row.job.cancelAndJoin() }
+        val joinBudget = leftMillis() ?: budget
+        if (joinBudget > 0) withTimeoutOrNull(joinBudget) { row.job.cancelAndJoin() }
         var failure: Throwable? = null
         for (cleanup in row.cleanups.asReversed()) {
+            val left = leftMillis()
+            if (deadlineNanos != null && left == 0L) {
+                Report.line("rutis: gave up the cleanups of row ${row.name}")
+                gaveUp = true
+                break
+            }
             try {
-                withContext(CallChain.element(row.chain)) { cleanup() }
+                val done = if (deadlineNanos == null) {
+                    withContext(CallChain.element(row.chain)) { cleanup() }
+                    true
+                } else {
+                    withTimeoutOrNull(left!!) {
+                        withContext(CallChain.element(row.chain)) { cleanup() }
+                    } != null
+                }
+                if (!done) {
+                    Report.line("rutis: gave up the cleanups of row ${row.name}")
+                    gaveUp = true
+                    break
+                }
             } catch (e: Throwable) {
                 if (failure == null) failure = e else failure.addSuppressed(e)
             }
         }
         failure?.let { throw it }
+        return !gaveUp
     }
 
     internal suspend fun update(key: String, config: Any?) {
@@ -422,22 +453,29 @@ class RuntimeState(plugins: List<Plugin>) {
         true
     }
 
-    /** Unloads every row, latest first. Returns false when it gave up cleanups at the deadline. */
+    /**
+     * Unloads every row, latest first. Returns false when it gave up
+     * cleanups at the deadline. The deadline bounds waiting for listeners
+     * and suspending cleanups; a cleanup that blocks its thread without
+     * suspending cannot be interrupted, so plugins should not do that.
+     */
     suspend fun dispose(budgetMillis: Long? = null): Boolean {
         val ordered = synchronized(lock) { rows.values.sortedBy { it.order } }
         val deadline = budgetMillis?.let { System.nanoTime() + it * 1_000_000 }
         for (row in ordered.asReversed()) {
-            val remaining = deadline?.let { ((it - System.nanoTime()) / 1_000_000).coerceAtLeast(0) }
-            if (remaining != null && remaining == 0L) {
+            val left = deadline?.let { ((it - System.nanoTime()) / 1_000_000).coerceAtLeast(0) }
+            if (deadline != null && left == 0L) {
                 System.err.println("rutis: gave up the cleanups of row ${row.key} and those after it")
                 return false
             }
-            if (remaining == null) {
-                runCatching { unload(row.key) }
-                continue
+            val done = if (deadline == null) {
+                runCatching { unload(row.key) }.getOrNull() ?: false
+            } else {
+                withTimeoutOrNull(left!!) {
+                    runCatching { unload(row.key, deadline) }.getOrNull() ?: false
+                } ?: false
             }
-            val done = withTimeoutOrNull(remaining) { runCatching { unload(row.key) } }
-            if (done == null) {
+            if (!done) {
                 System.err.println("rutis: gave up the cleanups of row ${row.key} and those after it")
                 return false
             }

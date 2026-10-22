@@ -98,6 +98,25 @@ class RuntimeTest {
     }
 
     @Test
+    fun aTaskOfAnUnloadedRowCannotProvideOrRegisterACleanup() = runBlocking<Unit> {
+        var late: Ctx? = null
+        val plugin = Rutis.define<Rutis.NoConfig>(
+            name = "late",
+            provides = mapOf("hello" to service<Hello>(sync = setOf("greet"))),
+        ) { ctx, _ ->
+            late = ctx
+            ctx.provide("hello", Hello("row"))
+        }
+        RutisTest.load(plugin).use { first ->
+            first.unload()
+            late!!.provide("hello", Hello("late"))
+            late!!.effect { }
+            val again = first.load(isolate = mapOf("hello" to "again"))
+            assertEquals("row Kim", again.service("hello").call("greet", "Kim"))
+        }
+    }
+
+    @Test
     fun listenersHearEmissionsInEveryMode() = runBlocking<Unit> {
         val plugin = Rutis.define<Rutis.NoConfig>(name = "events") { ctx, _ ->
             ctx.on("t/greet") { args -> "${args[0]}!" }
