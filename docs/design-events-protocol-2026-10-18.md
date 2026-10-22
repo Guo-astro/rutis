@@ -503,7 +503,7 @@ impl EventBus {
   | `{ "next": "<text>" }` | 返回 `"<text>" + r`，`r` 为 `next()` 的结果（没有结果时为 `""`） |
   | `{ "veto": v }` | 不调 `next`，返回 `v` |
   | `{ "nextTwice": true }` | 调两次 `next()`，返回第二次的结果 |
-  | `{ "waits": true }` | 等待取消，然后记 `label:cancelled` 并返回 `null` |
+  | `{ "waits": true }` | 等待取消，然后记 `label:cancelled` 并返回 `null`；`sync` 监听器不能被唤醒（JavaScript、Python）时阻塞所在线程，直到进程结束 |
   | `{ "calls": 0 }` | 以 `"x"` 调用 `args[0]`（一个函数），返回它的结果 |
   | `{ "emits": spec }` | 从自己这一行发出 `spec`（见下），返回结果 |
 
