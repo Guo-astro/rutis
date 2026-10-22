@@ -108,6 +108,18 @@ pub(super) fn marked(session: &str, id: &str) {
     waits.counted();
 }
 
+/// How many calls received on `session` are marked: a test's own count,
+/// which the process-wide one mixes with other tests' sessions.
+#[cfg(test)]
+pub(super) fn marks_of(session: &str) -> usize {
+    let waits = WAITS.lock().unwrap();
+    waits
+        .marked
+        .iter()
+        .filter(|(tag, _)| tag == session)
+        .count()
+}
+
 /// Call `id` received on `session` was answered.
 pub(super) fn answered(session: &str, id: &str) {
     if MARKS.load(Ordering::SeqCst) == 0 {

@@ -1031,3 +1031,84 @@ async fn function_references_calling_each_other() {
     assert_eq!(refused, 1, "{answers:?}");
     fixture.root.shutdown().await.unwrap();
 }
+
+// ── An emit whose filter answers later ──────────────────────────
+
+/// In another Node runtime: `fire` emits `t/n` through a filter, a call
+/// back into this runtime: the dispatch suspends before any listener is
+/// called, and calls them once the filter answered.
+const NODE_FILTERED_EMITTER: &str = r#"
+import { definePlugin } from 'PLUGIN'
+export default definePlugin({
+  provides: { e_svc: { fire: 'sync' } },
+  apply(ctx) {
+    ctx.provide('e_svc', { fire: () => { ctx.filter(() => true).emit('t/n'); return 'fired' } })
+  },
+})
+"#;
+
+/// As [`an_emit_listener_run_while_a_call_waits`] with a reentrant A, the
+/// emit going through a filter (#537): its listeners are called after the
+/// dispatch suspended, not when it started. C (Node) waits for `x` in A
+/// (Python); A runs the listener on top of `x`, and its call back to C
+/// closes the cycle: refused with `SyncWaitCycle`, and the rest completes.
+/// guarantee: bridge/sync-wait-cycle-refused
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_emit_listener_called_after_its_filter_answered() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = write(dir.path(), "c.mjs", NODE_C);
+    let back = write(dir.path(), "c_back.mjs", NODE_C_BACK);
+    let e = write(dir.path(), "e.mjs", NODE_FILTERED_EMITTER);
+    std::fs::write(dir.path().join("a_py.py"), PY_A).unwrap();
+    let (gate, arrivals) = Gate::new(0);
+    let opener = gate.clone();
+    let services = ["c_svc", "c_back", "e_svc", "a_svc"];
+    let fixture = fixture(
+        vec![
+            (node("node"), true),
+            (node("ne"), false),
+            (python("py", dir.path()), false),
+        ],
+        false,
+        false,
+        &services,
+        gate,
+    )
+    .await;
+    fixture
+        .loader
+        .reconcile(
+            rows(vec![
+                json!({ "id": "c", "name": c.to_string_lossy() }),
+                json!({ "id": "cb", "name": back.to_string_lossy() }),
+                json!({ "id": "e", "name": format!("ne:{}", e.display()) }),
+                json!({ "id": "a", "name": "py:a_py" }),
+            ]),
+            None,
+        )
+        .await
+        .unwrap();
+    let (loader, root) = (fixture.loader.clone(), fixture.root.clone());
+    COLD.until(
+        || {
+            ["c", "cb", "e", "a"].iter().all(|id| active(&loader, id))
+                && services.iter().all(|name| service(&root, name).is_some())
+        },
+        "the rows and their services",
+    )
+    .await;
+
+    let go = call(&fixture.root, "c_svc", "go");
+    // `x` holds at the gate: C waits for it.
+    assert_eq!(recv_within("x at the gate", &arrivals), "x");
+    assert_eq!(
+        answer(&call(&fixture.root, "e_svc", "fire"), "e.fire"),
+        json!("fired")
+    );
+    let heard = recv_within("the listener's report", &arrivals);
+    assert_eq!(heard, "listener SyncWaitCycle", "its call back is refused");
+    opener.open(&heard);
+    opener.open("x");
+    assert_eq!(answer(&go, "c.go"), json!("c got x"), "the rest completes");
+    fixture.root.shutdown().await.unwrap();
+}

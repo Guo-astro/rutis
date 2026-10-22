@@ -350,6 +350,167 @@ async fn a_cancel_for_an_unknown_call_is_ignored() {
     assert!(peer.close_reason().is_none());
 }
 
+fn invoke(id: &str, method: &str, sync: bool) -> Frame {
+    Frame::Invoke {
+        id: id.into(),
+        path: vec![],
+        target: "t".into(),
+        method: method.into(),
+        args: data(json!([])),
+        sync,
+    }
+}
+
+/// What the far ends of the cancellation tests declare: they mark their
+/// synchronous waits and run one stack, not reentrant (Node's profile).
+const ONE_STACK: [&str; 2] = ["sync-wait", "sync-stack"];
+/// How long a step of those tests may take before it counts as hung.
+const STEP: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// A synchronous call cancelled while it runs keeps its mark until its
+/// reply: a forward it makes afterwards is still a hop, and one closing a
+/// cycle is refused. Session A's far end calls `hold`; it is cancelled
+/// while running; B's far end calls `work`, which B forwards to A (A's far
+/// end is busy, so it waits); then `hold` forwards to B, which waits for A:
+/// the cycle.
+/// guarantee: bridge/sync-wait-cycle-refused
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_running_synchronous_call_cancelled_keeps_its_mark() {
+    struct Hold {
+        started: Mutex<mpsc::Sender<()>>,
+        release: Mutex<mpsc::Receiver<()>>,
+        outcome: Mutex<mpsc::Sender<Reply>>,
+        other: std::sync::OnceLock<Connection>,
+    }
+    impl Dispatch for Hold {
+        fn invoke(&self, peer: &Connection, _: &str, method: &str, args: Value) -> Reply {
+            if method == "echo" {
+                return Ok(args);
+            }
+            self.started.lock().unwrap().send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+            let other = self.other.get().unwrap();
+            let forwarded = other.forward(peer, || other.invoke("t", "work", Value::List(vec![])));
+            self.outcome.lock().unwrap().send(forwarded).unwrap();
+            Ok(Value::Undefined)
+        }
+    }
+    /// Forwards every call to the other session.
+    struct Forward(std::sync::OnceLock<Connection>);
+    impl Dispatch for Forward {
+        fn invoke(&self, peer: &Connection, target: &str, method: &str, args: Value) -> Reply {
+            let other = self.0.get().unwrap();
+            other.forward(peer, || other.invoke(target, method, args))
+        }
+    }
+    let (started, has_started) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let (outcome, outcomes) = mpsc::channel();
+    let hold = Arc::new(Hold {
+        started: Mutex::new(started),
+        release: Mutex::new(released),
+        outcome: Mutex::new(outcome),
+        other: std::sync::OnceLock::new(),
+    });
+    let forward = Arc::new(Forward(std::sync::OnceLock::new()));
+    let (a, far_a) = connected(hold.clone());
+    let (b, far_b) = connected(forward.clone());
+    assert!(hold.other.set(b.clone()).is_ok());
+    assert!(forward.0.set(a.clone()).is_ok());
+    let (a_tag, closing) = (a.tag().to_owned(), (a.clone(), b.clone()));
+    let script = tokio::task::spawn_blocking(move || {
+        let mut far_a = Remote::start_declaring(far_a, &ONE_STACK);
+        let mut far_b = Remote::start_declaring(far_b, &ONE_STACK);
+        far_a.send(invoke("node:1", "hold", true));
+        has_started.recv_timeout(STEP).expect("hold runs");
+        far_a.send(Frame::Cancel {
+            id: "node:1".into(),
+        });
+        // Read after the cancel: the cancel was handled.
+        far_a.call(2, invoke("node:2", "echo", false));
+        assert_eq!(
+            waits::marks_of(&a_tag),
+            1,
+            "the running call keeps its mark"
+        );
+        far_b.send(invoke("node:1", "work", true));
+        let Frame::Invoke { id: work, .. } = far_a.read() else {
+            panic!("the forwarded work expected")
+        };
+        release.send(()).unwrap();
+        let refused = outcomes.recv_timeout(STEP);
+        if refused.is_err() {
+            // Sent instead of refused: it waits for ever. End both sessions
+            // so nothing stays blocked.
+            closing.0.close(Error::Transport("test over".into()));
+            closing.1.close(Error::Transport("test over".into()));
+        }
+        assert!(
+            matches!(refused, Ok(Err(Error::SyncWaitCycle(_)))),
+            "the forward closing the cycle is refused: {refused:?}"
+        );
+        assert!(matches!(far_a.read(), Frame::Return { id, .. } if id == "node:1"));
+        far_a.ret(work, data(json!("worked")));
+        match far_b.read() {
+            Frame::Return { id, value } if id == "node:1" => {
+                assert_eq!(data_of(value), json!("worked"));
+            }
+            _ => panic!("the reply to work expected"),
+        }
+        assert_eq!(waits::marks_of(&a_tag), 0);
+    });
+    script.await.unwrap();
+}
+
+/// A synchronous `await` cancelled while the future is awaited on the
+/// caller's behalf leaves the wait graph: its mark goes with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_awaited_call_leaves_no_mark() {
+    struct Later(Mutex<mpsc::Sender<()>>);
+    impl Dispatch for Later {
+        fn invoke(&self, _: &Connection, _: &str, method: &str, args: Value) -> Reply {
+            if method == "echo" {
+                return Ok(args);
+            }
+            let polled = self.0.lock().unwrap().clone();
+            Ok(Value::future(async move {
+                let _ = polled.send(());
+                std::future::pending::<Reply>().await
+            }))
+        }
+    }
+    let (polled, was_polled) = mpsc::channel();
+    let (a, far) = connected(Arc::new(Later(Mutex::new(polled))));
+    let tag = a.tag().to_owned();
+    let script = tokio::task::spawn_blocking(move || {
+        let mut far = Remote::start_declaring(far, &ONE_STACK);
+        far.send(invoke("node:1", "later", false));
+        let (reference, kind) = match far.read() {
+            Frame::Return { id, value } if id == "node:1" => granted(&value),
+            _ => panic!("the future expected"),
+        };
+        assert_eq!(kind, Kind::Future);
+        far.send(Frame::Await {
+            id: "node:2".into(),
+            path: vec![],
+            reference,
+            sync: true,
+        });
+        // Polled once awaited on the caller's behalf.
+        was_polled
+            .recv_timeout(STEP)
+            .expect("the future is awaited");
+        assert_eq!(waits::marks_of(&tag), 1);
+        far.send(Frame::Cancel {
+            id: "node:2".into(),
+        });
+        far.call(3, invoke("node:3", "echo", false));
+        assert_eq!(waits::marks_of(&tag), 0, "the cancelled await is unmarked");
+    });
+    script.await.unwrap();
+    drop(a);
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn explicit_close_interrupts_a_writer_whose_peer_stopped_reading() {
     let (peer, mut remote) = pair();
