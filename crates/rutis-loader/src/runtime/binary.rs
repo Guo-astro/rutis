@@ -81,15 +81,12 @@ const MANIFEST_ERRORS: u64 = 64 * 1024;
 
 /// Wait for a runtime whose process was killed to report that it is down.
 async fn wait_down(handle: &RuntimeHandle, limit: Duration) {
-    let down = async {
-        loop {
-            if matches!(handle.state(), RuntimeState::Down(_)) {
-                return;
-            }
-            handle.changed().await;
+    let _ = tokio::time::timeout(limit, async {
+        while !matches!(handle.state(), RuntimeState::Down(_)) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-    };
-    let _ = tokio::time::timeout(limit, down).await;
+    })
+    .await;
 }
 
 /// How long a failed manifest read stands before a row asking for a plugin
