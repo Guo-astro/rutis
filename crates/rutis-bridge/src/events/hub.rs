@@ -392,7 +392,12 @@ impl SessionEvents {
             hub.leave(self.origin);
         }
         self.rows.lock().unwrap().clear();
-        self.emits.lock().unwrap().queue.clear();
+        // Dropped after the lock: a future may write a frame on drop.
+        let queued = {
+            let mut emits = self.emits.lock().unwrap();
+            std::mem::take(&mut emits.queue)
+        };
+        drop(queued);
         let entries: Vec<Registered> = self
             .entries
             .lock()
@@ -418,12 +423,17 @@ impl SessionEvents {
     pub(crate) fn row_ended(&self, key: &str) {
         self.rows.lock().unwrap().remove(key);
         // Its queued emits are dropped (§5.5); the ones already started
-        // are left to finish.
-        self.emits
-            .lock()
-            .unwrap()
-            .queue
-            .retain(|(row, _)| row.as_deref() != Some(key));
+        // are left to finish. Dropped after the lock: a future may write a
+        // frame on drop.
+        let queued = {
+            let mut emits = self.emits.lock().unwrap();
+            let (queued, kept) = std::mem::take(&mut emits.queue)
+                .into_iter()
+                .partition(|(row, _)| row.as_deref() == Some(key));
+            emits.queue = kept;
+            queued
+        };
+        drop(queued);
         let gone: Vec<Registered> = {
             let mut entries = self.entries.lock().unwrap();
             let ids: Vec<String> = entries
@@ -1167,6 +1177,43 @@ mod tests {
         /// Runs in `events.on` between the row's check and the entry's
         /// record.
         pub(super) static REGISTERING: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+    }
+
+    /// A queued emit of a row is dropped when the row ends, and its reply
+    /// completes: the waiting `events.dispatch` call sees an error, not a
+    /// dispatch that runs after the row is gone (events protocol §5.5).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_queued_emit_of_an_ended_row_is_dropped_and_its_reply_completes() {
+        let root = Ctx::root().unwrap();
+        let (near, _far) = crate::transport::memory::pair();
+        let near = Connection::open(near, Arc::new(Quiet)).unwrap();
+        let session = SessionEvents::join(Some(&root), near, "rt".into(), Vec::new()).unwrap();
+        session.row_loading("chat", Vec::new(), "chat".into());
+        // One dispatch is running (here, forever): the next one queues.
+        session.emits.lock().unwrap().busy = true;
+        let dropped = Arc::new(AtomicBool::new(false));
+        struct Note(Arc<AtomicBool>);
+        impl Drop for Note {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let (started, answered) = tokio::sync::oneshot::channel::<()>();
+        let note = Note(dropped.clone());
+        let run: BoxFuture<'static, ()> = Box::pin(async move {
+            let _note = note;
+            let _ = started.send(());
+        });
+        assert!(!session.run_emit(Some("chat".into()), run));
+        session.row_ended("chat");
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "the queued future was not dropped"
+        );
+        assert!(
+            answered.await.is_err(),
+            "the reply completed although its dispatch was dropped"
+        );
     }
 
     /// A row that unloads while one of its listeners registers (on the
