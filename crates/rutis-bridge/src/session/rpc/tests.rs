@@ -54,6 +54,19 @@ fn pair() -> (Connection, Far) {
     (Connection::open(local, Arc::new(NoExports)).unwrap(), far)
 }
 
+/// The chain of a slow dispatch is taken when `with_caller` is made, not
+/// when its future is first polled: a filter that suspends before polling
+/// still forwards from its caller's chain.
+#[tokio::test(flavor = "current_thread")]
+async fn with_caller_captures_the_chain_when_it_is_made() {
+    let (peer, _far) = pair();
+    let path = vec!["node:7".to_owned()];
+    let guard = PathGuard::enter(path.clone());
+    let future = with_caller(peer, async { current_path() });
+    drop(guard);
+    assert_eq!(future.await, path);
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn admitted_call_pins_its_target_before_a_following_counted_release() {
     let (peer, mut remote) = pair();

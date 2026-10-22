@@ -550,8 +550,17 @@ pub fn caller() -> Option<Connection> {
 /// the call being handled here (a notification another session's call
 /// happens to trigger), so it carries no chain of that session.
 pub(crate) fn unchained<R>(call: impl FnOnce() -> R) -> R {
+    let previous = UNCHAINED.with(|flag| flag.replace(true));
     let _path = PathGuard::enter(Vec::new());
-    call()
+    let result = call();
+    UNCHAINED.with(|flag| flag.set(previous));
+    result
+}
+
+/// Whether this thread is in [`unchained`]: what it sends is a
+/// notification nobody waits for, and is left out of the wait graph.
+pub(crate) fn unchained_now() -> bool {
+    UNCHAINED.with(|flag| flag.get())
 }
 /// Poll `future` with `source` as the [`caller`]: what it calls in other
 /// sessions on that session's behalf is forwarded from it (its chain
@@ -575,6 +584,7 @@ pub(crate) fn with_caller<F: Future>(
         .await
     }
 }
+thread_local! { static UNCHAINED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 thread_local! { static PUMPING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 /// Marks a thread that runs an invocation pumped by its own synchronous
 /// wait (`request_sync`), so code that relies on running there can check it.

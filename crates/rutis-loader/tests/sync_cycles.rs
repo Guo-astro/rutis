@@ -939,3 +939,95 @@ async fn an_emit_listener_run_while_a_call_waits() {
         fixture.root.shutdown().await.unwrap();
     }
 }
+
+// Function references relayed between two Node runtimes.
+const NODE_REF_WORK: &str = r#"
+import { definePlugin } from 'PLUGIN'
+export default definePlugin({
+  provides: { SELF: { fn: 'sync' } },
+  apply(ctx) {
+    ctx.provide('SELF', { fn: () => () => 'SELF works' })
+  },
+})
+"#;
+const NODE_REF_GO: &str = r#"
+import { definePlugin } from 'PLUGIN'
+export default definePlugin({
+  inject: ['gate', 'OTHER'],
+  provides: { SELF: { prepare: 'sync', go: 'sync' } },
+  apply(ctx) {
+    const gate = ctx.use('gate')
+    let f
+    ctx.provide('SELF', {
+      prepare() { f = ctx.use('OTHER').fn(); return 'ready' },
+      go() {
+        gate.arrive('SELF')
+        try { return `SELF got ${f()}` } catch (error) { return `SELF: ${error.name}` }
+      },
+    })
+  },
+})
+"#;
+
+/// A function reference taken from the other runtime, called while both
+/// runtimes wait: the relayed call is a hop, so one of the two is refused.
+/// guarantee: bridge/sync-wait-cycle-refused
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn function_references_calling_each_other() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = |me: &str| NODE_REF_WORK.replace("SELF", me);
+    let go = |me: &str, other: &str| NODE_REF_GO.replace("SELF", me).replace("OTHER", other);
+    let files = [
+        ("aw", "node", write(dir.path(), "aw.mjs", &work("a_work"))),
+        ("bw", "nb", write(dir.path(), "bw.mjs", &work("b_work"))),
+        (
+            "a",
+            "node",
+            write(dir.path(), "a.mjs", &go("a_svc", "b_work")),
+        ),
+        (
+            "b",
+            "nb",
+            write(dir.path(), "b.mjs", &go("b_svc", "a_work")),
+        ),
+    ];
+    let (gate, _arrivals) = Gate::new(2);
+    let fixture = fixture(
+        vec![(node("node"), true), (node("nb"), false)],
+        false,
+        false,
+        &["a_work", "b_work", "a_svc", "b_svc"],
+        gate,
+    )
+    .await;
+    let rows_of = files
+        .iter()
+        .map(|(id, runtime, file)| match *runtime {
+            "node" => json!({ "id": id, "name": file.to_string_lossy() }),
+            runtime => json!({ "id": id, "name": format!("{runtime}:{}", file.display()) }),
+        })
+        .collect();
+    fixture.loader.reconcile(rows(rows_of), None).await.unwrap();
+    let (loader, root) = (fixture.loader.clone(), fixture.root.clone());
+    COLD.until(
+        || {
+            ["aw", "bw", "a", "b"].iter().all(|id| active(&loader, id))
+                && ["a_work", "b_work", "a_svc", "b_svc"]
+                    .iter()
+                    .all(|name| service(&root, name).is_some())
+        },
+        "the rows and their services",
+    )
+    .await;
+    answer(&call(&fixture.root, "a_svc", "prepare"), "a.prepare");
+    answer(&call(&fixture.root, "b_svc", "prepare"), "b.prepare");
+    let a_go = call(&fixture.root, "a_svc", "go");
+    let b_go = call(&fixture.root, "b_svc", "go");
+    let answers = [answer(&a_go, "a.go"), answer(&b_go, "b.go")];
+    let refused = answers
+        .iter()
+        .filter(|a| a.as_str().unwrap().ends_with(": SyncWaitCycle"))
+        .count();
+    assert_eq!(refused, 1, "{answers:?}");
+    fixture.root.shutdown().await.unwrap();
+}

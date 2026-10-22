@@ -164,7 +164,7 @@ pub(super) fn forward(
     seq: u64,
     path: &[String],
 ) -> Result<bool, Vec<String>> {
-    if MARKS.load(Ordering::SeqCst) == 0 {
+    if MARKS.load(Ordering::SeqCst) == 0 || crate::session::rpc::unchained_now() {
         return Ok(false);
     }
     let mut waits = WAITS.lock().unwrap();
@@ -421,6 +421,26 @@ mod tests {
         assert_eq!(cycle(&[x, emitted], &back, &p), None);
     }
 
+    /// A notification sent with `unchained` is not part of the wait graph,
+    /// even while a call is marked.
+    #[test]
+    fn a_notification_sent_unchained_is_not_in_the_graph() {
+        marked("notice_a", "node:1");
+        let recorded = crate::session::rpc::unchained(|| {
+            forward("notice_b", "rust:1", 1, &["notice_a/node:1".to_owned()])
+        })
+        .unwrap();
+        assert!(!recorded);
+        assert!(!WAITS
+            .lock()
+            .unwrap()
+            .hops
+            .contains_key(&("notice_b".to_owned(), "rust:1".to_owned())));
+        answered("notice_a", "node:1");
+        ended("notice_a");
+        ended("notice_b");
+    }
+
     /// A forward whose chain ends at a marked call is a hop even when the
     /// forwarded call is asynchronous (a relayed function reference): the
     /// caller still waits for the relayed call to settle.
@@ -441,6 +461,17 @@ mod tests {
         answered("hop_a", "node:1");
         ended("hop_a");
         ended("hop_b");
+    }
+
+    /// A call removed after cancellation or a reply leaves no mark behind.
+    #[test]
+    fn an_answered_call_leaves_no_mark() {
+        let before = MARKS.load(Ordering::SeqCst);
+        marked("gone_a", "node:1");
+        assert!(MARKS.load(Ordering::SeqCst) > before);
+        answered("gone_a", "node:1");
+        assert_eq!(MARKS.load(Ordering::SeqCst), before);
+        ended("gone_a");
     }
 
     fn profiles(list: &[(&str, bool, bool)]) -> HashMap<String, Profile> {
