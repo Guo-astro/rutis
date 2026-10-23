@@ -595,7 +595,12 @@ impl Host {
             if *generation > 0 {
                 config["generation"] = json!(generation);
             }
-            Some(json!({ "id": row.label, "name": name, "config": config }))
+            let mut entry = json!({ "id": row.label, "name": name, "config": config });
+            // The row's own `inject` list, as a configuration gives it.
+            if let Some(inject) = row.config.get("inject") {
+                entry["inject"] = inject.clone();
+            }
+            Some(entry)
         };
         let in_scope = |path: &str| -> Vec<Json> {
             let mut rows = vec![json!({
