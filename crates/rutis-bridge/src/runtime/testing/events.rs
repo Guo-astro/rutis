@@ -27,6 +27,8 @@
 //!   labelled so.
 //! - `provides`: it also provides an undeclared service of that name;
 //!   `fails`: its `apply` throws that error, registering nothing;
+//!   `inject`: the row's own `inject` list (service names), as a
+//!   configuration gives it, for the loader to pass on;
 //!   `observesDispatch` (Cordis): it logs `<label>:dispatch:<mode>` from
 //!   Cordis's `internal/dispatch` for each dispatch of `name`.
 //!
@@ -1907,7 +1909,7 @@ const DOES: [&str; 11] = [
     "emits",
 ];
 
-const PARTICIPANT: [&str; 13] = [
+const PARTICIPANT: [&str; 14] = [
     "label",
     "at",
     "scope",
@@ -1918,6 +1920,7 @@ const PARTICIPANT: [&str; 13] = [
     "does",
     "typed",
     "fails",
+    "inject",
     "provides",
     "observesDispatch",
     "why",

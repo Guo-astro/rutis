@@ -141,12 +141,20 @@ export const Host = {
       const loaded = new Map()
       // A hosted row runs in its scope: each [name, label] of `isolate`
       // isolated (labels are the peer's, apart from other peers'), gated on
-      // the services `inject` names, as the runner runs a row.
+      // the services `inject` names, as the runner runs a row. Behind a
+      // gate, the plugin runs in a fiber of its own (`inner`), whose
+      // failure the gate does not share: `settled` waits for both, so a
+      // gated plugin's failure fails the load as an ungated one's (#584).
       const start = entry => {
+        entry.inner = undefined
         const fiber = entry.inject.length
-          ? entry.scope.plugin({ name: `host:${peer}:${entry.key}`, inject: entry.inject, apply(gate) { gate.plugin(entry.plugin, entry.config) } })
+          ? entry.scope.plugin({ name: `host:${peer}:${entry.key}`, inject: entry.inject, apply(gate) { entry.inner = fiberOf(gate.plugin(entry.plugin, entry.config)) } })
           : entry.scope.plugin(entry.plugin, entry.config)
         entry.fiber = fiberOf(fiber)
+      }
+      const settled = async entry => {
+        await entry.fiber.await()
+        await entry.inner?.await()
       }
       const unregister = link.register('plugins', async (_target, method, args) => {
         if (method === 'plugins.describe') {
@@ -159,10 +167,10 @@ export const Host = {
           const { plugin } = await locate(name)
           let rowScope = scope
           for (const [service, label] of isolate ?? []) rowScope = rowScope.isolate(service, Symbol.for(`rutis-peer:${peer}/${label}`))
-          const entry = { key, plugin, config: config ?? {}, scope: rowScope, inject: inject ?? [], fiber: undefined }
+          const entry = { key, plugin, config: config ?? {}, scope: rowScope, inject: inject ?? [], fiber: undefined, inner: undefined }
           start(entry)
           loaded.set(key, entry)
-          await entry.fiber.await()
+          await settled(entry)
           return null
         }
         if (method === 'plugins.update') {
@@ -173,7 +181,7 @@ export const Host = {
           await entry.fiber.dispose()
           entry.config = config ?? {}
           start(entry)
-          await entry.fiber.await()
+          await settled(entry)
           return null
         }
         if (method === 'plugins.unload') {

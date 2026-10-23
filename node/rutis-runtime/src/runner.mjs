@@ -441,6 +441,12 @@ async function loadRow([key, entry, config, isolate, inject, exports, place]) {
   }
   try {
     await fiber.await()
+    // A gated row: the gate applied, and its plugin runs in a fiber of its
+    // own, whose failure the gate does not share. The row waits for it, so
+    // it fails with its plugin's error as an ungated row does (#584). (A
+    // gate still waiting for its inject has no plugin fiber yet: the row
+    // loads, as an ungated row waiting for its plugin's inject does.)
+    if (row.inner !== fiber) await row.inner?.await()
     // What the row provides without declaring it is announced before the
     // reply, as the declared services are.
     discover()
