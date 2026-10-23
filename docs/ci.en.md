@@ -79,7 +79,7 @@ The first job of `ci.yml`, `changes`, looks at the files the pull request change
 | `kotlin` | `kotlin/**`, `crates/rutis-bridge`, `crates/rutis-loader`, `crates/rutis-host` |
 | `repro` | `crates/rutis-sdk`, `crates/rutis-cli/build.rs`, `tools/test-dylib-repro.sh`, `tools/build-dylib-bundle.sh`, `tools/lib/**`. Kernel changes reach the SDK too, but its reproducibility check for them runs in full runs |
 | `specs` | `specs/**` (the TLA+ models, their configurations, expected outcomes, and the READMEs that record the results) |
-| `swift` | `Package.swift`, `swift/**`, and the test files that run Swift runtimes: `swift_remote.rs` and `swift_runtime.rs` in the bridge, `swift_rows.rs` and `multilang_swift.rs` in the loader, `swift.rs` and `swift_app.rs` in rutis-host, and `tests/e2e/tests/dev_loop.rs`. Changes to the bridge, loader and host sources reach Swift too, but full runs check those (`rust` already runs the same suites on Linux) |
+| `swift` | `Package.swift`, `swift/**`, the Swift runtime's own sources (`src/runtime/swift.rs` in the loader, `src/languages/swift.rs` in rutis-host), and the test files that run Swift runtimes: `swift_remote.rs` and `swift_runtime.rs` in the bridge, `swift_rows.rs` and `multilang_swift.rs` in the loader, `swift.rs` and `swift_app.rs` in rutis-host, and `tests/e2e/tests/dev_loop.rs`. Changes to other bridge, loader and host sources reach Swift too, but full runs check those (`rust` already runs the same suites on Linux) |
 
 ## 4. Jobs
 
@@ -306,7 +306,7 @@ A self-hosted machine keeps its state between jobs, and several instances run at
 
 ## 11. Self-hosted Linux runners
 
-Where `ci.yml`'s Linux jobs (`rust`, `e2e`, `lint`, the Linux entries of `runtimes-go`/`runtimes-bun`, `dylib-linux-*`, `sdk-repro`) run is the repository variable `LINUX_RUNNER` (the JSON value of `runs-on`): unset, GitHub's `"ubuntu-24.04"`; set to `["self-hosted","Linux"]`, the organization's self-hosted Linux runners; delete it to go back to GitHub. The other workflows (`package.yml`, which needs Docker containers, `install.yml`, `stress.yml` and the rest) are not affected, but for the `shuttle` and `fuzz` jobs of `stress.yml`, the Linux entry of its `soak-host` and `nightly.yml`'s `cordis-latest`, which follow the variable too (the macOS entry of `soak-host` follows `MACOS_RUNNER`, the Windows entry `WINDOWS_RUNNER`).
+Where `ci.yml`'s Linux jobs (`rust`, `e2e`, `links`, `lint`, the Linux entries of `runtimes-go`/`runtimes-bun`, `dylib-linux-*`, `sdk-repro`) run is the repository variable `LINUX_RUNNER` (the JSON value of `runs-on`): unset, GitHub's `"ubuntu-24.04"`; set to `["self-hosted","Linux"]`, the organization's self-hosted Linux runners; delete it to go back to GitHub. The other workflows (`package.yml`, which needs Docker containers, `install.yml`, `stress.yml` and the rest) are not affected, but for the `shuttle` and `fuzz` jobs of `stress.yml`, the Linux entry of its `soak-host` and `nightly.yml`'s `cordis-latest`, which follow the variable too (the macOS entry of `soak-host` follows `MACOS_RUNNER`, the Windows entry `WINDOWS_RUNNER`).
 
 These runners are 4 Docker containers on one machine (32 cores, 60 GB of memory), one runner each, user `runner` with passwordless sudo, with Rust, Node, Go and Python installed and no `lsof`, Docker or Bun (`setup-bun` installs Bun). The jobs run `tools/ci-self-hosted.sh` at their start and their end as well (previous section), with these differences:
 

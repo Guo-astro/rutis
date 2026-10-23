@@ -79,7 +79,7 @@
 | `kotlin` | `kotlin/**`、`crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host` |
 | `repro` | `crates/rutis-sdk`、`crates/rutis-cli/build.rs`、`tools/test-dylib-repro.sh`、`tools/build-dylib-bundle.sh`、`tools/lib/**`。内核改动也会影响 SDK，但它的可复现检查放在完整运行里 |
 | `specs` | `specs/**`（TLA+ 模型、配置、预期结果，以及记录结果的 README） |
-| `swift` | `Package.swift`、`swift/**`，以及跑 Swift 运行时的测试文件：bridge 的 `swift_remote.rs`、`swift_runtime.rs`，loader 的 `swift_rows.rs`、`multilang_swift.rs`，rutis-host 的 `swift.rs`、`swift_app.rs`，`tests/e2e/tests/dev_loop.rs`。bridge、loader、host 源码的改动也会影响 Swift，但只在完整运行里查（`rust` 在 Linux 上已经跑过同样的套件） |
+| `swift` | `Package.swift`、`swift/**`，Swift 运行时自己的源码（loader 的 `src/runtime/swift.rs`、rutis-host 的 `src/languages/swift.rs`），以及跑 Swift 的测试文件（bridge 的 `swift_remote.rs`、`swift_runtime.rs`，loader 的 `swift_rows.rs`、`multilang_swift.rs`，rutis-host 的 `swift.rs`、`swift_app.rs`，`tests/e2e/tests/dev_loop.rs`）。bridge、loader、host 其他源码的改动也会影响 Swift，但只在完整运行里查（`rust` 在 Linux 上已经跑过同样的套件） |
 
 ## 4. 每个任务
 
@@ -306,7 +306,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 
 ## 11. 自托管的 Linux runner
 
-`ci.yml` 的 Linux 任务（`rust`、`e2e`、`lint`、`runtimes-go`/`runtimes-bun` 的 Linux 矩阵项、`dylib-linux-*`、`sdk-repro`）由仓库变量 `LINUX_RUNNER`（`runs-on` 的 JSON 值）决定跑在哪里：没设置时是 GitHub 的 `"ubuntu-24.04"`，设成 `["self-hosted","Linux"]` 就跑在组织的自托管 Linux runner 上；删掉变量就回到 GitHub。`package.yml`（要 Docker 容器）、`install.yml`、`stress.yml` 等其他工作流不受影响，只有 `stress.yml` 的 `shuttle`、`fuzz` 和 `soak-host` 的 Linux 项、`nightly.yml` 的 `cordis-latest` 也按这个变量（`soak-host` 的 macOS 项按 `MACOS_RUNNER`，Windows 项按 `WINDOWS_RUNNER`）。
+`ci.yml` 的 Linux 任务（`rust`、`e2e`、`links`、`lint`、`runtimes-go`/`runtimes-bun` 的 Linux 矩阵项、`dylib-linux-*`、`sdk-repro`）由仓库变量 `LINUX_RUNNER`（`runs-on` 的 JSON 值）决定跑在哪里：没设置时是 GitHub 的 `"ubuntu-24.04"`，设成 `["self-hosted","Linux"]` 就跑在组织的自托管 Linux runner 上；删掉变量就回到 GitHub。`package.yml`（要 Docker 容器）、`install.yml`、`stress.yml` 等其他工作流不受影响，只有 `stress.yml` 的 `shuttle`、`fuzz` 和 `soak-host` 的 Linux 项、`nightly.yml` 的 `cordis-latest` 也按这个变量（`soak-host` 的 macOS 项按 `MACOS_RUNNER`，Windows 项按 `WINDOWS_RUNNER`）。
 
 这些 runner 是同一台机器（32 核、60 GB 内存）上的 4 个 Docker 容器，每个容器一个 runner，用户 `runner`，有免密 sudo，自带 Rust、Node、Go、Python，没有 `lsof`、Docker 和 Bun（Bun 由 `setup-bun` 装）。任务开头和结尾同样运行 `tools/ci-self-hosted.sh`（见上一节），区别是：
 

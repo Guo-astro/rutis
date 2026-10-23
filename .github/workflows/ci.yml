@@ -167,18 +167,21 @@ jobs:
               - crates/rutis-bridge/**
               - crates/rutis-loader/**
               - crates/rutis-host/**
-            # The Swift SDK (the root Package.swift and swift/), and the test
-            # files that run its runtimes. Changes to the bridge, loader and
-            # host sources reach them too, but a Swift-only break there is
-            # found by the nightly full run (Q12.1): 6–7 minutes of macOS
-            # per bridge change otherwise, and Linux runs those suites.
+            # The Swift SDK (the root Package.swift and swift/), the Swift
+            # runtime's own sources, and the test files that run it. Changes
+            # to the other bridge, loader and host sources reach Swift too,
+            # but a Swift-only break there is found by the nightly full run
+            # (Q12.1): 6–7 minutes of macOS per bridge change otherwise, and
+            # Linux runs those suites.
             swift:
               - Package.swift
               - swift/**
               - crates/rutis-bridge/tests/swift_remote.rs
               - crates/rutis-bridge/tests/swift_runtime.rs
+              - crates/rutis-loader/src/runtime/swift.rs
               - crates/rutis-loader/tests/swift_rows.rs
               - crates/rutis-loader/tests/multilang_swift.rs
+              - crates/rutis-host/src/languages/swift.rs
               - crates/rutis-host/tests/swift.rs
               - crates/rutis-host/tests/swift_app.rs
               - tests/e2e/tests/dev_loop.rs
@@ -271,7 +274,7 @@ jobs:
       - name: self-hosted runner, start (tools/ci-self-hosted.sh)
         if: runner.environment == 'self-hosted'
         env:
-          RUTIS_CI_JOBS: ${{ vars.RUTIS_CI_JOBS }}
+          RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
         run: bash tools/ci-self-hosted.sh start
       # A self-hosted runner has no Node of its own.
       - uses: actions/setup-node@v4
