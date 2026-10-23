@@ -407,10 +407,29 @@ pub struct Exposure<'a> {
 }
 
 /// What serves marked services to other languages: the bridge installs it.
+///
+/// A provide asks [`admit`](Exposer::admit) before the native service is
+/// registered and [`expose`](Exposer::expose) after it: a name that cannot
+/// be served refuses the provide with nothing served, and the name is
+/// never served before the native service it calls exists. Exposed after
+/// it, the name is withdrawn before it, by the provide's disposer and by
+/// the provider's unload alike (cleanups run last in, first out).
 pub trait Exposer: Send + Sync + 'static {
+    /// Whether the marked service `exposure` describes can be served by
+    /// name: its blocks agree on the name and the name is free where it
+    /// would be served ([`vacant`]). Nothing is registered.
+    fn admit(&self, exposure: &Exposure<'_>) -> Result<(), CordisError>;
     /// Serve the marked service `exposure` describes by name, in the same
-    /// scope as the native one. The returned disposer stops serving it.
+    /// scope as the native one, which is provided by now. The returned
+    /// disposer stops serving it.
     fn expose(&self, exposure: Exposure<'_>) -> Result<Disposer, CordisError>;
+}
+
+/// Whether a provide of `key` on `ctx` finds its slot free (in the
+/// isolation scope `ctx` gives `key`): for an [`Exposer`] checking the name
+/// before the native service is registered.
+pub fn vacant(ctx: &Ctx, key: &TypeKey) -> bool {
+    !ctx.slot_taken(key)
 }
 
 /// The `check()` predicate a service was provided with
@@ -433,6 +452,14 @@ pub(crate) fn marked<T: ?Sized + 'static>(ctx: &Ctx) -> Option<Vec<&'static Entr
     let generation = ctx.code_generation().map(Generation);
     let entries = entries_of(TypeId::of::<T>(), generation);
     (!entries.is_empty()).then_some(entries)
+}
+
+/// Whether a marked service can be served by name ([`Exposer::admit`]).
+pub(crate) fn admit(exposure: &Exposure<'_>) -> Result<(), CordisError> {
+    match EXPOSER.get() {
+        Some(exposer) => exposer.admit(exposure),
+        None => Ok(()),
+    }
 }
 
 /// Serve a marked service by name ([`marked`]).
