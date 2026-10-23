@@ -319,3 +319,46 @@ test('the Events plugin announces and accepts entries by offer', async () => {
   handler('', 'events.on', [{ id: '3.1', name: 't/c', kind: 'any' }])
   assert.deepEqual(remote(), ['t/c'], 'an announcement of a newer offer, before the offer itself, replaces the older ones')
 })
+
+// guarantee: events/node-links — the peer's announcement can come before
+// its offer of `events` (#530): offers that do not show that offer yet do
+// not withdraw its entry; once the offer shown is withdrawn, it goes.
+test('the Events plugin keeps an entry announced before its offer', async () => {
+  const { Events, bus } = await import('../src/bridge/features.mjs')
+  const root = new Context()
+  const offers = new Set()
+  let handler, families = new Set(), since = new Map()
+  root.provide('rutisPeer.main', {
+    id: 'main',
+    epoch: family => family === 'events' && handler ? 7 : undefined,
+    register(family, served) { handler = served; return () => { handler = undefined } },
+    onOffers(listener) {
+      offers.add(listener)
+      listener(families, family => families.has(family) ? since.get(family) : undefined)
+      return () => offers.delete(listener)
+    },
+    callAsync: async () => {},
+    call: () => undefined,
+  })
+  const offer = epoch => {
+    families = new Set(epoch === undefined ? ['services'] : ['services', 'events'])
+    since = new Map([['services', 1], ['events', epoch]])
+    for (const listener of offers) listener(families, family => families.has(family) ? since.get(family) : undefined)
+  }
+  const events = bus(root)
+  root.plugin(Events, { peer: 'main', export: ['t/*'], import: ['t/*'] })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.ok(handler, 'the events family is served')
+  const remote = () => events.entries().filter(entry => entry.remote).map(entry => entry.name)
+
+  handler('', 'events.on', [{ id: '3.1', name: 't/a', kind: 'any' }])
+  offer(undefined)
+  assert.deepEqual(remote(), ['t/a'], 'offers not showing events yet withdraw nothing')
+  offer(3)
+  assert.deepEqual(remote(), ['t/a'])
+  offer(undefined)
+  assert.deepEqual(remote(), [], 'the offer shown is withdrawn, and its entry with it')
+  handler('', 'events.on', [{ id: '5.1', name: 't/b', kind: 'any' }])
+  offer(undefined)
+  assert.deepEqual(remote(), ['t/b'], 'an entry of a later offer, come before it, stays')
+})
