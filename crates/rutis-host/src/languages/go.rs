@@ -99,11 +99,15 @@ impl Language for Go {
         GoDev::of(dir).is_some()
     }
 
-    /// Build it, then one row per plugin of its binary, named with its
+    /// Build it (unless `built`, the first build the caller made without
+    /// blocking), then one row per plugin of its binary, named with its
     /// runtime (`go-<name>:<plugin>`).
-    fn dev(&self, dir: &Path) -> Result<(Vec<Value>, Runtimes), String> {
+    fn dev(&self, dir: &Path, built: Option<&Path>) -> Result<(Vec<Value>, Runtimes), String> {
         let go = GoDev::of(dir).ok_or_else(|| format!("{}: no go.mod", dir.display()))?;
-        let binary = binary::building(&go.name, || go.build(1))?;
+        let binary = match built {
+            Some(binary) => binary.to_owned(),
+            None => binary::building(&go.name, || go.build(1))?,
+        };
         let (rows, settings) = dev_rows(&binary, &go.runtime, &go.dir, &go.package)?;
         Ok((
             rows,

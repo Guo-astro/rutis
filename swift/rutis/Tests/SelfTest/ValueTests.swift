@@ -202,6 +202,15 @@ struct CodecTests {
         XCTAssertThrowsError(try ValueCodec.decode(Config.self, from: .data(.object([]))))
         XCTAssertEqual(try ValueCodec.decode(Int?.self, from: .undefined), nil)
     }
+
+    func testAMissingStoredPropertyIsAnError() {
+        struct Service { var present = 1 }
+        XCTAssertThrowsError(try readProperty(of: Service(), "absent")) { error in
+            guard let error = error as? RutisError else { return XCTFail("\(error)") }
+            XCTAssertEqual(error.name, "Error")
+            XCTAssertEqual(error.message, "no property absent")
+        }
+    }
 }
 
 struct ErrorGraphTests {

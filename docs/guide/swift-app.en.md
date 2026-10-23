@@ -2,7 +2,7 @@
 
 [中文](swift-app.md)
 
-An iOS, iPadOS or macOS app can offer what it and its device can do (health data, location, contacts, the app's own features) to rutis as ordinary rutis plugins. The plugins are compiled into the app and ship with it; rutis loads, configures and unloads them as its configuration says; the app only starts and stops the connection. Needs iOS / iPadOS 17 or macOS 14 or later, and Xcode 16 or later.
+An iOS, iPadOS or macOS app can offer what it and its device can do (health data, location, contacts, the app's own features) to rutis as ordinary rutis plugins. The plugins are compiled into the app and ship with it; rutis loads, configures and unloads them as its configuration says; the app only starts and stops the connection. Needs iOS / iPadOS 17 or macOS 14 or later, and Xcode 26 or later with the Swift 6.2 toolchain.
 
 The plugins are the same as [Swift plugins](swift-plugin.en.md) for Mac binaries: the same definition can be served as a binary or hosted by an app. This guide covers what differs: adding the SDK to an app, starting and stopping, the rutis side, permissions, and the network.
 

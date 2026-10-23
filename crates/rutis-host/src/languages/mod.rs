@@ -137,8 +137,16 @@ pub trait Language: Sync {
     /// Whether `dir` is a project of it.
     fn is_project(&self, dir: &Path) -> bool;
 
-    /// The rows and runtime that run the project in `dir` (one of it).
-    fn dev(&self, dir: &Path) -> Result<(Vec<Value>, Runtimes), String>;
+    /// Why its runtime cannot run on this machine, or `Ok(())`: Swift's
+    /// binaries run on macOS only.
+    fn available(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// The rows and runtime that run the project in `dir` (one of it);
+    /// `built` is its build #1 when the caller made it (a compiled
+    /// language's project, built without blocking).
+    fn dev(&self, dir: &Path, built: Option<&Path>) -> Result<(Vec<Value>, Runtimes), String>;
 
     /// What `rutis.dev.json` (`dev`) says of the runtime the project
     /// configures in `own`, when it should win over it; by default the

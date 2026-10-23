@@ -46,7 +46,7 @@ const calendar = ctx.use<Services['calendar']>('calendar')
 const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 ```
 
-- **对外的方法**：带标注的 `impl` 块里公开的 `&self` 方法；一个类型可以有几个带标注的块。对调用方都是 `async`（JavaScript 里是 Promise，Python 里是 awaitable），Node、Bun、Python、Go 的行调用的是同一个 dispatcher。方法名按 camelCase 对外（`add_entry` 是 `addEntry`）。带 `#[cfg(...)]` 的方法在包含它的构建里对外（同名的两个方法，`#[cfg]` 让每次构建只留一个时可以）；参数类型可以写生命周期或 `Self`。
+- **对外的方法**：带标注的 `impl` 块里公开的 `&self` 方法；一个类型可以有几个带标注的块。对调用方都是 `async`（JavaScript 里是 Promise，Python 里是 awaitable），Node、Bun、Python、Go 的行调用的是同一个 dispatcher。方法名按 camelCase 对外（`add_entry` 是 `addEntry`）。带 `#[cfg(...)]` 的方法在包含它的构建里对外（同名的两个方法，`#[cfg]` 让每次构建只留一个时可以）；同一个类型的不同标注块不能有两个方法映射到同一个对外名字，`provide` 会失败并指出那个名字。参数类型可以写生命周期或 `Self`。
 - **名字**：默认是类型名、第一个词小写（`Calendar` 是 `calendar`，`TreeCommands` 是 `treeCommands`，`HTTPClient` 是 `httpClient`）；`#[service(name = "cal")]` 改名。
 - **提供即对外**：`ctx.provide(value)`（以及键是这个类型自己的 `provide_as`）同时按名字提供它，同一个撤销函数撤下两者，插件卸载时一起撤下；依赖它的行随之停止，与其他服务相同。带 `check()` 谓词提供（`provide_as_with_check`）时，按名字的入口也受它门控：谓词不成立期间，按名字用它的行与原生服务的使用者一样停下。`provide_mut_as` 提供的可变绑定不对外，带限定名的（`TypeKey::keyed`）也不对外：同一类型的第二个值会占用同一个名字。每次按名字的调用都经提供方上下文的严格读取路径取服务，读取拦截器（`intercept_require_as`）与对处在调用方行位置的 Rust 读取方一样拒绝或替换它：生效的是这一行的祖先注册的拦截器（没有行调用时为提供方的）。读到的只能是入口提供时的那个值：服务撤下后仍被保留的引用会被拒绝，即使槽位又被提供。因原生服务或这个名字已存在而被拒的 `provide` 什么都不提供。名字在原生服务之后提供、在它之前撤下（撤销函数与插件卸载都是这样），被名字唤醒的行一定调得到它。
 - **作用域跟着提供的位置**：在实例里提供（`TypeKey::instance::<Notes>(build.instance("session")?)`），就是那个实例自己的，实例里的行拿到它；在实例外提供就是全局的。在隔离作用域里提供（`ctx.isolate(TypeKey::of::<Notes>(), "a")`）时，名字在同一个作用域里对外（`isolate(host_key("notes"), "a")`），两个隔离作用域各自对外。不用写实例组。实例里提供过之后，实例里的行用的是这个实例自己的，不会退回到同名的全局服务：实例里的服务撤下时，它们等它在这个实例里重新提供（设计 R3：作用域跟着提供的位置）。

@@ -285,7 +285,8 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
         None => errors = Some(error),
     };
     let mut arms = Vec::new();
-    let mut methods = Vec::new();
+    let mut methods: Vec<(String, Vec<Tokens>)> = Vec::new();
+    let mut guarded = Vec::new();
     for item in &block.items {
         let ImplItem::Fn(method) = item else {
             continue;
@@ -322,18 +323,32 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
         }
         let js = camel(&method.sig.ident.to_string());
         let cfgs = cfgs(&method.attrs);
-        // Two methods of one name for other languages: only when `#[cfg]`
-        // keeps one of them out of each build.
-        if methods
-            .iter()
-            .any(|(known, known_cfgs): &(String, Vec<Tokens>)| {
-                *known == js && (known_cfgs.is_empty() || cfgs.is_empty())
-            })
-        {
-            push(syn::Error::new(
+        // Two methods of one name for other languages. Without `#[cfg]` they
+        // are always both in the build: a compile error, at the method.
+        // With `#[cfg]`s, only a build that keeps both must fail, so the
+        // error goes under both cfg sets and the compiler decides. Doing
+        // that pairwise also covers three or more definitions.
+        let mut always = false;
+        for (known, known_cfgs) in &methods {
+            if *known != js {
+                continue;
+            }
+            if known_cfgs.is_empty() && cfgs.is_empty() {
+                push(syn::Error::new(
+                    method.sig.ident.span(),
+                    format!("two methods are `{js}` for other languages"),
+                ));
+                always = true;
+                break;
+            }
+            let error = syn::Error::new(
                 method.sig.ident.span(),
                 format!("two methods are `{js}` for other languages"),
-            ));
+            )
+            .to_compile_error();
+            guarded.push(quote!(#(#known_cfgs)* #(#cfgs)* #error));
+        }
+        if always {
             continue;
         }
         match arm(&rutis, ty, method, &js) {
@@ -361,6 +376,8 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
         .map(|(js, cfgs)| quote!(#(#cfgs)* methods.push(#js);));
     Ok(quote! {
         #block
+
+        #(#guarded)*
 
         #(#block_cfgs)*
         #[doc(hidden)]
@@ -948,6 +965,44 @@ mod tests {
         assert!(refused("impl Trait for A { fn a(&self) {} }")
             .unwrap()
             .contains("trait impl"));
+    }
+
+    /// Two cfg-guarded methods of one name are both generated, and their
+    /// clash is a `compile_error!` under both cfgs: only a build that keeps
+    /// both fails (#541).
+    #[test]
+    fn cfg_methods_of_one_name_clash_only_in_a_build_with_both() {
+        let item: Tokens = r#"
+            impl A {
+                #[cfg(feature = "a")] pub fn a_b(&self) -> u32 { 1 }
+                #[cfg(feature = "a")] pub fn aB(&self) -> u32 { 2 }
+            }
+        "#
+        .parse()
+        .unwrap();
+        let out = expand(quote!(::rutis), Tokens::new(), item).unwrap();
+        let file: syn::File = syn::parse2(out).unwrap();
+        let errors: Vec<&syn::ItemMacro> = file
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Macro(error)
+                    if error
+                        .mac
+                        .path
+                        .segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "compile_error") =>
+                {
+                    Some(error)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 1, "one clash, one error");
+        assert_eq!(errors[0].attrs.len(), 2, "under both methods' cfgs");
+        let text = errors[0].mac.tokens.to_string();
+        assert!(text.contains("two methods are `aB`"), "{text}");
     }
 
     #[test]

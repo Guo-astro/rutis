@@ -343,6 +343,134 @@ fn close_on_exec_from(first: i32, limit: i32) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Isolate a command that only reads something, such as a binary's
+/// `--rutis-manifest`: it runs in a process group of its own, so what it
+/// starts can be ended with it, and every descriptor above 2 is
+/// close-on-exec, so it holds none of this process's channels or files.
+pub fn isolate_manifest_command(command: &mut std::process::Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        #[cfg(target_os = "macos")]
+        notify_ready_before_fork();
+        command.process_group(0);
+        // Computed here: sysconf need not be async-signal-safe.
+        let limit = descriptor_limit();
+        // SAFETY: between fork and exec, only async-signal-safe calls:
+        // fcntl and close_range; nothing allocates.
+        unsafe {
+            command.pre_exec(move || close_on_exec_from(CHANNEL_FD, limit));
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP);
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = command;
+}
+
+/// The manifest readers not done yet: [`kill_processes`] kills them too.
+static MANIFESTS: std::sync::LazyLock<Mutex<Vec<Arc<ManifestChildInner>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+struct ManifestChildInner {
+    pid: u32,
+    /// Cleared once it was killed, or once its pid may name something else.
+    armed: AtomicBool,
+}
+
+/// A process started to print a manifest, leading its own group
+/// ([`isolate_manifest_command`]): dropping it before [`disarm`] kills that
+/// group, and [`kill_processes`] kills it as well.
+///
+/// [`disarm`]: ManifestChild::disarm
+pub struct ManifestChild {
+    inner: Option<Arc<ManifestChildInner>>,
+}
+
+impl ManifestChild {
+    /// Guard the process `pid`, which must lead its own process group.
+    pub fn new(pid: u32) -> Self {
+        let inner = Arc::new(ManifestChildInner {
+            pid,
+            armed: AtomicBool::new(true),
+        });
+        MANIFESTS.lock().unwrap().push(inner.clone());
+        Self { inner: Some(inner) }
+    }
+
+    /// Kill its process group now, and whatever it started with it.
+    pub fn kill(&self) {
+        if let Some(inner) = &self.inner {
+            if inner.armed.swap(false, Ordering::SeqCst) {
+                kill_pid_group(inner.pid);
+            }
+        }
+    }
+
+    /// Stop guarding it: it was waited for, so its pid (and group id) may
+    /// name another process now.
+    pub fn disarm(&mut self) {
+        let Some(inner) = self.inner.take() else {
+            return;
+        };
+        inner.armed.store(false, Ordering::SeqCst);
+        MANIFESTS
+            .lock()
+            .unwrap()
+            .retain(|registered| !Arc::ptr_eq(registered, &inner));
+    }
+}
+
+impl Drop for ManifestChild {
+    fn drop(&mut self) {
+        self.kill();
+        self.disarm();
+    }
+}
+
+/// Kill the process group `pid` leads (the process itself on Windows).
+fn kill_pid_group(pid: u32) {
+    #[cfg(unix)]
+    {
+        // SAFETY: kill(2) on the group of a process this process started
+        // and has not waited for: neither its id nor its group's can have
+        // been reused.
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+        };
+        // SAFETY: plain Win32 calls on a handle this function owns.
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if !handle.is_null() {
+                TerminateProcess(handle, 1);
+                CloseHandle(handle);
+            }
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = pid;
+}
+
+/// Kill every manifest reader not done yet, and whatever it started.
+fn kill_manifests() {
+    let manifests: Vec<Arc<ManifestChildInner>> = MANIFESTS.lock().unwrap().clone();
+    for manifest in manifests {
+        if manifest.armed.swap(false, Ordering::SeqCst) {
+            kill_pid_group(manifest.pid);
+        }
+    }
+}
+
 #[cfg(unix)]
 fn inherit(spawn: &Spawn) -> Result<Started, ConnectError> {
     let (ours, theirs) = UnixStream::pair().map_err(retryable)?;
@@ -780,6 +908,9 @@ pub async fn processes_ended() {
 /// without waiting for its cleanups: for a host that exits before they
 /// finish. [`processes_ended`] then waits for them to be gone.
 pub fn kill_processes() {
+    // Manifest readers are in no channel and no job, and may be between
+    // reads or hanging: kill them and what they started.
+    kill_manifests();
     // On Windows, every one of them is in this process's job, with what it
     // started: end the job. Elsewhere, each is killed by the task that
     // waits for it, so never once it has been waited for and its id reused.

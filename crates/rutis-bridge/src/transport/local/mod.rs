@@ -48,8 +48,8 @@ pub(crate) mod unix;
 
 pub use output::{output_ended, write_line, OutputStream, MAX_LINE};
 pub use spawn::{
-    kill_processes, processes_ended, running_processes, Handover, Processes, Spawn, Stdio,
-    CHANNEL_FD, CHANNEL_TOKEN, HANDOVER_VARIABLE,
+    isolate_manifest_command, kill_processes, processes_ended, running_processes, Handover,
+    ManifestChild, Processes, Spawn, Stdio, CHANNEL_FD, CHANNEL_TOKEN, HANDOVER_VARIABLE,
 };
 
 /// Provides `Transport#local`.
@@ -188,7 +188,7 @@ async fn connect(address: &str) -> Result<Channel, ConnectError> {
         Some((scheme, _)) if !scheme.contains('/') => {
             return Err(ConnectError::Incompatible {
                 reason: format!("the local transport cannot dial {scheme}: addresses"),
-            })
+            });
         }
         _ => address,
     };

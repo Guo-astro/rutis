@@ -58,4 +58,4 @@ let answer = try await loaded.service("weather").call("today", "rain?", as: Stri
 await loaded.close()
 ```
 
-Platforms: macOS 14 and iOS 17. In an app, `RutisApp(plugins:connect:id:token:)` serves the plugins compiled into it while started (`start()`, `stop()`, an observable `state`): [Host plugins in an app](../docs/guide/swift-app.en.md). Swift 5 language mode, toolchain 5.10 or later (parameter packs). The SDK's own tests: `swift run RutisSelfTest`.
+Platforms: macOS 14 and iOS 17. In an app, `RutisApp(plugins:connect:id:token:)` serves the plugins compiled into it while started (`start()`, `stop()`, an observable `state`): [Host plugins in an app](../docs/guide/swift-app.en.md). Swift 5 language mode, Swift 6.2 toolchain or later (parameter packs). The SDK's own tests: `swift run RutisSelfTest`.

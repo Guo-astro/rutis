@@ -102,12 +102,25 @@ impl Language for Swift {
         dir.join("Package.swift").is_file()
     }
 
-    /// Build it, then one row per plugin of its binary, named with its
+    /// Why its binaries cannot run here: their SDK is macOS's.
+    fn available(&self) -> Result<(), String> {
+        if cfg!(target_os = "macos") {
+            Ok(())
+        } else {
+            Err("runtimes.swift needs macOS: Swift plugin binaries run on macOS only".into())
+        }
+    }
+
+    /// Build it (unless `built`, the first build the caller made without
+    /// blocking), then one row per plugin of its binary, named with its
     /// runtime (`swift-<product>:<plugin>`).
-    fn dev(&self, dir: &Path) -> Result<(Vec<Value>, Runtimes), String> {
+    fn dev(&self, dir: &Path, built: Option<&Path>) -> Result<(Vec<Value>, Runtimes), String> {
         let swift =
             SwiftDev::of(dir).ok_or_else(|| format!("{}: no Package.swift", dir.display()))?;
-        let binary = binary::building(&swift.product, || swift.build(1))?;
+        let binary = match built {
+            Some(binary) => binary.to_owned(),
+            None => binary::building(&swift.product, || swift.build(1))?,
+        };
         let (rows, settings) = dev_rows(&binary, &swift.runtime, &swift.dir, &swift.product)?;
         Ok((
             rows,

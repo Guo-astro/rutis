@@ -376,6 +376,15 @@ impl HostConfig {
             _ => Path::new("."),
         };
         config.rebase(base);
+        // A language whose runtime this machine cannot run is refused now,
+        // not once its binary starts: Swift's binaries run on macOS only.
+        for language in LANGUAGES {
+            if language.configured(&config.runtimes) {
+                language
+                    .available()
+                    .map_err(|error| format!("{}: {error}", path.display()))?;
+            }
+        }
         Ok(config)
     }
 

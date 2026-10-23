@@ -39,6 +39,7 @@
 
 use std::any::{Any, TypeId};
 use std::cell::Cell;
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -364,10 +365,25 @@ pub fn name_of(type_id: TypeId) -> Option<&'static str> {
 
 /// The name the marked blocks `entries` of one type export it as: the one
 /// a block names, else the derived one. Two blocks naming it differently
-/// is an error.
+/// is an error, and so is a method name two blocks both export: the
+/// dispatcher could only ever reach one of them (#541).
 pub fn exported_name(entries: &[&'static Entry]) -> Result<&'static str, CordisError> {
     let mut named: Option<&'static str> = None;
-    for entry in entries.iter().filter(|entry| entry.named) {
+    let mut methods = HashSet::new();
+    for entry in entries {
+        for method in entry.methods() {
+            if !methods.insert(*method) {
+                return Err(CordisError::Validation {
+                    issues: vec![format!(
+                        "two #[rutis::service] blocks of {} both export `{method}`: rename one (they are the same name for other languages)",
+                        entry.type_name()
+                    )],
+                });
+            }
+        }
+        if !entry.named {
+            continue;
+        }
         match named {
             Some(name) if name != entry.name => {
                 return Err(CordisError::Validation {

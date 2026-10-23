@@ -3391,6 +3391,7 @@ name = "rutis-loader"
 version = "0.15.0"
 dependencies = [
  "futures-util",
+ "libc",
  "rutis",
  "rutis-bridge",
  "rutis-test-support",

@@ -2,7 +2,7 @@
 
 [English](swift-app.en.md)
 
-iOS、iPadOS 或 macOS 应用可以把它自己和所在设备的能力（健康数据、定位、通讯录、应用本身的功能）作为普通的 rutis 插件提供给 rutis。插件编进应用、随应用发布；装载、配置、卸载都由 rutis 按配置决定；应用只负责开始和停止连接。需要 iOS / iPadOS 17 或 macOS 14 以上，Xcode 16 以上。
+iOS、iPadOS 或 macOS 应用可以把它自己和所在设备的能力（健康数据、定位、通讯录、应用本身的功能）作为普通的 rutis 插件提供给 rutis。插件编进应用、随应用发布；装载、配置、卸载都由 rutis 按配置决定；应用只负责开始和停止连接。需要 iOS / iPadOS 17 或 macOS 14 以上，Xcode 26 以上（带 Swift 6.2 工具链）。
 
 插件与 Mac 上的 [Swift 插件](swift-plugin.md) 完全相同：同一个插件定义既可以 `serve` 成二进制，也可以交给应用托管。本文只写不同的部分：把 SDK 加进应用、开始与停止、rutis 一侧、权限、网络。
 

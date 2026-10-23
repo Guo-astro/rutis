@@ -21,6 +21,17 @@ pub use crate::languages::GoDev;
 /// The configuration that runs the plugin project in `dir`, and the id of
 /// its row.
 pub fn dev_config(dir: &Path) -> Result<(HostConfig, String), String> {
+    dev_config_with(dir, None)
+}
+
+/// [`dev_config`] for a compiled project whose first build `binary` is
+/// already made: its rows are read from that binary, not from one built
+/// here.
+pub fn dev_config_built(dir: &Path, binary: &Path) -> Result<(HostConfig, String), String> {
+    dev_config_with(dir, Some(binary))
+}
+
+fn dev_config_with(dir: &Path, built: Option<&Path>) -> Result<(HostConfig, String), String> {
     // Absolute, not canonical: on Windows a canonical path is a `\\?\` one,
     // which the runtimes are then given as their project.
     let dir = std::path::absolute(dir)
@@ -38,7 +49,8 @@ pub fn dev_config(dir: &Path) -> Result<(HostConfig, String), String> {
             languages::either(&files)
         ));
     };
-    let (rows, runtimes) = language.dev(&dir)?;
+    language.available()?;
+    let (rows, runtimes) = language.dev(&dir, built)?;
     let id = rows[0]["id"].as_str().unwrap_or("plugin").to_owned();
     let own_ids: Vec<Value> = rows.iter().map(|row| row["id"].clone()).collect();
     let mut config = HostConfig {
@@ -260,5 +272,73 @@ mod tests {
         let go = GoDev::of(&project).unwrap();
         let error = go.build(2).unwrap_err();
         assert!(error.contains("plugin.go"), "{error}");
+    }
+
+    /// A Swift project is refused where its binaries cannot run, before
+    /// `swift` is run.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_swift_project_needs_macos_before_building() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Package.swift"),
+            "let package = Package(name: \"probe\")",
+        )
+        .unwrap();
+        let error = dev_config(dir.path()).unwrap_err();
+        assert_eq!(
+            error,
+            "runtimes.swift needs macOS: Swift plugin binaries run on macOS only"
+        );
+    }
+
+    /// A `rutis.json` that configures Swift is refused where its binaries
+    /// cannot run, saying which file.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_swift_runtime_in_a_config_needs_macos() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rutis.json");
+        std::fs::write(
+            &path,
+            r#"{ "runtimes": { "swift": { "binaries": ["bin/MacKit"] } } }"#,
+        )
+        .unwrap();
+        let error = HostConfig::read(&path).unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "{}: runtimes.swift needs macOS: Swift plugin binaries run on macOS only",
+                path.display()
+            )
+        );
+    }
+
+    /// A compiled project's first build may be made by the caller: its
+    /// rows come from that binary, without building again.
+    #[cfg(unix)]
+    #[test]
+    fn a_built_go_binary_makes_the_dev_rows() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("go.mod"),
+            "module example.com/net-probe\n\ngo 1.24\n",
+        )
+        .unwrap();
+        let binary = dir.path().join("net-probe-1");
+        std::fs::write(
+            &binary,
+            "#!/bin/sh\n[ \"$1\" = --rutis-manifest ] || exit 1\n\
+             echo '{\"pluginApi\":3,\"plugins\":{\"probe\":{\"inject\":[],\"provides\":{}}}}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (config, id) = dev_config_built(dir.path(), &binary).unwrap();
+        assert_eq!(id, "probe");
+        assert_eq!(config.rows[0]["name"], "go-net-probe:probe");
+        let go = config.runtimes.go.unwrap();
+        assert_eq!(go.dev, Some((binary, "go-net-probe".to_owned())));
     }
 }
