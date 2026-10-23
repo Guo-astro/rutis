@@ -676,13 +676,20 @@ async fn the_name_is_served_after_the_native_service() {
     let watcher = {
         let (root, done) = (root.clone(), done.clone());
         std::thread::spawn(move || {
+            let name = host_key("notebook");
+            let native = TypeKey::of::<Notes>();
             while !done.load(Ordering::SeqCst) {
-                // Served by name, then the native service looked up: it is
-                // there unless the name was withdrawn meanwhile.
-                if served(&root, "notebook").is_some()
-                    && root.get::<Notes>().is_none()
-                    && served(&root, "notebook").is_some()
-                {
+                // One registry snapshot: the name is served only while the
+                // native service it calls is there. Separate reads could see
+                // a dispose and the next provide between them.
+                let bindings = root.diagnostics().bindings;
+                let named = bindings
+                    .iter()
+                    .any(|binding| binding.key == name && !binding.removing);
+                let has_native = bindings
+                    .iter()
+                    .any(|binding| binding.key == native && !binding.removing);
+                if named && !has_native {
                     return false;
                 }
             }
