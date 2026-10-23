@@ -9,7 +9,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
-use rutis_test_support::HANG_GUARD;
+use rutis_test_support::{scaled, HANG_GUARD};
 use serde_json::json;
 
 use super::repo;
@@ -213,7 +213,7 @@ impl Host {
     /// Read lines until one satisfies `want`; what it returns.
     pub fn wait_line<T>(&mut self, mut want: impl FnMut(&str) -> Option<T>) -> T {
         loop {
-            match self.lines.recv_timeout(GUARD) {
+            match self.lines.recv_timeout(scaled(GUARD)) {
                 Ok(line) => {
                     let found = want(&line);
                     // A plugin's own process, killed too if the test fails.
@@ -227,6 +227,18 @@ impl Host {
                 }
                 Err(error) => self.fail(&format!("waiting for a line: {error}")),
             }
+        }
+    }
+
+    /// Read lines until each of `lines` was read, in any order: the state
+    /// lines are printed every 200 ms, apart from what a reload or a stop
+    /// prints, so a row's change and the reload that made it come either
+    /// way round.
+    pub fn wait_lines(&mut self, lines: &[&str]) {
+        let mut missing: Vec<&str> = lines.to_vec();
+        while !missing.is_empty() {
+            let index = self.wait_line(|line| missing.iter().position(|want| *want == line));
+            missing.remove(index);
         }
     }
 
@@ -264,16 +276,16 @@ impl Host {
         std::thread::spawn(move || {
             let _ = send.send(child.wait());
         });
-        let status = match exited.recv_timeout(GUARD) {
+        let status = match exited.recv_timeout(scaled(GUARD)) {
             Ok(status) => status.unwrap(),
             Err(_) => {
                 kill_all(pid, &self.runtimes);
                 panic!("rutis-host did not exit; its output: {:#?}", self.seen);
             }
         };
-        let stderr = self.stderr.recv_timeout(GUARD);
+        let stderr = self.stderr.recv_timeout(scaled(GUARD));
         loop {
-            match self.lines.recv_timeout(GUARD) {
+            match self.lines.recv_timeout(scaled(GUARD)) {
                 Ok(line) => self.seen.push(line),
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(error) => {
@@ -288,7 +300,7 @@ impl Host {
     pub fn fail(&mut self, what: &str) -> ! {
         kill_all(self.pid(), &self.runtimes);
         let _ = self.child.wait();
-        let stderr = self.stderr.recv_timeout(GUARD).unwrap_or_default();
+        let stderr = self.stderr.recv_timeout(scaled(GUARD)).unwrap_or_default();
         panic!("{what}; output: {:#?}; stderr: {stderr}", self.seen);
     }
 }

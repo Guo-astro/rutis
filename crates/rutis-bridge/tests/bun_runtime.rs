@@ -18,7 +18,7 @@ use rutis::Ctx;
 use rutis_bridge::runtime::{row_projection, Launcher, Mount, Process};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value as RpcValue};
-use rutis_test_support::{recv_within, until, within, HANG_GUARD};
+use rutis_test_support::{recv_within, scaled, until, within, HANG_GUARD};
 use serde_json::{json, Value};
 
 const WEATHER: &str = r#"
@@ -274,7 +274,7 @@ async fn incoming_calls_run_while_a_synchronous_call_waits() {
             self.0
                 .lock()
                 .unwrap()
-                .recv_timeout(HANG_GUARD)
+                .recv_timeout(scaled(HANG_GUARD))
                 .map_err(|_| rutis_bridge::session::Error::Value("never opened".into()))?;
             Ok(json!("opened").into())
         }

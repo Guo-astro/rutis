@@ -11,7 +11,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 
-use rutis_test_support::HANG_GUARD;
+use rutis_test_support::{scaled, HANG_GUARD};
 use serde_json::{json, Value};
 
 mod common;
@@ -77,7 +77,7 @@ impl Host {
     /// Read lines until one satisfies `want`; what it returns.
     fn wait<T>(&mut self, what: &str, mut want: impl FnMut(&str) -> Option<T>) -> T {
         loop {
-            match self.lines.recv_timeout(HANG_GUARD) {
+            match self.lines.recv_timeout(scaled(HANG_GUARD)) {
                 Ok(line) => {
                     let found = want(&line);
                     self.seen.push(line);
@@ -88,7 +88,10 @@ impl Host {
                 Err(error) => {
                     let _ = self.child.kill();
                     let _ = self.child.wait();
-                    let stderr = self.stderr.recv_timeout(HANG_GUARD).unwrap_or_default();
+                    let stderr = self
+                        .stderr
+                        .recv_timeout(scaled(HANG_GUARD))
+                        .unwrap_or_default();
                     panic!(
                         "waiting for {what}: {error}; output: {:#?}; stderr: {stderr}",
                         self.seen
@@ -109,10 +112,13 @@ impl Host {
     fn end(mut self) -> String {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        while let Ok(line) = self.lines.recv_timeout(HANG_GUARD) {
+        while let Ok(line) = self.lines.recv_timeout(scaled(HANG_GUARD)) {
             self.seen.push(line);
         }
-        let stderr = self.stderr.recv_timeout(HANG_GUARD).unwrap_or_default();
+        let stderr = self
+            .stderr
+            .recv_timeout(scaled(HANG_GUARD))
+            .unwrap_or_default();
         format!("{}\n{stderr}", self.seen.join("\n"))
     }
 }

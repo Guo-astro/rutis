@@ -313,6 +313,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 - 进程的工作目录从 `/proc` 读（没有 `lsof`）；
 - 容器看得到整台机器的 CPU，看不到别的容器：每个任务的并行数取仓库变量 `LINUX_CI_JOBS`（4 个容器时设 `8`），没设置时是全部 CPU 数；
 - `setup-python` 在自托管的 Linux 上可以用，Python 照旧由它装。
+- 机器负载高（4 个容器同时编译、同时起多个运行时），测试的防挂死上限按 `RUTIS_TEST_TIME_SCALE` 放长：各个 "self-hosted runner, start" 步骤传入仓库变量 `LINUX_TEST_TIME_SCALE`，没设置时是 `3`，`tools/ci-self-hosted.sh` 把它写进任务的环境。`rutis-test-support` 的所有上限（`HANG_GUARD`、`Guard`、`within`、`eventually` 等，以及测试自己用 `scaled(...)` 的等待）都乘以它；它只放长上限，不改测试等的事件，真挂死仍在有限时间内失败（10 s 的上限变成 30 s）。本地不设就是 1；机器慢时本地也可以设，如 `RUTIS_TEST_TIME_SCALE=2 cargo test`。产品的时限不受它影响。
 
 `runtimes-windows` 和 `dylib-windows.yml` 同样由仓库变量 `WINDOWS_RUNNER` 决定：没设置时是 `"windows-2025"`，设成 `["self-hosted","Windows"]` 就跑在组织的自托管 Windows runner 上（一台 16 核的机器上 4 个实例，以 `NETWORK SERVICE` 运行；Rust 在 `C:\Rust`，有 VS Build Tools、Git、Node、Go、Python）。步骤用 Git 的 bash：机器的系统 `PATH` 里要有 `C:\Program Files\Git\bin`（改了以后重启 runner 服务）。自托管时，每个实例的编译目录和场景目录在 `_work/_rutis-ci/` 下（`checkout` 会清掉检出目录里的 `target`）；Python 不用 `setup-python`（它的 Windows 安装程序要管理员权限），用机器上的 Python，在 `runner.temp` 里建虚拟环境；并行数是 CPU 数除以 4，仓库变量 `WINDOWS_CI_JOBS` 可以改。`dylib-windows` 和 `runtimes-windows` 用同一个实例的编译目录；它的脚本把临时文件放在 `mktemp -d /tmp/rutis-*` 里，用完不删（可复现检查在里面放两份源码和两份 release 构建）；Git 的 bash 把 `/tmp` 映射到服务账户的临时目录，所有实例共用，设 `TMP`、`TEMP` 也不会改变它。所以和自托管的 Mac 一样，任务开头删掉其中超过 12 小时的 `rutis-*` 目录。`tools/test-dylib-launcher.sh` 的 Job Object 检查按进程名在整台机器上找宿主进程，所以宿主副本每次用不同的名字，别的实例同时跑这个检查不会互相干扰。机器要开长路径：注册表 `LongPathsEnabled` = 1，`git config --system core.longpaths true`。
 

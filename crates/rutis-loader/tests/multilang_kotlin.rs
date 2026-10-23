@@ -463,7 +463,7 @@ impl HostDispatch for Gate {
         self.changed.notify_all();
         let (arrived, timeout) = self
             .changed
-            .wait_timeout_while(arrived, COLD.0, |arrived| *arrived < self.parties)
+            .wait_timeout_while(arrived, COLD.limit(), |arrived| *arrived < self.parties)
             .unwrap();
         drop(arrived);
         assert!(!timeout.timed_out(), "the gate never opened");
@@ -560,7 +560,7 @@ async fn two_node_runtimes_waiting_on_each_other_through_kotlin() {
     let b_go = call(&fixture.root, "b_svc", "go");
     let answer = |result: std::sync::mpsc::Receiver<String>, what: &str| {
         result
-            .recv_timeout(COLD.0)
+            .recv_timeout(COLD.limit())
             .unwrap_or_else(|_| panic!("{what} hangs: the runtimes wait on each other"))
     };
     let answers = [answer(a_go, "a.go"), answer(b_go, "b.go")];
