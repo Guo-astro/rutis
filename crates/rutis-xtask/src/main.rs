@@ -933,7 +933,10 @@ fn pack_sdk_bundle(args: &[String]) -> Result<(), String> {
     }
 
     // Closure candidates: every artifact of every package in the SDK subtree.
-    let packages: Vec<String> = sdk
+    // By crate name: two versions of one crate (`syn 1` and `syn 2`) are one
+    // name, whose artifacts are copied once. Copying them a second time onto
+    // the first copies fails where the build's artifacts are read-only.
+    let packages: std::collections::BTreeSet<String> = sdk
         .get("packages")
         .and_then(toml::Value::as_array)
         .ok_or("sdk.toml lists no packages")?
