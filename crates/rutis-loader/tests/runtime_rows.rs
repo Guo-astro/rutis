@@ -1179,6 +1179,44 @@ async fn a_row_that_fails_to_load_releases_its_leases() {
     root.shutdown().await.unwrap();
 }
 
+/// A row with an `inject` list runs its plugin behind a gate; when the
+/// plugin's apply fails, the row fails with that error, as the same row
+/// without the gate does (#584).
+/// guarantee: loader/gated-row-failure
+#[tokio::test(flavor = "multi_thread")]
+async fn a_gated_row_fails_with_its_plugins_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let broken = dir.path().join("broken.mjs");
+    std::fs::write(&broken, BROKEN).unwrap();
+    let probe = Probe::default();
+    let (root, loader, _runtime) = interop_loader(&probe).await;
+    loader
+        .reconcile(
+            layer(vec![
+                row("u", &broken, json!({}), json!(null)),
+                row("g", &broken, json!({}), json!({ "inject": ["probe"] })),
+            ]),
+            None,
+        )
+        .await
+        .unwrap();
+    let error_of = |id: &str| match loader.get(id).map(|entry| entry.status) {
+        Some(EntryStatus::Running(snapshot)) if snapshot.state == FiberState::Failed => {
+            snapshot.error.map(|error| error.to_string())
+        }
+        _ => None,
+    };
+    until(
+        || error_of("u").is_some() && error_of("g").is_some(),
+        "both rows to fail",
+    )
+    .await;
+    let (ungated, gated) = (error_of("u").unwrap(), error_of("g").unwrap());
+    assert!(ungated.contains("broken on purpose"), "{ungated}");
+    assert_eq!(gated, ungated);
+    root.shutdown().await.unwrap();
+}
+
 const QUIT: &str = r#"
 export const name = 'quit'
 export const inject = ['probe']

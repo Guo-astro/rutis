@@ -8,7 +8,9 @@
 //! - import `probe` (`record(line)`, sync), which `main` exports;
 //! - host the installed plugin `conformance-greeter`, which records
 //!   `greeter: <text>` through `probe` when it starts and
-//!   `greeter gone: <text>` when it stops (`text` from its config);
+//!   `greeter gone: <text>` when it stops (`text` from its config); with
+//!   `fail` in its config, its apply fails with that message, and loading
+//!   it fails with it, with or without an `inject` list (#584);
 //! - take the event `tick` from `main` and, while handling it, forward
 //!   `tock` with `["pong", <number of tick arguments>]` back.
 //!
@@ -183,6 +185,25 @@ pub async fn node(root: &Ctx, peer: PeerId) {
         "the hosted plugin stopped",
     )
     .await;
+    // A plugin whose apply fails fails its load with that error, also
+    // behind the gate of an `inject` list (#584).
+    for (key, inject) in [("x", json!([])), ("y", json!(["probe"]))] {
+        let fail = format!("greeter {key} refused");
+        match call(
+            &at,
+            "plugins.load",
+            json!([key, "conformance-greeter", { "fail": fail }, [], inject]),
+        )
+        .await
+        {
+            Err(error) => assert!(
+                error.to_string().contains(&fail),
+                "loading {key} fails with its apply's error, got {error}"
+            ),
+            Ok(answer) => panic!("loading {key}, whose apply fails, must fail, got {answer}"),
+        }
+        let _ = call(&at, "plugins.unload", json!([key])).await;
+    }
 
     // Events: tick there; tock back before tick's parallel ends. The
     // peer's listener reaches this bus once the link announced it.
@@ -223,16 +244,20 @@ impl PluginFactory<Json> for Greeter {
     fn build(&self, config: &Json) -> Result<Box<dyn Plugin>, CordisError> {
         Ok(Box::new(Greeting(
             config["text"].as_str().unwrap_or("").to_owned(),
+            config["fail"].as_str().map(str::to_owned),
         )))
     }
 }
-struct Greeting(String);
+struct Greeting(String, Option<String>);
 impl Plugin for Greeting {
     fn name(&self) -> &str {
         "conformance-greeter"
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
         Box::pin(async move {
+            if let Some(fail) = &self.1 {
+                return Err(CordisError::PluginFailed(fail.clone().into()));
+            }
             let probe = ctx.require_as::<dyn HostDispatch>(host_key("probe"))?;
             record(probe.clone(), format!("greeter: {}", self.0)).await;
             let gone = format!("greeter gone: {}", self.0);
