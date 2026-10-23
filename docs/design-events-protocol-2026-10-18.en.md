@@ -232,7 +232,7 @@ A failing filter in an `emit` dispatch delivers to no listener and is reported b
 
 When a row unloads (the host sends `rows.unload`, or the runtime reports `rows.ended`), in this order:
 
-1. The host withdraws the row's entries from the table (and sends `events.elsewhere`) when it sends `rows.unload` or receives `rows.ended`; a runtime that sends `events.off` for them as well is harmless.
+1. The host withdraws the row's entries from the table (and sends `events.elsewhere`) when it sends `rows.unload` or receives `rows.ended`; a runtime that sends `events.off` for them as well is harmless. `rows.ended` is handled in frame order with the session's `events.*` operations (it only changes tables too, §4.1): an `events.on` sent before it enters the table first and leaves with the row, and an `events.dispatch` sent after it no longer reaches the row.
 2. The runtime stops admitting invocations for the row at once: an `events.call` arriving afterwards fails with the withdrawn error (§5.3).
 3. Provides are withdrawn (as in 0.12).
 4. Running listener invocations of the row get the cancellation signal (Go: the context; Python: task cancellation; JavaScript: the row's `ctx.signal` aborts; Rust: the fiber's stop, as for its other tasks) and are waited for, at most `RUTIS_SHUTDOWN_TIMEOUT` (default 10 s; the host's own shutdown deadline for Rust plugins). Past it the runtime writes `rutis: listeners of row <row> still running after <s>s; unloading anyway`, abandons them, and continues.

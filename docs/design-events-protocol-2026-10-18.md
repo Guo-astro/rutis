@@ -232,7 +232,7 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 
 一行卸载时（宿主发 `rows.unload`，或运行时报告 `rows.ended`），依次：
 
-1. 宿主在发出 `rows.unload` 或收到 `rows.ended` 时，把这一行的条目撤出监听器表（并发 `events.elsewhere`）；运行时再为它们发 `events.off` 也无妨。
+1. 宿主在发出 `rows.unload` 或收到 `rows.ended` 时，把这一行的条目撤出监听器表（并发 `events.elsewhere`）；运行时再为它们发 `events.off` 也无妨。`rows.ended` 与同一会话的 `events.*` 按帧的顺序处理（它也只改表，§4.1）：在它之前发出的 `events.on` 先进表、再随这一行撤下，在它之后发出的 `events.dispatch` 不再送达这一行。
 2. 运行时立即不再接受这一行的调用：之后到达的 `events.call` 以已撤下的错误失败（§5.3）。
 3. 撤下提供的服务（同 0.12）。
 4. 这一行正在运行的监听器调用收到取消信号（Go：context；Python：任务取消；JavaScript：这一行的 `ctx.signal` 被中止；Rust：fiber 的停止，与它的其他任务相同），并被等待，最多 `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒；Rust 插件用宿主自己的关闭截止时间）。超过时运行时写 `rutis: listeners of row <row> still running after <s>s; unloading anyway`，放弃它们，继续。
