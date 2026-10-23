@@ -323,7 +323,7 @@ let some = ctx.filter { $0.row == "chat" }                        // Rutis.Emitt
 | 取消 | 发出方的 Task 被取消：经宿主时对 `events.dispatch` 发 `cancel`；收到 `events.call` 的 `signal` 中止或 `cancel` 时取消该监听器的 Task |
 | 保留名 | 发出 `rutis/*` 同步以 `ReservedEvent` 拒绝（`rutis/* events are emitted by rutis only: <name>`）；可以监听 `rutis/*` |
 | 报告 | 没有人等待的失败按契约 §6 的原文各写一行 stderr（形态②写到 `RutisApp` 的日志回调，默认 stderr） |
-| 卸载 | 收到 `rows.unload` 后立即拒绝这一行的 `events.call` → 撤下提供的服务 → 取消这一行正在运行的监听器 Task 并等待，至多关闭时限（形态① `RUTIS_SHUTDOWN_TIMEOUT`，形态② `shutdownTimeout` 参数，默认 10 秒），超过时写 `rutis: listeners of row <row> still running after <s>s; unloading anyway` → 取消 `ctx.spawn` 的 Task 并在同一时限的剩余时间内等待（监听器已用完时限就不再等），超过时写 `rutis: tasks of row <row> still running after <s>s; unloading anyway` → 逆序清理 |
+| 卸载 | 收到 `rows.unload` 后立即拒绝这一行的 `events.call` → 撤下提供的服务 → 取消这一行正在运行的监听器 Task 和 `ctx.spawn` 的 Task → 等待监听器，至多关闭时限（形态① `RUTIS_SHUTDOWN_TIMEOUT`，形态② `shutdownTimeout` 参数，默认 10 秒），超过时写 `rutis: listeners of row <row> still running after <s>s; unloading anyway` → 再在同一时限的剩余时间内等待 `ctx.spawn` 的 Task（监听器已用完时限就不再等），超过时写 `rutis: tasks of row <row> still running after <s>s; unloading anyway` → 逆序清理 |
 | 断开 | `elsewhere` 视为空；卸载全部行 |
 
 ## 五、并发、调用链、取消
