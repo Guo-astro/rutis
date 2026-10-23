@@ -178,7 +178,7 @@ PR 模板中有对应的检查项。
 | `events/order` | 登记顺序：精确条目与前缀条目按登记先后，`prepend` 排在全部现有条目之前，`once` 只被调用一次；`once` 在调用开始时才被认领：被过滤掉或被 `serial` / `bail` 提前结束而没有调用的不算 | 契约行为 | 已验证 | `rutis/tests/events.rs::prefixes_prepend_and_once_keep_registration_order`、`rutis/tests/events.rs::a_once_listener_is_used_up_only_by_a_call`、`rutis/tests/typed_dispatch.rs::sync_bail_short_circuits_and_a_once_listener_stays_until_called` | |
 | `events/reserved` | 只有 rutis 发出 `rutis/*`：插件以任何方式发出都以 `ReservedEvent` 失败；可以监听 | 契约行为 | 已验证 | `rutis/tests/events.rs::rutis_events_are_reserved` | |
 | `events/flat` | 平总线：事件在一个 root 的总线上按名字送达所有监听器；作用域或运行时描述不挑选监听器。相连的节点只见到它的连接 `export` / `import` 承载的名字，没有总线的挂载（`Mount.ctx: None`）则没有；`ListenerInfo::scope` 只是过滤用的描述 | 契约行为 | 已验证 | `rutis/tests/events.rs::events_reach_every_listener_on_the_bus`、`rutis/tests/instance_subtrees.rs::sibling_scopes_share_the_bus_and_drain_by_shutdown`、`rutis-bridge/tests/node.rs::node_listeners_are_entries_of_the_other_bus`（不共享的名字留在原节点）、`rutis-bridge/tests/node.rs::a_link_inside_an_instance_shares_names_outside_it` | |
-| `events/scope` | 作用域：监听器收到自己作用域（`Ctx::mark_scope`）及其下各作用域发出的事件，收不到兄弟作用域的；根收到全部 | 契约行为 | 已撤回（0.16） | — | 作用域不再挑选监听器；事件是一条平总线（`events/flat`，#604、#605） |
+| `events/scope` | 作用域：监听器收到自己作用域（`Ctx::mark_scope`）及其下各作用域发出的事件，收不到兄弟作用域的；根收到全部 | 契约行为 | 已撤回（0.15.1） | — | 作用域不再挑选监听器；事件是一条平总线（`events/flat`，#604、#605） |
 | `events/filter` | 过滤在按名字取出的快照上、任何调用之前，按登记顺序看每个非 `global` 候选的 `ListenerInfo`；过滤失败时整次分发在任何调用前失败（`emit` 中报告为 `FilterFailed`，不送达任何监听器） | 契约行为 | 已验证 | `rutis/tests/events.rs::filters_see_descriptors_and_global_entries_skip_them`、`::a_failing_emit_filter_is_reported` | |
 | `events/lifecycle` | 监听器随插件离开：fiber 开始卸载后不再开始新的调用；卸载等它正在运行的调用结束（它们看到 `ctx.cancelled()`），以宿主的关闭截止时间为限；监听器以登记它的上下文被调用 | 核心承诺 | 已验证 | `rutis/tests/events.rs::unload_cancels_and_waits_for_running_listeners`、`::unloaded_listeners_are_not_called`、`rutis/tests/unload_deadline.rs::an_unload_gives_up_on_running_listeners_at_the_deadline` | |
 | `events/remote` | 别处条目（`RemoteListener`）是同一张表里的条目：登记顺序、按其描述过滤、`global`、由其 disposer 撤下；交给它的 waterfall `next` 只执行其余一次（第二次调用、调用结束后的调用以 `WaterfallNext` 失败）；同步方式就地调用它；表的观察者收到每次变化，Rust 的 `on` 在返回之前；原始分发（`emit` 在全部调用开始后完成）与 `invoke_entry`；表的变化按发生的顺序通知（`watch_table`）；按 id 调用的条目必须是这个名字的 | 契约行为 | 已验证 | `rutis/tests/events.rs::remote_entries_take_part_like_any_listener`、`::remote_waterfall_next_runs_once`、`::remote_entries_in_synchronous_modes`、`::the_table_is_watched`、`::raw_dispatch_and_entry_calls`、`rutis/tests/events.rs::table_changes_are_heard_in_the_order_they_were_made`、`rutis/tests/events.rs::an_entry_called_by_id_must_have_the_name` | |
@@ -210,7 +210,7 @@ PR 模板中有对应的检查项。
 | `events/presence` | 运行时在 `mount` 之前得知所有在它之外有监听器的名字和前缀，之后得知每次变化，按顺序，且在引起变化的登记返回之前；它自己的条目不算 | 契约行为 | 已验证 | `rutis-bridge/tests/event_hub.rs::a_runtime_hears_what_is_elsewhere` | |
 | `events/hub-dispatch` | 宿主发出的事件以一个 `events.call` 到达运行时的监听器（有类型的事件按参数）；运行时经宿主的分发按登记顺序到达宿主的与它自己的（`own`）监听器，得到该方式的结果；读线程不执行插件代码：看到运行时 emit 的插件代码可以同步调用这个运行时 | 核心承诺 | 已验证 | `rutis-bridge/tests/event_hub.rs::dispatches_cross_between_host_and_runtime`、`rutis-bridge/tests/event_hub.rs::plugin_code_seeing_a_runtime_s_emit_can_call_that_runtime` | |
 | `events/hub-flat` | 运行时的分发指明会话上已加载的一行；事件按名字送达所有监听器，与监听器的作用域无关；会话上未加载的行被拒绝 | 核心承诺 | 已验证 | `rutis-bridge/tests/event_hub.rs::rows_dispatch_and_hear_by_name` | |
-| `events/hub-scope` | 运行时的分发在它那一行的作用域发出（从不用它自报的）；监听器听到自己作用域及其下的；会话上未加载的行被拒绝 | 核心承诺 | 已撤回（0.16） | — | 作用域不再挑选监听器；见 `events/hub-flat`（#604、#605） |
+| `events/hub-scope` | 运行时的分发在它那一行的作用域发出（从不用它自报的）；监听器听到自己作用域及其下的；会话上未加载的行被拒绝 | 核心承诺 | 已撤回（0.15.1） | — | 作用域不再挑选监听器；见 `events/hub-flat`（#604、#605） |
 | `events/hub-filter` | 分发的过滤函数在发出方进程里运行，按名字取出候选后带着全部描述调用一次；答案个数不对则分发失败 | 契约行为 | 已验证 | `rutis-bridge/tests/event_hub.rs::the_filter_runs_in_the_emitters_process` | |
 | `events/hub-lifecycle` | 行卸载时它的条目离开总线，会话结束时会话的全部条目离开；卸载不等运行时永远不回答的调用（它以会话结束的传输错误失败一次），行在登记中途卸载时登记的条目也被撤下；`rows.ended` 与同一会话的 `events.*` 按帧的顺序处理 | 核心承诺 | 已验证 | `rutis-bridge/tests/event_hub.rs::entries_leave_with_their_row_and_their_session`、`rutis-bridge/tests/event_hub.rs::an_unload_does_not_wait_for_a_call_the_runtime_never_answers`、`rutis-bridge/tests/event_hub.rs::rows_ended_is_applied_in_frame_order_with_event_operations`、`rutis-bridge/src/events/hub.rs::tests::a_row_unloading_while_a_listener_registers_withdraws_it` | |
 | `events/hub-bail` | `bail` 处处同步：已知异步的运行时监听器使其失败（`AsyncListener`），同步的给出答案，运行时经宿主的 `bail` 得到宿主监听器的答案 | 核心承诺 | 已验证 | `rutis-bridge/tests/event_hub.rs::bail_is_synchronous_everywhere` | 等待环检测归会话（`bridge/sync-wait-cycle-refused`） |
@@ -403,7 +403,7 @@ PR 模板中有对应的检查项。
 | `host/*`（§15） | 14 | 3 | 1 | 1 | 19 |
 | 合计 | 145 | 12 | 1 | 3 | 161 |
 
-已撤回的条目（状态"已撤回（0.13）"：`boundary/5.2`–`boundary/5.5`；"已撤回（0.16）"：`events/scope`、`events/hub-scope`）不计入。
+已撤回的条目（状态"已撤回（0.13）"：`boundary/5.2`–`boundary/5.5`；"已撤回（0.15.1）"：`events/scope`、`events/hub-scope`）不计入。
 
 核心承诺 41 条：已验证 37，部分验证 4（D22、D28、5.8、`loader/instance-edits-all-or-none`），未验证 0。契约行为 121 条：已验证 111，部分验证 9（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`、`swift/app-access-belongs-to-the-app`），未验证 1（`host/go-add`）。
 

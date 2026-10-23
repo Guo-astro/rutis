@@ -45,7 +45,7 @@ A value type that is not serde (a handle, a channel) does not belong in an event
 - Every listener is skipped once its plugin is unloading, and the unload waits for its running calls (their `ctx.cancelled()` fires); before, only instance, pattern and synchronous listeners were.
 - `rutis/*` names are reserved: emitting one fails with `ReservedEvent`.
 
-**Scopes are no longer a delivery rule.** The loader marks each group instance with `Ctx::mark_scope(group)`; `Ctx::scope()` is the chain from the root, a `ListenerInfo` descriptor for filters. Events are delivered by name on one root's bus, and every listener receives them (as in Cordis). To pick listeners by instance, use `ctx.events().filter(|info| ..)` on `info.scope` and the other descriptors, or use distinct event names. There is no default instance isolation. *(0.13–0.15 delivered by scope; 0.16 replaced that with this flat bus — see [migrating to 0.16](migration-0.16.en.md).)*
+**Scopes are no longer a delivery rule.** The loader marks each group instance with `Ctx::mark_scope(group)`; `Ctx::scope()` is the chain from the root, a `ListenerInfo` descriptor for filters. Events are delivered by name on one root's bus, and every listener receives them (as in Cordis). To pick listeners by instance, use `ctx.events().filter(|info| ..)` on `info.scope` and the other descriptors, or use distinct event names. There is no default instance isolation. *(0.13–0.15.0 delivered by scope; 0.15.1 replaced that with this flat bus — see [migrating to 0.15.1](migration-0.15.1.en.md).)*
 
 A parent row emitting and a child row listening needs no extra wiring:
 

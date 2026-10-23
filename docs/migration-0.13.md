@@ -45,7 +45,7 @@ impl Event for Joined { const NAME: &'static str = "room/joined"; type Value = S
 - 插件开始卸载后，它的每个监听器都不再被调用，卸载等它们正在运行的调用结束（其 `ctx.cancelled()` 已触发）；以前只有实例、模式与同步监听器如此。
 - `rutis/*` 是保留名字：发出它以 `ReservedEvent` 失败。
 
-**作用域不再是事件送达规则。** 加载器对每个组实例调用 `Ctx::mark_scope(group)`；`Ctx::scope()` 是从根起的链，作为 `ListenerInfo` 的描述供过滤使用。事件在一个 root 的总线上按名字送达，所有监听器都收到（与 Cordis 相同）；要按实例挑监听器，用 `ctx.events().filter(|info| ..)` 按 `info.scope` 等描述筛，或用不同的事件名。默认不做实例隔离。*（0.13–0.15 按作用域送达；0.16 改为这条平总线，见[迁移到 0.16](migration-0.16.md)。）*
+**作用域不再是事件送达规则。** 加载器对每个组实例调用 `Ctx::mark_scope(group)`；`Ctx::scope()` 是从根起的链，作为 `ListenerInfo` 的描述供过滤使用。事件在一个 root 的总线上按名字送达，所有监听器都收到（与 Cordis 相同）；要按实例挑监听器，用 `ctx.events().filter(|info| ..)` 按 `info.scope` 等描述筛，或用不同的事件名。默认不做实例隔离。*（0.13–0.15.0 按作用域送达；0.15.1 改为这条平总线，见[迁移到 0.15.1](migration-0.15.1.md)。）*
 
 父级行发出、子级行监听不需要额外接线：
 
