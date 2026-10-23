@@ -42,7 +42,7 @@ fn the_expectation_file_is_well_formed() {
         "bail/awaitable-from-plain-function",
         "bail/call-back-into-waiting-emitter",
         "bail/wait-cycle",
-        "scope/up-not-down",
+        "scope/flat-bus",
         "filter/keeps-and-sees",
         "filter/cordis-this-arg",
         "filter/global-skips-filter",

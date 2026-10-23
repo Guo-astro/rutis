@@ -62,7 +62,7 @@ class Context:
         `bail` and `waterfall` see.
 
         `prepend`: before every listener registered so far. `global_`:
-        exempt from emitters' filters (never from the scope rule).
+        exempt from emitters' filters.
         `rutis/*` events (published by rutis) can be listened to;
         `internal/*` cannot.
 

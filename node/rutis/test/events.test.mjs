@@ -12,18 +12,18 @@ const listener = (name, reply, options) => definePlugin({
   apply(ctx) { ctx.on(name, (...args) => reply(ctx, ...args), options) },
 })
 
-test('rows share one bus; each hears its own scope and those under it', async () => {
+test('rows share one flat bus; every listener hears every event', async () => {
   const h = host({ scopes: { t1: 'tenant', 't1/s1': 'session' } })
   const heard = []
   for (const [row, scope] of [['root', undefined], ['t1', 't1'], ['s1', 't1/s1'], ['t2', 't2']]) {
     await h.load(listener('hello', () => { heard.push(row) }), { row, scope })
   }
   await h.at('t1/s1').parallel('hello')
-  assert.deepEqual(heard.splice(0), ['root', 't1', 's1'])
+  assert.deepEqual(heard.splice(0), ['root', 't1', 's1', 't2'])
   await h.at('t2').parallel('hello')
-  assert.deepEqual(heard.splice(0), ['root', 't2'])
+  assert.deepEqual(heard.splice(0), ['root', 't1', 's1', 't2'])
   await h.parallel('hello')
-  assert.deepEqual(heard.splice(0), ['root'])
+  assert.deepEqual(heard.splice(0), ['root', 't1', 's1', 't2'])
   await h.unload()
 })
 

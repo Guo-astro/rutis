@@ -490,8 +490,8 @@ impl Ctx {
     }
 
     /// The chain of loader instances around this context, outermost first;
-    /// `[]` at the root (protocol spec §3). An event emitted here reaches
-    /// the listeners of this scope and of every scope containing it.
+    /// `[]` at the root (protocol spec §3). It is a descriptor for filters;
+    /// events are delivered by name on the root's one bus.
     pub fn scope(&self) -> Vec<crate::Scope> {
         let mut chain = Vec::new();
         let mut current = self.0.fiber.upgrade();

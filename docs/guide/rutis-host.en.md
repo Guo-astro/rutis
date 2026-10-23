@@ -63,7 +63,7 @@ A listener that fails in an `emit` (the emitter does not wait, so nobody else he
 
 ### Events
 
-Every row's listeners, in any language and on linked nodes, are on one event bus, with one set of rules ([Unified events](../design-events-2026-10-18.en.md)): nothing is declared in `rutis.json`. A row inside an instance of an `instanced` group hears the events emitted in that instance and above it, never another instance's. `rutis-host` also emits, and plugins of every language may listen to:
+Every row's listeners, in any language and on linked nodes, are on one event bus, with one set of rules ([Unified events](../design-events-2026-10-18.en.md)): nothing is declared in `rutis.json`. An `instanced` group only affects the scope chain in descriptors; events are delivered by name to every listener on the bus, so filter by instance when needed. `rutis-host` also emits, and plugins of every language may listen to:
 
 | Event | When |
 | --- | --- |

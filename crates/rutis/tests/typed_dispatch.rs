@@ -1123,9 +1123,10 @@ async fn scoped_sync_bail_and_waterfall_drain_during_removal_and_subtree_shutdow
 }
 
 /// Was `sync_instance_isolation_stale_context_and_self_shutdown`: instance
-/// keys are gone; sibling scopes under one name are isolated instead.
+/// keys are gone. Events are one flat bus, so every listener hears every
+/// dispatch; registration order still decides `bail` / `waterfall`.
 #[tokio::test]
-async fn sync_scope_isolation_stale_context_and_self_shutdown() {
+async fn sync_flat_bus_stale_context_and_self_shutdown() {
     let root = Ctx::root().unwrap();
     let (view, ctx) = scope(&root, "a").await;
     let (_, sibling) = scope(&root, "b").await;
@@ -1141,14 +1142,14 @@ async fn sync_scope_isolation_stale_context_and_self_shutdown() {
     );
     assert_eq!(
         root.events().bail_sync(&root, &key, &Ping(0)).unwrap(),
-        None
+        Some(8)
     );
     assert_eq!(
         sibling
             .events()
             .bail_sync(&sibling, &key, &Ping(0))
             .unwrap(),
-        None
+        Some(8)
     );
     sibling
         .events()
@@ -1161,7 +1162,7 @@ async fn sync_scope_isolation_stale_context_and_self_shutdown() {
             .events()
             .bail_sync(&sibling, &key, &Ping(0))
             .unwrap(),
-        Some(9)
+        Some(8)
     );
     assert_eq!(
         ctx.events().bail_sync(&ctx, &key, &Ping(0)).unwrap(),
@@ -1174,7 +1175,7 @@ async fn sync_scope_isolation_stale_context_and_self_shutdown() {
                 panic!("the sibling's own listener answers without next")
             })
             .unwrap(),
-        Some(9)
+        Some(8)
     );
     view.restart().await.unwrap();
     assert!(matches!(

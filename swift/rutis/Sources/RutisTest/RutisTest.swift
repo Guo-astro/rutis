@@ -372,16 +372,13 @@ final class Harness: @unchecked Sendable {
         return try await body(Rutis.Arguments(args)).value
     }
 
-    /// A dispatch of `name` emitted in `scope` (§5.1).
+    /// A dispatch of `name` (§5.1); delivery is by name.
     func snapshot(_ name: String, _ scope: [Rutis.Scope], own: Bool) -> Dispatch {
         lock.withLock {
             dispatches += 1
             let id = "d\(dispatches)"
-            var chosen: [EventEntry] = []
-            for entry in entries where entry.name == name {
-                let listening = entry.local == nil ? (scopes[entry.row ?? ""] ?? []) : []
-                if Events.within(listening, scope) { chosen.append(Invocation(entry, dispatchID: id, own: own && entry.local == nil)) }
-            }
+            let chosen = entries.filter { $0.name == name }
+                .map { Invocation($0, dispatchID: id, own: own && $0.local == nil) }
             return Dispatch(name: name, entries: chosen)
         }
     }

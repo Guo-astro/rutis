@@ -135,20 +135,20 @@ test('bail is synchronous; an async listener is refused, one returning a Promise
   assert.equal(kindOf(() => {}), 'any')
 })
 
-test('a listener hears its own scope and those under it, never another', async () => {
+test('every listener hears every event; a scope is a descriptor', async () => {
   const { bus } = local()
   const log = []
   for (const [label, scope] of [['r', []], ['u', [T1]], ['s', [T1, S1]], ['v', [T2]]]) {
     listen(bus, 'scope', () => { log.push(label) }, { scope })
   }
   await bus.dispatch('parallel', 'scope', [], { scope: [T1, S1] })
-  assert.deepEqual(log.splice(0), ['r', 'u', 's'])
+  assert.deepEqual(log.splice(0), ['r', 'u', 's', 'v'])
   await bus.dispatch('parallel', 'scope', [], { scope: [T1] })
-  assert.deepEqual(log.splice(0), ['r', 'u'])
+  assert.deepEqual(log.splice(0), ['r', 'u', 's', 'v'])
   await bus.dispatch('parallel', 'scope', [], { scope: [T2] })
-  assert.deepEqual(log.splice(0), ['r', 'v'])
+  assert.deepEqual(log.splice(0), ['r', 'u', 's', 'v'])
   await bus.dispatch('parallel', 'scope', [], { scope: [] })
-  assert.deepEqual(log.splice(0), ['r'])
+  assert.deepEqual(log.splice(0), ['r', 'u', 's', 'v'])
 })
 
 test('a filter sees each candidate once, before any runs; global listeners skip it', async () => {
@@ -160,7 +160,7 @@ test('a filter sees each candidate once, before any runs; global listeners skip 
   listen(bus, 'f', () => { log.push('d') }, { row: 'd', scope: [T2] })
   const keep = descriptor => { log.push(`filter:${descriptor.row}`); return descriptor.row === 'a' }
   await bus.dispatch('serial', 'f', [], { keep })
-  assert.deepEqual(log.splice(0), ['filter:a', 'filter:b', 'a', 'g'])
+  assert.deepEqual(log.splice(0), ['filter:a', 'filter:b', 'filter:d', 'a', 'g'])
   const seen = []
   await bus.dispatch('serial', 'f', [], { keep: descriptor => { seen.push(descriptor); return false } })
   assert.deepEqual(seen[0], { name: 'f', prefix: false, plugin: 'p', row: 'a', runtime: 'node', node: null, scope: [], global: false })

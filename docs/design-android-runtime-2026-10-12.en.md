@@ -43,7 +43,7 @@ rutis (desktop / server)                  Android app
 - Plugins within the same app call each other on the objects themselves; across connections and languages, calls go through rutis by name.
 - rutis does not model devices: model, OS version, and the like are provided by plugins (such as a `device` plugin).
 - App process death, network loss, `stop()`: to rutis these are all a disconnect — the instance closes, services are withdrawn, consumers stop; after reconnecting, plugins are loaded again according to rutis's current configuration.
-- Events: listeners of plugins in the app register on the host's logical bus and are reached by any emitter like listeners in other languages (by scope); the connection's instance is the scope of these rows.
+- Events: listeners of plugins in the app register on the host's logical bus and are reached by any emitter like listeners in other languages (one flat bus, by name); the connection's instance is the scope of these rows.
 
 ## 3. Plugin API
 
@@ -161,7 +161,7 @@ val some = ctx.filter { d -> d.row == "chat" }               // Emitter: the sam
 | Registration | `ctx.on` sends `events.on [{ id, name, row, plugin, kind: "sync", prepend, global }]` (`id` increasing within the session, never reused); `rows.load` is answered after every registration made during `apply` was answered; `internal/*` is refused locally, and a refusal by the host is reported, or fails the load, per the contract |
 | `kind` | Always `"sync"`: one thread per call, so a listener (a `suspend` one included) runs to the end with `runBlocking` on that thread before the reply, and the host can wait for it synchronously (as Go). Kotlin listeners therefore never cause `AsyncListener` |
 | Fast path | Dispatch in this process when the name is not in `events.elsewhere`, no prefix matches, and (for `emit`) no earlier `emit` of the name sent through the host is unanswered; otherwise send `events.dispatch`. Descriptors of this process's entries use `mount`'s `runtime` |
-| Dispatch rules | Snapshot (name, registration order, scope chain prefix, live) → filter (non-`global`) → check liveness before each start; the five modes and "no result" (`null`, `false`) per contract §6 |
+| Dispatch rules | Snapshot (name, registration order, live) → filter (non-`global`) → check liveness before each start; the five modes and "no result" (`null`, `false`) per contract §6 |
 | `emit` order | One serial queue per listener: `emit` invocations on one listener run one after another in arrival order; different listeners run concurrently |
 | Filters | On the fast path, called directly on each descriptor; through the host, `filter` is a selector function reference that finds this process's entries by the descriptor's `listener` and removes that field before calling the plugin's predicate; descriptors are `Listener` (`name`, `prefix`, `plugin`, `row`, `runtime`, `node`, `scope`, `global`, `null` when absent) |
 | Cancellation | The emitting coroutine is cancelled: through the host, a `cancel` is sent for the `events.dispatch`; an aborted `signal` or a `cancel` for an `events.call` cancels that listener's coroutine and interrupts its thread |

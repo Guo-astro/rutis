@@ -157,11 +157,11 @@ test('through the host, the filter judges the very copy the host asks about', as
     await load('c#t1', { listen: 't/copies' }, [T1])
     await load('e', { probe: 'e' }, [T1], { 'probe-e': { filtered: 'async', emitKept: 'async' } })
     const probe = (method, args) => host.session.invokeAsync(host.services.get('probe-e'), method, args)
-    // Here: the t1 copy alone hears an emission in t1.
-    assert.deepEqual(await probe('filtered', ['t/copies', '17']), ['17'])
+    // The filter is asked about both copies; it keeps the t1 copy.
+    assert.deepEqual(await probe('filtered', ['t/copies', '17']), ['18', '17'])
     // Through the host: the same.
     await host.elsewhere({ add: ['t/copies'] })
-    assert.deepEqual(await probe('filtered', ['t/copies', '17']), ['17'])
+    assert.deepEqual(await probe('filtered', ['t/copies', '17']), ['18', '17'])
     assert.equal(host.dispatches.length, 1)
   } finally {
     await host.end()

@@ -23,7 +23,6 @@ import arcships.rutis.internal.RuntimeSession
 import arcships.rutis.internal.Shutdown
 import arcships.rutis.internal.checkEmit
 import arcships.rutis.internal.checkListen
-import arcships.rutis.internal.within
 import arcships.rutis.internal.peer.CallChain
 import arcships.rutis.internal.peer.Exported
 import arcships.rutis.internal.peer.MemoryChannel
@@ -287,11 +286,11 @@ internal class Harness(val plugin: Plugin, private val services: Map<String, Any
 
     fun providedNames(): List<String> = synchronized(lock) { handles.keys.toList() }
 
-    /** A dispatch of `name` emitted in `scope` (§5.1). */
+    /** A dispatch of `name` (§5.1); delivery is by name. */
     fun snapshot(name: String, scope: List<Scope>, own: Boolean, keep: (suspend (Listener) -> Boolean)?): Dispatch = synchronized(lock) {
         dispatches++
         val id = "d$dispatches"
-        val selected = entries.filter { it.name == name && within(if (it.fn != null) emptyList() else scopes[it.row] ?: emptyList(), scope) }
+        val selected = entries.filter { it.name == name }
             .map { Invocation(it, id, own && it.fn == null) }
         Dispatch(name, selected, keep)
     }

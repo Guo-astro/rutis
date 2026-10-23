@@ -26,13 +26,13 @@ A value type that is not serde (a handle, a channel) does not belong in an event
 | `on_waterfall(ctx, key, \|ctx, e, next\| next.call())` | `on(ctx, key, \|ctx, e, call\| call.next())`; the value is `Option<V>` |
 | `on_sync` / `on_waterfall_sync` of a `SyncEvent` | `on_sync(ctx, key, \|ctx, e, call: SyncCall<'_, V>\| ..)` for any event; `SyncEvent` is gone |
 | `on_pattern(ctx, EventPattern::any_prefix([..]), ..)` | `on_pattern(ctx, &EventPattern::prefix(p), \|ctx, key, e, call\| ..)`, one prefix per registration |
-| `*_keyed(name, ..)`, `*_instance(id, ..)`, `EventKey::instance(id)` | `EventKey::named` / `dynamic`; scopes instead of instance channels (below) |
+| `*_keyed(name, ..)`, `*_instance(id, ..)`, `EventKey::instance(id)` | `EventKey::named` / `dynamic`; events are delivered by name, and instance information is a `ListenerInfo::scope` filter (below) |
 | `serial(ctx, key, &e)` | `serial(ctx, key, Arc<E>)` |
 | `waterfall(..) -> Result<V>`, `Terminal` returning `V` | `-> Result<Option<V>>`, `Terminal` returning `Option<V>`; `()` is "no terminal" |
 | `waterfall_sync(.., \|ctx, e\| Ok(v))` | `\|ctx, e\| Ok(Some(v))` |
 | Your own `Listener` / `SyncListener` / `PatternListener` / `SyncPatternListener` implementing `fn call(&self, ctx, e)` (pattern listeners also take `key`) | `call` takes one more, last parameter: `call: Call<'_, E::Value>` (`SyncCall<'_, E::Value>` for the synchronous two) |
 | `WaterfallListener`, `SyncWaterfallListener`, `PatternWaterfallListener`, `SyncPatternWaterfallListener` | Removed: implement the matching `Listener` / `SyncListener` / `PatternListener` / `SyncPatternListener` and call `call.next()` in it |
-| `EventKey::instance_id()` | Removed: event keys no longer carry an instance; use scopes (`Ctx::scope()`) |
+| `EventKey::instance_id()` | Removed: event keys no longer carry an instance; `Ctx::scope()` is a filter descriptor |
 | `EventPattern::prefixes()` | `EventPattern::as_str()`: a pattern has one prefix |
 
 **Behaviour changes.**
@@ -45,7 +45,7 @@ A value type that is not serde (a handle, a channel) does not belong in an event
 - Every listener is skipped once its plugin is unloading, and the unload waits for its running calls (their `ctx.cancelled()` fires); before, only instance, pattern and synchronous listeners were.
 - `rutis/*` names are reserved: emitting one fails with `ReservedEvent`.
 
-**Scopes replace instance channels.** The loader marks each group instance with `Ctx::mark_scope(group)`; `Ctx::scope()` is the chain from the root. A listener hears events emitted in its scope and below it. To pick listeners further, `ctx.events().filter(|info| ..)` gives the same emitting methods filtered by each listener's `ListenerInfo`.
+**Scopes are no longer a delivery rule.** The loader marks each group instance with `Ctx::mark_scope(group)`; `Ctx::scope()` is the chain from the root, a `ListenerInfo` descriptor for filters. Events are delivered by name on one root's bus, and every listener receives them (as in Cordis). To pick listeners by instance, use `ctx.events().filter(|info| ..)` on `info.scope` and the other descriptors, or use distinct event names. There is no default instance isolation.
 
 **Diagnostics.** `EventSubscription` drops `key` (`TypeKey`), `prefixes`, `selected` and `invoked`, and has `name` (the event name, or the prefix of a prefix entry), `prefix`, `remote` (a listener elsewhere), `global` and `calls` (calls started so far); `owner` is an `Option<PluginId>` (`None` once the fiber that registered it is gone). `ListenerKind` has only `Sync`, `Async` and `Any` (`Any` only for listeners elsewhere): `AsyncWaterfall` and `SyncWaterfall` are gone, so code matching on them changes. `EventBacklog` and `DispatchAttempt` carry the event `name` instead of `key` (a `TypeKey`); `DispatchMode` is `rutis::Mode`; `CordisError::ReentrantEvent` is removed: a synchronous dispatch of a name may re-enter it (as in Cordis), and only a real wait cycle fails, with `SyncWaitCycle`.
 
@@ -65,7 +65,7 @@ A value type that is not serde (a handle, a channel) does not belong in an event
 
 ## Leaf plugins (Node, Bun, Python, Go)
 
-A `ctx.on` listener now receives the events emitted in its plugin's scope and inside it, whatever process, language or node the emitter is in; before, only those of its own runtime process.
+A `ctx.on` listener now receives every event of the name on the one bus, whatever process, language or node the emitter is in; before, only those of its own runtime process.
 
 **`emit` no longer waits or throws.** It starts every listener in registration order and returns at once; a listener's failure is written as one line where the listener runs, `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>`, reaches neither the emitter nor the other listeners, and no longer ends the runtime process. To wait for the listeners and get their errors, use `parallel`:
 
@@ -117,7 +117,7 @@ Host → runtime and runtime → host need no declaration and have no separate e
 | --- | --- |
 | `LocalRuntime::emits`, `RuntimePlugin::emits` | Nothing: listeners in runtimes register themselves |
 | `Mount.emits`, `Mount.events` (`EventSink`) | Nothing; listen on the Rust side with `ctx.events().on(..)` to what runtimes emit |
-| `Process::emit(name, args)` | The five modes on `ctx.events()`; `Process::emit` waited for every listener, which is `parallel` |
+| `Process::emit(name, args)` | The five modes on `ctx.events()`; `Process::emit` waited for every listener, which is `parallel`. The bus is flat, so `parallel` reaches every listener of the name on it |
 | `runtime::events::{Events, EmitToCordis, EventSink}` (also re-exported from `rutis_bridge::cordis`) | As above |
 | Nodes: `EventsPlugin`, `NodeEvent`, `node_event(name)`, `Features { outbound, inbound }` | `Features { export, import }` (shared by events and services, see [node links](#node-links) below); `PeerPlugin` starts `LinkEventsPlugin` itself; by name with `EventKey::<rutis_bridge::events::Args>::dynamic(name)` |
 
@@ -188,7 +188,7 @@ The mounted Cordis plugins emit with Cordis's own `ctx.emit` / `parallel` / `ser
 
 No code changes. What changes:
 
-- Events cross processes: a Cordis plugin's `ctx.on` receives events emitted by other runtimes, the host and nodes (by scope), and its `ctx.emit` and the rest reach them.
+- Events cross processes: a Cordis plugin's `ctx.on` receives events emitted by other runtimes, the host and nodes, and its `ctx.emit` and the rest reach them.
 - A synchronous `ctx.bail` meeting an asynchronous listener (an `async` function, or one returning a Promise) fails with `AsyncListener`; before, Cordis took the Promise as the result.
 - A listener of `ctx.emit` throwing synchronously no longer reaches the emitter or stops the listeners after it: it is reported in one line where the listener runs (`rutis: listener of <name> in row <row> failed: …`), and the other listeners run.
 - `parallel` failures are still an `AggregateError` with the errors in registration order (as in Cordis 4.0.4); new are its message, `<n> listeners of <name> failed`, and the failures of listeners elsewhere among its errors.
@@ -224,8 +224,8 @@ Now:
 Still there, it gives `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`.
 
 - An item is a name, or a prefix ending in `*` (`session/*`; `*` alone is every name); prefixes apply to events only. A name in `export` exports that service and also lets this node's events of that name reach the far end, so a name that is both a service and an event shares both.
-- Events between nodes are now the far listeners as entries on this node's bus: the five modes, scopes, filters and every value type as on one machine (before: always `parallel`, JSON only, silently dropped on a disconnect). When the link goes away they leave the bus, and calls in progress fail once. Events travel one hop: what a node imports is not shared further.
-- The far listeners sit in the scope of the node row; events no longer leak between instances, by the scope rule.
+- Events between nodes are now the far listeners as entries on this node's bus: the five modes, filters and every value type as on one machine (before: always `parallel`, JSON only, silently dropped on a disconnect). When the link goes away they leave the bus, and calls in progress fail once. Events travel one hop: what a node imports is not shared further.
+- The far listeners are entries of the one bus; their descriptors carry the node row's scope for filters.
 
 ## Behaviour changes at a glance
 
@@ -239,6 +239,6 @@ Still there, it gives `the peer config field events was removed in rutis 0.13: l
 | A synchronous `bail` / `waterfall_sync` meeting an asynchronous listener (or a function returning a Promise / coroutine) fails with `AsyncListener` | Every language; Cordis took the Promise as the result |
 | A Rust listener is called with the `ctx` that registered it, not the emitter's | Rust |
 | Unloading waits for running listeners (at most `RUTIS_SHUTDOWN_TIMEOUT`) and signals them to cancel | Every language |
-| A listener in an instance no longer receives other instances' events | Scopes |
+| Events cross instances by name; to isolate an instance, filter on `ListenerInfo::scope` or use distinct event names | Every language |
 | `rutis/*` names are reserved: listen only | Every language |
 | Plugin API 3; mixing with runtimes and nodes of 0.12 and earlier is refused | Every end |

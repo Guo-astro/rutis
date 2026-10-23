@@ -559,22 +559,15 @@ func (i *invocation) Emit(ctx context.Context, args []any) bool {
 	return true
 }
 
-// snapshot is a dispatch of `name` emitted in `scope` (§5.1).
-func (h *harness) snapshot(name string, scope []rutis.Scope, own bool) *events.Dispatch {
+// snapshot is a dispatch of `name` (§5.1); delivery is by name.
+func (h *harness) snapshot(name string, _ []rutis.Scope, own bool) *events.Dispatch {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.dispatches++
 	id := "d" + strconv.FormatInt(h.dispatches, 10)
 	d := &events.Dispatch{Name: name}
 	for _, e := range h.entries {
-		if e.name != name {
-			continue
-		}
-		listening := h.scope[e.row]
-		if e.fn != nil {
-			listening = nil
-		}
-		if events.Within(listening, scope) {
+		if e.name == name {
 			d.Entries = append(d.Entries, &invocation{busEntry: e, dispatch: id, own: own && e.fn == nil})
 		}
 	}
@@ -779,7 +772,7 @@ func (h *harness) elsewhere(change map[string]any) {
 	}
 }
 
-// Emit starts every listener of `name` the row's scope reaches and
+// Emit starts every listener of `name` on the bus and
 // returns; a listener's failure is reported (Reported), not returned.
 func (l *Loaded) Emit(ctx context.Context, name string, args ...any) error {
 	_, err := l.emit(ctx, nil, name, events.ModeEmit, args, nil)

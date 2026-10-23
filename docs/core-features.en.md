@@ -44,7 +44,7 @@ let hi = ctx.events().serial(&ctx, &EventKey::of(), Arc::new(RoomEvent { room: "
 - `serial` / `bail_sync` return the first result (`None` and `Some(false)` are no result); an error stops them. `bail_sync` / `waterfall_sync` meeting an async listener fail with `AsyncListener`.
 - `waterfall` / `waterfall_sync` run outer to inner, each listener calling the rest with `call.next()`; not calling it vetoes; the terminal is optional (`()`); the outermost value is returned.
 - Synchronous listeners register with `on_sync`; every mode can call them. `EventPattern::prefix("room/")` registers a prefix listener, which gets the actual name. `EventOptions` has `prepend`, `once` and `global`.
-- **Scope**: the loader marks group instances with `Ctx::mark_scope(group)`; `Ctx::scope()` is the scope chain from the root. A listener hears events emitted in its own scope and below it, never in a sibling scope.
+- **Scope**: the loader marks group instances with `Ctx::mark_scope(group)`; `Ctx::scope()` is the scope chain from the root. Events are delivered by name on one root's bus, and every listener receives them; a scope is only a descriptor in `ListenerInfo` for filters.
 - **Filter**: `ctx.events().filter(|info: &ListenerInfo| ..)` gives the same emitting methods; the filter sees each non-`global` listener's descriptor (plugin, row, runtime, node, scope) in the emitter's process, before any call.
 - **Lifecycle**: a listener is called with the `Ctx` that registered it; once its fiber unloads no new call starts, and the unload waits for running calls (their `ctx.cancelled()` has fired), at most until the host's shutdown deadline.
 - `rutis/*` is reserved for framework events: plugins listen to them; emitting one fails with `ReservedEvent`.

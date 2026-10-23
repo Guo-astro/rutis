@@ -64,7 +64,7 @@ The plugin API version becomes **3** (Node `PLUGIN_API`, Python `PLUGIN_API`, Go
 A **scope** is a loader group instance (a copy of a `group`, such as one tenant or one session) or the root. Every plugin, row and emission is in exactly one scope: the innermost instance that contains it, or the root.
 
 - **Scope chain** on the wire: a JSON array of `{ "id": <string>, "group": <string> }`, outermost first. The root is `[]`. `id` is opaque, unique among the host's live and past instances (Rust: the group fiber's `InstanceId` in decimal); `group` is the loader group's name. Example: `[{"id":"17","group":"tenant"},{"id":"42","group":"session"}]`.
-- **Rule**: an entry with chain `L` hears a dispatch emitted at chain `E` when `L` is a prefix of `E` (compared by `id`). Root entries hear everything; an entry in tenant `t1` does not hear `t2`.
+- **Rule**: events are delivered by name. A scope is a listener descriptor for filters, not a delivery rule: every listener of the name receives every dispatch, wherever its scope, runtime or node (Cordis's flat bus).
 - **Where a process learns chains**: the host gives each row its chain. `rows.load` takes a seventh argument `{ "scope": <chain>, "id": <the row's id> }` (0.13 hosts always send seven arguments; `exports` is `{}` when the row exports nothing). `id` is the id the configuration gives the row (the loader's row id; the copies a group's instances make share it), not the row key, which is unique on the session: descriptors (§4.2) and every reported message (§5.6, §11) call the row by it, while protocol messages keep using the key. Without `id`, the key. Plugins loaded by `mount`'s `plugins` list get the mount argument `scope` (the mounting plugin's chain). Rust plugins read `Ctx::scope()` (§12.1). `mount` also carries `runtime`, the runtime's name as descriptors give it (§4.2): a runtime uses it for its own entries' descriptors on the fast path, so they are the same as through the host.
 - **The emitter's scope is never self-reported**: a runtime's `events.dispatch` names the emitting `row`; the host uses that row's chain and refuses a row that is not loaded on that session (`BindingError`, `row <key> is not loaded in this runtime`). Mount-mode plugins name `row: null` and get the mount's chain.
 - Leaf `isolate` labels (service scopes, U+0001 leases) are unrelated to event scopes.
@@ -97,7 +97,7 @@ Registration (runtime → host):
 | `plugin` | Name of the registering plugin (the Cordis plugin's name, which may be a child plugin of the row; the leaf plugin's name) |
 | `kind` | `"sync"`: known synchronous (every Go listener); `"async"`: known asynchronous (JavaScript `AsyncFunction`, Python `async def`); `"any"`: known only from what it returns (other JavaScript and Python functions) |
 | `prepend` | The listener option `prepend` (every language, §12; Cordis's own option on Cordis plugins) |
-| `global` | The listener option `global` (every language, §12; Cordis's own on Cordis plugins): the entry is exempt from custom filters (§6), never from the scope rule |
+| `global` | The listener option `global` (every language, §12; Cordis's own on Cordis plugins): the entry is exempt from custom filters (§6); a scope is only a descriptor |
 
 Runtimes never register prefixes; Rust pattern listeners are prefix entries of the host (`prefix: true`, `name` = the prefix).
 
@@ -133,7 +133,7 @@ The kernel's process-local diagnostic events (names starting with `rutis::`, suc
 
 ### 5.1 The algorithm (the same for every dispatcher)
 
-1. **Snapshot**: the entries matching the name, in registration order, whose scope chain is a prefix of the emitter's chain (§3), that are live (not withdrawn).
+1. **Snapshot**: the entries matching the name, in registration order, that are live (not withdrawn).
 2. **Filter** (§6), if the dispatch has one: evaluated once for each non-`global` entry of the snapshot, in order, before any invocation starts. Entries it rejects are dropped.
 3. **Run** the mode (§5.4). Immediately before starting each invocation the dispatcher checks the entry is still live; a withdrawn entry is skipped as if it had never been in the snapshot.
 
@@ -222,7 +222,7 @@ A failing filter in an `emit` dispatch delivers to no listener and is reported b
 
 - **Where it runs**: always in the emitter's process. On the fast path the runtime calls the plugin's filter function directly for each candidate. Through the host, `events.dispatch` carries `filter`: a function reference to a **selector** the runtime makes around the plugin's filter. The host calls it once per dispatch, after the snapshot (§5.1), with one argument: the list of descriptors of the non-`global` candidates in registration order. The selector calls the plugin's filter on each, in order, in the emitter's process, and returns a list of booleans of the same length (`true` = deliver), using the language's own truthiness / `bool`. The host calls it synchronously in `bail` dispatches, asynchronously otherwise. A wrong length or non-booleans fail the dispatch (`BindingError`, `filter of <name> returned <n> answers for <m> listeners`). The descriptor of an entry of the emitter's own session also carries `listener`: that entry's `events.on` id (amended 2026-10-19). The runtime finds its own listener by it, never by the descriptor's other fields (two copies of a row in two instances, or one Cordis plugin listening from two Contexts, have equal descriptors), and removes it before calling the plugin's filter, which sees the same descriptor on both paths.
 - **Errors**: a throwing filter fails the whole dispatch with that error before any invocation (in `emit`: §5.6). In Go the filter returns `(bool, error)`: the error it returns, with its name, is the failure, and so is a panic. In Rust, `try_filter` takes a predicate returning `Result<bool, CordisError>`, whose error is the failure as it is; `filter` takes a plain `bool` predicate, which fails only by panicking.
-- **Default**: the scope rule is applied first and always; the filter only narrows it. `global` entries skip the filter.
+- **Default**: the snapshot takes every candidate by name; the filter narrows it per non-`global` listener. `global` entries skip the filter.
 - **Cordis** (`Context.filter`): `ctx.emit(thisArg, name, …)` and the other four with a `thisArg` whose `[Context.filter]` is a function use it as the filter. It is called with the entry's own Cordis `Context` for listeners in the process, and with `{ rutis: <descriptor> }` for every other entry. Every Context in a rutis Node runtime has a read-only `ctx.rutis` with its descriptor, so `c => c.rutis.row === 'chat'` works for both.
 - **Other languages**: `filter(predicate)` returns an emitter with the same five methods (§12); the predicate receives the descriptor (Node / Bun leaf and Python: a plain object / `dict` with the JSON fields; Go: `rutis.Listener`; Rust: `&ListenerInfo`).
 
@@ -268,7 +268,7 @@ Emitted by the host only, in `emit` mode, each with one argument (a record). Plu
   | `events.off` | `[[id, …]]` | Withdrawn |
   | `events.call` | as §5.3 | Invoke an entry the sender accepted |
 
-- **What a node announces**: only its own entries (host Rust plugins and its runtimes), never entries it imported over any link (no relaying, so no loops), and only entries whose scope chain is a prefix of the link's scope (the scope of the `rutis-bridge/peer` row; the root for a link outside instances), since only those could hear an event arriving there. A prefix entry is announced narrowed to what both it and the `import` item match (two prefixes: the longer when one extends the other; a prefix and a name: the name).
+- **What a node announces**: only its own entries (host Rust plugins and its runtimes), never entries it imported over any link (no relaying, so no loops). The `export` / `import` lists are the only boundary. A prefix entry is announced narrowed to what both it and the `import` item match (two prefixes: the longer when one extends the other; a prefix and a name: the name).
 - **Where an accepted entry sits**: at the link's scope on the accepting node, appended in arrival order, or in front of every existing entry when announced with `prepend: true`; descriptor `node` = the peer id, `plugin` / `row` / `runtime` as announced, `scope` = the link's scope. An entry announced that matches nothing in `export` is ignored (answered `undefined`).
 - **Announced ids**: `<epoch>.<n>`. `epoch` is the sender's offer of the `events` family (that family's `since` in its `link.offers`), `n` counts up within the offer. When the receiver sees a newer offer of the peer's (through `link.offers`, or an announcement with a higher epoch arriving first), it withdraws every entry the peer announced under an older offer; when the peer's `link.offers` no longer lists an offer of `events` it listed, it withdraws the entries announced under that offer or an older one (an announcement can arrive before its offer: the entries of an offer `link.offers` has not listed yet stay; amended 2026-10-23); a late announcement of an older offer is not taken (answered `undefined`). An id without an epoch (from an implementation that does not say) is replaced by id only (amended 2026-10-19).
 - **Rules**: identical to local entries: five modes, scope, filter, value types, withdrawal and disconnection (§7.2). The invoked node runs the entry (its Rust listener, or relays `events.call` to its runtime). A disconnected link's entries are withdrawn.
@@ -405,7 +405,7 @@ pub trait Transcoder: Send + Sync + 'static {
 
 pub enum ListenerKind { Sync, Async, Any }
 /// A remote entry: a listener whose calls go to an external dispatcher
-/// (a runtime session, a node link). Same table, positions, scope rule,
+/// (a runtime session, a node link). Same table, positions, name delivery,
 /// filter (by its `ListenerInfo`) and `global` as any entry.
 pub trait RemoteListener: Send + Sync + 'static {
     fn kind(&self) -> ListenerKind;   // `Async`: never called by bail / waterfall-sync (AsyncListener)
@@ -445,7 +445,7 @@ impl EventBus {
 - **Dynamic events**: `rutis_bridge::events::Args(pub Vec<rutis_bridge::session::Value>)` with `Value = rutis_bridge::events::ArgValue` (`ArgValue(pub rutis_bridge::session::Value)`), used only as `EventKey::<Args>::dynamic(name)` (`of()` fails with `BindingError`, `Args events need a name: EventKey::dynamic(name)`); the bridge's transcoder takes its values as they are.
 - A Rust listener is called with the context that registered it (its `ctx.cancelled()` is its unload signal, §7.1).
 - `Ok(Some(false))` is no result in `serial` / `bail_sync`; `waterfall` returns the value as is.
-- Scope: the emitter's scope is `ctx.scope()`; there is no API for plugins to emit into another scope (filter by `ListenerInfo::scope` instead).
+- Scope: the emitter's scope is `ctx.scope()`, a descriptor; events are delivered by name. To pick listeners further, filter by `ListenerInfo::scope`.
 - Removed: `on_waterfall*`, `on_waterfall_sync*`, `WaterfallListener`, `SyncWaterfallListener`, `Next`, `SyncNext`, `SyncEvent`, `EventKey::instance`, every `*_instance` and `*_keyed` method, `EventPattern::any_prefix`.
 
 ### 12.2 Other languages
@@ -702,7 +702,7 @@ A **case**: `case` (id), `rule` (the section of this document), `name` (default 
           { "emit": { "from": "Y", "row": "f", "mode": "bail", "name": "t/c2", "args": [] } } ], "hold": true,
         "expect": { "settles": true, "throws": { "name": "SyncWaitCycle" } } } ] },
 
-    { "case": "scope/up-not-down", "rule": "3", "name": "t/scope",
+    { "case": "scope/flat-bus", "rule": "3", "name": "t/scope",
       "listeners": [
         { "label": "r", "at": "host", "scope": "root", "does": { "returns": null } },
         { "label": "u", "at": "X", "scope": "t1", "does": { "returns": null } },
@@ -710,10 +710,10 @@ A **case**: `case` (id), `rule` (the section of this document), `name` (default 
         { "label": "v", "at": "X", "scope": "t2", "does": { "returns": null } } ],
       "vary": ["r", "u", "s", "v", "e"],
       "steps": [
-        { "emit": { "from": "X", "scope": "t1/s1", "mode": "parallel", "args": [] }, "expect": { "logUnordered": ["r", "u", "s"] } },
-        { "emit": { "from": "X", "scope": "t1", "mode": "parallel", "args": [] }, "expect": { "logUnordered": ["r", "u", "s", "r", "u"] } },
-        { "emit": { "from": "X", "scope": "t2", "mode": "parallel", "args": [] }, "expect": { "logUnordered": ["r", "u", "s", "r", "u", "r", "v"] } },
-        { "emit": { "from": "X", "scope": "root", "mode": "parallel", "args": [] }, "expect": { "logUnordered": ["r", "u", "s", "r", "u", "r", "v", "r"] } } ] },
+        { "emit": { "from": "X", "scope": "t1/s1", "mode": "parallel", "args": [] }, "expect": { "logUnordered": ["r", "u", "s", "v"] } },
+        { "emit": { "from": "X", "scope": "t1", "mode": "parallel", "args": [] }, "expect": { "logUnordered": ["r", "u", "s", "v", "r", "u", "s", "v"] } },
+        { "emit": { "from": "X", "scope": "t2", "mode": "parallel", "args": [] }, "expect": { "logUnordered": ["r", "u", "s", "v", "r", "u", "s", "v", "r", "u", "s", "v"] } },
+        { "emit": { "from": "X", "scope": "root", "mode": "parallel", "args": [] }, "expect": { "logUnordered": ["r", "u", "s", "v", "r", "u", "s", "v", "r", "u", "s", "v", "r", "u", "s", "v"] } } ] },
 
     { "case": "filter/keeps-and-sees", "rule": "6", "name": "t/filter",
       "listeners": [
@@ -883,13 +883,13 @@ Where the design was silent, this specification chose:
 10. **Listener kinds** `sync` / `async` / `any`: declared-async entries are never invoked by `bail` / `waterfall-sync`; `any` entries are checked by what they return.
 11. **`parallel` always throws `AggregateError`**, even for one failure (Cordis).
 12. **`waterfall` returns the outermost value as is**; with no entries, the terminal's value or no result; `next` takes no arguments; the terminal receives the event arguments; a Cordis plugin's terminal is Cordis's mandatory last argument; a leaf plugin gives it with `waterfall.with(terminal)` (amended 2026-10-19: its arguments may be functions, so the last cannot be told apart), optional elsewhere.
-13. **The filter runs over the scope-matched snapshot before any invocation**; `global` entries skip it (not the scope rule); a throwing filter fails the dispatch (in `emit`, reported).
+13. **The filter runs over the name-matched snapshot before any invocation**; `global` entries skip it; a throwing filter fails the dispatch (in `emit`, reported).
 14. **Cordis filter contexts**: real `Context` for local hooks, `{ rutis: descriptor }` for others, and `ctx.rutis` on every Context; other languages use `filter(predicate)` returning an emitter.
-15. **Scopes are loader group instances**, `[{id, group}]` chains, root `[]`, delivered by a seventh `rows.load` argument and a `mount` field; the host derives the emitter scope from the row and never trusts a reported one; Rust gets `Ctx::scope` / `Ctx::mark_scope`.
+15. **Scopes are loader group instances**, `[{id, group}]` chains, root `[]`, delivered by a seventh `rows.load` argument and a `mount` field; the host derives the emitter scope from the row and never trusts a reported one; Rust gets `Ctx::scope` / `Ctx::mark_scope`. A scope is a descriptor; it does not select listeners.
 16. **Cancellation per language**; JavaScript listeners have no per-invocation signal (Cordis's listener signature has no place for one) and see only `ctx.signal` at unload; JavaScript cannot cancel a dispatch.
 17. **Unload waits at most `RUTIS_SHUTDOWN_TIMEOUT`** (default 10 s), then writes the §7.1 line and goes on.
 18. **`rutis/*` payloads** are one record each with lowercase states; fired in `emit` mode at the subject's scope; a provider replacement fires `available: true` again.
-19. **Node links**: `export` = my emissions reach the peer, `import` = my listeners hear the peer (so `events.out` → `export`, `events.in` → `import`); entries travel from importer to exporter; `*` suffix = prefix, for events only; only a node's own entries at or above the link's scope are announced; imported entries are never relayed (no multi-hop events); accepted entries sit at the link's scope; a name may be shared both ways.
+19. **Node links**: `export` = my emissions reach the peer, `import` = my listeners hear the peer (so `events.out` → `export`, `events.in` → `import`); entries travel from importer to exporter; `*` suffix = prefix, for events only; only a node's own entries are announced; imported entries are never relayed (no multi-hop events); accepted entries carry the link's scope as a descriptor; a name may be shared both ways.
 20. **Every Rust event type crosses processes**: `Event` requires `Serialize + DeserializeOwned` (derived), its `Value` too, so no type is ever process-local and there is no opt-in (amended 2026-10-18; the earlier `const WIRE` / `NoWire` are dropped). Listeners are found by name; a listener of another Rust type with the same name gets the event converted through serde by the bus's transcoder. Argument mapping by tuple / unit / single value; dynamic events are `rutis_bridge::events::Args`; `SyncEvent`, instance keys and the deprecated keyed / instance methods are removed with `on_waterfall*`; `Terminal` returns `Option` (`()` = none); `on` keeps its registering `ctx` parameter, and a Rust listener is called with that context. The kernel adds `Ctx::mark_row` (descriptor `row` of host Rust listeners) and, for the bridge, remote entries (`RemoteListener`), the raw `dispatch` / `dispatch_sync`, `invoke_entry` and `watch_table` (§12.1).
 21. **A Rust `on_sync` listener cannot call `next` in an asynchronous waterfall** (`WaterfallNext`); register with `on` for that.
 22. **Go listeners are `func(ctx, args ...any) (any, error)`** with `next` as the last argument in a waterfall; `Emit` returns an error only for refusals.

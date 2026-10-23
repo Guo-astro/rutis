@@ -14,7 +14,7 @@ A Cordis plugin can also run as a row in rutis-loader: name its package in `ruti
 
 ## Events
 
-A Cordis plugin uses Cordis's own event API as before, and it is rutis's event API: `ctx.on`, `ctx.emit`, `ctx.parallel`, `ctx.serial`, `ctx.waterfall`, `ctx.bail`. Cordis listeners register themselves on the host's logical bus, so whether a Cordis plugin runs as a row of rutis.json, mounted in a Rust application, or in a Cordis application acting as a node, its events reach listeners in any language and process by the same rules (by scope), and events emitted elsewhere reach its listeners. A Cordis application acting as a node shares with its peer only the names its `Events` lists in `export` / `import` ([below](#use-a-cordis-application-as-a-node)). The rules are in [plugin API: events](plugin-api.en.md#events).
+A Cordis plugin uses Cordis's own event API as before, and it is rutis's event API: `ctx.on`, `ctx.emit`, `ctx.parallel`, `ctx.serial`, `ctx.waterfall`, `ctx.bail`. Cordis listeners register themselves on the host's logical bus, so whether a Cordis plugin runs as a row of rutis.json, mounted in a Rust application, or in a Cordis application acting as a node, its events reach listeners in any language and process by the same rules (one flat bus, by name), and events emitted elsewhere reach its listeners. A Cordis application acting as a node shares with its peer only the names its `Events` lists in `export` / `import` ([below](#use-a-cordis-application-as-a-node)). The rules are in [plugin API: events](plugin-api.en.md#events).
 
 ```ts
 export function apply(ctx: Context) {

@@ -4,9 +4,10 @@
 //! A **remote listener** is an entry of the one listener table whose calls
 //! are delegated to an external dispatcher (a runtime process, a node link).
 //! It takes a position like any entry (registration order, `prepend`), is
-//! selected by the scope rule from its [`ListenerInfo::scope`], is seen by
-//! filters through its [`ListenerInfo`], skips custom filters when
-//! `global`, and is withdrawn by its [`Disposer`](crate::Disposer).
+//! selected by name like any entry (its [`ListenerInfo::scope`] is a
+//! descriptor for filters), is seen by filters through its [`ListenerInfo`],
+//! skips custom filters when `global`, and is withdrawn by its
+//! [`Disposer`](crate::Disposer).
 //!
 //! Synchronous modes (`bail`, `waterfall-sync`) call
 //! [`RemoteListener::call_sync`] inline on the dispatching thread with no
@@ -283,7 +284,9 @@ pub struct Dispatch {
     pub name: String,
     pub mode: Mode,
     pub payload: super::Payload,
-    /// The emitter's scope chain; `None`: the emitting context's.
+    /// The emitter's scope chain; `None`: the emitting context's. Retained
+    /// as the emitter's descriptor for filters and reports; delivery is by
+    /// name, so it does not select listeners.
     pub scope: Option<Vec<Scope>>,
     pub filter: Option<BatchFilter>,
     /// `waterfall` / `waterfall-sync` only.

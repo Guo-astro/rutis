@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
 use rutis::events::{
-    scope_contains, EntryCall, EventOptions, ListenerInfo, ListenerKind, Mode, RawTerminal,
-    RemoteEntry, Scope, TableChange, TableEntry,
+    EntryCall, EventOptions, ListenerInfo, ListenerKind, Mode, RawTerminal, RemoteEntry, Scope,
+    TableChange, TableEntry,
 };
 use rutis::{BoxFuture, CordisError, Ctx, Disposer, Effect, Plugin, TypeKey};
 use serde_json::{json, Value as Json};
@@ -188,11 +188,10 @@ fn epoch_of(id: &str) -> Option<u64> {
 
 impl Link {
     /// Whether this node's entry goes to the peer at all: its own (not
-    /// imported), at or above the link's scope.
+    /// imported). Delivery is by name; the link's `export` / `import`
+    /// lists are the only boundary.
     fn own(&self, entry: &TableEntry) -> bool {
-        !imported(entry.origin)
-            && !super::hub::process_local(&entry.name)
-            && scope_contains(&entry.info.scope, &self.scope)
+        !imported(entry.origin) && !super::hub::process_local(&entry.name)
     }
 
     fn send(&self, method: &str, argument: Json) {

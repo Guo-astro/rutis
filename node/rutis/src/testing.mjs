@@ -14,7 +14,7 @@
 //
 // Events (#464) run as on a real runtime whose listeners are all in its
 // process: the five modes (emit, parallel, serial, waterfall, bail), the
-// scope rule (a listener hears its scope and those under it), filters,
+// flat bus (name delivery; a scope is a descriptor), filters,
 // prepend and global, emit's failures reported (`reported`), rutis/*
 // refused, and unload withdrawing listeners, aborting `ctx.signal` and
 // waiting for those still running. rutis/* events are the host's: the

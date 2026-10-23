@@ -27,7 +27,7 @@ does (values crossing with `strict`). The plugin's own `ctx` emitters pass
 values as they are, as the runtime's fast path does, but with `strict` the
 errors reaching them arrive as from another process (`RemoteError`, matched
 by `name`). Descriptors give `runtime` "python". Plugins loaded with one
-`Bus` hear each other, each in its scope::
+`Bus` share one flat bus; a scope is a descriptor::
 
     bus = Bus(scopes={"t1": "tenant"})
     async with load(audit, bus=bus) as root, load(chat, bus=bus, scope="t1") as tenant:
@@ -245,7 +245,7 @@ class Reported(NamedTuple):
 
 class Bus:
     """The event bus of one process, for tests. Plugins loaded with the
-    same `bus` hear each other, each in its scope; one loaded without gets
+    same `bus` hear each other (one flat bus; a scope is a descriptor); one loaded without gets
     a bus of its own.
 
     `scopes` names the group of each scope path (`{"t1": "tenant",

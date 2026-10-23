@@ -857,12 +857,13 @@ async fn rutis_events_are_reserved() {
 
 // ── scope ───────────────────────────────────────────────────────
 
-/// Events go up, not down: a listener hears its own scope and the scopes
-/// below it; siblings do not hear each other.
+/// Events are delivered by name on one flat bus: every live listener hears
+/// every dispatch, wherever its scope is (Cordis's rule). A listener's scope
+/// is a descriptor for filters, not a routing rule.
 ///
-/// guarantee: events/scope
+/// guarantee: events/flat
 #[tokio::test]
-async fn events_reach_their_scope_and_the_scopes_around_it() {
+async fn events_reach_every_listener_on_the_bus() {
     let root = Ctx::root().unwrap();
     let (_t1, t1) = scope(&root, "tenant").await;
     let (_s1, s1) = scope(&t1, "session").await;
@@ -904,10 +905,10 @@ async fn events_reach_their_scope_and_the_scopes_around_it() {
             got
         }
     };
-    assert_eq!(round(inner.clone()).await, ["r", "s", "u"]);
-    assert_eq!(round(t1.clone()).await, ["r", "u"]);
-    assert_eq!(round(t2.clone()).await, ["r", "v"]);
-    assert_eq!(round(root.clone()).await, ["r"]);
+    assert_eq!(round(inner.clone()).await, ["r", "s", "u", "v"]);
+    assert_eq!(round(t1.clone()).await, ["r", "s", "u", "v"]);
+    assert_eq!(round(t2.clone()).await, ["r", "s", "u", "v"]);
+    assert_eq!(round(root.clone()).await, ["r", "s", "u", "v"]);
     assert!(t1.mark_scope("tenant").is_ok(), "same group again is fine");
     assert!(t1.mark_scope("session").is_err());
     assert!(root.mark_scope("tenant").is_err(), "the root is no scope");
@@ -917,8 +918,7 @@ async fn events_reach_their_scope_and_the_scopes_around_it() {
 // ── filter ──────────────────────────────────────────────────────
 
 /// A filter sees each non-global candidate's descriptor in registration
-/// order, after the scope rule and before any call; `global` entries skip
-/// it.
+/// order, before any call; `global` entries skip it.
 ///
 /// guarantee: events/filter
 #[tokio::test]
@@ -960,8 +960,14 @@ async fn filters_see_descriptors_and_global_entries_skip_them() {
         .unwrap();
     assert_eq!(
         entries(&order),
-        ["filter:plugin-a", "filter:plugin-b", "a", "g"],
-        "the tenant's listener is out of scope; g skips the filter"
+        [
+            "filter:plugin-a",
+            "filter:plugin-b",
+            "filter:tenant",
+            "a",
+            "g"
+        ],
+        "the filter sees every non-global candidate; g skips the filter"
     );
     let first = seen.lock().unwrap()[0].clone();
     assert_eq!(
@@ -1237,8 +1243,8 @@ fn remote_entry(name: &str, info: ListenerInfo, options: EventOptions) -> Remote
 
 /// A remote entry is one more entry of the table: registration order,
 /// payload as JSON, results converted to the emitter's type, the filter
-/// sees its descriptor, the scope rule uses its scope, its disposer
-/// withdraws it.
+/// sees its descriptor, its scope is a descriptor, its disposer withdraws
+/// it.
 ///
 /// guarantee: events/remote-entry
 #[tokio::test]
@@ -1285,7 +1291,7 @@ async fn remote_entries_take_part_like_any_listener() {
     assert_eq!(
         entries(&order),
         ["local", "py:serial:4"],
-        "the tenant's entry is out of scope"
+        "registration order: py before the tenant entry"
     );
 
     // From inside the tenant, both; a filter sees the remote descriptor.
@@ -1317,7 +1323,7 @@ async fn remote_entries_take_part_like_any_listener() {
         .serial(&root, &PING, Arc::new(Ping(2)))
         .await
         .unwrap();
-    assert_eq!(entries(&order), ["local"]);
+    assert_eq!(entries(&order), ["local", "go:serial:2"]);
     root.shutdown().await.unwrap();
 }
 

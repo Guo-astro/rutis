@@ -591,15 +591,15 @@ async fn dependency_gate_reuses_registration_snapshot() {
     root.shutdown().await.unwrap();
 }
 
-/// Two sibling scopes (instance event channels are gone, #464): each one's
-/// listener hears only the events emitted in its own scope, and shutting a
-/// scope down waits for its listener's running call.
+/// Events are one flat bus, so both sibling scopes' listeners hear every
+/// emit; shutting one scope down waits for its own listener's running call
+/// and leaves the other's alone.
 ///
 /// Changed with #464: a slow call no longer holds up the next emit of the
-/// name, so `3` is recorded while `1` still waits for its gate; and an emit
-/// from a closing context is no longer rejected (not asserted).
+/// name, so `3` and `2` are recorded while `1` still waits for its gate; and
+/// an emit from a closing context is no longer rejected (not asserted).
 #[tokio::test(start_paused = true)]
-async fn sibling_scopes_are_isolated_and_drained_by_shutdown() {
+async fn sibling_scopes_share_the_bus_and_drain_by_shutdown() {
     let root = Ctx::root().unwrap();
     let (view_a, a) = child(&root).await;
     let (_view_b, b) = child(&root).await;
@@ -643,7 +643,7 @@ async fn sibling_scopes_are_isolated_and_drained_by_shutdown() {
     })
     .await
     .unwrap();
-    assert_eq!(*log_a.lock().unwrap(), vec![3]);
+    assert_eq!(*log_a.lock().unwrap(), vec![3, 2]);
 
     let pending = view_a.shutdown();
     assert!(matches!(
@@ -663,8 +663,8 @@ async fn sibling_scopes_are_isolated_and_drained_by_shutdown() {
     );
     release.add_permits(1);
     waiter.await.unwrap().unwrap();
-    assert_eq!(*log_a.lock().unwrap(), vec![3, 1]);
-    assert_eq!(*log_b.lock().unwrap(), vec![2]);
+    assert_eq!(*log_a.lock().unwrap(), vec![3, 2, 1]);
+    assert_eq!(*log_b.lock().unwrap(), vec![1, 3, 2]);
     assert!(view_a.restart().await.is_err());
     root.shutdown().await.unwrap();
 }

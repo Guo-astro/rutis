@@ -348,8 +348,8 @@ func TestWaterfallChainsThroughNext(t *testing.T) {
 	}
 }
 
-// guarantee: events/scope (up, not down)
-func TestListenersHearTheirScopeAndInside(t *testing.T) {
+// guarantee: events/flat (events are delivered by name)
+func TestListenersHearEveryEvent(t *testing.T) {
 	_, rows := eventRows(t, "", "t1", "t1/s1", "t2")
 	root, t1, s1, t2 := rows[0], rows[1], rows[2], rows[3]
 	ctx := context.Background()
@@ -361,7 +361,7 @@ func TestListenersHearTheirScopeAndInside(t *testing.T) {
 	for _, step := range []struct {
 		from *Ctx
 		want string
-	}{{s1, "[r u s]"}, {t1, "[r u]"}, {t2, "[r v]"}, {root, "[r]"}} {
+	}{{s1, "[r u s v]"}, {t1, "[r u s v]"}, {t2, "[r u s v]"}, {root, "[r u s v]"}} {
 		j.entries = nil
 		if _, err := step.from.Serial(ctx, "t/scope"); err != nil {
 			t.Fatal(err)
@@ -396,7 +396,7 @@ func TestFilterGlobalAndPrepend(t *testing.T) {
 	if _, err := a.Filter(keep).Serial(ctx, "t/filter"); err != nil {
 		t.Fatal(err)
 	}
-	if got := fmt.Sprint(j.list()); got != "[filter filter filter p g b]" {
+	if got := fmt.Sprint(j.list()); got != "[filter filter filter filter p g b d]" {
 		t.Fatalf("ran %s", got)
 	}
 	if seen[0].Row != "r0" || seen[0].Plugin != "events" || seen[0].Name != "t/filter" || seen[0].Global || len(seen[0].Scope) != 0 {

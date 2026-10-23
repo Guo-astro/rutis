@@ -8,7 +8,7 @@
 // listener of the name is here (the fast path, §5.2), and otherwise sends
 // it to the host (`events.dispatch`), which calls back the listeners here
 // (`events.call`). Both paths give the same results (§5.4): the five modes,
-// the scope rule (§3), filters (§6), emit's error reporting (§5.6) and
+// name-based delivery (a scope is a descriptor, §3), filters (§6), emit's error reporting (§5.6) and
 // emit's order (§5.5).
 //
 // This file is the same in the Node runtime (node/rutis-runtime), the Bun
@@ -64,8 +64,8 @@ export function refuseRemoved(config) {
 export const EVENTS_V2 = 'events-v2'
 export const NO_EVENTS_V2 = 'this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later'
 
-// Whether the listener chain `listener` is a prefix of the emitting chain
-// `emitter`, by id (§3).
+// Whether the chain `listener` is a prefix of `emitter`, by id: a
+// descriptor relationship for filters, not a delivery rule (§3).
 export function inScope(listener, emitter) {
   if (listener.length > emitter.length) return false
   return listener.every((scope, index) => scope.id === emitter[index].id)
@@ -320,7 +320,7 @@ export class Bus {
       throw new TypeError(`a waterfall's terminal is a function, not ${typeof terminal}`)
     }
     if (!this.local(mode, name)) return this.#viaHost(mode, name, args, { row, keep, terminal })
-    let snapshot = this.#entries.filter(entry => matches(entry, name) && inScope(entry.scope, scope))
+    let snapshot = this.#entries.filter(entry => matches(entry, name))
     if (keep) {
       try {
         snapshot = snapshot.filter(entry => entry.global || this.#keeps(keep, this.describe(entry), entry))

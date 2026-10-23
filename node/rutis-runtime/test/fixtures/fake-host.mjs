@@ -48,10 +48,9 @@ export async function fakeHost(command, { hello, env } = {}) {
   }
   let dispatchId = 0
   // The rows loaded, by key: their id and scope chain (rows.load's seventh
-  // argument), for descriptors and the scope rule.
+  // argument), for descriptors.
   const rows = new Map()
   const placed = row => rows.get(row) ?? { id: row, scope: [] }
-  const inScope = (listener, emitter) => listener.length <= emitter.length && listener.every((scope, index) => scope.id === emitter[index]?.id)
   const control = (method, args) => {
     const [fields] = args ?? []
     switch (method) {
@@ -77,8 +76,7 @@ export async function fakeHost(command, { hello, env } = {}) {
   async function dispatch(fields) {
     const id = `d${++dispatchId}`
     host.dispatches.push({ ...fields, id })
-    const emitter = placed(fields.row).scope
-    let entries = host.entries.filter(entry => entry.name === fields.name && inScope(placed(entry.row).scope, emitter))
+    let entries = host.entries.filter(entry => entry.name === fields.name)
     if (fields.filter) {
       const candidates = entries.filter(entry => !entry.global)
       // The runtime's own entries carry their id (`listener`), as the

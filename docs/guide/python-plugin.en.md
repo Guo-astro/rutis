@@ -149,7 +149,7 @@ class Events(unittest.TestCase):
 - `emit` returns at once; a failing listener reaches neither the emitter nor the other listeners and is reported in one line where it runs (in a test, in `t.reported`). To wait for every listener and get their errors, use `await ctx.parallel(...)`: failures are a `rutis.AggregateError` whose `errors` are in registration order.
 - `bail` is a synchronous `serial`: an `async def` listener (or a function returning a coroutine) fails it with `rutis.AsyncListener`.
 - `ctx.filter(lambda d: d["row"] == "audit")` returns an object with the five methods that delivers only to the listeners the filter keeps; `ctx.on(name, fn, prepend=True)` goes first, `global_=True` is exempt from filters.
-- Scopes: `load(plugin, bus=bus, scope="t1/s1")` loads a plugin into an instance (`Bus(scopes={"t1": "tenant"})` names the groups); a listener receives only the events emitted in its scope and inside it.
+- Scopes: `load(plugin, bus=bus, scope="t1/s1")` loads a plugin into an instance (`Bus(scopes={"t1": "tenant"})` names the groups); a listener receives every event of the name on the root bus; a scope is only a descriptor for filters.
 - On unload, the tasks of running listeners are cancelled and waited for (at most `RUTIS_SHUTDOWN_TIMEOUT`) before the cleanups run. When the emitter gives up (its task is cancelled), the listeners in progress are cancelled too.
 
 **Across languages**: a TypeScript plugin emits, a Python plugin listens, nothing to change. The host's `rutis.json`:
