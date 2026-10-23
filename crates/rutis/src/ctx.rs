@@ -1055,51 +1055,58 @@ impl Ctx {
         let Some(entries) = marked else {
             return self.provide_native(key, value, check, mutable);
         };
-        // The native slot first: a provide refused for it must not serve
-        // the name, even for a moment.
+        // Both slots are checked before anything is registered: a provide
+        // refused for either serves nothing, not even for a moment. The
+        // name (R6) is checked by the exposer, where it would serve it.
         let scope = self.scope_for(&key);
-        if let Some(existing) = self.0.shared.registry.lookup(&key, scope.as_ref()) {
-            if !existing.removing.load(Ordering::SeqCst) {
-                return Err(CordisError::ServiceExists(format!(
-                    "{} in scope {}",
-                    key.describe(),
-                    scope.as_deref().unwrap_or("<default>")
-                )));
-            }
+        if self.slot_taken(&key) {
+            return Err(CordisError::ServiceExists(format!(
+                "{} in scope {}",
+                key.describe(),
+                scope.as_deref().unwrap_or("<default>")
+            )));
         }
-        // Then the name: one taken in this scope (R6) refuses the provide
-        // before the native service is registered, so no consumer sees a
-        // native service that is then withdrawn.
         let provision = Arc::new(crate::service::Provision::new());
-        let exposed = crate::service::expose(crate::service::Exposure {
+        let exposure = |entries| crate::service::Exposure {
             ctx: self,
             native: &key,
             scope: scope.as_deref(),
             entries,
             check: check.clone(),
             provision: provision.clone(),
-        })
-        .transpose()?;
-        let registered = self.provide_native(key, value, check, mutable);
-        if let Ok((_, binding)) = &registered {
-            provision.fill(binding);
-        }
-        match (registered, exposed) {
-            (Ok((disposer, binding)), Some(exposed)) => {
-                // One disposer for both, the name going first.
-                Ok((crate::service::chain(exposed, disposer), binding))
-            }
-            (Ok(registered), None) => Ok(registered),
-            (Err(error), exposed) => {
-                // Only a race with another provide of the same key gets
-                // here: the name goes with the refusal, on this root's
-                // runtime whether or not the caller runs on one.
-                if let Some(exposed) = exposed {
-                    self.handle().spawn(exposed.dispose());
-                }
+        };
+        crate::service::admit(&exposure(entries.clone()))?;
+        // Then the native service, then the name: a row the name wakes
+        // finds what it calls. Registered after it, the name is withdrawn
+        // before it when the provider unloads (cleanups run last in, first
+        // out), as by the disposer below: no call by name finds the name
+        // served and the native service gone.
+        let (native, binding) = self.provide_native(key.clone(), value, check.clone(), mutable)?;
+        provision.fill(&binding);
+        match crate::service::expose(exposure(entries)) {
+            None => Ok((native, binding)),
+            // One disposer for both, the name going first.
+            Some(Ok(exposed)) => Ok((crate::service::chain(exposed, native), binding)),
+            Some(Err(error)) => {
+                // Only a race with another provide of the name, or the
+                // provider unloading meanwhile, gets here: the native
+                // service goes with the refusal, on this root's runtime
+                // whether or not the caller runs on one.
+                self.handle().spawn(native.dispose());
                 Err(error)
             }
         }
+    }
+
+    /// Whether `key`'s slot, in the isolation scope this context gives it,
+    /// holds a binding that is not being removed.
+    pub(crate) fn slot_taken(&self, key: &TypeKey) -> bool {
+        let scope = self.scope_for(key);
+        self.0
+            .shared
+            .registry
+            .lookup(key, scope.as_ref())
+            .is_some_and(|existing| !existing.removing.load(Ordering::SeqCst))
     }
 
     fn provide_native<T: ?Sized + Send + Sync + 'static>(

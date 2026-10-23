@@ -1057,13 +1057,20 @@ fn without_events(far: &str) -> String {
     )
 }
 
-/// Whether the control operation `method` is handled on the reader, before
-/// the next frame (events protocol §4.1, §5.5): the event table changes
-/// (`events.on`, `events.off`, `events.elsewhere`), and the `emit`
-/// dispatches and invocations, which start in arrival order.
+/// Whether the control operation `method` takes its turn in the session's
+/// ordered stream (events protocol §4.1, §5.5, §7.1): every `events.*`
+/// operation, and `rows.ended`, which changes the same table.
+fn is_ordered_op(method: &str) -> bool {
+    method.starts_with("events.") || method == "rows.ended"
+}
+
+/// Whether the ordered control operation `method` runs in its turn, before
+/// the next one starts (events protocol §4.1, §5.5, §7.1): the table
+/// changes (`events.on`, `events.off`, `events.elsewhere`, `rows.ended`),
+/// and the `emit` dispatches and invocations, which start in arrival order.
 fn inline_event_op(method: &str, args: &Value) -> bool {
     match method {
-        "events.on" | "events.off" | "events.elsewhere" => true,
+        "events.on" | "events.off" | "events.elsewhere" | "rows.ended" => true,
         "events.dispatch" | "events.call" => {
             let first = match args {
                 Value::List(items) => items.first(),
@@ -2368,12 +2375,13 @@ impl Connection {
         };
         // Event operations run in frame order (events protocol §4.1, §5.5):
         // table changes and emits each in its turn, the rest started in it.
+        // `rows.ended` withdraws a row's entries (§7.1), a table change in
+        // the same order: an `events.on` before it is applied first, an
+        // `events.dispatch` after it no longer reaches the row.
         // Never here: a reader runs no plugin code (a listener, an
         // observer), which could wait for a frame only this reader reads.
         let event_op = match &incoming.call {
-            Accepted::Invoke(target, method, _)
-                if target.is_empty() && method.starts_with("events.") =>
-            {
+            Accepted::Invoke(target, method, _) if target.is_empty() && is_ordered_op(method) => {
                 Some(method.clone())
             }
             _ => None,

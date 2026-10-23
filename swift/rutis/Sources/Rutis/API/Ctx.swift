@@ -56,7 +56,9 @@ extension Rutis {
 
         /// Runs `task` in a Task of its own, with the call chain: its error
         /// is written to stderr; when the plugin unloads, it is cancelled
-        /// and the unload waits for it.
+        /// and the unload waits for it within the shutdown deadline it
+        /// shares with the listeners, so a task that ignores cancellation
+        /// does not hold the unload.
         public func spawn(_ task: @escaping () async throws -> Void) {
             row.spawn(task)
         }

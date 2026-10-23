@@ -232,7 +232,7 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 
 一行卸载时（宿主发 `rows.unload`，或运行时报告 `rows.ended`），依次：
 
-1. 宿主在发出 `rows.unload` 或收到 `rows.ended` 时，把这一行的条目撤出监听器表（并发 `events.elsewhere`）；运行时再为它们发 `events.off` 也无妨。
+1. 宿主在发出 `rows.unload` 或收到 `rows.ended` 时，把这一行的条目撤出监听器表（并发 `events.elsewhere`）；运行时再为它们发 `events.off` 也无妨。`rows.ended` 与同一会话的 `events.*` 按帧的顺序处理（它也只改表，§4.1）：在它之前发出的 `events.on` 先进表、再随这一行撤下，在它之后发出的 `events.dispatch` 不再送达这一行。
 2. 运行时立即不再接受这一行的调用：之后到达的 `events.call` 以已撤下的错误失败（§5.3）。
 3. 撤下提供的服务（同 0.12）。
 4. 这一行正在运行的监听器调用收到取消信号（Go：context；Python：任务取消；JavaScript：这一行的 `ctx.signal` 被中止；Rust：fiber 的停止，与它的其他任务相同），并被等待，最多 `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒；Rust 插件用宿主自己的关闭截止时间）。超过时运行时写 `rutis: listeners of row <row> still running after <s>s; unloading anyway`，放弃它们，继续。
@@ -270,7 +270,7 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 
 - **节点通告什么**：只通告它自己的条目（宿主的 Rust 插件和它的运行时的），从不通告经任何连接引进的条目（不转发，所以不会成环）；并且只通告作用域链是连接作用域前缀的条目（连接的作用域是 `rutis-bridge/peer` 行所在的作用域；不在实例里的连接为根），因为只有它们能收到到达那里的事件。前缀条目按它与 `import` 项共同匹配的部分收窄后通告（两个前缀：一个延伸另一个时取较长的；一个前缀与一个名字：取名字）。
 - **接受的条目放在哪里**：放在接受方节点上连接的作用域，按到达顺序追加，以 `prepend: true` 通告的放在全部已有条目之前；描述的 `node` = 对端 id，`plugin` / `row` / `runtime` 按通告，`scope` = 连接的作用域。通告来的条目若不匹配 `export` 的任何项，则忽略（回复 `undefined`）。
-- **宣告的 id**：`<epoch>.<n>`。`epoch` 是发送方这一次提供 `events` 族的序号（它的 `link.offers` 里这一族的 `since`），`n` 在这次提供内递增。接收方看到对端更新的提供时（经 `link.offers`，或一个 epoch 更大的宣告先到），撤下对端在更早的提供下宣告的全部条目；对端不再提供 `events` 时同样撤下；更早提供的迟到宣告不接受（回复 `undefined`）。不带 epoch 的 id（不说明它的实现）只按 id 替换（2026-10-19 修订）。
+- **宣告的 id**：`<epoch>.<n>`。`epoch` 是发送方这一次提供 `events` 族的序号（它的 `link.offers` 里这一族的 `since`），`n` 在这次提供内递增。接收方看到对端更新的提供时（经 `link.offers`，或一个 epoch 更大的宣告先到），撤下对端在更早的提供下宣告的全部条目；对端的 `link.offers` 不再列出它列出过的 `events` 提供时，撤下在那次提供及更早的提供下宣告的条目（宣告可能先于它的提供到达：`link.offers` 还没列出的那次提供，它的条目留着；2026-10-23 修订）；更早提供的迟到宣告不接受（回复 `undefined`）。不带 epoch 的 id（不说明它的实现）只按 id 替换（2026-10-19 修订）。
 - **规则**：与本机条目完全相同：五种方式、作用域、过滤、值类型、撤下与断开（§7.2）。被调用的节点执行这个条目（它的 Rust 监听器，或把 `events.call` 转给它的运行时）。断开的连接的条目被撤下。
 
 ## 十、值
