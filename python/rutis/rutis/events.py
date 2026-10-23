@@ -103,6 +103,15 @@ def print_report(kind: str, name: str, row: str | None, error: BaseException) ->
     print(failed_line(kind, name, row, error), file=sys.stderr, flush=True)
 
 
+def within(listener: list, emitter: list) -> bool:
+    """Whether the chain `listener` is a prefix of `emitter` (by id): a
+    descriptor helper for filters, not a delivery rule. Kept for
+    compatibility with 0.13–0.15; delivery is by name."""
+    return len(listener) <= len(emitter) and all(
+        mine["id"] == theirs["id"] for mine, theirs in zip(listener, emitter)
+    )
+
+
 def check_scope(chain: Any) -> list:
     """A scope chain from the wire: `[{id, group}, ...]`, the outermost
     first; `[]` is the root."""

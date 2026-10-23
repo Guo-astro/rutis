@@ -148,6 +148,15 @@ package enum Events {
         if name.hasPrefix("internal/") { throw RutisError(name: "Error", message: "event \(name) is internal to the runtime") }
     }
 
+    /// Whether the chain `listener` is a prefix of `emitter`: a descriptor
+    /// helper for filters, not a delivery rule. Kept for compatibility with
+    /// 0.13–0.15; delivery is by name.
+    package static func within(_ listener: [Rutis.Scope], _ emitter: [Rutis.Scope]) -> Bool {
+        guard listener.count <= emitter.count else { return false }
+        for (i, scope) in listener.enumerated() where scope.id != emitter[i].id { return false }
+        return true
+    }
+
     /// Whether `value` is a result: anything but undefined, null and false.
     package static func hasResult(_ value: Value) -> Bool {
         switch value {

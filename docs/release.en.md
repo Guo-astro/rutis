@@ -73,7 +73,7 @@ The nightly stress workflow also runs two soak tests (repeated link disconnect/r
 
 ## 0.15.1
 
-Events are one flat bus again (#604, #605): delivery selects listeners by name only; a scope is a descriptor for filters. This is a behaviour change from 0.13–0.15.0, and it removes `Dispatch::scope`, the SDK scope helpers and the testing tools' emitter scope. All packages are at 0.15.1; see [the release notes](releases/0.15.1.en.md) and [migrating to 0.15.1](migration-0.15.1.en.md).
+Events are one flat bus again (#604, #605): delivery selects listeners by name only; a scope is a descriptor for filters. This is a behaviour change from 0.13–0.15.0. `Dispatch::scope`, the SDK scope helpers and the testing tools' emitter scope stay source-compatible but are ignored. All packages are at 0.15.1; see [the release notes](releases/0.15.1.en.md) and [migrating to 0.15.1](migration-0.15.1.en.md).
 
 `format` of `rutis.json` stays 1 and no configuration changes: the persisted sample is copied from 0.15.0 and its expectations are unchanged. dsh's user layer has not changed, so `cordis.patch.yml` is copied as is. The event wire format is unchanged; the release gate's cross-version tests (`RUTIS_E2E_ONLY_OLDER=1`) meet 0.15.0 and the sessions work, but an end still on 0.15.0 keeps its scope filtering, so all ends should be upgraded for flat delivery.
 

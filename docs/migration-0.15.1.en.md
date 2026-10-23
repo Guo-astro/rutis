@@ -37,10 +37,10 @@ ctx.events()
 
 `Ctx::scope()` and `ListenerInfo::scope` remain: a scope is a descriptor for filters, not a delivery rule. Across hosts, a linked node still sees only the names its link's `export` / `import` carry; links do not relay further.
 
-## Removed
+## Deprecated, still source-compatible
 
-- `Dispatch.scope`: the emitter's scope is not self-reported; use `ListenerInfo::scope` in a filter. `Dispatch::new` no longer takes one.
-- The scope helpers `scope_contains` (Rust), `inScope` (Node/Bun), `within` (Python, Kotlin, Swift) and `events.Within` (Go): with delivery by name they had no callers.
-- The testing tools' emitter scope: `h.at(scope)` (Node) and `Bus.emitter(scope)` (Python) are gone; use `h.parallel(..)` / `bus.emitter()` instead. A row's `scope` argument to `load` still sets its listeners' descriptors.
+- `Dispatch.scope` is ignored: the emitter's scope is not self-reported; use `ListenerInfo::scope` in a filter.
+- The scope helpers `scope_contains` (Rust), `inScope` (Node/Bun), `within` (Python, Kotlin, Swift) and `events.Within` (Go) remain as descriptor predicates for filters. They do not select listeners.
+- The testing tools' emitter scope is accepted and ignored: `h.at(scope)` (Node) and `Bus.emitter(scope)` (Python). A row's `scope` argument to `load` still sets its listeners' descriptors.
 
 See [the event protocol](design-events-protocol-2026-10-18.en.md) §3–§9 and [migrating to 0.13](migration-0.13.en.md) for the rest of the event model.

@@ -288,10 +288,12 @@ class Bus:
             if name is None or entry.name == name
         ]
 
-    def emitter(self, *, row: str = "test", strict: bool = True) -> Emitter:
+    def emitter(self, scope: str | None = "root", *, row: str = "test", strict: bool = True) -> Emitter:
         """Emit as a row `row` would: `emit`, `parallel`, `serial`,
         `waterfall`, `bail` and `filter`. With `strict`, the arguments and
-        what comes back cross as between processes."""
+        what comes back cross as between processes. `scope` is accepted for
+        compatibility and ignored: delivery is by name."""
+        del scope
         return Emitter(_send(self._bus, row, strict))
 
 
