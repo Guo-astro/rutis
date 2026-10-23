@@ -287,6 +287,9 @@ pub(crate) struct SessionEvents {
     ctx: Option<Ctx>,
     origin: u64,
     connection: WeakConnection,
+    /// The session's runtime, which runs the emits waiting their turn and
+    /// the answers awaited: whatever thread a dispatch arrives on.
+    executor: tokio::runtime::Handle,
     runtime: String,
     /// The scope of the mount's own plugins (`row: null`).
     mount_scope: Vec<Scope>,
@@ -444,6 +447,7 @@ impl SessionEvents {
             ctx: ctx.cloned(),
             origin: next_origin(),
             connection: connection.downgrade(),
+            executor: connection.executor(),
             runtime,
             mount_scope: scope,
             rows: Mutex::default(),
@@ -455,14 +459,12 @@ impl SessionEvents {
             None => session.push_elsewhere(Presence::default()),
         }
         let weak = Arc::downgrade(&session);
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-                connection.closed().await;
-                if let Some(session) = weak.upgrade() {
-                    session.leave();
-                }
-            });
-        }
+        session.executor.spawn(async move {
+            connection.closed().await;
+            if let Some(session) = weak.upgrade() {
+                session.leave();
+            }
+        });
         Ok(session)
     }
 
@@ -481,8 +483,8 @@ impl SessionEvents {
                 Value::List(vec![Value::Data(presence.argument())]),
             )
         });
-        if let (Ok(answer), Ok(runtime)) = (sent, tokio::runtime::Handle::try_current()) {
-            runtime.spawn(async move {
+        if let Ok(answer) = sent {
+            self.executor.spawn(async move {
                 let _ = answer.await;
             });
         }
@@ -853,25 +855,16 @@ impl SessionEvents {
             }
         }
         let session = self.clone();
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => {
-                runtime.spawn(async move {
-                    let mut run = run;
-                    loop {
-                        (&mut run).await;
-                        match session.next_emit() {
-                            Some(next) => run = next,
-                            None => return,
-                        }
-                    }
-                });
+        self.executor.spawn(async move {
+            let mut run = run;
+            loop {
+                (&mut run).await;
+                match session.next_emit() {
+                    Some(next) => run = next,
+                    None => return,
+                }
             }
-            Err(_) => {
-                let mut emits = self.emits.lock().unwrap();
-                emits.busy = false;
-                emits.running = None;
-            }
-        }
+        });
         false
     }
 

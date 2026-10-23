@@ -316,18 +316,21 @@ impl Reference {
 #[derive(Clone)]
 struct Executor {
     handle: Handle,
-    thread: ThreadId,
+    /// The thread the runtime runs on, when it was this thread's own
+    /// runtime; `None` for a session's runtime lent to a thread that has
+    /// none ([`LentRuntime`]): that thread never blocks it.
+    thread: Option<ThreadId>,
 }
 impl Executor {
     fn current() -> Self {
         Self {
             handle: Handle::current(),
-            thread: std::thread::current().id(),
+            thread: (!LentRuntime::active()).then(|| std::thread::current().id()),
         }
     }
     fn blocked_here(&self) -> bool {
         self.handle.runtime_flavor() == RuntimeFlavor::CurrentThread
-            && self.thread == std::thread::current().id()
+            && self.thread == Some(std::thread::current().id())
     }
 }
 /// Lazily started once per connection. Closing drops the stop sender; the
@@ -350,7 +353,7 @@ impl Background {
                     Ok(runtime) => {
                         let _ = ready.send(Ok(Executor {
                             handle: runtime.handle().clone(),
-                            thread: std::thread::current().id(),
+                            thread: Some(std::thread::current().id()),
                         }));
                         runtime.block_on(async {
                             let _ = stopped.await;
@@ -605,6 +608,35 @@ impl Pumping {
 impl Drop for Pumping {
     fn drop(&mut self) {
         PUMPING.with(|depth| depth.set(depth.get() - 1));
+    }
+}
+thread_local! { static LENT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+/// A session's runtime entered on a thread that has none, for the calls
+/// that thread runs while it pumps a synchronous wait (an application
+/// thread calling a service): they create futures, callbacks and tasks as
+/// a call the session runs on its own runtime does (#567).
+struct LentRuntime<'a>(Option<tokio::runtime::EnterGuard<'a>>);
+impl<'a> LentRuntime<'a> {
+    /// Enter `handle` when this thread is in no runtime; otherwise nothing.
+    fn enter(handle: &'a Handle) -> Self {
+        if Handle::try_current().is_ok() {
+            return Self(None);
+        }
+        LENT.with(|depth| depth.set(depth.get() + 1));
+        Self(Some(handle.enter()))
+    }
+}
+impl LentRuntime<'_> {
+    fn active() -> bool {
+        LENT.with(|depth| depth.get() > 0)
+    }
+}
+impl Drop for LentRuntime<'_> {
+    fn drop(&mut self) {
+        if let Some(entered) = self.0.take() {
+            drop(entered);
+            LENT.with(|depth| depth.set(depth.get() - 1));
+        }
     }
 }
 fn current_path() -> Vec<String> {
@@ -1125,6 +1157,10 @@ impl Connection {
     pub fn downgrade(&self) -> WeakConnection {
         WeakConnection(Arc::downgrade(&self.0))
     }
+    /// The runtime the session was opened on, which runs its tasks.
+    pub(crate) fn executor(&self) -> Handle {
+        self.0.executor.clone()
+    }
     /// Start a session on `channel`: sends `hello` and reads frames on a
     /// thread of its own. When the channel ends, the session closes with
     /// `peer disconnected` (a normal end) or the channel's reason.
@@ -1610,6 +1646,7 @@ impl Connection {
                 Message::Reply(result) => return result,
                 Message::Invoke(incoming) => {
                     let _pumping = Pumping::enter();
+                    let _runtime = LentRuntime::enter(&self.0.executor);
                     self.execute(incoming, true)
                 }
             }

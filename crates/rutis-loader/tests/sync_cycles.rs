@@ -771,12 +771,23 @@ export default definePlugin({
 "#;
 
 /// In another Node runtime: `fire` emits `t/n`, whose listener is A's.
+/// `reports` is what the runtime reported (its standard error) since: an
+/// emit that fails is reported there, the API having returned at once.
 const NODE_EMITTER: &str = r#"
 import { definePlugin } from 'PLUGIN'
+const reported = []
+const write = process.stderr.write.bind(process.stderr)
+process.stderr.write = (chunk, ...rest) => {
+  reported.push(String(chunk))
+  return write(chunk, ...rest)
+}
 export default definePlugin({
-  provides: { e_svc: { fire: 'sync' } },
+  provides: { e_svc: { fire: 'sync', reports: 'sync' } },
   apply(ctx) {
-    ctx.provide('e_svc', { fire: () => { ctx.emit('t/n'); return 'fired' } })
+    ctx.provide('e_svc', {
+      fire: () => { ctx.emit('t/n'); return 'fired' },
+      reports: () => reported.join(''),
+    })
   },
 })
 "#;
@@ -935,6 +946,13 @@ async fn an_emit_listener_run_while_a_call_waits() {
             answer(&go, "c.go"),
             json!("c got x"),
             "the rest completes ({kind})"
+        );
+        // The emit itself succeeded: `fire` called it on an application
+        // thread, which ran the dispatch while it waited (#567).
+        assert_eq!(
+            answer(&call(&fixture.root, "e_svc", "reports"), "e.reports"),
+            json!(""),
+            "the emit was answered without a failure ({kind})"
         );
         fixture.root.shutdown().await.unwrap();
     }
