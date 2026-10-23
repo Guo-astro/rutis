@@ -363,9 +363,23 @@ fn read_manifest_with_timeout(path: &Path, timeout: Duration) -> Result<BinaryMa
                 }
             }
             #[cfg(unix)]
-            break child.wait().map_err(|error| error.to_string())?;
+            {
+                let status = child.wait().map_err(|error| error.to_string())?;
+                // Reaped: never kill by its pid again. A group that still
+                // holds the pipes was killed just above, while it was not
+                // reaped; anything else is left as on a successful read.
+                if let Some(guard) = guard.as_mut() {
+                    guard.disarm();
+                }
+                break status;
+            }
             #[cfg(not(unix))]
-            break exit.expect("the manifest process ended");
+            {
+                if let Some(guard) = guard.as_mut() {
+                    guard.disarm();
+                }
+                break exit.expect("the manifest process ended");
+            }
         }
         std::thread::sleep(Duration::from_millis(10));
     };

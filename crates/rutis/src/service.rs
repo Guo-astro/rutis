@@ -36,6 +36,19 @@
 //!     }
 //! }
 //! ```
+//!
+//! Two methods whose names are the same for other languages can both be
+//! present only if `#[cfg]` keeps them apart; a build that has both fails:
+//!
+//! ```compile_fail
+//! pub struct Twice;
+//!
+//! #[rutis::service]
+//! impl Twice {
+//!     #[cfg(all())] pub fn a_b(&self) {}
+//!     #[cfg(all())] pub fn aB(&self) {}
+//! }
+//! ```
 
 use std::any::{Any, TypeId};
 use std::cell::Cell;

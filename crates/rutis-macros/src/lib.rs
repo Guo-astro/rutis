@@ -328,27 +328,29 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
         // With `#[cfg]`s, only a build that keeps both must fail, so the
         // error goes under both cfg sets and the compiler decides. Doing
         // that pairwise also covers three or more definitions.
-        let mut always = false;
+        let mut skip = false;
         for (known, known_cfgs) in &methods {
             if *known != js {
                 continue;
             }
+            let message = format!("two methods are `{js}` for other languages");
             if known_cfgs.is_empty() && cfgs.is_empty() {
-                push(syn::Error::new(
-                    method.sig.ident.span(),
-                    format!("two methods are `{js}` for other languages"),
-                ));
-                always = true;
+                // Both are always there, except that a cfg on the impl may
+                // leave the whole block out: guard the error with it then.
+                if block_cfgs.is_empty() {
+                    push(syn::Error::new(method.sig.ident.span(), message));
+                    skip = true;
+                    break;
+                }
+                let error = syn::Error::new(method.sig.ident.span(), message).to_compile_error();
+                guarded.push(quote!(#(#block_cfgs)* #error));
+                skip = true;
                 break;
             }
-            let error = syn::Error::new(
-                method.sig.ident.span(),
-                format!("two methods are `{js}` for other languages"),
-            )
-            .to_compile_error();
-            guarded.push(quote!(#(#known_cfgs)* #(#cfgs)* #error));
+            let error = syn::Error::new(method.sig.ident.span(), message).to_compile_error();
+            guarded.push(quote!(#(#block_cfgs)* #(#known_cfgs)* #(#cfgs)* #error));
         }
-        if always {
+        if skip {
             continue;
         }
         match arm(&rutis, ty, method, &js) {
@@ -1003,6 +1005,42 @@ mod tests {
         assert_eq!(errors[0].attrs.len(), 2, "under both methods' cfgs");
         let text = errors[0].mac.tokens.to_string();
         assert!(text.contains("two methods are `aB`"), "{text}");
+    }
+
+    /// Two plain methods of one name in a cfg-guarded impl: the error goes
+    /// under the impl's cfg, so a build without the impl has neither.
+    #[test]
+    fn a_duplicate_method_error_is_guarded_by_the_impl_cfg() {
+        let item: Tokens = r#"
+            #[cfg(feature = "a")]
+            impl A {
+                pub fn a_b(&self) -> u32 { 1 }
+                pub fn aB(&self) -> u32 { 2 }
+            }
+        "#
+        .parse()
+        .unwrap();
+        let out = expand(quote!(::rutis), Tokens::new(), item).unwrap();
+        let file: syn::File = syn::parse2(out).unwrap();
+        let errors: Vec<&syn::ItemMacro> = file
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Macro(error)
+                    if error
+                        .mac
+                        .path
+                        .segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "compile_error") =>
+                {
+                    Some(error)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 1, "one clash, one error");
+        assert_eq!(errors[0].attrs.len(), 1, "under the impl's cfg");
     }
 
     #[test]
