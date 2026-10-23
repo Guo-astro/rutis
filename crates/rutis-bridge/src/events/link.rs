@@ -173,6 +173,10 @@ struct LinkState {
     /// The latest epoch of the peer's offer of `events` seen here: what the
     /// peer announced under an older one is gone.
     seen: u64,
+    /// The latest epoch of the peer's offer of `events` its offers showed
+    /// (`link.offers`). `seen` can be ahead of it: an announcement can come
+    /// before its offer, which the peer announces on a task.
+    shown: Option<u64>,
 }
 
 /// The offer (epoch) an announced id was made under, `<epoch>.<n>`, if it
@@ -300,19 +304,37 @@ impl Link {
     /// restarted, or stopped), and is withdrawn here. An announcement of a
     /// newer offer, come before the offer itself, stays.
     fn peer_offer(&self, now: Option<u64>) {
-        let gone = {
-            let mut state = self.state.lock().unwrap();
-            match now {
-                Some(epoch) => Self::newer(&mut state, epoch),
-                None => {
-                    let below = state.seen.saturating_add(1);
-                    Self::older_than(&mut state, below)
-                }
-            }
-        };
+        let gone = Self::offer_now(&mut self.state.lock().unwrap(), now);
         for disposer in gone {
             dispose_now(disposer);
         }
+    }
+
+    /// [`Link::peer_offer`] on `state`: the accepted entries now gone.
+    fn offer_now(state: &mut LinkState, now: Option<u64>) -> Vec<Disposer> {
+        match now {
+            Some(epoch) => {
+                state.shown = state.shown.max(Some(epoch));
+                Self::newer(state, epoch)
+            }
+            // The offer shown last is withdrawn: what was announced under
+            // it or before goes. What a later offer announced, come before
+            // that offer, stays (#530).
+            None => match state.shown {
+                Some(shown) => Self::older_than(state, shown.saturating_add(1)),
+                None => Vec::new(),
+            },
+        }
+    }
+
+    /// An announcement made under the peer's offer `epoch` arrived: `None`
+    /// if that offer is already gone (the entry is not taken), else the
+    /// entries of older offers, gone now.
+    fn announced_under(state: &mut LinkState, epoch: u64) -> Option<Vec<Disposer>> {
+        if epoch < state.seen {
+            return None;
+        }
+        Some(Self::newer(state, epoch))
     }
 
     /// The peer's offer `epoch` is seen: the entries of older offers.
@@ -370,12 +392,8 @@ impl Link {
         // seen so far (its announcement may come before the offer): the
         // older offers' entries are gone.
         if let Some(epoch) = epoch_of(&announced.id) {
-            let gone = {
-                let mut state = self.state.lock().unwrap();
-                if epoch < state.seen {
-                    return Ok(Value::Undefined);
-                }
-                Self::newer(&mut state, epoch)
+            let Some(gone) = Self::announced_under(&mut self.state.lock().unwrap(), epoch) else {
+                return Ok(Value::Undefined);
             };
             for disposer in gone {
                 dispose_now(disposer);
@@ -726,6 +744,41 @@ mod tests {
             selected("", true, &items(&["t/a/*", "t/*", "u/x"])),
             vec![("t/".to_owned(), true), ("u/x".to_owned(), false)]
         );
+    }
+
+    /// The peer's `events.on` can come before its `link.offers` (the offer
+    /// is announced on a task, the entry as the peer sees this node's
+    /// offer). Its entry stays while the offers this node sees do not show
+    /// that offer yet, and goes once the offer shown is withdrawn (#530).
+    #[tokio::test]
+    async fn an_entry_announced_before_its_offer_stays() {
+        let root = Ctx::root().unwrap();
+        let mut state = LinkState::default();
+        let accept = |state: &mut LinkState, id: &str| {
+            let gone = Link::announced_under(state, epoch_of(id).unwrap()).expect("taken");
+            assert!(gone.is_empty());
+            let disposer = root.effect(|| Effect::Done).unwrap();
+            state.accepted.insert(id.to_owned(), vec![disposer]);
+        };
+        // Offers seen without `events` (other families), then its entry.
+        assert!(Link::offer_now(&mut state, None).is_empty());
+        accept(&mut state, "3.1");
+        // The offers change again before they show `events`.
+        assert!(
+            Link::offer_now(&mut state, None).is_empty(),
+            "an entry of an offer not shown yet is not withdrawn"
+        );
+        assert!(state.accepted.contains_key("3.1"));
+        assert!(Link::offer_now(&mut state, Some(3)).is_empty());
+        assert!(state.accepted.contains_key("3.1"));
+        // The offer shown is withdrawn: its entry goes.
+        assert_eq!(Link::offer_now(&mut state, None).len(), 1);
+        assert!(state.accepted.is_empty());
+        // Offered anew; an entry of the newer offer, come first, stays
+        // when the older one is seen withdrawn.
+        accept(&mut state, "5.1");
+        assert!(Link::offer_now(&mut state, None).is_empty());
+        assert!(state.accepted.contains_key("5.1"));
     }
 
     #[test]

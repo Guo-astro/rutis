@@ -280,6 +280,9 @@ export const Events = {
       // another's), and the latest offer of the peer's seen here: what the
       // peer announced under an older one is gone with it.
       let epoch = 0, seen = 0
+      // The latest offer of the peer's its offers showed (`seen` can be
+      // ahead of it: an announcement can come before its offer).
+      let shown
       const send = (method, args) => link.callAsync('', method, args)
         .catch(error => process.stderr.write(`rutis-bridge: ${method} to ${peer} failed: ${error.message}\n`))
       const announce = entry => {
@@ -367,8 +370,16 @@ export const Events = {
       // under an older offer (or one it withdrew) is gone.
       const off = link.onOffers((_families, epochOfPeer) => {
         const now = epochOfPeer('events')
-        if (now === undefined) olderThan(seen + 1)
-        else newer(now)
+        // The offer shown last is withdrawn: what was announced under it
+        // or before goes. What a later offer announced, come before that
+        // offer (the peer may send its offers after its announcements),
+        // stays (#530).
+        if (now === undefined) {
+          if (shown !== undefined) olderThan(shown + 1)
+        } else {
+          shown = Math.max(shown ?? now, now)
+          newer(now)
+        }
         if (now === undefined || now === offer) return
         offer = now
         announced.clear()
