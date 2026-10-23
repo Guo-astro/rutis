@@ -107,6 +107,7 @@ fn every_release_s_user_layer_reads_as_it_did() {
     let names: Vec<&str> = versions.iter().map(|(name, _)| name.as_str()).collect();
     for release in [
         "0.8.0", "0.9.0", "0.9.1", "0.10.0", "0.11.0", "0.12.0", "0.12.1", "0.13.0", "0.15.0",
+        "0.15.1",
     ] {
         assert!(
             names.contains(&release),

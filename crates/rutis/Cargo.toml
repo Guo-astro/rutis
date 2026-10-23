@@ -2,7 +2,7 @@
 name = "rutis"
 description = "Cordis core paradigms in idiomatic Rust: plugin assembly, fiber lifecycle, typed service registry, dependency-driven reload"
 edition.workspace = true
-version = "0.15.0"
+version = "0.15.1"
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
@@ -18,7 +18,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # What `#[rutis::service]` blocks and the bridge exchange values through.
 erased-serde = "0.4"
-rutis-macros = { path = "../rutis-macros", version = "0.15.0" }
+rutis-macros = { path = "../rutis-macros", version = "0.15.1" }
 
 # The shuttle models (src/shuttle_tests.rs, #179): built with
 # `RUSTFLAGS="--cfg rutis_shuttle"` only, never by a plain build.
