@@ -70,12 +70,6 @@ fun checkListen(name: String) {
     if (name.startsWith("internal/")) throw IllegalArgumentException("event $name is internal to the runtime")
 }
 
-/** Whether a listener in the scope `listener` hears what is emitted in `emitter`: its chain is a prefix. */
-fun within(listener: List<Scope>, emitter: List<Scope>): Boolean {
-    if (listener.size > emitter.size) return false
-    return listener.indices.all { listener[it].id == emitter[it].id }
-}
-
 /** Whether `v` is a result: not null, undefined or false (§1), native or a session value. */
 fun hasResult(v: Any?): Boolean = when (v) {
     null, Undefined, JsonNull -> false
@@ -122,7 +116,7 @@ object Report {
     fun failure(error: Throwable): String = errorName(error) + ": " + errorMessage(error)
 }
 
-/** A dispatch: the snapshot, in registration order, already limited to the emitter's scope (§5.1 step 1). */
+/** A dispatch: the snapshot, in registration order, by name (§5.1 step 1). */
 class Dispatch(
     val name: String,
     val entries: List<Entry>,

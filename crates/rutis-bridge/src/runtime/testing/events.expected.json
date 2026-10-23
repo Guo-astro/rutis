@@ -3,7 +3,7 @@
     "Unified events conformance (#464): one list both the real runtimes and the SDK testing tools are checked against. Format: docs/design-events-protocol-2026-10-18.en.md §13; the cases of §13.3 come first, then the ones added to cover every rule.",
     "Real runtimes: crates/rutis-loader/tests/events_conformance.rs (rows of one rutis host, its runtimes, and a second node). Testing tools, the cases without `tool: false`: node/rutis/test/events-conformance.test.mjs, python/rutis/tests/test_events_conformance.py, go/rutis/rutistest/events_conformance_test.go, bun/rutis-bun/test/events-conformance.test.ts, swift/rutis/Tests/RutisTests/EventsConformanceTests.swift (RutisTest), kotlin/rutis/rutis-conformance/src/test/kotlin/arcships/rutis/conformance/EventsConformanceTest.kt. The file is checked for shape by crates/rutis-bridge/tests/events_expected.rs.",
     "Languages (`only` / `except`): rust (the host's Rust plugin), node (a Cordis plugin in the Node runtime), node-leaf (a leaf plugin in the Node runtime), bun, python, go, swift, kotlin (the Kotlin SDK's jvm target). Fixtures: node/rutis-runtime/test/fixtures/conformance-events{,-e,-f}/ (Cordis) and conformance-events-leaf{,-e,-f}.mjs, bun/rutis-bun/test/fixtures/conformance-events{,-e,-f}.ts, python/rutis/tests/fixtures/conformance_events{,_e,_f}.py, go/rutis/internal/fixtures/plugins/conformance (served by go/rutis/internal/fixtures/runtime; one plugin provides every emitter undeclared, its sync method on the wire `dispatchSync`), swift/rutis/Sources/RutisFixturePlugins/ConformanceEvents.swift (served by RutisConformance; as Go), kotlin/rutis/rutis-conformance/src/main/kotlin/arcships/rutis/conformance/plugins/ConformanceEvents.kt (likewise: one plugin provides every emitter undeclared, `dispatchSync`), and the Rust plugin of crates/rutis-loader/tests/events_conformance.",
-    "Scopes: each scope path is one instance of its group, created once; t2's group is `team`, not `tenant`, so that rows placed in t1 are not copied into t2 (a loader instance copies its group's rows). The rule compares ids, so the group names do not matter to it.",
+    "Scopes: each scope path is one instance of its group, created once; t2's group is `team`, not `tenant`, so that rows placed in t1 are not copied into t2 (a loader instance copies its group's rows). A listener's scope is a descriptor for filters; delivery is by name on one flat bus, as in Cordis, so every listener hears every event regardless of its scope.",
     "Additions to the format of §13.2: a listener's `fails` ({name, message}: its row's apply throws that error, after registering nothing); a listener's `inject` (service names: the row's own `inject` list, as a configuration gives it: `rutis/row-failed-gated` checks that such a row, behind a gate in a Cordis runtime, fails with its apply's error as `rutis/row-failed` does, #584); `typed: \"unit\"` (a Rust unit struct event); `observesDispatch` (a Cordis listener row that also logs `<label>:dispatch:<mode>` from its internal/dispatch for each dispatch of the case's name); the filter `{\"throws\": {name, message}}` (the predicate throws); the step `{\"update\": label}` (the row's config changes, so it registers again); and `expect` on a `load` step. Rust events cross by serde without a declaration, so there is no NoWire case.",
     "Expectations, strictly: a step without `throws` or `cancelled` requires every dispatch that ends in it to succeed. `cancelled: true`: the dispatch ends with its emitter's language's cancellation (Python `CancelledError`, Go `Canceled`, Swift `CancellationError`, Kotlin `CancellationException`, the Rust fixture's `Cancelled`). `reported` entries ({label, name, filter?}): exactly one §5.6 line about the step's event names that row (`in row <label>`, or the dispatcher's `in runtime <its runtime>` / `in node <peer>`) with that error name; `filter: true` for a filter's line (`rutis: filter of <name> from row <label>`). `logLacks` (and `reported`) are checked again a moment after the rest held. A `$` tag that does not parse is an error of the file. `toolCases`: how many cases each testing tool runs (crates/rutis-bridge/tests/events_expected.rs checks it against the cases; each tool checks it ran that many).",
     "The rows: plugin `conformance-events`, one row per participant, keyed by its label; its config is the participant as resolved by the runner (name, kind and log filled in). It injects `events-log`, a host service: add(entry) sync; filter(description) sync (logs `filter:<row>` and keeps the description for `filterSees`); wait(entry) async (resolves once entry is logged, for `cancel`). Emitter rows (labelled e or f) load the plugin `conformance-events-e` or `conformance-events-f` (Python `conformance_events_e` / `_f`): the same plugin, declaring only its own `emitter-<label>` (a declared service is exported whether the row provides it or not), with dispatch(spec) async and dispatch_sync(spec) sync (for bail and waterfall-sync). `conformance-events` itself declares nothing."
@@ -260,7 +260,7 @@
         {"concurrent": [{"emit": {"from": "X", "mode": "bail", "args": []}}, {"emit": {"from": "Y", "row": "f", "mode": "bail", "name": "t/c2", "args": []}}], "hold": true, "expect": {"settles": true, "throws": {"name": "SyncWaitCycle"}}}
       ] },
 
-    { "case": "scope/up-not-down", "rule": "3", "name": "t/scope", "vary": ["r", "u", "s", "v", "e"],
+    { "case": "scope/flat-bus", "rule": "3", "name": "t/scope", "vary": ["r", "u", "s", "v", "e"],
       "listeners": [
         {"label": "r", "at": "host", "scope": "root", "does": {"returns": null}},
         {"label": "u", "at": "X", "scope": "t1", "does": {"returns": null}},
@@ -268,10 +268,10 @@
         {"label": "v", "at": "X", "scope": "t2", "does": {"returns": null}}
       ],
       "steps": [
-        {"emit": {"from": "X", "scope": "t1/s1", "mode": "parallel", "args": []}, "expect": {"logUnordered": ["r", "u", "s"]}},
-        {"emit": {"from": "X", "scope": "t1", "mode": "parallel", "args": []}, "expect": {"logUnordered": ["r", "u", "s", "r", "u"]}},
-        {"emit": {"from": "X", "scope": "t2", "mode": "parallel", "args": []}, "expect": {"logUnordered": ["r", "u", "s", "r", "u", "r", "v"]}},
-        {"emit": {"from": "X", "scope": "root", "mode": "parallel", "args": []}, "expect": {"logUnordered": ["r", "u", "s", "r", "u", "r", "v", "r"]}}
+        {"emit": {"from": "X", "scope": "t1/s1", "mode": "parallel", "args": []}, "expect": {"logUnordered": ["r", "u", "s", "v"]}},
+        {"emit": {"from": "X", "scope": "t1", "mode": "parallel", "args": []}, "expect": {"logUnordered": ["r", "u", "s", "v", "r", "u", "s", "v"]}},
+        {"emit": {"from": "X", "scope": "t2", "mode": "parallel", "args": []}, "expect": {"logUnordered": ["r", "u", "s", "v", "r", "u", "s", "v", "r", "u", "s", "v"]}},
+        {"emit": {"from": "X", "scope": "root", "mode": "parallel", "args": []}, "expect": {"logUnordered": ["r", "u", "s", "v", "r", "u", "s", "v", "r", "u", "s", "v", "r", "u", "s", "v"]}}
       ] },
 
     { "case": "filter/keeps-and-sees", "rule": "6", "name": "t/filter", "vary": ["a", "b", "c", "e"],
@@ -282,7 +282,7 @@
         {"label": "d", "at": "X", "scope": "t2", "does": {"returns": null}}
       ],
       "steps": [
-        {"emit": {"from": "X", "mode": "serial", "args": [], "filter": {"keep": ["a", "c"]}}, "expect": {"returns": null, "log": ["filter:a", "filter:b", "filter:c", "a", "c"], "filterSees": ["a", "b", "c"]}}
+        {"emit": {"from": "X", "mode": "serial", "args": [], "filter": {"keep": ["a", "c"]}}, "expect": {"returns": null, "log": ["filter:a", "filter:b", "filter:c", "filter:d", "a", "c"], "filterSees": ["a", "b", "c", "d"]}}
       ] },
 
     { "case": "filter/cordis-this-arg", "rule": "6 Cordis", "name": "t/filter-cordis", "vary": ["a", "b"], "only": [{"e": ["node"], "why": "Context.filter (thisArg) is Cordis's; leaf plugins filter with ctx.filter"}],
@@ -423,7 +423,7 @@
       ],
       "steps": [
         {"load": {"label": "z", "at": "Y", "scope": "t2", "name": "t/unused", "does": {"returns": null}}},
-        {"unload": "z", "expect": {"logContains": ["w:z,running", "w:z,stopped"], "logLacks": ["o:z,running", "o:z,stopped"]}}
+        {"unload": "z", "expect": {"logUnordered": ["w:w,running", "w:o,pending", "w:o,running", "o:o,running", "w:z,pending", "o:z,pending", "w:z,running", "o:z,running", "w:z,stopped", "o:z,stopped"]}}
       ] },
 
     { "case": "rutis/service", "rule": "8", "name": "rutis/service", "tool": false,
@@ -620,14 +620,14 @@
         {"emit": {"from": "host", "mode": "serial", "args": []}, "expect": {"returns": "A", "log": ["h", "a"]}}
       ] },
 
-    { "case": "scope/sibling-not-heard", "rule": "3", "name": "t/scope-sibling", "vary": ["u", "v", "e"],
+    { "case": "scope/siblings-share-the-bus", "rule": "3", "name": "t/scope-sibling", "vary": ["u", "v", "e"],
       "listeners": [
         {"label": "u", "at": "X", "scope": "t1", "does": {"returns": "U"}},
         {"label": "v", "at": "Y", "scope": "t2", "does": {"returns": "V"}}
       ],
       "steps": [
-        {"emit": {"from": "X", "scope": "t2", "mode": "serial", "args": []}, "expect": {"returns": "V", "log": ["v"]}},
-        {"emit": {"from": "X", "scope": "t1/s1", "mode": "serial", "args": []}, "expect": {"returns": "U", "log": ["v", "u"]}}
+        {"emit": {"from": "X", "scope": "t2", "mode": "parallel", "args": []}, "expect": {"logUnordered": ["u", "v"]}},
+        {"emit": {"from": "X", "scope": "t1/s1", "mode": "parallel", "args": []}, "expect": {"logUnordered": ["u", "v", "u", "v"]}}
       ] },
 
     { "case": "scope/bail-and-waterfall", "rule": "3", "name": "t/scope-modes", "vary": ["r", "v", "e"],
@@ -636,7 +636,7 @@
         {"label": "v", "at": "X", "scope": "t2", "does": {"next": "v"}}
       ],
       "steps": [
-        {"emit": {"from": "X", "scope": "t1", "mode": "waterfall", "args": [], "terminal": "t"}, "expect": {"returns": "rt", "log": ["r", "terminal"]}}
+        {"emit": {"from": "X", "scope": "t1", "mode": "waterfall", "args": [], "terminal": "t"}, "expect": {"returns": "rvt", "log": ["r", "v", "terminal"]}}
       ] },
 
     { "case": "filter/throws", "rule": "6", "name": "t/filter-throws", "vary": ["a", "e"],
@@ -655,22 +655,22 @@
         {"emit": {"from": "X", "mode": "emit", "args": [], "filter": {"throws": {"name": "FErr", "message": "no"}}}, "expect": {"returns": null, "log": [], "reported": [{"label": "e", "name": "FErr", "filter": true}]}}
       ] },
 
-    { "case": "filter/after-scope", "rule": "6", "name": "t/filter-scope", "vary": ["a", "b", "e"],
+    { "case": "filter/every-listener", "rule": "6", "name": "t/filter-scope", "vary": ["a", "b", "e"],
       "listeners": [
         {"label": "a", "at": "Y", "scope": "t1", "does": {"returns": null}},
         {"label": "b", "at": "X", "scope": "t2", "does": {"returns": null}}
       ],
       "steps": [
-        {"emit": {"from": "X", "scope": "t1", "mode": "parallel", "args": [], "filter": {"keep": ["a", "b"]}}, "expect": {"log": ["filter:a", "a"], "filterSees": ["a"]}}
+        {"emit": {"from": "X", "scope": "t1", "mode": "parallel", "args": [], "filter": {"keep": ["a", "b"]}}, "expect": {"logUnordered": ["filter:a", "filter:b", "a", "b"], "filterSees": ["a", "b"]}}
       ] },
 
-    { "case": "filter/global-still-scoped", "rule": "4.2 global, 3", "name": "t/global-scope", "vary": ["g", "h", "e"],
+    { "case": "filter/global-skips-filter-in-scopes", "rule": "4.2 global", "name": "t/global-scope", "vary": ["g", "h", "e"],
       "listeners": [
         {"label": "g", "at": "Y", "scope": "t2", "options": {"global": true}, "does": {"returns": null}},
         {"label": "h", "at": "X", "options": {"global": true}, "does": {"returns": null}}
       ],
       "steps": [
-        {"emit": {"from": "X", "scope": "t1", "mode": "parallel", "args": [], "filter": {"keep": []}}, "expect": {"log": ["h"]}}
+        {"emit": {"from": "X", "scope": "t1", "mode": "parallel", "args": [], "filter": {"keep": []}}, "expect": {"logUnordered": ["g", "h"]}}
       ] },
 
     { "case": "filter/bail", "rule": "6", "name": "t/filter-bail", "vary": ["a", "b", "e"],
@@ -795,7 +795,7 @@
       ],
       "steps": [
         {"load": {"label": "z", "at": "Y", "scope": "t1", "provides": "zsvc", "name": "t/unused", "does": {"returns": null}}},
-        {"unload": "z", "expect": {"logContains": ["r:zsvc,true", "r:zsvc,false"], "logLacks": ["w:zsvc,true", "w:zsvc,false"]}}
+        {"unload": "z", "expect": {"logUnordered": ["r:zsvc,true", "r:zsvc,false", "w:zsvc,true", "w:zsvc,false"]}}
       ] },
 
     { "case": "rutis/runtime-down-reason", "rule": "8", "name": "rutis/runtime", "tool": false,
@@ -876,7 +876,7 @@
         {"emit": {"from": "Y", "row": "f", "mode": "parallel", "args": []}, "expect": {"log": ["a:dispatch:parallel", "a"]}}
       ] },
 
-    { "case": "filter/own-listeners-in-scopes", "rule": "6, 3", "name": "t/filter-own", "vary": ["a", "b", "c", "e"],
+    { "case": "filter/own-listeners-in-scopes", "rule": "6", "name": "t/filter-own", "vary": ["a", "b", "c", "e"],
       "listeners": [
         {"label": "a", "at": "X", "does": {"returns": "A"}},
         {"label": "b", "at": "X", "scope": "t1", "does": {"returns": "B"}},
@@ -884,7 +884,7 @@
         {"label": "d", "at": "X", "scope": "t2", "does": {"returns": "D"}}
       ],
       "steps": [
-        {"emit": {"from": "X", "scope": "t1", "mode": "serial", "args": [], "filter": {"keep": ["b"]}}, "expect": {"returns": "B", "log": ["filter:a", "filter:b", "filter:c", "b"], "filterSees": ["a", "b", "c"]}}
+        {"emit": {"from": "X", "scope": "t1", "mode": "serial", "args": [], "filter": {"keep": ["b"]}}, "expect": {"returns": "B", "log": ["filter:a", "filter:b", "filter:c", "filter:d", "b"], "filterSees": ["a", "b", "c", "d"]}}
       ] },
 
     { "case": "waterfall/terminal-gets-args", "rule": "5.4 waterfall", "name": "t/wf-terminal-args", "vary": ["a", "b", "e"],

@@ -201,10 +201,9 @@ extension Runtime {
         return mode == .emit && (hostEmits[name] ?? 0) > 0
     }
 
-    /// The fast path's snapshot (§5.1); `lock` is held.
+    /// The fast path's snapshot (§5.1); `lock` is held. Delivery is by name.
     func snapshot(_ row: Row, _ name: String, keep: ((Rutis.Listener) async throws -> Bool)?) -> Dispatch {
-        let entries = (listeners[name] ?? []).filter { Events.within($0.row.scope, row.scope) }
-        return Dispatch(name: name, entries: entries, keep: keep.map(protectedKeep))
+        Dispatch(name: name, entries: listeners[name] ?? [], keep: keep.map(protectedKeep))
     }
 
     func protectedKeep(_ keep: @escaping (Rutis.Listener) async throws -> Bool) -> (Rutis.Listener) async throws -> Bool { keep }

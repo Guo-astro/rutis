@@ -14,7 +14,7 @@ rutis 和 Cordis（Node 插件框架）有两种互通方式：
 
 ## 事件
 
-Cordis 插件照常用 Cordis 自己的事件 API，它就是 rutis 的事件 API：`ctx.on`、`ctx.emit`、`ctx.parallel`、`ctx.serial`、`ctx.waterfall`、`ctx.bail`。Cordis 的监听器自动登记到宿主的逻辑总线上，所以不论 Cordis 插件作为 rutis.json 的行运行、挂载在 Rust 应用里，还是在作为节点的 Cordis 应用里，它的事件都按同一套规则到达任何语言、任何进程里的监听器（按作用域），别处发出的事件也到达它的监听器。作为节点的 Cordis 应用只与对端共享 `Events` 的 `export` / `import` 列出的名字（见[下文](#cordis-应用作为节点)）。规则见 [插件 API：事件](plugin-api.md#事件)。
+Cordis 插件照常用 Cordis 自己的事件 API，它就是 rutis 的事件 API：`ctx.on`、`ctx.emit`、`ctx.parallel`、`ctx.serial`、`ctx.waterfall`、`ctx.bail`。Cordis 的监听器自动登记到宿主的逻辑总线上，所以不论 Cordis 插件作为 rutis.json 的行运行、挂载在 Rust 应用里，还是在作为节点的 Cordis 应用里，它的事件都按同一套规则到达任何语言、任何进程里的监听器（平总线、按名字），别处发出的事件也到达它的监听器。作为节点的 Cordis 应用只与对端共享 `Events` 的 `export` / `import` 列出的名字（见[下文](#cordis-应用作为节点)）。规则见 [插件 API：事件](plugin-api.md#事件)。
 
 ```ts
 export function apply(ctx: Context) {

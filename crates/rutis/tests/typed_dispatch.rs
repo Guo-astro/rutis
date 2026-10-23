@@ -1015,8 +1015,9 @@ async fn thousand_early_sync_disposals_reject_new_selection_while_old_calls_fini
     root.shutdown().await.unwrap();
 }
 
-/// Was an instance-key test: the listener now lives in a scope, and the
-/// emitter below it hears it while the root does not.
+/// Was an instance-key test: the listener lives in a scope; the bus is
+/// flat, but disposing the listener or shutting down its owner's subtree
+/// still drains a running synchronous call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scoped_sync_bail_and_waterfall_drain_during_removal_and_subtree_shutdown() {
     for waterfall in [false, true] {
@@ -1102,11 +1103,6 @@ async fn scoped_sync_bail_and_waterfall_drain_during_removal_and_subtree_shutdow
                     Some(1)
                 );
             }
-            // The root is outside the scope: it never hears the listener.
-            assert_eq!(
-                root.events().bail_sync(&root, &key, &Ping(0)).unwrap(),
-                None
-            );
             if shutdown {
                 pending(finish.as_mut()).await;
             }
@@ -1123,9 +1119,10 @@ async fn scoped_sync_bail_and_waterfall_drain_during_removal_and_subtree_shutdow
 }
 
 /// Was `sync_instance_isolation_stale_context_and_self_shutdown`: instance
-/// keys are gone; sibling scopes under one name are isolated instead.
+/// keys are gone. Events are one flat bus, so every listener hears every
+/// dispatch; registration order still decides `bail` / `waterfall`.
 #[tokio::test]
-async fn sync_scope_isolation_stale_context_and_self_shutdown() {
+async fn sync_flat_bus_stale_context_and_self_shutdown() {
     let root = Ctx::root().unwrap();
     let (view, ctx) = scope(&root, "a").await;
     let (_, sibling) = scope(&root, "b").await;
@@ -1141,14 +1138,14 @@ async fn sync_scope_isolation_stale_context_and_self_shutdown() {
     );
     assert_eq!(
         root.events().bail_sync(&root, &key, &Ping(0)).unwrap(),
-        None
+        Some(8)
     );
     assert_eq!(
         sibling
             .events()
             .bail_sync(&sibling, &key, &Ping(0))
             .unwrap(),
-        None
+        Some(8)
     );
     sibling
         .events()
@@ -1161,7 +1158,7 @@ async fn sync_scope_isolation_stale_context_and_self_shutdown() {
             .events()
             .bail_sync(&sibling, &key, &Ping(0))
             .unwrap(),
-        Some(9)
+        Some(8)
     );
     assert_eq!(
         ctx.events().bail_sync(&ctx, &key, &Ping(0)).unwrap(),
@@ -1174,7 +1171,7 @@ async fn sync_scope_isolation_stale_context_and_self_shutdown() {
                 panic!("the sibling's own listener answers without next")
             })
             .unwrap(),
-        Some(9)
+        Some(8)
     );
     view.restart().await.unwrap();
     assert!(matches!(

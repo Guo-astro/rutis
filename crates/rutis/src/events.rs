@@ -95,17 +95,13 @@ impl std::fmt::Display for Mode {
 }
 
 /// One element of a scope chain: a loader group instance (protocol spec §3).
+/// It is a descriptor for filters; event delivery is by name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Scope {
     /// Unique among all instances, past and present (Rust: the decimal
     /// `InstanceId` of the group's fiber).
     pub id: String,
     pub group: String,
-}
-
-/// `inner` is `outer` or below it: `outer` is a prefix of `inner`, by id.
-pub fn scope_contains(outer: &[Scope], inner: &[Scope]) -> bool {
-    outer.len() <= inner.len() && outer.iter().zip(inner).all(|(a, b)| a.id == b.id)
 }
 
 /// What the bus says about a listener: what a filter sees (protocol spec
@@ -123,9 +119,10 @@ pub struct ListenerInfo {
     pub runtime: Option<String>,
     /// The node it was imported from; `None` for this node's own.
     pub node: Option<String>,
-    /// Its scope chain, outermost first; `[]` at the root.
+    /// Its scope chain, outermost first; `[]` at the root. A descriptor for
+    /// filters, not a delivery rule.
     pub scope: Vec<Scope>,
-    /// Custom filters skip it (the scope rule still applies).
+    /// Custom filters skip it.
     pub global: bool,
 }
 
@@ -164,7 +161,7 @@ pub struct EventOptions {
     pub prepend: bool,
     /// Called at most once: the first dispatch that selects it claims it.
     pub once: bool,
-    /// Custom filters skip it; the scope rule still applies.
+    /// Custom filters skip it.
     pub global: bool,
 }
 

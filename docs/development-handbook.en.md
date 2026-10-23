@@ -305,7 +305,7 @@ A slow listener does not hold up other calls of the same name, but each emit sta
 
 ## Instance Subtrees
 
-An instance subtree groups a plugin and its descendants for shared management. Instance service keys limit service scope, event scopes limit where events arrive, and `FiberView::shutdown()` closes the subtree.
+An instance subtree groups a plugin and its descendants for shared management. Instance service keys limit service scope; events are delivered by name to every listener, and instance information is only a filter descriptor; `FiberView::shutdown()` closes the subtree.
 
 Use this structure to manage multiple runtime instances with independent lifetimes. The following workspace example shows how to associate services and events.
 
@@ -343,7 +343,7 @@ progress_ctx.events().on(progress_ctx, &key, Progress)?;
 indexer_ctx.events().emit(indexer_ctx, &key, Arc::new(DocumentIndexed(path)))?;
 ```
 
-An event sent inside a scope reaches the listeners of that scope and of its enclosing scopes (up to root); sibling workspaces do not hear it, and events sent outside the scope do not reach listeners inside it. Listeners on root hear every event. When the subtree closes, the framework waits for the running calls of its listeners to finish before completing cleanup. Any additional background task created by a callback should be registered using the task-management pattern above.
+Events are one flat bus: within a root they are delivered by name to every listener, whatever the emitter's or listener's scope. A scope is only a `ListenerInfo` descriptor for filters; to narrow by instance, use `filter` or distinct event names. When the subtree closes, the framework waits for the running calls of its listeners to finish before completing cleanup. Any additional background task created by a callback should be registered using the task-management pattern above.
 
 Isolate service scope is separate from event scopes.
 

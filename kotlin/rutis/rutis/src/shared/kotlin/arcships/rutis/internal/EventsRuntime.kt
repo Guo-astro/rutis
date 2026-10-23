@@ -238,9 +238,8 @@ internal object EventsRuntime {
                 snapshot = Dispatch(name, emptyList())
             } else {
                 viaHost = null
-                // The fast path (§5.2): the snapshot of this process's listeners.
-                val entries = (rt.listeners[name] ?: emptyList()).filter { within(it.row.scope, row.scope) }
-                snapshot = Dispatch(name, entries, keep?.let(::protect))
+                // The fast path (§5.2): the snapshot of this process's listeners, by name.
+                snapshot = Dispatch(name, rt.listeners[name] ?: emptyList(), keep?.let(::protect))
             }
         }
         if (viaHost != null) return viaHost()

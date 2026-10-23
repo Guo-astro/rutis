@@ -135,6 +135,6 @@ extension Harness {
     /// Emits as a host plugin at the root.
     func run(_ name: String, _ mode: Mode, _ args: [Any?]) async throws {
         let values = try args.map { try ValueCodec.encodeAny($0 as Any) }
-        _ = try await Harness.run(snapshot(name, [], own: false), mode, values, terminal: nil)
+        _ = try await Harness.run(snapshot(name, own: false), mode, values, terminal: nil)
     }
 }

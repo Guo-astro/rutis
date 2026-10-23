@@ -18,7 +18,7 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 | `ctx.use(name)` | `inject` 里声明的服务。同一个运行时进程里的插件提供的，是对象本身；其他进程、其他语言、其他机器提供的，是代理 |
 | `ctx.provide(name, value)` | 提供服务，直到插件卸载，或调用返回的函数。服务自动对外，别的语言、别的进程按名字使用；`provides` 没有声明它时，方法取 `value` 上的公开方法（JavaScript：自身和原型链上的函数，不含 `constructor`；Python：不以 `_` 开头的可调用属性；Go：导出方法），都按 `async` 调用，字段不算方法。推断按各语言自己的规则，同一个服务用两种语言写时方法可能不同：继承 `EventEmitter` 的 JavaScript 类也会带上 `on`、`emit` 等方法；只想对外其中几个时在 `provides` 里列出它们 |
 | `ctx.effect(cleanup)` | 插件卸载时运行 `cleanup`（可以是 async） |
-| `ctx.on(name, listener, options?)` | 监听事件：不论在哪里发出（另一个插件、另一个运行时、宿主、相连的节点），只要发出方在本插件的作用域或其内，就送到 `listener`。随插件卸载注销；返回的函数立即注销。见下面的[事件](#事件) |
+| `ctx.on(name, listener, options?)` | 监听事件：不论在哪里发出（另一个插件、另一个运行时、宿主、相连的节点），只要是这个 root 总线上的同名事件，就送到 `listener`。随插件卸载注销；返回的函数立即注销。见下面的[事件](#事件) |
 | `ctx.emit` / `parallel` / `serial` / `waterfall` / `bail` | 发出事件的五种方式；`ctx.filter(keep)` 给出只送达部分监听器的同样五个方法。见[事件](#事件) |
 | `ctx.signal` | （JavaScript）插件卸载时中止；Python 是任务取消，Go 是 `ctx` 本身 |
 
@@ -41,7 +41,7 @@ Kotlin 里：`ctx.use<I>(name)` 经 `@RutisClient` 接口 `I` 使用服务（同
 做不到的只有物理上不可能的情况（同步等待成环、同步等待一个已经断开的对端），这时明确报错，从不悄悄换成别的行为。设计见 [统一事件](../design-events-2026-10-18.md)，线上协议见 [协议规格](../design-events-protocol-2026-10-18.md)。
 
 - **登记是自动的**：插件照常写 `ctx.on(name, listener)`，什么都不用声明，`rutis.json` 和宿主的 Rust 代码里也不用写。运行时把监听器登记给宿主，就像服务自动对外一样。
-- **事件 = 名字 + 参数 + 作用域**。名字是字符串，所有语言、所有路径通用，惯例是 `area/verb`（`session/created`）。参数按[值怎样传递](#值怎样传递)跨边界。作用域是发出方所在的加载器实例（见下）。
+- **事件 = 名字 + 参数 + 发出方的作用域描述**。名字是字符串，所有语言、所有路径通用，惯例是 `area/verb`（`session/created`）。参数按[值怎样传递](#值怎样传递)跨边界。作用域描述发出方所在的加载器实例（见下）；送达按名字。
 - **一张监听器表**：一个监听器登记一次，可以被下面任何一种方式调用；由发出方选择方式。
 - **只在需要时经过宿主**：一个名字的监听器都在发出方的进程里时，就在本进程分发，不经过宿主；结果相同，只是代码在哪里执行不同。
 
@@ -122,17 +122,17 @@ ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
 
 作用域是加载器的一个组实例（`instanced` 组的一份副本，如一个租户、一个会话），或者根。每个插件、每次发出都在一个作用域里：包含它的最内层实例，或者根。
 
-> 监听器收到自己作用域、以及其下所有作用域里发出的事件。
+> 事件是平总线：一个 root 里的所有同名监听器都收到，与发出方或监听器的作用域无关。
 
-根上的监听器收到全部事件；租户 `t1` 里的监听器收不到 `t2` 的事件；`t1` 的会话里发出的事件，`t1` 和根上的监听器都收到。发出方的作用域由宿主按发出的行确定，插件没有向别的作用域发出的 API：要进一步挑选监听器，用过滤，按描述里的 `scope` 判断。叶子插件的 `isolate` 标签（服务的作用域）与事件作用域无关。
+作用域只是 `ListenerInfo` 里的描述，供过滤使用；默认不做实例隔离。要把事件限制在一个实例里，用 `filter` 按描述里的 `scope` 判断，或使用不同的事件名。发出方的作用域由宿主按发出的行确定。叶子插件的 `isolate` 标签（服务的作用域）与事件作用域无关。
 
 ### 过滤
 
 发出时可以带一个过滤函数：它对每个候选监听器调用一次，收到这个监听器的**描述**，返回是否送达。
 
-- 在**发出方的进程里**执行，按登记顺序，在任何监听器开始之前；它看到的是已经按作用域筛过的监听器，对任何地方的监听器都一样有效。
+- 在**发出方的进程里**执行，按登记顺序，在任何监听器开始之前；它看到的是按名字取出的候选监听器，对任何地方的监听器都一样有效。
 - 过滤函数抛出时，整次分发以这个错误失败，不开始任何监听器（`emit` 中改为报告）。
-- 用 `global` 选项登记的监听器不经过滤（仍受作用域规则）。
+- 用 `global` 选项登记的监听器不经过滤。
 
 描述（JSON 字段，没有值时为 `null`；Rust 为 `ListenerInfo`，没有值时为 `None`；Go 为 `rutis.Listener`，没有值时为 `""`）：
 
@@ -176,7 +176,7 @@ Cordis 插件用 Cordis 自己的写法：`ctx.emit(thisArg, name, ...)`（以�
 | `rutis/row` | `{ row, plugin, scope, state, error }`，`state` 为 `pending` / `running` / `failed` / `stopped` | 配置的行（任何语言，包括 Rust 行和组行）每次状态变化；`failed` 时带 `error` | 行的作用域 |
 | `rutis/runtime` | `{ runtime, state, reason }`，`state` 为 `running` / `down` | 运行时挂载成功（每次重连之后也是）；会话结束或挂载失败（`reason` 说明原因） | 根 |
 
-按作用域规则，根上的监听器看到所有行的 `rutis/row`，实例里的只看到自己实例里的。Rust 里对应的类型是 `rutis_loader::RowEvent`、`rutis_bridge::events::{ServiceEvent, RuntimeEvent}`。测试工具不发出 `rutis/*`。
+`rutis/row` 也是这条总线上的事件，所有监听器都收到。Rust 里对应的类型是 `rutis_loader::RowEvent`、`rutis_bridge::events::{ServiceEvent, RuntimeEvent}`。测试工具不发出 `rutis/*`。
 
 `internal/*` 是每个运行时自己的框架内部机制（Cordis 的 `internal/dispatch`、`internal/service` 等），从不跨进程：叶子插件不能监听或发出它，宿主拒绝登记它（`event <name> is internal to its runtime`）。Cordis 插件在本进程里照常使用；从别处到达的事件也经过 Cordis 自己的分发，所以 `internal/dispatch` 的校验插件照常看得到它们。
 

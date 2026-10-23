@@ -27,7 +27,7 @@ does (values crossing with `strict`). The plugin's own `ctx` emitters pass
 values as they are, as the runtime's fast path does, but with `strict` the
 errors reaching them arrive as from another process (`RemoteError`, matched
 by `name`). Descriptors give `runtime` "python". Plugins loaded with one
-`Bus` hear each other, each in its scope::
+`Bus` share one flat bus; a scope is a descriptor::
 
     bus = Bus(scopes={"t1": "tenant"})
     async with load(audit, bus=bus) as root, load(chat, bus=bus, scope="t1") as tenant:
@@ -245,7 +245,7 @@ class Reported(NamedTuple):
 
 class Bus:
     """The event bus of one process, for tests. Plugins loaded with the
-    same `bus` hear each other, each in its scope; one loaded without gets
+    same `bus` hear each other (one flat bus; a scope is a descriptor); one loaded without gets
     a bus of its own.
 
     `scopes` names the group of each scope path (`{"t1": "tenant",
@@ -288,32 +288,32 @@ class Bus:
             if name is None or entry.name == name
         ]
 
-    def emitter(self, scope: str | None = "root", *, row: str = "test", strict: bool = True) -> Emitter:
-        """Emit as a row `row` at `scope` would: `emit`, `parallel`,
-        `serial`, `waterfall`, `bail` and `filter`. With `strict`, the
-        arguments and what comes back cross as between processes."""
-        return Emitter(_send(self._bus, row, self.chain(scope), strict))
+    def emitter(self, *, row: str = "test", strict: bool = True) -> Emitter:
+        """Emit as a row `row` would: `emit`, `parallel`, `serial`,
+        `waterfall`, `bail` and `filter`. With `strict`, the arguments and
+        what comes back cross as between processes."""
+        return Emitter(_send(self._bus, row, strict))
 
 
-def _send(bus: events.Bus, row: str, scope: list, strict: bool) -> Callable:
-    """How the test emits: as the row `row` at `scope`, its values crossing
-    as between processes with `strict`."""
+def _send(bus: events.Bus, row: str, strict: bool) -> Callable:
+    """How the test emits: as the row `row`, its values crossing as between
+    processes with `strict`."""
 
     def send(mode: str, name: str, args: list, terminal, keep) -> Any:
         if strict:
             args = [_cross(arg, f"event {name} argument {i}") for i, arg in enumerate(args)]
         if mode == "emit":
-            bus.dispatch(mode, name, scope, args, keep, terminal, row)
+            bus.dispatch(mode, name, args, keep, terminal, row)
             return None
         if mode == "bail":
             try:
-                value = bus.dispatch(mode, name, scope, args, keep, terminal, row)
+                value = bus.dispatch(mode, name, args, keep, terminal, row)
             except Exception as error:
                 if not strict:
                     raise
                 raise _crossed_error(error) from error
             return _cross(value, f"{mode} of {name}") if strict else value
-        dispatched = bus.dispatch(mode, name, scope, args, keep, terminal, row)
+        dispatched = bus.dispatch(mode, name, args, keep, terminal, row)
         if not strict:
             return dispatched
         return _awaited(dispatched, f"{mode} of {name}")
@@ -346,7 +346,7 @@ class Loaded:
         # What its listeners' descriptors give as `runtime`.
         self.runtime = runtime
         self._deadline = deadline
-        self._emitter = Emitter(_send(bus._bus, row, scope, strict))
+        self._emitter = Emitter(_send(bus._bus, row, strict))
 
     # ── Events, as the plugin's row emits them ───────────────────
 
@@ -536,10 +536,10 @@ def _own(loaded: Loaded) -> Callable:
         if loaded._unloaded:
             raise BindingError(f"row {loaded.row} is not loaded in this runtime")
         if mode == "emit":
-            bus.dispatch(mode, name, loaded.scope, args, keep, terminal, loaded.row)
+            bus.dispatch(mode, name, args, keep, terminal, loaded.row)
             return None
         try:
-            dispatched = bus.dispatch(mode, name, loaded.scope, args, keep, terminal, loaded.row)
+            dispatched = bus.dispatch(mode, name, args, keep, terminal, loaded.row)
         except Exception as error:
             if not loaded._strict:
                 raise

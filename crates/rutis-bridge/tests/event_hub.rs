@@ -382,13 +382,13 @@ async fn dispatches_cross_between_host_and_runtime() {
     .await;
 }
 
-/// guarantee: events/hub-scope
+/// guarantee: events/hub-flat
 ///
-/// Scope: a runtime's dispatch is emitted at its row's scope, never one it
-/// names; a listener hears its scope and below. A row not loaded on the
-/// session can neither register nor dispatch.
+/// A runtime's dispatch names a row loaded on the session; events are
+/// delivered by name to every listener, whatever the listener's scope. A row
+/// not loaded on the session can neither register nor dispatch.
 #[tokio::test(flavor = "multi_thread")]
-async fn rows_dispatch_and_hear_at_their_scopes() {
+async fn rows_dispatch_and_hear_by_name() {
     within("scope", async {
         let rig = rig().await;
         let t1 = scope(&[("17", "tenant")]);
@@ -411,7 +411,7 @@ async fn rows_dispatch_and_hear_at_their_scopes() {
             .events()
             .on(&rig.root, &key("t/x"), Answer(Some("host"), heard.clone()))
             .unwrap();
-        // From t1: the root listeners hear it, t2's does not.
+        // From t1: every listener of the name hears it, whatever its scope.
         let result = rig
             .dispatch(Some("a"), "t/x", "parallel", vec![], None)
             .await
@@ -425,7 +425,7 @@ async fn rows_dispatch_and_hear_at_their_scopes() {
             .iter()
             .map(|call| call["listener"].clone().json().unwrap())
             .collect();
-        assert_eq!(listeners, vec![json!("at-root")]);
+        assert_eq!(listeners, vec![json!("in-t2"), json!("at-root")]);
         assert_eq!(heard.lock().unwrap().len(), 1);
 
         let error = rig
@@ -445,8 +445,8 @@ async fn rows_dispatch_and_hear_at_their_scopes() {
 /// guarantee: events/hub-filter
 ///
 /// A dispatch's filter is the emitter's selector, called once with every
-/// candidate's descriptor (the scope rule applied first), answering one
-/// boolean each; a wrong count fails the dispatch.
+/// candidate's descriptor, answering one boolean each; a wrong count fails
+/// the dispatch.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_filter_runs_in_the_emitters_process() {
     within("filter", async {

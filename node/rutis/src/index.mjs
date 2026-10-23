@@ -15,7 +15,7 @@
 //   })
 //
 // Events cross every process and language on the host (#464): `ctx.on`
-// listens wherever the event is emitted (in its scope or below), and
+// listens to every event of the name on the flat bus, and
 // `ctx.emit` / `parallel` / `serial` / `waterfall` / `bail` reach every
 // listener, wherever it runs, as if all were in this process.
 //

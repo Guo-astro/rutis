@@ -7,8 +7,7 @@ use std::sync::{Arc, Weak};
 
 use crate::ctx::Ctx;
 use crate::events::{
-    scope_contains, ErasedAsync, ErasedSync, ListenerInfo, ListenerKind, RemoteListener, Scope,
-    TableEntry,
+    ErasedAsync, ErasedSync, ListenerInfo, ListenerKind, RemoteListener, TableEntry,
 };
 use crate::fiber::FiberInner;
 use crate::FiberState;
@@ -191,12 +190,13 @@ impl Table {
         self.by_id.get(&id).cloned()
     }
 
-    /// §5.1 step 1: the entries matching `name`, in registration order,
-    /// whose scope contains the emitter's, and live. A `once` entry stays
-    /// until a call of it starts.
-    pub fn select(&self, name: &str, scope: &[Scope]) -> Vec<Arc<Entry>> {
+    /// §5.1 step 1: the live entries matching `name`, in registration
+    /// order. Delivery is by name alone (Cordis's flat bus); a listener's
+    /// scope is a descriptor for filters, not a routing rule. A `once`
+    /// entry stays until a call of it starts.
+    pub fn select(&self, name: &str) -> Vec<Arc<Entry>> {
         let mut out: Vec<Arc<Entry>> = Vec::new();
-        let take = |entry: &Arc<Entry>| scope_contains(&entry.info.scope, scope) && entry.live();
+        let take = |entry: &Arc<Entry>| entry.live();
         if let Some(list) = self.exact.get(name) {
             out.extend(list.iter().filter(|e| take(e)).cloned());
         }

@@ -43,7 +43,7 @@ rutis（桌面 / 服务器）                    Android 应用
 - 同一应用内插件互调拿对象本身；跨连接、跨语言按名字经 rutis。
 - rutis 不建模设备：型号、系统版本等由插件提供（如 `device` 插件）。
 - 应用进程死亡、网络断开、`stop()`：对 rutis 都是断开——实例关闭，服务撤销，使用者停下；重连后按 rutis 当前配置重新装载。
-- 事件：应用里插件的监听器登记到宿主的逻辑总线，与其他语言的监听器一样被任何发出方送达（按作用域）；连接所在的实例是这些行的作用域。
+- 事件：应用里插件的监听器登记到宿主的逻辑总线，与其他语言的监听器一样被任何发出方送达（平总线、按名字）；连接所在的实例是这些行的作用域。
 
 ## 三、插件 API
 
@@ -161,7 +161,7 @@ val some = ctx.filter { d -> d.row == "chat" }               // Emitter：同样
 | 登记 | `ctx.on` 时发 `events.on [{ id, name, row, plugin, kind: "sync", prepend, global }]`（`id` 会话内递增、不复用）；`apply` 期间登记的全部得到回复后才答复 `rows.load`；`internal/*` 在本地拒绝，宿主拒绝时按契约报告或让装载失败 |
 | `kind` | 一律 `"sync"`：每次调用一个线程，监听器（含 `suspend` 的）在本线程上 `runBlocking` 跑完再回复，宿主可以同步等它（同 Go），所以 Kotlin 监听器从不引起 `AsyncListener` |
 | 快速路径 | 名字不在 `events.elsewhere`、无前缀匹配，且（`emit`）没有经宿主、未答复的同名 `emit` 时本进程分发；否则发 `events.dispatch`。本进程条目的描述用 `mount` 的 `runtime` |
-| 分发规则 | 快照（名字、登记顺序、作用域链前缀、存活）→ 过滤（非 `global`）→ 每次开始前检查存活；五种方式的语义与"没有结果"（`null`、`false`）按契约 §6 |
+| 分发规则 | 快照（名字、登记顺序、存活）→ 过滤（非 `global`）→ 每次开始前检查存活；五种方式的语义与"没有结果"（`null`、`false`）按契约 §6 |
 | `emit` 顺序 | 每个监听器一个串行队列：同一监听器上的 `emit` 调用按到达顺序一个接一个执行，不同监听器并发 |
 | 过滤 | 快速路径直接对每个描述调用；经宿主时 `filter` 是一个选择器函数引用，凭描述的 `listener` 找到本进程的条目、去掉该字段后再交给插件的谓词；描述是 `Listener`（`name`、`prefix`、`plugin`、`row`、`runtime`、`node`、`scope`、`global`，没有值时为 `null`） |
 | 取消 | 发出方的协程被取消：经宿主时对 `events.dispatch` 发 `cancel`；收到 `events.call` 的 `signal` 中止或 `cancel` 时取消该监听器的协程并中断其线程 |

@@ -26,13 +26,13 @@ impl Event for Joined { const NAME: &'static str = "room/joined"; type Value = S
 | `on_waterfall(ctx, key, \|ctx, e, next\| next.call())` | `on(ctx, key, \|ctx, e, call\| call.next())`；值为 `Option<V>` |
 | `SyncEvent` 的 `on_sync` / `on_waterfall_sync` | 任何事件都可 `on_sync(ctx, key, \|ctx, e, call: SyncCall<'_, V>\| ..)`；`SyncEvent` 删除 |
 | `on_pattern(ctx, EventPattern::any_prefix([..]), ..)` | `on_pattern(ctx, &EventPattern::prefix(p), \|ctx, key, e, call\| ..)`，每次登记一个前缀 |
-| `*_keyed(name, ..)`、`*_instance(id, ..)`、`EventKey::instance(id)` | `EventKey::named` / `dynamic`；实例通道改用作用域（见下） |
+| `*_keyed(name, ..)`、`*_instance(id, ..)`、`EventKey::instance(id)` | `EventKey::named` / `dynamic`；事件按名字送达，实例信息用 `ListenerInfo::scope` 过滤（见下） |
 | `serial(ctx, key, &e)` | `serial(ctx, key, Arc<E>)` |
 | `waterfall(..) -> Result<V>`，`Terminal` 返回 `V` | `-> Result<Option<V>>`，`Terminal` 返回 `Option<V>`；`()` 表示没有终态 |
 | `waterfall_sync(.., \|ctx, e\| Ok(v))` | `\|ctx, e\| Ok(Some(v))` |
 | 自己实现 `Listener` / `SyncListener` / `PatternListener` / `SyncPatternListener` 的 `fn call(&self, ctx, e)`（模式监听器另有 `key`） | `call` 末尾多一个参数：`call: Call<'_, E::Value>`（同步的两个为 `SyncCall<'_, E::Value>`） |
 | `WaterfallListener`、`SyncWaterfallListener`、`PatternWaterfallListener`、`SyncPatternWaterfallListener` | 删除：实现对应的 `Listener` / `SyncListener` / `PatternListener` / `SyncPatternListener`，在里面调用 `call.next()` |
-| `EventKey::instance_id()` | 删除：事件键不再带实例，改用作用域（`Ctx::scope()`） |
+| `EventKey::instance_id()` | 删除：事件键不再带实例；实例信息用 `Ctx::scope()` 作为过滤描述 |
 | `EventPattern::prefixes()` | `EventPattern::as_str()`：一个模式只有一个前缀 |
 
 **行为变化。**
@@ -45,7 +45,25 @@ impl Event for Joined { const NAME: &'static str = "room/joined"; type Value = S
 - 插件开始卸载后，它的每个监听器都不再被调用，卸载等它们正在运行的调用结束（其 `ctx.cancelled()` 已触发）；以前只有实例、模式与同步监听器如此。
 - `rutis/*` 是保留名字：发出它以 `ReservedEvent` 失败。
 
-**作用域取代实例通道。** 加载器对每个组实例调用 `Ctx::mark_scope(group)`；`Ctx::scope()` 是从根起的链。监听器收到自己作用域及其下各作用域发出的事件。要进一步挑选监听器，`ctx.events().filter(|info| ..)` 给出按每个监听器的 `ListenerInfo` 过滤的同样的发出方法。
+**作用域不再是事件送达规则。** 加载器对每个组实例调用 `Ctx::mark_scope(group)`；`Ctx::scope()` 是从根起的链，作为 `ListenerInfo` 的描述供过滤使用。事件在一个 root 的总线上按名字送达，所有监听器都收到（与 Cordis 相同）；要按实例挑监听器，用 `ctx.events().filter(|info| ..)` 按 `info.scope` 等描述筛，或用不同的事件名。默认不做实例隔离。*（0.13–0.15.0 按作用域送达；0.15.1 改为这条平总线，见[迁移到 0.15.1](migration-0.15.1.md)。）*
+
+父级行发出、子级行监听不需要额外接线：
+
+```rust
+// 父级行（t1）：
+ctx.events()
+    .parallel(&ctx, &EventKey::named("session/created"), &created)
+    .await?;
+
+// 子级行（t1/s1），任意深度：
+ctx.events().on(
+    &ctx,
+    &EventKey::named("session/created"),
+    |_ctx, created: &Created| async move { Ok(()) },
+)?;
+```
+
+子级的监听器收到父级的事件，兄弟实例的监听器也收到。`rutis/tests/events.rs::events_reach_every_listener_on_the_bus` 从每一侧运行这个流程。监听器按登记顺序运行；`parallel` 返回 `CordisError::ListenersFailed`，其子错误按登记顺序；`emit` 在监听器运行处报告失败并立即返回。
 
 **诊断。** `EventSubscription` 删除 `key`（`TypeKey`）、`prefixes`、`selected`、`invoked`，改为 `name`（事件名，前缀条目为前缀）、`prefix`、`remote`（别处的监听器）、`global`、`calls`（已开始的调用数）；`owner` 改为 `Option<PluginId>`（登记它的 fiber 已不在时为 `None`）。`ListenerKind` 只有 `Sync`、`Async`、`Any`（`Any` 只来自别处的监听器）：`AsyncWaterfall`、`SyncWaterfall` 删除，按值匹配的代码要改。`EventBacklog` 与 `DispatchAttempt` 带事件的 `name`，不再带 `key`（`TypeKey`）；`DispatchMode` 改为 `rutis::Mode`；`CordisError::ReentrantEvent` 删除：同名的同步分发可以重入（与 Cordis 相同），只有真正的等待环以 `SyncWaitCycle` 失败。
 
@@ -65,7 +83,7 @@ impl Event for Joined { const NAME: &'static str = "room/joined"; type Value = S
 
 ## 叶子插件（Node、Bun、Python、Go）
 
-`ctx.on` 的监听器现在收到在本插件作用域及其内发出的事件，不论发出方在哪个进程、哪种语言、哪个节点；以前只收到同一个运行时进程里的。
+`ctx.on` 的监听器现在收到这条总线上的所有同名事件，不论发出方在哪个进程、哪种语言、哪个节点；以前只收到同一个运行时进程里的。
 
 **`emit` 不再等待，也不再抛出。** 它按登记顺序开始每个监听器后立即返回；监听器的失败在它所在的一侧写一行 `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>`，不影响发出方、不影响其他监听器，也不再结束运行时进程。要等监听器结束、要拿到它们的错误，改用 `parallel`：
 
@@ -117,7 +135,7 @@ err = ctx.Parallel(callerCtx, "session/created", id)  // 等全部；*rutis.Aggr
 | --- | --- |
 | `LocalRuntime::emits`、`RuntimePlugin::emits` | 不写：运行时里的监听器自动登记 |
 | `Mount.emits`、`Mount.events`（`EventSink`） | 不写；Rust 一侧用 `ctx.events().on(..)` 监听运行时发出的事件 |
-| `Process::emit(name, args)` | `ctx.events()` 上的五种方式；`Process::emit` 等全部监听器，对应 `parallel` |
+| `Process::emit(name, args)` | `ctx.events()` 上的五种方式；`Process::emit` 等全部监听器，对应 `parallel`。事件是平总线，所以 `parallel` 送达这条总线上的所有同名监听器 |
 | `runtime::events::{Events, EmitToCordis, EventSink}`（`rutis_bridge::cordis` 也再导出过） | 同上 |
 | 节点：`EventsPlugin`、`NodeEvent`、`node_event(name)`、`Features { outbound, inbound }` | `Features { export, import }`（事件与服务共用，见下面的[节点连接](#节点连接)）；`PeerPlugin` 自己启动 `LinkEventsPlugin`；按名字收发用 `EventKey::<rutis_bridge::events::Args>::dynamic(name)` |
 
@@ -188,7 +206,7 @@ ctx.events().on(&ctx, &EventKey::<RecordUpdated>::of(), listener)?;
 
 不用改代码。变化：
 
-- 事件跨进程：一个 Cordis 插件的 `ctx.on` 收到别的运行时、宿主和节点（按作用域）发出的事件，它的 `ctx.emit` 等也到达它们。
+- 事件跨进程：一个 Cordis 插件的 `ctx.on` 收到别的运行时、宿主和节点发出的事件，它的 `ctx.emit` 等也到达它们。
 - 同步的 `ctx.bail` 遇到异步监听器（`async` 函数，或返回 Promise 的函数）以 `AsyncListener` 失败；以前 Cordis 把 Promise 当作结果。
 - `ctx.emit` 的监听器同步抛错不再抛给发出方、不再停止其后的监听器：它在监听器所在的一侧报告一行（`rutis: listener of <name> in row <row> failed: …`），其余监听器照常执行。
 - `parallel` 的失败仍是子错误按登记顺序的 `AggregateError`（与 Cordis 4.0.4 相同）；新的是信息为 `<n> listeners of <name> failed`，子错误也包括别处监听器的失败。
@@ -224,8 +242,8 @@ ctx.plugin(Events, { peer: 'main', export: ['tock'], import: ['tick'] })
 还写着时报 `the peer config field events was removed in rutis 0.13: list events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`。
 
 - 一项是名字，或以 `*` 结尾的前缀（`session/*`；单独的 `*` 是所有名字）；前缀只用于事件。`export` 里的名字既导出这个服务，也让本节点发出的这个事件到达对端，所以一个名字同时是服务和事件时两者一起共享。
-- 节点之间的事件现在是对端监听器在本节点总线上的条目：五种方式、作用域、过滤、所有值类型都与本机相同（以前一律当作 `parallel`、只能 JSON、断线时静默丢弃）。连接断开时它们离开总线，进行中的调用失败一次。事件只走一跳：引进来的不再往外共享。
-- 对端的监听器位于节点行所在的作用域；以前实例之间的事件会串台，现在按作用域规则不会。
+- 节点之间的事件现在是对端监听器在本节点总线上的条目：五种方式、过滤、所有值类型都与本机相同（以前一律当作 `parallel`、只能 JSON、断线时静默丢弃）。连接断开时它们离开总线，进行中的调用失败一次。事件只走一跳：引进来的不再往外共享。
+- 对端的监听器是这条总线上的一条条目；它们的描述里带节点行所在的作用域，供过滤使用。
 
 ## 行为变化一览
 
@@ -239,6 +257,6 @@ ctx.plugin(Events, { peer: 'main', export: ['tock'], import: ['tick'] })
 | 同步 `bail` / `waterfall_sync` 遇到异步监听器（或返回 Promise / 协程的函数）以 `AsyncListener` 失败 | 所有语言；Cordis 以前把 Promise 当结果 |
 | Rust 监听器以登记它的 `ctx` 被调用，不再是发出方的 | Rust |
 | 卸载等正在运行的监听器（最多 `RUTIS_SHUTDOWN_TIMEOUT`）并发出取消信号 | 所有语言 |
-| 实例里的监听器收不到别的实例的事件 | 作用域 |
+| 事件跨实例按名字送达；要实例隔离，用 `filter` 按 `ListenerInfo::scope` 筛或不同的事件名 | 所有语言 |
 | `rutis/*` 是保留名字：只能监听 | 所有语言 |
 | 插件 API 3；与 0.12 及更早的运行时、节点混用被拒绝 | 所有端 |

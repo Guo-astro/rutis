@@ -290,9 +290,9 @@ type scoped struct {
 	Label string `json:"label"`
 }
 
-// guarantee: events/scope (rows in scopes, the testing tool's emissions
+// guarantee: events/flat (rows in scopes, the testing tool's emissions
 // from a row's scope)
-func TestRowsInScopesHearUpNotDown(t *testing.T) {
+func TestRowsInScopesHearEveryEvent(t *testing.T) {
 	var mu sync.Mutex
 	var heard []string
 	plugin := rutis.Define(rutis.Plugin[scoped]{
@@ -315,7 +315,7 @@ func TestRowsInScopesHearUpNotDown(t *testing.T) {
 	for _, step := range []struct {
 		from *rutistest.Loaded
 		want string
-	}{{s1, "[r s u]"}, {t1, "[r u]"}, {t2, "[r v]"}, {root, "[r]"}} {
+	}{{s1, "[r s u v]"}, {t1, "[r s u v]"}, {t2, "[r s u v]"}, {root, "[r s u v]"}} {
 		mu.Lock()
 		heard = nil
 		mu.Unlock()
@@ -337,7 +337,7 @@ func TestRowsInScopesHearUpNotDown(t *testing.T) {
 	if _, err := s1.Filter(func(l rutis.Listener) (bool, error) { seen = append(seen, l); return false, nil }).Serial(ctx, "t/scope"); err != nil {
 		t.Fatal(err)
 	}
-	if len(seen) != 3 || seen[2].Row != "test-3" || seen[2].Runtime != "go" || len(seen[2].Scope) != 2 {
+	if len(seen) != 4 || seen[2].Row != "test-3" || seen[2].Runtime != "go" || len(seen[2].Scope) != 2 {
 		t.Fatalf("descriptors %+v", seen)
 	}
 }

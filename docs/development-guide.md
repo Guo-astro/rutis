@@ -133,7 +133,7 @@ let state_key = TypeKey::instance::<State>(instance);
 
 ### 区分事件的范围
 
-事件在同一个 root 的总线上按名字分发；`EventKey::named` / `EventKey::dynamic` 给同一类型不同的名字。要让事件只在一个实例（如一个租户、一个会话）里往上传，用作用域：加载器对每个组实例调用 `ctx.mark_scope(group)`，监听器收到自己作用域及其下各作用域发出的事件，收不到兄弟作用域的。发送方要进一步挑选监听器时，用 `ctx.events().filter(..)` 按监听器的描述过滤。
+事件在同一个 root 的总线上按名字分发；`EventKey::named` / `EventKey::dynamic` 给同一类型不同的名字。事件是平总线：所有监听器都收到，与 Cordis 相同。加载器对每个组实例调用 `ctx.mark_scope(group)`，`ctx.scope()` 只是 `ListenerInfo` 里的描述；要按实例挑选监听器，用 `ctx.events().filter(..)` 按描述过滤，或用不同的事件名。
 
 ### 选择服务作用域
 

@@ -161,20 +161,6 @@ func CheckListen(name string) error {
 	return nil
 }
 
-// Within reports whether a listener in the scope `listener` hears what is
-// emitted in `emitter`: the listener's chain is a prefix of the emitter's.
-func Within(listener, emitter []Scope) bool {
-	if len(listener) > len(emitter) {
-		return false
-	}
-	for i := range listener {
-		if listener[i].ID != emitter[i].ID {
-			return false
-		}
-	}
-	return true
-}
-
 // HasResult reports whether v is a result: not nil, undefined, null or
 // false (§1), as a Go value or as a value received from a session.
 func HasResult(v any) bool {

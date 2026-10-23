@@ -64,8 +64,7 @@ type ListenOption func(*events.ListenOptions)
 // instead of after them.
 func Prepend() ListenOption { return func(o *events.ListenOptions) { o.Prepend = true } }
 
-// Global exempts the listener from emitters' filters (Filter); the scope
-// rule still applies to it.
+// Global exempts the listener from emitters' filters (Filter).
 func Global() ListenOption { return func(o *events.ListenOptions) { o.Global = true } }
 
 type listener struct {
@@ -292,9 +291,8 @@ type Emitter struct {
 // Filter is an emitter whose dispatches reach only the listeners `keep`
 // accepts (listeners registered with Global excepted). `keep` runs in
 // this process, once per listener, in registration order, before any
-// listener runs; the scope rule applies first. An error `keep` returns
-// (or a panic) fails the dispatch before any listener runs, with that
-// error (§6).
+// listener runs. An error `keep` returns (or a panic) fails the dispatch
+// before any listener runs, with that error (§6).
 func (c *Ctx) Filter(keep func(Listener) (bool, error)) *Emitter {
 	if keep == nil {
 		panic("rutis: Filter needs a predicate")
@@ -303,8 +301,8 @@ func (c *Ctx) Filter(keep func(Listener) (bool, error)) *Emitter {
 }
 
 // Scope is the chain of loader instances this row runs in, outermost
-// first; empty at the root. A listener hears what is emitted in its scope
-// and in every scope inside it.
+// first; empty at the root. It is a descriptor for filters; event
+// delivery is by name on the one bus.
 func (c *Ctx) Scope() []Scope { return append([]Scope(nil), c.row.scope...) }
 
 // Emit starts every listener of `name` and returns at once. A listener's
@@ -408,9 +406,7 @@ func (e *Emitter) dispatch(ctx context.Context, name string, mode events.Mode, a
 	// The fast path (§5.2): the snapshot of this process's listeners.
 	d := &events.Dispatch{Name: name, Keep: keepOf(e.keep)}
 	for _, l := range rt.listeners[name] {
-		if events.Within(l.row.scope, r.scope) {
-			d.Entries = append(d.Entries, l)
-		}
+		d.Entries = append(d.Entries, l)
 	}
 	rt.mu.Unlock()
 	switch mode {

@@ -503,6 +503,72 @@ async fn node_listeners_are_entries_of_the_other_bus() {
     assert!(gone, "mac's listener left main's bus with the link");
 }
 
+/// A child plugin of `parent`, marked as the scope `tenant`; its context.
+async fn in_tenant(parent: &Ctx) -> (FiberView, Ctx) {
+    struct Child(std::sync::mpsc::Sender<Ctx>);
+    impl Plugin for Child {
+        fn name(&self) -> &str {
+            "in-tenant"
+        }
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+            Box::pin(async move {
+                ctx.mark_scope("tenant")?;
+                self.0.send(ctx.clone()).unwrap();
+                Ok(Effect::Done)
+            })
+        }
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<Ctx>();
+    let view = parent.plugin(Child(tx));
+    (&view).await.unwrap();
+    (view, rx.recv().unwrap())
+}
+
+/// A link inside an instance shares names with entries outside it: it
+/// announces the root's entries and what it accepts is heard from the root,
+/// because delivery is by name, not by scope.
+///
+/// guarantee: events/flat
+#[tokio::test(flavor = "multi_thread")]
+async fn a_link_inside_an_instance_shares_names_outside_it() {
+    let (main, mac, _mac_link) = linked().await;
+    let (_view, tenant) = in_tenant(&main).await;
+    // Both directions carry `t/*`; each accepts whatever the other sends.
+    (&mac.plugin(LinkEventsPlugin::new(id("main"), ["*"], ["t/*"])))
+        .await
+        .unwrap();
+    (&tenant.plugin(LinkEventsPlugin::new(id("mac"), ["*"], ["t/*"])))
+        .await
+        .unwrap();
+
+    // The root's listener is announced by the tenant's link to mac...
+    main.events()
+        .on(
+            &main,
+            &node_event("t/root"),
+            Record(Arc::new(Mutex::new(Vec::new())), Some("pong")),
+        )
+        .unwrap();
+    assert_eq!(
+        serial_until_heard(&mac, "t/root", vec![]).await,
+        Value::Data(json!("pong"))
+    );
+
+    // ...and mac's listener, accepted at the tenant's scope, is heard by the
+    // root's emitter.
+    mac.events()
+        .on(
+            &mac,
+            &node_event("t/mac"),
+            Record(Arc::new(Mutex::new(Vec::new())), Some("pong")),
+        )
+        .unwrap();
+    assert_eq!(
+        serial_until_heard(&main, "t/mac", vec![]).await,
+        Value::Data(json!("pong"))
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_composition_changes_one_feature_and_keeps_its_session() {
     use rutis_bridge::{Features, PeerPlugin};

@@ -138,7 +138,7 @@ test('plugins hear each other', async () => {
 - `emit` returns at once; a failing listener reaches neither the emitter nor the other listeners and is reported in one line where it runs (in a test, in `h.reported` / `t.reported`). To wait for every listener and get their errors, use `await ctx.parallel(...)`: failures are an `AggregateError` in registration order.
 - `waterfall` returns a Promise whenever a listener is in another process, so always `await` it. `bail` is a synchronous `serial`; an `async` listener fails it with `AsyncListener`.
 - `ctx.filter(d => d.row === 'audit').parallel(...)` delivers only to the listeners the filter keeps; `ctx.on(name, fn, { prepend: true })` goes first, `{ global: true }` is exempt from filters.
-- Scopes: `h.load(plugin, { scope: 't1/s1' })` loads a plugin into an instance, `h.at('t1/s1').emit(...)` emits from there; a listener receives only the events emitted in its scope and inside it.
+- Scopes: `h.load(plugin, { scope: 't1/s1' })` loads a plugin into an instance; its listeners carry the scope as a descriptor, and a listener receives every event of the name on the root bus, whatever the emitter's instance. A scope is only a descriptor for filters.
 - On unload the plugin's `ctx.signal` is aborted and its running listeners are waited for (up to the shutdown deadline) before the cleanups run.
 
 The `t` that `load(plugin)` returns has the five methods and `filter` too, emitting from that plugin's scope. For a plugin in another language listening to an event a TypeScript plugin emits, see [Python plugins: events](python-plugin.en.md#events).

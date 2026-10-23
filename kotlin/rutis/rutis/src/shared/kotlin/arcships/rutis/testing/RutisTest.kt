@@ -23,7 +23,6 @@ import arcships.rutis.internal.RuntimeSession
 import arcships.rutis.internal.Shutdown
 import arcships.rutis.internal.checkEmit
 import arcships.rutis.internal.checkListen
-import arcships.rutis.internal.within
 import arcships.rutis.internal.peer.CallChain
 import arcships.rutis.internal.peer.Exported
 import arcships.rutis.internal.peer.MemoryChannel
@@ -287,11 +286,11 @@ internal class Harness(val plugin: Plugin, private val services: Map<String, Any
 
     fun providedNames(): List<String> = synchronized(lock) { handles.keys.toList() }
 
-    /** A dispatch of `name` emitted in `scope` (§5.1). */
-    fun snapshot(name: String, scope: List<Scope>, own: Boolean, keep: (suspend (Listener) -> Boolean)?): Dispatch = synchronized(lock) {
+    /** A dispatch of `name` (§5.1); delivery is by name. */
+    fun snapshot(name: String, own: Boolean, keep: (suspend (Listener) -> Boolean)?): Dispatch = synchronized(lock) {
         dispatches++
         val id = "d$dispatches"
-        val selected = entries.filter { it.name == name && within(if (it.fn != null) emptyList() else scopes[it.row] ?: emptyList(), scope) }
+        val selected = entries.filter { it.name == name }
             .map { Invocation(it, id, own && it.fn == null) }
         Dispatch(name, selected, keep)
     }
@@ -311,8 +310,8 @@ internal class Harness(val plugin: Plugin, private val services: Map<String, Any
             else -> emptyList()
         }
         checkEmit(name)
-        val scope = synchronized(lock) { scopes[row] } ?: throw RutisException(RutisException.BINDING_ERROR, "row $row is not loaded in this runtime")
-        var d = snapshot(name, scope, true, null)
+        if (synchronized(lock) { row !in scopes }) throw RutisException(RutisException.BINDING_ERROR, "row $row is not loaded in this runtime")
+        var d = snapshot(name, true, null)
         val filter = record["filter"] as? RemoteFunction
         if (filter != null) {
             // One call of the emitter's selector, with every candidate the
@@ -590,7 +589,7 @@ class Loaded internal constructor(private val h: Harness, val row: String, val s
     private suspend fun dispatch(name: String, mode: Mode, args: List<Any?>, terminal: (suspend (EventArgs) -> Any?)?, keep: (suspend (Listener) -> Boolean)?): Any? {
         checkEmit(name)
         val values = args.map(Native::fromNative)
-        val d = h.snapshot(name, scope, false, keep)
+        val d = h.snapshot(name, false, keep)
         val last: (suspend (List<Any?>) -> Any?)? = terminal?.let { t -> { raw -> Native.fromNative(t(EventArgs.of(raw, null))) } }
         return Native.toNative(h.run(d, mode, values, last))
     }

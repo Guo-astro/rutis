@@ -133,7 +133,7 @@ Here `ctx` belongs to the parent plugin that owns the state. The instance key le
 
 ### Choosing an event's reach
 
-Events are dispatched by name on the bus within one root; `EventKey::named` / `EventKey::dynamic` give one type other names. To keep an event within one instance (a tenant, a session) going up only, use scopes: the loader calls `ctx.mark_scope(group)` for each group instance, and a listener hears events emitted in its own scope and below it, never in a sibling scope. An emitter that picks listeners further filters them by their descriptors with `ctx.events().filter(..)`.
+Events are dispatched by name on the bus within one root; `EventKey::named` / `EventKey::dynamic` give one type other names. The bus is flat: every listener receives every event, as in Cordis. The loader calls `ctx.mark_scope(group)` for each group instance, but `ctx.scope()` is only a `ListenerInfo` descriptor; an emitter that wants to pick listeners by instance filters them by their descriptors with `ctx.events().filter(..)`, or uses distinct event names.
 
 ### Choosing service scope
 
