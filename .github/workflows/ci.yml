@@ -59,6 +59,12 @@ env:
   PURE_TESTS_LOADER: >-
     check instance_peers instance_services instances lifecycle loader
     migration_example overlay patch_parity peer_rows regressions scope
+  # The jobs only build to run the tests and checks, and none reads a
+  # backtrace: leaving debug info out of the dev and test profiles keeps the
+  # target directories (and Swatinem/rust-cache's archives) smaller and the
+  # links shorter. Release builds already set `debug = 0` in Cargo.toml.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
 # A new push to a pull request cancels its run still in progress (Q12.4).
 # Other runs (by hand, or called by nightly.yml or release.yml, where
