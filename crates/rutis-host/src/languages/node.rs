@@ -90,7 +90,7 @@ impl Language for Node {
     }
 
     /// The package's source as the row.
-    fn dev(&self, dir: &Path) -> Result<(Vec<Value>, Runtimes), String> {
+    fn dev(&self, dir: &Path, _built: Option<&Path>) -> Result<(Vec<Value>, Runtimes), String> {
         let (name, entry) = package_entry(dir)?;
         let row = json!({ "id": id_of(&name), "name": file_url(&entry), "config": {} });
         let runtimes = Runtimes {

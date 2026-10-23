@@ -44,6 +44,11 @@ binary = ["runtimes"]
 # Rows hosted on other nodes (`peer:<id>/<plugin>`), over rutis-bridge links.
 peer = ["dep:rutis-bridge"]
 
+[target.'cfg(unix)'.dependencies]
+# Waiting for a manifest process without reaping it, so its group can still
+# be killed.
+libc = "0.2"
+
 [dev-dependencies]
 # Path only: cargo publish drops it.
 rutis-test-support = { path = "../rutis-test-support" }

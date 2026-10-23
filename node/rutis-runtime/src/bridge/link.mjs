@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { Connector } from './connector.mjs'
+import { bus } from './features.mjs'
 import { ENDPOINT_PROTOCOL } from '../session.mjs'
 
 // A link from a Cordis application, as a full node: the connection and
@@ -118,7 +119,7 @@ export const Link = {
     // and the peer is provided, or rejects with a categorized error.
     async function start(connection) {
       const operations = new Operations()
-      const session = connector.activate(connection, { dispatch: operations.dispatch, endpoint })
+      const session = connector.activate(connection, { dispatch: operations.dispatch, endpoint, report: bus(ctx).report })
       await session.ready
       const missing = required.find(capability => !session.supports(capability))
       if (missing) throw Object.assign(new Error(`${peer} does not declare ${missing}`), { category: 'incompatible' })

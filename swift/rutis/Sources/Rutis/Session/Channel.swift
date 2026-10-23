@@ -112,7 +112,9 @@ package final class LineChannel: Channel, @unchecked Sendable {
                 return line
             }
             scanned = buffer.count
-            if buffer.count - start > maxMessage + 1 {
+            // The newline is not part of the message: a line at index
+            // maxMessage is exactly maxMessage bytes, and valid.
+            if buffer.count - start > maxMessage {
                 throw ChannelError("a message exceeds the limit of \(maxMessage) bytes")
             }
             // Wait in poll, not in read: on macOS a read blocked on this

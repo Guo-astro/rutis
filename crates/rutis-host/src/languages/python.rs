@@ -80,7 +80,7 @@ impl Language for Python {
     /// The module of the first entry point of the group rutis.plugins (so
     /// it runs from the source, installed or not), else the project name as
     /// a module.
-    fn dev(&self, dir: &Path) -> Result<(Vec<Value>, Runtimes), String> {
+    fn dev(&self, dir: &Path, _built: Option<&Path>) -> Result<(Vec<Value>, Runtimes), String> {
         let text = std::fs::read_to_string(dir.join("pyproject.toml"))
             .map_err(|error| error.to_string())?;
         let (id, module) = entry_point(&text)

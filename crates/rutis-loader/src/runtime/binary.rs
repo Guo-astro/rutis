@@ -34,7 +34,7 @@ use rutis::{shutdown_deadline, BoxFuture, CordisError, Ctx, Effect, FiberView, P
 use rutis_bridge::runtime::{
     LocalRuntime, RowSchema, RuntimeHandle, RuntimeState, Stdio as RuntimeStdio,
 };
-use rutis_bridge::transport::local::Processes;
+use rutis_bridge::transport::local::{isolate_manifest_command, ManifestChild, Processes};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -137,9 +137,20 @@ impl Binaries {
     }
 }
 
+/// The manifest format this host reads. A binary may print a newer one;
+/// it is refused whole rather than half-read.
+pub const MANIFEST_FORMAT: u64 = 1;
+
+fn default_manifest_format() -> u64 {
+    MANIFEST_FORMAT
+}
+
 /// What a binary's manifest says.
 #[derive(Clone, Debug, Deserialize)]
 pub struct BinaryManifest {
+    /// The format of this manifest; absent means [`MANIFEST_FORMAT`].
+    #[serde(rename = "manifest", default = "default_manifest_format")]
+    pub manifest: u64,
     /// The SDK version it was built with.
     #[serde(default)]
     pub sdk: String,
@@ -236,31 +247,43 @@ fn retry_busy<T>(mut spawn: impl FnMut() -> std::io::Result<T>) -> std::io::Resu
 }
 
 fn read_manifest(path: &Path) -> Result<BinaryManifest, String> {
-    let mut child = retry_busy(|| {
-        Command::new(path)
-            .arg("--rutis-manifest")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-    })
-    .map_err(|error| match error.raw_os_error() {
+    read_manifest_with_timeout(path, MANIFEST_TIMEOUT)
+}
+
+/// Run `path --rutis-manifest` and read what it prints, within `timeout`.
+/// The process runs in a group of its own and holds none of this process's
+/// descriptors ([`isolate_manifest_command`]); if it, or something it
+/// started that still holds its output, outlives `timeout`, the group is
+/// killed. Its output is read by threads that send what they read, never
+/// joined: a descendant holding the pipes would hold a join forever.
+fn read_manifest_with_timeout(path: &Path, timeout: Duration) -> Result<BinaryManifest, String> {
+    let mut command = Command::new(path);
+    command
+        .arg("--rutis-manifest")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    isolate_manifest_command(&mut command);
+    let mut child = retry_busy(|| command.spawn()).map_err(|error| match error.raw_os_error() {
         // ENOEXEC (Unix), ERROR_BAD_EXE_FORMAT (Windows).
         Some(8) if cfg!(unix) => wrong_platform(),
         Some(193) if cfg!(windows) => wrong_platform(),
         _ => format!("cannot run it: {error}"),
     })?;
+    let mut guard = Some(ManifestChild::new(child.id()));
     let mut stdout = child.stdout.take().expect("piped");
     let mut stderr = child.stderr.take().expect("piped");
-    let reading = std::thread::spawn(move || {
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    let (err_tx, err_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut out = Vec::new();
         let _ = stdout
             .by_ref()
             .take(MANIFEST_OUTPUT + 1)
             .read_to_end(&mut out);
-        out
+        let _ = out_tx.send(out);
     });
-    let errors = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let mut out = Vec::new();
         let _ = stderr
             .by_ref()
@@ -269,35 +292,124 @@ fn read_manifest(path: &Path) -> Result<BinaryManifest, String> {
         // Read the rest and drop it: closing the pipe would kill a binary
         // that writes more than we keep.
         let _ = std::io::copy(&mut stderr, &mut std::io::sink());
-        out
+        let _ = err_tx.send(out);
     });
     let started = Instant::now();
+    let deadline = started + timeout;
+    let mut out = None;
+    let mut err = None;
+    // How long the readers get to deliver what the child wrote after it
+    // ended, before a pipe still open means something it started holds it.
+    const ORPHAN_GRACE: Duration = Duration::from_secs(1);
+    let mut ended_at = None;
+    let mut orphaned = false;
+    // On Unix the process is observed with `waitid(WNOWAIT)`, not reaped:
+    // its pid is also its group id, and it must not be reused while the
+    // group is killed to release the pipes a descendant still holds.
+    #[cfg(not(unix))]
+    let mut exit = None;
+    let mut ended = false;
     let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() > MANIFEST_TIMEOUT => {
-                let _ = child.kill();
-                let _ = child.wait();
+        if !ended {
+            #[cfg(unix)]
+            match exited_without_reaping(&child) {
+                Ok(true) => {
+                    ended = true;
+                    ended_at = Some(Instant::now());
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    stop_manifest(&mut child, &mut guard, false);
+                    return Err(error.to_string());
+                }
+            }
+            #[cfg(not(unix))]
+            match child.try_wait() {
+                Ok(Some(waited)) => {
+                    exit = Some(waited);
+                    ended = true;
+                    ended_at = Some(Instant::now());
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    stop_manifest(&mut child, &mut guard, false);
+                    return Err(error.to_string());
+                }
+            }
+            if !ended && started.elapsed() > timeout {
+                stop_manifest(&mut child, &mut guard, false);
                 return Err(format!(
                     "it did not print its manifest within {} s",
-                    MANIFEST_TIMEOUT.as_secs()
+                    timeout.as_secs_f32()
                 ));
             }
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error.to_string());
+        }
+        receive(&out_rx, &mut out, deadline);
+        receive(&err_rx, &mut err, deadline);
+        if ended {
+            // It is gone, but something it started may still hold its
+            // output. Give the readers a moment for what it wrote, then
+            // kill that group while its id is still this child's (not
+            // reaped on Unix), and only then reap it.
+            if out.is_none() || err.is_none() {
+                let waited = ended_at.unwrap_or_else(Instant::now).elapsed();
+                if waited < ORPHAN_GRACE && started.elapsed() <= timeout {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                orphaned = true;
+                if let Some(guard) = guard.as_ref() {
+                    guard.kill();
+                }
+            }
+            #[cfg(unix)]
+            {
+                let status = child.wait().map_err(|error| error.to_string())?;
+                // Reaped: never kill by its pid again. A group that still
+                // holds the pipes was killed just above, while it was not
+                // reaped; anything else is left as on a successful read.
+                if let Some(guard) = guard.as_mut() {
+                    guard.disarm();
+                }
+                break status;
+            }
+            #[cfg(not(unix))]
+            {
+                if let Some(guard) = guard.as_mut() {
+                    guard.disarm();
+                }
+                break exit.expect("the manifest process ended");
             }
         }
+        std::thread::sleep(Duration::from_millis(10));
     };
-    let out = reading.join().unwrap_or_default();
-    let err = errors.join().unwrap_or_default();
+    // Its output readers may still be finishing what it wrote before it
+    // ended; the deadline still applies.
+    while out.is_none() || err.is_none() {
+        if started.elapsed() > timeout {
+            stop_manifest(&mut child, &mut guard, true);
+            return Err(format!(
+                "its output was still open {} s after it started",
+                timeout.as_secs_f32()
+            ));
+        }
+        receive(&out_rx, &mut out, deadline);
+        receive(&err_rx, &mut err, deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let out = out.unwrap_or_default();
+    let err = err.unwrap_or_default();
     if out.len() as u64 > MANIFEST_OUTPUT {
+        stop_manifest(&mut child, &mut guard, true);
         return Err(format!(
             "it printed more than {} MiB of manifest",
             MANIFEST_OUTPUT / (1024 * 1024)
         ));
+    }
+    if orphaned {
+        return Err(
+            "it ended, but its output was still open: something it started holds it".into(),
+        );
     }
     if !status.success() {
         let err = String::from_utf8_lossy(&err);
@@ -311,7 +423,127 @@ fn read_manifest(path: &Path) -> Result<BinaryManifest, String> {
             .collect();
         return Err(format!("--rutis-manifest exited with {status}: {tail}"));
     }
-    serde_json::from_slice(&out).map_err(|error| format!("it printed no manifest: {error}"))
+    let manifest: BinaryManifest =
+        serde_json::from_slice(&out).map_err(|error| format!("it printed no manifest: {error}"))?;
+    match manifest.manifest {
+        0 => Err(
+            "it prints a manifest of format 0, this host reads format 1: upgrade the SDK".into(),
+        ),
+        format if format > MANIFEST_FORMAT => Err(format!(
+            "it prints a manifest of format {format}, this host reads up to {MANIFEST_FORMAT}: upgrade rutis-host"
+        )),
+        _ => {
+            // Only a manifest that is used leaves what it started alone.
+            if let Some(guard) = guard.as_mut() {
+                guard.disarm();
+            }
+            Ok(manifest)
+        }
+    }
+}
+
+/// Whether the manifest process `child` ended, without reaping it: it stays
+/// a child process until [`Child::wait`](std::process::Child::wait), so the
+/// process group named by its pid cannot be another's when it is killed to
+/// release a descendant's pipes.
+#[cfg(unix)]
+fn exited_without_reaping(child: &std::process::Child) -> std::io::Result<bool> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id() as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    match result {
+        0 => Ok(unsafe { info.si_pid() } != 0),
+        _ => Err(std::io::Error::last_os_error()),
+    }
+}
+
+/// Take what a reader thread sent, if it is there by `deadline`: whether
+/// its output is known now.
+fn receive(
+    from: &std::sync::mpsc::Receiver<Vec<u8>>,
+    into: &mut Option<Vec<u8>>,
+    deadline: Instant,
+) -> bool {
+    use std::sync::mpsc::RecvTimeoutError;
+    if into.is_some() {
+        return true;
+    }
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return false;
+    }
+    match from.recv_timeout(left.min(Duration::from_millis(50))) {
+        Ok(read) => {
+            *into = Some(read);
+            true
+        }
+        // Not yet; the caller looks again (and checks its own deadline).
+        Err(RecvTimeoutError::Timeout) => false,
+        // It panicked before sending: nothing was read.
+        Err(RecvTimeoutError::Disconnected) => {
+            *into = Some(Vec::new());
+            true
+        }
+    }
+}
+
+/// Kill a manifest process's group (what it started with it) and reap it.
+/// With `reaped`, it was already waited for: never kill by its pid then,
+/// which may name another process; only stop guarding it.
+fn stop_manifest(child: &mut std::process::Child, guard: &mut Option<ManifestChild>, reaped: bool) {
+    if !reaped {
+        if let Some(guard) = guard.as_ref() {
+            guard.kill();
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    if let Some(guard) = guard.as_mut() {
+        guard.disarm();
+    }
+}
+
+/// Read `path`'s manifest together with the stamp of the file it describes:
+/// the stamp before and after must be the same, or what was printed may be
+/// another file's (a rebuild in between). A change is tried once more; one
+/// that changes again is not read at all. A file that is gone after printing
+/// its manifest leaves that manifest without a stamp: the start will not
+/// find it either, and reports it gone then.
+fn read_manifest_stamped(path: &Path) -> (Result<BinaryManifest, String>, Option<Stamp>) {
+    let mut tried_again = false;
+    loop {
+        let Some(before) = stamp(path) else {
+            return (Err("there is no such file".into()), None);
+        };
+        let manifest = read_manifest(path);
+        match stamp(path) {
+            Some(after) if after == before => return (manifest, Some(after)),
+            Some(_) if !tried_again => tried_again = true,
+            Some(after) => {
+                return (
+                    Err("the file changed while its manifest was read".into()),
+                    Some(after),
+                );
+            }
+            None => {
+                return (
+                    match manifest {
+                        Ok(manifest) => Ok(manifest),
+                        // It could not be read, and its file is gone: that
+                        // is the report that explains why.
+                        Err(_) => Err("there is no such file".into()),
+                    },
+                    None,
+                );
+            }
+        }
+    }
 }
 
 fn wrong_platform() -> String {
@@ -589,13 +821,15 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
                 let mut binary = match previous {
                     Some(previous) if !forced && previous.stamp == current => previous,
                     _ => {
-                        let manifest = read_manifest(&path).map(Arc::new);
+                        let (manifest, observed) = read_manifest_stamped(&path);
                         Binary {
                             path: path.clone(),
                             runtime: runtime.clone(),
                             listed,
-                            stamp: current,
-                            manifest,
+                            // The file as it was when its manifest was read,
+                            // not before it (#539).
+                            stamp: observed.unwrap_or(current),
+                            manifest: manifest.map(Arc::new),
                             read_at: tokio::time::Instant::now(),
                         }
                     }
@@ -831,7 +1065,7 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
                             replaced_having[0],
                             L::TITLE,
                             replaced_having[0]
-                        )))
+                        )));
                     }
                     0 => {}
                     _ => {
@@ -1613,6 +1847,7 @@ impl<L: BinaryLanguage> Inner<L> {
             label: format!("{runtime} ({})", L::PREFIX),
             runtime: runtime.to_owned(),
             binary: binary.clone(),
+            stamp: Some(launched.stamp.clone()),
             project: self.project.clone(),
             output: self.settings.lock().unwrap().output,
             resolver: self.resolver.clone(),
@@ -1994,6 +2229,9 @@ struct BinaryRuntime<L: BinaryLanguage> {
     label: String,
     runtime: String,
     binary: PathBuf,
+    /// The binary as it was when its manifest was read: it must still be
+    /// that file when its process starts (#539).
+    stamp: Option<Stamp>,
     project: PathBuf,
     /// Its process's standard output and error.
     output: (RuntimeStdio, RuntimeStdio),
@@ -2018,6 +2256,17 @@ impl<L: BinaryLanguage> Plugin for BinaryRuntime<L> {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
         Box::pin(async move {
+            // The manifest was read from this file as it was; a rebuild
+            // since would start a process whose rows are another's (#539).
+            if stamp(&self.binary) != self.stamp {
+                return Err(CordisError::PluginFailed(
+                    std::io::Error::other(format!(
+                        "{} changed after its manifest was read",
+                        self.binary.display()
+                    ))
+                    .into(),
+                ));
+            }
             let local = self
                 .first
                 .lock()
@@ -2134,6 +2383,167 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = manifest_script(dir.path(), "printf '{}'\nhead -c 100000 /dev/zero >&2");
         assert_eq!(read_manifest(&path).unwrap().plugin_api, 0);
+    }
+
+    /// Whether `pid` is still a process.
+    #[cfg(unix)]
+    fn running(pid: i32) -> bool {
+        // SAFETY: kill(pid, 0) checks that the process exists and signals
+        // nothing.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    /// The pid a script wrote, once it is there.
+    #[cfg(unix)]
+    fn written_pid(path: &Path) -> i32 {
+        for _ in 0..500 {
+            if let Ok(pid) = std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .trim()
+                .parse()
+            {
+                return pid;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("{}: no pid was written", path.display());
+    }
+
+    /// A manifest that leaves a child holding its output is not waited for
+    /// forever: the read ends at its deadline and kills what the manifest
+    /// started (#538).
+    #[cfg(unix)]
+    #[test]
+    fn a_manifest_that_leaves_its_output_open_is_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let path = manifest_script(
+            dir.path(),
+            &format!(
+                "sleep 300 &\necho $! > '{}'\nprintf '{{}}'",
+                pidfile.display()
+            ),
+        );
+        let started = Instant::now();
+        let error = read_manifest_with_timeout(&path, Duration::from_millis(300)).unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            error.contains("output was still open") || error.contains("did not print"),
+            "{error}"
+        );
+        let pid = written_pid(&pidfile);
+        for _ in 0..100 {
+            if !running(pid) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("the background process {pid} survived the manifest read");
+    }
+
+    /// The process a manifest is read in has no descriptor above 2 of
+    /// this one's: fd 3, opened here, is not there (#538).
+    ///
+    /// The check runs in a process of its own, started here with fd 3 open:
+    /// swapping this process's fd 3 would reach into the other tests sharing
+    /// it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_manifest_does_not_inherit_fd_three() {
+        const CHILD: &str = "RUTIS_TEST_FD3_CHILD";
+        const SCRIPT: &str = "RUTIS_TEST_FD3_SCRIPT";
+        let dir = tempfile::tempdir().unwrap();
+        let path = manifest_script(
+            dir.path(),
+            "if [ -e /proc/self/fd/3 ]; then printf 'fd 3 survived'; else printf '{}'; fi",
+        );
+        if std::env::var_os(CHILD).is_some() {
+            let path = PathBuf::from(std::env::var_os(SCRIPT).unwrap());
+            assert!(
+                std::fs::metadata("/proc/self/fd/3").is_ok(),
+                "the process the check runs in has no fd 3"
+            );
+            assert_eq!(read_manifest(&path).unwrap().plugin_api, 0);
+            return;
+        }
+        let exe = std::env::current_exe().unwrap();
+        let status = Command::new("/bin/sh")
+            .arg("-c")
+            // fd 3 is the script (inheritable), then the test binary runs
+            // this test again with fd 3 still open.
+            .arg(
+                "exec 3<&- 2>/dev/null; exec 3<\"$1\" || exit 1; \
+                 exec \"$2\" --exact runtime::binary::tests::a_manifest_does_not_inherit_fd_three \
+                 --nocapture",
+            )
+            .arg("sh")
+            .arg(&path)
+            .arg(&exe)
+            .env(CHILD, "1")
+            .env(SCRIPT, &path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "the check in its own process failed");
+    }
+
+    /// A format this host does not read is refused whole, not half-read.
+    #[cfg(unix)]
+    #[test]
+    fn a_manifest_of_a_newer_format_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = manifest_script(dir.path(), "printf '{\"manifest\": 2}'");
+        let error = read_manifest(&path).unwrap_err();
+        assert!(error.contains("format 2"), "{error}");
+        assert!(error.contains("reads up to 1"), "{error}");
+        assert!(error.contains("upgrade rutis-host"), "{error}");
+    }
+
+    /// Format 0 is no format: refused too.
+    #[cfg(unix)]
+    #[test]
+    fn a_manifest_of_format_zero_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = manifest_script(dir.path(), "printf '{\"manifest\": 0}'");
+        let error = read_manifest(&path).unwrap_err();
+        assert!(error.contains("format 0"), "{error}");
+    }
+
+    /// Format 1 and a manifest without a format are read.
+    #[cfg(unix)]
+    #[test]
+    fn a_manifest_of_format_one_or_none_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = manifest_script(dir.path(), "printf '{\"manifest\": 1, \"pluginApi\": 2}'");
+        let manifest = read_manifest(&path).unwrap();
+        assert_eq!((manifest.manifest, manifest.plugin_api), (1, 2));
+        let path = manifest_script(dir.path(), "printf '{\"pluginApi\": 3}'");
+        let manifest = read_manifest(&path).unwrap();
+        assert_eq!(
+            (manifest.manifest, manifest.plugin_api),
+            (MANIFEST_FORMAT, 3)
+        );
+    }
+
+    /// A file that changes while its manifest is read is read once more; a
+    /// file that changes again is reported, not run (#539).
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_changes_while_its_manifest_is_read_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        // Touching the script changes its stamp without changing what it
+        // prints, so every read sees a file that moved under it.
+        let path = manifest_script(dir.path(), "printf '{}'\ntouch \"$0\"");
+        let (manifest, observed) = read_manifest_stamped(&path);
+        let error = manifest.unwrap_err();
+        assert!(
+            error.contains("changed while its manifest was read"),
+            "{error}"
+        );
+        assert!(observed.is_some());
     }
 
     #[cfg(feature = "go")]

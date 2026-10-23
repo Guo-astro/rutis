@@ -1541,17 +1541,21 @@ impl Connection {
         };
         let (id, sequence) = id;
         let mut path = current_path();
+        let synchronous = matches!(waiting, Waiting::Sync { .. });
         // A call forwarded for a caller that waits synchronously: refused,
         // not sent, if it would close a cycle of synchronous waits (#228).
-        let hop = waits::forward(&self.0.tag, &id, sequence, &path).map_err(|cycle| {
-            Error::SyncWaitCycle(format!(
-                "this synchronous call would wait on itself: {}",
-                cycle.join(" -> ")
-            ))
-        })?;
+        // The host's own synchronous `invoke` has no chain to begin with; it
+        // is a hop all the same (#537).
+        let hop =
+            waits::forward(&self.0.tag, &id, sequence, &path, synchronous).map_err(|cycle| {
+                Error::SyncWaitCycle(format!(
+                    "this synchronous call would wait on itself: {}",
+                    cycle.join(" -> ")
+                ))
+            })?;
         // Leaves the wait graph if the call is not sent after all.
         let unsent = Unsent(hop.then(|| (self.0.tag.clone(), id.clone())));
-        let sync = matches!(waiting, Waiting::Sync { .. }) && self.supports("sync-wait");
+        let sync = synchronous && self.supports("sync-wait");
         if let Operation::Await(_, origin) = &call {
             if let Waiting::Sync { origins, .. } = &mut waiting {
                 *origins = origin.clone();

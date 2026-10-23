@@ -321,14 +321,39 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
     let dir = std::path::PathBuf::from(args.first().map(String::as_str).unwrap_or("."));
     // Go runtimes warn of calls that carry no call chain.
     std::env::set_var("RUTIS_DEV", "1");
-    let (config, id) = project::dev_config(&dir)?;
-    warn(&config);
     // A compiled language's project (Go, Swift) is rebuilt, not reloaded:
-    // the loop below does both.
-    let compiled = languages::of_project(&dir).and_then(|language| {
+    // the loop below does both, and its first build runs here, where a
+    // signal still ends it.
+    let language = languages::of_project(&dir);
+    if let Some(language) = language {
+        language.available()?;
+    }
+    let compiled = language.and_then(|language| {
         let build = language.dev_build(&std::path::absolute(&dir).unwrap_or(dir.clone()))?;
         Some((language.key(), build))
     });
+    let (config, id) = match &compiled {
+        Some((_, project)) => {
+            outln!("{}: building", project.name());
+            let started = std::time::Instant::now();
+            let built = tokio::select! {
+                built = project.rebuild(1) => built,
+                signal = signals.next() => {
+                    errln!("rutis-host: {signal}: stopping");
+                    return Ok(Stopped::Done);
+                }
+            };
+            let binary = built?;
+            outln!(
+                "{}: built in {:.1}s",
+                project.name(),
+                started.elapsed().as_secs_f64()
+            );
+            project::dev_config_built(&dir, &binary)?
+        }
+        None => project::dev_config(&dir)?,
+    };
+    warn(&config);
     let mut build = 1;
     let host = host::Host::start(&config).await?;
     for line in status::listening(&host.listening) {

@@ -8,7 +8,7 @@ export class Process {
   #exited
   #session
 
-  constructor(executable, { channel, dispatch, settled, endpoint, inline, requires, holds } = {}) {
+  constructor(executable, { channel, dispatch, settled, endpoint, inline, requires, holds, report } = {}) {
     const { port1, port2 } = new MessageChannel()
     this.#port = port1
     this.#session = new Session({
@@ -20,6 +20,7 @@ export class Process {
       inline,
       requires,
       holds,
+      report,
       pump: done => {
         const sequence = Atomics.load(this.#signal, 0)
         let packet

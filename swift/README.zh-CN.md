@@ -58,4 +58,4 @@ let answer = try await loaded.service("weather").call("today", "rain?", as: Stri
 await loaded.close()
 ```
 
-平台：macOS 14、iOS 17。应用里用 `RutisApp(plugins:connect:id:token:)` 在开始后提供编进应用的插件（`start()`、`stop()`、可观察的 `state`）：[在应用里托管插件](../docs/guide/swift-app.md)。Swift 5 语言模式，工具链 5.10 及以上（参数包）。SDK 自己的测试：`swift run RutisSelfTest`。
+平台：macOS 14、iOS 17。应用里用 `RutisApp(plugins:connect:id:token:)` 在开始后提供编进应用的插件（`start()`、`stop()`、可观察的 `state`）：[在应用里托管插件](../docs/guide/swift-app.md)。Swift 5 语言模式，Swift 6.2 工具链及以上（宏使用 swift-syntax 602–603）。SDK 自己的测试：`swift run RutisSelfTest`。
