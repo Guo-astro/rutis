@@ -1,6 +1,6 @@
 // The release train: the packages released together at one version.
 //   node scripts/train.mjs            print the version; fail on a mismatch
-//   node scripts/train.mjs v0.13.0     also fail unless the version is 0.13.0
+//   node scripts/train.mjs v0.15.0     also fail unless the version is 0.15.0
 //   node scripts/train.mjs --crates   the crates, in publishing order
 //   node scripts/train.mjs --npm      the npm packages, the platform packages included
 import { readFileSync } from 'node:fs'
@@ -40,7 +40,7 @@ const versions = {
   // what its runtime and manifests say it is.
   'go github.com/arcships/rutis/go/rutis': read('go/rutis/version.go').match(/^const Version = "([^"]+)"/m)?.[1],
   // The Kotlin SDK (kotlin/rutis, Maven io.github.arcships:rutis and
-  // io.github.arcships:rutis-ksp; not published to Maven Central yet): its
+  // io.github.arcships:rutis-ksp): its
   // Gradle version, and what its runtime says it is when it greets.
   'maven io.github.arcships:rutis': read('kotlin/rutis/gradle.properties').match(/^version=(.+)$/m)?.[1],
   'maven io.github.arcships:rutis (implementation)': read('kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/Rutis.kt').match(/const val VERSION: String = "([^"]+)"/)?.[1],

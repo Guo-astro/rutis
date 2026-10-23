@@ -74,7 +74,7 @@ impl Language for Bun {
     }
 
     /// The package's source as the row, `bun:<file>`.
-    fn dev(&self, dir: &Path) -> Result<(Vec<Value>, Runtimes), String> {
+    fn dev(&self, dir: &Path, _built: Option<&Path>) -> Result<(Vec<Value>, Runtimes), String> {
         let (name, entry) = package_entry(dir)?;
         let row =
             json!({ "id": id_of(&name), "name": format!("bun:{}", entry.display()), "config": {} });

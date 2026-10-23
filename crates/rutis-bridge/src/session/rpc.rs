@@ -1057,13 +1057,20 @@ fn without_events(far: &str) -> String {
     )
 }
 
-/// Whether the control operation `method` is handled on the reader, before
-/// the next frame (events protocol §4.1, §5.5): the event table changes
-/// (`events.on`, `events.off`, `events.elsewhere`), and the `emit`
-/// dispatches and invocations, which start in arrival order.
+/// Whether the control operation `method` takes its turn in the session's
+/// ordered stream (events protocol §4.1, §5.5, §7.1): every `events.*`
+/// operation, and `rows.ended`, which changes the same table.
+fn is_ordered_op(method: &str) -> bool {
+    method.starts_with("events.") || method == "rows.ended"
+}
+
+/// Whether the ordered control operation `method` runs in its turn, before
+/// the next one starts (events protocol §4.1, §5.5, §7.1): the table
+/// changes (`events.on`, `events.off`, `events.elsewhere`, `rows.ended`),
+/// and the `emit` dispatches and invocations, which start in arrival order.
 fn inline_event_op(method: &str, args: &Value) -> bool {
     match method {
-        "events.on" | "events.off" | "events.elsewhere" => true,
+        "events.on" | "events.off" | "events.elsewhere" | "rows.ended" => true,
         "events.dispatch" | "events.call" => {
             let first = match args {
                 Value::List(items) => items.first(),
@@ -1534,17 +1541,21 @@ impl Connection {
         };
         let (id, sequence) = id;
         let mut path = current_path();
+        let synchronous = matches!(waiting, Waiting::Sync { .. });
         // A call forwarded for a caller that waits synchronously: refused,
         // not sent, if it would close a cycle of synchronous waits (#228).
-        let hop = waits::forward(&self.0.tag, &id, sequence, &path).map_err(|cycle| {
-            Error::SyncWaitCycle(format!(
-                "this synchronous call would wait on itself: {}",
-                cycle.join(" -> ")
-            ))
-        })?;
+        // The host's own synchronous `invoke` has no chain to begin with; it
+        // is a hop all the same (#537).
+        let hop =
+            waits::forward(&self.0.tag, &id, sequence, &path, synchronous).map_err(|cycle| {
+                Error::SyncWaitCycle(format!(
+                    "this synchronous call would wait on itself: {}",
+                    cycle.join(" -> ")
+                ))
+            })?;
         // Leaves the wait graph if the call is not sent after all.
         let unsent = Unsent(hop.then(|| (self.0.tag.clone(), id.clone())));
-        let sync = matches!(waiting, Waiting::Sync { .. }) && self.supports("sync-wait");
+        let sync = synchronous && self.supports("sync-wait");
         if let Operation::Await(_, origin) = &call {
             if let Waiting::Sync { origins, .. } = &mut waiting {
                 *origins = origin.clone();
@@ -2368,12 +2379,13 @@ impl Connection {
         };
         // Event operations run in frame order (events protocol §4.1, §5.5):
         // table changes and emits each in its turn, the rest started in it.
+        // `rows.ended` withdraws a row's entries (§7.1), a table change in
+        // the same order: an `events.on` before it is applied first, an
+        // `events.dispatch` after it no longer reaches the row.
         // Never here: a reader runs no plugin code (a listener, an
         // observer), which could wait for a frame only this reader reads.
         let event_op = match &incoming.call {
-            Accepted::Invoke(target, method, _)
-                if target.is_empty() && method.starts_with("events.") =>
-            {
+            Accepted::Invoke(target, method, _) if target.is_empty() && is_ordered_op(method) => {
                 Some(method.clone())
             }
             _ => None,

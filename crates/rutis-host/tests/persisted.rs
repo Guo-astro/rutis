@@ -197,6 +197,15 @@ fn versions() -> Vec<(String, PathBuf)> {
     versions
 }
 
+/// Whether the `rutis.json` at `path` configures the Swift runtime, which
+/// a machine that is not macOS refuses when it reads the file.
+fn configures_swift(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .is_some_and(|config| !config["runtimes"]["swift"].is_null())
+}
+
 /// Each release's `rutis.json` is read as that release read it.
 /// risk: J3
 /// guarantee: host/rutis-json-format
@@ -205,7 +214,7 @@ fn every_release_s_rutis_json_reads_as_it_did() {
     let versions = versions();
     let names: Vec<&str> = versions.iter().map(|(name, _)| name.as_str()).collect();
     for release in [
-        "0.8.0", "0.9.0", "0.9.1", "0.10.0", "0.11.0", "0.12.0", "0.12.1", "0.13.0",
+        "0.8.0", "0.9.0", "0.9.1", "0.10.0", "0.11.0", "0.12.0", "0.12.1", "0.13.0", "0.15.0",
     ] {
         assert!(
             names.contains(&release),
@@ -214,7 +223,14 @@ fn every_release_s_rutis_json_reads_as_it_did() {
     }
     let write = std::env::var("RUTIS_PERSISTED_WRITE").ok();
     for (version, dir) in &versions {
-        let config = HostConfig::read(&dir.join("rutis.json")).unwrap_or_else(|error| {
+        let sample = dir.join("rutis.json");
+        // A sample that configures Swift is refused where Swift cannot run
+        // (`runtimes.swift needs macOS`): that is the configuration check,
+        // not the format's. macOS reads it as before.
+        if !cfg!(target_os = "macos") && configures_swift(&sample) {
+            continue;
+        }
+        let config = HostConfig::read(&sample).unwrap_or_else(|error| {
             panic!("{version}: {}", normalize(&error, dir));
         });
         assert!(

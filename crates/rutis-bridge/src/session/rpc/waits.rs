@@ -165,18 +165,20 @@ fn decode(path: &[String], dst: &str) -> Vec<Global> {
 }
 
 /// Record that call `did` (number `seq`) on session `dst` is being sent
-/// with chain `path`. When the chain's last call came from another session
-/// and its caller waits synchronously, the call is a hop: if it would close
-/// a wait cycle, nothing is recorded and the cycle is returned, each call as
+/// with chain `path`. When the caller waits synchronously (a `sync` call, or
+/// the chain's last call is marked), the call is a hop: if it would close a
+/// wait cycle, nothing is recorded and the cycle is returned, each call as
 /// `session/id`. When nobody waits for it synchronously (the chain's last
-/// call is not marked), it is an entry. Returns whether either was recorded.
+/// call is not marked, and the call is asynchronous), it is an entry.
+/// Returns whether either was recorded.
 pub(super) fn forward(
     dst: &str,
     did: &str,
     seq: u64,
     path: &[String],
+    synchronous: bool,
 ) -> Result<bool, Vec<String>> {
-    if MARKS.load(Ordering::SeqCst) == 0 || crate::session::rpc::unchained_now() {
+    if crate::session::rpc::unchained_now() || (MARKS.load(Ordering::SeqCst) == 0 && !synchronous) {
         return Ok(false);
     }
     let mut waits = WAITS.lock().unwrap();
@@ -193,6 +195,19 @@ pub(super) fn forward(
         Some((src, sid)) => Hop {
             src,
             sid,
+            dst: dst.to_owned(),
+            did: did.to_owned(),
+            seq,
+            chain,
+            entry: false,
+        },
+        // The caller waits synchronously but no marked call is on its chain:
+        // the host's own `invoke`/`request_sync`, say. It is a hop all the
+        // same: a runtime may call back into this process, which forwards
+        // again, and the chain has to lead back here (#537).
+        None if synchronous => Hop {
+            src: String::new(),
+            sid: String::new(),
             dst: dst.to_owned(),
             did: did.to_owned(),
             seq,
@@ -439,7 +454,13 @@ mod tests {
     fn a_notification_sent_unchained_is_not_in_the_graph() {
         marked("notice_a", "node:1");
         let recorded = crate::session::rpc::unchained(|| {
-            forward("notice_b", "rust:1", 1, &["notice_a/node:1".to_owned()])
+            forward(
+                "notice_b",
+                "rust:1",
+                1,
+                &["notice_a/node:1".to_owned()],
+                false,
+            )
         })
         .unwrap();
         assert!(!recorded);
@@ -460,7 +481,7 @@ mod tests {
     #[test]
     fn an_asynchronous_forward_on_a_marked_chain_is_a_hop() {
         marked("hop_a", "node:1");
-        let recorded = forward("hop_b", "rust:1", 1, &["hop_a/node:1".to_owned()]).unwrap();
+        let recorded = forward("hop_b", "rust:1", 1, &["hop_a/node:1".to_owned()], false).unwrap();
         assert!(recorded);
         let entry = WAITS
             .lock()
@@ -475,14 +496,87 @@ mod tests {
         ended("hop_b");
     }
 
+    /// The host's own synchronous call begins a chain: recorded as a hop
+    /// even with no chain and nothing marked yet, so a runtime that calls
+    /// back and forwards again is checked against it (#537).
+    /// guarantee: bridge/sync-wait-cycle-refused
+    #[test]
+    fn a_synchronous_call_without_a_chain_is_a_hop() {
+        let recorded = forward("root_b", "rust:1", 1, &[], true).unwrap();
+        assert!(recorded);
+        let entry = WAITS
+            .lock()
+            .unwrap()
+            .hops
+            .get(&("root_b".to_owned(), "rust:1".to_owned()))
+            .map(|hop| hop.entry);
+        assert_eq!(entry, Some(false), "the host waits for it");
+        returned("root_b", "rust:1");
+        ended("root_b");
+    }
+
+    /// A host's root synchronous call joins the graph: A calls back into the
+    /// host, the host calls B, B calls back, and the host's next call into A
+    /// closes a cycle. Without the root hop the two runtimes' waits would
+    /// not be connected (#537).
+    /// guarantee: bridge/sync-wait-cycle-refused
+    #[test]
+    fn a_host_root_sync_call_closes_a_cycle_through_two_runtimes() {
+        let one_stack = Profile {
+            stacked: true,
+            reentrant: false,
+        };
+        profile("cycle_a", one_stack);
+        profile("cycle_b", one_stack);
+        // The host calls A synchronously, with no chain of its own.
+        forward("cycle_a", "rust:1", 1, &[], true).unwrap();
+        // A calls the host (marked); the host calls B.
+        marked("cycle_a", "node:1");
+        forward("cycle_b", "rust:2", 2, &["cycle_a/node:1".to_owned()], true).unwrap();
+        // B calls the host (marked); the host calls A again: A is non-
+        // reentrant and waits for B, B waits for A. The call is refused.
+        marked("cycle_b", "node:2");
+        let cycle = forward("cycle_a", "rust:3", 3, &["cycle_b/node:2".to_owned()], true)
+            .expect_err("the host's call into A closes the cycle");
+        assert!(
+            cycle.iter().any(|call| call == "cycle_a/rust:3"),
+            "{cycle:?}"
+        );
+        returned("cycle_a", "rust:1");
+        returned("cycle_b", "rust:2");
+        answered("cycle_a", "node:1");
+        answered("cycle_b", "node:2");
+        ended("cycle_a");
+        ended("cycle_b");
+    }
+
+    /// An asynchronous call with no chain is still an entry: nobody waits
+    /// for it, so it bounds the chain made under it.
+    #[test]
+    fn an_asynchronous_call_without_a_chain_is_an_entry() {
+        marked("call_a", "node:1");
+        let recorded = forward("call_b", "rust:1", 2, &[], false).unwrap();
+        assert!(recorded);
+        let entry = WAITS
+            .lock()
+            .unwrap()
+            .hops
+            .get(&("call_b".to_owned(), "rust:1".to_owned()))
+            .map(|hop| hop.entry);
+        assert_eq!(entry, Some(true));
+        returned("call_b", "rust:1");
+        answered("call_a", "node:1");
+        ended("call_a");
+        ended("call_b");
+    }
+
     /// A call removed after cancellation or a reply leaves no mark behind.
     #[test]
     fn an_answered_call_leaves_no_mark() {
-        let before = MARKS.load(Ordering::SeqCst);
         marked("gone_a", "node:1");
-        assert!(MARKS.load(Ordering::SeqCst) > before);
+        assert_eq!(marks_of("gone_a"), 1);
         answered("gone_a", "node:1");
-        assert_eq!(MARKS.load(Ordering::SeqCst), before);
+        assert_eq!(marks_of("gone_a"), 0);
         ended("gone_a");
     }
 

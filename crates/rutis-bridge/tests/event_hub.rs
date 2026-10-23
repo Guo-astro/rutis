@@ -683,6 +683,83 @@ async fn entries_leave_with_their_row_and_their_session() {
     .await;
 }
 
+/// A started call's reply, settled.
+async fn finish(call: impl std::future::Future<Output = Reply>) -> Result<Value, Error> {
+    settle(call.await?).await
+}
+
+/// guarantee: events/hub-lifecycle
+///
+/// `rows.ended` takes its place in frame order with the session's
+/// `events.*` operations (events protocol §7.1): an `events.on` sent before
+/// it is applied first, and an `events.dispatch` sent after it no longer
+/// reaches the ended row.
+#[tokio::test(flavor = "multi_thread")]
+async fn rows_ended_is_applied_in_frame_order_with_event_operations() {
+    within("rows.ended order", async {
+        let rig = rig().await;
+        rig.load("other", &[]).await;
+        // Each round races once; one round alone may pass by luck.
+        for round in 0..40 {
+            let row = format!("r{round}");
+            let name = format!("t/ended{round}");
+            rig.load(&row, &[]).await;
+            rig.fake
+                .listeners
+                .lock()
+                .unwrap()
+                .insert(row.clone(), answers(json!("ended row")));
+            // Three frames, back to back, before any reply is awaited.
+            let on = rig
+                .far
+                .invoke_started(
+                    "",
+                    "events.on",
+                    Value::List(vec![Value::Data(json!({
+                        "id": row, "name": name, "row": row, "plugin": "fake",
+                        "kind": "async", "prepend": false, "global": false,
+                    }))]),
+                )
+                .unwrap();
+            let ended = rig
+                .far
+                .invoke_started("", "rows.ended", Value::Data(json!([row])))
+                .unwrap();
+            let mut fields = BTreeMap::new();
+            fields.insert("row".into(), Value::Data(json!("other")));
+            fields.insert("name".into(), Value::Data(json!(name)));
+            fields.insert("mode".into(), Value::Data(json!("parallel")));
+            fields.insert("args".into(), Value::List(vec![]));
+            let dispatch = rig
+                .far
+                .invoke_started(
+                    "",
+                    "events.dispatch",
+                    Value::List(vec![Value::Record(fields)]),
+                )
+                .unwrap();
+            finish(on)
+                .await
+                .unwrap_or_else(|error| panic!("round {round}: events.on failed: {error}"));
+            finish(ended).await.unwrap();
+            finish(dispatch).await.unwrap();
+            let reached: Vec<Json> = rig
+                .fake
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|call| call["listener"].clone().json().unwrap())
+                .collect();
+            assert!(
+                !reached.contains(&json!(row)),
+                "round {round}: the dispatch reached the ended row"
+            );
+        }
+    })
+    .await;
+}
+
 /// guarantee: events/hub-reserved
 ///
 /// A runtime cannot emit `rutis/*` (`ReservedEvent`) nor register

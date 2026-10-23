@@ -171,6 +171,20 @@ public let callerPlugin = Rutis.define(Plugin(
         ctx.provide("caller", Caller(ping: try ctx.use("ping", PingClientProxy.self)))
     }))
 
+public struct UndeclaredConfig: Decodable {
+    var service: String
+}
+
+/// Provides a `ping` under its config's name, which no `provides` declares:
+/// announced to the host (contract §4). Another provider of the name makes
+/// the host fail this row (crates/rutis-loader/tests/swift_rows.rs).
+public let swiftUndeclared = Rutis.define(Plugin(
+    name: "swift_undeclared",
+    config: UndeclaredConfig.self,
+    apply: { ctx, config in
+        ctx.provide(config.service, Ping(from: "undeclared"))
+    }))
+
 // ── probe: what crosses the session ──────────────────────────────────────
 
 /// The `work` service: cancellation, errors, objects by reference.

@@ -146,5 +146,5 @@ func readProperty(of object: Any, _ property: String) throws -> Value {
         }
         mirror = current.superclassMirror
     }
-    return .undefined
+    throw RutisError(name: "Error", message: "no property \(property)")
 }

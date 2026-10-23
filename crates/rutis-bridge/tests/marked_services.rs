@@ -126,6 +126,44 @@ impl Notes {
     }
 }
 
+/// Two marked blocks of one type whose methods are the same name for other
+/// languages (`a_b` and `aB` both become `aB`): refused at provide time.
+pub struct Crossed;
+
+#[rutis::service]
+impl Crossed {
+    #[allow(non_snake_case)]
+    pub fn a_b(&self) -> u32 {
+        1
+    }
+}
+
+#[rutis::service]
+impl Crossed {
+    #[allow(non_snake_case)]
+    pub fn aB(&self) -> u32 {
+        2
+    }
+}
+
+/// The same name under cfg's that exclude one another: both arms may be
+/// generated, because no build has both (#541).
+pub struct Exclusive;
+
+#[rutis::service]
+impl Exclusive {
+    #[cfg(target_pointer_width = "16")]
+    pub fn a_b(&self) -> u32 {
+        1
+    }
+
+    #[cfg(not(target_pointer_width = "16"))]
+    #[allow(non_snake_case)]
+    pub fn aB(&self) -> u32 {
+        2
+    }
+}
+
 /// Not marked: not served.
 pub struct Hidden;
 
@@ -144,6 +182,30 @@ async fn call(service: &Arc<dyn HostDispatch>, method: &str, args: Json) -> Resu
 
 fn served(ctx: &Ctx, name: &str) -> Option<Arc<dyn HostDispatch>> {
     ctx.get_as::<dyn HostDispatch>(host_key(name))
+}
+
+/// A method name two marked blocks both export cannot be dispatched: the
+/// provide is refused and says which name (#541).
+#[tokio::test]
+async fn two_blocks_exporting_the_same_method_are_refused() {
+    let root = Ctx::root().unwrap();
+    let error = root.provide(Crossed).unwrap_err();
+    assert!(error.to_string().contains("both export `aB`"), "{error}");
+}
+
+/// One name under `#[cfg]`s that exclude one another: the build has one
+/// method, and the provide succeeds (#541).
+#[tokio::test]
+async fn cfg_exclusive_methods_of_one_name_are_served() {
+    let root = Ctx::root().unwrap();
+    root.provide(Exclusive).unwrap();
+    let exclusive = served(&root, "exclusive").expect("served as exclusive");
+    assert_eq!(
+        call(&exclusive, "aB", Json::Array(Vec::new()))
+            .await
+            .unwrap(),
+        json!(2)
+    );
 }
 
 #[tokio::test]
@@ -671,4 +733,113 @@ async fn calls_by_name_go_through_read_interceptors() {
     let error = call(&service, "text", json!([])).await.unwrap_err();
     assert!(error.to_string().contains("not available"), "{error}");
     root.shutdown().await.unwrap();
+}
+
+/// Provided on an active context, a marked service is served by name only
+/// once the native service it calls is there: a row woken by the name
+/// finds it (#540). Another thread watches while it is provided and
+/// withdrawn, again and again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_name_is_served_after_the_native_service() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let root = Ctx::root().unwrap();
+    let done = Arc::new(AtomicBool::new(false));
+    let watcher = {
+        let (root, done) = (root.clone(), done.clone());
+        std::thread::spawn(move || {
+            let name = host_key("notebook");
+            let native = TypeKey::of::<Notes>();
+            while !done.load(Ordering::SeqCst) {
+                // One registry snapshot: the name is served only while the
+                // native service it calls is there. Separate reads could see
+                // a dispose and the next provide between them.
+                let bindings = root.diagnostics().bindings;
+                let named = bindings
+                    .iter()
+                    .any(|binding| binding.key == name && !binding.removing);
+                let has_native = bindings
+                    .iter()
+                    .any(|binding| binding.key == native && !binding.removing);
+                if named && !has_native {
+                    return false;
+                }
+            }
+            true
+        })
+    };
+    for _ in 0..2000 {
+        if watcher.is_finished() {
+            break;
+        }
+        root.provide(Notes).unwrap().dispose().await.unwrap();
+    }
+    done.store(true, Ordering::SeqCst);
+    assert!(
+        watcher.join().unwrap(),
+        "the name was served while the native service was not"
+    );
+    root.shutdown().await.unwrap();
+}
+
+/// Unloaded, a plugin that provided a marked service stops serving it by
+/// name before the native service goes: a call by name never finds the
+/// name served and the service gone (#540). A user of the native service
+/// looks at the name when it is stopped because the native service goes.
+#[tokio::test]
+async fn unloading_withdraws_the_name_before_the_native_service() {
+    struct Provides;
+    impl rutis::Plugin for Provides {
+        fn name(&self) -> &str {
+            "provides"
+        }
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+            Box::pin(async move {
+                // The disposer is dropped: the unload withdraws it.
+                ctx.provide(Notes)?;
+                Ok(rutis::Effect::Done)
+            })
+        }
+    }
+    let root = Ctx::root().unwrap();
+    let provider = root.plugin(Provides);
+    (&provider).await.unwrap();
+    let named = Arc::new(Mutex::new(None));
+    let user = root.plugin(Uses(named.clone()));
+    reach(&user, rutis::FiberState::Active).await;
+    provider.dispose().await.unwrap();
+    assert_eq!(
+        *named.lock().unwrap(),
+        Some(false),
+        "the name was still served when the native service went"
+    );
+    root.shutdown().await.unwrap();
+}
+
+/// Uses `Notes`; when stopped, notes whether the name is served.
+struct Uses(Arc<Mutex<Option<bool>>>);
+
+impl rutis::Plugin for Uses {
+    fn name(&self) -> &str {
+        "uses"
+    }
+    fn injects(&self) -> &[TypeKey] {
+        static NATIVE: std::sync::OnceLock<[TypeKey; 1]> = std::sync::OnceLock::new();
+        NATIVE.get_or_init(|| [TypeKey::of::<Notes>()])
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+        let named = self.0.clone();
+        let ctx = ctx.clone();
+        Box::pin(async move {
+            Ok(rutis::Effect::Disposer(Box::new(move || {
+                let name = host_key("notebook");
+                let served = ctx
+                    .diagnostics()
+                    .bindings
+                    .iter()
+                    .any(|binding| binding.key == name && !binding.removing);
+                named.lock().unwrap().get_or_insert(served);
+                Ok(())
+            })))
+        })
+    }
 }

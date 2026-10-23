@@ -73,7 +73,9 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 ## 0.15.0
 
-`rutis-macros`（`#[rutis::service]`，#510）首次发布到 crates.io，在列车里排在 `rutis` 之前（`rutis` 依赖它）：`CARGO_TOKEN` 要能发布新的 crate。
+`rutis-macros`（`#[rutis::service]`，#510）首次发布到 crates.io，在列车里排在 `rutis` 之前（`rutis` 依赖它）：`CARGO_TOKEN` 要能发布新的 crate。Kotlin SDK（`io.github.arcships:rutis`、`io.github.arcships:rutis-ksp`）首次发布到 Maven Central；environment `maven` 缺 secret 时这一步跳过并在运行摘要里写明，其余照常发布。Swift 包没有注册表，SwiftPM 直接取 `v0.15.0` tag（第一个带根 `Package.swift` 的版本）。0.14 没有单独发布，它的内容在这一版里。
+
+`rutis.json` 的 `format` 仍是 1，持久化样本从 0.13.0 复制，加上 0.13 之后新增的写法：`runtimes.go` 的 `restart`（`"on-failure"`），`runtimes.swift`（`binaries`、`idle`、`restart: "exit"`，行 `swift-MacKit:clipboard`），远程运行时的 `language` 用 `"swift"`、`"kotlin"`（连进来的 iPhone、Android 应用，各配一个 instanced 分组）和 `"kt"`（宿主拨号的应用，配一个节点行）。persisted 测试的期望照旧只记不是默认值的 `restart`，`swift` 与 `go` 记同样的字段，旧样本的期望不变。dsh 的用户层自 0.13.0 以来没有变化，`cordis.patch.yml` 原样复制。发布门（`RUTIS_E2E_ONLY_OLDER=1`）的跨版本测试与 0.13.0 相遇，两边都声明 `events-v2`，相遇正常工作（`bridge/cross-version-meetings`），早于 0.13 的版本仍被拒绝（`events/old-peer-refused`）。
 
 ## 0.13.0
 

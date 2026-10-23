@@ -2,7 +2,7 @@
 
 [English](swift-plugin.en.md)
 
-从创建项目到发布，再到被宿主使用。需要 macOS 14 或更高，以及 Xcode 16 或更高（只有 Command Line Tools 也能构建和运行插件，但 `swift test` 要用 Xcode 的测试框架）；SDK 本身按 Swift 5 语言模式编写，`new` 生成的项目也是。
+从创建项目到发布，再到被宿主使用。需要 macOS 14 或更高，以及带 Swift 6.2 工具链的 Xcode 26 或更高（只有 Command Line Tools 也能构建和运行插件，但 `swift test` 要用 Xcode 的测试框架）；SDK 本身按 Swift 5 语言模式编写，`new` 生成的项目也是。
 
 Swift 插件和 TypeScript、Python、Go 插件的写法与规则相同（见 [插件 API](plugin-api.md)）；和 Go 一样，**Swift 插件编译成二进制，一个二进制就是宿主里的一个运行时进程**。一个二进制可以带一个或几个插件；宿主可以同时运行很多个二进制，只在有行用到时才启动它。Swift 用来接入 macOS 给本机程序的能力：日历与提醒（EventKit）、通讯录、辅助功能与 Apple 事件自动化、屏幕录制、Core ML。
 
@@ -80,7 +80,7 @@ public let plugin = Rutis.define(Plugin(
 | 方法 | `@RutisService` 让每个不是 `private` / `fileprivate` 的实例方法成为服务的方法，线上名是基本名（`today`），参数按位置。重载、泛型方法、不是 `async throws` 的函数参数在编译期报错。看不到父类和协议扩展里的方法：在类型里声明 |
 | 同步还是异步 | 默认 `async`，与 Swift 签名无关；`provides: [... .of(T.self, sync: ["unit"])]` 标出同步方法。`sync` 方法自己也可以是 `async`、调用别的服务：Task 等待时不占线程。同步方法会阻塞 Node 调用方的事件循环：做 I/O 的方法保持 `async` |
 | 使用服务 | 带 `@RutisClient` 的协议（方法须 `async throws`）；`ctx.use("llm", LLMProxy.self)` 返回 `any LLM`，提供者在同一进程且实现了这个协议时就是它本身。也可以按名字调用：`try await ctx.use("llm").call("ask", values: ["q"], as: String.self)` |
-| 调用链 | 随 Task 传递（`@TaskLocal`）：插件代码不传任何上下文。插件用 `ctx.spawn { ... }` 起的 Task 带着它，卸载时被取消 |
+| 调用链 | 随 Task 传递（`@TaskLocal`）：插件代码不传任何上下文。插件用 `ctx.spawn { ... }` 起的 Task 带着它，卸载时被取消；卸载至多等它们到关闭时限（和监听器共用），不响应取消的 Task 不会拖住卸载 |
 | 并发 | 每个进来的调用在自己的 Task 里运行：提供的对象要能并发使用 |
 | 取消 | 调用方放弃时取消方法的 Task（`Task.checkCancellation()` 抛 `CancellationError`）；在已取消的 Task 里发出的调用抛 `CancellationError`；取消后仍要调用（比如报告自己已停下）时在 `Task { … }` 里调用，它带着调用链、不带取消 |
 | 值 | 数据（`Codable` 结构体、数组、字典、数字、字符串）按值复制，用 SDK 自己的编码器与解码器；`Date`、`Data`、`Decimal`、`UUID`、`Set`、键不是 `String` 的字典，以及 `Rutis.DateTime`、`Rutis.CalendarDate`、`Rutis.TimeOfDay`、`Rutis.BigInt` 按各自的值传递（见下表）；超出 ±(2^53−1) 的整数（`Int64`、`UInt64` 等）自动按大整数传递；`@RutisService` 类型的实例和闭包按引用传递；类型为 `Any` 的参数收到原生值 |

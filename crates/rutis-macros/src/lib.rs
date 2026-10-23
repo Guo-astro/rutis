@@ -230,6 +230,13 @@ fn camel(name: &str) -> String {
         .unwrap_or_default()
 }
 
+/// How a method's error is reported: now, or under the cfg that keeps it in
+/// the build.
+enum Refusal {
+    Immediate(syn::Error),
+    Guarded(Vec<Tokens>),
+}
+
 fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
     let options = options(attr)?;
     let mut block: ItemImpl = syn::parse2(item).map_err(|error| {
@@ -289,7 +296,7 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
     // tell which cfgs hold).
     let mut guarded = Vec::new();
     let mut arms = Vec::new();
-    let mut methods = Vec::new();
+    let mut methods: Vec<(String, Vec<Tokens>)> = Vec::new();
     for item in &block.items {
         let ImplItem::Fn(method) = item else {
             continue;
@@ -305,14 +312,23 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
             continue;
         }
         let cfgs = cfgs(&method.attrs);
-        let mut refuse = |error: syn::Error| {
-            if cfgs.is_empty() {
-                push(error);
+        // An error at the method: direct unless the method (or its impl) is
+        // under `#[cfg]`, in which case it is emitted under that cfg.
+        let refuse = |error: syn::Error| -> Refusal {
+            if cfgs.is_empty() && block_cfgs.is_empty() {
+                Refusal::Immediate(error)
             } else {
-                for error in error {
-                    let error = error.to_compile_error();
-                    guarded.push(quote!(#(#cfgs)* #error));
-                }
+                Refusal::Guarded(
+                    error
+                        .into_iter()
+                        .map(|error| {
+                            let error = error.to_compile_error();
+                            // The output adds the impl's cfgs to every
+                            // guarded error.
+                            quote!(#(#cfgs)* #error)
+                        })
+                        .collect(),
+                )
             }
         };
         match method.sig.inputs.first() {
@@ -325,29 +341,48 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
             // Constructors and associated functions are not the service's.
             None | Some(FnArg::Typed(_)) => continue,
             Some(FnArg::Receiver(receiver)) => {
-                refuse(syn::Error::new(
+                match refuse(syn::Error::new(
                     receiver.span(),
                     format!(
                         "`{}` cannot be called from other languages: a marked service is shared, so its methods take `&self`; mark it #[service(skip)] to leave it out",
                         method.sig.ident
                     ),
-                ));
+                )) {
+                    Refusal::Immediate(error) => push(error),
+                    Refusal::Guarded(errors) => guarded.extend(errors),
+                }
                 continue;
             }
         }
         let js = camel(&method.sig.ident.to_string());
-        // Two methods of one name for other languages: only when `#[cfg]`
-        // keeps one of them out of each build.
-        if methods
-            .iter()
-            .any(|(known, known_cfgs): &(String, Vec<Tokens>)| {
-                *known == js && (known_cfgs.is_empty() || cfgs.is_empty())
-            })
-        {
-            refuse(syn::Error::new(
-                method.sig.ident.span(),
-                format!("two methods are `{js}` for other languages"),
-            ));
+        // Two methods of one name for other languages. Without `#[cfg]` they
+        // are always both in the build: a compile error, at the method.
+        // With `#[cfg]`s, only a build that keeps both must fail, so the
+        // error goes under both cfg sets and the compiler decides. Doing
+        // that pairwise also covers three or more definitions.
+        let mut skip = false;
+        for (known, known_cfgs) in &methods {
+            if *known != js {
+                continue;
+            }
+            let message = format!("two methods are `{js}` for other languages");
+            if known_cfgs.is_empty() && cfgs.is_empty() {
+                // Both are always there, except that a cfg on the impl may
+                // leave the whole block out: guard the error with it then.
+                if block_cfgs.is_empty() {
+                    push(syn::Error::new(method.sig.ident.span(), message));
+                    skip = true;
+                    break;
+                }
+                let error = syn::Error::new(method.sig.ident.span(), message).to_compile_error();
+                guarded.push(quote!(#error));
+                skip = true;
+                break;
+            }
+            let error = syn::Error::new(method.sig.ident.span(), message).to_compile_error();
+            guarded.push(quote!(#(#known_cfgs)* #(#cfgs)* #error));
+        }
+        if skip {
             continue;
         }
         match arm(&rutis, ty, method, &js) {
@@ -357,10 +392,13 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
             }
             Err(error) => {
                 for error in error {
-                    refuse(syn::Error::new(
+                    match refuse(syn::Error::new(
                         error.span(),
                         format!("{error}; or mark it #[service(skip)] to leave it out"),
-                    ));
+                    )) {
+                        Refusal::Immediate(error) => push(error),
+                        Refusal::Guarded(errors) => guarded.extend(errors),
+                    }
                 }
             }
         }
@@ -1000,6 +1038,80 @@ mod tests {
         assert!(message.contains("`mutable` cannot be called"), "{message}");
         let at = error.mac.path.segments.last().unwrap().ident.span();
         assert_eq!(at.start().line, 4, "the error is at the method");
+    }
+
+    /// Two cfg-guarded methods of one name are both generated, and their
+    /// clash is a `compile_error!` under both cfgs: only a build that keeps
+    /// both fails (#541).
+    #[test]
+    fn cfg_methods_of_one_name_clash_only_in_a_build_with_both() {
+        let item: Tokens = r#"
+            impl A {
+                #[cfg(feature = "a")] pub fn a_b(&self) -> u32 { 1 }
+                #[cfg(feature = "a")] pub fn aB(&self) -> u32 { 2 }
+            }
+        "#
+        .parse()
+        .unwrap();
+        let out = expand(quote!(::rutis), Tokens::new(), item).unwrap();
+        let file: syn::File = syn::parse2(out).unwrap();
+        let errors: Vec<&syn::ItemMacro> = file
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Macro(error)
+                    if error
+                        .mac
+                        .path
+                        .segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "compile_error") =>
+                {
+                    Some(error)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 1, "one clash, one error");
+        assert_eq!(errors[0].attrs.len(), 2, "under both methods' cfgs");
+        let text = errors[0].mac.tokens.to_string();
+        assert!(text.contains("two methods are `aB`"), "{text}");
+    }
+
+    /// Two plain methods of one name in a cfg-guarded impl: the error goes
+    /// under the impl's cfg, so a build without the impl has neither.
+    #[test]
+    fn a_duplicate_method_error_is_guarded_by_the_impl_cfg() {
+        let item: Tokens = r#"
+            #[cfg(feature = "a")]
+            impl A {
+                pub fn a_b(&self) -> u32 { 1 }
+                pub fn aB(&self) -> u32 { 2 }
+            }
+        "#
+        .parse()
+        .unwrap();
+        let out = expand(quote!(::rutis), Tokens::new(), item).unwrap();
+        let file: syn::File = syn::parse2(out).unwrap();
+        let errors: Vec<&syn::ItemMacro> = file
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Macro(error)
+                    if error
+                        .mac
+                        .path
+                        .segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "compile_error") =>
+                {
+                    Some(error)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 1, "one clash, one error");
+        assert_eq!(errors[0].attrs.len(), 1, "under the impl's cfg");
     }
 
     #[test]

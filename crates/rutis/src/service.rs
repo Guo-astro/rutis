@@ -63,9 +63,23 @@
 //!     }
 //! }
 //! ```
+//!
+//! Two methods whose names are the same for other languages can both be
+//! present only if `#[cfg]` keeps them apart; a build that has both fails:
+//!
+//! ```compile_fail
+//! pub struct Twice;
+//!
+//! #[rutis::service]
+//! impl Twice {
+//!     #[cfg(all())] pub fn a_b(&self) {}
+//!     #[cfg(all())] pub fn aB(&self) {}
+//! }
+//! ```
 
 use std::any::{Any, TypeId};
 use std::cell::Cell;
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -391,10 +405,25 @@ pub fn name_of(type_id: TypeId) -> Option<&'static str> {
 
 /// The name the marked blocks `entries` of one type export it as: the one
 /// a block names, else the derived one. Two blocks naming it differently
-/// is an error.
+/// is an error, and so is a method name two blocks both export: the
+/// dispatcher could only ever reach one of them (#541).
 pub fn exported_name(entries: &[&'static Entry]) -> Result<&'static str, CordisError> {
     let mut named: Option<&'static str> = None;
-    for entry in entries.iter().filter(|entry| entry.named) {
+    let mut methods = HashSet::new();
+    for entry in entries {
+        for method in entry.methods() {
+            if !methods.insert(*method) {
+                return Err(CordisError::Validation {
+                    issues: vec![format!(
+                        "two #[rutis::service] blocks of {} both export `{method}`: rename one (they are the same name for other languages)",
+                        entry.type_name()
+                    )],
+                });
+            }
+        }
+        if !entry.named {
+            continue;
+        }
         match named {
             Some(name) if name != entry.name => {
                 return Err(CordisError::Validation {
@@ -434,10 +463,29 @@ pub struct Exposure<'a> {
 }
 
 /// What serves marked services to other languages: the bridge installs it.
+///
+/// A provide asks [`admit`](Exposer::admit) before the native service is
+/// registered and [`expose`](Exposer::expose) after it: a name that cannot
+/// be served refuses the provide with nothing served, and the name is
+/// never served before the native service it calls exists. Exposed after
+/// it, the name is withdrawn before it, by the provide's disposer and by
+/// the provider's unload alike (cleanups run last in, first out).
 pub trait Exposer: Send + Sync + 'static {
+    /// Whether the marked service `exposure` describes can be served by
+    /// name: its blocks agree on the name and the name is free where it
+    /// would be served ([`vacant`]). Nothing is registered.
+    fn admit(&self, exposure: &Exposure<'_>) -> Result<(), CordisError>;
     /// Serve the marked service `exposure` describes by name, in the same
-    /// scope as the native one. The returned disposer stops serving it.
+    /// scope as the native one, which is provided by now. The returned
+    /// disposer stops serving it.
     fn expose(&self, exposure: Exposure<'_>) -> Result<Disposer, CordisError>;
+}
+
+/// Whether a provide of `key` on `ctx` finds its slot free (in the
+/// isolation scope `ctx` gives `key`): for an [`Exposer`] checking the name
+/// before the native service is registered.
+pub fn vacant(ctx: &Ctx, key: &TypeKey) -> bool {
+    !ctx.slot_taken(key)
 }
 
 /// The `check()` predicate a service was provided with
@@ -460,6 +508,14 @@ pub(crate) fn marked<T: ?Sized + 'static>(ctx: &Ctx) -> Option<Vec<&'static Entr
     let generation = ctx.code_generation().map(Generation);
     let entries = entries_of(TypeId::of::<T>(), generation);
     (!entries.is_empty()).then_some(entries)
+}
+
+/// Whether a marked service can be served by name ([`Exposer::admit`]).
+pub(crate) fn admit(exposure: &Exposure<'_>) -> Result<(), CordisError> {
+    match EXPOSER.get() {
+        Some(exposer) => exposer.admit(exposure),
+        None => Ok(()),
+    }
 }
 
 /// Serve a marked service by name ([`marked`]).

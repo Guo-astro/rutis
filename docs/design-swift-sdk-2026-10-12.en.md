@@ -221,7 +221,7 @@ let weather = Rutis.define(Plugin(
 | `ctx.effect(cleanup)` | `cleanup` may be `async`; runs in reverse order on unload |
 | `ctx.on` / `emit` / `parallel` / `serial` / `waterfall` / `bail` / `filter` | unified events, §4.7 |
 | `ctx.scope` | the row's scope chain `[Rutis.Scope]` (`rows.load`'s seventh argument) |
-| `ctx.spawn { ... }` | runs in a child Task (inheriting the call chain); errors are written to stderr; cancelled and awaited on unload |
+| `ctx.spawn { ... }` | runs in a child Task (inheriting the call chain); errors are written to stderr; cancelled and awaited on unload, within the shutdown deadline it shares with the listeners (§7.1), writing `rutis: tasks of row <row> still running after <s>s; unloading anyway` and waiting no longer past it |
 | Unload signal | the row's Task tree is cancelled on unload: `Task.isCancelled` / `try Task.checkCancellation()`, Swift's own cancellation |
 | `ctx.project` | the project directory (in shape ②, a directory the app chooses) |
 | `Rutis.NoConfig` | no configuration |
@@ -236,7 +236,7 @@ Swift has no runtime reflection of methods (`Mirror` enumerates stored propertie
 - Which methods: instance methods that are not `private` / `fileprivate` (`static`, `init`, subscripts and properties do not count), the counterpart of Go's "exported methods" and Python's "not starting with `_`". The wire name is the method's base name (`today(_:)` → `today`); arguments are positional, labels do not cross; two overloads with one base name are a compile error.
 - Methods may be synchronous or `async`, `throws` or not; parameters and results are any value of §4.5 (`Codable`, closures, `@RutisService` instances, `Any?`).
 - A method's `sync` / `async` is a declaration, not the Swift signature: methods listed in `provides`' `.of(T.self, sync: ["unit"])` are `sync`, everything else, and every method of an undeclared service, is `async` (contract §4). A literal `["today": .async, "unit": .sync]` also works.
-- Automatic exposure: a service from `ctx.provide` not in `provides` is announced by contract §4 as `service(id, handle, version, { row, methods })`, the methods taken from the method table, all `async`; only to a host whose `mount` carried `announce: true`, and `rows.load` is answered once those replies arrived (a name clash fails the load). With a host older than 0.12, the one-time stderr notice of the contract applies.
+- Automatic exposure: a service from `ctx.provide` not in `provides` is announced by contract §4 as `service(id, handle, version, { row, methods })`, the methods taken from the method table, all `async`; only to a host whose `mount` carried `announce: true`, and `rows.load` is answered once those replies arrived. The reply is always `undefined`: on a name clash the host fails the row itself, as the later provider, naming both, once `rows.load` is answered; waiting for the replies is what lets it do so before the row counts as loaded, and the SDK reads no error from them. With a host older than 0.12, the one-time stderr notice of the contract applies.
 - `announces` in `rows.schema` and the manifest is always `true`.
 - Calls in the same process: the object is called directly (S7); the path through the method table without encoding is used when the object does not conform to the user's protocol.
 
@@ -323,7 +323,7 @@ let some = ctx.filter { $0.row == "chat" }                        // Rutis.Emitt
 | Cancellation | the emitting Task is cancelled: through the host, a `cancel` is sent for the `events.dispatch`; an aborted `signal` or a `cancel` for an `events.call` cancels that listener's Task |
 | Reserved names | emitting `rutis/*` is refused synchronously with `ReservedEvent` (`rutis/* events are emitted by rutis only: <name>`); `rutis/*` can be listened to |
 | Reporting | failures nobody waits for write one stderr line each, with the contract §6 wording (in shape ②, to `RutisApp`'s log callback, stderr by default) |
-| Unload | after `rows.unload`, refuse the row's `events.call` at once → withdraw provided services → cancel the row's running listener Tasks and wait for them, at most the shutdown deadline (shape ① `RUTIS_SHUTDOWN_TIMEOUT`, shape ② the `shutdownTimeout` parameter, 10 seconds by default), writing `rutis: listeners of row <row> still running after <s>s; unloading anyway` past it → cleanups in reverse order |
+| Unload | after `rows.unload`, refuse the row's `events.call` at once → withdraw provided services → cancel the row's running listener Tasks and its `ctx.spawn` Tasks → wait for the listeners, at most the shutdown deadline (shape ① `RUTIS_SHUTDOWN_TIMEOUT`, shape ② the `shutdownTimeout` parameter, 10 seconds by default), writing `rutis: listeners of row <row> still running after <s>s; unloading anyway` past it → then wait for the `ctx.spawn` Tasks for what is left of the same deadline (not at all once the listeners used it up), writing `rutis: tasks of row <row> still running after <s>s; unloading anyway` past it → cleanups in reverse order |
 | Disconnection | `elsewhere` becomes empty; every row unloads |
 
 ## 5. Concurrency, call chains, cancellation

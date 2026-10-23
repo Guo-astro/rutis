@@ -252,9 +252,13 @@ final class Row: @unchecked Sendable {
         }
     }
 
-    /// Cancels its listeners and tasks; waits for the listeners at most the
-    /// shutdown deadline (then reports so, §7.1), and for its tasks.
+    /// Cancels its listeners and tasks; waits for the listeners, then for
+    /// its tasks (ctx.spawn), within one shutdown deadline, reporting what
+    /// was still running past it (§7.1): a task that ignores cancellation
+    /// does not hold the unload.
     func stop() async {
+        let budget = settings.shutdownTimeout
+        let started = DispatchTime.now().uptimeNanoseconds
         let (tasks, waiting, released): ([Task<Void, Never>], Event?, [Event]) = lock.withLock {
             cancelled = true
             let tasks = Array(running.values) + Array(spawned.values)
@@ -267,13 +271,22 @@ final class Row: @unchecked Sendable {
         for task in tasks { task.cancel() }
         for event in released { event.fire() }
         if let waiting {
-            let budget = settings.shutdownTimeout
             if await !waiting.wait(seconds: budget) {
                 Events.report("rutis: listeners of row \(name) still running after \(Events.seconds(budget))s; unloading anyway", to: settings.log)
+                return
             }
         }
         let rest = lock.withLock { Array(spawned.values) }
-        for task in rest { await task.value }
+        guard !rest.isEmpty else { return }
+        let ended = Event()
+        Task {
+            for task in rest { await task.value }
+            ended.fire()
+        }
+        let spent = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
+        if await !ended.wait(seconds: budget - spent) {
+            Events.report("rutis: tasks of row \(name) still running after \(Events.seconds(budget))s; unloading anyway", to: settings.log)
+        }
     }
 }
 
@@ -566,10 +579,18 @@ final class Runtime: @unchecked Sendable {
             return row
         }
         guard let row else { return }
+        // Taken and cleared before awaiting: a cleanup that captures the
+        // row's context would otherwise form Row -> cleanup -> Ctx -> Row,
+        // and the row would outlive its unload even when a cleanup hangs.
+        let cleanups: [() async throws -> Void] = lock.withLock {
+            let cleanups = row.cleanups
+            row.cleanups = []
+            return cleanups
+        }
         flush()
         await row.stop()
         var errors: [Error] = []
-        for cleanup in row.cleanups.reversed() {
+        for cleanup in cleanups.reversed() {
             do { try await cleanup() } catch { errors.append(error) }
         }
         if let first = errors.first {

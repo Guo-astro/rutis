@@ -106,4 +106,26 @@ struct PeerTests {
         await runtime.closed()
         XCTAssertNotNil(runtime.error)
     }
+
+    /// A read that fails ends the session and closes its channel: nothing
+    /// reads it any more, and its descriptor would stay open (#542).
+    func testAReadErrorClosesTheChannel() async throws {
+        let channel = FailingChannel()
+        let peer = try Peer(channel: channel, options: PeerOptions())
+        try peer.start()
+        await peer.closed()
+        XCTAssertTrue("\(peer.error.map { "\($0)" } ?? "")".contains("read failed"), "\(String(describing: peer.error))")
+        for _ in 0 ..< 200 where !channel.isClosed { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertTrue(channel.isClosed, "the channel is still open after a read error")
+    }
+}
+
+/// A channel whose every read fails.
+final class FailingChannel: Channel, @unchecked Sendable {
+    private let lock = NSLock()
+    private var closed = false
+    var isClosed: Bool { lock.withLock { closed } }
+    func send(_ message: [UInt8]) throws {}
+    func receive() throws -> [UInt8]? { throw ChannelError("read failed") }
+    func close() { lock.withLock { closed = true } }
 }

@@ -73,7 +73,9 @@ The nightly stress workflow also runs two soak tests (repeated link disconnect/r
 
 ## 0.15.0
 
-`rutis-macros` (`#[rutis::service]`, #510) is published to crates.io for the first time, first in the train (`rutis` depends on it): `CARGO_TOKEN` must be able to publish new crates.
+`rutis-macros` (`#[rutis::service]`, #510) is published to crates.io for the first time, first in the train (`rutis` depends on it): `CARGO_TOKEN` must be able to publish new crates. The Kotlin SDK (`io.github.arcships:rutis`, `io.github.arcships:rutis-ksp`) is published to Maven Central for the first time; when the environment `maven` lacks a secret, that step is skipped and the run summary says so, and everything else is published. The Swift package has no registry: SwiftPM takes the `v0.15.0` tag (the first release with a root `Package.swift`). 0.14 was not released on its own; its work is in this release.
+
+`format` of `rutis.json` stays 1. The persisted sample is copied from 0.13.0 and uses what was added since: `restart` of `runtimes.go` (`"on-failure"`), `runtimes.swift` (`binaries`, `idle`, `restart: "exit"`, the row `swift-MacKit:clipboard`), and a remote runtime's `language` as `"swift"`, `"kotlin"` (iPhone and Android apps that connect in, each with an instanced group) and `"kt"` (an app the host dials, with a node row). The persisted test's expectations still record `restart` only when it is not the default, and `swift` records the same fields as `go`, so the expectations of older samples are unchanged. dsh's user layer has not changed since 0.13.0, so `cordis.patch.yml` is copied as is. The gate's cross-version tests (`RUTIS_E2E_ONLY_OLDER=1`) meet 0.13.0; both ends declare `events-v2` and the meetings work (`bridge/cross-version-meetings`), while releases before 0.13 are still refused (`events/old-peer-refused`).
 
 ## 0.13.0
 
