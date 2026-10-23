@@ -830,15 +830,32 @@ fn sha256_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-/// Copy `from` to `to`, removing a file already at `to` first (it may be
-/// read-only: `fs::copy` gives the copy the source's permissions).
-fn replace_with_copy(from: &Path, to: &Path) -> std::io::Result<()> {
+/// Copy `from` to `to`, removing a file already at `to` first, and leave the
+/// copy writable by its owner. `fs::copy` gives the copy the source's
+/// permissions, and build artifacts can be read-only (a build cache that
+/// links them in): the bundle's files are the bundle's own, whatever mode
+/// the build left on its artifacts.
+fn replace_with_copy(from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<()> {
+    let (from, to) = (from.as_ref(), to.as_ref());
     match fs::remove_file(to) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
-    fs::copy(from, to).map(drop)
+    fs::copy(from, to)?;
+    let mut permissions = fs::metadata(to)?.permissions();
+    if permissions.readonly() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(permissions.mode() | 0o200);
+        }
+        #[cfg(not(unix))]
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        fs::set_permissions(to, permissions)?;
+    }
+    Ok(())
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
@@ -933,13 +950,13 @@ fn pack_sdk_bundle(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", output.join("lib").display()))?;
     fs::create_dir_all(output.join("deps"))
         .map_err(|e| format!("{}: {e}", output.join("deps").display()))?;
-    fs::copy(&sdk_file, output.join("lib").join(&sdk_name))
+    replace_with_copy(&sdk_file, output.join("lib").join(&sdk_name))
         .map_err(|e| format!("copy SDK: {e}"))?;
     // Windows links against the import library; the runtime bundle leaves it
     // out, the sdk-bundle needs it next to the DLL.
     if sdk_target.contains("windows") {
         let import_lib = target_dir.join("release/rutis_sdk.dll.lib");
-        fs::copy(&import_lib, output.join("lib").join("rutis_sdk.dll.lib"))
+        replace_with_copy(&import_lib, output.join("lib").join("rutis_sdk.dll.lib"))
             .map_err(|e| format!("copy import library: {e}"))?;
     }
 
@@ -997,7 +1014,7 @@ fn pack_sdk_bundle(args: &[String]) -> Result<(), String> {
                 // before) is replaced: `fs::copy` keeps the source's mode,
                 // and a read-only artifact cannot be written over.
                 let to = output.join("deps").join(entry.file_name());
-                replace_with_copy(&entry.path(), &to)
+                replace_with_copy(entry.path(), &to)
                     .map_err(|e| format!("copy closure: {}: {e}", to.display()))?;
                 variants.push(file.into_owned());
                 found += 1;
@@ -1019,7 +1036,7 @@ fn pack_sdk_bundle(args: &[String]) -> Result<(), String> {
         .get("build")
         .cloned()
         .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()));
-    fs::copy(bundle_dir.join("sdk.toml"), output.join("sdk.toml"))
+    replace_with_copy(bundle_dir.join("sdk.toml"), output.join("sdk.toml"))
         .map_err(|e| format!("copy sdk.toml: {e}"))?;
     for (name, key) in [
         ("Cargo.lock", "lock_sha256"),
@@ -1036,7 +1053,7 @@ fn pack_sdk_bundle(args: &[String]) -> Result<(), String> {
             .ok_or(format!(
                 "no {name} matching sdk.toml's {key}; the checkout changed since the SDK was built"
             ))?;
-        fs::copy(found, output.join(name)).map_err(|e| format!("copy {name}: {e}"))?;
+        replace_with_copy(found, output.join(name)).map_err(|e| format!("copy {name}: {e}"))?;
     }
 
     // Shrink: one variant at a time, while the probe still builds against
