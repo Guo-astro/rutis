@@ -41,7 +41,7 @@ use rutis_bridge::{
     AdmissionPlugin, Presented, Registration, Rejection, Release, SharedToken, StaticIdentity,
     Transport,
 };
-use rutis_test_support::{within, HANG_GUARD};
+use rutis_test_support::{scaled, within, HANG_GUARD};
 use serde_json::json;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{broadcast, mpsc};
@@ -310,7 +310,7 @@ impl Rutis {
             .unwrap();
         let plugin = AccessPointPlugin::new(
             AccessPointConfig::new(id("phone"), "websocket", "phone", "public")
-                .handshake(HANG_GUARD)
+                .handshake(scaled(HANG_GUARD))
                 .require("runtime"),
         )
         .accept(Rows);

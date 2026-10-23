@@ -1083,7 +1083,7 @@ async fn crash_ping(fixture: &Fixture) -> std::time::Instant {
 
 /// Wait up to `wait` and [`COLD`] for report `n`.
 async fn nth_end(ends: &Ends, n: usize, wait: Duration) -> (RuntimeEnd, std::time::Instant) {
-    let deadline = std::time::Instant::now() + wait + COLD.0;
+    let deadline = std::time::Instant::now() + wait + COLD.limit();
     loop {
         if let Some(end) = ends.lock().unwrap().get(n).cloned() {
             return end;

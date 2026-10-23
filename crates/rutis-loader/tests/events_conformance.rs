@@ -673,7 +673,7 @@ impl Host {
             return Ok(());
         }
         let fails = row.config.get("fails").is_some();
-        let deadline = tokio::time::Instant::now() + COLD.0;
+        let deadline = tokio::time::Instant::now() + COLD.limit();
         loop {
             let state = self.row_state(&row.label, &row.scope);
             match &state {
@@ -824,7 +824,7 @@ impl Host {
             .filter(|(row, _)| row.at == Location::Y)
             .map(|(row, _)| row.clone())
             .collect();
-        let deadline = tokio::time::Instant::now() + COLD.0;
+        let deadline = tokio::time::Instant::now() + COLD.limit();
         while !(gone()
             && rows.iter().all(|row| {
                 !matches!(
@@ -846,9 +846,9 @@ impl Host {
     async fn restart_y(&self) -> Result<(), String> {
         let name = self.y_runtime();
         let runtime = &self.runtimes[&name];
-        tokio::time::timeout(COLD.0, runtime.view.restart())
+        tokio::time::timeout(COLD.limit(), runtime.view.restart())
             .await
-            .map_err(|_| format!("restart {name}: did not finish within {:?}", COLD.0))?
+            .map_err(|_| format!("restart {name}: did not finish within {:?}", COLD.limit()))?
             .map_err(|e| format!("restart {name}: {e}"))?;
         let rows: Vec<Row> = self
             .state
@@ -1132,7 +1132,7 @@ impl World for Host {
 /// Wait until `check` holds, at most [`COLD`]; a case's failure otherwise,
 /// not the whole run's.
 async fn until(check: impl Fn() -> bool, what: &str) -> Result<(), String> {
-    let deadline = tokio::time::Instant::now() + COLD.0;
+    let deadline = tokio::time::Instant::now() + COLD.limit();
     while !check() {
         if tokio::time::Instant::now() > deadline {
             return Err(format!("timed out waiting for {what}"));

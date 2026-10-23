@@ -108,6 +108,18 @@ pub(super) fn marked(session: &str, id: &str) {
     waits.counted();
 }
 
+/// How many calls received on `session` are marked: a test's own count,
+/// which the process-wide one mixes with other tests' sessions.
+#[cfg(test)]
+pub(super) fn marks_of(session: &str) -> usize {
+    let waits = WAITS.lock().unwrap();
+    waits
+        .marked
+        .iter()
+        .filter(|(tag, _)| tag == session)
+        .count()
+}
+
 /// Call `id` received on `session` was answered.
 pub(super) fn answered(session: &str, id: &str) {
     if MARKS.load(Ordering::SeqCst) == 0 {
@@ -157,15 +169,14 @@ fn decode(path: &[String], dst: &str) -> Vec<Global> {
 /// and its caller waits synchronously, the call is a hop: if it would close
 /// a wait cycle, nothing is recorded and the cycle is returned, each call as
 /// `session/id`. When nobody waits for it synchronously (the chain's last
-/// call is not marked: an emit's `events.call`, an asynchronous call), it is
-/// an entry. Returns whether either was recorded.
+/// call is not marked), it is an entry. Returns whether either was recorded.
 pub(super) fn forward(
     dst: &str,
     did: &str,
     seq: u64,
     path: &[String],
 ) -> Result<bool, Vec<String>> {
-    if MARKS.load(Ordering::SeqCst) == 0 {
+    if MARKS.load(Ordering::SeqCst) == 0 || crate::session::rpc::unchained_now() {
         return Ok(false);
     }
     let mut waits = WAITS.lock().unwrap();
@@ -420,6 +431,59 @@ mod tests {
             &["c/node:1", "a/rust:1", "a/py:1", "d/rust:1", "d/js:1"],
         );
         assert_eq!(cycle(&[x, emitted], &back, &p), None);
+    }
+
+    /// A notification sent with `unchained` is not part of the wait graph,
+    /// even while a call is marked.
+    #[test]
+    fn a_notification_sent_unchained_is_not_in_the_graph() {
+        marked("notice_a", "node:1");
+        let recorded = crate::session::rpc::unchained(|| {
+            forward("notice_b", "rust:1", 1, &["notice_a/node:1".to_owned()])
+        })
+        .unwrap();
+        assert!(!recorded);
+        assert!(!WAITS
+            .lock()
+            .unwrap()
+            .hops
+            .contains_key(&("notice_b".to_owned(), "rust:1".to_owned())));
+        answered("notice_a", "node:1");
+        ended("notice_a");
+        ended("notice_b");
+    }
+
+    /// A forward whose chain ends at a marked call is a hop even when the
+    /// forwarded call is asynchronous (a relayed function reference): the
+    /// caller still waits for the relayed call to settle.
+    /// guarantee: bridge/sync-wait-cycle-refused
+    #[test]
+    fn an_asynchronous_forward_on_a_marked_chain_is_a_hop() {
+        marked("hop_a", "node:1");
+        let recorded = forward("hop_b", "rust:1", 1, &["hop_a/node:1".to_owned()]).unwrap();
+        assert!(recorded);
+        let entry = WAITS
+            .lock()
+            .unwrap()
+            .hops
+            .get(&("hop_b".to_owned(), "rust:1".to_owned()))
+            .map(|hop| hop.entry);
+        assert_eq!(entry, Some(false));
+        returned("hop_b", "rust:1");
+        answered("hop_a", "node:1");
+        ended("hop_a");
+        ended("hop_b");
+    }
+
+    /// A call removed after cancellation or a reply leaves no mark behind.
+    #[test]
+    fn an_answered_call_leaves_no_mark() {
+        let before = MARKS.load(Ordering::SeqCst);
+        marked("gone_a", "node:1");
+        assert!(MARKS.load(Ordering::SeqCst) > before);
+        answered("gone_a", "node:1");
+        assert_eq!(MARKS.load(Ordering::SeqCst), before);
+        ended("gone_a");
     }
 
     fn profiles(list: &[(&str, bool, bool)]) -> HashMap<String, Profile> {
