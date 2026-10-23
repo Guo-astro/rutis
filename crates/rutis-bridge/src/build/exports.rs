@@ -1578,11 +1578,11 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                         params: Rc::new(params),
                     };
                     match self.result(&alias_scope, &alias.ty)? {
-                        Some((ok, error, inner)) => Ok(Some((
-                            substitute(&ok, &inner),
-                            substitute(&error, &inner),
-                            inner,
-                        ))),
+                        // The parameters stay bound to the scope they were
+                        // written in: `ty` and `failure` follow them there,
+                        // so a `Thing` only in scope at the use site is
+                        // found.
+                        Some((ok, error, inner)) => Ok(Some((ok, error, inner))),
                         None => Ok(None),
                     }
                 }
@@ -1595,6 +1595,9 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
     /// How `Err(e)` of type `error` is thrown, and its `<Name>Thrown`
     /// TypeScript type.
     fn failure(&mut self, scope: &Scope, error: &Type) -> Result<(Failure, Option<String>)> {
+        if let Some(Binding::Type(ty, scope)) = Self::binding(scope, error) {
+            return self.failure(&scope, &ty);
+        }
         let Type::Path(path) = error else {
             return Ok((
                 Failure::Display {
@@ -3024,6 +3027,53 @@ mod tests {
             "{}",
             generated.typescript
         );
+    }
+
+    /// A generic alias's type argument is read where the alias is used,
+    /// not where it is defined: `Thing` is not in scope next to `Res`.
+    #[test]
+    fn an_alias_argument_is_read_at_its_use() {
+        let generated = generate(
+            Exports::new().service("service", "dep_crate::Service"),
+            &[
+                ("lib.rs", "mod err; mod model; mod svc; pub use svc::*;"),
+                (
+                    "err.rs",
+                    "use crate::model::Problem;\n\
+                     pub type Res<T> = std::result::Result<T, Problem>;\n\
+                     pub type More<T> = Res<Vec<T>>;\n\
+                     pub type ResE<T, E> = std::result::Result<T, E>;",
+                ),
+                (
+                    "model.rs",
+                    "#[derive(serde::Serialize)] pub struct Thing { pub id: String }\n\
+                     #[derive(Debug, serde::Serialize)] pub struct Problem { pub message: String }",
+                ),
+                (
+                    "svc.rs",
+                    "use crate::err::{More, Res, ResE}; use crate::model::{Problem, Thing};\n\
+                     pub struct Service;\n\
+                     impl Service {\n\
+                         pub fn one(&self) -> Res<Thing> { todo!() }\n\
+                         pub fn many(&self) -> More<Thing> { todo!() }\n\
+                         pub fn other(&self) -> ResE<Thing, Problem> { todo!() }\n\
+                     }",
+                ),
+            ],
+        )
+        .unwrap();
+        for expected in [
+            "one(): Promise<Thing>",
+            "many(): Promise<Thing[]>",
+            "other(): Promise<Thing>",
+        ] {
+            assert!(
+                generated.typescript.contains(expected),
+                "{expected}\n{}",
+                generated.typescript
+            );
+        }
+        assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
     }
 
     /// A `#[path]` back to a file being read is skipped with a warning.
