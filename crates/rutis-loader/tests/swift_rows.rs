@@ -534,3 +534,61 @@ async fn exit_reports_a_crashed_runtime() {
     assert_eq!(ends.lock().unwrap().len(), 1);
     fixture.root.shutdown().await.unwrap();
 }
+
+/// A name clash of an announced service fails the Swift row that provides
+/// it later, naming both, as in every runtime (contract §4): the host
+/// answers the announcement with `undefined` whether or not it follows it,
+/// and fails the row itself once `rows.load` is answered; the SDK only
+/// waits for that answer. A row announcing a free name loads, and its
+/// service reaches rutis. (#542)
+/// guarantee: loader/announced-services
+#[tokio::test(flavor = "multi_thread")]
+async fn an_announced_service_another_provider_has_fails_the_later_row() {
+    let fixture = fixture(Start::OnDemand(None), &[("RutisMultilang", "multilang")]).await;
+    // The application provides `llm` itself.
+    fixture
+        .root
+        .provide_as::<dyn HostDispatch>(host_key("llm"), Arc::new(common::runtimes::Llm))
+        .unwrap();
+    let undeclared = |id: &str, service: &str| json!({ "id": id, "name": "swift:swift_undeclared", "config": { "service": service } });
+    fixture
+        .loader
+        .reconcile(
+            layer(vec![undeclared("clash", "llm"), undeclared("free", "pong")]),
+            None,
+        )
+        .await
+        .unwrap();
+    let loader = fixture.loader.clone();
+    COLD.until(
+        || {
+            row_state(&loader, "clash") == Some(FiberState::Failed)
+                && row_state(&loader, "free") == Some(FiberState::Active)
+        },
+        "the clashing row to fail and the other to load",
+    )
+    .await;
+    let EntryStatus::Running(snapshot) = fixture.loader.get("clash").unwrap().status else {
+        panic!("clash has no fiber");
+    };
+    let error = snapshot.error.expect("why it failed").to_string();
+    assert!(
+        error.contains(
+            "service llm is already provided by the application: row clash cannot provide it too"
+        ),
+        "{error}"
+    );
+    // Announced methods are all `async`.
+    let pong = service(&fixture.root, "pong").expect("the announced service");
+    let echoed = settle(pong.invoke("echo", json!(["hi"]).into()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(echoed.json().unwrap(), json!("undeclared pong hi"));
+    drop(pong);
+    assert_eq!(
+        call(&fixture.root, "llm", "ask", json!([])).await.unwrap(),
+        json!("42"),
+        "the earlier provider keeps the name"
+    );
+    fixture.root.shutdown().await.unwrap();
+}

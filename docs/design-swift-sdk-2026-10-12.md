@@ -221,7 +221,7 @@ let weather = Rutis.define(Plugin(
 | `ctx.effect(cleanup)` | `cleanup` 可 `async`，卸载时逆序执行 |
 | `ctx.on` / `emit` / `parallel` / `serial` / `waterfall` / `bail` / `filter` | 统一事件，§4.7 |
 | `ctx.scope` | 本行的作用域链 `[Rutis.Scope]`（`rows.load` 第七个参数） |
-| `ctx.spawn { ... }` | 子 Task 中运行（继承调用链），捕获错误写 stderr；卸载时取消并等待 |
+| `ctx.spawn { ... }` | 子 Task 中运行（继承调用链），捕获错误写 stderr；卸载时取消并等待，和监听器共用一个关闭时限（§7.1），超过时写 `rutis: tasks of row <row> still running after <s>s; unloading anyway`，不再等 |
 | 卸载信号 | 行的 Task 树在卸载时被取消：`Task.isCancelled` / `try Task.checkCancellation()`，与 Swift 原生取消相同 |
 | `ctx.project` | 项目目录（形态②为应用约定的目录） |
 | `Rutis.NoConfig` | 无配置 |
@@ -236,7 +236,7 @@ Swift 没有方法反射（`Mirror` 只能枚举存储属性，不能枚举或�
 - 哪些方法：非 `private` / `fileprivate` 的实例方法（`static`、`init`、下标、属性不算）——对应 Go 的"导出方法"、Python 的"不以 `_` 开头"。线上名是方法的基本名（`today(_:)` → `today`），参数按位置传，参数标签不上线；同一基本名有两个重载时编译错误。
 - 方法可以是同步或 `async`、`throws` 或不 `throws`；参数与返回值是 §4.5 的任何值（`Codable`、闭包、`@RutisService` 实例、`Any?`）。
 - 方法的 `sync` / `async` 是声明，不由 Swift 签名决定：`provides` 里 `.of(T.self, sync: ["unit"])` 列出的方法为 `sync`，其余与没声明的服务全部为 `async`（契约 §4）。也可以写字面量 `["today": .async, "unit": .sync]`。
-- 自动对外：`ctx.provide` 的服务不在 `provides` 里时，按契约 §4 以 `service(id, handle, version, { row, methods })` 通告，方法取方法表、全部 `async`；只向 `mount` 带 `announce: true` 的宿主通告，回复到了才答复 `rows.load`（重名让装载失败）。宿主比 0.12 旧时按契约在 stderr 提示一次。
+- 自动对外：`ctx.provide` 的服务不在 `provides` 里时，按契约 §4 以 `service(id, handle, version, { row, methods })` 通告，方法取方法表、全部 `async`；只向 `mount` 带 `announce: true` 的宿主通告，回复到了才答复 `rows.load`。回复总是 `undefined`：重名时由宿主在 `rows.load` 答复后让这一行作为后来的提供者失败，错误写明双方；等这些回复是为了让宿主在这一行算作装载完成前处理完通告，SDK 不从回复里读错误。宿主比 0.12 旧时按契约在 stderr 提示一次。
 - `rows.schema` 与清单的 `announces` 总是 `true`。
 - 同进程调用：直接调用对象（S7）；只经方法表、不编码的路径用于对象没有实现使用方协议的情形。
 
@@ -323,7 +323,7 @@ let some = ctx.filter { $0.row == "chat" }                        // Rutis.Emitt
 | 取消 | 发出方的 Task 被取消：经宿主时对 `events.dispatch` 发 `cancel`；收到 `events.call` 的 `signal` 中止或 `cancel` 时取消该监听器的 Task |
 | 保留名 | 发出 `rutis/*` 同步以 `ReservedEvent` 拒绝（`rutis/* events are emitted by rutis only: <name>`）；可以监听 `rutis/*` |
 | 报告 | 没有人等待的失败按契约 §6 的原文各写一行 stderr（形态②写到 `RutisApp` 的日志回调，默认 stderr） |
-| 卸载 | 收到 `rows.unload` 后立即拒绝这一行的 `events.call` → 撤下提供的服务 → 取消这一行正在运行的监听器 Task 并等待，至多关闭时限（形态① `RUTIS_SHUTDOWN_TIMEOUT`，形态② `shutdownTimeout` 参数，默认 10 秒），超过时写 `rutis: listeners of row <row> still running after <s>s; unloading anyway` → 逆序清理 |
+| 卸载 | 收到 `rows.unload` 后立即拒绝这一行的 `events.call` → 撤下提供的服务 → 取消这一行正在运行的监听器 Task 和 `ctx.spawn` 的 Task → 等待监听器，至多关闭时限（形态① `RUTIS_SHUTDOWN_TIMEOUT`，形态② `shutdownTimeout` 参数，默认 10 秒），超过时写 `rutis: listeners of row <row> still running after <s>s; unloading anyway` → 再在同一时限的剩余时间内等待 `ctx.spawn` 的 Task（监听器已用完时限就不再等），超过时写 `rutis: tasks of row <row> still running after <s>s; unloading anyway` → 逆序清理 |
 | 断开 | `elsewhere` 视为空；卸载全部行 |
 
 ## 五、并发、调用链、取消

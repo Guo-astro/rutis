@@ -451,7 +451,9 @@ package final class Peer: @unchecked Sendable {
             do {
                 message = try channel.receive()
             } catch {
-                close(SessionEnded(.failed, "session failed: \(error)"))
+                // The channel goes too: nothing reads it any more, and its
+                // descriptor would stay open.
+                fault(SessionEnded(.failed, "session failed: \(error)"))
                 return
             }
             guard let message else {

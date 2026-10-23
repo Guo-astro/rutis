@@ -104,7 +104,7 @@ Android 上不用方法反射：R8 会改名与裁剪，`suspend` 函数经 Java
 ### 3.2 服务、方法种类与自动对外
 
 - 方法种类是声明，不由 Kotlin 签名决定：`service<Weather>(sync = setOf("unit"))` 列出的方法为 `sync`，其余与没声明的服务全部为 `async`（契约 §4）；也可写 `mapOf("today" to Kind.Async, "unit" to Kind.Sync)`。`suspend` 与否只决定实现怎样在本调用线程上运行。
-- 自动对外：`ctx.provide` 的服务不在 `provides` 里时，按契约 §4 以 `service(id, handle, version, { row, methods })` 通告，方法取生成的方法表、全部 `async`；只向 `mount` 带 `announce: true` 的宿主通告，回复到了才答复 `rows.load`（重名让装载失败）；宿主比 0.12 旧时按契约在 stderr 提示一次。
+- 自动对外：`ctx.provide` 的服务不在 `provides` 里时，按契约 §4 以 `service(id, handle, version, { row, methods })` 通告，方法取生成的方法表、全部 `async`；只向 `mount` 带 `announce: true` 的宿主通告，回复到了才答复 `rows.load`。回复总是 `undefined`：重名时由宿主在 `rows.load` 答复后让这一行作为后来的提供者失败，错误写明双方；等这些回复是为了让宿主在这一行算作装载完成前处理完通告，SDK 不从回复里读错误；宿主比 0.12 旧时按契约在 stderr 提示一次。
 - `rows.schema` 回复与 `mount` 的 `plugins` 里 `announces` 总是 `true`。
 - 调用对端声明为 `sync` 的方法时帧带 `sync: true`（种类取自 `hosts.provide` 的方法表），参加宿主的等待环检测。
 - 同进程调用：对象实现了使用方接口时直接调用（不编码）；否则经本地方法表。

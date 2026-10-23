@@ -15,6 +15,13 @@ final class LateService: @unchecked Sendable {
 
 private struct LetGo: Error {}
 
+/// Sleeps `seconds`, cancelled or not.
+private func uncancellableSleep(_ seconds: Double) async {
+    await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { done.resume() }
+    }
+}
+
 final class SavedCtx: @unchecked Sendable {
     private let lock = NSLock()
     private var saved: Rutis.Ctx?
@@ -92,6 +99,42 @@ struct AppTests {
         XCTAssertFalse(lines.all.contains { $0.contains("filter of") }, "let go: nothing reported: \(lines.all)")
         XCTAssertFalse(lines.all.contains("got 1"), "\(lines.all)")
         try await runtime.unload("l")
+    }
+
+    /// A task (ctx.spawn) that ignores cancellation does not hold an unload
+    /// past the shutdown deadline, nor does it get a deadline of its own
+    /// after a listener used it up: listeners and tasks share one deadline,
+    /// and what still runs past it is reported (#542).
+    func aSpawnedTaskDoesNotHoldTheUnloadPastTheDeadline() async throws {
+        let lines = Lines()
+        let saved = SavedCtx()
+        let listening = Event()
+        let plugin = Rutis.define(Plugin(name: "stubborn") { ctx in
+            saved.ctx = ctx
+            ctx.on("t/stubborn") { () async in
+                listening.fire()
+                await uncancellableSleep(3)
+            }
+            ctx.spawn { await uncancellableSleep(3) }
+        })
+        let runtime = Runtime([plugin], project: "", settings: Events.Settings(log: { lines.add($0) }, shutdownTimeout: 0.3))
+        // Only a task.
+        try await runtime.load(key: "a", name: nil, entry: "stubborn", config: .undefined, exports: [:], isolate: [:], scope: [])
+        var started = Date()
+        try await runtime.unload("a")
+        var took = Date().timeIntervalSince(started)
+        XCTAssertTrue(took < 1.5, "the unload waited \(took)s for a task")
+        XCTAssertTrue(lines.all.contains("rutis: tasks of row a still running after 0.3s; unloading anyway"), "\(lines.all)")
+        // A listener past the deadline, then the task: no second deadline.
+        try await runtime.load(key: "b", name: nil, entry: "stubborn", config: .undefined, exports: [:], isolate: [:], scope: [])
+        try XCTUnwrap(saved.ctx).emit("t/stubborn")
+        let heard = await listening.wait(seconds: 5)
+        XCTAssertTrue(heard, "the listener runs")
+        started = Date()
+        try await runtime.unload("b")
+        took = Date().timeIntervalSince(started)
+        XCTAssertTrue(took < 1.5, "the unload waited \(took)s after the listeners' deadline")
+        XCTAssertTrue(lines.all.contains("rutis: listeners of row b still running after 0.3s; unloading anyway"), "\(lines.all)")
     }
 
     func anUnloadedRowCannotProvide() async throws {
