@@ -1046,3 +1046,57 @@ async fn isolate_scopes_are_per_copy_and_per_instance() {
     assert!(log.contains(&"read shared A".to_owned()), "{log:?}");
     assert!(log.contains(&"read shared B".to_owned()), "{log:?}");
 }
+
+/// guarantee: loader/closed-after-shutdown
+#[tokio::test]
+async fn creating_an_instance_is_closed_as_soon_as_root_shutdown_starts() {
+    let s = setup(DOC).await;
+    s.create("A").await;
+    let shutdown = s.root.shutdown();
+    let error = s
+        .loader
+        .create_instance(&s.root, "doc")
+        .with(Title("B".into()))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, LoaderError::Closed), "{error:?}");
+    shutdown.await.unwrap();
+    let error = s.loader.create_instance(&s.root, "doc").await.unwrap_err();
+    assert!(matches!(error, LoaderError::Closed), "{error:?}");
+}
+
+/// Local reference measurements, without a timing threshold. Run with:
+/// `cargo test -p rutis-loader --release --test instances instance_creation_cost -- --ignored --nocapture`
+#[tokio::test]
+#[ignore = "manual performance sample"]
+async fn instance_creation_cost_with_live_instances() {
+    for live in [32, 256, 768] {
+        let s = setup(DOC).await;
+        for _ in 0..live {
+            s.create("resident").await;
+        }
+        let mut samples = Vec::new();
+        // Keep the resident population fixed; removal and fixture logging
+        // are outside the timed create_instance call. Warm up 20 times.
+        for round in 0..120 {
+            let start = std::time::Instant::now();
+            let instance = s.create("sample").await;
+            let elapsed = start.elapsed().as_nanos();
+            if round >= 20 {
+                samples.push(elapsed);
+            }
+            s.loader.remove_instance(instance.plugin).await.unwrap();
+            s.take_log();
+            s.changes.lock().unwrap().clear();
+        }
+        samples.sort_unstable();
+        println!(
+            "live={live} samples={} median_ns={} p10_ns={} p90_ns={}",
+            samples.len(),
+            samples[50],
+            samples[10],
+            samples[90]
+        );
+        s.root.shutdown().await.unwrap();
+    }
+}

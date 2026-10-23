@@ -336,6 +336,17 @@ impl Ctx {
         None
     }
 
+    /// Whether this context's root has begun its final shutdown.
+    ///
+    /// Becomes true when [`Ctx::shutdown`] is called, before waiting for cleanup,
+    /// and remains true after shutdown completes. All contexts under that root
+    /// share this state; disposing or shutting down a child alone does not set it.
+    /// Reads the same flag as [`RuntimeDiagnostics::shutting_down`] without
+    /// collecting a diagnostic snapshot.
+    pub fn is_shutting_down(&self) -> bool {
+        self.0.shared.closing.load(Ordering::SeqCst)
+    }
+
     /// Read-only, best-effort snapshot of live fibers and services.
     ///
     /// This scans fibers and bindings under separate locks. Concurrent lifecycle
@@ -415,7 +426,7 @@ impl Ctx {
             }
         }
         RuntimeDiagnostics {
-            shutting_down: self.0.shared.closing.load(Ordering::SeqCst),
+            shutting_down: self.is_shutting_down(),
             plugins,
             bindings: self.0.shared.registry.bindings_snapshot(),
             event_backlogs: self.events().backlogs(),

@@ -474,7 +474,7 @@ impl Inner {
         if state
             .groups
             .get(&None)
-            .is_none_or(|root| root.ctx.diagnostics().shutting_down)
+            .is_none_or(|root| root.ctx.is_shutting_down())
         {
             return true;
         }
@@ -607,7 +607,7 @@ impl Inner {
 
     pub(super) fn check_open(&self) -> Result<(), LoaderError> {
         match self.root() {
-            Some(root) if root.diagnostics().shutting_down => Err(LoaderError::Closed),
+            Some(root) if root.is_shutting_down() => Err(LoaderError::Closed),
             _ => Ok(()),
         }
     }
