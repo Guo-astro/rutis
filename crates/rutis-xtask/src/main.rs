@@ -830,6 +830,17 @@ fn sha256_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// Copy `from` to `to`, removing a file already at `to` first (it may be
+/// read-only: `fs::copy` gives the copy the source's permissions).
+fn replace_with_copy(from: &Path, to: &Path) -> std::io::Result<()> {
+    match fs::remove_file(to) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    fs::copy(from, to).map(drop)
+}
+
 fn sha256_file(path: &Path) -> Result<String, String> {
     fs::read(path)
         .map(|bytes| sha256_bytes(&bytes))
@@ -980,8 +991,14 @@ fn pack_sdk_bundle(args: &[String]) -> Result<(), String> {
                     Some("rlib") | Some("so") | Some("dylib") | Some("dll")
                 );
             if is_artifact {
-                fs::copy(entry.path(), output.join("deps").join(entry.file_name()))
-                    .map_err(|e| format!("copy closure: {e}"))?;
+                // Each artifact keeps its own name (crate and metadata hash),
+                // so two versions of a crate never share a destination. A
+                // file already there (an output directory packed into
+                // before) is replaced: `fs::copy` keeps the source's mode,
+                // and a read-only artifact cannot be written over.
+                let to = output.join("deps").join(entry.file_name());
+                replace_with_copy(&entry.path(), &to)
+                    .map_err(|e| format!("copy closure: {}: {e}", to.display()))?;
                 variants.push(file.into_owned());
                 found += 1;
             }
