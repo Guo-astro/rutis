@@ -379,6 +379,11 @@ struct ManifestChildInner {
     pid: u32,
     /// Cleared once it was killed, or once its pid may name something else.
     armed: AtomicBool,
+    /// A job that holds the process and what it started; 0 when the
+    /// process could not be put in one. Windows has no process group to
+    /// kill a whole tree through.
+    #[cfg(windows)]
+    job: usize,
 }
 
 /// A process started to print a manifest, leading its own group
@@ -391,11 +396,16 @@ pub struct ManifestChild {
 }
 
 impl ManifestChild {
-    /// Guard the process `pid`, which must lead its own process group.
+    /// Guard the process `pid`, which must lead its own process group
+    /// (on Windows, put it in a job of its own).
     pub fn new(pid: u32) -> Self {
+        #[cfg(windows)]
+        let job = manifest_job(pid);
         let inner = Arc::new(ManifestChildInner {
             pid,
             armed: AtomicBool::new(true),
+            #[cfg(windows)]
+            job,
         });
         MANIFESTS.lock().unwrap().push(inner.clone());
         Self { inner: Some(inner) }
@@ -404,9 +414,7 @@ impl ManifestChild {
     /// Kill its process group now, and whatever it started with it.
     pub fn kill(&self) {
         if let Some(inner) = &self.inner {
-            if inner.armed.swap(false, Ordering::SeqCst) {
-                kill_pid_group(inner.pid);
-            }
+            kill_inner(inner);
         }
     }
 
@@ -417,6 +425,8 @@ impl ManifestChild {
             return;
         };
         inner.armed.store(false, Ordering::SeqCst);
+        #[cfg(windows)]
+        disarm_job(inner.job);
         MANIFESTS
             .lock()
             .unwrap()
@@ -428,6 +438,101 @@ impl Drop for ManifestChild {
     fn drop(&mut self) {
         self.kill();
         self.disarm();
+    }
+}
+
+/// Kill what the guarded process started, if it is still armed.
+fn kill_inner(inner: &ManifestChildInner) -> bool {
+    if !inner.armed.swap(false, Ordering::SeqCst) {
+        return false;
+    }
+    #[cfg(windows)]
+    if inner.job != 0 {
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+        // SAFETY: the job handle lives until `disarm`, in this guard.
+        unsafe {
+            TerminateJobObject(inner.job as _, 1);
+        }
+        return true;
+    }
+    kill_pid_group(inner.pid);
+    true
+}
+
+/// A job holding the process `pid`, killed when it closes, or 0 if the
+/// process cannot be put in one (then killing falls back to its pid).
+#[cfg(windows)]
+fn manifest_job(pid: u32) -> usize {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
+    // SAFETY: plain Win32 calls on handles this function owns.
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return 0;
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let sized = std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
+        if SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &limits as *const _ as *const _,
+            sized,
+        ) == 0
+        {
+            CloseHandle(job);
+            return 0;
+        }
+        let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+        if process.is_null() {
+            CloseHandle(job);
+            return 0;
+        }
+        let assigned = AssignProcessToJobObject(job, process);
+        CloseHandle(process);
+        match assigned {
+            0 => {
+                CloseHandle(job);
+                0
+            }
+            _ => job as usize,
+        }
+    }
+}
+
+/// Let what the manifest started go: the manifest was used, so it is the
+/// binary's own business. Clearing the limit first keeps closing the job
+/// from killing it.
+#[cfg(windows)]
+fn disarm_job(job: usize) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::JobObjects::{
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    };
+    if job == 0 {
+        return;
+    }
+    // SAFETY: the job handle is this guard's, and is closed once.
+    unsafe {
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        limits.BasicLimitInformation.LimitFlags = 0;
+        let sized = std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
+        SetInformationJobObject(
+            job as _,
+            JobObjectExtendedLimitInformation,
+            &limits as *const _ as *const _,
+            sized,
+        );
+        CloseHandle(job as _);
     }
 }
 
@@ -465,9 +570,7 @@ fn kill_pid_group(pid: u32) {
 fn kill_manifests() {
     let manifests: Vec<Arc<ManifestChildInner>> = MANIFESTS.lock().unwrap().clone();
     for manifest in manifests {
-        if manifest.armed.swap(false, Ordering::SeqCst) {
-            kill_pid_group(manifest.pid);
-        }
+        kill_inner(&manifest);
     }
 }
 

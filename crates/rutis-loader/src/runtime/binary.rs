@@ -298,28 +298,79 @@ fn read_manifest_with_timeout(path: &Path, timeout: Duration) -> Result<BinaryMa
     let deadline = started + timeout;
     let mut out = None;
     let mut err = None;
+    // How long the readers get to deliver what the child wrote after it
+    // ended, before a pipe still open means something it started holds it.
+    const ORPHAN_GRACE: Duration = Duration::from_secs(1);
+    let mut ended_at = None;
+    let mut orphaned = false;
+    // On Unix the process is observed with `waitid(WNOWAIT)`, not reaped:
+    // its pid is also its group id, and it must not be reused while the
+    // group is killed to release the pipes a descendant still holds.
+    #[cfg(not(unix))]
+    let mut exit = None;
+    let mut ended = false;
     let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() > timeout => {
+        if !ended {
+            #[cfg(unix)]
+            match exited_without_reaping(&child) {
+                Ok(true) => {
+                    ended = true;
+                    ended_at = Some(Instant::now());
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    stop_manifest(&mut child, &mut guard, false);
+                    return Err(error.to_string());
+                }
+            }
+            #[cfg(not(unix))]
+            match child.try_wait() {
+                Ok(Some(waited)) => {
+                    exit = Some(waited);
+                    ended = true;
+                    ended_at = Some(Instant::now());
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    stop_manifest(&mut child, &mut guard, false);
+                    return Err(error.to_string());
+                }
+            }
+            if !ended && started.elapsed() > timeout {
                 stop_manifest(&mut child, &mut guard, false);
                 return Err(format!(
                     "it did not print its manifest within {} s",
                     timeout.as_secs_f32()
                 ));
             }
-            Ok(None) => {}
-            Err(error) => {
-                stop_manifest(&mut child, &mut guard, false);
-                return Err(error.to_string());
-            }
         }
         receive(&out_rx, &mut out, deadline);
         receive(&err_rx, &mut err, deadline);
+        if ended {
+            // It is gone, but something it started may still hold its
+            // output. Give the readers a moment for what it wrote, then
+            // kill that group while its id is still this child's (not
+            // reaped on Unix), and only then reap it.
+            if out.is_none() || err.is_none() {
+                let waited = ended_at.unwrap_or_else(Instant::now).elapsed();
+                if waited < ORPHAN_GRACE && started.elapsed() <= timeout {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                orphaned = true;
+                if let Some(guard) = guard.as_ref() {
+                    guard.kill();
+                }
+            }
+            #[cfg(unix)]
+            break child.wait().map_err(|error| error.to_string())?;
+            #[cfg(not(unix))]
+            break exit.expect("the manifest process ended");
+        }
         std::thread::sleep(Duration::from_millis(10));
     };
-    // It is gone; something it started may still hold its output open. That
-    // is no manifest read: the child ended, its pipes did not.
+    // Its output readers may still be finishing what it wrote before it
+    // ended; the deadline still applies.
     while out.is_none() || err.is_none() {
         if started.elapsed() > timeout {
             stop_manifest(&mut child, &mut guard, true);
@@ -340,6 +391,11 @@ fn read_manifest_with_timeout(path: &Path, timeout: Duration) -> Result<BinaryMa
             "it printed more than {} MiB of manifest",
             MANIFEST_OUTPUT / (1024 * 1024)
         ));
+    }
+    if orphaned {
+        return Err(
+            "it ended, but its output was still open: something it started holds it".into(),
+        );
     }
     if !status.success() {
         let err = String::from_utf8_lossy(&err);
@@ -369,6 +425,27 @@ fn read_manifest_with_timeout(path: &Path, timeout: Duration) -> Result<BinaryMa
             }
             Ok(manifest)
         }
+    }
+}
+
+/// Whether the manifest process `child` ended, without reaping it: it stays
+/// a child process until [`Child::wait`](std::process::Child::wait), so the
+/// process group named by its pid cannot be another's when it is killed to
+/// release a descendant's pipes.
+#[cfg(unix)]
+fn exited_without_reaping(child: &std::process::Child) -> std::io::Result<bool> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id() as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    match result {
+        0 => Ok(unsafe { info.si_pid() } != 0),
+        _ => Err(std::io::Error::last_os_error()),
     }
 }
 
@@ -402,13 +479,14 @@ fn receive(
     }
 }
 
-/// Kill a manifest process's group (what it started with it) and reap it,
-/// unless it was already waited for.
+/// Kill a manifest process's group (what it started with it) and reap it.
+/// With `reaped`, it was already waited for: never kill by its pid then,
+/// which may name another process; only stop guarding it.
 fn stop_manifest(child: &mut std::process::Child, guard: &mut Option<ManifestChild>, reaped: bool) {
-    if let Some(guard) = guard.as_ref() {
-        guard.kill();
-    }
     if !reaped {
+        if let Some(guard) = guard.as_ref() {
+            guard.kill();
+        }
         let _ = child.kill();
         let _ = child.wait();
     }

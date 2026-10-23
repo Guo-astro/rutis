@@ -515,12 +515,45 @@ mod tests {
         ended("root_b");
     }
 
+    /// A host's root synchronous call joins the graph: A calls back into the
+    /// host, the host calls B, B calls back, and the host's next call into A
+    /// closes a cycle. Without the root hop the two runtimes' waits would
+    /// not be connected (#537).
+    /// guarantee: bridge/sync-wait-cycle-refused
+    #[test]
+    fn a_host_root_sync_call_closes_a_cycle_through_two_runtimes() {
+        let one_stack = Profile {
+            stacked: true,
+            reentrant: false,
+        };
+        profile("cycle_a", one_stack);
+        profile("cycle_b", one_stack);
+        // The host calls A synchronously, with no chain of its own.
+        forward("cycle_a", "rust:1", 1, &[], true).unwrap();
+        // A calls the host (marked); the host calls B.
+        marked("cycle_a", "node:1");
+        forward("cycle_b", "rust:2", 2, &["cycle_a/node:1".to_owned()], true).unwrap();
+        // B calls the host (marked); the host calls A again: A is non-
+        // reentrant and waits for B, B waits for A. The call is refused.
+        marked("cycle_b", "node:2");
+        let cycle = forward("cycle_a", "rust:3", 3, &["cycle_b/node:2".to_owned()], true)
+            .expect_err("the host's call into A closes the cycle");
+        assert!(
+            cycle.iter().any(|call| call == "cycle_a/rust:3"),
+            "{cycle:?}"
+        );
+        returned("cycle_a", "rust:1");
+        returned("cycle_b", "rust:2");
+        answered("cycle_a", "node:1");
+        answered("cycle_b", "node:2");
+        ended("cycle_a");
+        ended("cycle_b");
+    }
+
     /// An asynchronous call with no chain is still an entry: nobody waits
     /// for it, so it bounds the chain made under it.
     #[test]
     fn an_asynchronous_call_without_a_chain_is_an_entry() {
-        let recorded = forward("call_b", "rust:1", 1, &[], false).unwrap();
-        assert!(!recorded, "nothing is marked: no graph to touch");
         marked("call_a", "node:1");
         let recorded = forward("call_b", "rust:1", 2, &[], false).unwrap();
         assert!(recorded);

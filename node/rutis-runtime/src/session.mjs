@@ -196,9 +196,10 @@ export class Session {
     if (dropped.length) {
       const events = dropped.map(job => String(job.key ?? '(none)'))
       const line = `rutis: session ended with ${dropped.length} local emit${dropped.length === 1 ? '' : 's'} still waiting behind an earlier one: ${events.join(', ')}`
-      // A failing report is the reporter's bug, not a reason to leave the
-      // session half closed; surface it like a failing queued run (#546).
-      try { this.#report(line, { count: dropped.length, events }) } catch (failure) { queueMicrotask(() => { throw failure }) }
+      // Reporting is best effort: a failing reporter must not throw from
+      // close() (nor turn into an uncaught microtask exception) and leave
+      // the session half closed (#546).
+      try { this.#report(line, { count: dropped.length, events }) } catch { /* ignore */ }
     }
   }
   // What this side found wrong with the session, if that is what ended it
