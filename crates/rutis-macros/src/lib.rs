@@ -284,6 +284,10 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
         Some(errors) => errors.combine(error),
         None => errors = Some(error),
     };
+    // The errors of methods under `#[cfg]`: emitted under the same cfg, so
+    // a build that leaves the method out does not check it (a macro cannot
+    // tell which cfgs hold).
+    let mut guarded = Vec::new();
     let mut arms = Vec::new();
     let mut methods = Vec::new();
     for item in &block.items {
@@ -300,6 +304,17 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
         if skip || !matches!(method.vis, syn::Visibility::Public(_)) {
             continue;
         }
+        let cfgs = cfgs(&method.attrs);
+        let mut refuse = |error: syn::Error| {
+            if cfgs.is_empty() {
+                push(error);
+            } else {
+                for error in error {
+                    let error = error.to_compile_error();
+                    guarded.push(quote!(#(#cfgs)* #error));
+                }
+            }
+        };
         match method.sig.inputs.first() {
             Some(FnArg::Receiver(receiver))
                 if receiver.reference.is_some()
@@ -310,7 +325,7 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
             // Constructors and associated functions are not the service's.
             None | Some(FnArg::Typed(_)) => continue,
             Some(FnArg::Receiver(receiver)) => {
-                push(syn::Error::new(
+                refuse(syn::Error::new(
                     receiver.span(),
                     format!(
                         "`{}` cannot be called from other languages: a marked service is shared, so its methods take `&self`; mark it #[service(skip)] to leave it out",
@@ -321,7 +336,6 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
             }
         }
         let js = camel(&method.sig.ident.to_string());
-        let cfgs = cfgs(&method.attrs);
         // Two methods of one name for other languages: only when `#[cfg]`
         // keeps one of them out of each build.
         if methods
@@ -330,7 +344,7 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
                 *known == js && (known_cfgs.is_empty() || cfgs.is_empty())
             })
         {
-            push(syn::Error::new(
+            refuse(syn::Error::new(
                 method.sig.ident.span(),
                 format!("two methods are `{js}` for other languages"),
             ));
@@ -343,7 +357,7 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
             }
             Err(error) => {
                 for error in error {
-                    push(syn::Error::new(
+                    refuse(syn::Error::new(
                         error.span(),
                         format!("{error}; or mark it #[service(skip)] to leave it out"),
                     ));
@@ -359,8 +373,11 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
     let listed = methods
         .iter()
         .map(|(js, cfgs)| quote!(#(#cfgs)* methods.push(#js);));
+    let guarded = guarded.iter().map(|error| quote!(#(#block_cfgs)* #error));
     Ok(quote! {
         #block
+
+        #(#guarded)*
 
         #(#block_cfgs)*
         #[doc(hidden)]
@@ -948,6 +965,41 @@ mod tests {
         assert!(refused("impl Trait for A { fn a(&self) {} }")
             .unwrap()
             .contains("trait impl"));
+    }
+
+    /// A method under `#[cfg]` is checked only in the builds that have it:
+    /// its error is emitted under its cfg (and the block's), at the method
+    /// (#541).
+    #[test]
+    fn a_cfg_methods_error_is_under_its_cfg() {
+        let source = "#[cfg(unix)] impl A {\n    pub fn fine(&self) -> u32 { 1 }\n    #[cfg(windows)]\n    pub fn mutable(&mut self) {}\n}";
+        let item: Tokens = source.parse().unwrap();
+        let out = expand(quote!(::rutis), Tokens::new(), item).expect("no error outside its cfg");
+        let file: syn::File = syn::parse2(out).unwrap();
+        let guarded: Vec<_> = file
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Macro(error)
+                    if error.mac.path.segments.last().unwrap().ident == "compile_error" =>
+                {
+                    Some(error)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(guarded.len(), 1);
+        let error = guarded[0];
+        let cfgs: Vec<String> = error
+            .attrs
+            .iter()
+            .map(|attr| quote!(#attr).to_string())
+            .collect();
+        assert_eq!(cfgs, ["# [cfg (unix)]", "# [cfg (windows)]"], "{cfgs:?}");
+        let message = error.mac.tokens.to_string();
+        assert!(message.contains("`mutable` cannot be called"), "{message}");
+        let at = error.mac.path.segments.last().unwrap().ident.span();
+        assert_eq!(at.start().line, 4, "the error is at the method");
     }
 
     #[test]
