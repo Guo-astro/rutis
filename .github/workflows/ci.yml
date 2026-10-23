@@ -81,11 +81,12 @@ jobs:
   # (nightly) means a path is missing here (Q12.3.3). Without a pull request
   # the input `all` decides: every job, or none.
   #
-  # This job and ci-ok only orchestrate: they run on the self-hosted macOS
-  # runners (docs/ci.md §10); the repository variable GATE_RUNNER (JSON)
-  # switches them, e.g. to "ubuntu-24.04".
+  # This job and ci-ok only orchestrate: they run on GitHub's Linux, not on
+  # the self-hosted macOS runners, whose slots the platform tests need
+  # (docs/ci.md §10); the repository variable GATE_RUNNER (JSON) switches
+  # them, e.g. to '["self-hosted","macOS","ARM64"]'.
   changes:
-    runs-on: ${{ fromJSON(vars.GATE_RUNNER || '["self-hosted","macOS","ARM64"]') }}
+    runs-on: ${{ fromJSON(vars.GATE_RUNNER || '"ubuntu-24.04"') }}
     permissions:
       contents: read
       pull-requests: read
@@ -116,13 +117,16 @@ jobs:
               - Cargo.toml
               - rust-toolchain.toml
               - .github/workflows/**
-            # The dylib crates, their tools and fixtures, and rutis-cli, which
-            # links the SDK and holds the dylib host tests. Kernel changes
+            # The dylib crates, their tools and fixtures, and the files of
+            # rutis-cli that link the SDK and hold the dylib host tests. Its
+            # documentation and license do not reach the SDK. Kernel changes
             # reach the SDK too, but full runs run the dylib jobs after them
             # (Q12.1): kernel pull requests would otherwise wait 20 minutes
             # on jobs that have not failed in 88 runs.
             dylib:
-              - crates/rutis-cli/**
+              - crates/rutis-cli/build.rs
+              - crates/rutis-cli/src/**
+              - crates/rutis-cli/Cargo.toml
               - crates/rutis-dylib/**
               - crates/rutis-dylib-meta/**
               - crates/rutis-dylib-launcher/**
@@ -163,14 +167,20 @@ jobs:
               - crates/rutis-bridge/**
               - crates/rutis-loader/**
               - crates/rutis-host/**
-            # The Swift SDK (the root Package.swift and swift/), and the Rust
-            # crates that start and run its runtimes.
+            # The Swift SDK (the root Package.swift and swift/), and the test
+            # files that run its runtimes. Changes to the bridge, loader and
+            # host sources reach them too, but a Swift-only break there is
+            # found by the nightly full run (Q12.1): 6–7 minutes of macOS
+            # per bridge change otherwise, and Linux runs those suites.
             swift:
               - Package.swift
               - swift/**
-              - crates/rutis-bridge/**
-              - crates/rutis-loader/**
-              - crates/rutis-host/**
+              - crates/rutis-bridge/tests/swift_remote.rs
+              - crates/rutis-bridge/tests/swift_runtime.rs
+              - crates/rutis-loader/tests/swift_rows.rs
+              - crates/rutis-loader/tests/multilang_swift.rs
+              - crates/rutis-host/tests/swift.rs
+              - crates/rutis-host/tests/swift_app.rs
               - tests/e2e/tests/dev_loop.rs
             # What decides whether the SDK builds reproducibly. Kernel
             # changes reach the SDK too, but are checked in full runs
@@ -248,10 +258,14 @@ jobs:
 
   # Relative links in Markdown resolve. Links already broken on the base
   # commit (old notes pointing at moved files) are listed, not failed.
+  #
+  # Every pull request runs it, not only the documentation ones: renaming or
+  # removing a file a note points at breaks the links too, and the check is
+  # cheap on Linux (docs/ci.md §10).
   links:
     needs: changes
-    if: needs.changes.outputs.docs == 'true'
-    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.docs == 'true'
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
       - name: self-hosted runner, start (tools/ci-self-hosted.sh)
@@ -403,6 +417,14 @@ jobs:
         env:
           RUSTFLAGS: --cfg fuzzing
         run: cargo check -p rutis-bridge --features websocket --target-dir "${CARGO_TARGET_DIR:-target}/fuzzcheck"
+
+      # The fuzz targets themselves (fuzz/, its own workspace): a change
+      # there used to break only the nightly stress.yml, which compiles them
+      # with cargo-fuzz. Same flags and target directory as the entry points.
+      - name: cargo check (fuzz targets)
+        env:
+          RUSTFLAGS: --cfg fuzzing
+        run: cargo check --manifest-path fuzz/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}/fuzzcheck"
 
       # Plugins of other languages and of other nodes as rutis-loader rows,
       # and the unified events conformance suite (events_conformance), which
@@ -807,13 +829,19 @@ jobs:
         run: |
           (cd go/rutis && go vet ./... && go test -race ./...)
           (cd crates/rutis-loader/tests/fixtures/go && go vet ./...)
+      # rust runs the bridge and loader suites with every runtime's features
+      # on Linux; these three repeat parts of them for the Go runtime, so
+      # pull requests leave them to the full runs (Q12.7).
       - name: cargo test (the Go runtime in the bridge)
+        if: needs.changes.outputs.all == 'true'
         run: cargo test -p rutis-bridge --features testing,go --test go_runtime --test host_gone
       # Only the Go tests of the contract suites: the other runtimes run in
       # their own jobs.
       - name: cargo test (the contract suites with Go)
+        if: needs.changes.outputs.all == 'true'
         run: cargo test -p rutis-bridge --features testing,websocket,go --test session_matrix --test runtime_conformance go_
       - name: cargo test (Go rows)
+        if: needs.changes.outputs.all == 'true'
         run: cargo test -p rutis-loader --features node,python,go --test go_rows --test go_stop --test multilang_go --test instance_go --test leases
       # Pull requests run these rows on Windows (runtimes-windows), where
       # loopback is how processes start; full runs also run them here.
