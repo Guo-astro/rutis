@@ -395,11 +395,29 @@ async fn waiting_for_an_unmarked_rust_service_says_how_to_serve_it() {
             .find(|entry| entry.id == "jh")
             .unwrap()
     };
+    // The row may first wait for its runtime (`node`) too, while that
+    // starts (#530): what is asserted is the wait once only `hidden` is
+    // missing, not the first list.
+    let waits_for_hidden = |waiting: &[String]| {
+        !waiting.is_empty()
+            && waiting
+                .iter()
+                .all(|name| name == "hidden" || name.starts_with("hidden:"))
+    };
     let waiting = Guard(HANG_GUARD * 3)
         .eventually_with(
-            || Some(fixture.loader.waiting_for(&entry())).filter(|waiting| !waiting.is_empty()),
-            "jh to wait",
-            || format!("{:?}", entry()),
+            || {
+                Some(fixture.loader.waiting_for(&entry()))
+                    .filter(|waiting| waits_for_hidden(waiting))
+            },
+            "jh to wait for hidden",
+            || {
+                format!(
+                    "{:?}, waiting for {:?}",
+                    entry(),
+                    fixture.loader.waiting_for(&entry())
+                )
+            },
         )
         .await;
     assert_eq!(waiting.len(), 1, "{waiting:?}");
