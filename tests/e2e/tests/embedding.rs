@@ -479,6 +479,26 @@ fn tenants_are_created_edited_closed_and_restored_after_a_restart() {
     s.finish();
 }
 
+/// `ready` comes once the global rows started (#568), however late a
+/// runtime's rows are released: here 3 s after the loader mounted, as on a
+/// loaded machine, so `reconcile` returns with `words` still `Pending`.
+#[test]
+fn ready_waits_for_the_global_rows_to_start() {
+    let s = Scenario::new("embedding-late-rows");
+    project(&s);
+    let mut app = s.fixture_tenants(
+        Vec::<&str>::new(),
+        &[
+            ("RUTIS_TEST_INSPECT", "1"),
+            ("RUTIS_TEST_ROWS_LATE_MS", "3000"),
+        ],
+    );
+    let ready = answer(&mut app, "ready");
+    assert_eq!(ready["rows"]["words"], "Active", "{ready}");
+    stop(&mut app);
+    s.finish();
+}
+
 // ── Step 6: churn ───────────────────────────────────────────────
 
 /// How many tenants step 6 creates and closes after its warm-up:
