@@ -9,6 +9,7 @@
 compile_error!("rutis-dylib requires panic = unwind");
 
 use crate::platform::{self, Handle};
+use rutis::service::Generation;
 use rutis::{CordisError, Ctx, FiberView, Plugin, PluginFactory, TypeKey};
 use rutis_sdk::{ConfigValue, PluginMeta, BOOT_MAGIC, BOOT_SIZE, SDK_ID};
 use serde::Deserialize;
@@ -88,7 +89,47 @@ struct Retained {
     bytes: u64,
     loaded_at: SystemTime,
     module: Option<Arc<Module>>,
+    generation: Generation,
     _handle: Handle,
+}
+
+/// The generation each library mapped in this process was loaded as
+/// (`rutis::service::loading`), by its handle: opening a library again
+/// returns the mapping already there, whose initializers do not run again,
+/// so its blocks stay those of the first opening. One entry per library
+/// mapped, which is never unmapped: bounded, like the libraries, by the
+/// loaders' version limits.
+static GENERATIONS: Mutex<Vec<(usize, Generation)>> = Mutex::new(Vec::new());
+
+/// Open `path`, its initializers registering its `#[rutis::service]`
+/// blocks as a generation of their own (two builds of one plugin keep their
+/// types' TypeIds; each serves its values with its own blocks). The lock is
+/// held across the opening and the recording, so two loaders opening the
+/// same file at once agree on the generation of its one mapping.
+///
+/// # Safety
+///
+/// As `platform::open_library`: the library's initializers run in this
+/// process.
+unsafe fn open_generation(path: &Path) -> Result<(Handle, Generation), String> {
+    open_generation_with(|| unsafe { platform::open_library(path) })
+}
+
+/// [`open_generation`] with `open` mapping the library.
+fn open_generation_with(
+    open: impl FnOnce() -> Result<Handle, String>,
+) -> Result<(Handle, Generation), String> {
+    let mut known = GENERATIONS
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let (opened, generation) = rutis::service::loading(open);
+    let handle = opened?;
+    let key = handle.as_ptr() as usize;
+    if let Some((_, generation)) = known.iter().find(|(handle, _)| *handle == key) {
+        return Ok((handle, *generation));
+    }
+    known.push((key, generation));
+    Ok((handle, generation))
 }
 
 // Library handles are process-global, remain mapped forever, and may be used
@@ -298,13 +339,13 @@ impl Loader {
         let existing_slot = retained
             .iter()
             .position(|entry| entry.id == *id && entry.hash == actual_hash);
-        let (handle, slot) = if let Some(slot) = existing_slot {
+        let (handle, generation, slot) = if let Some(slot) = existing_slot {
             if let Some(module) = &retained[slot].module {
                 return Ok(module.clone());
             }
             // A previous entry/metadata attempt failed after dlopen. Retry on
             // the retained mapping without consuming another version slot.
-            (retained[slot]._handle, slot)
+            (retained[slot]._handle, retained[slot].generation, slot)
         } else {
             if retained.iter().filter(|entry| entry.id == *id).count() >= self.max_versions {
                 return Err(fail(
@@ -330,8 +371,17 @@ impl Loader {
                         .map_err(|e| fail("code signature", e))?;
                 }
             }
-            let handle =
-                platform::open_library(&cached).map_err(|e| fail(platform::OPEN_STEP, e))?;
+            let (handle, generation) =
+                open_generation(&cached).map_err(|e| fail(platform::OPEN_STEP, e))?;
+            // This is the plugin's newest build: names are looked up in it,
+            // not in the earlier ones, whose blocks keep serving the values
+            // they provided.
+            rutis::service::supersede(
+                retained
+                    .iter()
+                    .filter(|entry| entry.id == *id && entry.generation != generation)
+                    .map(|entry| entry.generation),
+            );
             // Every successfully opened library remains mapped, even if entry fails.
             retained.push(Retained {
                 id: id.clone(),
@@ -340,9 +390,10 @@ impl Loader {
                 bytes: bytes.len() as u64,
                 loaded_at: SystemTime::now(),
                 module: None,
+                generation,
                 _handle: handle,
             });
-            (handle, retained.len() - 1)
+            (handle, generation, retained.len() - 1)
         };
         let meta_fn: unsafe fn() -> PluginMeta =
             symbol(handle, b"rutis_plugin_meta\0").map_err(|e| fail("metadata", e))?;
@@ -395,6 +446,7 @@ impl Loader {
             injects,
             schema,
             factory,
+            generation,
             _handle: handle,
         });
         retained[slot].module = Some(module.clone());
@@ -462,6 +514,7 @@ pub struct Module {
     injects: Vec<TypeKey>,
     schema: Option<rutis_sdk::serde_json::Value>,
     factory: Box<dyn PluginFactory<ConfigValue>>,
+    generation: Generation,
     _handle: Handle,
 }
 unsafe impl Send for Module {}
@@ -488,9 +541,53 @@ impl Module {
     pub fn schema(&self) -> Option<&rutis_sdk::serde_json::Value> {
         self.schema.as_ref()
     }
-    /// The plugin's factory over JSON config.
+    /// The plugin's factory over JSON config. Build plugins with
+    /// [`Module::build`]: a plugin built here directly is not marked as
+    /// this library's code, and what it provides of a `#[rutis::service]`
+    /// type of the library is not served by name (only the program's own
+    /// marked types are, for code of no library).
     pub fn factory(&self) -> &dyn PluginFactory<ConfigValue> {
         self.factory.as_ref()
+    }
+    /// The generation the library was loaded as (`rutis::service::loading`).
+    pub fn generation(&self) -> Generation {
+        self.generation
+    }
+    /// Build the plugin for `config`, its fiber marked as this library's
+    /// code (`rutis::service::set_generation`): a `#[rutis::service]` value
+    /// it provides is served with this library's blocks, even when another
+    /// build of the same plugin, with the same `TypeId`s, is loaded too.
+    pub fn build(&self, config: &ConfigValue) -> Result<Box<dyn Plugin>, CordisError> {
+        Ok(Box::new(InGeneration {
+            plugin: self.factory.build(config)?,
+            generation: self.generation,
+        }))
+    }
+}
+
+/// A plugin of a loaded library, which marks its fiber as that library's
+/// code when it is applied.
+struct InGeneration {
+    plugin: Box<dyn Plugin>,
+    generation: Generation,
+}
+
+impl Plugin for InGeneration {
+    fn name(&self) -> &str {
+        self.plugin.name()
+    }
+    fn injects(&self) -> &[TypeKey] {
+        self.plugin.injects()
+    }
+    fn validate(&self) -> Result<(), CordisError> {
+        self.plugin.validate()
+    }
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+    ) -> rutis::BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+        rutis::service::set_generation(ctx, self.generation);
+        self.plugin.apply(ctx)
     }
 }
 
@@ -534,7 +631,7 @@ impl PluginFactory<DylibConfig> for DylibFactory {
     }
     fn build(&self, config: &DylibConfig) -> Result<Box<dyn Plugin>, CordisError> {
         self.check_module(&config.module)?;
-        config.module.factory.build(&config.value)
+        config.module.build(&config.value)
     }
 }
 
@@ -608,4 +705,39 @@ unsafe fn symbol<T>(handle: Handle, name: &[u8]) -> Result<T, String> {
         std::mem::size_of::<*mut std::ffi::c_void>()
     );
     platform::find_symbol(handle, name).map(|ptr| std::mem::transmute_copy(&ptr))
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use super::*;
+    use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    /// Two loaders opening one file at once agree on the generation its
+    /// initializers ran in: the first opening runs them (slowly here), the
+    /// second gets the mapping already there.
+    #[test]
+    fn concurrent_openings_record_the_generation_the_initializers_ran_in() {
+        static INITIALIZED: AtomicBool = AtomicBool::new(false);
+        static RAN_IN: AtomicU64 = AtomicU64::new(0);
+        let fake = NonNull::new(0x5eed_usize as *mut std::ffi::c_void).unwrap();
+        let handle = fake.as_ptr() as usize;
+        let open = move || -> Result<Handle, String> {
+            if !INITIALIZED.swap(true, Ordering::SeqCst) {
+                // The initializers: they register as the current generation.
+                let generation = rutis::service::current_loading().expect("inside loading");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                RAN_IN.store(generation.id(), Ordering::SeqCst);
+            }
+            Ok(NonNull::new(handle as *mut std::ffi::c_void).unwrap())
+        };
+        let (a, b) = std::thread::scope(|scope| {
+            let a = scope.spawn(|| open_generation_with(open).unwrap().1);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let b = scope.spawn(|| open_generation_with(open).unwrap().1);
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        assert_eq!(a, b);
+        assert_eq!(a.id(), RAN_IN.load(Ordering::SeqCst));
+    }
 }

@@ -320,6 +320,224 @@ async fn a_plugin_in_two_binaries_is_named_with_its_runtime() {
     fixture.root.shutdown().await.unwrap();
 }
 
+/// What `states` says of `name`, when it is down: why.
+fn down(runtimes: &GoRuntimesHandle, name: &str) -> Option<String> {
+    runtimes
+        .states()
+        .into_iter()
+        .find(|(runtime, _)| runtime == name)
+        .and_then(|(_, state)| match state {
+            RuntimeState::Down(why) => Some(why),
+            _ => None,
+        })
+}
+
+/// A restart that cannot read the replacement keeps the old runtime; a
+/// start that fails on a removed binary is reported as Stopped and is not
+/// retried on every sweep.
+/// guarantee: loader/runtime-down-stops-its-rows, loader/go-runtimes
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_start_keeps_the_old_runtime_and_stays_stopped() {
+    let fixture = fixture(Some(Duration::from_millis(300)), &[("netkit", "netkit")]).await;
+    fixture
+        .loader
+        .reconcile(layer(vec![row("ping", "go:ping")]), None)
+        .await
+        .unwrap();
+    let loader = fixture.loader.clone();
+    COLD.until(
+        || {
+            row_state(&loader, "ping") == Some(FiberState::Active)
+                && service(&fixture.root, "ping").is_some()
+        },
+        "ping and its service",
+    )
+    .await;
+    let running = process(&fixture.runtimes, "go-netkit").expect("go-netkit runs");
+
+    // A replacement that has no manifest, in a file of its own (Windows
+    // refuses to replace a running executable): the running runtime keeps
+    // its process until it restarts, and the restart cannot start it.
+    let builds = fixture.dir.path().join("builds");
+    std::fs::create_dir_all(&builds).unwrap();
+    let bad = builds.join(exe("netkit-bad"));
+    std::fs::write(&bad, b"not a Go binary").unwrap();
+    fixture.resolver.replace("go-netkit", &bad);
+    let error = fixture.runtimes.restart("go-netkit").await.unwrap_err();
+    assert!(!error.is_empty(), "{error}");
+    assert!(Arc::ptr_eq(
+        &running,
+        &process(&fixture.runtimes, "go-netkit").expect("the old runtime still runs")
+    ));
+    assert_eq!(row_state(&loader, "ping"), Some(FiberState::Active));
+    assert_eq!(
+        call(&fixture.root, "ping", "echo", json!(["still"]))
+            .await
+            .unwrap(),
+        json!("netkit pong still")
+    );
+
+    // A runtime that was stopped and whose binary is gone is reported as
+    // Stopped, and sweeps leave it there.
+    fixture.loader.reconcile(layer(vec![]), None).await.unwrap();
+    let runtimes = fixture.runtimes.clone();
+    COLD.until(
+        || process(&runtimes, "go-netkit").is_none(),
+        "the idle stop",
+    )
+    .await;
+    std::fs::remove_file(&bad).unwrap();
+    let error = fixture.runtimes.restart("go-netkit").await.unwrap_err();
+    assert!(error.contains("no such file"), "{error}");
+    let stopped = down(&fixture.runtimes, "go-netkit");
+    assert!(
+        stopped
+            .as_deref()
+            .is_some_and(|why| why.contains("no such file")),
+        "{stopped:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(down(&fixture.runtimes, "go-netkit"), stopped);
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// After a restart, rows resolve from the manifest the new process started
+/// with, and a binary replaced since shows as replaced: the restart keeps
+/// the record of what it started.
+/// guarantee: loader/go-runtimes
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_runtime_keeps_its_start_manifest() {
+    let fixture = fixture(None, &[("netkit", "netkit")]).await;
+    fixture
+        .loader
+        .reconcile(layer(vec![row("ping", "go:ping")]), None)
+        .await
+        .unwrap();
+    let loader = fixture.loader.clone();
+    let first = COLD
+        .eventually(|| active_generation(&loader, "ping"), "the row")
+        .await;
+    fixture.runtimes.restart("go-netkit").await.unwrap();
+    COLD.until(
+        || active_generation(&loader, "ping").is_some_and(|generation| generation > first),
+        "the row after the restart",
+    )
+    .await;
+
+    // A new build, not restarted into: the running process is the old one.
+    let builds = fixture.dir.path().join("builds");
+    std::fs::create_dir_all(&builds).unwrap();
+    let build = install(&builds, "netkit2", "netkit-2");
+    fixture.resolver.replace("go-netkit", &build);
+    let info = fixture
+        .runtimes
+        .runtimes()
+        .into_iter()
+        .find(|runtime| runtime.name == "go-netkit")
+        .unwrap();
+    assert!(info.replaced, "the runtime shows the pending restart");
+    fixture
+        .loader
+        .reconcile(
+            layer(vec![row("ping", "go:ping"), row("extra", "go:extra")]),
+            None,
+        )
+        .await
+        .unwrap();
+    let message = unresolved(&fixture.loader, "extra").expect("extra waits for the restart");
+    assert!(
+        message.contains("replaced") && message.contains("go-netkit"),
+        "{message}"
+    );
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// A Go binary (a script with the SDK's marker) at `path` that prints the
+/// plugin `late` the first time its manifest is read and deletes itself.
+#[cfg(unix)]
+fn vanishing(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(
+        path,
+        "#!/bin/sh\n# rutis-go-runtime:1\n\
+         [ \"$1\" = --rutis-manifest ] || exit 1\n\
+         rm -f \"$0\"\n\
+         echo '{\"pluginApi\":1,\"plugins\":{\"late\":{\"inject\":[],\"provides\":{}}}}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A Go binary at `path` whose manifest read always fails; each read adds
+/// a line to the file `runs`. `version` makes a file of another size. It
+/// is written aside and renamed into place: one change of the file, which
+/// a sweep cannot see half made (written, then made executable).
+#[cfg(unix)]
+fn always_failing(path: &Path, runs: &Path, version: usize) {
+    use std::os::unix::fs::PermissionsExt;
+    // Outside the binaries' directory: not a binary of its own meanwhile.
+    let staged = runs.with_file_name("staged");
+    std::fs::write(
+        &staged,
+        format!(
+            "#!/bin/sh\n# rutis-go-runtime:1\n# {}\necho run >> '{}'\nexit 3\n",
+            "v".repeat(version),
+            runs.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::rename(&staged, path).unwrap();
+}
+
+/// A binary a row uses that is gone when its runtime starts: the failure is
+/// reported, sweeps do not start it again (every 100 ms before #539), and
+/// it is tried again once its file changes, once per change.
+/// guarantee: loader/go-runtimes
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_missing_binary_is_tried_again_only_when_its_file_changes() {
+    let fixture = fixture(None, &[]).await;
+    let binary = fixture.dir.path().join("plugins").join("late");
+    let count = fixture.dir.path().join("runs");
+    vanishing(&binary);
+    // The row resolves from the manifest; the start reads the binary again
+    // and finds it gone.
+    fixture
+        .loader
+        .reconcile(layer(vec![row("late", "go:late")]), None)
+        .await
+        .unwrap();
+    let runtimes = fixture.runtimes.clone();
+    let why = COLD
+        .eventually(|| down(&runtimes, "go-late"), "the failed start")
+        .await;
+    assert!(why.contains("no Go runtime go-late"), "{why}");
+    assert!(!binary.exists());
+    // Sweeps (every 100 ms) leave it.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(down(&fixture.runtimes, "go-late").as_deref(), Some(&*why));
+
+    // The file is back, its manifest failing: tried once, then left again.
+    always_failing(&binary, &count, 1);
+    COLD.until(|| runs(&count) == 1, "a start on the file that came back")
+        .await;
+    // A binary in a directory whose manifest fails is not one of its
+    // runtimes: the start fails as before.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(runs(&count), 1, "sweeps read the failing binary again");
+    assert_eq!(down(&fixture.runtimes, "go-late").as_deref(), Some(&*why));
+
+    // Changed again: tried once more.
+    always_failing(&binary, &count, 2);
+    COLD.until(|| runs(&count) == 2, "a start on the changed file")
+        .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(runs(&count), 2, "sweeps read the failing binary again");
+    assert_ne!(row_state(&fixture.loader, "late"), Some(FiberState::Active));
+    fixture.root.shutdown().await.unwrap();
+}
+
 /// guarantee: loader/runtime-down-stops-its-rows, loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
@@ -1083,7 +1301,7 @@ async fn crash_ping(fixture: &Fixture) -> std::time::Instant {
 
 /// Wait up to `wait` and [`COLD`] for report `n`.
 async fn nth_end(ends: &Ends, n: usize, wait: Duration) -> (RuntimeEnd, std::time::Instant) {
-    let deadline = std::time::Instant::now() + wait + COLD.0;
+    let deadline = std::time::Instant::now() + wait + COLD.limit();
     loop {
         if let Some(end) = ends.lock().unwrap().get(n).cloned() {
             return end;
@@ -1169,6 +1387,41 @@ async fn a_crashed_runtime_restarts_on_failure_until_it_gives_up() {
         "ping again",
     )
     .await;
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// A restart waiting out its backoff does not start once the policy is
+/// changed to `no`.
+/// guarantee: loader/go-runtimes, host/runtime-restart
+#[tokio::test(flavor = "multi_thread")]
+async fn a_policy_change_cancels_a_waiting_restart() {
+    let fixture = fixture(None, &[("netkit", "netkit")]).await;
+    fixture
+        .loader
+        .reconcile(layer(vec![row("ping", "go:ping")]), None)
+        .await
+        .unwrap();
+    supervise(&fixture.runtimes, RestartPolicy::OnFailure);
+    crash_ping(&fixture).await;
+    let runtimes = fixture.runtimes.clone();
+    COLD.until(
+        || {
+            matches!(
+                runtime_state(&runtimes, "go-netkit"),
+                Some(GoRuntimeState::Stopped(_))
+            )
+        },
+        "the crashed runtime",
+    )
+    .await;
+    // Its first backoff is one second; this is before it ends.
+    supervise(&fixture.runtimes, RestartPolicy::No);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(matches!(
+        runtime_state(&fixture.runtimes, "go-netkit"),
+        Some(GoRuntimeState::Stopped(_))
+    ));
+    assert_ne!(row_state(&fixture.loader, "ping"), Some(FiberState::Active));
     fixture.root.shutdown().await.unwrap();
 }
 

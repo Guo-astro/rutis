@@ -1,6 +1,7 @@
 package rutis
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -105,10 +106,20 @@ func TestEventRegistrationLifecycle(t *testing.T) {
 	if err := a.Parallel(ctx, "changed"); err != nil || calls.Load() != 6 {
 		t.Fatalf("unload: %v, calls %d", err, calls.Load())
 	}
-	for name, owner := range map[string]*Ctx{"changed": b, "internal/update": a} {
-		if _, err := peer.Protect(func() (any, error) { owner.On(name, listen); return nil, nil }); err == nil {
-			t.Fatalf("inactive/reserved registration accepted: %s", name)
-		}
+	if _, err := peer.Protect(func() (any, error) { a.On("internal/update", listen); return nil, nil }); err == nil {
+		t.Fatal("reserved registration accepted")
+	}
+	// The unloaded row: reported, not registered (TestAnUnloadedRowCannotProvide).
+	var written bytes.Buffer
+	savedOutput := rowOutput
+	rowOutput = &written
+	b.On("changed", listen)()
+	rowOutput = savedOutput
+	if !strings.Contains(written.String(), "row r1 is not active") {
+		t.Fatalf("inactive registration not reported: %q", written.String())
+	}
+	if err := a.Parallel(ctx, "changed"); err != nil || calls.Load() != 7 {
+		t.Fatalf("inactive registration accepted: %v, calls %d", err, calls.Load())
 	}
 	a.On("rutis/row", listen)
 	if err := a.Emit(ctx, "internal/update"); err == nil {

@@ -13,7 +13,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, Weak};
 
 use rutis::service::{
-    erased_serde, exported_name, Answer, CallError, Encoded, Entry, Exposer, Function, Wire,
+    erased_serde, exported_name, Answer, CallError, Encoded, Entry, Exposer, Exposure, Function,
+    Provision, Wire,
 };
 use rutis::{BoxFuture, CordisError, Ctx, Disposer, Effect, InstanceId, TypeKey};
 
@@ -32,9 +33,14 @@ pub fn install() {
 
 rutis::__on_load!(install);
 
-/// A marked service, served by name: the methods of all its blocks.
+/// A marked service, served by name: the methods of all its blocks. Each
+/// call reads the native service through the providing context's strict
+/// read path ([`Entry::resolve`]), so its read interceptors and `check()`
+/// apply as they do to Rust readers.
 struct Marked {
-    service: Arc<dyn Any + Send + Sync>,
+    ctx: Ctx,
+    native: TypeKey,
+    provision: Arc<Provision>,
     entries: Vec<&'static Entry>,
     type_name: &'static str,
 }
@@ -51,7 +57,17 @@ impl HostDispatch for Marked {
                 short(self.type_name)
             )));
         };
-        match entry.invoke(&self.service, method, Encoded(Box::new(args)), &WIRE) {
+        // Read interceptors apply with the calling row as the reader, as
+        // for a Rust reader in its place; with no row (a Rust or peer
+        // caller), with the provider.
+        let caller = caller_row();
+        let actor = caller.as_ref().map(|row| row.ctx());
+        let service = entry
+            .resolve(&self.ctx, &self.native, &self.provision, actor)
+            .map_err(|why| {
+                Error::Value(format!("{} is not available: {why}", short(self.type_name)))
+            })?;
+        match entry.invoke(&service, method, Encoded(Box::new(args)), &WIRE) {
             Ok(Answer::Ready(value)) => Ok(value_of(value)),
             Ok(Answer::Later(future)) => Ok(Value::future(async move {
                 future.await.map(value_of).map_err(error_of)
@@ -80,13 +96,16 @@ fn short(type_name: &str) -> &str {
 }
 
 impl Exposer for BridgeExposer {
-    fn expose(
-        &self,
-        ctx: &Ctx,
-        native: &TypeKey,
-        service: Arc<dyn Any + Send + Sync>,
-        entries: Vec<&'static Entry>,
-    ) -> Result<Disposer, CordisError> {
+    fn expose(&self, exposure: Exposure<'_>) -> Result<Disposer, CordisError> {
+        let Exposure {
+            ctx,
+            native,
+            scope,
+            entries,
+            check,
+            provision,
+            ..
+        } = exposure;
         let name = exported_name(&entries)?;
         let type_name = entries.first().map_or("", |entry| entry.type_name());
         let instance = native.instance_id();
@@ -95,37 +114,58 @@ impl Exposer for BridgeExposer {
             None => host_key(name),
         };
         let marked = Arc::new(Marked {
-            service,
+            ctx: ctx.clone(),
+            native: native.clone(),
+            provision,
             entries,
             type_name,
         });
-        let served = ctx
-            .provide_as::<dyn HostDispatch>(key.clone(), marked)
-            .map_err(|error| match error {
-                CordisError::ServiceExists(_) => {
-                    let by = ctx
-                        .get_as::<dyn HostDispatch>(key.clone())
-                        .and_then(|other| other.provider())
-                        .map(|other| format!(" by {other}"))
-                        .unwrap_or_default();
-                    CordisError::ServiceExists(format!(
-                        "`{name}` ({type_name}): the name is already provided here{by}"
-                    ))
-                }
-                error => error,
-            })?;
+        // In the isolation scope of the native service (R3): two isolated
+        // scopes each serve their own.
+        let serving = match scope {
+            Some(scope) => ctx.isolate(key.clone(), scope),
+            None => ctx.clone(),
+        };
+        // The native binding's `check()` gates the name as well.
+        let served = match check {
+            Some(check) => {
+                serving
+                    .provide_as_with_check::<dyn HostDispatch>(key.clone(), marked, move || check())
+            }
+            None => serving.provide_as::<dyn HostDispatch>(key.clone(), marked),
+        };
+        let served = served.map_err(|error| match error {
+            CordisError::ServiceExists(_) => {
+                let by = serving
+                    .get_as::<dyn HostDispatch>(key.clone())
+                    .and_then(|other| other.provider())
+                    .map(|other| format!(" by {other}"))
+                    .unwrap_or_default();
+                CordisError::ServiceExists(format!(
+                    "`{name}` ({type_name}): the name is already provided here{by}"
+                ))
+            }
+            error => error,
+        })?;
         let Some(instance) = instance else {
             return Ok(served);
         };
         let name = name.to_owned();
-        let claim = ctx.effect_named(format!("rutis-service claim: {name}"), move || {
+        let claimed = ctx.effect_named(format!("rutis-service claim: {name}"), move || {
             claim(instance, &name);
             Effect::Disposer(Box::new(move || {
                 unclaim(instance, &name);
                 Ok(())
             }))
-        })?;
-        Ok(rutis::service::chain(claim, served))
+        });
+        match claimed {
+            Ok(claimed) => Ok(rutis::service::chain(claimed, served)),
+            Err(error) => {
+                // Not claimed: not served either.
+                ctx.handle().spawn(served.dispose());
+                Err(error)
+            }
+        }
     }
 }
 
@@ -224,11 +264,38 @@ pub fn unexported(ctx: &Ctx, name: &str) -> Option<String> {
             return None;
         }
         let short = short(type_name);
-        (default_name(short) == name).then(|| {
-            format!(
-                "`{name}` is the Rust service {type_name}, which is not exported: add #[rutis::service] to its impl"
-            )
-        })
+        if default_name(short) != name {
+            return None;
+        }
+        if rutis::service::is_marked(key.type_id()) {
+            if let Some(exported) = rutis::service::name_of(key.type_id())
+                .filter(|exported| *exported != name)
+            {
+                return Some(format!(
+                    "`{name}` is the Rust service {type_name}, which is exported as `{exported}`"
+                ));
+            }
+            // Visible here when `ctx` reads the key under the binding's
+            // isolation label and, for an instance key, inside that instance.
+            let visible = ctx.in_instance_key(key)
+                && ctx.isolate_label(key).as_deref() == binding.scope.as_deref();
+            if visible {
+                return Some(format!(
+                    "`{name}` is the Rust service {type_name}, provided here but not served"
+                ));
+            }
+            let place = match (key.instance_id(), binding.scope.as_deref()) {
+                (Some(instance), _) => format!("instance {instance}"),
+                (None, Some(scope)) => format!("scope `{scope}`"),
+                (None, None) => "the default scope".to_owned(),
+            };
+            return Some(format!(
+                "`{name}` is the Rust service {type_name}, provided in {place}, not visible here"
+            ));
+        }
+        Some(format!(
+            "`{name}` is the Rust service {type_name}, which is not exported: add #[rutis::service] to its impl"
+        ))
     })
 }
 
@@ -373,5 +440,95 @@ mod tests {
         assert_eq!(default_name("Calendar"), "calendar");
         assert_eq!(default_name("HTTPClient"), "httpClient");
         assert_eq!(default_name("IO"), "io");
+    }
+
+    pub struct Guarded;
+
+    #[rutis::service]
+    impl Guarded {
+        pub fn ping(&self) -> u32 {
+            1
+        }
+    }
+
+    /// A plugin that hands out its context, and runs `then` on it first.
+    struct Probe<F>(std::sync::mpsc::Sender<Ctx>, F);
+
+    impl<F: Fn(&Ctx) + Send + Sync + 'static> rutis::Plugin for Probe<F> {
+        fn name(&self) -> &str {
+            "probe"
+        }
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+            (self.1)(ctx);
+            self.0.send(ctx.clone()).unwrap();
+            Box::pin(async { Ok(Effect::Done) })
+        }
+    }
+
+    async fn child(parent: &Ctx, then: impl Fn(&Ctx) + Send + Sync + 'static) -> Ctx {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (&parent.plugin(Probe(tx, then))).await.unwrap();
+        rx.recv().unwrap()
+    }
+
+    fn call_as(service: &Arc<dyn HostDispatch>, caller: Option<&Ctx>) -> Result<(), Error> {
+        let row = caller.map(|ctx| crate::session::CallerRow::new("row", "row", ctx.clone()));
+        crate::session::with_caller_row(row, || service.invoke("ping", Value::List(Vec::new())))
+            .map(|_| ())
+    }
+
+    /// Read interceptors of a call by name are those a Rust reader in the
+    /// calling row's place gets: the ones of the row's ancestors, not of
+    /// the provider's.
+    #[tokio::test]
+    async fn read_interceptors_are_the_calling_rows() {
+        use rutis::ServiceIntercept;
+        let root = Ctx::root().unwrap();
+        root.provide(Guarded).unwrap();
+        let service = root
+            .get_as::<dyn HostDispatch>(host_key("guarded"))
+            .unwrap();
+        // A plugin below the root denies reads of `Guarded` in its subtree.
+        let guard = child(&root, |ctx| {
+            ctx.intercept_require_as::<Guarded>(TypeKey::of::<Guarded>(), |_| {
+                ServiceIntercept::Deny
+            })
+            .unwrap();
+        })
+        .await;
+        let inside = child(&guard, |_| {}).await;
+        let outside = child(&root, |_| {}).await;
+        assert!(
+            call_as(&service, Some(&inside)).is_err(),
+            "denied in the guard's subtree"
+        );
+        assert!(call_as(&service, Some(&outside)).is_ok());
+        assert!(
+            call_as(&service, None).is_ok(),
+            "no row: the provider reads"
+        );
+        root.shutdown().await.unwrap();
+    }
+
+    /// A reference to the entry kept after its service went serves nothing,
+    /// even once the slot is provided again (by another build, say): it
+    /// never runs on a value it was not provided with.
+    #[tokio::test]
+    async fn a_kept_entry_serves_only_the_binding_it_was_provided_with() {
+        let root = Ctx::root().unwrap();
+        let first = root.provide(Guarded).unwrap();
+        let kept = root
+            .get_as::<dyn HostDispatch>(host_key("guarded"))
+            .unwrap();
+        assert!(call_as(&kept, None).is_ok());
+        first.dispose().await.unwrap();
+        root.provide(Guarded).unwrap();
+        let error = call_as(&kept, None).unwrap_err();
+        assert!(error.to_string().contains("not available"), "{error}");
+        let current = root
+            .get_as::<dyn HostDispatch>(host_key("guarded"))
+            .unwrap();
+        assert!(call_as(&current, None).is_ok());
+        root.shutdown().await.unwrap();
     }
 }

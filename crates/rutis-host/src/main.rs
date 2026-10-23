@@ -12,7 +12,7 @@
 use std::collections::HashSet;
 
 use rutis_host::{config, errln, host, languages, new, outln, project, status};
-use rutis_loader::{RowStatus, Supply};
+use rutis_loader::{Provider, RowStatus, Supply};
 
 mod reload;
 mod stop;
@@ -350,15 +350,19 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
     outln!("rutis-host dev: running {id}; changes reload it (Ctrl-C ends)");
     status::follow(host.followed());
     let mut exits = host.supervise();
-    loop {
+    // Builds no runtime runs any more, still to delete: Windows refuses
+    // while it still holds the image of a process that just ended.
+    let mut stale: Vec<std::path::PathBuf> = Vec::new();
+    let stopped = 'dev: loop {
+        remove_builds(&mut stale);
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(400)) => {}
             signal = signals.next() => {
-                return Ok(stop::stop(&host, signal, deadline, &mut signals).await);
+                break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
             }
             (runtime, why) = exits.next() => {
                 let ended = Ended::Runtime(runtime, why);
-                return Ok(stop::end(&host, ended, deadline, &mut signals).await);
+                break 'dev stop::end(&host, ended, deadline, &mut signals).await;
             }
         }
         let now = project::sources(&dir);
@@ -378,7 +382,7 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
             let built = tokio::select! {
                 built = project.rebuild(build + 1) => built,
                 signal = signals.next() => {
-                    return Ok(stop::stop(&host, signal, deadline, &mut signals).await);
+                    break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
                 }
             };
             match built {
@@ -388,20 +392,34 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
                         project.name(),
                         started.elapsed().as_secs_f64()
                     );
-                    build += 1;
                     running.replace(project.runtime(), &binary);
                     // A runtime that hangs starting does not keep a signal out.
                     let restarted = tokio::select! {
                         restarted = running.restart_runtime(project.runtime()) => restarted,
                         signal = signals.next() => {
-                            return Ok(stop::stop(&host, signal, deadline, &mut signals).await);
+                            break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
                         }
                     };
                     match restarted {
-                        Ok(()) => outln!("{}: rebuilt and restarted", project.runtime()),
-                        Err(error) => outln!("{}: cannot restart: {error}", project.runtime()),
+                        Ok(()) => {
+                            build += 1;
+                            outln!("{}: rebuilt and restarted", project.runtime());
+                            // Not the build the next start uses: once nothing
+                            // runs it, it can go.
+                            stale.push(project.binary(build - 1));
+                            remove_builds(&mut stale);
+                        }
+                        Err(error) => {
+                            // The new binary did not run: keep it and the
+                            // previous build, and point the runtime back at
+                            // the previous one, so a later change can retry.
+                            running.replace(project.runtime(), &project.binary(build));
+                            outln!(
+                                "{}: cannot restart: {error}; the previous build is kept",
+                                project.runtime()
+                            );
+                        }
                     }
-                    let _ = std::fs::remove_file(project.binary(build - 1));
                 }
                 Err(errors) => outln!(
                     "{}: the build failed; the last build keeps running\n{errors}",
@@ -424,7 +442,7 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
             let reloaded = tokio::select! {
                 reloaded = host.loader.reload(&row) => reloaded,
                 signal = signals.next() => {
-                    return Ok(stop::stop(&host, signal, deadline, &mut signals).await);
+                    break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
                 }
             };
             match reloaded {
@@ -432,7 +450,20 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
                 Err(error) => outln!("{row}: cannot reload: {error}"),
             }
         }
-    }
+    };
+    // Stopped: no runtime runs them now.
+    remove_builds(&mut stale);
+    Ok(stopped)
+}
+
+/// Delete the builds in `stale`, keeping those that cannot be deleted yet
+/// (on Windows, while a process that ran one is not quite gone) for the
+/// next try.
+fn remove_builds(stale: &mut Vec<std::path::PathBuf>) {
+    stale.retain(|build| match std::fs::remove_file(build) {
+        Ok(()) => false,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    });
 }
 
 async fn check(args: &[String]) -> Result<(), String> {
@@ -646,6 +677,23 @@ fn supply_line(service: &str, supply: &Supply) -> Option<String> {
         Supply::Missing { .. } => Some(format!(
             "{service}: add a row that provides it, or import it from a peer (import: [\"{service}\"])"
         )),
+        Supply::Provided(by)
+            if by
+                .iter()
+                .all(|provider| matches!(provider, Provider::Marked(_))) =>
+        {
+            let types: Vec<&str> = by
+                .iter()
+                .filter_map(|provider| match provider {
+                    Provider::Marked(type_name) => Some(type_name.as_str()),
+                    _ => None,
+                })
+                .collect();
+            Some(format!(
+                "{service}: served by the host's #[rutis::service] type {} once it is provided",
+                types.join(", ")
+            ))
+        }
         Supply::Unknown(sources) => Some(format!(
             "{service}: not known to be provided; it may come from {}",
             sources

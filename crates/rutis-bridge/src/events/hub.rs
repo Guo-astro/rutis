@@ -307,7 +307,110 @@ struct Registered {
 #[derive(Default)]
 struct Emits {
     busy: bool,
-    queue: VecDeque<BoxFuture<'static, ()>>,
+    /// The row of the dispatch running (its key) and its cancel, while one
+    /// runs.
+    running: Option<(Option<String>, Arc<Cancel>)>,
+    /// The row that emitted each queued dispatch (its key), and the run.
+    queue: VecDeque<(Option<String>, EmitRun)>,
+}
+
+/// Lets an emit go: its run and its filter (on the bus's task for the
+/// emit) end at their next poll.
+#[derive(Default)]
+struct Cancel {
+    cancelled: std::sync::atomic::AtomicBool,
+    /// The tasks polling the run and the filter.
+    wakers: Mutex<Vec<std::task::Waker>>,
+}
+
+impl Cancel {
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        let wakers = std::mem::take(&mut *self.wakers.lock().unwrap());
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+
+    /// Whether it was cancelled; if not, `cx` is woken when it is.
+    fn cancelled(&self, cx: &Context<'_>) -> bool {
+        {
+            let mut wakers = self.wakers.lock().unwrap();
+            if !wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
+                wakers.push(cx.waker().clone());
+            }
+        }
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+/// `filter`, ending when `cancel` is: then it keeps no listener and
+/// reports nothing, and its call is dropped (the emit's later emits of the
+/// name, which the bus starts after it, go on).
+fn cancelling(filter: BatchFilter, cancel: Arc<Cancel>) -> BatchFilter {
+    Box::new(move |candidates: Vec<Candidate>| {
+        let wanted = candidates.len();
+        match filter(candidates) {
+            FilterAnswer::Pending(mut answer) => {
+                FilterAnswer::Pending(Box::pin(std::future::poll_fn(move |cx| {
+                    if cancel.cancelled(cx) {
+                        return Poll::Ready(Ok(vec![false; wanted]));
+                    }
+                    answer.as_mut().poll(cx)
+                })))
+            }
+            ready => ready,
+        }
+    })
+}
+
+/// An emit's run: it ends when the run does, when it is cancelled (the run
+/// is dropped, and its filter keeps no listener: nothing starts or is
+/// reported after) or when the run panics, so the session's queue moves on
+/// in every case. Its dispatch's reply completes when the run is dropped.
+struct EmitRun {
+    run: Option<BoxFuture<'static, ()>>,
+    cancel: Arc<Cancel>,
+}
+
+impl EmitRun {
+    fn new(run: BoxFuture<'static, ()>, cancel: Arc<Cancel>) -> Self {
+        Self {
+            run: Some(run),
+            cancel,
+        }
+    }
+
+    /// Drop the run; a panic in its drop is caught too.
+    fn finish(&mut self) {
+        let run = self.run.take();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(run)));
+    }
+}
+
+impl Future for EmitRun {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let this = &mut *self;
+        if this.run.is_none() {
+            return Poll::Ready(());
+        }
+        if this.cancel.cancelled(cx) {
+            this.finish();
+            return Poll::Ready(());
+        }
+        let run = this.run.as_mut().expect("a run");
+        let polled =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run.as_mut().poll(cx)));
+        match polled {
+            Ok(Poll::Pending) => Poll::Pending,
+            Ok(Poll::Ready(())) | Err(_) => {
+                this.finish();
+                Poll::Ready(())
+            }
+        }
+    }
 }
 
 /// `events.on`'s argument (events protocol §4.2).
@@ -391,6 +494,16 @@ impl SessionEvents {
             hub.leave(self.origin);
         }
         self.rows.lock().unwrap().clear();
+        // The running emit is let go too. Dropped after the lock: a future
+        // may write a frame on drop.
+        let (queued, running) = {
+            let mut emits = self.emits.lock().unwrap();
+            (std::mem::take(&mut emits.queue), emits.running.take())
+        };
+        drop(queued);
+        if let Some((_, cancel)) = running {
+            cancel.cancel();
+        }
         let entries: Vec<Registered> = self
             .entries
             .lock()
@@ -415,6 +528,25 @@ impl SessionEvents {
     /// (events protocol §7.1).
     pub(crate) fn row_ended(&self, key: &str) {
         self.rows.lock().unwrap().remove(key);
+        // Its queued emits are dropped and the one running (waiting for
+        // its filter) is let go (§5.5): the session's later emits go on.
+        // Dropped after the lock: a future may write a frame on drop.
+        let (queued, running) = {
+            let mut emits = self.emits.lock().unwrap();
+            let (queued, kept): (VecDeque<_>, VecDeque<_>) = std::mem::take(&mut emits.queue)
+                .into_iter()
+                .partition(|(row, _)| row.as_deref() == Some(key));
+            emits.queue = kept;
+            let running = match &emits.running {
+                Some((row, _)) if row.as_deref() == Some(key) => emits.running.take(),
+                _ => None,
+            };
+            (queued, running)
+        };
+        drop(queued);
+        if let Some((_, cancel)) = running {
+            cancel.cancel();
+        }
         let gone: Vec<Registered> = {
             let mut entries = self.entries.lock().unwrap();
             let ids: Vec<String> = entries
@@ -612,6 +744,7 @@ impl SessionEvents {
             None | Some(Value::Undefined) | Some(Value::Data(Json::Null)) => None,
             Some(row) => Some(crate::session::decode::<String>(row.json()?)?),
         };
+        let row_key = row.clone();
         if name.starts_with(rutis::events::RESERVED_PREFIX) {
             return Err(Error::Remote {
                 name: "ReservedEvent".into(),
@@ -652,11 +785,15 @@ impl SessionEvents {
                 // The filter's failure is reported here, naming the
                 // emitter's row (§5.6): the bus would name the runtime
                 // plugin, whose context this dispatch runs in. Keeping no
-                // listener is what a failed filter does.
-                dispatch.filter = dispatch
-                    .filter
-                    .take()
-                    .map(|filter| reporting(filter, ctx.clone(), name.clone(), row.clone()));
+                // listener is what a failed filter does. One its row's end
+                // lets go keeps none and is not reported (§5.5).
+                let cancel = Arc::new(Cancel::default());
+                dispatch.filter = dispatch.filter.take().map(|filter| {
+                    cancelling(
+                        reporting(filter, ctx.clone(), name.clone(), row.clone()),
+                        cancel.clone(),
+                    )
+                });
                 let reporter = ctx.clone();
                 let (started, answered) = tokio::sync::oneshot::channel();
                 let row = row.clone();
@@ -668,7 +805,7 @@ impl SessionEvents {
                         }
                         let _ = started.send(());
                     }));
-                match self.run_emit(run) {
+                match self.run_emit(row_key, EmitRun::new(run, cancel)) {
                     true => Ok(Value::Undefined),
                     false => Ok(Value::future(async move {
                         let _ = answered.await;
@@ -695,23 +832,25 @@ impl SessionEvents {
     /// Start an `emit` dispatch after those of the session before it
     /// started (events protocol §5.5): here, when none waits and it starts
     /// at once (`true`); otherwise in turn, on a task.
-    fn run_emit(self: &Arc<Self>, mut run: BoxFuture<'static, ()>) -> bool {
+    ///
+    /// A run that is let go (its row ended, or the session) or panics ends
+    /// like one that finished: the next one starts.
+    fn run_emit(self: &Arc<Self>, row: Option<String>, mut run: EmitRun) -> bool {
         {
             let mut emits = self.emits.lock().unwrap();
             if emits.busy {
-                emits.queue.push_back(run);
+                emits.queue.push_back((row, run));
                 return false;
             }
             emits.busy = true;
+            emits.running = Some((row, run.cancel.clone()));
         }
         let mut context = Context::from_waker(std::task::Waker::noop());
-        if run.as_mut().poll(&mut context).is_ready() {
-            let mut emits = self.emits.lock().unwrap();
-            if emits.queue.is_empty() {
-                emits.busy = false;
-                return true;
+        if Pin::new(&mut run).poll(&mut context).is_ready() {
+            match self.next_emit() {
+                None => return true,
+                Some(next) => run = next,
             }
-            run = emits.queue.pop_front().expect("a queued emit");
         }
         let session = self.clone();
         match tokio::runtime::Handle::try_current() {
@@ -719,21 +858,38 @@ impl SessionEvents {
                 runtime.spawn(async move {
                     let mut run = run;
                     loop {
-                        run.await;
-                        let mut emits = session.emits.lock().unwrap();
-                        match emits.queue.pop_front() {
+                        (&mut run).await;
+                        match session.next_emit() {
                             Some(next) => run = next,
-                            None => {
-                                emits.busy = false;
-                                return;
-                            }
+                            None => return,
                         }
                     }
                 });
             }
-            Err(_) => self.emits.lock().unwrap().busy = false,
+            Err(_) => {
+                let mut emits = self.emits.lock().unwrap();
+                emits.busy = false;
+                emits.running = None;
+            }
         }
         false
+    }
+
+    /// The emit running ended: the next queued one, now running, or none
+    /// (the session's emits are idle).
+    fn next_emit(&self) -> Option<EmitRun> {
+        let mut emits = self.emits.lock().unwrap();
+        match emits.queue.pop_front() {
+            Some((row, next)) => {
+                emits.running = Some((row, next.cancel.clone()));
+                Some(next)
+            }
+            None => {
+                emits.busy = false;
+                emits.running = None;
+                None
+            }
+        }
     }
 }
 
@@ -1156,6 +1312,46 @@ mod tests {
         /// Runs in `events.on` between the row's check and the entry's
         /// record.
         pub(super) static REGISTERING: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+    }
+
+    /// An emit that panics while it runs, at once or on its task, does not
+    /// leave the session's emits stuck: the next one runs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_emit_that_panics_does_not_stop_the_next() {
+        let root = Ctx::root().unwrap();
+        let (near, _far) = crate::transport::memory::pair();
+        let near = Connection::open(near, Arc::new(Quiet)).unwrap();
+        let session = SessionEvents::join(Some(&root), near, "rt".into(), Vec::new()).unwrap();
+        let ran = Arc::new(AtomicBool::new(false));
+        let run = |run: BoxFuture<'static, ()>| EmitRun::new(run, Arc::default());
+        let marks = |ran: &Arc<AtomicBool>| {
+            let ran = ran.clone();
+            run(Box::pin(async move { ran.store(true, Ordering::SeqCst) }))
+        };
+
+        // At once, in `run_emit`.
+        assert!(session.run_emit(None, run(Box::pin(async { panic!("emit panics") }))));
+        assert!(session.run_emit(None, marks(&ran)));
+        assert!(ran.swap(false, Ordering::SeqCst));
+
+        // On its task, with the next one queued behind it.
+        let (go, wait) = tokio::sync::oneshot::channel::<()>();
+        let panics = run(Box::pin(async move {
+            let _ = wait.await;
+            panic!("emit panics later");
+        }));
+        assert!(!session.run_emit(None, panics));
+        assert!(!session.run_emit(None, marks(&ran)));
+        go.send(()).unwrap();
+        for _ in 0..200 {
+            if ran.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(ran.load(Ordering::SeqCst), "the emit after the panic ran");
+        let emits = session.emits.lock().unwrap();
+        assert!(!emits.busy && emits.queue.is_empty());
     }
 
     /// A row that unloads while one of its listeners registers (on the

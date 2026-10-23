@@ -47,7 +47,7 @@ Runtimes take emit replies in frame order, and rutis always answers a forwarded 
 For authors of runtimes and testing tools (protocol §5.5, [runtime contract](../.agents/skills/rutis-new-runtime/references/runtime-contract.md) §6):
 
 - **The host always answers an `emit` with a plain value.** An `emit`-mode `events.dispatch` is answered `undefined` once its listeners have started, also when it waited in the session's queue (a filter selector still pending). 0.13 answered a queued emit with a future.
-- **Runtimes apply that answer in frame order.** Take the reply as its frame is read, before the next frame, not on a later task, tick or thread. Start every `emit`-mode `events.call` in frame order too, also while one of your synchronous calls waits. The Node runtime now does this; until now it held such calls back until the wait ended, so a later emit could take the fast path past them.
+- **Runtimes apply that answer in frame order.** Take the reply as its frame is read, before the next frame, not on a later task, tick or thread. Start `emit`-mode `events.call`s in frame order too. A runtime that is not reentrant still holds them back while one of its synchronous calls waits. It must then run a fast-path emit of the same name behind the held calls, never before them. The Node runtime now does so; until now a later emit could take the fast path past them.
 - **`events.expected.json`.** It has the step expectation `answered`: wait until the host has replied to every `events.dispatch` it received. It also adds the spec field `then` (`{until, args}`), the `unload` step's `then`, and the sync method `events-log.until(entry)`. A testing tool that reads the file must accept these keys. The cases that use `then` are `tool: false`.
 - **`Tap::answered`** (`rutis_bridge::events::testing`, feature `testing`): waits for those replies, for your own host-side tests.
 - **Compatibility.** A 0.13 runtime still works with a 0.15 host but keeps its timing-dependent order: it counts the answer on a later tick. A 0.15 runtime still settles a 0.13 host's future answer, and with such a host keeps 0.13's order.
@@ -65,4 +65,5 @@ New (existing code is not affected):
 - `rutis_loader::Loader::waiting_for(&entry)`: which services a row waits for, and how to fix it when one is an unmarked Rust service.
 - `rutis-host types`.
 - `rutis-host`'s `rutis-bridge` dependency enables the `exports` feature.
+- `rutis_loader::Provider::Marked(type)`: `Loader::check` reports a marked type's name with it (served once provided). `Provider` is `#[non_exhaustive]`, so matches already have a catch-all.
 - The new crate `rutis-macros` holds the macro; `rutis` depends on it and re-exports it, so nothing is added to `Cargo.toml`. A dylib plugin reaches it as `rutis_sdk::rutis::service`.

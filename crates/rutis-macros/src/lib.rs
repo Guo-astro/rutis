@@ -121,6 +121,70 @@ fn skipped(method: &ImplItemFn) -> syn::Result<bool> {
     Ok(skip)
 }
 
+/// The `#[cfg]` attributes of a method, and the `cfg` parts of its
+/// `#[cfg_attr]`s, for what is generated for it: a method the build leaves
+/// out is not served either.
+fn cfgs(attrs: &[syn::Attribute]) -> Vec<Tokens> {
+    attrs
+        .iter()
+        .filter_map(|attr| {
+            if attr.path().is_ident("cfg") {
+                return Some(quote!(#attr));
+            }
+            if !attr.path().is_ident("cfg_attr") {
+                return None;
+            }
+            let nested = attr
+                .parse_args_with(
+                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+                )
+                .ok()?;
+            let mut nested = nested.into_iter();
+            let predicate = nested.next()?;
+            let cfgs: Vec<syn::Meta> = nested.filter(|meta| meta.path().is_ident("cfg")).collect();
+            (!cfgs.is_empty()).then(|| quote!(#[cfg_attr(#predicate, #(#cfgs),*)]))
+        })
+        .collect()
+}
+
+/// A parameter type as the generated code can name it, outside the `impl`
+/// and the method: its named lifetimes elided (`'_`, inferred), `Self` the
+/// marked type.
+fn nameable(ty: &Type, self_ty: &Type) -> Type {
+    struct Rewrite<'a>(&'a Type);
+    impl syn::visit_mut::VisitMut for Rewrite<'_> {
+        fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+            if lifetime.ident != "static" {
+                lifetime.ident = proc_macro2::Ident::new("_", lifetime.ident.span());
+            }
+        }
+        fn visit_type_mut(&mut self, ty: &mut Type) {
+            if let Type::Path(path) = ty {
+                if path.qself.is_none()
+                    && path
+                        .path
+                        .segments
+                        .first()
+                        .is_some_and(|segment| segment.ident == "Self")
+                {
+                    let self_ty = self.0;
+                    if path.path.segments.len() == 1 {
+                        *ty = self_ty.clone();
+                        return;
+                    }
+                    let rest: Vec<_> = path.path.segments.iter().skip(1).collect();
+                    *ty = syn::parse_quote!(<#self_ty>::#(#rest)::*);
+                    return;
+                }
+            }
+            syn::visit_mut::visit_type_mut(self, ty);
+        }
+    }
+    let mut ty = ty.clone();
+    syn::visit_mut::VisitMut::visit_type_mut(&mut Rewrite(self_ty), &mut ty);
+    ty
+}
+
 /// The service name a type is exported as by default: its name with the
 /// first word lowercased (`Calendar` is `calendar`, `TreeCommands`
 /// `treeCommands`, `HTTPClient` `httpClient`).
@@ -210,6 +274,10 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
     };
     let ty = block.self_ty.as_ref().clone();
     let ty = &ty;
+    // A cfg on the impl guards the whole block; the generated entry must be
+    // guarded too, or it would reference a type or methods this build leaves
+    // out.
+    let block_cfgs = cfgs(&block.attrs);
 
     let mut errors: Option<syn::Error> = None;
     let mut push = |error: syn::Error| match &mut errors {
@@ -237,6 +305,8 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
                 if receiver.reference.is_some()
                     && receiver.mutability.is_none()
                     && receiver.colon_token.is_none() => {}
+            // `self: &Self` is the same receiver.
+            Some(FnArg::Receiver(receiver)) if shared_self(receiver) => {}
             // Constructors and associated functions are not the service's.
             None | Some(FnArg::Typed(_)) => continue,
             Some(FnArg::Receiver(receiver)) => {
@@ -251,7 +321,15 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
             }
         }
         let js = camel(&method.sig.ident.to_string());
-        if methods.contains(&js) {
+        let cfgs = cfgs(&method.attrs);
+        // Two methods of one name for other languages: only when `#[cfg]`
+        // keeps one of them out of each build.
+        if methods
+            .iter()
+            .any(|(known, known_cfgs): &(String, Vec<Tokens>)| {
+                *known == js && (known_cfgs.is_empty() || cfgs.is_empty())
+            })
+        {
             push(syn::Error::new(
                 method.sig.ident.span(),
                 format!("two methods are `{js}` for other languages"),
@@ -260,8 +338,8 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
         }
         match arm(&rutis, ty, method, &js) {
             Ok(arm) => {
-                arms.push(arm);
-                methods.push(js);
+                arms.push(quote!(#(#cfgs)* #arm));
+                methods.push((js, cfgs));
             }
             Err(error) => {
                 for error in error {
@@ -278,9 +356,13 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
     }
     strip(&mut block);
     let type_name = &ident;
+    let listed = methods
+        .iter()
+        .map(|(js, cfgs)| quote!(#(#cfgs)* methods.push(#js);));
     Ok(quote! {
         #block
 
+        #(#block_cfgs)*
         #[doc(hidden)]
         const _: () = {
             fn __rutis_type_id() -> ::std::any::TypeId {
@@ -289,13 +371,25 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
             fn __rutis_type_name() -> &'static str {
                 ::std::any::type_name::<#ty>()
             }
-            fn __rutis_erase(
-                provided: ::std::boxed::Box<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>,
-            ) -> ::std::option::Option<::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>> {
-                provided
-                    .downcast::<::std::sync::Arc<#ty>>()
-                    .ok()
-                    .map(|service| *service as ::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>)
+            fn __rutis_methods() -> &'static [&'static str] {
+                static METHODS: ::std::sync::OnceLock<::std::vec::Vec<&'static str>> =
+                    ::std::sync::OnceLock::new();
+                METHODS.get_or_init(|| {
+                    #[allow(unused_mut)]
+                    let mut methods = ::std::vec::Vec::new();
+                    #(#listed)*
+                    methods
+                })
+            }
+            fn __rutis_resolve(
+                ctx: &#rutis::Ctx,
+                key: &#rutis::TypeKey,
+                provision: &#rutis::service::Provision,
+                actor: ::std::option::Option<&#rutis::Ctx>,
+            ) -> ::std::result::Result<::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>, ::std::string::String> {
+                ctx.require_provided_as::<#ty>(key.clone(), provision, actor)
+                    .map(|service| service as ::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>)
+                    .map_err(|error| ::std::string::ToString::to_string(&error))
             }
             #[allow(unused_variables, unused_mut, clippy::all)]
             fn __rutis_invoke(
@@ -322,8 +416,8 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
                 __rutis_type_name,
                 #name,
                 #named,
-                &[#(#methods),*],
-                __rutis_erase,
+                __rutis_methods,
+                __rutis_resolve,
                 __rutis_invoke,
             );
             fn __rutis_register() {
@@ -338,8 +432,9 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
 enum Param {
     /// The calling row's context, by reference or by value.
     Ctx { by_ref: bool },
-    /// A closure calling back a function the caller passed.
-    Closure { args: usize },
+    /// A closure calling back a function the caller passed; `param` is the
+    /// method's type parameter it stands for, if it is written as one.
+    Closure { args: usize, param: Option<String> },
     /// Decoded to `ty` (data, or a function by `FromFunction`), passed as
     /// it is or by reference.
     Value { ty: Box<Type>, by_ref: bool },
@@ -395,7 +490,7 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
         let FnArg::Typed(input) = input else {
             unreachable!("only the first input is a receiver")
         };
-        params.push(param(rust, &input.ty, &bounds)?);
+        params.push(param(rust, &nameable(&input.ty, ty), &bounds)?);
     }
     let count = params
         .iter()
@@ -436,6 +531,18 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
     let mut decode = Vec::new();
     let mut call = Vec::new();
     let mut takes_ctx = false;
+    for (name, _) in &bounds {
+        if !params.iter().any(
+            |param| matches!(param, Param::Closure { param: Some(known), .. } if known == name),
+        ) {
+            return Err(syn::Error::new(
+                sig.span(),
+                format!(
+                    "`{rust}` cannot be called from other languages: its type parameter {name} is not a function parameter"
+                ),
+            ));
+        }
+    }
     for (index, param) in params.iter().enumerate() {
         let local = format_ident!("a{}", index);
         match param {
@@ -447,7 +554,7 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
                     quote!(caller.clone())
                 });
             }
-            Param::Closure { args } => {
+            Param::Closure { args, .. } => {
                 let names: Vec<_> = (0..*args).map(|i| format_ident!("p{}", i)).collect();
                 decode.push(quote! {
                     let #local = {
@@ -534,6 +641,12 @@ fn param(
     };
     // The calling row's context.
     if is_ctx(ty) {
+        if static_reference(ty) {
+            return Err(refused(
+                ty.span(),
+                "it takes the context by a `'static` reference; take it by value or by a shorter borrow",
+            ));
+        }
         return match ty {
             Type::Reference(reference) if reference.mutability.is_some() => Err(refused(
                 reference.span(),
@@ -600,12 +713,17 @@ fn param(
         }
         return Ok(Param::Closure {
             args: arguments.inputs.len(),
+            param: single_ident(ty),
         });
     }
     if single_ident(ty).is_some_and(|name| bounds.iter().any(|(known, _)| *known == name)) {
         return Err(refused(ty.span(), "it has a generic parameter"));
     }
     match ty {
+        Type::Reference(reference) if static_reference(ty) => Err(refused(
+            reference.span(),
+            "it takes a `'static` reference; take it by value or by a shorter borrow",
+        )),
         Type::Reference(reference) if reference.mutability.is_some() => {
             Err(refused(reference.span(), "it takes a mutable reference"))
         }
@@ -643,6 +761,24 @@ fn param(
             by_ref: false,
         }),
     }
+}
+
+/// Whether `ty` is a reference with the `'static` lifetime.
+fn static_reference(ty: &Type) -> bool {
+    matches!(ty, Type::Reference(reference)
+        if reference.lifetime.as_ref().is_some_and(|lifetime| lifetime.ident == "static"))
+}
+
+/// The shared receiver written as `self: &Self` (or `self: &'a Self`).
+fn shared_self(receiver: &syn::Receiver) -> bool {
+    receiver.mutability.is_none()
+        && receiver.colon_token.is_some()
+        && matches!(receiver.ty.as_ref(), Type::Reference(reference)
+            if reference.mutability.is_none() && is_self(reference.elem.as_ref()))
+}
+
+fn is_self(ty: &Type) -> bool {
+    matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.is_ident("Self"))
 }
 
 /// `Ctx`, `rutis::Ctx` or a reference to one.
@@ -787,6 +923,15 @@ mod tests {
         assert!(refused("impl A { pub fn a<T>(&self, x: T) {} }")
             .unwrap()
             .contains("not a function"));
+        assert!(
+            refused("impl A { pub fn a<T: Default>(&self) -> T { T::default() } }")
+                .unwrap()
+                .contains("type parameter T")
+        );
+        assert!(refused("impl A { pub fn a(&self, s: &'static str) {} }")
+            .unwrap()
+            .contains("'static"));
+        assert!(refused("impl A { pub fn a(self: &Self) -> u32 { 1 } }").is_none());
         assert!(refused(
             "impl A { pub fn a(&self, f: impl Fn(&str) -> BoxFuture<'static, Result<(), E>>) {} }"
         )
@@ -803,6 +948,27 @@ mod tests {
         assert!(refused("impl Trait for A { fn a(&self) {} }")
             .unwrap()
             .contains("trait impl"));
+    }
+
+    #[test]
+    fn an_impl_cfg_guards_the_generated_entry() {
+        let item: Tokens = "#[cfg(feature = \"x\")] impl A { pub fn a(&self) -> u32 { 1 } }"
+            .parse()
+            .unwrap();
+        let out = expand(quote!(::rutis), Tokens::new(), item).unwrap();
+        let file: syn::File = syn::parse2(out).unwrap();
+        let entry = file
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Const(entry) if entry.ident == "_" => Some(entry),
+                _ => None,
+            })
+            .expect("the generated entry");
+        assert!(
+            entry.attrs.iter().any(|attr| attr.path().is_ident("cfg")),
+            "the entry carries the impl's cfg"
+        );
     }
 
     /// R5: the error points at the method that cannot be bound (its line),

@@ -486,7 +486,7 @@ impl Loopback {
         stream.set_nonblocking(false)?;
         let _ = stream.set_nodelay(true);
         let reader = stream.try_clone()?;
-        let closer = Arc::new(ShutTcp(stream.try_clone()?));
+        let closer = Arc::new(ShutTcp(Mutex::new(Some(stream.try_clone()?))));
         Ok(lines::channel(
             reader,
             stream,
@@ -523,11 +523,20 @@ async fn read_line(stream: &mut tokio::net::TcpStream) -> std::io::Result<String
     }
 }
 
-struct ShutTcp(std::net::TcpStream);
+/// Shuts a loopback connection down, then lets go of its handle of it, as
+/// `unix::Shut` does.
+struct ShutTcp(Mutex<Option<std::net::TcpStream>>);
 
 impl Closer for ShutTcp {
     fn close(&self, _reason: &str) {
-        let _ = self.0.shutdown(std::net::Shutdown::Both);
+        let stream = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(stream) = stream {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
     }
 }
 
@@ -546,7 +555,7 @@ fn cannot_start(spawn: &Spawn, error: std::io::Error) -> ConnectError {
 fn socket(stream: UnixStream, transport: &'static str) -> Result<Channel, ConnectError> {
     stream.set_nonblocking(false).map_err(retryable)?;
     let reader = stream.try_clone().map_err(retryable)?;
-    let closer = Arc::new(crate::transport::local::unix::Shut(
+    let closer = Arc::new(crate::transport::local::unix::Shut::new(
         stream.try_clone().map_err(retryable)?,
     ));
     Ok(lines::channel(
@@ -631,15 +640,33 @@ impl Sender for EndedSender {
 
 /// How the process ended, once it has. Readable from the reader thread,
 /// which must not depend on the async runtime: a current-thread runtime may
-/// be blocked in a synchronous call. The last flag: the process has been
-/// waited for, and is gone.
+/// be blocked in a synchronous call. The fourth field: the process has been
+/// waited for, and is gone. The last: notified to kill it now.
 #[derive(Default)]
-struct Exit(Mutex<Option<String>>, Condvar, AtomicBool, AtomicBool);
+struct Exit(
+    Mutex<Option<String>>,
+    Condvar,
+    AtomicBool,
+    watch::Sender<bool>,
+    tokio::sync::Notify,
+);
 
 impl Exit {
     /// Whether the process has ended and been waited for.
     fn ended(&self) -> bool {
-        self.3.load(Ordering::SeqCst)
+        *self.3.borrow()
+    }
+
+    /// Resolves once the process has ended and been waited for.
+    async fn gone(&self) {
+        let mut gone = self.3.subscribe();
+        let _ = gone.wait_for(|gone| *gone).await;
+    }
+
+    /// Kill the process now, without waiting for it to end by itself. A
+    /// kill asked for before the task that waits for it runs is kept.
+    fn kill(&self) {
+        self.4.notify_one();
     }
 
     fn record(&self, status: String) {
@@ -701,6 +728,22 @@ impl Processes {
         let mut started = self.0.lock().unwrap();
         started.retain(|exit| !exit.ended());
         !started.is_empty()
+    }
+
+    /// Kill those that have not ended yet, now: for a runtime that did not
+    /// stop within its deadline. [`Processes::ended`] then waits for them.
+    pub fn kill(&self) {
+        for exit in self.0.lock().unwrap().iter() {
+            exit.kill();
+        }
+    }
+
+    /// Resolves once every one of them has ended and been waited for.
+    pub async fn ended(&self) {
+        let started: Vec<Arc<Exit>> = self.0.lock().unwrap().clone();
+        for exit in started {
+            exit.gone().await;
+        }
     }
 }
 
@@ -812,9 +855,15 @@ impl Child {
             #[cfg(windows)]
             let killed_all = std::future::pending::<()>();
             tokio::pin!(killed_all);
+            let killed_now = record.4.notified();
+            tokio::pin!(killed_now);
             let status = tokio::select! {
                 status = child.wait() => status,
                 () = &mut killed_all => {
+                    kill_now(&mut child);
+                    child.wait().await
+                }
+                () = &mut killed_now => {
                     kill_now(&mut child);
                     child.wait().await
                 }
@@ -824,6 +873,7 @@ impl Child {
                         Ok(()) => tokio::select! {
                             status = tokio::time::timeout(GRACE, child.wait()) => status.ok(),
                             () = &mut killed_all => None,
+                            () = &mut killed_now => None,
                         },
                         Err(_) => None,
                     };
@@ -837,13 +887,13 @@ impl Child {
                 }
             };
             record.record(describe(status));
-            record.3.store(true, Ordering::SeqCst);
             // Waited for: the process is gone, its id free for reuse.
             if let Some(pid) = pid {
                 RUNNING.send_modify(|running| {
                     running.remove(&pid);
                 });
             }
+            record.3.send_replace(true);
         });
         Self {
             ended,

@@ -189,6 +189,47 @@ mod imp {
             assert_eq!(retry.diagnostics().len(), 1);
             assert!(retry.diagnostics()[0].usable);
         }
+        if let Some(rebuilt_dir) = args.get(5) {
+            // Another build of v2 under v2's version, features and path,
+            // loaded beside it: its `Greeting` has v2's TypeId but another
+            // layout and other code. Each value is served with the code of
+            // the build that provided it, whichever was loaded last.
+            let rebuilt = unsafe { loader.load(rebuilt_dir)? };
+            assert_eq!(rebuilt.version(), v2.version());
+            assert_ne!(rebuilt.library_sha256(), v2.library_sha256());
+            assert_ne!(rebuilt.generation(), v2.generation());
+            let scoped = |scope: &str| {
+                let ctx = root.isolate(rutis_bridge::session::host_key("greeting"), scope);
+                async move {
+                    greeting(&ctx)
+                        .await
+                        .map_err(|e| e as Box<dyn std::error::Error>)
+                }
+            };
+            let beside = loader.spawn(
+                &root,
+                &rebuilt,
+                rutis_sdk::serde_json::json!({ "scope": "rebuilt" }),
+            )?;
+            (&beside).await?;
+            // v2 again, provided after the rebuilt build was loaded.
+            let again = loader.spawn(
+                &root,
+                &v2,
+                rutis_sdk::serde_json::json!({ "scope": "again" }),
+            )?;
+            (&again).await?;
+            assert_eq!(scoped("rebuilt").await?, "hello v2 rebuilt 21");
+            assert_eq!(scoped("again").await?, "hello v2");
+            assert_eq!(
+                greeting(&root)
+                    .await
+                    .map_err(|e| e as Box<dyn std::error::Error>)?,
+                "hello v2"
+            );
+            beside.dispose().await?;
+            again.dispose().await?;
+        }
         consumer.dispose().await?;
         by_name.dispose().await?;
         view.dispose().await?;

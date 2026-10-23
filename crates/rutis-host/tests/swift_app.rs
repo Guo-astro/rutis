@@ -145,6 +145,37 @@ impl App {
             .await;
     }
 
+    /// Reads every line the app says for `duration`. The fixture says
+    /// `done …` and `state: …` from different tasks, so a state may come
+    /// after the `done` line of the call that caused it.
+    async fn settle(&mut self, duration: Duration) {
+        let until = tokio::time::Instant::now() + duration;
+        while let Ok(Some(line)) = tokio::time::timeout_at(until, self.lines.recv()).await {
+            self.seen.push(line);
+        }
+    }
+
+    /// Starts it listening; the address it says it bound (its port when
+    /// asked for `:0`).
+    async fn listening(&mut self) -> String {
+        self.stdin.write_all(b"start\n").await.unwrap();
+        let address = self
+            .line("its address", |line| {
+                line.strip_prefix("rutis: listening on ").map(str::to_owned)
+            })
+            .await;
+        self.said("done start", 1).await;
+        address
+    }
+
+    /// Every address it said it listens on so far, in order.
+    fn addresses(&self) -> Vec<&str> {
+        self.seen
+            .iter()
+            .filter_map(|line| line.strip_prefix("rutis: listening on "))
+            .collect()
+    }
+
     /// The states it reported so far, in order.
     fn states(&self) -> Vec<&str> {
         self.seen
@@ -256,22 +287,10 @@ async fn apps_that_dial_in_are_instances_their_users_stop_and_start_with_them() 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_app_that_listens_is_linked_to_and_comes_back_after_stop_and_start() {
     let _environment = environment();
-    // A port of its own: the address stays the same across stop and start,
-    // as a device's does.
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let listen = format!("ws://127.0.0.1:{port}/rutis");
-    let mut app = App::new("listen", &listen, "pad", "pad-token");
-    app.stdin.write_all(b"start\n").await.unwrap();
-    let address = app
-        .line("its address", |line| {
-            line.strip_prefix("rutis: listening on ").map(str::to_owned)
-        })
-        .await;
-    app.said("done start", 1).await;
+    // A free port the app picks (`:0`), and keeps across stop and start,
+    // as a device's address stays the same.
+    let mut app = App::new("listen", "ws://127.0.0.1:0/rutis", "pad", "pad-token");
+    let address = app.listening().await;
     std::env::set_var("RUTIS_TOKEN_PAD", "pad-token");
     let config: HostConfig = serde_json::from_value(json!({
         "id": "test",
@@ -298,6 +317,18 @@ async fn an_app_that_listens_is_linked_to_and_comes_back_after_stop_and_start() 
     COLD.until(|| host.service("device").is_none(), "the device gone")
         .await;
     app.command("start").await;
+    // stderr: it may come after `done start`.
+    while app.addresses().len() < 2 {
+        app.line("the second address", |line| {
+            line.starts_with("rutis: listening on ").then_some(())
+        })
+        .await;
+    }
+    assert_eq!(
+        app.addresses(),
+        [address.as_str(), address.as_str()],
+        "the same address again"
+    );
     let named = COLD.eventually(name, "the device back").await;
     assert_eq!(named, json!("pad"));
     app.command("quit").await;
@@ -312,14 +343,8 @@ async fn an_app_that_listens_is_linked_to_and_comes_back_after_stop_and_start() 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_apps_start_and_stop_take_effect_in_call_order() {
     let _environment = environment();
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let listen = format!("ws://127.0.0.1:{port}/rutis");
-    let mut app = App::new("listen", &listen, "pad", "pad-token");
-    app.command("start").await;
+    let mut app = App::new("listen", "ws://127.0.0.1:0/rutis", "pad", "pad-token");
+    let listen = app.listening().await;
     std::env::set_var("RUTIS_TOKEN_PAD", "pad-token");
     let config: HostConfig = serde_json::from_value(json!({
         "id": "test",
@@ -355,7 +380,8 @@ async fn an_apps_start_and_stop_take_effect_in_call_order() {
     app.stdin.write_all(b"start&\nstop&\n").await.unwrap();
     app.said("done start&", 2).await;
     app.said("done stop&", 2).await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Every state it says meanwhile is read: the last one counts.
+    app.settle(Duration::from_millis(500)).await;
     assert_eq!(
         app.states().last(),
         Some(&"stopped"),

@@ -7,17 +7,49 @@
 //! ([`eventually_with`]). Checking that something has *not* happened is
 //! [`still_pending`] on the paused clock, in-process; across threads and
 //! processes, see the rules in docs/design-test-clocks-2026-10-11.md §3.
+//!
+//! Every guard is scaled by [`time_scale`] (`RUTIS_TEST_TIME_SCALE`): a
+//! loaded machine (CI runners sharing a host) waits longer, and a real hang
+//! still fails, only later (docs/ci.md §11).
 
 use std::future::Future;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
 
-/// How long a wait lasts before the test fails as hung. It only guards
-/// against hangs, and is never what a test measures. A wait that needs
-/// longer (several runtimes starting cold) uses a multiple, with the reason
-/// next to it.
+/// How long a wait lasts before the test fails as hung, on an unloaded
+/// machine: the helpers here scale it by [`time_scale`], and a wait of a
+/// test's own takes [`scaled`]`(HANG_GUARD)`. It only guards against hangs,
+/// and is never what a test measures. A wait that needs longer (several
+/// runtimes starting cold) uses a multiple, with the reason next to it.
 pub const HANG_GUARD: Duration = Duration::from_secs(10);
+
+/// The environment variable [`time_scale`] reads.
+pub const TIME_SCALE_VAR: &str = "RUTIS_TEST_TIME_SCALE";
+
+/// How much longer than nominal every hang guard lasts on this machine:
+/// `RUTIS_TEST_TIME_SCALE`, a number of at least 1 (CI sets it on the
+/// self-hosted Linux runners, whose containers share a loaded host); 1 when
+/// unset. Only guards scale: a test never measures with them, so a longer
+/// guard changes nothing but how late a real hang fails. A value that is
+/// not a number of at least 1 fails the test.
+pub fn time_scale() -> f64 {
+    static SCALE: OnceLock<f64> = OnceLock::new();
+    *SCALE.get_or_init(|| match std::env::var(TIME_SCALE_VAR) {
+        Err(_) => 1.0,
+        Ok(value) if value.trim().is_empty() => 1.0,
+        Ok(value) => match value.trim().parse::<f64>() {
+            Ok(scale) if scale.is_finite() && scale >= 1.0 => scale,
+            _ => panic!("{TIME_SCALE_VAR}={value:?}: expected a number of at least 1"),
+        },
+    })
+}
+
+/// `nominal`, a hang guard, scaled by [`time_scale`].
+pub fn scaled(nominal: Duration) -> Duration {
+    nominal.mul_f64(time_scale())
+}
 
 /// How often [`eventually`] looks again.
 const POLL: Duration = Duration::from_millis(10);
@@ -52,16 +84,24 @@ pub async fn eventually_with<T>(
 
 /// A longer hang guard, for the waits that need one: `Guard(HANG_GUARD *
 /// 2)`, with the reason next to it (several runtimes starting cold, #238).
-/// It only guards against hangs too.
+/// It only guards against hangs too. The field is nominal; a wait lasts
+/// [`Guard::limit`].
 #[derive(Clone, Copy, Debug)]
 pub struct Guard(pub Duration);
 
 impl Guard {
+    /// How long a wait of this guard lasts here: the nominal guard,
+    /// [`scaled`].
+    pub fn limit(self) -> Duration {
+        scaled(self.0)
+    }
+
     /// [`within`] this guard.
     pub async fn within<F: Future>(self, what: &str, f: F) -> F::Output {
-        match tokio::time::timeout(self.0, f).await {
+        let limit = self.limit();
+        match tokio::time::timeout(limit, f).await {
             Ok(output) => output,
-            Err(_) => panic!("timed out ({:?}): {what}", self.0),
+            Err(_) => panic!("timed out ({limit:?}): {what}"),
         }
     }
 
@@ -82,13 +122,14 @@ impl Guard {
         what: &str,
         describe: impl FnOnce() -> String,
     ) -> T {
-        let deadline = tokio::time::Instant::now() + self.0;
+        let limit = self.limit();
+        let deadline = tokio::time::Instant::now() + limit;
         loop {
             if let Some(value) = check() {
                 return value;
             }
             if tokio::time::Instant::now() >= deadline {
-                fail(self.0, what, describe());
+                fail(limit, what, describe());
             }
             tokio::time::sleep(POLL).await;
         }
@@ -97,13 +138,14 @@ impl Guard {
 
 /// [`eventually`] on a plain thread, outside any runtime.
 pub fn eventually_blocking<T>(mut check: impl FnMut() -> Option<T>, what: &str) -> T {
-    let deadline = Instant::now() + HANG_GUARD;
+    let limit = Guard(HANG_GUARD).limit();
+    let deadline = Instant::now() + limit;
     loop {
         if let Some(value) = check() {
             return value;
         }
         if Instant::now() >= deadline {
-            fail(HANG_GUARD, what, String::new());
+            fail(limit, what, String::new());
         }
         std::thread::sleep(POLL);
     }
@@ -111,9 +153,10 @@ pub fn eventually_blocking<T>(mut check: impl FnMut() -> Option<T>, what: &str) 
 
 /// The next message of `rx`, within [`HANG_GUARD`].
 pub fn recv_within<T>(what: &str, rx: &std::sync::mpsc::Receiver<T>) -> T {
-    match rx.recv_timeout(HANG_GUARD) {
+    let limit = Guard(HANG_GUARD).limit();
+    match rx.recv_timeout(limit) {
         Ok(value) => value,
-        Err(error) => panic!("{what}: {error} (hang guard {HANG_GUARD:?})"),
+        Err(error) => panic!("{what}: {error} (hang guard {limit:?})"),
     }
 }
 

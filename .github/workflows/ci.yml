@@ -307,6 +307,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ runner.os == 'Linux' && (vars.LINUX_TEST_TIME_SCALE || '3') || '' }}
         run: bash tools/ci-self-hosted.sh start
 
       # rutui 已发布 crates.io(rutis-agent 走 version 依赖,与其他外部
@@ -425,7 +426,7 @@ jobs:
           RUTIS_EVENTS_PLACEMENTS: written
           RUTIS_EVENTS_REQUIRE: node,python,go,bun
           RUTIS_EVENTS_SETTLE_SCALE: '2'
-        run: cargo test -p rutis-loader --features node,python,go,bun,peer --test runtime_rows --test python_rows --test multilang --test leases --test instance_runtimes --test go_rows --test multilang_go --test instance_go --test sync_cycles --test events_conformance
+        run: cargo test -p rutis-loader --features node,python,go,bun,peer --test runtime_rows --test python_rows --test multilang --test leases --test instance_runtimes --test go_rows --test go_stop --test multilang_go --test instance_go --test sync_cycles --test events_conformance
       - name: job time
         if: always()
         run: echo "rust job, $(( ($(date +%s) - RUTIS_JOB_STARTED) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
@@ -452,6 +453,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ runner.os == 'Linux' && (vars.LINUX_TEST_TIME_SCALE || '3') || '' }}
         run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
       # Self-hosted runners keep their target directory instead.
@@ -601,6 +603,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ runner.os == 'Linux' && (vars.LINUX_TEST_TIME_SCALE || '3') || '' }}
         run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
@@ -757,6 +760,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ runner.os == 'Linux' && (vars.LINUX_TEST_TIME_SCALE || '3') || '' }}
         run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
       # Self-hosted runners keep their target directory instead.
@@ -804,14 +808,14 @@ jobs:
       - name: cargo test (the contract suites with Go)
         run: cargo test -p rutis-bridge --features testing,websocket,go --test session_matrix --test runtime_conformance go_
       - name: cargo test (Go rows)
-        run: cargo test -p rutis-loader --features node,python,go --test go_rows --test multilang_go --test instance_go --test leases
+        run: cargo test -p rutis-loader --features node,python,go --test go_rows --test go_stop --test multilang_go --test instance_go --test leases
       # Pull requests run these rows on Windows (runtimes-windows), where
       # loopback is how processes start; full runs also run them here.
       - name: cargo test (Go rows on loopback channels)
         if: needs.changes.outputs.all == 'true'
         env:
           RUTIS_LOCAL_HANDOVER: loopback
-        run: cargo test -p rutis-loader --features node,python,go --test go_rows --test multilang_go --test instance_go
+        run: cargo test -p rutis-loader --features node,python,go --test go_rows --test go_stop --test multilang_go --test instance_go
       # Only rutis-host's Go tests: the other runtimes run in their own jobs.
       - name: cargo test (rutis-host, Go)
         run: cargo test -p rutis-host go
@@ -836,6 +840,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ runner.os == 'Linux' && (vars.LINUX_TEST_TIME_SCALE || '3') || '' }}
         run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
       # Self-hosted runners keep their target directory instead.
@@ -1019,6 +1024,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ runner.os == 'Linux' && (vars.LINUX_TEST_TIME_SCALE || '3') || '' }}
         run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
       # Self-hosted runners keep their target directory instead.
@@ -1349,6 +1355,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ runner.os == 'Linux' && (vars.LINUX_TEST_TIME_SCALE || '3') || '' }}
           RUTIS_CI_FRESH_TARGET: '1'
         run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
@@ -1381,6 +1388,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ runner.os == 'Linux' && (vars.LINUX_TEST_TIME_SCALE || '3') || '' }}
           RUTIS_CI_FRESH_TARGET: '1'
         run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
@@ -1409,6 +1417,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ runner.os == 'Linux' && (vars.LINUX_TEST_TIME_SCALE || '3') || '' }}
           RUTIS_CI_FRESH_TARGET: '1'
         run: bash tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
@@ -1622,6 +1631,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ runner.os == 'Linux' && (vars.LINUX_TEST_TIME_SCALE || '3') || '' }}
         run: bash source-${{ matrix.slot }}/tools/ci-self-hosted.sh start
       - uses: dtolnay/rust-toolchain@1.98.1
       - name: build SDK at independent paths
@@ -1750,6 +1760,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           RUTIS_CI_JOBS: ${{ runner.os == 'Linux' && vars.LINUX_CI_JOBS || vars.RUTIS_CI_JOBS }}
+          RUTIS_TEST_TIME_SCALE: ${{ runner.os == 'Linux' && (vars.LINUX_TEST_TIME_SCALE || '3') || '' }}
         run: bash tools/ci-self-hosted.sh start
       - uses: actions/setup-java@v4
         with:

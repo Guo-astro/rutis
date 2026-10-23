@@ -47,7 +47,7 @@
 写运行时与测试工具的人需要知道（协议 §5.5，[运行时约定](../.agents/skills/rutis-new-runtime/references/runtime-contract.md) §6，英文）：
 
 - **宿主对 `emit` 总是回普通值**：`emit` 方式的 `events.dispatch` 在各监听器开始之后回 `undefined`，在会话队列里等过（过滤选择器尚未回复）的也一样。0.13 对排队的 emit 回的是 future。
-- **运行时按帧的顺序接收这个回复**：读到回复帧时就生效，处理完再读下一帧，而不是放到之后的任务、tick 或线程里。`emit` 方式的 `events.call` 也按帧的顺序开始，自己的同步调用正在等待时也一样。Node 运行时现在就是这样；在此之前它把这类调用扣到等待结束之后，后面的 emit 可能走快速路径抢到前面。
+- **运行时按帧的顺序接收这个回复**：读到回复帧时就生效，处理完再读下一帧，而不是放到之后的任务、tick 或线程里。`emit` 方式的 `events.call` 也按帧的顺序开始。不可重入的运行时在自己的同步调用等待期间仍扣住这类调用，这时本进程在快速路径上发出的同名 emit 必须排在被扣住的调用之后，不能抢先。Node 运行时现在就是这样；在此之前后面的 emit 可能走快速路径抢到前面。
 - **`events.expected.json`**：步骤期望里有 `answered`，表示等宿主回复了收到的每个 `events.dispatch`。另外新增 spec 字段 `then`（`{until, args}`）、`unload` 步骤的 `then`，以及同步方法 `events-log.until(entry)`。读这个文件的测试工具要接受这些键。用 `then` 的用例都是 `tool: false`。
 - **`Tap::answered`**（`rutis_bridge::events::testing`，feature `testing`）：等这些回复，供你自己的宿主侧测试使用。
 - **兼容**：0.13 的运行时仍可接 0.15 的宿主，但保持依赖时序的顺序，因为它在之后的 tick 才记下回复。0.15 的运行时仍会结算 0.13 宿主回的 future，与这种宿主对接时保持 0.13 的顺序。
@@ -65,4 +65,5 @@ Rust 服务在 `impl` 块上加 `#[rutis::service]`，照常 `provide`，各语�
 - `rutis_loader::Loader::waiting_for(&entry)`：一行在等哪些服务；等的是一个没标注的 Rust 服务时说明怎么改。
 - `rutis-host types`。
 - `rutis-host` 的 `rutis-bridge` 依赖开了 `exports` feature。
+- `rutis_loader::Provider::Marked(类型)`：`Loader::check` 用它报告标注类型的名字（提供后才对外）。`Provider` 是 `#[non_exhaustive]`，已有的 match 本来就有兜底分支。
 - 新 crate `rutis-macros` 放这个宏；`rutis` 依赖并重新导出它，`Cargo.toml` 不用加。dylib 插件经 `rutis_sdk::rutis::service` 用它。

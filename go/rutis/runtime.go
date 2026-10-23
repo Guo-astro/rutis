@@ -217,6 +217,9 @@ func relay(from <-chan struct{}, to chan struct{}) {
 // service (oldHost).
 var oldHostOutput io.Writer = os.Stderr
 
+// Where a row's late failures are written (tests replace it).
+var rowOutput io.Writer = os.Stderr
+
 // What a plugin providing the undeclared service name is told when the
 // host, older than 0.12, mounted without `announce`: such a host does not
 // take the service, which stays in this process.
@@ -364,10 +367,12 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 	}
 	rt.mu.Lock()
 	// A task of an unloaded row providing: refused, or the service would
-	// outlive its row and the row's next load find it taken.
+	// outlive its row and the row's next load find it taken. Reported, not
+	// a panic: a plain goroutine or timer calling it recovers nothing.
 	if rt.rows[r.key] != r {
 		rt.mu.Unlock()
-		panic(fmt.Sprintf("rutis: row %s is not active", r.key))
+		fmt.Fprintf(rowOutput, "rutis: row %s is not active: service %s is not provided\n", r.key, name)
+		return func() {}
 	}
 	if existing, ok := rt.services[id]; ok {
 		rt.mu.Unlock()

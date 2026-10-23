@@ -40,7 +40,10 @@ pub use events::{
     Call, Event, EventOptions, Listener, ListenerInfo, ListenerKind, Mode, PatternListener, Scope,
     SyncCall, SyncListener, SyncPatternListener, Terminal,
 };
-pub use fiber::{DisposeWaitError, FiberState, FiberStatusChanged, FiberView, PluginId, Snapshot};
+pub use fiber::{
+    shutdown_deadline, DisposeWaitError, FiberState, FiberStatusChanged, FiberView, PluginId,
+    Snapshot,
+};
 pub use intercept::{ServiceIntercept, ServiceWriter};
 pub use key::{EventKey, EventPattern, InstanceId, Key, ServiceKey, TypeKey};
 pub use plugin::{Plugin, PluginFactory};

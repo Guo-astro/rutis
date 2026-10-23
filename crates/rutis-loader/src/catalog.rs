@@ -373,11 +373,6 @@ impl ServiceCatalog {
     /// Whether the application registered `name` for a service of its own
     /// (a Rust service under its key), not a name rows share.
     pub(crate) fn registered_by_host(&self, name: &str) -> bool {
-        // A marked Rust service in this program is the application's own.
-        #[cfg(any(feature = "runtimes", feature = "peer"))]
-        if rutis::service::is_exported(name) && self.shared_key(name).is_some() {
-            return true;
-        }
         let Some(service) = self.services.get(name) else {
             return false;
         };
@@ -388,6 +383,18 @@ impl ServiceCatalog {
         }
         let _ = service;
         true
+    }
+
+    /// The `#[rutis::service]` type of this program exported as `name`
+    /// (its type name): served by name once it is provided, which a check
+    /// cannot know.
+    pub(crate) fn marked_by_host(&self, name: &str) -> Option<&'static str> {
+        #[cfg(any(feature = "runtimes", feature = "peer"))]
+        if self.shared_key(name).is_some() {
+            return rutis::service::exported_as(name);
+        }
+        let _ = name;
+        None
     }
 
     /// The key of a global name; `None` for unknown names and for names

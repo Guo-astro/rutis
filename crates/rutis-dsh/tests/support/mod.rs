@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 
-use rutis_test_support::HANG_GUARD;
+use rutis_test_support::{scaled, HANG_GUARD};
 use serde_json::Value;
 
 /// The npm project with dsh, when installed.
@@ -67,7 +67,7 @@ pub fn node_with<'a>(
     });
     // Node loading dsh's packages cold: three times HANG_GUARD; only
     // against a hang.
-    let output = match done.recv_timeout(HANG_GUARD * 3) {
+    let output = match done.recv_timeout(scaled(HANG_GUARD * 3)) {
         Ok(output) => output.expect("node"),
         Err(error) => {
             #[cfg(unix)]
@@ -77,7 +77,7 @@ pub fn node_with<'a>(
             }
             #[cfg(not(unix))]
             let _ = pid;
-            panic!("dsh.mjs {args:?}: {error} ({:?})", HANG_GUARD * 3);
+            panic!("dsh.mjs {args:?}: {error} ({:?})", scaled(HANG_GUARD * 3));
         }
     };
     assert!(

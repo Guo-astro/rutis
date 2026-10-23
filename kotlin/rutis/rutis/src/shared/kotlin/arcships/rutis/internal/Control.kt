@@ -37,7 +37,7 @@ internal object Control {
         "events.elsewhere", "events.call" -> EventsRuntime.arrive(rt, method, args)!!.invoke()
         "dispose" -> {
             rt.closing = true
-            rt.dispose()
+            rt.dispose(rt.shutdownMillis)
             rt.session?.drain(rt.shutdownMillis)
             null
         }

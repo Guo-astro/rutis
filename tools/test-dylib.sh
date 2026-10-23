@@ -78,10 +78,24 @@ cargo xtask pack-plugin \
   --output "$base/retry-entry" \
   --prebuilt-library "$target_dir/release/$(lib_name rutis-greeter-fixture-v2)"
 
+# Another build of v2 under the same version, features and path: its types
+# keep v2's TypeIds, while its Greeting is laid out and answers differently
+# (RUTIS_GREETER_REBUILT). It runs beside v2, each value with its own code.
+RUTIS_GREETER_REBUILT=1 cargo build --release -p rutis-dylib -p rutis-greeter-fixture-v1 -p rutis-greeter-fixture-v2 \
+  --lib --examples --features rutis-dylib/loader,rutis-greeter-fixture-v1/export,rutis-greeter-fixture-v2/export
+test "$(sha256_of "$target_dir/release/$sdk_name")" = "$sdk_sha"
+cargo xtask pack-plugin \
+  --manifest-path "$repo_dir/tests/dylib-fixtures/greeter-v2/Cargo.toml" \
+  --sdk-manifest "$base/sdk.toml" \
+  --sdk-file "$target_dir/release/$sdk_name" \
+  --output "$base/rebuilt" \
+  --prebuilt-library "$target_dir/release/$(lib_name rutis-greeter-fixture-v2)"
+test "$(sha256_of "$base/rebuilt/$plugin_name")" != "$(sha256_of "$base/v2/$plugin_name")"
+
 v1_hash="$(sha256_of "$base/v1/$plugin_name")"
 mkdir -p "$base/cache/$v1_hash"
 printf truncated > "$base/cache/$v1_hash/$plugin_name"
-RUTIS_PLUGIN_CACHE="$base/cache" RUTIS_PLUGIN_DROP_MARKER="$base/plugin-drop-marker" "$host" "$base/v1" "$base/v2" "$base/changed-identity" "$base/retry-entry"
+RUTIS_PLUGIN_CACHE="$base/cache" RUTIS_PLUGIN_DROP_MARKER="$base/plugin-drop-marker" "$host" "$base/v1" "$base/v2" "$base/changed-identity" "$base/retry-entry" "$base/rebuilt"
 "$target_dir/release/examples/loader_host" "$base"
 cp "$base/v1/plugin.toml" "$base/bad-boot/plugin.toml"
 bad_sha="$(sha256_of "$base/bad-boot/$plugin_name")"

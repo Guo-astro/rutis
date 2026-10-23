@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use rutis_bridge::channel::{Channel, Closer, PeerId};
 use rutis_bridge::session::{Connection, Dispatch, Endpoint, Error, Format, Reply, Value};
-use rutis_test_support::HANG_GUARD;
+use rutis_test_support::{scaled, HANG_GUARD};
 use serde_json::json;
 
 const NAME: &str = "a_call_chain_crossing_processes_keeps_each_process_s_calls_apart";
@@ -48,7 +48,7 @@ fn a_call_chain_crossing_processes_keeps_each_process_s_calls_apart() {
     let dir = tempfile::tempdir().unwrap();
     let mut b = Process::start("b", dir.path().into());
     let port = dir.path().join("port");
-    let deadline = Instant::now() + HANG_GUARD;
+    let deadline = Instant::now() + scaled(HANG_GUARD);
     while !port.exists() {
         assert!(
             Instant::now() < deadline,
@@ -58,7 +58,7 @@ fn a_call_chain_crossing_processes_keeps_each_process_s_calls_apart() {
         std::thread::sleep(Duration::from_millis(10));
     }
     let mut a = Process::start("a", dir.path().into());
-    let status = a.wait(HANG_GUARD * 3);
+    let status = a.wait(scaled(HANG_GUARD * 3));
     let (a_out, b_out) = (a.finish(), b.finish());
     assert!(
         status == Some(true),

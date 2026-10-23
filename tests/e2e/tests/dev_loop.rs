@@ -560,13 +560,22 @@ fn dev_loop(kind: Kind) {
     dev.expect("demo v3 applied ");
     assert_eq!(greet(&probe, &mut dev), json!("Hello, Ada! (v3)"));
     if kind.compiled() {
-        // Only the build that runs is kept.
-        let builds = format!("demo/.rutis/{}", kind.lang());
-        let builds: Vec<_> = std::fs::read_dir(s.path(&builds))
-            .expect(&builds)
-            .flatten()
-            .map(|entry| entry.file_name())
-            .collect();
+        // Only the build that runs is kept: the others are deleted once
+        // they can be (Windows holds the image of a process that just
+        // ended for a moment).
+        let dir = format!("demo/.rutis/{}", kind.lang());
+        let builds = || -> Vec<_> {
+            std::fs::read_dir(s.path(&dir))
+                .expect(&dir)
+                .flatten()
+                .map(|entry| entry.file_name())
+                .collect()
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while builds().len() > 1 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let builds = builds();
         assert_eq!(builds.len(), 1, "builds left: {builds:?}");
         // Only the plugin's runtime restarted: the probe's Python runtime
         // ran on, never down.

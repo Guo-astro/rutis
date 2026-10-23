@@ -299,3 +299,367 @@ async fn an_unmarked_service_is_named_in_the_diagnostic() {
     assert!(rutis_bridge::exports::unexported(&root, "other").is_none());
     root.shutdown().await.unwrap();
 }
+
+/// A marked service provided in this scope but not served (its check fails)
+/// is not described as out of scope.
+#[tokio::test]
+async fn a_service_provided_here_is_not_described_as_out_of_scope() {
+    let root = Ctx::root().unwrap();
+    root.provide_as_with_check(
+        TypeKey::of::<Calendar>(),
+        Arc::new(Calendar::default()),
+        || false,
+    )
+    .unwrap();
+    let hint = rutis_bridge::exports::unexported(&root, "calendar").unwrap();
+    assert!(hint.contains("provided here but not served"), "{hint}");
+    assert!(!hint.contains("not visible here"), "{hint}");
+    root.shutdown().await.unwrap();
+}
+
+/// A child plugin of `parent`, optionally marked as a scope; its context.
+async fn child_ctx(parent: &Ctx, scope: Option<&'static str>) -> Ctx {
+    struct Child(Option<&'static str>, std::sync::mpsc::Sender<Ctx>);
+    impl rutis::Plugin for Child {
+        fn name(&self) -> &str {
+            "child"
+        }
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+            Box::pin(async move {
+                if let Some(scope) = self.0 {
+                    ctx.mark_scope(scope)?;
+                }
+                self.1.send(ctx.clone()).unwrap();
+                Ok(rutis::Effect::Done)
+            })
+        }
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<Ctx>();
+    parent.plugin(Child(scope, tx)).await.unwrap();
+    rx.recv().unwrap()
+}
+
+/// Provide a Calendar under `key` from `ctx` whose check fails, so it is
+/// bound but not served.
+fn unserved(ctx: &Ctx, key: TypeKey) -> rutis::Disposer {
+    ctx.provide_as_with_check(key, Arc::new(Calendar::default()), || false)
+        .unwrap()
+}
+
+fn here() -> String {
+    format!(
+        "`calendar` is the Rust service {}, provided here but not served",
+        std::any::type_name::<Calendar>()
+    )
+}
+
+fn elsewhere(place: &str) -> String {
+    format!(
+        "`calendar` is the Rust service {}, provided in {place}, not visible here",
+        std::any::type_name::<Calendar>()
+    )
+}
+
+/// A marked service isolated under a label is described as provided here
+/// only to contexts reading it under that label; everywhere else, marked
+/// scope or not, it names the label.
+#[tokio::test]
+async fn a_service_in_another_scope_names_the_scope() {
+    let root = Ctx::root().unwrap();
+    let scope = child_ctx(&root, Some("chat")).await;
+    let plain = child_ctx(&root, None).await;
+    let isolated = scope.isolate(TypeKey::of::<Calendar>(), "chat");
+    let provided = unserved(&isolated, TypeKey::of::<Calendar>());
+    let unexported = |ctx: &Ctx| rutis_bridge::exports::unexported(ctx, "calendar").unwrap();
+    assert_eq!(unexported(&isolated), here());
+    assert_eq!(unexported(&root), elsewhere("scope `chat`"));
+    assert_eq!(unexported(&scope), elsewhere("scope `chat`"));
+    assert_eq!(unexported(&plain), elsewhere("scope `chat`"));
+    let other = root.isolate(TypeKey::of::<Calendar>(), "mail");
+    assert_eq!(unexported(&other), elsewhere("scope `chat`"));
+    provided.dispose().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
+/// A service of the root is visible from a child that marks its own scope,
+/// through the parent chain, so it is provided there too.
+#[tokio::test]
+async fn a_root_service_is_provided_here_in_a_child_scope() {
+    let root = Ctx::root().unwrap();
+    let provided = unserved(&root, TypeKey::of::<Calendar>());
+    let scope = child_ctx(&root, Some("chat")).await;
+    let nested = child_ctx(&scope, None).await;
+    let unexported = |ctx: &Ctx| rutis_bridge::exports::unexported(ctx, "calendar").unwrap();
+    assert_eq!(unexported(&root), here());
+    assert_eq!(unexported(&scope), here());
+    assert_eq!(unexported(&nested), here());
+    let isolated = scope.isolate(TypeKey::of::<Calendar>(), "chat");
+    assert_eq!(unexported(&isolated), elsewhere("the default scope"));
+    provided.dispose().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
+/// A service bound to an instance is provided inside that instance and
+/// names the instance outside it, whether or not the instance marks a scope.
+#[tokio::test]
+async fn an_instance_service_names_the_instance_outside_it() {
+    let root = Ctx::root().unwrap();
+    let owner = child_ctx(&root, None).await;
+    let inner = child_ctx(&owner, Some("chat")).await;
+    let sibling = child_ctx(&root, None).await;
+    let key = TypeKey::instance::<Calendar>(owner.instance());
+    let provided = unserved(&owner, key);
+    let unexported = |ctx: &Ctx| rutis_bridge::exports::unexported(ctx, "calendar").unwrap();
+    assert_eq!(unexported(&owner), here());
+    assert_eq!(unexported(&inner), here());
+    let outside = elsewhere(&format!("instance {}", owner.instance()));
+    assert_eq!(unexported(&sibling), outside);
+    assert_eq!(unexported(&root), outside);
+    provided.dispose().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_renamed_service_says_the_name_it_is_exported_as() {
+    let root = Ctx::root().unwrap();
+    root.provide(Notes).unwrap();
+    let hint = rutis_bridge::exports::unexported(&root, "notes").unwrap();
+    assert!(hint.contains("notebook"), "{hint}");
+    assert!(!hint.contains("#[rutis::service]"), "{hint}");
+    root.shutdown().await.unwrap();
+}
+
+/// A plugin gated on `keys`, as a row of another language is gated on a
+/// name.
+struct Gated(Vec<TypeKey>);
+
+impl rutis::Plugin for Gated {
+    fn name(&self) -> &str {
+        "gated"
+    }
+    fn injects(&self) -> &[TypeKey] {
+        &self.0
+    }
+    fn apply<'a>(&'a self, _: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+        Box::pin(async { Ok(rutis::Effect::Done) })
+    }
+}
+
+async fn reach(view: &rutis::FiberView, state: rutis::FiberState) {
+    for _ in 0..1000 {
+        if view.state().state == state {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("{state:?} not reached: {:?}", view.state());
+}
+
+/// Provided with a `check()` predicate, a marked service's entry by name is
+/// gated by it as the native binding is: its users stop while it fails and
+/// start again when it passes.
+#[tokio::test]
+async fn the_check_gates_the_name_as_it_gates_the_native_service() {
+    use rutis::FiberState::{Active, Pending};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let root = Ctx::root().unwrap();
+    let up = Arc::new(AtomicBool::new(true));
+    let flag = up.clone();
+    root.provide_as_with_check(TypeKey::of::<Notes>(), Arc::new(Notes), move || {
+        flag.load(Ordering::SeqCst)
+    })
+    .unwrap();
+    let by_name = root.plugin(Gated(vec![host_key("notebook")]));
+    let native = root.plugin(Gated(vec![TypeKey::of::<Notes>()]));
+    reach(&by_name, Active).await;
+    reach(&native, Active).await;
+
+    up.store(false, Ordering::SeqCst);
+    root.refresh();
+    reach(&by_name, Pending).await;
+    reach(&native, Pending).await;
+
+    up.store(true, Ordering::SeqCst);
+    root.refresh();
+    reach(&by_name, Active).await;
+    reach(&native, Active).await;
+    root.shutdown().await.unwrap();
+}
+
+/// A greeting, for the tests below.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Greeter {
+    text: String,
+}
+
+#[rutis::service]
+impl Greeter {
+    pub fn text(&self) -> String {
+        self.text.clone()
+    }
+
+    /// Named lifetimes and `Self` in parameter types.
+    pub fn joined<'a>(&self, other: std::borrow::Cow<'a, str>, more: Vec<Self>) -> String {
+        let mut text = format!("{}{other}", self.text);
+        for greeter in more {
+            text.push_str(&greeter.text);
+        }
+        text
+    }
+
+    /// Not in this build, so not served (it would not compile).
+    #[cfg(any())]
+    pub fn never(&self) -> u32 {
+        missing_function()
+    }
+
+    /// One name, one method per build.
+    #[cfg(unix)]
+    pub fn platform(&self) -> &'static str {
+        "unix"
+    }
+    #[cfg(not(unix))]
+    pub fn platform(&self) -> &'static str {
+        "other"
+    }
+
+    #[cfg_attr(any(), cfg(any()))]
+    pub fn kept(&self) -> bool {
+        true
+    }
+
+    /// The explicit form of `&self`.
+    #[allow(clippy::needless_arbitrary_self_type)]
+    pub fn explicit(self: &Self) -> String {
+        self.text.clone()
+    }
+}
+
+/// A marked block not in this build: nothing of it is served, and its
+/// generated entry goes with it (it names methods that would not
+/// compile; #541).
+#[rutis::service]
+#[cfg(any())]
+impl Greeter {
+    pub fn gone(&self) -> u32 {
+        missing_function()
+    }
+}
+
+/// The same, removed by a `cfg_attr`.
+#[rutis::service]
+#[cfg_attr(not(any()), cfg(any()))]
+impl Greeter {
+    pub fn also_gone(&self) -> u32 {
+        missing_function()
+    }
+}
+
+fn greeter(text: &str) -> Greeter {
+    Greeter { text: text.into() }
+}
+
+/// Parameter types with named lifetimes or `Self`, methods and blocks
+/// under `#[cfg]`, and a `self: &Self` receiver: served as the build has
+/// them.
+#[tokio::test]
+async fn cfg_lifetimes_and_self_are_as_the_build_has_them() {
+    let root = Ctx::root().unwrap();
+    root.provide(greeter("a")).unwrap();
+    let service = served(&root, "greeter").unwrap();
+    let methods = service.methods().unwrap();
+    assert!(methods.get("never").is_none(), "{methods}");
+    assert!(methods.get("gone").is_none(), "{methods}");
+    assert!(methods.get("alsoGone").is_none(), "{methods}");
+    assert_eq!(methods["explicit"], "async");
+    assert_eq!(
+        call(&service, "explicit", json!([])).await.unwrap(),
+        json!("a")
+    );
+    assert_eq!(methods["platform"], "async");
+    assert_eq!(methods["kept"], "async");
+    assert_eq!(
+        call(&service, "joined", json!(["b", [{ "text": "c" }]]))
+            .await
+            .unwrap(),
+        json!("abc")
+    );
+    let platform = if cfg!(unix) { "unix" } else { "other" };
+    assert_eq!(
+        call(&service, "platform", json!([])).await.unwrap(),
+        json!(platform)
+    );
+    assert!(call(&service, "never", json!([])).await.is_err());
+    root.shutdown().await.unwrap();
+}
+
+/// Provided in two isolated scopes, a marked type is served in each, by
+/// name in the same scope.
+#[tokio::test]
+async fn each_isolated_scope_serves_its_own() {
+    let root = Ctx::root().unwrap();
+    let native = TypeKey::of::<Greeter>();
+    let name = host_key("greeter");
+    let a = root.isolate(native.clone(), "a");
+    let b = root.isolate(native.clone(), "b");
+    a.provide(greeter("in a")).unwrap();
+    b.provide(greeter("in b")).unwrap();
+    for (ctx, text) in [(&a, "in a"), (&b, "in b")] {
+        let readers = ctx.isolate(name.clone(), if text == "in a" { "a" } else { "b" });
+        let service = readers.get_as::<dyn HostDispatch>(name.clone()).unwrap();
+        assert_eq!(
+            call(&service, "text", json!([])).await.unwrap(),
+            json!(text)
+        );
+    }
+    assert!(served(&root, "greeter").is_none());
+    root.shutdown().await.unwrap();
+}
+
+/// A provide refused for its native slot serves nothing by name.
+#[tokio::test]
+async fn a_provide_refused_for_its_native_slot_serves_nothing() {
+    let root = Ctx::root().unwrap();
+    // A mutable binding is not served by name, but holds the native slot.
+    let (_disposer, _writer) = root
+        .provide_mut_as(TypeKey::of::<Greeter>(), Arc::new(greeter("first")))
+        .unwrap();
+    let error = root.provide(greeter("refused")).unwrap_err();
+    assert!(matches!(error, CordisError::ServiceExists(_)), "{error}");
+    assert!(served(&root, "greeter").is_none());
+    root.shutdown().await.unwrap();
+}
+
+/// Calls by name read the service through the strict read path: read
+/// interceptors deny or replace it, as for Rust readers.
+#[tokio::test]
+async fn calls_by_name_go_through_read_interceptors() {
+    use rutis::ServiceIntercept;
+    use std::sync::atomic::{AtomicU8, Ordering};
+    let root = Ctx::root().unwrap();
+    root.provide(greeter("native")).unwrap();
+    let service = served(&root, "greeter").unwrap();
+    let policy = Arc::new(AtomicU8::new(0));
+    let read = policy.clone();
+    root.intercept_require_as::<Greeter>(TypeKey::of::<Greeter>(), move |_| {
+        match read.load(Ordering::SeqCst) {
+            0 => ServiceIntercept::Continue,
+            1 => ServiceIntercept::Replace(Arc::new(greeter("replaced"))),
+            _ => ServiceIntercept::Deny,
+        }
+    })
+    .unwrap();
+    assert_eq!(
+        call(&service, "text", json!([])).await.unwrap(),
+        json!("native")
+    );
+    policy.store(1, Ordering::SeqCst);
+    assert_eq!(
+        call(&service, "text", json!([])).await.unwrap(),
+        json!("replaced")
+    );
+    policy.store(2, Ordering::SeqCst);
+    let error = call(&service, "text", json!([])).await.unwrap_err();
+    assert!(error.to_string().contains("not available"), "{error}");
+    root.shutdown().await.unwrap();
+}

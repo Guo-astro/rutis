@@ -30,10 +30,11 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
+use rutis::{shutdown_deadline, BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
 use rutis_bridge::runtime::{
     LocalRuntime, RowSchema, RuntimeHandle, RuntimeState, Stdio as RuntimeStdio,
 };
+use rutis_bridge::transport::local::Processes;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -71,6 +72,23 @@ const SWEEP: Duration = Duration::from_millis(100);
 /// run of a new binary on macOS waits for the system to assess it, which
 /// takes seconds when several start at once.
 const MANIFEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The most a manifest may print, and the most of its errors kept: a
+/// binary that floods its stdout is stopped at this size, not buffered
+/// without bound. Errors beyond the kept part are read and dropped, so a
+/// chatty binary keeps running.
+const MANIFEST_OUTPUT: u64 = 16 * 1024 * 1024;
+const MANIFEST_ERRORS: u64 = 64 * 1024;
+
+/// Added to the shutdown deadline when the loader waits for a runtime to
+/// stop: the runtime's own cleanups have that deadline too, and one that
+/// uses all of it is not killed just as it finishes.
+const STOP_MARGIN: Duration = Duration::from_secs(2);
+
+/// How long a runtime's process may take to be gone once it was disposed
+/// (the local transport kills it 2 s after closing its channel), or once
+/// it was killed, before the loader goes on without it.
+const STOP_EXIT: Duration = Duration::from_secs(5);
 
 /// How long a failed manifest read stands before a row asking for a plugin
 /// no binary has gets it read again: a failure may pass, but a binary that
@@ -236,12 +254,21 @@ fn read_manifest(path: &Path) -> Result<BinaryManifest, String> {
     let mut stderr = child.stderr.take().expect("piped");
     let reading = std::thread::spawn(move || {
         let mut out = Vec::new();
-        let _ = stdout.read_to_end(&mut out);
+        let _ = stdout
+            .by_ref()
+            .take(MANIFEST_OUTPUT + 1)
+            .read_to_end(&mut out);
         out
     });
     let errors = std::thread::spawn(move || {
         let mut out = Vec::new();
-        let _ = stderr.read_to_end(&mut out);
+        let _ = stderr
+            .by_ref()
+            .take(MANIFEST_ERRORS + 1)
+            .read_to_end(&mut out);
+        // Read the rest and drop it: closing the pipe would kill a binary
+        // that writes more than we keep.
+        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
         out
     });
     let started = Instant::now();
@@ -266,6 +293,12 @@ fn read_manifest(path: &Path) -> Result<BinaryManifest, String> {
     };
     let out = reading.join().unwrap_or_default();
     let err = errors.join().unwrap_or_default();
+    if out.len() as u64 > MANIFEST_OUTPUT {
+        return Err(format!(
+            "it printed more than {} MiB of manifest",
+            MANIFEST_OUTPUT / (1024 * 1024)
+        ));
+    }
     if !status.success() {
         let err = String::from_utf8_lossy(&err);
         let tail: String = err
@@ -622,30 +655,45 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
         }
     }
 
-    /// Read the binary of `runtime` again and record its manifest as the one
-    /// its runtime starts with; the rows resolved to it resolve again.
-    fn launch(&self, runtime: &str) -> Result<PathBuf, String> {
+    /// Read the binary of `runtime` again, for a start: its path and what
+    /// it starts with. Nothing is recorded until the start
+    /// ([`BinaryResolver::launched`]): a runtime still running keeps its
+    /// own meanwhile. A failure names the file it failed on, or the file
+    /// the runtime last had when it is gone.
+    fn read(&self, runtime: &str) -> Result<(PathBuf, Launched), StartFailure> {
+        let last = self
+            .state
+            .lock()
+            .unwrap()
+            .scanned
+            .values()
+            .find(|binary| binary.runtime == runtime)
+            .map(|binary| binary.path.clone());
         let binary = self
             .scan(Force::Runtime(runtime))
             .into_iter()
             .find(|binary| binary.runtime == runtime)
-            .ok_or_else(|| format!("there is no {} runtime {runtime}", L::TITLE))?;
-        let manifest = binary.manifest.clone()?;
+            .ok_or_else(|| (last, format!("there is no {} runtime {runtime}", L::TITLE)))?;
+        let path = Some(binary.path.clone());
+        let manifest = binary.manifest.clone().map_err(|why| (path, why))?;
+        let launched = Launched {
+            stamp: binary.stamp,
+            manifest,
+        };
+        Ok((binary.path, launched))
+    }
+
+    /// Record `launched` as the manifest the runtime `runtime` started
+    /// with; the rows resolved to it resolve again.
+    fn launched(&self, runtime: &str, launched: Launched) {
         let mut state = self.state.lock().unwrap();
-        state.launched.insert(
-            runtime.to_owned(),
-            Launched {
-                stamp: binary.stamp.clone(),
-                manifest,
-            },
-        );
+        state.launched.insert(runtime.to_owned(), launched);
         let resolved = state.resolved.get(runtime).cloned().unwrap_or_default();
         state
             .stale
             .entry(runtime.to_owned())
             .or_default()
             .extend(resolved);
-        Ok(binary.path)
     }
 
     fn stopped(&self, runtime: &str) {
@@ -1007,6 +1055,8 @@ pub struct BinaryRuntimeInfo {
 struct Slot {
     view: FiberView,
     handle: RuntimeHandle,
+    /// Its process, to wait for it to be gone, or kill it.
+    processes: Processes,
     /// The file it started from, to tell a changed binary after a crash.
     stamp: Option<Stamp>,
     binary: PathBuf,
@@ -1017,6 +1067,27 @@ struct Slot {
     /// Which start it is: a restart decided for one start does not restart
     /// a later one.
     generation: u64,
+}
+
+/// A start that failed before there was a slot to watch: the file it
+/// failed on (`None` when it was already gone) and why. It stays Stopped
+/// until that file changes or [`BinaryRuntimesHandle::restart`] asks again.
+struct FailedStart {
+    binary: Option<PathBuf>,
+    stamp: Option<Stamp>,
+    why: String,
+}
+
+impl FailedStart {
+    fn of(binary: Option<PathBuf>, why: String) -> Self {
+        let stamp = binary.as_deref().and_then(stamp);
+        Self { binary, stamp, why }
+    }
+
+    /// Whether the file this failed on changed (or came back).
+    fn retry(&self) -> bool {
+        self.binary.as_deref().and_then(stamp) != self.stamp
+    }
 }
 
 impl Slot {
@@ -1041,6 +1112,9 @@ struct Ended {
     generation: u64,
 }
 
+type StartFailure = (Option<PathBuf>, String);
+type Prepared<L> = Result<(Ctx, BinaryRuntime<L>, PathBuf, Launched), StartFailure>;
+
 struct Inner<L: BinaryLanguage> {
     resolver: Arc<BinaryResolver<L>>,
     project: PathBuf,
@@ -1054,9 +1128,11 @@ struct Inner<L: BinaryLanguage> {
     supervision: Mutex<Option<Supervision>>,
     /// The ends noted before supervising first started (a runtime that
     /// crashed as it started, while the application was still starting),
-    /// for [`BinaryRuntimesHandle::supervise`] to handle; `None` once it
-    /// did, or supervising stopped. Locked under `supervision`.
-    unreported: Mutex<Option<Vec<Ended>>>,
+    /// for [`BinaryRuntimesHandle::supervise`] to handle: the latest of
+    /// each runtime, so at most one per runtime. `None` once it did, or
+    /// once [`BinaryRuntimesHandle::unsupervise`] said it will not come.
+    /// Locked under `supervision`.
+    unreported: Mutex<Option<HashMap<String, Ended>>>,
     /// Each runtime's restarts so far, kept across its starts and stops.
     backoffs: Mutex<HashMap<String, Backoff>>,
     /// The restarts waiting out their backoff: aborted when supervising
@@ -1081,6 +1157,10 @@ struct Slots {
     /// Runtimes a row asked for while they were busy: wanted again once
     /// that is over (a stop in progress is followed by a start).
     rewanted: HashSet<String>,
+    /// Starts that failed, and the file they failed on: a failed start is
+    /// not retried on every sweep (every 100 ms), only when the file
+    /// changes or a caller asks for a restart.
+    failed: HashMap<String, FailedStart>,
     /// The last start's generation.
     generation: u64,
 }
@@ -1170,7 +1250,7 @@ impl<L: BinaryLanguage> BinaryRuntimes<L> {
                 slots: Mutex::default(),
                 early: Mutex::default(),
                 supervision: Mutex::new(None),
-                unreported: Mutex::new(Some(Vec::new())),
+                unreported: Mutex::new(Some(HashMap::new())),
                 backoffs: Mutex::default(),
                 pending: Mutex::default(),
             }),
@@ -1223,6 +1303,8 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
+        // Asked for by hand: a failure kept for the same file is tried again.
+        self.inner.slots.lock().unwrap().failed.remove(name);
         // In a task: dropped half way, the restart would free the name while
         // the old runtime is still stopping, and the next start would run a
         // second process under it meanwhile (#307).
@@ -1270,7 +1352,7 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
             });
             self.inner.unreported.lock().unwrap().take()
         };
-        for ended in earlier.unwrap_or_default() {
+        for ended in earlier.unwrap_or_default().into_values() {
             // Unless something started or stopped it since.
             let still = self
                 .inner
@@ -1287,7 +1369,10 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
     }
 
     /// Stop supervising: a restart waiting out its backoff does not happen
-    /// (the application is stopping). One already starting goes on.
+    /// (the application is stopping). One already starting goes on. Called
+    /// before any [`BinaryRuntimesHandle::supervise`], it says none is
+    /// coming (restart `no`): the ends noted so far are dropped, and no
+    /// more are kept for it.
     pub fn unsupervise(&self) {
         self.inner.unsupervise();
     }
@@ -1303,7 +1388,13 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
                     None if slots.busy.contains(&binary.runtime) => {
                         (BinaryRuntimeState::Starting, false)
                     }
-                    None => (BinaryRuntimeState::NotStarted, false),
+                    None => match slots.failed.get(&binary.runtime) {
+                        Some(failed) => (
+                            BinaryRuntimeState::Stopped(failed.why.clone()),
+                            Some(binary.stamp.clone()) != failed.stamp,
+                        ),
+                        None => (BinaryRuntimeState::NotStarted, false),
+                    },
                     Some(slot) => {
                         let state = match (&slot.stopped, slot.handle.state()) {
                             (Some(reason), _) => BinaryRuntimeState::Stopped(reason.clone()),
@@ -1342,8 +1433,65 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
             .iter()
             .map(|(name, slot)| (name.clone(), slot.handle.state()))
             .collect();
+        states.extend(
+            slots
+                .failed
+                .iter()
+                .filter(|(name, _)| !slots.running.contains_key(*name))
+                .map(|(name, failed)| (name.clone(), RuntimeState::Down(failed.why.clone()))),
+        );
         states.sort_by(|a, b| a.0.cmp(&b.0));
         states
+    }
+}
+
+/// Stop a runtime taken out of the slots, and return once its process is
+/// gone: another one may start under its name then (#307). Its cleanups
+/// get the shutdown deadline and a margin; a runtime still stopping by
+/// then is killed, and the rest of its stop, which no longer waits for the
+/// process, is waited for, so it withdraws nothing of the next one's.
+async fn stop<L: BinaryLanguage>(runtime: &str, slot: Slot) {
+    let limit = shutdown_deadline() + STOP_MARGIN;
+    let disposed = slot.view.dispose_with_timeout(limit).await;
+    let timed_out = matches!(disposed, Err(rutis::DisposeWaitError::TimedOut { .. }));
+    if let Err(error) = &disposed {
+        eprintln!(
+            "rutis-loader: stopping the {} runtime {runtime}: {error}",
+            L::TITLE
+        );
+    }
+    // Disposed, the process ends once its channel closes, or the transport
+    // kills it; here it is killed at the latest.
+    let exited = !timed_out
+        && tokio::time::timeout(STOP_EXIT, slot.processes.ended())
+            .await
+            .is_ok();
+    if exited {
+        return;
+    }
+    slot.processes.kill();
+    if tokio::time::timeout(STOP_EXIT, slot.processes.ended())
+        .await
+        .is_err()
+    {
+        eprintln!(
+            "rutis-loader: the process of the {} runtime {runtime} still runs after it was killed",
+            L::TITLE
+        );
+    }
+    eprintln!(
+        "rutis-loader: the {} runtime {runtime} did not stop within {:.1}s; killed it",
+        L::TITLE,
+        limit.as_secs_f64()
+    );
+    if timed_out {
+        // Its process gone, its calls into it fail, and its stop ends.
+        if let Err(error) = slot.view.dispose_with_timeout(STOP_EXIT).await {
+            eprintln!(
+                "rutis-loader: stopping the {} runtime {runtime} after killing it: {error}",
+                L::TITLE
+            );
+        }
     }
 }
 
@@ -1363,6 +1511,10 @@ impl<L: BinaryLanguage> Inner<L> {
                 slots.rewanted.insert(runtime.to_owned());
                 return;
             }
+            let quiet = slots
+                .failed
+                .get(runtime)
+                .is_some_and(|failed| !failed.retry());
             let transition = match slots.running.get_mut(runtime) {
                 Some(slot) => {
                     slot.last_used = Instant::now();
@@ -1377,14 +1529,28 @@ impl<L: BinaryLanguage> Inner<L> {
                         });
                     }
                     match &slot.stopped {
+                        // Running: it keeps its process until restarted
+                        // (`replace`, `restart`).
                         None => None,
                         // Crashed: only a new binary is worth another try
-                        // here; its restart policy may start it again.
-                        Some(_) if stamp(&slot.binary) != slot.stamp => Some(Transition::Restart),
-                        Some(_) => None,
+                        // here; its restart policy may start it again. A
+                        // binary that disappeared is not "changed".
+                        Some(_) => {
+                            let now = stamp(&slot.binary);
+                            (now.is_some() && now != slot.stamp && !quiet)
+                                .then_some(Transition::Restart)
+                        }
                     }
                 }
-                None => Some(Transition::Start),
+                None => {
+                    if let Some(failed) = slots.failed.get(runtime) {
+                        if !failed.retry() {
+                            return;
+                        }
+                        slots.failed.remove(runtime);
+                    }
+                    Some(Transition::Start)
+                }
             };
             if transition.is_some() {
                 slots.busy.insert(runtime.to_owned());
@@ -1399,9 +1565,10 @@ impl<L: BinaryLanguage> Inner<L> {
             }
             Some(Transition::Start) => {
                 let _busy = Busy::held(self, runtime);
-                if let Err(error) = self.start(runtime) {
+                if let Err((binary, why)) = self.start(runtime) {
+                    self.note_failed(runtime, binary, why.clone());
                     eprintln!(
-                        "rutis-loader: cannot start the {} runtime {runtime}: {error}",
+                        "rutis-loader: cannot start the {} runtime {runtime}: {why}",
                         L::TITLE
                     );
                 }
@@ -1422,26 +1589,26 @@ impl<L: BinaryLanguage> Inner<L> {
         }
     }
 
-    /// Stop `runtime` and start it again, holding its busy mark. The new
-    /// process starts only once the old one is gone: both use the
-    /// runtime's name.
-    async fn restart_now(self: Arc<Self>, runtime: &str, _busy: Busy<L>) -> Result<(), String> {
-        let previous = self.slots.lock().unwrap().running.remove(runtime);
-        if let Some(previous) = previous {
-            let _ = previous.view.dispose().await;
-        }
-        self.resolver.stopped(runtime);
-        self.start(runtime)
+    /// Remember a failed start until its file changes or a caller asks
+    /// again, and show it in [`BinaryRuntimesHandle::states`].
+    fn note_failed(&self, runtime: &str, binary: Option<PathBuf>, why: String) {
+        self.slots
+            .lock()
+            .unwrap()
+            .failed
+            .insert(runtime.to_owned(), FailedStart::of(binary, why));
     }
 
-    fn start(&self, runtime: &str) -> Result<(), String> {
+    /// Read the binary and make its runtime, before anything of an old
+    /// runtime is dropped: a restart that cannot start keeps the old one.
+    fn prepare(&self, runtime: &str) -> Prepared<L> {
         let ctx = self
             .ctx
             .lock()
             .unwrap()
             .clone()
-            .ok_or_else(|| format!("the {} runtimes are not running", L::TITLE))?;
-        let binary = self.resolver.launch(runtime)?;
+            .ok_or_else(|| (None, format!("the {} runtimes are not running", L::TITLE)))?;
+        let (binary, launched) = self.resolver.read(runtime)?;
         let mut runtime_plugin = BinaryRuntime::<L> {
             label: format!("{runtime} ({})", L::PREFIX),
             runtime: runtime.to_owned(),
@@ -1452,18 +1619,37 @@ impl<L: BinaryLanguage> Inner<L> {
             first: Mutex::new(None),
         };
         let local = runtime_plugin.local();
-        let handle = local.handle();
         runtime_plugin.first = Mutex::new(Some(local));
+        Ok((ctx, runtime_plugin, binary, launched))
+    }
+
+    fn install(
+        &self,
+        runtime: &str,
+        ctx: Ctx,
+        runtime_plugin: BinaryRuntime<L>,
+        binary: PathBuf,
+        launched: Launched,
+    ) {
+        let stamp = Some(launched.stamp.clone());
+        self.resolver.launched(runtime, launched);
+        let (handle, processes) = {
+            let first = runtime_plugin.first.lock().unwrap();
+            let local = first.as_ref().expect("the first runtime was just made");
+            (local.handle(), local.processes())
+        };
         let view = ctx.plugin(runtime_plugin);
         let mut slots = self.slots.lock().unwrap();
         slots.generation += 1;
         let generation = slots.generation;
+        slots.failed.remove(runtime);
         slots.running.insert(
             runtime.to_owned(),
             Slot {
                 view,
                 handle,
-                stamp: stamp(&binary),
+                processes,
+                stamp,
                 binary,
                 last_used: Instant::now(),
                 stopped: None,
@@ -1471,6 +1657,30 @@ impl<L: BinaryLanguage> Inner<L> {
                 generation,
             },
         );
+    }
+
+    /// Stop `runtime` and start it again, holding its busy mark. The binary
+    /// is read before the old runtime is stopped: one that cannot start
+    /// leaves the old runtime running. Both processes use the runtime's
+    /// name, so the new one starts only once the old one is gone, and
+    /// records what it started with only then.
+    async fn restart_now(self: Arc<Self>, runtime: &str, _busy: Busy<L>) -> Result<(), String> {
+        let (ctx, plugin, binary, launched) = self.prepare(runtime).map_err(|(binary, why)| {
+            self.note_failed(runtime, binary, why.clone());
+            why
+        })?;
+        let previous = self.slots.lock().unwrap().running.remove(runtime);
+        if let Some(previous) = previous {
+            stop::<L>(runtime, previous).await;
+        }
+        self.resolver.stopped(runtime);
+        self.install(runtime, ctx, plugin, binary, launched);
+        Ok(())
+    }
+
+    fn start(&self, runtime: &str) -> Result<(), StartFailure> {
+        let (ctx, plugin, binary, launched) = self.prepare(runtime)?;
+        self.install(runtime, ctx, plugin, binary, launched);
         Ok(())
     }
 
@@ -1497,8 +1707,10 @@ impl<L: BinaryLanguage> Inner<L> {
                 Some(supervision) => supervision.clone(),
                 None => {
                     // Not yet supervising: for `supervise` to handle.
+                    // An earlier end of the same runtime is over: a later
+                    // start replaced it.
                     if let Some(unreported) = &mut *self.unreported.lock().unwrap() {
-                        unreported.push(ended);
+                        unreported.insert(ended.runtime.clone(), ended);
                     }
                     return;
                 }
@@ -1547,6 +1759,10 @@ impl<L: BinaryLanguage> Inner<L> {
         let Some(supervision) = self.supervision.lock().unwrap().clone() else {
             return;
         };
+        // The policy may have changed while this restart waited.
+        if supervision.policy != RestartPolicy::OnFailure {
+            return;
+        }
         let Some(busy) = Busy::take(&self, &runtime) else {
             return;
         };
@@ -1693,7 +1909,7 @@ impl<L: BinaryLanguage> Inner<L> {
                 let _busy = busy;
                 let previous = inner.slots.lock().unwrap().running.remove(&name);
                 if let Some(previous) = previous {
-                    let _ = previous.view.dispose().await;
+                    stop::<L>(&name, previous).await;
                 }
                 inner.resolver.stopped(&name);
             });
@@ -1859,5 +2075,113 @@ mod tests {
         });
         assert!(started.is_err());
         assert_eq!(tries, 1);
+    }
+
+    /// A failed start is retried only when its file changes, not on every
+    /// sweep.
+    #[test]
+    fn a_failed_start_waits_for_its_file_to_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runtime");
+        std::fs::write(&path, b"one").unwrap();
+        let failed = FailedStart::of(Some(path.clone()), "cannot start".into());
+        assert!(!failed.retry());
+        std::fs::write(&path, b"another").unwrap();
+        assert!(failed.retry());
+        std::fs::remove_file(&path).unwrap();
+        assert!(failed.retry());
+    }
+
+    /// A failed start whose file was already gone stays stopped until a
+    /// caller asks again.
+    #[test]
+    fn a_failed_start_without_a_file_is_not_retried() {
+        let failed = FailedStart::of(None, "there is no runtime".into());
+        assert!(!failed.retry());
+    }
+
+    #[cfg(unix)]
+    fn manifest_script(dir: &Path, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join("runtime");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+
+    /// A manifest that floods stdout is refused at 16 MiB instead of being
+    /// buffered without bound.
+    #[cfg(unix)]
+    #[test]
+    fn a_manifest_that_prints_more_than_the_cap_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = manifest_script(
+            dir.path(),
+            "dd if=/dev/zero bs=1048576 count=17 2>/dev/null",
+        );
+        let error = read_manifest(&path).unwrap_err();
+        assert!(error.contains("more than 16 MiB"), "{error}");
+    }
+
+    /// Errors beyond the kept 64 KiB are read and dropped: a binary that
+    /// writes them keeps running and its manifest is read.
+    #[cfg(unix)]
+    #[test]
+    fn a_manifest_may_write_more_errors_than_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = manifest_script(dir.path(), "printf '{}'\nhead -c 100000 /dev/zero >&2");
+        assert_eq!(read_manifest(&path).unwrap().plugin_api, 0);
+    }
+
+    #[cfg(feature = "go")]
+    fn ended(runtime: &str, generation: u64) -> Ended {
+        Ended {
+            runtime: runtime.into(),
+            why: "crashed".into(),
+            ran: Duration::ZERO,
+            generation,
+        }
+    }
+
+    #[cfg(feature = "go")]
+    fn kept(runtimes: &crate::GoRuntimesHandle) -> Option<Vec<(String, u64)>> {
+        let unreported = runtimes.inner.unreported.lock().unwrap();
+        unreported.as_ref().map(|ends| {
+            let mut kept: Vec<_> = ends
+                .values()
+                .map(|end| (end.runtime.clone(), end.generation))
+                .collect();
+            kept.sort();
+            kept
+        })
+    }
+
+    /// Ends noted before supervising are kept for it, only the latest of
+    /// each runtime; once `unsupervise` says supervising will not come
+    /// (restart `no`, or an application that never supervises and says
+    /// so), none are kept.
+    #[cfg(feature = "go")]
+    #[test]
+    fn ends_kept_for_supervising_are_bounded_and_dropped_when_it_will_not_come() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolver = Arc::new(crate::GoResolver::new(
+            crate::GoBinaries::new().dir(dir.path()),
+        ));
+        let runtimes = crate::GoRuntimes::new(resolver, dir.path()).handle();
+        for generation in 1..=100 {
+            runtimes.inner.ended(ended("go-a", generation));
+            runtimes.inner.ended(ended("go-b", generation));
+        }
+        assert_eq!(
+            kept(&runtimes),
+            Some(vec![("go-a".into(), 100), ("go-b".into(), 100)])
+        );
+        runtimes.unsupervise();
+        assert_eq!(kept(&runtimes), None);
+        runtimes.inner.ended(ended("go-a", 101));
+        assert_eq!(kept(&runtimes), None);
     }
 }

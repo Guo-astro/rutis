@@ -550,22 +550,45 @@ pub fn caller() -> Option<Connection> {
 /// the call being handled here (a notification another session's call
 /// happens to trigger), so it carries no chain of that session.
 pub(crate) fn unchained<R>(call: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            UNCHAINED.with(|flag| flag.set(self.0));
+        }
+    }
+    let _restore = Restore(UNCHAINED.with(|flag| flag.replace(true)));
     let _path = PathGuard::enter(Vec::new());
     call()
+}
+
+/// Whether this thread is in [`unchained`]: what it sends is a
+/// notification nobody waits for, and is left out of the wait graph.
+pub(crate) fn unchained_now() -> bool {
+    UNCHAINED.with(|flag| flag.get())
 }
 /// Poll `future` with `source` as the [`caller`]: what it calls in other
 /// sessions on that session's behalf is forwarded from it (its chain
 /// rebased), however long after the call it runs.
-pub(crate) async fn with_caller<F: Future>(source: Connection, future: F) -> F::Output {
-    let mut future = std::pin::pin!(future);
-    std::future::poll_fn(|cx| {
-        let previous = CALLER.with(|caller| caller.replace(Some(source.clone())));
-        let polled = future.as_mut().poll(cx);
-        CALLER.with(|caller| caller.replace(previous));
-        polled
-    })
-    .await
+pub(crate) fn with_caller<F: Future>(
+    source: Connection,
+    future: F,
+) -> impl Future<Output = F::Output> {
+    let path = current_path();
+    async move {
+        let mut future = std::pin::pin!(future);
+        with_path(
+            path,
+            std::future::poll_fn(|cx| {
+                let previous = CALLER.with(|caller| caller.replace(Some(source.clone())));
+                let polled = future.as_mut().poll(cx);
+                CALLER.with(|caller| caller.replace(previous));
+                polled
+            }),
+        )
+        .await
+    }
 }
+thread_local! { static UNCHAINED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 thread_local! { static PUMPING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 /// Marks a thread that runs an invocation pumped by its own synchronous
 /// wait (`request_sync`), so code that relies on running there can check it.
@@ -2185,8 +2208,12 @@ impl Connection {
                     let mut calls = self.0.calls.lock().unwrap();
                     (calls.awaiting.remove(&id), calls.incoming.remove(&id))
                 };
-                // The caller no longer waits for it.
-                waits::answered(&self.0.tag, &id);
+                // The caller no longer waits for it. A synchronous call
+                // already started keeps its mark: it still runs on that
+                // stack and may forward calls.
+                if incoming.is_some() || awaiting.is_some() {
+                    waits::answered(&self.0.tag, &id);
+                }
                 drop((awaiting, incoming));
                 return Ok(());
             }

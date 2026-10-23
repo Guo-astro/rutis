@@ -98,6 +98,10 @@ pub enum Provider {
     Row(String),
     /// The application, under the name it registered in the catalog.
     Host,
+    /// A `#[rutis::service]` type of the application (its type name), which
+    /// serves the name once it is provided: whether it is, is not known
+    /// before the rows run.
+    Marked(String),
 }
 
 /// A row whose declarations are not known, and why.
@@ -247,6 +251,8 @@ impl Loader {
                             .collect();
                         if catalog.registered_by_host(service) {
                             by.push(Provider::Host);
+                        } else if let Some(type_name) = catalog.marked_by_host(service) {
+                            by.push(Provider::Marked(type_name.to_owned()));
                         }
                         let others: Vec<Unknown> = unknown
                             .iter()
