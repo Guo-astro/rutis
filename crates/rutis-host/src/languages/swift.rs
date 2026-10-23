@@ -271,6 +271,15 @@ impl DevBuild for SwiftDev {
             .join("swift")
             .join(format!("{}-{n}", self.product))
     }
+
+    /// Swift sources, Package.swift among them, and Package.resolved.
+    fn is_source(&self, path: &Path) -> bool {
+        path.extension()
+            .is_some_and(|extension| extension == "swift")
+            || path
+                .file_name()
+                .is_some_and(|name| name == "Package.resolved")
+    }
 }
 
 /// The `name:` of the `Package(...)` in a Package.swift.

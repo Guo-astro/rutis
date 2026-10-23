@@ -230,7 +230,7 @@ func TestEvents(t *testing.T) {
 rutis-host dev
 ```
 
-`dev` 构建 `cmd/weather`，作为运行时 `go-weather` 运行它的每个插件；改了 `.go`、`go.mod`、`go.sum` 就重新构建并只重启这个运行时，构建失败时旧的继续运行。插件需要的其他服务写在 `rutis.dev.json` 里，可以是 Python 或 TypeScript 插件（同时写上对应的 `runtimes`）。`rutis-host check` 列出每一行和每个 Go 二进制的插件、版本和插件 API。
+`dev` 构建 `cmd/weather`，作为运行时 `go-weather` 运行它的每个插件；改了 `.go`、`go.mod`、`go.sum` 就重新构建并只重启这个运行时，构建失败时旧的继续运行。插件需要的其他服务写在 `rutis.dev.json` 里，可以是 Python 或 TypeScript 插件（同时写上对应的 `runtimes`）；它们的文件（以及 `rutis.dev.json`）变化时，这些行在重新构建之后照常重新加载，Go 运行时不为此重启。`rutis-host check` 列出每一行和每个 Go 二进制的插件、版本和插件 API。
 
 ## 5. 发布
 

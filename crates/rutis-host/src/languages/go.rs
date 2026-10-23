@@ -257,6 +257,13 @@ impl DevBuild for GoDev {
         };
         self.dir.join(".rutis").join("go").join(file)
     }
+
+    fn is_source(&self, path: &Path) -> bool {
+        path.extension().is_some_and(|extension| extension == "go")
+            || path
+                .file_name()
+                .is_some_and(|name| name == "go.mod" || name == "go.sum" || name == "go.work")
+    }
 }
 
 /// `binary`, if the build that wrote it succeeded; else the compiler's
