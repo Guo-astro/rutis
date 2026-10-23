@@ -663,3 +663,105 @@ async fn calls_by_name_go_through_read_interceptors() {
     assert!(error.to_string().contains("not available"), "{error}");
     root.shutdown().await.unwrap();
 }
+
+/// Provided on an active context, a marked service is served by name only
+/// once the native service it calls is there: a row woken by the name
+/// finds it (#540). Another thread watches while it is provided and
+/// withdrawn, again and again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_name_is_served_after_the_native_service() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let root = Ctx::root().unwrap();
+    let done = Arc::new(AtomicBool::new(false));
+    let watcher = {
+        let (root, done) = (root.clone(), done.clone());
+        std::thread::spawn(move || {
+            while !done.load(Ordering::SeqCst) {
+                // Served by name, then the native service looked up: it is
+                // there unless the name was withdrawn meanwhile.
+                if served(&root, "notebook").is_some()
+                    && root.get::<Notes>().is_none()
+                    && served(&root, "notebook").is_some()
+                {
+                    return false;
+                }
+            }
+            true
+        })
+    };
+    for _ in 0..2000 {
+        if watcher.is_finished() {
+            break;
+        }
+        root.provide(Notes).unwrap().dispose().await.unwrap();
+    }
+    done.store(true, Ordering::SeqCst);
+    assert!(
+        watcher.join().unwrap(),
+        "the name was served while the native service was not"
+    );
+    root.shutdown().await.unwrap();
+}
+
+/// Unloaded, a plugin that provided a marked service stops serving it by
+/// name before the native service goes: a call by name never finds the
+/// name served and the service gone (#540). A user of the native service
+/// looks at the name when it is stopped because the native service goes.
+#[tokio::test]
+async fn unloading_withdraws_the_name_before_the_native_service() {
+    struct Provides;
+    impl rutis::Plugin for Provides {
+        fn name(&self) -> &str {
+            "provides"
+        }
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+            Box::pin(async move {
+                // The disposer is dropped: the unload withdraws it.
+                ctx.provide(Notes)?;
+                Ok(rutis::Effect::Done)
+            })
+        }
+    }
+    let root = Ctx::root().unwrap();
+    let provider = root.plugin(Provides);
+    (&provider).await.unwrap();
+    let named = Arc::new(Mutex::new(None));
+    let user = root.plugin(Uses(named.clone()));
+    reach(&user, rutis::FiberState::Active).await;
+    provider.dispose().await.unwrap();
+    assert_eq!(
+        *named.lock().unwrap(),
+        Some(false),
+        "the name was still served when the native service went"
+    );
+    root.shutdown().await.unwrap();
+}
+
+/// Uses `Notes`; when stopped, notes whether the name is served.
+struct Uses(Arc<Mutex<Option<bool>>>);
+
+impl rutis::Plugin for Uses {
+    fn name(&self) -> &str {
+        "uses"
+    }
+    fn injects(&self) -> &[TypeKey] {
+        static NATIVE: std::sync::OnceLock<[TypeKey; 1]> = std::sync::OnceLock::new();
+        NATIVE.get_or_init(|| [TypeKey::of::<Notes>()])
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+        let named = self.0.clone();
+        let ctx = ctx.clone();
+        Box::pin(async move {
+            Ok(rutis::Effect::Disposer(Box::new(move || {
+                let name = host_key("notebook");
+                let served = ctx
+                    .diagnostics()
+                    .bindings
+                    .iter()
+                    .any(|binding| binding.key == name && !binding.removing);
+                named.lock().unwrap().get_or_insert(served);
+                Ok(())
+            })))
+        })
+    }
+}

@@ -95,24 +95,82 @@ fn short(type_name: &str) -> &str {
     base.rsplit("::").next().unwrap_or(base)
 }
 
+/// Where a marked service is served by name: its name, the key, and the
+/// context to provide it on, in the isolation scope of the native service
+/// (R3: two isolated scopes each serve their own).
+struct Place {
+    name: &'static str,
+    type_name: &'static str,
+    key: TypeKey,
+    serving: Ctx,
+}
+
+impl Place {
+    fn of(exposure: &Exposure<'_>) -> Result<Self, CordisError> {
+        let name = exported_name(&exposure.entries)?;
+        let type_name = exposure
+            .entries
+            .first()
+            .map_or("", |entry| entry.type_name());
+        let key = match exposure.native.instance_id() {
+            Some(instance) => host_key_in(name, instance),
+            None => host_key(name),
+        };
+        let serving = match exposure.scope {
+            Some(scope) => exposure.ctx.isolate(key.clone(), scope),
+            None => exposure.ctx.clone(),
+        };
+        Ok(Self {
+            name,
+            type_name,
+            key,
+            serving,
+        })
+    }
+
+    /// The refusal for a name another service has here (R6).
+    fn taken(&self) -> CordisError {
+        let by = self
+            .serving
+            .get_as::<dyn HostDispatch>(self.key.clone())
+            .and_then(|other| other.provider())
+            .map(|other| format!(" by {other}"))
+            .unwrap_or_default();
+        CordisError::ServiceExists(format!(
+            "`{}` ({}): the name is already provided here{by}",
+            self.name, self.type_name
+        ))
+    }
+}
+
 impl Exposer for BridgeExposer {
+    fn admit(&self, exposure: &Exposure<'_>) -> Result<(), CordisError> {
+        let place = Place::of(exposure)?;
+        if rutis::service::vacant(&place.serving, &place.key) {
+            Ok(())
+        } else {
+            Err(place.taken())
+        }
+    }
+
     fn expose(&self, exposure: Exposure<'_>) -> Result<Disposer, CordisError> {
+        let place = Place::of(&exposure)?;
         let Exposure {
             ctx,
             native,
-            scope,
             entries,
             check,
             provision,
             ..
         } = exposure;
-        let name = exported_name(&entries)?;
-        let type_name = entries.first().map_or("", |entry| entry.type_name());
         let instance = native.instance_id();
-        let key = match instance {
-            Some(instance) => host_key_in(name, instance),
-            None => host_key(name),
-        };
+        let Place {
+            name,
+            type_name,
+            key,
+            serving,
+        } = &place;
+        let (name, type_name) = (*name, *type_name);
         let marked = Arc::new(Marked {
             ctx: ctx.clone(),
             native: native.clone(),
@@ -120,12 +178,6 @@ impl Exposer for BridgeExposer {
             entries,
             type_name,
         });
-        // In the isolation scope of the native service (R3): two isolated
-        // scopes each serve their own.
-        let serving = match scope {
-            Some(scope) => ctx.isolate(key.clone(), scope),
-            None => ctx.clone(),
-        };
         // The native binding's `check()` gates the name as well.
         let served = match check {
             Some(check) => {
@@ -135,16 +187,7 @@ impl Exposer for BridgeExposer {
             None => serving.provide_as::<dyn HostDispatch>(key.clone(), marked),
         };
         let served = served.map_err(|error| match error {
-            CordisError::ServiceExists(_) => {
-                let by = serving
-                    .get_as::<dyn HostDispatch>(key.clone())
-                    .and_then(|other| other.provider())
-                    .map(|other| format!(" by {other}"))
-                    .unwrap_or_default();
-                CordisError::ServiceExists(format!(
-                    "`{name}` ({type_name}): the name is already provided here{by}"
-                ))
-            }
+            CordisError::ServiceExists(_) => place.taken(),
             error => error,
         })?;
         let Some(instance) = instance else {
