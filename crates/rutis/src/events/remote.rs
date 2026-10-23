@@ -19,7 +19,7 @@
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 
-use super::{EventOptions, ListenerInfo, ListenerKind, Mode, PayloadRef, Scope, Value};
+use super::{EventOptions, ListenerInfo, ListenerKind, Mode, PayloadRef, Value};
 use crate::bus::run::Inv;
 use crate::error::NextMisuse;
 use crate::{BoxFuture, CordisError, Ctx};
@@ -284,10 +284,6 @@ pub struct Dispatch {
     pub name: String,
     pub mode: Mode,
     pub payload: super::Payload,
-    /// The emitter's scope chain; `None`: the emitting context's. Retained
-    /// as the emitter's descriptor for filters and reports; delivery is by
-    /// name, so it does not select listeners.
-    pub scope: Option<Vec<Scope>>,
     pub filter: Option<BatchFilter>,
     /// `waterfall` / `waterfall-sync` only.
     pub terminal: Option<RawTerminal>,
@@ -303,7 +299,6 @@ impl Dispatch {
             name: name.into(),
             mode,
             payload,
-            scope: None,
             filter: None,
             terminal: None,
             origin: None,

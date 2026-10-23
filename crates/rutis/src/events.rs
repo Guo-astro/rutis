@@ -104,11 +104,6 @@ pub struct Scope {
     pub group: String,
 }
 
-/// `inner` is `outer` or below it: `outer` is a prefix of `inner`, by id.
-pub fn scope_contains(outer: &[Scope], inner: &[Scope]) -> bool {
-    outer.len() <= inner.len() && outer.iter().zip(inner).all(|(a, b)| a.id == b.id)
-}
-
 /// What the bus says about a listener: what a filter sees (protocol spec
 /// §4.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

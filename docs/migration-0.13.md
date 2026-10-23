@@ -45,7 +45,25 @@ impl Event for Joined { const NAME: &'static str = "room/joined"; type Value = S
 - 插件开始卸载后，它的每个监听器都不再被调用，卸载等它们正在运行的调用结束（其 `ctx.cancelled()` 已触发）；以前只有实例、模式与同步监听器如此。
 - `rutis/*` 是保留名字：发出它以 `ReservedEvent` 失败。
 
-**作用域不再是事件送达规则。** 加载器对每个组实例调用 `Ctx::mark_scope(group)`；`Ctx::scope()` 是从根起的链，作为 `ListenerInfo` 的描述供过滤使用。事件在一个 root 的总线上按名字送达，所有监听器都收到（与 Cordis 相同）；要按实例挑监听器，用 `ctx.events().filter(|info| ..)` 按 `info.scope` 等描述筛，或用不同的事件名。默认不做实例隔离。
+**作用域不再是事件送达规则。** 加载器对每个组实例调用 `Ctx::mark_scope(group)`；`Ctx::scope()` 是从根起的链，作为 `ListenerInfo` 的描述供过滤使用。事件在一个 root 的总线上按名字送达，所有监听器都收到（与 Cordis 相同）；要按实例挑监听器，用 `ctx.events().filter(|info| ..)` 按 `info.scope` 等描述筛，或用不同的事件名。默认不做实例隔离。*（0.13–0.15 按作用域送达；0.16 改为这条平总线，见[迁移到 0.16](migration-0.16.md)。）*
+
+父级行发出、子级行监听不需要额外接线：
+
+```rust
+// 父级行（t1）：
+ctx.events()
+    .parallel(&ctx, &EventKey::named("session/created"), &created)
+    .await?;
+
+// 子级行（t1/s1），任意深度：
+ctx.events().on(
+    &ctx,
+    &EventKey::named("session/created"),
+    |_ctx, created: &Created| async move { Ok(()) },
+)?;
+```
+
+子级的监听器收到父级的事件，兄弟实例的监听器也收到。`rutis/tests/events.rs::events_reach_every_listener_on_the_bus` 从每一侧运行这个流程。监听器按登记顺序运行；`parallel` 返回 `CordisError::ListenersFailed`，其子错误按登记顺序；`emit` 在监听器运行处报告失败并立即返回。
 
 **诊断。** `EventSubscription` 删除 `key`（`TypeKey`）、`prefixes`、`selected`、`invoked`，改为 `name`（事件名，前缀条目为前缀）、`prefix`、`remote`（别处的监听器）、`global`、`calls`（已开始的调用数）；`owner` 改为 `Option<PluginId>`（登记它的 fiber 已不在时为 `None`）。`ListenerKind` 只有 `Sync`、`Async`、`Any`（`Any` 只来自别处的监听器）：`AsyncWaterfall`、`SyncWaterfall` 删除，按值匹配的代码要改。`EventBacklog` 与 `DispatchAttempt` 带事件的 `name`，不再带 `key`（`TypeKey`）；`DispatchMode` 改为 `rutis::Mode`；`CordisError::ReentrantEvent` 删除：同名的同步分发可以重入（与 Cordis 相同），只有真正的等待环以 `SyncWaitCycle` 失败。
 

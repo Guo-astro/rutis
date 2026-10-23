@@ -1015,8 +1015,9 @@ async fn thousand_early_sync_disposals_reject_new_selection_while_old_calls_fini
     root.shutdown().await.unwrap();
 }
 
-/// Was an instance-key test: the listener now lives in a scope, and the
-/// emitter below it hears it while the root does not.
+/// Was an instance-key test: the listener lives in a scope; the bus is
+/// flat, but disposing the listener or shutting down its owner's subtree
+/// still drains a running synchronous call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scoped_sync_bail_and_waterfall_drain_during_removal_and_subtree_shutdown() {
     for waterfall in [false, true] {
@@ -1102,11 +1103,6 @@ async fn scoped_sync_bail_and_waterfall_drain_during_removal_and_subtree_shutdow
                     Some(1)
                 );
             }
-            // The root is outside the scope: it never hears the listener.
-            assert_eq!(
-                root.events().bail_sync(&root, &key, &Ping(0)).unwrap(),
-                None
-            );
             if shutdown {
                 pending(finish.as_mut()).await;
             }

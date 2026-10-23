@@ -45,7 +45,25 @@ A value type that is not serde (a handle, a channel) does not belong in an event
 - Every listener is skipped once its plugin is unloading, and the unload waits for its running calls (their `ctx.cancelled()` fires); before, only instance, pattern and synchronous listeners were.
 - `rutis/*` names are reserved: emitting one fails with `ReservedEvent`.
 
-**Scopes are no longer a delivery rule.** The loader marks each group instance with `Ctx::mark_scope(group)`; `Ctx::scope()` is the chain from the root, a `ListenerInfo` descriptor for filters. Events are delivered by name on one root's bus, and every listener receives them (as in Cordis). To pick listeners by instance, use `ctx.events().filter(|info| ..)` on `info.scope` and the other descriptors, or use distinct event names. There is no default instance isolation.
+**Scopes are no longer a delivery rule.** The loader marks each group instance with `Ctx::mark_scope(group)`; `Ctx::scope()` is the chain from the root, a `ListenerInfo` descriptor for filters. Events are delivered by name on one root's bus, and every listener receives them (as in Cordis). To pick listeners by instance, use `ctx.events().filter(|info| ..)` on `info.scope` and the other descriptors, or use distinct event names. There is no default instance isolation. *(0.13–0.15 delivered by scope; 0.16 replaced that with this flat bus — see [migrating to 0.16](migration-0.16.en.md).)*
+
+A parent row emitting and a child row listening needs no extra wiring:
+
+```rust
+// In the parent row (`t1`):
+ctx.events()
+    .parallel(&ctx, &EventKey::named("session/created"), &created)
+    .await?;
+
+// In the child row (`t1/s1`), at any depth:
+ctx.events().on(
+    &ctx,
+    &EventKey::named("session/created"),
+    |_ctx, created: &Created| async move { Ok(()) },
+)?;
+```
+
+The child's listener receives the parent's event, and a listener in a sibling instance receives it too. `rutis/tests/events.rs::events_reach_every_listener_on_the_bus` runs this flow from each side. Listeners run in registration order; `parallel` returns a `CordisError::ListenersFailed` whose children are in registration order, and `emit` reports failures where they run and returns at once.
 
 **Diagnostics.** `EventSubscription` drops `key` (`TypeKey`), `prefixes`, `selected` and `invoked`, and has `name` (the event name, or the prefix of a prefix entry), `prefix`, `remote` (a listener elsewhere), `global` and `calls` (calls started so far); `owner` is an `Option<PluginId>` (`None` once the fiber that registered it is gone). `ListenerKind` has only `Sync`, `Async` and `Any` (`Any` only for listeners elsewhere): `AsyncWaterfall` and `SyncWaterfall` are gone, so code matching on them changes. `EventBacklog` and `DispatchAttempt` carry the event `name` instead of `key` (a `TypeKey`); `DispatchMode` is `rutis::Mode`; `CordisError::ReentrantEvent` is removed: a synchronous dispatch of a name may re-enter it (as in Cordis), and only a real wait cycle fails, with `SyncWaitCycle`.
 

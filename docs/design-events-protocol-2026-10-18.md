@@ -19,7 +19,7 @@
 | **监听器表** | 宿主上全部条目的有序列表 |
 | **描述** | 总线对一个条目的说明（§4.2）；过滤函数看到的就是它 |
 | **作用域链** | 从根到某个作用域的作用域列表（第三节） |
-| **一次分发** | 一个事件的一次发出：名字、参数、方式、发出方作用域，可选的过滤与终态 |
+| **一次分发** | 一个事件的一次发出：名字、参数、方式、发出方所在行，可选的过滤与终态 |
 | **分发方** | 执行一次分发的一方：快速路径上是发出方自己的进程（§5.2），否则是宿主 |
 | **一次调用** | 一次分发中对一个条目的一次调用 |
 | **没有结果** | 返回值是 `undefined` / `null`（JavaScript）、`None`（Python、Rust）、`nil`（Go），或 `false`（任何语言，包括 Rust 的 `Some(false)`）。其余都是结果 |
@@ -64,7 +64,7 @@
 **作用域**是加载器的一个组实例（一个 `group` 的一份副本，如一个租户、一个会话），或者根。每个插件、行和每次发出都恰好在一个作用域里：包含它的最内层实例，或者根。
 
 - **线上的作用域链**：JSON 数组，元素是 `{ "id": <字符串>, "group": <字符串> }`，最外层在前。根是 `[]`。`id` 是不透明的字符串，在宿主现在和过去的全部实例中唯一（Rust：组 fiber 的 `InstanceId` 的十进制）；`group` 是加载器组的名字。例：`[{"id":"17","group":"tenant"},{"id":"42","group":"session"}]`。
-- **规则**：事件按名字送达；作用域是监听器的描述，供过滤使用，不是送达规则。每个监听器都收到这个名字的每次分发，不论它在哪个作用域、哪个运行时、哪个节点（Cordis 的平总线）。
+- **规则**：事件按名字送达；作用域是监听器的描述，供过滤使用，不是送达规则。一个 root 总线上这个名字的每个监听器都收到每次分发，不论它在哪个作用域、哪个运行时（Cordis 的平总线）。相连的节点只增加它的连接 `export` / `import` 承载的名字。
 - **进程怎样知道作用域链**：宿主告诉每一行它的链。`rows.load` 增加第七个参数 `{ "scope": <链>, "id": <行的 id> }`（0.13 宿主总是发七个参数；行不导出服务时 `exports` 是 `{}`）。`id` 是配置给这一行的 id（加载器的行 id；同一组的各实例复制的行 id 相同），与会话内唯一的行键不同：描述（§4.2）与报告的各条信息（§5.6、第十一节）用它称呼这一行，协议消息仍用行键。没有 `id` 时用行键。经 `mount` 的 `plugins` 列表加载的插件，得到 `mount` 参数 `scope`（挂载它的插件的链）。Rust 插件用 `Ctx::scope()`（§12.1）。`mount` 还带 `runtime`，即描述里给出的运行时名字（§4.2）：运行时在快速路径上给自己的条目写描述时用它，与经宿主时的描述一致。
 - **发出方的作用域从不由发出方自报**：运行时的 `events.dispatch` 写明发出的 `row`，宿主用这一行的链；这一行没有加载在这个会话上时拒绝（`BindingError`，`row <key> is not loaded in this runtime`）。挂载方式加载的插件写 `row: null`，用挂载的链。
 - 叶子插件的 `isolate` 标签（服务作用域、U+0001 的租约）与事件作用域无关。
@@ -271,7 +271,7 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 - **节点通告什么**：只通告它自己的条目（宿主的 Rust 插件和它的运行时的），从不通告经任何连接引进的条目（不转发，所以不会成环）。`export` / `import` 名单是唯一的边界；前缀条目按它与 `import` 项共同匹配的部分收窄后通告（两个前缀：一个延伸另一个时取较长的；一个前缀与一个名字：取名字）。
 - **接受的条目放在哪里**：放在接受方节点上连接的作用域，按到达顺序追加，以 `prepend: true` 通告的放在全部已有条目之前；描述的 `node` = 对端 id，`plugin` / `row` / `runtime` 按通告，`scope` = 连接的作用域。通告来的条目若不匹配 `export` 的任何项，则忽略（回复 `undefined`）。
 - **宣告的 id**：`<epoch>.<n>`。`epoch` 是发送方这一次提供 `events` 族的序号（它的 `link.offers` 里这一族的 `since`），`n` 在这次提供内递增。接收方看到对端更新的提供时（经 `link.offers`，或一个 epoch 更大的宣告先到），撤下对端在更早的提供下宣告的全部条目；对端的 `link.offers` 不再列出它列出过的 `events` 提供时，撤下在那次提供及更早的提供下宣告的条目（宣告可能先于它的提供到达：`link.offers` 还没列出的那次提供，它的条目留着；2026-10-23 修订）；更早提供的迟到宣告不接受（回复 `undefined`）。不带 epoch 的 id（不说明它的实现）只按 id 替换（2026-10-19 修订）。
-- **规则**：与本机条目完全相同：五种方式、作用域、过滤、值类型、撤下与断开（§7.2）。被调用的节点执行这个条目（它的 Rust 监听器，或把 `events.call` 转给它的运行时）。断开的连接的条目被撤下。
+- **规则**：与本机条目完全相同：五种方式、按名字送达（作用域只是描述，不是规则）、过滤、值类型、撤下与断开（§7.2）。被调用的节点执行这个条目（它的 Rust 监听器，或把 `events.call` 转给它的运行时）。断开的连接的条目被撤下。
 
 ## 十、值
 
@@ -428,7 +428,7 @@ impl EventBus {
     /// The current entries, then every change; a Rust `on` is reported before it returns (§4.4).
     pub fn watch_table(&self, owner: &Ctx, f: impl Fn(&TableChange) + Send + Sync + 'static) -> Result<(Vec<TableEntry>, Disposer), CordisError>;
     /// A dispatch whose event is erased (a runtime's `events.dispatch`): name, mode, payload,
-    /// optional emitter scope, batch filter (§6 selector), terminal, origin, `framework` (`rutis/*`).
+    /// batch filter (§6 selector), terminal, origin, `framework` (`rutis/*`).
     /// For `emit` it resolves once every call started.
     pub fn dispatch<'a>(&self, ctx: &'a Ctx, d: Dispatch) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
     pub fn dispatch_sync(&self, ctx: &Ctx, d: Dispatch) -> Result<Option<Value>, CordisError>;   // bail, waterfall-sync

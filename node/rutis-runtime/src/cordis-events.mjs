@@ -116,9 +116,9 @@ export function install(ctx, Context, bus, where) {
     const thisArg = hasThis ? args.shift() : null
     args.shift()
     original.emit.call(this, 'internal/dispatch', type, name, args, thisArg)
-    const { row, scope, gone } = where(this.ctx)
+    const { row, gone } = where(this.ctx)
     return [(...values) => {
-      const result = bus.dispatch(mode, name, values, { row, scope, thisArg, gone })
+      const result = bus.dispatch(mode, name, values, { row, thisArg, gone })
       return type === 'emit' ? unawaited(bus, result, name, row) : result
     }]
   }
@@ -133,14 +133,14 @@ export function install(ctx, Context, bus, where) {
       const terminal = mode === 'waterfall' ? values.pop() : undefined
       // Cordis's own diagnostics hook, once for this dispatch here.
       original.emit.call(this, 'internal/dispatch', mode, name, values, thisArg)
-      const { row, scope, gone } = where(this.ctx)
+      const { row, gone } = where(this.ctx)
       let keep
       if (typeof thisArg?.[KEEP] === 'function') keep = thisArg[KEEP]
       else if (typeof thisArg?.[Context.filter] === 'function') {
         const filter = thisArg[Context.filter]
         keep = (descriptor, entry) => filter.call(thisArg, entry ? entry.owner : { rutis: descriptor })
       }
-      return bus.dispatch(mode, name, values, { row, scope, keep, thisArg, terminal, gone })
+      return bus.dispatch(mode, name, values, { row, keep, thisArg, terminal, gone })
     }
   }
 }

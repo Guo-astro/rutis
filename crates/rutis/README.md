@@ -42,7 +42,7 @@ The complete program, with a provider being replaced at runtime, is in [examples
 1. **Plugin, the unit of assembly**: one `apply` provides services, registers listeners and records cleanup.
 2. **Fiber, the lifecycle container**: a six-state machine with dependency gating, subtree shutdown and exactly-once cleanup.
 3. **Services, a type-keyed registry**: with isolate scopes and instance subtree visibility.
-4. **Events, one listener table and five dispatch modes**: emit, parallel, serial, waterfall and synchronous bail, found by name and scoped to loader instances.
+4. **Events, one listener table and five dispatch modes**: emit, parallel, serial, waterfall and synchronous bail, found by name on one flat bus; loader scopes are filter descriptors.
 5. **Dependency-driven reload**: when a provider unloads, its consumers are evicted and load again on their own.
 
 ## Learn more
@@ -54,7 +54,7 @@ The complete program, with a provider being replaced at runtime, is in [examples
 ## Recent changes
 
 - **0.15** — `#[rutis::service]` on a service's `impl` block exposes it by name to the rows of every language, without a `build.rs` list (re-exported from the new crate `rutis-macros`); `CallError`. No code changes. [Migration guide](https://github.com/arcships/rutis/blob/main/docs/migration-0.15.en.md)
-- **0.13** — unified events: one listener table for every mode, events found by name and serde across processes, `emit` / `parallel` / `serial` / `waterfall` / `bail_sync` / `waterfall_sync` with one meaning everywhere, scopes and filters, remote listener entries. [Migration guide](https://github.com/arcships/rutis/blob/main/docs/migration-0.13.en.md)
+- **0.13** — unified events: one listener table for every mode, events found by name and serde across processes, `emit` / `parallel` / `serial` / `waterfall` / `bail_sync` / `waterfall_sync` with one meaning everywhere, scope descriptors and filters, remote listener entries. [Migration guide](https://github.com/arcships/rutis/blob/main/docs/migration-0.13.en.md)
 - **0.6.1** — interfaces for the plugin control plane ([rutis-loader](https://crates.io/crates/rutis-loader)), typed plugins; no breaking changes. [Upgrade notes](https://github.com/arcships/rutis/blob/main/docs/migration-0.6.0-to-0.6.1.en.md)
 - **0.6** — growing error, diagnostic and observation types are `#[non_exhaustive]`; per-key emit backlogs in diagnostics. [Migration guide](https://github.com/arcships/rutis/blob/main/docs/migration-0.5-to-0.6.en.md)
 - **0.5** — `EventKey<E>` for default, named and instance channels; `EventPattern<E>` prefix subscriptions; `bail_sync` / `waterfall_sync`. [Migration guide](https://github.com/arcships/rutis/blob/main/docs/migration-0.3-to-0.5.en.md)

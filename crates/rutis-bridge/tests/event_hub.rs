@@ -382,11 +382,11 @@ async fn dispatches_cross_between_host_and_runtime() {
     .await;
 }
 
-/// guarantee: events/hub-dispatch
+/// guarantee: events/hub-flat
 ///
-/// A runtime's dispatch carries its row's scope as a descriptor, never one
-/// it names; events are delivered by name to every listener. A row not
-/// loaded on the session can neither register nor dispatch.
+/// A runtime's dispatch names a row loaded on the session; events are
+/// delivered by name to every listener, whatever the listener's scope. A row
+/// not loaded on the session can neither register nor dispatch.
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_dispatch_and_hear_by_name() {
     within("scope", async {

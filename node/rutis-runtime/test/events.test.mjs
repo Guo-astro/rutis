@@ -141,13 +141,7 @@ test('every listener hears every event; a scope is a descriptor', async () => {
   for (const [label, scope] of [['r', []], ['u', [T1]], ['s', [T1, S1]], ['v', [T2]]]) {
     listen(bus, 'scope', () => { log.push(label) }, { scope })
   }
-  await bus.dispatch('parallel', 'scope', [], { scope: [T1, S1] })
-  assert.deepEqual(log.splice(0), ['r', 'u', 's', 'v'])
-  await bus.dispatch('parallel', 'scope', [], { scope: [T1] })
-  assert.deepEqual(log.splice(0), ['r', 'u', 's', 'v'])
-  await bus.dispatch('parallel', 'scope', [], { scope: [T2] })
-  assert.deepEqual(log.splice(0), ['r', 'u', 's', 'v'])
-  await bus.dispatch('parallel', 'scope', [], { scope: [] })
+  await bus.dispatch('parallel', 'scope', [])
   assert.deepEqual(log.splice(0), ['r', 'u', 's', 'v'])
 })
 
@@ -347,7 +341,7 @@ test('through the host, the filter judges the very listener the host asks about'
   const t1 = bus.on({ name: 'f', callback: () => {}, row: 'c#1', plugin: 'p', scope: [T1], owner: 'ctx-t1' })
   bus.elsewhere({ add: ['f'] })
   const seen = []
-  bus.dispatch('parallel', 'f', [], { row: 'e', scope: [T1], keep: (descriptor, entry) => { seen.push([descriptor, entry?.owner]); return descriptor.scope[0]?.id === T1.id } })
+  bus.dispatch('parallel', 'f', [], { row: 'e', keep: (descriptor, entry) => { seen.push([descriptor, entry?.owner]); return descriptor.scope[0]?.id === T1.id } })
   const [, [fields]] = host.sent.at(-1)
   const at = scope => ({ name: 'f', prefix: false, plugin: 'p', row: 'c', runtime: 'node', node: null, scope, global: false })
   // Only the t1 copy hears an emission in t1; the host asks about it alone.
@@ -364,7 +358,7 @@ test('a filter gets a copy of the scope; an unloaded row cannot emit', () => {
   const { bus } = local()
   const chain = [T1]
   bus.on({ name: 's', callback: () => 'x', row: 'r', scope: chain })
-  bus.dispatch('bail', 's', [], { scope: [T1], keep: descriptor => { descriptor.scope[0].id = 'changed'; descriptor.scope.push(S1); return true } })
+  bus.dispatch('bail', 's', [], { keep: descriptor => { descriptor.scope[0].id = 'changed'; descriptor.scope.push(S1); return true } })
   assert.deepEqual(chain, [T1])
   assert.equal(T1.id, '17')
   bus.nameRow('r', 'r')

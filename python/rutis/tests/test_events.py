@@ -16,7 +16,7 @@ import background
 from support import HANG_GUARD, within
 
 from rutis import AggregateError, AsyncListener, BindingError, ReservedEvent, WaterfallNext, define_plugin
-from rutis.events import Bus, no_result, within as hears
+from rutis.events import Bus, no_result
 from rutis.runner import Runtime
 
 
@@ -57,13 +57,6 @@ class NoResult(unittest.TestCase):
             self.assertTrue(no_result(value))
         for value in (0, "", [], {}, 0.0, True):
             self.assertFalse(no_result(value), value)
-
-    def test_the_scope_rule_compares_ids_as_a_prefix(self):
-        self.assertTrue(hears([], chain("t1", "s1")))
-        self.assertTrue(hears(chain("t1"), chain("t1", "s1")))
-        self.assertTrue(hears(chain("t1", "s1"), chain("t1", "s1")))
-        self.assertFalse(hears(chain("t1", "s1"), chain("t1")))
-        self.assertFalse(hears(chain("t2"), chain("t1", "s1")))
 
 
 class Emit(Rows):

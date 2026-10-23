@@ -626,17 +626,16 @@ impl SessionEvents {
         }
     }
 
-    /// The scope and the id of row `key` on this session, or the mount's
-    /// scope for none.
-    fn row_of(&self, key: Option<&str>) -> Result<(Vec<Scope>, Option<String>), Error> {
+    /// The id of row `key` on this session; `None` for the mount.
+    fn row_id(&self, key: Option<&str>) -> Result<Option<String>, Error> {
         match key {
-            None => Ok((self.mount_scope.clone(), None)),
+            None => Ok(None),
             Some(key) => self
                 .rows
                 .lock()
                 .unwrap()
                 .get(key)
-                .map(|(scope, id)| (scope.clone(), Some(id.clone())))
+                .map(|(_, id)| Some(id.clone()))
                 .ok_or_else(|| binding(format!("row {key} is not loaded in this runtime"))),
         }
     }
@@ -757,7 +756,7 @@ impl SessionEvents {
         if name.starts_with("internal/") {
             return Err(binding(format!("event {name} is internal to its runtime")));
         }
-        let (scope, row) = self.row_of(row.as_deref())?;
+        let row = self.row_id(row.as_deref())?;
         let args = match fields.remove("args") {
             None | Some(Value::Undefined) => Vec::new(),
             Some(args) => args.list()?,
@@ -769,7 +768,6 @@ impl SessionEvents {
             return Ok(Value::Undefined);
         };
         let mut dispatch = Dispatch::new(name.clone(), mode, from_wire(args));
-        dispatch.scope = Some(scope);
         dispatch.origin = Some(self.origin);
         dispatch.filter =
             filter.map(|filter| selector(filter, name.clone(), mode.is_sync(), self.origin));

@@ -19,7 +19,7 @@ In this document "must" is a hard requirement of every implementation. Frames, f
 | **table** | The host's ordered list of every entry. |
 | **descriptor** | What the bus says of an entry (§4.2); the filter sees it. |
 | **scope chain** | The list of scopes from the root to a scope (§3). |
-| **dispatch** | One emission of an event: its name, arguments, mode, emitter scope and optional filter and terminal. |
+| **dispatch** | One emission of an event: its name, arguments, mode, emitter row, and optional filter and terminal. |
 | **dispatcher** | Who runs a dispatch: the emitter's own process on the fast path (§5.2), otherwise the host. |
 | **invocation** | One call of one entry within a dispatch. |
 | **no result** | A return value that is `undefined` / `null` (JavaScript), `None` (Python, Rust), `nil` (Go), or `false` (any language, Rust `Some(false)` included). Everything else is a result. |
@@ -64,7 +64,7 @@ The plugin API version becomes **3** (Node `PLUGIN_API`, Python `PLUGIN_API`, Go
 A **scope** is a loader group instance (a copy of a `group`, such as one tenant or one session) or the root. Every plugin, row and emission is in exactly one scope: the innermost instance that contains it, or the root.
 
 - **Scope chain** on the wire: a JSON array of `{ "id": <string>, "group": <string> }`, outermost first. The root is `[]`. `id` is opaque, unique among the host's live and past instances (Rust: the group fiber's `InstanceId` in decimal); `group` is the loader group's name. Example: `[{"id":"17","group":"tenant"},{"id":"42","group":"session"}]`.
-- **Rule**: events are delivered by name. A scope is a listener descriptor for filters, not a delivery rule: every listener of the name receives every dispatch, wherever its scope, runtime or node (Cordis's flat bus).
+- **Rule**: events are delivered by name. A scope is a listener descriptor for filters, not a delivery rule: every listener of the name on a root's bus receives every dispatch, wherever its scope or runtime (Cordis's flat bus). A linked node adds only the names its link's `export` / `import` carry.
 - **Where a process learns chains**: the host gives each row its chain. `rows.load` takes a seventh argument `{ "scope": <chain>, "id": <the row's id> }` (0.13 hosts always send seven arguments; `exports` is `{}` when the row exports nothing). `id` is the id the configuration gives the row (the loader's row id; the copies a group's instances make share it), not the row key, which is unique on the session: descriptors (§4.2) and every reported message (§5.6, §11) call the row by it, while protocol messages keep using the key. Without `id`, the key. Plugins loaded by `mount`'s `plugins` list get the mount argument `scope` (the mounting plugin's chain). Rust plugins read `Ctx::scope()` (§12.1). `mount` also carries `runtime`, the runtime's name as descriptors give it (§4.2): a runtime uses it for its own entries' descriptors on the fast path, so they are the same as through the host.
 - **The emitter's scope is never self-reported**: a runtime's `events.dispatch` names the emitting `row`; the host uses that row's chain and refuses a row that is not loaded on that session (`BindingError`, `row <key> is not loaded in this runtime`). Mount-mode plugins name `row: null` and get the mount's chain.
 - Leaf `isolate` labels (service scopes, U+0001 leases) are unrelated to event scopes.
@@ -271,7 +271,7 @@ Emitted by the host only, in `emit` mode, each with one argument (a record). Plu
 - **What a node announces**: only its own entries (host Rust plugins and its runtimes), never entries it imported over any link (no relaying, so no loops). The `export` / `import` lists are the only boundary. A prefix entry is announced narrowed to what both it and the `import` item match (two prefixes: the longer when one extends the other; a prefix and a name: the name).
 - **Where an accepted entry sits**: at the link's scope on the accepting node, appended in arrival order, or in front of every existing entry when announced with `prepend: true`; descriptor `node` = the peer id, `plugin` / `row` / `runtime` as announced, `scope` = the link's scope. An entry announced that matches nothing in `export` is ignored (answered `undefined`).
 - **Announced ids**: `<epoch>.<n>`. `epoch` is the sender's offer of the `events` family (that family's `since` in its `link.offers`), `n` counts up within the offer. When the receiver sees a newer offer of the peer's (through `link.offers`, or an announcement with a higher epoch arriving first), it withdraws every entry the peer announced under an older offer; when the peer's `link.offers` no longer lists an offer of `events` it listed, it withdraws the entries announced under that offer or an older one (an announcement can arrive before its offer: the entries of an offer `link.offers` has not listed yet stay; amended 2026-10-23); a late announcement of an older offer is not taken (answered `undefined`). An id without an epoch (from an implementation that does not say) is replaced by id only (amended 2026-10-19).
-- **Rules**: identical to local entries: five modes, scope, filter, value types, withdrawal and disconnection (§7.2). The invoked node runs the entry (its Rust listener, or relays `events.call` to its runtime). A disconnected link's entries are withdrawn.
+- **Rules**: identical to local entries: five modes, name delivery (the scope is a descriptor, not a rule), filter, value types, withdrawal and disconnection (§7.2). The invoked node runs the entry (its Rust listener, or relays `events.call` to its runtime). A disconnected link's entries are withdrawn.
 
 ## 10. Values
 
@@ -428,7 +428,7 @@ impl EventBus {
     /// The current entries, then every change; a Rust `on` is reported before it returns (§4.4).
     pub fn watch_table(&self, owner: &Ctx, f: impl Fn(&TableChange) + Send + Sync + 'static) -> Result<(Vec<TableEntry>, Disposer), CordisError>;
     /// A dispatch whose event is erased (a runtime's `events.dispatch`): name, mode, payload,
-    /// optional emitter scope, batch filter (§6 selector), terminal, origin, `framework` (`rutis/*`).
+    /// batch filter (§6 selector), terminal, origin, `framework` (`rutis/*`).
     /// For `emit` it resolves once every call started.
     pub fn dispatch<'a>(&self, ctx: &'a Ctx, d: Dispatch) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
     pub fn dispatch_sync(&self, ctx: &Ctx, d: Dispatch) -> Result<Option<Value>, CordisError>;   // bail, waterfall-sync

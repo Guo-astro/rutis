@@ -240,7 +240,7 @@ export class Runtime {
     const dispatch = (mode: string, name: string, values: unknown[], terminal?: unknown) => {
       reserved(name)
       refuseReserved(name)
-      return this.#bus.dispatch(mode, name, values, { row: row.key, scope: row.chain, keep, terminal, gone: this.#rows.get(row.key) !== row })
+      return this.#bus.dispatch(mode, name, values, { row: row.key, keep, terminal, gone: this.#rows.get(row.key) !== row })
     }
     const waterfall = (terminal?: unknown) => (name: string, ...values: unknown[]) => dispatch('waterfall', name, values, terminal)
     return {

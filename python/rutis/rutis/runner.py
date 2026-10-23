@@ -609,7 +609,7 @@ class Runtime:
         if not self._here():
             return self._send_from_thread(row, mode, name, args, terminal, keep)
         if not self._via_host(name, mode):
-            return self.bus.dispatch(mode, name, row.scope, args, keep, terminal, row.key)
+            return self.bus.dispatch(mode, name, args, keep, terminal, row.key)
         request = {"row": row.key, "name": name, "mode": mode, "args": args}
         if keep is not None:
             request["filter"] = _selector(keep)

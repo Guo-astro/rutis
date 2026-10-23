@@ -18,10 +18,6 @@ test('rows share one flat bus; every listener hears every event', async () => {
   for (const [row, scope] of [['root', undefined], ['t1', 't1'], ['s1', 't1/s1'], ['t2', 't2']]) {
     await h.load(listener('hello', () => { heard.push(row) }), { row, scope })
   }
-  await h.at('t1/s1').parallel('hello')
-  assert.deepEqual(heard.splice(0), ['root', 't1', 's1', 't2'])
-  await h.at('t2').parallel('hello')
-  assert.deepEqual(heard.splice(0), ['root', 't1', 's1', 't2'])
   await h.parallel('hello')
   assert.deepEqual(heard.splice(0), ['root', 't1', 's1', 't2'])
   await h.unload()

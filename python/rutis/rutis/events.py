@@ -103,14 +103,6 @@ def print_report(kind: str, name: str, row: str | None, error: BaseException) ->
     print(failed_line(kind, name, row, error), file=sys.stderr, flush=True)
 
 
-def within(listener: list, emitter: list) -> bool:
-    """Whether the chain `listener` is a prefix of `emitter` (by id): a
-    descriptor relationship for filters, not a delivery rule."""
-    return len(listener) <= len(emitter) and all(
-        mine["id"] == theirs["id"] for mine, theirs in zip(listener, emitter)
-    )
-
-
 def check_scope(chain: Any) -> list:
     """A scope chain from the wire: `[{id, group}, ...]`, the outermost
     first; `[]` is the root."""
@@ -460,7 +452,7 @@ class Bus:
                 return value
         return None
 
-    def dispatch(self, mode: str, name: str, scope: list, args: list, keep, terminal, emitter: str) -> Any:
+    def dispatch(self, mode: str, name: str, args: list, keep, terminal, emitter: str) -> Any:
         """Dispatch here: None for `emit` (a failing filter reported), the
         value for `bail`, an awaitable for the others (a failing filter
         raises from it)."""

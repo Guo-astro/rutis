@@ -70,12 +70,6 @@ fun checkListen(name: String) {
     if (name.startsWith("internal/")) throw IllegalArgumentException("event $name is internal to the runtime")
 }
 
-/** Whether the chain `listener` is a prefix of `emitter`: a descriptor relationship for filters, not a delivery rule. */
-fun within(listener: List<Scope>, emitter: List<Scope>): Boolean {
-    if (listener.size > emitter.size) return false
-    return listener.indices.all { listener[it].id == emitter[it].id }
-}
-
 /** Whether `v` is a result: not null, undefined or false (§1), native or a session value. */
 fun hasResult(v: Any?): Boolean = when (v) {
     null, Undefined, JsonNull -> false
