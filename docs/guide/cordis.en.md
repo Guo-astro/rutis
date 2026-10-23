@@ -75,7 +75,7 @@ Create an npm project beside the application and install the plugins to mount an
   "dependencies": {
     "@deepseek-ai/cordis": "4.0.4",
     "@deepseek-ai/dsh-credentials-local": "0.2.0-rc.1",
-    "@arcships/rutis-runtime": "0.13.0"
+    "@arcships/rutis-runtime": "0.15.0"
   }
 }
 ```
@@ -91,11 +91,11 @@ The build does not install npm dependencies automatically. It fails with the req
 ```toml
 [dependencies]
 rutis = "…"
-rutis-bridge = { version = "0.13", features = ["cordis"] }
+rutis-bridge = { version = "0.15", features = ["cordis"] }
 tokio = { version = "1", features = ["full"] }
 
 [build-dependencies]
-rutis-bridge = { version = "0.13", features = ["cordis"] }
+rutis-bridge = { version = "0.15", features = ["cordis"] }
 
 [package.metadata.rutis-cordis]
 npm = "cordis"                   # npm project from step 1, relative to Cargo.toml

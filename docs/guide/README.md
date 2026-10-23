@@ -26,9 +26,9 @@
 | 宿主（运行插件） | `rutis`、`rutis-loader`、`rutis-bridge`、`rutis-dylib` | `@arcships/rutis-runtime`（Node）、`@arcships/rutis-bun`（Bun） | `rutis` | （插件二进制自带运行时） | （插件二进制自带运行时） |
 | 不写 Rust 的宿主 | `rutis-host` | `@arcships/rutis-host` | `rutis-host` | | |
 
-这些包（包括内核 `rutis` 和 dylib 工具链）一起发布、版本号相同（发布列车，当前为 0.13）。各个 rutis 包请使用同一个版本。
+这些包（包括内核 `rutis` 和 dylib 工具链）一起发布、版本号相同（发布列车，当前为 0.15）。各个 rutis 包请使用同一个版本。
 
-从 0.13 升级见 [迁移到 0.15](../migration-0.15.md)（不用改代码）。从 0.12 升级见 [迁移到 0.13](../migration-0.13.md)（统一的事件，不与 0.12 混用）。从 0.8 升级见 [0.8 → 0.9](../migration-0.8-to-0.9.md)，从 0.7 升级见 [0.7 → 0.8](../migration-0.7-to-0.8.md)。用过 `rutis-interop` 的项目见[迁移指南](../migration-interop-to-0.7.md)。
+从 0.13 升级见 [迁移到 0.15](../migration-0.15.md)（几乎不用改代码）。从 0.12 升级见 [迁移到 0.13](../migration-0.13.md)（统一的事件，不与 0.12 混用）。从 0.8 升级见 [0.8 → 0.9](../migration-0.8-to-0.9.md)，从 0.7 升级见 [0.7 → 0.8](../migration-0.7-to-0.8.md)。用过 `rutis-interop` 的项目见[迁移指南](../migration-interop-to-0.7.md)。
 
 ## 环境
 

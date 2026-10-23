@@ -11,7 +11,7 @@ Plugins say what they need and what they provide; rutis decides when they start,
 
 ```toml
 [dependencies]
-rutis = "0.13"
+rutis = "0.15"
 ```
 
 ```rust
@@ -53,6 +53,7 @@ The complete program, with a provider being replaced at runtime, is in [examples
 
 ## Recent changes
 
+- **0.15** — `#[rutis::service]` on a service's `impl` block exposes it by name to the rows of every language, without a `build.rs` list (re-exported from the new crate `rutis-macros`); `CallError`. No code changes. [Migration guide](https://github.com/arcships/rutis/blob/main/docs/migration-0.15.en.md)
 - **0.13** — unified events: one listener table for every mode, events found by name and serde across processes, `emit` / `parallel` / `serial` / `waterfall` / `bail_sync` / `waterfall_sync` with one meaning everywhere, scopes and filters, remote listener entries. [Migration guide](https://github.com/arcships/rutis/blob/main/docs/migration-0.13.en.md)
 - **0.6.1** — interfaces for the plugin control plane ([rutis-loader](https://crates.io/crates/rutis-loader)), typed plugins; no breaking changes. [Upgrade notes](https://github.com/arcships/rutis/blob/main/docs/migration-0.6.0-to-0.6.1.en.md)
 - **0.6** — growing error, diagnostic and observation types are `#[non_exhaustive]`; per-key emit backlogs in diagnostics. [Migration guide](https://github.com/arcships/rutis/blob/main/docs/migration-0.5-to-0.6.en.md)
