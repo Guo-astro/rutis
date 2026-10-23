@@ -148,9 +148,6 @@ fn default_manifest_format() -> u64 {
 /// What a binary's manifest says.
 #[derive(Clone, Debug, Deserialize)]
 pub struct BinaryManifest {
-    /// The format of this manifest; absent means [`MANIFEST_FORMAT`].
-    #[serde(rename = "manifest", default = "default_manifest_format")]
-    pub manifest: u64,
     /// The SDK version it was built with.
     #[serde(default)]
     pub sdk: String,
@@ -163,6 +160,16 @@ pub struct BinaryManifest {
     /// The platform it was built for (`linux/amd64`), when it says.
     #[serde(default)]
     pub platform: Option<String>,
+}
+
+/// The format line of a manifest, read with the manifest itself; absent
+/// means [`MANIFEST_FORMAT`]. It is not part of the public manifest.
+#[derive(Deserialize)]
+struct ManifestWire {
+    #[serde(rename = "manifest", default = "default_manifest_format")]
+    manifest: u64,
+    #[serde(flatten)]
+    rest: BinaryManifest,
 }
 
 /// What can tell that a file changed: its size, modification time and (on
@@ -423,9 +430,9 @@ fn read_manifest_with_timeout(path: &Path, timeout: Duration) -> Result<BinaryMa
             .collect();
         return Err(format!("--rutis-manifest exited with {status}: {tail}"));
     }
-    let manifest: BinaryManifest =
+    let wire: ManifestWire =
         serde_json::from_slice(&out).map_err(|error| format!("it printed no manifest: {error}"))?;
-    match manifest.manifest {
+    match wire.manifest {
         0 => Err(
             "it prints a manifest of format 0, this host reads format 1: upgrade the SDK".into(),
         ),
@@ -437,7 +444,7 @@ fn read_manifest_with_timeout(path: &Path, timeout: Duration) -> Result<BinaryMa
             if let Some(guard) = guard.as_mut() {
                 guard.disarm();
             }
-            Ok(manifest)
+            Ok(wire.rest)
         }
     }
 }
@@ -2519,13 +2526,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = manifest_script(dir.path(), "printf '{\"manifest\": 1, \"pluginApi\": 2}'");
         let manifest = read_manifest(&path).unwrap();
-        assert_eq!((manifest.manifest, manifest.plugin_api), (1, 2));
+        assert_eq!(manifest.plugin_api, 2);
         let path = manifest_script(dir.path(), "printf '{\"pluginApi\": 3}'");
         let manifest = read_manifest(&path).unwrap();
-        assert_eq!(
-            (manifest.manifest, manifest.plugin_api),
-            (MANIFEST_FORMAT, 3)
-        );
+        assert_eq!(manifest.plugin_api, 3);
     }
 
     /// A file that changes while its manifest is read is read once more; a

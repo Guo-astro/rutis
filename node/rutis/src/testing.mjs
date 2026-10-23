@@ -421,6 +421,8 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
       closed = true
       for (const row of [...rows.values()].reverse()) await unloadRow(row)
     },
+    /** The five ways to emit, kept for compatibility; `scope` is ignored. */
+    at: _scope => emitters(bus, null, strict),
     // The five ways to emit and `filter`, as the test: values cross as from
     // another process (strict).
     ...emitters(bus, null, strict),
