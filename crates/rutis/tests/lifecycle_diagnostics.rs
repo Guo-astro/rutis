@@ -332,3 +332,101 @@ async fn terminal_fiber_drops_dynamic_dependency_key() {
     assert_eq!(Arc::strong_count(&qualifier), 1);
     root.shutdown().await.unwrap();
 }
+
+struct ShutdownProbe {
+    context: Arc<Mutex<Option<Ctx>>>,
+    cleanup: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
+}
+
+impl Plugin for ShutdownProbe {
+    fn name(&self) -> &str {
+        "shutdown-probe"
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        *self.context.lock().unwrap() = Some(ctx.clone());
+        let cleanup = self.cleanup.lock().unwrap().take();
+        Box::pin(async move {
+            Ok(match cleanup {
+                Some((entered, release)) => Effect::AsyncDisposer(Box::new(move || {
+                    Box::pin(async move {
+                        let _ = entered.send(());
+                        let _ = release.await;
+                        Ok(())
+                    })
+                })),
+                None => Effect::Done,
+            })
+        })
+    }
+}
+
+fn assert_shutdown_state(ctx: &Ctx, expected: bool) {
+    assert_eq!(ctx.is_shutting_down(), expected);
+    assert_eq!(ctx.diagnostics().shutting_down, expected);
+}
+
+/// guarantee: core/features.shutdown-state
+#[tokio::test]
+async fn shutdown_state_is_shared_before_cleanup_and_after_completion() {
+    let root = Ctx::root().unwrap();
+    let isolated = root.isolate(TypeKey::of::<u64>(), "isolated");
+    let context = Arc::new(Mutex::new(None));
+    let (entered, cleanup_started) = oneshot::channel();
+    let (resume, release) = oneshot::channel();
+    let view = root.plugin(ShutdownProbe {
+        context: context.clone(),
+        cleanup: Mutex::new(Some((entered, release))),
+    });
+    settled(&view).await;
+    let child = context.lock().unwrap().clone().unwrap();
+    for ctx in [&root, &isolated, &child] {
+        assert_shutdown_state(ctx, false);
+    }
+
+    let shutdown = root.shutdown();
+    // shutdown closes admission when called, before its future is polled.
+    for ctx in [&root, &isolated, &child] {
+        assert_shutdown_state(ctx, true);
+    }
+    tokio::time::timeout(Duration::from_secs(10), cleanup_started)
+        .await
+        .expect("cleanup did not start")
+        .unwrap();
+    assert_shutdown_state(&child, true);
+    resume.send(()).unwrap();
+    shutdown.await.unwrap();
+    drop(view);
+    for ctx in [&root, &isolated, &child] {
+        assert_shutdown_state(ctx, true);
+    }
+}
+
+/// guarantee: core/features.shutdown-state
+#[tokio::test]
+async fn closing_a_child_does_not_report_root_shutdown() {
+    let root = Ctx::root().unwrap();
+    let mut children = Vec::new();
+    for final_shutdown in [false, true] {
+        let context = Arc::new(Mutex::new(None));
+        let view = root.plugin(ShutdownProbe {
+            context: context.clone(),
+            cleanup: Mutex::new(None),
+        });
+        settled(&view).await;
+        let child = context.lock().unwrap().clone().unwrap();
+        if final_shutdown {
+            view.shutdown().await.unwrap();
+        } else {
+            view.dispose().await.unwrap();
+        }
+        assert_shutdown_state(&child, false);
+        assert_shutdown_state(&root, false);
+        children.push(child);
+    }
+    root.shutdown().await.unwrap();
+    for child in children {
+        assert_shutdown_state(&child, true);
+    }
+    assert_shutdown_state(&root, true);
+}
