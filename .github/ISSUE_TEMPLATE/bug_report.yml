@@ -26,7 +26,7 @@ body:
     id: packages
     attributes:
       label: Packages and versions · 包与版本
-      placeholder: rutis 0.15.1, rutis-bridge 0.15.1, @arcships/rutis-runtime 0.15.1
+      placeholder: rutis 0.16.0, rutis-bridge 0.16.0, @arcships/rutis-runtime 0.16.0
     validations:
       required: true
   - type: input

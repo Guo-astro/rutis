@@ -227,7 +227,7 @@ The [design philosophy](docs/design-philosophy.en.md) explains these choices, an
 | Running plugins in your app | [`rutis-loader`](https://crates.io/crates/rutis-loader), [`rutis-bridge`](https://crates.io/crates/rutis-bridge), [`rutis-dylib`](https://crates.io/crates/rutis-dylib) (dylib plugins) | [`@arcships/rutis-runtime`](https://www.npmjs.com/package/@arcships/rutis-runtime) (Node), [`@arcships/rutis-bun`](https://www.npmjs.com/package/@arcships/rutis-bun) (Bun) | [`rutis`](https://pypi.org/project/rutis/) |
 | A host without Rust | [`rutis-host`](https://crates.io/crates/rutis-host) | [`@arcships/rutis-host`](https://www.npmjs.com/package/@arcships/rutis-host) | [`rutis-host`](https://pypi.org/project/rutis-host/) |
 
-Go plugins use the module [`github.com/arcships/rutis/go/rutis`](go/rutis): the SDK, and the runtime each plugin binary carries. Swift plugins (macOS) use the Swift package of this repository, [`Rutis`](swift/README.md) (`.package(url: "https://github.com/arcships/rutis", from: "0.15.1")`), the same way.
+Go plugins use the module [`github.com/arcships/rutis/go/rutis`](go/rutis): the SDK, and the runtime each plugin binary carries. Swift plugins (macOS) use the Swift package of this repository, [`Rutis`](swift/README.md) (`.package(url: "https://github.com/arcships/rutis", from: "0.16.0")`), the same way.
 
 All of these form a release train: released together at one version, currently 0.15. Use the same version for every rutis package.
 

@@ -392,7 +392,7 @@ Sources: the sections of the user documentation [rutis-host](guide/rutis-host.en
 | Scope | Verified | Partly verified | Not verified | Explicitly not guaranteed | Total |
 | --- | --- | --- | --- | --- | --- |
 | `core/D*` (without D20, D26, D27) | 26 | 3 | 0 | 1 | 30 |
-| `core/features.*`, `core/typed.*`, `events/*` (§7) | 19 | 0 | 0 | 0 | 19 |
+| `core/features.*`, `core/typed.*`, `events/*` (§7) | 20 | 0 | 0 | 0 | 20 |
 | `boundary/5.*` (without the withdrawn 5.2–5.5) | 3 | 1 | 0 | 0 | 4 |
 | `events/*` (§8a) | 16 | 0 | 0 | 0 | 16 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
@@ -402,10 +402,10 @@ Sources: the sections of the user documentation [rutis-host](guide/rutis-host.en
 | `host/*` (§13) | 3 | 0 | 0 | 0 | 3 |
 | `loader/*` (§14) | 34 | 4 | 0 | 0 | 38 |
 | `host/*` (§15) | 14 | 3 | 1 | 1 | 19 |
-| Total | 145 | 12 | 1 | 3 | 161 |
+| Total | 146 | 12 | 1 | 3 | 162 |
 
 Withdrawn rows (status "withdrawn (0.13)": `boundary/5.2`–`boundary/5.5`; "withdrawn (0.15.1)": `events/scope`, `events/hub-scope`) are not counted.
 
-41 core promises: 37 verified, 4 partly verified (D22, D28, 5.8, `loader/instance-edits-all-or-none`), 0 not verified. 121 contract behaviours: 111 verified, 9 partly verified (D5, `sdk/testing-matches-runtime`, `loader/persist-queue`, `loader/saved-layers-restore`, `loader/go-runtimes`, `host/stop-deadline`, `host/exit-codes`, `host/row-state-lines`, `swift/app-access-belongs-to-the-app`), 1 not verified (`host/go-add`).
+41 core promises: 37 verified, 4 partly verified (D22, D28, 5.8, `loader/instance-edits-all-or-none`), 0 not verified. 122 contract behaviours: 112 verified, 9 partly verified (D5, `sdk/testing-matches-runtime`, `loader/persist-queue`, `loader/saved-layers-restore`, `loader/go-runtimes`, `host/stop-deadline`, `host/exit-codes`, `host/row-state-lines`, `swift/app-access-belongs-to-the-app`), 1 not verified (`host/go-add`).
 
 **0.10 baseline**: 0 unverified core promises, 1 unverified contract behaviour (`host/go-add`). From 0.11 on, a newly registered row that is "not verified" pushes the contract number above the baseline (Q9.4.4), so new rows should be registered together with their tests. The maintainer confirms which rows are core promises and may change them.

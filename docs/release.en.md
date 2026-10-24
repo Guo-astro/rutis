@@ -71,6 +71,12 @@ Expected behavior: the dialer prints `clock: <n>` every second. After a network 
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
 
+## 0.16.0
+
+The flat event bus of 0.15.1 stays; the source-compatibility shims that release carried are removed (`Dispatch::scope`, the SDK scope helpers and the testing tools' emitter scope). The release also carries the fixes ready since 0.15.1: cfg-gated service methods, generic alias arguments in exports, dev reload of mixed-language rows, and `Ctx::is_shutting_down()`. All packages are at 0.16.0; see [the release notes](releases/0.16.0.en.md) and [migrating to 0.16](migration-0.16.en.md).
+
+`format` of `rutis.json` stays 1 and no configuration changes: the persisted sample is copied from 0.15.1 and its expectations are unchanged. The event wire format is unchanged; the release gate's cross-version tests (`RUTIS_E2E_ONLY_OLDER=1`) meet 0.15.1. An end still on 0.15.1 keeps its scope filtering, so upgrade all ends for flat delivery.
+
 ## 0.15.1
 
 Events are one flat bus again (#604, #605): delivery selects listeners by name only; a scope is a descriptor for filters. This is a behaviour change from 0.13–0.15.0. `Dispatch::scope`, the SDK scope helpers and the testing tools' emitter scope stay source-compatible but are ignored. All packages are at 0.15.1; see [the release notes](releases/0.15.1.en.md) and [migrating to 0.15.1](migration-0.15.1.en.md).

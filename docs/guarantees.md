@@ -392,7 +392,7 @@ PR 模板中有对应的检查项。
 | 范围 | 已验证 | 部分验证 | 未验证 | 明确不保证 | 合计 |
 | --- | --- | --- | --- | --- | --- |
 | `core/D*`（不含 D20、D26、D27） | 26 | 3 | 0 | 1 | 30 |
-| `core/features.*`、`core/typed.*`、`events/*`（§7） | 19 | 0 | 0 | 0 | 19 |
+| `core/features.*`、`core/typed.*`、`events/*`（§7） | 20 | 0 | 0 | 0 | 20 |
 | `boundary/5.*`（不含已撤回的 5.2–5.5） | 3 | 1 | 0 | 0 | 4 |
 | `events/*`（§8a） | 16 | 0 | 0 | 0 | 16 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
@@ -402,10 +402,10 @@ PR 模板中有对应的检查项。
 | `host/*`（§13） | 3 | 0 | 0 | 0 | 3 |
 | `loader/*`（§14） | 34 | 4 | 0 | 0 | 38 |
 | `host/*`（§15） | 14 | 3 | 1 | 1 | 19 |
-| 合计 | 145 | 12 | 1 | 3 | 161 |
+| 合计 | 146 | 12 | 1 | 3 | 162 |
 
 已撤回的条目（状态"已撤回（0.13）"：`boundary/5.2`–`boundary/5.5`；"已撤回（0.15.1）"：`events/scope`、`events/hub-scope`）不计入。
 
-核心承诺 41 条：已验证 37，部分验证 4（D22、D28、5.8、`loader/instance-edits-all-or-none`），未验证 0。契约行为 121 条：已验证 111，部分验证 9（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`、`swift/app-access-belongs-to-the-app`），未验证 1（`host/go-add`）。
+核心承诺 41 条：已验证 37，部分验证 4（D22、D28、5.8、`loader/instance-edits-all-or-none`），未验证 0。契约行为 122 条：已验证 112，部分验证 9（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`、`swift/app-access-belongs-to-the-app`），未验证 1（`host/go-add`）。
 
 **0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 1 条（`host/go-add`）。从 0.11 起，新登记的"未验证"条目会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。

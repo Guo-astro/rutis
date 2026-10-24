@@ -284,9 +284,6 @@ pub struct Dispatch {
     pub name: String,
     pub mode: Mode,
     pub payload: super::Payload,
-    /// Ignored since 0.15.1: delivery is by name, and a filter sees
-    /// [`ListenerInfo::scope`]. Kept for source compatibility.
-    pub scope: Option<Vec<super::Scope>>,
     pub filter: Option<BatchFilter>,
     /// `waterfall` / `waterfall-sync` only.
     pub terminal: Option<RawTerminal>,
@@ -302,7 +299,6 @@ impl Dispatch {
             name: name.into(),
             mode,
             payload,
-            scope: None,
             filter: None,
             terminal: None,
             origin: None,

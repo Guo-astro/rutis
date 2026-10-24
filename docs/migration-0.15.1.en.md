@@ -2,6 +2,8 @@
 
 [中文](migration-0.15.1.md)
 
+> 0.16 removes the compatibility shims described below; see [migrating to 0.16](migration-0.16.en.md).
+
 ## Events are one flat bus
 
 0.13–0.15.0 delivered an event only to listeners in the emitter's scope and below it. 0.15.1 removes that rule and restores Cordis's simple model: every listener of the name on the root's bus receives the event, whatever its plugin, instance, runtime or linked node. This is a behaviour change, not an opt-in.
