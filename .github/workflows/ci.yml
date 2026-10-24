@@ -25,6 +25,14 @@ on:
         description: The commit the links check compares with (default the parent commit)
         type: string
         default: ""
+      specs:
+        description: Run the TLA+ specs (nightly skips them unless specs/** changed or this is the weekly run)
+        type: boolean
+        default: true
+      sdk_repro:
+        description: Run the two-runner SDK reproducibility checks (nightly skips them unless the SDK changed or this is the weekly run)
+        type: boolean
+        default: true
   workflow_call:
     inputs:
       all:
@@ -39,6 +47,14 @@ on:
         description: Called by release.yml, the release gate (the cross-version meetings leave out the version being released)
         type: boolean
         default: false
+      specs:
+        description: Run the TLA+ specs (nightly skips them unless specs/** changed or this is the weekly run)
+        type: boolean
+        default: true
+      sdk_repro:
+        description: Run the two-runner SDK reproducibility checks (nightly skips them unless the SDK changed or this is the weekly run)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -46,19 +62,43 @@ permissions:
 env:
   # The test files that do not depend on the platform: in-memory channels,
   # nothing started, no socket, no file but fixtures read, nothing of the OS
-  # (Rust code only, the same everywhere). Pull requests skip these on macOS
-  # and Windows and run every other test file of the crate there, with its
-  # unit tests (tools/platform-tests.sh builds the cargo test flags); Linux
-  # runs every test, and full runs run every test everywhere. A new test file
-  # therefore runs on every platform unless it is added here, and only a test
-  # that starts nothing and opens nothing belongs here. A name here without
-  # its file fails the `lint` job.
+  # (Rust code only, the same everywhere). Pull requests skip these and the
+  # MACOS/WINDOWS_SKIP_TESTS_* lists below on macOS and Windows, and run every
+  # other test file of the crate there, with its unit tests
+  # (tools/platform-tests.sh builds the cargo test flags); Linux runs every
+  # test, and full runs run every test everywhere. A new test file therefore
+  # runs on every platform unless it is added to one of these lists, and only
+  # a test that starts nothing and opens nothing belongs in PURE_TESTS_*. A
+  # name here without its file fails the `lint` job.
   PURE_TESTS_BRIDGE: >-
     link memory_mux memory_plugin memory_session multihop node
     node_conformance
   PURE_TESTS_LOADER: >-
     check instance_peers instance_services instances lifecycle loader
     migration_example overlay patch_parity peer_rows regressions scope
+  # What the pull-request jobs on macOS and Windows skip besides PURE_TESTS_*:
+  # tests of runtime and event behavior that is the same on Linux, where the
+  # `rust` job runs them with every runtime's features. What is platform
+  # specific stays: process start, inherited sockets and loopback handover,
+  # signals, the network stack, and the Swift and Kotlin rows of their own
+  # platforms. Full runs run every test file on every platform. Unlike
+  # PURE_TESTS_*, multiprocess still repeats these (they start processes).
+  # The two platforms differ: Windows keeps the runtime rows that start
+  # through loopback, and skips the rows of runtimes it does not run.
+  MACOS_SKIP_TESTS_BRIDGE: >-
+    dsh_baseline event_hub events_expected go_runtime kotlin_runtime
+    marked_services python_runtime runtime_conformance swift_runtime
+    value_roundtrip
+  MACOS_SKIP_TESTS_LOADER: >-
+    events_conformance events_nodes go_rows go_stop instance_go leases
+    marked_services multilang_go runtime_instances runtime_rows sync_cycles
+  WINDOWS_SKIP_TESTS_BRIDGE: >-
+    dsh_baseline event_hub events_expected go_runtime kotlin_runtime
+    marked_services python_runtime runtime_conformance swift_runtime
+    value_roundtrip
+  WINDOWS_SKIP_TESTS_LOADER: >-
+    bun_instances bun_multilang bun_rows events_conformance events_nodes
+    multilang_swift swift_rows
   # The jobs only build to run the tests and checks, and none reads a
   # backtrace: leaving debug info out of the dev and test profiles keeps the
   # target directories (and Swatinem/rust-cache's archives) smaller and the
@@ -104,6 +144,7 @@ jobs:
       swift: ${{ steps.select.outputs.swift }}
       repro: ${{ steps.select.outputs.repro }}
       specs: ${{ steps.select.outputs.specs }}
+      sdk_repro: ${{ steps.select.outputs.sdk_repro }}
     steps:
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         if: github.event_name == 'pull_request'
@@ -224,6 +265,11 @@ jobs:
           SWIFT: ${{ steps.paths.outputs.swift }}
           REPRO: ${{ steps.paths.outputs.repro }}
           SPECS: ${{ steps.paths.outputs.specs }}
+          # Nightly turns these off unless the paths changed or it is the
+          # weekly run (nightly.yml). Pull requests: specs follows its paths;
+          # sdk-repro stays in full runs.
+          SPECS_INPUT: ${{ inputs.specs }}
+          SDK_REPRO_INPUT: ${{ inputs.sdk_repro }}
           # JSON, as runs-on takes it.
           LINUX_RUNNER: ${{ vars.LINUX_RUNNER || '"ubuntu-24.04"' }}
           MACOS_RUNNER: ${{ vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]' }}
@@ -233,6 +279,12 @@ jobs:
           all=false
           if [ "$FULL" = true ] || [ "$ALL" = true ]; then all=true; fi
           pick() { if [ "$all" = true ] || [ "$1" = true ]; then echo true; else echo false; fi; }
+          # In a full run these default on; nightly turns them off unless its
+          # paths changed or it is the weekly run.
+          specs=$(pick "$SPECS")
+          if [ "$all" = true ] && [ "$SPECS_INPUT" = false ]; then specs=false; fi
+          sdk_repro=false
+          if [ "$all" = true ] && [ "$SDK_REPRO_INPUT" != false ]; then sdk_repro=true; fi
           {
             echo "all=$all"
             echo "code=$(pick "$CODE")"
@@ -244,7 +296,8 @@ jobs:
             echo "go=$(pick "$GO")"
             echo "kotlin=$(pick "$KOTLIN")"
             echo "swift=$(pick "$SWIFT")"
-            echo "specs=$(pick "$SPECS")"
+            echo "specs=$specs"
+            echo "sdk_repro=$sdk_repro"
             # Pull requests: the oldest supported Bun and Go, on Linux only
             # (the minimum must be verified; network-macos runs the latest).
             # Full runs: also the latest on Linux and the oldest on macOS.
@@ -645,12 +698,16 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
-      # Every name in PURE_TESTS_* (top of this file) is a test file: a
-      # rename must not leave a stale name behind.
-      - name: the platform-independent test lists
+      # Every name in the test lists at the top of this file is a test file:
+      # a rename must not leave a stale name behind.
+      - name: the platform test lists
         run: |
           bash tools/platform-tests.sh crates/rutis-bridge $PURE_TESTS_BRIDGE
           bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER
+          bash tools/platform-tests.sh crates/rutis-bridge $MACOS_SKIP_TESTS_BRIDGE
+          bash tools/platform-tests.sh crates/rutis-loader $MACOS_SKIP_TESTS_LOADER
+          bash tools/platform-tests.sh crates/rutis-bridge $WINDOWS_SKIP_TESTS_BRIDGE
+          bash tools/platform-tests.sh crates/rutis-loader $WINDOWS_SKIP_TESTS_LOADER
       # The examples' build scripts need the Node runtime, and rutis-dsh
       # compiles its web host only when dsh is installed.
       - uses: actions/setup-node@v4
@@ -1233,8 +1290,8 @@ jobs:
         run: |
           BRIDGE_TESTS= LOADER_TESTS=
           if [ "$ALL" != true ]; then
-            BRIDGE_TESTS=$(bash tools/platform-tests.sh crates/rutis-bridge $PURE_TESTS_BRIDGE)
-            LOADER_TESTS=$(bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER)
+            BRIDGE_TESTS=$(bash tools/platform-tests.sh crates/rutis-bridge $PURE_TESTS_BRIDGE $MACOS_SKIP_TESTS_BRIDGE)
+            LOADER_TESTS=$(bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER $MACOS_SKIP_TESTS_LOADER)
           fi
           cargo test -p rutis-bridge --all-features $BRIDGE_TESTS
           cargo test -p rutis-loader --features node,python,go,peer,bun $LOADER_TESTS
@@ -1614,7 +1671,7 @@ jobs:
         run: |
           LOADER_TESTS=
           if [ "$ALL" != true ]; then
-            LOADER_TESTS=$(bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER)
+            LOADER_TESTS=$(bash tools/platform-tests.sh crates/rutis-loader $PURE_TESTS_LOADER $WINDOWS_SKIP_TESTS_LOADER)
           fi
           cargo test -p rutis-loader --features node,python,go,peer --no-fail-fast $LOADER_TESTS
       - name: cargo test (rutis-bridge, all features)
@@ -1624,7 +1681,7 @@ jobs:
         run: |
           BRIDGE_TESTS=
           if [ "$ALL" != true ]; then
-            BRIDGE_TESTS=$(bash tools/platform-tests.sh crates/rutis-bridge $PURE_TESTS_BRIDGE)
+            BRIDGE_TESTS=$(bash tools/platform-tests.sh crates/rutis-bridge $PURE_TESTS_BRIDGE $WINDOWS_SKIP_TESTS_BRIDGE)
           fi
           cargo test -p rutis-bridge --all-features --no-fail-fast $BRIDGE_TESTS
       - name: cargo test (rutis-host)
@@ -1655,7 +1712,7 @@ jobs:
   # single-runner check for dylib changes.
   sdk-repro:
     needs: changes
-    if: needs.changes.outputs.all == 'true'
+    if: needs.changes.outputs.sdk_repro == 'true'
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     strategy:
       matrix:
@@ -1709,7 +1766,7 @@ jobs:
   # runner.temp, which the runner empties.
   sdk-repro-macos:
     needs: changes
-    if: needs.changes.outputs.all == 'true'
+    if: needs.changes.outputs.sdk_repro == 'true'
     runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     strategy:
       matrix:
@@ -1765,6 +1822,7 @@ jobs:
   sdk-repro-macos-compare:
     runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     needs: [changes, sdk-repro-macos]
+    if: needs.changes.outputs.sdk_repro == 'true'
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -1777,6 +1835,7 @@ jobs:
   sdk-repro-compare:
     runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","ARM64"]') }}
     needs: [changes, sdk-repro]
+    if: needs.changes.outputs.sdk_repro == 'true'
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -1865,7 +1924,7 @@ jobs:
       - sdk-repro-compare
       - sdk-repro-macos-compare
       - specs
-    runs-on: ${{ fromJSON(vars.GATE_RUNNER || '["self-hosted","macOS","ARM64"]') }}
+    runs-on: ${{ fromJSON(vars.GATE_RUNNER || '"ubuntu-24.04"') }}
     steps:
       - name: every selected job passed
         env:

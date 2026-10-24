@@ -46,6 +46,9 @@ on:
       events_case:
         description: The events conformance cases every placement of which runs (RUTIS_EVENTS_CASE, prefixes); empty, all of them in shards
         default: ""
+      events:
+        description: Events conformance placements (all, or sampled)
+        default: all
   # nightly.yml, with the defaults.
   workflow_call:
     inputs:
@@ -67,6 +70,10 @@ on:
       events_case:
         type: string
         default: ""
+      events:
+        description: Events conformance placements (all, or sampled)
+        type: string
+        default: "all"
 
 permissions:
   contents: read
@@ -342,7 +349,7 @@ jobs:
         # bash -eo pipefail: a failing run fails the step through tee.
         shell: bash
         env:
-          RUTIS_EVENTS_PLACEMENTS: all
+          RUTIS_EVENTS_PLACEMENTS: ${{ inputs.events || 'all' }}
           RUTIS_EVENTS_CASE: ${{ matrix.cases }}
           RUTIS_EVENTS_REQUIRE: node,python,go,bun
           RUTIS_EVENTS_SETTLE_SCALE: '2'
@@ -355,7 +362,7 @@ jobs:
           cargo test -p rutis-loader --features node,python,go,bun,peer --test events_conformance -- \
             --exact "$test" --nocapture 2>&1 | tee "$RUNNER_TEMP/events.txt" || status=$?
           {
-            echo "### events conformance, X=$X, every placement of $RUTIS_EVENTS_CASE"
+            echo "### events conformance, X=$X, $RUTIS_EVENTS_PLACEMENTS placements of $RUTIS_EVENTS_CASE"
             echo
             echo "$(( $(date +%s) - started )) s"
             echo
@@ -473,11 +480,13 @@ jobs:
         if: runner.os != 'Windows'
         with:
           bun-version: ${{ matrix.bun }}
-      # Python as in ci.yml: setup-python on GitHub's runners; uv's on the
-      # self-hosted Mac, the machine's on the self-hosted Windows, each in a
-      # virtual environment with pip.
+      # Python as in ci.yml: setup-python on GitHub's runners and on the
+      # self-hosted Linux (there it installs into the tool cache, not the
+      # system Python that PEP 668 protects); uv's on the self-hosted Mac,
+      # the machine's on the self-hosted Windows, each in a virtual
+      # environment with pip.
       - uses: actions/setup-python@v5
-        if: runner.environment == 'github-hosted'
+        if: runner.environment == 'github-hosted' || runner.os == 'Linux'
         with:
           python-version: ${{ matrix.python }}
       - uses: astral-sh/setup-uv@v6

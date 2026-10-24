@@ -38,14 +38,24 @@ concurrency:
 
 jobs:
   # Whether there is anything new: this commit against the last successful
-  # nightly run's.
+  # nightly run's. What that range touches decides the checks that need not
+  # run every night (#576): the packages (install), the Windows dylib tests,
+  # the TLA+ specs and the two-runner SDK reproducibility. Monday's run (UTC,
+  # 03:00 Tuesday in Beijing) runs all of them; the event conformance suite
+  # runs a sample every night and every placement on Monday.
   plan:
     runs-on: ubuntu-24.04
     permissions:
       actions: read
+      contents: read
     outputs:
       run: ${{ steps.plan.outputs.run }}
       base: ${{ steps.plan.outputs.base }}
+      install: ${{ steps.plan.outputs.install }}
+      dylib: ${{ steps.plan.outputs.dylib }}
+      specs: ${{ steps.plan.outputs.specs }}
+      sdk_repro: ${{ steps.plan.outputs.sdk_repro }}
+      events: ${{ steps.plan.outputs.events }}
     steps:
       - id: plan
         env:
@@ -57,9 +67,64 @@ jobs:
             --status success --limit 1 --json headSha --jq '.[0].headSha // ""')
           run=true
           if [ "$base" = "$GITHUB_SHA" ] && [ "$FORCE" != true ]; then run=false; fi
+
+          # Monday, and the first run (no base) or one whose comparison the
+          # API truncated, check everything.
+          weekly=false
+          if [ "$(date -u +%u)" = 1 ]; then weekly=true; fi
+          everything=$weekly
+          changed=""
+          if [ -n "$base" ]; then
+            if ! changed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/compare/$base...$GITHUB_SHA" \
+              --jq '.files[].filename'); then
+              changed=""
+              everything=true
+            fi
+            # The compare API lists at most 300 files.
+            files=$(printf '%s\n' "$changed" | sed '/^$/d' | wc -l | tr -d ' ')
+            if [ "$files" -ge 300 ]; then everything=true; fi
+          else
+            everything=true
+          fi
+
+          install=false; dylib=false; specs=false; sdk_repro=false
+          if [ "$everything" = true ]; then
+            install=true; dylib=true; specs=true; sdk_repro=true
+          else
+            while IFS= read -r f; do
+              case "$f" in
+                .github/workflows/*|Cargo.toml|Cargo.lock|rust-toolchain.toml)
+                  install=true; dylib=true; specs=true; sdk_repro=true ;;
+              esac
+              case "$f" in
+                scripts/train.mjs|*/pyproject.toml|*/package.json|crates/*/Cargo.toml|node/rutis-host/scripts/*)
+                  install=true ;;
+              esac
+              case "$f" in
+                crates/rutis-cli/build.rs|crates/rutis-cli/src/*|crates/rutis-cli/Cargo.toml|crates/rutis-dylib/*|crates/rutis-dylib-meta/*|crates/rutis-dylib-launcher/*|crates/rutis-sdk/*|crates/rutis-dev/*|crates/rutis-xtask/*|tools/*dylib*|tools/build-dylib-bundle.sh|tools/test-sdk-bundle.sh|tools/lib/*|tests/dylib-fixtures/*)
+                  dylib=true ;;
+              esac
+              case "$f" in
+                specs/*) specs=true ;;
+              esac
+              case "$f" in
+                crates/rutis-sdk/*|crates/rutis-cli/build.rs|tools/test-dylib-repro.sh|tools/build-dylib-bundle.sh|tools/lib/*)
+                  sdk_repro=true ;;
+              esac
+            done <<< "$changed"
+          fi
+          events=sampled
+          if [ "$everything" = true ]; then events=all; fi
+
           {
             echo "base=$base"
             echo "run=$run"
+            echo "weekly=$weekly"
+            echo "install=$install"
+            echo "dylib=$dylib"
+            echo "specs=$specs"
+            echo "sdk_repro=$sdk_repro"
+            echo "events=$events"
           } | tee -a "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY"
           if [ "$run" = false ]; then
             echo "The last successful nightly run already checked $GITHUB_SHA: nothing to run." | tee -a "$GITHUB_STEP_SUMMARY"
@@ -76,12 +141,15 @@ jobs:
     with:
       all: true
       base: ${{ needs.plan.outputs.base }}
+      specs: ${{ needs.plan.outputs.specs == 'true' }}
+      sdk_repro: ${{ needs.plan.outputs.sdk_repro == 'true' }}
 
   # This commit's packages, built and installed on every platform; GitHub's
-  # clean machines but darwin-arm64 (docs/ci.md §10).
+  # clean machines but darwin-arm64 (docs/ci.md §10). Only when this range
+  # touched what they package, or on the weekly run.
   install:
     needs: plan
-    if: needs.plan.outputs.run == 'true'
+    if: needs.plan.outputs.run == 'true' && needs.plan.outputs.install == 'true'
     uses: ./.github/workflows/install.yml
     with:
       source: local
@@ -90,13 +158,15 @@ jobs:
 
   dylib-windows:
     needs: plan
-    if: needs.plan.outputs.run == 'true'
+    if: needs.plan.outputs.run == 'true' && needs.plan.outputs.dylib == 'true'
     uses: ./.github/workflows/dylib-windows.yml
 
   stress:
     needs: plan
     if: needs.plan.outputs.run == 'true'
     uses: ./.github/workflows/stress.yml
+    with:
+      events: ${{ needs.plan.outputs.events }}
 
   # Risk F4 (docs/quality-status.md, Q6.14.4): the newest published Cordis
   # and dsh plugins, instead of node/baseline's lockfile, through the checks
