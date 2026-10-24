@@ -7,7 +7,7 @@
 #   nightly.yml   calls it every night main has new commits: builds that
 #                 commit's packages (package.yml) on every platform and
 #                 installs them (self-hosted: true)
-#   pull request  only when packaging or these tests change: Linux x64
+#   pull requests not at all: the nightly runs and the release gate cover it
 #   release.yml   calls it twice: before publishing, on every platform,
 #                 with the packages it built (source: local, build: false);
 #                 after publishing, from the registries (source: registry)
@@ -18,31 +18,17 @@
 # oldstable; websockets 15.0 is the PyPI cell's own);
 # macOS and Windows take the latest (docs/ci.md §9).
 #
-# darwin-arm64 runs on the self-hosted macOS runners for pull requests and
-# the nightly runs (input self-hosted; the repository variable MACOS_RUNNER
-# switches it, docs/ci.md §10); a release (release.yml) and a run by hand
-# keep the GitHub-hosted macos-15. The other platforms always run on
-# GitHub's clean machines.
+# darwin-arm64 runs on the self-hosted macOS runners for the nightly runs
+# (input self-hosted; the repository variable MACOS_RUNNER switches it,
+# docs/ci.md §10); a release (release.yml) and a run by hand keep the
+# GitHub-hosted macos-15. The other platforms always run on GitHub's clean
+# machines.
 name: install
 
+# Pull requests do not run it (Q12.1, #569): it cost about 6.5 minutes there
+# and its failures did not stop a merge (ci-ok only sums up ci.yml's jobs).
+# The nightly runs and the release gate check it.
 on:
-  pull_request:
-    paths:
-      - .github/workflows/package.yml
-      - .github/workflows/install.yml
-      - tests/e2e/**
-      - tools/install/**
-      - tools/doc-examples.mjs
-      - node/*/package.json
-      - bun/rutis-bun/package.json
-      - python/rutis/pyproject.toml
-      - crates/rutis-host/pyproject.toml
-      # What package.yml builds the binaries and platform packages from
-      # (as ci.yml's `packaging` switch, and the workspace manifests).
-      - node/rutis-host/scripts/**
-      - crates/*/Cargo.toml
-      - Cargo.toml
-      - Cargo.lock
   workflow_dispatch:
     inputs:
       source:
@@ -75,12 +61,10 @@ on:
 permissions:
   contents: read
 
-# As ci.yml: one group per pull request, cancelled by a new push; any other
-# run has its own (github.run_id is the caller's for a call, and release.yml
-# calls this twice in one run, with different sources).
+# As ci.yml: one group per run (github.run_id is the caller's for a call,
+# and release.yml calls this twice in one run, with different sources).
 concurrency:
-  group: install-${{ github.event.pull_request.number || github.run_id }}-${{ inputs.source || 'local' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: install-${{ github.run_id }}-${{ inputs.source || 'local' }}
 
 jobs:
   # Orchestration only: on the self-hosted macOS runners but for a release
@@ -103,7 +87,6 @@ jobs:
       - run: node tools/doc-examples.mjs --check
       - id: plan
         env:
-          EVENT: ${{ github.event_name }}
           SOURCE: ${{ inputs.source || 'local' }}
           VERSION: ${{ inputs.version }}
           PLATFORMS: ${{ inputs.platforms }}
@@ -115,12 +98,10 @@ jobs:
           const version = process.env.VERSION || require('./node/rutis-host/package.json').version
           const all = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64']
           const main = ['linux-x64', 'darwin-arm64', 'win32-x64']
-          const platforms = process.env.PLATFORMS ? JSON.parse(process.env.PLATFORMS)
-            : process.env.EVENT === 'pull_request' ? ['linux-x64'] : main
-          // Pull requests and the nightly runs: the self-hosted runners; a
-          // release and a run by hand: GitHub's.
+          const platforms = process.env.PLATFORMS ? JSON.parse(process.env.PLATFORMS) : main
+          // The nightly runs: the self-hosted runners; a release and a run
+          // by hand: GitHub's.
           const selfHosted = process.env.SELF_HOSTED === 'true'
-            || (!process.env.PLATFORMS && process.env.EVENT === 'pull_request')
           const runners = {
             'linux-x64': { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-musl', wheel: 'x86_64', node: '22', python: '3.10' },
             'linux-arm64': { os: 'ubuntu-24.04-arm', target: 'aarch64-unknown-linux-musl', wheel: 'aarch64', node: '22', python: '3.10' },

@@ -21,12 +21,12 @@
 | --- | --- | --- |
 | `ci.yml` | 每个 PR；每晚由 `nightly.yml` 调用（`all=true`）；发布门里由 `release.yml` 调用（`all=true`）；手动（任何分支，`all` 默认打开） | 测试和检查（下文） |
 | `nightly.yml` | 每天 UTC 19:00，main 有新提交时；手动（`force`：没有新提交也跑） | 调用 `ci.yml`（全部任务）、`install.yml`（五个平台）、`dylib-windows.yml`、`stress.yml`；用最新已发布的 Cordis 插件跑一遍 Cordis 检查，只报告（`cordis-latest`，下文）；调用 `netem.yml`，只报告（`netem`，下文）；失败时开问题单（下文、§7） |
-| `dylib-windows.yml` | PR 改了 dylib 相关文件（与 `dylib` 开关相同）；每晚由 `nightly.yml` 调用；发布门里由 `release.yml` 调用（打 `v*` tag 不再单独触发）；手动 | Windows 上的 dylib 测试 |
+| `dylib-windows.yml` | 每晚由 `nightly.yml` 调用；发布门里由 `release.yml` 调用（打 `v*` tag 不再单独触发）；手动 | Windows 上的 dylib 测试 |
 | `stress.yml` | 每晚由 `nightly.yml` 调用；手动 | 重复运行内核测试和多进程测试；网络长时间测试；大规模运行内核的 shuttle 模型，以及模糊测试；宿主长时间运行的 S8（三个平台）（下文） |
-| `netem.yml` | 每晚由 `nightly.yml` 调用（只报告）；PR 改了 `tests/e2e/tests/netem.rs` 或 `netem.yml`；手动 | S5 的容器版（风险 E12，#341）：两个 Docker 容器，非 loopback 地址 + TLS，netem 延迟、丢包、断网（下文） |
+| `netem.yml` | 每晚由 `nightly.yml` 调用（只报告）；手动 | S5 的容器版（风险 E12，#341）：两个 Docker 容器，非 loopback 地址 + TLS，netem 延迟、丢包、断网（下文） |
 | `ci-stats.yml` | 每周；手动 | 统计 CI 的耗时和失败 |
 | `deps.yml` | 每周；手动 | 依赖漏洞检查：`cargo deny check advisories`（不含示例项目）、`@arcships/rutis-runtime` 的 `npm audit`、Python 包的 `pip-audit`。不在 PR 上跑，不阻止合并；失败时 GitHub 通知维护者 |
-| `install.yml` | 每晚由 `nightly.yml` 调用；PR 改了打包、构建配置或安装测试（`package.yml`、`install.yml`、`tests/e2e/**`、各包的 `package.json`、`pyproject.toml`、`node/rutis-host/scripts/**`、`Cargo.toml`、`Cargo.lock` 等）；发布时由 `release.yml` 调用；手动 | 用 `package.yml` 构建这次提交的包并安装运行：npm、PyPI、release 二进制。每晚和发布前五个平台（linux-x64、linux-arm64、darwin-x64、darwin-arm64、win32-x64），PR 上只有 linux-x64，手动运行默认三个平台（linux-x64、darwin-arm64、win32-x64） |
+| `install.yml` | 每晚由 `nightly.yml` 调用；发布时由 `release.yml` 调用；手动 | 用 `package.yml` 构建这次提交的包并安装运行：npm、PyPI、release 二进制。每晚和发布前五个平台（linux-x64、linux-arm64、darwin-x64、darwin-arm64、win32-x64），手动运行默认三个平台（linux-x64、darwin-arm64、win32-x64） |
 | `release.yml` | 打 `v*` tag；手动（`dry-run` 默认打开：只跑发布门，不发布） | 发布门（调用 `ci.yml`（`all=true`）、`package.yml`、`install.yml`（五个平台）、`dylib-windows.yml`）、发布、发布后验证（[发布](release.md)） |
 | `release-cli.yml` | 打 `cli-v*` tag | 发布 rutis-cli |
 
@@ -104,7 +104,7 @@
 | `dylib-linux-launcher`、`dylib-linux-sdk-bundle` | Linux | `dylib` | — | dylib 测试，分两个任务同时跑 |
 | `dylib-linux-repro` | Linux | `repro` | 整个任务 | SDK 可复现构建（在一台机器上用两个目录各构建一次） |
 | `dylib-macos` | macOS（自托管，§10） | `dylib` | 可复现构建一步 | 同样的 dylib 测试，在一个任务里依次跑，共用一次构建的 bundle；可复现构建这一步只在 `repro` 打开时跑 |
-| `release-dry-run` | macOS（自托管，§10） | `packaging` | 整个任务 | 发布要用的包能构建（crate、npm 包、Python 包）。各平台的二进制和 wheel 由 `install.yml` 构建并安装（§2）：PR 上只有 Linux x64，其他平台的打包在每晚和发布前检查 |
+| `release-dry-run` | macOS（自托管，§10） | `packaging` | 整个任务 | 发布要用的包能构建（crate、npm 包、Python 包）。各平台的二进制和 wheel 由 `install.yml` 在每晚和发布前构建并安装（§2），PR 上不跑 |
 | `sdk-repro`、`sdk-repro-macos` 及比对 | Linux、macOS（自托管，§10） | 只在 `all` 时 | 整个任务 | 在两台机器上分别构建 SDK，比较结果是否相同（比较在自托管的 macOS 上） |
 | `specs` | Linux | `specs` | — | TLA+ 设计模型（`specs/`，质量标准 §11.2）：每个模型一项（矩阵），装 Java 21 和固定版本、校验过 sha256 的 `tla2tools.jar`（v1.7.4），运行模型目录下的 `run.sh`，每个配置的结果（通过、死锁、某个不变式或活性被违反）与 `expected.txt` 比较。失败时上传 TLC 日志（含反例）为 artifact `tlc-<模型>`。`cross-runtime-sync` 约 1 分钟，`remote-lease` 约 2–3 分钟（16 核；GitHub 的 4 核机器上估计 5–8 分钟） |
 | `ci-ok` | Linux | 总是 | — | 汇总（§5） |
@@ -186,7 +186,7 @@ bridge 的一致性套件在哪些实现、哪些通道、哪些平台上运行�
 | bridge、loader、host | 再加 `runtimes-bun`、`runtimes-go`（Linux 各一个版本）和 `runtimes-kotlin` | 约 6–9 分钟 |
 | 只有 Kotlin SDK（`kotlin/**`） | `rust`、`e2e`、`js-py`、`lint`、`network-macos`、`runtimes-windows`、`runtimes-kotlin` | 约 5–8 分钟 |
 | 只有 Python 包 | `rust`、`e2e`、`js-py`、`lint`、`network-macos`、`runtimes-windows` | 约 5–8 分钟 |
-| 改了 `package.json`、`pyproject.toml`、`crates/*/Cargo.toml` | 再加 `release-dry-run` 和 `semver-rutis`；改了包的 `package.json`、`pyproject.toml` 时还有 `install.yml`（Linux x64） | 不变，打包任务与测试并行 |
+| 改了 `package.json`、`pyproject.toml`、`crates/*/Cargo.toml` | 再加 `release-dry-run` 和 `semver-rutis` | 不变，打包任务与测试并行 |
 | dylib | 再加 dylib 任务；`dylib-windows.yml` | 约 20–25 分钟（dylib 的预算） |
 | CI 配置、`Cargo.lock`、根 `Cargo.toml` | 全部，同完整运行 | 约 25 分钟 |
 
@@ -279,7 +279,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 
 ## 10. 自托管的 macOS runner
 
-`ci.yml` 的 `dylib-macos`、`sdk-repro-macos`，以及 `install.yml` 在 PR 和每晚的运行中的 `darwin-arm64`，跑在自托管的 macOS runner 上：一台专用、隔离的 Mac，可以装多个 runner 实例，标签都是 `self-hosted, macOS, ARM64`（第一个实例叫 `macos-1`）。结果和操作系统无关的任务也在那里跑，免得排队等 GitHub 的 Linux runner：`ci.yml` 的 `js-py`（Node 22、Python 3.10、websockets 15，Python 由 uv 装）、`msrv`、`checks`、`release-dry-run`、`semver-rutis`、两个 SDK 比对，`runtimes-go`/`runtimes-bun` 在完整运行时的 macOS 矩阵项（Go oldstable、Bun 1.4.0，Node 22，Python 由 uv 装），以及 `install.yml`、`package.yml` 的 `plan`（发布时，即 tag 上，`plan` 仍用 `ubuntu-24.04`）。只有一个实例时它们会排在正在跑的 macOS 任务后面，所以要多加实例（现在有 `macos-1` 到 `macos-4`）。`msrv`、`checks` 在 macOS 上编译，不编译只在 Linux 上的 cfg 代码；这部分由 Linux 上的 `lint`（clippy，全部 feature）编译。留在 Linux 上的：`rust`、`e2e`、`links`、`lint`、`runtimes-go`/`runtimes-bun` 的 ubuntu 矩阵项、`dylib-linux-*`、`sdk-repro`，以及只做调度的 `changes`、`ci-ok`（它们不占 macOS 槽位）。`network-macos` 也在自托管的机器上跑（仓库变量 `NETWORK_MACOS_RUNNER` 为 `["self-hosted","macOS","ARM64"]`；删掉变量回到 GitHub 的 `macos-15`。曾因 #287 留在 GitHub 上，#344 修复后切过来）。其余任务仍用 GitHub 的 runner：`darwin-x64`（要 Intel 的 `macos-15-intel`）、`package.yml` 的 macOS 构建（发布用的文件）、`release.yml` 调用 `install.yml` 时和手动运行 `install.yml` 时的 `darwin-arm64`（发布前的检查用 `macos-15`）；Linux 和 Windows 的任务见 §11。
+`ci.yml` 的 `dylib-macos`、`sdk-repro-macos`，以及 `install.yml` 在每晚的运行中的 `darwin-arm64`，跑在自托管的 macOS runner 上：一台专用、隔离的 Mac，可以装多个 runner 实例，标签都是 `self-hosted, macOS, ARM64`（第一个实例叫 `macos-1`）。结果和操作系统无关的任务也在那里跑，免得排队等 GitHub 的 Linux runner：`ci.yml` 的 `js-py`（Node 22、Python 3.10、websockets 15，Python 由 uv 装）、`msrv`、`checks`、`release-dry-run`、`semver-rutis`、两个 SDK 比对，`runtimes-go`/`runtimes-bun` 在完整运行时的 macOS 矩阵项（Go oldstable、Bun 1.4.0，Node 22，Python 由 uv 装），以及 `install.yml`、`package.yml` 的 `plan`（发布时，即 tag 上，`plan` 仍用 `ubuntu-24.04`）。只有一个实例时它们会排在正在跑的 macOS 任务后面，所以要多加实例（现在有 `macos-1` 到 `macos-4`）。`msrv`、`checks` 在 macOS 上编译，不编译只在 Linux 上的 cfg 代码；这部分由 Linux 上的 `lint`（clippy，全部 feature）编译。留在 Linux 上的：`rust`、`e2e`、`links`、`lint`、`runtimes-go`/`runtimes-bun` 的 ubuntu 矩阵项、`dylib-linux-*`、`sdk-repro`，以及只做调度的 `changes`、`ci-ok`（它们不占 macOS 槽位）。`network-macos` 也在自托管的机器上跑（仓库变量 `NETWORK_MACOS_RUNNER` 为 `["self-hosted","macOS","ARM64"]`；删掉变量回到 GitHub 的 `macos-15`。曾因 #287 留在 GitHub 上，#344 修复后切过来）。其余任务仍用 GitHub 的 runner：`darwin-x64`（要 Intel 的 `macos-15-intel`）、`package.yml` 的 macOS 构建（发布用的文件）、`release.yml` 调用 `install.yml` 时和手动运行 `install.yml` 时的 `darwin-arm64`（发布前的检查用 `macos-15`）；Linux 和 Windows 的任务见 §11。
 
 **切回 GitHub 的 runner，不用改代码**：仓库变量 `MACOS_RUNNER`（Settings → Secrets and variables → Actions → Variables）是 `runs-on` 的 JSON 值，没设置时为 `["self-hosted","macOS","ARM64"]`。设成 `"macos-15"`（带引号）就全部回到 GitHub 的 macOS；删掉变量就回到自托管。`gh variable set MACOS_RUNNER --body '"macos-15"'`。调度任务用另一个变量 `GATE_RUNNER`：没设置时是 GitHub 的 `ubuntu-24.04`，要让它们回到自托管的 Mac 就设成 `'["self-hosted","macOS","ARM64"]'`。
 

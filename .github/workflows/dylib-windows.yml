@@ -1,14 +1,10 @@
-# Windows dylib plugin tests. They take about 25 minutes on pull requests
-# (40 with the reproducibility check), so pull requests run them only when
-# they touch the dylib code. The nightly runs (nightly.yml) and the release
-# gate (release.yml) call them; manual runs: Actions → dylib-windows → Run
-# workflow.
+# Windows dylib plugin tests, about 40 minutes with the reproducibility
+# check. Pull requests do not run them (Q12.1, #569): they cost 11–14 minutes
+# there and their failures did not stop a merge (ci-ok only sums up ci.yml's
+# jobs). The nightly runs (nightly.yml) and the release gate (release.yml)
+# call them; manual runs: Actions → dylib-windows → Run workflow.
 # Other Windows builds are checked on every code change by ci.yml's
 # runtimes-windows job.
-#
-# The reproducible-SDK check builds the SDK twice from scratch (about 15
-# minutes) and rarely breaks from ordinary changes, so pull requests skip it;
-# the nightly runs, releases and manual runs keep it.
 #
 # Changes elsewhere (the rutis kernel, dependency updates in Cargo.lock) can
 # also break Windows dylib plugins; the nightly run catches those after the
@@ -17,33 +13,15 @@
 name: dylib-windows
 
 on:
-  pull_request:
-    paths:
-      - "crates/rutis-sdk/**"
-      - "crates/rutis-dylib/**"
-      - "crates/rutis-dylib-meta/**"
-      - "crates/rutis-dylib-launcher/**"
-      - "crates/rutis-xtask/**"
-      - "crates/rutis-dev/**"
-      # rutis-cli links the SDK and holds the dylib host tests.
-      - "crates/rutis-cli/**"
-      - "tests/dylib-fixtures/**"
-      - "tools/*dylib*"
-      - "tools/test-sdk-bundle.sh"
-      - "tools/lib/**"
-      - "rust-toolchain.toml"
-      - ".github/workflows/dylib-windows.yml"
   workflow_dispatch:
   # The nightly runs (nightly.yml; quality status §8.4) and the release gate
   # (release.yml).
   workflow_call:
 
-# A new push to a pull request cancels its run still in progress; any other
-# run has a group of its own (github.run_id is the caller's for a call), as
-# in ci.yml.
+# A run has a group of its own (github.run_id is the caller's for a call),
+# as in ci.yml.
 concurrency:
-  group: dylib-windows-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: dylib-windows-${{ github.run_id }}
 
 permissions:
   contents: read
@@ -116,7 +94,6 @@ jobs:
       - name: launcher pre-execution verification, file locks and job object
         run: bash tools/test-dylib-launcher.sh "${{ steps.bundle.outputs.dir }}"
       - name: reproducible SDK across source and target paths
-        if: github.event_name != 'pull_request'
         run: bash tools/test-dylib-repro.sh
       - name: external plugin build against a prebuilt SDK
         run: bash tools/test-sdk-bundle.sh "${{ steps.bundle.outputs.dir }}"
