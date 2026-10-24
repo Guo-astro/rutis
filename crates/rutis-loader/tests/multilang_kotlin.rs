@@ -16,12 +16,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
 use common::runtimes::{kotlin_launcher, layer, repo, row_state, Llm, Probe, COLD};
-use rutis::{Ctx, FiberState};
+use rutis::host::{CtxHost, FiberState};
+use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch, Reply, Value as RpcValue};
-use rutis_loader::{
-    Chain, Loader, LoaderOptions, LoaderPlugin, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
-};
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
 
@@ -151,11 +151,10 @@ async fn fixture(
 ) -> Fixture {
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     for (name, service) in extra {
-        root.provide_as::<dyn HostDispatch>(host_key(name), service)
-            .unwrap();
+        root.provide_at(host_key(name), service).unwrap();
     }
     let mut catalog = ServiceCatalog::new();
     for name in services {
@@ -403,7 +402,7 @@ async fn injected_services_gate_a_kotlin_plugin() {
         .any(|l| l.starts_with("kt gated")));
     let llm = fixture
         .root
-        .provide_as::<dyn HostDispatch>(host_key("llm"), Arc::new(Llm))
+        .provide_at(host_key("llm"), Arc::new(Llm))
         .unwrap();
     fixture.probe.wait_for("kt gated: 42").await;
     llm.dispose().await.unwrap();
@@ -476,7 +475,7 @@ impl HostDispatch for Gate {
 }
 
 fn service(root: &Ctx, name: &str) -> Option<Arc<dyn HostDispatch>> {
-    root.get_as::<dyn HostDispatch>(host_key(name))
+    root.get_at::<dyn HostDispatch>(&host_key(name))
 }
 
 /// Call `method` of `name` synchronously, on a thread of its own.

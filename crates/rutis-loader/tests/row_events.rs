@@ -7,23 +7,10 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::*;
-use rutis::{BoxFuture, Call, CordisError, Ctx, EventKey, Listener};
-use rutis_loader::{RowEvent, RowState};
+use rutis_loader::report::RowState;
+use rutis_loader::RowEvent;
 use rutis_test_support::eventually;
 use serde_json::json;
-
-struct Rows(Arc<Mutex<Vec<RowEvent>>>);
-impl Listener<RowEvent> for Rows {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        event: &'a RowEvent,
-        _: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        self.0.lock().unwrap().push(event.clone());
-        Box::pin(async { Ok(None) })
-    }
-}
 
 fn states(events: &Arc<Mutex<Vec<RowEvent>>>, row: &str) -> Vec<RowState> {
     events
@@ -46,9 +33,12 @@ async fn rows_announce_their_states_at_their_scopes() {
     let store = MemStore::default();
     let (root, loader) = mount(harness.resolver(), store.clone()).await;
     let events = Arc::new(Mutex::new(Vec::new()));
-    root.events()
-        .on(&root, &EventKey::<RowEvent>::of(), Rows(events.clone()))
-        .unwrap();
+    let seen = events.clone();
+    root.on::<RowEvent>(move |event, _| {
+        seen.lock().unwrap().push((*event).clone());
+        std::future::ready(Ok(None))
+    })
+    .unwrap();
     reconcile(
         &loader,
         patches(json!([{ "insert": [

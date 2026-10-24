@@ -12,13 +12,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::runtimes::{layer, row_state, swift_binary, COLD};
-use rutis::{Ctx, FiberState};
+use rutis::host::{CtxHost, FiberState};
+use rutis::Ctx;
 use rutis_bridge::session::{host_key, settle, HostDispatch};
-use rutis_loader::{
-    read_swift_manifest, Chain, EntryStatus, Loader, LoaderOptions, LoaderPlugin, RestartPolicy,
-    RuntimeEnd, ServiceCatalog, SwiftBinaries, SwiftResolver, SwiftRuntimeState, SwiftRuntimes,
-    SwiftRuntimesHandle,
+use rutis_loader::internal::read_swift_manifest;
+use rutis_loader::report::EntryStatus;
+use rutis_loader::runtime::binary::{RestartPolicy, RuntimeEnd};
+use rutis_loader::runtime::swift::{
+    SwiftBinaries, SwiftResolver, SwiftRuntimeState, SwiftRuntimes, SwiftRuntimesHandle,
 };
+use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
 
 /// Put the Swift product `product` into `dir` as `name`.
@@ -104,7 +107,7 @@ fn runtime_state(runtimes: &SwiftRuntimesHandle, name: &str) -> Option<SwiftRunt
 }
 
 fn service(root: &Ctx, name: &str) -> Option<Arc<dyn HostDispatch>> {
-    root.get_as::<dyn HostDispatch>(host_key(name))
+    root.get_at::<dyn HostDispatch>(&host_key(name))
 }
 
 /// Call `method` of the service `name` synchronously, off the async runtime.
@@ -548,7 +551,7 @@ async fn an_announced_service_another_provider_has_fails_the_later_row() {
     // The application provides `llm` itself.
     fixture
         .root
-        .provide_as::<dyn HostDispatch>(host_key("llm"), Arc::new(common::runtimes::Llm))
+        .provide_at(host_key("llm"), Arc::new(common::runtimes::Llm))
         .unwrap();
     let undeclared = |id: &str, service: &str| json!({ "id": id, "name": "swift:swift_undeclared", "config": { "service": service } });
     fixture

@@ -40,16 +40,19 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::runtimes::{repo, COLD};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, FiberView, Plugin, PluginFactory};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error};
 use rutis_bridge::events::testing::Tap;
 use rutis_bridge::runtime::testing::events::{
     self, Coverage, EventsLog, EventsLogService, Location, Row, Tally, World,
 };
 use rutis_bridge::runtime::{Launcher, LocalRuntime};
 use rutis_bridge::session::{host_key, HostDispatch};
+use rutis_loader::report::EntryStatus;
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
 use rutis_loader::{
-    Builtins, Chain, EntryStatus, Layer, Loader, LoaderOptions, LoaderPlugin, Patch,
-    RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
+    Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
 };
 use serde_json::{json, Value as Json};
 
@@ -362,12 +365,12 @@ struct Anchor {
     anchors: Anchors,
 }
 
-impl Plugin for Anchor {
+impl DynPlugin for Anchor {
     fn name(&self) -> &str {
         "scope-anchor"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             self.anchors
                 .0
@@ -390,7 +393,7 @@ impl PluginFactory<Json> for AnchorFactory {
         "scope-anchor"
     }
 
-    fn build(&self, config: &Json) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &Json) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(Anchor {
             path: config["path"].as_str().unwrap_or("root").to_owned(),
             anchors: self.0.clone(),
@@ -462,14 +465,14 @@ impl Host {
         // The host prints event failures as rutis-host does; the tap
         // records them and counts and holds the runtimes' dispatches.
         let tap = Tap::new();
-        let print: rutis::ErrorSink =
+        let print: rutis::host::ErrorSink =
             Arc::new(|error| match rutis_bridge::events::report_line(&error) {
                 Some(line) => eprintln!("{line}"),
-                None => rutis::default_sink()(error),
+                None => rutis::host::default_sink()(error),
             });
         let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), tap.sink(print));
         tap.attach(&root).unwrap();
-        root.provide_as::<dyn HostDispatch>(
+        root.provide_at(
             host_key("events-log"),
             Arc::new(EventsLogService(log.clone())),
         )
@@ -480,7 +483,11 @@ impl Host {
         }
         let anchors = Anchors::default();
         let mut builtins = Builtins::new();
-        builtins.register::<Json, _>("scope-anchor", AnchorFactory(anchors.clone()));
+        builtins.register_raw(
+            "scope-anchor",
+            AnchorFactory(anchors.clone()),
+            common::schema_of::<Json>(),
+        );
         let rust = rust_participant::register(&mut builtins, log.clone(), tap);
 
         let mut chain = Chain::new().with(builtins);
@@ -958,7 +965,7 @@ impl World for Host {
             return self.node.emitter(label);
         }
         let ctx = self.anchors.0.lock().unwrap().get(&row.scope).cloned()?;
-        ctx.get_as::<dyn HostDispatch>(host_key(&format!("emitter-{label}")))
+        ctx.get_at::<dyn HostDispatch>(&host_key(&format!("emitter-{label}")))
     }
 
     fn kill<'a>(&'a self, target: Location) -> BoxFuture<'a, Result<(), String>> {

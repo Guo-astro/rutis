@@ -1,4 +1,4 @@
-use rutis::BoxFuture;
+use rutis::host::BoxFuture;
 
 use crate::{Edit, LoaderError, Patch, PersistError};
 

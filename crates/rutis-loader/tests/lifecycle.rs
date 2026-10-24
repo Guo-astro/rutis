@@ -6,13 +6,12 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::*;
-use rutis::{
-    BoxFuture, CordisError, Ctx, Effect, EventKey, FiberState, Listener, Plugin, PluginFactory,
-};
-use rutis_loader::{
-    volatile_key, Builtins, Editable, EntryStatus, Layer, LoaderChanged, LoaderOptions,
-    LoaderPlugin, NewEntry, Resolved, Resolver, VolatileUpdate,
-};
+use rutis::host::{BoxFuture, CtxHost, FiberState};
+use rutis::Ctx;
+use rutis_loader::edit::{volatile_key, Editable, NewEntry, VolatileUpdate};
+use rutis_loader::report::{EntryStatus, LoaderChanged};
+use rutis_loader::resolve::Resolved;
+use rutis_loader::{Builtins, Layer, LoaderOptions, LoaderPlugin, Resolver};
 use rutis_test_support::{still_pending, until};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -40,58 +39,31 @@ struct TunablePlugin {
     log: Log,
 }
 
-struct Updates(Log);
+impl rutis::Plugin for TunablePlugin {
+    type Deps = ();
 
-impl Listener<VolatileUpdate> for Updates {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a VolatileUpdate,
-        _: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        self.0
+    fn name(&self) -> &str {
+        "tunable"
+    }
+
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
+        self.log
             .lock()
             .unwrap()
-            .push(format!("volatile {:?} {}", e.paths, e.config["level"]));
-        Box::pin(async { Ok(None) })
-    }
-}
-
-impl Plugin for TunablePlugin {
-    fn name(&self) -> &str {
-        "tunable"
-    }
-
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            self.log
-                .lock()
-                .unwrap()
-                .push(format!("apply {} {}", self.name, self.level));
-            if self.quit {
-                ctx.dispose_self()?;
-            }
-            ctx.events()
-                .on(ctx, &volatile_key(ctx), Updates(self.log.clone()))?;
-            Ok(Effect::Done)
-        })
-    }
-}
-
-struct TunableFactory(Log);
-
-impl PluginFactory<Tunable> for TunableFactory {
-    fn name(&self) -> &str {
-        "tunable"
-    }
-
-    fn build(&self, config: &Tunable) -> Result<Box<dyn Plugin>, CordisError> {
-        Ok(Box::new(TunablePlugin {
-            name: config.name.clone(),
-            level: config.level,
-            quit: config.quit,
-            log: self.0.clone(),
-        }))
+            .push(format!("apply {} {}", self.name, self.level));
+        if self.quit {
+            ctx.dispose_self()?;
+        }
+        let log = self.log.clone();
+        ctx.listen::<VolatileUpdate>()
+            .name(volatile_key(ctx))
+            .on(move |e, _| {
+                log.lock()
+                    .unwrap()
+                    .push(format!("volatile {:?} {}", e.paths, e.config["level"]));
+                std::future::ready(Ok(None))
+            })?;
+        Ok(())
     }
 }
 
@@ -116,7 +88,15 @@ async fn setup(
 ) {
     let log = Log::default();
     let mut builtins = Builtins::new();
-    builtins.register::<Tunable, _>("tunable", TunableFactory(log.clone()));
+    let tunables = log.clone();
+    builtins.register("tunable", move |config: &Tunable| {
+        Ok(TunablePlugin {
+            name: config.name.clone(),
+            level: config.level,
+            quit: config.quit,
+            log: tunables.clone(),
+        })
+    });
     let root = Ctx::root().unwrap();
     let plugin = LoaderPlugin::new(
         Tunables(builtins),
@@ -128,28 +108,13 @@ async fn setup(
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
     let changes = Arc::new(Mutex::new(Vec::new()));
-    root.events()
-        .on(
-            &root,
-            &EventKey::<LoaderChanged>::of(),
-            Changes(changes.clone()),
-        )
-        .unwrap();
+    let seen = changes.clone();
+    root.on::<LoaderChanged>(move |e, _| {
+        seen.lock().unwrap().push((*e).clone());
+        std::future::ready(Ok(None))
+    })
+    .unwrap();
     (root, loader, log, changes)
-}
-
-struct Changes(Arc<Mutex<Vec<LoaderChanged>>>);
-
-impl Listener<LoaderChanged> for Changes {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a LoaderChanged,
-        _: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        self.0.lock().unwrap().push(e.clone());
-        Box::pin(async { Ok(None) })
-    }
 }
 
 fn self_disposed(changes: &Arc<Mutex<Vec<LoaderChanged>>>) -> Option<(String, Option<String>)> {
@@ -204,23 +169,6 @@ async fn without_an_editable_layer_the_failure_is_reported() {
     assert!(error.unwrap().contains("no editable layer"));
 }
 
-/// Sends each row reported as disposing itself.
-struct SelfDisposals(tokio::sync::mpsc::UnboundedSender<String>);
-
-impl Listener<LoaderChanged> for SelfDisposals {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a LoaderChanged,
-        _: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        if let LoaderChanged::SelfDisposed { id, .. } = e {
-            let _ = self.0.send(id.clone());
-        }
-        Box::pin(async { Ok(None) })
-    }
-}
-
 // In-process only (the kernel, the loader and its monitors are tasks of
 // this runtime), so the paused clock applies.
 /// guarantee: loader/self-dispose
@@ -229,13 +177,14 @@ async fn loader_disposals_are_not_self_disposals() {
     let store = MemStore::default();
     let (root, loader, _log, changes) = setup(&store).await;
     let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
-    root.events()
-        .on(
-            &root,
-            &EventKey::<LoaderChanged>::of(),
-            SelfDisposals(sender),
-        )
-        .unwrap();
+    // Sends each row reported as disposing itself.
+    root.on::<LoaderChanged>(move |e, _| {
+        if let LoaderChanged::SelfDisposed { id, .. } = &*e {
+            let _ = sender.send(id.clone());
+        }
+        std::future::ready(Ok(None))
+    })
+    .unwrap();
     reconcile(
         &loader,
         patches(json!([{ "insert": [{ "id": "t", "name": "tunable" }] }])),

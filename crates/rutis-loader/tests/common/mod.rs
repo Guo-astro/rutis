@@ -2,18 +2,24 @@
 
 pub mod runtimes;
 
+use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rutis::{
-    BoxFuture, CordisError, Ctx, Effect, EventKey, FiberState, FiberStatusChanged, Listener,
-    Plugin, PluginFactory, PluginId, TypeKey,
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberStatusChanged,
+    PluginFactory, PluginId, TypeKey,
 };
+use rutis::{Ctx, Error};
+use rutis_loader::edit::{Edit, Editable, Persist, PersistError, Version};
+use rutis_loader::report::EntryStatus;
+use rutis_loader::resolve::{Build, Resolved, ScopedFactory};
 use rutis_loader::{
-    Builtins, Edit, Editable, EntryStatus, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin,
-    Patch, Persist, PersistError, Resolved, Resolver, Version,
+    Builtins, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch, Resolver,
 };
 use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -42,17 +48,19 @@ struct Echo {
     broken: Arc<AtomicBool>,
 }
 
-impl Plugin for Echo {
+impl DynPlugin for Echo {
     fn name(&self) -> &str {
         self.kind
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let label = self.config.label.clone();
             if self.config.fail_apply || self.broken.load(Ordering::SeqCst) {
                 self.log.lock().unwrap().push(format!("fail:{label}"));
-                return Err(CordisError::PluginFailed(format!("{label} failed").into()));
+                return Err(rutis::Error::from(ErrorKind::PluginFailed(
+                    format!("{label} failed").into(),
+                )));
             }
             match self.kind {
                 "provider" => {
@@ -86,20 +94,20 @@ impl PluginFactory<EchoConfig> for EchoFactory {
         self.kind
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn validate_config(&self, config: &EchoConfig) -> Result<(), CordisError> {
+    fn validate_config(&self, config: &EchoConfig) -> Result<(), Error> {
         if config.invalid {
-            return Err(CordisError::Validation {
+            return Err(rutis::Error::from(ErrorKind::Validation {
                 issues: vec!["invalid".into()],
-            });
+            }));
         }
         Ok(())
     }
 
-    fn build(&self, config: &EchoConfig) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &EchoConfig) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(Echo {
             kind: self.kind,
             config: config.clone(),
@@ -136,26 +144,28 @@ impl Harness {
             ("consumer", "consumer", vec![TypeKey::of::<Dep>()]),
             ("late", "echo", vec![]),
         ] {
-            builtins.register::<EchoConfig, _>(
+            builtins.register_raw(
                 name,
-                EchoFactory {
+                json(EchoFactory {
                     kind,
                     injects,
                     log: self.log.clone(),
                     broken: Arc::new(AtomicBool::new(false)),
-                },
+                }),
+                schema_of::<EchoConfig>(),
             );
         }
-        builtins.register::<EchoConfig, _>(
+        builtins.register_raw(
             "flaky",
-            EchoFactory {
+            json(EchoFactory {
                 kind: "flaky",
                 injects: vec![],
                 log: self.log.clone(),
                 broken: self.broken.clone(),
-            },
+            }),
+            schema_of::<EchoConfig>(),
         );
-        builtins.register_fn::<Value, _>("plain", |_| Ok(Box::new(Nothing)));
+        builtins.register::<Value, _, _>("plain", |_| Ok(Nothing));
         Switch {
             builtins,
             late: self.late.clone(),
@@ -169,13 +179,144 @@ impl Harness {
 
 struct Nothing;
 
-impl Plugin for Nothing {
+impl rutis::Plugin for Nothing {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "nothing"
     }
 
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async { Ok(Effect::Done) })
+    async fn apply(&self, _ctx: &Ctx, (): ()) -> rutis::Result {
+        Ok(())
+    }
+}
+
+/// `factory` taking the row's JSON config, decoded as `Builtins::register`
+/// decodes it (a `null` config as `null` first, then as `{}`), for
+/// `Builtins::register_raw`: a factory that declares its dependencies in
+/// `injects()` and checks its config in `validate_config`.
+pub fn json<C, F>(factory: F) -> Json<C, F>
+where
+    C: DeserializeOwned + Send + Sync + 'static,
+    F: PluginFactory<C>,
+{
+    Json {
+        inner: factory,
+        _config: PhantomData,
+    }
+}
+
+/// The schema `Builtins::register` gives a config of type `C`.
+pub fn schema_of<C: JsonSchema>() -> Option<Value> {
+    serde_json::to_value(schemars::schema_for!(C)).ok()
+}
+
+/// See [`json`].
+pub struct Json<C, F> {
+    inner: F,
+    _config: PhantomData<fn() -> C>,
+}
+
+fn decode<C: DeserializeOwned>(value: &Value) -> Result<C, Error> {
+    let first = serde_json::from_value::<C>(value.clone());
+    match (first, value) {
+        (Ok(config), _) => Ok(config),
+        (Err(_), Value::Null) => serde_json::from_value::<C>(Value::Object(Default::default()))
+            .map_err(|e| {
+                Error::from(ErrorKind::Validation {
+                    issues: vec![e.to_string()],
+                })
+            }),
+        (Err(e), _) => Err(Error::from(ErrorKind::Validation {
+            issues: vec![e.to_string()],
+        })),
+    }
+}
+
+impl<C, F> PluginFactory<Value> for Json<C, F>
+where
+    C: DeserializeOwned + Send + Sync + 'static,
+    F: PluginFactory<C>,
+{
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn injects(&self) -> Vec<TypeKey> {
+        self.inner.injects()
+    }
+
+    fn validate_config(&self, config: &Value) -> Result<(), Error> {
+        self.inner.validate_config(&decode::<C>(config)?)
+    }
+
+    fn build(&self, config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
+        self.inner.build(&decode::<C>(config)?)
+    }
+}
+
+/// Plugins whose factory is built for each copy from the instances it runs
+/// in, with dependencies qualified by those instances (`injects()` naming
+/// keys of `build.instance(..)`): what `Resolved::with_scoped` takes.
+/// `Builtins::register_with` builds a `Plugin`, whose `Deps` name types
+/// only, so these resolve here, in front of the `Builtins` in a `Chain`.
+#[derive(Default)]
+pub struct Scoped {
+    entries: HashMap<String, Arc<Resolved>>,
+}
+
+impl Scoped {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `build` makes the factory of each copy from where it runs
+    /// ([`Build::instance`]); outside instanced groups such a row fails.
+    pub fn register<C, F, B>(&mut self, name: impl Into<String>, build: B) -> &mut Self
+    where
+        C: DeserializeOwned + JsonSchema + Send + Sync + 'static,
+        F: PluginFactory<C>,
+        B: Fn(&Build) -> Result<F, Error> + Send + Sync + 'static,
+    {
+        let name = name.into();
+        let scoped: ScopedFactory = Arc::new(move |at: &Build| {
+            let factory: Arc<dyn PluginFactory<Value>> = Arc::new(json::<C, F>(build(at)?));
+            Ok(factory)
+        });
+        let resolved = Resolved::new(Arc::new(Unscoped { name: name.clone() }))
+            .with_schema(schema_of::<C>())
+            .with_meta(serde_json::json!({ "source": "builtin" }))
+            .with_scoped(scoped);
+        self.entries.insert(name, Arc::new(resolved));
+        self
+    }
+}
+
+impl Resolver for Scoped {
+    fn resolve<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<Resolved>, LoaderError>> {
+        let found = self.entries.get(name).cloned();
+        Box::pin(async move {
+            found.ok_or_else(|| LoaderError::NotFound {
+                name: name.to_owned(),
+            })
+        })
+    }
+}
+
+/// The factory of a [`Scoped`] plugin outside any instance.
+struct Unscoped {
+    name: String,
+}
+
+impl PluginFactory<Value> for Unscoped {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn build(&self, _config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
+        Err(Error::from(ErrorKind::PluginFailed(
+            format!("{} runs only inside an instanced group", self.name).into(),
+        )))
     }
 }
 
@@ -328,13 +469,12 @@ pub struct Transitions(Arc<Mutex<Vec<(PluginId, u64, FiberState)>>>);
 impl Transitions {
     pub fn on(root: &Ctx) -> Self {
         let transitions = Self::default();
-        root.events()
-            .on(
-                root,
-                &EventKey::<FiberStatusChanged>::of(),
-                transitions.clone(),
-            )
-            .unwrap();
+        let seen = transitions.clone();
+        root.on::<FiberStatusChanged>(move |e, _| {
+            seen.0.lock().unwrap().push((e.plugin_id, e.seq, e.to));
+            std::future::ready(Ok(None))
+        })
+        .unwrap();
         transitions
     }
 
@@ -385,17 +525,5 @@ impl Transitions {
         seen.iter()
             .filter(|(id, _, state)| plugins.contains(id) && *state == FiberState::Loading)
             .count()
-    }
-}
-
-impl Listener<FiberStatusChanged> for Transitions {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a FiberStatusChanged,
-        _: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        self.0.lock().unwrap().push((e.plugin_id, e.seq, e.to));
-        Box::pin(async { Ok(None) })
     }
 }

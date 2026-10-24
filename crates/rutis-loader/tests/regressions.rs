@@ -3,10 +3,11 @@
 mod common;
 
 use common::*;
-use rutis::FiberState;
-use rutis_loader::{
-    apply_edit, apply_patches, Edit, Editable, EntryStatus, Layer, LoaderError, NewEntry, Version,
-};
+use rutis::host::{CtxHost, FiberState};
+use rutis_loader::edit::{apply_edit, Edit, Editable, NewEntry, Version};
+use rutis_loader::internal::apply_patches;
+use rutis_loader::report::EntryStatus;
+use rutis_loader::{Layer, LoaderError};
 use serde_json::json;
 
 /// Finding 1: Moving a group keeps the children another patch inserted into it.

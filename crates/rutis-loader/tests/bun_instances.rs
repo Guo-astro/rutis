@@ -8,13 +8,15 @@ mod common;
 use std::sync::Arc;
 
 use common::runtimes::{active, repo, title, NoConfig, Probe, Title, Tools};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory, TypeKey};
+use common::Scoped;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, PluginFactory, TypeKey};
+use rutis::{Ctx, Error};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, host_key_in, settle, HostDispatch, Value as RpcValue};
-use rutis_loader::{
-    Builtins, Chain, EntryInfo, Instance, InstanceResult, Layer, Loader, LoaderOptions,
-    LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
-};
+use rutis_loader::edit::{Instance, InstanceResult};
+use rutis_loader::report::EntryInfo;
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::{Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 use serde_json::json;
 
 // ── The language row ────────────────────────────────────────────
@@ -34,9 +36,9 @@ export function apply(ctx) {
 
 enum Job {
     /// Provide `Tools` at this key.
-    Provide(TypeKey),
+    Provide(Key<dyn HostDispatch>),
     /// Read the timeline at this key and record it.
-    Read(TypeKey),
+    Read(Key<dyn HostDispatch>),
 }
 
 struct JobPlugin {
@@ -45,42 +47,42 @@ struct JobPlugin {
     injects: Vec<TypeKey>,
 }
 
-impl Plugin for JobPlugin {
+impl DynPlugin for JobPlugin {
     fn name(&self) -> &str {
         "job"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             match &*self.job {
                 Job::Provide(key) => {
-                    ctx.provide_as::<dyn HostDispatch>(
-                        key.clone(),
-                        Arc::new(Tools(self.title.clone())),
-                    )?;
+                    ctx.provide_at(key.clone(), Arc::new(Tools(self.title.clone())))?;
                 }
                 Job::Read(key) => {
                     let mut seen = Vec::new();
                     {
-                        let timeline = ctx.require_as::<dyn HostDispatch>(key.clone())?;
+                        let timeline = ctx.require_at(key)?;
                         let call = timeline
                             .invoke("title", RpcValue::List(Vec::new()))
-                            .map_err(|e| CordisError::PluginFailed(e.to_string().into()))?;
-                        let title = settle(call)
-                            .await
-                            .and_then(RpcValue::json)
-                            .map_err(|e| CordisError::PluginFailed(e.to_string().into()))?;
+                            .map_err(|e| {
+                                rutis::Error::from(ErrorKind::PluginFailed(e.to_string().into()))
+                            })?;
+                        let title = settle(call).await.and_then(RpcValue::json).map_err(|e| {
+                            rutis::Error::from(ErrorKind::PluginFailed(e.to_string().into()))
+                        })?;
                         seen.push(title.as_str().unwrap_or_default().to_owned());
                     }
-                    let probe = ctx.require_as::<dyn HostDispatch>(host_key("probe"))?;
+                    let probe = ctx.require_at::<dyn HostDispatch>(&host_key("probe"))?;
                     let line = format!("rust in {} reads {}", self.title, seen.join(" / "));
                     probe
                         .invoke("record", RpcValue::List(vec![json!(line).into()]))
-                        .map_err(|e| CordisError::PluginFailed(e.to_string().into()))?;
+                        .map_err(|e| {
+                            rutis::Error::from(ErrorKind::PluginFailed(e.to_string().into()))
+                        })?;
                 }
             }
             Ok(Effect::Done)
@@ -99,11 +101,11 @@ impl PluginFactory<NoConfig> for JobFactory {
         "job"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn build(&self, _: &NoConfig) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, _: &NoConfig) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(JobPlugin {
             job: self.job.clone(),
             title: self.title.clone(),
@@ -112,9 +114,9 @@ impl PluginFactory<NoConfig> for JobFactory {
     }
 }
 
-fn builtins() -> Builtins {
-    let mut builtins = Builtins::new();
-    builtins.register_with::<NoConfig, _, _>("tools", |build| {
+fn builtins() -> Scoped {
+    let mut builtins = Scoped::new();
+    builtins.register::<NoConfig, _, _>("tools", |build| {
         let instance = build.instance("session")?;
         Ok(JobFactory {
             job: Arc::new(Job::Provide(host_key_in("tools", instance))),
@@ -122,11 +124,11 @@ fn builtins() -> Builtins {
             injects: Vec::new(),
         })
     });
-    builtins.register_with::<NoConfig, _, _>("reader", |build| {
+    builtins.register::<NoConfig, _, _>("reader", |build| {
         let instance = build.instance("session")?;
         let key = host_key_in("bun_timeline", instance);
         Ok(JobFactory {
-            injects: vec![key.clone(), host_key("probe")],
+            injects: vec![key.erase(), host_key("probe").erase()],
             job: Arc::new(Job::Read(key)),
             title: title(build),
         })
@@ -150,7 +152,7 @@ async fn fixture() -> Fixture {
 
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let mut catalog = ServiceCatalog::new();
     catalog.register_shared("probe");

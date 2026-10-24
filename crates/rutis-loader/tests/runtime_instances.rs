@@ -11,7 +11,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use common::runtimes::{id, NoConfig};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, PluginFactory, TypeKey};
+use common::Scoped;
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, PluginFactory, TypeKey,
+};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error as RutisError};
 use rutis_bridge::session::{
     settle, Connection, Dispatch, Endpoint, Error, Format, HostDispatch, Reply, Value as RpcValue,
 };
@@ -20,10 +25,10 @@ use rutis_bridge::{
     protocol, AccessEvent, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Credential, Dial,
     Identity, SharedToken, StaticIdentity, Transport,
 };
-use rutis_loader::{
-    Builtins, Chain, Editable, EntryInfo, EntryStatus, Layer, Loader, LoaderOptions, LoaderPlugin,
-    NewEntry, Patch, RuntimeConnection, RuntimeInstances, ServiceCatalog, Version,
-};
+use rutis_loader::edit::{Editable, NewEntry, Version};
+use rutis_loader::report::{EntryInfo, EntryStatus};
+use rutis_loader::runtime::{RuntimeConnection, RuntimeInstances};
+use rutis_loader::{Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 use rutis_test_support::{eventually, scaled, within, HANG_GUARD};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
@@ -189,19 +194,21 @@ struct Reader {
     log: Log,
 }
 
-impl Plugin for Reader {
+impl DynPlugin for Reader {
     fn name(&self) -> &str {
         "reader"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        std::slice::from_ref(&self.key)
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.key.clone()]
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
-            let failed = |error: Error| CordisError::PluginFailed(error.to_string().into());
-            let contacts = ctx.require_as::<dyn HostDispatch>(self.key.clone())?;
+            let failed = |error: Error| {
+                rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
+            };
+            let contacts = ctx.require_key::<dyn HostDispatch>(self.key.clone())?;
             let call = contacts
                 .invoke("whoami", RpcValue::List(Vec::new()))
                 .map_err(failed)?;
@@ -237,11 +244,11 @@ impl PluginFactory<NoConfig> for ReaderFactory {
         "reader"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.key
+    fn injects(&self) -> Vec<TypeKey> {
+        self.key.to_vec()
     }
 
-    fn build(&self, _: &NoConfig) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, _: &NoConfig) -> Result<Box<dyn DynPlugin>, RutisError> {
         Ok(Box::new(Reader {
             key: self.key[0].clone(),
             connection: self.connection.clone(),
@@ -292,7 +299,7 @@ async fn main() -> Main {
 
     // A global `weather`: a connection whose plugins include one no row
     // runs must not take the name over in its instance.
-    root.provide_as::<dyn HostDispatch>(
+    root.provide_at(
         rutis_bridge::session::host_key("weather"),
         Arc::new(GlobalWeather),
     )
@@ -301,13 +308,13 @@ async fn main() -> Main {
     let mut catalog = ServiceCatalog::new();
     catalog.share_by_name();
     let log = Log::default();
-    let mut builtins = Builtins::new();
+    let mut builtins = Scoped::new();
     {
         let (catalog, log) = (catalog.clone(), log.clone());
-        builtins.register_with::<NoConfig, _, _>("weather-reader", move |build| {
-            let key = catalog
-                .key_in("weather", build)
-                .map_err(|error| CordisError::PluginFailed(error.to_string().into()))?;
+        builtins.register::<NoConfig, _, _>("weather-reader", move |build| {
+            let key = catalog.key_in("weather", build).map_err(|error| {
+                rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
+            })?;
             let connection = build
                 .value::<RuntimeConnection>()
                 .map(|connection| connection.id().to_string())
@@ -321,10 +328,10 @@ async fn main() -> Main {
     }
     {
         let (catalog, log) = (catalog.clone(), log.clone());
-        builtins.register_with::<NoConfig, _, _>("reader", move |build| {
-            let key = catalog
-                .key_in("contacts", build)
-                .map_err(|error| CordisError::PluginFailed(error.to_string().into()))?;
+        builtins.register::<NoConfig, _, _>("reader", move |build| {
+            let key = catalog.key_in("contacts", build).map_err(|error| {
+                rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
+            })?;
             let connection = build
                 .value::<RuntimeConnection>()
                 .map(|connection| connection.id().to_string())
@@ -448,7 +455,7 @@ async fn connections_with_the_same_plugin_each_get_their_own_instance() {
     // Each instance's own: nothing is provided under the global name.
     assert!(main
         ._root
-        .get_as::<dyn HostDispatch>(rutis_bridge::session::host_key("contacts"))
+        .get_at(&rutis_bridge::session::host_key("contacts"))
         .is_none());
 }
 
@@ -606,7 +613,7 @@ async fn undeclared_services_are_each_instances_own() {
     assert_eq!(main.states("reader"), (2, Vec::new()));
     assert!(main
         ._root
-        .get_as::<dyn HostDispatch>(rutis_bridge::session::host_key("contacts"))
+        .get_at(&rutis_bridge::session::host_key("contacts"))
         .is_none());
     // A name no row of the connection announces stays global.
     main.heard("reader in pixel hears global").await;

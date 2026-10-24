@@ -9,13 +9,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use common::runtimes::{active, repo, title, tool_callers, NoConfig, Probe, Title, Tools, COLD};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory, TypeKey};
+use common::Scoped;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, PluginFactory, TypeKey};
+use rutis::{Ctx, Error};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, host_key_in, settle, HostDispatch, Value as RpcValue};
-use rutis_loader::{
-    Builtins, Chain, EntryInfo, EntryStatus, Instance, InstanceResult, Layer, Loader,
-    LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
-};
+use rutis_loader::edit::{Instance, InstanceResult};
+use rutis_loader::report::{EntryInfo, EntryStatus};
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::{Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 use serde_json::{json, Value};
 
 // ── The language rows ───────────────────────────────────────────
@@ -59,9 +61,12 @@ export default definePlugin({
 
 enum Job {
     /// Provide `Tools` at this key.
-    Provide(TypeKey),
+    Provide(Key<dyn HostDispatch>),
     /// Read both timelines at these keys and record them.
-    Read { py: TypeKey, js: TypeKey },
+    Read {
+        py: Key<dyn HostDispatch>,
+        js: Key<dyn HostDispatch>,
+    },
 }
 
 struct Job1 {
@@ -70,42 +75,42 @@ struct Job1 {
     injects: Vec<TypeKey>,
 }
 
-impl Plugin for Job1 {
+impl DynPlugin for Job1 {
     fn name(&self) -> &str {
         "job"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             match &*self.job {
                 Job::Provide(key) => {
-                    ctx.provide_as::<dyn HostDispatch>(
-                        key.clone(),
-                        Arc::new(Tools(self.title.clone())),
-                    )?;
+                    ctx.provide_at(key.clone(), Arc::new(Tools(self.title.clone())))?;
                 }
                 Job::Read { py, js } => {
                     let mut seen = Vec::new();
                     for key in [py, js] {
-                        let timeline = ctx.require_as::<dyn HostDispatch>(key.clone())?;
+                        let timeline = ctx.require_at(key)?;
                         let call = timeline
                             .invoke("title", RpcValue::List(Vec::new()))
-                            .map_err(|e| CordisError::PluginFailed(e.to_string().into()))?;
-                        let title = settle(call)
-                            .await
-                            .and_then(RpcValue::json)
-                            .map_err(|e| CordisError::PluginFailed(e.to_string().into()))?;
+                            .map_err(|e| {
+                                rutis::Error::from(ErrorKind::PluginFailed(e.to_string().into()))
+                            })?;
+                        let title = settle(call).await.and_then(RpcValue::json).map_err(|e| {
+                            rutis::Error::from(ErrorKind::PluginFailed(e.to_string().into()))
+                        })?;
                         seen.push(title.as_str().unwrap_or_default().to_owned());
                     }
-                    let probe = ctx.require_as::<dyn HostDispatch>(host_key("probe"))?;
+                    let probe = ctx.require_at::<dyn HostDispatch>(&host_key("probe"))?;
                     let line = format!("rust in {} reads {}", self.title, seen.join(" / "));
                     probe
                         .invoke("record", RpcValue::List(vec![json!(line).into()]))
-                        .map_err(|e| CordisError::PluginFailed(e.to_string().into()))?;
+                        .map_err(|e| {
+                            rutis::Error::from(ErrorKind::PluginFailed(e.to_string().into()))
+                        })?;
                 }
             }
             Ok(Effect::Done)
@@ -124,11 +129,11 @@ impl PluginFactory<NoConfig> for JobFactory {
         "job"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn build(&self, _: &NoConfig) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, _: &NoConfig) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(Job1 {
             job: self.job.clone(),
             title: self.title.clone(),
@@ -137,9 +142,9 @@ impl PluginFactory<NoConfig> for JobFactory {
     }
 }
 
-fn builtins() -> Builtins {
-    let mut builtins = Builtins::new();
-    builtins.register_with::<NoConfig, _, _>("tools", |build| {
+fn builtins() -> Scoped {
+    let mut builtins = Scoped::new();
+    builtins.register::<NoConfig, _, _>("tools", |build| {
         let instance = build.instance("session")?;
         Ok(JobFactory {
             job: Arc::new(Job::Provide(host_key_in("tools", instance))),
@@ -147,12 +152,12 @@ fn builtins() -> Builtins {
             injects: Vec::new(),
         })
     });
-    builtins.register_with::<NoConfig, _, _>("reader", |build| {
+    builtins.register::<NoConfig, _, _>("reader", |build| {
         let instance = build.instance("session")?;
         let py = host_key_in("py_timeline", instance);
         let js = host_key_in("js_timeline", instance);
         Ok(JobFactory {
-            injects: vec![py.clone(), js.clone(), host_key("probe")],
+            injects: vec![py.erase(), js.erase(), host_key("probe").erase()],
             job: Arc::new(Job::Read { py, js }),
             title: title(build),
         })
@@ -194,7 +199,7 @@ async fn fixture() -> Fixture {
 
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let mut catalog = ServiceCatalog::new();
     catalog.register_shared("probe");

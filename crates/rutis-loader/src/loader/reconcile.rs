@@ -4,9 +4,9 @@ use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
-use rutis::{
-    CordisError, Ctx, Event, EventKey, FiberState, FiberView, PluginFactory, PluginId, TypeKey,
-};
+use rutis::host::{CtxHost, ErrorKind, FiberState, FiberView, PluginFactory, PluginId, TypeKey};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error, Event};
 use serde_json::Value;
 
 use crate::error::Failure;
@@ -45,7 +45,7 @@ fn effective_scope(resolved: &Resolved, row: &Row, build: &Build) -> Option<Boun
 }
 
 /// Fibers whose disposal the caller awaits, and events to emit afterwards.
-pub(super) type Dropped = (Vec<rutis::BoxFuture<'static, ()>>, Vec<LoaderChanged>);
+pub(super) type Dropped = (Vec<rutis::host::BoxFuture<'static, ()>>, Vec<LoaderChanged>);
 
 impl Inner {
     pub(super) fn eval(&self) -> Eval<'_> {
@@ -90,12 +90,16 @@ impl Inner {
         state: &State,
         resolved: &Resolved,
         scope: Option<u64>,
-    ) -> Result<Arc<dyn PluginFactory<Value>>, CordisError> {
+    ) -> Result<Arc<dyn PluginFactory<Value>>, Error> {
         match &resolved.scoped {
             None => Ok(resolved.factory.clone()),
             Some(scoped) => {
                 catch_unwind(AssertUnwindSafe(|| scoped(&Self::build_for(state, scope))))
-                    .unwrap_or_else(|_| Err(CordisError::PluginFailed("factory panicked".into())))
+                    .unwrap_or_else(|_| {
+                        Err(rutis::Error::from(ErrorKind::PluginFailed(
+                            "factory panicked".into(),
+                        )))
+                    })
             }
         }
     }
@@ -345,9 +349,9 @@ impl Inner {
         }
         let resolved = resolved.expect("a leaf row resolved above");
         let id = row.id.clone();
-        let rejected = |error: CordisError| LoaderError::Rejected {
+        let rejected = |error: Error| LoaderError::Rejected {
             id: id.clone(),
-            error: Arc::new(error),
+            error: Arc::new(error.into_kind()),
         };
         let factory = match Self::slot_factory(state, &resolved, slot.scope) {
             Ok(factory) => factory,
@@ -366,7 +370,11 @@ impl Inner {
         // The kernel's first load only builds and validates the instance;
         // check the config here as `update` and the dry run do.
         let checked = catch_unwind(AssertUnwindSafe(|| factory.validate_config(&config)))
-            .unwrap_or_else(|_| Err(CordisError::PluginFailed("validate_config panicked".into())));
+            .unwrap_or_else(|_| {
+                Err(rutis::Error::from(ErrorKind::PluginFailed(
+                    "validate_config panicked".into(),
+                )))
+            });
         if let Err(error) = checked {
             state.rejected.insert(slot, rejected(error));
             return None;
@@ -413,7 +421,7 @@ impl Inner {
     /// or unloaded; the plugins that created them create them again).
     /// Their records go too.
     pub(super) fn prune_instances(state: &mut State) -> Dropped {
-        let mut disposals: Vec<rutis::BoxFuture<'static, ()>> = Vec::new();
+        let mut disposals: Vec<rutis::host::BoxFuture<'static, ()>> = Vec::new();
         let mut events = Vec::new();
         loop {
             let mut gone: Vec<u64> = state
@@ -621,9 +629,7 @@ impl Inner {
             .get(&None)
             .map(|g| g.ctx.clone());
         if let Some(root) = root {
-            let _ = root
-                .events()
-                .emit(&root, &EventKey::<E>::of(), Arc::new(event));
+            let _ = root.emit(event);
         }
     }
 
@@ -815,7 +821,7 @@ impl Inner {
                 .filter(|slot| !keep.contains(*slot))
                 .cloned()
                 .collect();
-            let mut disposals: Vec<rutis::BoxFuture<'static, ()>> = Vec::new();
+            let mut disposals: Vec<rutis::host::BoxFuture<'static, ()>> = Vec::new();
             for slot in dropped {
                 let running = state.running.remove(&slot).unwrap();
                 let key = Some(slot);
@@ -960,7 +966,7 @@ impl Inner {
             self.respawn_instances(state);
         }
         for (ctx, key, update) in notifications {
-            let _ = ctx.events().emit(&ctx, &key, Arc::new(update));
+            let _ = ctx.named(key).emit(update);
         }
         for (slot, view, update, name) in updates {
             let result = update.await;

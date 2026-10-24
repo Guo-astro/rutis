@@ -8,7 +8,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use rutis::{Ctx, TypeKey};
+use rutis::host::TypeKey;
+use rutis::internal::CtxInternal;
+use rutis::Ctx;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -31,7 +33,7 @@ pub(crate) enum NameKey {
 /// The innermost instance enclosing a copy in `build` in which a marked
 /// Rust service is served as `name` ([`rutis_bridge::exports::claimed_in`]).
 #[cfg(feature = "runtimes")]
-pub(crate) fn marked_claim(name: &str, build: &Build) -> Option<rutis::InstanceId> {
+pub(crate) fn marked_claim(name: &str, build: &Build) -> Option<rutis::host::InstanceId> {
     build
         .chain
         .iter()
@@ -48,7 +50,7 @@ impl NameKey {
             // or that a `#[rutis::service]` type provided in an enclosing
             // instance is served as, is that instance's own.
             #[cfg(feature = "runtimes")]
-            NameKey::Global(key) if key == &rutis_bridge::session::host_key(name) => {
+            NameKey::Global(key) if *key == rutis_bridge::session::host_key(name).erase() => {
                 Ok(crate::runtime::claimed(name, build)
                     .or_else(|| marked_claim(name, build))
                     .map_or_else(
@@ -118,12 +120,12 @@ pub struct ServiceCatalog {
 }
 
 fn probe<T: ?Sized + Send + Sync + 'static>() -> Probe {
-    Arc::new(|ctx: &Ctx, key: &TypeKey| ctx.get_as::<T>(key.clone()).is_some())
+    Arc::new(|ctx: &Ctx, key: &TypeKey| ctx.get_key::<T>(key.clone()).is_some())
 }
 
 fn reader<T: Serialize + Send + Sync + 'static>() -> Read {
     Arc::new(|ctx: &Ctx, key: &TypeKey| {
-        ctx.get_as::<T>(key.clone())
+        ctx.get_key::<T>(key.clone())
             .and_then(|value| serde_json::to_value(&*value).ok())
     })
 }
@@ -257,7 +259,7 @@ impl ServiceCatalog {
     pub fn register_shared(&mut self, name: impl Into<String>) -> &mut Self {
         let name = name.into();
         let key = rutis_bridge::session::host_key(&name);
-        self.register_keyed::<dyn rutis_bridge::session::HostDispatch>(name, key)
+        self.register_keyed::<dyn rutis_bridge::session::HostDispatch>(name, key.erase())
     }
 
     /// A shared service ([`ServiceCatalog::register_shared`]) inside each
@@ -272,7 +274,11 @@ impl ServiceCatalog {
     ) -> &mut Self {
         let name = name.into();
         let key = rutis_bridge::session::host_key(&name);
-        self.register_instance_keyed::<dyn rutis_bridge::session::HostDispatch>(name, group, key)
+        self.register_instance_keyed::<dyn rutis_bridge::session::HostDispatch>(
+            name,
+            group,
+            key.erase(),
+        )
     }
 
     /// Share every name not registered otherwise, as
@@ -313,11 +319,13 @@ impl ServiceCatalog {
         let name = export.name().to_owned();
         let key = rutis_bridge::session::host_key(&name);
         match export.group() {
-            None => self.register_keyed::<dyn rutis_bridge::session::HostDispatch>(&name, key),
+            None => {
+                self.register_keyed::<dyn rutis_bridge::session::HostDispatch>(&name, key.erase())
+            }
             Some(group) => self.register_instance_keyed::<dyn rutis_bridge::session::HostDispatch>(
                 &name,
                 group.to_owned(),
-                key,
+                key.erase(),
             ),
         };
         self.exports.retain(|known| known.name() != name);
@@ -355,7 +363,7 @@ impl ServiceCatalog {
     #[cfg(any(feature = "runtimes", feature = "peer"))]
     pub fn is_shared(&self, name: &str) -> bool {
         self.name_key(name)
-            .is_some_and(|key| key.base() == &rutis_bridge::session::host_key(name))
+            .is_some_and(|key| key.base() == &rutis_bridge::session::host_key(name).erase())
     }
 
     /// [`ServiceCatalog::is_shared`]; nothing is shared without runtimes or
@@ -377,7 +385,7 @@ impl ServiceCatalog {
             return false;
         };
         #[cfg(any(feature = "runtimes", feature = "peer"))]
-        if service.key.base() == &rutis_bridge::session::host_key(name) {
+        if service.key.base() == &rutis_bridge::session::host_key(name).erase() {
             // An exported Rust service is the application's own.
             return self.exports.iter().any(|export| export.name() == name);
         }
@@ -391,7 +399,7 @@ impl ServiceCatalog {
     pub(crate) fn marked_by_host(&self, name: &str) -> Option<&'static str> {
         #[cfg(any(feature = "runtimes", feature = "peer"))]
         if self.shared_key(name).is_some() {
-            return rutis::service::exported_as(name);
+            return rutis::internal::service::exported_as(name);
         }
         let _ = name;
         None
@@ -416,8 +424,8 @@ impl ServiceCatalog {
     /// The instance names usable in `build`'s instances, with the instance
     /// each resolves to: what a copy there isolates by instance.
     #[cfg(feature = "runtimes")]
-    pub(crate) fn instance_names(&self, build: &Build) -> Vec<(String, rutis::InstanceId)> {
-        let mut names: Vec<(String, rutis::InstanceId)> = self
+    pub(crate) fn instance_names(&self, build: &Build) -> Vec<(String, rutis::host::InstanceId)> {
+        let mut names: Vec<(String, rutis::host::InstanceId)> = self
             .services
             .iter()
             .filter_map(|(name, service)| {
@@ -437,9 +445,9 @@ impl ServiceCatalog {
             }
         }
         for (name, instance) in claimed {
-            let global = self
-                .name_key(&name)
-                .is_some_and(|key| key == NameKey::Global(rutis_bridge::session::host_key(&name)));
+            let global = self.name_key(&name).is_some_and(|key| {
+                key == NameKey::Global(rutis_bridge::session::host_key(&name).erase())
+            });
             if global && !names.iter().any(|(known, _)| known == &name) {
                 names.push((name, instance));
             }
@@ -459,8 +467,8 @@ impl ServiceCatalog {
     /// Rust services ([`rutis::service`]) always are.
     #[cfg(any(feature = "runtimes", feature = "peer"))]
     fn shared_key(&self, name: &str) -> Option<TypeKey> {
-        (self.by_name || rutis::service::is_exported(name))
-            .then(|| rutis_bridge::session::host_key(name))
+        (self.by_name || rutis::internal::service::is_exported(name))
+            .then(|| rutis_bridge::session::host_key(name).erase())
     }
 
     #[cfg(not(any(feature = "runtimes", feature = "peer")))]

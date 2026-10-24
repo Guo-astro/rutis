@@ -5,8 +5,11 @@ mod common;
 use std::sync::atomic::Ordering;
 
 use common::*;
-use rutis::FiberState;
-use rutis_loader::{apply_patches, Editable, EntryStatus, Layer, LoaderError, NewEntry, Version};
+use rutis::host::{CtxHost, FiberState};
+use rutis_loader::edit::{Edit, Editable, NewEntry, Version};
+use rutis_loader::internal::apply_patches;
+use rutis_loader::report::{EntryStatus, PendingEditDropped};
+use rutis_loader::{Layer, LoaderError};
 use rutis_test_support::{until, within};
 use serde_json::{json, Value};
 
@@ -567,9 +570,12 @@ async fn replay_drops_edits_that_no_longer_apply() {
     reconcile(&two, base(), &store).await;
 
     let dropped = Dropped::default();
-    r1.events()
-        .on(&r1, &rutis::EventKey::of(), dropped.clone())
-        .unwrap();
+    let seen = dropped.clone();
+    r1.on::<PendingEditDropped>(move |e, _| {
+        seen.0.lock().unwrap().push(e.edit.clone());
+        std::future::ready(Ok(None))
+    })
+    .unwrap();
 
     store.set_fail(true);
     assert!(one.update("x", json!({ "label": "x2" })).await.is_err());
@@ -591,7 +597,7 @@ async fn replay_drops_edits_that_no_longer_apply() {
     .await;
     assert_eq!(
         *dropped.0.lock().unwrap(),
-        vec![rutis_loader::Edit::Update {
+        vec![Edit::Update {
             id: "x".into(),
             config: json!({ "label": "x2" })
         }]
@@ -630,17 +636,6 @@ async fn edits_after_shutdown_are_closed() {
     let _ = Version::default();
 }
 
+/// The edits `PendingEditDropped` reported.
 #[derive(Clone, Default)]
-struct Dropped(std::sync::Arc<std::sync::Mutex<Vec<rutis_loader::Edit>>>);
-
-impl rutis::Listener<rutis_loader::PendingEditDropped> for Dropped {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a rutis::Ctx,
-        e: &'a rutis_loader::PendingEditDropped,
-        _: rutis::Call<'a, ()>,
-    ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-        self.0.lock().unwrap().push(e.edit.clone());
-        Box::pin(async { Ok(None) })
-    }
-}
+struct Dropped(std::sync::Arc<std::sync::Mutex<Vec<Edit>>>);

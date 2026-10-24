@@ -10,16 +10,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::runtimes::id;
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, PluginFactory, TypeKey};
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, Key, PluginFactory, PluginId,
+};
+use rutis::{Ctx, Error};
 use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
     peer_key, Credential, Described, HostPlugin, IdentityPlugin, LinkConfig, LinkPlugin, Peer,
     Retry, StaticCatalog, StaticIdentity,
 };
-use rutis_loader::{
-    Chain, EntryStatus, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch,
-    PeerResolver, PeerRowsPlugin,
-};
+use rutis_loader::peer::{PeerResolver, PeerRowsPlugin};
+use rutis_loader::report::EntryStatus;
+use rutis_loader::{Chain, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch};
 use rutis_test_support::eventually;
 use serde_json::{json, Value};
 
@@ -28,7 +30,7 @@ use serde_json::{json, Value};
 /// often it started.
 struct Greeter(Arc<AtomicUsize>);
 impl PluginFactory<Value> for Greeter {
-    fn build(&self, config: &Value) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(Greeting(
             config["text"].as_str().unwrap_or("hello").to_owned(),
             config["as"].as_str().map(str::to_owned),
@@ -37,18 +39,18 @@ impl PluginFactory<Value> for Greeter {
     }
 }
 struct Greeting(String, Option<String>, Arc<AtomicUsize>);
-impl Plugin for Greeting {
+impl DynPlugin for Greeting {
     fn name(&self) -> &str {
         "greeter"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             self.2.fetch_add(1, Ordering::SeqCst);
             let service = GreetingService(self.0.clone());
             match &self.1 {
                 Some(key) => {
-                    ctx.provide_as(
-                        TypeKey::keyed_dynamic::<GreetingService>(key.clone()),
+                    ctx.provide_at(
+                        Key::<GreetingService>::dynamic(key.clone()),
                         Arc::new(service),
                     )?;
                 }
@@ -72,7 +74,7 @@ struct Nodes {
     /// main's fibers' state changes, from before its rows exist.
     transitions: common::Transitions,
     /// Each row's fiber before mac linked in.
-    placeholders: std::collections::HashMap<String, rutis::PluginId>,
+    placeholders: std::collections::HashMap<String, PluginId>,
 }
 
 fn greeting(mac: &Ctx) -> Option<String> {
@@ -81,7 +83,7 @@ fn greeting(mac: &Ctx) -> Option<String> {
 }
 
 fn greeting_as(mac: &Ctx, key: &str) -> Option<String> {
-    mac.get_as::<GreetingService>(TypeKey::keyed_dynamic::<GreetingService>(key.to_owned()))
+    mac.get_at(&Key::<GreetingService>::dynamic(key.to_owned()))
         .map(|service| service.0.clone())
 }
 
@@ -272,7 +274,7 @@ async fn rows_stop_with_the_host_and_the_link_and_the_peer_stays() {
         "the row stopped",
     )
     .await;
-    assert!(nodes.main.get_as::<Peer>(peer_key(&id("mac"))).is_some());
+    assert!(nodes.main.get_at(&peer_key(&id("mac"))).is_some());
 
     // The host again: the row runs again.
     let catalog = StaticCatalog::new().with(
@@ -294,9 +296,7 @@ async fn rows_stop_with_the_host_and_the_link_and_the_peer_stays() {
     .await;
     eventually(
         || match nodes.loader.get("g")?.status {
-            EntryStatus::Running(snapshot) if snapshot.state != rutis::FiberState::Active => {
-                Some(())
-            }
+            EntryStatus::Running(snapshot) if snapshot.state != FiberState::Active => Some(()),
             _ => None,
         },
         "the row waiting",
@@ -311,7 +311,8 @@ async fn rows_stop_with_the_host_and_the_link_and_the_peer_stays() {
 async fn loader_rows_compose_links_and_change_features_in_place() {
     use rutis_bridge::session::{host_key, HostDispatch};
     use rutis_bridge::session::{Reply, Value as RpcValue};
-    use rutis_loader::{register_peer_node, Builtins};
+    use rutis_loader::peer::register_peer_node;
+    use rutis_loader::Builtins;
 
     struct Fixed(u64);
     impl HostDispatch for Fixed {
@@ -328,9 +329,9 @@ async fn loader_rows_compose_links_and_change_features_in_place() {
 
     // main: exports clock, runs peer:mac/… rows on mac.
     let main = Ctx::root().unwrap();
-    main.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Fixed(1)))
+    main.provide_at(host_key("clock"), Arc::new(Fixed(1)))
         .unwrap();
-    main.provide_as::<dyn HostDispatch>(host_key("calendar"), Arc::new(Fixed(2)))
+    main.provide_at(host_key("calendar"), Arc::new(Fixed(2)))
         .unwrap();
     (&main.plugin(MemoryPlugin::with_transport(transport.clone())))
         .await
@@ -397,14 +398,12 @@ async fn loader_rows_compose_links_and_change_features_in_place() {
     )
     .await;
     eventually(
-        || mac.get_as::<dyn HostDispatch>(host_key("clock")),
+        || mac.get_at::<dyn HostDispatch>(&host_key("clock")),
         "clock imported",
     )
     .await;
-    assert!(mac
-        .get_as::<dyn HostDispatch>(host_key("calendar"))
-        .is_none());
-    let session = main.get_as::<Peer>(peer_key(&id("mac"))).unwrap();
+    assert!(mac.get_at(&host_key("calendar")).is_none());
+    let session = main.get_at::<Peer>(&peer_key(&id("mac"))).unwrap();
 
     // Export calendar too: a volatile change, so the session stays.
     main_loader
@@ -412,11 +411,11 @@ async fn loader_rows_compose_links_and_change_features_in_place() {
         .await
         .unwrap();
     eventually(
-        || mac.get_as::<dyn HostDispatch>(host_key("calendar")),
+        || mac.get_at::<dyn HostDispatch>(&host_key("calendar")),
         "calendar imported",
     )
     .await;
-    let still = main.get_as::<Peer>(peer_key(&id("mac"))).unwrap();
+    let still = main.get_at::<Peer>(&peer_key(&id("mac"))).unwrap();
     assert!(Arc::ptr_eq(&session, &still), "the link kept its session");
     assert_eq!(greeting(&mac).as_deref(), Some("composed"));
 }
@@ -436,7 +435,7 @@ async fn hosted_rows_share_the_session_of_their_link() {
         "both hosted rows",
     )
     .await;
-    let session = nodes.main.get_as::<Peer>(peer_key(&id("mac"))).unwrap();
+    let session = nodes.main.get_at::<Peer>(&peer_key(&id("mac"))).unwrap();
     assert_eq!(session.generation(), 1, "one session carries both rows");
 
     // Unload one: the session and the other row stay.
@@ -459,7 +458,7 @@ async fn hosted_rows_share_the_session_of_their_link() {
         Some("two"),
         "the other row still running"
     );
-    let still = nodes.main.get_as::<Peer>(peer_key(&id("mac"))).unwrap();
+    let still = nodes.main.get_at::<Peer>(&peer_key(&id("mac"))).unwrap();
     assert!(
         Arc::ptr_eq(&session, &still),
         "unloading a row closes no session"
@@ -537,7 +536,7 @@ async fn nodes_hosting_for_each_other_start_and_reconnect_without_deadlock() {
     eventually(|| (greeting(&b)? == "for a").then_some(()), "a's row on b").await;
 
     // A reconnect: both rows stop and start again on the new session.
-    let session = a.get_as::<Peer>(peer_key(&id("b"))).unwrap();
+    let session = a.get_at::<Peer>(&peer_key(&id("b"))).unwrap();
     session
         .connection()
         .close(rutis_bridge::session::Error::Transport("cut".into()));

@@ -11,13 +11,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use common::runtimes::{go_binary, layer, repo, row_state, Probe};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, PluginFactory, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, FiberState, Key};
+use rutis::{Ctx, Error};
 use rutis_bridge::runtime::LocalRuntime;
-use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_loader::{
-    Builtins, Chain, GoBinaries, GoResolver, GoRuntimes, Loader, LoaderOptions, LoaderPlugin,
-    RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
-};
+use rutis_bridge::session::host_key;
+use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::{Builtins, Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use rutis_test_support::{Guard, HANG_GUARD};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -67,8 +67,8 @@ impl Calendar {
     pub async fn each(
         &self,
         days: Vec<u32>,
-        callback: impl Fn(u32) -> BoxFuture<'static, Result<String, CordisError>>,
-    ) -> Result<Vec<String>, CordisError> {
+        callback: impl Fn(u32) -> BoxFuture<'static, Result<String, Error>>,
+    ) -> Result<Vec<String>, Error> {
         let mut out = Vec::new();
         for day in days {
             out.push(callback(day).await?);
@@ -157,39 +157,25 @@ struct NoConfig {}
 /// The Rust row providing a `session` instance's own `Notes`: at the
 /// native type's key in the instance, as an application does.
 struct NotesRow {
-    key: TypeKey,
+    key: Key<Notes>,
     owner: String,
 }
 
-impl Plugin for NotesRow {
+impl rutis::Plugin for NotesRow {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "notes"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            ctx.provide_as(
-                self.key.clone(),
-                Arc::new(Notes {
-                    owner: self.owner.clone(),
-                }),
-            )?;
-            Ok(Effect::Done)
-        })
-    }
-}
-
-struct NotesFactory {
-    key: TypeKey,
-    owner: String,
-}
-
-impl PluginFactory<NoConfig> for NotesFactory {
-    fn build(&self, _: &NoConfig) -> Result<Box<dyn Plugin>, CordisError> {
-        Ok(Box::new(NotesRow {
-            key: self.key.clone(),
-            owner: self.owner.clone(),
-        }))
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
+        ctx.provide_at(
+            self.key.clone(),
+            Arc::new(Notes {
+                owner: self.owner.clone(),
+            }),
+        )?;
+        Ok(())
     }
 }
 
@@ -234,7 +220,7 @@ async fn fixture_with(by_name: bool) -> Fixture {
 
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     // Provided as usual; nothing else.
     let calendar = root.provide(Calendar::default()).unwrap();
@@ -259,9 +245,9 @@ async fn fixture_with(by_name: bool) -> Fixture {
     root.plugin(node);
     root.plugin(python);
     let mut builtins = Builtins::new();
-    builtins.register_with::<NoConfig, _, _>("notes", |build| {
-        Ok(NotesFactory {
-            key: TypeKey::instance::<Notes>(build.instance("session")?),
+    builtins.register_with("notes", |build, _: &NoConfig| {
+        Ok(NotesRow {
+            key: Key::of().instance(build.instance("session")?),
             owner: build
                 .value::<Owner>()
                 .map(|owner| owner.0.clone())
@@ -446,7 +432,7 @@ async fn a_bun_row_calls_a_marked_rust_service() {
     .unwrap();
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     root.provide(Calendar::default()).unwrap();
     let mut catalog = ServiceCatalog::new();

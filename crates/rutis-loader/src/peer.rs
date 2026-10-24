@@ -12,9 +12,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use rutis::{
-    BoxFuture, CordisError, Ctx, Disposer, Effect, InstanceId, Plugin, PluginFactory, TypeKey,
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, InstanceId, PluginFactory, TypeKey,
 };
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Disposer, Error};
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{settle, Value as RpcValue};
 use rutis_bridge::{peer_key, LinkState, Peer};
@@ -92,7 +94,7 @@ impl PeerResolver {
     /// link has not started yet. For a host to report the link's state
     /// beside the row's.
     ///
-    /// [`FiberView::instance`]: rutis::FiberView::instance
+    /// [`FiberView::instance`]: rutis::host::FiberView::instance
     pub fn link_state(&self, row: InstanceId) -> Option<watch::Receiver<LinkState>> {
         let links = self.directory.links.lock().unwrap();
         links.get(&row).and_then(|(_, handle)| handle.link_state())
@@ -183,25 +185,25 @@ impl PeerRowsPlugin {
     pub fn new(peer: PeerId, resolver: Arc<PeerResolver>) -> Self {
         Self {
             label: format!("peer-rows#{peer}"),
-            injects: [peer_key(&peer), TypeKey::of::<Loader>()],
+            injects: [peer_key(&peer).erase(), TypeKey::of::<Loader>()],
             peer,
             resolver,
         }
     }
 }
 
-impl Plugin for PeerRowsPlugin {
+impl DynPlugin for PeerRowsPlugin {
     fn name(&self) -> &str {
         &self.label
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            let peer = ctx.require_as::<Peer>(self.injects[0].clone())?;
+            let peer = ctx.require_key::<Peer>(self.injects[0].clone())?;
             let loader = ctx.require::<Loader>()?;
             let directory = self.resolver.directory.clone();
             directory
@@ -219,12 +221,10 @@ impl Plugin for PeerRowsPlugin {
                 self.peer.clone(),
             ));
             let id = self.peer.clone();
-            ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
-                    task.abort();
-                    directory.peers.lock().unwrap().remove(&id);
-                    Ok(())
-                }))
+            ctx.effect(move || async move {
+                task.abort();
+                directory.peers.lock().unwrap().remove(&id);
+                Ok(())
             })?;
             Ok(Effect::Done)
         })
@@ -262,7 +262,7 @@ async fn follow(
                         let _ = loader.refresh(&entry.id).await;
                     }
                 }
-                match ctx.provide_as(
+                match ctx.provide_key(
                     PeerRows::key(&id),
                     Arc::new(PeerRows { peer: peer.clone() }),
                 ) {
@@ -298,11 +298,11 @@ impl PluginFactory<Value> for PeerFactory {
         &self.name
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn build(&self, config: &Value) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(PeerRow {
             name: self.name.clone(),
             plugin: self.plugin.clone(),
@@ -320,22 +320,22 @@ struct PeerRow {
     injects: [TypeKey; 1],
 }
 
-fn failed(error: impl std::fmt::Display) -> CordisError {
-    CordisError::PluginFailed(error.to_string().into())
+fn failed(error: impl std::fmt::Display) -> Error {
+    rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
 }
 
-impl Plugin for PeerRow {
+impl DynPlugin for PeerRow {
     fn name(&self) -> &str {
         &self.name
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            let rows = ctx.require_as::<PeerRows>(self.injects[0].clone())?;
+            let rows = ctx.require_key::<PeerRows>(self.injects[0].clone())?;
             let session = rows.peer().connection().clone();
             // Unique, and new for every generation.
             let key = ctx.instance().to_string();
@@ -452,11 +452,12 @@ struct NodeConfig {
 
 /// Why a peer config with `events` is refused: events are shared through
 /// `export` and `import` since rutis 0.13 (events protocol §2.4, §9).
+#[doc(hidden)]
 pub const REMOVED_EVENTS: &str = "the peer config field events was removed in rutis 0.13: list \
      events: { out } in export and events: { in } in import (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)";
 
 impl NodeConfig {
-    fn parse(config: &Value) -> Result<Self, CordisError> {
+    fn parse(config: &Value) -> Result<Self, Error> {
         if config.get("events").is_some() {
             return Err(failed(REMOVED_EVENTS));
         }
@@ -538,7 +539,7 @@ impl NodeConfig {
     /// exported or imported by a name that has no key there, and, inside
     /// instances, features that publish keys the rest of the tree uses
     /// (`rows`, `runtime`): every instance's link would publish the same.
-    fn check(&self, loader: Option<&Loader>, build: &Build) -> Result<(), CordisError> {
+    fn check(&self, loader: Option<&Loader>, build: &Build) -> Result<(), Error> {
         if build.instances().next().is_some() {
             if self.rows {
                 return Err(failed(
@@ -568,6 +569,7 @@ impl NodeConfig {
 /// services by name and events by name or `*` prefix. What is exported and
 /// imported is volatile: changing it restarts only that feature and keeps
 /// the session.
+#[doc(hidden)]
 pub fn node_schema() -> Value {
     let names = json!({ "type": "array", "items": { "type": "string" }, "x-volatile": true });
     json!({
@@ -607,11 +609,11 @@ impl PluginFactory<Value> for NodeFactory {
         "rutis-bridge/peer"
     }
 
-    fn validate_config(&self, config: &Value) -> Result<(), CordisError> {
+    fn validate_config(&self, config: &Value) -> Result<(), Error> {
         NodeConfig::parse(config).map(|_| ())
     }
 
-    fn build(&self, config: &Value) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(Node {
             config: NodeConfig::parse(config)?,
             resolver: self.resolver.clone(),
@@ -678,31 +680,24 @@ struct Reconfigure {
     build: Build,
 }
 
-impl rutis::Listener<crate::VolatileUpdate> for Reconfigure {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        update: &'a crate::VolatileUpdate,
-        _: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        Box::pin(async move {
-            let config = NodeConfig::parse(&update.config)?;
-            config.check(self.loader.as_ref(), &self.build)?;
-            self.handle
-                .set(config.features(self.loader.as_ref(), &self.build))
-                .await
-                .map_err(failed)?;
-            Ok(None)
-        })
+impl Reconfigure {
+    async fn apply(&self, update: &crate::VolatileUpdate) -> Result<Option<()>, Error> {
+        let config = NodeConfig::parse(&update.config)?;
+        config.check(self.loader.as_ref(), &self.build)?;
+        self.handle
+            .set(config.features(self.loader.as_ref(), &self.build))
+            .await
+            .map_err(failed)?;
+        Ok(None)
     }
 }
 
-impl Plugin for Node {
+impl DynPlugin for Node {
     fn name(&self) -> &str {
         "rutis-bridge/peer"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let loader = ctx.get::<Loader>().map(|loader| (*loader).clone());
             self.config.check(loader.as_ref(), &self.build)?;
@@ -721,14 +716,12 @@ impl Plugin for Node {
                 .lock()
                 .unwrap()
                 .insert(row, (token, handle.clone()));
-            ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
-                    let mut links = links.links.lock().unwrap();
-                    if links.get(&row).is_some_and(|(mine, _)| *mine == token) {
-                        links.remove(&row);
-                    }
-                    Ok(())
-                }))
+            ctx.effect(move || async move {
+                let mut links = links.links.lock().unwrap();
+                if links.get(&row).is_some_and(|(mine, _)| *mine == token) {
+                    links.remove(&row);
+                }
+                Ok(())
             })?;
             // Inside instances, the link is the instance's own: its peer
             // is kept apart from other instances' links to the same peer.
@@ -747,15 +740,17 @@ impl Plugin for Node {
                 let peer = PeerId::new(&self.config.peer).map_err(failed)?;
                 ctx.plugin(PeerRowsPlugin::new(peer, self.resolver.clone()));
             }
-            ctx.events().on(
-                ctx,
-                &crate::volatile_key(ctx),
-                Reconfigure {
-                    handle,
-                    loader,
-                    build: self.build.clone(),
-                },
-            )?;
+            let reconfigure = Arc::new(Reconfigure {
+                handle,
+                loader,
+                build: self.build.clone(),
+            });
+            ctx.listen::<crate::VolatileUpdate>()
+                .name(crate::volatile_key(ctx))
+                .on(move |update, _| {
+                    let reconfigure = reconfigure.clone();
+                    async move { reconfigure.apply(&update).await }
+                })?;
             Ok(Effect::Done)
         })
     }
@@ -765,7 +760,7 @@ impl Plugin for Node {
 mod tests {
     use std::time::Duration;
 
-    use rutis::{FiberState, PluginFactory};
+    use rutis::host::FiberState;
     use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
     use rutis_bridge::{
         Credential, Described, HostPlugin, IdentityPlugin, LinkConfig, LinkPlugin, Retry,
@@ -782,16 +777,16 @@ mod tests {
     /// Installed on mac: provides `GreetingService`.
     struct Greeter;
     impl PluginFactory<Value> for Greeter {
-        fn build(&self, _: &Value) -> Result<Box<dyn Plugin>, CordisError> {
+        fn build(&self, _: &Value) -> Result<Box<dyn DynPlugin>, Error> {
             Ok(Box::new(Greeting))
         }
     }
     struct Greeting;
-    impl Plugin for Greeting {
+    impl DynPlugin for Greeting {
         fn name(&self) -> &str {
             "greeter"
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             Box::pin(async move {
                 ctx.provide(GreetingService)?;
                 Ok(Effect::Done)
@@ -809,18 +804,18 @@ mod tests {
     }
     impl ProvidesRows {
         fn provide(ctx: &Ctx, peer: &Arc<Peer>) -> Disposer {
-            ctx.provide_as(
+            ctx.provide_key::<PeerRows>(
                 PeerRows::key(&id("mac")),
                 Arc::new(PeerRows { peer: peer.clone() }),
             )
             .unwrap()
         }
     }
-    impl Plugin for ProvidesRows {
+    impl DynPlugin for ProvidesRows {
         fn name(&self) -> &str {
             "provides-rows"
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             Box::pin(async move {
                 *self.provided.lock().unwrap() = Some(Self::provide(ctx, &self.peer));
                 *self.ctx.lock().unwrap() = Some(ctx.clone());
@@ -829,7 +824,7 @@ mod tests {
         }
     }
 
-    type Withdrawal = Mutex<Option<std::thread::JoinHandle<Result<(), Arc<CordisError>>>>>;
+    type Withdrawal = Mutex<Option<std::thread::JoinHandle<Result<(), Arc<ErrorKind>>>>>;
 
     /// A hosted row whose first generation sees `PeerRows` withdrawn after
     /// its gate opened, before its apply runs.
@@ -839,14 +834,14 @@ mod tests {
         provided: Arc<Mutex<Option<Disposer>>>,
         withdrawal: Arc<Withdrawal>,
     }
-    impl Plugin for WithdrawnBeforeApply {
+    impl DynPlugin for WithdrawnBeforeApply {
         fn name(&self) -> &str {
             self.row.name()
         }
-        fn injects(&self) -> &[TypeKey] {
+        fn injects(&self) -> Vec<TypeKey> {
             self.row.injects()
         }
-        fn validate(&self) -> Result<(), CordisError> {
+        fn validate(&self) -> Result<(), Error> {
             if let Some(disposer) = self.provided.lock().unwrap().take() {
                 // From another thread: this worker is blocked here.
                 let runtime = tokio::runtime::Handle::current();
@@ -856,7 +851,7 @@ mod tests {
                 let start = std::time::Instant::now();
                 while self
                     .main
-                    .get_as::<PeerRows>(PeerRows::key(&id("mac")))
+                    .get_key::<PeerRows>(PeerRows::key(&id("mac")))
                     .is_some()
                 {
                     assert!(start.elapsed() < Duration::from_secs(10), "never withdrawn");
@@ -865,7 +860,7 @@ mod tests {
             }
             Ok(())
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             self.row.apply(ctx)
         }
     }
@@ -913,7 +908,7 @@ mod tests {
 
         let peer = eventually(
             || {
-                let peer = main.get_as::<Peer>(peer_key(&id("mac")))?;
+                let peer = main.get_at::<Peer>(&peer_key(&id("mac")))?;
                 let hosting = peer.offers().borrow().families.contains("plugins");
                 hosting.then_some(peer)
             },

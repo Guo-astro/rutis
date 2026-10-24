@@ -1,8 +1,10 @@
 //! The example of docs/migration-0.6.0-to-0.6.1.md, kept compiling and
 //! running: rows from a layer, then edits through the editable layer.
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory};
-use rutis_loader::{Builtins, Editable, Layer, LoaderOptions, LoaderPlugin, Patch, Version};
+use rutis::host::CtxHost;
+use rutis::Ctx;
+use rutis_loader::edit::{Editable, Version};
+use rutis_loader::{Builtins, Layer, LoaderOptions, LoaderPlugin, Patch};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -14,25 +16,21 @@ struct MyConfig {
 
 struct MyPlugin;
 
-impl Plugin for MyPlugin {
-    fn name(&self) -> &str {
-        "my-plugin"
-    }
-
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async { Ok(Effect::Done) })
+impl MyPlugin {
+    fn new(_config: &MyConfig) -> rutis::Result<Self> {
+        Ok(MyPlugin)
     }
 }
 
-struct MyFactory;
+impl rutis::Plugin for MyPlugin {
+    type Deps = ();
 
-impl PluginFactory<MyConfig> for MyFactory {
     fn name(&self) -> &str {
         "my-plugin"
     }
 
-    fn build(&self, _config: &MyConfig) -> Result<Box<dyn Plugin>, CordisError> {
-        Ok(Box::new(MyPlugin))
+    async fn apply(&self, _ctx: &Ctx, (): ()) -> rutis::Result {
+        Ok(())
     }
 }
 
@@ -41,7 +39,7 @@ async fn the_migration_example_runs() -> Result<(), Box<dyn std::error::Error>> 
     let root = Ctx::root()?;
 
     let mut builtins = Builtins::new();
-    builtins.register::<MyConfig, _>("my-plugin", MyFactory);
+    builtins.register("my-plugin", MyPlugin::new);
     let plugin = LoaderPlugin::new(builtins, LoaderOptions::default());
     let loader = plugin.handle();
     root.plugin(plugin).await?;

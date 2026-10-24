@@ -9,17 +9,18 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::runtimes::{id, repo, row_state, COLD};
-use rutis::{BoxFuture, Call, CordisError, Ctx, EventKey, FiberState, Listener};
-use rutis_bridge::events::{ArgValue, Args, LinkEventsPlugin};
+use rutis::host::{CtxHost, FiberState};
+use rutis::internal::CtxInternal;
+use rutis::Ctx;
+use rutis_bridge::events::{Args, LinkEventsPlugin};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value as RpcValue};
 use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
 use rutis_bridge::{
     ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin, StaticIdentity,
 };
-use rutis_loader::{
-    Chain, Layer, LoaderOptions, LoaderPlugin, Patch, PeerResolver, PeerRowsPlugin,
-};
+use rutis_loader::peer::{PeerResolver, PeerRowsPlugin};
+use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch};
 use serde_json::{json, Value};
 use tokio::io::AsyncBufReadExt;
 
@@ -34,39 +35,13 @@ impl HostDispatch for Clock {
     }
 }
 
-fn node_event(name: &str) -> EventKey<Args> {
-    EventKey::dynamic(name.to_owned())
-}
-
 /// Emit `tick` with `what`: Cordis's listener is on this bus, and it
 /// answers with `tock` before `parallel` ends.
 async fn tick(main: &Ctx, what: &str) {
-    main.events()
-        .parallel(
-            main,
-            &node_event("tick"),
-            Arc::new(Args(vec![RpcValue::Data(json!(what))])),
-        )
+    main.named("tick")
+        .parallel(Args(vec![RpcValue::Data(json!(what))]))
         .await
         .unwrap();
-}
-
-struct Record(Arc<Mutex<Vec<Value>>>);
-impl Listener<Args> for Record {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        event: &'a Args,
-        _: Call<'a, ArgValue>,
-    ) -> BoxFuture<'a, Result<Option<ArgValue>, CordisError>> {
-        Box::pin(async move {
-            let args = RpcValue::List(event.0.clone())
-                .json()
-                .unwrap_or(Value::Null);
-            self.0.lock().unwrap().push(args);
-            Ok(None)
-        })
-    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -91,8 +66,7 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
 
     // The rutis node: listens for mac.
     let main = Ctx::root().unwrap();
-    main.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Clock))
-        .unwrap();
+    main.provide_at(host_key("clock"), Arc::new(Clock)).unwrap();
     let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
         "public",
         "127.0.0.1:0".parse().unwrap(),
@@ -116,8 +90,18 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
     main.plugin(ExportPlugin::new(id("mac"), ["clock"]));
     main.plugin(LinkEventsPlugin::new(id("mac"), ["tick"], ["tock"]));
     let tocks = Arc::new(Mutex::new(Vec::new()));
-    main.events()
-        .on(&main, &node_event("tock"), Record(tocks.clone()))
+    main.listen::<Args>()
+        .name("tock")
+        .on({
+            let tocks = tocks.clone();
+            move |event: Arc<Args>, _| {
+                let args = RpcValue::List(event.0.clone())
+                    .json()
+                    .unwrap_or(Value::Null);
+                tocks.lock().unwrap().push(args);
+                std::future::ready(Ok(None))
+            }
+        })
         .unwrap();
     let rows = Arc::new(PeerResolver::new());
     let plugin = LoaderPlugin::new(
@@ -168,7 +152,7 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
     // Cordis's calendar, imported here; sync and async.
     let calendar = COLD
         .eventually(
-            || main.get_as::<dyn HostDispatch>(host_key("calendar")),
+            || main.get_at::<dyn HostDispatch>(&host_key("calendar")),
             "calendar imported",
         )
         .await;
@@ -237,7 +221,7 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
     };
     let used = clock_uses();
     let session = main
-        .get_as::<rutis_bridge::Peer>(rutis_bridge::peer_key(&id("mac")))
+        .get_at::<rutis_bridge::Peer>(&rutis_bridge::peer_key(&id("mac")))
         .unwrap()
         .connection()
         .clone();
@@ -301,7 +285,7 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
     // back here (its versions go on from the last export's).
     use tokio::io::AsyncWriteExt;
     let before = main
-        .get_as::<dyn HostDispatch>(host_key("calendar"))
+        .get_at::<dyn HostDispatch>(&host_key("calendar"))
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
     stdin.write_all(b"export agenda\n").await.unwrap();
@@ -312,7 +296,7 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
     let again = COLD
         .eventually(
             || {
-                let now = main.get_as::<dyn HostDispatch>(host_key("calendar"))?;
+                let now = main.get_at::<dyn HostDispatch>(&host_key("calendar"))?;
                 (!std::ptr::addr_eq(Arc::as_ptr(&now), Arc::as_ptr(&before))).then_some(now)
             },
             "calendar imported again",
@@ -328,7 +312,7 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
     COLD.eventually(saw("tick: [\"after export\"]"), "the third tick in Cordis")
         .await;
     let now = main
-        .get_as::<dyn HostDispatch>(host_key("calendar"))
+        .get_at::<dyn HostDispatch>(&host_key("calendar"))
         .expect("calendar stays");
     assert!(std::ptr::addr_eq(Arc::as_ptr(&now), Arc::as_ptr(&again)));
     child.start_kill().unwrap();
@@ -369,10 +353,9 @@ async fn a_listening_cordis_node_lets_a_newer_connection_take_over() {
         .await;
     tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
 
-    async fn controller(address: &str) -> (Ctx, rutis::FiberView) {
+    async fn controller(address: &str) -> (Ctx, rutis::host::FiberView) {
         let root = Ctx::root().unwrap();
-        root.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Clock))
-            .unwrap();
+        root.provide_at(host_key("clock"), Arc::new(Clock)).unwrap();
         (&root.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
             .await
             .unwrap();
@@ -392,13 +375,13 @@ async fn a_listening_cordis_node_lets_a_newer_connection_take_over() {
 
     let (first, first_link) = controller(&address).await;
     COLD.eventually(
-        || first.get_as::<dyn HostDispatch>(host_key("calendar")),
+        || first.get_at::<dyn HostDispatch>(&host_key("calendar")),
         "the first controller's import",
     )
     .await;
     let (second, _second_link) = controller(&address).await;
     COLD.eventually(
-        || second.get_as::<dyn HostDispatch>(host_key("calendar")),
+        || second.get_at::<dyn HostDispatch>(&host_key("calendar")),
         "the second controller's import",
     )
     .await;
@@ -406,7 +389,7 @@ async fn a_listening_cordis_node_lets_a_newer_connection_take_over() {
     COLD.eventually(
         || {
             first
-                .get_as::<dyn HostDispatch>(host_key("calendar"))
+                .get_at::<dyn HostDispatch>(&host_key("calendar"))
                 .is_none()
                 .then_some(())
         },
@@ -416,7 +399,7 @@ async fn a_listening_cordis_node_lets_a_newer_connection_take_over() {
     // Stop it before it takes the session back.
     first_link.dispose().await.unwrap();
     let calendar = second
-        .get_as::<dyn HostDispatch>(host_key("calendar"))
+        .get_at::<dyn HostDispatch>(&host_key("calendar"))
         .unwrap();
     let today =
         tokio::task::spawn_blocking(move || calendar.invoke("today", RpcValue::List(vec![])))

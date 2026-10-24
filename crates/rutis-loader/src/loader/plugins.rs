@@ -2,7 +2,9 @@
 
 use std::sync::{Arc, Mutex, Weak};
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory, TypeKey};
+use rutis::host::{BoxFuture, DynPlugin, Effect, PluginFactory, TypeKey};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error};
 use serde_json::Value;
 
 use crate::resolver::{Resolved, Resolver};
@@ -31,15 +33,15 @@ impl PluginFactory<EntryConfig> for EntryFactory {
         &self.name
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn validate_config(&self, config: &EntryConfig) -> Result<(), CordisError> {
+    fn validate_config(&self, config: &EntryConfig) -> Result<(), Error> {
         config.factory.validate_config(&config.value)
     }
 
-    fn build(&self, config: &EntryConfig) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &EntryConfig) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(RowPlugin {
             row: self.row.clone(),
             inner: config.factory.build(&config.value)?,
@@ -50,23 +52,23 @@ impl PluginFactory<EntryConfig> for EntryFactory {
 /// A row's plugin, its fiber marked as the row (`Ctx::mark_row`).
 struct RowPlugin {
     row: String,
-    inner: Box<dyn Plugin>,
+    inner: Box<dyn DynPlugin>,
 }
 
-impl Plugin for RowPlugin {
+impl DynPlugin for RowPlugin {
     fn name(&self) -> &str {
         self.inner.name()
     }
 
-    fn injects(&self) -> &[TypeKey] {
+    fn injects(&self) -> Vec<TypeKey> {
         self.inner.injects()
     }
 
-    fn validate(&self) -> Result<(), CordisError> {
+    fn validate(&self) -> Result<(), Error> {
         self.inner.validate()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             ctx.mark_row(&self.row)?;
             self.inner.apply(ctx).await
@@ -85,16 +87,16 @@ pub(super) struct GroupPlugin {
     pub(super) token: u64,
 }
 
-impl Plugin for GroupPlugin {
+impl DynPlugin for GroupPlugin {
     fn name(&self) -> &str {
         &self.slot.row
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let Some(inner) = self.inner.upgrade() else {
                 return Ok(Effect::Done);
@@ -117,7 +119,7 @@ impl Plugin for GroupPlugin {
                     .is_some_and(|row| row.instanced);
                 if instanced {
                     for export in inner.catalog.exports_in(Some(&self.slot.row)) {
-                        ctx.plugin(export.plugin(Some(ctx.instance())));
+                        ctx.plugin(export.plugin(Some(rutis::host::CtxHost::instance(ctx))));
                     }
                 }
             }
@@ -162,12 +164,12 @@ impl LoaderPlugin {
     }
 }
 
-impl Plugin for LoaderPlugin {
+impl DynPlugin for LoaderPlugin {
     fn name(&self) -> &str {
         "rutis-loader"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             // The service is released with the fiber.
             ctx.provide(self.loader.clone())?;
@@ -187,7 +189,7 @@ impl Plugin for LoaderPlugin {
             // `rutis/service` for the rows' services, Rust ones included
             // (events protocol §8).
             #[cfg(any(feature = "runtimes", feature = "peer"))]
-            let bus = rutis_bridge::events::join_bus(ctx).map_err(CordisError::from)?;
+            let bus = rutis_bridge::events::join_bus(ctx).map_err(Error::from)?;
             let token = self.loader.inner.next_token();
             self.loader.inner.attach(None, token, ctx);
             let weak = Arc::downgrade(&self.loader.inner);

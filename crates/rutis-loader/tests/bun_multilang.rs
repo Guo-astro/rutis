@@ -11,12 +11,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use common::runtimes::{layer, repo, row_state, Probe, COLD};
-use rutis::{Ctx, FiberState};
+use rutis::host::{CtxHost, FiberState};
+use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_loader::{
-    Chain, Loader, LoaderOptions, LoaderPlugin, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
-};
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::json;
 
 const BUN_PROVIDER: &str = r#"
@@ -151,7 +151,7 @@ async fn fixture() -> Fixture {
 
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let mut catalog = ServiceCatalog::new();
     for name in [
@@ -271,7 +271,9 @@ async fn a_synchronous_chain_crosses_bun_and_python_and_back() {
     let relay = COLD
         .eventually(
             || {
-                let relay = fixture.root.get_as::<dyn HostDispatch>(host_key("relay"))?;
+                let relay = fixture
+                    .root
+                    .get_at::<dyn HostDispatch>(&host_key("relay"))?;
                 (row_state(&fixture.loader, "r") == Some(FiberState::Active)).then_some(relay)
             },
             "the relay row and its service",

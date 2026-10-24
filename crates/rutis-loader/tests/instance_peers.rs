@@ -8,13 +8,16 @@ mod common;
 use std::sync::Arc;
 
 use common::runtimes::{id, NoConfig, Title};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory, TypeKey};
+use rutis::host::{CtxHost, Key};
+use rutis::Ctx;
 use rutis_bridge::session::{host_key, host_key_in, HostDispatch, Reply, Value as RpcValue};
 use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{Credential, IdentityPlugin, StaticIdentity};
+use rutis_loader::peer::{register_peer_node, PeerResolver};
+use rutis_loader::report::EntryStatus;
+use rutis_loader::resolve::Build;
 use rutis_loader::{
-    register_peer_node, Build, Builtins, Chain, EntryStatus, Layer, Loader, LoaderError,
-    LoaderOptions, LoaderPlugin, Patch, PeerResolver, ServiceCatalog,
+    Builtins, Chain, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
 };
 use rutis_test_support::eventually;
 use serde_json::{json, Value};
@@ -42,41 +45,20 @@ fn get(service: &Arc<dyn HostDispatch>) -> Value {
 
 /// Provides the instance's `tools`, which tells the instance's title.
 struct Tools {
-    key: TypeKey,
+    key: Key<dyn HostDispatch>,
     title: String,
 }
 
-impl Plugin for Tools {
+impl rutis::Plugin for Tools {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "tools"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            ctx.provide_as::<dyn HostDispatch>(
-                self.key.clone(),
-                Arc::new(Fixed(json!(self.title))),
-            )?;
-            Ok(Effect::Done)
-        })
-    }
-}
-
-struct ToolsFactory {
-    key: TypeKey,
-    title: String,
-}
-
-impl PluginFactory<NoConfig> for ToolsFactory {
-    fn name(&self) -> &str {
-        "tools"
-    }
-
-    fn build(&self, _: &NoConfig) -> Result<Box<dyn Plugin>, CordisError> {
-        Ok(Box::new(Tools {
-            key: self.key.clone(),
-            title: self.title.clone(),
-        }))
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
+        ctx.provide_at(self.key.clone(), Arc::new(Fixed(json!(self.title))))?;
+        Ok(())
     }
 }
 
@@ -103,8 +85,8 @@ async fn main_node(transport: &Arc<MemoryTransport>, rows: Value) -> (Ctx, Loade
         StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
     ));
     let mut builtins = Builtins::new();
-    builtins.register_with::<NoConfig, _, _>("tools", |build: &Build| {
-        Ok(ToolsFactory {
+    builtins.register_with("tools", |build: &Build, _: &NoConfig| {
+        Ok(Tools {
             key: host_key_in("tools", build.instance("session")?),
             title: build
                 .value::<Title>()
@@ -148,7 +130,7 @@ async fn nodes() -> Nodes {
     .await;
 
     let mac = Ctx::root().unwrap();
-    mac.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Fixed(json!(7))))
+    mac.provide_at(host_key("clock"), Arc::new(Fixed(json!(7))))
         .unwrap();
     (&mac.plugin(MemoryPlugin::with_transport(transport)))
         .await
@@ -177,8 +159,9 @@ async fn nodes() -> Nodes {
     Nodes { main, loader, mac }
 }
 
-fn bound(ctx: &Ctx, key: &TypeKey) -> bool {
-    ctx.diagnostics().bindings.iter().any(|b| &b.key == key)
+fn bound(ctx: &Ctx, key: &Key<dyn HostDispatch>) -> bool {
+    let key = key.erase();
+    ctx.diagnostics().bindings.iter().any(|b| b.key == key)
 }
 
 /// The instance's link exports the instance's `tools`, and imports `clock`
@@ -194,7 +177,7 @@ async fn a_link_inside_an_instance_exchanges_that_instance_s_services() {
         .await
         .unwrap();
     let tools = eventually(
-        || nodes.mac.get_as::<dyn HostDispatch>(host_key("tools")),
+        || nodes.mac.get_at::<dyn HostDispatch>(&host_key("tools")),
         "mac to import A's tools",
     )
     .await;
@@ -213,7 +196,7 @@ async fn a_link_inside_an_instance_exchanges_that_instance_s_services() {
         || {
             nodes
                 .mac
-                .get_as::<dyn HostDispatch>(host_key("tools"))
+                .get_at::<dyn HostDispatch>(&host_key("tools"))
                 .is_none()
                 .then_some(())
         },

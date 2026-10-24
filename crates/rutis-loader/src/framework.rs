@@ -5,7 +5,11 @@
 use std::sync::{Arc, Mutex};
 
 use rutis::events::Scope;
-use rutis::{CordisError, Ctx, Event, EventKey, FiberState, FiberStatusChanged, FiberView};
+use rutis::host::CtxHost;
+use rutis::host::{FiberState, FiberStatusChanged, FiberView};
+use rutis::internal::CtxInternal;
+use rutis::internal::EventKey;
+use rutis::{Ctx, Error, Event};
 use serde::{Deserialize, Serialize};
 
 /// A row's state, as `rutis/row` gives it.
@@ -82,11 +86,13 @@ pub(crate) fn follow(ctx: &Ctx, view: &FiberView, row: &str, plugin: &str) {
         listening: Mutex::default(),
     });
     let root = ctx.root_ctx();
-    if let Ok(disposer) = root.events().on_sync(
-        &root,
-        &EventKey::<FiberStatusChanged>::of(),
-        Listening(follower.clone()),
-    ) {
+    if let Ok(disposer) = root.on_sync::<FiberStatusChanged>({
+        let listener = Listening(follower.clone());
+        move |event, call| {
+            let ctx = call.ctx().clone();
+            listener.on_event_sync(&ctx, &event, call)
+        }
+    }) {
         *follower.listening.lock().unwrap() = Some(disposer);
     }
     let (seq, now) = view.sequenced_state();
@@ -135,13 +141,13 @@ impl Follower {
 
 struct Listening(Arc<Follower>);
 
-impl rutis::SyncListener<FiberStatusChanged> for Listening {
-    fn call(
+impl Listening {
+    fn on_event_sync(
         &self,
-        _: &Ctx,
+        _: &rutis::Ctx,
         changed: &FiberStatusChanged,
-        _: rutis::SyncCall<'_, ()>,
-    ) -> Result<Option<()>, CordisError> {
+        _: rutis::events::SyncCall<'_, FiberStatusChanged>,
+    ) -> Result<Option<()>, Error> {
         if changed.plugin_id == self.0.view.id {
             self.0.saw(changed.seq, changed.to);
         }

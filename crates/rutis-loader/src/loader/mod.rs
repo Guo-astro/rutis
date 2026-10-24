@@ -18,7 +18,8 @@ mod reconcile;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
-use rutis::{Ctx, Event, FiberView, InstanceId, PluginId, Snapshot, TypeKey};
+use rutis::host::{FiberView, InstanceId, PluginId, Snapshot, TypeKey};
+use rutis::{Ctx, Event};
 
 use serde_json::Value;
 
@@ -287,7 +288,7 @@ impl Loader {
         &self,
         name: &str,
         build: &crate::Build,
-    ) -> Result<rutis::TypeKey, LoaderError> {
+    ) -> Result<rutis::host::TypeKey, LoaderError> {
         self.inner.catalog.key_in(name, build)
     }
 
@@ -299,10 +300,10 @@ impl Loader {
         &self,
         name: &str,
         build: &crate::Build,
-    ) -> Result<rutis::TypeKey, LoaderError> {
+    ) -> Result<rutis::host::TypeKey, LoaderError> {
         match self.inner.catalog.is_shared(name) {
             true => self.inner.catalog.key_in(name, build),
-            false => Ok(rutis_bridge::session::host_key(name)),
+            false => Ok(rutis_bridge::session::host_key(name).erase()),
         }
     }
 }

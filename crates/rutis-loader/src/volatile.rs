@@ -8,7 +8,8 @@
 //! `FiberView::set_config` (no restart) and sends the plugin a
 //! [`VolatileUpdate`] on its instance key ([`volatile_key`]).
 
-use rutis::{Ctx, Event, EventKey};
+use rutis::host::CtxHost;
+use rutis::{Ctx, Event};
 use serde_json::Value;
 
 pub const MARKER: &str = "x-volatile";
@@ -27,18 +28,18 @@ impl Event for VolatileUpdate {
     type Value = ();
 }
 
-/// The key a plugin listens on for its own volatile updates:
-/// `ctx.events().on(ctx, &volatile_key(ctx), listener)`.
+/// The name a plugin listens under for its own volatile updates:
+/// `ctx.listen::<VolatileUpdate>().name(volatile_key(ctx)).on(listener)`.
 ///
 /// Named after the fiber's instance id, which is unique in the process. (An
 /// instance-qualified key would not do: only the fiber's own subtree may use
 /// those, and the loader is its ancestor.)
-pub fn volatile_key(ctx: &Ctx) -> EventKey<VolatileUpdate> {
+pub fn volatile_key(ctx: &Ctx) -> String {
     key_for(ctx.instance())
 }
 
-pub(crate) fn key_for(instance: rutis::InstanceId) -> EventKey<VolatileUpdate> {
-    EventKey::dynamic(format!("volatile:{instance}"))
+pub(crate) fn key_for(instance: rutis::host::InstanceId) -> String {
+    format!("volatile:{instance}")
 }
 
 fn resolve<'a>(root: &'a Value, schema: &'a Value) -> &'a Value {

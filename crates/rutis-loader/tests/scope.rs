@@ -6,11 +6,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use common::*;
-use rutis::FiberState;
-use rutis_loader::{
-    Editable, EntryStatus, ExprScope, Expressions, Isolate, Layer, LoaderError, LoaderOptions,
-    NewEntry, ServiceCatalog,
-};
+use rutis::host::FiberState;
+use rutis_loader::edit::{Editable, NewEntry};
+use rutis_loader::report::{EntryStatus, Isolate};
+use rutis_loader::resolve::{ExprScope, Expressions};
+use rutis_loader::{Layer, LoaderError, LoaderOptions, ServiceCatalog};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -75,7 +75,7 @@ async fn apply(
     loader: &rutis_loader::Loader,
     store: &MemStore,
     rows: Value,
-) -> rutis_loader::ReconcileReport {
+) -> rutis_loader::report::ReconcileReport {
     loader
         .reconcile(
             vec![

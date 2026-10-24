@@ -4,7 +4,8 @@
 //! `applyEntryPatches([], layers.flat())` on `fixtures/patch-cases.json`,
 //! generated with the dsh-vendored package (see the README in fixtures).
 
-use rutis_loader::{apply_patches, Layer, Owner, Patch};
+use rutis_loader::internal::{apply_patches, Owner};
+use rutis_loader::{Layer, Patch};
 use serde_json::{json, Value};
 
 fn layers(value: &Value) -> Vec<Layer> {

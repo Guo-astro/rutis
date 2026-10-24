@@ -11,7 +11,8 @@ use std::collections::HashMap;
 use std::future::IntoFuture;
 use std::sync::Arc;
 
-use rutis::{BoxFuture, CordisError, Ctx, FiberState, FiberView, PluginId};
+use rutis::host::{BoxFuture, CtxHost, ErrorKind, FiberState, FiberView, PluginId};
+use rutis::Ctx;
 
 use crate::LoaderError;
 
@@ -371,7 +372,7 @@ fn fiber_result(id: &str, view: &FiberView) -> InstanceResult {
             id: id.to_owned(),
             error: snapshot
                 .error
-                .unwrap_or_else(|| Arc::new(CordisError::PluginFailed("failed".into()))),
+                .unwrap_or_else(|| Arc::new(ErrorKind::PluginFailed("failed".into()))),
         }),
         _ => InstanceResult::Waiting,
     }
