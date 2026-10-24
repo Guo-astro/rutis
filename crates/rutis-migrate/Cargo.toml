@@ -1,0 +1,22 @@
+[package]
+name = "rutis-migrate"
+description = "Migrate Rust code that uses rutis to the next API (0.16 → 0.17: one plugin trait, rutis::host and rutis::internal, events on Ctx, rutis::Error)"
+edition.workspace = true
+version = "0.16.0"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+keywords = ["rutis", "migration", "codemod"]
+categories = ["development-tools"]
+
+[dependencies]
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
+proc-macro2 = { version = "1.0.80", features = ["span-locations"] }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "rutis-migrate"
+path = "src/main.rs"
