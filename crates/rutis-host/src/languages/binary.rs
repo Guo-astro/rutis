@@ -249,6 +249,12 @@ pub trait DevBuild: Send + Sync {
 
     /// Where build #`n` is.
     fn binary(&self, n: u32) -> PathBuf;
+
+    /// Whether `path`, a project file that changed, is a source or package
+    /// file of this language. Any change rebuilds the binary; a change to
+    /// another file (a plugin of another language the dev file adds, the
+    /// dev file itself) also reloads the other rows.
+    fn is_source(&self, path: &Path) -> bool;
 }
 
 /// Says that `name` is being built, runs `build`, and on success says how

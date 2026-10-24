@@ -582,13 +582,37 @@ fn dev_loop(kind: Kind) {
         assert_eq!(dev.count("runtime py"), 0, "the Python runtime restarted");
     }
 
-    // 8. Ctrl-C: v3 is cleaned up once, the probe stops, exit code 0.
+    // 8. A compiled project: its plugin and another language's row (the
+    // probe) change together. The binary is rebuilt and its runtime
+    // restarted, and the probe's row reloads its new code too (#547).
+    let last = match kind.compiled() {
+        true => {
+            let probe_file = format!("demo/{dir}/probe.py");
+            let probe_source = std::fs::read(s.path(&probe_file)).expect(&probe_file);
+            s.replace(&source, kind.version(4));
+            s.replace(&probe_file, probe_source);
+            edited(kind, &mut dev, &probe);
+            dev.expect("probe: reloaded");
+            dev.expect("demo v4 applied ");
+            assert_eq!(greet(&probe, &mut dev), json!("Hello, Ada! (v4)"));
+            4
+        }
+        false => 3,
+    };
+
+    // 9. Ctrl-C: the last version is cleaned up once, the probe stops,
+    // exit code 0.
     dev.ctrl_c();
     let status = dev.wait_exit();
     dev.wait_output_end();
     assert_eq!(status.code(), Some(0), "dev after Ctrl-C: {status}");
-    assert_eq!(dev.count("demo v2 cleanup"), 1, "v2 cleanup");
-    assert_eq!(dev.count("demo v3 cleanup"), 1, "v3 cleanup");
+    for version in 2..=last {
+        assert_eq!(
+            dev.count(&format!("demo v{version} cleanup")),
+            1,
+            "v{version} cleanup"
+        );
+    }
     probe.event(&mut dev, "stopped");
 
     s.finish();

@@ -309,3 +309,43 @@ fn the_dev_file_is_merged_into_the_project() {
         ["<dir>/rutis.dev.json: rows[0] (id \"x\"): unknown field `nam` is ignored; a row has `id`, `name`, `config`, `inject`, `isolate`, `disabled`, `group`, `instanced`"]
     );
 }
+
+/// What of a compiled project is its own source: a change to anything else
+/// in it (a Python or TypeScript plugin the dev file adds, the dev file)
+/// also reloads the other rows after the rebuild (#547).
+/// guarantee: host/dev-reload
+#[test]
+fn a_compiled_projects_own_sources() {
+    use rutis_host::languages::{DevBuild, SwiftDev};
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path();
+    write(
+        project,
+        &[
+            ("go.mod", "module example.com/demo\n"),
+            ("Package.swift", "let package = Package(name: \"demo\")\n"),
+        ],
+    );
+    let go = GoDev::of(project).unwrap();
+    for own in [
+        "plugin.go",
+        "cmd/demo/main.go",
+        "go.mod",
+        "go.sum",
+        "go.work",
+    ] {
+        assert!(go.is_source(&project.join(own)), "{own}");
+    }
+    let swift = SwiftDev::of(project).unwrap();
+    for own in [
+        "Package.swift",
+        "Package.resolved",
+        "Sources/DemoPlugin/Plugin.swift",
+    ] {
+        assert!(swift.is_source(&project.join(own)), "{own}");
+    }
+    for other in ["dev/probe.py", "fake.ts", "rutis.dev.json", "README.md"] {
+        assert!(!go.is_source(&project.join(other)), "{other}");
+        assert!(!swift.is_source(&project.join(other)), "{other}");
+    }
+}
