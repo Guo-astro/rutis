@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::Scripted;
-use rutis::{BoxFuture, CordisError, Ctx, Event, EventKey, Listener};
+use rutis::host::*;
+use rutis::{Ctx, Event};
 use rutis_dsh::web;
 use rutis_test_support::{within, Guard, HANG_GUARD};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -18,27 +19,16 @@ use tokio::sync::oneshot;
 const DSH_START: Guard = Guard(Duration::from_secs(6 * HANG_GUARD.as_secs()));
 
 /// Hands the first event of its kind to the test.
-struct First<E>(Mutex<Option<oneshot::Sender<E>>>);
-
-impl<E: Event + Clone> Listener<E> for First<E> {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        event: &'a E,
-        _: rutis::Call<'a, E::Value>,
-    ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
-        if let Some(sender) = self.0.lock().unwrap().take() {
-            let _ = sender.send(event.clone());
-        }
-        Box::pin(async { Ok(None) })
-    }
-}
-
 fn first<E: Event + Clone>(ctx: &Ctx) -> oneshot::Receiver<E> {
     let (sender, receiver) = oneshot::channel();
-    ctx.events()
-        .on(ctx, &EventKey::<E>::of(), First(Mutex::new(Some(sender))))
-        .unwrap();
+    let sender = Mutex::new(Some(sender));
+    ctx.on::<E>(move |event, _| {
+        if let Some(sender) = sender.lock().unwrap().take() {
+            let _ = sender.send((*event).clone());
+        }
+        async { Ok(None) }
+    })
+    .unwrap();
     receiver
 }
 

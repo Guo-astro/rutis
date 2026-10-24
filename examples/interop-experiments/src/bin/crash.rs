@@ -9,32 +9,28 @@ mod unix {
     use std::time::{Duration, Instant};
 
     use interop_experiments::fragile::{self, Fragile};
-    use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
+    use rutis::host::*;
+    use rutis::{Ctx, Plugin};
 
     /// A rutis plugin that depends on the mounted service.
     struct Consumer {
         stopped: Arc<AtomicBool>,
-        injects: [TypeKey; 1],
     }
 
     impl Plugin for Consumer {
+        type Deps = Arc<Fragile>;
+
         fn name(&self) -> &str {
             "consumer"
         }
-        fn injects(&self) -> &[TypeKey] {
-            &self.injects
-        }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+
+        async fn apply(&self, ctx: &Ctx, _: Arc<Fragile>) -> rutis::Result {
             let stopped = self.stopped.clone();
-            Box::pin(async move {
-                ctx.effect(move || {
-                    Effect::Disposer(Box::new(move || {
-                        stopped.store(true, Ordering::SeqCst);
-                        Ok(())
-                    }))
-                })?;
-                Ok(Effect::Done)
-            })
+            ctx.effect(|| async move {
+                stopped.store(true, Ordering::SeqCst);
+                Ok(())
+            })?;
+            Ok(())
         }
     }
 
@@ -53,7 +49,6 @@ mod unix {
         let stopped = Arc::new(AtomicBool::new(false));
         let consumer = ctx.plugin(Consumer {
             stopped: stopped.clone(),
-            injects: [TypeKey::of::<Fragile>()],
         });
         (&consumer).await.unwrap();
         let pid = ctx.get::<Fragile>().unwrap().pid().unwrap() as u32;

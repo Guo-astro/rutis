@@ -30,7 +30,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin};
+use rutis::host::*;
+use rutis::{Ctx, Plugin};
 use rutis_bridge::session::{
     caller_row, host_key, Error as CallError, HostDispatch, Reply, Value as CallValue,
 };
@@ -67,9 +68,7 @@ async fn run(path: &Path) -> i32 {
     };
     let embedding = Embedding {
         builtins: Some(Box::new(|builtins| {
-            builtins.register_fn::<serde_json::Value, _>("fixture/calendar", |_| {
-                Ok(Box::new(RustCalendar))
-            });
+            builtins.register::<serde_json::Value, _, _>("fixture/calendar", |_| Ok(RustCalendar));
         })),
         identity: None,
     };
@@ -143,15 +142,15 @@ async fn reload(host: &mut Host, path: &Path) -> Result<(), String> {
 struct RustCalendar;
 
 impl Plugin for RustCalendar {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "fixture/calendar"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            ctx.provide_as::<dyn HostDispatch>(host_key("calendar"), Arc::new(Calendar))?;
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, ctx: &Ctx, _: ()) -> rutis::Result {
+        ctx.provide_at(host_key("calendar"), Arc::new(Calendar))?;
+        Ok(())
     }
 }
 

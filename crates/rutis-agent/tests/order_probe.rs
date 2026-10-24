@@ -8,7 +8,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use rutis::{Ctx, Event, Listener};
+use rutis::host::*;
+use rutis::{Ctx, Event};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct ProbeEvent {
@@ -21,22 +22,16 @@ impl Event for ProbeEvent {
 }
 
 /// TUI 式监听器:逐条记录到达序。
-struct Recorder(Arc<Mutex<Vec<usize>>>);
-
-impl Listener<ProbeEvent> for Recorder {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a ProbeEvent,
-        _call: rutis::Call<'a, ()>,
-    ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-        let log = self.0.clone();
-        let seq = e.seq;
-        Box::pin(async move {
-            log.lock().unwrap().push(seq);
+fn record(root: &Ctx, log: &Arc<Mutex<Vec<usize>>>) {
+    let log = log.clone();
+    root.on::<ProbeEvent>(move |e, _| {
+        let log = log.clone();
+        async move {
+            log.lock().unwrap().push(e.seq);
             Ok(None)
-        })
-    }
+        }
+    })
+    .unwrap();
 }
 
 const N: usize = 200;
@@ -47,8 +42,7 @@ async fn emit_rounds(root: &Ctx, log: &Arc<Mutex<Vec<usize>>>, gap_ms: u64) -> u
     for _ in 0..ROUNDS {
         log.lock().unwrap().clear();
         for seq in 0..N {
-            root.events()
-                .emit(root, &rutis::EventKey::of(), Arc::new(ProbeEvent { seq }))
+            root.emit(ProbeEvent { seq })
                 .expect("default event dispatch");
             if gap_ms > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(gap_ms)).await;
@@ -77,9 +71,7 @@ async fn emit_rounds(root: &Ctx, log: &Arc<Mutex<Vec<usize>>>, gap_ms: u64) -> u
 async fn emit_delivers_in_order_back_to_back_multi_thread() {
     let root = Ctx::root().unwrap();
     let log = Arc::new(Mutex::new(Vec::new()));
-    root.events()
-        .on(&root, &rutis::EventKey::of(), Recorder(log.clone()))
-        .unwrap();
+    record(&root, &log);
     let misplaced = emit_rounds(&root, &log, 0).await;
     assert_eq!(misplaced, 0, "同事件类型 emit 必须按发射序投递");
 }
@@ -89,9 +81,7 @@ async fn emit_delivers_in_order_back_to_back_multi_thread() {
 async fn emit_delivers_in_order_with_network_gap() {
     let root = Ctx::root().unwrap();
     let log = Arc::new(Mutex::new(Vec::new()));
-    root.events()
-        .on(&root, &rutis::EventKey::of(), Recorder(log.clone()))
-        .unwrap();
+    record(&root, &log);
     let misplaced = emit_rounds(&root, &log, 1).await;
     assert_eq!(misplaced, 0, "同事件类型 emit 必须按发射序投递");
 }
@@ -101,9 +91,7 @@ async fn emit_delivers_in_order_with_network_gap() {
 async fn emit_delivers_in_order_single_thread() {
     let root = Ctx::root().unwrap();
     let log = Arc::new(Mutex::new(Vec::new()));
-    root.events()
-        .on(&root, &rutis::EventKey::of(), Recorder(log.clone()))
-        .unwrap();
+    record(&root, &log);
     let misplaced = emit_rounds(&root, &log, 0).await;
     assert_eq!(misplaced, 0, "同事件类型 emit 必须按发射序投递");
 }

@@ -55,24 +55,30 @@
 //!   did not finish).
 
 use std::collections::{BTreeMap, HashMap};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{
-    BoxFuture, CordisError, Ctx, Effect, FiberState, InstanceId, Plugin, PluginFactory, TypeKey,
-};
+use rutis::host::*;
+use rutis::{Ctx, Error, Plugin};
 use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle, Stdio};
 use rutis_bridge::session::{
     host_key_in, settle, Error as CallError, HostDispatch, Reply, Value as CallValue,
 };
+use rutis_loader::edit::{
+    Edit, Editable, Instance, InstanceResult, NewEntry, Persist, PersistError, Version,
+};
+use rutis_loader::report::EntryStatus;
+use rutis_loader::resolve::{Build, Resolved, ScopedFactory};
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
 use rutis_loader::{
-    Build, Builtins, Chain, Edit, Editable, EntryStatus, Instance, InstanceResult, Layer, Loader,
-    LoaderError, LoaderOptions, LoaderPlugin, NewEntry, Patch, Persist, PersistError,
-    RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog, Version,
+    Builtins, Chain, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch, Resolver,
+    ServiceCatalog,
 };
 use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -221,8 +227,10 @@ impl App {
         root.plugin(python);
 
         let doors = Doors::default();
+        let (builtins, scoped) = rows(doors.clone());
         let chain = Chain::new()
-            .with(builtins(doors.clone()))
+            .with(scoped)
+            .with(builtins)
             .with_shared(python_rows.clone())
             .with_shared(node_rows.clone());
         let plugin = LoaderPlugin::new(
@@ -456,9 +464,7 @@ impl App {
                 .ctx
                 .clone(),
         };
-        let visible = ctx
-            .get_as::<dyn HostDispatch>(host_key_in(service, instance))
-            .is_some();
+        let visible = ctx.get_at(&host_key_in(service, instance)).is_some();
         Ok(json!({ "visible": visible }))
     }
 
@@ -534,7 +540,7 @@ impl App {
         };
         let entries = self.loader.entries();
         let mut tenants = serde_json::Map::new();
-        let open: Vec<(String, rutis::PluginId, InstanceId)> = self
+        let open: Vec<(String, PluginId, InstanceId)> = self
             .open
             .lock()
             .unwrap()
@@ -598,7 +604,7 @@ impl App {
 async fn call(door: &Door, service: &str, method: &str, args: Value) -> Result<Value, String> {
     let dispatch = door
         .ctx
-        .get_as::<dyn HostDispatch>(host_key_in(service, door.instance))
+        .get_at(&host_key_in(service, door.instance))
         .ok_or_else(|| format!("{service} is not available in tenant {}", door.tenant))?;
     let reply = dispatch
         .invoke(method, CallValue::from(args))
@@ -766,35 +772,40 @@ struct TenantConfig {
 struct NoConfig {}
 
 /// Where a tenant's configuration is provided.
-fn config_key(tenant: &str) -> TypeKey {
-    TypeKey::keyed_dynamic::<TenantConfig>(format!("tenant/{tenant}"))
+fn config_key(tenant: &str) -> Key<TenantConfig> {
+    Key::dynamic(format!("tenant/{tenant}"))
 }
 
-fn failed(error: impl std::fmt::Display) -> CordisError {
-    CordisError::PluginFailed(error.to_string().into())
+fn failed(error: impl std::fmt::Display) -> Error {
+    Error::msg(error.to_string())
 }
 
-fn builtins(doors: Doors) -> Builtins {
+/// The Rust rows: `app/tenant-config` in the builtins; `app/settings` and
+/// `app/caller`, built for each tenant instance, in [`Scoped`].
+fn rows(doors: Doors) -> (Builtins, Scoped) {
     let mut builtins = Builtins::new();
-    builtins.register::<TenantConfig, _>("app/tenant-config", ConfigFactory);
-    builtins.register_with::<NoConfig, _, _>("app/settings", |build: &Build| {
+    builtins.register("app/tenant-config", |config: &TenantConfig| {
+        Ok(ConfigRow(config.clone()))
+    });
+    let mut scoped = Scoped::default();
+    scoped.register::<NoConfig, _, _>("app/settings", |build: &Build| {
         let tenant = tenant_of(build)?;
         Ok(RowFactory {
             name: "app/settings",
-            injects: vec![config_key(&tenant)],
+            injects: vec![config_key(&tenant).erase()],
             row: Arc::new(Row::Settings {
                 tenant,
                 instance: build.instance(TENANT)?,
             }),
         })
     });
-    builtins.register_with::<NoConfig, _, _>("app/caller", move |build: &Build| {
+    scoped.register::<NoConfig, _, _>("app/caller", move |build: &Build| {
         let instance = build.instance(TENANT)?;
         Ok(RowFactory {
             name: "app/caller",
             injects: ["settings", "greeter", "py_greeter"]
                 .iter()
-                .map(|name| host_key_in(name, instance))
+                .map(|name| host_key_in(name, instance).erase())
                 .collect(),
             row: Arc::new(Row::Caller {
                 tenant: tenant_of(build)?,
@@ -803,49 +814,146 @@ fn builtins(doors: Doors) -> Builtins {
             }),
         })
     });
-    builtins
+    (builtins, scoped)
 }
 
-fn tenant_of(build: &Build) -> Result<String, CordisError> {
+fn tenant_of(build: &Build) -> rutis::Result<String> {
     build
         .value::<Tenant>()
         .map(|tenant| tenant.0.clone())
         .ok_or_else(|| failed("an instance of `tenant` is created with its Tenant"))
 }
 
-/// `app/tenant-config`.
-struct ConfigFactory;
+/// Rows whose factory is built for each copy from the instance it runs in,
+/// with dependencies named by that instance. Stands in for 0.16's
+/// `Builtins::register_with(name, |build| factory)`: 0.17's
+/// `register_with` builds a `Plugin`, whose `Deps` are types only.
+#[derive(Default)]
+struct Scoped {
+    entries: HashMap<String, Arc<Resolved>>,
+}
 
-impl PluginFactory<TenantConfig> for ConfigFactory {
-    fn name(&self) -> &str {
-        "app/tenant-config"
-    }
-
-    fn build(&self, config: &TenantConfig) -> Result<Box<dyn Plugin>, CordisError> {
-        Ok(Box::new(ConfigRow(config.clone())))
+impl Scoped {
+    /// `build` makes each copy's factory from where it runs; outside an
+    /// instanced group such a row fails.
+    fn register<C, F, B>(&mut self, name: &str, build: B)
+    where
+        C: DeserializeOwned + JsonSchema + Send + Sync + 'static,
+        F: PluginFactory<C>,
+        B: Fn(&Build) -> rutis::Result<F> + Send + Sync + 'static,
+    {
+        let scoped: ScopedFactory = Arc::new(move |at: &Build| {
+            let factory: Arc<dyn PluginFactory<Value>> = Arc::new(Json::<C, F> {
+                inner: build(at)?,
+                config: PhantomData,
+            });
+            Ok(factory)
+        });
+        let unscoped = Unscoped {
+            name: name.to_owned(),
+        };
+        let resolved = Resolved::new(Arc::new(unscoped))
+            .with_schema(serde_json::to_value(schemars::schema_for!(C)).ok())
+            .with_meta(json!({ "source": "builtin" }))
+            .with_scoped(scoped);
+        self.entries.insert(name.to_owned(), Arc::new(resolved));
     }
 }
 
+impl Resolver for Scoped {
+    fn resolve<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<Resolved>, LoaderError>> {
+        let found = self.entries.get(name).cloned();
+        Box::pin(async move {
+            found.ok_or_else(|| LoaderError::NotFound {
+                name: name.to_owned(),
+            })
+        })
+    }
+}
+
+/// A [`Scoped`] row's factory outside any instance.
+struct Unscoped {
+    name: String,
+}
+
+impl PluginFactory<Value> for Unscoped {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn build(&self, _config: &Value) -> rutis::Result<Box<dyn DynPlugin>> {
+        Err(failed(format!(
+            "{} runs only inside an instanced group",
+            self.name
+        )))
+    }
+}
+
+/// `inner` taking the row's JSON config, decoded into `C` (a `null`
+/// config as `null` first, then as `{}`).
+struct Json<C, F> {
+    inner: F,
+    config: PhantomData<fn() -> C>,
+}
+
+fn decode<C: DeserializeOwned>(value: &Value) -> rutis::Result<C> {
+    let invalid = |e: serde_json::Error| {
+        Error::from(ErrorKind::Validation {
+            issues: vec![e.to_string()],
+        })
+    };
+    match serde_json::from_value::<C>(value.clone()) {
+        Ok(config) => Ok(config),
+        Err(_) if value.is_null() => {
+            serde_json::from_value::<C>(Value::Object(Default::default())).map_err(invalid)
+        }
+        Err(e) => Err(invalid(e)),
+    }
+}
+
+impl<C, F> PluginFactory<Value> for Json<C, F>
+where
+    C: DeserializeOwned + Send + Sync + 'static,
+    F: PluginFactory<C>,
+{
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn injects(&self) -> Vec<TypeKey> {
+        self.inner.injects()
+    }
+
+    fn validate_config(&self, config: &Value) -> rutis::Result {
+        self.inner.validate_config(&decode::<C>(config)?)
+    }
+
+    fn build(&self, config: &Value) -> rutis::Result<Box<dyn DynPlugin>> {
+        self.inner.build(&decode::<C>(config)?)
+    }
+}
+
+/// `app/tenant-config`.
 struct ConfigRow(TenantConfig);
 
 impl Plugin for ConfigRow {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "app/tenant-config"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            // Checked as it starts, not by the config's validation: an edit
-            // to 0 passes the dry run and fails here (it is rolled back).
-            if self.0.quota == 0 {
-                return Err(failed(format!(
-                    "tenant {} needs a quota of at least 1",
-                    self.0.tenant
-                )));
-            }
-            ctx.provide_as::<TenantConfig>(config_key(&self.0.tenant), Arc::new(self.0.clone()))?;
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, ctx: &Ctx, _: ()) -> rutis::Result {
+        // Checked as it starts, not by the config's validation: an edit
+        // to 0 passes the dry run and fails here (it is rolled back).
+        if self.0.quota == 0 {
+            return Err(failed(format!(
+                "tenant {} needs a quota of at least 1",
+                self.0.tenant
+            )));
+        }
+        ctx.provide_at(config_key(&self.0.tenant), Arc::new(self.0.clone()))?;
+        Ok(())
     }
 }
 
@@ -876,11 +984,11 @@ impl PluginFactory<NoConfig> for RowFactory {
         self.name
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.clone()
     }
 
-    fn build(&self, _: &NoConfig) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, _: &NoConfig) -> rutis::Result<Box<dyn DynPlugin>> {
         Ok(Box::new(TenantRow {
             name: self.name,
             injects: self.injects.clone(),
@@ -895,23 +1003,23 @@ struct TenantRow {
     row: Arc<Row>,
 }
 
-impl Plugin for TenantRow {
+/// Its dependencies are keys of its tenant's instance, known only once it
+/// is built: an object-safe [`DynPlugin`].
+impl DynPlugin for TenantRow {
     fn name(&self) -> &str {
         self.name
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.clone()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             match &*self.row {
                 Row::Settings { tenant, instance } => {
-                    let config = ctx
-                        .require_as::<TenantConfig>(config_key(tenant))
-                        .map_err(failed)?;
-                    ctx.provide_as::<dyn HostDispatch>(
+                    let config = ctx.require_at(&config_key(tenant)).map_err(failed)?;
+                    ctx.provide_at(
                         host_key_in("settings", *instance),
                         Arc::new(Settings((*config).clone())),
                     )?;

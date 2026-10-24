@@ -12,10 +12,10 @@
 use std::sync::Arc;
 
 use aimux_core::language_model::LanguageModel;
-use rutis::{BoxFuture, CordisError, Ctx};
+use rutis::host::*;
+use rutis::Ctx;
 use rutis_agent::{
-    agent_key, llm_key, Agent, AgentDriverPlugin, AgentTextDelta, AgentToolCall, AgentToolResult,
-    ToolDef, ToolsPlugin,
+    Agent, AgentDriverPlugin, AgentTextDelta, AgentToolCall, AgentToolResult, ToolDef, ToolsPlugin,
 };
 use serde_json::{json, Value};
 
@@ -41,52 +41,8 @@ async fn run_turn(agent: &Arc<dyn Agent>, input: &str) {
     }
 }
 
-// ── 打印监听器(fn 项:省略生命周期满足 Listener 的 for<'a> blanket impl)──
-
-fn print_delta<'a>(
-    _ctx: &'a Ctx,
-    e: &'a AgentTextDelta,
-    _call: rutis::Call<'a, ()>,
-) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-    let d = e.delta.clone();
-    Box::pin(async move {
-        use std::io::Write as _;
-        print!("{d}");
-        let _ = std::io::stdout().flush();
-        Ok(None)
-    })
-}
-
-fn print_tool_call<'a>(
-    _ctx: &'a Ctx,
-    e: &'a AgentToolCall,
-    _call: rutis::Call<'a, ()>,
-) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-    let s = format!("\n⚙ {}({})", e.name, e.args);
-    Box::pin(async move {
-        println!("{s}");
-        Ok(None)
-    })
-}
-
-fn print_tool_result<'a>(
-    _ctx: &'a Ctx,
-    e: &'a AgentToolResult,
-    _call: rutis::Call<'a, ()>,
-) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-    let s = if e.ok {
-        format!("  → [{}] {}", e.name, e.output)
-    } else {
-        format!("  → [{}] FAILED: {}", e.name, e.output)
-    };
-    Box::pin(async move {
-        println!("{s}");
-        Ok(None)
-    })
-}
-
 #[tokio::main]
-async fn main() -> Result<(), CordisError> {
+async fn main() -> rutis::Result {
     let provider = std::env::var("AIMUX_PROVIDER").unwrap_or_else(|_| "deepseek".into());
     let model_id = std::env::var("AIMUX_MODEL").unwrap_or_else(|_| "deepseek-chat".into());
     let model = aimux_providers::provider(&provider, None, &model_id, None)
@@ -96,19 +52,28 @@ async fn main() -> Result<(), CordisError> {
     let root = Ctx::root().expect("run inside a tokio runtime");
 
     // 过程增量观察方:订阅 agent/* 事件,逐块打印(归 root 所有,demo 全程有效)
-    let _delta = root
-        .events()
-        .on(&root, &rutis::EventKey::of(), print_delta)?;
-    let _tool_call = root
-        .events()
-        .on(&root, &rutis::EventKey::of(), print_tool_call)?;
-    let _tool_result = root
-        .events()
-        .on(&root, &rutis::EventKey::of(), print_tool_result)?;
+    let _delta = root.on::<AgentTextDelta>(|e, _| async move {
+        use std::io::Write as _;
+        print!("{}", e.delta);
+        let _ = std::io::stdout().flush();
+        Ok(None)
+    })?;
+    let _tool_call = root.on::<AgentToolCall>(|e, _| async move {
+        println!("\n⚙ {}({})", e.name, e.args);
+        Ok(None)
+    })?;
+    let _tool_result = root.on::<AgentToolResult>(|e, _| async move {
+        if e.ok {
+            println!("  → [{}] {}", e.name, e.output);
+        } else {
+            println!("  → [{}] FAILED: {}", e.name, e.output);
+        }
+        Ok(None)
+    })?;
 
     // LLM 服务直接 provide(设计 §六:无 LlmPlugin 空壳)
     let llm_disposer = root
-        .provide_as(llm_key(), llm)
+        .provide_as::<dyn LanguageModel>(llm)
         .expect("provide llm service");
     let tools_view = root.plugin(ToolsPlugin::new(vec![weather_tool()]));
     let driver_view = root.plugin(AgentDriverPlugin::new(10000).with_default_session_path());
@@ -117,7 +82,7 @@ async fn main() -> Result<(), CordisError> {
         .await
         .expect("driver loads (gated on llm+tools)");
 
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     run_turn(&agent, "weather in Oslo?").await; // 第一轮
     run_turn(&agent, "and in Bergen?").await; // 第二轮,history 连续
 
@@ -125,14 +90,14 @@ async fn main() -> Result<(), CordisError> {
     llm_disposer.dispose().await.expect("dispose llm");
     let mut rx = driver_view.watch();
     loop {
-        if rx.borrow().state == rutis::FiberState::Pending {
+        if rx.borrow().state == FiberState::Pending {
             break;
         }
         rx.changed().await.expect("watch driver eviction");
     }
     println!(
         "llm disposed → driver evicted (agent service: {:?})",
-        root.get_as::<dyn Agent>(agent_key()).is_none()
+        root.get::<dyn Agent>().is_none()
     );
 
     driver_view.dispose().await.unwrap();

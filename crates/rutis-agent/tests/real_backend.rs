@@ -9,11 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aimux_core::language_model::LanguageModel;
+use rutis::host::*;
 use rutis::Ctx;
-use rutis_agent::{
-    agent_key, llm_key, Agent, AgentDriverPlugin, AgentTextDelta, AgentToolCall, ToolDef,
-    ToolsPlugin,
-};
+use rutis_agent::{Agent, AgentDriverPlugin, AgentTextDelta, AgentToolCall, ToolDef, ToolsPlugin};
 use serde_json::{json, Value};
 
 fn weather_tool() -> ToolDef {
@@ -28,50 +26,19 @@ fn weather_tool() -> ToolDef {
     )
 }
 
-/// 收集 `AgentTextDelta` 的 listener:拼接增量进共享缓冲。
-struct TextL(Arc<Mutex<String>>);
-impl rutis::Listener<AgentTextDelta> for TextL {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a AgentTextDelta,
-        _call: rutis::Call<'a, ()>,
-    ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-        let text = self.0.clone();
-        let d = e.delta.clone();
-        Box::pin(async move {
-            text.lock().unwrap().push_str(&d);
-            Ok(None)
-        })
-    }
-}
-
-/// 见到 `get_weather` 工具调用即置位的 listener。
-struct ToolFlagL(Arc<AtomicBool>);
-impl rutis::Listener<AgentToolCall> for ToolFlagL {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a AgentToolCall,
-        _call: rutis::Call<'a, ()>,
-    ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-        let flag = self.0.clone();
-        let name = e.name.clone();
-        Box::pin(async move {
-            if name == "get_weather" {
-                flag.store(true, Ordering::SeqCst);
-            }
-            Ok(None)
-        })
-    }
-}
-
 /// 跑一个 turn,返回拼接增量文本(终态断言在调用侧)。
 async fn run_turn(root: &Ctx, agent: &Arc<dyn Agent>, input: &str) -> String {
     let text = Arc::new(Mutex::new(String::new()));
+    // 收集 `AgentTextDelta` 的 listener:拼接增量进共享缓冲。
+    let buffer = text.clone();
     let _d = root
-        .events()
-        .on(root, &rutis::EventKey::of(), TextL(text.clone()))
+        .on::<AgentTextDelta>(move |e, _| {
+            let text = buffer.clone();
+            async move {
+                text.lock().unwrap().push_str(&e.delta);
+                Ok(None)
+            }
+        })
         .unwrap();
     let result = agent.followup(input).await.expect("turn ok");
     drop(result);
@@ -102,18 +69,24 @@ async fn real_backend_multi_turn_with_tool() {
     }
 
     let root = Ctx::root().unwrap();
-    root.provide_as(llm_key(), backend()).unwrap();
+    root.provide_as::<dyn LanguageModel>(backend()).unwrap();
     let tools_view = root.plugin(ToolsPlugin::new(vec![weather_tool()]));
     let driver_view = root.plugin(AgentDriverPlugin::new(16));
     (&tools_view).await.expect("tools loads");
     (&driver_view).await.expect("driver loads");
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
 
     // 第一轮:期望模型调用 get_weather(经 agent/tool-call 事件观察)
     let saw_tool = Arc::new(AtomicBool::new(false));
+    // 见到 `get_weather` 工具调用即置位的 listener。
+    let flag = saw_tool.clone();
     let _tool_l = root
-        .events()
-        .on(&root, &rutis::EventKey::of(), ToolFlagL(saw_tool.clone()))
+        .on::<AgentToolCall>(move |e, _| {
+            if e.name == "get_weather" {
+                flag.store(true, Ordering::SeqCst);
+            }
+            async { Ok(None) }
+        })
         .unwrap();
     let a1 = run_turn(
         &root,

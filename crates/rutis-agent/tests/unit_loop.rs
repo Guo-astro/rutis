@@ -9,11 +9,12 @@ use std::time::Duration;
 use aimux_core::content::ContentPart;
 use aimux_core::language_model::LanguageModel;
 use aimux_core::message::Role;
-use rutis::{Ctx, FiberState, FiberView, Listener};
+use rutis::events::{Call, Listener};
+use rutis::host::*;
+use rutis::{Ctx, Plugin};
 use rutis_agent::{
-    agent_key, llm_key, tool_call, Agent, AgentDriverPlugin, AgentError, AgentStatus,
-    AgentTextDelta, AgentToolCall, AgentToolResult, AgentTurnEnd, LlmResponse, ScriptedLlm,
-    ToolDef, ToolsPlugin,
+    tool_call, Agent, AgentDriverPlugin, AgentError, AgentStatus, AgentTextDelta, AgentToolCall,
+    AgentToolResult, AgentTurnEnd, LlmResponse, ScriptedLlm, ToolDef, ToolsPlugin,
 };
 use serde_json::{json, Value};
 
@@ -38,7 +39,7 @@ async fn load_driver(
 ) -> (FiberView, Arc<ScriptedLlm>) {
     let llm = Arc::new(ScriptedLlm::new(responses));
     let service: Arc<dyn LanguageModel> = llm.clone();
-    root.provide_as(llm_key(), service).unwrap();
+    root.provide_as::<dyn LanguageModel>(service).unwrap();
     root.plugin(ToolsPlugin::new(tools));
     let view = root.plugin(AgentDriverPlugin::new(max_steps.unwrap_or(16)));
     (&view).await.expect("driver loads (gated on llm+tools)");
@@ -46,72 +47,46 @@ async fn load_driver(
 }
 
 /// 收集 `AgentTextDelta` 的 listener:拼接增量进共享缓冲。
-struct TextL(Arc<Mutex<String>>);
-impl Listener<AgentTextDelta> for TextL {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a AgentTextDelta,
-        _call: rutis::Call<'a, ()>,
-    ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-        let text = self.0.clone();
-        let d = e.delta.clone();
-        Box::pin(async move {
-            text.lock().unwrap().push_str(&d);
+fn text_listener(text: Arc<Mutex<String>>) -> impl Listener<AgentTextDelta> {
+    move |e, _| {
+        let text = text.clone();
+        async move {
+            text.lock().unwrap().push_str(&e.delta);
             Ok(None)
-        })
+        }
     }
 }
 
 /// 统计 `AgentTextDelta` 次数的 listener。
-struct CountL(Arc<AtomicUsize>);
-impl Listener<AgentTextDelta> for CountL {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _e: &'a AgentTextDelta,
-        _call: rutis::Call<'a, ()>,
-    ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-        let n = self.0.clone();
-        Box::pin(async move {
+fn count_listener(n: Arc<AtomicUsize>) -> impl Listener<AgentTextDelta> {
+    move |_, _| {
+        let n = n.clone();
+        async move {
             n.fetch_add(1, Ordering::SeqCst);
             Ok(None)
-        })
+        }
     }
 }
 
 /// `AgentTextDelta` → mpsc 通道。
-struct DeltaTxL(tokio::sync::mpsc::Sender<String>);
-impl Listener<AgentTextDelta> for DeltaTxL {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a AgentTextDelta,
-        _call: rutis::Call<'a, ()>,
-    ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-        let tx = self.0.clone();
-        let d = e.delta.clone();
-        Box::pin(async move {
-            let _ = tx.send(d).await;
+fn delta_tx_listener(tx: tokio::sync::mpsc::Sender<String>) -> impl Listener<AgentTextDelta> {
+    move |e, _| {
+        let tx = tx.clone();
+        async move {
+            let _ = tx.send(e.delta.clone()).await;
             Ok(None)
-        })
+        }
     }
 }
 
 /// `AgentTurnEnd` → mpsc 通道。
-struct TurnEndTxL(tokio::sync::mpsc::Sender<()>);
-impl Listener<AgentTurnEnd> for TurnEndTxL {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _e: &'a AgentTurnEnd,
-        _call: rutis::Call<'a, ()>,
-    ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-        let tx = self.0.clone();
-        Box::pin(async move {
+fn turn_end_tx_listener(tx: tokio::sync::mpsc::Sender<()>) -> impl Listener<AgentTurnEnd> {
+    move |_, _| {
+        let tx = tx.clone();
+        async move {
             let _ = tx.send(()).await;
             Ok(None)
-        })
+        }
     }
 }
 
@@ -122,19 +97,17 @@ async fn observer(root: &Ctx, f: impl Fn(&Ctx) + Send + Sync + 'static) -> (Fibe
         f: F,
         tx: Mutex<Option<tokio::sync::oneshot::Sender<Ctx>>>,
     }
-    impl<F: Fn(&Ctx) + Send + Sync + 'static> rutis::Plugin for Observer<F> {
+    impl<F: Fn(&Ctx) + Send + Sync + 'static> Plugin for Observer<F> {
+        type Deps = ();
         fn name(&self) -> &str {
             "observer"
         }
-        fn apply<'a>(
-            &'a self,
-            ctx: &'a Ctx,
-        ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
+        async fn apply(&self, ctx: &Ctx, _: ()) -> rutis::Result {
             (self.f)(ctx);
             if let Some(tx) = self.tx.lock().unwrap().take() {
                 let _ = tx.send(ctx.clone());
             }
-            Box::pin(async move { Ok(rutis::Effect::Done) })
+            Ok(())
         }
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -156,10 +129,7 @@ async fn run_turn(
     input: &str,
 ) -> (String, Result<String, AgentError>) {
     let text = Arc::new(Mutex::new(String::new()));
-    let _d = observer
-        .events()
-        .on(observer, &rutis::EventKey::of(), TextL(text.clone()))
-        .unwrap();
+    let _d = observer.on(text_listener(text.clone())).unwrap();
     let result = agent.followup(input).await;
     let collected = text.lock().unwrap().clone();
     (collected, result)
@@ -179,12 +149,10 @@ where
 async fn direct_answer_without_tools() {
     let root = Ctx::root().unwrap();
     let (_v, llm) = load_driver(&root, vec![LlmResponse::content("42")], vec![], None).await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
     let (_ov, _octx) = observer(&root, move |ctx| {
-        ctx.events()
-            .on(ctx, &rutis::EventKey::of(), DeltaTxL(tx.clone()))
-            .unwrap();
+        ctx.on(delta_tx_listener(tx.clone())).unwrap();
     })
     .await;
 
@@ -215,18 +183,14 @@ async fn text_arrives_as_multiple_deltas() {
         None,
     )
     .await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
 
     let deltas = Arc::new(AtomicUsize::new(0));
     let text: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let (n, t) = (deltas.clone(), text.clone());
     let (_ov, _octx) = observer(&root, move |ctx| {
-        ctx.events()
-            .on(ctx, &rutis::EventKey::of(), CountL(n.clone()))
-            .unwrap();
-        ctx.events()
-            .on(ctx, &rutis::EventKey::of(), TextL(t.clone()))
-            .unwrap();
+        ctx.on(count_listener(n.clone())).unwrap();
+        ctx.on(text_listener(t.clone())).unwrap();
     })
     .await;
     agent.followup("stream").await.unwrap();
@@ -263,12 +227,10 @@ async fn tool_round_trip() {
         None,
     )
     .await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
     let (_ov, _octx) = observer(&root, move |ctx| {
-        ctx.events()
-            .on(ctx, &rutis::EventKey::of(), DeltaTxL(tx.clone()))
-            .unwrap();
+        ctx.on(delta_tx_listener(tx.clone())).unwrap();
     })
     .await;
 
@@ -357,7 +319,7 @@ async fn multiple_tool_calls_run_in_order() {
         None,
     )
     .await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
 
     #[derive(Debug)]
     enum Seen {
@@ -365,48 +327,29 @@ async fn multiple_tool_calls_run_in_order() {
         Result { ok: bool, output: String },
     }
 
-    /// 工具事件 → mpsc 通道(保序)。
-    struct ToolCallTxL(tokio::sync::mpsc::Sender<Seen>);
-    impl Listener<AgentToolCall> for ToolCallTxL {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a Ctx,
-            e: &'a AgentToolCall,
-            _call: rutis::Call<'a, ()>,
-        ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-            let tx = self.0.clone();
-            let name = e.name.clone();
-            Box::pin(async move {
-                let _ = tx.send(Seen::Call(name)).await;
-                Ok(None)
-            })
-        }
-    }
-    struct ToolResultTxL(tokio::sync::mpsc::Sender<Seen>);
-    impl Listener<AgentToolResult> for ToolResultTxL {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a Ctx,
-            e: &'a AgentToolResult,
-            _call: rutis::Call<'a, ()>,
-        ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-            let tx = self.0.clone();
-            let (ok, output) = (e.ok, e.output.clone());
-            Box::pin(async move {
-                let _ = tx.send(Seen::Result { ok, output }).await;
-                Ok(None)
-            })
-        }
-    }
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Seen>(8);
     let (tx1, tx2) = (tx.clone(), tx.clone());
     let (_ov, _octx) = observer(&root, move |ctx| {
-        ctx.events()
-            .on(ctx, &rutis::EventKey::of(), ToolCallTxL(tx1.clone()))
-            .unwrap();
-        ctx.events()
-            .on(ctx, &rutis::EventKey::of(), ToolResultTxL(tx2.clone()))
-            .unwrap();
+        // 工具事件 → mpsc 通道(保序)。
+        let tx = tx1.clone();
+        ctx.on::<AgentToolCall>(move |e, _| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send(Seen::Call(e.name.clone())).await;
+                Ok(None)
+            }
+        })
+        .unwrap();
+        let tx = tx2.clone();
+        ctx.on::<AgentToolResult>(move |e, _| {
+            let tx = tx.clone();
+            async move {
+                let (ok, output) = (e.ok, e.output.clone());
+                let _ = tx.send(Seen::Result { ok, output }).await;
+                Ok(None)
+            }
+        })
+        .unwrap();
     })
     .await;
     agent.followup("add twice").await.unwrap();
@@ -463,7 +406,7 @@ async fn tool_error_is_fed_back_not_fatal() {
         None,
     )
     .await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let (_ov, octx) = observer(&root, |_| {}).await;
 
     let (_, done) = soon(run_turn(&octx, &agent, "try it")).await;
@@ -494,7 +437,7 @@ async fn unknown_tool_reported_to_model() {
         None,
     )
     .await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let (_ov, octx) = observer(&root, |_| {}).await;
 
     let (_, done) = soon(run_turn(&octx, &agent, "call something odd")).await;
@@ -535,7 +478,7 @@ async fn tool_panic_is_fed_back() {
         None,
     )
     .await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let (_ov, octx) = observer(&root, |_| {}).await;
 
     let (_, done) = soon(run_turn(&octx, &agent, "go")).await;
@@ -575,7 +518,7 @@ async fn async_tool_supported() {
         None,
     )
     .await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let (_ov, octx) = observer(&root, |_| {}).await;
 
     let (_, done) = soon(run_turn(&octx, &agent, "double 4")).await;
@@ -602,7 +545,7 @@ async fn multi_turn_history_is_continuous() {
         None,
     )
     .await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     assert_eq!(agent.id(), agent.session().id()); // id 与 session 共享身份
     let (_ov, octx) = observer(&root, |_| {}).await;
 
@@ -636,7 +579,7 @@ async fn cancel_takes_effect_between_steps() {
         move |_args: Value| {
             let root2 = root2.clone();
             async move {
-                if let Some(agent) = root2.get_as::<dyn Agent>(agent_key()) {
+                if let Some(agent) = root2.get::<dyn Agent>() {
                     agent.cancel();
                 }
                 Ok(Value::String("stopping".to_string()))
@@ -653,7 +596,7 @@ async fn cancel_takes_effect_between_steps() {
         None,
     )
     .await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let (_ov, octx) = observer(&root, |_| {}).await;
 
     let (_, done) = soon(run_turn(&octx, &agent, "go")).await;
@@ -732,18 +675,16 @@ async fn cancel_interrupts_mid_stream() {
         deltas: Mutex::new(Some(deltas_rx)),
     });
     let service: Arc<dyn LanguageModel> = model;
-    root.provide_as(llm_key(), service).unwrap();
+    root.provide_as::<dyn LanguageModel>(service).unwrap();
     root.plugin(ToolsPlugin::new(vec![]));
     let view = root.plugin(AgentDriverPlugin::new(16));
     (&view).await.expect("driver loads");
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
 
     // 首个增量到(driver 在流内)→ cancel ⇒ 循环 select 到取消
     let (dtx, mut drx) = tokio::sync::mpsc::channel::<String>(4);
     let (_ov, _octx) = observer(&root, move |ctx| {
-        ctx.events()
-            .on(ctx, &rutis::EventKey::of(), DeltaTxL(dtx.clone()))
-            .unwrap();
+        ctx.on(delta_tx_listener(dtx.clone())).unwrap();
     })
     .await;
 
@@ -773,7 +714,7 @@ async fn max_steps_bounds_the_loop() {
         })
         .collect();
     let (_v, llm) = load_driver(&root, endless, vec![weather_tool()], Some(3)).await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let (_ov, octx) = observer(&root, |_| {}).await;
 
     let (_, done) = soon(run_turn(&octx, &agent, "run forever")).await;
@@ -786,7 +727,7 @@ async fn max_steps_bounds_the_loop() {
 async fn llm_error_terminates_turn() {
     let root = Ctx::root().unwrap();
     let (_v, _llm) = load_driver(&root, vec![], vec![], None).await; // 无响应可弹
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let (_ov, octx) = observer(&root, |_| {}).await;
 
     let (_, done) = soon(run_turn(&octx, &agent, "hi")).await;
@@ -801,75 +742,30 @@ async fn llm_error_terminates_turn() {
 async fn status_transitions_and_session_grows() {
     let root = Ctx::root().unwrap();
     let (_v, _llm) = load_driver(&root, vec![LlmResponse::content("ok")], vec![], None).await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     assert_eq!(agent.status(), AgentStatus::Idle);
 
     // turn 进行中信号:agent/pre-step waterfall 挂起点(停在续延前,
     // turn 保持 Running);终止信号:turn-end 事件
     let (stx, mut srx) = tokio::sync::mpsc::channel::<()>(1);
     let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
-    struct HoldL {
-        entered: tokio::sync::mpsc::Sender<()>,
-        gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
-    }
-    impl rutis::Listener<rutis_agent::AgentPreStep> for HoldL {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a Ctx,
-            _e: &'a rutis_agent::AgentPreStep,
-            call: rutis::Call<
-                'a,
-                Result<
-                    (
-                        Vec<aimux_core::language_model_message::LanguageModelPromptMessage>,
-                        Vec<aimux_core::options::Tool>,
-                    ),
-                    String,
-                >,
-            >,
-        ) -> rutis::BoxFuture<
-            'a,
-            Result<
-                Option<
-                    Result<
-                        (
-                            Vec<aimux_core::language_model_message::LanguageModelPromptMessage>,
-                            Vec<aimux_core::options::Tool>,
-                        ),
-                        String,
-                    >,
-                >,
-                rutis::CordisError,
-            >,
-        > {
-            let entered = self.entered.clone();
-            let gate = self.gate.lock().unwrap().take();
-            Box::pin(async move {
-                let _ = entered.send(()).await;
-                if let Some(gate) = gate {
-                    let _ = gate.await; // 挂起:turn 停在 Running
-                }
-                call.next().await
-            })
-        }
-    }
     let (etx, mut erx) = tokio::sync::mpsc::channel::<()>(1);
-    let hold = HoldL {
-        entered: stx,
-        gate: Mutex::new(Some(gate_rx)),
+    let gate = Mutex::new(Some(gate_rx));
+    let hold = move |_: Arc<rutis_agent::AgentPreStep>, call: Call<rutis_agent::AgentPreStep>| {
+        let entered = stx.clone();
+        let gate = gate.lock().unwrap().take();
+        async move {
+            let _ = entered.send(()).await;
+            if let Some(gate) = gate {
+                let _ = gate.await; // 挂起:turn 停在 Running
+            }
+            call.next().await
+        }
     };
     let hold_slot = Mutex::new(Some(hold));
     let (_ov, octx) = observer(&root, move |ctx| {
-        ctx.events()
-            .on(
-                ctx,
-                &rutis::EventKey::of(),
-                hold_slot.lock().unwrap().take().unwrap(),
-            )
-            .unwrap();
-        ctx.events()
-            .on(ctx, &rutis::EventKey::of(), TurnEndTxL(etx.clone()))
-            .unwrap();
+        ctx.on(hold_slot.lock().unwrap().take().unwrap()).unwrap();
+        ctx.on(turn_end_tx_listener(etx.clone())).unwrap();
     })
     .await;
 
@@ -896,8 +792,8 @@ async fn status_transitions_and_session_grows() {
 async fn disposing_driver_removes_service() {
     let root = Ctx::root().unwrap();
     let (view, _llm) = load_driver(&root, vec![LlmResponse::content("x")], vec![], None).await;
-    assert!(root.get_as::<dyn Agent>(agent_key()).is_some());
+    assert!(root.get::<dyn Agent>().is_some());
     view.dispose().await.unwrap();
-    assert!(root.get_as::<dyn Agent>(agent_key()).is_none());
+    assert!(root.get::<dyn Agent>().is_none());
     assert_eq!(view.state().state, FiberState::Disposed);
 }

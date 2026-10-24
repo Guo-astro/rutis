@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle};
-use rutis_loader::RuntimeResolver;
+use rutis_loader::runtime::RuntimeResolver;
 use serde_json::{json, Value};
 
 use super::{id_of, package_entry, Language};

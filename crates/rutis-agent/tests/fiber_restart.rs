@@ -7,10 +7,9 @@
 use std::sync::Arc;
 
 use aimux_core::language_model::LanguageModel;
+use rutis::host::*;
 use rutis::Ctx;
-use rutis_agent::{
-    agent_key, llm_key, minimal_persona, AgentDriverPlugin, LlmResponse, ScriptedLlm, ToolsPlugin,
-};
+use rutis_agent::{minimal_persona, AgentDriverPlugin, LlmResponse, ScriptedLlm, ToolsPlugin};
 
 fn scripted() -> Arc<dyn LanguageModel> {
     Arc::new(ScriptedLlm::new(vec![
@@ -31,7 +30,7 @@ async fn driver_restart_preserves_session_and_cascades_tui() {
     let session_path = tmp.join("session.json");
 
     let root = Ctx::root().unwrap();
-    root.provide_as(llm_key(), scripted()).unwrap();
+    root.provide_as::<dyn LanguageModel>(scripted()).unwrap();
     let tools_view = root.plugin(ToolsPlugin::new(rutis_agent::minimal_tools()));
     let driver_view = root.plugin(
         AgentDriverPlugin::new(10)
@@ -42,7 +41,7 @@ async fn driver_restart_preserves_session_and_cascades_tui() {
     (&driver_view).await.unwrap();
 
     // 第一代 driver
-    let agent1 = root.get_as::<dyn rutis_agent::Agent>(agent_key()).unwrap();
+    let agent1 = root.get::<dyn rutis_agent::Agent>().unwrap();
     let id1 = agent1.id();
     let msgs1 = agent1.session().messages().len();
 
@@ -57,7 +56,7 @@ async fn driver_restart_preserves_session_and_cascades_tui() {
     driver_view.restart().await.unwrap();
 
     // 重启后 agent 服务被重新 provide
-    let agent2 = root.get_as::<dyn rutis_agent::Agent>(agent_key()).unwrap();
+    let agent2 = root.get::<dyn rutis_agent::Agent>().unwrap();
     assert!(
         !Arc::ptr_eq(&agent1, &agent2),
         "driver should be a new instance"

@@ -8,12 +8,14 @@ use std::time::Duration;
 
 use rust_services_calendar::{Calendar, Change, Entry, Kind, Notes};
 use rust_services_example::exports;
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory, TypeKey};
+use rutis::host::*;
+use rutis::{Ctx, Plugin};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch, Reply, Value as RpcValue};
+use rutis_loader::resolve::Build;
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
 use rutis_loader::{
-    Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver,
-    RuntimeRowsPlugin, ServiceCatalog,
+    Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
 };
 use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
@@ -74,34 +76,33 @@ struct NoConfig {}
 /// The Rust row providing a `session` instance's own `Notes`, as an
 /// application does: at the native type's key in the instance.
 struct NotesRow {
-    key: TypeKey,
+    key: Key<Notes>,
     owner: String,
 }
 
-impl Plugin for NotesRow {
-    fn name(&self) -> &str {
-        "notes"
-    }
-
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            ctx.provide_as(self.key.clone(), Arc::new(Notes::new(self.owner.clone())))?;
-            Ok(Effect::Done)
+impl NotesRow {
+    /// One copy per `session` instance, titled as the instance was.
+    fn new(build: &Build, _: &NoConfig) -> rutis::Result<Self> {
+        Ok(NotesRow {
+            key: Key::of().instance(build.instance("session")?),
+            owner: build
+                .value::<Title>()
+                .map(|title| title.0.clone())
+                .unwrap_or_default(),
         })
     }
 }
 
-struct NotesFactory {
-    key: TypeKey,
-    owner: String,
-}
+impl Plugin for NotesRow {
+    type Deps = ();
 
-impl PluginFactory<NoConfig> for NotesFactory {
-    fn build(&self, _: &NoConfig) -> Result<Box<dyn Plugin>, CordisError> {
-        Ok(Box::new(NotesRow {
-            key: self.key.clone(),
-            owner: self.owner.clone(),
-        }))
+    fn name(&self) -> &str {
+        "notes"
+    }
+
+    async fn apply(&self, ctx: &Ctx, _: ()) -> rutis::Result {
+        ctx.provide_at(self.key.clone(), Arc::new(Notes::new(self.owner.clone())))?;
+        Ok(())
     }
 }
 
@@ -139,12 +140,11 @@ async fn fixture(rows: Value) -> Fixture {
     let dir = self::rows();
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     // The native service, provided as the application always did.
     let calendar = Arc::new(Calendar::new());
-    root.provide_as(TypeKey::of::<Calendar>(), calendar.clone())
-        .unwrap();
+    root.provide_as::<Calendar>(calendar.clone()).unwrap();
 
     let mut catalog = ServiceCatalog::new();
     catalog.register_shared("probe");
@@ -161,15 +161,7 @@ async fn fixture(rows: Value) -> Fixture {
     root.plugin(node);
     root.plugin(python);
     let mut builtins = Builtins::new();
-    builtins.register_with::<NoConfig, _, _>("notes", |build| {
-        Ok(NotesFactory {
-            key: TypeKey::instance::<Notes>(build.instance("session")?),
-            owner: build
-                .value::<Title>()
-                .map(|title| title.0.clone())
-                .unwrap_or_default(),
-        })
-    });
+    builtins.register_with("notes", NotesRow::new);
     let chain = Chain::new()
         .with(builtins)
         .with_shared(python_rows.clone())

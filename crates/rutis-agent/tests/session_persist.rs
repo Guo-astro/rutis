@@ -13,10 +13,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aimux_core::message::{MessageContent, ModelMessage, Role};
+use rutis::host::*;
 use rutis::Ctx;
 use rutis_agent::{
-    agent_key, llm_key, Agent, AgentDriverPlugin, LlmResponse, ScriptedLlm, Session, SessionId,
-    ToolsPlugin,
+    Agent, AgentDriverPlugin, LlmResponse, ScriptedLlm, Session, SessionId, ToolsPlugin,
 };
 
 async fn soon<F, T>(f: F) -> T
@@ -132,10 +132,15 @@ async fn load_driver(
     root: &Ctx,
     path: Option<&str>,
     responses: Vec<LlmResponse>,
-) -> (rutis::FiberView, rutis::FiberView, Arc<ScriptedLlm>) {
+) -> (
+    rutis::host::FiberView,
+    rutis::host::FiberView,
+    Arc<ScriptedLlm>,
+) {
     let llm = Arc::new(ScriptedLlm::new(responses));
     let service: Arc<dyn aimux_core::language_model::LanguageModel> = llm.clone();
-    root.provide_as(llm_key(), service).unwrap();
+    root.provide_as::<dyn aimux_core::language_model::LanguageModel>(service)
+        .unwrap();
     let tools_view = root.plugin(ToolsPlugin::new(vec![]));
     let mut p = AgentDriverPlugin::new(8);
     if let Some(pth) = path {
@@ -168,7 +173,7 @@ async fn session_restored_after_driver_restart() {
             ],
         )
         .await;
-        let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+        let agent = root.get::<dyn Agent>().unwrap();
         id1 = agent.id();
         let _ = soon(agent.followup("q1")).await.unwrap();
         let _ = soon(agent.followup("q2")).await.unwrap();
@@ -194,7 +199,7 @@ async fn session_restored_after_driver_restart() {
         vec![LlmResponse::content("after restart")],
     )
     .await;
-    let agent2 = root2.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent2 = root2.get::<dyn Agent>().unwrap();
 
     // identity 稳定(跨重启),generation 递增
     assert_eq!(agent2.id().as_u64(), id1.as_u64(), "重启后 identity 不变");
@@ -231,7 +236,7 @@ async fn not_persisted_by_default() {
     let root = Ctx::root().unwrap();
     let (tools_view, driver_view, _llm) =
         load_driver(&root, None, vec![LlmResponse::content("answer")]).await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let _ = soon(agent.followup("q")).await.unwrap();
     assert!(!std::path::Path::new(&path).exists(), "默认不落盘");
 
@@ -249,7 +254,7 @@ async fn persist_error_does_not_break_turn() {
     let bad = "/nonexistent/rutis-no-such-dir/session.json";
     let (tools_view, driver_view, _llm) =
         load_driver(&root, Some(bad), vec![LlmResponse::content("still works")]).await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let out = soon(agent.followup("q")).await.unwrap();
     assert_eq!(out, "still works");
 
@@ -281,7 +286,7 @@ async fn dependency_reload_keeps_identity_when_persisted() {
     {
         let (tools_view, driver_view, _llm) =
             load_driver(&root, Some(&path), vec![LlmResponse::content("gen1")]).await;
-        let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+        let agent = root.get::<dyn Agent>().unwrap();
         id1 = agent.id();
         let _ = soon(agent.followup("g1")).await.unwrap();
         soon(async {
@@ -295,7 +300,7 @@ async fn dependency_reload_keeps_identity_when_persisted() {
     let root2 = Ctx::root().unwrap();
     let (tools_view2, driver_view2, _llm2) =
         load_driver(&root2, Some(&path), vec![LlmResponse::content("gen2")]).await;
-    let agent2 = root2.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent2 = root2.get::<dyn Agent>().unwrap();
     assert_eq!(agent2.id().as_u64(), id1.as_u64(), "持久化时 identity 稳定");
     assert_eq!(agent2.id().generation(), id1.generation() + 1);
     // 历史未丢(对话未加新消息前,消息数 = 第一代 2 条)
@@ -326,7 +331,7 @@ async fn restored_session_carries_memory_pointer() {
         vec![LlmResponse::content("a1"), LlmResponse::content("a2")],
     )
     .await;
-    let agent1 = root1.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent1 = root1.get::<dyn Agent>().unwrap();
     let _ = soon(agent1.followup("q1")).await.unwrap();
     let _ = soon(agent1.followup("q2")).await.unwrap();
     soon(async {
@@ -343,7 +348,7 @@ async fn restored_session_carries_memory_pointer() {
         vec![LlmResponse::content("after restart")],
     )
     .await;
-    let agent2 = root2.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent2 = root2.get::<dyn Agent>().unwrap();
     assert_eq!(agent2.id().generation(), 2, "恢复后是第 2 代");
     let _ = soon(agent2.followup("q3")).await.unwrap();
 
@@ -389,7 +394,7 @@ async fn fresh_session_never_has_memory_pointer() {
         ],
     )
     .await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
 
     // 两轮都无记忆指针(generation 恒为 1)
     let _ = soon(agent.followup("q1")).await.unwrap();
@@ -485,7 +490,7 @@ async fn compacted_session_injects_summary_into_prompt() {
         ],
     )
     .await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
 
     let _ = soon(agent.followup("q1")).await.unwrap();
     let _ = soon(agent.followup("q2")).await.unwrap();
@@ -572,7 +577,7 @@ async fn todo_injected_into_prompt() {
         vec![LlmResponse::content("a1"), LlmResponse::content("a2")],
     )
     .await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
 
     // 第一轮(无待办):system 不含"待办"
     let _ = soon(agent.followup("q1")).await.unwrap();
@@ -622,7 +627,7 @@ async fn todo_survives_restart_and_injects() {
     let root1 = Ctx::root().unwrap();
     let (tv1, dv1, _llm1) =
         load_driver(&root1, Some(&path), vec![LlmResponse::content("a1")]).await;
-    let agent1 = root1.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent1 = root1.get::<dyn Agent>().unwrap();
     let _ = soon(agent1.followup("q1")).await.unwrap();
     agent1.set_todo("finish the self-todo feature".to_string());
     soon(async {
@@ -635,7 +640,7 @@ async fn todo_survives_restart_and_injects() {
     let root2 = Ctx::root().unwrap();
     let (tv2, dv2, llm2) =
         load_driver(&root2, Some(&path), vec![LlmResponse::content("resumed")]).await;
-    let agent2 = root2.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent2 = root2.get::<dyn Agent>().unwrap();
     assert_eq!(
         agent2.session().todo(),
         Some("finish the self-todo feature")
@@ -688,7 +693,7 @@ async fn cross_generation_memory_retention_keeps_facts() {
             .collect(),
     )
     .await;
-    let agent1 = root1.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent1 = root1.get::<dyn Agent>().unwrap();
     for q in 1..=4 {
         let _ = soon(agent1.followup(&format!("remember fact {q}")))
             .await
@@ -709,7 +714,7 @@ async fn cross_generation_memory_retention_keeps_facts() {
         vec![LlmResponse::content("ok").to_owned()],
     )
     .await;
-    let agent2 = root2.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent2 = root2.get::<dyn Agent>().unwrap();
     assert_eq!(agent2.id().generation(), 2);
     let _ = soon(agent2.followup("continue")).await.unwrap();
 
@@ -892,9 +897,8 @@ async fn driver_accumulates_llm_token_usage_from_finish() {
     }
 
     let root = Ctx::root().unwrap();
-    use rutis_agent::llm_key;
     let lm: Arc<dyn LanguageModel> = Arc::new(UsageLlm);
-    root.provide_as(llm_key(), lm).unwrap();
+    root.provide_as::<dyn LanguageModel>(lm).unwrap();
     let tools_view = root.plugin(ToolsPlugin::new(vec![]));
     let driver_view = root.plugin(AgentDriverPlugin::new(8));
     soon(async {
@@ -902,7 +906,7 @@ async fn driver_accumulates_llm_token_usage_from_finish() {
         (&driver_view).await.expect("driver");
     })
     .await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let _ = soon(agent.followup("go")).await.unwrap();
     assert_eq!(
         agent.session().tokens_used(),
@@ -975,9 +979,8 @@ async fn token_budget_limit_interrupts_turn() {
     }
 
     let root = Ctx::root().unwrap();
-    use rutis_agent::llm_key;
     let lm: Arc<dyn LanguageModel> = Arc::new(UsageLlm2);
-    root.provide_as(llm_key(), lm).unwrap();
+    root.provide_as::<dyn LanguageModel>(lm).unwrap();
     let tools_view = root.plugin(ToolsPlugin::new(vec![]));
     let driver_view = root.plugin(AgentDriverPlugin::new(8).with_token_budget(100));
     soon(async {
@@ -985,7 +988,7 @@ async fn token_budget_limit_interrupts_turn() {
         (&driver_view).await.expect("driver");
     })
     .await;
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
 
     // 第一轮:单次 Finish 累计 150 > budget 100 → BudgetLimit(每 step 前检查,
     // step1 时累计 0 不触发;step2 时累计 150 触发。单轮内第二次 step 中断)。

@@ -274,8 +274,8 @@ async fn an_application_stops_and_starts_again() {
             .into_iter()
             .filter(|entry| entry.id == id && entry.instance.is_some())
             .filter(|entry| {
-                matches!(&entry.status, rutis_loader::EntryStatus::Running(snapshot)
-                    if snapshot.state == rutis::FiberState::Active)
+                matches!(&entry.status, rutis_loader::report::EntryStatus::Running(snapshot)
+                    if snapshot.state == rutis::host::FiberState::Active)
             })
             .count()
     };

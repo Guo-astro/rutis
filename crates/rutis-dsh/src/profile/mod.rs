@@ -20,7 +20,8 @@ pub mod yaml;
 
 use std::sync::Arc;
 
-use rutis_loader::{Expressions, LoaderOptions, ServiceCatalog};
+use rutis_loader::resolve::Expressions;
+use rutis_loader::{LoaderOptions, ServiceCatalog};
 use serde::Serialize;
 
 pub use layers::{load, Profile, ProfileContext, ProfileError, SkipKind, SkippedBundle};
@@ -94,7 +95,7 @@ pub fn install_anchor() -> std::path::PathBuf {
 /// The composed rows of `profile` as the entry-list YAML (`!!js` kept), the
 /// output of `rutis-dsh dump-config`.
 pub fn dump(profile: &Profile) -> String {
-    let rows = rutis_loader::apply_patches(&profile.layers).rows;
+    let rows = rutis_loader::internal::apply_patches(&profile.layers).rows;
     yaml::Document::parse("")
         .expect("an empty document")
         .render_fresh(&rows)

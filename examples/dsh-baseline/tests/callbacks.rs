@@ -6,11 +6,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use dsh_baseline::{credentials, fs, invariants, jobs};
-use rutis::{Ctx, Plugin};
+use rutis::host::*;
+use rutis::Ctx;
 use rutis_bridge::cordis::serde_json::json;
 use rutis_test_support::until;
 
-async fn mount(ctx: &Ctx, plugin: impl Plugin + 'static) {
+async fn mount(ctx: &Ctx, plugin: impl DynPlugin) {
     let view = ctx.plugin(plugin);
     (&view).await.unwrap();
 }

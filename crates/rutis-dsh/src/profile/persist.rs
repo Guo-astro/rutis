@@ -3,8 +3,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rutis::BoxFuture;
-use rutis_loader::{Edit, LoaderError, Patch, Persist, PersistError, Version};
+use rutis::host::BoxFuture;
+use rutis_loader::edit::{Edit, Persist, PersistError, Version};
+use rutis_loader::{LoaderError, Patch};
 use serde_json::Value;
 
 use super::layers::{parse_patch_list, unanchor_patch, version_of, ProfileContext};

@@ -7,6 +7,7 @@ mod unix {
     use std::time::{Duration, Instant};
 
     use interop_experiments::bench::{self, Bench, Row};
+    use rutis::host::*;
     use rutis::Ctx;
 
     fn summary(label: &str, mut samples: Vec<Duration>) {

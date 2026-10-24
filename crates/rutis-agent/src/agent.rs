@@ -9,14 +9,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use aimux_core::message::ModelMessage;
-use rutis::{BoxFuture, TypeKey};
+use futures::future::BoxFuture;
 
 use crate::session::SessionId;
-
-/// agent 服务键(`AgentDriverPlugin` 提供,`get_as::<dyn Agent>` 取回)。
-pub fn agent_key() -> TypeKey {
-    TypeKey::of::<dyn Agent>()
-}
 
 /// driver 生命周期态(设计 §三.3;原子存 0=idle / 1=running)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +70,7 @@ pub enum AgentError {
 
 /// 多轮 agent 接口(dsh Agent 的多轮内核裁剪:保留 id/status/session/
 /// followup/cancel,裁掉 inbox 排队 / steer / fork / resume / 维护调度)。
+/// 服务类型为 `dyn Agent`:`AgentDriverPlugin` 提供,`ctx.get::<dyn Agent>()` 取回。
 ///
 /// `followup` 只负责"触发 turn + 回传终态";过程增量(text/tool/状态)
 /// 经 EventBus 的 `agent/*` 事件广播,不独占返回——观察方(TUI/日志/

@@ -64,7 +64,7 @@ use std::sync::Arc;
 #[cfg(all(unix, dsh_installed))]
 use aimux_llm::LlmService;
 #[cfg(all(unix, dsh_installed))]
-use rutis::{CordisError, Ctx, Disposer};
+use rutis::{Ctx, Disposer, Error};
 
 #[cfg(all(unix, dsh_installed))]
 pub use aimux::AimuxBridge;
@@ -76,15 +76,12 @@ aimux::serve_aimux!(agent);
 
 /// Registers `service` as the `aimux` service of the [`web`] mount.
 #[cfg(all(unix, dsh_installed))]
-pub fn provide_web_aimux(ctx: &Ctx, service: Arc<dyn LlmService>) -> Result<Disposer, CordisError> {
+pub fn provide_web_aimux(ctx: &Ctx, service: Arc<dyn LlmService>) -> Result<Disposer, Error> {
     web::provide_aimux(ctx, AimuxBridge::new(service))
 }
 
 /// Registers `service` as the `aimux` service of the [`agent`] mount.
 #[cfg(all(unix, dsh_installed))]
-pub fn provide_agent_aimux(
-    ctx: &Ctx,
-    service: Arc<dyn LlmService>,
-) -> Result<Disposer, CordisError> {
+pub fn provide_agent_aimux(ctx: &Ctx, service: Arc<dyn LlmService>) -> Result<Disposer, Error> {
     agent::provide_aimux(ctx, AimuxBridge::new(service))
 }

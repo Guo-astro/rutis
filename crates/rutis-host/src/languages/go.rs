@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rutis::BoxFuture;
+use rutis::host::BoxFuture;
 use serde_json::{json, Value};
 
 use super::binary::{self, DevBuild};
@@ -74,7 +74,7 @@ impl Language for Go {
     /// The binaries' resolver now; their runtimes once the loader runs.
     fn start(&self, config: &HostConfig, mount: &mut Mount<'_>) -> Result<(), Error> {
         match &config.runtimes.go {
-            Some(go) => binary::start::<rutis_loader::Go>(self, go, config, mount),
+            Some(go) => binary::start::<rutis_loader::runtime::go::Go>(self, go, config, mount),
             None => Ok(()),
         }
     }
@@ -144,7 +144,7 @@ pub(super) fn dev_rows(
     project: &Path,
     what: &str,
 ) -> Result<(Vec<Value>, GoRuntime), String> {
-    let manifest = rutis_loader::read_binary_manifest(binary)
+    let manifest = rutis_loader::internal::read_binary_manifest(binary)
         .map_err(|error| format!("{}: {error}", binary.display()))?;
     let rows: Vec<Value> = manifest
         .plugins

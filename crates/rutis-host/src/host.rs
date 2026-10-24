@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberView, TypeKey};
+use rutis::{Ctx, Error as RutisError};
 use rutis_bridge::runtime::{RuntimeHandle, RuntimePlugin, RuntimeState};
 use rutis_bridge::transport::local::LocalPlugin;
 use rutis_bridge::transport::websocket::{
@@ -16,10 +17,11 @@ use rutis_bridge::{
     AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Credential, Identity, IdentityPlugin,
     PeerId, Presented, SharedToken,
 };
+use rutis_loader::peer::{register_peer_node, PeerResolver};
+use rutis_loader::runtime::binary::RuntimeEnd;
+use rutis_loader::runtime::{RuntimeInstances, RuntimeResolver, RuntimeRows, RuntimeRowsPlugin};
 use rutis_loader::{
-    register_peer_node, Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch,
-    PeerResolver, RuntimeEnd, RuntimeInstances, RuntimeResolver, RuntimeRows, RuntimeRowsPlugin,
-    ServiceCatalog,
+    Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
 };
 
 use crate::config::{token, HostConfig, Restart};
@@ -160,8 +162,8 @@ impl Host {
         // Event failures print as the protocol says (`rutis: listener of
         // <name> in <where> failed: <ErrorName>: <message>`); the rest as
         // the kernel prints them.
-        let fallback = rutis::default_sink();
-        let sink: rutis::ErrorSink =
+        let fallback = rutis::host::default_sink();
+        let sink: rutis::host::ErrorSink =
             std::sync::Arc::new(
                 move |error| match rutis_bridge::events::report_line(&error) {
                     Some(line) => eprintln!("{line}"),
@@ -338,7 +340,7 @@ impl Host {
     /// of the [`Exits`] returned when it ends, for the host to stop. The
     /// runtimes of compiled languages (Go, Swift), which start and stop as
     /// rows use them, are supervised by their plugin
-    /// ([`rutis_loader::BinaryRuntimesHandle::supervise`]), each on its
+    /// ([`rutis_loader::runtime::binary::BinaryRuntimesHandle::supervise`]), each on its
     /// own, with the same numbers and lines.
     pub fn supervise(&self) -> Exits {
         let (send, exits) = tokio::sync::mpsc::unbounded_channel();
@@ -522,9 +524,12 @@ impl Host {
             .into_iter()
             .filter(|entry| {
                 entry.rejected.is_some()
-                    || matches!(&entry.status, rutis_loader::EntryStatus::Unresolved(_))
-                    || matches!(&entry.status, rutis_loader::EntryStatus::Running(snapshot)
-                        if snapshot.state == rutis::FiberState::Failed)
+                    || matches!(
+                        &entry.status,
+                        rutis_loader::report::EntryStatus::Unresolved(_)
+                    )
+                    || matches!(&entry.status, rutis_loader::report::EntryStatus::Running(snapshot)
+                        if snapshot.state == rutis::host::FiberState::Failed)
             })
             .map(|entry| entry.id)
             .collect();
@@ -534,7 +539,9 @@ impl Host {
             .iter()
             .filter(|row| !failing_now.contains(&row.id))
             .filter_map(|row| match &row.status {
-                rutis_loader::RowStatus::Failed(error) => Some(format!("row {}: {error}", row.id)),
+                rutis_loader::report::RowStatus::Failed(error) => {
+                    Some(format!("row {}: {error}", row.id))
+                }
                 _ => None,
             })
             .collect();
@@ -631,7 +638,7 @@ impl Host {
     pub async fn check(
         &self,
         rows: Vec<serde_json::Value>,
-    ) -> Result<rutis_loader::CheckReport, Error> {
+    ) -> Result<rutis_loader::report::CheckReport, Error> {
         let patches: Vec<Patch> = serde_json::from_value(serde_json::json!([{ "insert": rows }]))
             .map_err(|error| format!("rows: {error}"))?;
         Ok(self
@@ -651,10 +658,10 @@ impl Host {
             .await
             .map_err(|error| {
                 Unfinished::Cleanups(match error {
-                    rutis::DisposeWaitError::TimedOut { .. } => {
+                    rutis::host::DisposeWaitError::TimedOut { .. } => {
                         format!("{}s passed", deadline.as_secs_f64())
                     }
-                    rutis::DisposeWaitError::Failed(error) => {
+                    rutis::host::DisposeWaitError::Failed(error) => {
                         format!("the shutdown failed: {error}")
                     }
                     error => error.to_string(),
@@ -685,7 +692,7 @@ impl Host {
     /// What has not stopped yet: the plugins stopping (or still starting),
     /// and how many others wait for them to stop first.
     pub fn still_running(&self) -> (Vec<String>, usize) {
-        use rutis::FiberState;
+        use rutis::host::FiberState;
         let root = self.root.root_view().map(|root| root.id);
         let mut stopping = Vec::new();
         let mut waiting = 0;
@@ -706,8 +713,8 @@ impl Host {
     /// The service `name` as rutis sees it (what a row provides).
     #[allow(dead_code)]
     pub fn service(&self, name: &str) -> Option<Arc<dyn rutis_bridge::session::HostDispatch>> {
-        self.root.get_as::<dyn rutis_bridge::session::HostDispatch>(
-            rutis_bridge::session::host_key(name),
+        self.root.get_at::<dyn rutis_bridge::session::HostDispatch>(
+            &rutis_bridge::session::host_key(name),
         )
     }
 
@@ -1036,16 +1043,16 @@ impl Drop for Unmount {
     }
 }
 
-impl Plugin for Released {
+impl DynPlugin for Released {
     fn name(&self) -> &str {
         "runtime-rows-released"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         if let Some(released) = self.released.lock().unwrap().take() {
             let _ = released.send(());
         }
@@ -1057,6 +1064,7 @@ impl Plugin for Released {
 mod tests {
     use super::*;
     use crate::config::{BunRuntime, NodeRuntime, PythonRuntime, RemoteRuntime, Runtimes};
+    use rutis::internal::CtxInternal;
     use rutis_bridge::session::{settle, Value};
     use rutis_test_support::{within, Guard, HANG_GUARD};
     use serde_json::json;
@@ -1213,7 +1221,7 @@ mod tests {
             .await
             .unwrap();
         // What the runtime's rows wait for.
-        let rows = host.root.get_as::<RuntimeRows>(RuntimeRows::key("py"));
+        let rows = host.root.get_key::<RuntimeRows>(RuntimeRows::key("py"));
         assert!(rows.is_some(), "the runtime is ready, its rows not yet");
         within("loading the row", host.load(config.rows()))
             .await

@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rutis::BoxFuture;
+use rutis::host::BoxFuture;
 use serde_json::Value;
 
 use super::binary::{self, DevBuild};
@@ -77,7 +77,9 @@ impl Language for Swift {
 
     fn start(&self, config: &HostConfig, mount: &mut Mount<'_>) -> Result<(), Error> {
         match &config.runtimes.swift {
-            Some(swift) => binary::start::<rutis_loader::Swift>(self, swift, config, mount),
+            Some(swift) => {
+                binary::start::<rutis_loader::runtime::swift::Swift>(self, swift, config, mount)
+            }
             None => Ok(()),
         }
     }

@@ -15,10 +15,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rutis::{BoxFuture, Ctx, FiberView};
+use rutis::host::{BoxFuture, FiberView};
+use rutis::Ctx;
 use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle, Stdio};
 use rutis_bridge::transport::local::Processes;
-use rutis_loader::{Chain, Resolver, RuntimeResolver, ServiceCatalog};
+use rutis_loader::runtime::RuntimeResolver;
+use rutis_loader::{Chain, Resolver, ServiceCatalog};
 use serde_json::Value;
 
 use crate::config::{HostConfig, Restart, Runtimes};

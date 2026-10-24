@@ -269,7 +269,7 @@ pub enum Restart {
     Exit,
 }
 
-impl From<Restart> for rutis_loader::RestartPolicy {
+impl From<Restart> for rutis_loader::runtime::binary::RestartPolicy {
     fn from(restart: Restart) -> Self {
         match restart {
             Restart::No => Self::No,
@@ -454,7 +454,7 @@ impl HostConfig {
         let mut seen: Vec<&str> = Vec::new();
         for remote in &self.runtimes.remote {
             let name = remote.name.as_str();
-            if !rutis_loader::is_runtime_name(name) {
+            if !rutis_loader::internal::is_runtime_name(name) {
                 return Err(format!(
                     "remote runtime {name:?}: a runtime name is two or more of a-z, 0-9 and -, and not file"
                 ));
@@ -597,7 +597,10 @@ fn check_rows(rows: &[Value], at: &str, ignored: &mut Vec<String>) -> Result<(),
         // A 0.12 link's `events: { out, in }`: refused here, so `check`
         // says so, not only `run` once the loader builds the link.
         if row["name"] == "rutis-bridge/peer" && row["config"].get("events").is_some() {
-            return Err(format!("{place}: {}", rutis_loader::REMOVED_EVENTS));
+            return Err(format!(
+                "{place}: {}",
+                rutis_loader::internal::REMOVED_EVENTS
+            ));
         }
         let group = !matches!(
             fields.get("group"),

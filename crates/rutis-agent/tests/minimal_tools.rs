@@ -12,10 +12,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aimux_core::language_model::LanguageModel;
-use rutis::{Ctx, Listener};
+use rutis::host::*;
+use rutis::Ctx;
 use rutis_agent::{
-    agent_key, bash_tool, llm_key, minimal_persona, minimal_tools, replace_text_tool, tool_call,
-    Agent, AgentDriverPlugin, AgentStatus, AgentToolResult, LlmResponse, ScriptedLlm, ToolDef,
+    bash_tool, minimal_persona, minimal_tools, replace_text_tool, tool_call, Agent,
+    AgentDriverPlugin, AgentStatus, AgentToolResult, LlmResponse, ScriptedLlm, ToolDef,
     ToolsPlugin,
 };
 use serde_json::{json, Value};
@@ -456,7 +457,7 @@ async fn minimal_turn_edits_file_and_runs_command() {
 
     let root = Ctx::root().unwrap();
     let service: Arc<dyn LanguageModel> = llm.clone();
-    root.provide_as(llm_key(), service).unwrap();
+    root.provide_as::<dyn LanguageModel>(service).unwrap();
     let tools_view = root.plugin(ToolsPlugin::new(minimal_tools()));
     let driver_view = root.plugin(AgentDriverPlugin::new(8).with_system_prompt(persona));
     soon(async {
@@ -465,29 +466,21 @@ async fn minimal_turn_edits_file_and_runs_command() {
     })
     .await;
 
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
 
     // 工具结果经 agent/tool-result 事件观察(driver emit,总线广播)
     let results: Arc<Mutex<Vec<(String, bool, String)>>> = Arc::new(Mutex::new(Vec::new()));
-    struct ToolResultL(Arc<Mutex<Vec<(String, bool, String)>>>);
-    impl Listener<AgentToolResult> for ToolResultL {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a Ctx,
-            e: &'a AgentToolResult,
-            _call: rutis::Call<'a, ()>,
-        ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-            let rs = self.0.clone();
-            let (name, ok, output) = (e.name.clone(), e.ok, e.output.clone());
-            Box::pin(async move {
-                rs.lock().unwrap().push((name, ok, output));
-                Ok(None)
-            })
-        }
-    }
+    let rs = results.clone();
     let _d = root
-        .events()
-        .on(&root, &rutis::EventKey::of(), ToolResultL(results.clone()))
+        .on::<AgentToolResult>(move |e, _| {
+            let rs = rs.clone();
+            async move {
+                rs.lock()
+                    .unwrap()
+                    .push((e.name.clone(), e.ok, e.output.clone()));
+                Ok(None)
+            }
+        })
         .unwrap();
     let text = soon(agent.followup("bump timeout and show the file"))
         .await

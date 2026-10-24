@@ -16,7 +16,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use rutis_loader::{ExprScope, Expressions, LoaderError};
+use rutis_loader::resolve::{ExprScope, Expressions};
+use rutis_loader::LoaderError;
 use serde_json::{Number, Value};
 
 use super::paths;

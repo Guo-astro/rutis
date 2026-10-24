@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rutis::{
-    BoxFuture, CordisError, Ctx, Event, EventKey, FiberStatusChanged, Listener, ServiceChanged,
-};
-use rutis_loader::{Loader, LoaderChanged, Patch, PendingEditDropped};
+use rutis::events::{Call, Listener};
+use rutis::host::diagnostics::ServiceChanged;
+use rutis::host::{CtxHost, FiberStatusChanged};
+use rutis::{Ctx, Event};
+use rutis_loader::report::{LoaderChanged, PendingEditDropped};
+use rutis_loader::{Loader, Patch};
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -196,7 +198,7 @@ fn text<'a>(request: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("`{key}` is required"))
 }
 
-fn report(report: &rutis_loader::ReconcileReport) -> Value {
+fn report(report: &rutis_loader::report::ReconcileReport) -> Value {
     json!({
         "newFailures": report.new_failures.iter().map(|f| json!({ "id": f.id, "error": f.error })).collect::<Vec<_>>(),
         "failures": report.failures.len(),
@@ -316,20 +318,14 @@ async fn handle(shared: &Shared, command: &str, request: &Value) -> Result<Value
 }
 
 /// Forwards one event kind to a client as JSON.
-struct Forward<E> {
+/// A listener sending each event, rendered, to the watching client.
+fn forward<E: Event>(
     send: mpsc::UnboundedSender<Value>,
     render: fn(&E) -> Value,
-}
-
-impl<E: Event> Listener<E> for Forward<E> {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a E,
-        _: rutis::Call<'a, E::Value>,
-    ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
-        let _ = self.send.send((self.render)(e));
-        Box::pin(async { Ok(None) })
+) -> impl Listener<E> {
+    move |event: Arc<E>, _: Call<E>| {
+        let _ = send.send(render(&event));
+        std::future::ready(Ok(None))
     }
 }
 
@@ -340,40 +336,11 @@ async fn watch(
 ) -> std::io::Result<()> {
     let (send, mut receive) = mpsc::unbounded_channel();
     let root = &shared.root;
-    let events = root.events();
     let subscriptions: Vec<rutis::Disposer> = [
-        events.on(
-            root,
-            &EventKey::<FiberStatusChanged>::of(),
-            Forward {
-                send: send.clone(),
-                render: describe::fiber_status,
-            },
-        ),
-        events.on(
-            root,
-            &EventKey::<ServiceChanged>::of(),
-            Forward {
-                send: send.clone(),
-                render: describe::service,
-            },
-        ),
-        events.on(
-            root,
-            &EventKey::<LoaderChanged>::of(),
-            Forward {
-                send: send.clone(),
-                render: describe::loader,
-            },
-        ),
-        events.on(
-            root,
-            &EventKey::<PendingEditDropped>::of(),
-            Forward {
-                send,
-                render: describe::dropped,
-            },
-        ),
+        root.on::<FiberStatusChanged>(forward(send.clone(), describe::fiber_status)),
+        root.on::<ServiceChanged>(forward(send.clone(), describe::service)),
+        root.on::<LoaderChanged>(forward(send.clone(), describe::loader)),
+        root.on::<PendingEditDropped>(forward(send, describe::dropped)),
     ]
     .into_iter()
     .filter_map(Result::ok)

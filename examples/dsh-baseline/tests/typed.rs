@@ -2,10 +2,11 @@
 #![cfg(all(unix, dsh_baseline))]
 
 use dsh_baseline::{commands, credentials, fs, invariants, jobs, workspace};
-use rutis::{Ctx, FiberView, Plugin};
+use rutis::host::*;
+use rutis::Ctx;
 use rutis_bridge::session::Error;
 
-async fn mount(ctx: &Ctx, plugin: impl Plugin + 'static) -> FiberView {
+async fn mount(ctx: &Ctx, plugin: impl DynPlugin) -> FiberView {
     let view = ctx.plugin(plugin);
     (&view).await.unwrap();
     view

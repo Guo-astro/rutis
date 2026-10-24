@@ -7,10 +7,12 @@ mod support;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use rutis::{Ctx, TypeKey};
+use rutis::host::*;
+use rutis::Ctx;
 use rutis_dsh::profile::expr::{node_platform, Environment, HostFn, JsSubset};
 use rutis_dsh::profile::{paths, yaml};
-use rutis_loader::{ExprScope, Expressions, LoaderError, ServiceCatalog};
+use rutis_loader::resolve::{ExprScope, Expressions};
+use rutis_loader::{LoaderError, ServiceCatalog};
 use serde_json::{json, Value};
 
 fn collect(value: &Value, out: &mut Vec<String>) {
@@ -77,15 +79,12 @@ fn rust_eval(
         let mut catalog = ServiceCatalog::new();
         let mut disposers = Vec::new();
         for (name, value) in services().as_object().unwrap() {
-            let key = TypeKey::keyed_dynamic::<Value>(name.clone());
-            catalog.readable_keyed::<Value>(name.clone(), key.clone());
+            let key = Key::<Value>::dynamic(name.clone());
+            catalog.readable_keyed::<Value>(name.clone(), key.erase());
             if name == "profileContext" && !with_profile {
                 continue;
             }
-            disposers.push(
-                root.provide_as::<Value>(key, Arc::new(value.clone()))
-                    .unwrap(),
-            );
+            disposers.push(root.provide_at(key, Arc::new(value.clone())).unwrap());
         }
         let home = home.to_owned();
         let mut functions: HashMap<String, HostFn> = HashMap::new();

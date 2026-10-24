@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use rutis::host::CtxHost;
 use rutis_bridge::cordis::server::Dispatch;
 use serde_json::json;
 

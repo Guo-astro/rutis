@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin};
+use rutis::{Ctx, Plugin};
 
 pub struct Counter {
     value: Mutex<f64>,
@@ -59,27 +59,26 @@ pub struct CounterPlugin {
 }
 
 impl Plugin for CounterPlugin {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "ordinary-rust-counter"
     }
 
-    fn validate(&self) -> Result<(), CordisError> {
+    fn validate(&self) -> rutis::Result {
         if self.initial < 0.0 {
-            return Err(CordisError::PluginFailed(Box::new(std::io::Error::other(
-                "initial value must be non-negative",
-            ))));
+            return Err(std::io::Error::other("initial value must be non-negative").into());
         }
         Ok(())
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            ctx.provide(Counter::new(self.initial))?;
-            let counter = ctx.get::<Counter>().unwrap();
-            Ok(Effect::Disposer(Box::new(move || {
-                counter.stopped.notify_one();
-                Ok(())
-            })))
-        })
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
+        ctx.provide(Counter::new(self.initial))?;
+        let counter = ctx.get::<Counter>().unwrap();
+        ctx.effect(|| async move {
+            counter.stopped.notify_one();
+            Ok(())
+        })?;
+        Ok(())
     }
 }

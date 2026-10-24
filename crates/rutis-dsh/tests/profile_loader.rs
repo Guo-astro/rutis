@@ -6,9 +6,12 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin};
+use rutis::host::*;
+use rutis::{Ctx, Plugin};
 use rutis_dsh::profile::{self, watch, ProfileContext, ProfileContextService};
-use rutis_loader::{Builtins, EntryStatus, Loader, LoaderError, LoaderPlugin, NewEntry};
+use rutis_loader::edit::NewEntry;
+use rutis_loader::report::EntryStatus;
+use rutis_loader::{Builtins, Loader, LoaderError, LoaderPlugin};
 use rutis_test_support::eventually_with;
 use serde_json::{json, Value};
 
@@ -21,28 +24,30 @@ struct Echo {
 }
 
 impl Plugin for Echo {
+    type Deps = ();
+
     fn name(&self) -> &str {
         &self.id
     }
 
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    async fn apply(&self, _: &Ctx, _: ()) -> rutis::Result {
         self.log
             .lock()
             .unwrap()
             .push(format!("apply {}", self.config));
-        Box::pin(async { Ok(Effect::Done) })
+        Ok(())
     }
 }
 
 fn builtins(log: &Log) -> Builtins {
     let mut builtins = Builtins::new();
     let log = log.clone();
-    builtins.register_fn::<Value, _>("echo", move |config: &Value| {
-        Ok(Box::new(Echo {
+    builtins.register("echo", move |config: &Value| {
+        Ok(Echo {
             id: "echo".into(),
             config: config.clone(),
             log: log.clone(),
-        }))
+        })
     });
     builtins
 }
@@ -192,7 +197,7 @@ async fn edits_go_to_the_user_file_and_keep_comments() {
     // Comments are kept per patch: the changed patch is rewritten.
     assert!(!text.contains("# keep this comment"), "{text}");
     let reread = profile::load(&context).unwrap();
-    let rows = rutis_loader::apply_patches(&reread.layers).flat;
+    let rows = rutis_loader::internal::apply_patches(&reread.layers).flat;
     let row = |id: &str| {
         rows.iter()
             .find(|r| r.id.as_deref() == Some(id))
@@ -224,7 +229,7 @@ async fn two_writers_keep_both_edits() {
     .await
     .unwrap();
     let reread = profile::load(&context).unwrap();
-    let rows = rutis_loader::apply_patches(&reread.layers).flat;
+    let rows = rutis_loader::internal::apply_patches(&reread.layers).flat;
     assert!(rows.iter().any(|r| r.id.as_deref() == Some("b-row")));
     let from_base = rows
         .iter()

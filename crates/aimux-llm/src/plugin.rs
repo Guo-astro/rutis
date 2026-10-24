@@ -2,14 +2,15 @@
 
 use std::sync::Arc;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, TypeKey};
+use rutis::host::Key;
+use rutis::{Ctx, Plugin};
 
 use crate::provider::AimuxLlm;
 use crate::service::LlmService;
 
-/// 服务键(`get_as::<dyn LlmService>(llm_service_key())` 取回)。
-pub fn llm_service_key() -> TypeKey {
-    TypeKey::of::<dyn LlmService>()
+/// 服务键(`ctx.get::<dyn LlmService>()`,或宿主 `get_at(&llm_service_key())` 取回)。
+pub fn llm_service_key() -> Key<dyn LlmService> {
+    Key::of()
 }
 
 /// 装配单元:持服务实例,apply 注册进当前 ctx。
@@ -32,14 +33,14 @@ impl AimuxLlmPlugin {
 }
 
 impl Plugin for AimuxLlmPlugin {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "aimux-llm"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            ctx.provide_as::<dyn LlmService>(llm_service_key(), Arc::clone(&self.service))?;
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
+        ctx.provide_as::<dyn LlmService>(Arc::clone(&self.service))?;
+        Ok(())
     }
 }

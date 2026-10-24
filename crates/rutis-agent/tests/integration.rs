@@ -18,11 +18,13 @@ use aimux_core::recording::{
     ResponseRecord, TimingRecord, RECORDING_SCHEMA,
 };
 use aimux_core::replay::MockReplayModel;
-use rutis::{Call, Ctx, FiberState, FiberView, Listener, Plugin};
+use rutis::events::Listener;
+use rutis::host::*;
+use rutis::{Ctx, Plugin};
 use rutis_agent::{
-    agent_key, llm_key, tool_call, Agent, AgentDriverPlugin, AgentError, AgentStepEvent,
-    AgentTextDelta, AgentToolResult, LlmResponse, ScriptedLlm, ToolDef, ToolPostExecute,
-    ToolPreExecute, ToolsPlugin,
+    tool_call, Agent, AgentDriverPlugin, AgentError, AgentStepEvent, AgentTextDelta,
+    AgentToolResult, LlmResponse, ScriptedLlm, ToolDef, ToolPostExecute, ToolPreExecute,
+    ToolsPlugin,
 };
 use serde_json::{json, Value};
 
@@ -49,20 +51,13 @@ async fn wait_state(view: &FiberView, want: FiberState) {
 }
 
 /// 收集 `AgentTextDelta` 的 listener:拼接增量进共享缓冲。
-struct TextL(Arc<Mutex<String>>);
-impl Listener<AgentTextDelta> for TextL {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a AgentTextDelta,
-        _call: rutis::Call<'a, ()>,
-    ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-        let text = self.0.clone();
-        let d = e.delta.clone();
-        Box::pin(async move {
-            text.lock().unwrap().push_str(&d);
+fn text_listener(text: Arc<Mutex<String>>) -> impl Listener<AgentTextDelta> {
+    move |e, _| {
+        let text = text.clone();
+        async move {
+            text.lock().unwrap().push_str(&e.delta);
             Ok(None)
-        })
+        }
     }
 }
 
@@ -73,10 +68,7 @@ async fn collect_turn(
     input: &str,
 ) -> (String, Result<String, AgentError>) {
     let text = Arc::new(Mutex::new(String::new()));
-    let _d = root
-        .events()
-        .on(root, &rutis::EventKey::of(), TextL(text.clone()))
-        .unwrap();
+    let _d = root.on(text_listener(text.clone())).unwrap();
     let result = agent.followup(input).await;
     let collected = text.lock().unwrap().clone();
     (collected, result)
@@ -160,7 +152,7 @@ async fn driver_is_gated_on_llm_and_tools() {
     let driver_view = root.plugin(AgentDriverPlugin::new(16));
     tokio::time::sleep(Duration::from_millis(30)).await;
     assert_eq!(driver_view.state().state, FiberState::Pending);
-    assert!(root.get_as::<dyn Agent>(agent_key()).is_none());
+    assert!(root.get::<dyn Agent>().is_none());
 
     // 只给 llm:仍 Pending(缺 tools)
     let llm: Arc<dyn LanguageModel> = Arc::new(MockReplayModel::new(
@@ -168,7 +160,7 @@ async fn driver_is_gated_on_llm_and_tools() {
         "gpt-4o",
         vec![replay_recording("ping", "pong")],
     ));
-    let llm_disposer = root.provide_as(llm_key(), llm).unwrap();
+    let llm_disposer = root.provide_as::<dyn LanguageModel>(llm).unwrap();
     tokio::time::sleep(Duration::from_millis(30)).await;
     assert_eq!(driver_view.state().state, FiberState::Pending);
 
@@ -176,7 +168,7 @@ async fn driver_is_gated_on_llm_and_tools() {
     let tools_view = root.plugin(ToolsPlugin::new(vec![]));
     (&tools_view).await.expect("tools loads");
     (&driver_view).await.expect("driver loads with llm+tools");
-    assert!(root.get_as::<dyn Agent>(agent_key()).is_some());
+    assert!(root.get::<dyn Agent>().is_some());
 
     // 清理:dispose 顺序无关(driver 是消费者,先 dispose provider 也安全)
     llm_disposer.dispose().await.unwrap();
@@ -194,18 +186,18 @@ async fn unloading_llm_evicts_and_reloads_driver() {
         "gpt-4o",
         vec![replay_recording("ping", "pong")],
     ));
-    let llm_disposer = root.provide_as(llm_key(), llm).unwrap();
+    let llm_disposer = root.provide_as::<dyn LanguageModel>(llm).unwrap();
     let tools_view = root.plugin(ToolsPlugin::new(vec![]));
     let driver_view = root.plugin(AgentDriverPlugin::new(16));
     (&tools_view).await.expect("tools loads");
     (&driver_view).await.expect("driver loads");
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let session1 = agent.id();
 
     // 只 dispose llm:无需手动 dispose driver(设计 §六)
     llm_disposer.dispose().await.unwrap();
     wait_state(&driver_view, FiberState::Pending).await;
-    assert!(root.get_as::<dyn Agent>(agent_key()).is_none()); // 驱逐:服务消失
+    assert!(root.get::<dyn Agent>().is_none()); // 驱逐:服务消失
 
     // 重新 provide llm → driver 自动重载(新 driver,新 session)
     let llm2: Arc<dyn LanguageModel> = Arc::new(MockReplayModel::new(
@@ -213,9 +205,9 @@ async fn unloading_llm_evicts_and_reloads_driver() {
         "gpt-4o",
         vec![replay_recording("ping", "pong")],
     ));
-    let _keep = root.provide_as(llm_key(), llm2).unwrap();
+    let _keep = root.provide_as::<dyn LanguageModel>(llm2).unwrap();
     wait_state(&driver_view, FiberState::Active).await;
-    let agent2 = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent2 = root.get::<dyn Agent>().unwrap();
     assert_ne!(agent2.id(), session1); // 重载即新 session
 
     tools_view.dispose().await.unwrap();
@@ -231,31 +223,26 @@ async fn replay_backend_drives_followup() {
         "gpt-4o",
         vec![replay_recording("ping", "pong")],
     ));
-    root.provide_as(llm_key(), llm).unwrap();
+    root.provide_as::<dyn LanguageModel>(llm).unwrap();
     let tools_view = root.plugin(ToolsPlugin::new(vec![]));
     let driver_view = root.plugin(AgentDriverPlugin::new(16));
     (&tools_view).await.expect("tools loads");
     (&driver_view).await.expect("driver loads");
 
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     // 监听器挂独立 fiber,生存期覆盖整个 turn 与事件派发
     let text: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     struct Audit {
         text: Arc<Mutex<String>>,
     }
     impl Plugin for Audit {
+        type Deps = ();
         fn name(&self) -> &str {
             "audit"
         }
-        fn apply<'a>(
-            &'a self,
-            ctx: &'a Ctx,
-        ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
-            let text = self.text.clone();
-            Box::pin(async move {
-                ctx.events().on(ctx, &rutis::EventKey::of(), TextL(text))?;
-                Ok(rutis::Effect::Done)
-            })
+        async fn apply(&self, ctx: &Ctx, _: ()) -> rutis::Result {
+            ctx.on(text_listener(self.text.clone()))?;
+            Ok(())
         }
     }
     let audit_view = root.plugin(Audit { text: text.clone() });
@@ -302,12 +289,12 @@ async fn fiber_unload_stops_running_loop() {
         LlmResponse::tool_calls(vec![tool_call("s1", "slow", json!({}))]),
         LlmResponse::content("never reached"),
     ]));
-    root.provide_as(llm_key(), llm).unwrap();
+    root.provide_as::<dyn LanguageModel>(llm).unwrap();
     let tools_view = root.plugin(ToolsPlugin::new(vec![slow_tool]));
     let driver_view = root.plugin(AgentDriverPlugin::new(16));
     (&tools_view).await.expect("tools loads");
     (&driver_view).await.expect("driver loads");
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
 
     // 后台跑 turn;工具启动后卸载 driver fiber
     let agent2 = agent.clone();
@@ -336,60 +323,34 @@ async fn events_observed_and_listeners_unload_with_fiber() {
     }
     let events: Arc<Mutex<Vec<Seen>>> = Arc::new(Mutex::new(Vec::new()));
 
-    struct StepL(Arc<Mutex<Vec<Seen>>>);
-    impl Listener<AgentStepEvent> for StepL {
-        fn call<'a>(
-            &'a self,
-            _c: &'a Ctx,
-            e: &'a AgentStepEvent,
-            _call: rutis::Call<'a, ()>,
-        ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-            let ev = self.0.clone();
-            let e = e.clone();
-            Box::pin(async move {
-                ev.lock()
-                    .unwrap()
-                    .push(Seen::Step(e.step, e.content.clone(), e.tool_calls));
-                Ok(None)
-            })
-        }
-    }
-    struct ToolL(Arc<Mutex<Vec<Seen>>>);
-    impl Listener<AgentToolResult> for ToolL {
-        fn call<'a>(
-            &'a self,
-            _c: &'a Ctx,
-            e: &'a AgentToolResult,
-            _call: rutis::Call<'a, ()>,
-        ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-            let ev = self.0.clone();
-            let (name, ok) = (e.name.clone(), e.ok);
-            Box::pin(async move {
-                ev.lock().unwrap().push(Seen::Tool(name, ok));
-                Ok(None)
-            })
-        }
-    }
-
     struct Audit {
         events: Arc<Mutex<Vec<Seen>>>,
     }
     impl Plugin for Audit {
+        type Deps = ();
         fn name(&self) -> &str {
             "audit"
         }
-        fn apply<'a>(
-            &'a self,
-            ctx: &'a Ctx,
-        ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
-            let events = self.events.clone();
-            Box::pin(async move {
-                ctx.events()
-                    .on(ctx, &rutis::EventKey::of(), StepL(events.clone()))?;
-                ctx.events()
-                    .on(ctx, &rutis::EventKey::of(), ToolL(events))?;
-                Ok(rutis::Effect::Done)
-            })
+        async fn apply(&self, ctx: &Ctx, _: ()) -> rutis::Result {
+            let ev = self.events.clone();
+            ctx.on::<AgentStepEvent>(move |e, _| {
+                let ev = ev.clone();
+                async move {
+                    ev.lock()
+                        .unwrap()
+                        .push(Seen::Step(e.step, e.content.clone(), e.tool_calls));
+                    Ok(None)
+                }
+            })?;
+            let ev = self.events.clone();
+            ctx.on::<AgentToolResult>(move |e, _| {
+                let ev = ev.clone();
+                async move {
+                    ev.lock().unwrap().push(Seen::Tool(e.name.clone(), e.ok));
+                    Ok(None)
+                }
+            })?;
+            Ok(())
         }
     }
     let audit_view = root.plugin(Audit {
@@ -420,13 +381,13 @@ async fn events_observed_and_listeners_unload_with_fiber() {
         )]),
         LlmResponse::content("31"),
     ]));
-    root.provide_as(llm_key(), llm).unwrap();
+    root.provide_as::<dyn LanguageModel>(llm).unwrap();
     let tools_view = root.plugin(ToolsPlugin::new(vec![weather]));
     let driver_view = root.plugin(AgentDriverPlugin::new(16));
     (&tools_view).await.expect("tools loads");
     (&driver_view).await.expect("driver loads");
 
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let (_, done) = soon(collect_turn(&root, &agent, "w")).await;
     assert_eq!(done.unwrap(), "30");
 
@@ -476,7 +437,7 @@ async fn pre_execute_gate_can_block_specific_tool() {
         LlmResponse::tool_calls(vec![tool_call("b1", "bash", json!({"command":"id"}))]),
         LlmResponse::content("understood the block"),
     ]));
-    root.provide_as(llm_key(), llm).unwrap();
+    root.provide_as::<dyn LanguageModel>(llm).unwrap();
 
     // 记录真实执行(若被执行置 true)
     let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -500,40 +461,27 @@ async fn pre_execute_gate_can_block_specific_tool() {
     (&driver_view).await.expect("driver loads");
 
     // 门控:拒绝 bash(matcher = 按 tool_name)
-    struct BashGate;
-    impl Listener<ToolPreExecute> for BashGate {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a Ctx,
-            e: &'a ToolPreExecute,
-            _call: Call<'a, Option<String>>,
-        ) -> rutis::BoxFuture<'a, Result<Option<Option<String>>, rutis::CordisError>> {
-            if e.call.tool_name == "bash" {
-                Box::pin(async move { Ok(Some(Some("blocked: audit forbids bash".to_string()))) })
-            } else {
-                Box::pin(async move { Ok(Some(None)) })
-            }
-        }
-    }
     struct GateBootstrap;
     impl Plugin for GateBootstrap {
+        type Deps = ();
         fn name(&self) -> &str {
             "gate-bootstrap"
         }
-        fn apply<'a>(
-            &'a self,
-            ctx: &'a Ctx,
-        ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
-            Box::pin(async move {
-                ctx.events().on(ctx, &rutis::EventKey::of(), BashGate)?;
-                Ok(rutis::Effect::Done)
-            })
+        async fn apply(&self, ctx: &Ctx, _: ()) -> rutis::Result {
+            ctx.on::<ToolPreExecute>(|e, _| async move {
+                if e.call.tool_name == "bash" {
+                    Ok(Some(Some("blocked: audit forbids bash".to_string())))
+                } else {
+                    Ok(Some(None))
+                }
+            })?;
+            Ok(())
         }
     }
     let audit_view = root.plugin(GateBootstrap);
     (&audit_view).await.expect("gate loads");
 
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let done = soon(agent.followup("run it")).await;
     assert_eq!(done.unwrap(), "understood the block");
     // bash 未真正执行
@@ -583,7 +531,7 @@ async fn post_execute_can_rewrite_result() {
         LlmResponse::tool_calls(vec![tool_call("w1", "get_weather", json!({"city":"Rome"}))]),
         LlmResponse::content("got REDACTED"),
     ]));
-    root.provide_as(llm_key(), llm).unwrap();
+    root.provide_as::<dyn LanguageModel>(llm).unwrap();
 
     let weather = ToolDef::new(
         "get_weather",
@@ -597,49 +545,30 @@ async fn post_execute_can_rewrite_result() {
     (&driver_view).await.expect("driver loads");
 
     // 改写:get_weather 的结果 → 脱敏
-    struct RedactResult;
-    impl Listener<ToolPostExecute> for RedactResult {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a Ctx,
-            e: &'a ToolPostExecute,
-            _call: Call<'a, rutis_agent::ToolOutput>,
-        ) -> rutis::BoxFuture<'a, Result<Option<rutis_agent::ToolOutput>, rutis::CordisError>>
-        {
-            if e.call.tool_name == "get_weather" {
-                Box::pin(async move {
+    struct GateBootstrap2;
+    impl Plugin for GateBootstrap2 {
+        type Deps = ();
+        fn name(&self) -> &str {
+            "gate-bootstrap-2"
+        }
+        async fn apply(&self, ctx: &Ctx, _: ()) -> rutis::Result {
+            ctx.on::<ToolPostExecute>(|e, _| async move {
+                if e.call.tool_name == "get_weather" {
                     Ok(Some(rutis_agent::ToolOutput {
                         ok: true,
                         output: "REDACTED".to_string(),
                     }))
-                })
-            } else {
-                Box::pin(async move {
-                    let _ = e;
+                } else {
                     unreachable!("only get_weather runs")
-                })
-            }
-        }
-    }
-    struct GateBootstrap2;
-    impl Plugin for GateBootstrap2 {
-        fn name(&self) -> &str {
-            "gate-bootstrap-2"
-        }
-        fn apply<'a>(
-            &'a self,
-            ctx: &'a Ctx,
-        ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
-            Box::pin(async move {
-                ctx.events().on(ctx, &rutis::EventKey::of(), RedactResult)?;
-                Ok(rutis::Effect::Done)
-            })
+                }
+            })?;
+            Ok(())
         }
     }
     let audit_view = root.plugin(GateBootstrap2);
     (&audit_view).await.expect("gate loads");
 
-    let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+    let agent = root.get::<dyn Agent>().unwrap();
     let done = soon(agent.followup("weather now")).await;
     assert_eq!(done.unwrap(), "got REDACTED");
 

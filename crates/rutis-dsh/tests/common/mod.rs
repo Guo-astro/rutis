@@ -11,6 +11,7 @@ use aimux_core::stream_part::StreamPart;
 use aimux_core::types::{FinishReason, FinishReasonUnified, TokenUsage, Usage};
 use aimux_llm::service::PartStream;
 use aimux_llm::{LlmService, LlmServiceError, ModelBrief, StreamRequest};
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_dsh::agent;
 use serde_json::json;

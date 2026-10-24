@@ -6,12 +6,14 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rutis::FiberState;
+use rutis::host::FiberState;
 
 use crate::outln;
 use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
 use rutis_bridge::{Failure, LinkState};
-use rutis_loader::{EntryStatus, Loader, PeerResolver};
+use rutis_loader::peer::PeerResolver;
+use rutis_loader::report::EntryStatus;
+use rutis_loader::Loader;
 
 use crate::languages::BinaryHost;
 

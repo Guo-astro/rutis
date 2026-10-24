@@ -4,7 +4,7 @@ mod error;
 
 use std::sync::Arc;
 
-use rutis::{BoxFuture, CordisError};
+use rutis::host::BoxFuture;
 use serde::{Deserialize, Serialize};
 
 pub use error::CalendarError;
@@ -54,4 +54,4 @@ pub enum Change {
 
 /// A subscriber: called for each change, and the change is handled once
 /// every subscriber's future resolved; one failing fails the change.
-pub type Handler = Arc<dyn Fn(Change) -> BoxFuture<'static, Result<(), CordisError>> + Send + Sync>;
+pub type Handler = Arc<dyn Fn(Change) -> BoxFuture<'static, rutis::Result> + Send + Sync>;

@@ -12,7 +12,7 @@
 use std::collections::HashSet;
 
 use rutis_host::{config, errln, host, languages, new, outln, project, status};
-use rutis_loader::{Provider, RowStatus, Supply};
+use rutis_loader::report::{Provider, RowStatus, Supply};
 
 mod reload;
 mod stop;
@@ -23,8 +23,8 @@ use stop::{Ended, Stopped};
 /// manifests); Node, Bun and Python runtimes check their own plugins
 /// against their own API. One definition, shared with the loader that
 /// reads the manifests.
-const PLUGIN_API: u64 = rutis_loader::PLUGIN_API;
-const _: () = assert!(PLUGIN_API == rutis_loader::SWIFT_PLUGIN_API);
+const PLUGIN_API: u64 = rutis_loader::internal::PLUGIN_API;
+const _: () = assert!(PLUGIN_API == rutis_loader::internal::SWIFT_PLUGIN_API);
 
 /// The oldest plugin API of a binary this host runs: an SDK older than rutis
 /// 0.13 (plugin API 2 or lower) does not declare the event protocol of 0.13,
