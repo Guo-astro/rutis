@@ -8,26 +8,13 @@
 
 > 写 Rust 插件的人只学一种插件写法、三个服务方法，以及和其他语言同名的事件方法。最小的插件不出现 `BoxFuture`、生命周期参数和 `Effect`。宿主用的东西放进 `rutis::host`，rutis 自己的 crate 之间用的东西放进隐藏的 `rutis::internal`。能力一项不少，只是默认路径变短。
 
-Python 插件已经做到了：同样的门控、重载、清理、跨进程和五种事件方式，`Context` 只有 10 个方法（`use`、`provide`、`effect`、`on`、`emit`、`parallel`、`serial`、`waterfall`、`bail`、`filter`）。所以 Rust 的公开面这么大，原因不在于跨语言、跨进程，Rust 也能做到同样短。
+Python 插件已经做到了：同样的门控、重载、清理、跨进程和五种事件方式，`Context` 只有 10 个方法。所以 Rust 的公开面大（根上 71 个名字、`Ctx` 40 个方法、`EventBus` 28 个方法、四种插件 trait），原因不在于跨语言、跨进程，而是三处可以修的问题：
 
-## 二、现状
+- 宿主和 rutis 自己的 crate 要调用的方法，挂在了插件作者用的对象上；
+- 绕 Rust 语言限制时用了最笨的办法，例如每个 `on*` 配一个 `_opt`、让作者手写 `BoxFuture`；
+- 每加一项能力就多一个名字，从来没有合并过。例如 typed 依赖另起了一套写法，而在内核之外没人用。
 
-| | 现在 |
-| --- | --- |
-| `rutis` 根 | 71 个名字，内核、宿主、诊断、拦截、桥接层平铺在一起 |
-| `Ctx` | 40 个方法 |
-| `EventBus` | 28 个方法：9 种注册写法、6 种分发、2 种过滤，其余 11 个是给 rutis-bridge / rutis-loader 和诊断用的 |
-| 插件写法 | `Plugin`、`PluginFactory`、`TypedPlugin`、`TypedPluginFactory`，加上 `Typed`、`TypedFactory` 两个包装，`plugin` / `plugin_with` / `plugin_from` 三种装法 |
-| 服务键 | `TypeKey`、`ServiceKey`（就是 `TypeKey` 的别名）、`Key<T>`、`DepKey<T>`（与 `Key<T>` 是同一个概念） |
-| 错误 | 插件自己的错误要写 `.map_err(|e| CordisError::PluginFailed(e.into()))`，内核之外这样写了 39 处 |
-
-公开面变大有三个原因，都不是范式本身要求的：
-
-1. **宿主内部用的方法放在了公开对象上。** rutis-bridge、rutis-loader 和宏生成的代码要调用内核，Rust 没有"只对同仓库 crate 公开"的可见性，于是这些方法都挂在了插件作者用的 `Ctx` 和 `EventBus` 上。
-2. **绕 Rust 语言限制时用了最笨的办法。** Rust 函数没有默认参数，每个 `on*` 就配一个 `_opt`；闭包不能同时有两种 blanket 实现，就把同步 / 异步、精确名字 / 前缀各拆出一个 trait；trait 对象里不能写 `async fn`，就让作者手写 `BoxFuture<'a, …>`。
-3. **每加一项能力就多一个名字，从来没有合并过。** typed 依赖（#50）是另起的一套平行写法，不是在原来的写法上收敛；可是在内核 crate 之外，`TypedPlugin`、`DepKey`、`Keyed`、`Gate` 一处都没有用到。
-
-## 三、插件作者看到的写法
+## 二、插件作者的写法
 
 ### 最小的插件
 
@@ -95,13 +82,10 @@ impl Plugin for Audit {
             Ok(Some(format!("audited {}", event.0))) // Ok(None) 是没有结果
         })?;
         ctx.on_sync::<Created>(|event, _| Ok(Some(format!("sync {}", event.1))))?;
-        ctx.listen::<Created>()
-            .prefix("session/")
-            .prepend()
-            .on(|_, call| async move {
-                println!("saw {}", call.name());
-                Ok(None)
-            })?;
+        ctx.listen::<Created>().prefix("session/").on(|_, call| async move {
+            println!("saw {}", call.name());
+            Ok(None)
+        })?;
         Ok(())
     }
 }
@@ -169,7 +153,7 @@ rutis_sdk::export_plugin!(id: "weather", build: Weather::new); // dylib 插件
 let view = root.plugin_from(Weather::new, config);         // 宿主直接装，view.update(新配置)
 ```
 
-### 插件作者用到的全部名字
+### 用到的全部名字
 
 `rutis` 根只留下 9 个：
 
@@ -208,9 +192,16 @@ let view = root.plugin_from(Weather::new, config);         // 宿主直接装，
 | 过滤 | `ctx.filter(keep)` | `ctx.filter(|info| …)` |
 | 配置 | `apply(ctx, config)` | 结构体字段 + `new(&Config)` |
 
-Python 的 `use` 在 Rust 里由 `Deps` 代替。Rust 的 16 个方法里有 7 个是 Python 没有的，每个都对应一处语言差异：`provide_as`（Rust 要写明 trait 对象的类型）、`get`（可选读取；Python 的 `use` 只读声明过的依赖）、`spawn` 和 `cancelled`（Rust 自己的任务和取消写法）、`on_sync`（Rust 不能在运行时分辨闭包是同步的还是异步的）、`listen`（Rust 没有关键字参数）、`plugin`（Rust 应用自己装子插件）。
+Python 的 `use` 在 Rust 里由 `Deps` 代替。Rust 的 16 个方法里有 7 个是 Python 没有的，每个都对应一处语言差异：
 
-## 四、规则
+- `provide_as`：Rust 要写明 trait 对象的类型；
+- `get`：可选读取，Python 的 `use` 只读声明过的依赖；
+- `spawn` 和 `cancelled`：Rust 自己的任务和取消写法；
+- `on_sync`：Rust 不能在运行时分辨闭包是同步的还是异步的；
+- `listen`：按前缀或另一个名字监听；
+- `plugin`：Rust 应用自己装子插件。
+
+## 三、规则
 
 ### 插件
 
@@ -246,7 +237,7 @@ pub trait Plugin: Send + Sync + 'static {
 | 至多 8 个成员的元组 | 全部成员 | 各自的值 |
 
 - `T` 可以是 trait 对象：`Arc<dyn Llm>`。
-- 依赖只按类型区分。同一类型要两个服务时，用两个新类型（`struct Primary(Db)`、`struct Replica(Db)`）：类型就是名字。按运行期名字区分的服务（传输、身份、运行时会话）属于宿主一层，见第五节。
+- 依赖只按类型区分。同一类型要两个服务时，用两个新类型（`struct Primary(Db)`、`struct Replica(Db)`）：类型就是名字。按运行期名字区分的服务（传输、身份、运行时会话）属于宿主一层（附录 A）。
 - `Deps` 是密封的 trait，作者不实现它。
 - 门控之后、`apply` 读取之前依赖被撤销的，回到 Pending，与现在相同。
 
@@ -255,7 +246,7 @@ pub trait Plugin: Send + Sync + 'static {
 - `ctx.provide(value)`：以 `value` 的类型提供。
 - `ctx.provide_as::<dyn T>(arc)`：以 trait 对象的类型提供，例如 `ctx.provide_as::<dyn Llm>(Arc::new(MyLlm))`。
 - `ctx.get::<T>()`：可选读取，`T` 可以是 trait 对象。它不门控，也不建立重载关系，诊断里记为未声明的访问。用在"有就用"的场合；需要的服务写进 `Deps`。
-- 原来的 `require`、按名字 / 实例的读写、带 `check()` 的提供、可写绑定都移到第五节的层次。
+- 原来的 `require`、按名字 / 实例的读写、带 `check()` 的提供、可写绑定，移到 `rutis::host` 和 `rutis::internal`（附录 A）。
 
 ### 清理和后台任务
 
@@ -271,7 +262,8 @@ pub trait Plugin: Send + Sync + 'static {
 - 监听：
   - `ctx.on::<E>(|event, call| async move { … })` 注册异步监听器；
   - `ctx.on_sync::<E>(|event, call| …)` 注册同步监听器，所有方式都能调用它；
-  - 需要选项时用 `ctx.listen::<E>()`，可选 `.name(n)`、`.prefix(p)`、`.prepend()`、`.once()`、`.global()`，最后写 `.on(…)` 或 `.on_sync(…)`。
+  - 按前缀或另一个名字监听时用 `ctx.listen::<E>()`，写 `.prefix(p)` 或 `.name(n)`，最后写 `.on(…)` 或 `.on_sync(…)`。
+  - `prepend`、`once`、`global` 三个选项放在 `host::ListenExt` 里，`use rutis::host::*` 之后可以接在同一个构建器上。
 - 监听器是闭包，参数是 `(Arc<E>, Call<E>)`；同步监听器的参数是 `(Arc<E>, SyncCall<E>)`。返回 `Result<Option<E::Value>>`，`Ok(None)` 表示没有结果。闭包的参数类型由编译器推断，块里可以对任何错误用 `?`。
 - `call.mode()` 是这次分发的方式；`call.name()` 是分发时用的名字（前缀监听器用得到）；`call.next()` 只在 `waterfall` 里可用；`call.ctx()` 是登记这个监听器的 `Ctx`。
 - 发出：
@@ -282,8 +274,6 @@ pub trait Plugin: Send + Sync + 'static {
 - 名字：事件以 `E::NAME` 登记和发出。没有固定名字的事件类型（例如 rutis-bridge 的 `Args`）重写 `Event::name(&self)`，让值自己带上名字；监听这种事件时用 `ctx.listen::<Args>().name("file-changed")`。
 - 五种方式的语义、作用域、过滤、卸载等待，都和[统一事件设计](design-events-2026-10-18.md)一致，不变。
 
-同步和异步分成 `on` 和 `on_sync` 两个方法，不合成一个：合成一个 `on` 要靠"标记类型"技巧，可那样编译器就推断不出闭包参数的类型，每个监听器都得写成 `|e: Arc<Created>, call: Call<Created>|`（见第八节）。
-
 ### 错误
 
 - 所有签名里只有一种错误类型 `rutis::Error`，`rutis::Result<T = (), E = Error>`。
@@ -291,8 +281,6 @@ pub trait Plugin: Send + Sync + 'static {
 - `rutis::Error` 本身不实现 `std::error::Error`，这是 `?` 能接住任何错误的前提（`anyhow::Error` 和 Bevy 的 `BevyError` 也是这么做的）。它可以转成 `Box<dyn std::error::Error + Send + Sync>`，所以宿主在返回 `Box<dyn Error>` 的函数里照常用 `?`。
 - 宿主要区分 rutis 的失败时，`err.kind()` 返回 `Option<&host::ErrorKind>`。`ErrorKind` 就是现在的 `CordisError` 枚举，改了名字，变体不变。来自插件代码的错误，`kind()` 是 `None`；它报到宿主时被包在 `ErrorKind::PluginFailed` 里。
 - 错误仍然不能 `Clone`，要共享时用 `Arc<Error>`（D11、D25 不变）。
-
-## 五、宿主和 rutis 自己的 crate 用的东西
 
 ### 三层
 
@@ -302,7 +290,46 @@ pub trait Plugin: Send + Sync + 'static {
 | `rutis::host` | 嵌入 rutis 的应用、测试 | 宿主指南 | 同上 |
 | `rutis::internal` | rutis-bridge、rutis-loader、rutis-dylib、rutis-sdk、rutis-macros、rutis-host | `#[doc(hidden)]` | 不承诺；仓库外有人需要时，提 issue 把它移到 `host` |
 
-划分规则：仓库里除了 rutis 自己的 crate 之外没人用的，放 `internal`；应用嵌入 rutis 时要用的，放 `host`；写插件用的，放根。`Ctx` 的方法也按这个规则分开：`host` 和 `internal` 的方法放在扩展 trait 里（`host::CtxHost`、`internal::CtxInternal`），要先 `use rutis::host::*` 才能调用。rustdoc 把扩展 trait 的方法放在 `Ctx` 页面下单独的一节，不和插件用的方法混在一起。
+- 划分规则：写插件用的放根；应用嵌入 rutis 时要用的放 `host`；仓库里除了 rutis 自己的 crate 之外没人用的放 `internal`。
+- `Ctx` 的方法也按这个规则分开：`host` 和 `internal` 的方法放在扩展 trait 里（`host::CtxHost`、`internal::CtxInternal`），要先 `use rutis::host::*` 才能调用。rustdoc 把扩展 trait 的方法放在 `Ctx` 页面下单独的一节。
+- rutis-loader 也这样分：根上留下组装加载器的 11 个名字，其余按主题放进模块，只有 rutis-host 和测试用的放进 `internal`。
+
+每一层的完整清单、现在每个名字的去向见附录 A；迁移和实施步骤见附录 B。
+
+## 四、取舍
+
+- **只加 `rutis::prelude`，其他不动**：`Ctx` 和 `EventBus` 上的方法不会因为多一个 prelude 而变少，文档里照样是 40 个和 28 个。所以根本身就当 prelude 用，不再另设一个模块。
+- **新写法当默认，旧写法也保留**：这样同一件事又多了一种写法，#617 说的问题正是写法太多。所以 0.17 一次改完，不保留旧名字（附录 B）。
+- **`#[rutis::plugin]` 宏**：`async fn` 已经能写在 trait 里，`BoxFuture` 不用宏也能去掉。加了宏，作者看到的就不是真正的 trait，出错时的提示也更难懂。
+- **把配置做成关联类型、`apply(ctx, config, deps)`（Cordis / Python 的写法）**：那样每个插件都要多写一个关联类型，没有配置的插件装起来也得写 `ctx.plugin(P, ())`。在 Rust 里，配置本来就写在结构体的字段上；配置变了重建插件，是装插件那一方的事。
+- **用一个 `on` 同时接受同步和异步闭包**（axum、Bevy 那样的标记类型技巧）：试过。候选实现有两个，编译器就推断不出闭包参数的类型，每个监听器都得写成 `|e: Arc<Created>, call: Call<Created>|`。分成两个方法以后，`on::<E>(|e, call| async move { …? … })` 不用写任何类型标注（两种写法都在 Rust 1.88 上验证过）。
+- **`listen` 带上全部选项**：`prepend`、`once`、`global` 在内核之外没有 Rust 代码用过；Cordis 插件用的是 Cordis 自己的 API，不经过这里。所以这三个选项放进 `host`，插件作者看到的构建器只有 `prefix` 和 `name`。
+- **一个 `dispatch(mode, …)` 代替五个分发方法**：五种方式的返回值不同（不等待、汇总错误、第一个结果、链式、同步），合成一个以后，要么丢掉类型，要么返回一个枚举让调用方再拆。
+- **依赖里保留名字（`Keyed<T>`、`DepKey<T>`）**：内核之外没有用户。在类型里写死名字需要稳定版还没有的 `&str` 常量泛型；运行期才定的名字要另带一份键，`Typed::with_keys` 就是这么来的。同一类型要两个服务时，用新类型就够了。
+- **`rutis::Error` 也实现 `std::error::Error`**：这样就和 `impl<E: std::error::Error> From<E>` 冲突，`?` 又接不住任意错误了，作者只能回到 `map_err`。
+
+## 五、验收
+
+对照 #617 的验收项：
+
+| #617 | 本方案 |
+| --- | --- |
+| 插件作者默认看到的入口 ≤ 15 个 | 根上 9 个；`rutis::events` 里的类型都由编译器推断 |
+| 最小的 Rust 插件不手写 `BoxFuture` 和生命周期 | 第二节的例子；README、指南、示例都用这种写法 |
+| `EventBus` 的公开方法 ≤ 10 个 | 插件只用 `Ctx` 上的 9 个事件方法，`EventBus` 移进 `internal` |
+| 服务的 provide / read 方法 ≤ 5 个 | 3 个：`provide`、`provide_as`、`get` |
+| `rutis-loader` 有明确的 prelude 和不稳定边界 | 根上 11 个名字，其余按模块分组，`internal` 不承诺稳定 |
+| 文档第一页有"只需要这些"的清单 | 新增 `docs/guide/rust-plugin.md`（写一个 Rust 插件），指南首页加一行 |
+
+另外：
+
+- 用 `cargo public-api` 给 `rutis` 根、`rutis::events` 和 `rutis::host` 生成公开面快照，提交进仓库，CI 比对。以后加一个名字就要改快照，评审时看得见，公开面不会再悄悄变大。
+- `examples/` 和指南里的 Rust 代码不出现 `rutis::internal`，由 CI 用 grep 检查。
+- `docs/guide/rust-plugin.md` 和 README 的 Rust 代码作为 doctest 编译，与现在开发手册的做法相同。
+- 第二节的每个写法都写成测试，包括：`?` 接住 `io::Error`；不写类型标注的监听器闭包能编译；`effect` 在插件停下以后才登记时立即执行；`spawn` 的任务在插件停下时被丢弃；`DynPlugin` 与 `Plugin` 的插件能互相依赖。
+- 重新跑一遍事件分发的基准（[事件分发性能](performance-event-dispatch-2026-09-27.md)）。`Call` 改成拥有所有权以后，每次调用多一次 `Arc` 克隆，要把前后的数字写进 PR。
+
+## 附录 A：名字去向
 
 ### `rutis::host`
 
@@ -313,6 +340,7 @@ pub trait Plugin: Send + Sync + 'static {
 | 作用域与实例（`CtxHost`） | `isolate`、`isolate_label`、`instance`、`scope`、`row`、`dispose_self`、`cancellation_token` |
 | 装载（`CtxHost`） | `plugin_from(build, config)`（类型化的配置闭包，依赖从 `P::Deps` 得出）、`plugin_with(factory, config)` |
 | 事件（`CtxHost`） | `waterfall_sync`、`subscriptions` |
+| 监听选项（`ListenExt`） | `ctx.listen::<E>()` 上的 `prepend`、`once`、`global` |
 | 插件的对象安全形式 | `DynPlugin`、`PluginFactory`、`Effect`、`EffectMeta`、`EffectPhase`、`BoxFuture` |
 | fiber | `FiberView`、`FiberState`、`FiberStatusChanged`、`PluginId`、`Snapshot`、`DisposeWaitError`、`shutdown_deadline` |
 | 键 | `Key<T>`、`TypeKey`、`InstanceId` |
@@ -329,6 +357,69 @@ pub trait Plugin: Send + Sync + 'static {
 `EventBus` 和 `events::{remote, wire}`、`EventKey`、`EventPattern`、`EventOptions`、`DispatchAttempt`、`ServiceIntercept`、`ServiceWriter`、`ServiceWriteError`、`ServiceWriteFailure`、`__sdk_service`，以及 `CtxInternal`：`events()`、`mark_scope`、`mark_row`、`provide_checked`（原 `provide_as_with_check`）、`provide_mut_at`（原 `provide_mut_as`）、`require_provided_as`、`effect_named`、`refresh`、`in_instance_key`。
 
 `EventBus` 上只有 rutis-bridge / rutis-loader 用的 10 个方法（`on_remote`、`watch_table`、`observe_dispatch`、`emit_framework`、`dispatch`、`dispatch_sync`、`invoke_entry`、`invoke_entry_sync`、`transcoder`、`set_transcoder`）连同 `try_filter` 留在这里，签名不变。插件和宿主不再拿到 `EventBus`，原来的 `ctx.events().on(&ctx, &key, …)` 都改成 `ctx.on…` 系列方法。
+
+### `rutis` 根上现在的 71 个名字
+
+| 现在 | 0.17 |
+| --- | --- |
+| `Plugin` | `host::DynPlugin`（`injects` 返回 `Vec`）；新的 `Plugin` 就是原来的 `TypedPlugin`，按第三节去掉了 `BoxFuture` 和 `Effect` |
+| `TypedPlugin` | `Plugin` |
+| `Typed` | 删除（`impl<P: Plugin> DynPlugin for P`） |
+| `PluginFactory` | `host::PluginFactory`（`build` 返回 `Box<dyn DynPlugin>`） |
+| `TypedPluginFactory`、`TypedFactory` | 删除；用 `plugin_from`、`Builtins::register`、`export_plugin!(build:)` |
+| `Deps` | `Deps`（密封；去掉 `Keys`） |
+| `DepKey`、`Keyed`、`KeyedGate` | 删除；按名字的依赖用 `host::DynPlugin` + `host::Key<T>` |
+| `Gate` | 删除；写 `Arc<T>` 而不使用它 |
+| `BoxFuture` | `host::BoxFuture` |
+| `Effect`、`EffectMeta`、`EffectPhase` | `host::` |
+| `Disposer` | `Disposer` |
+| `Ctx` | `Ctx`（方法按第二节和本附录分开） |
+| `TypeKey`、`InstanceId` | `host::` |
+| `Key` | `host::Key<T>`（与 `DepKey` 合并） |
+| `ServiceKey` | 删除（`TypeKey` 的别名） |
+| `ServiceIntercept`、`ServiceWriter` | `internal::` |
+| `CallError` | `host::CallError` |
+| `service` | `service` |
+| `CordisError` | `Error`；枚举本身改名为 `host::ErrorKind` |
+| `ServiceReadError`、`ServiceReadFailure`、`NextMisuse`、`ErrorSink`、`default_sink` | `host::` |
+| `ServiceWriteError`、`ServiceWriteFailure` | `internal::` |
+| `EventBus`、`DispatchAttempt` | `internal::` |
+| `EventSubscription`、`ListenerKind` | `host::` |
+| `Filtered` | `events::Filtered` |
+| `Event` | `Event`（增加 `fn name(&self)`，默认返回 `NAME`） |
+| `EventKey`、`EventPattern`、`EventOptions` | `internal::`；插件用 `ctx.listen::<E>()` |
+| `Listener` | `events::Listener`（由异步监听器闭包自动满足，不手写实现） |
+| `SyncListener`、`PatternListener`、`SyncPatternListener` | 删除；监听器只用闭包，前缀监听器从 `call.name()` 读名字 |
+| `Terminal` | 删除；用 `ctx.waterfall(e).terminal(…)` |
+| `Call`、`SyncCall` | `events::Call<E>`、`events::SyncCall<E>`（拥有所有权，不再带生命周期参数） |
+| `Mode`、`ListenerInfo`、`Scope` | `events::` |
+| `FiberView`、`FiberState`、`FiberStatusChanged`、`PluginId`、`Snapshot`、`DisposeWaitError`、`shutdown_deadline` | `host::` |
+| 诊断类型（`RuntimeDiagnostics` 等 10 个） | `host::diagnostics::` |
+| `serde` | `serde` |
+
+### `Ctx` 现在的 40 个方法
+
+| 现在 | 0.17 |
+| --- | --- |
+| `provide`、`get`、`plugin`、`cancelled` | 不变（`get` 允许 trait 对象） |
+| `provide_as(key, arc)` | `provide_as::<T>(arc)`；带键的改用 `host::provide_at(Key<T>, arc)` |
+| `get_as(key)` | 不带名字的用 `get::<T>()`；带键的用 `host::get_at` |
+| `effect(f)` | `effect(future)`，见第三节 |
+| `require`、`require_as` | `host::require`、`host::require_at` |
+| `root`、`root_with`、`root_with_sink`、`root_view`、`root_ctx`、`view`、`shutdown`、`shutdown_with_timeout`、`is_shutting_down`、`handle`、`error_sink`、`take_cleanup_errors`、`diagnostics`、`isolate`、`isolate_label`、`instance`、`scope`、`row`、`dispose_self`、`cancellation_token`、`plugin_with`、`plugin_from` | `host::CtxHost` |
+| `events` | `internal::CtxInternal`；事件方法在 `Ctx` 上 |
+| `mark_scope`、`mark_row`、`provide_as_with_check`、`provide_mut_as`、`require_provided_as`、`effect_named`、`refresh`、`in_instance_key` | `internal::CtxInternal`（两个改名：`provide_checked`、`provide_mut_at`） |
+| 新增 | `spawn`、`on`、`on_sync`、`listen`、`emit`、`parallel`、`serial`、`waterfall`、`bail`、`filter` |
+
+### `EventBus` 现在的 28 个方法
+
+| 现在 | 0.17 |
+| --- | --- |
+| `on`、`on_opt`、`once`、`on_sync`、`on_sync_opt`、`on_pattern`、`on_pattern_opt`、`on_sync_pattern`、`on_sync_pattern_opt` | `ctx.on`、`ctx.on_sync`、`ctx.listen::<E>()`（`.prefix()`、`.name()`；`.prepend()`、`.once()`、`.global()` 在 `host::ListenExt`） |
+| `emit`、`parallel`、`serial`、`waterfall`、`bail_sync` | `ctx.emit`、`parallel`、`serial`、`waterfall`、`bail` |
+| `filter` | `ctx.filter` |
+| `waterfall_sync`、`subscriptions` | `host::CtxHost` |
+| `try_filter`、`on_remote`、`watch_table`、`observe_dispatch`、`emit_framework`、`dispatch`、`dispatch_sync`、`invoke_entry`、`invoke_entry_sync`、`transcoder`、`set_transcoder` | `internal`（签名不变） |
 
 ### rutis-loader
 
@@ -354,72 +445,9 @@ pub trait Plugin: Send + Sync + 'static {
 
 `export_plugin!(id: "weather", build: Weather::new)` 接受和 `Builtins::register` 相同的构造函数，`schema:` 照旧可选。原来的 `factory:` 形式保留，给需要 `PluginFactory<Value>` 的插件用。dylib 插件本来就要用和宿主完全相同的 SDK 构建，所以 0.17 的插件照常重新构建即可。
 
-## 六、合并与删除的名字
+## 附录 B：迁移与实施
 
-现在 `rutis` 根上的 71 个名字分别去了哪里：
-
-| 现在 | 0.17 |
-| --- | --- |
-| `Plugin` | `host::DynPlugin`（`injects` 返回 `Vec`）；新的 `Plugin` 就是原来的 `TypedPlugin`，按第四节去掉了 `BoxFuture` 和 `Effect` |
-| `TypedPlugin` | `Plugin` |
-| `Typed` | 删除（`impl<P: Plugin> DynPlugin for P`） |
-| `PluginFactory` | `host::PluginFactory`（`build` 返回 `Box<dyn DynPlugin>`） |
-| `TypedPluginFactory`、`TypedFactory` | 删除；用 `plugin_from`、`Builtins::register`、`export_plugin!(build:)` |
-| `Deps` | `Deps`（密封；去掉 `Keys`） |
-| `DepKey`、`Keyed`、`KeyedGate` | 删除；按名字的依赖用 `host::DynPlugin` + `host::Key<T>` |
-| `Gate` | 删除；写 `Arc<T>` 而不使用它 |
-| `BoxFuture` | `host::BoxFuture` |
-| `Effect`、`EffectMeta`、`EffectPhase` | `host::` |
-| `Disposer` | `Disposer` |
-| `Ctx` | `Ctx`（方法按第三、五节分开） |
-| `TypeKey`、`InstanceId` | `host::` |
-| `Key` | `host::Key<T>`（与 `DepKey` 合并） |
-| `ServiceKey` | 删除（`TypeKey` 的别名） |
-| `ServiceIntercept`、`ServiceWriter` | `internal::` |
-| `CallError` | `host::CallError` |
-| `service` | `service` |
-| `CordisError` | `Error`；枚举本身改名为 `host::ErrorKind` |
-| `ServiceReadError`、`ServiceReadFailure`、`NextMisuse`、`ErrorSink`、`default_sink` | `host::` |
-| `ServiceWriteError`、`ServiceWriteFailure` | `internal::` |
-| `EventBus`、`DispatchAttempt` | `internal::` |
-| `EventSubscription`、`ListenerKind` | `host::` |
-| `Filtered` | `events::Filtered` |
-| `Event` | `Event`（增加 `fn name(&self)`，默认返回 `NAME`） |
-| `EventKey`、`EventPattern`、`EventOptions` | `internal::`；插件用 `ctx.listen::<E>()` |
-| `Listener` | `events::Listener`（由异步监听器闭包自动满足，不手写实现） |
-| `SyncListener`、`PatternListener`、`SyncPatternListener` | 删除；监听器只用闭包，前缀监听器从 `call.name()` 读名字 |
-| `Terminal` | 删除；用 `ctx.waterfall(e).terminal(…)` |
-| `Call`、`SyncCall` | `events::Call<E>`、`events::SyncCall<E>`（拥有所有权，不再带生命周期参数） |
-| `Mode`、`ListenerInfo`、`Scope` | `events::` |
-| `FiberView`、`FiberState`、`FiberStatusChanged`、`PluginId`、`Snapshot`、`DisposeWaitError`、`shutdown_deadline` | `host::` |
-| 诊断类型（`RuntimeDiagnostics` 等 10 个） | `host::diagnostics::` |
-| `serde` | `serde` |
-
-`Ctx` 的 40 个方法：
-
-| 现在 | 0.17 |
-| --- | --- |
-| `provide`、`get`、`plugin`、`cancelled` | 不变（`get` 允许 trait 对象） |
-| `provide_as(key, arc)` | `provide_as::<T>(arc)`；带键的改用 `host::provide_at(Key<T>, arc)` |
-| `get_as(key)` | 不带名字的用 `get::<T>()`；带键的用 `host::get_at` |
-| `effect(f)` | `effect(future)`，见第四节 |
-| `require`、`require_as` | `host::require`、`host::require_at` |
-| `root`、`root_with`、`root_with_sink`、`root_view`、`root_ctx`、`view`、`shutdown`、`shutdown_with_timeout`、`is_shutting_down`、`handle`、`error_sink`、`take_cleanup_errors`、`diagnostics`、`isolate`、`isolate_label`、`instance`、`scope`、`row`、`dispose_self`、`cancellation_token`、`plugin_with`、`plugin_from` | `host::CtxHost` |
-| `events` | `internal::CtxInternal`；事件方法在 `Ctx` 上 |
-| `mark_scope`、`mark_row`、`provide_as_with_check`、`provide_mut_as`、`require_provided_as`、`effect_named`、`refresh`、`in_instance_key` | `internal::CtxInternal`（两个改名：`provide_checked`、`provide_mut_at`） |
-| 新增 | `spawn`、`on`、`on_sync`、`listen`、`emit`、`parallel`、`serial`、`waterfall`、`bail`、`filter` |
-
-`EventBus` 的 28 个方法：
-
-| 现在 | 0.17 |
-| --- | --- |
-| `on`、`on_opt`、`once`、`on_sync`、`on_sync_opt`、`on_pattern`、`on_pattern_opt`、`on_sync_pattern`、`on_sync_pattern_opt` | `ctx.on`、`ctx.on_sync`、`ctx.listen::<E>()`（`.once()`、`.prepend()`、`.global()`、`.prefix()`、`.name()`） |
-| `emit`、`parallel`、`serial`、`waterfall`、`bail_sync` | `ctx.emit`、`parallel`、`serial`、`waterfall`、`bail` |
-| `filter` | `ctx.filter` |
-| `waterfall_sync`、`subscriptions` | `host::CtxHost` |
-| `try_filter`、`on_remote`、`watch_table`、`observe_dispatch`、`emit_framework`、`dispatch`、`dispatch_sync`、`invoke_entry`、`invoke_entry_sync`、`transcoder`、`set_transcoder` | `internal`（签名不变） |
-
-## 七、迁移
+### 迁移
 
 0.17 一次改完，不保留旧名字，和 0.13 的统一事件做法相同：旧写法编译不过，按 `docs/migration-0.17.md` 里的对照表修改。不用 `#[deprecated]` 别名过渡：留着旧名字，旧名字就还会出现在文档和补全里，这正是 #617 要去掉的。协议不变，所以和其他语言、其他节点的互通不受影响。
 
@@ -459,49 +487,17 @@ impl Plugin for Weather {
 }
 ```
 
-**嵌入 rutis 的应用**：加 `use rutis::host::*;`；`PluginFactory` 和自己实现 `Plugin` 的对象安全写法改成 `host::DynPlugin`（`injects` 返回 `Vec`）；`Builtins::register_fn` 改成 `register`；从 rutis-loader 根上消失的名字到第五节的模块里找。
+**嵌入 rutis 的应用**：加 `use rutis::host::*;`；`PluginFactory` 和自己实现 `Plugin` 的对象安全写法改成 `host::DynPlugin`（`injects` 返回 `Vec`）；`Builtins::register_fn` 改成 `register`；从 rutis-loader 根上消失的名字到附录 A 的模块里找。
 
 **仓库里的 crate** 在同一个版本里一起改：rutis-bridge、rutis-loader、rutis-dylib、rutis-sdk、rutis-macros、rutis-host、rutis-dsh、rutis-dev、rutis-xtask、aimux-llm，以及示例 rutis-agent、rutis-cli 和 `examples/`。内核之外有 42 处 `impl Plugin`、14 处 `impl PluginFactory`，都机械地改成 `host::DynPlugin` / `host::PluginFactory`；只有 aimux-llm 和示例改用新的 `Plugin`，因为它们就是给插件作者看的写法。只改名的部分（`CordisError` 出现 1277 次）用脚本批量替换。真正要重写的只有内核里事件、清理和插件包装这几处。
 
 其他语言的 SDK、运行时、协议、`rutis.json` 都不受影响。
 
-## 八、考虑过的其他方案
-
-- **只加 `rutis::prelude`，其他不动**：`Ctx` 和 `EventBus` 上的方法不会因为多一个 prelude 而变少，文档里照样是 40 个和 28 个。所以根本身就当 prelude 用，不再另设一个模块。
-- **新写法当默认，旧写法也保留**：这样同一件事又多了一种写法，#617 说的问题正是写法太多。
-- **`#[rutis::plugin]` 宏**：`async fn` 已经能写在 trait 里，`BoxFuture` 不用宏也能去掉。加了宏，作者看到的就不是真正的 trait，出错时的提示也更难懂。
-- **把配置做成关联类型、`apply(ctx, config, deps)`（Cordis / Python 的写法）**：那样每个插件都要多写一个关联类型，没有配置的插件装起来也得写 `ctx.plugin(P, ())`。在 Rust 里，配置本来就写在结构体的字段上；配置变了重建插件，是装插件那一方的事。
-- **用一个 `on` 同时接受同步和异步闭包**（axum、Bevy 那样的标记类型技巧）：试过。候选实现有两个，编译器就推断不出闭包参数的类型，每个监听器都得写成 `|e: Arc<Created>, call: Call<Created>|`。分成两个方法以后，`on::<E>(|e, call| async move { …? … })` 不用写任何类型标注（两种写法都在 Rust 1.88 上验证过）。
-- **一个 `dispatch(mode, …)` 代替五个分发方法**：五种方式的返回值不同（不等待、汇总错误、第一个结果、链式、同步），合成一个以后，要么丢掉类型，要么返回一个枚举让调用方再拆。
-- **依赖里保留名字（`Keyed<T>`、`DepKey<T>`）**：仓库之外没有用户。在类型里写死名字需要稳定版还没有的 `&str` 常量泛型；运行期才定的名字要另带一份键，`Typed::with_keys` 就是这么来的。同一类型要两个服务时，用新类型就够了。
-- **`rutis::Error` 也实现 `std::error::Error`**：这样就和 `impl<E: std::error::Error> From<E>` 冲突，`?` 又接不住任意错误了，作者只能回到 `map_err`。
-
-## 九、验收
-
-对照 #617 的验收项：
-
-| #617 | 本方案 |
-| --- | --- |
-| 插件作者默认看到的入口 ≤ 15 个 | 根上 9 个；`rutis::events` 里的类型都由编译器推断 |
-| 最小的 Rust 插件不手写 `BoxFuture` 和生命周期 | 第三节的例子；README、指南、示例都用这种写法 |
-| `EventBus` 的公开方法 ≤ 10 个 | 插件只用 `Ctx` 上的 9 个事件方法，`EventBus` 移进 `internal` |
-| 服务的 provide / read 方法 ≤ 5 个 | 3 个：`provide`、`provide_as`、`get` |
-| `rutis-loader` 有明确的 prelude 和不稳定边界 | 根上 11 个名字，其余按模块分组，`internal` 不承诺稳定 |
-| 文档第一页有"只需要这些"的清单 | 新增 `docs/guide/rust-plugin.md`（写一个 Rust 插件），指南首页加一行 |
-
-另外：
-
-- 用 `cargo public-api` 给 `rutis` 根、`rutis::events` 和 `rutis::host` 生成公开面快照，提交进仓库，CI 比对。以后加一个名字就要改快照，评审时看得见，公开面不会再悄悄变大。
-- `examples/` 和指南里的 Rust 代码不出现 `rutis::internal`，由 CI 用 grep 检查。
-- `docs/guide/rust-plugin.md` 和 README 的 Rust 代码作为 doctest 编译，与现在开发手册的做法相同。
-- 第三节的每个写法都写成测试，包括：`?` 接住 `io::Error`；不写类型标注的监听器闭包能编译；`effect` 在插件停下以后才登记时立即执行；`spawn` 的任务在插件停下时被丢弃；`DynPlugin` 与 `Plugin` 的插件能互相依赖。
-- 重新跑一遍事件分发的基准（[事件分发性能](performance-event-dispatch-2026-09-27.md)）。`Call` 改成拥有所有权以后，每次调用多一次 `Arc` 克隆，要把前后的数字写进 PR。
-
-## 十、实施
+### 实施
 
 在一个集成分支上按下面的顺序提交，整体合入，随 0.17 发布：
 
-1. 内核：新的 `Plugin` / `Deps` / `DynPlugin` 和 blanket 实现；`Error` / `ErrorKind`；`Ctx` 上的 `effect`、`spawn` 和事件方法（`Call` 改成拥有所有权）；合并 `Key<T>`；建立 `host` / `internal` 两个模块和扩展 trait；删除第六节列出的名字。
+1. 内核：新的 `Plugin` / `Deps` / `DynPlugin` 和 blanket 实现；`Error` / `ErrorKind`；`Ctx` 上的 `effect`、`spawn` 和事件方法（`Call` 改成拥有所有权）；合并 `Key<T>`；建立 `host` / `internal` 两个模块和扩展 trait；删除附录 A 列出的名字。
 2. rutis-bridge、rutis-loader、rutis-dylib、rutis-sdk、rutis-macros 改用 `DynPlugin` 和 `internal`；`Builtins::register`、`export_plugin!(build:)` 改用类型化的构造函数。
 3. rutis-loader 的根和模块重新分组。
 4. rutis-host、rutis-dsh、rutis-dev、rutis-xtask、aimux-llm、示例（rutis-agent、rutis-cli、`examples/`）。

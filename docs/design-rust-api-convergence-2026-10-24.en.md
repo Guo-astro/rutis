@@ -8,26 +8,13 @@ Status: design (2026-10-24), #617, target version 0.17. Only the Rust public API
 
 > A Rust plugin author learns one way to write a plugin, three service methods, and event methods named as in every other language. The smallest plugin has no `BoxFuture`, no lifetime parameters and no `Effect`. What hosts use goes into `rutis::host`; what rutis's own crates use among themselves goes into the hidden `rutis::internal`. No capability is removed; the default path gets shorter.
 
-Python plugins already work this way: the same gating, reload, cleanup, cross-process calls and five event modes, with 10 methods on `Context` (`use`, `provide`, `effect`, `on`, `emit`, `parallel`, `serial`, `waterfall`, `bail`, `filter`). So the size of the Rust public surface is not caused by crossing languages or processes, and Rust can be just as short.
+Python plugins already work this way: the same gating, reload, cleanup, cross-process calls and five event modes, with 10 methods on `Context`. So the large Rust surface (71 names at the root, 40 methods on `Ctx`, 28 on `EventBus`, four plugin traits) is not caused by crossing languages or processes, but by three fixable problems:
 
-## 2. Where we are
+- methods that hosts and rutis's own crates call sit on the objects plugin authors use;
+- Rust's language limits were worked around in the clumsiest way, such as an `_opt` twin for every `on*` and a hand-written `BoxFuture`;
+- each new capability added a name and nothing was ever merged. Typed dependencies, for example, became a second way to write a plugin, and nobody outside the kernel uses it.
 
-| | Today |
-| --- | --- |
-| `rutis` root | 71 names: kernel, host, diagnostics, interception and bridge plumbing side by side |
-| `Ctx` | 40 methods |
-| `EventBus` | 28 methods: 9 ways to register, 6 ways to dispatch, 2 filters, and 11 more for rutis-bridge / rutis-loader and diagnostics |
-| Plugin forms | `Plugin`, `PluginFactory`, `TypedPlugin`, `TypedPluginFactory`, plus the `Typed` and `TypedFactory` wrappers and three ways to mount (`plugin` / `plugin_with` / `plugin_from`) |
-| Service keys | `TypeKey`, `ServiceKey` (an alias of `TypeKey`), `Key<T>`, `DepKey<T>` (the same concept as `Key<T>`) |
-| Errors | A plugin's own errors need `.map_err(|e| CordisError::PluginFailed(e.into()))`, written 39 times outside the kernel |
-
-Three causes made the surface grow, and none of them is required by the paradigm:
-
-1. **Host plumbing sits on the public objects.** rutis-bridge, rutis-loader and macro-generated code call into the kernel. Rust has no "public to my sibling crates only" visibility, so all of those methods ended up on the `Ctx` and `EventBus` that plugin authors use.
-2. **Rust's language limits were worked around in the clumsiest way.** Rust has no default arguments, so every `on*` got an `_opt` twin; closures cannot have two blanket impls, so sync / async and exact name / prefix each got their own trait; trait objects cannot have `async fn`, so authors write `BoxFuture<'a, …>` by hand.
-3. **Each new capability added a name and nothing was ever merged.** Typed dependencies (#50) became a second, parallel way to write a plugin instead of converging the first; outside the kernel crate, `TypedPlugin`, `DepKey`, `Keyed` and `Gate` are not used anywhere.
-
-## 3. What a plugin author writes
+## 2. What a plugin author writes
 
 ### The smallest plugin
 
@@ -95,13 +82,10 @@ impl Plugin for Audit {
             Ok(Some(format!("audited {}", event.0))) // Ok(None) is "no result"
         })?;
         ctx.on_sync::<Created>(|event, _| Ok(Some(format!("sync {}", event.1))))?;
-        ctx.listen::<Created>()
-            .prefix("session/")
-            .prepend()
-            .on(|_, call| async move {
-                println!("saw {}", call.name());
-                Ok(None)
-            })?;
+        ctx.listen::<Created>().prefix("session/").on(|_, call| async move {
+            println!("saw {}", call.name());
+            Ok(None)
+        })?;
         Ok(())
     }
 }
@@ -169,7 +153,7 @@ rutis_sdk::export_plugin!(id: "weather", build: Weather::new); // dylib plugin
 let view = root.plugin_from(Weather::new, config);         // mounted by a host; view.update(new_config)
 ```
 
-### Every name a plugin author uses
+### Every name used
 
 The `rutis` root keeps 9 names:
 
@@ -208,9 +192,16 @@ Compared with Python:
 | Filter | `ctx.filter(keep)` | `ctx.filter(|info| …)` |
 | Configuration | `apply(ctx, config)` | struct fields + `new(&Config)` |
 
-Python's `use` is replaced by `Deps` in Rust. Of Rust's 16 methods, 7 have no Python counterpart, and each corresponds to a language difference: `provide_as` (Rust has to name the trait-object type), `get` (an optional read; Python's `use` only reads declared dependencies), `spawn` and `cancelled` (Rust's own way of running and cancelling tasks), `on_sync` (Rust cannot tell at run time whether a closure is sync or async), `listen` (Rust has no keyword arguments) and `plugin` (a Rust application mounts child plugins itself).
+Python's `use` is replaced by `Deps` in Rust. Of Rust's 16 methods, 7 have no Python counterpart, and each corresponds to a language difference:
 
-## 4. Rules
+- `provide_as`: Rust has to name the trait-object type;
+- `get`: an optional read, while Python's `use` only reads declared dependencies;
+- `spawn` and `cancelled`: Rust's own way of running and cancelling tasks;
+- `on_sync`: Rust cannot tell at run time whether a closure is sync or async;
+- `listen`: listening by prefix or under another name;
+- `plugin`: a Rust application mounts child plugins itself.
+
+## 3. Rules
 
 ### Plugins
 
@@ -246,7 +237,7 @@ The six states, exactly-once cleanup and "consumers stop before providers" are u
 | a tuple of up to 8 | all members | each value |
 
 - `T` may be a trait object: `Arc<dyn Llm>`.
-- Dependencies are told apart by type only. For two services of the same type, use two newtypes (`struct Primary(Db)`, `struct Replica(Db)`): the type is the name. Services told apart by a run-time name (transports, identities, runtime sessions) belong to the host layer, see section 5.
+- Dependencies are told apart by type only. For two services of the same type, use two newtypes (`struct Primary(Db)`, `struct Replica(Db)`): the type is the name. Services told apart by a run-time name (transports, identities, runtime sessions) belong to the host layer (appendix A).
 - `Deps` is a sealed trait; authors do not implement it.
 - A dependency withdrawn after the gate opened but before `apply` reads it returns the plugin to Pending, as today.
 
@@ -255,7 +246,7 @@ The six states, exactly-once cleanup and "consumers stop before providers" are u
 - `ctx.provide(value)`: provides it under its own type.
 - `ctx.provide_as::<dyn T>(arc)`: provides it under a trait-object type, e.g. `ctx.provide_as::<dyn Llm>(Arc::new(MyLlm))`.
 - `ctx.get::<T>()`: an optional read; `T` may be a trait object. It does not gate and creates no reload relation; diagnostics record it as an undeclared access. Use it for "use it if it is there"; services a plugin needs go in `Deps`.
-- Today's `require`, reads and writes by name or instance, provides with a `check()` predicate and writable bindings move to the layers in section 5.
+- Today's `require`, reads and writes by name or instance, provides with a `check()` predicate and writable bindings move to `rutis::host` and `rutis::internal` (appendix A).
 
 ### Cleanup and background tasks
 
@@ -271,7 +262,8 @@ Today `ctx.effect(f)` means "run `f` now and use the `Effect` it returns as the 
 - Listening:
   - `ctx.on::<E>(|event, call| async move { … })` registers an async listener;
   - `ctx.on_sync::<E>(|event, call| …)` registers a sync listener, which every mode can call;
-  - for options use `ctx.listen::<E>()` with any of `.name(n)`, `.prefix(p)`, `.prepend()`, `.once()`, `.global()`, ending with `.on(…)` or `.on_sync(…)`.
+  - to listen by prefix or under another name, use `ctx.listen::<E>()` with `.prefix(p)` or `.name(n)`, ending with `.on(…)` or `.on_sync(…)`.
+  - The `prepend`, `once` and `global` options live in `host::ListenExt`; after `use rutis::host::*` they chain onto the same builder.
 - A listener is a closure taking `(Arc<E>, Call<E>)`; a sync listener takes `(Arc<E>, SyncCall<E>)`. It returns `Result<Option<E::Value>>`, where `Ok(None)` is "no result". The compiler infers the parameter types, and the body can use `?` on any error.
 - `call.mode()` is this dispatch's mode; `call.name()` is the name dispatched (for prefix listeners); `call.next()` works only in `waterfall`; `call.ctx()` is the `Ctx` that registered the listener.
 - Sending:
@@ -282,8 +274,6 @@ Today `ctx.effect(f)` means "run `f` now and use the `Effect` it returns as the 
 - Names: an event registers and dispatches under `E::NAME`. Event types without a fixed name (rutis-bridge's `Args`, for example) override `Event::name(&self)`, so the value carries its own name; to listen to such an event use `ctx.listen::<Args>().name("file-changed")`.
 - The semantics of the five modes, scope, filters and waiting at unload follow the [unified events design](design-events-2026-10-18.en.md), unchanged.
 
-Sync and async stay two methods, `on` and `on_sync`. Merging them into one `on` needs the marker-type trick, and then the compiler can no longer infer the closure's parameter types, so every listener would have to be written `|e: Arc<Created>, call: Call<Created>|` (see section 8).
-
 ### Errors
 
 - Every signature has one error type, `rutis::Error`, and `rutis::Result<T = (), E = Error>`.
@@ -291,8 +281,6 @@ Sync and async stay two methods, `on` and `on_sync`. Merging them into one `on` 
 - `rutis::Error` itself does not implement `std::error::Error`; that is what lets `?` accept any error (as with `anyhow::Error` and Bevy's `BevyError`). It converts into `Box<dyn std::error::Error + Send + Sync>`, so hosts use `?` as usual in functions returning `Box<dyn Error>`.
 - A host that needs to tell rutis's failures apart calls `err.kind()`, which returns `Option<&host::ErrorKind>`. `ErrorKind` is today's `CordisError` enum, renamed, with the same variants. An error from plugin code has `kind()` `None`; when it reaches a host it is wrapped in `ErrorKind::PluginFailed`.
 - Errors still do not implement `Clone`; share them as `Arc<Error>` (D11 and D25 unchanged).
-
-## 5. What hosts and rutis's own crates use
 
 ### Three layers
 
@@ -302,7 +290,46 @@ Sync and async stay two methods, `on` and `on_sync`. Merging them into one `on` 
 | `rutis::host` | applications embedding rutis, tests | host guide | same |
 | `rutis::internal` | rutis-bridge, rutis-loader, rutis-dylib, rutis-sdk, rutis-macros, rutis-host | `#[doc(hidden)]` | none; if something outside the repository needs it, open an issue to move it to `host` |
 
-The rule: what nothing but rutis's own crates uses goes to `internal`; what an application embedding rutis needs goes to `host`; what writing a plugin needs stays at the root. `Ctx`'s methods are split by the same rule: the `host` and `internal` methods live in extension traits (`host::CtxHost`, `internal::CtxInternal`) and need `use rutis::host::*` before they can be called. rustdoc lists extension-trait methods in their own section of the `Ctx` page, apart from the plugin methods.
+- The rule: what writing a plugin needs stays at the root; what an application embedding rutis needs goes to `host`; what nothing but rutis's own crates uses goes to `internal`.
+- `Ctx`'s methods are split by the same rule: the `host` and `internal` methods live in extension traits (`host::CtxHost`, `internal::CtxInternal`) and need `use rutis::host::*` before they can be called. rustdoc lists extension-trait methods in their own section of the `Ctx` page.
+- rutis-loader is split the same way: the root keeps the 11 names needed to assemble a loader, the rest move into modules by topic, and what only rutis-host and tests use goes to `internal`.
+
+The full contents of each layer and where every current name goes are in appendix A; migration and implementation steps are in appendix B.
+
+## 4. Trade-offs
+
+- **Add `rutis::prelude` and change nothing else**: another prelude does not remove any of the 40 `Ctx` methods or 28 `EventBus` methods from the documentation. So the root itself serves as the prelude, with no extra module.
+- **Make the new style the default and keep the old one**: that adds one more way to do the same thing, and too many ways is exactly the problem #617 describes. So 0.17 makes the whole change at once and keeps no old names (appendix B).
+- **A `#[rutis::plugin]` macro**: `async fn` already works in traits, so `BoxFuture` goes away without a macro. A macro would also hide the real trait from authors and make error messages harder to read.
+- **Configuration as an associated type, `apply(ctx, config, deps)` (the Cordis / Python shape)**: every plugin would write one more associated type, and a plugin without configuration would be mounted as `ctx.plugin(P, ())`. In Rust, configuration naturally lives in struct fields; rebuilding a plugin when its configuration changes is the mounter's job.
+- **One `on` that takes both sync and async closures** (the marker-type trick axum and Bevy use): tried. With two candidate impls the compiler cannot infer the closure's parameter types, so every listener has to be written `|e: Arc<Created>, call: Call<Created>|`. With two methods, `on::<E>(|e, call| async move { …? … })` needs no annotation (both verified on Rust 1.88).
+- **`listen` with every option**: no Rust code outside the kernel uses `prepend`, `once` or `global`; Cordis plugins use Cordis's own API and never pass through here. So those three options go to `host`, and the builder plugin authors see has only `prefix` and `name`.
+- **One `dispatch(mode, …)` instead of five methods**: the five modes return different things (no wait, aggregated errors, first result, chained, synchronous); a single method either loses the types or returns an enum for the caller to take apart.
+- **Keep names in dependencies (`Keyed<T>`, `DepKey<T>`)**: nobody outside the kernel uses them. Writing a name into a type needs `&str` const generics, which stable Rust does not have; a name chosen at run time needs a separate set of keys, which is where `Typed::with_keys` came from. Newtypes cover two services of one type.
+- **Make `rutis::Error` implement `std::error::Error` too**: that collides with `impl<E: std::error::Error> From<E>`, so `?` could no longer accept any error and authors would be back to `map_err`.
+
+## 5. Acceptance
+
+Against #617's acceptance list:
+
+| #617 | This design |
+| --- | --- |
+| A plugin author sees ≤ 15 entry points by default | 9 at the root; the compiler infers the types in `rutis::events` |
+| A minimal Rust plugin needs no hand-written `BoxFuture` or lifetimes | the examples in section 2; the README, guides and examples all use this style |
+| `EventBus` has ≤ 10 public methods | plugins use the 9 event methods on `Ctx`; `EventBus` moves into `internal` |
+| ≤ 5 service provide / read methods | 3: `provide`, `provide_as`, `get` |
+| `rutis-loader` has a clear prelude and unstable boundary | 11 names at the root, the rest grouped into modules, `internal` with no stability promise |
+| The first page of the docs lists "this is all you need" | new `docs/guide/rust-plugin.md` (write a Rust plugin), one more row on the guide index |
+
+Also:
+
+- `cargo public-api` produces snapshots of the public surface of the `rutis` root, `rutis::events` and `rutis::host`, committed to the repository and compared in CI. Adding a name then means changing the snapshot, visible in review, so the surface cannot grow unnoticed.
+- The Rust code in `examples/` and the guides does not mention `rutis::internal`; CI checks this with grep.
+- The Rust code in `docs/guide/rust-plugin.md` and the README compiles as doctests, as the development handbook's does today.
+- Every pattern in section 2 is a test, including: `?` accepting `io::Error`; listener closures compiling without annotations; `effect` running at once when registered after the plugin started stopping; a `spawn`ed task being dropped when the plugin stops; `DynPlugin` and `Plugin` plugins depending on each other.
+- Rerun the event dispatch benchmark ([event dispatch performance](performance-event-dispatch-2026-09-27.en.md)). With an owned `Call`, each call clones one more `Arc`; the PR records the numbers before and after.
+
+## Appendix A: where names go
 
 ### `rutis::host`
 
@@ -313,6 +340,7 @@ The rule: what nothing but rutis's own crates uses goes to `internal`; what an a
 | Scopes and instances (`CtxHost`) | `isolate`, `isolate_label`, `instance`, `scope`, `row`, `dispose_self`, `cancellation_token` |
 | Mounting (`CtxHost`) | `plugin_from(build, config)` (a typed config closure; dependencies come from `P::Deps`), `plugin_with(factory, config)` |
 | Events (`CtxHost`) | `waterfall_sync`, `subscriptions` |
+| Listen options (`ListenExt`) | `prepend`, `once`, `global` on `ctx.listen::<E>()` |
 | The object-safe plugin form | `DynPlugin`, `PluginFactory`, `Effect`, `EffectMeta`, `EffectPhase`, `BoxFuture` |
 | Fibers | `FiberView`, `FiberState`, `FiberStatusChanged`, `PluginId`, `Snapshot`, `DisposeWaitError`, `shutdown_deadline` |
 | Keys | `Key<T>`, `TypeKey`, `InstanceId` |
@@ -329,6 +357,69 @@ The rule: what nothing but rutis's own crates uses goes to `internal`; what an a
 `EventBus` with `events::{remote, wire}`, `EventKey`, `EventPattern`, `EventOptions`, `DispatchAttempt`, `ServiceIntercept`, `ServiceWriter`, `ServiceWriteError`, `ServiceWriteFailure`, `__sdk_service`, and `CtxInternal`: `events()`, `mark_scope`, `mark_row`, `provide_checked` (was `provide_as_with_check`), `provide_mut_at` (was `provide_mut_as`), `require_provided_as`, `effect_named`, `refresh`, `in_instance_key`.
 
 The 10 `EventBus` methods that only rutis-bridge / rutis-loader use (`on_remote`, `watch_table`, `observe_dispatch`, `emit_framework`, `dispatch`, `dispatch_sync`, `invoke_entry`, `invoke_entry_sync`, `transcoder`, `set_transcoder`) stay here together with `try_filter`, with unchanged signatures. Plugins and hosts no longer get an `EventBus`; `ctx.events().on(&ctx, &key, …)` becomes the `ctx.on…` methods.
+
+### The 71 names at today's `rutis` root
+
+| Today | 0.17 |
+| --- | --- |
+| `Plugin` | `host::DynPlugin` (`injects` returns `Vec`); the new `Plugin` is the former `TypedPlugin`, minus `BoxFuture` and `Effect` as in section 3 |
+| `TypedPlugin` | `Plugin` |
+| `Typed` | removed (`impl<P: Plugin> DynPlugin for P`) |
+| `PluginFactory` | `host::PluginFactory` (`build` returns `Box<dyn DynPlugin>`) |
+| `TypedPluginFactory`, `TypedFactory` | removed; use `plugin_from`, `Builtins::register`, `export_plugin!(build:)` |
+| `Deps` | `Deps` (sealed; `Keys` removed) |
+| `DepKey`, `Keyed`, `KeyedGate` | removed; named dependencies use `host::DynPlugin` + `host::Key<T>` |
+| `Gate` | removed; take an `Arc<T>` and leave it unused |
+| `BoxFuture` | `host::BoxFuture` |
+| `Effect`, `EffectMeta`, `EffectPhase` | `host::` |
+| `Disposer` | `Disposer` |
+| `Ctx` | `Ctx` (methods split per section 2 and this appendix) |
+| `TypeKey`, `InstanceId` | `host::` |
+| `Key` | `host::Key<T>` (merged with `DepKey`) |
+| `ServiceKey` | removed (an alias of `TypeKey`) |
+| `ServiceIntercept`, `ServiceWriter` | `internal::` |
+| `CallError` | `host::CallError` |
+| `service` | `service` |
+| `CordisError` | `Error`; the enum itself is renamed `host::ErrorKind` |
+| `ServiceReadError`, `ServiceReadFailure`, `NextMisuse`, `ErrorSink`, `default_sink` | `host::` |
+| `ServiceWriteError`, `ServiceWriteFailure` | `internal::` |
+| `EventBus`, `DispatchAttempt` | `internal::` |
+| `EventSubscription`, `ListenerKind` | `host::` |
+| `Filtered` | `events::Filtered` |
+| `Event` | `Event` (adds `fn name(&self)`, returning `NAME` by default) |
+| `EventKey`, `EventPattern`, `EventOptions` | `internal::`; plugins use `ctx.listen::<E>()` |
+| `Listener` | `events::Listener` (satisfied by async listener closures; not implemented by hand) |
+| `SyncListener`, `PatternListener`, `SyncPatternListener` | removed; listeners are closures, and prefix listeners read the name from `call.name()` |
+| `Terminal` | removed; use `ctx.waterfall(e).terminal(…)` |
+| `Call`, `SyncCall` | `events::Call<E>`, `events::SyncCall<E>` (owned, no lifetime parameter) |
+| `Mode`, `ListenerInfo`, `Scope` | `events::` |
+| `FiberView`, `FiberState`, `FiberStatusChanged`, `PluginId`, `Snapshot`, `DisposeWaitError`, `shutdown_deadline` | `host::` |
+| diagnostics types (`RuntimeDiagnostics` and 9 more) | `host::diagnostics::` |
+| `serde` | `serde` |
+
+### The 40 methods on today's `Ctx`
+
+| Today | 0.17 |
+| --- | --- |
+| `provide`, `get`, `plugin`, `cancelled` | unchanged (`get` accepts trait objects) |
+| `provide_as(key, arc)` | `provide_as::<T>(arc)`; with a key, `host::provide_at(Key<T>, arc)` |
+| `get_as(key)` | `get::<T>()` without a name; `host::get_at` with a key |
+| `effect(f)` | `effect(future)`, see section 3 |
+| `require`, `require_as` | `host::require`, `host::require_at` |
+| `root`, `root_with`, `root_with_sink`, `root_view`, `root_ctx`, `view`, `shutdown`, `shutdown_with_timeout`, `is_shutting_down`, `handle`, `error_sink`, `take_cleanup_errors`, `diagnostics`, `isolate`, `isolate_label`, `instance`, `scope`, `row`, `dispose_self`, `cancellation_token`, `plugin_with`, `plugin_from` | `host::CtxHost` |
+| `events` | `internal::CtxInternal`; the event methods are on `Ctx` |
+| `mark_scope`, `mark_row`, `provide_as_with_check`, `provide_mut_as`, `require_provided_as`, `effect_named`, `refresh`, `in_instance_key` | `internal::CtxInternal` (two renamed: `provide_checked`, `provide_mut_at`) |
+| new | `spawn`, `on`, `on_sync`, `listen`, `emit`, `parallel`, `serial`, `waterfall`, `bail`, `filter` |
+
+### The 28 methods on today's `EventBus`
+
+| Today | 0.17 |
+| --- | --- |
+| `on`, `on_opt`, `once`, `on_sync`, `on_sync_opt`, `on_pattern`, `on_pattern_opt`, `on_sync_pattern`, `on_sync_pattern_opt` | `ctx.on`, `ctx.on_sync`, `ctx.listen::<E>()` (`.prefix()`, `.name()`; `.prepend()`, `.once()`, `.global()` in `host::ListenExt`) |
+| `emit`, `parallel`, `serial`, `waterfall`, `bail_sync` | `ctx.emit`, `parallel`, `serial`, `waterfall`, `bail` |
+| `filter` | `ctx.filter` |
+| `waterfall_sync`, `subscriptions` | `host::CtxHost` |
+| `try_filter`, `on_remote`, `watch_table`, `observe_dispatch`, `emit_framework`, `dispatch`, `dispatch_sync`, `invoke_entry`, `invoke_entry_sync`, `transcoder`, `set_transcoder` | `internal` (signatures unchanged) |
 
 ### rutis-loader
 
@@ -354,72 +445,9 @@ For plugins, `Builtins` has two registration methods:
 
 `export_plugin!(id: "weather", build: Weather::new)` takes the same build function as `Builtins::register`; `schema:` stays optional. The existing `factory:` form stays for plugins that need a `PluginFactory<Value>`. A dylib plugin already has to be built with exactly the host's SDK, so 0.17 plugins are simply rebuilt as usual.
 
-## 6. Merged and removed names
+## Appendix B: migration and implementation
 
-Where each of the 71 names at today's `rutis` root goes:
-
-| Today | 0.17 |
-| --- | --- |
-| `Plugin` | `host::DynPlugin` (`injects` returns `Vec`); the new `Plugin` is the former `TypedPlugin`, minus `BoxFuture` and `Effect` as in section 4 |
-| `TypedPlugin` | `Plugin` |
-| `Typed` | removed (`impl<P: Plugin> DynPlugin for P`) |
-| `PluginFactory` | `host::PluginFactory` (`build` returns `Box<dyn DynPlugin>`) |
-| `TypedPluginFactory`, `TypedFactory` | removed; use `plugin_from`, `Builtins::register`, `export_plugin!(build:)` |
-| `Deps` | `Deps` (sealed; `Keys` removed) |
-| `DepKey`, `Keyed`, `KeyedGate` | removed; named dependencies use `host::DynPlugin` + `host::Key<T>` |
-| `Gate` | removed; take an `Arc<T>` and leave it unused |
-| `BoxFuture` | `host::BoxFuture` |
-| `Effect`, `EffectMeta`, `EffectPhase` | `host::` |
-| `Disposer` | `Disposer` |
-| `Ctx` | `Ctx` (methods split per sections 3 and 5) |
-| `TypeKey`, `InstanceId` | `host::` |
-| `Key` | `host::Key<T>` (merged with `DepKey`) |
-| `ServiceKey` | removed (an alias of `TypeKey`) |
-| `ServiceIntercept`, `ServiceWriter` | `internal::` |
-| `CallError` | `host::CallError` |
-| `service` | `service` |
-| `CordisError` | `Error`; the enum itself is renamed `host::ErrorKind` |
-| `ServiceReadError`, `ServiceReadFailure`, `NextMisuse`, `ErrorSink`, `default_sink` | `host::` |
-| `ServiceWriteError`, `ServiceWriteFailure` | `internal::` |
-| `EventBus`, `DispatchAttempt` | `internal::` |
-| `EventSubscription`, `ListenerKind` | `host::` |
-| `Filtered` | `events::Filtered` |
-| `Event` | `Event` (adds `fn name(&self)`, returning `NAME` by default) |
-| `EventKey`, `EventPattern`, `EventOptions` | `internal::`; plugins use `ctx.listen::<E>()` |
-| `Listener` | `events::Listener` (satisfied by async listener closures; not implemented by hand) |
-| `SyncListener`, `PatternListener`, `SyncPatternListener` | removed; listeners are closures, and prefix listeners read the name from `call.name()` |
-| `Terminal` | removed; use `ctx.waterfall(e).terminal(…)` |
-| `Call`, `SyncCall` | `events::Call<E>`, `events::SyncCall<E>` (owned, no lifetime parameter) |
-| `Mode`, `ListenerInfo`, `Scope` | `events::` |
-| `FiberView`, `FiberState`, `FiberStatusChanged`, `PluginId`, `Snapshot`, `DisposeWaitError`, `shutdown_deadline` | `host::` |
-| diagnostics types (`RuntimeDiagnostics` and 9 more) | `host::diagnostics::` |
-| `serde` | `serde` |
-
-`Ctx`'s 40 methods:
-
-| Today | 0.17 |
-| --- | --- |
-| `provide`, `get`, `plugin`, `cancelled` | unchanged (`get` accepts trait objects) |
-| `provide_as(key, arc)` | `provide_as::<T>(arc)`; with a key, `host::provide_at(Key<T>, arc)` |
-| `get_as(key)` | `get::<T>()` without a name; `host::get_at` with a key |
-| `effect(f)` | `effect(future)`, see section 4 |
-| `require`, `require_as` | `host::require`, `host::require_at` |
-| `root`, `root_with`, `root_with_sink`, `root_view`, `root_ctx`, `view`, `shutdown`, `shutdown_with_timeout`, `is_shutting_down`, `handle`, `error_sink`, `take_cleanup_errors`, `diagnostics`, `isolate`, `isolate_label`, `instance`, `scope`, `row`, `dispose_self`, `cancellation_token`, `plugin_with`, `plugin_from` | `host::CtxHost` |
-| `events` | `internal::CtxInternal`; the event methods are on `Ctx` |
-| `mark_scope`, `mark_row`, `provide_as_with_check`, `provide_mut_as`, `require_provided_as`, `effect_named`, `refresh`, `in_instance_key` | `internal::CtxInternal` (two renamed: `provide_checked`, `provide_mut_at`) |
-| new | `spawn`, `on`, `on_sync`, `listen`, `emit`, `parallel`, `serial`, `waterfall`, `bail`, `filter` |
-
-`EventBus`'s 28 methods:
-
-| Today | 0.17 |
-| --- | --- |
-| `on`, `on_opt`, `once`, `on_sync`, `on_sync_opt`, `on_pattern`, `on_pattern_opt`, `on_sync_pattern`, `on_sync_pattern_opt` | `ctx.on`, `ctx.on_sync`, `ctx.listen::<E>()` (`.once()`, `.prepend()`, `.global()`, `.prefix()`, `.name()`) |
-| `emit`, `parallel`, `serial`, `waterfall`, `bail_sync` | `ctx.emit`, `parallel`, `serial`, `waterfall`, `bail` |
-| `filter` | `ctx.filter` |
-| `waterfall_sync`, `subscriptions` | `host::CtxHost` |
-| `try_filter`, `on_remote`, `watch_table`, `observe_dispatch`, `emit_framework`, `dispatch`, `dispatch_sync`, `invoke_entry`, `invoke_entry_sync`, `transcoder`, `set_transcoder` | `internal` (signatures unchanged) |
-
-## 7. Migration
+### Migration
 
 0.17 makes the whole change at once, with no old names kept, as 0.13 did for unified events: old code does not compile, and `docs/migration-0.17.md` gives the table to fix it by. There is no `#[deprecated]` transition: kept names would still show up in the documentation and in completion, which is exactly what #617 is about. The protocol does not change, so working with other languages and other nodes is unaffected.
 
@@ -459,49 +487,17 @@ impl Plugin for Weather {
 }
 ```
 
-**Applications embedding rutis** add `use rutis::host::*;`; `PluginFactory` and hand-written object-safe plugins move to `host::DynPlugin` (`injects` returns `Vec`); `Builtins::register_fn` becomes `register`; names gone from the rutis-loader root are found in the modules of section 5.
+**Applications embedding rutis** add `use rutis::host::*;`; `PluginFactory` and hand-written object-safe plugins move to `host::DynPlugin` (`injects` returns `Vec`); `Builtins::register_fn` becomes `register`; names gone from the rutis-loader root are found in the modules of appendix A.
 
 **The crates in this repository** change in the same release: rutis-bridge, rutis-loader, rutis-dylib, rutis-sdk, rutis-macros, rutis-host, rutis-dsh, rutis-dev, rutis-xtask, aimux-llm, and the examples rutis-agent, rutis-cli and `examples/`. Outside the kernel there are 42 `impl Plugin` and 14 `impl PluginFactory`; they become `host::DynPlugin` / `host::PluginFactory` mechanically. Only aimux-llm and the examples switch to the new `Plugin`, since they are what plugin authors read. The pure renames (`CordisError` appears 1277 times) are done by script. The only real rewrite is in the kernel: events, cleanup and the plugin wrapper.
 
 The other languages' SDKs and runtimes, the protocol and `rutis.json` are unaffected.
 
-## 8. Alternatives considered
-
-- **Add `rutis::prelude` and change nothing else**: another prelude does not remove any of the 40 `Ctx` methods or 28 `EventBus` methods from the documentation. So the root itself serves as the prelude, with no extra module.
-- **Make the new style the default and keep the old one**: that adds one more way to do the same thing, and too many ways is exactly the problem #617 describes.
-- **A `#[rutis::plugin]` macro**: `async fn` already works in traits, so `BoxFuture` goes away without a macro. A macro would also hide the real trait from authors and make error messages harder to read.
-- **Configuration as an associated type, `apply(ctx, config, deps)` (the Cordis / Python shape)**: every plugin would write one more associated type, and a plugin without configuration would be mounted as `ctx.plugin(P, ())`. In Rust, configuration naturally lives in struct fields; rebuilding a plugin when its configuration changes is the mounter's job.
-- **One `on` that takes both sync and async closures** (the marker-type trick axum and Bevy use): tried. With two candidate impls the compiler cannot infer the closure's parameter types, so every listener has to be written `|e: Arc<Created>, call: Call<Created>|`. With two methods, `on::<E>(|e, call| async move { …? … })` needs no annotation (both verified on Rust 1.88).
-- **One `dispatch(mode, …)` instead of five methods**: the five modes return different things (no wait, aggregated errors, first result, chained, synchronous); a single method either loses the types or returns an enum for the caller to take apart.
-- **Keep names in dependencies (`Keyed<T>`, `DepKey<T>`)**: nobody outside the kernel uses them. Writing a name into a type needs `&str` const generics, which stable Rust does not have; a name chosen at run time needs a separate set of keys, which is where `Typed::with_keys` came from. Newtypes cover two services of one type.
-- **Make `rutis::Error` implement `std::error::Error` too**: that collides with `impl<E: std::error::Error> From<E>`, so `?` could no longer accept any error and authors would be back to `map_err`.
-
-## 9. Acceptance
-
-Against #617's acceptance list:
-
-| #617 | This design |
-| --- | --- |
-| A plugin author sees ≤ 15 entry points by default | 9 at the root; the compiler infers the types in `rutis::events` |
-| A minimal Rust plugin needs no hand-written `BoxFuture` or lifetimes | the examples in section 3; the README, guides and examples all use this style |
-| `EventBus` has ≤ 10 public methods | plugins use the 9 event methods on `Ctx`; `EventBus` moves into `internal` |
-| ≤ 5 service provide / read methods | 3: `provide`, `provide_as`, `get` |
-| `rutis-loader` has a clear prelude and unstable boundary | 11 names at the root, the rest grouped into modules, `internal` with no stability promise |
-| The first page of the docs lists "this is all you need" | new `docs/guide/rust-plugin.md` (write a Rust plugin), one more row on the guide index |
-
-Also:
-
-- `cargo public-api` produces snapshots of the public surface of the `rutis` root, `rutis::events` and `rutis::host`, committed to the repository and compared in CI. Adding a name then means changing the snapshot, visible in review, so the surface cannot grow unnoticed.
-- The Rust code in `examples/` and the guides does not mention `rutis::internal`; CI checks this with grep.
-- The Rust code in `docs/guide/rust-plugin.md` and the README compiles as doctests, as the development handbook's does today.
-- Every pattern in section 3 is a test, including: `?` accepting `io::Error`; listener closures compiling without annotations; `effect` running at once when registered after the plugin started stopping; a `spawn`ed task being dropped when the plugin stops; `DynPlugin` and `Plugin` plugins depending on each other.
-- Rerun the event dispatch benchmark ([event dispatch performance](performance-event-dispatch-2026-09-27.en.md)). With an owned `Call`, each call clones one more `Arc`; the PR records the numbers before and after.
-
-## 10. Implementation
+### Implementation
 
 Commits on one integration branch in this order, merged as a whole, shipped in 0.17:
 
-1. Kernel: the new `Plugin` / `Deps` / `DynPlugin` with the blanket impl; `Error` / `ErrorKind`; `effect`, `spawn` and the event methods on `Ctx` (with an owned `Call`); the merged `Key<T>`; the `host` / `internal` modules and extension traits; removal of the names in section 6.
+1. Kernel: the new `Plugin` / `Deps` / `DynPlugin` with the blanket impl; `Error` / `ErrorKind`; `effect`, `spawn` and the event methods on `Ctx` (with an owned `Call`); the merged `Key<T>`; the `host` / `internal` modules and extension traits; removal of the names in appendix A.
 2. rutis-bridge, rutis-loader, rutis-dylib, rutis-sdk and rutis-macros move to `DynPlugin` and `internal`; `Builtins::register` and `export_plugin!(build:)` take typed build functions.
 3. Regroup the rutis-loader root and modules.
 4. rutis-host, rutis-dsh, rutis-dev, rutis-xtask, aimux-llm and the examples (rutis-agent, rutis-cli, `examples/`).
