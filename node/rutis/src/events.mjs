@@ -64,14 +64,6 @@ export function refuseRemoved(config) {
 export const EVENTS_V2 = 'events-v2'
 export const NO_EVENTS_V2 = 'this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later'
 
-// Whether the chain `listener` is a prefix of `emitter`, by id: a
-// descriptor helper for filters, not a delivery rule (§3). Kept for
-// compatibility with 0.13–0.15; delivery is by name.
-export function inScope(listener, emitter) {
-  if (listener.length > emitter.length) return false
-  return listener.every((scope, index) => scope.id === emitter[index].id)
-}
-
 const errorText = error => `${error?.name ?? 'Error'}: ${error?.message ?? String(error)}`
 
 // How many dispatch ids this process remembers having fired

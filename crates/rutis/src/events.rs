@@ -104,12 +104,6 @@ pub struct Scope {
     pub group: String,
 }
 
-/// `inner` is `outer` or below it, by id: a descriptor helper for filters.
-/// It does not select listeners; delivery is by name.
-pub fn scope_contains(outer: &[Scope], inner: &[Scope]) -> bool {
-    outer.len() <= inner.len() && outer.iter().zip(inner).all(|(a, b)| a.id == b.id)
-}
-
 /// What the bus says about a listener: what a filter sees (protocol spec
 /// §4.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
