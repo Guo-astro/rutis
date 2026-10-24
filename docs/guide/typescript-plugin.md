@@ -138,7 +138,7 @@ test('plugins hear each other', async () => {
 - `emit` 立即返回；监听器出错不影响发出方和别的监听器，在监听器所在处报告一行（测试里在 `h.reported` / `t.reported`）。要等全部监听器、拿到它们的错误，用 `await ctx.parallel(...)`：失败是 `AggregateError`，按登记顺序。
 - `waterfall` 只要有监听器在别的进程就返回 Promise，所以总是 `await` 它。`bail` 是同步的 `serial`，遇到 `async` 监听器以 `AsyncListener` 失败。
 - `ctx.filter(d => d.row === 'audit').parallel(...)` 只送达过滤函数留下的监听器；`ctx.on(name, fn, { prepend: true })` 排到最前，`{ global: true }` 不受过滤。
-- 作用域：`h.load(plugin, { scope: 't1/s1' })` 把插件加载到一个实例里，`h.at('t1/s1').emit(...)` 从那里发出；监听器只收到自己作用域及其内发出的事件。
+- 作用域：`h.load(plugin, { scope: 't1/s1' })` 把插件加载到一个实例里，它的监听器把作用域作为描述带上；监听器收到这个 root 总线上的所有同名事件，与发出方在哪个实例无关。作用域只是描述，供过滤使用。
 - 卸载时插件的 `ctx.signal` 被中止，正在运行的监听器被等待（最多到关闭截止时间），然后才运行清理。
 
 `load(plugin)` 返回的 `t` 也有这五个方法和 `filter`，从这个插件的作用域发出。别的语言的插件监听 TypeScript 插件发出的事件，写法见 [Python 插件：事件](python-plugin.md#事件)。
@@ -183,7 +183,7 @@ npm publish
 
 或者推一个 `v0.1.0` 这样的 tag，模板里的工作流会测试、`check` 并发布（仓库里需要 `NPM_TOKEN` secret）。
 
-依赖写 `"@arcships/rutis": "^0.15.0"` 这样的范围。插件上带有它所用的插件 API 版本（`definePlugin` 自动标记），宿主的运行时比它旧时会明确报错，而不是加载后出错。
+依赖写 `"@arcships/rutis": "^0.15.1"` 这样的范围。插件上带有它所用的插件 API 版本（`definePlugin` 自动标记），宿主的运行时比它旧时会明确报错，而不是加载后出错。
 
 ## 6. 被宿主使用
 

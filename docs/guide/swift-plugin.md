@@ -2,7 +2,7 @@
 
 [English](swift-plugin.en.md)
 
-从创建项目到发布，再到被宿主使用。需要 macOS 14 或更高，以及 Xcode 16 或更高（只有 Command Line Tools 也能构建和运行插件，但 `swift test` 要用 Xcode 的测试框架）；SDK 本身按 Swift 5 语言模式编写，`new` 生成的项目也是。
+从创建项目到发布，再到被宿主使用。需要 macOS 14 或更高，以及带 Swift 6.2 工具链的 Xcode 26 或更高（只有 Command Line Tools 也能构建和运行插件，但 `swift test` 要用 Xcode 的测试框架）；SDK 本身按 Swift 5 语言模式编写，`new` 生成的项目也是。
 
 Swift 插件和 TypeScript、Python、Go 插件的写法与规则相同（见 [插件 API](plugin-api.md)）；和 Go 一样，**Swift 插件编译成二进制，一个二进制就是宿主里的一个运行时进程**。一个二进制可以带一个或几个插件；宿主可以同时运行很多个二进制，只在有行用到时才启动它。Swift 用来接入 macOS 给本机程序的能力：日历与提醒（EventKit）、通讯录、辅助功能与 Apple 事件自动化、屏幕录制、Core ML。
 

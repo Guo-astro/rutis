@@ -227,7 +227,7 @@ The [design philosophy](docs/design-philosophy.en.md) explains these choices, an
 | Running plugins in your app | [`rutis-loader`](https://crates.io/crates/rutis-loader), [`rutis-bridge`](https://crates.io/crates/rutis-bridge), [`rutis-dylib`](https://crates.io/crates/rutis-dylib) (dylib plugins) | [`@arcships/rutis-runtime`](https://www.npmjs.com/package/@arcships/rutis-runtime) (Node), [`@arcships/rutis-bun`](https://www.npmjs.com/package/@arcships/rutis-bun) (Bun) | [`rutis`](https://pypi.org/project/rutis/) |
 | A host without Rust | [`rutis-host`](https://crates.io/crates/rutis-host) | [`@arcships/rutis-host`](https://www.npmjs.com/package/@arcships/rutis-host) | [`rutis-host`](https://pypi.org/project/rutis-host/) |
 
-Go plugins use the module [`github.com/arcships/rutis/go/rutis`](go/rutis): the SDK, and the runtime each plugin binary carries. Swift plugins (macOS) use the Swift package of this repository, [`Rutis`](swift/README.md) (`.package(url: "https://github.com/arcships/rutis", from: "0.15.0")`), the same way.
+Go plugins use the module [`github.com/arcships/rutis/go/rutis`](go/rutis): the SDK, and the runtime each plugin binary carries. Swift plugins (macOS) use the Swift package of this repository, [`Rutis`](swift/README.md) (`.package(url: "https://github.com/arcships/rutis", from: "0.15.1")`), the same way.
 
 All of these form a release train: released together at one version, currently 0.15. Use the same version for every rutis package.
 
@@ -257,7 +257,7 @@ All of these form a release train: released together at one version, currently 0
 rutis is at 0.x and its API is still evolving. Breaking changes are listed in the release notes and come with a migration guide.
 
 - **The core** is pure Rust with tokio, tokio-util, thiserror, serde and serde_json as its only dependencies; it needs Rust 1.88 or later.
-- **Language runtimes and rutis-host** (Node, Bun, Python and Go rows, remote runtimes, shared services, peers, Cordis mounts) run on Linux, macOS and Windows x64 (MSVC); they need Node 22+, Bun 1.4+ or Python 3.10+; Go plugins are compiled binaries, built with Go 1.24+. Swift plugins are compiled binaries for macOS 14+, built with a Swift 6 toolchain. The Bun runtime is not tested on Windows yet.
+- **Language runtimes and rutis-host** (Node, Bun, Python and Go rows, remote runtimes, shared services, peers, Cordis mounts) run on Linux, macOS and Windows x64 (MSVC); they need Node 22+, Bun 1.4+ or Python 3.10+; Go plugins are compiled binaries, built with Go 1.24+. Swift plugins are compiled binaries for macOS 14+, built with a Swift 6.2 toolchain. The Bun runtime is not tested on Windows yet.
 - **dylib plugins** load on Linux, macOS and Windows x64 (MSVC).
 
 ## Contributing

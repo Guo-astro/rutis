@@ -372,16 +372,13 @@ final class Harness: @unchecked Sendable {
         return try await body(Rutis.Arguments(args)).value
     }
 
-    /// A dispatch of `name` emitted in `scope` (§5.1).
-    func snapshot(_ name: String, _ scope: [Rutis.Scope], own: Bool) -> Dispatch {
+    /// A dispatch of `name` (§5.1); delivery is by name.
+    func snapshot(_ name: String, own: Bool) -> Dispatch {
         lock.withLock {
             dispatches += 1
             let id = "d\(dispatches)"
-            var chosen: [EventEntry] = []
-            for entry in entries where entry.name == name {
-                let listening = entry.local == nil ? (scopes[entry.row ?? ""] ?? []) : []
-                if Events.within(listening, scope) { chosen.append(Invocation(entry, dispatchID: id, own: own && entry.local == nil)) }
-            }
+            let chosen = entries.filter { $0.name == name }
+                .map { Invocation($0, dispatchID: id, own: own && $0.local == nil) }
             return Dispatch(name: name, entries: chosen)
         }
     }
@@ -409,10 +406,10 @@ final class Harness: @unchecked Sendable {
         }
         try Events.checkEmit(name)
         let args = record["args"]?.items ?? []
-        guard let scope = lock.withLock({ scopes[row] }) else {
+        guard lock.withLock({ scopes[row] != nil }) else {
             throw RutisError(name: RutisError.Name.bindingError, message: "row \(row) is not loaded in this runtime")
         }
-        var dispatch = snapshot(name, scope, own: true)
+        var dispatch = snapshot(name, own: true)
         if case let .remoteFunction(filter) = record["filter"] ?? .undefined {
             // One call of the emitter's selector, with every candidate the
             // filter applies to (§6).
@@ -568,12 +565,12 @@ public final class Loaded: @unchecked Sendable {
     {
         try Events.checkEmit(name)
         let values = try args.map { try ValueCodec.encodeAny($0 as Any) }
-        var dispatch = harness.snapshot(name, scope, own: false)
+        var dispatch = harness.snapshot(name, own: false)
         dispatch.keep = keep
         return try await Harness.run(dispatch, mode, values, terminal: terminal)
     }
 
-    /// Starts every listener of `name` the row's scope reaches.
+    /// Starts every listener of `name` on the bus.
     public func emit(_ name: String, _ args: Any?...) async throws { _ = try await dispatch(name, .emit, args, keep: nil, terminal: nil) }
 
     /// Runs every listener of `name` and waits for all; failures are an

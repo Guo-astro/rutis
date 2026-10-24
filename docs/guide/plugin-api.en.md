@@ -18,7 +18,7 @@ TypeScript / JavaScript plugins (`@arcships/rutis`), Python plugins (`rutis`) an
 | `ctx.use(name)` | Gets a service declared in `inject`. A service provided by a plugin in the same runtime process is the object itself; services from other processes, languages, or machines are proxies. |
 | `ctx.provide(name, value)` | Provides a service until the plugin is unloaded or the returned function is called. It reaches rutis by itself, used by name from other languages and processes; when `provides` does not declare it, its methods are the public methods of `value` (JavaScript: its own and its prototype chain's functions, not `constructor`; Python: callable attributes not starting with `_`; Go: exported methods), all called as `async`; fields are not methods. The inferred methods follow each language's rules, so the same service written in two languages can differ: a JavaScript class extending `EventEmitter` also exposes `on`, `emit` and the rest; list the methods in `provides` to expose only those. |
 | `ctx.effect(cleanup)` | Runs `cleanup` when the plugin is unloaded. It may be async. |
-| `ctx.on(name, listener, options?)` | Listens to an event: wherever it is emitted (another plugin, another runtime, the host, a linked node), it reaches `listener` when the emitter is in this plugin's scope or inside it. Unregistered when the plugin unloads; the returned function unregisters it at once. See [Events](#events) below. |
+| `ctx.on(name, listener, options?)` | Listens to an event: wherever it is emitted (another plugin, another runtime, the host, a linked node), a same-named event on this root's bus reaches `listener`. Unregistered when the plugin unloads; the returned function unregisters it at once. See [Events](#events) below. |
 | `ctx.emit` / `parallel` / `serial` / `waterfall` / `bail` | The five ways to emit; `ctx.filter(keep)` gives the same five methods delivering to some listeners only. See [Events](#events). |
 | `ctx.signal` | (JavaScript) Aborted when the plugin unloads; Python cancels the task, in Go it is `ctx` itself. |
 
@@ -41,7 +41,7 @@ Every listener on a host — of the host's Rust plugins, of every plugin in ever
 The only exceptions are what is physically impossible (a cycle of synchronous waits, waiting synchronously on a far end that went away); those fail with an error and never silently turn into something else. Design: [unified events](../design-events-2026-10-18.en.md); wire protocol: [protocol spec](../design-events-protocol-2026-10-18.en.md).
 
 - **Registration is automatic**: a plugin writes `ctx.on(name, listener)` as usual and declares nothing, neither in `rutis.json` nor in the host's Rust code. A runtime registers its listeners with the host, as services reach rutis by themselves.
-- **An event is a name, arguments and a scope**. The name is a string, the same in every language and on every path, by convention `area/verb` (`session/created`). Arguments cross as in [passing values](#passing-values). The scope is the loader instance the emitter is in (below).
+- **An event is a name, arguments and an emitter scope descriptor**. The name is a string, the same in every language and on every path, by convention `area/verb` (`session/created`). Arguments cross as in [passing values](#passing-values). The scope describes the loader instance the emitter is in; delivery is by name (below).
 - **One listener table**: a listener registered once can be called by any of the modes below; the emitter chooses the mode.
 - **Through the host only when needed**: when every listener of a name is in the emitter's process, the dispatch runs in that process without the host; the results are the same, only where the code runs differs.
 
@@ -122,17 +122,17 @@ Each language's guide has a complete example: [TypeScript](typescript-plugin.en.
 
 A scope is a loader group instance (a copy of an `instanced` group, such as a tenant or a session), or the root. Every plugin and every emission is in one scope: the innermost instance around it, or the root.
 
-> A listener receives the events emitted in its own scope and in every scope inside it.
+> Events are one flat bus: every listener of the name in a root receives every dispatch, whatever the emitter's or listener's scope.
 
-A listener at the root receives every event; a listener in tenant `t1` does not receive `t2`'s; an event emitted in a session of `t1` reaches the listeners of `t1` and of the root. The host determines the emitter's scope from the emitting row; plugins have no API to emit into another scope: to choose listeners further, use a filter on the descriptor's `scope`. A leaf plugin's `isolate` label (a service scope) has nothing to do with event scopes.
+A scope is only a `ListenerInfo` descriptor for filters; there is no default instance isolation. To keep an event within an instance, filter on the descriptor's `scope` or use distinct event names. The host determines the emitter's scope from the emitting row. A leaf plugin's `isolate` label (a service scope) has nothing to do with event scopes.
 
 ### Filter
 
 An emission can carry a filter function: it is called once for each candidate listener with that listener's **descriptor** and returns whether to deliver.
 
-- It runs **in the emitter's process**, in registration order, before any listener starts; it sees the listeners the scope rule kept, and works the same for listeners anywhere.
+- It runs **in the emitter's process**, in registration order, before any listener starts; it sees the name-matched candidates, and works the same for listeners anywhere.
 - When the filter throws, the whole dispatch fails with that error and no listener starts (in `emit`, it is reported instead).
-- Listeners registered with the `global` option are never filtered (the scope rule still applies).
+- Listeners registered with the `global` option are never filtered.
 
 The descriptor (JSON fields, `null` when there is no value; Rust `ListenerInfo`, `None` when there is none; Go `rutis.Listener`, `""` when there is none):
 
@@ -176,7 +176,7 @@ The host publishes framework information with `emit`, one argument (a record) pe
 | `rutis/row` | `{ row, plugin, scope, state, error }`, `state` one of `pending` / `running` / `failed` / `stopped` | Every state change of a configured row (any language, Rust rows and group rows included); `failed` with `error` | The row's scope |
 | `rutis/runtime` | `{ runtime, state, reason }`, `state` one of `running` / `down` | A runtime mounted (after every reconnection too); its session ended or its mount failed (`reason` says why) | The root |
 
-By the scope rule, a listener at the root sees `rutis/row` of every row, one in an instance only the rows in its instance. In Rust the types are `rutis_loader::RowEvent` and `rutis_bridge::events::{ServiceEvent, RuntimeEvent}`. The test tools emit no `rutis/*` events.
+`rutis/row` is an event on the same bus, so every listener sees it. In Rust the types are `rutis_loader::RowEvent` and `rutis_bridge::events::{ServiceEvent, RuntimeEvent}`. The test tools emit no `rutis/*` events.
 
 `internal/*` is each runtime's own framework machinery (Cordis's `internal/dispatch`, `internal/service` and the like) and never crosses processes: leaf plugins cannot listen to or emit it, and the host refuses to register it (`event <name> is internal to its runtime`). Cordis plugins use it in their process as before; events arriving from elsewhere also go through Cordis's own dispatch, so `internal/dispatch` validators still see them.
 

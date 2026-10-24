@@ -198,13 +198,13 @@ test('the five modes, prepend, global and filter', () => eventRows(async (runtim
   expect(descriptors.map(d => [d.row, d.global, d.prefix, d.node])).toEqual([['a', false, false, null]])
 }))
 
-// guarantee: events/bun-runtime (scope: up, not down)
-test('a listener hears its own scope and those under it', () => eventRows(async (_runtime, a, b) => {
+// guarantee: events/bun-runtime (flat bus)
+test('every listener hears every event; a scope is a descriptor', () => eventRows(async (_runtime, a, b) => {
   const heard: string[] = []
   a.on('x', () => { heard.push('a') })
   b.on('x', () => { heard.push('b') })
   await a.parallel('x')
-  expect(heard.splice(0)).toEqual(['a'])
+  expect(heard.splice(0)).toEqual(['a', 'b'])
   await b.parallel('x')
   expect(heard.splice(0)).toEqual(['a', 'b'])
 }, { b: [{ id: '17', group: 'tenant' }] }))

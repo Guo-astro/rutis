@@ -24,21 +24,6 @@ func TestWhatIsAResult(t *testing.T) {
 	}
 }
 
-func TestScopeIsAPrefixByID(t *testing.T) {
-	t1 := []Scope{{ID: "17", Group: "tenant"}}
-	s1 := []Scope{{ID: "17", Group: "tenant"}, {ID: "42", Group: "session"}}
-	t2 := []Scope{{ID: "18", Group: "tenant"}}
-	cases := []struct {
-		listener, emitter []Scope
-		hears             bool
-	}{{nil, s1, true}, {t1, s1, true}, {s1, s1, true}, {s1, t1, false}, {t2, s1, false}, {t1, nil, false}}
-	for _, c := range cases {
-		if Within(c.listener, c.emitter) != c.hears {
-			t.Errorf("%v hears %v: %v", c.listener, c.emitter, !c.hears)
-		}
-	}
-}
-
 func TestADescriptorCrossesAsTheProtocolWritesIt(t *testing.T) {
 	data, err := json.Marshal(Listener{Name: "session/created", Plugin: "chat-ui", Row: "chat", Scope: []Scope{{ID: "17", Group: "tenant"}}})
 	if err != nil {

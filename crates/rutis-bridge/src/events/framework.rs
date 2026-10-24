@@ -92,7 +92,6 @@ impl rutis::Listener<ServiceChanged> for ServiceEvents {
             Mode::Emit,
             Payload::new(Arc::new(event)),
         );
-        dispatch.scope = Some(changed.chain.clone());
         dispatch.framework = true;
         Box::pin(async move {
             if let Err(error) = ctx.events().dispatch(ctx, dispatch).await {

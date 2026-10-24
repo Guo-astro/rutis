@@ -6,15 +6,16 @@
 //   assert.equal(await t.serial('weather/ask', 'Oslo'), 'sunny')
 //   await t.unload()
 //
-// Several plugins share one event bus on a `host()`, each row in a scope:
+// Several plugins share one event bus on a `host()`, each row with its
+// scope descriptor:
 //
 //   const h = host({ services: { llm } })
 //   const chat = await h.load(chatPlugin, { scope: 't1/s1' })
-//   await h.at('t1/s1').parallel('session/created', id)
+//   await h.parallel('session/created', id)
 //
 // Events (#464) run as on a real runtime whose listeners are all in its
 // process: the five modes (emit, parallel, serial, waterfall, bail), the
-// scope rule (a listener hears its scope and those under it), filters,
+// flat bus (name delivery; a scope is a descriptor), filters,
 // prepend and global, emit's failures reported (`reported`), rutis/*
 // refused, and unload withdrawing listeners, aborting `ctx.signal` and
 // waiting for those still running. rutis/* events are the host's: the
@@ -276,14 +277,14 @@ function chainOf(path, groups) {
   })
 }
 
-// The five ways to emit and `filter`, on `bus`, from `row` in `scope`.
+// The five ways to emit and `filter`, on `bus`, from `row`.
 // `crossing`: values cross between the emitter and the listeners (the test
 // emitting, strict), as from another process. `errors`: what the
 // listeners throw crosses (a plugin emitting, strict): a listener may be
 // in another process, where an error arrives as an Error of a built-in
 // class or a plain Error with the thrower's `name` (not its class), so a
 // plugin matching errors by class fails here as it would there.
-function emitters(bus, row, scope, crossing, keep, errors = crossing) {
+function emitters(bus, row, crossing, keep, errors = crossing) {
   const where = name => `event ${name}`
   const inbound = (name, values) => crossing ? values.map((value, i) => cross(value, `${where(name)} argument ${i}`)) : values
   const outbound = (name, value) => {
@@ -297,7 +298,7 @@ function emitters(bus, row, scope, crossing, keep, errors = crossing) {
     internal(name)
     let result
     try {
-      result = bus.dispatch(mode, name, inbound(name, values), { row, scope, keep, terminal: crossing && terminal ? cross(terminal, `${where(name)} terminal`) : terminal })
+      result = bus.dispatch(mode, name, inbound(name, values), { row, keep, terminal: crossing && terminal ? cross(terminal, `${where(name)} terminal`) : terminal })
     } catch (thrown) {
       throw errors ? crossThrown(thrown, where(name)) : thrown
     }
@@ -319,7 +320,7 @@ function emitters(bus, row, scope, crossing, keep, errors = crossing) {
     bail: (name, ...values) => dispatch('bail', name, values),
     filter: predicate => {
       if (typeof predicate !== 'function') throw new PluginTestError('filter needs a predicate function')
-      const { filter: _, ...five } = emitters(bus, row, scope, crossing, descriptor => predicate(crossing ? cross(descriptor, 'a listener descriptor') : descriptor), errors)
+      const { filter: _, ...five } = emitters(bus, row, crossing, descriptor => predicate(crossing ? cross(descriptor, 'a listener descriptor') : descriptor), errors)
       return five
     },
   }
@@ -409,7 +410,7 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
           const entry = bus.on({ name, callback: listener, prepend: options?.prepend, global: options?.global, row: key, plugin: plugin.name ?? key, scope: row.chain })
           return () => { bus.off(entry) }
         },
-        ...emitters(bus, key, row.chain, false, undefined, strict),
+        ...emitters(bus, key, false, undefined, strict),
       }
       row.apply = config => applyRow(row, ctx, config)
       await row.apply(config)
@@ -420,11 +421,11 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
       closed = true
       for (const row of [...rows.values()].reverse()) await unloadRow(row)
     },
-    /** The five ways to emit from the scope path `scope`, as the test. */
-    at: scope => emitters(bus, null, chainOf(scope, scopes), strict),
-    // The five ways to emit and `filter`, from the root, as the test: values
-    // cross as from another process (strict).
-    ...emitters(bus, null, [], strict),
+    /** The five ways to emit, kept for compatibility; `scope` is ignored. */
+    at: _scope => emitters(bus, null, strict),
+    // The five ways to emit and `filter`, as the test: values cross as from
+    // another process (strict).
+    ...emitters(bus, null, strict),
   }
 
   // Run the plugin's apply for `row` with `config`; on failure, unload the row.
@@ -483,9 +484,9 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
       get reported() { return self.reported },
       /** The host this row is loaded on. */
       host: self,
-      // The five ways to emit and `filter`, in the row's scope, as the test:
-      // values cross as from another process (strict).
-      ...emitters(bus, null, row.chain, strict),
+      // The five ways to emit and `filter`, as the test: values cross as
+      // from another process (strict).
+      ...emitters(bus, null, strict),
       /**
        * Change the row's config, as a host's `rows.update`: the row unloads
        * (as `unload`) and applies again with `config` under the same key, so

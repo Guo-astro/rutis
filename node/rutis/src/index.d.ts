@@ -16,21 +16,21 @@ export interface ListenerDescriptor {
   readonly node: string | null
   /** Its scope chain, outermost first; `[]` at the root. */
   readonly scope: ReadonlyArray<{ readonly id: string, readonly group: string }>
-  /** A `global` listener is never filtered (the scope rule still applies). */
+  /** A `global` listener is never filtered. */
   readonly global: boolean
 }
 
 export interface ListenerOptions {
   /** Run before every listener of the name registered so far. */
   prepend?: boolean
-  /** Not subject to emitters' filters (still to the scope rule). */
+  /** Not subject to emitters' filters. */
   global?: boolean
 }
 
 /** A listener: the event's arguments, then, in a `waterfall`, `next` (the rest of the chain) last. */
 export type Listener = (...args: any[]) => any
 
-/** The five ways to emit. Each reaches every listener of the name in the emitter's scope or above it, wherever the listener runs, by the same rules as if all were in this process. Emitting `rutis/*` throws `ReservedEvent`; `internal/*` is refused. */
+/** The five ways to emit. Each reaches every listener of the name on the root's flat bus, wherever the listener runs, by the same rules as if all were in this process. Emitting `rutis/*` throws `ReservedEvent`; `internal/*` is refused. */
 export interface Emitter {
   /** Start every listener in registration order; returns at once. A listener's failure is reported where it ran and reaches neither the emitter nor the other listeners. */
   emit(name: string, ...args: any[]): void
@@ -68,7 +68,7 @@ export interface Context extends Emitter {
   effect(cleanup: () => unknown): void
   /** Aborted when the plugin unloads; its running listeners are then waited for (up to the host's shutdown deadline) before the cleanups run. */
   readonly signal: AbortSignal
-  /** Listen to `name` on the host's logical bus: events emitted in the plugin's scope or below it, from any process or language. Registered with the host by itself; unregistered when the plugin unloads or the returned function is called. `rutis/*` (the host's framework events) can be listened to; `internal/*` cannot. */
+  /** Listen to `name` on the host's logical bus: every event of that name, from any process or language (a scope is a descriptor). Registered with the host by itself; unregistered when the plugin unloads or the returned function is called. `rutis/*` (the host's framework events) can be listened to; `internal/*` cannot. */
   on(name: string, listener: Listener, options?: ListenerOptions): () => void
   /** The five ways to emit, delivered only to the listeners `keep` returns true for (`global` listeners are always delivered). `keep` runs in this process, once per candidate, before any listener runs. */
   filter(keep: (listener: ListenerDescriptor) => unknown): Emitter

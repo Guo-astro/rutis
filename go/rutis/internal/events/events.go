@@ -161,8 +161,9 @@ func CheckListen(name string) error {
 	return nil
 }
 
-// Within reports whether a listener in the scope `listener` hears what is
-// emitted in `emitter`: the listener's chain is a prefix of the emitter's.
+// Within reports whether the chain listener is a prefix of emitter, by id:
+// a descriptor helper for filters, not a delivery rule. Kept for
+// compatibility with 0.13–0.15; delivery is by name.
 func Within(listener, emitter []Scope) bool {
 	if len(listener) > len(emitter) {
 		return false

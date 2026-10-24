@@ -46,7 +46,7 @@ const calendar = ctx.use<Services['calendar']>('calendar')
 const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 ```
 
-- **对外的方法**：带标注的 `impl` 块里公开的 `&self` 方法；一个类型可以有几个带标注的块。对调用方都是 `async`（JavaScript 里是 Promise，Python 里是 awaitable），Node、Bun、Python、Go 的行调用的是同一个 dispatcher。方法名按 camelCase 对外（`add_entry` 是 `addEntry`）。带 `#[cfg(...)]` 的方法在包含它的构建里对外（同名的两个方法，`#[cfg]` 让每次构建只留一个时可以）；参数类型可以写生命周期或 `Self`。
+- **对外的方法**：带标注的 `impl` 块里公开的 `&self` 方法；一个类型可以有几个带标注的块。对调用方都是 `async`（JavaScript 里是 Promise，Python 里是 awaitable），Node、Bun、Python、Go 的行调用的是同一个 dispatcher。方法名按 camelCase 对外（`add_entry` 是 `addEntry`）。带 `#[cfg(...)]` 的方法在包含它的构建里对外（同名的两个方法，`#[cfg]` 让每次构建只留一个时可以）；同一个类型的不同标注块不能有两个方法映射到同一个对外名字，`provide` 会失败并指出那个名字。参数类型可以写生命周期或 `Self`。
 - **名字**：默认是类型名、第一个词小写（`Calendar` 是 `calendar`，`TreeCommands` 是 `treeCommands`，`HTTPClient` 是 `httpClient`）；`#[service(name = "cal")]` 改名。
 - **提供即对外**：`ctx.provide(value)`（以及键是这个类型自己的 `provide_as`）同时按名字提供它，同一个撤销函数撤下两者，插件卸载时一起撤下；依赖它的行随之停止，与其他服务相同。带 `check()` 谓词提供（`provide_as_with_check`）时，按名字的入口也受它门控：谓词不成立期间，按名字用它的行与原生服务的使用者一样停下。`provide_mut_as` 提供的可变绑定不对外，带限定名的（`TypeKey::keyed`）也不对外：同一类型的第二个值会占用同一个名字。每次按名字的调用都经提供方上下文的严格读取路径取服务，读取拦截器（`intercept_require_as`）与对处在调用方行位置的 Rust 读取方一样拒绝或替换它：生效的是这一行的祖先注册的拦截器（没有行调用时为提供方的）。读到的只能是入口提供时的那个值：服务撤下后仍被保留的引用会被拒绝，即使槽位又被提供。因原生服务或这个名字已存在而被拒的 `provide` 什么都不提供。名字在原生服务之后提供、在它之前撤下（撤销函数与插件卸载都是这样），被名字唤醒的行一定调得到它。
 - **作用域跟着提供的位置**：在实例里提供（`TypeKey::instance::<Notes>(build.instance("session")?)`），就是那个实例自己的，实例里的行拿到它；在实例外提供就是全局的。在隔离作用域里提供（`ctx.isolate(TypeKey::of::<Notes>(), "a")`）时，名字在同一个作用域里对外（`isolate(host_key("notes"), "a")`），两个隔离作用域各自对外。不用写实例组。实例里提供过之后，实例里的行用的是这个实例自己的，不会退回到同名的全局服务：实例里的服务撤下时，它们等它在这个实例里重新提供（设计 R3：作用域跟着提供的位置）。
@@ -321,7 +321,7 @@ off.dispose().await?;
 | 监听器 | 一个监听器登记一次，五种方式都能调用它；`call.mode()` 是这次的方式，`call.next()` 只在 `waterfall` 里可用（否则 `WaterfallNext`）。`on_sync` 登记同步监听器，它能被所有方式调用，但在异步 `waterfall` 里不能调 `next`；`on` 的（异步）监听器不能被 `bail_sync` / `waterfall_sync` 调用（`AsyncListener`） |
 | 选项与前缀 | `on_opt` / `on_sync_opt` 取 `EventOptions`，用构建方法写：`EventOptions::default().prepend(true)`（还有 `.once(true)`、`.global(true)`）；`on_pattern(&ctx, &EventPattern::prefix("session/"), ..)` 收这个前缀下的所有名字 |
 | 按名字 | 不定义类型时用 `rutis_bridge::events::Args`：`EventKey::<Args>::dynamic("file-changed")`，参数是 `Args(vec![Value::Data(json!(…))])`，结果是 `ArgValue`。同名的类型化监听器与 `Args` 监听器互相收到对方的事件，经 serde 转换 |
-| 作用域 | 发出方的作用域是 `ctx.scope()`：加载器为每个组实例调用 `Ctx::mark_scope`，监听器收到自己作用域及其内的事件。没有向别的作用域发出的 API，按 `ListenerInfo::scope` 过滤 |
+| 作用域 | 发出方的作用域是 `ctx.scope()`：加载器为每个组实例调用 `Ctx::mark_scope`。事件按名字送达所有监听器；作用域只是描述，按 `ListenerInfo::scope` 过滤 |
 | 失败 | `emit` 的监听器失败以 `CordisError::ListenerFailed` 进入错误汇集（`Ctx::root_with_sink`），`rutis_bridge::events::report_line` 给出 rutis-host 打印的那一行；`parallel` 是 `CordisError::ListenersFailed`（按登记顺序）；别处监听器的错误带着名字与信息到达 |
 | 卸载与取消 | 插件卸载时它的监听器撤下，正在运行的调用看到 `ctx.cancelled()`，卸载等它们结束（最多到关闭截止时间）。丢弃 `parallel` / `serial` / `waterfall` 的 future 即取消这次分发 |
 | 框架事件 | `rutis_loader::RowEvent`（`rutis/row`）、`rutis_bridge::events::{ServiceEvent, RuntimeEvent}`（`rutis/service`、`rutis/runtime`）：用 `on` 监听；发出 `rutis/*` 以 `ReservedEvent` 失败 |

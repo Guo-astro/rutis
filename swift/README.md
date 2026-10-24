@@ -5,7 +5,7 @@
 Write rutis plugins in Swift and run them as a macOS plugin binary, or host them in an iOS, iPadOS or macOS app (`RutisApp`). The package is the repository root's `Package.swift` (targets under `swift/rutis`); it follows the release train's `v` tags. Design: [Swift SDK](../docs/design-swift-sdk-2026-10-12.en.md). The guide: [Write a Swift plugin](../docs/guide/swift-plugin.en.md) (`rutis-host new <name> --lang swift` makes a project).
 
 ```swift
-// Package.swift: .package(url: "https://github.com/arcships/rutis", from: "0.15.0")
+// Package.swift: .package(url: "https://github.com/arcships/rutis", from: "0.15.1")
 //                .product(name: "Rutis", package: "rutis")
 import Rutis
 
@@ -58,4 +58,4 @@ let answer = try await loaded.service("weather").call("today", "rain?", as: Stri
 await loaded.close()
 ```
 
-Platforms: macOS 14 and iOS 17. In an app, `RutisApp(plugins:connect:id:token:)` serves the plugins compiled into it while started (`start()`, `stop()`, an observable `state`): [Host plugins in an app](../docs/guide/swift-app.en.md). Swift 5 language mode, toolchain 5.10 or later (parameter packs). The SDK's own tests: `swift run RutisSelfTest`.
+Platforms: macOS 14 and iOS 17. In an app, `RutisApp(plugins:connect:id:token:)` serves the plugins compiled into it while started (`start()`, `stop()`, an observable `state`): [Host plugins in an app](../docs/guide/swift-app.en.md). Swift 5 language mode, Swift 6.2 toolchain or later (the macros use swift-syntax 602–603). The SDK's own tests: `swift run RutisSelfTest`.

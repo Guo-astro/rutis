@@ -1,5 +1,5 @@
 """Unified events in the runtime's own process (#464): the five modes, the
-scope rule, filters, order, reserved names, error types and unload
+flat bus, filters, order, reserved names, error types and unload
 waiting, on the fast path (no host: every listener is here).
 docs/design-events-protocol-2026-10-18.md §3–§8, §11, §12.2."""
 
@@ -16,7 +16,7 @@ import background
 from support import HANG_GUARD, within
 
 from rutis import AggregateError, AsyncListener, BindingError, ReservedEvent, WaterfallNext, define_plugin
-from rutis.events import Bus, no_result, within as hears
+from rutis.events import Bus, no_result
 from rutis.runner import Runtime
 
 
@@ -57,13 +57,6 @@ class NoResult(unittest.TestCase):
             self.assertTrue(no_result(value))
         for value in (0, "", [], {}, 0.0, True):
             self.assertFalse(no_result(value), value)
-
-    def test_the_scope_rule_compares_ids_as_a_prefix(self):
-        self.assertTrue(hears([], chain("t1", "s1")))
-        self.assertTrue(hears(chain("t1"), chain("t1", "s1")))
-        self.assertTrue(hears(chain("t1", "s1"), chain("t1", "s1")))
-        self.assertFalse(hears(chain("t1", "s1"), chain("t1")))
-        self.assertFalse(hears(chain("t2"), chain("t1", "s1")))
 
 
 class Emit(Rows):
@@ -348,8 +341,8 @@ class Bail(Rows):
 
 
 class Scope(Rows):
-    async def test_events_go_up_not_down(self):
-        # §3, case scope/up-not-down.
+    async def test_events_are_one_flat_bus(self):
+        # §3, case scope/flat-bus.
         log = []
         root = await self.row("r")
         tenant1 = await self.row("u", chain("t1"))
@@ -358,16 +351,16 @@ class Scope(Rows):
         for label, ctx in (("r", root), ("u", tenant1), ("s", session), ("v", tenant2)):
             ctx.on("t/scope", lambda label=label: log.append(label))
         await session.parallel("t/scope")
-        self.assertEqual(sorted(log), ["r", "s", "u"])
+        self.assertEqual(sorted(log), ["r", "s", "u", "v"])
         log.clear()
         await tenant1.parallel("t/scope")
-        self.assertEqual(sorted(log), ["r", "u"])
+        self.assertEqual(sorted(log), ["r", "s", "u", "v"])
         log.clear()
         await tenant2.parallel("t/scope")
-        self.assertEqual(sorted(log), ["r", "v"])
+        self.assertEqual(sorted(log), ["r", "s", "u", "v"])
         log.clear()
         await root.parallel("t/scope")
-        self.assertEqual(log, ["r"])
+        self.assertEqual(sorted(log), ["r", "s", "u", "v"])
 
     async def test_a_malformed_scope_is_refused(self):
         with self.assertRaisesRegex(ValueError, "scope chain"):
@@ -376,8 +369,8 @@ class Scope(Rows):
 
 class Filter(Rows):
     async def test_asked_once_per_listener_in_order_before_any_runs(self):
-        # §6, case filter/keeps-and-sees: the scope rule first (d is not
-        # asked), then the filter, then the listeners.
+        # §6, case filter/keeps-and-sees: the name snapshot first (d is
+        # asked too), then the filter, then the listeners.
         log = []
         a = await self.row("a")
         await self.row("b")
@@ -395,7 +388,7 @@ class Filter(Rows):
             return descriptor["row"] in ("a", "c")
 
         self.assertIsNone(await a.filter(keep).serial("t/filter"))
-        self.assertEqual(log, ["filter:a", "filter:b", "filter:c", "a", "c"])
+        self.assertEqual(log, ["filter:a", "filter:b", "filter:c", "filter:d", "a", "c"])
         self.assertEqual(
             seen[0],
             {
@@ -425,7 +418,7 @@ class Filter(Rows):
         self.assertEqual(log, ["b"] * 5)
         self.assertIsNone(await only_b.filter(lambda d: d["row"] == "a").serial("t/f"))
 
-    async def test_global_listeners_skip_the_filter_not_the_scope(self):
+    async def test_global_listeners_skip_the_filter(self):
         log = []
         ctx = await self.row("a", chain("t1"))
         other = await self.row("b", chain("t2"))
@@ -433,7 +426,7 @@ class Filter(Rows):
         other.on("t/filter-global", lambda: log.append("h"), global_=True)
         asked = []
         await ctx.filter(lambda d: asked.append(d) or False).parallel("t/filter-global")
-        self.assertEqual((log, asked), (["g"], []))
+        self.assertEqual((log, asked), (["g", "h"], []))
 
     async def test_a_failing_filter_fails_the_dispatch_and_is_reported_in_emit(self):
         ctx = await self.row("a")

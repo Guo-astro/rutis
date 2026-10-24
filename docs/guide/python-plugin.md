@@ -149,7 +149,7 @@ class Events(unittest.TestCase):
 - `emit` 立即返回；监听器出错不影响发出方和别的监听器，在监听器所在处报告一行（测试里在 `t.reported`）。要等全部监听器、拿到它们的错误，用 `await ctx.parallel(...)`：失败是 `rutis.AggregateError`，`errors` 按登记顺序。
 - `bail` 是同步的 `serial`：遇到 `async def` 监听器（或返回协程的函数）以 `rutis.AsyncListener` 失败。
 - `ctx.filter(lambda d: d["row"] == "audit")` 返回带这五个方法的对象，只送达过滤函数留下的监听器；`ctx.on(name, fn, prepend=True)` 排到最前，`global_=True` 不受过滤。
-- 作用域：`load(plugin, bus=bus, scope="t1/s1")` 把插件加载到一个实例里（`Bus(scopes={"t1": "tenant"})` 给出组名）；监听器只收到自己作用域及其内发出的事件。
+- 作用域：`load(plugin, bus=bus, scope="t1/s1")` 把插件加载到一个实例里（`Bus(scopes={"t1": "tenant"})` 给出组名）；监听器收到这个 root 总线上的所有同名事件；作用域只是描述，供过滤使用。
 - 卸载时正在运行的监听器的任务被取消并被等待（最多 `RUTIS_SHUTDOWN_TIMEOUT`），然后才运行清理。发出方放弃时（它的任务被取消），进行中的监听器同样被取消。
 
 **跨语言**：TypeScript 插件发出、Python 插件监听，什么都不用改。宿主的 `rutis.json`：

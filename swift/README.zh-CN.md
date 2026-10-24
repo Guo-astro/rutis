@@ -5,7 +5,7 @@
 用 Swift 写 rutis 插件，编成 macOS 插件二进制运行，或在 iOS、iPadOS、macOS 应用里托管（`RutisApp`）。包是仓库根的 `Package.swift`（目标在 `swift/rutis` 下），版本跟发布线的 `v` tag。设计：[Swift SDK](../docs/design-swift-sdk-2026-10-12.md)。指南：[写一个 Swift 插件](../docs/guide/swift-plugin.md)（`rutis-host new <名字> --lang swift` 创建项目）。
 
 ```swift
-// Package.swift: .package(url: "https://github.com/arcships/rutis", from: "0.15.0")
+// Package.swift: .package(url: "https://github.com/arcships/rutis", from: "0.15.1")
 //                .product(name: "Rutis", package: "rutis")
 import Rutis
 
@@ -58,4 +58,4 @@ let answer = try await loaded.service("weather").call("today", "rain?", as: Stri
 await loaded.close()
 ```
 
-平台：macOS 14、iOS 17。应用里用 `RutisApp(plugins:connect:id:token:)` 在开始后提供编进应用的插件（`start()`、`stop()`、可观察的 `state`）：[在应用里托管插件](../docs/guide/swift-app.md)。Swift 5 语言模式，工具链 5.10 及以上（参数包）。SDK 自己的测试：`swift run RutisSelfTest`。
+平台：macOS 14、iOS 17。应用里用 `RutisApp(plugins:connect:id:token:)` 在开始后提供编进应用的插件（`start()`、`stop()`、可观察的 `state`）：[在应用里托管插件](../docs/guide/swift-app.md)。Swift 5 语言模式，Swift 6.2 工具链及以上（宏使用 swift-syntax 602–603）。SDK 自己的测试：`swift run RutisSelfTest`。

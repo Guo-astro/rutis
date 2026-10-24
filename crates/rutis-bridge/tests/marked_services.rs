@@ -126,6 +126,44 @@ impl Notes {
     }
 }
 
+/// Two marked blocks of one type whose methods are the same name for other
+/// languages (`a_b` and `aB` both become `aB`): refused at provide time.
+pub struct Crossed;
+
+#[rutis::service]
+impl Crossed {
+    #[allow(non_snake_case)]
+    pub fn a_b(&self) -> u32 {
+        1
+    }
+}
+
+#[rutis::service]
+impl Crossed {
+    #[allow(non_snake_case)]
+    pub fn aB(&self) -> u32 {
+        2
+    }
+}
+
+/// The same name under cfg's that exclude one another: both arms may be
+/// generated, because no build has both (#541).
+pub struct Exclusive;
+
+#[rutis::service]
+impl Exclusive {
+    #[cfg(target_pointer_width = "16")]
+    pub fn a_b(&self) -> u32 {
+        1
+    }
+
+    #[cfg(not(target_pointer_width = "16"))]
+    #[allow(non_snake_case)]
+    pub fn aB(&self) -> u32 {
+        2
+    }
+}
+
 /// Not marked: not served.
 pub struct Hidden;
 
@@ -144,6 +182,30 @@ async fn call(service: &Arc<dyn HostDispatch>, method: &str, args: Json) -> Resu
 
 fn served(ctx: &Ctx, name: &str) -> Option<Arc<dyn HostDispatch>> {
     ctx.get_as::<dyn HostDispatch>(host_key(name))
+}
+
+/// A method name two marked blocks both export cannot be dispatched: the
+/// provide is refused and says which name (#541).
+#[tokio::test]
+async fn two_blocks_exporting_the_same_method_are_refused() {
+    let root = Ctx::root().unwrap();
+    let error = root.provide(Crossed).unwrap_err();
+    assert!(error.to_string().contains("both export `aB`"), "{error}");
+}
+
+/// One name under `#[cfg]`s that exclude one another: the build has one
+/// method, and the provide succeeds (#541).
+#[tokio::test]
+async fn cfg_exclusive_methods_of_one_name_are_served() {
+    let root = Ctx::root().unwrap();
+    root.provide(Exclusive).unwrap();
+    let exclusive = served(&root, "exclusive").expect("served as exclusive");
+    assert_eq!(
+        call(&exclusive, "aB", Json::Array(Vec::new()))
+            .await
+            .unwrap(),
+        json!(2)
+    );
 }
 
 #[tokio::test]

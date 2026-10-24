@@ -4,9 +4,10 @@
 //! A **remote listener** is an entry of the one listener table whose calls
 //! are delegated to an external dispatcher (a runtime process, a node link).
 //! It takes a position like any entry (registration order, `prepend`), is
-//! selected by the scope rule from its [`ListenerInfo::scope`], is seen by
-//! filters through its [`ListenerInfo`], skips custom filters when
-//! `global`, and is withdrawn by its [`Disposer`](crate::Disposer).
+//! selected by name like any entry (its [`ListenerInfo::scope`] is a
+//! descriptor for filters), is seen by filters through its [`ListenerInfo`],
+//! skips custom filters when `global`, and is withdrawn by its
+//! [`Disposer`](crate::Disposer).
 //!
 //! Synchronous modes (`bail`, `waterfall-sync`) call
 //! [`RemoteListener::call_sync`] inline on the dispatching thread with no
@@ -18,7 +19,7 @@
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 
-use super::{EventOptions, ListenerInfo, ListenerKind, Mode, PayloadRef, Scope, Value};
+use super::{EventOptions, ListenerInfo, ListenerKind, Mode, PayloadRef, Value};
 use crate::bus::run::Inv;
 use crate::error::NextMisuse;
 use crate::{BoxFuture, CordisError, Ctx};
@@ -283,8 +284,9 @@ pub struct Dispatch {
     pub name: String,
     pub mode: Mode,
     pub payload: super::Payload,
-    /// The emitter's scope chain; `None`: the emitting context's.
-    pub scope: Option<Vec<Scope>>,
+    /// Ignored since 0.15.1: delivery is by name, and a filter sees
+    /// [`ListenerInfo::scope`]. Kept for source compatibility.
+    pub scope: Option<Vec<super::Scope>>,
     pub filter: Option<BatchFilter>,
     /// `waterfall` / `waterfall-sync` only.
     pub terminal: Option<RawTerminal>,

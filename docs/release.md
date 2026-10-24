@@ -71,6 +71,12 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 每晚的 stress 工作流还跑两个浸泡测试（link 反复断开重连、进程反复拉起结束），检查文件描述符、线程数不增长、进程都被回收。
 
+## 0.15.1
+
+事件恢复成一条平总线（#604、#605）：送达只按名字选监听器，作用域只是过滤用的描述。这是相对 0.13–0.15.0 的行为变化。`Dispatch::scope`、各 SDK 的作用域辅助函数与测试工具的发出方作用域保留源码兼容，但被忽略。所有包均为 0.15.1；见[发布说明](releases/0.15.1.md)与[迁移到 0.15.1](migration-0.15.1.md)。
+
+`rutis.json` 的 `format` 仍是 1，配置没有变化：持久化样本从 0.15.0 复制，期望不变。dsh 的用户层没有变化，`cordis.patch.yml` 原样复制。事件线上格式不变；发布门（`RUTIS_E2E_ONLY_OLDER=1`）的跨版本测试与 0.15.0 相遇，会话正常工作，但仍在 0.15.0 的一端会继续按自己的作用域过滤，所以要让各处都按平总线送达，所有端都要升级。
+
 ## 0.15.0
 
 `rutis-macros`（`#[rutis::service]`，#510）首次发布到 crates.io，在列车里排在 `rutis` 之前（`rutis` 依赖它）：`CARGO_TOKEN` 要能发布新的 crate。Kotlin SDK（`io.github.arcships:rutis`、`io.github.arcships:rutis-ksp`）首次发布到 Maven Central；environment `maven` 缺 secret 时这一步跳过并在运行摘要里写明，其余照常发布。Swift 包没有注册表，SwiftPM 直接取 `v0.15.0` tag（第一个带根 `Package.swift` 的版本）。0.14 没有单独发布，它的内容在这一版里。

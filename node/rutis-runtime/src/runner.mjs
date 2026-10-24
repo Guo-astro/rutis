@@ -755,6 +755,7 @@ try {
     // the name goes behind it (the bus's `behind`, §5.5).
     holds: (method, args) => method === 'events.call' && args?.[0]?.mode === 'emit' ? args[0].name : undefined,
     requires: [EVENTS_V2],
+    report: bus.report,
   })
 } catch (error) {
   // A host older than 0.13 (protocol §2.2).

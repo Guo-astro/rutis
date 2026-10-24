@@ -26,6 +26,7 @@ let registry: [(String, () async throws -> Void)] = [
     ("CodecTests.testDecimalKeepsItsTextAsAString", { try CodecTests().testDecimalKeepsItsTextAsAString() }),
     ("CodecTests.testCyclicValuesFail", { CodecTests().testCyclicValuesFail() }),
     ("CodecTests.testOptionalsAndMissingFields", { try CodecTests().testOptionalsAndMissingFields() }),
+    ("CodecTests.testAMissingStoredPropertyIsAnError", { CodecTests().testAMissingStoredPropertyIsAnError() }),
     ("ErrorGraphTests.testAnErrorCrossesWithItsCodeAndData", { ErrorGraphTests().testAnErrorCrossesWithItsCodeAndData() }),
     ("ErrorGraphTests.testAnAggregateKeepsItsChildrenInOrder", { ErrorGraphTests().testAnAggregateKeepsItsChildrenInOrder() }),
     ("LifetimeTests.aClosedChannelLeavesItsDescriptorsNumberAlone", { try LifetimeTests().aClosedChannelLeavesItsDescriptorsNumberAlone() }),

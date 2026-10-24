@@ -272,7 +272,7 @@ class Testing(background.TestCase):
 
         run(go())
 
-    def test_plugins_on_one_bus_hear_each_other_by_scope_and_filter(self):
+    def test_plugins_on_one_bus_hear_each_other_and_filter(self):
         # #464 §3, §4.3, §6 in the tool: a shared bus, scopes, prepend,
         # global, the filter seeing descriptors.
         async def go():
@@ -289,18 +289,18 @@ class Testing(background.TestCase):
                     load(listener("s", prepend=True), bus=bus, row="s", scope="t1/s1") as session, \
                     load(listener("v", global_=True), bus=bus, row="v", scope="t2"):
                 await session.parallel("t/x")
-                self.assertEqual(log, ["s", "r", "u"])
+                self.assertEqual(log, ["s", "r", "u", "v"])
                 log.clear()
                 await tenant.parallel("t/x")
-                self.assertEqual(log, ["r", "u"])
+                self.assertEqual(log, ["s", "r", "u", "v"])
                 log.clear()
                 seen = []
-                await bus.emitter("t1/s1").filter(lambda d: seen.append(d) or d["row"] == "u").parallel("t/x")
-                self.assertEqual(log, ["u"])
-                self.assertEqual([d["row"] for d in seen], ["s", "r", "u"])
+                await bus.emitter().filter(lambda d: seen.append(d) or d["row"] == "u").parallel("t/x")
+                self.assertEqual(log, ["u", "v"], "v is global and skips the filter")
+                self.assertEqual([d["row"] for d in seen], ["s", "r", "u"], "global v skips the filter")
                 self.assertEqual(seen[0]["scope"], [{"id": "t1", "group": "tenant"}, {"id": "t1/s1", "group": "session"}])
                 log.clear()
-                await bus.emitter("t2").filter(lambda d: False).parallel("t/x")
+                await bus.emitter().filter(lambda d: False).parallel("t/x")
                 self.assertEqual(log, ["v"], "global skips the filter")
                 with self.assertRaisesRegex(PluginTestError, "already loaded"):
                     async with load(listener("x"), bus=bus, row="r"):

@@ -3,10 +3,10 @@ ways to dispatch over it, shared by the runtime and its testing tool.
 
 The rules are rutis's unified events (#464,
 docs/design-events-protocol-2026-10-18.md §5): an event is a name, its
-arguments and the emitter's scope. A dispatch takes the listeners of the
-name in registration order whose scope chain is a prefix of the emitter's,
-applies the filter (not to `global` listeners) before any listener runs,
-and checks each listener is still registered just before starting it.
+arguments and the emitter's scope (a descriptor for filters). A dispatch
+takes every live listener of the name in registration order, applies the
+filter (not to `global` listeners) before any listener runs, and checks
+each listener is still registered just before starting it.
 
 | mode        | the emitter gets                     | listeners                         |
 | ----------- | ------------------------------------ | --------------------------------- |
@@ -104,8 +104,9 @@ def print_report(kind: str, name: str, row: str | None, error: BaseException) ->
 
 
 def within(listener: list, emitter: list) -> bool:
-    """Whether a listener at the scope chain `listener` hears an emission
-    at `emitter`: its chain is a prefix of the emitter's (by id)."""
+    """Whether the chain `listener` is a prefix of `emitter` (by id): a
+    descriptor helper for filters, not a delivery rule. Kept for
+    compatibility with 0.13–0.15; delivery is by name."""
     return len(listener) <= len(emitter) and all(
         mine["id"] == theirs["id"] for mine, theirs in zip(listener, emitter)
     )
@@ -272,10 +273,10 @@ class Bus:
         with self._lock:
             return self.by_id.get(id)
 
-    def snapshot(self, name: str, scope: list) -> list[Entry]:
-        """The listeners an emission of `name` at `scope` reaches, in order."""
+    def snapshot(self, name: str) -> list[Entry]:
+        """The listeners of `name`, in registration order (delivery is by name)."""
         with self._lock:
-            return [entry for entry in self.entries if entry.name == name and within(entry.scope, scope)]
+            return [entry for entry in self.entries if entry.name == name]
 
     def select(self, entries: list[Entry], keep: Callable | None) -> list[Entry]:
         """`entries` the filter keeps, asked once for each non-`global` one,
@@ -460,24 +461,24 @@ class Bus:
                 return value
         return None
 
-    def dispatch(self, mode: str, name: str, scope: list, args: list, keep, terminal, emitter: str) -> Any:
+    def dispatch(self, mode: str, name: str, args: list, keep, terminal, emitter: str) -> Any:
         """Dispatch here: None for `emit` (a failing filter reported), the
         value for `bail`, an awaitable for the others (a failing filter
         raises from it)."""
         if mode == "emit":
             try:
-                entries = self.select(self.snapshot(name, scope), keep)
+                entries = self.select(self.snapshot(name), keep)
             except Exception as error:  # noqa: BLE001 - contained and reported
                 self.report("filter", name, emitter, error)
                 return None
             self.emit(name, entries, args)
             return None
         if mode == "bail":
-            return self.bail(name, self.select(self.snapshot(name, scope), keep), args)
+            return self.bail(name, self.select(self.snapshot(name), keep), args)
         # The snapshot and the filter are taken now, not once awaited: a
         # listener registered in between is not in it.
         try:
-            entries = self.select(self.snapshot(name, scope), keep)
+            entries = self.select(self.snapshot(name), keep)
         except Exception as error:  # noqa: BLE001 - raised when awaited
             return _raise(error)
         return self._dispatch(mode, name, entries, args, terminal)

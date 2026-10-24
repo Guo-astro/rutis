@@ -579,10 +579,18 @@ final class Runtime: @unchecked Sendable {
             return row
         }
         guard let row else { return }
+        // Taken and cleared before awaiting: a cleanup that captures the
+        // row's context would otherwise form Row -> cleanup -> Ctx -> Row,
+        // and the row would outlive its unload even when a cleanup hangs.
+        let cleanups: [() async throws -> Void] = lock.withLock {
+            let cleanups = row.cleanups
+            row.cleanups = []
+            return cleanups
+        }
         flush()
         await row.stop()
         var errors: [Error] = []
-        for cleanup in row.cleanups.reversed() {
+        for cleanup in cleanups.reversed() {
             do { try await cleanup() } catch { errors.append(error) }
         }
         if let first = errors.first {

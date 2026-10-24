@@ -8,8 +8,8 @@
 // listener of the name is here (the fast path, §5.2), and otherwise sends
 // it to the host (`events.dispatch`), which calls back the listeners here
 // (`events.call`). Both paths give the same results (§5.4): the five modes,
-// the scope rule (§3), filters (§6), emit's error reporting (§5.6) and
-// emit's order (§5.5).
+// name-based delivery (a scope is a descriptor, §3), filters (§6), emit's
+// error reporting (§5.6) and emit's order (§5.5).
 //
 // This file is the same in the Node runtime (node/rutis-runtime), the Bun
 // runtime (bun/rutis-bun) and the SDK's testing tool (node/rutis), which
@@ -64,8 +64,9 @@ export function refuseRemoved(config) {
 export const EVENTS_V2 = 'events-v2'
 export const NO_EVENTS_V2 = 'this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later'
 
-// Whether the listener chain `listener` is a prefix of the emitting chain
-// `emitter`, by id (§3).
+// Whether the chain `listener` is a prefix of `emitter`, by id: a
+// descriptor helper for filters, not a delivery rule (§3). Kept for
+// compatibility with 0.13–0.15; delivery is by name.
 export function inScope(listener, emitter) {
   if (listener.length > emitter.length) return false
   return listener.every((scope, index) => scope.id === emitter[index].id)
@@ -307,11 +308,11 @@ export class Bus {
   // ── Dispatch (§5) ─────────────────────────────────────────────
 
   // Emit `name` with `args` in `mode`, from `row` (null: a plugin loaded by
-  // `mount`) whose chain is `scope`. `keep(descriptor, entry?)`: the filter
-  // (§6), `entry` given for a listener of this process. `thisArg`: what the
-  // listeners here are called with (Cordis's). `terminal`: waterfall's
-  // innermost function, or none. Throws ReservedEvent for rutis/* (§8).
-  dispatch(mode, name, args, { row = null, scope = [], keep, thisArg = null, terminal, gone = false } = {}) {
+  // `mount`). `keep(descriptor, entry?)`: the filter (§6), `entry` given for
+  // a listener of this process. `thisArg`: what the listeners here are called
+  // with (Cordis's). `terminal`: waterfall's innermost function, or none.
+  // Throws ReservedEvent for rutis/* (§8).
+  dispatch(mode, name, args, { row = null, keep, thisArg = null, terminal, gone = false } = {}) {
     if (!MODES.includes(mode)) throw new TypeError(`unknown dispatch mode ${mode}`)
     if (typeof name !== 'string') throw new TypeError(`an event name is a string, not ${name === null ? 'null' : typeof name}`)
     refuseReserved(name)
@@ -320,7 +321,7 @@ export class Bus {
       throw new TypeError(`a waterfall's terminal is a function, not ${typeof terminal}`)
     }
     if (!this.local(mode, name)) return this.#viaHost(mode, name, args, { row, keep, terminal })
-    let snapshot = this.#entries.filter(entry => matches(entry, name) && inScope(entry.scope, scope))
+    let snapshot = this.#entries.filter(entry => matches(entry, name))
     if (keep) {
       try {
         snapshot = snapshot.filter(entry => entry.global || this.#keeps(keep, this.describe(entry), entry))

@@ -120,7 +120,7 @@ class RemotePromise extends Promise {
 // The transport owns I/O; every decoder, reference table and callback stays on
 // the owning JS thread, including while a synchronous caller pumps its chain.
 export class Session {
-  #send; #pump; #dispatch; #abort; #settled; #inline; #requires; #holds
+  #send; #pump; #dispatch; #abort; #settled; #inline; #requires; #holds; #report
   #next = 0; #received = 0; #ref = 0; #pending = new Map(); #exports = new Map(); #identities = new WeakMap()
   #imports = new Map(); #proxies = new WeakMap(); #finalizer
   #closed; #handshake = false; #resolveReady; #rejectReady
@@ -138,8 +138,11 @@ export class Session {
   // `endpoint` ({ local, expected?, verified?, declare? }) selects the
   // endpoint format (`declare`: capabilities beyond the session's, such as
   // the contract); without it the session speaks the compat protocol.
-  constructor({ send, pump, dispatch, abort, settled, endpoint, inline, requires, holds }) {
+  // `report(line, details?)`: where a session-end loss is reported (local
+  // emits still queued, #546); a no-op when not configured.
+  constructor({ send, pump, dispatch, abort, settled, endpoint, inline, requires, holds, report = () => {} }) {
     this.#send = send; this.#pump = pump; this.#dispatch = dispatch; this.#abort = abort; this.#settled = settled
+    this.#report = typeof report === 'function' ? report : () => {}
     // `inline`: control methods (empty target) run as their frame arrives,
     // in frame order, before the next frame is read, also while a
     // synchronous call waits (`events.on`, `events.off`, `events.elsewhere`).
@@ -185,7 +188,19 @@ export class Session {
     if (this.#closed) return
     this.#closed = error; this.#rejectReady(error)
     for (const pending of this.#pending.values()) pending({ ok: false, value: error })
+    // Local emits queued behind an earlier call never start once the session
+    // ends; say which were lost instead of dropping them silently (#546).
+    // Protocol jobs are still dropped silently, as before.
+    const dropped = [...this.#queued].filter(job => job.run)
     this.#pending.clear(); this.#exports.clear(); this.#imports.clear(); this.#queued.clear()
+    if (dropped.length) {
+      const events = dropped.map(job => String(job.key ?? '(none)'))
+      const line = `rutis: session ended with ${dropped.length} local emit${dropped.length === 1 ? '' : 's'} still waiting behind an earlier one: ${events.join(', ')}`
+      // Reporting is best effort: a failing reporter must not throw from
+      // close() (nor turn into an uncaught microtask exception) and leave
+      // the session half closed (#546).
+      try { this.#report(line, { count: dropped.length, events }) } catch { /* ignore */ }
+    }
   }
   // What this side found wrong with the session, if that is what ended it
   // (a frame it refused, say): not a normal end.

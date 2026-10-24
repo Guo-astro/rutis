@@ -71,6 +71,12 @@ Expected behavior: the dialer prints `clock: <n>` every second. After a network 
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
 
+## 0.15.1
+
+Events are one flat bus again (#604, #605): delivery selects listeners by name only; a scope is a descriptor for filters. This is a behaviour change from 0.13–0.15.0. `Dispatch::scope`, the SDK scope helpers and the testing tools' emitter scope stay source-compatible but are ignored. All packages are at 0.15.1; see [the release notes](releases/0.15.1.en.md) and [migrating to 0.15.1](migration-0.15.1.en.md).
+
+`format` of `rutis.json` stays 1 and no configuration changes: the persisted sample is copied from 0.15.0 and its expectations are unchanged. dsh's user layer has not changed, so `cordis.patch.yml` is copied as is. The event wire format is unchanged; the release gate's cross-version tests (`RUTIS_E2E_ONLY_OLDER=1`) meet 0.15.0 and the sessions work, but an end still on 0.15.0 keeps its scope filtering, so all ends should be upgraded for flat delivery.
+
 ## 0.15.0
 
 `rutis-macros` (`#[rutis::service]`, #510) is published to crates.io for the first time, first in the train (`rutis` depends on it): `CARGO_TOKEN` must be able to publish new crates. The Kotlin SDK (`io.github.arcships:rutis`, `io.github.arcships:rutis-ksp`) is published to Maven Central for the first time; when the environment `maven` lacks a secret, that step is skipped and the run summary says so, and everything else is published. The Swift package has no registry: SwiftPM takes the `v0.15.0` tag (the first release with a root `Package.swift`). 0.14 was not released on its own; its work is in this release.

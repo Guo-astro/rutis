@@ -317,7 +317,7 @@ let some = ctx.filter { $0.row == "chat" }                        // Rutis.Emitt
 | 登记 | `ctx.on` 时发 `events.on [{ id, name, row, plugin, kind: "sync", prepend, global }]`（`id` 会话内递增、不复用）；`apply` 期间登记的全部得到回复后才答复 `rows.load`；`internal/*` 在本地拒绝，宿主拒绝时按契约报告或让装载失败 |
 | `kind` | 一律 `"sync"`：每次调用一个 Task，监听器即使是 `async` 闭包也在自己的 Task 里跑完再回复，宿主可以同步等它（同 Go），所以 Swift 监听器从不引起 `AsyncListener` |
 | 快速路径 | 名字不在 `events.elsewhere`、无前缀匹配，且（`emit`）没有经宿主、未答复的同名 `emit` 时本进程分发；否则发 `events.dispatch`。本进程条目的描述用 `mount` 的 `runtime` |
-| 分发规则 | 快照（名字、登记顺序、作用域链前缀、存活）→ 过滤（非 `global`）→ 每次开始前检查存活；五种方式的语义与"没有结果"（`nil`、`false`）按契约 §6 |
+| 分发规则 | 快照（名字、登记顺序、存活）→ 过滤（非 `global`）→ 每次开始前检查存活；五种方式的语义与"没有结果"（`nil`、`false`）按契约 §6 |
 | `emit` 顺序 | 每个监听器一个串行队列：同一监听器上的 `emit` 调用按到达顺序一个接一个执行，不同监听器并发 |
 | 过滤 | 快速路径直接对每个描述调用；经宿主时 `filter` 是一个选择器函数引用，凭描述的 `listener` 找到本进程的条目、去掉该字段后再交给插件的谓词；描述是 `Rutis.Listener`（`name`、`prefix`、`plugin`、`row`、`runtime`、`node`、`scope`、`global`，没有值时为 `nil`） |
 | 取消 | 发出方的 Task 被取消：经宿主时对 `events.dispatch` 发 `cancel`；收到 `events.call` 的 `signal` 中止或 `cancel` 时取消该监听器的 Task |

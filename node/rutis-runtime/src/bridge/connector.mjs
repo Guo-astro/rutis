@@ -52,12 +52,13 @@ export class Connector {
 
   // Start the session of `generation`: its buffered frames flow, and this
   // side greets.
-  activate(generation, { dispatch, endpoint }) {
+  activate(generation, { dispatch, endpoint, report }) {
     const session = new Session({
       send: frame => this.#port.postMessage({ generation, frame }),
       abort: () => this.close(generation, 'session failed'),
       dispatch,
       endpoint,
+      report,
       pump: done => this.#pump(done),
     })
     this.#sessions.set(generation, session)

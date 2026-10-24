@@ -24,7 +24,7 @@ use crate::error::{panic_error, CordisError};
 use crate::events::{
     AsyncAdapter, AsyncPatternAdapter, Dispatch, EntryCall, Event, EventOptions, JsonTranscoder,
     Listener, ListenerInfo, ListenerKind, Mode, PatternListener, Payload, PayloadRef, RemoteEntry,
-    RemoteListener, Scope, SyncAdapter, SyncListener, SyncPatternAdapter, SyncPatternListener,
+    RemoteListener, SyncAdapter, SyncListener, SyncPatternAdapter, SyncPatternListener,
     TableChange, TableEntry, Terminal, Transcoder, Value, RESERVED_PREFIX,
 };
 use crate::fiber::{FiberInner, PluginId};
@@ -168,7 +168,6 @@ impl Drop for TailCleanup {
 /// Options of one dispatch, beyond its name, mode and event.
 #[derive(Default)]
 pub(crate) struct Opts {
-    pub scope: Option<Vec<Scope>>,
     pub filter: Option<FilterSpec>,
     pub origin: Option<u64>,
     pub framework: bool,
@@ -805,8 +804,7 @@ impl EventBus {
             });
         }
         self.observe(ctx, name, mode, event);
-        let scope = opts.scope.take().unwrap_or_else(|| ctx.scope());
-        Ok(self.core.state.lock().unwrap().table.select(name, &scope))
+        Ok(self.core.state.lock().unwrap().table.select(name))
     }
 
     /// Begin a call of `entry` (§5.1 step 3): `None` skips it. A `once`
@@ -1282,7 +1280,6 @@ impl EventBus {
 
     fn raw_opts(d: &mut Dispatch) -> Opts {
         Opts {
-            scope: d.scope.take(),
             filter: d.filter.take().map(FilterSpec::Batch),
             origin: d.origin,
             framework: d.framework,

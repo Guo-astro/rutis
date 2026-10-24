@@ -28,7 +28,7 @@ Choose a guide based on what you want to do:
 
 All of these packages, the `rutis` core and the dylib toolchain included, are released together with matching version numbers (a release train, currently 0.15). Use the same version for every rutis package.
 
-Upgrading from 0.13: see [migrating to 0.15](../migration-0.15.en.md) (almost no code changes). Upgrading from 0.12: see [migrating to 0.13](../migration-0.13.en.md) (unified events; no mixing with 0.12). Upgrading from 0.8: see [0.8 → 0.9](../migration-0.8-to-0.9.en.md); from 0.7: [0.7 → 0.8](../migration-0.7-to-0.8.en.md). Projects that used `rutis-interop`: see the [migration guide](../migration-interop-to-0.7.en.md).
+Upgrading from 0.13–0.15.0: see [migrating to 0.15.1](../migration-0.15.1.en.md) (events are one flat bus; scopes are only descriptors). Upgrading from 0.12: see [migrating to 0.13](../migration-0.13.en.md) (unified events; no mixing with 0.12). Upgrading from 0.8: see [0.8 → 0.9](../migration-0.8-to-0.9.en.md); from 0.7: [0.7 → 0.8](../migration-0.7-to-0.8.en.md). Projects that used `rutis-interop`: see the [migration guide](../migration-interop-to-0.7.en.md).
 
 ## Requirements
 
@@ -36,6 +36,6 @@ Upgrading from 0.13: see [migrating to 0.15](../migration-0.15.en.md) (almost no
 - Node 22 or later, or Bun 1.4 or later, for TypeScript / JavaScript plugins.
 - Python 3.10 or later for Python plugins.
 - Go 1.24 or later only to write Go plugins and build their binaries; running a Go plugin binary needs no Go.
-- macOS 14 or later and a Swift 6 toolchain only to write Swift plugins and build their binaries; running a Swift plugin binary needs no toolchain, and runs on macOS only.
+- macOS 14 or later and a Swift 6.2 toolchain only to write Swift plugins and build their binaries; running a Swift plugin binary needs no toolchain, and runs on macOS only.
 - JDK 17 and Android 10 (API 29) or later for Kotlin plugins, compiled into an Android application (the packages are `io.github.arcships:rutis` on Maven Central and, at compile time, `io.github.arcships:rutis-ksp`).
 - Rust 1.88 or later, only when embedding rutis in Rust. This version is verified with the repository's `Cargo.lock`; when an older Rust resolves dependencies itself, setting `resolver.incompatible-rust-versions = "fallback"` in the Cargo configuration makes Cargo pick dependency versions that work.
