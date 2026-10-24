@@ -22,6 +22,33 @@
 //! }
 //! ```
 //!
+//! A method under `#[cfg]` is checked in the builds that have it:
+//!
+//! ```compile_fail
+//! pub struct Counter(std::sync::atomic::AtomicU32);
+//!
+//! #[rutis::service]
+//! impl Counter {
+//!     #[cfg(all())] // in every build
+//!     pub fn bump(&mut self) {}
+//! }
+//! ```
+//!
+//! and not in the builds that leave it out:
+//!
+//! ```
+//! pub struct Counter(std::sync::atomic::AtomicU32);
+//!
+//! #[rutis::service]
+//! impl Counter {
+//!     #[cfg(any())] // in no build
+//!     pub fn bump(&mut self) {}
+//!     pub fn get(&self) -> u32 {
+//!         self.0.load(std::sync::atomic::Ordering::Relaxed)
+//!     }
+//! }
+//! ```
+//!
 //! Left out with `#[service(skip)]`, the rest is served:
 //!
 //! ```
