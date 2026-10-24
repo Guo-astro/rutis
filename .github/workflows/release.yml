@@ -470,9 +470,12 @@ jobs:
       platforms: '["linux-x64"]'
 
   report:
-    needs: [verify, published, installed]
-    # Only for what was published: a failed gate published nothing.
-    if: failure() && needs.published.result != 'skipped'
+    needs: [verify, crates, npm, pypi, pypi-host, maven, go, github, published, installed]
+    # Anything that failed after publishing began. A partial publish (go or
+    # github failed) leaves `published` skipped, so its result cannot say
+    # whether anything was published; verify's `publish` can. `always()`
+    # because a skipped dependency would otherwise skip this job too.
+    if: always() && needs.verify.outputs.publish == 'true' && contains(needs.*.result, 'failure')
     runs-on: ubuntu-24.04
     permissions:
       issues: write
@@ -482,7 +485,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.verify.outputs.version }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
+          # Which channels published and which did not: a partial publish is
+          # the case this reports on too.
+          {
+            echo "The release of $VERSION failed after publishing began: $RUN"
+            echo
+            echo "| job | result |"
+            echo "| --- | --- |"
+            echo "$NEEDS" | jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"'
+            echo
+            echo "Whether to deprecate (npm) or yank (PyPI, crates.io) the release and publish a fix is decided by hand; see docs/release.md."
+          } > "$RUNNER_TEMP/issue.md"
           gh issue create --repo "$GITHUB_REPOSITORY" --assignee eric8810 \
-            --title "release $VERSION: the published packages failed to install or run" \
-            --body "The checks after publishing $VERSION failed: $RUN. Whether to deprecate (npm) or yank (PyPI, crates.io) the release and publish a fix is decided by hand; see docs/release.md."
+            --title "release $VERSION: a job failed after publishing began" \
+            --body-file "$RUNNER_TEMP/issue.md"
