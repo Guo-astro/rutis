@@ -71,7 +71,7 @@
 | --- | --- |
 | `all` | `Cargo.lock`、根目录的 `Cargo.toml`、`rust-toolchain.toml`、`.github/workflows/**`。打开时其他开关也全部打开 |
 | `code` | 除 `docs/**` 和 `*.md` 以外的任何文件 |
-| `dylib` | dylib 相关的 crate：`rutis-dylib*`、`rutis-sdk`、`rutis-dev`、`rutis-xtask`，以及链接 SDK、放着 dylib 宿主测试的 `rutis-cli`；`tools/*dylib*`、`tools/build-dylib-bundle.sh`、`tools/test-sdk-bundle.sh`、`tools/lib/**`、`tests/dylib-fixtures/**`。**内核 `crates/rutis` 不在内**：内核改动也会影响 SDK，但 dylib 任务在过去 88 次运行里没有失败过，内核 PR 不再为它等 20 分钟，由每晚的运行检查 |
+| `dylib` | dylib 相关的 crate：`rutis-dylib*`、`rutis-sdk`、`rutis-dev`、`rutis-xtask`，以及链接 SDK、放着 dylib 宿主测试的 `rutis-cli` 的 `build.rs`、`src/**`、`Cargo.toml`（它的文档和许可证不影响 SDK）；`tools/*dylib*`、`tools/build-dylib-bundle.sh`、`tools/test-sdk-bundle.sh`、`tools/lib/**`、`tests/dylib-fixtures/**`。**内核 `crates/rutis` 不在内**：内核改动也会影响 SDK，但 dylib 任务在过去 88 次运行里没有失败过，内核 PR 不再为它等 20 分钟，由每晚的运行检查 |
 | `packaging` | `scripts/train.mjs`、各个 `pyproject.toml` 和 `package.json`、`crates/*/Cargo.toml`、`node/rutis-host/scripts/**` |
 | `docs` | 任何 `.md` 文件 |
 | `bun` | `bun/**`、`node/rutis/**`、`crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host` |
@@ -79,6 +79,7 @@
 | `kotlin` | `kotlin/**`、`crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host` |
 | `repro` | `crates/rutis-sdk`、`crates/rutis-cli/build.rs`、`tools/test-dylib-repro.sh`、`tools/build-dylib-bundle.sh`、`tools/lib/**`。内核改动也会影响 SDK，但它的可复现检查放在完整运行里 |
 | `specs` | `specs/**`（TLA+ 模型、配置、预期结果，以及记录结果的 README） |
+| `swift` | `Package.swift`、`swift/**`，Swift 运行时自己的源码（loader 的 `src/runtime/swift.rs`、rutis-host 的 `src/languages/swift.rs`），以及跑 Swift 的测试文件（bridge 的 `swift_remote.rs`、`swift_runtime.rs`，loader 的 `swift_rows.rs`、`multilang_swift.rs`，rutis-host 的 `swift.rs`、`swift_app.rs`，`tests/e2e/tests/dev_loop.rs`）。bridge、loader、host 其他源码的改动也会影响 Swift，但只在完整运行里查（`rust` 在 Linux 上已经跑过同样的套件） |
 
 ## 4. 每个任务
 
@@ -86,8 +87,8 @@
 
 | 任务 | 机器 | PR 上 | 完整运行多做的 | 内容 |
 | --- | --- | --- | --- | --- |
-| `links` | macOS（自托管，§10） | `docs` | — | 检查 Markdown 里的相对链接 |
-| `rust` | Linux | `code` | Linux 上 loopback 方式启动运行时的重跑；事件一致性矩阵（`events_conformance`）的抽样放置（`RUTIS_EVENTS_PLACEMENTS=sampled`，每种语言约 900 种，约多 6 分钟；全部约 22 000 种由每晚 `stress.yml` 的 `events-all` 跑） | 全部 Rust 测试，每项只跑一次：工作区（除 bridge、loader、`rutis-e2e`）、loader 全部行类型（`events_conformance` 在 PR 上只跑写定的放置，每种运行时语言都必须在：`RUTIS_EVENTS_REQUIRE`）、bridge 全部 feature；内核的 shuttle 模型，1000 次迭代（用 `--cfg rutis_shuttle` 在 `target/shuttle` 里构建，远不到一分钟；`stress.yml` 大规模运行）；模糊测试入口（`crates/rutis-bridge/src/fuzzing.rs`）用 `--cfg fuzzing` 在 `target/fuzzcheck` 里 `cargo check` 一遍（只编译不运行，`stress.yml` 的 `fuzz` 才跑）。用最低支持版本（§9） |
+| `links` | Linux | `code` 或 `docs`（每个 PR 都跑） | — | 检查 Markdown 里的相对链接；改文件名、删文件也要发现 |
+| `rust` | Linux | `code` | Linux 上 loopback 方式启动运行时的重跑；事件一致性矩阵（`events_conformance`）的抽样放置（`RUTIS_EVENTS_PLACEMENTS=sampled`，每种语言约 900 种，约多 6 分钟；全部约 22 000 种由每晚 `stress.yml` 的 `events-all` 跑） | 全部 Rust 测试，每项只跑一次：工作区（除 bridge、loader、`rutis-e2e`）、loader 全部行类型（`events_conformance` 在 PR 上只跑写定的放置，每种运行时语言都必须在：`RUTIS_EVENTS_REQUIRE`）、bridge 全部 feature；内核的 shuttle 模型，1000 次迭代（用 `--cfg rutis_shuttle` 在 `target/shuttle` 里构建，远不到一分钟；`stress.yml` 大规模运行）；模糊测试入口（`crates/rutis-bridge/src/fuzzing.rs`）和 `fuzz/` 里的三个模糊测试目标都用 `--cfg fuzzing` 在 `target/fuzzcheck` 里 `cargo check` 一遍（只编译不运行，`stress.yml` 的 `fuzz` 才跑）。用最低支持版本（§9） |
 | `e2e` | Linux | `code` | 跨版本相遇：`cargo test -p rutis-e2e --test cross_version -- --ignored`（#209），上一个发布版本的运行时包、Go SDK、`rutis-host` 与这次提交相遇；从 npm、PyPI、Go 模块代理下载，装在 `runner.temp`（不进 Rust 缓存），约 1–2 分钟。结果随新版本发布而变（§6 第 5 条），不在 PR 上跑；它只随本项目自己的发布而变，又要在发布门里跑，所以放完整运行（每晚、发布门），不放每周。放进已有的 `e2e`（Node、Python、Bun、Go 都已装好），不新开任务（§6「加一个任务」第 4 条）；完整运行中 `e2e` 不在关键路径上 | 端到端场景 `cargo test -p rutis-e2e`（`tests/e2e`：真实的 rutis-host 进程、项目目录、各语言的探针插件），与 `rust` 并行，用最低支持版本（§9）。失败时上传 `RUTIS_E2E_DIR`（失败场景的目录和日志）为 artifact `e2e-linux`。安装场景不在这里跑，由 `install.yml` 跑。S7（`embedding.rs`）反复创建关闭租户的次数由 `RUTIS_E2E_TENANT_CYCLES` 决定：PR 上 20 次，完整运行（每晚）3000 次，多约一分钟；其他任务用默认的 20 次。同样的场景在 macOS 上由 `network-macos` 跑，在 Windows 上由 `runtimes-windows` 跑（只跑不限于 Unix 的场景） |
 | `js-py` | macOS（自托管，§10） | `code` | — | `scripts/train.mjs`；Node 包（`node/rutis`、`rutis-runtime`、`rutis-host`）和 rutis-dsh 的 dsh 测试；Python 单元测试 |
 | `lint` | Linux | `code` | — | `cargo fmt --check`；`PURE_TESTS_*` 里的每个名字都有对应的测试文件（§4）；`cargo clippy --workspace --all-targets --all-features -- -D warnings`。与测试并行。没有基线：警告在引入它的 PR 里改掉，升级工具链带来的新 lint 在升级的 PR 里改掉 |
@@ -96,7 +97,7 @@
 | `network-macos` | macOS | `code`：只跑和平台有关的测试（`events_conformance` 只跑写定的放置） | bridge、loader 全部测试；`node/rutis` 测试；`events_conformance` 的抽样放置 | 最新版本（§9）下的进程启动、本地通道、运行时进程、WebSocket、rutis-host 测试；端到端场景（失败时上传 artifact `e2e-macos`）；Node 运行时和 Python 包的测试；整个工作区的编译检查 |
 | `runtimes-windows` | Windows | `code`：只跑和平台有关的测试 | bridge、loader 全部测试 | 同上，在 Windows 上（进程用 loopback 方式启动）；Go SDK 测试；E2E harness 和不限于 Unix 的 E2E 场景（`rutis-e2e`：Job Object、Ctrl-Break、残余检查）；整个工作区的编译检查 |
 | `runtimes-bun` | Linux | `bun`：Bun 1.4.0 | Linux 最新版；macOS 1.4.0 | Bun 运行时的全部测试，包括 loopback 方式启动的重跑 |
-| `runtimes-go` | Linux | `go`：Go oldstable | Linux stable；macOS oldstable；Linux 上 loopback 方式启动的重跑 | Go SDK 与 Go 运行时的全部测试 |
+| `runtimes-go` | Linux | `go`：Go oldstable；`gofmt`、`go vet`、`go test -race`、Go SDK 和 rutis-host 的 Go 测试 | Linux stable；macOS oldstable；Linux 上 loopback 方式启动的重跑；`rust` 已经跑过的那几套 cargo 测试（Go 运行时、契约套件、Go 行） | Go SDK 与 Go 运行时的全部测试 |
 | `runtimes-kotlin` | Linux | `kotlin`：JDK 17 | — | Kotlin SDK（`kotlin/rutis`）的 Gradle 构建与测试：jvm target 的单元测试、测试工具对两份期望文件；runner 有 Android SDK 时还编译 android target、出 AAR。然后跑带 Kotlin 的 Rust 套件（feature `kotlin`：会话与值、运行时契约、事件一致性中 Kotlin 作 X 与 Y、`kotlin_runtime`、多语言 `multilang_kotlin`；远程：拨出契约的 Kotlin 列、`kotlin_remote`、rutis-host 的 `--features kotlin --test kotlin`），Gradle 在 cargo 之前。`rust`、`network-macos`、`runtimes-windows` 的 bridge 全部 feature 也包含 `kotlin`：它们装 JDK 17，先用 Gradle 构建一致性 jar（`RUTIS_KOTLIN_JAR`） |
 | `runtimes-swift` | macOS（自托管，§10） | `swift`：runner 上 Xcode 的工具链 | — | Swift SDK 自己的测试（`swift run RutisSelfTest`）、runner 有 iOS SDK 时为 iOS 构建库、带 Swift 会话与运行时的 Rust 契约套件、Swift 行与 Node / Python 行一起（`swift_rows`、`multilang_swift`、调用方的行、等待环）、远程的 Swift 运行时（`dial_conformance`、`swift_remote`）、rutis-host 的 `runtimes.swift` 与 Swift 插件开发循环（`rutis-host --test swift`、`rutis-e2e --test dev_loop`）、应用用 `RutisApp` 托管插件（`rutis-host --test swift_app`，以一个可执行程序代替应用），以及 X 为 Swift 插件的 `events_conformance`（PR 跑写定的组合，完整运行抽样） |
 | `semver-rutis` | macOS（自托管，§10） | `packaging` | 整个任务 | 公开 API 和上次发布相比有没有不兼容的改动（只提示） |
@@ -106,7 +107,7 @@
 | `release-dry-run` | macOS（自托管，§10） | `packaging` | 整个任务 | 发布要用的包能构建（crate、npm 包、Python 包）。各平台的二进制和 wheel 由 `install.yml` 构建并安装（§2）：PR 上只有 Linux x64，其他平台的打包在每晚和发布前检查 |
 | `sdk-repro`、`sdk-repro-macos` 及比对 | Linux、macOS（自托管，§10） | 只在 `all` 时 | 整个任务 | 在两台机器上分别构建 SDK，比较结果是否相同（比较在自托管的 macOS 上） |
 | `specs` | Linux | `specs` | — | TLA+ 设计模型（`specs/`，质量标准 §11.2）：每个模型一项（矩阵），装 Java 21 和固定版本、校验过 sha256 的 `tla2tools.jar`（v1.7.4），运行模型目录下的 `run.sh`，每个配置的结果（通过、死锁、某个不变式或活性被违反）与 `expected.txt` 比较。失败时上传 TLC 日志（含反例）为 artifact `tlc-<模型>`。`cross-runtime-sync` 约 1 分钟，`remote-lease` 约 2–3 分钟（16 核；GitHub 的 4 核机器上估计 5–8 分钟） |
-| `ci-ok` | macOS（自托管，§10） | 总是 | — | 汇总（§5） |
+| `ci-ok` | Linux | 总是 | — | 汇总（§5） |
 
 ### 和平台有关的测试
 
@@ -278,9 +279,9 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 
 ## 10. 自托管的 macOS runner
 
-`ci.yml` 的 `dylib-macos`、`sdk-repro-macos`，以及 `install.yml` 在 PR 和每晚的运行中的 `darwin-arm64`，跑在自托管的 macOS runner 上：一台专用、隔离的 Mac，可以装多个 runner 实例，标签都是 `self-hosted, macOS, ARM64`（第一个实例叫 `macos-1`）。结果和操作系统无关的任务也在那里跑，免得排队等 GitHub 的 Linux runner：`ci.yml` 的 `links`、`js-py`（Node 22、Python 3.10、websockets 15，Python 由 uv 装）、`msrv`、`checks`、`release-dry-run`、`semver-rutis`、两个 SDK 比对，`runtimes-go`/`runtimes-bun` 在完整运行时的 macOS 矩阵项（Go oldstable、Bun 1.4.0，Node 22，Python 由 uv 装），以及只做调度的 `changes`、`ci-ok`，`install.yml`、`package.yml` 的 `plan`（发布时，即 tag 上，`plan` 仍用 `ubuntu-24.04`）。只有一个实例时它们会排在正在跑的 macOS 任务后面，所以要多加实例（现在有 `macos-1` 到 `macos-4`）。`msrv`、`checks` 在 macOS 上编译，不编译只在 Linux 上的 cfg 代码；这部分由 Linux 上的 `lint`（clippy，全部 feature）编译。留在 Linux 上的：`rust`、`e2e`、`lint`、`runtimes-go`/`runtimes-bun` 的 ubuntu 矩阵项、`dylib-linux-*`、`sdk-repro`。`network-macos` 也在自托管的机器上跑（仓库变量 `NETWORK_MACOS_RUNNER` 为 `["self-hosted","macOS","ARM64"]`；删掉变量回到 GitHub 的 `macos-15`。曾因 #287 留在 GitHub 上，#344 修复后切过来）。其余任务仍用 GitHub 的 runner：`darwin-x64`（要 Intel 的 `macos-15-intel`）、`package.yml` 的 macOS 构建（发布用的文件）、`release.yml` 调用 `install.yml` 时和手动运行 `install.yml` 时的 `darwin-arm64`（发布前的检查用 `macos-15`）；Linux 和 Windows 的任务见 §11。
+`ci.yml` 的 `dylib-macos`、`sdk-repro-macos`，以及 `install.yml` 在 PR 和每晚的运行中的 `darwin-arm64`，跑在自托管的 macOS runner 上：一台专用、隔离的 Mac，可以装多个 runner 实例，标签都是 `self-hosted, macOS, ARM64`（第一个实例叫 `macos-1`）。结果和操作系统无关的任务也在那里跑，免得排队等 GitHub 的 Linux runner：`ci.yml` 的 `js-py`（Node 22、Python 3.10、websockets 15，Python 由 uv 装）、`msrv`、`checks`、`release-dry-run`、`semver-rutis`、两个 SDK 比对，`runtimes-go`/`runtimes-bun` 在完整运行时的 macOS 矩阵项（Go oldstable、Bun 1.4.0，Node 22，Python 由 uv 装），以及 `install.yml`、`package.yml` 的 `plan`（发布时，即 tag 上，`plan` 仍用 `ubuntu-24.04`）。只有一个实例时它们会排在正在跑的 macOS 任务后面，所以要多加实例（现在有 `macos-1` 到 `macos-4`）。`msrv`、`checks` 在 macOS 上编译，不编译只在 Linux 上的 cfg 代码；这部分由 Linux 上的 `lint`（clippy，全部 feature）编译。留在 Linux 上的：`rust`、`e2e`、`links`、`lint`、`runtimes-go`/`runtimes-bun` 的 ubuntu 矩阵项、`dylib-linux-*`、`sdk-repro`，以及只做调度的 `changes`、`ci-ok`（它们不占 macOS 槽位）。`network-macos` 也在自托管的机器上跑（仓库变量 `NETWORK_MACOS_RUNNER` 为 `["self-hosted","macOS","ARM64"]`；删掉变量回到 GitHub 的 `macos-15`。曾因 #287 留在 GitHub 上，#344 修复后切过来）。其余任务仍用 GitHub 的 runner：`darwin-x64`（要 Intel 的 `macos-15-intel`）、`package.yml` 的 macOS 构建（发布用的文件）、`release.yml` 调用 `install.yml` 时和手动运行 `install.yml` 时的 `darwin-arm64`（发布前的检查用 `macos-15`）；Linux 和 Windows 的任务见 §11。
 
-**切回 GitHub 的 runner，不用改代码**：仓库变量 `MACOS_RUNNER`（Settings → Secrets and variables → Actions → Variables）是 `runs-on` 的 JSON 值，没设置时为 `["self-hosted","macOS","ARM64"]`。设成 `"macos-15"`（带引号）就全部回到 GitHub 的 macOS；删掉变量就回到自托管。`gh variable set MACOS_RUNNER --body '"macos-15"'`。调度任务用另一个变量 `GATE_RUNNER`，切回时设成 `"ubuntu-24.04"`。
+**切回 GitHub 的 runner，不用改代码**：仓库变量 `MACOS_RUNNER`（Settings → Secrets and variables → Actions → Variables）是 `runs-on` 的 JSON 值，没设置时为 `["self-hosted","macOS","ARM64"]`。设成 `"macos-15"`（带引号）就全部回到 GitHub 的 macOS；删掉变量就回到自托管。`gh variable set MACOS_RUNNER --body '"macos-15"'`。调度任务用另一个变量 `GATE_RUNNER`：没设置时是 GitHub 的 `ubuntu-24.04`，要让它们回到自托管的 Mac 就设成 `'["self-hosted","macOS","ARM64"]'`。
 
 自托管的机器在任务之间保留状态，几个实例同时跑。这些任务开头和结尾（`if: always()`）运行 `tools/ci-self-hosted.sh`：
 
@@ -305,7 +306,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 
 ## 11. 自托管的 Linux runner
 
-`ci.yml` 的 Linux 任务（`rust`、`e2e`、`lint`、`runtimes-go`/`runtimes-bun` 的 Linux 矩阵项、`dylib-linux-*`、`sdk-repro`）由仓库变量 `LINUX_RUNNER`（`runs-on` 的 JSON 值）决定跑在哪里：没设置时是 GitHub 的 `"ubuntu-24.04"`，设成 `["self-hosted","Linux"]` 就跑在组织的自托管 Linux runner 上；删掉变量就回到 GitHub。`package.yml`（要 Docker 容器）、`install.yml`、`stress.yml` 等其他工作流不受影响，只有 `stress.yml` 的 `shuttle`、`fuzz` 和 `soak-host` 的 Linux 项、`nightly.yml` 的 `cordis-latest` 也按这个变量（`soak-host` 的 macOS 项按 `MACOS_RUNNER`，Windows 项按 `WINDOWS_RUNNER`）。
+`ci.yml` 的 Linux 任务（`rust`、`e2e`、`links`、`lint`、`runtimes-go`/`runtimes-bun` 的 Linux 矩阵项、`dylib-linux-*`、`sdk-repro`）由仓库变量 `LINUX_RUNNER`（`runs-on` 的 JSON 值）决定跑在哪里：没设置时是 GitHub 的 `"ubuntu-24.04"`，设成 `["self-hosted","Linux"]` 就跑在组织的自托管 Linux runner 上；删掉变量就回到 GitHub。`package.yml`（要 Docker 容器）、`install.yml`、`stress.yml` 等其他工作流不受影响，只有 `stress.yml` 的 `shuttle`、`fuzz` 和 `soak-host` 的 Linux 项、`nightly.yml` 的 `cordis-latest` 也按这个变量（`soak-host` 的 macOS 项按 `MACOS_RUNNER`，Windows 项按 `WINDOWS_RUNNER`）。
 
 这些 runner 是同一台机器（32 核、60 GB 内存）上的 4 个 Docker 容器，每个容器一个 runner，用户 `runner`，有免密 sudo，自带 Rust、Node、Go、Python，没有 `lsof`、Docker 和 Bun（Bun 由 `setup-bun` 装）。任务开头和结尾同样运行 `tools/ci-self-hosted.sh`（见上一节），区别是：
 
