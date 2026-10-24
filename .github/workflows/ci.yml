@@ -455,6 +455,9 @@ jobs:
       # features (Q12.7); the end-to-end scenarios run in `e2e`.
       - name: cargo test (workspace but rutis-bridge, rutis-loader and rutis-e2e)
         run: cargo test --workspace --exclude rutis-bridge --exclude rutis-loader --exclude rutis-e2e
+      # The `anyhow` feature's conversions (the error table of #617).
+      - name: cargo test (rutis, anyhow feature)
+        run: cargo test -p rutis --features anyhow --test author_api
 
       # The shuttle models of the kernel (crates/rutis/src/fiber/shuttle_tests.rs,
       # #179), 1000 iterations of each scheduler (well under a second); the
@@ -698,6 +701,14 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
+      # Plugin guides and examples use the author and host layers only; the
+      # hidden `rutis::internal` is for rutis's own crates (#617).
+      - name: no rutis::internal in the guides and examples
+        run: |
+          if grep -rn "rutis::internal" docs/guide README.md README.zh-CN.md examples crates/rutis/examples crates/aimux-llm; then
+            echo "::error::guides and examples must not use rutis::internal" >&2
+            exit 1
+          fi
       # Every name in the test lists at the top of this file is a test file:
       # a rename must not leave a stale name behind.
       - name: the platform test lists
@@ -730,6 +741,26 @@ jobs:
         env:
           JOB_STATUS: ${{ job.status }}
         run: bash tools/ci-self-hosted.sh end
+
+  # The kernel's public API (its root, rutis::events and rutis::host) against
+  # the snapshot in crates/rutis/public-api.txt (tools/public-api.sh, #617):
+  # a new name shows in review as a change to the snapshot.
+  public-api:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-16
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-public-api@0.52.0
+      - name: public API snapshot
+        env:
+          RUTIS_PUBLIC_API_TOOLCHAIN: nightly-2026-10-16
+        run: bash tools/public-api.sh
 
   # The declared MSRV (rust-version in Cargo.toml) builds the libraries and
   # binaries, with our Cargo.lock (Q10.3). With `all`: in full runs, and on pull
@@ -1905,6 +1936,7 @@ jobs:
       - e2e
       - js-py
       - lint
+      - public-api
       - msrv
       - checks
       - network-macos

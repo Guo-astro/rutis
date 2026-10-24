@@ -1,0 +1,1069 @@
+pub mod rutis
+pub use rutis::serde
+pub use rutis::service
+pub mod rutis::events
+pub enum rutis::events::Mode
+pub rutis::events::Mode::Bail
+pub rutis::events::Mode::Emit
+pub rutis::events::Mode::Parallel
+pub rutis::events::Mode::Serial
+pub rutis::events::Mode::Waterfall
+pub rutis::events::Mode::WaterfallSync
+impl rutis::events::Mode
+pub fn rutis::events::Mode::as_str(self) -> &'static str
+pub fn rutis::events::Mode::is_sync(self) -> bool
+pub fn rutis::events::Mode::is_waterfall(self) -> bool
+impl core::clone::Clone for rutis::events::Mode
+pub fn rutis::events::Mode::clone(&self) -> Self
+impl core::cmp::Eq for rutis::events::Mode
+impl core::cmp::PartialEq for rutis::events::Mode
+pub fn rutis::events::Mode::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::events::Mode
+pub fn rutis::events::Mode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for rutis::events::Mode
+pub fn rutis::events::Mode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for rutis::events::Mode
+pub fn rutis::events::Mode::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for rutis::events::Mode
+impl core::marker::StructuralPartialEq for rutis::events::Mode
+impl serde_core::ser::Serialize for rutis::events::Mode
+pub fn rutis::events::Mode::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rutis::events::Mode
+pub fn rutis::events::Mode::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rutis::events::Mode
+impl core::marker::Send for rutis::events::Mode
+impl core::marker::Sync for rutis::events::Mode
+impl core::marker::Unpin for rutis::events::Mode
+impl core::marker::UnsafeUnpin for rutis::events::Mode
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::events::Mode
+impl core::panic::unwind_safe::UnwindSafe for rutis::events::Mode
+pub struct rutis::events::Call<E: rutis::events::Event>
+impl<E: rutis::events::Event> rutis::events::Call<E>
+pub fn rutis::events::Call<E>::ctx(&self) -> &rutis::Ctx
+pub fn rutis::events::Call<E>::mode(&self) -> rutis::events::Mode
+pub fn rutis::events::Call<E>::name(&self) -> &str
+pub async fn rutis::events::Call<E>::next(self) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
+impl<E> core::marker::Freeze for rutis::events::Call<E> where core::option::Option<tokio::sync::oneshot::Sender<tokio::sync::oneshot::Sender<core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>>>>: core::marker::Freeze
+impl<E> core::marker::Send for rutis::events::Call<E> where core::option::Option<tokio::sync::oneshot::Sender<tokio::sync::oneshot::Sender<core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>>>>: core::marker::Send
+impl<E> core::marker::Sync for rutis::events::Call<E> where core::option::Option<tokio::sync::oneshot::Sender<tokio::sync::oneshot::Sender<core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>>>>: core::marker::Sync
+impl<E> core::marker::Unpin for rutis::events::Call<E> where core::option::Option<tokio::sync::oneshot::Sender<tokio::sync::oneshot::Sender<core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>>>>: core::marker::Unpin
+impl<E> core::marker::UnsafeUnpin for rutis::events::Call<E> where core::option::Option<tokio::sync::oneshot::Sender<tokio::sync::oneshot::Sender<core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>>>>: core::marker::UnsafeUnpin
+impl<E> !core::panic::unwind_safe::RefUnwindSafe for rutis::events::Call<E>
+impl<E> !core::panic::unwind_safe::UnwindSafe for rutis::events::Call<E>
+pub struct rutis::events::Filtered<'c>
+impl<'c> rutis::events::Filtered<'c>
+pub fn rutis::events::Filtered<'c>::bail<E: rutis::events::Event>(&self, impl rutis::events::into_event::IntoEvent<E>) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
+pub fn rutis::events::Filtered<'c>::emit<E: rutis::events::Event>(&self, impl rutis::events::into_event::IntoEvent<E>) -> core::result::Result<(), rutis::Error>
+pub fn rutis::events::Filtered<'c>::parallel<E: rutis::events::Event>(&self, impl rutis::events::into_event::IntoEvent<E>) -> rutis::host::BoxFuture<'c, core::result::Result<(), rutis::Error>>
+pub fn rutis::events::Filtered<'c>::serial<E: rutis::events::Event>(&self, impl rutis::events::into_event::IntoEvent<E>) -> rutis::host::BoxFuture<'c, core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>>
+pub fn rutis::events::Filtered<'c>::waterfall<E: rutis::events::Event>(&self, impl rutis::events::into_event::IntoEvent<E>) -> rutis::events::Waterfall<'c, E>
+impl<'c> core::marker::Freeze for rutis::events::Filtered<'c>
+impl<'c> core::marker::Send for rutis::events::Filtered<'c>
+impl<'c> core::marker::Sync for rutis::events::Filtered<'c>
+impl<'c> core::marker::Unpin for rutis::events::Filtered<'c>
+impl<'c> core::marker::UnsafeUnpin for rutis::events::Filtered<'c>
+impl<'c> !core::panic::unwind_safe::RefUnwindSafe for rutis::events::Filtered<'c>
+impl<'c> !core::panic::unwind_safe::UnwindSafe for rutis::events::Filtered<'c>
+pub struct rutis::events::Listen<'c, E: rutis::events::Event>
+impl<'c, E: rutis::events::Event> rutis::events::Listen<'c, E>
+pub fn rutis::events::Listen<'c, E>::global(self) -> Self
+pub fn rutis::events::Listen<'c, E>::name(self, impl core::convert::Into<alloc::rcs::arc::Arc<str>>) -> Self
+pub fn rutis::events::Listen<'c, E>::on(self, impl rutis::events::Listener<E>) -> core::result::Result<rutis::Disposer, rutis::Error>
+pub fn rutis::events::Listen<'c, E>::on_sync(self, impl core::ops::function::Fn(alloc::rcs::arc::Arc<E>, rutis::events::SyncCall<'_, E>) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error> + core::marker::Send + core::marker::Sync + 'static) -> core::result::Result<rutis::Disposer, rutis::Error>
+pub fn rutis::events::Listen<'c, E>::once(self) -> Self
+pub fn rutis::events::Listen<'c, E>::prefix(self, impl core::convert::Into<alloc::rcs::arc::Arc<str>>) -> Self
+pub fn rutis::events::Listen<'c, E>::prepend(self) -> Self
+impl<'c, E> core::marker::Freeze for rutis::events::Listen<'c, E> where core::marker::PhantomData<fn() -> E>: core::marker::Freeze
+impl<'c, E> core::marker::Send for rutis::events::Listen<'c, E> where core::marker::PhantomData<fn() -> E>: core::marker::Send
+impl<'c, E> core::marker::Sync for rutis::events::Listen<'c, E> where core::marker::PhantomData<fn() -> E>: core::marker::Sync
+impl<'c, E> core::marker::Unpin for rutis::events::Listen<'c, E> where core::marker::PhantomData<fn() -> E>: core::marker::Unpin
+impl<'c, E> core::marker::UnsafeUnpin for rutis::events::Listen<'c, E> where core::marker::PhantomData<fn() -> E>: core::marker::UnsafeUnpin
+impl<'c, E> !core::panic::unwind_safe::RefUnwindSafe for rutis::events::Listen<'c, E>
+impl<'c, E> !core::panic::unwind_safe::UnwindSafe for rutis::events::Listen<'c, E>
+pub struct rutis::events::ListenerInfo
+pub rutis::events::ListenerInfo::global: bool
+pub rutis::events::ListenerInfo::name: alloc::string::String
+pub rutis::events::ListenerInfo::node: core::option::Option<alloc::string::String>
+pub rutis::events::ListenerInfo::plugin: alloc::string::String
+pub rutis::events::ListenerInfo::prefix: bool
+pub rutis::events::ListenerInfo::row: core::option::Option<alloc::string::String>
+pub rutis::events::ListenerInfo::runtime: core::option::Option<alloc::string::String>
+pub rutis::events::ListenerInfo::scope: alloc::vec::Vec<rutis::events::Scope>
+impl rutis::events::ListenerInfo
+pub fn rutis::events::ListenerInfo::describe(&self) -> alloc::string::String
+impl core::clone::Clone for rutis::events::ListenerInfo
+pub fn rutis::events::ListenerInfo::clone(&self) -> Self
+impl core::cmp::Eq for rutis::events::ListenerInfo
+impl core::cmp::PartialEq for rutis::events::ListenerInfo
+pub fn rutis::events::ListenerInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::events::ListenerInfo
+pub fn rutis::events::ListenerInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rutis::events::ListenerInfo
+impl serde_core::ser::Serialize for rutis::events::ListenerInfo
+pub fn rutis::events::ListenerInfo::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rutis::events::ListenerInfo
+pub fn rutis::events::ListenerInfo::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rutis::events::ListenerInfo
+impl core::marker::Send for rutis::events::ListenerInfo
+impl core::marker::Sync for rutis::events::ListenerInfo
+impl core::marker::Unpin for rutis::events::ListenerInfo
+impl core::marker::UnsafeUnpin for rutis::events::ListenerInfo
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::events::ListenerInfo
+impl core::panic::unwind_safe::UnwindSafe for rutis::events::ListenerInfo
+pub struct rutis::events::Scope
+pub rutis::events::Scope::group: alloc::string::String
+pub rutis::events::Scope::id: alloc::string::String
+impl core::clone::Clone for rutis::events::Scope
+pub fn rutis::events::Scope::clone(&self) -> Self
+impl core::cmp::Eq for rutis::events::Scope
+impl core::cmp::PartialEq for rutis::events::Scope
+pub fn rutis::events::Scope::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::events::Scope
+pub fn rutis::events::Scope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for rutis::events::Scope
+pub fn rutis::events::Scope::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for rutis::events::Scope
+impl serde_core::ser::Serialize for rutis::events::Scope
+pub fn rutis::events::Scope::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rutis::events::Scope
+pub fn rutis::events::Scope::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rutis::events::Scope
+impl core::marker::Send for rutis::events::Scope
+impl core::marker::Sync for rutis::events::Scope
+impl core::marker::Unpin for rutis::events::Scope
+impl core::marker::UnsafeUnpin for rutis::events::Scope
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::events::Scope
+impl core::panic::unwind_safe::UnwindSafe for rutis::events::Scope
+pub struct rutis::events::SyncCall<'a, E: rutis::events::Event>
+impl<E: rutis::events::Event> rutis::events::SyncCall<'_, E>
+pub fn rutis::events::SyncCall<'_, E>::ctx(&self) -> &rutis::Ctx
+pub fn rutis::events::SyncCall<'_, E>::mode(&self) -> rutis::events::Mode
+pub fn rutis::events::SyncCall<'_, E>::name(&self) -> &str
+pub fn rutis::events::SyncCall<'_, E>::next(self) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
+impl<'a, E> core::marker::Freeze for rutis::events::SyncCall<'a, E> where core::marker::PhantomData<fn() -> E>: core::marker::Freeze
+impl<'a, E> !core::marker::Send for rutis::events::SyncCall<'a, E>
+impl<'a, E> !core::marker::Sync for rutis::events::SyncCall<'a, E>
+impl<'a, E> core::marker::Unpin for rutis::events::SyncCall<'a, E> where core::marker::PhantomData<fn() -> E>: core::marker::Unpin
+impl<'a, E> core::marker::UnsafeUnpin for rutis::events::SyncCall<'a, E> where core::marker::PhantomData<fn() -> E>: core::marker::UnsafeUnpin
+impl<'a, E> !core::panic::unwind_safe::RefUnwindSafe for rutis::events::SyncCall<'a, E>
+impl<'a, E> !core::panic::unwind_safe::UnwindSafe for rutis::events::SyncCall<'a, E>
+pub struct rutis::events::Waterfall<'c, E: rutis::events::Event>
+impl<'c, E: rutis::events::Event> rutis::events::Waterfall<'c, E>
+pub fn rutis::events::Waterfall<'c, E>::terminal<F, Fut>(self, F) -> Self where F: core::ops::function::FnOnce(alloc::rcs::arc::Arc<E>) -> Fut + core::marker::Send + 'static, Fut: core::future::future::Future<Output = core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>> + core::marker::Send + 'static
+impl<'c, E: rutis::events::Event> core::future::into_future::IntoFuture for rutis::events::Waterfall<'c, E>
+pub type rutis::events::Waterfall<'c, E>::IntoFuture = core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = <rutis::events::Waterfall<'c, E> as core::future::into_future::IntoFuture>::Output> + core::marker::Send + 'c)>>
+pub type rutis::events::Waterfall<'c, E>::Output = core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
+pub fn rutis::events::Waterfall<'c, E>::into_future(self) -> Self::IntoFuture
+impl<'c, E> core::marker::Freeze for rutis::events::Waterfall<'c, E> where alloc::rcs::arc::Arc<E>: core::marker::Freeze
+impl<'c, E> core::marker::Send for rutis::events::Waterfall<'c, E> where alloc::rcs::arc::Arc<E>: core::marker::Send
+impl<'c, E> core::marker::Sync for rutis::events::Waterfall<'c, E> where alloc::rcs::arc::Arc<E>: core::marker::Sync
+impl<'c, E> core::marker::Unpin for rutis::events::Waterfall<'c, E> where alloc::rcs::arc::Arc<E>: core::marker::Unpin
+impl<'c, E> core::marker::UnsafeUnpin for rutis::events::Waterfall<'c, E> where alloc::rcs::arc::Arc<E>: core::marker::UnsafeUnpin
+impl<'c, E> !core::panic::unwind_safe::RefUnwindSafe for rutis::events::Waterfall<'c, E>
+impl<'c, E> !core::panic::unwind_safe::UnwindSafe for rutis::events::Waterfall<'c, E>
+pub trait rutis::events::Event: serde_core::ser::Serialize + serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static
+pub type rutis::events::Event::Value: serde_core::ser::Serialize + serde_core::de::DeserializeOwned + core::marker::Send + 'static
+pub const rutis::events::Event::NAME: &'static str
+pub fn rutis::events::Event::name(&self) -> &str
+impl rutis::events::Event for rutis::host::FiberStatusChanged
+pub type rutis::host::FiberStatusChanged::Value = ()
+pub const rutis::host::FiberStatusChanged::NAME: &'static str
+pub fn rutis::host::FiberStatusChanged::name(&self) -> &str
+impl rutis::events::Event for rutis::host::diagnostics::ServiceChanged
+pub type rutis::host::diagnostics::ServiceChanged::Value = ()
+pub const rutis::host::diagnostics::ServiceChanged::NAME: &'static str
+pub fn rutis::host::diagnostics::ServiceChanged::name(&self) -> &str
+pub trait rutis::events::Listener<E: rutis::events::Event>: core::ops::function::Fn(alloc::rcs::arc::Arc<E>, rutis::events::Call<E>) -> <Self as rutis::events::Listener<E>>::Fut + core::marker::Send + core::marker::Sync + 'static
+pub type rutis::events::Listener::Fut: core::future::future::Future<Output = core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>> + core::marker::Send + 'static
+impl<E, F, Fut> rutis::events::Listener<E> for F where E: rutis::events::Event, F: core::ops::function::Fn(alloc::rcs::arc::Arc<E>, rutis::events::Call<E>) -> Fut + core::marker::Send + core::marker::Sync + 'static, Fut: core::future::future::Future<Output = core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>> + core::marker::Send + 'static
+pub type F::Fut = Fut
+pub mod rutis::host
+pub mod rutis::host::diagnostics
+#[non_exhaustive] pub enum rutis::host::diagnostics::DependencyStatus
+pub rutis::host::diagnostics::DependencyStatus::CheckPanicked
+pub rutis::host::diagnostics::DependencyStatus::CheckPending
+pub rutis::host::diagnostics::DependencyStatus::CheckRejected
+pub rutis::host::diagnostics::DependencyStatus::Missing
+pub rutis::host::diagnostics::DependencyStatus::OutOfScope
+pub rutis::host::diagnostics::DependencyStatus::ProviderInactive(rutis::host::FiberState)
+pub rutis::host::diagnostics::DependencyStatus::Ready
+pub rutis::host::diagnostics::DependencyStatus::Removing
+impl core::clone::Clone for rutis::host::diagnostics::DependencyStatus
+pub fn rutis::host::diagnostics::DependencyStatus::clone(&self) -> Self
+impl core::cmp::Eq for rutis::host::diagnostics::DependencyStatus
+impl core::cmp::PartialEq for rutis::host::diagnostics::DependencyStatus
+pub fn rutis::host::diagnostics::DependencyStatus::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::host::diagnostics::DependencyStatus
+pub fn rutis::host::diagnostics::DependencyStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for rutis::host::diagnostics::DependencyStatus
+pub fn rutis::host::diagnostics::DependencyStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rutis::host::diagnostics::DependencyStatus
+impl core::marker::StructuralPartialEq for rutis::host::diagnostics::DependencyStatus
+impl core::marker::Freeze for rutis::host::diagnostics::DependencyStatus
+impl core::marker::Send for rutis::host::diagnostics::DependencyStatus
+impl core::marker::Sync for rutis::host::diagnostics::DependencyStatus
+impl core::marker::Unpin for rutis::host::diagnostics::DependencyStatus
+impl core::marker::UnsafeUnpin for rutis::host::diagnostics::DependencyStatus
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::diagnostics::DependencyStatus
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::diagnostics::DependencyStatus
+#[non_exhaustive] pub enum rutis::host::diagnostics::ServiceChange
+pub rutis::host::diagnostics::ServiceChange::Provided
+pub rutis::host::diagnostics::ServiceChange::Removed
+impl core::clone::Clone for rutis::host::diagnostics::ServiceChange
+pub fn rutis::host::diagnostics::ServiceChange::clone(&self) -> Self
+impl core::cmp::Eq for rutis::host::diagnostics::ServiceChange
+impl core::cmp::PartialEq for rutis::host::diagnostics::ServiceChange
+pub fn rutis::host::diagnostics::ServiceChange::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::host::diagnostics::ServiceChange
+pub fn rutis::host::diagnostics::ServiceChange::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rutis::host::diagnostics::ServiceChange
+impl core::marker::StructuralPartialEq for rutis::host::diagnostics::ServiceChange
+impl serde_core::ser::Serialize for rutis::host::diagnostics::ServiceChange
+pub fn rutis::host::diagnostics::ServiceChange::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rutis::host::diagnostics::ServiceChange
+pub fn rutis::host::diagnostics::ServiceChange::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rutis::host::diagnostics::ServiceChange
+impl core::marker::Send for rutis::host::diagnostics::ServiceChange
+impl core::marker::Sync for rutis::host::diagnostics::ServiceChange
+impl core::marker::Unpin for rutis::host::diagnostics::ServiceChange
+impl core::marker::UnsafeUnpin for rutis::host::diagnostics::ServiceChange
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::diagnostics::ServiceChange
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::diagnostics::ServiceChange
+#[non_exhaustive] pub struct rutis::host::diagnostics::BindingDiagnostics
+pub rutis::host::diagnostics::BindingDiagnostics::generation: u64
+pub rutis::host::diagnostics::BindingDiagnostics::key: rutis::host::TypeKey
+pub rutis::host::diagnostics::BindingDiagnostics::provider: rutis::host::PluginId
+pub rutis::host::diagnostics::BindingDiagnostics::removing: bool
+pub rutis::host::diagnostics::BindingDiagnostics::scope: core::option::Option<alloc::string::String>
+impl core::clone::Clone for rutis::host::diagnostics::BindingDiagnostics
+pub fn rutis::host::diagnostics::BindingDiagnostics::clone(&self) -> Self
+impl core::fmt::Debug for rutis::host::diagnostics::BindingDiagnostics
+pub fn rutis::host::diagnostics::BindingDiagnostics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rutis::host::diagnostics::BindingDiagnostics
+impl core::marker::Send for rutis::host::diagnostics::BindingDiagnostics
+impl core::marker::Sync for rutis::host::diagnostics::BindingDiagnostics
+impl core::marker::Unpin for rutis::host::diagnostics::BindingDiagnostics
+impl core::marker::UnsafeUnpin for rutis::host::diagnostics::BindingDiagnostics
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::diagnostics::BindingDiagnostics
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::diagnostics::BindingDiagnostics
+#[non_exhaustive] pub struct rutis::host::diagnostics::DependencyDiagnostics
+pub rutis::host::diagnostics::DependencyDiagnostics::key: rutis::host::TypeKey
+pub rutis::host::diagnostics::DependencyDiagnostics::scope: core::option::Option<alloc::string::String>
+pub rutis::host::diagnostics::DependencyDiagnostics::status: rutis::host::diagnostics::DependencyStatus
+impl core::clone::Clone for rutis::host::diagnostics::DependencyDiagnostics
+pub fn rutis::host::diagnostics::DependencyDiagnostics::clone(&self) -> Self
+impl core::fmt::Debug for rutis::host::diagnostics::DependencyDiagnostics
+pub fn rutis::host::diagnostics::DependencyDiagnostics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rutis::host::diagnostics::DependencyDiagnostics
+impl core::marker::Send for rutis::host::diagnostics::DependencyDiagnostics
+impl core::marker::Sync for rutis::host::diagnostics::DependencyDiagnostics
+impl core::marker::Unpin for rutis::host::diagnostics::DependencyDiagnostics
+impl core::marker::UnsafeUnpin for rutis::host::diagnostics::DependencyDiagnostics
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::diagnostics::DependencyDiagnostics
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::diagnostics::DependencyDiagnostics
+#[non_exhaustive] pub struct rutis::host::diagnostics::EventBacklog
+pub rutis::host::diagnostics::EventBacklog::name: alloc::string::String
+pub rutis::host::diagnostics::EventBacklog::oldest: core::time::Duration
+pub rutis::host::diagnostics::EventBacklog::pending: usize
+impl core::clone::Clone for rutis::host::diagnostics::EventBacklog
+pub fn rutis::host::diagnostics::EventBacklog::clone(&self) -> Self
+impl core::fmt::Debug for rutis::host::diagnostics::EventBacklog
+pub fn rutis::host::diagnostics::EventBacklog::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rutis::host::diagnostics::EventBacklog
+impl core::marker::Send for rutis::host::diagnostics::EventBacklog
+impl core::marker::Sync for rutis::host::diagnostics::EventBacklog
+impl core::marker::Unpin for rutis::host::diagnostics::EventBacklog
+impl core::marker::UnsafeUnpin for rutis::host::diagnostics::EventBacklog
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::diagnostics::EventBacklog
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::diagnostics::EventBacklog
+#[non_exhaustive] pub struct rutis::host::diagnostics::PluginDiagnostics
+pub rutis::host::diagnostics::PluginDiagnostics::accesses: alloc::vec::Vec<rutis::host::diagnostics::ServiceAccess>
+pub rutis::host::diagnostics::PluginDiagnostics::error: core::option::Option<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
+pub rutis::host::diagnostics::PluginDiagnostics::generation: u64
+pub rutis::host::diagnostics::PluginDiagnostics::id: rutis::host::PluginId
+pub rutis::host::diagnostics::PluginDiagnostics::injects: alloc::vec::Vec<rutis::host::diagnostics::DependencyDiagnostics>
+pub rutis::host::diagnostics::PluginDiagnostics::instance: rutis::host::InstanceId
+pub rutis::host::diagnostics::PluginDiagnostics::name: alloc::string::String
+pub rutis::host::diagnostics::PluginDiagnostics::parent: core::option::Option<rutis::host::PluginId>
+pub rutis::host::diagnostics::PluginDiagnostics::resolved_dependencies: alloc::vec::Vec<rutis::host::diagnostics::ResolvedDependency>
+pub rutis::host::diagnostics::PluginDiagnostics::state: rutis::host::FiberState
+impl core::clone::Clone for rutis::host::diagnostics::PluginDiagnostics
+pub fn rutis::host::diagnostics::PluginDiagnostics::clone(&self) -> Self
+impl core::fmt::Debug for rutis::host::diagnostics::PluginDiagnostics
+pub fn rutis::host::diagnostics::PluginDiagnostics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rutis::host::diagnostics::PluginDiagnostics
+impl core::marker::Send for rutis::host::diagnostics::PluginDiagnostics
+impl core::marker::Sync for rutis::host::diagnostics::PluginDiagnostics
+impl core::marker::Unpin for rutis::host::diagnostics::PluginDiagnostics
+impl core::marker::UnsafeUnpin for rutis::host::diagnostics::PluginDiagnostics
+impl !core::panic::unwind_safe::RefUnwindSafe for rutis::host::diagnostics::PluginDiagnostics
+impl !core::panic::unwind_safe::UnwindSafe for rutis::host::diagnostics::PluginDiagnostics
+#[non_exhaustive] pub struct rutis::host::diagnostics::ResolvedDependency
+pub rutis::host::diagnostics::ResolvedDependency::generation: u64
+pub rutis::host::diagnostics::ResolvedDependency::key: rutis::host::TypeKey
+pub rutis::host::diagnostics::ResolvedDependency::provider: rutis::host::PluginId
+pub rutis::host::diagnostics::ResolvedDependency::scope: core::option::Option<alloc::string::String>
+impl core::clone::Clone for rutis::host::diagnostics::ResolvedDependency
+pub fn rutis::host::diagnostics::ResolvedDependency::clone(&self) -> Self
+impl core::fmt::Debug for rutis::host::diagnostics::ResolvedDependency
+pub fn rutis::host::diagnostics::ResolvedDependency::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rutis::host::diagnostics::ResolvedDependency
+impl core::marker::Send for rutis::host::diagnostics::ResolvedDependency
+impl core::marker::Sync for rutis::host::diagnostics::ResolvedDependency
+impl core::marker::Unpin for rutis::host::diagnostics::ResolvedDependency
+impl core::marker::UnsafeUnpin for rutis::host::diagnostics::ResolvedDependency
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::diagnostics::ResolvedDependency
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::diagnostics::ResolvedDependency
+#[non_exhaustive] pub struct rutis::host::diagnostics::RuntimeDiagnostics
+pub rutis::host::diagnostics::RuntimeDiagnostics::bindings: alloc::vec::Vec<rutis::host::diagnostics::BindingDiagnostics>
+pub rutis::host::diagnostics::RuntimeDiagnostics::event_backlogs: alloc::vec::Vec<rutis::host::diagnostics::EventBacklog>
+pub rutis::host::diagnostics::RuntimeDiagnostics::plugins: alloc::vec::Vec<rutis::host::diagnostics::PluginDiagnostics>
+pub rutis::host::diagnostics::RuntimeDiagnostics::shutting_down: bool
+impl core::clone::Clone for rutis::host::diagnostics::RuntimeDiagnostics
+pub fn rutis::host::diagnostics::RuntimeDiagnostics::clone(&self) -> Self
+impl core::fmt::Debug for rutis::host::diagnostics::RuntimeDiagnostics
+pub fn rutis::host::diagnostics::RuntimeDiagnostics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rutis::host::diagnostics::RuntimeDiagnostics
+impl core::marker::Send for rutis::host::diagnostics::RuntimeDiagnostics
+impl core::marker::Sync for rutis::host::diagnostics::RuntimeDiagnostics
+impl core::marker::Unpin for rutis::host::diagnostics::RuntimeDiagnostics
+impl core::marker::UnsafeUnpin for rutis::host::diagnostics::RuntimeDiagnostics
+impl !core::panic::unwind_safe::RefUnwindSafe for rutis::host::diagnostics::RuntimeDiagnostics
+impl !core::panic::unwind_safe::UnwindSafe for rutis::host::diagnostics::RuntimeDiagnostics
+#[non_exhaustive] pub struct rutis::host::diagnostics::ServiceAccess
+pub rutis::host::diagnostics::ServiceAccess::declared: bool
+pub rutis::host::diagnostics::ServiceAccess::external: bool
+pub rutis::host::diagnostics::ServiceAccess::failure: core::option::Option<rutis::host::ServiceReadFailure>
+pub rutis::host::diagnostics::ServiceAccess::generation: core::option::Option<u64>
+pub rutis::host::diagnostics::ServiceAccess::key: rutis::host::TypeKey
+pub rutis::host::diagnostics::ServiceAccess::out_of_scope: bool
+pub rutis::host::diagnostics::ServiceAccess::provider: core::option::Option<rutis::host::PluginId>
+pub rutis::host::diagnostics::ServiceAccess::scope: core::option::Option<alloc::string::String>
+pub rutis::host::diagnostics::ServiceAccess::strict: bool
+impl core::clone::Clone for rutis::host::diagnostics::ServiceAccess
+pub fn rutis::host::diagnostics::ServiceAccess::clone(&self) -> Self
+impl core::cmp::Eq for rutis::host::diagnostics::ServiceAccess
+impl core::cmp::PartialEq for rutis::host::diagnostics::ServiceAccess
+pub fn rutis::host::diagnostics::ServiceAccess::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::host::diagnostics::ServiceAccess
+pub fn rutis::host::diagnostics::ServiceAccess::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rutis::host::diagnostics::ServiceAccess
+impl core::marker::Freeze for rutis::host::diagnostics::ServiceAccess
+impl core::marker::Send for rutis::host::diagnostics::ServiceAccess
+impl core::marker::Sync for rutis::host::diagnostics::ServiceAccess
+impl core::marker::Unpin for rutis::host::diagnostics::ServiceAccess
+impl core::marker::UnsafeUnpin for rutis::host::diagnostics::ServiceAccess
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::diagnostics::ServiceAccess
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::diagnostics::ServiceAccess
+#[non_exhaustive] pub struct rutis::host::diagnostics::ServiceChanged
+pub rutis::host::diagnostics::ServiceChanged::chain: alloc::vec::Vec<rutis::events::Scope>
+pub rutis::host::diagnostics::ServiceChanged::change: rutis::host::diagnostics::ServiceChange
+pub rutis::host::diagnostics::ServiceChanged::generation: u64
+pub rutis::host::diagnostics::ServiceChanged::key: rutis::host::TypeKey
+pub rutis::host::diagnostics::ServiceChanged::provider: rutis::host::PluginId
+pub rutis::host::diagnostics::ServiceChanged::row: core::option::Option<alloc::string::String>
+pub rutis::host::diagnostics::ServiceChanged::scope: core::option::Option<alloc::string::String>
+impl core::clone::Clone for rutis::host::diagnostics::ServiceChanged
+pub fn rutis::host::diagnostics::ServiceChanged::clone(&self) -> Self
+impl core::fmt::Debug for rutis::host::diagnostics::ServiceChanged
+pub fn rutis::host::diagnostics::ServiceChanged::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl rutis::events::Event for rutis::host::diagnostics::ServiceChanged
+pub type rutis::host::diagnostics::ServiceChanged::Value = ()
+pub const rutis::host::diagnostics::ServiceChanged::NAME: &'static str
+pub fn rutis::host::diagnostics::ServiceChanged::name(&self) -> &str
+impl serde_core::ser::Serialize for rutis::host::diagnostics::ServiceChanged
+pub fn rutis::host::diagnostics::ServiceChanged::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for rutis::host::diagnostics::ServiceChanged
+pub fn rutis::host::diagnostics::ServiceChanged::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for rutis::host::diagnostics::ServiceChanged
+impl core::marker::Send for rutis::host::diagnostics::ServiceChanged
+impl core::marker::Sync for rutis::host::diagnostics::ServiceChanged
+impl core::marker::Unpin for rutis::host::diagnostics::ServiceChanged
+impl core::marker::UnsafeUnpin for rutis::host::diagnostics::ServiceChanged
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::diagnostics::ServiceChanged
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::diagnostics::ServiceChanged
+#[non_exhaustive] pub enum rutis::host::DisposeWaitError
+pub rutis::host::DisposeWaitError::Failed(alloc::rcs::arc::Arc<rutis::host::ErrorKind>)
+pub rutis::host::DisposeWaitError::TimedOut
+pub rutis::host::DisposeWaitError::TimedOut::elapsed: core::time::Duration
+pub rutis::host::DisposeWaitError::TimedOut::generation: u64
+pub rutis::host::DisposeWaitError::TimedOut::plugin_id: rutis::host::PluginId
+pub rutis::host::DisposeWaitError::TimedOut::state: rutis::host::FiberState
+impl core::error::Error for rutis::host::DisposeWaitError
+impl core::fmt::Debug for rutis::host::DisposeWaitError
+pub fn rutis::host::DisposeWaitError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for rutis::host::DisposeWaitError
+pub fn rutis::host::DisposeWaitError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rutis::host::DisposeWaitError
+impl core::marker::Send for rutis::host::DisposeWaitError
+impl core::marker::Sync for rutis::host::DisposeWaitError
+impl core::marker::Unpin for rutis::host::DisposeWaitError
+impl core::marker::UnsafeUnpin for rutis::host::DisposeWaitError
+impl !core::panic::unwind_safe::RefUnwindSafe for rutis::host::DisposeWaitError
+impl !core::panic::unwind_safe::UnwindSafe for rutis::host::DisposeWaitError
+pub enum rutis::host::Effect
+pub rutis::host::Effect::AsyncDisposer(alloc::boxed::Box<(dyn core::ops::function::FnOnce() -> rutis::host::BoxFuture<'static, core::result::Result<(), rutis::Error>> + core::marker::Send)>)
+pub rutis::host::Effect::Disposer(alloc::boxed::Box<(dyn core::ops::function::FnOnce() -> core::result::Result<(), rutis::Error> + core::marker::Send)>)
+pub rutis::host::Effect::Done
+pub rutis::host::Effect::Many(alloc::vec::Vec<rutis::host::Effect>)
+impl core::marker::Freeze for rutis::host::Effect
+impl core::marker::Send for rutis::host::Effect
+impl !core::marker::Sync for rutis::host::Effect
+impl core::marker::Unpin for rutis::host::Effect
+impl core::marker::UnsafeUnpin for rutis::host::Effect
+impl !core::panic::unwind_safe::RefUnwindSafe for rutis::host::Effect
+impl !core::panic::unwind_safe::UnwindSafe for rutis::host::Effect
+pub enum rutis::host::EffectPhase
+pub rutis::host::EffectPhase::Draining
+pub rutis::host::EffectPhase::Live
+impl core::clone::Clone for rutis::host::EffectPhase
+pub fn rutis::host::EffectPhase::clone(&self) -> Self
+impl core::cmp::Eq for rutis::host::EffectPhase
+impl core::cmp::PartialEq for rutis::host::EffectPhase
+pub fn rutis::host::EffectPhase::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::host::EffectPhase
+pub fn rutis::host::EffectPhase::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rutis::host::EffectPhase
+impl core::marker::StructuralPartialEq for rutis::host::EffectPhase
+impl core::marker::Freeze for rutis::host::EffectPhase
+impl core::marker::Send for rutis::host::EffectPhase
+impl core::marker::Sync for rutis::host::EffectPhase
+impl core::marker::Unpin for rutis::host::EffectPhase
+impl core::marker::UnsafeUnpin for rutis::host::EffectPhase
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::EffectPhase
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::EffectPhase
+#[non_exhaustive] pub enum rutis::host::ErrorKind
+pub rutis::host::ErrorKind::Aggregate
+pub rutis::host::ErrorKind::Aggregate::errors: alloc::vec::Vec<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
+pub rutis::host::ErrorKind::AsyncListener
+pub rutis::host::ErrorKind::AsyncListener::listener: alloc::string::String
+pub rutis::host::ErrorKind::AsyncListener::mode: rutis::events::Mode
+pub rutis::host::ErrorKind::AsyncListener::name: alloc::string::String
+pub rutis::host::ErrorKind::Closed
+pub rutis::host::ErrorKind::EventNeedsName
+pub rutis::host::ErrorKind::EventNeedsName::event: alloc::string::String
+pub rutis::host::ErrorKind::EventValue
+pub rutis::host::ErrorKind::EventValue::message: alloc::string::String
+pub rutis::host::ErrorKind::EventValue::type_name: &'static str
+pub rutis::host::ErrorKind::FilterFailed
+pub rutis::host::ErrorKind::FilterFailed::emitter: alloc::string::String
+pub rutis::host::ErrorKind::FilterFailed::error: alloc::rcs::arc::Arc<rutis::host::ErrorKind>
+pub rutis::host::ErrorKind::FilterFailed::name: alloc::string::String
+pub rutis::host::ErrorKind::InactiveEffect
+pub rutis::host::ErrorKind::InactiveGeneration
+pub rutis::host::ErrorKind::InactiveGeneration::generation: u64
+pub rutis::host::ErrorKind::InactiveGeneration::state: rutis::host::FiberState
+pub rutis::host::ErrorKind::InjectUnsatisfied(alloc::vec::Vec<alloc::string::String>)
+pub rutis::host::ErrorKind::InstanceOutOfScope
+pub rutis::host::ErrorKind::InstanceOutOfScope::instance: rutis::host::InstanceId
+pub rutis::host::ErrorKind::ListenerFailed
+pub rutis::host::ErrorKind::ListenerFailed::error: alloc::rcs::arc::Arc<rutis::host::ErrorKind>
+pub rutis::host::ErrorKind::ListenerFailed::listener: alloc::string::String
+pub rutis::host::ErrorKind::ListenerFailed::name: alloc::string::String
+pub rutis::host::ErrorKind::ListenerWithdrawn
+pub rutis::host::ErrorKind::ListenerWithdrawn::id: u64
+pub rutis::host::ErrorKind::ListenerWithdrawn::name: alloc::string::String
+pub rutis::host::ErrorKind::ListenersFailed
+pub rutis::host::ErrorKind::ListenersFailed::errors: alloc::vec::Vec<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
+pub rutis::host::ErrorKind::ListenersFailed::name: alloc::string::String
+pub rutis::host::ErrorKind::ListenersStillRunning
+pub rutis::host::ErrorKind::ListenersStillRunning::listeners: alloc::string::String
+pub rutis::host::ErrorKind::ListenersStillRunning::seconds: f64
+pub rutis::host::ErrorKind::PluginFailed(alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>)
+pub rutis::host::ErrorKind::ReservedEvent
+pub rutis::host::ErrorKind::ReservedEvent::name: alloc::string::String
+pub rutis::host::ErrorKind::ServiceExists(alloc::string::String)
+pub rutis::host::ErrorKind::ServiceNotFound(alloc::string::String)
+pub rutis::host::ErrorKind::ServiceRead(rutis::host::ServiceReadError)
+pub rutis::host::ErrorKind::StaleGeneration
+pub rutis::host::ErrorKind::StaleGeneration::current: u64
+pub rutis::host::ErrorKind::StaleGeneration::expected: u64
+pub rutis::host::ErrorKind::SyncEventPanicked(alloc::rcs::arc::Arc<rutis::host::ErrorKind>)
+pub rutis::host::ErrorKind::Validation
+pub rutis::host::ErrorKind::Validation::issues: alloc::vec::Vec<alloc::string::String>
+pub rutis::host::ErrorKind::WaterfallNext
+pub rutis::host::ErrorKind::WaterfallNext::misuse: rutis::host::NextMisuse
+pub rutis::host::ErrorKind::WaterfallNext::name: alloc::string::String
+impl rutis::host::ErrorKind
+pub fn rutis::host::ErrorKind::wire_name(&self) -> core::option::Option<&'static str>
+impl core::convert::From<rutis::host::ServiceReadError> for rutis::host::ErrorKind
+pub fn rutis::host::ErrorKind::from(rutis::host::ServiceReadError) -> Self
+impl core::error::Error for rutis::host::ErrorKind
+pub fn rutis::host::ErrorKind::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for rutis::host::ErrorKind
+pub fn rutis::host::ErrorKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for rutis::host::ErrorKind
+pub fn rutis::host::ErrorKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rutis::host::ErrorKind
+impl core::marker::Send for rutis::host::ErrorKind
+impl core::marker::Sync for rutis::host::ErrorKind
+impl core::marker::Unpin for rutis::host::ErrorKind
+impl core::marker::UnsafeUnpin for rutis::host::ErrorKind
+impl !core::panic::unwind_safe::RefUnwindSafe for rutis::host::ErrorKind
+impl !core::panic::unwind_safe::UnwindSafe for rutis::host::ErrorKind
+pub enum rutis::host::FiberState
+pub rutis::host::FiberState::Active
+pub rutis::host::FiberState::Disposed
+pub rutis::host::FiberState::Failed
+pub rutis::host::FiberState::Loading
+pub rutis::host::FiberState::Pending
+pub rutis::host::FiberState::Unloading
+impl core::clone::Clone for rutis::host::FiberState
+pub fn rutis::host::FiberState::clone(&self) -> Self
+impl core::cmp::Eq for rutis::host::FiberState
+impl core::cmp::PartialEq for rutis::host::FiberState
+pub fn rutis::host::FiberState::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::host::FiberState
+pub fn rutis::host::FiberState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rutis::host::FiberState
+impl core::marker::StructuralPartialEq for rutis::host::FiberState
+impl serde_core::ser::Serialize for rutis::host::FiberState
+pub fn rutis::host::FiberState::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rutis::host::FiberState
+pub fn rutis::host::FiberState::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rutis::host::FiberState
+impl core::marker::Send for rutis::host::FiberState
+impl core::marker::Sync for rutis::host::FiberState
+impl core::marker::Unpin for rutis::host::FiberState
+impl core::marker::UnsafeUnpin for rutis::host::FiberState
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::FiberState
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::FiberState
+pub enum rutis::host::ListenerKind
+pub rutis::host::ListenerKind::Any
+pub rutis::host::ListenerKind::Async
+pub rutis::host::ListenerKind::Sync
+impl core::clone::Clone for rutis::host::ListenerKind
+pub fn rutis::host::ListenerKind::clone(&self) -> Self
+impl core::cmp::Eq for rutis::host::ListenerKind
+impl core::cmp::PartialEq for rutis::host::ListenerKind
+pub fn rutis::host::ListenerKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::host::ListenerKind
+pub fn rutis::host::ListenerKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for rutis::host::ListenerKind
+pub fn rutis::host::ListenerKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for rutis::host::ListenerKind
+impl core::marker::StructuralPartialEq for rutis::host::ListenerKind
+impl serde_core::ser::Serialize for rutis::host::ListenerKind
+pub fn rutis::host::ListenerKind::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rutis::host::ListenerKind
+pub fn rutis::host::ListenerKind::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rutis::host::ListenerKind
+impl core::marker::Send for rutis::host::ListenerKind
+impl core::marker::Sync for rutis::host::ListenerKind
+impl core::marker::Unpin for rutis::host::ListenerKind
+impl core::marker::UnsafeUnpin for rutis::host::ListenerKind
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::ListenerKind
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::ListenerKind
+#[non_exhaustive] pub enum rutis::host::NextMisuse
+pub rutis::host::NextMisuse::AlreadyCalled
+pub rutis::host::NextMisuse::Ended
+pub rutis::host::NextMisuse::NotWaterfall(rutis::events::Mode)
+pub rutis::host::NextMisuse::OtherThread
+pub rutis::host::NextMisuse::SyncInAsync
+impl core::clone::Clone for rutis::host::NextMisuse
+pub fn rutis::host::NextMisuse::clone(&self) -> Self
+impl core::cmp::Eq for rutis::host::NextMisuse
+impl core::cmp::PartialEq for rutis::host::NextMisuse
+pub fn rutis::host::NextMisuse::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::host::NextMisuse
+pub fn rutis::host::NextMisuse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rutis::host::NextMisuse
+impl core::marker::StructuralPartialEq for rutis::host::NextMisuse
+impl core::marker::Freeze for rutis::host::NextMisuse
+impl core::marker::Send for rutis::host::NextMisuse
+impl core::marker::Sync for rutis::host::NextMisuse
+impl core::marker::Unpin for rutis::host::NextMisuse
+impl core::marker::UnsafeUnpin for rutis::host::NextMisuse
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::NextMisuse
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::NextMisuse
+#[non_exhaustive] pub enum rutis::host::ServiceReadFailure
+pub rutis::host::ServiceReadFailure::Inactive
+pub rutis::host::ServiceReadFailure::InterceptDenied
+pub rutis::host::ServiceReadFailure::InterceptPanicked
+pub rutis::host::ServiceReadFailure::InterceptReentrant
+pub rutis::host::ServiceReadFailure::OutOfScope
+pub rutis::host::ServiceReadFailure::TypeMismatch
+pub rutis::host::ServiceReadFailure::Unavailable(rutis::host::diagnostics::DependencyStatus)
+pub rutis::host::ServiceReadFailure::Undeclared
+impl core::clone::Clone for rutis::host::ServiceReadFailure
+pub fn rutis::host::ServiceReadFailure::clone(&self) -> Self
+impl core::cmp::Eq for rutis::host::ServiceReadFailure
+impl core::cmp::PartialEq for rutis::host::ServiceReadFailure
+pub fn rutis::host::ServiceReadFailure::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::host::ServiceReadFailure
+pub fn rutis::host::ServiceReadFailure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for rutis::host::ServiceReadFailure
+pub fn rutis::host::ServiceReadFailure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for rutis::host::ServiceReadFailure
+impl core::marker::StructuralPartialEq for rutis::host::ServiceReadFailure
+impl core::marker::Freeze for rutis::host::ServiceReadFailure
+impl core::marker::Send for rutis::host::ServiceReadFailure
+impl core::marker::Sync for rutis::host::ServiceReadFailure
+impl core::marker::Unpin for rutis::host::ServiceReadFailure
+impl core::marker::UnsafeUnpin for rutis::host::ServiceReadFailure
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::ServiceReadFailure
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::ServiceReadFailure
+pub struct rutis::host::CallError
+impl rutis::host::CallError
+pub fn rutis::host::CallError::into_raw(self) -> (alloc::string::String, core::option::Option<alloc::boxed::Box<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>>)
+pub fn rutis::host::CallError::message(&self) -> &str
+pub fn rutis::host::CallError::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn rutis::host::CallError::with_raw(impl core::convert::Into<alloc::string::String>, alloc::boxed::Box<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>) -> Self
+impl core::error::Error for rutis::host::CallError
+impl core::fmt::Debug for rutis::host::CallError
+pub fn rutis::host::CallError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for rutis::host::CallError
+pub fn rutis::host::CallError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rutis::host::CallError
+impl core::marker::Send for rutis::host::CallError
+impl core::marker::Sync for rutis::host::CallError
+impl core::marker::Unpin for rutis::host::CallError
+impl core::marker::UnsafeUnpin for rutis::host::CallError
+impl !core::panic::unwind_safe::RefUnwindSafe for rutis::host::CallError
+impl !core::panic::unwind_safe::UnwindSafe for rutis::host::CallError
+#[non_exhaustive] pub struct rutis::host::EffectMeta
+pub rutis::host::EffectMeta::children: alloc::vec::Vec<rutis::host::EffectMeta>
+pub rutis::host::EffectMeta::label: alloc::string::String
+pub rutis::host::EffectMeta::phase: rutis::host::EffectPhase
+impl core::clone::Clone for rutis::host::EffectMeta
+pub fn rutis::host::EffectMeta::clone(&self) -> Self
+impl core::cmp::Eq for rutis::host::EffectMeta
+impl core::cmp::PartialEq for rutis::host::EffectMeta
+pub fn rutis::host::EffectMeta::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::host::EffectMeta
+pub fn rutis::host::EffectMeta::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rutis::host::EffectMeta
+impl core::marker::Freeze for rutis::host::EffectMeta
+impl core::marker::Send for rutis::host::EffectMeta
+impl core::marker::Sync for rutis::host::EffectMeta
+impl core::marker::Unpin for rutis::host::EffectMeta
+impl core::marker::UnsafeUnpin for rutis::host::EffectMeta
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::EffectMeta
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::EffectMeta
+#[non_exhaustive] pub struct rutis::host::EventSubscription
+pub rutis::host::EventSubscription::calls: u64
+pub rutis::host::EventSubscription::global: bool
+pub rutis::host::EventSubscription::id: u64
+pub rutis::host::EventSubscription::kind: rutis::host::ListenerKind
+pub rutis::host::EventSubscription::name: alloc::string::String
+pub rutis::host::EventSubscription::once: bool
+pub rutis::host::EventSubscription::owner: core::option::Option<rutis::host::PluginId>
+pub rutis::host::EventSubscription::prefix: bool
+pub rutis::host::EventSubscription::prepend: bool
+pub rutis::host::EventSubscription::remote: bool
+impl core::clone::Clone for rutis::host::EventSubscription
+pub fn rutis::host::EventSubscription::clone(&self) -> Self
+impl core::fmt::Debug for rutis::host::EventSubscription
+pub fn rutis::host::EventSubscription::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rutis::host::EventSubscription
+impl core::marker::Send for rutis::host::EventSubscription
+impl core::marker::Sync for rutis::host::EventSubscription
+impl core::marker::Unpin for rutis::host::EventSubscription
+impl core::marker::UnsafeUnpin for rutis::host::EventSubscription
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::EventSubscription
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::EventSubscription
+#[non_exhaustive] pub struct rutis::host::FiberStatusChanged
+pub rutis::host::FiberStatusChanged::from: rutis::host::FiberState
+pub rutis::host::FiberStatusChanged::generation: u64
+pub rutis::host::FiberStatusChanged::plugin_id: rutis::host::PluginId
+pub rutis::host::FiberStatusChanged::seq: u64
+pub rutis::host::FiberStatusChanged::to: rutis::host::FiberState
+impl core::clone::Clone for rutis::host::FiberStatusChanged
+pub fn rutis::host::FiberStatusChanged::clone(&self) -> Self
+impl core::fmt::Debug for rutis::host::FiberStatusChanged
+pub fn rutis::host::FiberStatusChanged::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl rutis::events::Event for rutis::host::FiberStatusChanged
+pub type rutis::host::FiberStatusChanged::Value = ()
+pub const rutis::host::FiberStatusChanged::NAME: &'static str
+pub fn rutis::host::FiberStatusChanged::name(&self) -> &str
+impl serde_core::ser::Serialize for rutis::host::FiberStatusChanged
+pub fn rutis::host::FiberStatusChanged::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rutis::host::FiberStatusChanged
+pub fn rutis::host::FiberStatusChanged::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rutis::host::FiberStatusChanged
+impl core::marker::Send for rutis::host::FiberStatusChanged
+impl core::marker::Sync for rutis::host::FiberStatusChanged
+impl core::marker::Unpin for rutis::host::FiberStatusChanged
+impl core::marker::UnsafeUnpin for rutis::host::FiberStatusChanged
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::FiberStatusChanged
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::FiberStatusChanged
+pub struct rutis::host::FiberView
+pub rutis::host::FiberView::id: rutis::host::PluginId
+impl rutis::host::FiberView
+pub fn rutis::host::FiberView::current_config<C: core::marker::Send + core::marker::Sync + 'static>(&self) -> core::option::Option<alloc::rcs::arc::Arc<C>>
+pub fn rutis::host::FiberView::dispose(&self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
+pub fn rutis::host::FiberView::dispose_with_timeout(&self, core::time::Duration) -> rutis::host::BoxFuture<'static, core::result::Result<(), rutis::host::DisposeWaitError>>
+pub fn rutis::host::FiberView::effects(&self) -> alloc::vec::Vec<rutis::host::EffectMeta>
+pub fn rutis::host::FiberView::instance(&self) -> rutis::host::InstanceId
+pub fn rutis::host::FiberView::name(&self) -> &str
+pub fn rutis::host::FiberView::restart(&self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
+pub fn rutis::host::FiberView::sequenced_state(&self) -> (u64, rutis::host::Snapshot)
+pub fn rutis::host::FiberView::set_config<C: core::marker::Send + core::marker::Sync + 'static>(&self, C) -> core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
+pub fn rutis::host::FiberView::shutdown(&self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
+pub fn rutis::host::FiberView::state(&self) -> rutis::host::Snapshot
+pub fn rutis::host::FiberView::take_cleanup_errors(&self) -> alloc::vec::Vec<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
+pub fn rutis::host::FiberView::update<C: core::marker::Send + core::marker::Sync + 'static>(&self, C) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
+pub fn rutis::host::FiberView::watch(&self) -> tokio::sync::watch::Receiver<rutis::host::Snapshot>
+impl core::clone::Clone for rutis::host::FiberView
+pub fn rutis::host::FiberView::clone(&self) -> Self
+impl core::future::into_future::IntoFuture for &rutis::host::FiberView
+pub type &rutis::host::FiberView::IntoFuture = core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>> + core::marker::Send)>>
+pub type &rutis::host::FiberView::Output = core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
+pub fn &rutis::host::FiberView::into_future(self) -> Self::IntoFuture
+impl core::future::into_future::IntoFuture for rutis::host::FiberView
+pub type rutis::host::FiberView::IntoFuture = core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>> + core::marker::Send)>>
+pub type rutis::host::FiberView::Output = core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
+pub fn rutis::host::FiberView::into_future(self) -> Self::IntoFuture
+impl core::marker::Freeze for rutis::host::FiberView
+impl core::marker::Send for rutis::host::FiberView
+impl core::marker::Sync for rutis::host::FiberView
+impl core::marker::Unpin for rutis::host::FiberView
+impl core::marker::UnsafeUnpin for rutis::host::FiberView
+impl !core::panic::unwind_safe::RefUnwindSafe for rutis::host::FiberView
+impl !core::panic::unwind_safe::UnwindSafe for rutis::host::FiberView
+pub struct rutis::host::InstanceId(_)
+impl core::clone::Clone for rutis::host::InstanceId
+pub fn rutis::host::InstanceId::clone(&self) -> Self
+impl core::cmp::Eq for rutis::host::InstanceId
+impl core::cmp::PartialEq for rutis::host::InstanceId
+pub fn rutis::host::InstanceId::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::host::InstanceId
+pub fn rutis::host::InstanceId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for rutis::host::InstanceId
+pub fn rutis::host::InstanceId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for rutis::host::InstanceId
+pub fn rutis::host::InstanceId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for rutis::host::InstanceId
+impl core::marker::StructuralPartialEq for rutis::host::InstanceId
+impl core::marker::Freeze for rutis::host::InstanceId
+impl core::marker::Send for rutis::host::InstanceId
+impl core::marker::Sync for rutis::host::InstanceId
+impl core::marker::Unpin for rutis::host::InstanceId
+impl core::marker::UnsafeUnpin for rutis::host::InstanceId
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::InstanceId
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::InstanceId
+pub struct rutis::host::Key<T: ?core::marker::Sized + 'static>
+impl<T: ?core::marker::Sized + 'static> rutis::host::Key<T>
+pub fn rutis::host::Key<T>::dynamic(impl core::convert::Into<alloc::rcs::arc::Arc<str>>) -> Self
+pub fn rutis::host::Key<T>::erase(&self) -> rutis::host::TypeKey
+pub fn rutis::host::Key<T>::instance(self, rutis::host::InstanceId) -> Self
+pub const fn rutis::host::Key<T>::named(&'static str) -> Self
+pub const fn rutis::host::Key<T>::of() -> Self
+impl<T: ?core::marker::Sized + 'static> core::clone::Clone for rutis::host::Key<T>
+pub fn rutis::host::Key<T>::clone(&self) -> Self
+impl<T: ?core::marker::Sized + 'static> core::convert::From<&rutis::host::Key<T>> for rutis::host::TypeKey
+pub fn rutis::host::TypeKey::from(&rutis::host::Key<T>) -> Self
+impl<T: ?core::marker::Sized + 'static> core::convert::From<rutis::host::Key<T>> for rutis::host::TypeKey
+pub fn rutis::host::TypeKey::from(rutis::host::Key<T>) -> Self
+impl<T: ?core::marker::Sized + 'static> core::default::Default for rutis::host::Key<T>
+pub fn rutis::host::Key<T>::default() -> Self
+impl<T: ?core::marker::Sized + 'static> core::fmt::Debug for rutis::host::Key<T>
+pub fn rutis::host::Key<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::marker::Freeze for rutis::host::Key<T> where core::marker::PhantomData<fn() -> T>: core::marker::Freeze, T: ?core::marker::Sized
+impl<T> core::marker::Send for rutis::host::Key<T> where core::marker::PhantomData<fn() -> T>: core::marker::Send, T: ?core::marker::Sized
+impl<T> core::marker::Sync for rutis::host::Key<T> where core::marker::PhantomData<fn() -> T>: core::marker::Sync, T: ?core::marker::Sized
+impl<T> core::marker::Unpin for rutis::host::Key<T> where core::marker::PhantomData<fn() -> T>: core::marker::Unpin, T: ?core::marker::Sized
+impl<T> core::marker::UnsafeUnpin for rutis::host::Key<T> where core::marker::PhantomData<fn() -> T>: core::marker::UnsafeUnpin, T: ?core::marker::Sized
+impl<T> core::panic::unwind_safe::RefUnwindSafe for rutis::host::Key<T> where core::marker::PhantomData<fn() -> T>: core::panic::unwind_safe::RefUnwindSafe, T: ?core::marker::Sized
+impl<T> core::panic::unwind_safe::UnwindSafe for rutis::host::Key<T> where core::marker::PhantomData<fn() -> T>: core::panic::unwind_safe::UnwindSafe, T: ?core::marker::Sized
+pub struct rutis::host::PluginId(pub u64)
+impl core::clone::Clone for rutis::host::PluginId
+pub fn rutis::host::PluginId::clone(&self) -> Self
+impl core::cmp::Eq for rutis::host::PluginId
+impl core::cmp::Ord for rutis::host::PluginId
+pub fn rutis::host::PluginId::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for rutis::host::PluginId
+pub fn rutis::host::PluginId::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for rutis::host::PluginId
+pub fn rutis::host::PluginId::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for rutis::host::PluginId
+pub fn rutis::host::PluginId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for rutis::host::PluginId
+pub fn rutis::host::PluginId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for rutis::host::PluginId
+impl core::marker::StructuralPartialEq for rutis::host::PluginId
+impl serde_core::ser::Serialize for rutis::host::PluginId
+pub fn rutis::host::PluginId::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rutis::host::PluginId
+pub fn rutis::host::PluginId::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rutis::host::PluginId
+impl core::marker::Send for rutis::host::PluginId
+impl core::marker::Sync for rutis::host::PluginId
+impl core::marker::Unpin for rutis::host::PluginId
+impl core::marker::UnsafeUnpin for rutis::host::PluginId
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::PluginId
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::PluginId
+#[non_exhaustive] pub struct rutis::host::ServiceReadError
+pub rutis::host::ServiceReadError::instance: rutis::host::InstanceId
+pub rutis::host::ServiceReadError::key: rutis::host::TypeKey
+pub rutis::host::ServiceReadError::location: &'static core::panic::location::Location<'static>
+pub rutis::host::ServiceReadError::plugin_id: rutis::host::PluginId
+pub rutis::host::ServiceReadError::reason: rutis::host::ServiceReadFailure
+impl core::convert::From<rutis::host::ServiceReadError> for rutis::host::ErrorKind
+pub fn rutis::host::ErrorKind::from(rutis::host::ServiceReadError) -> Self
+impl core::error::Error for rutis::host::ServiceReadError
+impl core::fmt::Debug for rutis::host::ServiceReadError
+pub fn rutis::host::ServiceReadError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for rutis::host::ServiceReadError
+pub fn rutis::host::ServiceReadError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rutis::host::ServiceReadError
+impl core::marker::Send for rutis::host::ServiceReadError
+impl core::marker::Sync for rutis::host::ServiceReadError
+impl core::marker::Unpin for rutis::host::ServiceReadError
+impl core::marker::UnsafeUnpin for rutis::host::ServiceReadError
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::ServiceReadError
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::ServiceReadError
+pub struct rutis::host::Snapshot
+pub rutis::host::Snapshot::error: core::option::Option<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
+pub rutis::host::Snapshot::generation: u64
+pub rutis::host::Snapshot::state: rutis::host::FiberState
+impl core::clone::Clone for rutis::host::Snapshot
+pub fn rutis::host::Snapshot::clone(&self) -> Self
+impl core::fmt::Debug for rutis::host::Snapshot
+pub fn rutis::host::Snapshot::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rutis::host::Snapshot
+impl core::marker::Send for rutis::host::Snapshot
+impl core::marker::Sync for rutis::host::Snapshot
+impl core::marker::Unpin for rutis::host::Snapshot
+impl core::marker::UnsafeUnpin for rutis::host::Snapshot
+impl !core::panic::unwind_safe::RefUnwindSafe for rutis::host::Snapshot
+impl !core::panic::unwind_safe::UnwindSafe for rutis::host::Snapshot
+pub struct rutis::host::TypeKey
+impl rutis::host::TypeKey
+pub fn rutis::host::TypeKey::describe(&self) -> alloc::string::String
+pub fn rutis::host::TypeKey::instance<T: ?core::marker::Sized + 'static>(rutis::host::InstanceId) -> Self
+pub fn rutis::host::TypeKey::instance_id(&self) -> core::option::Option<rutis::host::InstanceId>
+pub fn rutis::host::TypeKey::keyed<T: ?core::marker::Sized + 'static>(&'static str) -> Self
+pub fn rutis::host::TypeKey::keyed_dynamic<T: ?core::marker::Sized + 'static>(impl core::convert::Into<alloc::rcs::arc::Arc<str>>) -> Self
+pub fn rutis::host::TypeKey::name(&self) -> core::option::Option<&str>
+pub fn rutis::host::TypeKey::of<T: ?core::marker::Sized + 'static>() -> Self
+pub fn rutis::host::TypeKey::type_id(&self) -> core::any::TypeId
+pub fn rutis::host::TypeKey::type_name(&self) -> &'static str
+pub fn rutis::host::TypeKey::with_instance(self, rutis::host::InstanceId) -> Self
+impl core::clone::Clone for rutis::host::TypeKey
+pub fn rutis::host::TypeKey::clone(&self) -> Self
+impl core::cmp::Eq for rutis::host::TypeKey
+impl core::cmp::PartialEq for rutis::host::TypeKey
+pub fn rutis::host::TypeKey::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::host::TypeKey
+pub fn rutis::host::TypeKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for rutis::host::TypeKey
+pub fn rutis::host::TypeKey::hash<H: core::hash::Hasher>(&self, &mut H)
+impl<T: ?core::marker::Sized + 'static> core::convert::From<&rutis::host::Key<T>> for rutis::host::TypeKey
+pub fn rutis::host::TypeKey::from(&rutis::host::Key<T>) -> Self
+impl<T: ?core::marker::Sized + 'static> core::convert::From<rutis::host::Key<T>> for rutis::host::TypeKey
+pub fn rutis::host::TypeKey::from(rutis::host::Key<T>) -> Self
+impl core::marker::Freeze for rutis::host::TypeKey
+impl core::marker::Send for rutis::host::TypeKey
+impl core::marker::Sync for rutis::host::TypeKey
+impl core::marker::Unpin for rutis::host::TypeKey
+impl core::marker::UnsafeUnpin for rutis::host::TypeKey
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::TypeKey
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::TypeKey
+pub trait rutis::host::CtxHost: rutis::host::sealed::Sealed
+pub fn rutis::host::CtxHost::cancellation_token(&self) -> tokio_util::sync::cancellation_token::CancellationToken
+pub fn rutis::host::CtxHost::diagnostics(&self) -> rutis::host::diagnostics::RuntimeDiagnostics
+pub fn rutis::host::CtxHost::dispose_self(&self) -> core::result::Result<(), rutis::Error>
+pub fn rutis::host::CtxHost::error_sink(&self) -> rutis::host::ErrorSink
+pub fn rutis::host::CtxHost::get_at<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self, &rutis::host::Key<T>) -> core::option::Option<alloc::rcs::arc::Arc<T>>
+pub fn rutis::host::CtxHost::handle(&self) -> &tokio::runtime::handle::Handle
+pub fn rutis::host::CtxHost::instance(&self) -> rutis::host::InstanceId
+pub fn rutis::host::CtxHost::is_shutting_down(&self) -> bool
+pub fn rutis::host::CtxHost::isolate(&self, impl core::convert::Into<rutis::host::TypeKey>, &str) -> rutis::Ctx
+pub fn rutis::host::CtxHost::isolate_label(&self, &rutis::host::TypeKey) -> core::option::Option<alloc::string::String>
+pub fn rutis::host::CtxHost::plugin_from<C, P, B>(&self, B, C) -> rutis::host::FiberView where C: core::marker::Send + core::marker::Sync + 'static, P: rutis::Plugin, B: core::ops::function::Fn(&C) -> core::result::Result<P, rutis::Error> + core::marker::Send + core::marker::Sync + 'static
+pub fn rutis::host::CtxHost::plugin_with<C: core::marker::Send + core::marker::Sync + 'static>(&self, impl rutis::host::PluginFactory<C>, C) -> rutis::host::FiberView
+pub fn rutis::host::CtxHost::provide_at<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self, rutis::host::Key<T>, alloc::rcs::arc::Arc<T>) -> core::result::Result<rutis::Disposer, rutis::Error>
+pub fn rutis::host::CtxHost::require<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self) -> core::result::Result<alloc::rcs::arc::Arc<T>, rutis::host::ServiceReadError>
+pub fn rutis::host::CtxHost::require_at<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self, &rutis::host::Key<T>) -> core::result::Result<alloc::rcs::arc::Arc<T>, rutis::host::ServiceReadError>
+pub fn rutis::host::CtxHost::root() -> core::result::Result<rutis::Ctx, rutis::Error> where Self: core::marker::Sized
+pub fn rutis::host::CtxHost::root_ctx(&self) -> rutis::Ctx
+pub fn rutis::host::CtxHost::root_view(&self) -> core::option::Option<rutis::host::FiberView>
+pub fn rutis::host::CtxHost::root_with(tokio::runtime::handle::Handle) -> rutis::Ctx where Self: core::marker::Sized
+pub fn rutis::host::CtxHost::root_with_sink(tokio::runtime::handle::Handle, rutis::host::ErrorSink) -> rutis::Ctx where Self: core::marker::Sized
+pub fn rutis::host::CtxHost::row(&self) -> core::option::Option<alloc::string::String>
+pub fn rutis::host::CtxHost::scope(&self) -> alloc::vec::Vec<rutis::events::Scope>
+pub fn rutis::host::CtxHost::shutdown(&self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
+pub fn rutis::host::CtxHost::shutdown_with_timeout(&self, core::time::Duration) -> rutis::host::BoxFuture<'static, core::result::Result<(), rutis::host::DisposeWaitError>>
+pub fn rutis::host::CtxHost::subscriptions(&self) -> alloc::vec::Vec<rutis::host::EventSubscription>
+pub fn rutis::host::CtxHost::take_cleanup_errors(&self) -> alloc::vec::Vec<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
+pub fn rutis::host::CtxHost::view(&self, rutis::host::PluginId) -> core::option::Option<rutis::host::FiberView>
+pub fn rutis::host::CtxHost::waterfall_sync<E, F>(&self, impl rutis::events::into_event::IntoEvent<E>, F) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error> where E: rutis::events::Event, F: core::ops::function::FnOnce(alloc::rcs::arc::Arc<E>) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
+impl rutis::host::CtxHost for rutis::Ctx
+pub fn rutis::Ctx::cancellation_token(&self) -> tokio_util::sync::cancellation_token::CancellationToken
+pub fn rutis::Ctx::diagnostics(&self) -> rutis::host::diagnostics::RuntimeDiagnostics
+pub fn rutis::Ctx::dispose_self(&self) -> core::result::Result<(), rutis::Error>
+pub fn rutis::Ctx::error_sink(&self) -> rutis::host::ErrorSink
+pub fn rutis::Ctx::get_at<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self, &rutis::host::Key<T>) -> core::option::Option<alloc::rcs::arc::Arc<T>>
+pub fn rutis::Ctx::handle(&self) -> &tokio::runtime::handle::Handle
+pub fn rutis::Ctx::instance(&self) -> rutis::host::InstanceId
+pub fn rutis::Ctx::is_shutting_down(&self) -> bool
+pub fn rutis::Ctx::isolate(&self, impl core::convert::Into<rutis::host::TypeKey>, &str) -> rutis::Ctx
+pub fn rutis::Ctx::isolate_label(&self, &rutis::host::TypeKey) -> core::option::Option<alloc::string::String>
+pub fn rutis::Ctx::plugin_from<C, P, B>(&self, B, C) -> rutis::host::FiberView where C: core::marker::Send + core::marker::Sync + 'static, P: rutis::Plugin, B: core::ops::function::Fn(&C) -> core::result::Result<P, rutis::Error> + core::marker::Send + core::marker::Sync + 'static
+pub fn rutis::Ctx::plugin_with<C: core::marker::Send + core::marker::Sync + 'static>(&self, impl rutis::host::PluginFactory<C>, C) -> rutis::host::FiberView
+pub fn rutis::Ctx::provide_at<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self, rutis::host::Key<T>, alloc::rcs::arc::Arc<T>) -> core::result::Result<rutis::Disposer, rutis::Error>
+pub fn rutis::Ctx::require<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self) -> core::result::Result<alloc::rcs::arc::Arc<T>, rutis::host::ServiceReadError>
+pub fn rutis::Ctx::require_at<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self, &rutis::host::Key<T>) -> core::result::Result<alloc::rcs::arc::Arc<T>, rutis::host::ServiceReadError>
+pub fn rutis::Ctx::root() -> core::result::Result<rutis::Ctx, rutis::Error>
+pub fn rutis::Ctx::root_ctx(&self) -> rutis::Ctx
+pub fn rutis::Ctx::root_view(&self) -> core::option::Option<rutis::host::FiberView>
+pub fn rutis::Ctx::root_with(tokio::runtime::handle::Handle) -> rutis::Ctx
+pub fn rutis::Ctx::root_with_sink(tokio::runtime::handle::Handle, rutis::host::ErrorSink) -> rutis::Ctx
+pub fn rutis::Ctx::row(&self) -> core::option::Option<alloc::string::String>
+pub fn rutis::Ctx::scope(&self) -> alloc::vec::Vec<rutis::events::Scope>
+pub fn rutis::Ctx::shutdown(&self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
+pub fn rutis::Ctx::shutdown_with_timeout(&self, core::time::Duration) -> rutis::host::BoxFuture<'static, core::result::Result<(), rutis::host::DisposeWaitError>>
+pub fn rutis::Ctx::subscriptions(&self) -> alloc::vec::Vec<rutis::host::EventSubscription>
+pub fn rutis::Ctx::take_cleanup_errors(&self) -> alloc::vec::Vec<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
+pub fn rutis::Ctx::view(&self, rutis::host::PluginId) -> core::option::Option<rutis::host::FiberView>
+pub fn rutis::Ctx::waterfall_sync<E, F>(&self, impl rutis::events::into_event::IntoEvent<E>, F) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error> where E: rutis::events::Event, F: core::ops::function::FnOnce(alloc::rcs::arc::Arc<E>) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
+pub trait rutis::host::DynPlugin: core::marker::Send + core::marker::Sync + 'static
+pub fn rutis::host::DynPlugin::apply<'a>(&'a self, &'a rutis::Ctx) -> rutis::host::BoxFuture<'a, core::result::Result<rutis::host::Effect, rutis::Error>>
+pub fn rutis::host::DynPlugin::injects(&self) -> alloc::vec::Vec<rutis::host::TypeKey>
+pub fn rutis::host::DynPlugin::name(&self) -> &str
+pub fn rutis::host::DynPlugin::validate(&self) -> core::result::Result<(), rutis::Error>
+impl rutis::host::DynPlugin for alloc::boxed::Box<dyn rutis::host::DynPlugin>
+pub fn alloc::boxed::Box<dyn rutis::host::DynPlugin>::apply<'a>(&'a self, &'a rutis::Ctx) -> rutis::host::BoxFuture<'a, core::result::Result<rutis::host::Effect, rutis::Error>>
+pub fn alloc::boxed::Box<dyn rutis::host::DynPlugin>::injects(&self) -> alloc::vec::Vec<rutis::host::TypeKey>
+pub fn alloc::boxed::Box<dyn rutis::host::DynPlugin>::name(&self) -> &str
+pub fn alloc::boxed::Box<dyn rutis::host::DynPlugin>::validate(&self) -> core::result::Result<(), rutis::Error>
+impl<P: rutis::Plugin> rutis::host::DynPlugin for P
+pub fn P::apply<'a>(&'a self, &'a rutis::Ctx) -> rutis::host::BoxFuture<'a, core::result::Result<rutis::host::Effect, rutis::Error>>
+pub fn P::injects(&self) -> alloc::vec::Vec<rutis::host::TypeKey>
+pub fn P::name(&self) -> &str
+pub fn P::validate(&self) -> core::result::Result<(), rutis::Error>
+pub trait rutis::host::PluginFactory<C: core::marker::Send + core::marker::Sync + 'static>: core::marker::Send + core::marker::Sync + 'static
+pub fn rutis::host::PluginFactory::build(&self, &C) -> core::result::Result<alloc::boxed::Box<dyn rutis::host::DynPlugin>, rutis::Error>
+pub fn rutis::host::PluginFactory::injects(&self) -> alloc::vec::Vec<rutis::host::TypeKey>
+pub fn rutis::host::PluginFactory::name(&self) -> &str
+pub fn rutis::host::PluginFactory::validate_config(&self, &C) -> core::result::Result<(), rutis::Error>
+pub fn rutis::host::default_sink() -> rutis::host::ErrorSink
+pub fn rutis::host::shutdown_deadline() -> core::time::Duration
+pub type rutis::host::BoxFuture<'a, T> = core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = T> + core::marker::Send + 'a)>>
+pub type rutis::host::ErrorSink = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(alloc::rcs::arc::Arc<rutis::host::ErrorKind>) + core::marker::Send + core::marker::Sync)>
+pub struct rutis::Ctx(_)
+impl rutis::Ctx
+pub fn rutis::Ctx::bail<E: rutis::events::Event>(&self, impl rutis::events::into_event::IntoEvent<E>) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
+pub fn rutis::Ctx::emit<E: rutis::events::Event>(&self, impl rutis::events::into_event::IntoEvent<E>) -> core::result::Result<(), rutis::Error>
+pub fn rutis::Ctx::filter(&self, impl core::ops::function::Fn(&rutis::events::ListenerInfo) -> bool + core::marker::Send + core::marker::Sync + 'static) -> rutis::events::Filtered<'_>
+pub fn rutis::Ctx::listen<E: rutis::events::Event>(&self) -> rutis::events::Listen<'_, E>
+pub fn rutis::Ctx::on<E: rutis::events::Event>(&self, impl rutis::events::Listener<E>) -> core::result::Result<rutis::Disposer, rutis::Error>
+pub fn rutis::Ctx::on_sync<E: rutis::events::Event>(&self, impl core::ops::function::Fn(alloc::rcs::arc::Arc<E>, rutis::events::SyncCall<'_, E>) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error> + core::marker::Send + core::marker::Sync + 'static) -> core::result::Result<rutis::Disposer, rutis::Error>
+pub fn rutis::Ctx::parallel<E: rutis::events::Event>(&self, impl rutis::events::into_event::IntoEvent<E>) -> rutis::host::BoxFuture<'_, core::result::Result<(), rutis::Error>>
+pub fn rutis::Ctx::serial<E: rutis::events::Event>(&self, impl rutis::events::into_event::IntoEvent<E>) -> rutis::host::BoxFuture<'_, core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>>
+pub fn rutis::Ctx::waterfall<E: rutis::events::Event>(&self, impl rutis::events::into_event::IntoEvent<E>) -> rutis::events::Waterfall<'_, E>
+impl rutis::Ctx
+pub fn rutis::Ctx::cancelled(&self) -> impl core::future::future::Future<Output = ()> + core::marker::Send + 'static
+pub fn rutis::Ctx::effect<Fut>(&self, impl core::ops::function::FnOnce() -> Fut) -> core::result::Result<rutis::Disposer, rutis::Error> where Fut: core::future::future::Future<Output = core::result::Result<(), rutis::Error>> + core::marker::Send + 'static
+pub fn rutis::Ctx::get<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self) -> core::option::Option<alloc::rcs::arc::Arc<T>>
+pub fn rutis::Ctx::plugin(&self, impl rutis::host::DynPlugin) -> rutis::host::FiberView
+pub fn rutis::Ctx::provide<T: core::marker::Send + core::marker::Sync + 'static>(&self, T) -> core::result::Result<rutis::Disposer, rutis::Error>
+pub fn rutis::Ctx::provide_as<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self, alloc::rcs::arc::Arc<T>) -> core::result::Result<rutis::Disposer, rutis::Error>
+impl core::clone::Clone for rutis::Ctx
+pub fn rutis::Ctx::clone(&self) -> Self
+impl rutis::host::CtxHost for rutis::Ctx
+pub fn rutis::Ctx::cancellation_token(&self) -> tokio_util::sync::cancellation_token::CancellationToken
+pub fn rutis::Ctx::diagnostics(&self) -> rutis::host::diagnostics::RuntimeDiagnostics
+pub fn rutis::Ctx::dispose_self(&self) -> core::result::Result<(), rutis::Error>
+pub fn rutis::Ctx::error_sink(&self) -> rutis::host::ErrorSink
+pub fn rutis::Ctx::get_at<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self, &rutis::host::Key<T>) -> core::option::Option<alloc::rcs::arc::Arc<T>>
+pub fn rutis::Ctx::handle(&self) -> &tokio::runtime::handle::Handle
+pub fn rutis::Ctx::instance(&self) -> rutis::host::InstanceId
+pub fn rutis::Ctx::is_shutting_down(&self) -> bool
+pub fn rutis::Ctx::isolate(&self, impl core::convert::Into<rutis::host::TypeKey>, &str) -> rutis::Ctx
+pub fn rutis::Ctx::isolate_label(&self, &rutis::host::TypeKey) -> core::option::Option<alloc::string::String>
+pub fn rutis::Ctx::plugin_from<C, P, B>(&self, B, C) -> rutis::host::FiberView where C: core::marker::Send + core::marker::Sync + 'static, P: rutis::Plugin, B: core::ops::function::Fn(&C) -> core::result::Result<P, rutis::Error> + core::marker::Send + core::marker::Sync + 'static
+pub fn rutis::Ctx::plugin_with<C: core::marker::Send + core::marker::Sync + 'static>(&self, impl rutis::host::PluginFactory<C>, C) -> rutis::host::FiberView
+pub fn rutis::Ctx::provide_at<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self, rutis::host::Key<T>, alloc::rcs::arc::Arc<T>) -> core::result::Result<rutis::Disposer, rutis::Error>
+pub fn rutis::Ctx::require<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self) -> core::result::Result<alloc::rcs::arc::Arc<T>, rutis::host::ServiceReadError>
+pub fn rutis::Ctx::require_at<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self, &rutis::host::Key<T>) -> core::result::Result<alloc::rcs::arc::Arc<T>, rutis::host::ServiceReadError>
+pub fn rutis::Ctx::root() -> core::result::Result<rutis::Ctx, rutis::Error>
+pub fn rutis::Ctx::root_ctx(&self) -> rutis::Ctx
+pub fn rutis::Ctx::root_view(&self) -> core::option::Option<rutis::host::FiberView>
+pub fn rutis::Ctx::root_with(tokio::runtime::handle::Handle) -> rutis::Ctx
+pub fn rutis::Ctx::root_with_sink(tokio::runtime::handle::Handle, rutis::host::ErrorSink) -> rutis::Ctx
+pub fn rutis::Ctx::row(&self) -> core::option::Option<alloc::string::String>
+pub fn rutis::Ctx::scope(&self) -> alloc::vec::Vec<rutis::events::Scope>
+pub fn rutis::Ctx::shutdown(&self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
+pub fn rutis::Ctx::shutdown_with_timeout(&self, core::time::Duration) -> rutis::host::BoxFuture<'static, core::result::Result<(), rutis::host::DisposeWaitError>>
+pub fn rutis::Ctx::subscriptions(&self) -> alloc::vec::Vec<rutis::host::EventSubscription>
+pub fn rutis::Ctx::take_cleanup_errors(&self) -> alloc::vec::Vec<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
+pub fn rutis::Ctx::view(&self, rutis::host::PluginId) -> core::option::Option<rutis::host::FiberView>
+pub fn rutis::Ctx::waterfall_sync<E, F>(&self, impl rutis::events::into_event::IntoEvent<E>, F) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error> where E: rutis::events::Event, F: core::ops::function::FnOnce(alloc::rcs::arc::Arc<E>) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
+impl core::marker::Freeze for rutis::Ctx
+impl core::marker::Send for rutis::Ctx
+impl core::marker::Sync for rutis::Ctx
+impl core::marker::Unpin for rutis::Ctx
+impl core::marker::UnsafeUnpin for rutis::Ctx
+impl !core::panic::unwind_safe::RefUnwindSafe for rutis::Ctx
+impl !core::panic::unwind_safe::UnwindSafe for rutis::Ctx
+pub struct rutis::Disposer
+impl rutis::Disposer
+pub fn rutis::Disposer::dispose(self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
+impl core::fmt::Debug for rutis::Disposer
+pub fn rutis::Disposer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for rutis::Disposer
+impl core::marker::Send for rutis::Disposer
+impl !core::marker::Sync for rutis::Disposer
+impl core::marker::Unpin for rutis::Disposer
+impl core::marker::UnsafeUnpin for rutis::Disposer
+impl !core::panic::unwind_safe::RefUnwindSafe for rutis::Disposer
+impl !core::panic::unwind_safe::UnwindSafe for rutis::Disposer
+pub struct rutis::Error
+impl rutis::Error
+pub fn rutis::Error::into_kind(self) -> rutis::host::ErrorKind
+pub fn rutis::Error::kind(&self) -> core::option::Option<&rutis::host::ErrorKind>
+pub fn rutis::Error::msg(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::convert::AsRef<(dyn core::error::Error + core::marker::Send + core::marker::Sync)> for rutis::Error
+pub fn rutis::Error::as_ref(&self) -> &(dyn core::error::Error + core::marker::Send + core::marker::Sync + 'static)
+impl core::convert::From<rutis::Error> for alloc::boxed::Box<(dyn core::error::Error + 'static)>
+pub fn alloc::boxed::Box<(dyn core::error::Error + 'static)>::from(rutis::Error) -> Self
+impl core::convert::From<rutis::Error> for alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync + 'static)>
+pub fn alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync + 'static)>::from(rutis::Error) -> Self
+impl core::fmt::Debug for rutis::Error
+pub fn rutis::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for rutis::Error
+pub fn rutis::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::deref::Deref for rutis::Error
+pub type rutis::Error::Target = rutis::host::ErrorKind
+pub fn rutis::Error::deref(&self) -> &rutis::host::ErrorKind
+impl<E: core::error::Error + core::marker::Send + core::marker::Sync + 'static> core::convert::From<E> for rutis::Error
+pub fn rutis::Error::from(E) -> Self
+impl core::marker::Freeze for rutis::Error
+impl core::marker::Send for rutis::Error
+impl core::marker::Sync for rutis::Error
+impl core::marker::Unpin for rutis::Error
+impl core::marker::UnsafeUnpin for rutis::Error
+impl !core::panic::unwind_safe::RefUnwindSafe for rutis::Error
+impl !core::panic::unwind_safe::UnwindSafe for rutis::Error
+pub trait rutis::Deps: rutis::deps::sealed::Sealed + core::marker::Sized + core::marker::Send + 'static
+impl rutis::Deps for ()
+impl<A: rutis::Deps, B: rutis::Deps, C: rutis::Deps, D: rutis::Deps, E: rutis::Deps, F: rutis::Deps, G: rutis::Deps, H: rutis::Deps> rutis::Deps for (A, B, C, D, E, F, G, H)
+impl<A: rutis::Deps, B: rutis::Deps, C: rutis::Deps, D: rutis::Deps, E: rutis::Deps, F: rutis::Deps, G: rutis::Deps> rutis::Deps for (A, B, C, D, E, F, G)
+impl<A: rutis::Deps, B: rutis::Deps, C: rutis::Deps, D: rutis::Deps, E: rutis::Deps, F: rutis::Deps> rutis::Deps for (A, B, C, D, E, F)
+impl<A: rutis::Deps, B: rutis::Deps, C: rutis::Deps, D: rutis::Deps, E: rutis::Deps> rutis::Deps for (A, B, C, D, E)
+impl<A: rutis::Deps, B: rutis::Deps, C: rutis::Deps, D: rutis::Deps> rutis::Deps for (A, B, C, D)
+impl<A: rutis::Deps, B: rutis::Deps, C: rutis::Deps> rutis::Deps for (A, B, C)
+impl<A: rutis::Deps, B: rutis::Deps> rutis::Deps for (A, B)
+impl<A: rutis::Deps> rutis::Deps for (A)
+impl<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static> rutis::Deps for alloc::rcs::arc::Arc<T>
+impl<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static> rutis::Deps for core::option::Option<alloc::rcs::arc::Arc<T>>
+pub trait rutis::Event: serde_core::ser::Serialize + serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static
+pub type rutis::Event::Value: serde_core::ser::Serialize + serde_core::de::DeserializeOwned + core::marker::Send + 'static
+pub const rutis::Event::NAME: &'static str
+pub fn rutis::Event::name(&self) -> &str
+impl rutis::events::Event for rutis::host::FiberStatusChanged
+pub type rutis::host::FiberStatusChanged::Value = ()
+pub const rutis::host::FiberStatusChanged::NAME: &'static str
+pub fn rutis::host::FiberStatusChanged::name(&self) -> &str
+impl rutis::events::Event for rutis::host::diagnostics::ServiceChanged
+pub type rutis::host::diagnostics::ServiceChanged::Value = ()
+pub const rutis::host::diagnostics::ServiceChanged::NAME: &'static str
+pub fn rutis::host::diagnostics::ServiceChanged::name(&self) -> &str
+pub trait rutis::Plugin: core::marker::Send + core::marker::Sync + 'static
+pub type rutis::Plugin::Deps: rutis::Deps
+pub fn rutis::Plugin::apply(&self, &rutis::Ctx, Self::Deps) -> impl core::future::future::Future<Output = core::result::Result<(), rutis::Error>> + core::marker::Send
+pub fn rutis::Plugin::name(&self) -> &str
+pub fn rutis::Plugin::validate(&self) -> core::result::Result<(), rutis::Error>
+pub type rutis::Result<T, E> = core::result::Result<T, E>
