@@ -582,7 +582,7 @@ impl Generator<'_> {
                 match self.sources.item(module, index).clone() {
                     Item::Type(alias) => {
                         self.expandable(module, index)?;
-                        let params = bind(&alias.generics, args, scope)?;
+                        let params = bind(&alias.generics, args, scope, module)?;
                         let alias_scope = Scope {
                             module,
                             params: Rc::new(params),
@@ -1517,8 +1517,12 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                             // `type Fut<'a, T> = BoxFuture<'a, T>`, say.
                             Item::Type(alias) => {
                                 self.expandable(module, index)?;
-                                let params =
-                                    bind(&alias.generics, &Self::type_args(segment), scope)?;
+                                let params = bind(
+                                    &alias.generics,
+                                    &Self::type_args(segment),
+                                    scope,
+                                    module,
+                                )?;
                                 let alias_scope = Scope {
                                     module,
                                     params: Rc::new(params),
@@ -1572,17 +1576,17 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
             Some(Res::Item { module, index }) => match self.sources.item(module, index).clone() {
                 Item::Type(alias) => {
                     self.expandable(module, index)?;
-                    let params = bind(&alias.generics, &args, scope)?;
+                    let params = bind(&alias.generics, &args, scope, module)?;
                     let alias_scope = Scope {
                         module,
                         params: Rc::new(params),
                     };
                     match self.result(&alias_scope, &alias.ty)? {
-                        Some((ok, error, inner)) => Ok(Some((
-                            substitute(&ok, &inner),
-                            substitute(&error, &inner),
-                            inner,
-                        ))),
+                        // The parameters stay bound to the scope they were
+                        // written in: `ty` and `failure` follow them there,
+                        // so a `Thing` only in scope at the use site is
+                        // found.
+                        Some((ok, error, inner)) => Ok(Some((ok, error, inner))),
                         None => Ok(None),
                     }
                 }
@@ -1595,6 +1599,9 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
     /// How `Err(e)` of type `error` is thrown, and its `<Name>Thrown`
     /// TypeScript type.
     fn failure(&mut self, scope: &Scope, error: &Type) -> Result<(Failure, Option<String>)> {
+        if let Some(Binding::Type(ty, scope)) = Self::binding(scope, error) {
+            return self.failure(&scope, &ty);
+        }
         let Type::Path(path) = error else {
             return Ok((
                 Failure::Display {
@@ -1690,7 +1697,8 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                     ),
                     Item::Type(alias) => {
                         self.expandable(module, index)?;
-                        let params = bind(&alias.generics, &Self::type_args(segment), scope)?;
+                        let params =
+                            bind(&alias.generics, &Self::type_args(segment), scope, module)?;
                         let alias_scope = Scope {
                             module,
                             params: Rc::new(params),
@@ -1805,8 +1813,12 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                         match self.sources.item(module, index).clone() {
                             Item::Type(alias) => {
                                 self.expandable(module, index)?;
-                                let params =
-                                    bind(&alias.generics, &Self::type_args(segment), scope)?;
+                                let params = bind(
+                                    &alias.generics,
+                                    &Self::type_args(segment),
+                                    scope,
+                                    module,
+                                )?;
                                 let alias_scope = Scope {
                                     module,
                                     params: Rc::new(params),
@@ -1948,25 +1960,31 @@ impl<'ast> Visit<'ast> for PathTypes {
     }
 }
 
-/// A type's generic parameters bound to `args`, written in `scope`.
+/// A type's generic parameters bound to `args`, written in `scope`. A
+/// default is written where the parameters are, in `module`, with the
+/// parameters before it bound: `type Res<T, E = ErrorOf<T>>`.
 fn bind(
     generics: &syn::Generics,
     args: &[Type],
     scope: &Scope,
+    module: usize,
 ) -> Result<HashMap<String, Binding>> {
     let mut params = HashMap::new();
     let mut args = args.iter();
     for param in &generics.params {
         if let syn::GenericParam::Type(param) = param {
-            let ty = match (args.next(), &param.default) {
-                (Some(arg), _) => arg.clone(),
-                (None, Some(default)) => default.clone(),
+            let binding = match (args.next(), &param.default) {
+                (Some(arg), _) => Binding::Type(Box::new(arg.clone()), scope.clone()),
+                (None, Some(default)) => Binding::Type(
+                    Box::new(default.clone()),
+                    Scope {
+                        module,
+                        params: Rc::new(params.clone()),
+                    },
+                ),
                 (None, None) => return Err(format!("{} needs its type arguments", param.ident)),
             };
-            params.insert(
-                param.ident.to_string(),
-                Binding::Type(Box::new(ty), scope.clone()),
-            );
+            params.insert(param.ident.to_string(), binding);
         }
     }
     Ok(params)
@@ -3021,6 +3039,96 @@ mod tests {
             generated
                 .typescript
                 .contains("pairs(): Promise<[[number, number], [number, number]]>"),
+            "{}",
+            generated.typescript
+        );
+    }
+
+    /// A generic alias's type argument is read where the alias is used,
+    /// not where it is defined: `Thing` is not in scope next to `Res`.
+    #[test]
+    fn an_alias_argument_is_read_at_its_use() {
+        let generated = generate(
+            Exports::new().service("service", "dep_crate::Service"),
+            &[
+                ("lib.rs", "mod err; mod model; mod svc; pub use svc::*;"),
+                (
+                    "err.rs",
+                    "use crate::model::Problem;\n\
+                     pub type Res<T> = std::result::Result<T, Problem>;\n\
+                     pub type More<T> = Res<Vec<T>>;\n\
+                     pub type ResE<T, E> = std::result::Result<T, E>;",
+                ),
+                (
+                    "model.rs",
+                    "#[derive(serde::Serialize)] pub struct Thing { pub id: String }\n\
+                     #[derive(Debug, serde::Serialize)] pub struct Problem { pub message: String }",
+                ),
+                (
+                    "svc.rs",
+                    "use crate::err::{More, Res, ResE}; use crate::model::{Problem, Thing};\n\
+                     pub struct Service;\n\
+                     impl Service {\n\
+                         pub fn one(&self) -> Res<Thing> { todo!() }\n\
+                         pub fn many(&self) -> More<Thing> { todo!() }\n\
+                         pub fn other(&self) -> ResE<Thing, Problem> { todo!() }\n\
+                     }",
+                ),
+            ],
+        )
+        .unwrap();
+        for expected in [
+            "one(): Promise<Thing>",
+            "many(): Promise<Thing[]>",
+            "other(): Promise<Thing>",
+        ] {
+            assert!(
+                generated.typescript.contains(expected),
+                "{expected}\n{}",
+                generated.typescript
+            );
+        }
+        assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
+    }
+
+    /// A defaulted type parameter is written where the alias is defined:
+    /// its `Problem` is not in scope at the use site.
+    #[test]
+    fn an_alias_default_is_read_where_the_alias_is_defined() {
+        let generated = generate(
+            Exports::new().service("service", "dep_crate::Service"),
+            &[
+                ("lib.rs", "mod err; mod model; mod svc; pub use svc::*;"),
+                (
+                    "err.rs",
+                    "use crate::model::Problem;\n\
+                     pub type Res<T, E = Problem> = std::result::Result<T, E>;",
+                ),
+                (
+                    "model.rs",
+                    "#[derive(serde::Serialize)] pub struct Thing { pub id: String }\n\
+                     #[derive(Debug, serde::Serialize)]\n\
+                     #[serde(tag = \"kind\", content = \"detail\")]\n\
+                     pub enum Problem { Missing }",
+                ),
+                (
+                    "svc.rs",
+                    "use crate::err::Res; use crate::model::Thing;\n\
+                     pub struct Service;\n\
+                     impl Service { pub fn one(&self) -> Res<Thing> { todo!() } }",
+                ),
+            ],
+        )
+        .unwrap();
+        assert!(
+            generated.typescript.contains("one(): Promise<Thing>"),
+            "{}",
+            generated.typescript
+        );
+        assert!(
+            generated
+                .typescript
+                .contains("RustError<\"Problem\", \"Missing\", Problem>"),
             "{}",
             generated.typescript
         );
