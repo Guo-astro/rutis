@@ -89,7 +89,7 @@ The first job of `ci.yml`, `changes`, looks at the files the pull request change
 
 ## 4. Jobs
 
-The "Pull requests" column says when a job runs on a pull request and what it runs there. In a full run (nightly, by hand, and on pull requests with `all` on) every job runs, in full.
+The "Pull requests" column says when a job runs on a pull request and what it runs there. In a full run (by hand, the release gate, and pull requests with `all` on) every job runs, in full. The nightly run skips a few heavy ones (`install`, `dylib-windows`, `specs`, `sdk-repro`) or samples the events placements, as §2 describes.
 
 | Job | Runner | Pull requests | Added in full runs | What it does |
 | --- | --- | --- | --- | --- |
