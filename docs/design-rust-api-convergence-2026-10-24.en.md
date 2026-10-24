@@ -1,12 +1,12 @@
-# Rust API convergence: one way to write a plugin
+# Rust API convergence: one default path plus a host escape hatch
 
 [中文](design-rust-api-convergence-2026-10-24.md)
 
-Status: design (2026-10-24), #617, target version 0.17. It only layers the Rust public API and shortens the default path: no new capabilities, no runtime semantics changed; the protocol, the other languages' SDKs and `rutis.json` stay as they are.
+Status: design approved (2026-10-24, #618), to be implemented, #617, target version 0.17. It only layers the Rust public API and shortens the default path: no new capabilities, no runtime semantics changed; the protocol, the other languages' SDKs and `rutis.json` stay as they are.
 
 ## 1. Goal
 
-> A Rust plugin author learns one way to write a plugin, three service methods, and event methods named as in every other language. The smallest plugin has no `BoxFuture`, no lifetime parameters and no `Effect`. What hosts use goes into `rutis::host`; what rutis's own crates use among themselves goes into the hidden `rutis::internal`. Every capability is still there and behaves as in 0.16; only its place and its spelling change.
+> By default, a Rust plugin author learns one way to write a plugin, three service methods, and event methods named as in every other language. The smallest plugin has no `BoxFuture`, no lifetime parameters and no `Effect`. What hosts use goes into `rutis::host`; what rutis's own crates use among themselves goes into the hidden `rutis::internal`. Every capability is still there and behaves as in 0.16; only its place and its spelling change.
 
 Python plugins already work this way: the same gating, reload, cleanup, cross-process calls and five event modes, with 10 methods on `Context`. So the large Rust surface (71 names at the root, 40 methods on `Ctx`, 28 on `EventBus`, four plugin traits) is not caused by crossing languages or processes, but by three fixable problems:
 
@@ -382,7 +382,7 @@ Against #617's acceptance list:
 
 | #617 | This design |
 | --- | --- |
-| A plugin author sees ≤ 15 entry points by default | 9 at the root + 9 in `rutis::events`, 18 in all: not met. The extra ones are types the compiler infers in event signatures; authors write 6 in the examples. The proposal is to change this item to "≤ 10 names an author writes, with the public surface of the root and `rutis::events` locked by a snapshot", the same measure as #617's "a normal plugin actually needs about 10–12 names"; #617 decides on this change |
+| A plugin author sees ≤ 15 entry points by default | This item becomes: ≤ 10 names an author writes, with the public surface of the root and `rutis::events` locked by a snapshot (agreed in the #618 review, 2026-10-24). It is the same measure as #617's "a normal plugin actually needs about 10–12 names". Authors now write 6 in the examples; the 9 at the root plus the 9 in `rutis::events`, 18 in all, are locked by the snapshot |
 | A minimal Rust plugin needs no hand-written `BoxFuture` or lifetimes | the examples in section 2; the README, guides and examples all use this style |
 | `EventBus` has ≤ 10 public methods | plugins use the 9 event methods on `Ctx`; `EventBus` moves into `internal` |
 | ≤ 5 service provide / read methods | 3: `provide`, `provide_as`, `get` |
@@ -569,6 +569,7 @@ rutis-migrate 0.17 path/to/crate
 | --- | --- |
 | `CordisError` in type positions becomes `Error`; `.map_err(\|e\| CordisError::PluginFailed(e.into()))?` becomes `?`; constructing `CordisError::PluginFailed(…)` becomes `Error::from(…)` | yes |
 | An old `impl Plugin` becomes `impl host::DynPlugin`, with `injects` returning `Vec<TypeKey>` (the body wrapped in `.to_vec()`) | yes |
+| Where the old `Plugin` appears as a type or a bound, it becomes `DynPlugin`: `Box<dyn Plugin>`, `Arc<dyn Plugin>`, `Vec<Box<dyn Plugin>>`, generic bounds `P: Plugin` and `where P: Plugin`, `impl Plugin` in argument position | yes |
 | `impl TypedPlugin`: `BoxFuture` and `Box::pin` removed, `async fn apply`; a trailing `Ok(Effect::Done)` becomes `Ok(())`; `Typed::new(p)` becomes `p` | yes |
 | `ctx.effect(\|\| { …; Effect::Disposer(Box::new(move \|\| B)) })` becomes `ctx.effect(\|\| { …; async move { B } })`; the same for `AsyncDisposer` and `Done` | yes (a TODO for `Effect::Many`) |
 | `ctx.events().on(&ctx, &key, \|c, e, call\| Box::pin(async move { … }))` becomes `ctx.on::<E>(\|e, call\| async move { … })`, with uses of `c` in the body becoming `call.ctx()`; the same for `on_sync`, `on_pattern`, `on_opt`; `E` is taken from `EventKey::<E>` or the key variable's type | yes (a TODO where the key's type cannot be found) |

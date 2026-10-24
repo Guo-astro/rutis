@@ -1,12 +1,12 @@
-# Rust API 收敛：写插件只有一条路
+# Rust API 收敛：一条默认路加 host 逃生口
 
 [English](design-rust-api-convergence-2026-10-24.en.md)
 
-状态：设计（2026-10-24），#617，目标版本 0.17。只把 Rust 公开 API 分层、缩短默认路径：不加新能力，不改运行时语义；协议、其他语言的 SDK 和 `rutis.json` 都不变。
+状态：设计已通过（2026-10-24，#618），待实现，#617，目标版本 0.17。只把 Rust 公开 API 分层、缩短默认路径：不加新能力，不改运行时语义；协议、其他语言的 SDK 和 `rutis.json` 都不变。
 
 ## 一、目标
 
-> 写 Rust 插件的人只学一种插件写法、三个服务方法，以及和其他语言同名的事件方法。最小的插件不出现 `BoxFuture`、生命周期参数和 `Effect`。宿主用的东西放进 `rutis::host`，rutis 自己的 crate 之间用的东西放进隐藏的 `rutis::internal`。每项能力都还在，行为和 0.16 相同，只是换了位置、换了写法。
+> 写 Rust 插件的人默认只学一种插件写法、三个服务方法，以及和其他语言同名的事件方法。最小的插件不出现 `BoxFuture`、生命周期参数和 `Effect`。宿主用的东西放进 `rutis::host`，rutis 自己的 crate 之间用的东西放进隐藏的 `rutis::internal`。每项能力都还在，行为和 0.16 相同，只是换了位置、换了写法。
 
 Python 插件已经做到了：同样的门控、重载、清理、跨进程和五种事件方式，`Context` 只有 10 个方法。所以 Rust 的公开面大（根上 71 个名字、`Ctx` 40 个方法、`EventBus` 28 个方法、四种插件 trait），原因不在于跨语言、跨进程，而是三处可以修的问题：
 
@@ -382,7 +382,7 @@ pub trait Plugin: Send + Sync + 'static {
 
 | #617 | 本方案 |
 | --- | --- |
-| 插件作者默认看到的入口 ≤ 15 个 | 根上 9 个 + `rutis::events` 9 个，共 18 个，没有达到。多出来的是事件签名里由编译器推断的类型；作者在例子里手写的是 6 个。建议把这一项改成"作者手写的名字 ≤ 10，根和 `rutis::events` 的公开面由快照锁住"，与 #617 里"写一个普通插件实际只需要约 10–12 个名字"是同一个口径；这一改动由 #617 决定 |
+| 插件作者默认看到的入口 ≤ 15 个 | 这一项改为：作者手写的名字 ≤ 10，根和 `rutis::events` 的公开面由快照锁住（#618 评审同意，2026-10-24）。与 #617 里"写一个普通插件实际只需要约 10–12 个名字"是同一个口径。现在作者在例子里手写的是 6 个；根上 9 个加 `rutis::events` 9 个，共 18 个，由快照锁住 |
 | 最小的 Rust 插件不手写 `BoxFuture` 和生命周期 | 第二节的例子；README、指南、示例都用这种写法 |
 | `EventBus` 的公开方法 ≤ 10 个 | 插件只用 `Ctx` 上的 9 个事件方法，`EventBus` 移进 `internal` |
 | 服务的 provide / read 方法 ≤ 5 个 | 3 个：`provide`、`provide_as`、`get` |
@@ -569,6 +569,7 @@ rutis-migrate 0.17 path/to/crate
 | --- | --- |
 | `CordisError` 在类型位置改成 `Error`；`.map_err(\|e\| CordisError::PluginFailed(e.into()))?` 改成 `?`；构造 `CordisError::PluginFailed(…)` 改成 `Error::from(…)` | 是 |
 | 旧的 `impl Plugin` 改成 `impl host::DynPlugin`，`injects` 的签名改成返回 `Vec<TypeKey>`（函数体包一层 `.to_vec()`） | 是 |
+| 旧 `Plugin` 作为类型和约束出现的地方改成 `DynPlugin`：`Box<dyn Plugin>`、`Arc<dyn Plugin>`、`Vec<Box<dyn Plugin>>`，泛型约束 `P: Plugin`、`where P: Plugin`，参数位置的 `impl Plugin` | 是 |
 | `impl TypedPlugin`：去掉 `BoxFuture` 和 `Box::pin`，改成 `async fn apply`；末尾的 `Ok(Effect::Done)` 改成 `Ok(())`；`Typed::new(p)` 改成 `p` | 是 |
 | `ctx.effect(\|\| { …; Effect::Disposer(Box::new(move \|\| B)) })` 改成 `ctx.effect(\|\| { …; async move { B } })`；`AsyncDisposer`、`Done` 同理 | 是（`Effect::Many` 留 TODO） |
 | `ctx.events().on(&ctx, &key, \|c, e, call\| Box::pin(async move { … }))` 改成 `ctx.on::<E>(\|e, call\| async move { … })`，块里用到的 `c` 改成 `call.ctx()`；`on_sync`、`on_pattern`、`on_opt` 同理；`E` 取自 `EventKey::<E>` 或键变量的类型 | 是（键的类型推不出来时留 TODO） |
