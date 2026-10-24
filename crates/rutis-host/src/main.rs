@@ -394,11 +394,17 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
         if now == seen {
             continue;
         }
+        let changed = changed_files(&seen, &now);
         seen = now;
         let running = compiled
             .as_ref()
             .and_then(|(key, project)| Some((project, host.binaries_of(key)?)));
+        // Without a compiled project, or when a file not its source changed
+        // too (a plugin of another language the dev file adds), the other
+        // rows reload, after the rebuild.
+        let mut reload_others = true;
         if let Some((project, running)) = running {
+            reload_others = changed.iter().any(|path| !project.is_source(path));
             // A Go or Swift plugin is a binary: build it again, then restart
             // its runtime on the new build. A failed build keeps the old one.
             // Nor does a build: a signal ends it (and the build command).
@@ -451,17 +457,23 @@ async fn dev(args: &[String]) -> Result<Stopped, String> {
                     project.name()
                 ),
             }
+        }
+        if !reload_others {
             continue;
         }
-        // Plugin rows load their new code; peer rows keep their sessions.
+        // Plugin rows load their new code; peer rows keep their sessions,
+        // and a compiled project's rows run on the build its runtime
+        // restarted on.
         host.invalidate();
-        let rows: Vec<String> = host
-            .loader
-            .entries()
-            .into_iter()
-            .filter(|entry| entry.options["name"] != "rutis-bridge/peer")
-            .map(|entry| entry.id)
-            .collect();
+        let own = compiled.as_ref().map(|(_, project)| project.runtime());
+        let entries = host.loader.entries();
+        let rows = rows_to_reload(
+            entries.iter().map(|entry| {
+                let name = entry.options["name"].as_str().unwrap_or_default();
+                (entry.id.as_str(), name)
+            }),
+            own,
+        );
         for row in rows {
             // A plugin whose new code hangs does not keep a signal out.
             let reloaded = tokio::select! {
@@ -489,6 +501,41 @@ fn remove_builds(stale: &mut Vec<std::path::PathBuf>) {
         Ok(()) => false,
         Err(error) => error.kind() != std::io::ErrorKind::NotFound,
     });
+}
+
+/// The files added, removed or modified between two scans of
+/// [`project::sources`].
+fn changed_files(
+    before: &[(std::path::PathBuf, std::time::SystemTime)],
+    after: &[(std::path::PathBuf, std::time::SystemTime)],
+) -> Vec<std::path::PathBuf> {
+    let before_set: HashSet<_> = before.iter().collect();
+    let after_set: HashSet<_> = after.iter().collect();
+    let mut changed: Vec<std::path::PathBuf> = before_set
+        .symmetric_difference(&after_set)
+        .map(|(path, _)| path.clone())
+        .collect();
+    changed.sort();
+    changed.dedup();
+    changed
+}
+
+/// Of `rows` (id, name), those `dev` reloads after a change: not the peer
+/// rows, which keep their sessions, nor the rows of the compiled project's
+/// runtime `own` (`<runtime>:<plugin>`), which a rebuild restarts.
+fn rows_to_reload<'a>(
+    rows: impl Iterator<Item = (&'a str, &'a str)>,
+    own: Option<&str>,
+) -> Vec<String> {
+    rows.filter(|(_, name)| *name != "rutis-bridge/peer")
+        .filter(|(_, name)| {
+            own.is_none_or(|runtime| {
+                name.strip_prefix(runtime)
+                    .is_none_or(|rest| !rest.starts_with(':'))
+            })
+        })
+        .map(|(id, _)| id.to_owned())
+        .collect()
 }
 
 async fn check(args: &[String]) -> Result<(), String> {
@@ -781,6 +828,54 @@ mod tests {
             Some("runtime py: rutis")
         );
         assert_eq!(runtime_line("node", &serde_json::Value::Null), None);
+    }
+
+    /// A file that changed, was added or was removed between two scans.
+    #[test]
+    fn dev_sees_which_files_changed() {
+        use std::path::PathBuf;
+        use std::time::{Duration, SystemTime};
+        let at = |s: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(s);
+        let before = vec![
+            (PathBuf::from("a.go"), at(1)),
+            (PathBuf::from("dev/probe.py"), at(1)),
+            (PathBuf::from("gone.go"), at(1)),
+        ];
+        let after = vec![
+            (PathBuf::from("a.go"), at(1)),
+            (PathBuf::from("dev/probe.py"), at(2)),
+            (PathBuf::from("new.go"), at(1)),
+        ];
+        assert_eq!(
+            super::changed_files(&before, &after),
+            ["dev/probe.py", "gone.go", "new.go"].map(PathBuf::from)
+        );
+        assert!(super::changed_files(&before, &before).is_empty());
+    }
+
+    /// After a change, `dev` reloads every row but the peers' and those of
+    /// the compiled project's own runtime, which its rebuild restarts: a
+    /// Python or TypeScript row the dev file adds to a Go or Swift project
+    /// reloads too (#547).
+    /// guarantee: host/dev-reload
+    #[test]
+    fn dev_reloads_the_rows_a_rebuild_does_not_restart() {
+        let rows = [
+            ("demo", "go-demo:demo"),
+            ("other", "go-demo:other"),
+            ("near", "go-demo-2:near"),
+            ("probe", "py:probe"),
+            ("ts", "./fake.ts"),
+            ("peer", "rutis-bridge/peer"),
+        ];
+        assert_eq!(
+            super::rows_to_reload(rows.into_iter(), Some("go-demo")),
+            ["near", "probe", "ts"]
+        );
+        assert_eq!(
+            super::rows_to_reload(rows.into_iter(), None),
+            ["demo", "other", "near", "probe", "ts"]
+        );
     }
 
     /// The rows that may provide a service at runtime: three named, then a

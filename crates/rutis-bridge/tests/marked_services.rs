@@ -590,6 +590,15 @@ impl Greeter {
         true
     }
 
+    /// Not in this build, so not checked either: in a build that has
+    /// them, these could not be bound (#541).
+    #[cfg(any())]
+    pub fn reset(&mut self) {}
+    #[cfg_attr(not(any()), cfg(any()))]
+    pub fn make<T: Default>(&self) -> T {
+        T::default()
+    }
+
     /// The explicit form of `&self`.
     #[allow(clippy::needless_arbitrary_self_type)]
     pub fn explicit(self: &Self) -> String {
