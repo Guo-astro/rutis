@@ -2,22 +2,26 @@
 
 Data-driven plugin management for [rutis](https://github.com/arcships/rutis): which plugins run, with which config, decided by ordered layers of rows rather than code. The counterpart of Cordis' `cordis-plugin-loader` and `cordis-plugin-include`.
 
-- `reconcile` converges the running plugins to the layers; imperative edits (`create`, `update`, `set_disabled`, `move_to`, `remove`, …) change the editable layer, wait for the tree to settle and roll back on failure; `Persist` saves edits.
+- `reconcile` converges the running plugins to the layers; imperative edits (`create`, `update`, `set_disabled`, `move_to`, `remove`, …) change the editable layer, wait for the tree to settle and roll back on failure; `edit::Persist` saves edits.
 - `inject` / `isolate` name services through a `ServiceCatalog`; `{ "__jsExpr": … }` expressions are evaluated by `LoaderOptions::expressions`.
 - Volatile config fields change without a restart; a plugin can unload itself.
-- An `instanced` group runs once per instance the application creates (`create_instance(&ctx, "session")`, `remove_instance`); edits reach every instance, and factories registered with `Builtins::register_with` build instance keys from `Build::instance`.
+- An `instanced` group runs once per instance the application creates (`create_instance(&ctx, "session")`, `remove_instance`); edits reach every instance, and plugins registered with `Builtins::register_with` are built for each copy from where it runs (`Build::instance`).
+
+The root holds what assembling a loader takes (`LoaderPlugin`, `LoaderOptions`, `Loader`, `Layer`, `Patch`, `Builtins`, `Chain`, `Resolver`, `ServiceCatalog`, `LoaderError`, `RowEvent`); the rest is grouped in modules: `report` (what the loader's methods return), `edit` (imperative edits and persistence), `resolve` (writing a resolver), `runtime` (plugins of other languages) and `peer` (rows on linked nodes).
 
 Plugin sources (`Resolver`):
 
 | source | row name | feature |
 | --- | --- | --- |
 | `Builtins` | any registered name | |
-| `RuntimeResolver::node` | npm package, subpath or file | `node` |
-| `RuntimeResolver::modules` | `py:<module>` (or `<runtime>:<module>`) | `python` |
-| `PeerResolver`, `register_peer_node` | `peer:<node>/<plugin>`, `rutis-bridge/peer` | `peer` |
+| `runtime::RuntimeResolver::node` | npm package, subpath or file | `node` |
+| `runtime::RuntimeResolver::modules` | `py:<module>` (or `<runtime>:<module>`) | `python` |
+| `peer::PeerResolver`, `peer::register_peer_node` | `peer:<node>/<plugin>`, `rutis-bridge/peer` | `peer` |
 | `rutis_dylib::DylibResolver` | `dylib:<dir>` | rutis-dylib's `loader` |
 
 ```rust
+let mut builtins = Builtins::new();
+builtins.register("weather", Weather::new);   // fn new(config: &WeatherConfig) -> rutis::Result<Weather>
 let plugin = LoaderPlugin::new(Chain::new().with(builtins), LoaderOptions::default());
 let loader = plugin.handle();
 root.plugin(plugin).await?;

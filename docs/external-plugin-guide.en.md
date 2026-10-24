@@ -55,40 +55,43 @@ export = []
 `src/lib.rs`:
 
 ```rust
-use rutis_sdk::rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory};
+use rutis_sdk::rutis::{Ctx, Error, Plugin, Result};
 use rutis_sdk::ConfigValue;
 
-struct Factory;
-struct MyPlugin;
+struct MyPlugin {
+    greeting: String,
+}
 
-impl PluginFactory<ConfigValue> for Factory {
-    fn name(&self) -> &str {
-        "my-plugin"
-    }
-    fn build(&self, config: &ConfigValue) -> Result<Box<dyn Plugin>, CordisError> {
-        let _ = config;
-        Ok(Box::new(MyPlugin))
+impl MyPlugin {
+    /// Built from the row's config; when the config changes, the host builds a new one with it.
+    fn new(config: &ConfigValue) -> Result<Self> {
+        let greeting = config["greeting"].as_str().unwrap_or("hello from my-plugin");
+        if greeting.is_empty() {
+            return Err(Error::msg("greeting must not be empty"));
+        }
+        Ok(MyPlugin { greeting: greeting.to_owned() })
     }
 }
 
 impl Plugin for MyPlugin {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "my-plugin"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            // Use the Tokio re-export: the task runs on the host's runtime.
-            rutis_sdk::tokio::spawn(async {})
-                .await
-                .map_err(|e| CordisError::PluginFailed(e.into()))?;
-            ctx.provide("hello from my-plugin".to_string())?;
-            Ok(Effect::Done)
-        })
+
+    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
+        // Use the Tokio re-export: the task runs on the host's runtime.
+        rutis_sdk::tokio::spawn(async {}).await?;
+        ctx.provide(self.greeting.clone())?;
+        Ok(())
     }
 }
 
-rutis_sdk::export_plugin! { id: "my-plugin", factory: Factory }
+rutis_sdk::export_plugin! { id: "my-plugin", build: MyPlugin::new }
 ```
+
+How to write the plugin itself (dependencies, services, events, cleanup, errors) is in [Write a Rust plugin](guide/rust-plugin.en.md): the same as for a plugin compiled into the host. `build:` takes a constructor `Fn(&C) -> rutis::Result<P>`, where `P` is a `Plugin` whose dependencies come from its `type Deps`, and `C` is decoded from the row's JSON config (here the raw `ConfigValue`). The optional `schema:` gives the config's JSON Schema (a `serde_json::Value`) for hosts that show config forms. A plugin whose dependencies are known only at run time (by a name in its config, say) implements `rutis_sdk::rutis::host::DynPlugin` and `host::PluginFactory<ConfigValue>`, and is exported with `export_plugin! { id: "…", factory: … }`.
 
 Use private dependency types internally, but **do not expose them across plugin/host boundaries**. Types exchanged in services, events, and configuration must come from the `rutis_sdk` re-exports. To pass structured data to the host, construct `ConfigValue` with `rutis_sdk::serde_json::json!({...})`. Do not derive `Serialize` for your own types and pass them to the SDK's serde_json: your private copy's trait and the one in the SDK dependency closure are different, producing compile error E0277.
 
@@ -125,7 +128,7 @@ Local verification with the runtime release directory supplied by the host publi
 
 ## SDK upgrades
 
-After the host publisher upgrades the SDK, old plugins are rejected by the new host because L1/L2 do not match, so users cannot load them. Get the new sdk-bundle (its `sdk.toml` has a different `artifact_sha256`) and package your plugin again. Your source normally needs no changes unless the SDK API changed. Replace the sdk-bundle in your workspace and update the paths in `.cargo/config.toml`.
+After the host publisher upgrades the SDK, old plugins are rejected by the new host because L1/L2 do not match, so users cannot load them. Get the new sdk-bundle (its `sdk.toml` has a different `artifact_sha256`) and package your plugin again. Your source normally needs no changes unless the SDK API changed (0.17 changed the Rust API: see [migrating to 0.17](migration-0.17.en.md)). Replace the sdk-bundle in your workspace and update the paths in `.cargo/config.toml`.
 
 ## Known limitations
 

@@ -11,31 +11,27 @@ Plugins say what they need and what they provide; rutis decides when they start,
 
 ```toml
 [dependencies]
-rutis = "0.15"
+rutis = "0.17"
 ```
 
 ```rust
 use std::sync::Arc;
-use rutis::{BoxFuture, CordisError, Ctx, Effect, TypedPlugin};
+use rutis::{Ctx, Plugin, Result};
 
 struct Greeting(String);
 struct Listener;
 
-impl TypedPlugin for Listener {
-    type Deps = (Arc<Greeting>,);   // starts once a Greeting is provided
+impl Plugin for Listener {
+    type Deps = Arc<Greeting>;   // starts once a Greeting is provided
 
-    fn name(&self) -> &str { "listener" }
-
-    fn apply<'a>(&'a self, _: &'a Ctx, (greeting,): Self::Deps) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            println!("{}", greeting.0);
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, _: &Ctx, greeting: Arc<Greeting>) -> Result {
+        println!("{}", greeting.0);
+        Ok(())
     }
 }
 ```
 
-The complete program, with a provider being replaced at runtime, is in [examples/quickstart.rs](https://github.com/arcships/rutis/blob/main/crates/rutis/examples/quickstart.rs).
+The complete program, with a provider being replaced at runtime, is in [examples/quickstart.rs](https://github.com/arcships/rutis/blob/main/crates/rutis/examples/quickstart.rs). The crate root and `rutis::events` hold what a plugin uses; an application embedding rutis also uses `rutis::host` (`use rutis::host::*;` for `Ctx::root`, `shutdown`, `diagnostics` and the like).
 
 ## The model
 
@@ -47,12 +43,14 @@ The complete program, with a provider being replaced at runtime, is in [examples
 
 ## Learn more
 
+- [Write a Rust plugin](https://github.com/arcships/rutis/blob/main/docs/guide/rust-plugin.en.md): dependencies, services, events, cleanup, errors
 - [Application design guide](https://github.com/arcships/rutis/blob/main/docs/development-guide.en.md) and [development handbook](https://github.com/arcships/rutis/blob/main/docs/development-handbook.en.md)
 - [Core features](https://github.com/arcships/rutis/blob/main/docs/core-features.en.md): hot update, dynamic events, interception, diagnostics
 - Plugins in TypeScript and Python, and links between machines: the [rutis repository](https://github.com/arcships/rutis)
 
 ## Recent changes
 
+- **0.17** — one plugin trait, `Plugin` (`type Deps` and `async fn apply`, no `BoxFuture` or `Effect`); listeners are closures and the five dispatch modes are `Ctx` methods (`ctx.on`, `ctx.emit`, …); one error type, `rutis::Error`, which `?` takes from any error (`anyhow` feature for `anyhow`); what applications use moved to `rutis::host`. No behaviour changes; `rutis-migrate` rewrites most code. [Migration guide](https://github.com/arcships/rutis/blob/main/docs/migration-0.17.en.md)
 - **0.15** — `#[rutis::service]` on a service's `impl` block exposes it by name to the rows of every language, without a `build.rs` list (re-exported from the new crate `rutis-macros`); `CallError`. No code changes. [Migration guide](https://github.com/arcships/rutis/blob/main/docs/migration-0.15.en.md)
 - **0.13** — unified events: one listener table for every mode, events found by name and serde across processes, `emit` / `parallel` / `serial` / `waterfall` / `bail_sync` / `waterfall_sync` with one meaning everywhere, scope descriptors and filters, remote listener entries. [Migration guide](https://github.com/arcships/rutis/blob/main/docs/migration-0.13.en.md)
 - **0.6.1** — interfaces for the plugin control plane ([rutis-loader](https://crates.io/crates/rutis-loader)), typed plugins; no breaking changes. [Upgrade notes](https://github.com/arcships/rutis/blob/main/docs/migration-0.6.0-to-0.6.1.en.md)

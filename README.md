@@ -83,7 +83,8 @@ cargo add tokio --features full
 
 ```rust
 use std::sync::Arc;
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, Typed, TypedPlugin};
+use rutis::host::*;                 // Ctx::root, shutdown: what a host calls
+use rutis::{Ctx, Plugin, Result};
 
 /// A service is a type.
 struct Greeting(String);
@@ -92,36 +93,30 @@ struct Greeting(String);
 struct Greeter(&'static str);
 
 impl Plugin for Greeter {
-    fn name(&self) -> &str { "greeter" }
+    type Deps = ();
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            ctx.provide(Greeting(format!("hello from {}", self.0)))?;
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
+        ctx.provide(Greeting(format!("hello from {}", self.0)))?;
+        Ok(())
     }
 }
 
 /// Depends on Greeting: starts when it appears, restarts when it is replaced.
 struct Listener;
 
-impl TypedPlugin for Listener {
-    type Deps = (Arc<Greeting>,);
+impl Plugin for Listener {
+    type Deps = Arc<Greeting>;
 
-    fn name(&self) -> &str { "listener" }
-
-    fn apply<'a>(&'a self, _: &'a Ctx, (greeting,): Self::Deps) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            println!("{}", greeting.0);
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, _: &Ctx, greeting: Arc<Greeting>) -> Result {
+        println!("{}", greeting.0);
+        Ok(())
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = Ctx::root()?;
-    let listener = ctx.plugin(Typed::new(Listener));  // waits for a Greeting
+    let listener = ctx.plugin(Listener);              // waits for a Greeting
 
     let english = ctx.plugin(Greeter("English"));
     (&english).await?;
@@ -137,7 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Nothing touched `Listener`: when the provider changed, it stopped and started again on its own. Run it from the repository with `cargo run -p rutis --example quickstart`. To run TypeScript, Python and Go plugins inside your Rust application, see [embedding in Rust](docs/guide/rust-host.en.md).
+Nothing touched `Listener`: when the provider changed, it stopped and started again on its own. Run it from the repository with `cargo run -p rutis --example quickstart`. Services, events, cleanup and dylib plugins: [Write a Rust plugin](docs/guide/rust-plugin.en.md). To run TypeScript, Python and Go plugins inside your Rust application, see [embedding in Rust](docs/guide/rust-host.en.md).
 
 ## From experiment to production
 
@@ -242,7 +237,7 @@ All of these form a release train: released together at one version, currently 0
 
 ## Documentation
 
-- **[Guides](docs/guide/README.en.md)**: organized by task. Plugins in TypeScript, Bun, Python, Go and Swift, running rutis-host, linking nodes, embedding in Rust, working with Cordis.
+- **[Guides](docs/guide/README.en.md)**: organized by task. Plugins in Rust, TypeScript, Bun, Python, Go and Swift, running rutis-host, linking nodes, embedding in Rust, working with Cordis.
 - **[Design philosophy](docs/design-philosophy.en.md)**: why rutis exists, the shape that follows, its costs and principles.
 - **[Application design guide](docs/development-guide.en.md)**: splitting an app into plugins, drawing the dependency graph, designing reloads and multiple instances.
 - **[Development handbook](docs/development-handbook.en.md)**: API usage, resource cleanup, events, troubleshooting and verification.
@@ -250,7 +245,7 @@ All of these form a release train: released together at one version, currently 0
 - **[Guarantee registry](docs/guarantees.en.md)**: what rutis promises, at what level, and which tests verify each promise.
 - **[API docs](https://docs.rs/rutis)**: the complete reference on docs.rs.
 - **Design records**: the [core design](docs/design-rust-port.en.md), the [spec-by-spec parity check against Cordis](docs/cordis-spec-parity-2026-08-18.en.md), and every design record in [docs](docs).
-- **Upgrading**: [0.8 → 0.9](docs/migration-0.8-to-0.9.en.md) · [0.7 → 0.8](docs/migration-0.7-to-0.8.en.md) · [from rutis-interop to 0.7](docs/migration-interop-to-0.7.en.md) · [0.6.0 → 0.6.1](docs/migration-0.6.0-to-0.6.1.en.md) · [0.5 → 0.6](docs/migration-0.5-to-0.6.en.md) · [0.3 → 0.5](docs/migration-0.3-to-0.5.en.md) · [0.1 → 0.2](docs/migration-0.1-to-0.2.en.md)
+- **Upgrading**: [0.16 → 0.17](docs/migration-0.17.en.md) · [0.8 → 0.9](docs/migration-0.8-to-0.9.en.md) · [0.7 → 0.8](docs/migration-0.7-to-0.8.en.md) · [from rutis-interop to 0.7](docs/migration-interop-to-0.7.en.md) · [0.6.0 → 0.6.1](docs/migration-0.6.0-to-0.6.1.en.md) · [0.5 → 0.6](docs/migration-0.5-to-0.6.en.md) · [0.3 → 0.5](docs/migration-0.3-to-0.5.en.md) · [0.1 → 0.2](docs/migration-0.1-to-0.2.en.md)
 
 ## Platforms and status
 
