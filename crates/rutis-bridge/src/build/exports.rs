@@ -421,6 +421,23 @@ struct Generator<'a> {
     cyclic: HashMap<(usize, usize), bool>,
 }
 
+/// `rutis::Error`, `rutis::host::ErrorKind` (or 0.16's `rutis::CordisError`),
+/// also through `rutis_sdk::rutis`.
+fn rutis_error(path: &[String]) -> bool {
+    let path = match path.first().map(String::as_str) {
+        Some("rutis_sdk") => &path[1..],
+        _ => path,
+    };
+    path_is(
+        path,
+        &[
+            &["rutis", "Error"],
+            &["rutis", "host", "ErrorKind"],
+            &["rutis", "CordisError"],
+        ],
+    )
+}
+
 fn path_is(path: &[String], candidates: &[&[&str]]) -> bool {
     candidates
         .iter()
@@ -1569,6 +1586,22 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                     _ => Ok(None),
                 }
             }
+            // `rutis::Result<T = (), E = rutis::Error>`
+            Some(Res::External(found))
+                if path_is(
+                    &found,
+                    &[&["rutis", "Result"], &["rutis_sdk", "rutis", "Result"]],
+                ) =>
+            {
+                let unit: Type = syn::parse_quote!(());
+                let error: Type = syn::parse_quote!(::rutis::Error);
+                match args.as_slice() {
+                    [] => Ok(Some((unit, error, scope.clone()))),
+                    [ok] => Ok(Some((ok.clone(), error, scope.clone()))),
+                    [ok, error] => Ok(Some((ok.clone(), error.clone(), scope.clone()))),
+                    _ => Ok(None),
+                }
+            }
             Some(Res::External(found)) if path_is(&found, &[&["std", "io", "Result"]]) => {
                 let error: Type = syn::parse_quote!(::std::io::Error);
                 Ok(args.first().map(|ok| (ok.clone(), error, scope.clone())))
@@ -1612,7 +1645,12 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
         };
         let segment = path.path.segments.last().expect("a segment");
         let res = self.resolve_type(scope, &path.path)?;
-        let ident = segment.ident.to_string();
+        // rutis's error keeps the name it had in 0.16 on the TypeScript side
+        // too (`CordisErrorThrown`)
+        let ident = match &res {
+            Some(Res::External(found)) if rutis_error(found) => "CordisError".to_owned(),
+            _ => segment.ident.to_string(),
+        };
         let (failure, codes, data) = match &res {
             Some(Res::External(found)) if path_is(found, &[&["std", "string", "String"]]) => {
                 (Failure::Str, "\"Error\"".to_owned(), "undefined".to_owned())
@@ -1623,19 +1661,16 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
             {
                 return Ok((Failure::Pass, None));
             }
-            Some(Res::External(found))
-                if found.first().is_some_and(|k| k == "rutis")
-                    && found.last().is_some_and(|l| l == "CordisError") =>
-            {
-                (
-                    Failure::Variant {
-                        name: "CordisError".into(),
-                        data: false,
-                    },
-                    "string".to_owned(),
-                    "undefined".to_owned(),
-                )
-            }
+            // rutis's error (0.16's `CordisError`): thrown as `CordisError`,
+            // its code the kind's variant, as before
+            Some(Res::External(found)) if rutis_error(found) => (
+                Failure::Variant {
+                    name: "CordisError".into(),
+                    data: false,
+                },
+                "string".to_owned(),
+                "undefined".to_owned(),
+            ),
             Some(Res::Item { module, index }) => {
                 let (module, index) = (*module, *index);
                 match self.sources.item(module, index).clone() {
@@ -2499,7 +2534,8 @@ mod tests {
 
     const INNER: &str = r#"
         use crate::types::{Item, Problem, Res, Single};
-        use rutis::{BoxFuture, CordisError};
+        use rutis::host::BoxFuture;
+        use rutis::Error;
 
         /// The store.
         pub struct Store;
@@ -2509,11 +2545,11 @@ mod tests {
             /// Put an item.
             pub fn put(&self, item: Item) -> Res<u32> { Ok(1) }
             pub async fn find(&self, name: &str, limit: Option<u8>) -> Option<Item> { None }
-            pub fn watch(&self, each: impl Fn(Item, u8) -> BoxFuture<'static, Result<bool, CordisError>> + Send) {}
+            pub fn watch(&self, each: impl Fn(Item, u8) -> BoxFuture<'static, Result<bool, Error>> + Send) {}
             pub fn reset(&mut self) {}
             pub fn tied(&self, ctx: &rutis::Ctx, n: u8) {}
             pub fn single(&self) -> Result<(), Single> { Ok(()) }
-            pub fn borrowing(&self, each: impl Fn(&Item) -> BoxFuture<'static, Result<(), CordisError>>) {}
+            pub fn borrowing(&self, each: impl Fn(&Item) -> BoxFuture<'static, rutis::Result>) {}
             #[cfg(feature = "extra")]
             pub fn extra(&self) -> String { String::new() }
             #[cfg(feature = "missing")]

@@ -12,7 +12,9 @@ use std::sync::Arc;
 use crate::channel::PeerId;
 use crate::runtime::rpc::{Connection, Dispatch, Reply, Value};
 use crate::runtime::{runtime_session_key, Error, RuntimeSession};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, TypeKey};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error as RutisError};
 
 use crate::{peer_key, Peer};
 
@@ -33,29 +35,30 @@ impl RuntimeAccessPlugin {
         Self {
             label: format!("rutis-bridge/runtime#{runtime}"),
             runtime: runtime.to_owned(),
-            injects: [peer_key(&peer)],
+            injects: [peer_key(&peer).erase()],
         }
     }
 }
 
-impl Plugin for RuntimeAccessPlugin {
+impl DynPlugin for RuntimeAccessPlugin {
     fn name(&self) -> &str {
         &self.label
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
-            let peer = ctx.get_as::<Peer>(self.injects[0].clone()).ok_or_else(|| {
-                CordisError::PluginFailed(format!("{}: the peer is gone", self.label).into())
-            })?;
-            ctx.provide_as::<dyn RuntimeSession>(
-                runtime_session_key(&self.runtime),
-                peer_session(peer),
-            )?;
+            let peer = ctx
+                .get_key::<Peer>(self.injects[0].clone())
+                .ok_or_else(|| {
+                    rutis::Error::from(ErrorKind::PluginFailed(
+                        format!("{}: the peer is gone", self.label).into(),
+                    ))
+                })?;
+            ctx.provide_at(runtime_session_key(&self.runtime), peer_session(peer))?;
             Ok(Effect::Done)
         })
     }

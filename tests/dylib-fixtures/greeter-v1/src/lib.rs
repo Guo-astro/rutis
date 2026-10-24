@@ -1,11 +1,12 @@
 #![cfg(feature = "export")]
 
-use rutis_sdk::rutis::{
-    BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, PluginFactory, Snapshot,
-};
+//! The plugin as its author writes it: a `Plugin`, exported with its
+//! constructor (`build:`). greeter-v2 exports a `PluginFactory` instead.
+
+use rutis_sdk::rutis::host::{FiberState, Snapshot};
+use rutis_sdk::rutis::{Ctx, Plugin};
 use rutis_sdk::ConfigValue;
 
-struct Factory;
 struct Greeter;
 
 /// Served by name to the plugins of other languages once provided (#510).
@@ -32,36 +33,31 @@ impl Drop for Greeter {
     }
 }
 
-impl PluginFactory<ConfigValue> for Factory {
+impl Plugin for Greeter {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "greeter"
     }
-    fn build(&self, _: &ConfigValue) -> Result<Box<dyn Plugin>, CordisError> {
-        Ok(Box::new(Greeter))
+
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis_sdk::rutis::Result {
+        rutis_sdk::tokio::spawn(async {}).await?;
+        ctx.provide("hello v1".to_string())?;
+        ctx.provide(Greeting("hello v1"))?;
+        ctx.provide(Snapshot {
+            generation: 1,
+            state: FiberState::Active,
+            error: None,
+        })?;
+        Ok(())
     }
 }
-impl Plugin for Greeter {
-    fn name(&self) -> &str {
-        "greeter"
-    }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            rutis_sdk::tokio::spawn(async {})
-                .await
-                .map_err(|e| CordisError::PluginFailed(e.into()))?;
-            ctx.provide("hello v1".to_string())?;
-            ctx.provide(Greeting("hello v1"))?;
-            ctx.provide(Snapshot {
-                generation: 1,
-                state: FiberState::Active,
-                error: None,
-            })?;
-            Ok(Effect::Done)
-        })
-    }
+
+fn greeter(_: &ConfigValue) -> rutis_sdk::rutis::Result<Greeter> {
+    Ok(Greeter)
 }
 #[cfg(feature = "export")]
-rutis_sdk::export_plugin! { id: "greeter", factory: Factory }
+rutis_sdk::export_plugin! { id: "greeter", build: greeter }
 
 #[cfg(feature = "export")]
 #[used]

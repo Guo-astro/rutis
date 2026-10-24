@@ -6,7 +6,8 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect};
+use rutis::{Ctx, Error as RutisError};
 use rutis_bridge::runtime::{Process, Projection};
 use rutis_bridge::session::{decode, Error};
 use rutis_test_support::until;
@@ -56,11 +57,11 @@ struct Mount {
     process: Arc<std::sync::Mutex<Option<Arc<Process>>>>,
 }
 
-impl Plugin for Mount {
+impl DynPlugin for Mount {
     fn name(&self) -> &str {
         "projection-test"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
             let projection = Projection::new();
             projection.service::<Counter>("counter", |process, handle| Counter { process, handle });
@@ -75,13 +76,9 @@ impl Plugin for Mount {
             .await?;
             let owner = process.clone();
             let followed = projection.clone();
-            ctx.effect(move || {
-                Effect::AsyncDisposer(Box::new(move || {
-                    Box::pin(async move {
-                        followed.close();
-                        owner.dispose().await.map_err(Into::into)
-                    })
-                }))
+            ctx.effect(move || async move {
+                followed.close();
+                owner.dispose().await.map_err(Into::into)
             })?;
             *self.process.lock().unwrap() = Some(process.clone());
             projection.attach(ctx, process)?;

@@ -639,7 +639,7 @@ export function generate(plugins, nodePackage, options = {}) {
     const shape = nothing ? { rustType: '()', omit: false } : outbound(rust(awaited, `${hint}Result`), absence(awaited, false))
     const result = shape.rustType
     const output = promise
-      ? `::rutis::BoxFuture<'static, Result<${result}, ::rutis_bridge::cordis::Error>>`
+      ? `::rutis::host::BoxFuture<'static, Result<${result}, ::rutis_bridge::cordis::Error>>`
       : `Result<${result}, ::rutis_bridge::cordis::Error>`
     return { params, async: !!promise, result, omit: shape.omit, rustFn: `impl Fn(${params.map(param => param.rustType).join(', ')}) -> ${output} + Send + Sync + 'static` }
   }
@@ -856,7 +856,7 @@ export function generate(plugins, nodePackage, options = {}) {
     const declarations = methods.map(method => {
       const signature = signatureOf(method)
       return method.async
-        ? `fn ${method.rustName}(&self${signature ? ', ' + signature : ''}) -> ::rutis::BoxFuture<'static, Result<${method.result}, ::rutis_bridge::cordis::Error>> { Box::pin(async { Err(${unimplemented(method)}) }) }`
+        ? `fn ${method.rustName}(&self${signature ? ', ' + signature : ''}) -> ::rutis::host::BoxFuture<'static, Result<${method.result}, ::rutis_bridge::cordis::Error>> { Box::pin(async { Err(${unimplemented(method)}) }) }`
         : `fn ${method.rustName}(&self${signature ? ', ' + signature : ''}) -> Result<${method.result}, ::rutis_bridge::cordis::Error> { Err(${unimplemented(method)}) }`
     }).join('\n')
     // The dispatcher's locals are prefixed so that no parameter name can
@@ -891,8 +891,8 @@ export function generate(plugins, nodePackage, options = {}) {
       }
     }
     /// Register \`host\` as the rutis provider of \`ctx.${serviceName}\` for mounted Cordis plugins.
-    pub fn provide_${snake(serviceName)}(ctx: &::rutis::Ctx, host: impl ${traitName}) -> Result<::rutis::Disposer, ::rutis::CordisError> {
-      ctx.provide_as::<dyn ${traitName}>(::rutis::TypeKey::of::<dyn ${traitName}>(), ::std::sync::Arc::new(host))
+    pub fn provide_${snake(serviceName)}(ctx: &::rutis::Ctx, host: impl ${traitName}) -> ::rutis::Result<::rutis::Disposer> {
+      ctx.provide_as::<dyn ${traitName}>(::std::sync::Arc::new(host))
     }`
   }
 
@@ -942,7 +942,7 @@ export function generate(plugins, nodePackage, options = {}) {
   const located = path => root
     ? `__rutis_root.join(${literal(relative(root, path).replaceAll('\\', '/'))})`
     : `::std::path::PathBuf::from(${literal(path)})`
-  const toValue = accessor => `::rutis_bridge::cordis::serde_json::to_value(&${accessor}).map_err(|e| ::rutis::CordisError::PluginFailed(Box::new(e)))?`
+  const toValue = accessor => `::rutis_bridge::cordis::serde_json::to_value(&${accessor})?`
   if (single) {
     const config = configFor(group[0].configType, 'Config', 'self.config')
     configCode = config.code
@@ -964,30 +964,30 @@ export function generate(plugins, nodePackage, options = {}) {
 
   const serviceNames = [...services.keys()]
   const label = serviceNames.length ? serviceNames.join(',') : group.map(plugin => basename(plugin.entry)).join(',')
-  const hostKeys = hosts.map(host => `::rutis::TypeKey::of::<dyn ${host.trait}>()`)
+  const hostKeys = hosts.map(host => `::rutis::host::TypeKey::of::<dyn ${host.trait}>()`)
   const rust_ = `// Generated from the original Cordis plugin. Do not edit.
   ${configCode}
   ${items.join('\n')}
   ${serviceCode.join('\n')}
   ${hostCode.join('\n')}
-  pub struct Plugin { config: Config, injects: Vec<::rutis::TypeKey> }
+  pub struct Plugin { config: Config, injects: Vec<::rutis::host::TypeKey> }
   impl Plugin { pub fn new(config: Config) -> Self { Self { config, injects: vec![${hostKeys.join(', ')}] } } }
-  impl ::rutis::Plugin for Plugin {
+  impl ::rutis::host::DynPlugin for Plugin {
     fn name(&self) -> &str { "cordis:${label}" }
     /// Host-provided services: the mount waits for them natively.
-    fn injects(&self) -> &[::rutis::TypeKey] { &self.injects }
-    fn validate(&self) -> Result<(), ::rutis::CordisError> {
+    fn injects(&self) -> Vec<::rutis::host::TypeKey> { self.injects.clone() }
+    fn validate(&self) -> ::rutis::Result {
       ${configChecks}
       Ok(())
     }
-    fn apply<'a>(&'a self, ctx: &'a ::rutis::Ctx) -> ::rutis::BoxFuture<'a, Result<::rutis::Effect, ::rutis::CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a ::rutis::Ctx) -> ::rutis::host::BoxFuture<'a, ::rutis::Result<::rutis::host::Effect>> {
       Box::pin(async move {
         let projection = ::rutis_bridge::cordis::Projection::new();
         ${[...structs].map(([name, struct]) => `projection.service::<${struct}>(${literal(name)}, |process, handle| ${struct} { process, handle });`).join('\n')}
         let hosts = vec![${hosts.map(host => `::rutis_bridge::cordis::Host {
           name: ${literal(host.name)}.into(),
           methods: ::rutis_bridge::cordis::serde_json::json!(${JSON.stringify(host.manifest)}),
-          dispatch: ::std::sync::Arc::new(${host.dispatch}(ctx.require_as::<dyn ${host.trait}>(::rutis::TypeKey::of::<dyn ${host.trait}>())?)),
+          dispatch: ::std::sync::Arc::new(${host.dispatch}(::rutis::host::CtxHost::require::<dyn ${host.trait}>(ctx)?)),
         }`).join(', ')}];
         ${root ? `let __rutis_root = ::rutis_bridge::cordis::npm_root(${literal(root)});` : ''}
         let __rutis_entries: [::std::path::PathBuf; ${group.length}] = [${group.map(plugin => located(plugin.entry)).join(', ')}];
@@ -1008,12 +1008,12 @@ export function generate(plugins, nodePackage, options = {}) {
         // the services and runs their consumers' disposers first.
         let owner = process.clone();
         let followed = projection.clone();
-        ctx.effect(move || ::rutis::Effect::AsyncDisposer(Box::new(move || Box::pin(async move {
+        ctx.effect(move || async move {
           followed.close();
           owner.dispose().await.map_err(Into::into)
-        }))))?;
+        })?;
         projection.attach(ctx, process)?;
-        Ok(::rutis::Effect::Done)
+        Ok(::rutis::host::Effect::Done)
       })
     }
   }

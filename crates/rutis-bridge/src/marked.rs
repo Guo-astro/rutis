@@ -12,11 +12,14 @@ use std::any::Any;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, Weak};
 
-use rutis::service::{
+use rutis::host::{BoxFuture, Effect, InstanceId, TypeKey};
+use rutis::host::{CtxHost, ErrorKind};
+use rutis::internal::service::{
     erased_serde, exported_name, Answer, CallError, Encoded, Entry, Exposer, Exposure, Function,
     Provision, Wire,
 };
-use rutis::{BoxFuture, CordisError, Ctx, Disposer, Effect, InstanceId, TypeKey};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Disposer, Error as RutisError};
 
 use crate::session::{
     arg, caller_row, host_key, host_key_in, settle, Error, HostDispatch, Reference, Reply, Value,
@@ -28,7 +31,7 @@ static EXPOSER: BridgeExposer = BridgeExposer;
 /// Install the exposer. Done when the program (or library) holding the
 /// bridge loads; calling it again does nothing.
 pub fn install() {
-    rutis::service::install(&EXPOSER);
+    rutis::internal::service::install(&EXPOSER);
 }
 
 rutis::__on_load!(install);
@@ -106,7 +109,7 @@ struct Place {
 }
 
 impl Place {
-    fn of(exposure: &Exposure<'_>) -> Result<Self, CordisError> {
+    fn of(exposure: &Exposure<'_>) -> Result<Self, RutisError> {
         let name = exported_name(&exposure.entries)?;
         let type_name = exposure
             .entries
@@ -123,37 +126,37 @@ impl Place {
         Ok(Self {
             name,
             type_name,
-            key,
+            key: key.erase(),
             serving,
         })
     }
 
     /// The refusal for a name another service has here (R6).
-    fn taken(&self) -> CordisError {
+    fn taken(&self) -> RutisError {
         let by = self
             .serving
-            .get_as::<dyn HostDispatch>(self.key.clone())
+            .get_key::<dyn HostDispatch>(self.key.clone())
             .and_then(|other| other.provider())
             .map(|other| format!(" by {other}"))
             .unwrap_or_default();
-        CordisError::ServiceExists(format!(
+        rutis::Error::from(ErrorKind::ServiceExists(format!(
             "`{}` ({}): the name is already provided here{by}",
             self.name, self.type_name
-        ))
+        )))
     }
 }
 
 impl Exposer for BridgeExposer {
-    fn admit(&self, exposure: &Exposure<'_>) -> Result<(), CordisError> {
+    fn admit(&self, exposure: &Exposure<'_>) -> Result<(), RutisError> {
         let place = Place::of(exposure)?;
-        if rutis::service::vacant(&place.serving, &place.key) {
+        if rutis::internal::service::vacant(&place.serving, &place.key) {
             Ok(())
         } else {
             Err(place.taken())
         }
     }
 
-    fn expose(&self, exposure: Exposure<'_>) -> Result<Disposer, CordisError> {
+    fn expose(&self, exposure: Exposure<'_>) -> Result<Disposer, RutisError> {
         let place = Place::of(&exposure)?;
         let Exposure {
             ctx,
@@ -181,14 +184,13 @@ impl Exposer for BridgeExposer {
         // The native binding's `check()` gates the name as well.
         let served = match check {
             Some(check) => {
-                serving
-                    .provide_as_with_check::<dyn HostDispatch>(key.clone(), marked, move || check())
+                serving.provide_checked::<dyn HostDispatch>(key.clone(), marked, move || check())
             }
-            None => serving.provide_as::<dyn HostDispatch>(key.clone(), marked),
+            None => serving.provide_key::<dyn HostDispatch>(key.clone(), marked),
         };
-        let served = served.map_err(|error| match error {
-            CordisError::ServiceExists(_) => place.taken(),
-            error => error,
+        let served = served.map_err(|error| match &*error {
+            ErrorKind::ServiceExists(_) => place.taken(),
+            _ => error,
         })?;
         let Some(instance) = instance else {
             return Ok(served);
@@ -202,7 +204,7 @@ impl Exposer for BridgeExposer {
             }))
         });
         match claimed {
-            Ok(claimed) => Ok(rutis::service::chain(claimed, served)),
+            Ok(claimed) => Ok(rutis::internal::service::chain(claimed, served)),
             Err(error) => {
                 // Not claimed: not served either.
                 ctx.handle().spawn(served.dispose());
@@ -310,8 +312,8 @@ pub fn unexported(ctx: &Ctx, name: &str) -> Option<String> {
         if default_name(short) != name {
             return None;
         }
-        if rutis::service::is_marked(key.type_id()) {
-            if let Some(exported) = rutis::service::name_of(key.type_id())
+        if rutis::internal::service::is_marked(key.type_id()) {
+            if let Some(exported) = rutis::internal::service::name_of(key.type_id())
                 .filter(|exported| *exported != name)
             {
                 return Some(format!(
@@ -497,11 +499,11 @@ mod tests {
     /// A plugin that hands out its context, and runs `then` on it first.
     struct Probe<F>(std::sync::mpsc::Sender<Ctx>, F);
 
-    impl<F: Fn(&Ctx) + Send + Sync + 'static> rutis::Plugin for Probe<F> {
+    impl<F: Fn(&Ctx) + Send + Sync + 'static> rutis::host::DynPlugin for Probe<F> {
         fn name(&self) -> &str {
             "probe"
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
             (self.1)(ctx);
             self.0.send(ctx.clone()).unwrap();
             Box::pin(async { Ok(Effect::Done) })
@@ -525,11 +527,11 @@ mod tests {
     /// the provider's.
     #[tokio::test]
     async fn read_interceptors_are_the_calling_rows() {
-        use rutis::ServiceIntercept;
+        use rutis::internal::ServiceIntercept;
         let root = Ctx::root().unwrap();
         root.provide(Guarded).unwrap();
         let service = root
-            .get_as::<dyn HostDispatch>(host_key("guarded"))
+            .get_at::<dyn HostDispatch>(&host_key("guarded"))
             .unwrap();
         // A plugin below the root denies reads of `Guarded` in its subtree.
         let guard = child(&root, |ctx| {
@@ -561,7 +563,7 @@ mod tests {
         let root = Ctx::root().unwrap();
         let first = root.provide(Guarded).unwrap();
         let kept = root
-            .get_as::<dyn HostDispatch>(host_key("guarded"))
+            .get_at::<dyn HostDispatch>(&host_key("guarded"))
             .unwrap();
         assert!(call_as(&kept, None).is_ok());
         first.dispose().await.unwrap();
@@ -569,7 +571,7 @@ mod tests {
         let error = call_as(&kept, None).unwrap_err();
         assert!(error.to_string().contains("not available"), "{error}");
         let current = root
-            .get_as::<dyn HostDispatch>(host_key("guarded"))
+            .get_at::<dyn HostDispatch>(&host_key("guarded"))
             .unwrap();
         assert!(call_as(&current, None).is_ok());
         root.shutdown().await.unwrap();

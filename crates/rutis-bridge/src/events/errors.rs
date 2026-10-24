@@ -1,9 +1,10 @@
 //! Event errors across sessions (events protocol §11): the kernel's
-//! [`CordisError`]s as the `throw`s a far end reads, and back.
+//! [`ErrorKind`]s as the `throw`s a far end reads, and back.
 
 use std::sync::Arc;
 
-use rutis::CordisError;
+use rutis::host::ErrorKind;
+use rutis::Error as RutisError;
 use serde_json::{json, Value as Json};
 
 use crate::session::Error;
@@ -20,26 +21,26 @@ pub(crate) fn binding(message: impl Into<String>) -> Error {
 
 /// A session error as the kernel carries it; [`to_session`] gives it back
 /// as it was.
-pub(crate) fn to_cordis(error: Error) -> CordisError {
-    CordisError::PluginFailed(Box::new(error))
+pub(crate) fn to_cordis(error: Error) -> RutisError {
+    RutisError::from(error)
 }
 
 /// The session error a far end gets for `error`: an error that came over a
 /// session as it came, the kernel's event errors under their names
 /// (`AggregateError` with its children in registration order).
-pub fn to_session(error: &CordisError) -> Error {
-    if let CordisError::PluginFailed(source) = error {
+pub fn to_session(error: &ErrorKind) -> Error {
+    if let ErrorKind::PluginFailed(source) = error {
         if let Some(error) = source.downcast_ref::<Error>() {
             return error.clone();
         }
     }
-    if let CordisError::ListenersFailed { name, errors } = error {
+    if let ErrorKind::ListenersFailed { name, errors } = error {
         return aggregate(name, errors);
     }
-    if let CordisError::ListenerFailed { error, .. } = error {
+    if let ErrorKind::ListenerFailed { error, .. } = error {
         return to_session(error);
     }
-    if let CordisError::SyncEventPanicked(inner) = error {
+    if let ErrorKind::SyncEventPanicked(inner) = error {
         return to_session(inner);
     }
     match error.wire_name() {
@@ -57,7 +58,7 @@ pub fn to_session(error: &CordisError) -> Error {
 }
 
 /// `<ErrorName>: <message>` of an error, as a far end would read it.
-fn named(error: &CordisError) -> String {
+fn named(error: &ErrorKind) -> String {
     match to_session(error) {
         Error::Remote { name, message, .. } => format!("{name}: {message}"),
         Error::SyncWaitCycle(message) => format!("SyncWaitCycle: {message}"),
@@ -69,9 +70,9 @@ fn named(error: &CordisError) -> String {
 /// (events protocol §5.6): `rutis: listener of <name> in <where> failed:
 /// <ErrorName>: <message>`, and the same for a filter; `None` for any other
 /// error.
-pub fn report_line(error: &CordisError) -> Option<String> {
+pub fn report_line(error: &ErrorKind) -> Option<String> {
     match error {
-        CordisError::ListenerFailed {
+        ErrorKind::ListenerFailed {
             name,
             listener,
             error,
@@ -79,7 +80,7 @@ pub fn report_line(error: &CordisError) -> Option<String> {
             "rutis: listener of {name} in {listener} failed: {}",
             named(error)
         )),
-        CordisError::FilterFailed {
+        ErrorKind::FilterFailed {
             name,
             emitter,
             error,
@@ -87,7 +88,7 @@ pub fn report_line(error: &CordisError) -> Option<String> {
             "rutis: filter of {name} from {emitter} failed: {}",
             named(error)
         )),
-        CordisError::PluginFailed(source) => {
+        ErrorKind::PluginFailed(source) => {
             let line = source.to_string();
             line.starts_with("filter of ")
                 .then(|| format!("rutis: {line}"))
@@ -99,7 +100,7 @@ pub fn report_line(error: &CordisError) -> Option<String> {
 /// `AggregateError`: `<n> listeners of <name> failed`, its graph's root an
 /// error node whose `errors` are the children's (as JavaScript encodes an
 /// `AggregateError`).
-fn aggregate(name: &str, errors: &[Arc<CordisError>]) -> Error {
+fn aggregate(name: &str, errors: &[Arc<ErrorKind>]) -> Error {
     let message = format!("{} listeners of {name} failed", errors.len());
     let mut nodes: Vec<Json> = vec![Json::Null];
     let mut children = Vec::new();
@@ -176,10 +177,10 @@ mod tests {
     fn aggregates_carry_their_children_in_order() {
         let child = crate::exports::failure("Busy", "Busy", "busy".into(), Some(json!([1])));
         let errors = vec![
-            Arc::new(to_cordis(binding("listener 7 of t/x is withdrawn"))),
-            Arc::new(to_cordis(child)),
+            Arc::new(to_cordis(binding("listener 7 of t/x is withdrawn")).into_kind()),
+            Arc::new(to_cordis(child).into_kind()),
         ];
-        let error = to_session(&CordisError::ListenersFailed {
+        let error = to_session(&ErrorKind::ListenersFailed {
             name: "t/x".into(),
             errors,
         });

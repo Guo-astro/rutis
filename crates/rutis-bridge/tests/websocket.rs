@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::{Channel, ConnectError, PeerId};
 use rutis_bridge::transport::websocket::{
@@ -834,7 +835,7 @@ async fn the_plugin_provides_the_transport_and_unloading_closes_everything() {
     let view = root.plugin(plugin);
     (&view).await.unwrap();
     let transport = root
-        .get_as::<dyn Transport>(transport_key("websocket"))
+        .get_at::<dyn Transport>(&transport_key("websocket"))
         .expect("Transport#websocket is provided");
     assert_eq!(transport.kind(), "websocket");
     let running = handle.transport().unwrap();
@@ -850,7 +851,7 @@ async fn the_plugin_provides_the_transport_and_unloading_closes_everything() {
 
     view.dispose().await.unwrap();
     assert!(root
-        .get_as::<dyn Transport>(transport_key("websocket"))
+        .get_at::<dyn Transport>(&transport_key("websocket"))
         .is_none());
     assert!(handle.transport().is_none());
     // Its channels closed, and the far end saw it.

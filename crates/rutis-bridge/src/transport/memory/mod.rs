@@ -14,7 +14,8 @@ use crate::{
     transport_key, Credential, Dial, Presented, Refusal, Registered, Registration,
     RegistrationError, Registrations, Transport,
 };
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect};
+use rutis::{Ctx, Error};
 
 /// Messages buffered per direction before `send` blocks.
 pub const CAPACITY: usize = 64;
@@ -203,21 +204,19 @@ impl MemoryPlugin {
     }
 }
 
-impl Plugin for MemoryPlugin {
+impl DynPlugin for MemoryPlugin {
     fn name(&self) -> &str {
         "rutis-bridge/memory"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let transport = self.transport.clone();
-            ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
-                    transport.close_all();
-                    Ok(())
-                }))
+            ctx.effect(move || async move {
+                transport.close_all();
+                Ok(())
             })?;
-            ctx.provide_as::<dyn Transport>(transport_key("memory"), self.transport.clone())?;
+            ctx.provide_at(transport_key("memory"), self.transport.clone())?;
             Ok(Effect::Done)
         })
     }

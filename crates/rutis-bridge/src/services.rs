@@ -18,18 +18,20 @@ use std::sync::{Arc, Mutex};
 use crate::channel::PeerId;
 use crate::session::rpc::{Connection, Reference, Reply, Value};
 use crate::session::{host_key, Error, HostDispatch};
-use rutis::{BoxFuture, CordisError, Ctx, Disposer, Effect, Plugin, TypeKey};
+use rutis::host::{BoxFuture, DynPlugin, Effect, ErrorKind, TypeKey};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Disposer, Error as RutisError};
 use serde_json::{json, Value as Json};
 
 use crate::{peer_key, Offered, Peer, ServiceKeys};
 
 /// `host_key(name)` for every name: the default mapping.
 fn by_name() -> ServiceKeys {
-    Arc::new(|name: &str| Some(host_key(name)))
+    Arc::new(|name: &str| Some(host_key(name).erase()))
 }
 
-fn failed(label: &str, error: impl std::fmt::Display) -> CordisError {
-    CordisError::PluginFailed(format!("{label}: {error}").into())
+fn failed(label: &str, error: impl std::fmt::Display) -> RutisError {
+    rutis::Error::from(ErrorKind::PluginFailed(format!("{label}: {error}").into()))
 }
 
 // ── export ──────────────────────────────────────────────────────────
@@ -49,7 +51,7 @@ impl ExportPlugin {
         Self {
             label: format!("rutis-bridge/export#{peer}"),
             names: names.into_iter().map(Into::into).collect(),
-            injects: [peer_key(&peer)],
+            injects: [peer_key(&peer).erase()],
             keys: by_name(),
         }
     }
@@ -63,19 +65,19 @@ impl ExportPlugin {
     }
 }
 
-impl Plugin for ExportPlugin {
+impl DynPlugin for ExportPlugin {
     fn name(&self) -> &str {
         &self.label
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
             let peer = ctx
-                .get_as::<Peer>(self.injects[0].clone())
+                .get_key::<Peer>(self.injects[0].clone())
                 .ok_or_else(|| failed(&self.label, "the peer is gone"))?;
             let keys = self
                 .names
@@ -110,19 +112,19 @@ struct ExportOne {
     peer: Arc<Peer>,
 }
 
-impl Plugin for ExportOne {
+impl DynPlugin for ExportOne {
     fn name(&self) -> &str {
         &self.label
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
             let service = ctx
-                .get_as::<dyn HostDispatch>(self.injects[0].clone())
+                .get_key::<dyn HostDispatch>(self.injects[0].clone())
                 .ok_or_else(|| failed(&self.label, "the service is gone"))?;
             let shape = service.methods().ok_or_else(|| {
                 failed(
@@ -152,26 +154,24 @@ impl Plugin for ExportOne {
             let peer = self.peer.clone();
             let name = self.service.clone();
             ctx.effect(move || {
-                Effect::AsyncDisposer(Box::new(move || {
-                    Box::pin(async move {
-                        announcer.abort();
-                        let version = peer.next_version();
-                        // Withdrawn there before this fiber ends. A peer that
-                        // went away has nothing to withdraw.
-                        let withdrawn = peer
-                            .connection()
-                            .invoke_async(
-                                "",
-                                "services.withdraw",
-                                json!([{ "name": name, "version": version }]).into(),
-                            )
-                            .await;
-                        if let Ok(withdrawn) = withdrawn {
-                            let _ = crate::session::rpc::settle(withdrawn).await;
-                        }
-                        Ok(())
-                    })
-                }))
+                async move {
+                    announcer.abort();
+                    let version = peer.next_version();
+                    // Withdrawn there before this fiber ends. A peer that
+                    // went away has nothing to withdraw.
+                    let withdrawn = peer
+                        .connection()
+                        .invoke_async(
+                            "",
+                            "services.withdraw",
+                            json!([{ "name": name, "version": version }]).into(),
+                        )
+                        .await;
+                    if let Ok(withdrawn) = withdrawn {
+                        let _ = crate::session::rpc::settle(withdrawn).await;
+                    }
+                    Ok(())
+                }
             })?;
             Ok(Effect::Done)
         })
@@ -230,7 +230,7 @@ impl ImportPlugin {
     pub fn new(peer: PeerId, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
             label: format!("rutis-bridge/import#{peer}"),
-            injects: [peer_key(&peer)],
+            injects: [peer_key(&peer).erase()],
             names: names.into_iter().map(Into::into).collect(),
             peer,
             keys: by_name(),
@@ -386,7 +386,7 @@ impl Importer {
         let replacing = previous
             .as_ref()
             .is_some_and(|previous| previous.provided.is_some());
-        if !replacing && self.ctx.get_as::<dyn HostDispatch>(key.clone()).is_some() {
+        if !replacing && self.ctx.get_key::<dyn HostDispatch>(key.clone()).is_some() {
             return Err(Error::Value(format!(
                 "{name} is already provided here: the import from {} is refused",
                 self.peer
@@ -394,7 +394,7 @@ impl Importer {
         }
         let provided = self
             .ctx
-            .provide_as::<dyn HostDispatch>(
+            .provide_key::<dyn HostDispatch>(
                 key,
                 Arc::new(Remote {
                     session: self.session.clone(),
@@ -475,19 +475,19 @@ impl crate::Handler for Importer {
     }
 }
 
-impl Plugin for ImportPlugin {
+impl DynPlugin for ImportPlugin {
     fn name(&self) -> &str {
         &self.label
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
             let peer = ctx
-                .get_as::<Peer>(self.injects[0].clone())
+                .get_key::<Peer>(self.injects[0].clone())
                 .ok_or_else(|| failed(&self.label, "the peer is gone"))?;
             let names = self
                 .names
@@ -498,7 +498,7 @@ impl Plugin for ImportPlugin {
                     })?;
                     Ok((name.clone(), key))
                 })
-                .collect::<Result<HashMap<_, _>, CordisError>>()?;
+                .collect::<Result<HashMap<_, _>, RutisError>>()?;
             let importer = Arc::new(Importer {
                 ctx: ctx.clone(),
                 session: peer.connection().clone(),
@@ -510,13 +510,13 @@ impl Plugin for ImportPlugin {
                 .register("services", importer.clone())
                 .map_err(|error| failed(&self.label, error))?;
             ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
+                async move {
                     // Unregistering stops announcements; the imported
                     // services were provided from this fiber and go with it.
                     drop(offered);
                     importer.services.lock().unwrap().clear();
                     Ok(())
-                }))
+                }
             })?;
             Ok(Effect::Done)
         })

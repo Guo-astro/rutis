@@ -11,7 +11,7 @@ compile_error!("rutis-sdk requires panic = unwind");
 /// on this crate only (or, built against an sdk-bundle, on nothing: the
 /// packer injects `rutis_sdk` with `--extern`).
 pub mod rutis {
-    pub use ::rutis::__sdk_service as service;
+    pub use ::rutis::internal::__sdk_service as service;
     pub use ::rutis::*;
 }
 pub use serde_json;
@@ -105,13 +105,93 @@ pub const fn boot_meta(sdk_id: &str, artifact: &str, id: &str, version: &str) ->
     out
 }
 
-/// Export a factory and a static, pre-dlopen identity blob from a plugin dylib.
-/// `RUTIS_SDK_ARTIFACT_SHA256` must be set by the two-stage build.
+/// The factory `export_plugin!(build: …)` exports: `build` makes the plugin
+/// from the config, decoded from JSON as rutis-loader's `Builtins::register`
+/// decodes it (a `null` config as `null` first, then as `{}`); the
+/// dependencies come from `P::Deps`. The factory is named by the exported
+/// `id`, as a `factory:` export names its own.
+#[doc(hidden)]
+pub fn build_factory<C, P, B>(
+    id: &'static str,
+    build: B,
+) -> impl rutis::host::PluginFactory<ConfigValue>
+where
+    C: ::rutis::serde::de::DeserializeOwned + Send + Sync + 'static,
+    P: rutis::Plugin,
+    B: Fn(&C) -> rutis::Result<P> + Send + Sync + 'static,
+{
+    Exported {
+        id,
+        factory: ::rutis::internal::build_fn(move |config: &ConfigValue| {
+            build(&decode::<C>(config)?)
+        }),
+    }
+}
+
+struct Exported<F> {
+    id: &'static str,
+    factory: F,
+}
+
+impl<F: rutis::host::PluginFactory<ConfigValue>> rutis::host::PluginFactory<ConfigValue>
+    for Exported<F>
+{
+    fn name(&self) -> &str {
+        self.id
+    }
+
+    fn injects(&self) -> Vec<rutis::host::TypeKey> {
+        self.factory.injects()
+    }
+
+    fn validate_config(&self, config: &ConfigValue) -> rutis::Result {
+        self.factory.validate_config(config)
+    }
+
+    fn build(&self, config: &ConfigValue) -> rutis::Result<Box<dyn rutis::host::DynPlugin>> {
+        self.factory.build(config)
+    }
+}
+
+fn decode<C: ::rutis::serde::de::DeserializeOwned>(value: &ConfigValue) -> rutis::Result<C> {
+    let invalid = |error: serde_json::Error| {
+        rutis::Error::from(rutis::host::ErrorKind::Validation {
+            issues: vec![error.to_string()],
+        })
+    };
+    match (serde_json::from_value::<C>(value.clone()), value) {
+        (Ok(config), _) => Ok(config),
+        (Err(_), ConfigValue::Null) => {
+            serde_json::from_value::<C>(ConfigValue::Object(Default::default())).map_err(invalid)
+        }
+        (Err(error), _) => Err(invalid(error)),
+    }
+}
+
+/// Export a plugin and a static, pre-dlopen identity blob from a plugin
+/// dylib. `RUTIS_SDK_ARTIFACT_SHA256` must be set by the two-stage build.
+///
+/// `build:` takes the constructor `Builtins::register` takes,
+/// `Fn(&C) -> rutis::Result<P>` with `P: rutis::Plugin` and `C` decoded
+/// from the JSON config (`serde_json::Value` for the raw config):
+///
+/// ```ignore
+/// rutis_sdk::export_plugin!(id: "weather", build: Weather::new);
+/// ```
+///
+/// `factory:` takes a `PluginFactory<serde_json::Value>` instead, for a
+/// plugin whose dependencies are known only at run time.
 ///
 /// `schema:` optionally gives the JSON Schema of the config, as a
 /// `serde_json::Value`, for hosts that show config forms (rutis-loader).
 #[macro_export]
 macro_rules! export_plugin {
+    (id: $id:literal, build: $build:expr $(,)?) => {
+        $crate::export_plugin!(@export $id, $crate::build_factory($id, $build), ::core::option::Option::None);
+    };
+    (id: $id:literal, build: $build:expr, schema: $schema:expr $(,)?) => {
+        $crate::export_plugin!(@export $id, $crate::build_factory($id, $build), ::core::option::Option::Some($schema));
+    };
     (id: $id:literal, factory: $factory:expr $(,)?) => {
         $crate::export_plugin!(@export $id, $factory, ::core::option::Option::None);
     };
@@ -156,17 +236,13 @@ macro_rules! export_plugin {
         }
         #[no_mangle]
         pub fn rutis_plugin_entry() -> Result<
-            Box<dyn $crate::rutis::PluginFactory<$crate::ConfigValue>>,
-            $crate::rutis::CordisError,
+            Box<dyn $crate::rutis::host::PluginFactory<$crate::ConfigValue>>,
+            $crate::rutis::Error,
         > {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Box::new($factory) as Box<dyn $crate::rutis::PluginFactory<$crate::ConfigValue>>
+                Box::new($factory) as Box<dyn $crate::rutis::host::PluginFactory<$crate::ConfigValue>>
             }))
-            .map_err(|_| {
-                $crate::rutis::CordisError::PluginFailed(
-                    "plugin factory construction panicked".into(),
-                )
-            })
+            .map_err(|_| $crate::rutis::Error::msg("plugin factory construction panicked"))
         }
     };
 }

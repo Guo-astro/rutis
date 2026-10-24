@@ -21,7 +21,8 @@ use crate::{
     transport_key, Dial, Registered, Registration, RegistrationError, Registrations, Transport,
 };
 use rustls::RootCertStore;
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect};
+use rutis::{Ctx, Error};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 mod config;
@@ -57,30 +58,27 @@ impl WebSocketPlugin {
     }
 }
 
-impl Plugin for WebSocketPlugin {
+impl DynPlugin for WebSocketPlugin {
     fn name(&self) -> &str {
         "rutis-bridge/websocket"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            let transport = WebSocketTransport::start(self.config.clone())
-                .map_err(|error| CordisError::PluginFailed(error.into()))?;
+            let transport = WebSocketTransport::start(self.config.clone()).map_err(Error::msg)?;
             *self.started.lock().unwrap() = Some(transport.clone());
             let started = self.started.clone();
             let stopping = transport.clone();
             ctx.effect(move || {
-                Effect::AsyncDisposer(Box::new(move || {
-                    Box::pin(async move {
-                        started.lock().unwrap().take();
-                        stopping.stop();
-                        // Let the close frames go out before the threads stop.
-                        stopping.closed(std::time::Duration::from_secs(1)).await;
-                        Ok(())
-                    })
-                }))
+                async move {
+                    started.lock().unwrap().take();
+                    stopping.stop();
+                    // Let the close frames go out before the threads stop.
+                    stopping.closed(std::time::Duration::from_secs(1)).await;
+                    Ok(())
+                }
             })?;
-            ctx.provide_as::<dyn Transport>(transport_key("websocket"), transport)?;
+            ctx.provide_at(transport_key("websocket"), transport)?;
             Ok(Effect::Done)
         })
     }

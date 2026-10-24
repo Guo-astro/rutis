@@ -21,10 +21,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::channel::PeerId;
-use crate::events::{ArgValue, Args};
+use crate::events::Args;
 use crate::session::rpc::{settle, Reply, Value};
 use crate::session::{host_key, Error, HostDispatch};
-use rutis::{BoxFuture, Call, CordisError, Ctx, Effect, EventKey, Listener, Plugin, PluginFactory};
+use rutis::events::{Call, Listener};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, PluginFactory};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error as RutisError};
 use serde_json::{json, Value as Json};
 
 use crate::{
@@ -32,10 +35,6 @@ use crate::{
 };
 
 /// The node event `name`, its arguments as they come.
-fn node_event(name: &str) -> EventKey<Args> {
-    EventKey::dynamic(name.to_owned())
-}
-
 /// What `main` hears through `probe`.
 #[derive(Clone, Default)]
 struct Probe(Arc<Mutex<Vec<String>>>);
@@ -50,19 +49,12 @@ impl HostDispatch for Probe {
     }
 }
 
-struct Tocks(Arc<Mutex<Vec<Json>>>);
-impl Listener<Args> for Tocks {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        event: &'a Args,
-        _: Call<'a, ArgValue>,
-    ) -> BoxFuture<'a, Result<Option<ArgValue>, CordisError>> {
-        Box::pin(async move {
-            let args = Value::List(event.0.clone()).json().unwrap_or(Json::Null);
-            self.0.lock().unwrap().push(args);
-            Ok(None)
-        })
+/// Records the arguments of each event it hears.
+fn tocks(tocks: Arc<Mutex<Vec<Json>>>) -> impl Listener<Args> {
+    move |event: Arc<Args>, _: Call<Args>| {
+        let args = Value::List(event.0.clone()).json().unwrap_or(Json::Null);
+        tocks.lock().unwrap().push(args);
+        std::future::ready(Ok(None))
     }
 }
 
@@ -91,15 +83,16 @@ async fn call(peer: &Peer, method: &str, args: Json) -> Result<Json, Error> {
 /// application, `root`) has a link to. Mounts what `main` needs for them.
 pub async fn node(root: &Ctx, peer: PeerId) {
     let probe = Probe::default();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .expect("probe provided");
     root.plugin(ImportPlugin::new(peer.clone(), ["calendar"]));
     root.plugin(ExportPlugin::new(peer.clone(), ["probe"]));
     // This node's `tick` reaches the peer; the peer's `tock` reaches here.
     root.plugin(LinkEventsPlugin::new(peer.clone(), ["tick"], ["tock"]));
     let tocks = Arc::new(Mutex::new(Vec::new()));
-    root.events()
-        .on(root, &node_event("tock"), Tocks(tocks.clone()))
+    root.listen::<Args>()
+        .name("tock")
+        .on(self::tocks(tocks.clone()))
         .expect("tock listener");
     let heard = |line: String| {
         let probe = probe.clone();
@@ -108,7 +101,7 @@ pub async fn node(root: &Ctx, peer: PeerId) {
 
     // Its service, here: sync and async.
     let calendar = eventually(
-        || root.get_as::<dyn HostDispatch>(host_key("calendar")),
+        || root.get_at::<dyn HostDispatch>(&host_key("calendar")),
         "calendar imported",
     )
     .await;
@@ -133,7 +126,7 @@ pub async fn node(root: &Ctx, peer: PeerId) {
     drop(calendar);
 
     // Its host: describe, load (which uses our probe there), update, unload.
-    let at = eventually(|| root.get_as::<Peer>(peer_key(&peer)), "the peer").await;
+    let at = eventually(|| root.get_at::<Peer>(&peer_key(&peer)), "the peer").await;
     let mut offers = at.offers();
     eventually(
         || {
@@ -209,12 +202,8 @@ pub async fn node(root: &Ctx, peer: PeerId) {
     // peer's listener reaches this bus once the link announced it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
-        root.events()
-            .parallel(
-                root,
-                &node_event("tick"),
-                Arc::new(Args(vec![Value::Data(json!("ping"))])),
-            )
+        root.named("tick")
+            .parallel(Args(vec![Value::Data(json!("ping"))]))
             .await
             .expect("tick dispatched");
         if !tocks.lock().unwrap().is_empty() {
@@ -234,14 +223,14 @@ pub async fn node(root: &Ctx, peer: PeerId) {
 }
 
 /// `conformance-greeter`, for a rutis node.
-struct Greeter([rutis::TypeKey; 1]);
+struct Greeter([rutis::host::TypeKey; 1]);
 impl PluginFactory<Json> for Greeter {
     // A factory's fiber is gated on what the factory declares.
-    fn injects(&self) -> &[rutis::TypeKey] {
-        &self.0
+    fn injects(&self) -> Vec<rutis::host::TypeKey> {
+        self.0.to_vec()
     }
 
-    fn build(&self, config: &Json) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &Json) -> Result<Box<dyn DynPlugin>, RutisError> {
         Ok(Box::new(Greeting(
             config["text"].as_str().unwrap_or("").to_owned(),
             config["fail"].as_str().map(str::to_owned),
@@ -249,16 +238,18 @@ impl PluginFactory<Json> for Greeter {
     }
 }
 struct Greeting(String, Option<String>);
-impl Plugin for Greeting {
+impl DynPlugin for Greeting {
     fn name(&self) -> &str {
         "conformance-greeter"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
             if let Some(fail) = &self.1 {
-                return Err(CordisError::PluginFailed(fail.clone().into()));
+                return Err(rutis::Error::from(ErrorKind::PluginFailed(
+                    fail.clone().into(),
+                )));
             }
-            let probe = ctx.require_as::<dyn HostDispatch>(host_key("probe"))?;
+            let probe = ctx.require_at::<dyn HostDispatch>(&host_key("probe"))?;
             record(probe.clone(), format!("greeter: {}", self.0)).await;
             let gone = format!("greeter gone: {}", self.0);
             Ok(Effect::AsyncDisposer(Box::new(move || {
@@ -280,29 +271,20 @@ async fn record(probe: Arc<dyn HostDispatch>, line: String) {
 }
 
 /// On `tick`, forward `tock` back.
-struct TickTock(Ctx);
-impl Listener<Args> for TickTock {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        event: &'a Args,
-        _: Call<'a, ArgValue>,
-    ) -> BoxFuture<'a, Result<Option<ArgValue>, CordisError>> {
-        Box::pin(async move {
+/// Answers each `tick` with a `tock` carrying the count of its arguments.
+fn tick_tock(root: Ctx) -> impl Listener<Args> {
+    move |event: Arc<Args>, _: Call<Args>| {
+        let root = root.clone();
+        async move {
             let count = event.0.len();
-            self.0
-                .events()
-                .parallel(
-                    &self.0,
-                    &node_event("tock"),
-                    Arc::new(Args(vec![
-                        Value::Data(json!("pong")),
-                        Value::Data(json!(count)),
-                    ])),
-                )
+            root.named("tock")
+                .parallel(Args(vec![
+                    Value::Data(json!("pong")),
+                    Value::Data(json!(count)),
+                ]))
                 .await?;
             Ok(None)
-        })
+        }
     }
 }
 
@@ -324,7 +306,7 @@ impl HostDispatch for Calendar {
 /// exports `calendar`, imports `probe`, hosts `conformance-greeter` and
 /// answers `tick` with `tock`.
 pub fn fixture(root: &Ctx, main: PeerId) {
-    root.provide_as::<dyn HostDispatch>(host_key("calendar"), Arc::new(Calendar))
+    root.provide_at(host_key("calendar"), Arc::new(Calendar))
         .expect("calendar provided");
     root.plugin(ExportPlugin::new(main.clone(), ["calendar"]));
     root.plugin(ImportPlugin::new(main.clone(), ["probe"]));
@@ -337,11 +319,12 @@ pub fn fixture(root: &Ctx, main: PeerId) {
             version: Some("1.0.0".into()),
             integrity: None,
         },
-        Greeter([host_key("probe")]),
+        Greeter([host_key("probe").erase()]),
     );
     root.plugin(crate::HostPlugin::new(main.clone(), Arc::new(catalog)));
     root.plugin(LinkEventsPlugin::new(main, ["tock"], ["tick"]));
-    root.events()
-        .on(root, &node_event("tick"), TickTock(root.clone()))
+    root.listen::<Args>()
+        .name("tick")
+        .on(tick_tock(root.clone()))
         .expect("tick listener");
 }

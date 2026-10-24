@@ -1,5 +1,6 @@
 //! The memory transport as a native plugin: it provides `Transport#memory`
 //! while mounted, and unloading withdraws it and closes its channels.
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::transport::memory::MemoryPlugin;
 use rutis_bridge::{transport_key, Transport};
@@ -13,7 +14,7 @@ async fn provides_the_transport_until_unloaded() {
     (&fiber).await.unwrap();
 
     let transport = root
-        .get_as::<dyn Transport>(transport_key("memory"))
+        .get_at::<dyn Transport>(&transport_key("memory"))
         .expect("Transport#memory is provided");
     assert_eq!(transport.kind(), "memory");
     let mut dialed = transport
@@ -26,7 +27,7 @@ async fn provides_the_transport_until_unloaded() {
 
     fiber.dispose().await.unwrap();
     assert!(root
-        .get_as::<dyn Transport>(transport_key("memory"))
+        .get_at::<dyn Transport>(&transport_key("memory"))
         .is_none());
     assert!(dialed.sender.send(b"after").is_err());
     assert!(matches!(accepted.receiver.recv(), Ok(None) | Err(_)));

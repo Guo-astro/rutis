@@ -12,6 +12,7 @@ use serde_json::{Map, Value};
 
 use crate::runtime::rpc::{Reply, Value as RpcValue};
 use crate::runtime::{host_key, HostDispatch, Process, Projection};
+use rutis::internal::CtxInternal;
 
 /// One object a row's service slot holds, as a host service: calls go to
 /// that object in the runtime. Async methods return a future.
@@ -98,14 +99,14 @@ impl Drop for RowService {
 /// Attach it from the row's own context and pass it to
 /// [`Process::load_row_exporting`] as the observer.
 pub fn row_projection(provides: &Map<String, Value>) -> Arc<Projection> {
-    row_projection_with(provides, host_key)
+    row_projection_with(provides, |name| host_key(name).erase())
 }
 
 /// [`row_projection`] publishing each service under `key(name)` instead
 /// (`host_key_in(name, instance)` for a service inside an instance).
 pub fn row_projection_with(
     provides: &Map<String, Value>,
-    key: impl Fn(&str) -> rutis::TypeKey,
+    key: impl Fn(&str) -> rutis::host::TypeKey,
 ) -> Arc<Projection> {
     let projection = Projection::new();
     for (name, methods) in provides {
@@ -126,7 +127,7 @@ pub fn row_projection_with(
 pub fn row_projection_of(
     provider: &str,
     provides: &Map<String, Value>,
-    key: impl Fn(&str) -> rutis::TypeKey + Send + 'static,
+    key: impl Fn(&str) -> rutis::host::TypeKey + Send + 'static,
     private: impl Fn(&str) -> bool + Send + 'static,
 ) -> Arc<Projection> {
     let projection = Projection::new();
@@ -160,7 +161,7 @@ fn row_slot(
     projection: &Projection,
     provider: &str,
     name: &str,
-    key: rutis::TypeKey,
+    key: rutis::host::TypeKey,
     methods: Arc<Mutex<Value>>,
 ) {
     let named = provider.to_owned();
@@ -174,7 +175,7 @@ fn row_slot(
         },
         provider.to_owned(),
         move |ctx| {
-            let holder = ctx.get_as::<dyn HostDispatch>(holder.clone())?;
+            let holder = ctx.get_key::<dyn HostDispatch>(holder.clone())?;
             Some(
                 holder
                     .provider()

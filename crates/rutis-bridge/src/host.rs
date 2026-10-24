@@ -27,7 +27,11 @@ use std::sync::{Arc, Mutex};
 use crate::channel::PeerId;
 use crate::session::rpc::{Connection, Reply, Value};
 use crate::session::Error;
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, PluginFactory, TypeKey};
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberView, PluginFactory, TypeKey,
+};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error as RutisError};
 use serde_json::{json, Value as Json};
 
 use crate::{peer_key, Offered, Peer};
@@ -114,13 +118,13 @@ impl PluginFactory<Json> for Shared {
     fn name(&self) -> &str {
         self.factory.name()
     }
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
-    fn validate_config(&self, config: &Json) -> Result<(), CordisError> {
+    fn validate_config(&self, config: &Json) -> Result<(), RutisError> {
         self.factory.validate_config(config)
     }
-    fn build(&self, config: &Json) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &Json) -> Result<Box<dyn DynPlugin>, RutisError> {
         self.factory.build(config)
     }
 }
@@ -141,10 +145,10 @@ impl HostPlugin {
     pub fn new(peer: PeerId, catalog: Arc<dyn PluginCatalog>) -> Self {
         Self {
             label: format!("rutis-bridge/host#{peer}"),
-            injects: [peer_key(&peer)],
+            injects: [peer_key(&peer).erase()],
             peer,
             catalog,
-            services: Arc::new(|name: &str| Some(crate::session::host_key(name))),
+            services: Arc::new(|name: &str| Some(crate::session::host_key(name).erase())),
         }
     }
 
@@ -172,7 +176,7 @@ fn not_found(name: &str) -> Error {
     }
 }
 
-fn wait(result: rutis::BoxFuture<'static, Result<(), Arc<CordisError>>>) -> Reply {
+fn wait(result: rutis::host::BoxFuture<'static, Result<(), Arc<ErrorKind>>>) -> Reply {
     Ok(Value::future(async move {
         result
             .await
@@ -310,20 +314,24 @@ impl crate::Handler for Hosting {
     }
 }
 
-impl Plugin for HostPlugin {
+impl DynPlugin for HostPlugin {
     fn name(&self) -> &str {
         &self.label
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
-            let peer = ctx.get_as::<Peer>(self.injects[0].clone()).ok_or_else(|| {
-                CordisError::PluginFailed(format!("{}: the peer is gone", self.label).into())
-            })?;
+            let peer = ctx
+                .get_key::<Peer>(self.injects[0].clone())
+                .ok_or_else(|| {
+                    rutis::Error::from(ErrorKind::PluginFailed(
+                        format!("{}: the peer is gone", self.label).into(),
+                    ))
+                })?;
             let host = Arc::new(Host {
                 ctx: ctx.clone(),
                 peer: self.peer.clone(),
@@ -331,17 +339,15 @@ impl Plugin for HostPlugin {
                 services: self.services.clone(),
                 loaded: Mutex::default(),
             });
-            let offered: Offered = peer
-                .register("plugins", Arc::new(Hosting(host.clone())))
-                .map_err(|error| CordisError::PluginFailed(error.to_string().into()))?;
+            let offered: Offered = peer.register("plugins", Arc::new(Hosting(host.clone())))?;
             ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
+                async move {
                     // The hosted plugins are this fiber's children and go
                     // with it.
                     drop(offered);
                     host.loaded.lock().unwrap().clear();
                     Ok(())
-                }))
+                }
             })?;
             Ok(Effect::Done)
         })

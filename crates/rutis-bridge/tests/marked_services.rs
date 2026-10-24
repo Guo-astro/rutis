@@ -4,7 +4,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use rutis::{BoxFuture, CordisError, Ctx, InstanceId, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, ErrorKind, InstanceId, Key, TypeKey};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error as RutisError};
 use rutis_bridge::exports::claimed_in;
 use rutis_bridge::session::{host_key, host_key_in, settle, Error, HostDispatch, Value};
 use serde::{Deserialize, Serialize};
@@ -86,11 +88,15 @@ impl Calendar {
         Err(std::io::Error::other("disk"))
     }
 
+    pub fn closed(&self) -> Result<(), RutisError> {
+        Err(ErrorKind::Closed.into())
+    }
+
     pub fn each(
         &self,
         days: Vec<u32>,
-        callback: Arc<dyn Fn(u32) -> BoxFuture<'static, Result<String, CordisError>> + Send + Sync>,
-    ) -> BoxFuture<'_, Result<Vec<String>, CordisError>> {
+        callback: Arc<dyn Fn(u32) -> BoxFuture<'static, Result<String, RutisError>> + Send + Sync>,
+    ) -> BoxFuture<'_, Result<Vec<String>, RutisError>> {
         Box::pin(async move {
             let mut out = Vec::new();
             for day in days {
@@ -181,7 +187,7 @@ async fn call(service: &Arc<dyn HostDispatch>, method: &str, args: Json) -> Resu
 }
 
 fn served(ctx: &Ctx, name: &str) -> Option<Arc<dyn HostDispatch>> {
-    ctx.get_as::<dyn HostDispatch>(host_key(name))
+    ctx.get_at::<dyn HostDispatch>(&host_key(name))
 }
 
 /// A method name two marked blocks both export cannot be dispatched: the
@@ -254,6 +260,10 @@ async fn a_provided_marked_type_is_served_by_name() {
     );
     let error = call(&calendar, "io", json!([])).await.unwrap_err();
     assert_eq!(error.code(), Some("Error"));
+    // rutis's own error keeps its 0.16 name on the wire, its kind the code.
+    let error = call(&calendar, "closed", json!([])).await.unwrap_err();
+    assert_eq!(error.code(), Some("Closed"));
+    assert!(error.to_string().starts_with("CordisError: "), "{error}");
     call(&calendar, "add", json!([entry])).await.unwrap();
     call(&calendar, "add", json!([entry])).await.unwrap();
     let error = call(&calendar, "add", json!([entry])).await.unwrap_err();
@@ -312,7 +322,7 @@ async fn a_second_service_of_the_same_name_is_refused() {
     assert!(root.get::<Clash>().is_none());
     // A keyed binding of a marked type is a second value of it, not served
     // by name (it would clash with the first).
-    root.provide_as(TypeKey::keyed::<Notes>("second"), Arc::new(Notes))
+    root.provide_at(Key::<Notes>::named("second"), Arc::new(Notes))
         .unwrap();
     root.shutdown().await.unwrap();
     other.shutdown().await.unwrap();
@@ -323,25 +333,28 @@ async fn provided_in_an_instance_it_is_that_instances() {
     let root = Ctx::root().unwrap();
     let (instance_tx, instance_rx) = std::sync::mpsc::channel::<(InstanceId, Ctx)>();
     struct Instance(std::sync::mpsc::Sender<(InstanceId, Ctx)>);
-    impl rutis::Plugin for Instance {
+    impl rutis::host::DynPlugin for Instance {
         fn name(&self) -> &str {
             "instance"
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+        fn apply<'a>(
+            &'a self,
+            ctx: &'a Ctx,
+        ) -> BoxFuture<'a, Result<rutis::host::Effect, RutisError>> {
             Box::pin(async move {
                 self.0.send((ctx.instance(), ctx.clone())).unwrap();
-                Ok(rutis::Effect::Done)
+                Ok(rutis::host::Effect::Done)
             })
         }
     }
     root.plugin(Instance(instance_tx)).await.unwrap();
     let (instance, ctx) = instance_rx.recv().unwrap();
     let provided = ctx
-        .provide_as(TypeKey::instance::<Notes>(instance), Arc::new(Notes))
+        .provide_at(Key::<Notes>::of().instance(instance), Arc::new(Notes))
         .unwrap();
     assert!(served(&ctx, "notebook").is_none());
     assert!(ctx
-        .get_as::<dyn HostDispatch>(host_key_in("notebook", instance))
+        .get_at::<dyn HostDispatch>(&host_key_in("notebook", instance))
         .is_some());
     assert!(claimed_in(instance, "notebook"));
     provided.dispose().await.unwrap();
@@ -367,7 +380,7 @@ async fn an_unmarked_service_is_named_in_the_diagnostic() {
 #[tokio::test]
 async fn a_service_provided_here_is_not_described_as_out_of_scope() {
     let root = Ctx::root().unwrap();
-    root.provide_as_with_check(
+    root.provide_checked(
         TypeKey::of::<Calendar>(),
         Arc::new(Calendar::default()),
         || false,
@@ -382,17 +395,20 @@ async fn a_service_provided_here_is_not_described_as_out_of_scope() {
 /// A child plugin of `parent`, optionally marked as a scope; its context.
 async fn child_ctx(parent: &Ctx, scope: Option<&'static str>) -> Ctx {
     struct Child(Option<&'static str>, std::sync::mpsc::Sender<Ctx>);
-    impl rutis::Plugin for Child {
+    impl rutis::host::DynPlugin for Child {
         fn name(&self) -> &str {
             "child"
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+        fn apply<'a>(
+            &'a self,
+            ctx: &'a Ctx,
+        ) -> BoxFuture<'a, Result<rutis::host::Effect, RutisError>> {
             Box::pin(async move {
                 if let Some(scope) = self.0 {
                     ctx.mark_scope(scope)?;
                 }
                 self.1.send(ctx.clone()).unwrap();
-                Ok(rutis::Effect::Done)
+                Ok(rutis::host::Effect::Done)
             })
         }
     }
@@ -404,7 +420,7 @@ async fn child_ctx(parent: &Ctx, scope: Option<&'static str>) -> Ctx {
 /// Provide a Calendar under `key` from `ctx` whose check fails, so it is
 /// bound but not served.
 fn unserved(ctx: &Ctx, key: TypeKey) -> rutis::Disposer {
-    ctx.provide_as_with_check(key, Arc::new(Calendar::default()), || false)
+    ctx.provide_checked(key, Arc::new(Calendar::default()), || false)
         .unwrap()
 }
 
@@ -495,19 +511,19 @@ async fn a_renamed_service_says_the_name_it_is_exported_as() {
 /// name.
 struct Gated(Vec<TypeKey>);
 
-impl rutis::Plugin for Gated {
+impl rutis::host::DynPlugin for Gated {
     fn name(&self) -> &str {
         "gated"
     }
-    fn injects(&self) -> &[TypeKey] {
-        &self.0
+    fn injects(&self) -> Vec<TypeKey> {
+        self.0.to_vec()
     }
-    fn apply<'a>(&'a self, _: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
-        Box::pin(async { Ok(rutis::Effect::Done) })
+    fn apply<'a>(&'a self, _: &'a Ctx) -> BoxFuture<'a, Result<rutis::host::Effect, RutisError>> {
+        Box::pin(async { Ok(rutis::host::Effect::Done) })
     }
 }
 
-async fn reach(view: &rutis::FiberView, state: rutis::FiberState) {
+async fn reach(view: &rutis::host::FiberView, state: rutis::host::FiberState) {
     for _ in 0..1000 {
         if view.state().state == state {
             return;
@@ -522,16 +538,16 @@ async fn reach(view: &rutis::FiberView, state: rutis::FiberState) {
 /// start again when it passes.
 #[tokio::test]
 async fn the_check_gates_the_name_as_it_gates_the_native_service() {
-    use rutis::FiberState::{Active, Pending};
+    use rutis::host::FiberState::{Active, Pending};
     use std::sync::atomic::{AtomicBool, Ordering};
     let root = Ctx::root().unwrap();
     let up = Arc::new(AtomicBool::new(true));
     let flag = up.clone();
-    root.provide_as_with_check(TypeKey::of::<Notes>(), Arc::new(Notes), move || {
+    root.provide_checked(TypeKey::of::<Notes>(), Arc::new(Notes), move || {
         flag.load(Ordering::SeqCst)
     })
     .unwrap();
-    let by_name = root.plugin(Gated(vec![host_key("notebook")]));
+    let by_name = root.plugin(Gated(vec![host_key("notebook").erase()]));
     let native = root.plugin(Gated(vec![TypeKey::of::<Notes>()]));
     reach(&by_name, Active).await;
     reach(&native, Active).await;
@@ -677,7 +693,7 @@ async fn each_isolated_scope_serves_its_own() {
     b.provide(greeter("in b")).unwrap();
     for (ctx, text) in [(&a, "in a"), (&b, "in b")] {
         let readers = ctx.isolate(name.clone(), if text == "in a" { "a" } else { "b" });
-        let service = readers.get_as::<dyn HostDispatch>(name.clone()).unwrap();
+        let service = readers.get_at(&name).unwrap();
         assert_eq!(
             call(&service, "text", json!([])).await.unwrap(),
             json!(text)
@@ -693,10 +709,10 @@ async fn a_provide_refused_for_its_native_slot_serves_nothing() {
     let root = Ctx::root().unwrap();
     // A mutable binding is not served by name, but holds the native slot.
     let (_disposer, _writer) = root
-        .provide_mut_as(TypeKey::of::<Greeter>(), Arc::new(greeter("first")))
+        .provide_mut_at(TypeKey::of::<Greeter>(), Arc::new(greeter("first")))
         .unwrap();
     let error = root.provide(greeter("refused")).unwrap_err();
-    assert!(matches!(error, CordisError::ServiceExists(_)), "{error}");
+    assert!(matches!(&*error, ErrorKind::ServiceExists(_)), "{error}");
     assert!(served(&root, "greeter").is_none());
     root.shutdown().await.unwrap();
 }
@@ -705,7 +721,7 @@ async fn a_provide_refused_for_its_native_slot_serves_nothing() {
 /// interceptors deny or replace it, as for Rust readers.
 #[tokio::test]
 async fn calls_by_name_go_through_read_interceptors() {
-    use rutis::ServiceIntercept;
+    use rutis::internal::ServiceIntercept;
     use std::sync::atomic::{AtomicU8, Ordering};
     let root = Ctx::root().unwrap();
     root.provide(greeter("native")).unwrap();
@@ -756,7 +772,7 @@ async fn the_name_is_served_after_the_native_service() {
                 let bindings = root.diagnostics().bindings;
                 let named = bindings
                     .iter()
-                    .any(|binding| binding.key == name && !binding.removing);
+                    .any(|binding| binding.key == name.erase() && !binding.removing);
                 let has_native = bindings
                     .iter()
                     .any(|binding| binding.key == native && !binding.removing);
@@ -788,15 +804,18 @@ async fn the_name_is_served_after_the_native_service() {
 #[tokio::test]
 async fn unloading_withdraws_the_name_before_the_native_service() {
     struct Provides;
-    impl rutis::Plugin for Provides {
+    impl rutis::host::DynPlugin for Provides {
         fn name(&self) -> &str {
             "provides"
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+        fn apply<'a>(
+            &'a self,
+            ctx: &'a Ctx,
+        ) -> BoxFuture<'a, Result<rutis::host::Effect, RutisError>> {
             Box::pin(async move {
                 // The disposer is dropped: the unload withdraws it.
                 ctx.provide(Notes)?;
-                Ok(rutis::Effect::Done)
+                Ok(rutis::host::Effect::Done)
             })
         }
     }
@@ -805,7 +824,7 @@ async fn unloading_withdraws_the_name_before_the_native_service() {
     (&provider).await.unwrap();
     let named = Arc::new(Mutex::new(None));
     let user = root.plugin(Uses(named.clone()));
-    reach(&user, rutis::FiberState::Active).await;
+    reach(&user, rutis::host::FiberState::Active).await;
     provider.dispose().await.unwrap();
     assert_eq!(
         *named.lock().unwrap(),
@@ -818,25 +837,25 @@ async fn unloading_withdraws_the_name_before_the_native_service() {
 /// Uses `Notes`; when stopped, notes whether the name is served.
 struct Uses(Arc<Mutex<Option<bool>>>);
 
-impl rutis::Plugin for Uses {
+impl rutis::host::DynPlugin for Uses {
     fn name(&self) -> &str {
         "uses"
     }
-    fn injects(&self) -> &[TypeKey] {
+    fn injects(&self) -> Vec<TypeKey> {
         static NATIVE: std::sync::OnceLock<[TypeKey; 1]> = std::sync::OnceLock::new();
-        NATIVE.get_or_init(|| [TypeKey::of::<Notes>()])
+        NATIVE.get_or_init(|| [TypeKey::of::<Notes>()]).to_vec()
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<rutis::host::Effect, RutisError>> {
         let named = self.0.clone();
         let ctx = ctx.clone();
         Box::pin(async move {
-            Ok(rutis::Effect::Disposer(Box::new(move || {
+            Ok(rutis::host::Effect::Disposer(Box::new(move || {
                 let name = host_key("notebook");
                 let served = ctx
                     .diagnostics()
                     .bindings
                     .iter()
-                    .any(|binding| binding.key == name && !binding.removing);
+                    .any(|binding| binding.key == name.erase() && !binding.removing);
                 named.lock().unwrap().get_or_insert(served);
                 Ok(())
             })))

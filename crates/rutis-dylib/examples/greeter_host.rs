@@ -1,7 +1,8 @@
 //! Release-only integration fixture. tools/test-dylib.sh packages and runs it.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod imp {
-    use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, Snapshot, TypeKey};
+    use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Snapshot, TypeKey};
+    use rutis::{Ctx, Error};
     use rutis_dylib::{DylibConfig, Loader};
     use std::sync::{Arc, Mutex};
 
@@ -9,19 +10,19 @@ mod imp {
         log: Arc<Mutex<Vec<String>>>,
         injects: Vec<TypeKey>,
     }
-    impl Plugin for Consumer {
+    impl DynPlugin for Consumer {
         fn name(&self) -> &str {
             "consumer"
         }
-        fn injects(&self) -> &[TypeKey] {
-            &self.injects
+        fn injects(&self) -> Vec<TypeKey> {
+            self.injects.to_vec()
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             Box::pin(async move {
                 self.log
                     .lock()
                     .unwrap()
-                    .push((*ctx.require::<String>().map_err(CordisError::from)?).clone());
+                    .push((*ctx.require::<String>().map_err(Error::from)?).clone());
                 Ok(Effect::Done)
             })
         }
@@ -32,7 +33,7 @@ mod imp {
     async fn greeting(ctx: &Ctx) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         use rutis_bridge::session::{host_key, settle, HostDispatch, Value};
         let service = ctx
-            .get_as::<dyn HostDispatch>(host_key("greeting"))
+            .get_at::<dyn HostDispatch>(&host_key("greeting"))
             .ok_or("the plugin's Greeting is not served by name")?;
         match settle(service.invoke("text", Value::List(Vec::new()))?).await? {
             Value::Data(rutis_sdk::serde_json::Value::String(text)) => Ok(text),
@@ -46,16 +47,16 @@ mod imp {
         log: Arc<Mutex<Vec<String>>>,
         injects: Vec<TypeKey>,
     }
-    impl Plugin for ByName {
+    impl DynPlugin for ByName {
         fn name(&self) -> &str {
             "by-name"
         }
-        fn injects(&self) -> &[TypeKey] {
-            &self.injects
+        fn injects(&self) -> Vec<TypeKey> {
+            self.injects.to_vec()
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             Box::pin(async move {
-                let text = greeting(ctx).await.map_err(CordisError::PluginFailed)?;
+                let text = greeting(ctx).await.map_err(ErrorKind::PluginFailed)?;
                 self.log.lock().unwrap().push(text);
                 Ok(Effect::Done)
             })
@@ -125,7 +126,7 @@ mod imp {
         let by_name_log = Arc::new(Mutex::new(Vec::new()));
         let by_name = root.plugin(ByName {
             log: by_name_log.clone(),
-            injects: vec![rutis_bridge::session::host_key("greeting")],
+            injects: vec![rutis_bridge::session::host_key("greeting").erase()],
         });
         (&by_name).await?;
         let v2 = unsafe { loader.load(second)? };

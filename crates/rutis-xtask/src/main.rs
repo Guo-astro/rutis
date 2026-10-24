@@ -1232,9 +1232,8 @@ fn shrink_closure_inner(
 /// tokio-util has no re-export; it stays in the closure through the rutis
 /// types the probe instantiates.
 const PROBE_SOURCE: &str = r#"
-use rutis_sdk::rutis::{
-    BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, PluginFactory, Snapshot,
-};
+use rutis_sdk::rutis::host::{BoxFuture, DynPlugin, Effect, FiberState, PluginFactory, Snapshot};
+use rutis_sdk::rutis::{Ctx, Error};
 use rutis_sdk::{ConfigValue, serde_json, tokio};
 
 struct ProbeFactory;
@@ -1244,21 +1243,19 @@ impl PluginFactory<ConfigValue> for ProbeFactory {
     fn name(&self) -> &str {
         "sdk-bundle-probe"
     }
-    fn build(&self, _: &ConfigValue) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, _: &ConfigValue) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(Probe))
     }
 }
 
-impl Plugin for Probe {
+impl DynPlugin for Probe {
     fn name(&self) -> &str {
         "sdk-bundle-probe"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let _config = serde_json::json!({ "probe": true });
-            tokio::spawn(async {})
-                .await
-                .map_err(|e| CordisError::PluginFailed(e.into()))?;
+            tokio::spawn(async {}).await?;
             ctx.provide("probe".to_string())?;
             ctx.provide(Snapshot {
                 generation: 1,

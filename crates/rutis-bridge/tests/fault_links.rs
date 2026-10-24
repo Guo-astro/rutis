@@ -18,7 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{BoxFuture, Ctx};
+use rutis::host::{BoxFuture, CtxHost};
+use rutis::Ctx;
 use rutis_bridge::channel::testing::{fault, Faults};
 use rutis_bridge::channel::{Channel, ConnectError, PeerId};
 use rutis_bridge::session::{host_key, settle, Error, HostDispatch};
@@ -115,7 +116,7 @@ async fn linked() -> Linked {
         down: AtomicBool::new(false),
     });
     let provided = mac
-        .provide_as::<dyn Transport>(transport_key("faulty"), faulty.clone())
+        .provide_at(transport_key("faulty"), faulty.clone())
         .unwrap();
     mac.plugin(IdentityPlugin::new(
         "mac",
@@ -135,7 +136,7 @@ async fn linked() -> Linked {
 }
 
 fn peer(root: &Ctx, of: &str) -> Option<Arc<Peer>> {
-    root.get_as::<Peer>(peer_key(&id(of)))
+    root.get_at::<Peer>(&peer_key(&id(of)))
 }
 
 /// The peer `of` at `root` once its session is `generation`.
@@ -575,7 +576,7 @@ async fn cancellation_and_release_pass_hop_by_hop() {
     )
     .await;
     let _provided = b
-        .provide_as::<dyn HostDispatch>(
+        .provide_at(
             host_key("clock"),
             Arc::new(Clock {
                 started,
@@ -599,7 +600,7 @@ async fn cancellation_and_release_pass_hop_by_hop() {
     c.plugin(ImportPlugin::new(id("a"), ["clock"]));
 
     let clock = eventually(
-        || c.get_as::<dyn HostDispatch>(host_key("clock")),
+        || c.get_at::<dyn HostDispatch>(&host_key("clock")),
         "the clock at c",
     )
     .await;

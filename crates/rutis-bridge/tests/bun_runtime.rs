@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::runtime::{row_projection, Launcher, Mount, Process};
 use rutis_bridge::session::{host_key, HostDispatch};
@@ -104,11 +105,7 @@ async fn load(
         .unwrap();
     let name = described.provides.keys().next().unwrap().clone();
     let service = host_key(&name);
-    until(
-        || ctx.get_as::<dyn HostDispatch>(service.clone()).is_some(),
-        &name,
-    )
-    .await;
+    until(|| ctx.get_at::<dyn HostDispatch>(&service).is_some(), &name).await;
     projection
 }
 
@@ -149,7 +146,7 @@ async fn bun_rows_follow_the_row_contract() {
     let ctx = Ctx::root().unwrap();
     let projection = load(&process, &ctx, "w", entry, json!({ "city": "Oslo" })).await;
     let key = host_key("weather");
-    let weather = ctx.get_as::<dyn HostDispatch>(key.clone()).unwrap();
+    let weather = ctx.get_at::<dyn HostDispatch>(&key).unwrap();
     assert_eq!(
         weather
             .invoke("today", json!([]).into())
@@ -174,7 +171,7 @@ async fn bun_rows_follow_the_row_contract() {
 
     process.unload_row("w").await.unwrap();
     until(
-        || ctx.get_as::<dyn HostDispatch>(key.clone()).is_none(),
+        || ctx.get_at::<dyn HostDispatch>(&key).is_none(),
         "the withdrawal",
     )
     .await;
@@ -243,7 +240,7 @@ export function apply(ctx) { ctx.provide('probe', { value: () => process.env.RUT
     let process = bun(dir.path()).await;
     let ctx = Ctx::root().unwrap();
     let projection = load(&process, &ctx, "p", Path::new("./probe.ts"), json!({})).await;
-    let probe = ctx.get_as::<dyn HostDispatch>(host_key("probe")).unwrap();
+    let probe = ctx.get_at::<dyn HostDispatch>(&host_key("probe")).unwrap();
     assert_eq!(
         probe
             .invoke("value", json!([]).into())
@@ -304,7 +301,7 @@ export function apply(ctx) {
         .unwrap();
     let ctx = Ctx::root().unwrap();
     let projection = load(&process, &ctx, "d", Path::new("./gate.ts"), json!({})).await;
-    let door = ctx.get_as::<dyn HostDispatch>(host_key("door")).unwrap();
+    let door = ctx.get_at::<dyn HostDispatch>(&host_key("door")).unwrap();
 
     let passing = door.clone();
     let pass = tokio::task::spawn_blocking(move || passing.invoke("pass", json!([]).into()));
@@ -350,7 +347,9 @@ export function apply(ctx) {
     let process = bun(dir.path()).await;
     let ctx = Ctx::root().unwrap();
     let projection = load(&process, &ctx, "f", Path::new("./fragile.ts"), json!({})).await;
-    let fragile = ctx.get_as::<dyn HostDispatch>(host_key("fragile")).unwrap();
+    let fragile = ctx
+        .get_at::<dyn HostDispatch>(&host_key("fragile"))
+        .unwrap();
     assert_eq!(
         fragile
             .invoke("later", json!([]).into())
@@ -390,7 +389,7 @@ async fn an_edited_plugin_is_imported_again() {
     let ctx = Ctx::root().unwrap();
     let entry = Path::new("./greeter.ts");
     let greet = |ctx: &Ctx| {
-        ctx.get_as::<dyn HostDispatch>(host_key("greeter"))
+        ctx.get_at::<dyn HostDispatch>(&host_key("greeter"))
             .unwrap()
             .invoke("greet", json!([]).into())
             .unwrap()
@@ -403,7 +402,7 @@ async fn an_edited_plugin_is_imported_again() {
     projection.close();
     until(
         || {
-            ctx.get_as::<dyn HostDispatch>(host_key("greeter"))
+            ctx.get_at::<dyn HostDispatch>(&host_key("greeter"))
                 .is_none()
         },
         "the withdrawal",
@@ -469,7 +468,7 @@ async fn a_runtime_without_the_row_contract_fails_to_start() {
     let ctx = Ctx::root().unwrap();
     let view = ctx.plugin(runtime);
     let _ = (&view).await;
-    assert_eq!(view.state().state, rutis::FiberState::Failed);
+    assert_eq!(view.state().state, rutis::host::FiberState::Failed);
     match handle.state() {
         rutis_bridge::runtime::RuntimeState::Down(message) => {
             assert!(message.contains("lacks rows.v2 and hosts"), "{message}")
@@ -501,7 +500,7 @@ async fn unloading_a_row_withdraws_its_services_without_waiting_for_the_runtime(
     process.unload_row("w").await.unwrap();
     until(
         || {
-            ctx.get_as::<dyn HostDispatch>(host_key("weather"))
+            ctx.get_at::<dyn HostDispatch>(&host_key("weather"))
                 .is_none()
         },
         "the withdrawal",

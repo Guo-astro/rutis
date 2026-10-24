@@ -152,12 +152,6 @@ pub enum Handshake {
     IdentityMismatch(String),
 }
 
-impl From<Error> for rutis::CordisError {
-    fn from(error: Error) -> Self {
-        Self::PluginFailed(Box::new(error))
-    }
-}
-
 /// An error raised on the Rust side, as the other side sees it.
 pub fn native_error(error: impl std::fmt::Display) -> Error {
     Error::Remote {

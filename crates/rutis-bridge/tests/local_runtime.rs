@@ -2,7 +2,8 @@
 //! how its process ended, and its handle says so. Every handover: an
 //! inherited socket by default, loopback on Windows (and with
 //! `RUTIS_LOCAL_HANDOVER=loopback`).
-use rutis::{Ctx, FiberState};
+use rutis::host::{CtxHost, FiberState};
+use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::runtime::{Launcher, RuntimeState};
 
@@ -51,6 +52,7 @@ async fn a_runtime_that_cannot_start_says_why() {
 #[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
 async fn local_runtime_events_follow_leaf_lifecycle() {
+    use rutis::internal::CtxInternal;
     use rutis_bridge::runtime::row_projection;
     use rutis_test_support::{eventually, within};
     use serde_json::json;
@@ -60,7 +62,7 @@ async fn local_runtime_events_follow_leaf_lifecycle() {
         let package = repo.join("node/rutis-runtime");
         let entry = repo.join("crates/rutis-bridge/tests/fixtures/leaf-events.mjs");
         let runtime = LocalRuntime::node(&package, package.join("package.json"));
-        let changed = rutis::EventKey::<rutis_bridge::events::Args>::dynamic("leaf/changed");
+        let changed = "leaf/changed";
         let emit = |args: Vec<rutis_bridge::session::Value>| {
             std::sync::Arc::new(rutis_bridge::events::Args(args))
         };
@@ -89,8 +91,8 @@ async fn local_runtime_events_follow_leaf_lifecycle() {
                 .load_row("listener", &entry, json!({}), &[], &[], &[])
                 .await
                 .unwrap();
-            root.events()
-                .parallel(&root, &changed, emit(vec![json!(generation).into()]))
+            root.named(changed)
+                .parallel(emit(vec![json!(generation).into()]))
                 .await
                 .unwrap();
             let expected = json!([generation]);
@@ -99,10 +101,7 @@ async fn local_runtime_events_follow_leaf_lifecycle() {
                 expected
             );
             process.unload_row("listener").await.unwrap();
-            root.events()
-                .parallel(&root, &changed, emit(vec![]))
-                .await
-                .unwrap();
+            root.named(changed).parallel(emit(vec![])).await.unwrap();
             assert_eq!(
                 process.call_async(&probe, "seen", json!([])).await.unwrap(),
                 expected
@@ -122,7 +121,6 @@ async fn local_runtime_events_follow_leaf_lifecycle() {
 async fn a_runtime_announces_running_and_down() {
     use std::sync::{Arc, Mutex};
 
-    use rutis::{BoxFuture, Call, CordisError, EventKey, Listener};
     use rutis_bridge::channel::PeerId;
     use rutis_bridge::events::{RuntimeEvent, RuntimeEventState};
     use rutis_bridge::runtime::{runtime_session_key, RuntimePlugin, RuntimeSession};
@@ -155,18 +153,6 @@ async fn a_runtime_announces_running_and_down() {
             Ok(Box::new(()))
         }
     }
-    struct Heard(Arc<Mutex<Vec<RuntimeEvent>>>);
-    impl Listener<RuntimeEvent> for Heard {
-        fn call<'a>(
-            &'a self,
-            _: &'a Ctx,
-            event: &'a RuntimeEvent,
-            _: Call<'a, ()>,
-        ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-            self.0.lock().unwrap().push(event.clone());
-            Box::pin(async { Ok(None) })
-        }
-    }
     within("rutis/runtime", async {
         let (a, b) = rutis_bridge::transport::memory::pair();
         let endpoint = |name| Format::Endpoint(Endpoint::rust(PeerId::new(name).unwrap()));
@@ -175,10 +161,13 @@ async fn a_runtime_announces_running_and_down() {
         session.ready().await.unwrap();
         let root = Ctx::root().unwrap();
         let heard = Arc::new(Mutex::new(Vec::new()));
-        root.events()
-            .on(&root, &EventKey::<RuntimeEvent>::of(), Heard(heard.clone()))
-            .unwrap();
-        root.provide_as::<dyn RuntimeSession>(
+        let into = heard.clone();
+        root.on::<RuntimeEvent>(move |event, _| {
+            into.lock().unwrap().push((*event).clone());
+            std::future::ready(Ok(None))
+        })
+        .unwrap();
+        root.provide_at(
             runtime_session_key("fake"),
             Arc::new(Session(session.clone())),
         )

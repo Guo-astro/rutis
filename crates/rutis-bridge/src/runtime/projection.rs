@@ -10,7 +10,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, Weak};
 
-use rutis::{BoxFuture, CordisError, Ctx, Disposer, ServiceWriter, TypeKey};
+use rutis::host::{BoxFuture, ErrorKind, TypeKey};
+use rutis::internal::{CtxInternal, ServiceWriter};
+use rutis::{Ctx, Disposer, Error as RutisError};
 
 use crate::runtime::process::ServiceEvents;
 use crate::runtime::{Error, Process};
@@ -219,14 +221,16 @@ impl Projection {
                 Some((_, writer)) => writer
                     .set(ctx, proxy.clone())
                     .map_err(|error| Error::Value(error.to_string())),
-                None => match ctx.provide_mut_as(key.clone(), proxy.clone()) {
+                None => match ctx.provide_mut_at(key.clone(), proxy.clone()) {
                     Ok(registered) => {
                         binding = Some(registered);
                         Ok(())
                     }
                     // Another provider has the key: the later one fails,
                     // and says who has it.
-                    Err(CordisError::ServiceExists(_)) if occupied.is_some() => {
+                    Err(error)
+                        if matches!(&*error, ErrorKind::ServiceExists(_)) && occupied.is_some() =>
+                    {
                         let (this, occupied) = occupied.as_ref().unwrap();
                         let holder = occupied(ctx).unwrap_or_else(|| "another plugin".to_owned());
                         let why = format!(
@@ -258,7 +262,7 @@ impl Projection {
     }
 
     /// Publish the current handles from the mounting plugin's own context.
-    pub fn attach(&self, ctx: &Ctx, process: Arc<Process>) -> Result<(), CordisError> {
+    pub fn attach(&self, ctx: &Ctx, process: Arc<Process>) -> Result<(), RutisError> {
         let (watching, closed) = tokio::sync::oneshot::channel::<()>();
         {
             let mut state = self.state.lock().unwrap();

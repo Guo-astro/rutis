@@ -5,7 +5,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rutis::{Ctx, FiberView};
+use rutis::host::{CtxHost, FiberView};
+use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::Error;
 use rutis_bridge::session::{Connection, Endpoint, Format, Value};
@@ -50,7 +51,7 @@ async fn state(
 }
 
 fn peer(root: &Ctx, of: &str) -> Option<Arc<Peer>> {
-    root.get_as::<Peer>(peer_key(&id(of)))
+    root.get_at::<Peer>(&peer_key(&id(of)))
 }
 
 /// One application: the shared transport, an identity and a link.

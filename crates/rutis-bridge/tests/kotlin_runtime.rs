@@ -10,6 +10,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::runtime::{row_projection, Mount, Process};
 use rutis_bridge::session::{caller_row, host_key, CallerRow, Error, HostDispatch};
@@ -62,12 +63,8 @@ async fn service(
         .await
         .unwrap();
     let key = host_key(name);
-    until(
-        || ctx.get_as::<dyn HostDispatch>(key.clone()).is_some(),
-        name,
-    )
-    .await;
-    ctx.get_as::<dyn HostDispatch>(key).unwrap()
+    until(|| ctx.get_at::<dyn HostDispatch>(&key).is_some(), name).await;
+    ctx.get_at::<dyn HostDispatch>(&key).unwrap()
 }
 
 /// A host whose `hello` lacks `events-v2` (rutis 0.12 and older) is

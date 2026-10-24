@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use rutis::{Ctx, ErrorSink};
+use rutis::host::ErrorSink;
+use rutis::Ctx;
 
 use super::hub::Hub;
 use crate::session::Error;

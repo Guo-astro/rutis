@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{host_key, HostDispatch};
@@ -125,10 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
             (&root.plugin(WebSocketPlugin::new(Config::new().listener(listener))?)).await?;
-            root.provide_as::<dyn HostDispatch>(
-                host_key("clock"),
-                Arc::new(Clock(AtomicU64::new(0))),
-            )?;
+            root.provide_at(host_key("clock"), Arc::new(Clock(AtomicU64::new(0))))?;
             root.plugin(IdentityPlugin::new(
                 "main",
                 StaticIdentity::new(main_id).accept_token(args.token.as_str(), mac_id.clone()),
@@ -172,7 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut ticks = tokio::time::interval(Duration::from_secs(1));
             loop {
                 ticks.tick().await;
-                let Some(clock) = root.get_as::<dyn HostDispatch>(host_key("clock")) else {
+                let Some(clock) = root.get_at::<dyn HostDispatch>(&host_key("clock")) else {
                     println!("[{:>7.1?}] clock: not imported", started.elapsed());
                     continue;
                 };

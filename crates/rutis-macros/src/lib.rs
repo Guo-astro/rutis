@@ -438,11 +438,11 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
             }
             fn __rutis_resolve(
                 ctx: &#rutis::Ctx,
-                key: &#rutis::TypeKey,
-                provision: &#rutis::service::Provision,
+                key: &#rutis::host::TypeKey,
+                provision: &#rutis::internal::service::Provision,
                 actor: ::std::option::Option<&#rutis::Ctx>,
             ) -> ::std::result::Result<::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>, ::std::string::String> {
-                ctx.require_provided_as::<#ty>(key.clone(), provision, actor)
+                #rutis::internal::CtxInternal::require_provided_as::<#ty>(ctx, key.clone(), provision, actor)
                     .map(|service| service as ::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>)
                     .map_err(|error| ::std::string::ToString::to_string(&error))
             }
@@ -450,11 +450,11 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
             fn __rutis_invoke(
                 service: &::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>,
                 method: &str,
-                args: #rutis::service::Encoded,
-                wire: &'static dyn #rutis::service::Wire,
-            ) -> ::std::result::Result<#rutis::service::Answer, #rutis::service::CallError> {
+                args: #rutis::internal::service::Encoded,
+                wire: &'static dyn #rutis::internal::service::Wire,
+            ) -> ::std::result::Result<#rutis::internal::service::Answer, #rutis::internal::service::CallError> {
                 #[allow(unused_imports)]
-                use #rutis::service::{
+                use #rutis::internal::service::{
                     FailCordis as _, FailDebug as _, FailDisplay as _, FailIo as _, FailSerde as _,
                     FailString as _, SplitResult as _, SplitValue as _, ViaData as _,
                     ViaFunction as _,
@@ -466,7 +466,7 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
                     ))),
                 }
             }
-            static __RUTIS_ENTRY: #rutis::service::Entry = #rutis::service::Entry::new(
+            static __RUTIS_ENTRY: #rutis::internal::service::Entry = #rutis::internal::service::Entry::new(
                 __rutis_type_id,
                 __rutis_type_name,
                 #name,
@@ -476,7 +476,7 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
                 __rutis_invoke,
             );
             fn __rutis_register() {
-                #rutis::service::register(&__RUTIS_ENTRY);
+                #rutis::internal::service::register(&__RUTIS_ENTRY);
             }
             #rutis::__on_load!(__rutis_register);
         };
@@ -613,11 +613,11 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
                 let names: Vec<_> = (0..*args).map(|i| format_ident!("p{}", i)).collect();
                 decode.push(quote! {
                     let #local = {
-                        let function = #rutis::service::function(wire, args.next().unwrap())?;
-                        move |#(#names),*| #rutis::service::call_back(
+                        let function = #rutis::internal::service::function(wire, args.next().unwrap())?;
+                        move |#(#names),*| #rutis::internal::service::call_back(
                             &function,
                             wire,
-                            ::std::vec![#(#rutis::service::encode_arg(wire, &#names)),*],
+                            ::std::vec![#(#rutis::internal::service::encode_arg(wire, &#names)),*],
                         )
                     };
                 });
@@ -629,7 +629,7 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
             } => {
                 let span = param_ty.span();
                 decode.push(quote_spanned! {span=>
-                    let #local: #param_ty = (&#rutis::service::Param::<#param_ty>::NEW)
+                    let #local: #param_ty = (&#rutis::internal::service::Param::<#param_ty>::NEW)
                         .__rutis_param(wire, args.next().unwrap())?;
                 });
                 call.push(if *by_ref {
@@ -640,7 +640,8 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
             }
         }
     }
-    let caller = takes_ctx.then(|| quote!(let caller = #rutis::service::caller(wire, #js)?;));
+    let caller =
+        takes_ctx.then(|| quote!(let caller = #rutis::internal::service::caller(wire, #js)?;));
     let invoke = quote!(<#ty>::#rust(&*service #(, #call)*));
     let output_span = match &sig.output {
         ReturnType::Type(_, output) => output.span(),
@@ -648,12 +649,12 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
     };
     let reply = quote_spanned! {output_span=>
         {
-            let returned = #rutis::service::Returned::new(returned);
+            let returned = #rutis::internal::service::Returned::new(returned);
             match (&returned).__rutis_split() {
-                ::std::result::Result::Ok(value) => #rutis::service::encode_ok(wire, &value),
+                ::std::result::Result::Ok(value) => #rutis::internal::service::encode_ok(wire, &value),
                 ::std::result::Result::Err(error) => ::std::result::Result::Err(
-                    #rutis::service::forwarded(wire, &error).unwrap_or_else(|| {
-                        (&&&&&#rutis::service::Failure(&error)).__rutis_fail(wire)
+                    #rutis::internal::service::forwarded(wire, &error).unwrap_or_else(|| {
+                        (&&&&&#rutis::internal::service::Failure(&error)).__rutis_fail(wire)
                     }),
                 ),
             }
@@ -661,7 +662,7 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
     };
     let body = if awaited {
         quote! {
-            ::std::result::Result::Ok(#rutis::service::Answer::Later(::std::boxed::Box::pin(async move {
+            ::std::result::Result::Ok(#rutis::internal::service::Answer::Later(::std::boxed::Box::pin(async move {
                 let returned = #invoke.await;
                 #reply
             })))
@@ -669,7 +670,7 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
     } else {
         quote! {
             let returned = #invoke;
-            ::std::result::Result::Ok(#rutis::service::Answer::Ready(#reply?))
+            ::std::result::Result::Ok(#rutis::internal::service::Answer::Ready(#reply?))
         }
     };
     Ok(quote! {
@@ -677,7 +678,7 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
             #caller
             let mut args = wire.arguments(args, #count)?.into_iter();
             #(#decode)*
-            let service = #rutis::service::downcast::<#ty>(service);
+            let service = #rutis::internal::service::downcast::<#ty>(service);
             #body
         }
     })

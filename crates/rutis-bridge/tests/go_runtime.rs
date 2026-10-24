@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::runtime::{row_projection, Launcher, Mount, Process};
 use rutis_bridge::session::{host_key, Error, HostDispatch};
@@ -94,12 +95,8 @@ async fn service(
         .await
         .unwrap();
     let key = host_key(name);
-    until(
-        || ctx.get_as::<dyn HostDispatch>(key.clone()).is_some(),
-        name,
-    )
-    .await;
-    ctx.get_as::<dyn HostDispatch>(key).unwrap()
+    until(|| ctx.get_at::<dyn HostDispatch>(&key).is_some(), name).await;
+    ctx.get_at::<dyn HostDispatch>(&key).unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -179,7 +176,7 @@ async fn go_rows_follow_the_row_contract() {
     let key = host_key("weather");
     until(
         || {
-            ctx.get_as::<dyn HostDispatch>(key.clone())
+            ctx.get_at::<dyn HostDispatch>(&key)
                 .and_then(|weather| weather.invoke("today", json!([]).into()).ok())
                 .and_then(|today| today.json().ok())
                 .is_some_and(|today| today.as_str().unwrap_or("").starts_with("Oslo"))
@@ -190,7 +187,7 @@ async fn go_rows_follow_the_row_contract() {
 
     process.unload_row("w").await.unwrap();
     until(
-        || ctx.get_as::<dyn HostDispatch>(key.clone()).is_none(),
+        || ctx.get_at::<dyn HostDispatch>(&key).is_none(),
         "the withdrawal",
     )
     .await;

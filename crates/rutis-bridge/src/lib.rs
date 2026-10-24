@@ -26,7 +26,7 @@
 
 use std::sync::Arc;
 
-use rutis::{BoxFuture, TypeKey};
+use rutis::host::BoxFuture;
 
 #[cfg(feature = "exports")]
 pub mod build;
@@ -138,6 +138,6 @@ impl Dial {
 }
 
 /// The key a transport of `kind` is provided under (`Transport#local`).
-pub fn transport_key(kind: &str) -> TypeKey {
-    TypeKey::keyed_dynamic::<dyn Transport>(kind.to_owned())
+pub fn transport_key(kind: &str) -> rutis::host::Key<dyn Transport> {
+    rutis::host::Key::dynamic(kind.to_owned())
 }

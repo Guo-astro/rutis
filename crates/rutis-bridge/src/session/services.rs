@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use rutis::TypeKey;
+use rutis::host::{CtxHost, Key};
 use serde_json::Value;
 
 use crate::session::rpc::{Reply, Value as RpcValue};
@@ -38,14 +38,14 @@ pub trait HostDispatch: Send + Sync + 'static {
 
 /// The key a host service named `name` is provided under, for example
 /// `ctx.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe))`.
-pub fn host_key(name: &str) -> TypeKey {
-    TypeKey::keyed_dynamic::<dyn HostDispatch>(name.to_owned())
+pub fn host_key(name: &str) -> Key<dyn HostDispatch> {
+    Key::dynamic(name.to_owned())
 }
 
 /// The key of the host service `name` inside the instance subtree
 /// `instance`: seen only from that subtree, so each instance has its own.
-pub fn host_key_in(name: &str, instance: rutis::InstanceId) -> TypeKey {
-    host_key(name).with_instance(instance)
+pub fn host_key_in(name: &str, instance: rutis::host::InstanceId) -> Key<dyn HostDispatch> {
+    host_key(name).instance(instance)
 }
 
 /// The row a call into a [`HostDispatch`] comes from ([`caller_row`]): a
@@ -110,7 +110,7 @@ impl CallerRow {
 
     /// The identity of the row's fiber (`ctx().instance()`), which it
     /// keeps across restarts.
-    pub fn instance(&self) -> rutis::InstanceId {
+    pub fn instance(&self) -> rutis::host::InstanceId {
         self.0.ctx.instance()
     }
 

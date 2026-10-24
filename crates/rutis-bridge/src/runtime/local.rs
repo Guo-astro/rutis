@@ -23,11 +23,9 @@ use crate::channel::PeerId;
 use crate::runtime::{
     Launcher, RuntimeAccessPlugin, RuntimeHandle, RuntimePlugin, RuntimeState, Stdio,
 };
-use crate::{
-    identity_key, transport_key, Identity, LinkConfig, LinkPlugin, LinkState, StaticIdentity,
-    Transport,
-};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin};
+use crate::{identity_key, transport_key, LinkConfig, LinkPlugin, LinkState, StaticIdentity};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind};
+use rutis::{Ctx, Error};
 use serde_json::Value;
 
 use crate::transport::local::{Handover, LocalTransport, Processes, Spawn};
@@ -228,12 +226,12 @@ impl LocalRuntime {
     }
 }
 
-impl Plugin for LocalRuntime {
+impl DynPlugin for LocalRuntime {
     fn name(&self) -> &str {
         &self.label
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             // Its own transport and identity, under keys of its own, from a
             // child: what the link waits for must come from a provider that
@@ -280,7 +278,7 @@ impl Plugin for LocalRuntime {
                 }
             };
             self.runtime.failed(failure.clone());
-            Err(CordisError::PluginFailed(failure.into()))
+            Err(rutis::Error::from(ErrorKind::PluginFailed(failure.into())))
         })
     }
 }
@@ -295,12 +293,12 @@ struct Carrier {
     processes: Processes,
 }
 
-impl Plugin for Carrier {
+impl DynPlugin for Carrier {
     fn name(&self) -> &str {
         &self.label
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let transport = Arc::new(LocalTransport::sharing(self.processes.clone()));
             transport.spawner("runtime", self.spawn.clone());
@@ -308,15 +306,13 @@ impl Plugin for Carrier {
                 transport.trace(Arc::new(|line: &str| eprintln!("rutis trace: {line}")));
             }
             let closing = transport.clone();
-            ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
-                    closing.close_all();
-                    Ok(())
-                }))
+            ctx.effect(move || async move {
+                closing.close_all();
+                Ok(())
             })?;
-            ctx.provide_as::<dyn Transport>(transport_key(&self.kind), transport)?;
+            ctx.provide_at(transport_key(&self.kind), transport)?;
             let main = PeerId::new("main").expect("a valid id");
-            ctx.provide_as::<dyn Identity>(
+            ctx.provide_at(
                 identity_key(&self.kind),
                 Arc::new(StaticIdentity::new(main)),
             )?;

@@ -4,6 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};

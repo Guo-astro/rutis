@@ -11,8 +11,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use rutis::{BoxFuture, CordisError, Plugin, PluginFactory, TypeKey};
-use rutis_loader::{LoaderError, Resolved, Resolver};
+use rutis::host::{BoxFuture, DynPlugin, PluginFactory, TypeKey};
+use rutis::Error;
+use rutis_loader::resolve::Resolved;
+use rutis_loader::{LoaderError, Resolver};
 use rutis_sdk::serde_json::{json, Value};
 
 use crate::{Loader, Module};
@@ -90,15 +92,15 @@ impl PluginFactory<Value> for ModuleFactory {
         self.module.name()
     }
 
-    fn injects(&self) -> &[TypeKey] {
+    fn injects(&self) -> Vec<TypeKey> {
         self.module.injects()
     }
 
-    fn validate_config(&self, config: &Value) -> Result<(), CordisError> {
+    fn validate_config(&self, config: &Value) -> Result<(), Error> {
         self.module.factory().validate_config(config)
     }
 
-    fn build(&self, config: &Value) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
         self.module.build(config)
     }
 }

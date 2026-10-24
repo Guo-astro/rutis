@@ -9,8 +9,10 @@
 compile_error!("rutis-dylib requires panic = unwind");
 
 use crate::platform::{self, Handle};
-use rutis::service::Generation;
-use rutis::{CordisError, Ctx, FiberView, Plugin, PluginFactory, TypeKey};
+use rutis::host::{CtxHost, ErrorKind};
+use rutis::host::{DynPlugin, FiberView, PluginFactory, TypeKey};
+use rutis::internal::service::Generation;
+use rutis::{Ctx, Error};
 use rutis_sdk::{ConfigValue, PluginMeta, BOOT_MAGIC, BOOT_SIZE, SDK_ID};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -122,7 +124,7 @@ fn open_generation_with(
     let mut known = GENERATIONS
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
-    let (opened, generation) = rutis::service::loading(open);
+    let (opened, generation) = rutis::internal::service::loading(open);
     let handle = opened?;
     let key = handle.as_ptr() as usize;
     if let Some((_, generation)) = known.iter().find(|(handle, _)| *handle == key) {
@@ -376,7 +378,7 @@ impl Loader {
             // This is the plugin's newest build: names are looked up in it,
             // not in the earlier ones, whose blocks keep serving the values
             // they provided.
-            rutis::service::supersede(
+            rutis::internal::service::supersede(
                 retained
                     .iter()
                     .filter(|entry| entry.id == *id && entry.generation != generation)
@@ -411,7 +413,7 @@ impl Loader {
                 "runtime identity differs from boot metadata or manifest".into(),
             ));
         }
-        let entry: unsafe fn() -> Result<Box<dyn PluginFactory<ConfigValue>>, CordisError> =
+        let entry: unsafe fn() -> Result<Box<dyn PluginFactory<ConfigValue>>, Error> =
             symbol(handle, b"rutis_plugin_entry\0").map_err(|e| fail("entry", e))?;
         let factory = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| entry()))
             .map_err(|_| fail("entry", "factory entry panicked".into()))?
@@ -475,7 +477,7 @@ impl Loader {
         ctx: &Ctx,
         module: &Arc<Module>,
         value: ConfigValue,
-    ) -> Result<FiberView, CordisError> {
+    ) -> Result<FiberView, Error> {
         let factory = DylibFactory {
             id: module.id.clone(),
             name: module.name.clone(),
@@ -490,9 +492,9 @@ impl Loader {
         view: &FiberView,
         module: &Arc<Module>,
         value: ConfigValue,
-    ) -> Result<(), Arc<CordisError>> {
+    ) -> Result<(), Arc<ErrorKind>> {
         let current = view.current_config::<DylibConfig>().ok_or_else(|| {
-            Arc::new(CordisError::Validation {
+            Arc::new(ErrorKind::Validation {
                 issues: vec!["fiber is not a dylib plugin".into()],
             })
         })?;
@@ -501,7 +503,9 @@ impl Loader {
             name: current.module.name.clone(),
             injects: current.module.injects.clone(),
         };
-        expected.check_module(module).map_err(Arc::new)?;
+        expected
+            .check_module(module)
+            .map_err(|error| Arc::new(error.into_kind()))?;
         view.update(DylibConfig::new(module.clone(), value)).await
     }
 }
@@ -534,8 +538,8 @@ impl Module {
     pub fn name(&self) -> &str {
         &self.name
     }
-    pub fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    pub fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
     /// The config's JSON Schema, when the plugin exported one.
     pub fn schema(&self) -> Option<&rutis_sdk::serde_json::Value> {
@@ -557,7 +561,7 @@ impl Module {
     /// code (`rutis::service::set_generation`): a `#[rutis::service]` value
     /// it provides is served with this library's blocks, even when another
     /// build of the same plugin, with the same `TypeId`s, is loaded too.
-    pub fn build(&self, config: &ConfigValue) -> Result<Box<dyn Plugin>, CordisError> {
+    pub fn build(&self, config: &ConfigValue) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(InGeneration {
             plugin: self.factory.build(config)?,
             generation: self.generation,
@@ -568,25 +572,25 @@ impl Module {
 /// A plugin of a loaded library, which marks its fiber as that library's
 /// code when it is applied.
 struct InGeneration {
-    plugin: Box<dyn Plugin>,
+    plugin: Box<dyn DynPlugin>,
     generation: Generation,
 }
 
-impl Plugin for InGeneration {
+impl DynPlugin for InGeneration {
     fn name(&self) -> &str {
         self.plugin.name()
     }
-    fn injects(&self) -> &[TypeKey] {
+    fn injects(&self) -> Vec<TypeKey> {
         self.plugin.injects()
     }
-    fn validate(&self) -> Result<(), CordisError> {
+    fn validate(&self) -> Result<(), Error> {
         self.plugin.validate()
     }
     fn apply<'a>(
         &'a self,
         ctx: &'a Ctx,
-    ) -> rutis::BoxFuture<'a, Result<rutis::Effect, CordisError>> {
-        rutis::service::set_generation(ctx, self.generation);
+    ) -> rutis::host::BoxFuture<'a, Result<rutis::host::Effect, Error>> {
+        rutis::internal::service::set_generation(ctx, self.generation);
         self.plugin.apply(ctx)
     }
 }
@@ -611,9 +615,9 @@ struct DylibFactory {
     injects: Vec<TypeKey>,
 }
 impl DylibFactory {
-    fn check_module(&self, module: &Module) -> Result<(), CordisError> {
+    fn check_module(&self, module: &Module) -> Result<(), Error> {
         if self.id != module.id || self.name != module.name || self.injects != module.injects {
-            return Err(CordisError::Validation { issues: vec!["plugin identity or dependency declaration changed; dispose and spawn a new fiber".into()] });
+            return Err(rutis::Error::from(ErrorKind::Validation { issues: vec!["plugin identity or dependency declaration changed; dispose and spawn a new fiber".into()] }));
         }
         Ok(())
     }
@@ -622,14 +626,14 @@ impl PluginFactory<DylibConfig> for DylibFactory {
     fn name(&self) -> &str {
         &self.name
     }
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
-    fn validate_config(&self, config: &DylibConfig) -> Result<(), CordisError> {
+    fn validate_config(&self, config: &DylibConfig) -> Result<(), Error> {
         self.check_module(&config.module)?;
         config.module.factory.validate_config(&config.value)
     }
-    fn build(&self, config: &DylibConfig) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &DylibConfig) -> Result<Box<dyn DynPlugin>, Error> {
         self.check_module(&config.module)?;
         config.module.build(&config.value)
     }
@@ -725,7 +729,8 @@ mod generation_tests {
         let open = move || -> Result<Handle, String> {
             if !INITIALIZED.swap(true, Ordering::SeqCst) {
                 // The initializers: they register as the current generation.
-                let generation = rutis::service::current_loading().expect("inside loading");
+                let generation =
+                    rutis::internal::service::current_loading().expect("inside loading");
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 RAN_IN.store(generation.id(), Ordering::SeqCst);
             }

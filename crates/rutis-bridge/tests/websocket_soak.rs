@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{host_key, Error, HostDispatch};
@@ -89,7 +90,7 @@ async fn relinking_over_and_over_holds_nothing_more() {
         "ws://{}/rutis",
         handle.transport().unwrap().local_addr("public").unwrap()
     );
-    main.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Clock(AtomicU64::new(0))))
+    main.provide_at(host_key("clock"), Arc::new(Clock(AtomicU64::new(0))))
         .unwrap();
     main.plugin(IdentityPlugin::new(
         "main",
@@ -121,7 +122,7 @@ async fn relinking_over_and_over_holds_nothing_more() {
         // A new session, the clock imported through it and called.
         let peer = eventually(
             || {
-                mac.get_as::<Peer>(peer_key(&id("main")))
+                mac.get_at::<Peer>(&peer_key(&id("main")))
                     .filter(|peer| peer.generation() > generation)
             },
             "a new session",
@@ -129,7 +130,7 @@ async fn relinking_over_and_over_holds_nothing_more() {
         .await;
         generation = peer.generation();
         let clock = eventually(
-            || mac.get_as::<dyn HostDispatch>(host_key("clock")),
+            || mac.get_at::<dyn HostDispatch>(&host_key("clock")),
             "the clock",
         )
         .await;

@@ -30,7 +30,8 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rutis::{BoxFuture, Ctx, FiberView};
+use rutis::host::{BoxFuture, CtxHost, FiberView};
+use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::Value;
 use rutis_bridge::transport::websocket::{

@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::runtime::{Launcher, Mount, Process};
 use serde_json::{json, Value};

@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::runtime::{Mount, Process};
 use rutis_bridge::session::{caller_row, CallerRow, HostDispatch, Reply, Value};
