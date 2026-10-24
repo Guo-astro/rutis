@@ -1865,7 +1865,7 @@ jobs:
       - sdk-repro-compare
       - sdk-repro-macos-compare
       - specs
-    runs-on: ${{ fromJSON(vars.GATE_RUNNER || '["self-hosted","macOS","ARM64"]') }}
+    runs-on: ${{ fromJSON(vars.GATE_RUNNER || '"ubuntu-24.04"') }}
     steps:
       - name: every selected job passed
         env:

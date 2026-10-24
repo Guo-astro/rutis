@@ -473,11 +473,13 @@ jobs:
         if: runner.os != 'Windows'
         with:
           bun-version: ${{ matrix.bun }}
-      # Python as in ci.yml: setup-python on GitHub's runners; uv's on the
-      # self-hosted Mac, the machine's on the self-hosted Windows, each in a
-      # virtual environment with pip.
+      # Python as in ci.yml: setup-python on GitHub's runners and on the
+      # self-hosted Linux (there it installs into the tool cache, not the
+      # system Python that PEP 668 protects); uv's on the self-hosted Mac,
+      # the machine's on the self-hosted Windows, each in a virtual
+      # environment with pip.
       - uses: actions/setup-python@v5
-        if: runner.environment == 'github-hosted'
+        if: runner.environment == 'github-hosted' || runner.os == 'Linux'
         with:
           python-version: ${{ matrix.python }}
       - uses: astral-sh/setup-uv@v6
