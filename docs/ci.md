@@ -6,27 +6,27 @@
 
 ## 1. 规则
 
-1. PR 只运行和这次改动有关的任务；每晚（main 有新提交时）和发布前运行全部任务。合并到 main 不运行检查。
+1. PR 只运行和这次改动有关的任务；发布前运行全部任务；每晚运行全部任务，但打包安装、Windows dylib、`specs`、`sdk-repro` 和全量 events 只按改动或每周跑（§2）。合并到 main 不运行检查。
 2. PR 推了新提交，旧的那次运行自动取消；每晚的运行和手动运行不取消。
 3. 合并只看一个检查：`ci-ok`。
 4. macOS 机器少，一次运行尽量只占一个 macOS 任务。
 5. 同一项检查只在一个任务里跑。
 6. 改 CI 配置的 PR 运行全部任务。
 7. Rust 编译缓存只在 main 上的运行（每晚的运行）里保存；PR 读取 main 的缓存，不保存自己的。
-8. 时间目标：普通代码 PR 从推送到出结果不超过 10 分钟，排队也算在内。
+8. 时间目标：普通代码 PR 从推送到出结果不超过 15 分钟，排队也算在内（收窄平台任务前的实测约 17.5 分钟；这次改动后用 `ci-stats` 重新测量，再按实测收紧，#577）。
 
 ## 2. 有哪些 workflow
 
 | workflow | 什么时候运行 | 做什么 |
 | --- | --- | --- |
 | `ci.yml` | 每个 PR；每晚由 `nightly.yml` 调用（`all=true`）；发布门里由 `release.yml` 调用（`all=true`）；手动（任何分支，`all` 默认打开） | 测试和检查（下文） |
-| `nightly.yml` | 每天 UTC 19:00，main 有新提交时；手动（`force`：没有新提交也跑） | 调用 `ci.yml`（全部任务）、`install.yml`（五个平台）、`dylib-windows.yml`、`stress.yml`；用最新已发布的 Cordis 插件跑一遍 Cordis 检查，只报告（`cordis-latest`，下文）；调用 `netem.yml`，只报告（`netem`，下文）；失败时开问题单（下文、§7） |
-| `dylib-windows.yml` | 每晚由 `nightly.yml` 调用；发布门里由 `release.yml` 调用（打 `v*` tag 不再单独触发）；手动 | Windows 上的 dylib 测试 |
+| `nightly.yml` | 每天 UTC 19:00，main 有新提交时；手动（`force`：没有新提交也跑） | 调用 `ci.yml`（`all=true`）和 `stress.yml`；用最新已发布的 Cordis 插件跑一遍 Cordis 检查（`cordis-latest`，只报告）；按改动调用 `install.yml`（五个平台）、`dylib-windows.yml` 和 `ci.yml` 的 `specs`、`sdk-repro`（每周一全跑）；调用 `netem.yml`（只报告）；失败时开问题单（下文、§7） |
+| `dylib-windows.yml` | 每晚由 `nightly.yml` 按 dylib 路径或周一调用；发布门里由 `release.yml` 调用（打 `v*` tag 不再单独触发）；手动 | Windows 上的 dylib 测试 |
 | `stress.yml` | 每晚由 `nightly.yml` 调用；手动 | 重复运行内核测试和多进程测试；网络长时间测试；大规模运行内核的 shuttle 模型，以及模糊测试；宿主长时间运行的 S8（三个平台）（下文） |
 | `netem.yml` | 每晚由 `nightly.yml` 调用（只报告）；手动 | S5 的容器版（风险 E12，#341）：两个 Docker 容器，非 loopback 地址 + TLS，netem 延迟、丢包、断网（下文） |
 | `ci-stats.yml` | 每周；手动 | 统计 CI 的耗时和失败 |
 | `deps.yml` | 每周；手动 | 依赖漏洞检查：`cargo deny check advisories`（不含示例项目）、`@arcships/rutis-runtime` 的 `npm audit`、Python 包的 `pip-audit`。不在 PR 上跑，不阻止合并；失败时 GitHub 通知维护者 |
-| `install.yml` | 每晚由 `nightly.yml` 调用；发布时由 `release.yml` 调用；手动 | 用 `package.yml` 构建这次提交的包并安装运行：npm、PyPI、release 二进制。每晚和发布前五个平台（linux-x64、linux-arm64、darwin-x64、darwin-arm64、win32-x64），手动运行默认三个平台（linux-x64、darwin-arm64、win32-x64） |
+| `install.yml` | 每晚由 `nightly.yml` 按打包路径或周一调用；发布时由 `release.yml` 调用；手动 | 用 `package.yml` 构建这次提交的包并安装运行：npm、PyPI、release 二进制。每晚和发布前五个平台（linux-x64、linux-arm64、darwin-x64、darwin-arm64、win32-x64），手动运行默认三个平台（linux-x64、darwin-arm64、win32-x64） |
 | `release.yml` | 打 `v*` tag；手动（`dry-run` 默认打开：只跑发布门，不发布） | 发布门（调用 `ci.yml`（`all=true`）、`package.yml`、`install.yml`（五个平台）、`dylib-windows.yml`）、发布、发布后验证（[发布](release.md)） |
 | `release-cli.yml` | 打 `cli-v*` tag | 发布 rutis-cli |
 
@@ -35,7 +35,13 @@
 合并到 main 不运行任何检查：PR 已经按改动跑过相关的任务。PR 上没测到的两类问题由每晚的运行补上：路径表漏了某个依赖，PR 上该跑的任务没跑（Q12.3.3）；两个 PR 各自通过，合在一起才出问题。
 
 - 时间：每天 UTC 19:00（北京时间凌晨 3 点）。第一个任务 `plan` 比较 main 当前的提交和上一次成功的每晚运行的提交，相同就跳过，后面的任务都不跑。
-- 内容：调用 `ci.yml`（`all=true`，全部任务）、`install.yml`（构建这次提交的包，五个平台安装运行；`darwin-arm64` 在自托管 macOS 上，其他格子用 GitHub 的干净机器）、`dylib-windows.yml`、`stress.yml`（默认轮数）、`netem.yml`（任务 `netem`），以及任务 `cordis-latest`。六个同时开始。
+- 内容：调用 `ci.yml`（`all=true`，全部任务）、`stress.yml`（默认轮数）、`netem.yml`（任务 `netem`），以及任务 `cordis-latest`。`plan` 用 GitHub 的 compare API 看上一次成功的每晚运行到这次改了哪些文件，决定另外几项：
+  - `install.yml`（构建这次提交的包，五个平台安装运行；`darwin-arm64` 在自托管 macOS 上，其他格子用 GitHub 的干净机器）：只有改了打包相关路径才跑（`scripts/train.mjs`、`**/pyproject.toml`、`**/package.json`、`crates/*/Cargo.toml`、`node/rutis-host/scripts/**`）；
+  - `dylib-windows.yml`：只有改了 dylib 相关路径才跑；
+  - `ci.yml` 的 `specs`：只有改了 `specs/**` 才跑；`sdk-repro`：只有改了 SDK 可复现相关路径才跑；
+  - `stress.yml` 的 `events-all`：每晚抽样（`RUTIS_EVENTS_PLACEMENTS=sampled`），周一跑全部（`all`）。
+
+  `Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml`、workflow 文件有改动，或者比较结果超过 compare API 的 300 个文件上限时，上面这些全部跑。每周一（UTC 19:00，北京周二 03:00）也全部跑一次，所以这些检查最长一周一定完整跑一次（#576）。
 - 失败时 `report` 任务开问题单（§7）。
 - `cordis-latest`（风险 F4，规范 Q6.14.4）：把 `node/baseline` 的 Cordis 和 dsh 插件换成最新已发布的版本（每个包取 `latest` 与 `next` 两个 dist-tag 中较新的一个，`node/baseline/latest.mjs`；锁文件不改、不提交），再跑用到它们的检查：库级挂载与原生 Cordis 对照（`rutis-bridge` 的 `dsh_baseline`）、生成的绑定（`examples/dsh-baseline`，去掉挂载的版本固定）、S6（`tests/e2e/tests/cordis.rs`）。最新版本之间 peer 依赖冲突、装不到一起时，先报告，再用 `--legacy-peer-deps` 安装，检查照常跑。**只报告**：上游发新版不应让 main 的每晚运行失败，所以这个任务不会失败（`continue-on-error`），`report` 不等它，也不开问题单；作业摘要列出每个包锁定的和最新的版本、每项检查的结果，失败的检查在运行页面上显示为警告。维护者看到警告后判断：是 rutis 的问题就登记 issue 修复，是上游的不兼容就在升级锁文件时处理。
 - `netem`（风险 E12，#341）：调用 `netem.yml`，跑 `tests/e2e/tests/netem.rs`：两个 Docker 容器在自己的 bridge 网络上，B 是监听 `wss://0.0.0.0:7443` 的 Python 运行时（证书由测试时生成的 CA 签发），A 是 `rutis-host run`，拨号 B 并在 B 上运行一行；`tc qdisc … netem` 依次加上 200 ms 延迟 + 5% 丢包、双向断网，再恢复，最后 B 换 token 重启。断言与 S5 相同：进行中的调用显式失败且只执行一次、退避上限内重连、拒绝类别可读、两个容器内无残留。用 GitHub 的 `ubuntu-24.04`（要 Docker 和 `NET_ADMIN`；自托管 Linux 是没有 Docker 的容器，§11），release 构建 `rutis-host`，约 2 分钟。**只报告**，做法同 `cordis-latest`：`netem.yml` 的 `report-only` 输入让任务 `continue-on-error`，`report` 不等它、不开问题单；失败时运行页面显示警告，失败场景的目录（每个程序的输出）上传为 artifact `e2e-netem`。手动运行：`gh workflow run netem.yml --ref <分支>`（这时失败就是失败）；本机 Linux 有 Docker 时的命令写在 `netem.rs` 开头。
@@ -49,7 +55,7 @@
 | 任务 | 做什么 |
 | --- | --- |
 | `rutis` | 内核测试重复 `rounds` 轮（默认 20）。每轮换测试线程数（1、2、全部核数）、打乱顺序、换种子，每五轮用一次 release 构建。第一次失败就停 |
-| `multiprocess` | bridge、loader 中会启动进程、打开本地通道、启动运行时进程的测试，也就是 PR 上 macOS、Windows 跑的那些测试文件：除 `ci.yml` 的 `PURE_TESTS_BRIDGE`、`PURE_TESTS_LOADER` 两个列表以外的全部测试文件（§4；新测试文件这里自动跟着跑）。运行时和 `rust` 任务相同（§9）。测试只构建一次，然后重复 `rounds` 轮，每轮换测试线程数、打乱顺序、换种子。某一轮失败也跑完所有轮，最后才让任务失败 |
+| `multiprocess` | bridge、loader 中会启动进程、打开本地通道、启动运行时进程的测试：除 `ci.yml` 的 `PURE_TESTS_BRIDGE`、`PURE_TESTS_LOADER` 两个列表以外的全部测试文件（§4；新测试文件这里自动跟着跑）。`MACOS_SKIP_TESTS_*`、`WINDOWS_SKIP_TESTS_*` 不影响这里：那些测试仍启动进程，只是 PR 上不在 macOS、Windows 跑。运行时和 `rust` 任务相同（§9）。测试只构建一次，然后重复 `rounds` 轮，每轮换测试线程数、打乱顺序、换种子。某一轮失败也跑完所有轮，最后才让任务失败 |
 | `soak` | bridge 的 WebSocket 和本地通道长时间测试，各 `soak_secs` 秒（默认 600） |
 | `shuttle` | 内核的 shuttle 模型（`crates/rutis/src/fiber/shuttle_tests.rs`：TransitionTask 唤醒、`post_join` 与驱动退出、并发 dispose 只清理一次），每个模型每种调度器 `shuttle_iterations` 次迭代（默认 1,000,000；PR 上在 `rust` 里跑 1000 次）。失败时打印失败的调度和种子，日志作为 artifact `shuttle-log` 上传，作业摘要里写明怎样重放（`RUTIS_SHUTTLE_REPLAY`） |
 | `fuzz` | `fuzz/` 下的三个模糊测试目标（cargo-fuzz，nightly Rust），矩阵里每个目标一项，各 `fuzz_secs` 秒（默认 1200）：`session_frame`（会话帧和其中的带标签值）、`local_lines`（本地通道的行分帧及其长度上限）、`websocket_upgrade`（监听方读取升级请求）。都从仓库里的语料（`fuzz/corpus/<目标>`）开始，运行中新增的语料不保留。崩溃、卡住（单个输入超过 10 秒）或性质检查失败，该项失败：输入和日志作为 artifact `fuzz-<目标>` 上传，作业摘要里有复现命令。跑在 GitHub 的 Linux runner 上（`LINUX_RUNNER`，§11） |
@@ -91,11 +97,11 @@
 | `rust` | Linux | `code` | Linux 上 loopback 方式启动运行时的重跑；事件一致性矩阵（`events_conformance`）的抽样放置（`RUTIS_EVENTS_PLACEMENTS=sampled`，每种语言约 900 种，约多 6 分钟；全部约 22 000 种由每晚 `stress.yml` 的 `events-all` 跑） | 全部 Rust 测试，每项只跑一次：工作区（除 bridge、loader、`rutis-e2e`）、loader 全部行类型（`events_conformance` 在 PR 上只跑写定的放置，每种运行时语言都必须在：`RUTIS_EVENTS_REQUIRE`）、bridge 全部 feature；内核的 shuttle 模型，1000 次迭代（用 `--cfg rutis_shuttle` 在 `target/shuttle` 里构建，远不到一分钟；`stress.yml` 大规模运行）；模糊测试入口（`crates/rutis-bridge/src/fuzzing.rs`）和 `fuzz/` 里的三个模糊测试目标都用 `--cfg fuzzing` 在 `target/fuzzcheck` 里 `cargo check` 一遍（只编译不运行，`stress.yml` 的 `fuzz` 才跑）。用最低支持版本（§9） |
 | `e2e` | Linux | `code` | 跨版本相遇：`cargo test -p rutis-e2e --test cross_version -- --ignored`（#209），上一个发布版本的运行时包、Go SDK、`rutis-host` 与这次提交相遇；从 npm、PyPI、Go 模块代理下载，装在 `runner.temp`（不进 Rust 缓存），约 1–2 分钟。结果随新版本发布而变（§6 第 5 条），不在 PR 上跑；它只随本项目自己的发布而变，又要在发布门里跑，所以放完整运行（每晚、发布门），不放每周。放进已有的 `e2e`（Node、Python、Bun、Go 都已装好），不新开任务（§6「加一个任务」第 4 条）；完整运行中 `e2e` 不在关键路径上 | 端到端场景 `cargo test -p rutis-e2e`（`tests/e2e`：真实的 rutis-host 进程、项目目录、各语言的探针插件），与 `rust` 并行，用最低支持版本（§9）。失败时上传 `RUTIS_E2E_DIR`（失败场景的目录和日志）为 artifact `e2e-linux`。安装场景不在这里跑，由 `install.yml` 跑。S7（`embedding.rs`）反复创建关闭租户的次数由 `RUTIS_E2E_TENANT_CYCLES` 决定：PR 上 20 次，完整运行（每晚）3000 次，多约一分钟；其他任务用默认的 20 次。同样的场景在 macOS 上由 `network-macos` 跑，在 Windows 上由 `runtimes-windows` 跑（只跑不限于 Unix 的场景） |
 | `js-py` | macOS（自托管，§10） | `code` | — | `scripts/train.mjs`；Node 包（`node/rutis`、`rutis-runtime`、`rutis-host`）和 rutis-dsh 的 dsh 测试；Python 单元测试 |
-| `lint` | Linux | `code` | — | `cargo fmt --check`；`PURE_TESTS_*` 里的每个名字都有对应的测试文件（§4）；`cargo clippy --workspace --all-targets --all-features -- -D warnings`。与测试并行。没有基线：警告在引入它的 PR 里改掉，升级工具链带来的新 lint 在升级的 PR 里改掉 |
+| `lint` | Linux | `code` | — | `cargo fmt --check`；顶部测试列表里的每个名字都有对应的测试文件（§4）；`cargo clippy --workspace --all-targets --all-features -- -D warnings`。与测试并行。没有基线：警告在引入它的 PR 里改掉，升级工具链带来的新 lint 在升级的 PR 里改掉 |
 | `msrv` | macOS（自托管，§10） | 只在 `all` 时（改了 `Cargo.lock`、`Cargo.toml` 等） | 整个任务 | 用声明的 MSRV（`Cargo.toml` 的 `rust-version`）和仓库的 `Cargo.lock` 编译库和二进制（`cargo +<版本> check --workspace`，不含示例项目 `rutis-agent`、`rutis-cli`） |
 | `checks` | macOS（自托管，§10） | 只在 `all` 时 | 整个任务 | bridge、loader 各个 feature 组合的编译检查和 `--no-run`（整个工作区的编译由 `lint` 的 clippy 覆盖）。这些检查发现的是少见的 feature 组合编译错误，不跑测试 |
-| `network-macos` | macOS | `code`：只跑和平台有关的测试（`events_conformance` 只跑写定的放置） | bridge、loader 全部测试；`node/rutis` 测试；`events_conformance` 的抽样放置 | 最新版本（§9）下的进程启动、本地通道、运行时进程、WebSocket、rutis-host 测试；端到端场景（失败时上传 artifact `e2e-macos`）；Node 运行时和 Python 包的测试；整个工作区的编译检查 |
-| `runtimes-windows` | Windows | `code`：只跑和平台有关的测试 | bridge、loader 全部测试 | 同上，在 Windows 上（进程用 loopback 方式启动）；Go SDK 测试；E2E harness 和不限于 Unix 的 E2E 场景（`rutis-e2e`：Job Object、Ctrl-Break、残余检查）；整个工作区的编译检查 |
+| `network-macos` | macOS | `code`：只跑平台专项测试（§4；`events_conformance` 只跑写定的放置） | bridge、loader 全部测试；`node/rutis` 测试；`events_conformance` 的抽样放置 | 最新版本（§9）下的进程启动、本地通道、运行时进程、WebSocket、rutis-host 测试；端到端场景（失败时上传 artifact `e2e-macos`）；Node 运行时和 Python 包的测试；整个工作区的编译检查 |
+| `runtimes-windows` | Windows | `code`：只跑平台专项测试（§4） | bridge、loader 全部测试 | 同上，在 Windows 上（进程用 loopback 方式启动）；Go SDK 测试；E2E harness 和不限于 Unix 的 E2E 场景（`rutis-e2e`：Job Object、Ctrl-Break、残余检查）；整个工作区的编译检查 |
 | `runtimes-bun` | Linux | `bun`：Bun 1.4.0 | Linux 最新版；macOS 1.4.0 | Bun 运行时的全部测试，包括 loopback 方式启动的重跑 |
 | `runtimes-go` | Linux | `go`：Go oldstable；`gofmt`、`go vet`、`go test -race`、Go SDK 和 rutis-host 的 Go 测试 | Linux stable；macOS oldstable；Linux 上 loopback 方式启动的重跑；`rust` 已经跑过的那几套 cargo 测试（Go 运行时、契约套件、Go 行） | Go SDK 与 Go 运行时的全部测试 |
 | `runtimes-kotlin` | Linux | `kotlin`：JDK 17 | — | Kotlin SDK（`kotlin/rutis`）的 Gradle 构建与测试：jvm target 的单元测试、测试工具对两份期望文件；runner 有 Android SDK 时还编译 android target、出 AAR。然后跑带 Kotlin 的 Rust 套件（feature `kotlin`：会话与值、运行时契约、事件一致性中 Kotlin 作 X 与 Y、`kotlin_runtime`、多语言 `multilang_kotlin`；远程：拨出契约的 Kotlin 列、`kotlin_remote`、rutis-host 的 `--features kotlin --test kotlin`），Gradle 在 cargo 之前。`rust`、`network-macos`、`runtimes-windows` 的 bridge 全部 feature 也包含 `kotlin`：它们装 JDK 17，先用 Gradle 构建一致性 jar（`RUTIS_KOTLIN_JAR`） |
@@ -105,15 +111,20 @@
 | `dylib-linux-repro` | Linux | `repro` | 整个任务 | SDK 可复现构建（在一台机器上用两个目录各构建一次） |
 | `dylib-macos` | macOS（自托管，§10） | `dylib` | 可复现构建一步 | 同样的 dylib 测试，在一个任务里依次跑，共用一次构建的 bundle；可复现构建这一步只在 `repro` 打开时跑 |
 | `release-dry-run` | macOS（自托管，§10） | `packaging` | 整个任务 | 发布要用的包能构建（crate、npm 包、Python 包）。各平台的二进制和 wheel 由 `install.yml` 在每晚和发布前构建并安装（§2），PR 上不跑 |
-| `sdk-repro`、`sdk-repro-macos` 及比对 | Linux、macOS（自托管，§10） | 只在 `all` 时 | 整个任务 | 在两台机器上分别构建 SDK，比较结果是否相同（比较在自托管的 macOS 上） |
+| `sdk-repro`、`sdk-repro-macos` 及比对 | Linux、macOS（自托管，§10） | 完整运行里由 `sdk-repro` 开关决定（nightly 只在 SDK 可复现相关路径改动或每周一跑） | 整个任务 | 在两台机器上分别构建 SDK，比较结果是否相同（比较在自托管的 macOS 上） |
 | `specs` | Linux | `specs` | — | TLA+ 设计模型（`specs/`，质量标准 §11.2）：每个模型一项（矩阵），装 Java 21 和固定版本、校验过 sha256 的 `tla2tools.jar`（v1.7.4），运行模型目录下的 `run.sh`，每个配置的结果（通过、死锁、某个不变式或活性被违反）与 `expected.txt` 比较。失败时上传 TLC 日志（含反例）为 artifact `tlc-<模型>`。`cross-runtime-sync` 约 1 分钟，`remote-lease` 约 2–3 分钟（16 核；GitHub 的 4 核机器上估计 5–8 分钟） |
 | `ci-ok` | Linux | 总是 | — | 汇总（§5） |
 
 ### 和平台有关的测试
 
-PR 上 macOS、Windows 默认跑 bridge、loader 的全部测试文件和两个 crate 的单元测试（`--lib`），只跳过 `ci.yml` 顶部 `PURE_TESTS_BRIDGE`、`PURE_TESTS_LOADER` 列出的测试文件；rutis-host 的测试全跑。列表里的测试只依赖 Rust 代码本身：内存通道上的协议、行的配置和生命周期等，不启动进程、不开 socket、除了读 fixture 不碰文件、不依赖操作系统的行为。它们在各平台上结果相同，PR 上只在 Linux 的 `rust` 任务里跑，完整运行中三个平台都跑。跳过它们是为了让 macOS、Windows 的时间有上限。
+PR 上 macOS、Windows 跑两个 crate 的单元测试（`--lib`）和平台专项的测试文件，跳过 `ci.yml` 顶部三组列表里的名字：
 
-传给 `cargo test` 的 `--lib --test <名字> ...` 由 `tools/platform-tests.sh` 在任务运行时生成：`crates/<crate>/tests/` 下的每个测试文件，去掉列表里的名字。所以新加的测试文件默认在三个平台上都跑，不需要记得登记；只有确定不启动进程、不打开通道或文件的测试才加进 `PURE_TESTS_*`。列表里的名字找不到对应文件时，脚本报错，`lint` 任务失败，重命名或删除测试文件不会让列表悄悄失效。每晚 `stress.yml` 的 `multiprocess` 任务用同一个脚本重复运行同一组测试（§2）。
+- `PURE_TESTS_*`：只依赖 Rust 代码本身，不启动进程、不开 socket、除了读 fixture 不碰文件、不依赖操作系统的行为；
+- `MACOS_SKIP_TESTS_*`、`WINDOWS_SKIP_TESTS_*`：运行时和事件行为，和平台无关，Linux 的 `rust` 任务已经用全部 feature 跑过。平台专项的部分保留：进程启动、继承的 socket 与 loopback 交接、signal、网络栈，以及 Swift、Kotlin 自己的行。两个平台不完全相同：Windows 保留经 loopback 启动的运行时行，跳过它不运行的运行时的行。
+
+`rutis-host` 的测试在 PR 上全跑。完整运行三个平台都跑全部测试文件。新加的测试文件默认在三个平台上都跑，不需要记得登记；只有确认 Linux 已覆盖与操作系统无关的部分，才把它加进 skip 列表。列表里的名字找不到对应文件时，脚本报错，`lint` 任务失败，重命名或删除测试文件不会让列表悄悄失效。
+
+传给 `cargo test` 的 `--lib --test <名字> ...` 由 `tools/platform-tests.sh` 在任务运行时生成：`crates/<crate>/tests/` 下的每个测试文件，去掉传入的列表里的名字。每晚 `stress.yml` 的 `multiprocess` 任务也用它，但只排除 `PURE_TESTS_*`，所以 skip 列表里会启动进程的测试仍会在夜里重复（§2）。
 
 ### 一致性矩阵
 
@@ -205,7 +216,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 1. **它防的是哪类问题，放在哪一级。** 级别是 PR、每晚（`nightly.yml`：`ci.yml` 的完整运行、`install.yml`、`dylib-windows.yml`、`stress.yml`）、每周。默认放每晚；只有必须在合并前拦住的问题才放 PR。放每晚的检查失败了，按 §7 优先处理，同样会被发现，只是晚一点。
 2. **放 PR 的，写明它占多少时间。** 它不能让关键路径（最慢的那个任务）变长：放进一个并行的 Linux 任务，或者在已有任务里替换掉别的内容。不新增 macOS、Windows 任务；macOS、Windows 上只跑和平台有关的测试（§4）。
 3. **能替换就不新增。** 例如支持矩阵的最低版本：把 Linux 任务里的版本换成最低版本，macOS 保持最新版，而不是再加一个任务跑最低版本。
-4. **目标：普通代码 PR 从推送到出结果不超过 10 分钟，排队也算在内。** 用 `node tools/ci-stats.mjs [次数] [workflow] [--since 日期]` 测量（每周的 `ci-stats.yml` 也会跑），看"ordinary code"一行：第一次运行、跑了 `rust`、没跑 `checks` 和 `dylib-` 任务的 PR。
+4. **目标：普通代码 PR 从推送到出结果不超过 15 分钟，排队也算在内。** 收窄 macOS、Windows 的平台任务后，用 `node tools/ci-stats.mjs [次数] [workflow] [--since 日期]` 重新测量（每周的 `ci-stats.yml` 也会跑），看"ordinary code"一行：第一次运行、跑了 `rust`、没跑 `checks` 和 `dylib-` 任务的 PR；按实测把目标收紧（#577）。
 5. **结果会因外部数据变化的检查不放 PR。** 漏洞库、新版本发布会让代码没变的 PR 失败；这类检查放每周（`deps.yml`）。超出时，从关键路径上的任务开始调整：拆成并行任务，或者把成本高、很少失败的部分移到每晚。
 
 把这几条的答案写进 PR 描述。

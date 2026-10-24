@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# The test targets of a crate that pull requests run on macOS and Windows:
-# the unit tests (--lib) and every integration test file but those named
-# (the PURE_TESTS_* lists of .github/workflows/ci.yml). Prints the cargo test
-# flags on one line. A named file that does not exist is an error, so a
-# renamed or removed test file cannot leave a stale name in a list.
+# The test targets of a crate that a job runs: the unit tests (--lib) and
+# every integration test file but those named (the PURE_TESTS_* and
+# MACOS/WINDOWS_SKIP_TESTS_* lists of .github/workflows/ci.yml). Prints the
+# cargo test flags on one line. A named file that does not exist is an error,
+# so a renamed or removed test file cannot leave a stale name in a list.
 #
 # Usage: tools/platform-tests.sh <crate directory> [<test name>...]
 #   tools/platform-tests.sh crates/rutis-bridge link multihop
@@ -33,7 +33,7 @@ for excluded in "$@"; do
   for name in "${names[@]}"; do
     [ "$name" = "$excluded" ] && found=1
   done
-  [ -n "$found" ] || { echo "::error::$dir: no test file named $excluded (PURE_TESTS_* in ci.yml)" >&2; status=1; }
+  [ -n "$found" ] || { echo "::error::$dir: no test file named $excluded (a test list in ci.yml)" >&2; status=1; }
 done
 [ "$status" -eq 0 ] || exit 1
 
