@@ -5,10 +5,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{
-    BoxFuture, CordisError, Ctx, DisposeWaitError, Effect, Event, FiberState, FiberStatusChanged,
-    FiberView, Listener, Plugin, Terminal, TypeKey,
+use rutis::events::{Call, Listener};
+use rutis::host::{
+    BoxFuture, CtxHost, DisposeWaitError, DynPlugin, Effect, ErrorKind, FiberState,
+    FiberStatusChanged, FiberView, Key, TypeKey,
 };
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error, Event};
 
 // ── 测试助手 ─────────────────────────────────────────────────────
 
@@ -54,28 +57,30 @@ struct Rec {
     gate: Option<Arc<tokio::sync::Notify>>,
 }
 
-impl Listener<Ping> for Rec {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a Ping,
-        _call: rutis::Call<'a, u32>,
-    ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
+impl Rec {
+    /// 注册用的监听器:每次调用交给 [`Rec::call`]。
+    fn listener(self) -> impl Listener<Ping> {
+        let rec = Arc::new(self);
+        move |e: Arc<Ping>, _call: Call<Ping>| {
+            let rec = rec.clone();
+            async move { rec.call(&e).await }
+        }
+    }
+
+    async fn call(&self, e: &Ping) -> Result<Option<u32>, Error> {
         let hits = self.hits.clone();
         let value = e.value;
-        Box::pin(async move {
-            if let Some(gate) = &self.gate {
-                gate.notified().await;
-            }
-            hits.fetch_add(1, Ordering::SeqCst);
-            if let Some(n) = &self.notify {
-                n.notify_one();
-            }
-            if self.err {
-                return Err(CordisError::ServiceNotFound("boom".to_string()));
-            }
-            Ok(self.bail.map(|b| b + value))
-        })
+        if let Some(gate) = &self.gate {
+            gate.notified().await;
+        }
+        hits.fetch_add(1, Ordering::SeqCst);
+        if let Some(n) = &self.notify {
+            n.notify_one();
+        }
+        if self.err {
+            return Err(ErrorKind::ServiceNotFound("boom".to_string()).into());
+        }
+        Ok(self.bail.map(|b| b + value))
     }
 }
 
@@ -86,24 +91,24 @@ struct Simple<F> {
     apply: F,
 }
 
-impl<F> Plugin for Simple<F>
+impl<F> DynPlugin for Simple<F>
 where
-    F: for<'a> Fn(&'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> + Send + Sync + 'static,
+    F: for<'a> Fn(&'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> + Send + Sync + 'static,
 {
     fn name(&self) -> &str {
         self.name
     }
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.clone()
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         (self.apply)(ctx)
     }
 }
 
 fn simple<F>(name: &'static str, apply: F) -> Simple<F>
 where
-    F: for<'a> Fn(&'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> + Send + Sync + 'static,
+    F: for<'a> Fn(&'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> + Send + Sync + 'static,
 {
     Simple {
         name,
@@ -114,7 +119,7 @@ where
 
 fn simple_dep<F>(name: &'static str, injects: Vec<TypeKey>, apply: F) -> Simple<F>
 where
-    F: for<'a> Fn(&'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> + Send + Sync + 'static,
+    F: for<'a> Fn(&'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> + Send + Sync + 'static,
 {
     Simple {
         name,
@@ -123,7 +128,7 @@ where
     }
 }
 
-fn counting_effect(counter: Arc<AtomicUsize>, err: Option<CordisError>) -> Effect {
+fn counting_effect(counter: Arc<AtomicUsize>, err: Option<Error>) -> Effect {
     Effect::Disposer(Box::new(move || {
         counter.fetch_add(1, Ordering::SeqCst);
         match err {
@@ -133,15 +138,19 @@ fn counting_effect(counter: Arc<AtomicUsize>, err: Option<CordisError>) -> Effec
     }))
 }
 
-fn marker_effect(name: &'static str, order: Order) -> Effect {
-    Effect::AsyncDisposer(Box::new(move || {
-        let order = order.clone();
-        Box::pin(async move {
-            tokio::task::yield_now().await;
-            order.lock().unwrap().push(name);
-            Ok(())
-        })
-    }))
+/// `ctx.effect` 的计数清理(`counting_effect` 的异步形态)。
+async fn counting_cleanup(counter: Arc<AtomicUsize>, err: Option<Error>) -> rutis::Result {
+    counter.fetch_add(1, Ordering::SeqCst);
+    match err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+async fn marker_cleanup(name: &'static str, order: Order) -> rutis::Result {
+    tokio::task::yield_now().await;
+    order.lock().unwrap().push(name);
+    Ok(())
 }
 
 async fn soon<F, T>(f: F) -> T
@@ -225,41 +234,35 @@ async fn plugin_registers_n_listeners() {
         let h2 = h.clone();
         let d2 = d.clone();
         Box::pin(async move {
-            ctx.events().on(
-                ctx,
-                &rutis::EventKey::of(),
+            ctx.on::<Ping>(
                 Rec {
                     hits: h1,
                     bail: None,
                     err: false,
                     notify: None,
                     gate: None,
-                },
+                }
+                .listener(),
             )?;
-            ctx.events().on(
-                ctx,
-                &rutis::EventKey::of(),
+            ctx.on::<Ping>(
                 Rec {
                     hits: h2,
                     bail: None,
                     err: false,
                     notify: Some(d2),
                     gate: None,
-                },
+                }
+                .listener(),
             )?;
             Ok(Effect::Done)
         })
     }));
     (&view).await.expect("load");
-    ctx.events()
-        .emit(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .expect("default event dispatch");
+    ctx.emit(Ping { value: 1 }).expect("default event dispatch");
     soon(done.notified()).await;
     assert_eq!(hits.load(Ordering::SeqCst), 2);
     view.dispose().await.unwrap();
-    ctx.events()
-        .emit(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .expect("default event dispatch");
+    ctx.emit(Ping { value: 1 }).expect("default event dispatch");
     drained(&ctx).await;
     assert_eq!(hits.load(Ordering::SeqCst), 2); // 卸载后不再分发
 }
@@ -269,7 +272,7 @@ async fn effect_yields_disposer() {
     let ctx = Ctx::root().unwrap();
     let counter = Arc::new(AtomicUsize::new(0));
     let c = counter.clone();
-    let d = ctx.effect(move || counting_effect(c, None)).unwrap();
+    let d = ctx.effect(move || counting_cleanup(c, None)).unwrap();
     assert_eq!(counter.load(Ordering::SeqCst), 0);
     d.dispose().await.unwrap(); // 提前释放(D28)
     assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -287,7 +290,7 @@ async fn auto_ownership() {
         let counter = c.clone();
         Box::pin(async move {
             ctx.provide(LlmSvc { n: 1 })?;
-            ctx.effect(move || counting_effect(counter, None))?;
+            ctx.effect(move || counting_cleanup(counter, None))?;
             Ok(Effect::Done)
         })
     }));
@@ -309,30 +312,21 @@ async fn auto_ownership() {
 async fn state_transitions() {
     let ctx = Ctx::root().unwrap();
     let seen: Arc<Mutex<Vec<FiberStatusChanged>>> = Arc::new(Mutex::new(Vec::new()));
-    // 用监听器结构体收集状态事件(D24 锁外分发)
-    struct S(Arc<Mutex<Vec<FiberStatusChanged>>>);
-    impl Listener<FiberStatusChanged> for S {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a Ctx,
-            e: &'a FiberStatusChanged,
-            _call: rutis::Call<'a, ()>,
-        ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-            let seen = self.0.clone();
-            let ev = e.clone();
-            Box::pin(async move {
-                // Recorded when the call starts.
-                seen.lock().unwrap().push(ev.clone());
-                if ev.seq == 1 {
-                    turns(16).await;
-                }
-                Ok(None)
-            })
+    // 用监听器收集状态事件(D24 锁外分发)
+    let s = seen.clone();
+    ctx.on::<FiberStatusChanged>(move |e, _call| {
+        let seen = s.clone();
+        let ev = (*e).clone();
+        async move {
+            // Recorded when the call starts.
+            seen.lock().unwrap().push(ev.clone());
+            if ev.seq == 1 {
+                turns(16).await;
+            }
+            Ok(None)
         }
-    }
-    ctx.events()
-        .on(&ctx, &rutis::EventKey::of(), S(seen.clone()))
-        .unwrap();
+    })
+    .unwrap();
 
     let view = ctx.plugin(simple("states", move |_ctx: &Ctx| {
         Box::pin(async { Ok(Effect::Done) })
@@ -360,10 +354,10 @@ async fn state_transitions() {
 async fn init_failure_marks_failed() {
     let ctx = Ctx::root().unwrap();
     let view = ctx.plugin(simple("fail", move |_ctx: &Ctx| {
-        Box::pin(async { Err(CordisError::ServiceNotFound("nope".into())) })
+        Box::pin(async { Err(Error::from(ErrorKind::ServiceNotFound("nope".into()))) })
     }));
     let err = (&view).await.expect_err("must fail");
-    assert!(matches!(*err, CordisError::ServiceNotFound(_)));
+    assert!(matches!(&*err, ErrorKind::ServiceNotFound(_)));
     assert_eq!(view.state().state, FiberState::Failed);
 }
 
@@ -407,13 +401,13 @@ async fn root_restart_dispose_cycle() {
     let root = ctx.root_view().unwrap();
     let counter = Arc::new(AtomicUsize::new(0));
     let c = counter.clone();
-    ctx.effect(move || counting_effect(c, None)).unwrap();
+    ctx.effect(move || counting_cleanup(c, None)).unwrap();
     root.dispose().await.unwrap();
     assert_eq!(counter.load(Ordering::SeqCst), 1);
 
     root.restart().await.unwrap();
     let c2 = counter.clone();
-    ctx.effect(move || counting_effect(c2, None)).unwrap();
+    ctx.effect(move || counting_cleanup(c2, None)).unwrap();
     root.dispose().await.unwrap(); // 第二次:真实清理
     assert_eq!(counter.load(Ordering::SeqCst), 2);
     assert_eq!(root.state().state, FiberState::Disposed);
@@ -426,7 +420,12 @@ async fn concurrent_dispose_join() {
     let c = counter.clone();
     let view = ctx.plugin(simple("joinme", move |_ctx: &Ctx| {
         let c = c.clone();
-        Box::pin(async move { Ok(counting_effect(c, Some(CordisError::InactiveEffect))) })
+        Box::pin(async move {
+            Ok(counting_effect(
+                c,
+                Some(Error::from(ErrorKind::InactiveEffect)),
+            ))
+        })
     }));
     (&view).await.expect("load");
     let v1 = view.clone();
@@ -454,7 +453,9 @@ async fn cross_generation_isolation() {
         let attempts = attempts.clone();
         Box::pin(async move {
             if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-                Err(CordisError::ServiceNotFound("first fails".into()))
+                Err(Error::from(ErrorKind::ServiceNotFound(
+                    "first fails".into(),
+                )))
             } else {
                 Ok(Effect::Done)
             }
@@ -532,7 +533,7 @@ async fn check_evicts() {
     let ctx = Ctx::root().unwrap();
     let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let flag2 = flag.clone();
-    ctx.provide_as_with_check(
+    ctx.provide_checked(
         TypeKey::of::<LlmSvc>(),
         Arc::new(LlmSvc { n: 1 }),
         move || flag2.load(Ordering::SeqCst),
@@ -578,18 +579,16 @@ async fn lifo_serial() {
     let view = ctx.plugin(simple("lifo", move |ctx: &Ctx| {
         let t = t.clone();
         Box::pin(async move {
-            let mk =
-                |name: &'static str, n: usize, t: Arc<Mutex<Vec<(&'static str, &'static str)>>>| {
-                    Effect::AsyncDisposer(Box::new(move || {
-                        let t = t.clone();
-                        Box::pin(async move {
-                            t.lock().unwrap().push((name, "start"));
-                            turns(n).await;
-                            t.lock().unwrap().push((name, "end"));
-                            Ok(())
-                        })
-                    }))
-                };
+            let mk = |name: &'static str,
+                      n: usize,
+                      t: Arc<Mutex<Vec<(&'static str, &'static str)>>>| {
+                async move {
+                    t.lock().unwrap().push((name, "start"));
+                    turns(n).await;
+                    t.lock().unwrap().push((name, "end"));
+                    Ok(())
+                }
+            };
             let t1 = t.clone();
             ctx.effect(move || mk("e1", 3, t1))?;
             let t2 = t.clone();
@@ -621,30 +620,28 @@ async fn aggregate_no_flatten() {
     let view = ctx.plugin(simple("agg", move |ctx: &Ctx| {
         Box::pin(async move {
             // 先注册 nested:LIFO 后跑,其错误排在聚合第二位
-            ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
-                    Err(CordisError::Aggregate {
-                        errors: vec![
-                            Arc::new(CordisError::ServiceNotFound("b".into())),
-                            Arc::new(CordisError::ServiceNotFound("c".into())),
-                        ],
-                    })
+            ctx.effect(move || async move {
+                Err(Error::from(ErrorKind::Aggregate {
+                    errors: vec![
+                        Arc::new(ErrorKind::ServiceNotFound("b".into())),
+                        Arc::new(ErrorKind::ServiceNotFound("c".into())),
+                    ],
                 }))
             })?;
-            ctx.effect(move || {
-                Effect::Disposer(Box::new(|| Err(CordisError::ServiceNotFound("a".into()))))
-            })?;
+            ctx.effect(
+                move || async move { Err(Error::from(ErrorKind::ServiceNotFound("a".into()))) },
+            )?;
             Ok(Effect::Done)
         })
     }));
     (&view).await.expect("load");
     let err = view.dispose().await.expect_err("cleanup errors");
     match &*err {
-        CordisError::Aggregate { errors } => {
+        ErrorKind::Aggregate { errors } => {
             assert_eq!(errors.len(), 2); // 两个清理各一个错误
                                          // 用户自己的 Aggregate 不被压平:作为单元素出现
             match &*errors[1] {
-                CordisError::Aggregate { errors: inner } => assert_eq!(inner.len(), 2),
+                ErrorKind::Aggregate { errors: inner } => assert_eq!(inner.len(), 2),
                 other => panic!("expected nested aggregate, got {other:?}"),
             }
         }
@@ -659,7 +656,12 @@ async fn exactly_once_same_error() {
     let c = counter.clone();
     let view = ctx.plugin(simple("exactly", move |_ctx: &Ctx| {
         let c = c.clone();
-        Box::pin(async move { Ok(counting_effect(c, Some(CordisError::InactiveEffect))) })
+        Box::pin(async move {
+            Ok(counting_effect(
+                c,
+                Some(Error::from(ErrorKind::InactiveEffect)),
+            ))
+        })
     }));
     (&view).await.expect("load");
     let first = view.dispose().await.expect_err("first");
@@ -710,7 +712,7 @@ async fn dispose_during_dispose() {
 #[tokio::test]
 async fn effect_during_cleanup_fails() {
     let ctx = Ctx::root().unwrap();
-    let captured: Arc<Mutex<Option<CordisError>>> = Arc::new(Mutex::new(None));
+    let captured: Arc<Mutex<Option<Error>>> = Arc::new(Mutex::new(None));
     let cap = captured.clone();
     let view = ctx.plugin(simple("reentrant", move |ctx: &Ctx| {
         let cap = cap.clone();
@@ -718,16 +720,14 @@ async fn effect_during_cleanup_fails() {
         Box::pin(async move {
             let inner = ctx2.clone();
             ctx2.effect(move || {
-                Effect::AsyncDisposer(Box::new(move || {
-                    let cap = cap.clone();
-                    let ctx3 = inner.clone();
-                    Box::pin(async move {
-                        // 卸载中注册新 effect → InactiveEffect(fiber.ts:434-436)
-                        let e = ctx3.effect(move || Effect::Done).err();
-                        *cap.lock().unwrap() = e;
-                        Ok(())
-                    })
-                }))
+                let cap = cap.clone();
+                let ctx3 = inner.clone();
+                async move {
+                    // 卸载中注册新 effect → InactiveEffect(fiber.ts:434-436)
+                    let e = ctx3.effect(move || async { Ok(()) }).err();
+                    *cap.lock().unwrap() = e;
+                    Ok(())
+                }
             })?;
             Ok(Effect::Done)
         })
@@ -735,8 +735,8 @@ async fn effect_during_cleanup_fails() {
     (&view).await.expect("load");
     view.dispose().await.unwrap();
     assert!(matches!(
-        captured.lock().unwrap().take().unwrap(),
-        CordisError::InactiveEffect
+        &*captured.lock().unwrap().take().unwrap(),
+        ErrorKind::InactiveEffect
     ));
 }
 
@@ -746,57 +746,37 @@ async fn effect_during_cleanup_fails() {
 async fn emit_async_safe() {
     let ctx = Ctx::root().unwrap();
     let (hits, done) = recorder();
-    // 值记录监听器:校验 spawn 任务读到的载荷内容(强度加固)
-    struct ValueL(Arc<Mutex<Vec<u32>>>);
-    impl Listener<Ping> for ValueL {
-        fn call<'a>(
-            &'a self,
-            _c: &'a Ctx,
-            e: &'a Ping,
-            _call: rutis::Call<'a, u32>,
-        ) -> rutis::BoxFuture<'a, Result<Option<u32>, CordisError>> {
-            let seen = self.0.clone();
-            let v = e.value;
-            Box::pin(async move {
-                seen.lock().unwrap().push(v);
-                Ok(None)
-            })
-        }
-    }
     let seen: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
-    // fn 项监听器:验证 Listener 的 blanket impl(Fn 路线)可用;
-    // HRTB 返回型闭包字面量推断受限,惯用写法为 fn 项或小结构体(见 §八)
-    fn ok_ping<'a>(
-        _ctx: &'a Ctx,
-        e: &'a Ping,
-        _call: rutis::Call<'a, u32>,
-    ) -> rutis::BoxFuture<'a, Result<Option<u32>, CordisError>> {
-        Box::pin(async move { Ok(Some(e.value)) })
+    // fn 项监听器:验证 Listener 的 blanket impl(Fn 路线)对 fn 项可用
+    fn ok_ping(e: Arc<Ping>, _call: Call<Ping>) -> std::future::Ready<Result<Option<u32>, Error>> {
+        std::future::ready(Ok(Some(e.value)))
     }
-    ctx.events()
-        .on(&ctx, &rutis::EventKey::of(), ok_ping)
-        .unwrap();
-    ctx.events()
-        .on(&ctx, &rutis::EventKey::of(), ValueL(seen.clone()))
-        .unwrap();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: hits.clone(),
-                bail: None,
-                err: false,
-                notify: Some(done.clone()),
-                gate: None,
-            },
-        )
-        .unwrap();
+    ctx.on::<Ping>(ok_ping).unwrap();
+    // 值记录监听器:校验 spawn 任务读到的载荷内容(强度加固)
+    let value_seen = seen.clone();
+    ctx.on::<Ping>(move |e, _call| {
+        let seen = value_seen.clone();
+        let v = e.value;
+        async move {
+            seen.lock().unwrap().push(v);
+            Ok(None)
+        }
+    })
+    .unwrap();
+    ctx.on::<Ping>(
+        Rec {
+            hits: hits.clone(),
+            bail: None,
+            err: false,
+            notify: Some(done.clone()),
+            gate: None,
+        }
+        .listener(),
+    )
+    .unwrap();
     let event = Arc::new(Ping { value: 42 });
     let kept = event.clone();
-    ctx.events()
-        .emit(&ctx, &rutis::EventKey::of(), event)
-        .expect("default event dispatch");
+    ctx.emit::<Ping>(event).expect("default event dispatch");
     drop(kept); // 调用栈持有的克隆先释放,spawn 任务仍安全读
     soon(done.notified()).await;
     assert_eq!(hits.load(Ordering::SeqCst), 1);
@@ -805,52 +785,38 @@ async fn emit_async_safe() {
 
 #[tokio::test]
 async fn emit_error_sink() {
-    let collected: Arc<Mutex<Vec<Arc<CordisError>>>> = Arc::new(Mutex::new(Vec::new()));
+    let collected: Arc<Mutex<Vec<Arc<ErrorKind>>>> = Arc::new(Mutex::new(Vec::new()));
     let sink_to = collected.clone();
     let ctx = Ctx::root_with_sink(
         tokio::runtime::Handle::current(),
-        Arc::new(move |e: Arc<CordisError>| {
+        Arc::new(move |e: Arc<ErrorKind>| {
             sink_to.lock().unwrap().push(e);
         }),
     );
     let (hits, _done) = recorder();
-    struct Boom;
-    impl Listener<Ping> for Boom {
-        fn call<'a>(
-            &'a self,
-            _c: &'a Ctx,
-            _e: &'a Ping,
-            _call: rutis::Call<'a, u32>,
-        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-            Box::pin(async { panic!("listener boom") })
+    ctx.on::<Ping>(
+        Rec {
+            hits: hits.clone(),
+            bail: None,
+            err: true,
+            notify: None,
+            gate: None,
         }
-    }
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: hits.clone(),
-                bail: None,
-                err: true,
-                notify: None,
-                gate: None,
-            },
-        )
+        .listener(),
+    )
+    .unwrap();
+    ctx.on::<Ping>(|_, _| async { panic!("listener boom") })
         .unwrap();
-    ctx.events().on(&ctx, &rutis::EventKey::of(), Boom).unwrap();
-    ctx.events()
-        .emit(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .expect("default event dispatch");
+    ctx.emit(Ping { value: 1 }).expect("default event dispatch");
     // Err 与 panic 都进 ErrorSink(D30),各一次,包成 ListenerFailed。两个
     // 调用并发执行,到达 sink 的先后不作契约。
     drained(&ctx).await;
     let got = collected.lock().unwrap();
     assert_eq!(got.len(), 2);
-    let inner: Vec<&CordisError> = got
+    let inner: Vec<&ErrorKind> = got
         .iter()
         .map(|error| match &**error {
-            CordisError::ListenerFailed { name, error, .. } => {
+            ErrorKind::ListenerFailed { name, error, .. } => {
                 assert_eq!(name, Ping::NAME);
                 &**error
             }
@@ -859,49 +825,44 @@ async fn emit_error_sink() {
         .collect();
     assert!(inner
         .iter()
-        .any(|e| matches!(e, CordisError::ServiceNotFound(_))));
+        .any(|e| matches!(e, ErrorKind::ServiceNotFound(_))));
     assert!(inner
         .iter()
-        .any(|e| matches!(e, CordisError::PluginFailed(_)))); // panic 包装
+        .any(|e| matches!(e, ErrorKind::PluginFailed(_)))); // panic 包装
 }
 
 #[tokio::test]
 async fn parallel_aggregates() {
     let ctx = Ctx::root().unwrap();
     let hits = Arc::new(AtomicUsize::new(0));
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: hits.clone(),
-                bail: None,
-                err: true,
-                notify: None,
-                gate: None,
-            },
-        )
-        .unwrap();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: hits.clone(),
-                bail: None,
-                err: true,
-                notify: None,
-                gate: None,
-            },
-        )
-        .unwrap();
+    ctx.on::<Ping>(
+        Rec {
+            hits: hits.clone(),
+            bail: None,
+            err: true,
+            notify: None,
+            gate: None,
+        }
+        .listener(),
+    )
+    .unwrap();
+    ctx.on::<Ping>(
+        Rec {
+            hits: hits.clone(),
+            bail: None,
+            err: true,
+            notify: None,
+            gate: None,
+        }
+        .listener(),
+    )
+    .unwrap();
     let err = ctx
-        .events()
-        .parallel(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
+        .parallel(Ping { value: 1 })
         .await
         .expect_err("aggregates");
-    match err {
-        CordisError::ListenersFailed { name, errors } => {
+    match &*err {
+        ErrorKind::ListenersFailed { name, errors } => {
             assert_eq!(name, Ping::NAME);
             assert_eq!(errors.len(), 2);
         }
@@ -909,28 +870,22 @@ async fn parallel_aggregates() {
     }
     // 单错也聚合(统一事件模型:parallel 总是 ListenersFailed,原为单错原样)
     let ctx2 = Ctx::root().unwrap();
-    ctx2.events()
-        .on(
-            &ctx2,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: hits.clone(),
-                bail: None,
-                err: true,
-                notify: None,
-                gate: None,
-            },
-        )
-        .unwrap();
-    let single = ctx2
-        .events()
-        .parallel(&ctx2, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .await
-        .expect_err("single");
-    match single {
-        CordisError::ListenersFailed { errors, .. } => {
+    ctx2.on::<Ping>(
+        Rec {
+            hits: hits.clone(),
+            bail: None,
+            err: true,
+            notify: None,
+            gate: None,
+        }
+        .listener(),
+    )
+    .unwrap();
+    let single = ctx2.parallel(Ping { value: 1 }).await.expect_err("single");
+    match &*single {
+        ErrorKind::ListenersFailed { errors, .. } => {
             assert_eq!(errors.len(), 1);
-            assert!(matches!(*errors[0], CordisError::ServiceNotFound(_)));
+            assert!(matches!(&*errors[0], ErrorKind::ServiceNotFound(_)));
         }
         other => panic!("expected ListenersFailed, got {other:?}"),
     }
@@ -940,73 +895,57 @@ async fn parallel_aggregates() {
 async fn serial_bails() {
     let ctx = Ctx::root().unwrap();
     let hits = Arc::new(AtomicUsize::new(0));
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: hits.clone(),
-                bail: None,
-                err: false,
-                notify: None,
-                gate: None,
-            },
-        )
-        .unwrap();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: hits.clone(),
-                bail: Some(7),
-                err: false,
-                notify: None,
-                gate: None,
-            },
-        )
-        .unwrap();
-    let out = ctx
-        .events()
-        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .await
-        .unwrap();
+    ctx.on::<Ping>(
+        Rec {
+            hits: hits.clone(),
+            bail: None,
+            err: false,
+            notify: None,
+            gate: None,
+        }
+        .listener(),
+    )
+    .unwrap();
+    ctx.on::<Ping>(
+        Rec {
+            hits: hits.clone(),
+            bail: Some(7),
+            err: false,
+            notify: None,
+            gate: None,
+        }
+        .listener(),
+    )
+    .unwrap();
+    let out = ctx.serial(Ping { value: 1 }).await.unwrap();
     assert_eq!(out, Some(8)); // 短路值 = bail + e.value
     assert_eq!(hits.load(Ordering::SeqCst), 2);
     // 短路后不再继续
     let hits2 = Arc::new(AtomicUsize::new(0));
     let ctx2 = Ctx::root().unwrap();
-    ctx2.events()
-        .on(
-            &ctx2,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: hits2.clone(),
-                bail: Some(1),
-                err: false,
-                notify: None,
-                gate: None,
-            },
-        )
-        .unwrap();
-    ctx2.events()
-        .on(
-            &ctx2,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: hits2.clone(),
-                bail: None,
-                err: false,
-                notify: None,
-                gate: None,
-            },
-        )
-        .unwrap();
-    let out2 = ctx2
-        .events()
-        .serial(&ctx2, &rutis::EventKey::of(), Arc::new(Ping { value: 0 }))
-        .await
-        .unwrap();
+    ctx2.on::<Ping>(
+        Rec {
+            hits: hits2.clone(),
+            bail: Some(1),
+            err: false,
+            notify: None,
+            gate: None,
+        }
+        .listener(),
+    )
+    .unwrap();
+    ctx2.on::<Ping>(
+        Rec {
+            hits: hits2.clone(),
+            bail: None,
+            err: false,
+            notify: None,
+            gate: None,
+        }
+        .listener(),
+    )
+    .unwrap();
+    let out2 = ctx2.serial(Ping { value: 0 }).await.unwrap();
     assert_eq!(out2, Some(1));
     assert_eq!(hits2.load(Ordering::SeqCst), 1); // 第二个未调用
 }
@@ -1018,64 +957,51 @@ async fn waterfall_veto_around() {
         order: Order,
         veto: bool,
     }
-    impl Listener<Ping> for Wf {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a Ctx,
-            e: &'a Ping,
-            call: rutis::Call<'a, u32>,
-        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-            let order = self.order.clone();
-            let base = e.value;
-            Box::pin(async move {
-                order.lock().unwrap().push(self.name);
-                if self.veto {
-                    return Ok(Some(base + 100)); // veto:不调 next
+    impl Wf {
+        fn listener(self) -> impl Listener<Ping> {
+            let wf = Arc::new(self);
+            move |e: Arc<Ping>, call: Call<Ping>| {
+                let wf = wf.clone();
+                async move {
+                    let base = e.value;
+                    wf.order.lock().unwrap().push(wf.name);
+                    if wf.veto {
+                        return Ok(Some(base + 100)); // veto:不调 next
+                    }
+                    let inner = call.next().await?.unwrap_or(0);
+                    Ok(Some(inner + 10)) // 包裹:改写内层结果
                 }
-                let inner = call.next().await?.unwrap_or(0);
-                Ok(Some(inner + 10)) // 包裹:改写内层结果
-            })
+            }
         }
     }
-    struct BaseTerm;
-    impl Terminal<Ping> for BaseTerm {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a Ctx,
-            e: &'a Ping,
-        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-            Box::pin(async move { Ok(Some(e.value)) })
-        }
+    fn base_term(e: Arc<Ping>) -> std::future::Ready<Result<Option<u32>, Error>> {
+        std::future::ready(Ok(Some(e.value)))
     }
 
     // 包裹:outer(inner(terminal)) = (1)+10+10
     let ctx = Ctx::root().unwrap();
     let ord = order();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Wf {
-                name: "outer",
-                order: ord.clone(),
-                veto: false,
-            },
-        )
-        .unwrap();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Wf {
-                name: "inner",
-                order: ord.clone(),
-                veto: false,
-            },
-        )
-        .unwrap();
+    ctx.on::<Ping>(
+        Wf {
+            name: "outer",
+            order: ord.clone(),
+            veto: false,
+        }
+        .listener(),
+    )
+    .unwrap();
+    ctx.on::<Ping>(
+        Wf {
+            name: "inner",
+            order: ord.clone(),
+            veto: false,
+        }
+        .listener(),
+    )
+    .unwrap();
     let out = ctx
-        .events()
-        .waterfall(&ctx, &rutis::EventKey::of(), &Ping { value: 1 }, BaseTerm)
+        .waterfall(Ping { value: 1 })
+        .terminal(base_term)
         .await
         .unwrap();
     assert_eq!(out, Some(21)); // 最外层返回
@@ -1084,31 +1010,27 @@ async fn waterfall_veto_around() {
     // veto:后续监听器与终态都不执行
     let ctx2 = Ctx::root().unwrap();
     let ord2 = order();
-    ctx2.events()
-        .on(
-            &ctx2,
-            &rutis::EventKey::of(),
-            Wf {
-                name: "outer",
-                order: ord2.clone(),
-                veto: true,
-            },
-        )
-        .unwrap();
-    ctx2.events()
-        .on(
-            &ctx2,
-            &rutis::EventKey::of(),
-            Wf {
-                name: "inner",
-                order: ord2.clone(),
-                veto: false,
-            },
-        )
-        .unwrap();
+    ctx2.on::<Ping>(
+        Wf {
+            name: "outer",
+            order: ord2.clone(),
+            veto: true,
+        }
+        .listener(),
+    )
+    .unwrap();
+    ctx2.on::<Ping>(
+        Wf {
+            name: "inner",
+            order: ord2.clone(),
+            veto: false,
+        }
+        .listener(),
+    )
+    .unwrap();
     let out2 = ctx2
-        .events()
-        .waterfall(&ctx2, &rutis::EventKey::of(), &Ping { value: 1 }, BaseTerm)
+        .waterfall(Ping { value: 1 })
+        .terminal(base_term)
         .await
         .unwrap();
     assert_eq!(out2, Some(101));
@@ -1119,41 +1041,22 @@ async fn waterfall_veto_around() {
 async fn prepend_order() {
     let ctx = Ctx::root().unwrap();
     let ord = order();
-    struct Named(&'static str, Order);
-    impl Listener<Ping> for Named {
-        fn call<'a>(
-            &'a self,
-            _c: &'a Ctx,
-            _e: &'a Ping,
-            _call: rutis::Call<'a, u32>,
-        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-            let o = self.1.clone();
-            let n = self.0;
-            Box::pin(async move {
+    fn named(n: &'static str, o: Order) -> impl Listener<Ping> {
+        move |_: Arc<Ping>, _: Call<Ping>| {
+            let o = o.clone();
+            async move {
                 o.lock().unwrap().push(n);
                 Ok(None)
-            })
+            }
         }
     }
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Named("first-registered", ord.clone()),
-        )
+    ctx.on::<Ping>(named("first-registered", ord.clone()))
         .unwrap();
-    ctx.events()
-        .on_opt(
-            &ctx,
-            &rutis::EventKey::of(),
-            Named("prepended", ord.clone()),
-            rutis::EventOptions::default().prepend(true),
-        )
+    ctx.listen::<Ping>()
+        .prepend()
+        .on(named("prepended", ord.clone()))
         .unwrap();
-    ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 0 }))
-        .await
-        .unwrap();
+    ctx.serial(Ping { value: 0 }).await.unwrap();
     assert_eq!(*ord.lock().unwrap(), vec!["prepended", "first-registered"]);
 }
 
@@ -1161,27 +1064,21 @@ async fn prepend_order() {
 async fn once_once() {
     let ctx = Ctx::root().unwrap();
     let (hits, done) = recorder();
-    ctx.events()
-        .once(
-            &ctx,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: hits.clone(),
-                bail: None,
-                err: false,
-                notify: Some(done.clone()),
-                gate: None,
-            },
-        )
+    ctx.listen::<Ping>()
+        .once()
+        .on(Rec {
+            hits: hits.clone(),
+            bail: None,
+            err: false,
+            notify: Some(done.clone()),
+            gate: None,
+        }
+        .listener())
         .unwrap();
-    ctx.events()
-        .emit(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .expect("default event dispatch");
+    ctx.emit(Ping { value: 1 }).expect("default event dispatch");
     soon(done.notified()).await;
     assert_eq!(hits.load(Ordering::SeqCst), 1);
-    ctx.events()
-        .emit(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .expect("default event dispatch");
+    ctx.emit(Ping { value: 1 }).expect("default event dispatch");
     drained(&ctx).await;
     assert_eq!(hits.load(Ordering::SeqCst), 1); // 至多一次
 }
@@ -1192,45 +1089,33 @@ async fn once_keeps_position() {
     // 不因 once 语义被挪到分发队尾
     let ctx = Ctx::root().unwrap();
     let hits = Arc::new(AtomicUsize::new(0));
-    ctx.events()
-        .once(
-            &ctx,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: Arc::new(AtomicUsize::new(0)),
-                bail: Some(1),
-                err: false,
-                notify: None,
-                gate: None,
-            },
-        )
+    ctx.listen::<Ping>()
+        .once()
+        .on(Rec {
+            hits: Arc::new(AtomicUsize::new(0)),
+            bail: Some(1),
+            err: false,
+            notify: None,
+            gate: None,
+        }
+        .listener())
         .unwrap();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: hits.clone(),
-                bail: None,
-                err: false,
-                notify: None,
-                gate: None,
-            },
-        )
-        .unwrap();
-    let out = ctx
-        .events()
-        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 0 }))
-        .await
-        .unwrap();
+    ctx.on::<Ping>(
+        Rec {
+            hits: hits.clone(),
+            bail: None,
+            err: false,
+            notify: None,
+            gate: None,
+        }
+        .listener(),
+    )
+    .unwrap();
+    let out = ctx.serial(Ping { value: 0 }).await.unwrap();
     assert_eq!(out, Some(1)); // once 的短路值先到(位置在前)
     assert_eq!(hits.load(Ordering::SeqCst), 0); // 后注册的未短路未调用
                                                 // 第二次:once 已消耗,轮到 regular
-    let out2 = ctx
-        .events()
-        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 0 }))
-        .await
-        .unwrap();
+    let out2 = ctx.serial(Ping { value: 0 }).await.unwrap();
     assert_eq!(out2, None);
     assert_eq!(hits.load(Ordering::SeqCst), 1);
 }
@@ -1240,19 +1125,6 @@ async fn listener_unload_race() {
     let ctx = Ctx::root().unwrap();
     let (hits, _done) = recorder();
     let h = hits.clone();
-    // 进入监听器时报到,再交给 Rec 等 gate
-    struct Entered(Arc<tokio::sync::Notify>, Rec);
-    impl Listener<Ping> for Entered {
-        fn call<'a>(
-            &'a self,
-            ctx: &'a Ctx,
-            e: &'a Ping,
-            call: rutis::Call<'a, u32>,
-        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-            self.0.notify_one();
-            self.1.call(ctx, e, call)
-        }
-    }
     let gate = Arc::new(tokio::sync::Notify::new());
     let entered = Arc::new(tokio::sync::Notify::new());
     let gate2 = gate.clone();
@@ -1262,31 +1134,26 @@ async fn listener_unload_race() {
         let gate = gate2.clone();
         let entered = entered2.clone();
         Box::pin(async move {
-            ctx.events().on(
-                ctx,
-                &rutis::EventKey::of(),
-                Entered(
-                    entered,
-                    Rec {
-                        hits,
-                        bail: None,
-                        err: false,
-                        notify: None,
-                        gate: Some(gate),
-                    },
-                ),
-            )?;
+            // 进入监听器时报到,再交给 Rec 等 gate
+            let rec = Rec {
+                hits,
+                bail: None,
+                err: false,
+                notify: None,
+                gate: Some(gate),
+            }
+            .listener();
+            ctx.on::<Ping>(move |e, call| {
+                entered.notify_one();
+                rec(e, call)
+            })?;
             Ok(Effect::Done)
         })
     }));
     (&view).await.expect("load");
     // 分发进行中(监听器等 gate):快照语义,本轮照常调用
     let ctx2 = ctx.clone();
-    let dispatch = tokio::spawn(async move {
-        ctx2.events()
-            .serial(&ctx2, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-            .await
-    });
+    let dispatch = tokio::spawn(async move { ctx2.serial(Ping { value: 1 }).await });
     soon(entered.notified()).await; // 监听器已在 gate 上
                                     // 与进行中分发竞争:卸载等待监听器正在运行的调用(统一事件模型;
                                     // 原为卸载先完成)
@@ -1301,10 +1168,7 @@ async fn listener_unload_race() {
     dispatch.await.unwrap().unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 1);
     // 卸载后:不再分发
-    ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .await
-        .unwrap();
+    ctx.serial(Ping { value: 1 }).await.unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 1);
 }
 
@@ -1317,7 +1181,7 @@ async fn typed_roundtrip() {
     assert_eq!(ctx.get::<LlmSvc>().unwrap().n, 3);
     // 重复注册报错
     let err = ctx.provide(LlmSvc { n: 4 }).unwrap_err();
-    assert!(matches!(err, CordisError::ServiceExists(_)));
+    assert!(matches!(&*err, ErrorKind::ServiceExists(_)));
     // 卸载(root 卸载清空)后可再注册
     ctx.root_view().unwrap().dispose().await.unwrap();
     ctx.root_view().unwrap().restart().await.unwrap();
@@ -1335,7 +1199,7 @@ async fn mismatched_service_key_never_satisfies_injection() {
         move |ctx: &Ctx| {
             let key = TypeKey::keyed::<Dep1>("session-1");
             Box::pin(async move {
-                assert!(ctx.get_as::<Dep1>(key).is_some());
+                assert!(ctx.get_key::<Dep1>(key).is_some());
                 Ok(Effect::Done)
             })
         },
@@ -1344,11 +1208,11 @@ async fn mismatched_service_key_never_satisfies_injection() {
     assert_eq!(consumer.state().state, FiberState::Pending);
 
     for err in [
-        ctx.provide_as(key.clone(), Arc::new(Dep2)).unwrap_err(),
-        ctx.provide_as_with_check(key.clone(), Arc::new(Dep2), || true)
+        ctx.provide_key(key.clone(), Arc::new(Dep2)).unwrap_err(),
+        ctx.provide_checked(key.clone(), Arc::new(Dep2), || true)
             .unwrap_err(),
     ] {
-        let CordisError::Validation { issues } = err else {
+        let ErrorKind::Validation { issues } = &*err else {
             panic!("expected a type validation error");
         };
         assert!(issues[0].contains("session-1"));
@@ -1356,9 +1220,9 @@ async fn mismatched_service_key_never_satisfies_injection() {
         assert!(issues[0].contains("Dep2"));
     }
     assert_eq!(consumer.state().state, FiberState::Pending);
-    assert!(ctx.get_as::<Dep1>(key.clone()).is_none());
+    assert!(ctx.get_key::<Dep1>(key.clone()).is_none());
 
-    ctx.provide_as(key, Arc::new(Dep1)).unwrap();
+    ctx.provide_key(key, Arc::new(Dep1)).unwrap();
     soon(async { (&consumer).await }).await.unwrap();
     assert_eq!(consumer.state().state, FiberState::Active);
 }
@@ -1371,7 +1235,8 @@ async fn apply_panic_regression() {
         move |ctx: &Ctx| {
             ctx.provide(Dep1).unwrap();
             let cleanups = cleanups.clone();
-            ctx.effect(move || counting_effect(cleanups, None)).unwrap();
+            ctx.effect(move || counting_cleanup(cleanups, None))
+                .unwrap();
             panic!("apply failed before creating future")
         }
     }));
@@ -1437,7 +1302,7 @@ async fn driver_panic_completes_waiters_with_error() {
     let view = root.plugin(simple("panicking-sink", |_ctx: &Ctx| {
         Box::pin(async {
             Ok(Effect::Disposer(Box::new(|| {
-                Err(CordisError::InactiveEffect)
+                Err(Error::from(ErrorKind::InactiveEffect))
             })))
         })
     }));
@@ -1451,14 +1316,13 @@ async fn driver_panic_completes_waiters_with_error() {
 
 #[tokio::test]
 async fn keyed_multi_instance() {
-    use rutis::Key;
-    const A: Key<LlmSvc> = Key::new("a");
-    const B: Key<LlmSvc> = Key::new("b");
+    const A: Key<LlmSvc> = Key::named("a");
+    const B: Key<LlmSvc> = Key::named("b");
     let ctx = Ctx::root().unwrap();
-    ctx.provide_as(A, Arc::new(LlmSvc { n: 1 })).unwrap();
-    ctx.provide_as(B, Arc::new(LlmSvc { n: 2 })).unwrap();
-    assert_eq!(ctx.get_as::<LlmSvc>(A).unwrap().n, 1);
-    assert_eq!(ctx.get_as::<LlmSvc>(B).unwrap().n, 2);
+    ctx.provide_at(A, Arc::new(LlmSvc { n: 1 })).unwrap();
+    ctx.provide_at(B, Arc::new(LlmSvc { n: 2 })).unwrap();
+    assert_eq!(ctx.get_at(&A).unwrap().n, 1);
+    assert_eq!(ctx.get_at(&B).unwrap().n, 2);
     assert!(ctx.get::<LlmSvc>().is_none()); // 默认键空
 }
 
@@ -1498,7 +1362,7 @@ async fn eviction_order() {
     let provider = ctx.plugin(simple("P", move |ctx: &Ctx| {
         let o = o1.clone();
         Box::pin(async move {
-            ctx.effect(move || marker_effect("P", o.clone()))?; // 先注册 → LIFO 最后跑
+            ctx.effect(move || marker_cleanup("P", o))?; // 先注册 → LIFO 最后跑
             ctx.provide(Dep1)?;
             Ok(Effect::Done)
         })
@@ -1511,7 +1375,7 @@ async fn eviction_order() {
         move |ctx: &Ctx| {
             let o = o2.clone();
             Box::pin(async move {
-                ctx.effect(move || marker_effect("M", o.clone()))?;
+                ctx.effect(move || marker_cleanup("M", o))?;
                 ctx.provide(Dep2)?;
                 Ok(Effect::Done)
             })
@@ -1525,7 +1389,7 @@ async fn eviction_order() {
         move |ctx: &Ctx| {
             let o = o3.clone();
             Box::pin(async move {
-                ctx.effect(move || marker_effect("C", o.clone()))?;
+                ctx.effect(move || marker_cleanup("C", o))?;
                 Ok(Effect::Done)
             })
         },
@@ -1552,14 +1416,12 @@ async fn self_access_during_cleanup() {
             // 但 provider 子树内自访问仍有效(reflect.ts:297-303)
             let inner = ctx2.clone();
             ctx2.effect(move || {
-                Effect::AsyncDisposer(Box::new(move || {
-                    let s = s.clone();
-                    let ctx3 = inner.clone();
-                    Box::pin(async move {
-                        *s.lock().unwrap() = ctx3.get::<LlmSvc>().map(|v| v.n);
-                        Ok(())
-                    })
-                }))
+                let s = s.clone();
+                let ctx3 = inner.clone();
+                async move {
+                    *s.lock().unwrap() = ctx3.get::<LlmSvc>().map(|v| v.n);
+                    Ok(())
+                }
             })?;
             Ok(Effect::Done)
         })
@@ -1572,7 +1434,7 @@ async fn self_access_during_cleanup() {
 #[tokio::test]
 async fn reentrant_provide_fails() {
     let ctx = Ctx::root().unwrap();
-    let captured: Arc<Mutex<Option<CordisError>>> = Arc::new(Mutex::new(None));
+    let captured: Arc<Mutex<Option<Error>>> = Arc::new(Mutex::new(None));
     let cap = captured.clone();
     let view = ctx.plugin(simple("reprov", move |ctx: &Ctx| {
         let cap = cap.clone();
@@ -1581,14 +1443,12 @@ async fn reentrant_provide_fails() {
             ctx2.provide(LlmSvc { n: 1 })?;
             let inner = ctx2.clone();
             ctx2.effect(move || {
-                Effect::AsyncDisposer(Box::new(move || {
-                    let cap = cap.clone();
-                    let ctx3 = inner.clone();
-                    Box::pin(async move {
-                        *cap.lock().unwrap() = ctx3.provide::<LlmSvc>(LlmSvc { n: 2 }).err();
-                        Ok(())
-                    })
-                }))
+                let cap = cap.clone();
+                let ctx3 = inner.clone();
+                async move {
+                    *cap.lock().unwrap() = ctx3.provide::<LlmSvc>(LlmSvc { n: 2 }).err();
+                    Ok(())
+                }
             })?;
             Ok(Effect::Done)
         })
@@ -1596,8 +1456,8 @@ async fn reentrant_provide_fails() {
     (&view).await.expect("load");
     view.dispose().await.unwrap();
     assert!(matches!(
-        captured.lock().unwrap().take().unwrap(),
-        CordisError::InactiveEffect
+        &*captured.lock().unwrap().take().unwrap(),
+        ErrorKind::InactiveEffect
     ));
 }
 
@@ -1735,7 +1595,9 @@ async fn disposal_deadline_reports_async_cleanup_and_preserves_result() {
                 Ok(Effect::AsyncDisposer(Box::new(move || {
                     Box::pin(async move {
                         release.notified().await;
-                        Err(CordisError::ServiceNotFound("cleanup failed".into()))
+                        Err(Error::from(ErrorKind::ServiceNotFound(
+                            "cleanup failed".into(),
+                        )))
                     })
                 })))
             })
@@ -1808,7 +1670,7 @@ async fn root_shutdown_releases_driver_and_rejects_new_work() {
         let marker = Arc::new(());
         let weak = Arc::downgrade(&marker);
         let sink_marker = marker.clone();
-        let sink = Arc::new(move |_error: Arc<CordisError>| {
+        let sink = Arc::new(move |_error: Arc<ErrorKind>| {
             let _ = &sink_marker;
         });
         drop(marker);
@@ -1817,10 +1679,13 @@ async fn root_shutdown_releases_driver_and_rejects_new_work() {
         ctx.provide(Dep1).unwrap();
         soon(ctx.shutdown()).await.unwrap();
         soon(ctx.shutdown()).await.unwrap();
-        assert!(matches!(ctx.provide(Dep2), Err(CordisError::Closed)));
         assert!(matches!(
-            ctx.effect(|| Effect::Done),
-            Err(CordisError::Closed)
+            ctx.provide(Dep2).map_err(Error::into_kind),
+            Err(ErrorKind::Closed)
+        ));
+        assert!(matches!(
+            ctx.effect(|| async { Ok(()) }).map_err(Error::into_kind),
+            Err(ErrorKind::Closed)
         ));
         let rejected = ctx.plugin(simple("late", |_ctx: &Ctx| {
             Box::pin(async { Ok(Effect::Done) })
@@ -1876,14 +1741,10 @@ async fn concurrent_shutdown_and_dispose_share_completion() {
     ctx.effect({
         let started = started.clone();
         let release = release.clone();
-        move || {
-            Effect::AsyncDisposer(Box::new(move || {
-                Box::pin(async move {
-                    started.notify_one();
-                    release.notified().await;
-                    Ok(())
-                })
-            }))
+        move || async move {
+            started.notify_one();
+            release.notified().await;
+            Ok(())
         }
     })
     .unwrap();
@@ -2010,34 +1871,31 @@ async fn apply_failure_rolls_back() {
         let slot = slot.clone();
         Box::pin(async move {
             ctx.provide(LlmSvc { n: 1 })?;
-            ctx.events().on(
-                ctx,
-                &rutis::EventKey::of(),
+            ctx.on::<Ping>(
                 Rec {
                     hits: h,
                     bail: None,
                     err: false,
                     notify: None,
                     gate: None,
-                },
+                }
+                .listener(),
             )?;
             let child = ctx.plugin(simple("inner", move |_c: &Ctx| {
                 Box::pin(async { Ok(Effect::Done) })
             }));
             *slot.lock().unwrap() = Some(child);
-            Err(CordisError::ServiceNotFound("half fail".into()))
+            Err(Error::from(ErrorKind::ServiceNotFound("half fail".into())))
         })
     }));
     let err = (&view).await.expect_err("apply fails");
-    assert!(matches!(*err, CordisError::ServiceNotFound(_)));
+    assert!(matches!(&*err, ErrorKind::ServiceNotFound(_)));
     assert_eq!(view.state().state, FiberState::Failed);
 
     // 服务占位已回滚:同键可再注册
     ctx.provide(LlmSvc { n: 2 }).unwrap();
     // 监听器已随回滚卸载:不再收事件
-    ctx.events()
-        .emit(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .expect("default event dispatch");
+    ctx.emit(Ping { value: 1 }).expect("default event dispatch");
     drained(&ctx).await;
     assert_eq!(hits.load(Ordering::SeqCst), 0);
     // 子插件已级联处置
@@ -2056,7 +1914,7 @@ async fn restart_after_queued_dispose_rejected() {
     // 调用即登记终态任务(不依赖 future 被 poll):随后的 restart 必须立刻拒绝
     let dispose_fut = view.clone().dispose();
     let err = soon(view.restart()).await.expect_err("restart rejected");
-    assert!(matches!(*err, CordisError::InactiveEffect));
+    assert!(matches!(&*err, ErrorKind::InactiveEffect));
     dispose_fut.await.unwrap();
     assert_eq!(view.state().state, FiberState::Disposed);
 }
@@ -2112,16 +1970,14 @@ async fn disposer_drop_is_cancel_safe() {
     );
     let d = ctx
         .effect(move || {
-            Effect::AsyncDisposer(Box::new(move || {
-                let (c, s, r, dn) = (c.clone(), s.clone(), r.clone(), dn.clone());
-                Box::pin(async move {
-                    s.notify_one();
-                    r.notified().await;
-                    c.fetch_add(1, Ordering::SeqCst);
-                    dn.notify_one();
-                    Ok(())
-                })
-            }))
+            let (c, s, r, dn) = (c.clone(), s.clone(), r.clone(), dn.clone());
+            async move {
+                s.notify_one();
+                r.notified().await;
+                c.fetch_add(1, Ordering::SeqCst);
+                dn.notify_one();
+                Ok(())
+            }
         })
         .unwrap();
     // 清理开始后中途丢弃 dispose future
@@ -2146,14 +2002,14 @@ async fn disposer_drop_is_cancel_safe() {
 
 // #6:validate panic → Failed,不杀驱动
 struct PanicValidate;
-impl Plugin for PanicValidate {
+impl DynPlugin for PanicValidate {
     fn name(&self) -> &str {
         "panic-validate"
     }
-    fn validate(&self) -> Result<(), CordisError> {
+    fn validate(&self) -> Result<(), Error> {
         panic!("validate boom")
     }
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async { Ok(Effect::Done) })
     }
 }
@@ -2165,7 +2021,7 @@ async fn validate_panic_marks_failed() {
     let err = soon(async { (&view).await })
         .await
         .expect_err("panic → Failed");
-    assert!(matches!(*err, CordisError::PluginFailed(_)));
+    assert!(matches!(&*err, ErrorKind::PluginFailed(_)));
     assert_eq!(view.state().state, FiberState::Failed);
     view.dispose().await.unwrap(); // 句柄仍可用
 }
@@ -2174,7 +2030,7 @@ async fn validate_panic_marks_failed() {
 #[tokio::test]
 async fn check_panic_treated_unsatisfied() {
     let ctx = Ctx::root().unwrap();
-    ctx.provide_as_with_check(TypeKey::of::<LlmSvc>(), Arc::new(LlmSvc { n: 1 }), || {
+    ctx.provide_checked(TypeKey::of::<LlmSvc>(), Arc::new(LlmSvc { n: 1 }), || {
         panic!("check boom")
     })
     .unwrap();
@@ -2201,25 +2057,23 @@ async fn cleanup_panics_contained() {
     let ctx = Ctx::root().unwrap();
     let view = ctx.plugin(simple("panicky", move |ctx: &Ctx| {
         Box::pin(async move {
-            // f() 调用时 panic
-            ctx.effect(move || {
+            // f() 调用时 panic(清理闭包本身:只有 AsyncDisposer 形态有)
+            ctx.effect_raw(move || {
                 Effect::AsyncDisposer(Box::new(move || panic!("closure creation boom")))
             })?;
             // future poll 时 panic
-            ctx.effect(move || {
-                Effect::AsyncDisposer(Box::new(move || Box::pin(async { panic!("poll boom") })))
-            })?;
+            ctx.effect(move || async { panic!("poll boom") })?;
             Ok(Effect::Done)
         })
     }));
     (&view).await.expect("load");
     let err = view.dispose().await.expect_err("both panics aggregated");
     match &*err {
-        CordisError::Aggregate { errors } => {
+        ErrorKind::Aggregate { errors } => {
             assert_eq!(errors.len(), 2);
             assert!(errors
                 .iter()
-                .all(|e| matches!(**e, CordisError::PluginFailed(_))));
+                .all(|e| matches!(&**e, ErrorKind::PluginFailed(_))));
         }
         other => panic!("expected aggregate, got {other:?}"),
     }
@@ -2247,7 +2101,7 @@ async fn concurrent_provide_single_winner() {
         .unwrap()
         .as_ref()
         .unwrap_err();
-    assert!(matches!(err, CordisError::ServiceExists(_)));
+    assert!(matches!(&**err, ErrorKind::ServiceExists(_)));
     assert!(ctx.get::<LlmSvc>().is_some());
 }
 
@@ -2259,54 +2113,42 @@ async fn serial_register_order_adversarial() {
         turns: usize,
         hits: Arc<AtomicUsize>,
     }
-    impl Listener<Ping> for SlowBail {
-        fn call<'a>(
-            &'a self,
-            _c: &'a Ctx,
-            e: &'a Ping,
-            _call: rutis::Call<'a, u32>,
-        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-            let hits = self.hits.clone();
-            let bail = self.value;
-            let n = self.turns;
-            let base = e.value;
-            Box::pin(async move {
-                turns(n).await;
-                hits.fetch_add(1, Ordering::SeqCst);
-                Ok(Some(bail + base))
-            })
+    impl SlowBail {
+        fn listener(self) -> impl Listener<Ping> {
+            move |e: Arc<Ping>, _call: Call<Ping>| {
+                let hits = self.hits.clone();
+                let bail = self.value;
+                let n = self.turns;
+                let base = e.value;
+                async move {
+                    turns(n).await;
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    Ok(Some(bail + base))
+                }
+            }
         }
     }
     let ctx = Ctx::root().unwrap();
     let hits = Arc::new(AtomicUsize::new(0));
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            SlowBail {
-                value: 1,
-                turns: 20,
-                hits: hits.clone(),
-            },
-        )
-        .unwrap();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            SlowBail {
-                value: 2,
-                turns: 0,
-                hits: hits.clone(),
-            },
-        )
-        .unwrap();
-    let out = soon(
-        ctx.events()
-            .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 0 })),
+    ctx.on::<Ping>(
+        SlowBail {
+            value: 1,
+            turns: 20,
+            hits: hits.clone(),
+        }
+        .listener(),
     )
-    .await
     .unwrap();
+    ctx.on::<Ping>(
+        SlowBail {
+            value: 2,
+            turns: 0,
+            hits: hits.clone(),
+        }
+        .listener(),
+    )
+    .unwrap();
+    let out = soon(ctx.serial(Ping { value: 0 })).await.unwrap();
     // 若按完成序,快的(2)会先短路;注册序语义必须返回慢者的 1
     assert_eq!(out, Some(1));
     assert_eq!(hits.load(Ordering::SeqCst), 1); // 后注册者未执行
@@ -2357,7 +2199,7 @@ async fn check_recovery_reactivates() {
     let ctx = Ctx::root().unwrap();
     let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let f1 = flag.clone();
-    ctx.provide_as_with_check(TypeKey::of::<Dep1>(), Arc::new(Dep1), move || {
+    ctx.provide_checked(TypeKey::of::<Dep1>(), Arc::new(Dep1), move || {
         f1.load(Ordering::SeqCst)
     })
     .unwrap();
@@ -2401,63 +2243,50 @@ async fn parallel_waits_all() {
         err: bool,
         hits: Arc<AtomicUsize>,
     }
-    impl Listener<Ping> for Delayed {
-        fn call<'a>(
-            &'a self,
-            _c: &'a Ctx,
-            _e: &'a Ping,
-            _call: rutis::Call<'a, u32>,
-        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-            let hits = self.hits.clone();
-            let err = self.err;
-            let n = self.turns;
-            Box::pin(async move {
-                turns(n).await;
-                hits.fetch_add(1, Ordering::SeqCst);
-                if err {
-                    Err(CordisError::ServiceNotFound("fast".into()))
-                } else {
-                    Ok(None)
+    impl Delayed {
+        fn listener(self) -> impl Listener<Ping> {
+            move |_e: Arc<Ping>, _call: Call<Ping>| {
+                let hits = self.hits.clone();
+                let err = self.err;
+                let n = self.turns;
+                async move {
+                    turns(n).await;
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    if err {
+                        Err(ErrorKind::ServiceNotFound("fast".into()).into())
+                    } else {
+                        Ok(None)
+                    }
                 }
-            })
+            }
         }
     }
     let ctx = Ctx::root().unwrap();
     let hits = Arc::new(AtomicUsize::new(0));
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Delayed {
-                turns: 0,
-                err: true,
-                hits: hits.clone(),
-            },
-        )
-        .unwrap();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Delayed {
-                turns: 20,
-                err: false,
-                hits: hits.clone(),
-            },
-        )
-        .unwrap();
-    let err = soon(ctx.events().parallel(
-        &ctx,
-        &rutis::EventKey::of(),
-        Arc::new(Ping { value: 0 }),
-    ))
-    .await
-    .unwrap_err();
+    ctx.on::<Ping>(
+        Delayed {
+            turns: 0,
+            err: true,
+            hits: hits.clone(),
+        }
+        .listener(),
+    )
+    .unwrap();
+    ctx.on::<Ping>(
+        Delayed {
+            turns: 20,
+            err: false,
+            hits: hits.clone(),
+        }
+        .listener(),
+    )
+    .unwrap();
+    let err = soon(ctx.parallel(Ping { value: 0 })).await.unwrap_err();
     // 单错也聚合为 ListenersFailed(统一事件模型)
     assert!(matches!(
-        &err,
-        CordisError::ListenersFailed { errors, .. }
-            if errors.len() == 1 && matches!(*errors[0], CordisError::ServiceNotFound(_))
+        &*err,
+        ErrorKind::ListenersFailed { errors, .. }
+            if errors.len() == 1 && matches!(&*errors[0], ErrorKind::ServiceNotFound(_))
     ));
     assert_eq!(hits.load(Ordering::SeqCst), 2); // 慢者也已全部完成
 }
@@ -2465,49 +2294,30 @@ async fn parallel_waits_all() {
 // serial 内联执行的 panic 遏制:监听器 panic 转 PluginFailed,不击穿分发者
 #[tokio::test]
 async fn serial_panic_contained() {
-    struct BoomL;
-    impl Listener<Ping> for BoomL {
-        fn call<'a>(
-            &'a self,
-            _c: &'a Ctx,
-            _e: &'a Ping,
-            _call: rutis::Call<'a, u32>,
-        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-            Box::pin(async { panic!("serial boom") })
-        }
-    }
     let ctx = Ctx::root().unwrap();
     let hits = Arc::new(AtomicUsize::new(0));
-    ctx.events()
-        .on(&ctx, &rutis::EventKey::of(), BoomL)
+    ctx.on::<Ping>(|_, _| async { panic!("serial boom") })
         .unwrap();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: hits.clone(),
-                bail: None,
-                err: false,
-                notify: None,
-                gate: None,
-            },
-        )
-        .unwrap();
-    let err = soon(
-        ctx.events()
-            .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 })),
+    ctx.on::<Ping>(
+        Rec {
+            hits: hits.clone(),
+            bail: None,
+            err: false,
+            notify: None,
+            gate: None,
+        }
+        .listener(),
     )
-    .await
-    .unwrap_err();
-    assert!(matches!(err, CordisError::PluginFailed(_)));
+    .unwrap();
+    let err = soon(ctx.serial(Ping { value: 1 })).await.unwrap_err();
+    assert!(matches!(&*err, ErrorKind::PluginFailed(_)));
     assert_eq!(hits.load(Ordering::SeqCst), 0); // panic 后不再继续
 }
 
 // P2:非终止卸载的清理错误路由 ErrorSink,不改变下一代状态
 #[tokio::test]
 async fn restart_cleanup_errors_to_sink() {
-    let sink_errors: Arc<Mutex<Vec<Arc<CordisError>>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink_errors: Arc<Mutex<Vec<Arc<ErrorKind>>>> = Arc::new(Mutex::new(Vec::new()));
     let sink_to = sink_errors.clone();
     let ctx = Ctx::root_with_sink(
         tokio::runtime::Handle::current(),
@@ -2516,7 +2326,7 @@ async fn restart_cleanup_errors_to_sink() {
     let view = ctx.plugin(simple("dirty-restart", move |_ctx: &Ctx| {
         Box::pin(async {
             Ok(Effect::Disposer(Box::new(|| {
-                Err(CordisError::InactiveEffect)
+                Err(Error::from(ErrorKind::InactiveEffect))
             })))
         })
     }));
@@ -2527,8 +2337,8 @@ async fn restart_cleanup_errors_to_sink() {
         .expect("restart Ok, cleanup error to sink");
     eventually(|| !sink_errors.lock().unwrap().is_empty()).await;
     assert!(matches!(
-        *sink_errors.lock().unwrap()[0],
-        CordisError::InactiveEffect
+        &*sink_errors.lock().unwrap()[0],
+        ErrorKind::InactiveEffect
     ));
     assert_eq!(view.state().state, FiberState::Active); // 重载成功
                                                         // 终止卸载的清理错误走 dispose() 自己的通道(与 restart 路由不同)
@@ -2536,7 +2346,7 @@ async fn restart_cleanup_errors_to_sink() {
         .dispose()
         .await
         .expect_err("terminal unload reports cleanup error");
-    assert!(matches!(*err, CordisError::InactiveEffect));
+    assert!(matches!(&*err, ErrorKind::InactiveEffect));
 }
 
 // Settle 栅栏:并发 settle/restart/dispose 混合投递,全部完成无挂起

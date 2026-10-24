@@ -9,13 +9,15 @@
 //! 固定时长的等待;等待一律有 `HANG_GUARD` 兜底(质量规范 §7)。
 
 use std::collections::BTreeMap;
-use std::marker::PhantomData;
+use std::future::{Future, IntoFuture};
 use std::sync::Arc;
 
-use rutis::{
-    BoxFuture, Call, CordisError, Ctx, Effect, Event, EventKey, FiberState, FiberStatusChanged,
-    Listener, Plugin, PluginId, Terminal, TypeKey,
+use rutis::events::{Call, Listener};
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberStatusChanged, PluginId,
+    TypeKey,
 };
+use rutis::{Ctx, Error, Event};
 use rutis_test_support::within;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -34,49 +36,28 @@ impl Event for Seq {
     type Value = ();
 }
 
-fn seq(emitter: usize, n: usize) -> Arc<Seq> {
-    Arc::new(Seq { emitter, n })
+fn seq(emitter: usize, n: usize) -> Seq {
+    Seq { emitter, n }
 }
 
 /// 监听器:调用开始时执行 `body`,然后让出 `delay(e)` 轮调度。
-struct Slow<E, D, B> {
-    delay: D,
-    body: B,
-    _event: PhantomData<fn(E)>,
-}
-
-fn slow<E, D, B>(delay: D, body: B) -> Slow<E, D, B>
+fn slow<E, D, B>(delay: D, body: B) -> impl Listener<E>
 where
     E: Event,
     D: Fn(&E) -> usize + Send + Sync + 'static,
     B: Fn(&Ctx, &E) + Send + Sync + 'static,
 {
-    Slow {
-        delay,
-        body,
-        _event: PhantomData,
-    }
-}
-
-impl<E, D, B> Listener<E> for Slow<E, D, B>
-where
-    E: Event,
-    D: Fn(&E) -> usize + Send + Sync + 'static,
-    B: Fn(&Ctx, &E) + Send + Sync + 'static,
-{
-    fn call<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-        e: &'a E,
-        _call: Call<'a, E::Value>,
-    ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
-        Box::pin(async move {
-            (self.body)(ctx, e);
-            for _ in 0..(self.delay)(e) {
+    let parts = Arc::new((delay, body));
+    move |e: Arc<E>, call: Call<E>| {
+        let parts = parts.clone();
+        async move {
+            let (delay, body) = &*parts;
+            body(call.ctx(), &e);
+            for _ in 0..delay(&e) {
                 tokio::task::yield_now().await;
             }
             Ok(None)
-        })
+        }
     }
 }
 
@@ -95,11 +76,11 @@ async fn take<T>(what: &str, rx: &mut mpsc::UnboundedReceiver<T>, count: usize) 
 /// 什么都不做的插件。
 struct Noop;
 
-impl Plugin for Noop {
+impl DynPlugin for Noop {
     fn name(&self) -> &str {
         "noop"
     }
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async { Ok(Effect::Done) })
     }
 }
@@ -118,18 +99,13 @@ async fn status_events_arrive_in_commit_order_across_concurrent_fibers() {
     const RESTARTS: usize = 3;
     let root = Ctx::root().unwrap();
     let (tx, mut rx) = mpsc::unbounded_channel::<FiberStatusChanged>();
-    root.events()
-        .on(
-            &root,
-            &EventKey::of(),
-            slow(
-                |e: &FiberStatusChanged| (e.seq % 3) as usize * 4,
-                move |_: &Ctx, e: &FiberStatusChanged| {
-                    let _ = tx.send(e.clone());
-                },
-            ),
-        )
-        .unwrap();
+    root.on::<FiberStatusChanged>(slow(
+        |e: &FiberStatusChanged| (e.seq % 3) as usize * 4,
+        move |_: &Ctx, e: &FiberStatusChanged| {
+            let _ = tx.send(e.clone());
+        },
+    ))
+    .unwrap();
 
     let barrier = Arc::new(tokio::sync::Barrier::new(FIBERS));
     let mut runs = Vec::new();
@@ -192,34 +168,25 @@ async fn emit_order_is_kept_per_emitter() {
     const EMITTERS: usize = 4;
     const PER_EMITTER: usize = 300;
     let root = Ctx::root().unwrap();
-    let key = EventKey::<Seq>::of();
     let (tx, mut rx) = mpsc::unbounded_channel::<Seq>();
-    root.events()
-        .on(
-            &root,
-            &key,
-            slow(
-                |e: &Seq| (e.n * 7 + e.emitter) % 5,
-                move |_: &Ctx, e: &Seq| {
-                    let _ = tx.send(*e);
-                },
-            ),
-        )
-        .unwrap();
+    root.on::<Seq>(slow(
+        |e: &Seq| (e.n * 7 + e.emitter) % 5,
+        move |_: &Ctx, e: &Seq| {
+            let _ = tx.send(*e);
+        },
+    ))
+    .unwrap();
 
     let barrier = Arc::new(std::sync::Barrier::new(EMITTERS));
     let mut emitters = Vec::new();
     for emitter in 0..EMITTERS {
         let root = root.clone();
-        let key = key.clone();
         let barrier = barrier.clone();
         // 各自的线程:emit 是同步调用,线程间真正并发
         emitters.push(std::thread::spawn(move || {
             barrier.wait();
             for n in 0..PER_EMITTER {
-                root.events()
-                    .emit(&root, &key, seq(emitter, n))
-                    .expect("emit accepted");
+                root.emit(seq(emitter, n)).expect("emit accepted");
             }
         }));
     }
@@ -248,41 +215,30 @@ async fn emit_after_listener_panic_is_still_delivered() {
     let (sink_tx, mut sink_rx) = mpsc::unbounded_channel::<String>();
     let root = Ctx::root_with_sink(
         tokio::runtime::Handle::current(),
-        Arc::new(move |e: Arc<CordisError>| {
+        Arc::new(move |e: Arc<ErrorKind>| {
             let _ = sink_tx.send(e.to_string());
         }),
     );
-    let key = EventKey::<Seq>::of();
-    root.events()
-        .on(
-            &root,
-            &key,
-            slow(
-                |_: &Seq| 0,
-                |_: &Ctx, e: &Seq| {
-                    if e.n == 1 {
-                        panic!("listener panic on 1");
-                    }
-                },
-            ),
-        )
-        .unwrap();
+    root.on::<Seq>(slow(
+        |_: &Seq| 0,
+        |_: &Ctx, e: &Seq| {
+            if e.n == 1 {
+                panic!("listener panic on 1");
+            }
+        },
+    ))
+    .unwrap();
     let (tx, mut rx) = mpsc::unbounded_channel::<usize>();
-    root.events()
-        .on(
-            &root,
-            &key,
-            slow(
-                |_: &Seq| 0,
-                move |_: &Ctx, e: &Seq| {
-                    let _ = tx.send(e.n);
-                },
-            ),
-        )
-        .unwrap();
+    root.on::<Seq>(slow(
+        |_: &Seq| 0,
+        move |_: &Ctx, e: &Seq| {
+            let _ = tx.send(e.n);
+        },
+    ))
+    .unwrap();
 
     for n in 0..3 {
-        root.events().emit(&root, &key, seq(0, n)).unwrap();
+        root.emit(seq(0, n)).unwrap();
     }
     assert_eq!(take("emits delivered", &mut rx, 3).await, vec![0, 1, 2]);
     let reported = take("panic reported", &mut sink_rx, 1).await;
@@ -303,29 +259,22 @@ async fn emit_after_listener_panic_is_still_delivered() {
 #[tokio::test]
 async fn emit_inside_listener_goes_to_the_back() {
     let root = Ctx::root().unwrap();
-    let key = EventKey::<Seq>::of();
     let (tx, mut rx) = mpsc::unbounded_channel::<usize>();
-    let inner_key = key.clone();
-    root.events()
-        .on(
-            &root,
-            &key,
-            slow(
-                // 事件 0 的调用最慢(#464 起它不再挡住 1、2,只是开始在前)
-                |e: &Seq| if e.n == 0 { 8 } else { 0 },
-                move |ctx: &Ctx, e: &Seq| {
-                    if e.n == 0 {
-                        ctx.events().emit(ctx, &inner_key, seq(0, 100)).unwrap();
-                        ctx.events().emit(ctx, &inner_key, seq(0, 101)).unwrap();
-                    }
-                    let _ = tx.send(e.n);
-                },
-            ),
-        )
-        .unwrap();
+    root.on::<Seq>(slow(
+        // 事件 0 的调用最慢(#464 起它不再挡住 1、2,只是开始在前)
+        |e: &Seq| if e.n == 0 { 8 } else { 0 },
+        move |ctx: &Ctx, e: &Seq| {
+            if e.n == 0 {
+                ctx.emit(seq(0, 100)).unwrap();
+                ctx.emit(seq(0, 101)).unwrap();
+            }
+            let _ = tx.send(e.n);
+        },
+    ))
+    .unwrap();
 
     for n in 0..3 {
-        root.events().emit(&root, &key, seq(0, n)).unwrap();
+        root.emit(seq(0, n)).unwrap();
     }
     assert_eq!(
         take("re-entrant emits delivered", &mut rx, 5).await,
@@ -343,24 +292,20 @@ struct ListenIn {
     tx: mpsc::UnboundedSender<(&'static str, usize)>,
 }
 
-impl Plugin for ListenIn {
+impl DynPlugin for ListenIn {
     fn name(&self) -> &str {
         self.name
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         let name = self.name;
         let tx = self.tx.clone();
         Box::pin(async move {
-            ctx.events().on(
-                ctx,
-                &EventKey::<Seq>::of(),
-                slow(
-                    |_: &Seq| 0,
-                    move |_: &Ctx, e: &Seq| {
-                        let _ = tx.send((name, e.emitter));
-                    },
-                ),
-            )?;
+            ctx.on::<Seq>(slow(
+                |_: &Seq| 0,
+                move |_: &Ctx, e: &Seq| {
+                    let _ = tx.send((name, e.emitter));
+                },
+            ))?;
             Ok(Effect::Done)
         })
     }
@@ -380,18 +325,13 @@ async fn events_are_not_filtered_by_isolate() {
     let scope_b = root.isolate(scoped, "B");
     let (tx, mut rx) = mpsc::unbounded_channel::<(&'static str, usize)>();
     let root_tx = tx.clone();
-    root.events()
-        .on(
-            &root,
-            &EventKey::<Seq>::of(),
-            slow(
-                |_: &Seq| 0,
-                move |_: &Ctx, e: &Seq| {
-                    let _ = root_tx.send(("root", e.emitter));
-                },
-            ),
-        )
-        .unwrap();
+    root.on::<Seq>(slow(
+        |_: &Seq| 0,
+        move |_: &Ctx, e: &Seq| {
+            let _ = root_tx.send(("root", e.emitter));
+        },
+    ))
+    .unwrap();
     let in_a = scope_a.plugin(ListenIn {
         name: "in_a",
         tx: tx.clone(),
@@ -408,17 +348,13 @@ async fn events_are_not_filtered_by_isolate() {
 
     // 发射者编号:0 = 根,1 = isolate A,2 = isolate B
     for (emitter, ctx) in [&root, &scope_a, &scope_b].into_iter().enumerate() {
-        ctx.events()
-            .emit(ctx, &EventKey::of(), seq(emitter, 0))
-            .unwrap();
+        ctx.emit(seq(emitter, 0)).unwrap();
     }
     // 栅栏:根上的监听器最先注册,它收到栅栏时,之前各次 emit 的调用都
     // 已开始,而监听器在开始时就记录(同名按顺序开始,D31)。之后只看
     // 收到了什么,少收时立即失败。
     const FENCE: usize = 99;
-    root.events()
-        .emit(&root, &EventKey::of(), seq(FENCE, 0))
-        .unwrap();
+    root.emit(seq(FENCE, 0)).unwrap();
     let mut got = within("fence delivered", async {
         let mut got = Vec::new();
         loop {
@@ -454,73 +390,44 @@ impl Event for Wf {
 }
 
 /// 中间件:调用 next,结果加一(next 没有结果时当 0)。
-struct AddOne;
-
-impl Listener<Wf> for AddOne {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _e: &'a Wf,
-        call: Call<'a, u32>,
-    ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-        Box::pin(async move { Ok(Some(call.next().await?.unwrap_or(0) + 1)) })
-    }
+async fn add_one(_: Arc<Wf>, call: Call<Wf>) -> rutis::Result<Option<u32>> {
+    Ok(Some(call.next().await?.unwrap_or(0) + 1))
 }
 
 /// 让出一轮后 panic 的中间件(panic 发生在 poll 中,不在构造 future 时)。
-struct PanicsAfterYield;
-
-impl Listener<Wf> for PanicsAfterYield {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _e: &'a Wf,
-        _call: Call<'a, u32>,
-    ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-        Box::pin(async move {
-            tokio::task::yield_now().await;
-            panic!("async waterfall listener panic")
-        })
-    }
+async fn panics_after_yield(_: Arc<Wf>, _: Call<Wf>) -> rutis::Result<Option<u32>> {
+    tokio::task::yield_now().await;
+    panic!("async waterfall listener panic")
 }
 
-struct Zero;
-
-impl Terminal<Wf> for Zero {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _e: &'a Wf,
-    ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-        Box::pin(async { Ok(Some(0)) })
-    }
+/// 终态续延:0。
+async fn zero(_: Arc<Wf>) -> rutis::Result<Option<u32>> {
+    Ok(Some(0))
 }
 
-struct PanicTerminal;
-
-impl Terminal<Wf> for PanicTerminal {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _e: &'a Wf,
-    ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-        Box::pin(async { panic!("async waterfall terminal panic") })
-    }
+/// panic 的终态续延(panic 发生在 poll 中)。
+async fn panic_terminal(_: Arc<Wf>) -> rutis::Result<Option<u32>> {
+    panic!("async waterfall terminal panic")
 }
 
 /// 调用 waterfall,返回 panic 转成的错误信息(waterfall 没有失败时测试
 /// 失败,并给出它的返回值)。
-async fn waterfall_panic(root: &Ctx, terminal: impl Terminal<Wf>) -> String {
+async fn waterfall_panic<T, F>(root: &Ctx, terminal: T) -> String
+where
+    T: FnOnce(Arc<Wf>) -> F + Send + 'static,
+    F: Future<Output = rutis::Result<Option<u32>>> + Send + 'static,
+{
     let result = within(
         "waterfall caller",
-        root.events()
-            .waterfall(root, &EventKey::of(), &Wf, terminal),
+        root.waterfall(Wf).terminal(terminal).into_future(),
     )
     .await;
-    match result {
-        Err(CordisError::PluginFailed(message)) => message.to_string(),
-        other => panic!("panic did not reach the caller as an error; waterfall returned {other:?}"),
+    if let Err(error) = &result {
+        if let ErrorKind::PluginFailed(message) = &**error {
+            return message.to_string();
+        }
     }
+    panic!("panic did not reach the caller as an error; waterfall returned {result:?}")
 }
 
 /// 异步 waterfall 里的监听器或终态续延 panic:传给调用 waterfall 的一方
@@ -535,28 +442,21 @@ async fn waterfall_panic(root: &Ctx, terminal: impl Terminal<Wf>) -> String {
 #[tokio::test]
 async fn async_waterfall_panic_reaches_the_caller() {
     let root = Ctx::root().unwrap();
-    let key = EventKey::<Wf>::of();
-    root.events().on(&root, &key, AddOne).unwrap();
+    root.on::<Wf>(add_one).unwrap();
 
     // 没有 panic 时链正常:0 + 1
-    assert_eq!(
-        root.events()
-            .waterfall(&root, &key, &Wf, Zero)
-            .await
-            .unwrap(),
-        Some(1)
-    );
+    assert_eq!(root.waterfall(Wf).terminal(zero).await.unwrap(), Some(1));
 
     // 终态续延 panic,穿过外层中间件
     assert_eq!(
-        waterfall_panic(&root, PanicTerminal).await,
+        waterfall_panic(&root, panic_terminal).await,
         "async waterfall terminal panic"
     );
 
     // 内层监听器 panic,穿过外层中间件
-    let inner = root.events().on(&root, &key, PanicsAfterYield).unwrap();
+    let inner = root.on::<Wf>(panics_after_yield).unwrap();
     assert_eq!(
-        waterfall_panic(&root, Zero).await,
+        waterfall_panic(&root, zero).await,
         "async waterfall listener panic"
     );
     inner.dispose().await.unwrap();

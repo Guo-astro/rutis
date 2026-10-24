@@ -1,3 +1,5 @@
+use crate::host::CtxHost;
+use crate::internal::CtxInternal;
 use std::any::{Any, TypeId};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,10 +12,10 @@ use tokio_util::sync::CancellationToken;
 use crate::ctx::{Ctx, Shared};
 use crate::diagnostics::ServiceAccess;
 use crate::effect::{Effect, EffectMeta, EffectRecord};
-use crate::error::{aggregate_arcs, panic_error, CordisError, ServiceReadFailure};
+use crate::error::{aggregate_arcs, panic_error, Error, ErrorKind, ServiceReadFailure};
 use crate::events::{CatchUnwind, Event};
 use crate::key::{InstanceId, ScopeId, TypeKey};
-use crate::{BoxFuture, Plugin, PluginFactory};
+use crate::{BoxFuture, DynPlugin, PluginFactory};
 
 /// 六态状态机(§四:保留 TS 六态)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -37,7 +39,7 @@ pub enum FiberState {
 pub struct Snapshot {
     pub generation: u64,
     pub state: FiberState,
-    pub error: Option<Arc<CordisError>>,
+    pub error: Option<Arc<ErrorKind>>,
 }
 
 /// 插件身份(D10:注册返回的显式 id,非闭包指针)。
@@ -60,7 +62,7 @@ pub enum DisposeWaitError {
         elapsed: Duration,
     },
     #[error("fiber disposal failed: {0}")]
-    Failed(Arc<CordisError>),
+    Failed(Arc<ErrorKind>),
 }
 
 /// fiber 状态迁移事件(D24:锁内 FIFO 入队、锁外分发;
@@ -82,11 +84,11 @@ impl Event for FiberStatusChanged {
 
 pub(crate) enum TaskDone {
     Running,
-    Done(Option<Arc<CordisError>>),
+    Done(Option<Arc<ErrorKind>>),
 }
 
 /// 恰好一次的转换任务(D6/D20):锁内单 `Arc`,同代 join 同一个;
-/// 完成结果缓存 `Arc<CordisError>`(identity 归这里,D25)。
+/// 完成结果缓存 `Arc<ErrorKind>`(identity 归这里,D25)。
 pub(crate) struct TransitionTask {
     pub done_tx: watch::Sender<TaskDone>,
     /// 常驻 receiver 保活(§八 7 同坑):无 receiver 时 watch 通道视为关闭,
@@ -104,7 +106,7 @@ impl TransitionTask {
         })
     }
 
-    pub(crate) fn complete(&self, err: Option<Arc<CordisError>>) {
+    pub(crate) fn complete(&self, err: Option<Arc<ErrorKind>>) {
         let _ = self.done_tx.send(TaskDone::Done(err));
     }
 }
@@ -141,7 +143,7 @@ pub(crate) fn post_join_to(
     intents: &mpsc::UnboundedSender<Intent>,
     task: Arc<TransitionTask>,
     make: impl FnOnce(Arc<TransitionTask>) -> Intent,
-    stopped_error: impl Fn() -> Option<Arc<CordisError>>,
+    stopped_error: impl Fn() -> Option<Arc<ErrorKind>>,
 ) -> bool {
     if !alive.load(Ordering::SeqCst) {
         task.complete(stopped_error());
@@ -165,7 +167,7 @@ pub(crate) fn post_join_to(
 }
 
 /// 意图携带的完成信号即刻完成(驱动不存在时防 join 永等)。
-fn complete_intent(intent: &Intent, err: Option<Arc<CordisError>>) {
+fn complete_intent(intent: &Intent, err: Option<Arc<ErrorKind>>) {
     if let Some(task) = intent.task() {
         task.complete(err);
     }
@@ -179,7 +181,7 @@ enum NextState {
 pub(crate) struct Trans {
     pub generation: u64,
     pub state: FiberState,
-    pub error: Option<Arc<CordisError>>,
+    pub error: Option<Arc<ErrorKind>>,
     pub seq: u64,
     pub status_queue: Vec<FiberStatusChanged>,
     pub terminal_task: Option<Arc<TransitionTask>>,
@@ -190,7 +192,7 @@ pub(crate) struct FiberInner {
     pub instance: InstanceId,
     pub name: String,
     pub is_root: bool,
-    pub plugin: Option<Arc<dyn Plugin>>,
+    pub plugin: Option<Arc<dyn DynPlugin>>,
     /// 工厂模式(D32):与 `plugin` 互斥(工厂模式 plugin 为 None)。
     pub factory: Option<Arc<dyn ErasedFactory>>,
     /// 工厂模式的当前 config(Arc 存储便于快照;update 原子替换)。
@@ -220,7 +222,7 @@ pub(crate) struct FiberInner {
     /// 已 drain 记录寄存的清理错误(0.2.1):记录 Done 自摘后,错误在此
     /// 等待 fiber 级卸载/重启统一观察——单一错误保持 Arc 同一性,
     /// 与记录留在列表中被再次 join 的旧语义等价。
-    pub drained_errors: Mutex<Vec<Arc<CordisError>>>,
+    pub drained_errors: Mutex<Vec<Arc<ErrorKind>>>,
     /// 本 fiber 在 parent 上的 mount 记录(级联 dispose 的 effect,
     /// 0.2.1:终态退出时主动 drain,记录自摘,长寿 parent 不残留)。
     pub mount: Mutex<Option<Arc<EffectRecord>>>,
@@ -253,9 +255,9 @@ pub(crate) struct FiberInner {
 pub(crate) trait ErasedFactory: Send + Sync + 'static {
     fn config_type_id(&self) -> TypeId;
     fn name(&self) -> &str;
-    fn injects(&self) -> &[TypeKey];
-    fn validate_config_erased(&self, config: &dyn Any) -> Result<(), CordisError>;
-    fn build_erased(&self, config: &dyn Any) -> Result<Box<dyn Plugin>, CordisError>;
+    fn injects(&self) -> Vec<TypeKey>;
+    fn validate_config_erased(&self, config: &dyn Any) -> Result<(), Error>;
+    fn build_erased(&self, config: &dyn Any) -> Result<Box<dyn DynPlugin>, Error>;
 }
 
 /// 泛型工厂的擦除包装(同 registry `StoredValue` 手法)。
@@ -277,24 +279,28 @@ where
         self.factory.name()
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        self.factory.injects()
+    fn injects(&self) -> Vec<TypeKey> {
+        (self.factory.injects()).to_vec()
     }
 
-    fn validate_config_erased(&self, config: &dyn Any) -> Result<(), CordisError> {
+    fn validate_config_erased(&self, config: &dyn Any) -> Result<(), Error> {
         config
             .downcast_ref::<C>()
-            .ok_or_else(|| CordisError::Validation {
-                issues: vec!["config type mismatch".into()],
+            .ok_or_else(|| {
+                Error::from(ErrorKind::Validation {
+                    issues: vec!["config type mismatch".into()],
+                })
             })
             .and_then(|c| self.factory.validate_config(c))
     }
 
-    fn build_erased(&self, config: &dyn Any) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build_erased(&self, config: &dyn Any) -> Result<Box<dyn DynPlugin>, Error> {
         config
             .downcast_ref::<C>()
-            .ok_or_else(|| CordisError::Validation {
-                issues: vec!["config type mismatch".into()],
+            .ok_or_else(|| {
+                Error::from(ErrorKind::Validation {
+                    issues: vec!["config type mismatch".into()],
+                })
             })
             .and_then(|c| self.factory.build(c))
     }
@@ -314,20 +320,20 @@ impl FiberInner {
     /// `build` 是用户回调且 panic 概率高于 validate(评审:三处用户回调
     /// 唯独此处漏边界会杀驱动 → fiber 卡 Loading、join 永等)——panic
     /// 转 `fail_load`,与 validate 的边界对称。
-    fn current_plugin(&self) -> Result<Arc<dyn Plugin>, CordisError> {
+    fn current_plugin(&self) -> Result<Arc<dyn DynPlugin>, Error> {
         if let Some(plugin) = &self.plugin {
             return Ok(plugin.clone());
         }
-        let factory = self
-            .factory
-            .as_ref()
-            .ok_or_else(|| CordisError::PluginFailed("fiber has no plugin or factory".into()))?;
-        let config = self
-            .config
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| CordisError::PluginFailed("factory fiber has no config".into()))?;
+        let factory = self.factory.as_ref().ok_or_else(|| {
+            Error::from(ErrorKind::PluginFailed(
+                "fiber has no plugin or factory".into(),
+            ))
+        })?;
+        let config = self.config.lock().unwrap().clone().ok_or_else(|| {
+            Error::from(ErrorKind::PluginFailed(
+                "factory fiber has no config".into(),
+            ))
+        })?;
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             factory.build_erased(config.as_ref())
         }))
@@ -425,7 +431,7 @@ impl FiberInner {
                     Some(row) => format!("row {row}"),
                     None => format!("plugin {}", self.ctx.plugin_name()),
                 };
-                let error = CordisError::ListenersStillRunning {
+                let error = ErrorKind::ListenersStillRunning {
                     listeners,
                     seconds: limit.as_secs_f64(),
                 };
@@ -459,13 +465,13 @@ impl FiberInner {
         }
     }
 
-    fn stopped_error(&self) -> Option<Arc<CordisError>> {
+    fn stopped_error(&self) -> Option<Arc<ErrorKind>> {
         self.transition.lock().unwrap().error.clone().or_else(|| {
             self.ctx
                 .shared()
                 .closing
                 .load(Ordering::SeqCst)
-                .then(|| Arc::new(CordisError::Closed))
+                .then(|| Arc::new(ErrorKind::Closed))
         })
     }
 
@@ -536,13 +542,8 @@ impl FiberInner {
             std::mem::take(&mut tr.status_queue)
         };
         for event in queue {
-            if let Err(error) =
-                self.ctx
-                    .shared()
-                    .bus
-                    .emit(&self.ctx, &crate::EventKey::of(), Arc::new(event))
-            {
-                self.ctx.error_sink()(Arc::new(error));
+            if let Err(error) = self.ctx.emit(event) {
+                self.ctx.error_sink()(error.shared());
             }
         }
     }
@@ -588,10 +589,10 @@ impl FiberInner {
     /// Whether `apply`'s error says a declared dependency was lost after
     /// the gate, with this generation's failed strict read as evidence:
     /// `InjectUnsatisfied`, or the strict read's own error returned as is.
-    fn reports_a_lost_dependency(&self, error: &CordisError) -> bool {
-        let claims = match error {
-            CordisError::InjectUnsatisfied(_) => true,
-            CordisError::ServiceRead(read) => {
+    fn reports_a_lost_dependency(&self, error: &Error) -> bool {
+        let claims = match &**error {
+            ErrorKind::InjectUnsatisfied(_) => true,
+            ErrorKind::ServiceRead(read) => {
                 matches!(read.reason, ServiceReadFailure::Unavailable(_))
                     && self.declared_injects.contains(&read.key)
             }
@@ -690,7 +691,7 @@ impl FiberInner {
         let ctx = this.ctx.for_generation(generation);
         // async block 把创建 Future 的同步回调也放进 unwind 边界。
         let outcome = CatchUnwind::new(async { plugin.apply(&ctx).await }).await;
-        let result: Result<Effect, CordisError> = outcome.unwrap_or_else(|p| Err(panic_error(p)));
+        let result: Result<Effect, Error> = outcome.unwrap_or_else(|p| Err(panic_error(p)));
         match result {
             Ok(effect) => {
                 let record = EffectRecord::new(
@@ -755,7 +756,7 @@ impl FiberInner {
     /// 的重复通知(如提供者激活时逐键发出的通知)不再重新装载(#327)。
     async fn fail_load(
         this: &Arc<Self>,
-        error: CordisError,
+        error: Error,
         deps: HashSet<(PluginId, u64, TypeKey, Option<ScopeId>)>,
     ) {
         {
@@ -774,7 +775,7 @@ impl FiberInner {
         for e in &cleanup_errors {
             sink(e.clone());
         }
-        let mut combined = vec![Arc::new(error)];
+        let mut combined = vec![error.shared()];
         combined.extend(cleanup_errors);
         let arc = aggregate_arcs(combined).expect("failure present");
         {
@@ -789,10 +790,10 @@ impl FiberInner {
     /// 对照声明(审计):cordis 跨顶层 effect **并发**清理(`Promise.all`,
     /// fiber.ts:676),仅单 effect 内部 LIFO;此处跨 effect 也串行 LIFO——
     /// 完成顺序确定、错误聚合可预期,方向性强化而非语义缺失。
-    async fn drain_effects(this: &Arc<Self>) -> Vec<Arc<CordisError>> {
+    async fn drain_effects(this: &Arc<Self>) -> Vec<Arc<ErrorKind>> {
         let handle = this.ctx.handle().clone();
         let effects: Vec<Arc<EffectRecord>> = std::mem::take(&mut *this.effects.lock().unwrap());
-        let mut errors: Vec<Arc<CordisError>> = Vec::new();
+        let mut errors: Vec<Arc<ErrorKind>> = Vec::new();
         for record in effects.into_iter().rev() {
             if let Err(e) = record.drain(&handle).await {
                 errors.push(e);
@@ -894,7 +895,7 @@ pub(crate) async fn drive(this: Arc<FiberInner>, mut rx: mpsc::UnboundedReceiver
                     if this.closing.load(Ordering::SeqCst)
                         || this.ctx.shared().closing.load(Ordering::SeqCst)
                     {
-                        task.complete(Some(Arc::new(CordisError::Closed)));
+                        task.complete(Some(Arc::new(ErrorKind::Closed)));
                         return;
                     }
                     let state = this.state();
@@ -977,7 +978,7 @@ pub(crate) async fn drive(this: Arc<FiberInner>, mut rx: mpsc::UnboundedReceiver
                     // A second internal shutdown must observe the actual
                     // terminal result, including cleanup errors.
                     Intent::Shutdown(_) => err.clone(),
-                    _ => Some(Arc::new(CordisError::Closed)),
+                    _ => Some(Arc::new(ErrorKind::Closed)),
                 };
                 complete_intent(&intent, completion);
             }
@@ -1036,10 +1037,10 @@ async fn recover_driver_panic(
     }
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| this.flush_status()));
     this.wait_events().await;
-    let mut errors = vec![Arc::new(panic_error(panic))];
+    let mut errors = vec![panic_error(panic).shared()];
     let cleanup_errors = match CatchUnwind::new(FiberInner::drain_effects(this)).await {
         Ok(cleanup_errors) => cleanup_errors,
-        Err(cleanup_panic) => vec![Arc::new(panic_error(cleanup_panic))],
+        Err(cleanup_panic) => vec![panic_error(cleanup_panic).shared()],
     };
     let sink = this.ctx.error_sink();
     for error in &cleanup_errors {
@@ -1110,7 +1111,7 @@ async fn release_transient(this: &Arc<FiberInner>) {
 pub(crate) fn spawn_fiber(
     shared: &Arc<Shared>,
     parent_ctx: Option<&Ctx>,
-    plugin: Option<Arc<dyn Plugin>>,
+    plugin: Option<Arc<dyn DynPlugin>>,
     is_root: bool,
 ) -> Arc<FiberInner> {
     spawn_fiber_inner(shared, parent_ctx, plugin, None, None, is_root)
@@ -1141,7 +1142,7 @@ where
 fn spawn_fiber_inner(
     shared: &Arc<Shared>,
     parent_ctx: Option<&Ctx>,
-    plugin: Option<Arc<dyn Plugin>>,
+    plugin: Option<Arc<dyn DynPlugin>>,
     factory: Option<Arc<dyn ErasedFactory>>,
     config: Option<Arc<dyn Any + Send + Sync>>,
     is_root: bool,
@@ -1166,9 +1167,9 @@ fn spawn_fiber_inner(
     let declared_injects: Vec<TypeKey> = if known_closed {
         Vec::new()
     } else if let Some(plugin) = &plugin {
-        plugin.injects().to_vec()
+        plugin.injects()
     } else if let Some(factory) = &factory {
-        factory.injects().to_vec()
+        factory.injects()
     } else {
         Vec::new()
     };
@@ -1192,7 +1193,7 @@ fn spawn_fiber_inner(
     } else {
         FiberState::Pending
     };
-    let closed_error = closed.then(|| Arc::new(CordisError::Closed));
+    let closed_error = closed.then(|| Arc::new(ErrorKind::Closed));
     let closed_task = closed.then(|| {
         let task = TransitionTask::new();
         task.complete(closed_error.clone());
@@ -1342,14 +1343,14 @@ impl FiberView {
     /// Take this fiber's completed, early-disposed effect errors. Taken
     /// errors are excluded from a later unload result; see
     /// [`Ctx::take_cleanup_errors`].
-    pub fn take_cleanup_errors(&self) -> Vec<Arc<CordisError>> {
+    pub fn take_cleanup_errors(&self) -> Vec<Arc<ErrorKind>> {
         std::mem::take(&mut *self.inner.drained_errors.lock().unwrap())
     }
 
     /// Permanently close this fiber and its descendants. Admission closes at
     /// the call site; dropping the returned future does not stop cleanup.
     /// A callback or finalizer must not await shutdown of its own subtree.
-    pub fn shutdown(&self) -> BoxFuture<'static, Result<(), Arc<CordisError>>> {
+    pub fn shutdown(&self) -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> {
         if self.inner.is_root {
             return self.inner.ctx.shutdown();
         }
@@ -1379,14 +1380,14 @@ impl FiberView {
         self.inner.snapshot_rx.clone()
     }
 
-    /// dispose:恰好一次;重复/并发调用 join 同一 `Arc<CordisError>`(D6/D20)。
+    /// dispose:恰好一次;重复/并发调用 join 同一 `Arc<ErrorKind>`(D6/D20)。
     /// 入队前预取消当前代 token(运行中的 apply 协作退出,D27 第②步前置)。
     ///
     /// Root (#234): the call is ordered against `Ctx::shutdown()` by the
     /// admission lock. Before shutdown closes admission it registers its own
     /// dispose, which the shutdown then waits behind and shares; after, it
     /// joins the shutdown task. Either way it shares the one cleanup result.
-    pub fn dispose(&self) -> BoxFuture<'static, Result<(), Arc<CordisError>>> {
+    pub fn dispose(&self) -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> {
         let task = if self.inner.is_root {
             #[cfg(test)]
             test_hooks::root_dispose();
@@ -1424,8 +1425,8 @@ impl FiberView {
     /// sees the terminal task and is refused.
     pub(crate) fn register_dispose(
         &self,
-        check: impl FnOnce(&Trans) -> Result<(), CordisError>,
-    ) -> Result<Arc<TransitionTask>, CordisError> {
+        check: impl FnOnce(&Trans) -> Result<(), Error>,
+    ) -> Result<Arc<TransitionTask>, Error> {
         // 登记在调用点同步完成(评审 #2):dispose() 返回后,并发的
         // restart() 立刻可见终态任务并拒绝,不依赖本 future 被 poll
         let (task, newly_registered) = {
@@ -1480,7 +1481,7 @@ impl FiberView {
     /// 已 Disposed(或 Dispose 已入队/驱动已退出)的非 root fiber返回
     /// `InactiveEffect`——不得让 join 永等(评审 #2)。
     /// 经转换任务 join:等待本次 restart 排干并回传终态错误。
-    pub fn restart(&self) -> BoxFuture<'static, Result<(), Arc<CordisError>>> {
+    pub fn restart(&self) -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> {
         let this = self.inner.clone();
         Box::pin(async move {
             {
@@ -1488,12 +1489,12 @@ impl FiberView {
                 if this.ctx.shared().closing.load(Ordering::SeqCst)
                     || this.closing.load(Ordering::SeqCst)
                 {
-                    return Err(Arc::new(CordisError::Closed));
+                    return Err(Arc::new(ErrorKind::Closed));
                 }
                 if !this.is_root
                     && (tr.terminal_task.is_some() || !this.alive.load(Ordering::SeqCst))
                 {
-                    return Err(Arc::new(CordisError::InactiveEffect));
+                    return Err(Arc::new(ErrorKind::InactiveEffect));
                 }
             }
             this.cancel_current(); // 预取消:运行中的 apply 协作退出
@@ -1515,7 +1516,7 @@ impl FiberView {
     pub fn update<C: Send + Sync + 'static>(
         &self,
         new_config: C,
-    ) -> BoxFuture<'static, Result<(), Arc<CordisError>>> {
+    ) -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> {
         let this = self.inner.clone();
         Box::pin(async move {
             {
@@ -1523,12 +1524,12 @@ impl FiberView {
                 if this.ctx.shared().closing.load(Ordering::SeqCst)
                     || this.closing.load(Ordering::SeqCst)
                 {
-                    return Err(Arc::new(CordisError::Closed));
+                    return Err(Arc::new(ErrorKind::Closed));
                 }
                 if !this.is_root
                     && (tr.terminal_task.is_some() || !this.alive.load(Ordering::SeqCst))
                 {
-                    return Err(Arc::new(CordisError::InactiveEffect));
+                    return Err(Arc::new(ErrorKind::InactiveEffect));
                 }
             }
             let factory = this
@@ -1541,7 +1542,7 @@ impl FiberView {
                 } else {
                     "fiber has no factory (static plugin cannot update)"
                 };
-                return Err(Arc::new(CordisError::Validation {
+                return Err(Arc::new(ErrorKind::Validation {
                     issues: vec![reason.into()],
                 }));
             };
@@ -1557,12 +1558,12 @@ impl FiberView {
                 factory.validate_config_erased(boxed.as_ref())?;
                 let instance = factory.build_erased(boxed.as_ref())?;
                 instance.validate()?;
-                Ok::<(), CordisError>(())
+                Ok::<(), Error>(())
             }));
             match dry {
                 Ok(Ok(())) => {}
-                Ok(Err(e)) => return Err(Arc::new(e)),
-                Err(p) => return Err(Arc::new(panic_error(p))),
+                Ok(Err(e)) => return Err(e.shared()),
+                Err(p) => return Err(panic_error(p).shared()),
             }
             // 二次终态检查:dry-run 期间并发 dispose 可能已登记 terminal_task
             // 并完成卸载——此时不存,现状交由 dispose 收敛(评审 3 探针:dry-run
@@ -1572,12 +1573,12 @@ impl FiberView {
                 if this.ctx.shared().closing.load(Ordering::SeqCst)
                     || this.closing.load(Ordering::SeqCst)
                 {
-                    return Err(Arc::new(CordisError::Closed));
+                    return Err(Arc::new(ErrorKind::Closed));
                 }
                 if !this.is_root
                     && (tr.terminal_task.is_some() || !this.alive.load(Ordering::SeqCst))
                 {
-                    return Err(Arc::new(CordisError::InactiveEffect));
+                    return Err(Arc::new(ErrorKind::InactiveEffect));
                 }
             }
             *this.config.lock().unwrap() = Some(boxed);
@@ -1609,17 +1610,17 @@ impl FiberView {
     pub fn set_config<C: Send + Sync + 'static>(
         &self,
         new_config: C,
-    ) -> Result<(), Arc<CordisError>> {
+    ) -> Result<(), Arc<ErrorKind>> {
         let this = &self.inner;
         {
             let tr = this.transition.lock().unwrap();
             if this.ctx.shared().closing.load(Ordering::SeqCst)
                 || this.closing.load(Ordering::SeqCst)
             {
-                return Err(Arc::new(CordisError::Closed));
+                return Err(Arc::new(ErrorKind::Closed));
             }
             if !this.is_root && (tr.terminal_task.is_some() || !this.alive.load(Ordering::SeqCst)) {
-                return Err(Arc::new(CordisError::InactiveEffect));
+                return Err(Arc::new(ErrorKind::InactiveEffect));
             }
         }
         let factory = this
@@ -1627,7 +1628,7 @@ impl FiberView {
             .as_ref()
             .filter(|f| f.config_type_id() == TypeId::of::<C>())
             .ok_or_else(|| {
-                Arc::new(CordisError::Validation {
+                Arc::new(ErrorKind::Validation {
                     issues: vec![if this.factory.is_some() {
                         "config type mismatch".into()
                     } else {
@@ -1640,8 +1641,8 @@ impl FiberView {
             factory.validate_config_erased(boxed.as_ref())
         })) {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(Arc::new(e)),
-            Err(p) => return Err(Arc::new(panic_error(p))),
+            Ok(Err(e)) => return Err(e.shared()),
+            Err(p) => return Err(panic_error(p).shared()),
         }
         *this.config.lock().unwrap() = Some(boxed);
         Ok(())
@@ -1694,7 +1695,7 @@ fn begin_subtree_shutdown_locked(fiber: &Arc<FiberInner>) -> Arc<TransitionTask>
         let driver = { owner.driver.lock().unwrap().take() };
         if let Some(driver) = driver {
             if let Err(error) = driver.await {
-                errors.push(Arc::new(crate::error::join_panic_error(error)));
+                errors.push(crate::error::join_panic_error(error).shared());
             }
         }
         for child in child_tasks {
@@ -1708,7 +1709,7 @@ fn begin_subtree_shutdown_locked(fiber: &Arc<FiberInner>) -> Arc<TransitionTask>
     public
 }
 
-pub(crate) async fn join_task(task: &Arc<TransitionTask>) -> Result<(), Arc<CordisError>> {
+pub(crate) async fn join_task(task: &Arc<TransitionTask>) -> Result<(), Arc<ErrorKind>> {
     let mut rx = task.done_tx.subscribe();
     loop {
         match &*rx.borrow() {
@@ -1717,7 +1718,7 @@ pub(crate) async fn join_task(task: &Arc<TransitionTask>) -> Result<(), Arc<Cord
         }
         if rx.changed().await.is_err() {
             // 发送端随 fiber 析构:不得伪装成功(评审 #8)
-            return Err(Arc::new(CordisError::PluginFailed(
+            return Err(Arc::new(ErrorKind::PluginFailed(
                 "fiber dropped before transition completed".into(),
             )));
         }
@@ -1727,15 +1728,15 @@ pub(crate) async fn join_task(task: &Arc<TransitionTask>) -> Result<(), Arc<Cord
 /// settle(`IntoFuture`)= Settle 栅栏 + join:"稳定了吗"由 mailbox 的 FIFO
 /// 顺序直接回答——Settle 排到时,此前入队的意图(初始装载、再装载通知、
 /// restart)都已处理完;错误只认 Failed(dispose 聚合错误经 dispose() 返回)。
-fn settle(this: &FiberInner) -> BoxFuture<'static, Result<(), Arc<CordisError>>> {
+fn settle(this: &FiberInner) -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> {
     let task = TransitionTask::new();
     this.post_join(task.clone(), Intent::Settle);
     Box::pin(async move { join_task(&task).await })
 }
 
 impl std::future::IntoFuture for FiberView {
-    type Output = Result<(), Arc<CordisError>>;
-    type IntoFuture = BoxFuture<'static, Result<(), Arc<CordisError>>>;
+    type Output = Result<(), Arc<ErrorKind>>;
+    type IntoFuture = BoxFuture<'static, Result<(), Arc<ErrorKind>>>;
 
     fn into_future(self) -> Self::IntoFuture {
         settle(&self.inner)
@@ -1743,8 +1744,8 @@ impl std::future::IntoFuture for FiberView {
 }
 
 impl std::future::IntoFuture for &FiberView {
-    type Output = Result<(), Arc<CordisError>>;
-    type IntoFuture = BoxFuture<'static, Result<(), Arc<CordisError>>>;
+    type Output = Result<(), Arc<ErrorKind>>;
+    type IntoFuture = BoxFuture<'static, Result<(), Arc<ErrorKind>>>;
 
     fn into_future(self) -> Self::IntoFuture {
         settle(&self.inner)

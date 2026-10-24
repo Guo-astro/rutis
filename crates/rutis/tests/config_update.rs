@@ -3,9 +3,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rutis::{
-    BoxFuture, CordisError, Ctx, Effect, FiberState, FiberView, Plugin, PluginFactory, TypeKey,
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberView, PluginFactory, TypeKey,
 };
+use rutis::{Ctx, Error};
 
 // ── 测试助手 ─────────────────────────────────────────────────────
 
@@ -25,23 +26,23 @@ struct ConfigPlugin {
     fail_apply: bool,
 }
 
-impl Plugin for ConfigPlugin {
+impl DynPlugin for ConfigPlugin {
     fn name(&self) -> &str {
         "config-plugin"
     }
 
-    fn validate(&self) -> Result<(), CordisError> {
+    fn validate(&self) -> Result<(), Error> {
         if self.svc.n == u32::MAX {
             // 实例级校验失败通道(dry-run 第 3 步)
-            Err(CordisError::Validation {
+            Err(Error::from(ErrorKind::Validation {
                 issues: vec!["bad instance".into()],
-            })
+            }))
         } else {
             Ok(())
         }
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         let svc = self.svc.clone();
         let log = self.apply_log.clone();
         let cleanups = self.cleanups.clone();
@@ -49,7 +50,7 @@ impl Plugin for ConfigPlugin {
         Box::pin(async move {
             log.lock().unwrap().push(format!("apply:{}", svc.label));
             if fail {
-                return Err(CordisError::PluginFailed("apply boom".into()));
+                return Err(Error::from(ErrorKind::PluginFailed("apply boom".into())));
             }
             ctx.provide(ConfigSvc { ..svc })?;
             Ok(Effect::Disposer(Box::new(move || {
@@ -88,19 +89,19 @@ impl PluginFactory<TestConfig> for TestFactory {
         "test-factory"
     }
 
-    fn validate_config(&self, config: &TestConfig) -> Result<(), CordisError> {
+    fn validate_config(&self, config: &TestConfig) -> Result<(), Error> {
         if config.n == 1000 {
-            Err(CordisError::Validation {
+            Err(Error::from(ErrorKind::Validation {
                 issues: vec!["config invalid".into()],
-            })
+            }))
         } else {
             Ok(())
         }
     }
 
-    fn build(&self, config: &TestConfig) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &TestConfig) -> Result<Box<dyn DynPlugin>, Error> {
         if config.n == 1001 {
-            return Err(CordisError::PluginFailed("build boom".into()));
+            return Err(Error::from(ErrorKind::PluginFailed("build boom".into())));
         }
         Ok(Box::new(ConfigPlugin {
             svc: ConfigSvc {
@@ -167,7 +168,7 @@ async fn update_dry_run_failure_leaves_state_untouched() {
         assert!(
             matches!(
                 *err,
-                CordisError::Validation { .. } | CordisError::PluginFailed(_)
+                ErrorKind::Validation { .. } | ErrorKind::PluginFailed(_)
             ),
             "{what}: unexpected {err:?}"
         );
@@ -198,10 +199,10 @@ async fn update_pending_uses_new_config_when_gate_opens() {
         fn name(&self) -> &str {
             "gated-factory"
         }
-        fn injects(&self) -> &[TypeKey] {
-            &self.injects
+        fn injects(&self) -> Vec<TypeKey> {
+            self.injects.clone()
         }
-        fn build(&self, config: &TestConfig) -> Result<Box<dyn Plugin>, CordisError> {
+        fn build(&self, config: &TestConfig) -> Result<Box<dyn DynPlugin>, Error> {
             self.inner.build(config)
         }
     }
@@ -244,7 +245,7 @@ async fn update_failed_recovers_with_new_config() {
     // 同一 fiber 的 factory 固定,config 才是热修复的变量。
     struct BranchFactory;
     impl PluginFactory<TestConfig> for BranchFactory {
-        fn build(&self, config: &TestConfig) -> Result<Box<dyn Plugin>, CordisError> {
+        fn build(&self, config: &TestConfig) -> Result<Box<dyn DynPlugin>, Error> {
             if config.n == 0 {
                 Ok(Box::new(BoomPlugin))
             } else {
@@ -261,19 +262,19 @@ async fn update_failed_recovers_with_new_config() {
         }
     }
     struct BoomPlugin;
-    impl Plugin for BoomPlugin {
+    impl DynPlugin for BoomPlugin {
         fn name(&self) -> &str {
             "boom"
         }
-        fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-            Box::pin(async move { Err(CordisError::PluginFailed("boom".into())) })
+        fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+            Box::pin(async move { Err(Error::from(ErrorKind::PluginFailed("boom".into()))) })
         }
     }
 
     let ctx = Ctx::root().unwrap();
     let view = ctx.plugin_with(BranchFactory, cfg("bad", 0));
     let err = view.clone().await.expect_err("load fails");
-    assert!(matches!(*err, CordisError::PluginFailed(_)));
+    assert!(matches!(*err, ErrorKind::PluginFailed(_)));
     assert_eq!(view.state().state, FiberState::Failed);
 
     // 热修复:换 config 走正常分支
@@ -297,14 +298,14 @@ async fn update_evicts_consumers_who_reload() {
         loads: Arc<AtomicUsize>,
         seen: Arc<Mutex<Vec<String>>>,
     }
-    impl Plugin for Consumer {
+    impl DynPlugin for Consumer {
         fn name(&self) -> &str {
             "consumer"
         }
-        fn injects(&self) -> &[TypeKey] {
-            Box::leak(Box::new([TypeKey::of::<ConfigSvc>()]))
+        fn injects(&self) -> Vec<TypeKey> {
+            vec![TypeKey::of::<ConfigSvc>()]
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             let loads = self.loads.clone();
             let seen = self.seen.clone();
             Box::pin(async move {
@@ -341,7 +342,7 @@ async fn concurrent_update_and_dispose_settle_correctly() {
     // dispose 先登记:update 拒绝
     let dispose = view.dispose();
     let upd = view.update(cfg("v2", 2)).await;
-    assert!(matches!(upd, Err(e) if matches!(*e, CordisError::InactiveEffect)));
+    assert!(matches!(upd, Err(e) if matches!(*e, ErrorKind::InactiveEffect)));
     dispose.await.expect("dispose");
     assert_eq!(view.state().state, FiberState::Disposed);
 
@@ -367,10 +368,10 @@ async fn factory_injects_gate_plugin_until_ready() {
         injects: Vec<TypeKey>,
     }
     impl PluginFactory<TestConfig> for F {
-        fn injects(&self) -> &[TypeKey] {
-            &self.injects
+        fn injects(&self) -> Vec<TypeKey> {
+            self.injects.clone()
         }
-        fn build(&self, config: &TestConfig) -> Result<Box<dyn Plugin>, CordisError> {
+        fn build(&self, config: &TestConfig) -> Result<Box<dyn DynPlugin>, Error> {
             Ok(Box::new(ConfigPlugin {
                 svc: ConfigSvc {
                     label: config.label.clone(),
@@ -403,11 +404,11 @@ async fn factory_injects_gate_plugin_until_ready() {
 #[tokio::test]
 async fn update_rejects_static_fiber_and_type_mismatch() {
     struct StaticPlugin;
-    impl Plugin for StaticPlugin {
+    impl DynPlugin for StaticPlugin {
         fn name(&self) -> &str {
             "static"
         }
-        fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             Box::pin(async move { Ok(Effect::Done) })
         }
     }
@@ -416,7 +417,7 @@ async fn update_rejects_static_fiber_and_type_mismatch() {
     static_view.clone().await.expect("loads");
     // 静态 fiber:无工厂
     let err = static_view.update(cfg("x", 1)).await.err().unwrap();
-    assert!(matches!(*err, CordisError::Validation { .. }));
+    assert!(matches!(*err, ErrorKind::Validation { .. }));
 
     // 工厂 fiber + 错误 config 类型
     let fview = ctx.plugin_with(TestFactory::new(), cfg("v1", 1));
@@ -424,7 +425,7 @@ async fn update_rejects_static_fiber_and_type_mismatch() {
     #[derive(Debug, Clone, PartialEq)]
     struct OtherConfig;
     let err = fview.update(OtherConfig).await.err().unwrap();
-    assert!(matches!(*err, CordisError::Validation { .. }));
+    assert!(matches!(*err, ErrorKind::Validation { .. }));
     // 现状不动
     assert_eq!(fview.state().state, FiberState::Active);
     assert_eq!(ctx.get::<ConfigSvc>().unwrap().label.clone(), "v1");
@@ -445,14 +446,14 @@ async fn dependency_reload_rebuilds_with_current_config() {
         n: u32,
         seen: Arc<Mutex<Vec<u32>>>,
     }
-    impl Plugin for RecordingPlugin {
+    impl DynPlugin for RecordingPlugin {
         fn name(&self) -> &str {
             "recording"
         }
-        fn injects(&self) -> &[TypeKey] {
-            Box::leak(Box::new([TypeKey::of::<Dep>()]))
+        fn injects(&self) -> Vec<TypeKey> {
+            vec![TypeKey::of::<Dep>()]
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             let n = self.n;
             let seen = self.seen.clone();
             Box::pin(async move {
@@ -466,10 +467,10 @@ async fn dependency_reload_rebuilds_with_current_config() {
         }
     }
     impl PluginFactory<TestConfig> for RecordFactory {
-        fn injects(&self) -> &[TypeKey] {
-            &self.injects
+        fn injects(&self) -> Vec<TypeKey> {
+            self.injects.clone()
         }
-        fn build(&self, config: &TestConfig) -> Result<Box<dyn Plugin>, CordisError> {
+        fn build(&self, config: &TestConfig) -> Result<Box<dyn DynPlugin>, Error> {
             Ok(Box::new(RecordingPlugin {
                 n: config.n,
                 seen: self.seen.clone(),
@@ -552,7 +553,7 @@ async fn update_during_loading_converges_to_new_config() {
         seen: Arc<Mutex<Vec<String>>>,
     }
     impl PluginFactory<TestConfig> for SlowFactory {
-        fn build(&self, config: &TestConfig) -> Result<Box<dyn Plugin>, CordisError> {
+        fn build(&self, config: &TestConfig) -> Result<Box<dyn DynPlugin>, Error> {
             let gate = self.gate.clone();
             let seen = self.seen.clone();
             let label = config.label.clone();
@@ -564,11 +565,11 @@ async fn update_during_loading_converges_to_new_config() {
         seen: Arc<Mutex<Vec<String>>>,
         label: String,
     }
-    impl Plugin for SlowPlugin {
+    impl DynPlugin for SlowPlugin {
         fn name(&self) -> &str {
             "slow"
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             let gate = self.gate.clone();
             let seen = self.seen.clone();
             let label = self.label.clone();
@@ -585,7 +586,7 @@ async fn update_during_loading_converges_to_new_config() {
                 }
                 tokio::select! {
                     // 协作取消:update 的 cancel_current 让这里返回
-                    _ = ctx.cancelled() => Err(CordisError::PluginFailed("cancelled".into())),
+                    _ = ctx.cancelled() => Err(ErrorKind::PluginFailed("cancelled".into()).into()),
                     _ = gate.notified() => Ok(Effect::Done),
                 }
             })
@@ -632,10 +633,10 @@ async fn update_during_unloading_converges_to_new_config() {
         injects: Vec<TypeKey>,
     }
     impl PluginFactory<TestConfig> for GatedFactory {
-        fn injects(&self) -> &[TypeKey] {
-            &self.injects
+        fn injects(&self) -> Vec<TypeKey> {
+            self.injects.clone()
         }
-        fn build(&self, config: &TestConfig) -> Result<Box<dyn Plugin>, CordisError> {
+        fn build(&self, config: &TestConfig) -> Result<Box<dyn DynPlugin>, Error> {
             let gate = self.gate.clone();
             let label = config.label.clone();
             Ok(Box::new(GatedPlugin { gate, label }))
@@ -645,14 +646,14 @@ async fn update_during_unloading_converges_to_new_config() {
         gate: Arc<Notify>,
         label: String,
     }
-    impl Plugin for GatedPlugin {
+    impl DynPlugin for GatedPlugin {
         fn name(&self) -> &str {
             "gated"
         }
-        fn injects(&self) -> &[TypeKey] {
-            Box::leak(Box::new([TypeKey::of::<Dep>()]))
+        fn injects(&self) -> Vec<TypeKey> {
+            vec![TypeKey::of::<Dep>()]
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             let gate = self.gate.clone();
             let label = self.label.clone();
             Box::pin(async move {
@@ -714,7 +715,7 @@ async fn concurrent_provider_reload_and_consumer_update_settle() {
     // provider 工厂:config 决定 Dep 的值(热更新换值)
     struct ProviderFactory;
     impl PluginFactory<TestConfig> for ProviderFactory {
-        fn build(&self, config: &TestConfig) -> Result<Box<dyn Plugin>, CordisError> {
+        fn build(&self, config: &TestConfig) -> Result<Box<dyn DynPlugin>, Error> {
             let value = config.label.clone();
             Ok(Box::new(DepProvider { value }))
         }
@@ -722,11 +723,11 @@ async fn concurrent_provider_reload_and_consumer_update_settle() {
     struct DepProvider {
         value: String,
     }
-    impl Plugin for DepProvider {
+    impl DynPlugin for DepProvider {
         fn name(&self) -> &str {
             "dep-provider"
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             let dep = Dep(self.value.clone());
             Box::pin(async move {
                 ctx.provide(dep)?;
@@ -741,10 +742,10 @@ async fn concurrent_provider_reload_and_consumer_update_settle() {
         injects: Vec<TypeKey>,
     }
     impl PluginFactory<TestConfig> for ConsumerFactory {
-        fn injects(&self) -> &[TypeKey] {
-            &self.injects
+        fn injects(&self) -> Vec<TypeKey> {
+            self.injects.clone()
         }
-        fn build(&self, config: &TestConfig) -> Result<Box<dyn Plugin>, CordisError> {
+        fn build(&self, config: &TestConfig) -> Result<Box<dyn DynPlugin>, Error> {
             let seen = self.seen.clone();
             let label = config.label.clone();
             Ok(Box::new(Consumer { seen, label }))
@@ -754,14 +755,14 @@ async fn concurrent_provider_reload_and_consumer_update_settle() {
         seen: Arc<Mutex<Vec<String>>>,
         label: String,
     }
-    impl Plugin for Consumer {
+    impl DynPlugin for Consumer {
         fn name(&self) -> &str {
             "consumer"
         }
-        fn injects(&self) -> &[TypeKey] {
-            Box::leak(Box::new([TypeKey::of::<Dep>()]))
+        fn injects(&self) -> Vec<TypeKey> {
+            vec![TypeKey::of::<Dep>()]
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             let seen = self.seen.clone();
             let mine = self.label.clone();
             let dep = ctx.get::<Dep>().unwrap();
@@ -808,7 +809,7 @@ async fn concurrent_provider_reload_and_consumer_update_settle() {
 async fn factory_build_panic_fails_load_without_hanging() {
     struct PanicFactory;
     impl PluginFactory<TestConfig> for PanicFactory {
-        fn build(&self, _config: &TestConfig) -> Result<Box<dyn Plugin>, CordisError> {
+        fn build(&self, _config: &TestConfig) -> Result<Box<dyn DynPlugin>, Error> {
             panic!("build boom");
         }
     }
@@ -818,13 +819,13 @@ async fn factory_build_panic_fails_load_without_hanging() {
     // settle 返回错误(而非永等):panic 被转为装载失败
     let err = view.clone().await.expect_err("build panic fails load");
     assert!(
-        matches!(*err, CordisError::PluginFailed(ref m) if m.to_string().contains("build boom")),
+        matches!(*err, ErrorKind::PluginFailed(ref m) if m.to_string().contains("build boom")),
         "{err:?}"
     );
     assert_eq!(view.state().state, FiberState::Failed);
     // 驱动仍存活:restart 可重试(build 再 panic 则再 Failed,不挂起)
     let err2 = view.restart().await.expect_err("restart fails again");
-    assert!(matches!(*err2, CordisError::PluginFailed(_)));
+    assert!(matches!(*err2, ErrorKind::PluginFailed(_)));
     assert_eq!(view.state().state, FiberState::Failed);
 }
 
@@ -835,17 +836,17 @@ async fn factory_build_panic_fails_load_without_hanging() {
 
 #[tokio::test]
 async fn failed_stays_failed_when_dependency_removed_but_retries_when_restored() {
-    use rutis::TypeKey;
+    use rutis::host::TypeKey;
 
     #[derive(Debug)]
     struct FlakyDep;
     // 工厂声明依赖 FlakyDep;build 只在 n==1 时失败(apply 失败路径)
     struct FlakyFactory2;
     impl PluginFactory<TestConfig> for FlakyFactory2 {
-        fn injects(&self) -> &[TypeKey] {
-            Box::leak(Box::new([TypeKey::of::<FlakyDep>()]))
+        fn injects(&self) -> Vec<TypeKey> {
+            vec![TypeKey::of::<FlakyDep>()]
         }
-        fn build(&self, config: &TestConfig) -> Result<Box<dyn Plugin>, CordisError> {
+        fn build(&self, config: &TestConfig) -> Result<Box<dyn DynPlugin>, Error> {
             if config.n == 1 {
                 Ok(Box::new(BoomPlugin))
             } else {
@@ -862,12 +863,12 @@ async fn failed_stays_failed_when_dependency_removed_but_retries_when_restored()
         }
     }
     struct BoomPlugin;
-    impl Plugin for BoomPlugin {
+    impl DynPlugin for BoomPlugin {
         fn name(&self) -> &str {
             "boom"
         }
-        fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-            Box::pin(async move { Err(CordisError::PluginFailed("boom".into())) })
+        fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+            Box::pin(async move { Err(Error::from(ErrorKind::PluginFailed("boom".into()))) })
         }
     }
 
@@ -891,7 +892,7 @@ async fn failed_stays_failed_when_dependency_removed_but_retries_when_restored()
         .clone()
         .await
         .expect_err("settle still reports the load error");
-    assert!(matches!(*err, CordisError::PluginFailed(_)));
+    assert!(matches!(*err, ErrorKind::PluginFailed(_)));
 
     // 依赖恢复:Failed 重试装载(仍失败 → 仍 Failed,错误持续)
     let _dep2 = ctx.provide(FlakyDep).unwrap();

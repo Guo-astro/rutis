@@ -1,14 +1,15 @@
 mod common;
 
-use std::future::IntoFuture;
+use std::future::{ready, IntoFuture, Ready};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{
-    BoxFuture, Call, CordisError, Ctx, DependencyStatus, Effect, Event, EventKey, FiberState,
-    Listener, Plugin, TypeKey,
-};
+use rutis::events::{Call, Listener};
+use rutis::host::diagnostics::DependencyStatus;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, Key, TypeKey};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error, Event, Plugin};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{oneshot, Semaphore};
 
@@ -17,28 +18,28 @@ use common::still_pending;
 struct Capture(Arc<Mutex<Option<Ctx>>>);
 
 struct PanicMetadata;
-impl Plugin for PanicMetadata {
+impl DynPlugin for PanicMetadata {
     fn name(&self) -> &str {
         panic!("closed fiber must not inspect plugin metadata")
     }
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         unreachable!()
     }
 }
 
 impl Plugin for Capture {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "capture"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            *self.0.lock().unwrap() = Some(ctx.clone());
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
+        *self.0.lock().unwrap() = Some(ctx.clone());
+        Ok(())
     }
 }
 
-async fn child(parent: &Ctx) -> (rutis::FiberView, Ctx) {
+async fn child(parent: &Ctx) -> (rutis::host::FiberView, Ctx) {
     let slot = Arc::new(Mutex::new(None));
     let view = parent.plugin(Capture(slot.clone()));
     (&view).await.unwrap();
@@ -47,33 +48,33 @@ async fn child(parent: &Ctx) -> (rutis::FiberView, Ctx) {
 }
 
 struct Read {
-    key: TypeKey,
+    key: Key<u64>,
     seen: Arc<Mutex<Vec<u64>>>,
 }
 
-struct ProbeRead(TypeKey);
-impl Plugin for ProbeRead {
+struct ProbeRead(Key<u64>);
+impl DynPlugin for ProbeRead {
     fn name(&self) -> &str {
         "probe-read"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            assert!(ctx.get_as::<u64>(self.0.clone()).is_none());
+            assert!(ctx.get_at(&self.0).is_none());
             Ok(Effect::Done)
         })
     }
 }
 
-impl Plugin for Read {
+impl DynPlugin for Read {
     fn name(&self) -> &str {
         "read"
     }
-    fn injects(&self) -> &[TypeKey] {
-        std::slice::from_ref(&self.key)
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.key.erase()]
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            let value = ctx.get_as::<u64>(self.key.clone()).unwrap();
+            let value = ctx.get_at(&self.key).unwrap();
             self.seen.lock().unwrap().push(*value);
             Ok(Effect::Done)
         })
@@ -87,48 +88,40 @@ impl Event for Ping {
     type Value = ();
 }
 
-const PING: EventKey<Ping> = EventKey::of();
-
 struct Record {
     log: Arc<Mutex<Vec<u32>>>,
     entered: Mutex<Option<oneshot::Sender<()>>>,
     release: Option<Arc<Semaphore>>,
 }
 
-impl Listener<Ping> for Record {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        event: &'a Ping,
-        _call: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        let value = event.0;
-        Box::pin(async move {
-            if value == 1 {
-                if let Some(tx) = self.entered.lock().unwrap().take() {
-                    let _ = tx.send(());
-                }
-                if let Some(gate) = &self.release {
-                    let permit = gate.acquire().await.unwrap();
-                    permit.forget();
-                }
+impl Record {
+    /// The listener: records every `Ping`; for `1` it first tells
+    /// `entered` and waits for `release`.
+    fn listener(self) -> impl Listener<Ping> {
+        let record = Arc::new(self);
+        move |event: Arc<Ping>, _: Call<Ping>| {
+            let record = record.clone();
+            async move { record.call(event.0).await }
+        }
+    }
+
+    async fn call(&self, value: u32) -> rutis::Result<Option<()>> {
+        if value == 1 {
+            if let Some(tx) = self.entered.lock().unwrap().take() {
+                let _ = tx.send(());
             }
-            self.log.lock().unwrap().push(value);
-            Ok(None)
-        })
+            if let Some(gate) = &self.release {
+                let permit = gate.acquire().await.unwrap();
+                permit.forget();
+            }
+        }
+        self.log.lock().unwrap().push(value);
+        Ok(None)
     }
 }
 
-struct Bail;
-impl Listener<Ping> for Bail {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _event: &'a Ping,
-        _call: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        Box::pin(async { Ok(Some(())) })
-    }
+fn bail(_: Arc<Ping>, _: Call<Ping>) -> Ready<rutis::Result<Option<()>>> {
+    ready(Ok(Some(())))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -137,30 +130,14 @@ impl Event for Fault {
     const NAME: &'static str = "instance-subtree-fault";
     type Value = ();
 }
-const FAULT: EventKey<Fault> = EventKey::of();
 
-struct FailListener;
-impl Listener<Fault> for FailListener {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _event: &'a Fault,
-        _call: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        Box::pin(async { Err(CordisError::PluginFailed("listener".into())) })
-    }
+fn fail_listener(_: Arc<Fault>, _: Call<Fault>) -> Ready<rutis::Result<Option<()>>> {
+    ready(Err(ErrorKind::PluginFailed("listener".into()).into()))
 }
 
-struct PanicCall;
-impl Listener<Ping> for PanicCall {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _event: &'a Ping,
-        _call: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        panic!("listener call failed before returning a future")
-    }
+/// Panics when called, before returning a future.
+fn panic_call(_: Arc<Ping>, _: Call<Ping>) -> Ready<rutis::Result<Option<()>>> {
+    panic!("listener call failed before returning a future")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -176,8 +153,8 @@ async fn emit_reports_synchronous_listener_panic() {
         })
     });
     let (view, ctx) = child(&root).await;
-    ctx.events().on(&ctx, &PING, PanicCall).unwrap();
-    ctx.events().emit(&ctx, &PING, Arc::new(Ping(1))).unwrap();
+    ctx.on::<Ping>(panic_call).unwrap();
+    ctx.emit(Ping(1)).unwrap();
     let error = tokio::time::timeout(Duration::from_secs(10), rx)
         .await
         .unwrap()
@@ -192,34 +169,24 @@ async fn serial_short_circuits_and_parallel_aggregates() {
     let root = Ctx::root().unwrap();
     let (view, ctx) = child(&root).await;
     let log = Arc::new(Mutex::new(Vec::new()));
-    ctx.events().on(&ctx, &PING, Bail).unwrap();
-    ctx.events()
-        .on(
-            &ctx,
-            &PING,
-            Record {
-                log: log.clone(),
-                entered: Mutex::new(None),
-                release: None,
-            },
-        )
-        .unwrap();
-    let value = ctx
-        .events()
-        .serial(&ctx, &PING, Arc::new(Ping(2)))
-        .await
-        .unwrap();
+    ctx.on::<Ping>(bail).unwrap();
+    ctx.on::<Ping>(
+        Record {
+            log: log.clone(),
+            entered: Mutex::new(None),
+            release: None,
+        }
+        .listener(),
+    )
+    .unwrap();
+    let value = ctx.serial(Ping(2)).await.unwrap();
     assert_eq!(value, Some(()));
     assert!(log.lock().unwrap().is_empty());
 
-    ctx.events().on(&ctx, &FAULT, FailListener).unwrap();
-    ctx.events().on(&ctx, &FAULT, FailListener).unwrap();
-    let error = ctx
-        .events()
-        .parallel(&ctx, &FAULT, Arc::new(Fault))
-        .await
-        .unwrap_err();
-    assert!(matches!(error, CordisError::ListenersFailed { errors, .. } if errors.len() == 2));
+    ctx.on::<Fault>(fail_listener).unwrap();
+    ctx.on::<Fault>(fail_listener).unwrap();
+    let error = ctx.parallel(Fault).await.unwrap_err();
+    assert!(matches!(&*error, ErrorKind::ListenersFailed { errors, .. } if errors.len() == 2));
     view.shutdown().await.unwrap();
     root.shutdown().await.unwrap();
 }
@@ -229,27 +196,28 @@ async fn instance_keys_enforce_subtree_and_explain_pending_dependency() {
     let root = Ctx::root().unwrap();
     let (_a, a) = child(&root).await;
     let (_b, b) = child(&root).await;
-    let key_a = TypeKey::instance::<u64>(a.instance());
-    let key_b = TypeKey::instance::<u64>(b.instance());
+    let key_a = Key::<u64>::of().instance(a.instance());
+    let key_b = Key::<u64>::of().instance(b.instance());
     let checks = Arc::new(AtomicUsize::new(0));
     let check_count = checks.clone();
-    a.provide_as_with_check(key_a.clone(), Arc::new(10u64), move || {
+    a.provide_checked(key_a.clone(), Arc::new(10u64), move || {
         check_count.fetch_add(1, Ordering::SeqCst);
         true
     })
     .unwrap();
-    b.provide_as(key_b.clone(), Arc::new(20u64)).unwrap();
+    b.provide_at(key_b.clone(), Arc::new(20u64)).unwrap();
 
-    assert_eq!(*a.get_as::<u64>(key_a.clone()).unwrap(), 10);
-    assert_eq!(*b.get_as::<u64>(key_b).unwrap(), 20);
-    assert!(b.get_as::<u64>(key_a.clone()).is_none());
-    assert!(root.get_as::<u64>(key_a.clone()).is_none());
+    assert_eq!(*a.get_at(&key_a).unwrap(), 10);
+    assert_eq!(*b.get_at(&key_b).unwrap(), 20);
+    assert!(b.get_at(&key_a).is_none());
+    assert!(root.get_at(&key_a).is_none());
     assert!(matches!(
-        root.provide_as(key_a.clone(), Arc::new(99u64)),
-        Err(CordisError::InstanceOutOfScope { .. })
+        root.provide_at(key_a.clone(), Arc::new(99u64))
+            .map_err(Error::into_kind),
+        Err(ErrorKind::InstanceOutOfScope { .. })
     ));
     let (_nested, nested) = child(&a).await;
-    assert_eq!(*nested.get_as::<u64>(key_a.clone()).unwrap(), 10);
+    assert_eq!(*nested.get_at(&key_a).unwrap(), 10);
 
     let pending = b.plugin(Read {
         key: key_a.clone(),
@@ -284,8 +252,8 @@ async fn instance_keys_enforce_subtree_and_explain_pending_dependency() {
     assert!(access.provider.is_none());
     assert!(access.generation.is_none());
     root.shutdown().await.unwrap();
-    assert_eq!(a.instance(), key_a.instance_id().unwrap());
-    assert!(a.get_as::<u64>(key_a).is_none());
+    assert_eq!(a.instance(), key_a.erase().instance_id().unwrap());
+    assert!(a.get_at(&key_a).is_none());
     let new_root = Ctx::root().unwrap();
     assert_ne!(new_root.instance(), root.instance());
     new_root.shutdown().await.unwrap();
@@ -299,58 +267,66 @@ async fn registration_errors_prioritize_closed_then_inactive_then_instance_scope
     let root = Ctx::root().unwrap();
     let (disposed_view, disposed) = child(&root).await;
     let (closed_view, closed) = child(&root).await;
-    let foreign = TypeKey::instance::<u64>(closed.instance());
+    let foreign = Key::<u64>::of().instance(closed.instance());
 
     assert!(matches!(
-        root.provide_as(foreign.clone(), Arc::new(1u64)),
-        Err(CordisError::InstanceOutOfScope { .. })
+        root.provide_at(foreign.clone(), Arc::new(1u64))
+            .map_err(Error::into_kind),
+        Err(ErrorKind::InstanceOutOfScope { .. })
     ));
 
     disposed_view.dispose().await.unwrap();
     assert!(matches!(
-        disposed.effect(|| Effect::Done),
-        Err(CordisError::InactiveEffect)
+        disposed
+            .effect(|| async { Ok(()) })
+            .map_err(Error::into_kind),
+        Err(ErrorKind::InactiveEffect)
     ));
     assert!(matches!(
-        disposed.provide_as(foreign.clone(), Arc::new(1u64)),
-        Err(CordisError::InactiveEffect)
+        disposed
+            .provide_at(foreign.clone(), Arc::new(1u64))
+            .map_err(Error::into_kind),
+        Err(ErrorKind::InactiveEffect)
     ));
     assert!(matches!(
-        disposed.events().on(&disposed, &PING, Bail),
-        Err(CordisError::InactiveEffect)
+        disposed.on::<Ping>(bail).map_err(Error::into_kind),
+        Err(ErrorKind::InactiveEffect)
     ));
 
     closed_view.shutdown().await.unwrap();
     assert!(matches!(
-        closed.effect(|| Effect::Done),
-        Err(CordisError::Closed)
+        closed.effect(|| async { Ok(()) }).map_err(Error::into_kind),
+        Err(ErrorKind::Closed)
     ));
     assert!(matches!(
-        closed.provide_as(foreign.clone(), Arc::new(1u64)),
-        Err(CordisError::Closed)
+        closed
+            .provide_at(foreign.clone(), Arc::new(1u64))
+            .map_err(Error::into_kind),
+        Err(ErrorKind::Closed)
     ));
     assert!(matches!(
-        closed.events().on(&closed, &PING, Bail),
-        Err(CordisError::Closed)
+        closed.on::<Ping>(bail).map_err(Error::into_kind),
+        Err(ErrorKind::Closed)
     ));
 
     drop(closed_view);
     assert!(matches!(
-        closed.effect(|| Effect::Done),
-        Err(CordisError::Closed)
+        closed.effect(|| async { Ok(()) }).map_err(Error::into_kind),
+        Err(ErrorKind::Closed)
     ));
     root.shutdown().await.unwrap();
     assert!(matches!(
-        root.effect(|| Effect::Done),
-        Err(CordisError::Closed)
+        root.effect(|| async { Ok(()) }).map_err(Error::into_kind),
+        Err(ErrorKind::Closed)
     ));
     assert!(matches!(
-        root.provide_as(foreign.clone(), Arc::new(1u64)),
-        Err(CordisError::Closed)
+        root.provide_at(foreign.clone(), Arc::new(1u64))
+            .map_err(Error::into_kind),
+        Err(ErrorKind::Closed)
     ));
     assert!(matches!(
-        root.events().on(&root, &PING, Bail),
-        Err(CordisError::Closed)
+        root.on::<Ping>(bail).map_err(Error::into_kind),
+        Err(ErrorKind::Closed)
     ));
 }
 
@@ -363,11 +339,11 @@ async fn process_service_reload_reaches_both_instances() {
     let seen_a = Arc::new(Mutex::new(Vec::new()));
     let seen_b = Arc::new(Mutex::new(Vec::new()));
     let read_a = a.plugin(Read {
-        key: TypeKey::of::<u64>(),
+        key: Key::of(),
         seen: seen_a.clone(),
     });
     let read_b = b.plugin(Read {
-        key: TypeKey::of::<u64>(),
+        key: Key::of(),
         seen: seen_b.clone(),
     });
     (&read_a).await.unwrap();
@@ -386,10 +362,10 @@ async fn instance_service_reload_does_not_touch_sibling_consumer() {
     let root = Ctx::root().unwrap();
     let (_a_view, a) = child(&root).await;
     let (_b_view, b) = child(&root).await;
-    let key_a = TypeKey::instance::<u64>(a.instance());
-    let key_b = TypeKey::instance::<u64>(b.instance());
-    let old_a = a.provide_as(key_a.clone(), Arc::new(1u64)).unwrap();
-    b.provide_as(key_b.clone(), Arc::new(2u64)).unwrap();
+    let key_a = Key::<u64>::of().instance(a.instance());
+    let key_b = Key::<u64>::of().instance(b.instance());
+    let old_a = a.provide_at(key_a.clone(), Arc::new(1u64)).unwrap();
+    b.provide_at(key_b.clone(), Arc::new(2u64)).unwrap();
     let seen_a = Arc::new(Mutex::new(Vec::new()));
     let seen_b = Arc::new(Mutex::new(Vec::new()));
     let read_a = a.plugin(Read {
@@ -406,7 +382,7 @@ async fn instance_service_reload_does_not_touch_sibling_consumer() {
 
     old_a.dispose().await.unwrap();
     assert_eq!(read_a.state().state, FiberState::Pending);
-    a.provide_as(key_a, Arc::new(3u64)).unwrap();
+    a.provide_at(key_a, Arc::new(3u64)).unwrap();
     (&read_a).await.unwrap();
     assert_eq!(*seen_a.lock().unwrap(), vec![1, 3]);
     assert_eq!(*seen_b.lock().unwrap(), vec![2]);
@@ -432,10 +408,7 @@ async fn fiber_instance_stays_stable_across_restart_update_and_dependency_reload
 
     let slot = Arc::new(Mutex::new(None));
     let factory_slot = slot.clone();
-    let factory = root.plugin_from(
-        move |_config: &u32| Ok(Box::new(Capture(factory_slot.clone())) as Box<dyn Plugin>),
-        1u32,
-    );
+    let factory = root.plugin_from(move |_config: &u32| Ok(Capture(factory_slot.clone())), 1u32);
     (&factory).await.unwrap();
     let factory_id = slot.lock().unwrap().as_ref().unwrap().instance();
     factory.update(2u32).await.unwrap();
@@ -451,7 +424,7 @@ async fn fiber_instance_stays_stable_across_restart_update_and_dependency_reload
 
     let old = root.provide(4u64).unwrap();
     let reader = root.plugin(Read {
-        key: TypeKey::of::<u64>(),
+        key: Key::of(),
         seen: Arc::new(Mutex::new(Vec::new())),
     });
     (&reader).await.unwrap();
@@ -483,18 +456,16 @@ async fn dropping_borrowed_serial_releases_shutdown_flight() {
     let (view, ctx) = child(&root).await;
     let (entered_tx, entered_rx) = oneshot::channel();
     let gate = Arc::new(Semaphore::new(0));
-    ctx.events()
-        .on(
-            &ctx,
-            &PING,
-            Record {
-                log: Arc::new(Mutex::new(Vec::new())),
-                entered: Mutex::new(Some(entered_tx)),
-                release: Some(gate),
-            },
-        )
-        .unwrap();
-    let mut dispatch = ctx.events().serial(&ctx, &PING, Arc::new(Ping(1)));
+    ctx.on::<Ping>(
+        Record {
+            log: Arc::new(Mutex::new(Vec::new())),
+            entered: Mutex::new(Some(entered_tx)),
+            release: Some(gate),
+        }
+        .listener(),
+    )
+    .unwrap();
+    let mut dispatch = ctx.serial(Ping(1));
     tokio::select! {
         result = &mut dispatch => panic!("serial completed before its gate: {result:?}"),
         result = entered_rx => result.unwrap(),
@@ -507,45 +478,23 @@ async fn dropping_borrowed_serial_releases_shutdown_flight() {
     root.shutdown().await.unwrap();
 }
 
-struct StartOwnShutdown {
-    view: rutis::FiberView,
-    calls: Arc<AtomicUsize>,
-}
-
-impl Listener<Ping> for StartOwnShutdown {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _event: &'a Ping,
-        _call: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        Box::pin(async move {
-            drop(self.view.shutdown());
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(None)
-        })
-    }
-}
-
 #[tokio::test]
 async fn callback_can_start_own_shutdown_and_return() {
     let root = Ctx::root().unwrap();
     let (view, ctx) = child(&root).await;
     let calls = Arc::new(AtomicUsize::new(0));
-    ctx.events()
-        .on(
-            &ctx,
-            &PING,
-            StartOwnShutdown {
-                view: view.clone(),
-                calls: calls.clone(),
-            },
-        )
-        .unwrap();
-    ctx.events()
-        .serial(&ctx, &PING, Arc::new(Ping(1)))
-        .await
-        .unwrap();
+    // Starts its own fiber's shutdown and returns.
+    let (own, count) = (view.clone(), calls.clone());
+    ctx.on::<Ping>(move |_, _| {
+        let (own, count) = (own.clone(), count.clone());
+        async move {
+            drop(own.shutdown());
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+    })
+    .unwrap();
+    ctx.serial(Ping(1)).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), view.shutdown())
         .await
         .unwrap()
@@ -559,17 +508,17 @@ struct CountInjects {
     calls: Arc<AtomicUsize>,
 }
 
-impl Plugin for CountInjects {
+impl DynPlugin for CountInjects {
     fn name(&self) -> &str {
         "count-injects"
     }
 
-    fn injects(&self) -> &[TypeKey] {
+    fn injects(&self) -> Vec<TypeKey> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        std::slice::from_ref(&self.key)
+        vec![self.key.clone()]
     }
 
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async { Ok(Effect::Done) })
     }
 }
@@ -609,32 +558,28 @@ async fn sibling_scopes_share_the_bus_and_drain_by_shutdown() {
     let log_b = Arc::new(Mutex::new(Vec::new()));
     let release = Arc::new(Semaphore::new(0));
     let (entered_tx, entered_rx) = oneshot::channel();
-    a.events()
-        .on(
-            &a,
-            &PING,
-            Record {
-                log: log_a.clone(),
-                entered: Mutex::new(Some(entered_tx)),
-                release: Some(release.clone()),
-            },
-        )
-        .unwrap();
-    b.events()
-        .on(
-            &b,
-            &PING,
-            Record {
-                log: log_b.clone(),
-                entered: Mutex::new(None),
-                release: None,
-            },
-        )
-        .unwrap();
-    a.events().emit(&a, &PING, Arc::new(Ping(1))).unwrap();
+    a.on::<Ping>(
+        Record {
+            log: log_a.clone(),
+            entered: Mutex::new(Some(entered_tx)),
+            release: Some(release.clone()),
+        }
+        .listener(),
+    )
+    .unwrap();
+    b.on::<Ping>(
+        Record {
+            log: log_b.clone(),
+            entered: Mutex::new(None),
+            release: None,
+        }
+        .listener(),
+    )
+    .unwrap();
+    a.emit(Ping(1)).unwrap();
     entered_rx.await.unwrap();
-    a.events().emit(&a, &PING, Arc::new(Ping(3))).unwrap();
-    b.events().emit(&b, &PING, Arc::new(Ping(2))).unwrap();
+    a.emit(Ping(3)).unwrap();
+    b.emit(Ping(2)).unwrap();
     // Polls on the paused clock, so the hang guard still fires.
     tokio::time::timeout(Duration::from_secs(10), async {
         while log_b.lock().unwrap().is_empty() || log_a.lock().unwrap().is_empty() {
@@ -647,12 +592,13 @@ async fn sibling_scopes_share_the_bus_and_drain_by_shutdown() {
 
     let pending = view_a.shutdown();
     assert!(matches!(
-        a.provide_as(TypeKey::instance::<u32>(a.instance()), Arc::new(1u32)),
-        Err(CordisError::Closed)
+        a.provide_at(Key::<u32>::of().instance(a.instance()), Arc::new(1u32))
+            .map_err(Error::into_kind),
+        Err(ErrorKind::Closed)
     ));
     assert!(matches!(
-        a.events().on(&a, &PING, Bail),
-        Err(CordisError::Closed)
+        a.on::<Ping>(bail).map_err(Error::into_kind),
+        Err(ErrorKind::Closed)
     ));
     let closed_child = a.plugin(PanicMetadata);
     assert_eq!(closed_child.state().state, FiberState::Disposed);
@@ -678,27 +624,19 @@ async fn closing_listener_is_excluded_from_new_ancestor_dispatches() {
     let release = Arc::new(Semaphore::new(0));
     let (entered_tx, entered_rx) = oneshot::channel();
     listener_ctx
-        .events()
-        .on(
-            &listener_ctx,
-            &PING,
+        .on::<Ping>(
             Record {
                 log: log.clone(),
                 entered: Mutex::new(Some(entered_tx)),
                 release: Some(release.clone()),
-            },
+            }
+            .listener(),
         )
         .unwrap();
-    parent
-        .events()
-        .emit(&parent, &PING, Arc::new(Ping(1)))
-        .unwrap();
+    parent.emit(Ping(1)).unwrap();
     entered_rx.await.unwrap();
     let closing = child_view.shutdown();
-    parent
-        .events()
-        .emit(&parent, &PING, Arc::new(Ping(2)))
-        .unwrap();
+    parent.emit(Ping(2)).unwrap();
     release.add_permits(1);
     closing.await.unwrap();
     assert_eq!(*log.lock().unwrap(), vec![1]);
@@ -715,24 +653,17 @@ async fn dropped_parallel_waiter_cancels_its_calls() {
     let release = Arc::new(Semaphore::new(0));
     let (entered_tx, entered_rx) = oneshot::channel();
     let log = Arc::new(Mutex::new(Vec::new()));
-    ctx.events()
-        .on(
-            &ctx,
-            &PING,
-            Record {
-                log: log.clone(),
-                entered: Mutex::new(Some(entered_tx)),
-                release: Some(release.clone()),
-            },
-        )
-        .unwrap();
+    ctx.on::<Ping>(
+        Record {
+            log: log.clone(),
+            entered: Mutex::new(Some(entered_tx)),
+            release: Some(release.clone()),
+        }
+        .listener(),
+    )
+    .unwrap();
     let dispatch_ctx = ctx.clone();
-    let waiting = tokio::spawn(async move {
-        dispatch_ctx
-            .events()
-            .parallel(&dispatch_ctx, &PING, Arc::new(Ping(1)))
-            .await
-    });
+    let waiting = tokio::spawn(async move { dispatch_ctx.parallel(Ping(1)).await });
     entered_rx.await.unwrap();
     waiting.abort();
     assert!(waiting.await.unwrap_err().is_cancelled());
@@ -756,25 +687,23 @@ async fn manual_listener_disposal_stops_new_calls() {
     let (entered_tx, entered_rx) = oneshot::channel();
     let log = Arc::new(Mutex::new(Vec::new()));
     let listener = ctx
-        .events()
-        .on(
-            &ctx,
-            &PING,
+        .on::<Ping>(
             Record {
                 log: log.clone(),
                 entered: Mutex::new(Some(entered_tx)),
                 release: Some(release.clone()),
-            },
+            }
+            .listener(),
         )
         .unwrap();
-    ctx.events().emit(&ctx, &PING, Arc::new(Ping(1))).unwrap();
+    ctx.emit(Ping(1)).unwrap();
     entered_rx.await.unwrap();
 
     tokio::time::timeout(Duration::from_secs(10), listener.dispose())
         .await
         .expect("disposal does not wait for the running call")
         .unwrap();
-    ctx.events().emit(&ctx, &PING, Arc::new(Ping(2))).unwrap();
+    ctx.emit(Ping(2)).unwrap();
     assert!(log.lock().unwrap().is_empty());
     let mut closing = tokio::spawn(view.shutdown());
     assert!(
@@ -788,26 +717,26 @@ async fn manual_listener_disposal_stops_new_calls() {
 }
 
 struct FailCleanup;
-impl Plugin for FailCleanup {
+impl DynPlugin for FailCleanup {
     fn name(&self) -> &str {
         "fail-cleanup"
     }
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async {
             Ok(Effect::Disposer(Box::new(|| {
-                Err(CordisError::PluginFailed("cleanup".into()))
+                Err(ErrorKind::PluginFailed("cleanup".into()).into())
             })))
         })
     }
 }
 
 struct FailApply;
-impl Plugin for FailApply {
+impl DynPlugin for FailApply {
     fn name(&self) -> &str {
         "fail-apply"
     }
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async { Err(CordisError::PluginFailed("apply".into())) })
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        Box::pin(async { Err(ErrorKind::PluginFailed("apply".into()).into()) })
     }
 }
 
@@ -842,12 +771,12 @@ struct BlockCleanup {
     release: Arc<Semaphore>,
 }
 
-impl Plugin for BlockCleanup {
+impl DynPlugin for BlockCleanup {
     fn name(&self) -> &str {
         "block-cleanup"
     }
 
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         let entered = self.entered.lock().unwrap().take().unwrap();
         let release = self.release.clone();
         Box::pin(async move {
@@ -917,11 +846,11 @@ impl Drop for DropProbe {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
-impl Plugin for DropProbe {
+impl DynPlugin for DropProbe {
     fn name(&self) -> &str {
         "drop-probe"
     }
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async { Ok(Effect::Done) })
     }
 }
@@ -949,22 +878,20 @@ struct SlowApply {
     cleaned: Arc<AtomicUsize>,
 }
 
-impl Plugin for SlowApply {
+impl DynPlugin for SlowApply {
     fn name(&self) -> &str {
         "slow-apply"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             if let Some(tx) = self.started.lock().unwrap().take() {
                 let _ = tx.send(());
             }
             ctx.cancelled().await;
             let cleaned = self.cleaned.clone();
-            ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
-                    cleaned.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                }))
+            ctx.effect(move || async move {
+                cleaned.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             })?;
             Ok(Effect::Done)
         })
@@ -1036,18 +963,16 @@ async fn dispose_child_shutdown_and_parent_shutdown_converge() {
 }
 
 struct Supply(Arc<Mutex<Vec<&'static str>>>);
-impl Plugin for Supply {
+impl DynPlugin for Supply {
     fn name(&self) -> &str {
         "supply"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let log = self.0.clone();
-            ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
-                    log.lock().unwrap().push("provider");
-                    Ok(())
-                }))
+            ctx.effect(move || async move {
+                log.lock().unwrap().push("provider");
+                Ok(())
             })?;
             ctx.provide(1u32)?;
             Ok(Effect::Done)
@@ -1056,16 +981,14 @@ impl Plugin for Supply {
 }
 
 struct Use(Arc<Mutex<Vec<&'static str>>>);
-impl Plugin for Use {
+impl DynPlugin for Use {
     fn name(&self) -> &str {
         "use"
     }
-    fn injects(&self) -> &[TypeKey] {
-        // A static declaration is sufficient for this unqualified service.
-        static KEYS: std::sync::OnceLock<Vec<TypeKey>> = std::sync::OnceLock::new();
-        KEYS.get_or_init(|| vec![TypeKey::of::<u32>()])
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![TypeKey::of::<u32>()]
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             assert_eq!(*ctx.get::<u32>().unwrap(), 1);
             let log = self.0.clone();
@@ -1116,50 +1039,27 @@ async fn consumer_outside_closed_subtree_can_reload_from_new_provider() {
     root.shutdown().await.unwrap();
 }
 
-/// Waits for its owner's cancellation, then records that it returned.
-struct AwaitOwnerCancellation {
-    owner: Ctx,
-    entered: Arc<Semaphore>,
-    returned: Arc<AtomicUsize>,
-}
-impl Listener<Ping> for AwaitOwnerCancellation {
-    fn call<'a>(
-        &'a self,
-        _sender: &'a Ctx,
-        _event: &'a Ping,
-        _call: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        Box::pin(async move {
-            self.entered.add_permits(1);
-            self.owner.cancelled().await;
-            self.returned.fetch_add(1, Ordering::SeqCst);
-            Ok(None)
-        })
-    }
-}
-
 /// A descendant's listener is running for an event emitted by `ancestor` and
 /// only returns once its owner is cancelled. Returns how often it returned.
 async fn start_owner_waiting_callback(ancestor: &Ctx, owner: &Ctx) -> Arc<AtomicUsize> {
     let entered = Arc::new(Semaphore::new(0));
     let returned = Arc::new(AtomicUsize::new(0));
-    let key = PING;
+    // Waits for its owner's cancellation, then records that it returned.
+    let listener_owner = owner.clone();
+    let (listener_entered, listener_returned) = (entered.clone(), returned.clone());
     owner
-        .events()
-        .on(
-            owner,
-            &key,
-            AwaitOwnerCancellation {
-                owner: owner.clone(),
-                entered: entered.clone(),
-                returned: returned.clone(),
-            },
-        )
+        .on::<Ping>(move |_, _| {
+            let owner = listener_owner.clone();
+            let (entered, returned) = (listener_entered.clone(), listener_returned.clone());
+            async move {
+                entered.add_permits(1);
+                owner.cancelled().await;
+                returned.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            }
+        })
         .unwrap();
-    ancestor
-        .events()
-        .emit(ancestor, &key, Arc::new(Ping(1)))
-        .unwrap();
+    ancestor.emit(Ping(1)).unwrap();
     tokio::time::timeout(Duration::from_secs(10), entered.acquire())
         .await
         .expect("callback entered")
@@ -1221,11 +1121,9 @@ async fn a_recreated_child_gets_a_new_instance_id() {
         let id = ctx.instance();
         assert_eq!(view.instance(), id);
         assert!(!seen.contains(&id), "{id} handed out again ({seen:?})");
-        ctx.provide_as(TypeKey::instance::<u64>(id), Arc::new(7u64))
+        ctx.provide_at(Key::<u64>::of().instance(id), Arc::new(7u64))
             .unwrap();
-        assert!(ctx
-            .get_as::<u64>(TypeKey::instance::<u64>(old_id))
-            .is_none());
+        assert!(ctx.get_at(&Key::<u64>::of().instance(old_id)).is_none());
         seen.push(id);
         view.dispose().await.unwrap();
     }
@@ -1243,29 +1141,23 @@ struct Resident {
 
 struct ResidentService;
 
-struct CountPings(Arc<AtomicUsize>);
-impl Listener<Ping> for CountPings {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _event: &'a Ping,
-        _call: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Ok(None) })
+/// Counts the `Ping`s it hears in `pings`.
+fn count_pings(pings: Arc<AtomicUsize>) -> impl Listener<Ping> {
+    move |_: Arc<Ping>, _: Call<Ping>| {
+        pings.fetch_add(1, Ordering::SeqCst);
+        ready(Ok(None))
     }
 }
 
-impl Plugin for Resident {
+impl DynPlugin for Resident {
     fn name(&self) -> &str {
         "resident"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             self.loads.fetch_add(1, Ordering::SeqCst);
             ctx.provide(ResidentService)?;
-            ctx.events()
-                .on(ctx, &rutis::EventKey::of(), CountPings(self.pings.clone()))?;
+            ctx.on::<Ping>(count_pings(self.pings.clone()))?;
             Ok(Effect::Done)
         })
     }
@@ -1287,22 +1179,24 @@ impl Drop for Transient {
     }
 }
 
-impl Plugin for Transient {
+impl DynPlugin for Transient {
     fn name(&self) -> &str {
         "transient"
     }
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.clone()
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             ctx.require::<ResidentService>()?;
             let id = ctx.instance();
-            ctx.provide_as(TypeKey::instance::<u64>(id), Arc::new(1u64))?;
+            ctx.provide_at(Key::<u64>::of().instance(id), Arc::new(1u64))?;
             ctx.mark_scope("transient")?;
-            let key = EventKey::<Ping>::dynamic(format!("instance-subtree-ping/{id}"));
-            ctx.events().on(ctx, &key, CountPings(self.pings.clone()))?;
-            ctx.events().emit(ctx, &key, Arc::new(Ping(0)))?;
+            let name = format!("instance-subtree-ping/{id}");
+            ctx.listen::<Ping>()
+                .name(name.clone())
+                .on(count_pings(self.pings.clone()))?;
+            ctx.named(name).emit(Ping(0))?;
             ctx.plugin(DropProbe(self.dropped.clone()));
             Ok(Effect::Done)
         })
@@ -1363,10 +1257,7 @@ async fn thousand_subtrees_next_to_a_resident_leave_no_tasks_behind() {
         (state.state, state.generation),
         (FiberState::Active, generation)
     );
-    root.events()
-        .parallel(&root, &rutis::EventKey::of(), Arc::new(Ping(1)))
-        .await
-        .unwrap();
+    root.parallel(Ping(1)).await.unwrap();
     assert_eq!(resident_pings.load(Ordering::SeqCst), 1);
     root.shutdown().await.unwrap();
 }

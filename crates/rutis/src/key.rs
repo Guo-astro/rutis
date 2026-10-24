@@ -1,4 +1,5 @@
 use std::any::TypeId;
+
 use std::marker::PhantomData;
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -266,14 +267,15 @@ impl<E: crate::Event> EventKey<E> {
     /// The name to register or dispatch under. An event type whose `NAME`
     /// is empty has no name of its own (`rutis_bridge::events::Args`): its
     /// key needs one, `EventKey::dynamic(name)` (protocol spec §12.1).
-    pub(crate) fn checked_name(&self) -> Result<Arc<str>, crate::CordisError> {
+    pub(crate) fn checked_name(&self) -> Result<Arc<str>, crate::Error> {
         let name = self.name_arc();
         if name.is_empty() {
             let full = std::any::type_name::<E>();
             let short = full.rsplit("::").next().unwrap_or(full);
-            return Err(crate::CordisError::EventNeedsName {
+            return Err(crate::ErrorKind::EventNeedsName {
                 event: short.to_owned(),
-            });
+            }
+            .into());
         }
         Ok(name)
     }
@@ -327,10 +329,6 @@ impl<E: crate::Event> EventPattern<E> {
     pub fn as_str(&self) -> &str {
         &self.prefix
     }
-
-    pub(crate) fn prefix_arc(&self) -> Arc<str> {
-        self.prefix.clone()
-    }
 }
 
 impl<E: crate::Event> Clone for EventPattern<E> {
@@ -350,34 +348,108 @@ impl<E: crate::Event> std::fmt::Debug for EventPattern<E> {
     }
 }
 
-/// 服务键别名(D21 裁决:`ServiceKey` 不另建类型)。
-pub type ServiceKey = TypeKey;
-
-/// 类型化限定名常量(开放问题 2 的裁决:`Key<T>` newtype,shaku Keyed 精神)。
+/// A service key that names its value type: every constructor names `T`,
+/// so the key cannot point at a service of another type.
 ///
 /// ```
-/// use rutis::{Key, TypeKey};
-/// const PRIMARY: Key<str> = Key::new("primary");
-/// let k: TypeKey = PRIMARY.into();
+/// use rutis::host::{Key, TypeKey};
+/// const PRIMARY: Key<str> = Key::named("primary");
+/// let k: TypeKey = PRIMARY.erase();
 /// assert_eq!(k, TypeKey::keyed::<str>("primary"));
+/// assert_eq!(Key::<str>::dynamic("primary").erase(), k);
 /// ```
 pub struct Key<T: ?Sized + 'static> {
-    name: &'static str,
+    name: Option<KeyName>,
+    instance: Option<InstanceId>,
     _marker: PhantomData<fn() -> T>,
 }
 
+#[derive(Clone)]
+enum KeyName {
+    Static(&'static str),
+    Dynamic(Arc<str>),
+}
+
 impl<T: ?Sized + 'static> Key<T> {
-    pub const fn new(name: &'static str) -> Self {
+    /// The service of type `T` itself: `TypeKey::of::<T>()`.
+    pub const fn of() -> Self {
         Self {
-            name,
+            name: None,
+            instance: None,
+            _marker: PhantomData,
+        }
+    }
+
+    /// A named service of type `T`.
+    pub const fn named(name: &'static str) -> Self {
+        Self {
+            name: Some(KeyName::Static(name)),
+            instance: None,
+            _marker: PhantomData,
+        }
+    }
+
+    /// A service of type `T` whose name is chosen at run time.
+    pub fn dynamic(name: impl Into<Arc<str>>) -> Self {
+        Self {
+            name: Some(KeyName::Dynamic(name.into())),
+            instance: None,
+            _marker: PhantomData,
+        }
+    }
+
+    /// This key on instance `id`.
+    pub fn instance(mut self, id: InstanceId) -> Self {
+        self.instance = Some(id);
+        self
+    }
+
+    /// The untyped key.
+    pub fn erase(&self) -> TypeKey {
+        let key = match &self.name {
+            None => TypeKey::of::<T>(),
+            Some(KeyName::Static(name)) => TypeKey::keyed::<T>(name),
+            Some(KeyName::Dynamic(name)) => TypeKey::keyed_dynamic::<T>(name.clone()),
+        };
+        match self.instance {
+            Some(id) => key.with_instance(id),
+            None => key,
+        }
+    }
+}
+
+impl<T: ?Sized + 'static> Clone for Key<T> {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            instance: self.instance,
             _marker: PhantomData,
         }
     }
 }
 
+/// `Key::of()`.
+impl<T: ?Sized + 'static> Default for Key<T> {
+    fn default() -> Self {
+        Self::of()
+    }
+}
+
+impl<T: ?Sized + 'static> std::fmt::Debug for Key<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.erase().fmt(f)
+    }
+}
+
 impl<T: ?Sized + 'static> From<Key<T>> for TypeKey {
-    fn from(k: Key<T>) -> Self {
-        TypeKey::keyed::<T>(k.name)
+    fn from(key: Key<T>) -> Self {
+        key.erase()
+    }
+}
+
+impl<T: ?Sized + 'static> From<&Key<T>> for TypeKey {
+    fn from(key: &Key<T>) -> Self {
+        key.erase()
     }
 }
 

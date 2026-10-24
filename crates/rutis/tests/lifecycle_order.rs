@@ -7,7 +7,8 @@ use std::future::IntoFuture;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, FiberView, Plugin};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView};
+use rutis::{Ctx, Error, Plugin};
 use rutis_test_support::within;
 use tokio::sync::Notify;
 
@@ -50,42 +51,36 @@ struct ActiveSteps {
     hold: Arc<Notify>,
 }
 
-impl Plugin for ActiveSteps {
+impl DynPlugin for ActiveSteps {
     fn name(&self) -> &str {
         "active-steps"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let token = ctx.cancellation_token();
             let (log, view) = (self.log.clone(), self.view.clone());
             let first_token = token.clone();
-            ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
-                    log.lock().unwrap().push(format!(
-                        "cleanup first: {:?}, cancelled {}",
-                        state_of(&view),
-                        first_token.is_cancelled()
-                    ));
-                    Ok(())
-                }))
+            ctx.effect(move || async move {
+                log.lock().unwrap().push(format!(
+                    "cleanup first: {:?}, cancelled {}",
+                    state_of(&view),
+                    first_token.is_cancelled()
+                ));
+                Ok(())
             })?;
             let (log, view) = (self.log.clone(), self.view.clone());
             let (started, hold) = (self.started.clone(), self.hold.clone());
-            ctx.effect(move || {
-                Effect::AsyncDisposer(Box::new(move || {
-                    Box::pin(async move {
-                        log.lock().unwrap().push(format!(
-                            "cleanup second: {:?}, cancelled {}",
-                            state_of(&view),
-                            token.is_cancelled()
-                        ));
-                        started.notify_one();
-                        hold.notified().await;
-                        log.lock().unwrap().push("cleanup second done".into());
-                        Ok(())
-                    })
-                }))
+            ctx.effect(move || async move {
+                log.lock().unwrap().push(format!(
+                    "cleanup second: {:?}, cancelled {}",
+                    state_of(&view),
+                    token.is_cancelled()
+                ));
+                started.notify_one();
+                hold.notified().await;
+                log.lock().unwrap().push("cleanup second done".into());
+                Ok(())
             })?;
             Ok(Effect::Done)
         })
@@ -144,24 +139,22 @@ struct LoadingSteps {
     exit: Arc<Notify>,
 }
 
-impl Plugin for LoadingSteps {
+impl DynPlugin for LoadingSteps {
     fn name(&self) -> &str {
         "loading-steps"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let token = ctx.cancellation_token();
             let (log, view) = (self.log.clone(), self.view.clone());
-            ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
-                    log.lock().unwrap().push(format!(
-                        "cleanup: {:?}, cancelled {}",
-                        state_of(&view),
-                        token.is_cancelled()
-                    ));
-                    Ok(())
-                }))
+            ctx.effect(move || async move {
+                log.lock().unwrap().push(format!(
+                    "cleanup: {:?}, cancelled {}",
+                    state_of(&view),
+                    token.is_cancelled()
+                ));
+                Ok(())
             })?;
             self.entered.notify_one();
             ctx.cancelled().await;
@@ -250,11 +243,13 @@ impl Held {
 }
 
 impl Plugin for Held {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "held"
     }
 
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
         let first = {
             let mut applied = self.applied.lock().unwrap();
             applied.push(self.config);
@@ -262,18 +257,15 @@ impl Plugin for Held {
         };
         let (started, cleaned) = (self.started.clone(), self.cleaned.clone());
         let hold = self.hold.clone().filter(|_| first);
-        Box::pin(async move {
-            Ok(Effect::AsyncDisposer(Box::new(move || {
-                Box::pin(async move {
-                    started.notify_one();
-                    if let Some(hold) = hold {
-                        hold.notified().await;
-                    }
-                    cleaned.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                })
-            })))
-        })
+        ctx.effect(move || async move {
+            started.notify_one();
+            if let Some(hold) = hold {
+                hold.notified().await;
+            }
+            cleaned.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })?;
+        Ok(())
     }
 }
 
@@ -285,7 +277,7 @@ async fn mount_factory(ctx: &Ctx, plugin: &Held) -> FiberView {
         move |config: &u32| {
             let mut plugin = template.clone();
             plugin.config = *config;
-            Ok(Box::new(plugin) as Box<dyn Plugin>)
+            Ok(plugin)
         },
         1u32,
     );

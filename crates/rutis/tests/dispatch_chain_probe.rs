@@ -14,7 +14,8 @@ use std::sync::{
     Arc, Mutex,
 };
 
-use rutis::{Call, Ctx, Event, EventKey, Listener};
+use rutis::host::CtxHost;
+use rutis::{Ctx, Event};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -29,6 +30,7 @@ impl Event for ProbeEvent {
 }
 
 /// 监听器持 Arc 原子句柄(注册移走监听器,断言侧仍可读)。
+#[derive(Clone)]
 struct ChainProbe {
     in_flight: Arc<AtomicUsize>,
     max_in_flight: Arc<AtomicUsize>,
@@ -37,28 +39,17 @@ struct ChainProbe {
     started: Arc<Mutex<[Vec<usize>; 2]>>,
 }
 
-impl Listener<ProbeEvent> for ChainProbe {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a ProbeEvent,
-        _call: Call<'a, ()>,
-    ) -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-        let in_flight = self.in_flight.clone();
-        let max_in_flight = self.max_in_flight.clone();
-        let completed = self.completed.clone();
-        let started = self.started.clone();
+impl ChainProbe {
+    async fn call(self, e: Arc<ProbeEvent>) -> rutis::Result<Option<()>> {
         let (emitter, n) = (e.emitter, e.n);
-        Box::pin(async move {
-            let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-            max_in_flight.fetch_max(now, Ordering::SeqCst);
-            started.lock().unwrap()[emitter].push(n);
-            // 一点工作量,放大重叠窗口:若链分叉,并发派发在此明显重叠
-            std::thread::sleep(std::time::Duration::from_micros(50));
-            in_flight.fetch_sub(1, Ordering::SeqCst);
-            completed.fetch_add(1, Ordering::SeqCst);
-            Ok(None)
-        })
+        let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_in_flight.fetch_max(now, Ordering::SeqCst);
+        self.started.lock().unwrap()[emitter].push(n);
+        // 一点工作量,放大重叠窗口:若链分叉,并发派发在此明显重叠
+        std::thread::sleep(std::time::Duration::from_micros(50));
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        self.completed.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
     }
 }
 
@@ -67,32 +58,25 @@ const EMITS_PER_EMITTER: usize = 2_000;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dispatch_chain_does_not_fork_under_concurrent_emit() {
     let root = Ctx::root().unwrap();
-    let key = EventKey::<ProbeEvent>::of();
     let in_flight = Arc::new(AtomicUsize::new(0));
     let max_in_flight = Arc::new(AtomicUsize::new(0));
     let completed = Arc::new(AtomicUsize::new(0));
     let started: Arc<Mutex<[Vec<usize>; 2]>> = Arc::default();
-    root.events()
-        .on(
-            &root,
-            &key,
-            ChainProbe {
-                in_flight: in_flight.clone(),
-                max_in_flight: max_in_flight.clone(),
-                completed: completed.clone(),
-                started: started.clone(),
-            },
-        )
+    let probe = ChainProbe {
+        in_flight: in_flight.clone(),
+        max_in_flight: max_in_flight.clone(),
+        completed: completed.clone(),
+        started: started.clone(),
+    };
+    root.on::<ProbeEvent>(move |e, _| probe.clone().call(e))
         .unwrap();
 
     let emitters: Vec<_> = (0..2)
         .map(|emitter| {
             let root = root.clone();
-            let key = key.clone();
             tokio::spawn(async move {
                 for n in 0..EMITS_PER_EMITTER {
-                    root.events()
-                        .emit(&root, &key, Arc::new(ProbeEvent { emitter, n }))
+                    root.emit(ProbeEvent { emitter, n })
                         .expect("default event dispatch");
                 }
             })

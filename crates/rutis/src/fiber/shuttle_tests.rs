@@ -41,7 +41,7 @@ use tokio::sync::mpsc;
 
 use super::{complete_intent, join_task, post_join_to, Intent, TransitionTask};
 use crate::effect::{run_cleanups, Effect, EffectRecord};
-use crate::error::CordisError;
+use crate::error::{Error, ErrorKind};
 
 /// Iterations of each scheduler: `RUTIS_SHUTTLE_ITERATIONS`, or 1000.
 fn iterations() -> usize {
@@ -69,8 +69,8 @@ where
     shuttle::check_pct(move || model(), iterations, 3);
 }
 
-fn failed(what: &str) -> Arc<CordisError> {
-    Arc::new(CordisError::PluginFailed(what.into()))
+fn failed(what: &str) -> Arc<ErrorKind> {
+    Arc::new(ErrorKind::PluginFailed(what.into()))
 }
 
 /// Model 1, TransitionTask lost wakeup (cordis-spec-parity §5.2, item 3): the
@@ -124,7 +124,7 @@ fn shuttle_post_join_completes_across_driver_exit() {
                 }
                 alive.store(false, Ordering::SeqCst);
                 while let Ok(intent) = mailbox.try_recv() {
-                    complete_intent(&intent, Some(Arc::new(CordisError::Closed)));
+                    complete_intent(&intent, Some(Arc::new(ErrorKind::Closed)));
                 }
                 // release_transient(..).await: the mailbox is still open.
                 thread::yield_now();
@@ -137,7 +137,7 @@ fn shuttle_post_join_completes_across_driver_exit() {
                 thread::spawn(move || {
                     let task = TransitionTask::new();
                     post_join_to(&alive, &intents, task.clone(), Intent::Settle, || {
-                        Some(Arc::new(CordisError::Closed))
+                        Some(Arc::new(ErrorKind::Closed))
                     });
                     // Ok when the driver handled it, Err(Closed) after it
                     // stopped; what matters is that the join returns.
@@ -177,7 +177,7 @@ fn shuttle_concurrent_dispose_cleans_up_exactly_once() {
             let runs = runs.clone();
             Effect::Disposer(Box::new(move || {
                 runs.fetch_add(1, Ordering::SeqCst);
-                Err(CordisError::PluginFailed("cleanup".into()))
+                Err(Error::from(ErrorKind::PluginFailed("cleanup".into())))
             }))
         };
         let record = EffectRecord::new(effect, "model".into(), Weak::new());

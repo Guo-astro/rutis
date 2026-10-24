@@ -1,4 +1,6 @@
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Event, FiberState, Plugin, TypeKey};
+use rutis::events::Call;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, TypeKey};
+use rutis::{Ctx, Error, Event};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{oneshot, Notify};
 
@@ -8,28 +10,24 @@ impl Event for Ping {
     const NAME: &'static str = "ping";
     type Value = ();
 }
-fn listener<'a>(
-    _: &'a Ctx,
-    _: &'a Ping,
-    _: rutis::Call<'a, ()>,
-) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-    Box::pin(async { Ok(None) })
+fn listener(_: Arc<Ping>, _: Call<Ping>) -> std::future::Ready<Result<Option<()>, Error>> {
+    std::future::ready(Ok(None))
 }
 
 struct Probe {
     seen: Arc<Mutex<Vec<Ctx>>>,
     gate: Arc<Notify>,
-    late: Arc<Mutex<Option<oneshot::Sender<CordisError>>>>,
+    late: Arc<Mutex<Option<oneshot::Sender<Error>>>>,
     injects: Vec<TypeKey>,
 }
-impl Plugin for Probe {
+impl DynPlugin for Probe {
     fn name(&self) -> &str {
         "generation-probe"
     }
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let old = ctx.clone();
             let first = {
@@ -69,12 +67,12 @@ async fn exercise() {
     provider.dispose().await.unwrap();
     assert_eq!(view.state().state, FiberState::Pending);
     assert!(matches!(
-        first.effect(|| Effect::Done),
-        Err(CordisError::InactiveGeneration { .. })
+        first.effect(|| async { Ok(()) }).map_err(Error::into_kind),
+        Err(ErrorKind::InactiveGeneration { .. })
     ));
     assert!(matches!(
-        first.provide(1_u64),
-        Err(CordisError::InactiveGeneration { .. })
+        first.provide(1_u64).map_err(Error::into_kind),
+        Err(ErrorKind::InactiveGeneration { .. })
     ));
 
     let replacement = root.provide(2_u8).unwrap();
@@ -83,21 +81,23 @@ async fn exercise() {
     assert_eq!(seen.lock().unwrap().len(), 2);
     gate.notify_one();
     assert!(matches!(
-        rx.await.unwrap(),
-        CordisError::StaleGeneration { .. }
+        &*rx.await.unwrap(),
+        ErrorKind::StaleGeneration { .. }
     ));
     assert!(matches!(
-        first.effect(|| Effect::Done),
-        Err(CordisError::StaleGeneration { .. })
+        first.effect(|| async { Ok(()) }).map_err(Error::into_kind),
+        Err(ErrorKind::StaleGeneration { .. })
     ));
     assert!(matches!(
-        isolated.effect(|| Effect::Done),
-        Err(CordisError::StaleGeneration { .. })
+        isolated
+            .effect(|| async { Ok(()) })
+            .map_err(Error::into_kind),
+        Err(ErrorKind::StaleGeneration { .. })
     ));
     assert!(isolated.cancellation_token().is_cancelled());
     assert!(matches!(
-        first.events().on(&first, &rutis::EventKey::of(), listener),
-        Err(CordisError::StaleGeneration { .. })
+        first.on::<Ping>(listener).map_err(Error::into_kind),
+        Err(ErrorKind::StaleGeneration { .. })
     ));
     let child = first.plugin(Noop);
     child.dispose().await.unwrap();
@@ -110,11 +110,11 @@ async fn exercise() {
 }
 
 struct Noop;
-impl Plugin for Noop {
+impl DynPlugin for Noop {
     fn name(&self) -> &str {
         "noop"
     }
-    fn apply<'a>(&'a self, _: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async { Ok(Effect::Done) })
     }
 }
@@ -122,13 +122,17 @@ impl Plugin for Noop {
 struct Fails {
     seen: Arc<Mutex<Option<Ctx>>>,
 }
-impl Plugin for Fails {
+impl DynPlugin for Fails {
     fn name(&self) -> &str {
         "fails"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         *self.seen.lock().unwrap() = Some(ctx.clone());
-        Box::pin(async { Err(CordisError::PluginFailed("intentional failure".into())) })
+        Box::pin(async {
+            Err(Error::from(ErrorKind::PluginFailed(
+                "intentional failure".into(),
+            )))
+        })
     }
 }
 
@@ -141,8 +145,8 @@ async fn rejects_registration_after_failed_apply() {
     assert_eq!(view.state().state, FiberState::Failed);
     let old = seen.lock().unwrap().clone().unwrap();
     assert!(matches!(
-        old.provide(1_u64),
-        Err(CordisError::InactiveGeneration {
+        old.provide(1_u64).map_err(Error::into_kind),
+        Err(ErrorKind::InactiveGeneration {
             state: FiberState::Failed,
             ..
         })

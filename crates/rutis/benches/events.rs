@@ -3,10 +3,12 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use rutis::{
-    BoxFuture, Call, CordisError, Ctx, Event, EventKey, EventPattern, Listener, Mode,
-    PatternListener, SyncCall,
-};
+use std::sync::Arc;
+
+use rutis::events::{Call, Mode, SyncCall};
+use rutis::host::CtxHost;
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Event};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Ping;
@@ -14,44 +16,21 @@ impl Event for Ping {
     const NAME: &'static str = "bench/ping";
     type Value = u64;
 }
-struct Pass;
-impl PatternListener<Ping> for Pass {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        _: EventKey<Ping>,
-        _: &'a Ping,
-        _: Call<'a, u64>,
-    ) -> BoxFuture<'a, Result<Option<u64>, CordisError>> {
-        Box::pin(async { Ok(None) })
-    }
-}
 /// No result; in a waterfall, passes to the rest of the chain.
-struct Through;
-impl Listener<Ping> for Through {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        _: &'a Ping,
-        call: Call<'a, u64>,
-    ) -> BoxFuture<'a, Result<Option<u64>, CordisError>> {
-        if call.mode() == Mode::Waterfall {
-            call.next()
-        } else {
-            Box::pin(async { Ok(None) })
-        }
+async fn through(_: Arc<Ping>, call: Call<Ping>) -> rutis::Result<Option<u64>> {
+    if call.mode() == Mode::Waterfall {
+        call.next().await
+    } else {
+        Ok(None)
     }
 }
-/// The synchronous `Through`.
-fn sync_through(_: &Ctx, _: &Ping, call: SyncCall<'_, u64>) -> Result<Option<u64>, CordisError> {
+/// The synchronous `through`.
+fn sync_through(_: Arc<Ping>, call: SyncCall<'_, Ping>) -> rutis::Result<Option<u64>> {
     if call.mode() == Mode::WaterfallSync {
         call.next()
     } else {
         Ok(None)
     }
-}
-fn terminal<'a>(_: &'a Ctx, _: &'a Ping) -> BoxFuture<'a, Result<Option<u64>, CordisError>> {
-    Box::pin(async { Ok(Some(1)) })
 }
 fn measure(mut call: impl FnMut(), iterations: usize) -> f64 {
     for _ in 0..1000 {
@@ -82,16 +61,16 @@ fn main() {
     println!("iterations={iterations}; release build; 2 runtime workers");
     for listeners in [0, 1, 8, 64] {
         let root = Ctx::root().unwrap();
-        let key = EventKey::of();
         for _ in 0..listeners {
             // One table: the same listeners serve both modes.
-            root.events().on_sync(&root, &key, sync_through).unwrap();
+            root.on_sync::<Ping>(sync_through).unwrap();
         }
+        let ping = Arc::new(Ping);
         report(
             &format!("bail_sync exact listeners={listeners}"),
             measure(
                 || {
-                    black_box(root.events().bail_sync(&root, &key, &Ping).unwrap());
+                    black_box(root.bail::<Ping>(ping.clone()).unwrap());
                 },
                 iterations,
             ),
@@ -101,8 +80,7 @@ fn main() {
             measure(
                 || {
                     black_box(
-                        root.events()
-                            .waterfall_sync(&root, &key, &Ping, |_, _| Ok(Some(1)))
+                        root.waterfall_sync::<Ping, _>(ping.clone(), |_| Ok(Some(1)))
                             .unwrap(),
                     );
                 },
@@ -116,44 +94,35 @@ fn main() {
     // waterfall passes through every listener to the terminal.
     for listeners in [0, 1, 8, 64] {
         let root = Ctx::root().unwrap();
-        let key = EventKey::named("awaited");
         for _ in 0..listeners {
-            root.events().on(&root, &key, Through).unwrap();
+            root.listen::<Ping>().name("awaited").on(through).unwrap();
         }
         let loops = if listeners > 8 {
             iterations / 10 + 1
         } else {
             iterations
         };
-        let ping = std::sync::Arc::new(Ping);
+        let ping = Arc::new(Ping);
         // Measured inside a runtime task, where plugins call them; parallel
         // spawns one task per listener.
         let task_root = root.clone();
-        let task_key = key.clone();
         let [serial, parallel, waterfall] = runtime
             .block_on(runtime.spawn(async move {
-                let (root, key) = (task_root, task_key);
+                let root = task_root;
+                let awaited = root.named("awaited");
                 let mut samples = [0.0; 3];
                 for (mode, sample) in samples.iter_mut().enumerate() {
                     let once = || async {
                         match mode {
                             0 => {
-                                black_box(
-                                    root.events()
-                                        .serial(&root, &key, ping.clone())
-                                        .await
-                                        .unwrap(),
-                                );
+                                black_box(awaited.serial::<Ping>(ping.clone()).await.unwrap());
                             }
-                            1 => root
-                                .events()
-                                .parallel(&root, &key, ping.clone())
-                                .await
-                                .unwrap(),
+                            1 => awaited.parallel::<Ping>(ping.clone()).await.unwrap(),
                             _ => {
                                 black_box(
-                                    root.events()
-                                        .waterfall(&root, &key, &Ping, terminal)
+                                    awaited
+                                        .waterfall::<Ping>(ping.clone())
+                                        .terminal(|_| async { Ok(Some(1)) })
                                         .await
                                         .unwrap(),
                                 );
@@ -179,20 +148,16 @@ fn main() {
     }
     for patterns in [0, 1, 8, 64, 1024] {
         let root = Ctx::root().unwrap();
-        let key = EventKey::named("room/hit");
-        root.events().on(&root, &key, Through).unwrap();
-        let ping = std::sync::Arc::new(Ping);
+        root.listen::<Ping>().name("room/hit").on(through).unwrap();
+        let ping = Arc::new(Ping);
         for i in 0..patterns {
-            root.events()
-                .on_pattern(
-                    &root,
-                    &EventPattern::prefix(if i == 0 {
-                        "room/".to_owned()
-                    } else {
-                        format!("miss/{i}/")
-                    }),
-                    Pass,
-                )
+            root.listen::<Ping>()
+                .prefix(if i == 0 {
+                    "room/".to_owned()
+                } else {
+                    format!("miss/{i}/")
+                })
+                .on(|_, _| async { Ok(None) })
                 .unwrap();
         }
         let loops = if patterns > 64 {
@@ -201,20 +166,13 @@ fn main() {
             iterations
         };
         let samples = runtime.block_on(async {
+            let hit = root.named("room/hit");
             for _ in 0..1000 {
-                root.events()
-                    .serial(&root, &key, ping.clone())
-                    .await
-                    .unwrap();
+                hit.serial::<Ping>(ping.clone()).await.unwrap();
             }
             let start = Instant::now();
             for _ in 0..loops {
-                black_box(
-                    root.events()
-                        .serial(&root, &key, ping.clone())
-                        .await
-                        .unwrap(),
-                );
+                black_box(hit.serial::<Ping>(ping.clone()).await.unwrap());
             }
             start.elapsed().as_nanos() as f64 / loops as f64
         });
@@ -226,15 +184,15 @@ fn main() {
     // event until the chain behind one listener is empty.
     for listeners in [0, 1] {
         let root = Ctx::root().unwrap();
-        let key = EventKey::named("queue");
         for _ in 0..listeners {
-            root.events().on(&root, &key, Through).unwrap();
+            root.listen::<Ping>().name("queue").on(through).unwrap();
         }
-        let ping = std::sync::Arc::new(Ping);
+        let ping = Arc::new(Ping);
+        let queue = root.named("queue");
         let loops = iterations / 10 + 1;
         let start = Instant::now();
         for _ in 0..loops {
-            root.events().emit(&root, &key, ping.clone()).unwrap();
+            queue.emit::<Ping>(ping.clone()).unwrap();
         }
         let accept = start.elapsed().as_nanos() as f64 / loops as f64;
         runtime.block_on(async {

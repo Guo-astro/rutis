@@ -1,6 +1,7 @@
 //! The dispatch algorithm (protocol spec §5.1, §5.4): snapshot, filter,
 //! then the mode, the same for every entry wherever it lives.
 
+use crate::host::CtxHost;
 use std::cell::RefCell;
 use std::future::Future;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -11,7 +12,7 @@ use std::task::Poll;
 use super::table::{Body, CallFlight, Entry};
 use super::EventBus;
 use crate::ctx::Ctx;
-use crate::error::{join_panic_error, panic_error, CordisError, NextMisuse};
+use crate::error::{join_panic_error, panic_error, Error, ErrorKind, NextMisuse};
 use crate::events::remote::{SyncNextFn, SyncNextState};
 use crate::events::{
     Candidate, CatchUnwind, FilterAnswer, ListenerInfo, ListenerKind, Mode, Payload, PayloadRef,
@@ -23,7 +24,7 @@ use crate::BoxFuture;
 pub(crate) struct Inv<'a> {
     pub bus: &'a EventBus,
     pub emitter: &'a Ctx,
-    pub name: &'a str,
+    pub name: &'a Arc<str>,
     pub mode: Mode,
     pub event: PayloadRef<'a>,
     pub dispatch: u64,
@@ -66,12 +67,9 @@ pub(crate) enum FilterSpec {
 }
 
 /// A filter predicate of this process.
-pub(crate) type Keep = dyn Fn(&ListenerInfo) -> Result<bool, CordisError> + Send + Sync;
+pub(crate) type Keep = dyn Fn(&ListenerInfo) -> Result<bool, Error> + Send + Sync;
 
-pub(crate) fn filter_each(
-    entries: Vec<Arc<Entry>>,
-    keep: &Keep,
-) -> Result<Vec<Arc<Entry>>, CordisError> {
+pub(crate) fn filter_each(entries: Vec<Arc<Entry>>, keep: &Keep) -> Result<Vec<Arc<Entry>>, Error> {
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
         if entry.info.global {
@@ -107,15 +105,16 @@ fn apply_answers(
     name: &str,
     entries: Vec<Arc<Entry>>,
     answers: Vec<bool>,
-) -> Result<Vec<Arc<Entry>>, CordisError> {
+) -> Result<Vec<Arc<Entry>>, Error> {
     let asked = entries.iter().filter(|e| !e.info.global).count();
     if answers.len() != asked {
-        return Err(CordisError::Validation {
+        return Err(ErrorKind::Validation {
             issues: vec![format!(
                 "filter of {name} returned {} answers for {asked} listeners",
                 answers.len()
             )],
-        });
+        }
+        .into());
     }
     let mut answers = answers.into_iter();
     Ok(entries
@@ -128,7 +127,7 @@ pub(crate) async fn filter_any(
     name: &str,
     entries: Vec<Arc<Entry>>,
     filter: Option<FilterSpec>,
-) -> Result<Vec<Arc<Entry>>, CordisError> {
+) -> Result<Vec<Arc<Entry>>, Error> {
     match filter {
         None => Ok(entries),
         Some(FilterSpec::Each(keep)) => filter_each(entries, &*keep),
@@ -148,7 +147,7 @@ pub(crate) fn filter_sync(
     name: &str,
     entries: Vec<Arc<Entry>>,
     filter: Option<FilterSpec>,
-) -> Result<Vec<Arc<Entry>>, CordisError> {
+) -> Result<Vec<Arc<Entry>>, Error> {
     match filter {
         None => Ok(entries),
         Some(FilterSpec::Each(keep)) => filter_each(entries, &*keep),
@@ -157,11 +156,11 @@ pub(crate) fn filter_sync(
             let answers = match catch_unwind(AssertUnwindSafe(|| batch(asked))) {
                 Ok(FilterAnswer::Ready(answers)) => answers?,
                 Ok(FilterAnswer::Pending(_)) => {
-                    return Err(CordisError::Validation {
+                    return Err(ErrorKind::Validation {
                         issues: vec![format!(
                             "the filter of the synchronous dispatch of {name} must answer synchronously"
                         )],
-                    })
+                    }.into())
                 }
                 Err(panic) => return Err(panic_error(panic)),
             };
@@ -191,28 +190,26 @@ pub(crate) async fn first_poll<F: Future>(fut: F) -> Started<F> {
     .await
 }
 
-fn caught<T>(
-    out: Result<Result<T, CordisError>, Box<dyn std::any::Any + Send>>,
-) -> Result<T, CordisError> {
+fn caught<T>(out: Result<Result<T, Error>, Box<dyn std::any::Any + Send>>) -> Result<T, Error> {
     out.unwrap_or_else(|panic| Err(panic_error(panic)))
 }
 
 // ── async calls ──────────────────────────────────────────────────
 
 pub(crate) trait ErasedTerminal: Sync {
-    fn call<'a>(&'a self, inv: &'a Inv<'a>) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
+    fn call<'a>(&'a self, inv: &'a Inv<'a>) -> BoxFuture<'a, Result<Option<Value>, Error>>;
 }
 
 pub(crate) struct NoTerminal;
 
 impl ErasedTerminal for NoTerminal {
-    fn call<'a>(&'a self, _: &'a Inv<'a>) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
+    fn call<'a>(&'a self, _: &'a Inv<'a>) -> BoxFuture<'a, Result<Option<Value>, Error>> {
         Box::pin(std::future::ready(Ok(None)))
     }
 }
 
 impl ErasedSyncTerminal for NoTerminal {
-    fn call(&self, _: &Inv<'_>) -> Result<Option<Value>, CordisError> {
+    fn call(&self, _: &Inv<'_>) -> Result<Option<Value>, Error> {
         Ok(None)
     }
 }
@@ -221,7 +218,7 @@ impl ErasedSyncTerminal for NoTerminal {
 pub(crate) struct RawTerm(pub Mutex<Option<RawTerminal>>);
 
 impl ErasedTerminal for RawTerm {
-    fn call<'a>(&'a self, inv: &'a Inv<'a>) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
+    fn call<'a>(&'a self, inv: &'a Inv<'a>) -> BoxFuture<'a, Result<Option<Value>, Error>> {
         match self.0.lock().unwrap().take() {
             Some(RawTerminal::Async(f)) => {
                 let fut = f(inv.event);
@@ -237,16 +234,17 @@ impl ErasedTerminal for RawTerm {
 }
 
 impl ErasedSyncTerminal for RawTerm {
-    fn call(&self, inv: &Inv<'_>) -> Result<Option<Value>, CordisError> {
+    fn call(&self, inv: &Inv<'_>) -> Result<Option<Value>, Error> {
         match self.0.lock().unwrap().take() {
             Some(RawTerminal::Sync(f)) => catch_unwind(AssertUnwindSafe(|| f(inv.event)))
                 .unwrap_or_else(|panic| Err(panic_error(panic))),
-            Some(RawTerminal::Async(_)) => Err(CordisError::Validation {
+            Some(RawTerminal::Async(_)) => Err(ErrorKind::Validation {
                 issues: vec![format!(
                     "the terminal of the synchronous waterfall of {} must be synchronous",
                     inv.name
                 )],
-            }),
+            }
+            .into()),
             None => Ok(None),
         }
     }
@@ -260,7 +258,7 @@ pub(crate) struct AsyncNext<'a> {
 }
 
 impl<'a> AsyncNext<'a> {
-    pub fn invoke(self) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
+    pub fn invoke(self) -> BoxFuture<'a, Result<Option<Value>, Error>> {
         Box::pin(async move {
             for (index, entry) in self.chain.iter().enumerate() {
                 // Withdrawn since the snapshot: skipped, as if never selected.
@@ -286,7 +284,7 @@ pub(crate) fn call_async<'a>(
     entry: &'a Entry,
     inv: &'a Inv<'a>,
     next: Option<AsyncNext<'a>>,
-) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
+) -> BoxFuture<'a, Result<Option<Value>, Error>> {
     match &entry.body {
         Body::Async(listener) => Box::pin(async move {
             caught(
@@ -317,7 +315,7 @@ pub(crate) fn call_async<'a>(
     }
 }
 
-type NextReply = tokio::sync::oneshot::Sender<Result<Option<Value>, CordisError>>;
+type NextReply = tokio::sync::oneshot::Sender<Result<Option<Value>, Error>>;
 
 /// A remote entry in an async waterfall: its `next` is a `'static` handle;
 /// a request from it runs the rest of the chain here, beside the entry's
@@ -326,11 +324,11 @@ fn remote_waterfall<'a>(
     remote: &'a dyn crate::events::RemoteListener,
     inv: &'a Inv<'a>,
     next: AsyncNext<'a>,
-) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
+) -> BoxFuture<'a, Result<Option<Value>, Error>> {
     Box::pin(async move {
         let (requests, mut rx) = tokio::sync::mpsc::unbounded_channel::<NextReply>();
         let handle = RemoteNext {
-            name: Arc::from(inv.name),
+            name: inv.name.clone(),
             called: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             requests,
         };
@@ -343,7 +341,7 @@ fn remote_waterfall<'a>(
                 .await
         });
         let mut next = Some(next);
-        let mut rest: Option<BoxFuture<'a, Result<Option<Value>, CordisError>>> = None;
+        let mut rest: Option<BoxFuture<'a, Result<Option<Value>, Error>>> = None;
         let mut reply: Option<NextReply> = None;
         let out = std::future::poll_fn(|cx| loop {
             if let Poll::Ready(out) = Pin::new(&mut call).poll(cx) {
@@ -375,7 +373,7 @@ fn remote_waterfall<'a>(
 // ── sync calls ───────────────────────────────────────────────────
 
 pub(crate) trait ErasedSyncTerminal {
-    fn call(&self, inv: &Inv<'_>) -> Result<Option<Value>, CordisError>;
+    fn call(&self, inv: &Inv<'_>) -> Result<Option<Value>, Error>;
 }
 
 pub(crate) enum SyncNextArg<'a> {
@@ -393,7 +391,7 @@ pub(crate) struct SyncNext<'a> {
 }
 
 impl SyncNext<'_> {
-    pub fn invoke(self) -> Result<Option<Value>, CordisError> {
+    pub fn invoke(self) -> Result<Option<Value>, Error> {
         for (index, entry) in self.chain.iter().enumerate() {
             let Some(flight) = self.inv.bus.start(entry) else {
                 continue;
@@ -411,26 +409,24 @@ impl SyncNext<'_> {
     }
 }
 
-pub(crate) fn user_call<T>(
-    ctx: &Ctx,
-    call: impl FnOnce() -> Result<T, CordisError>,
-) -> Result<T, CordisError> {
+pub(crate) fn user_call<T>(ctx: &Ctx, call: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     match catch_unwind(AssertUnwindSafe(call)) {
         Ok(result) => result,
         Err(panic) => {
-            let error = Arc::new(panic_error(panic));
+            let error = panic_error(panic).shared();
             let _ = catch_unwind(AssertUnwindSafe(|| ctx.error_sink()(error.clone())));
-            Err(CordisError::SyncEventPanicked(error))
+            Err(ErrorKind::SyncEventPanicked(error).into())
         }
     }
 }
 
-fn async_listener(entry: &Entry, inv: &Inv<'_>) -> CordisError {
-    CordisError::AsyncListener {
-        name: inv.name.to_owned(),
+fn async_listener(entry: &Entry, inv: &Inv<'_>) -> Error {
+    ErrorKind::AsyncListener {
+        name: inv.name.to_string(),
         listener: entry.info.describe(),
         mode: inv.mode,
     }
+    .into()
 }
 
 /// Call one entry in a synchronous mode. `next` only in `waterfall-sync`.
@@ -438,7 +434,7 @@ pub(crate) fn call_sync(
     entry: &Entry,
     inv: &Inv<'_>,
     next: Option<SyncNext<'_>>,
-) -> Result<Option<Value>, CordisError> {
+) -> Result<Option<Value>, Error> {
     match &entry.body {
         Body::Sync(listener) => {
             let arg = next.map_or(SyncNextArg::None, SyncNextArg::Next);
@@ -474,26 +470,27 @@ fn remote_sync_waterfall(
     remote: &dyn crate::events::RemoteListener,
     inv: &Inv<'_>,
     next: SyncNext<'_>,
-) -> Result<Option<Value>, CordisError> {
+) -> Result<Option<Value>, Error> {
     let cell = RefCell::new(Some(next));
     let name = inv.name;
-    let run = || -> Result<Option<Value>, CordisError> {
+    let run = || -> Result<Option<Value>, Error> {
         let next = cell.borrow_mut().take();
         match next {
             Some(next) => next.invoke(),
-            None => Err(CordisError::WaterfallNext {
-                name: name.to_owned(),
+            None => Err(ErrorKind::WaterfallNext {
+                name: name.to_string(),
                 misuse: NextMisuse::AlreadyCalled,
-            }),
+            }
+            .into()),
         }
     };
-    let run: &(dyn Fn() -> Result<Option<Value>, CordisError> + '_) = &run;
+    let run: &(dyn Fn() -> Result<Option<Value>, Error> + '_) = &run;
     // SAFETY: only the lifetime bound changes. `RemoteSyncNext::call`
     // dereferences it only on this thread while `run` is set, and `_clear`
     // unsets it before this frame (which owns the closure) returns.
     let run: *const SyncNextFn = unsafe {
         std::mem::transmute::<
-            *const (dyn Fn() -> Result<Option<Value>, CordisError> + '_),
+            *const (dyn Fn() -> Result<Option<Value>, Error> + '_),
             *const SyncNextFn,
         >(run)
     };
@@ -504,7 +501,7 @@ fn remote_sync_waterfall(
     }));
     let _clear = ClearOnReturn(state.clone());
     let handle = RemoteSyncNext {
-        name: Arc::from(inv.name),
+        name: inv.name.clone(),
         state,
     };
     user_call(&entry.ctx, || {
@@ -522,8 +519,8 @@ pub(crate) async fn run_parallel(
     owned: Arc<OwnedInv>,
     entries: Vec<Arc<Entry>>,
     handle: &tokio::runtime::Handle,
-) -> Result<(), CordisError> {
-    let mut results: Vec<(usize, Result<Option<Value>, CordisError>)> = Vec::new();
+) -> Result<(), Error> {
+    let mut results: Vec<(usize, Result<Option<Value>, Error>)> = Vec::new();
     let mut set = tokio::task::JoinSet::new();
     for (index, entry) in entries.into_iter().enumerate() {
         let Some(flight) = owned.bus.start(&entry) else {
@@ -549,24 +546,25 @@ pub(crate) async fn run_parallel(
         }
     }
     results.sort_by_key(|(index, _)| *index);
-    let errors: Vec<Arc<CordisError>> = results
+    let errors: Vec<Arc<ErrorKind>> = results
         .into_iter()
-        .filter_map(|(_, result)| result.err().map(Arc::new))
+        .filter_map(|(_, result)| result.err().map(Error::shared))
         .collect();
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(CordisError::ListenersFailed {
+        Err(ErrorKind::ListenersFailed {
             name: owned.name.to_string(),
             errors,
-        })
+        }
+        .into())
     }
 }
 
 pub(crate) async fn run_serial(
     inv: &Inv<'_>,
     entries: &[Arc<Entry>],
-) -> Result<Option<Value>, CordisError> {
+) -> Result<Option<Value>, Error> {
     for entry in entries {
         let Some(flight) = inv.bus.start(entry) else {
             continue;
@@ -581,10 +579,7 @@ pub(crate) async fn run_serial(
     Ok(None)
 }
 
-pub(crate) fn run_bail(
-    inv: &Inv<'_>,
-    entries: &[Arc<Entry>],
-) -> Result<Option<Value>, CordisError> {
+pub(crate) fn run_bail(inv: &Inv<'_>, entries: &[Arc<Entry>]) -> Result<Option<Value>, Error> {
     for entry in entries {
         let Some(flight) = inv.bus.start(entry) else {
             continue;
@@ -615,11 +610,11 @@ pub(crate) async fn emit_call(
     }
 }
 
-pub(crate) fn report_listener(ctx: &Ctx, name: &str, entry: &Entry, error: CordisError) {
-    let report = CordisError::ListenerFailed {
+pub(crate) fn report_listener(ctx: &Ctx, name: &str, entry: &Entry, error: Error) {
+    let report = ErrorKind::ListenerFailed {
         name: name.to_owned(),
         listener: entry.info.describe(),
-        error: Arc::new(error),
+        error: error.shared(),
     };
     let sink = ctx.error_sink();
     let _ = catch_unwind(AssertUnwindSafe(|| sink(Arc::new(report))));

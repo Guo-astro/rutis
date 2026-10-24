@@ -3,25 +3,26 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{
-    BoxFuture, CordisError, Ctx, DependencyStatus, Effect, FiberState, FiberView, Plugin, TypeKey,
-};
+use rutis::host::diagnostics::DependencyStatus;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, TypeKey};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error};
 use tokio::sync::oneshot;
 
 struct Consumer {
     key: TypeKey,
 }
 
-impl Plugin for Consumer {
+impl DynPlugin for Consumer {
     fn name(&self) -> &str {
         "diagnostic-consumer"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        std::slice::from_ref(&self.key)
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.key.clone()]
     }
 
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async { Ok(Effect::Done) })
     }
 }
@@ -32,18 +33,18 @@ struct MetadataProbe {
     injects: Arc<AtomicUsize>,
 }
 
-impl Plugin for MetadataProbe {
+impl DynPlugin for MetadataProbe {
     fn name(&self) -> &str {
         self.names.fetch_add(1, Ordering::SeqCst);
         "diagnostic-metadata-probe"
     }
 
-    fn injects(&self) -> &[TypeKey] {
+    fn injects(&self) -> Vec<TypeKey> {
         self.injects.fetch_add(1, Ordering::SeqCst);
-        std::slice::from_ref(&self.key)
+        vec![self.key.clone()]
     }
 
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async { Ok(Effect::Done) })
     }
 }
@@ -53,16 +54,16 @@ struct BlockingConsumer {
     cleanup: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
 }
 
-impl Plugin for BlockingConsumer {
+impl DynPlugin for BlockingConsumer {
     fn name(&self) -> &str {
         "diagnostic-blocking-consumer"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        std::slice::from_ref(&self.key)
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.key.clone()]
     }
 
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         let (entered, release) = self.cleanup.lock().unwrap().take().unwrap();
         Box::pin(async move {
             Ok(Effect::AsyncDisposer(Box::new(move || {
@@ -81,14 +82,14 @@ struct Provider {
     gate: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
 }
 
-impl Plugin for Provider {
+impl DynPlugin for Provider {
     fn name(&self) -> &str {
         "diagnostic-provider"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            ctx.provide_as(self.key.clone(), Arc::new(7u64))?;
+            ctx.provide_key(self.key.clone(), Arc::new(7u64))?;
             let gate = self.gate.lock().unwrap().take();
             if let Some((entered, release)) = gate {
                 let _ = entered.send(());
@@ -117,7 +118,7 @@ async fn state(view: &FiberView, expected: FiberState) {
     .expect("fiber did not reach expected state");
 }
 
-fn dependency(root: &Ctx, view: &FiberView) -> rutis::DependencyDiagnostics {
+fn dependency(root: &Ctx, view: &FiberView) -> rutis::host::diagnostics::DependencyDiagnostics {
     root.diagnostics()
         .plugins
         .into_iter()
@@ -259,7 +260,7 @@ async fn cached_check_diagnostics_do_not_call_user_code() {
     let injects = Arc::new(AtomicUsize::new(0));
     let check_mode = mode.clone();
     let check_calls = calls.clone();
-    root.provide_as_with_check(TypeKey::of::<u64>(), Arc::new(1u64), move || {
+    root.provide_checked(TypeKey::of::<u64>(), Arc::new(1u64), move || {
         check_calls.fetch_add(1, Ordering::SeqCst);
         match check_mode.load(Ordering::SeqCst) {
             0 => false,
@@ -338,12 +339,12 @@ struct ShutdownProbe {
     cleanup: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
 }
 
-impl Plugin for ShutdownProbe {
+impl DynPlugin for ShutdownProbe {
     fn name(&self) -> &str {
         "shutdown-probe"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         *self.context.lock().unwrap() = Some(ctx.clone());
         let cleanup = self.cleanup.lock().unwrap().take();
         Box::pin(async move {

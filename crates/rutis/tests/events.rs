@@ -7,14 +7,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::events::{
-    Candidate, Dispatch, EntryCall, FilterAnswer, Payload, RawTerminal, RemoteCall, RemoteEntry,
-    RemoteListener, RemoteSyncCall, TableChange, Value,
+use rutis::events::{Call, Listener, ListenerInfo, Mode, Scope};
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, ErrorSink, FiberView, ListenerKind,
+    NextMisuse,
 };
-use rutis::{
-    BoxFuture, Call, CordisError, Ctx, Effect, ErrorSink, Event, EventKey, EventOptions,
-    EventPattern, FiberView, ListenerInfo, ListenerKind, Mode, NextMisuse, Plugin, Scope, SyncCall,
+use rutis::internal::events::{
+    Candidate, Dispatch, EntryCall, FilterAnswer, JsonTranscoder, Payload, RawTerminal, RemoteCall,
+    RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall, TableChange, Value,
 };
+use rutis::internal::{CtxInternal, EventKey, EventOptions};
+use rutis::{Ctx, Error, Event};
 use serde::{Deserialize, Serialize};
 
 // ── fixtures ────────────────────────────────────────────────────
@@ -55,63 +58,27 @@ fn entries(log: &Log) -> Vec<String> {
     log.lock().unwrap().clone()
 }
 
-/// Gives an async closure listener its higher-ranked signature.
-fn on<E: Event, F>(f: F) -> F
-where
-    F: for<'a> Fn(
-            &'a Ctx,
-            &'a E,
-            Call<'a, E::Value>,
-        ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>>
-        + Send
-        + Sync
-        + 'static,
-{
-    f
-}
-
-/// The same for a prefix listener.
-fn on_prefix<E: Event, F>(f: F) -> F
-where
-    F: for<'a> Fn(
-            &'a Ctx,
-            EventKey<E>,
-            &'a E,
-            Call<'a, E::Value>,
-        ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>>
-        + Send
-        + Sync
-        + 'static,
-{
-    f
-}
-
 /// A listener that logs `label` and returns `value`.
-fn returns<E: Event>(
-    log: &Log,
-    label: &'static str,
-    value: Option<E::Value>,
-) -> impl rutis::Listener<E>
+fn returns<E: Event>(log: &Log, label: &'static str, value: Option<E::Value>) -> impl Listener<E>
 where
     E::Value: Clone + Sync,
 {
     let log = log.clone();
-    on::<E, _>(move |_, _, _| {
+    move |_: Arc<E>, _: Call<E>| {
         push(&log, label);
-        let value = value.clone();
-        Box::pin(async move { Ok(value) })
-    })
+        std::future::ready(Ok(value.clone()))
+    }
 }
 
 struct Apply<F>(&'static str, F);
-impl<F> Plugin for Apply<F>
+impl<F> DynPlugin for Apply<F>
 where
-    F: Fn(&Ctx) -> Result<(), CordisError> + Send + Sync + 'static,
+    F: Fn(&Ctx) -> Result<(), Error> + Send + Sync + 'static,
 {
     fn name(&self) -> &str {
         self.0
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move { (self.1)(ctx).map(|()| Effect::Done) })
     }
 }
@@ -136,22 +103,20 @@ async fn scope(parent: &Ctx, group: &'static str) -> (FiberView, Ctx) {
     (view, ctx)
 }
 
-fn sink() -> (ErrorSink, Arc<Mutex<Vec<Arc<CordisError>>>>) {
-    let errors: Arc<Mutex<Vec<Arc<CordisError>>>> = Arc::default();
+fn sink() -> (ErrorSink, Arc<Mutex<Vec<Arc<ErrorKind>>>>) {
+    let errors: Arc<Mutex<Vec<Arc<ErrorKind>>>> = Arc::default();
     let out = errors.clone();
     let sink: ErrorSink = Arc::new(move |error| out.lock().unwrap().push(error));
     (sink, errors)
 }
 
-fn root_with_sink() -> (Ctx, Arc<Mutex<Vec<Arc<CordisError>>>>) {
+fn root_with_sink() -> (Ctx, Arc<Mutex<Vec<Arc<ErrorKind>>>>) {
     let (sink, errors) = sink();
     (
         Ctx::root_with_sink(tokio::runtime::Handle::current(), sink),
         errors,
     )
 }
-
-const PING: EventKey<Ping> = EventKey::of();
 
 // ── one table, every mode ───────────────────────────────────────
 
@@ -163,29 +128,22 @@ async fn one_listener_is_called_by_every_mode() {
     let root = Ctx::root().unwrap();
     let modes = log();
     let seen = modes.clone();
-    root.events()
-        .on_sync(
-            &root,
-            &PING,
-            move |_: &Ctx, _: &Ping, call: SyncCall<'_, String>| {
-                push(&seen, call.mode().as_str());
-                if call.mode() == Mode::WaterfallSync {
-                    call.next()
-                } else {
-                    Ok(None)
-                }
-            },
-        )
-        .unwrap();
-    let bus = root.events();
-    bus.emit(&root, &PING, Arc::new(Ping(1))).unwrap();
+    root.on_sync::<Ping>(move |_, call| {
+        push(&seen, call.mode().as_str());
+        if call.mode() == Mode::WaterfallSync {
+            call.next()
+        } else {
+            Ok(None)
+        }
+    })
+    .unwrap();
+    root.emit(Ping(1)).unwrap();
     rutis_test_support::until(|| entries(&modes).len() == 1, "emit called it").await;
-    bus.parallel(&root, &PING, Arc::new(Ping(1))).await.unwrap();
-    bus.serial(&root, &PING, Arc::new(Ping(1))).await.unwrap();
-    bus.waterfall(&root, &PING, &Ping(1), ()).await.unwrap();
-    bus.bail_sync(&root, &PING, &Ping(1)).unwrap();
-    bus.waterfall_sync(&root, &PING, &Ping(1), |_, _| Ok(None))
-        .unwrap();
+    root.parallel(Ping(1)).await.unwrap();
+    root.serial(Ping(1)).await.unwrap();
+    root.waterfall(Ping(1)).await.unwrap();
+    root.bail(Ping(1)).unwrap();
+    root.waterfall_sync(Ping(1), |_| Ok(None)).unwrap();
     assert_eq!(
         entries(&modes),
         [
@@ -207,22 +165,12 @@ async fn one_listener_is_called_by_every_mode() {
 #[tokio::test]
 async fn next_outside_a_waterfall_is_an_error() {
     let root = Ctx::root().unwrap();
-    root.events()
-        .on(
-            &root,
-            &PING,
-            on::<Ping, _>(|_, _, call| Box::pin(async move { call.next().await })),
-        )
-        .unwrap();
-    let error = root
-        .events()
-        .serial(&root, &PING, Arc::new(Ping(0)))
-        .await
-        .unwrap_err();
+    root.on::<Ping>(|_, call| call.next()).unwrap();
+    let error = root.serial(Ping(0)).await.unwrap_err();
     assert!(
         matches!(
-            &error,
-            CordisError::WaterfallNext {
+            &*error,
+            ErrorKind::WaterfallNext {
                 misuse: NextMisuse::NotWaterfall(Mode::Serial),
                 ..
             }
@@ -235,17 +183,13 @@ async fn next_outside_a_waterfall_is_an_error() {
         "next is available only in a waterfall (this is serial)"
     );
 
-    let key = EventKey::<Ping>::named("t/sync-next");
-    root.events()
-        .on_sync(
-            &root,
-            &key,
-            |_: &Ctx, _: &Ping, call: SyncCall<'_, String>| call.next(),
-        )
+    root.listen::<Ping>()
+        .name("t/sync-next")
+        .on_sync(|_, call| call.next())
         .unwrap();
     let error = root
-        .events()
-        .waterfall(&root, &key, &Ping(0), ())
+        .named("t/sync-next")
+        .waterfall(Ping(0))
         .await
         .unwrap_err();
     assert_eq!(
@@ -268,37 +212,25 @@ async fn emit_does_not_wait_and_contains_failures() {
     let order = log();
     let (release, gate) = tokio::sync::watch::channel(false);
     let first = order.clone();
-    root.events()
-        .on(
-            &root,
-            &PING,
-            on::<Ping, _>(move |_, _, _| {
-                push(&first, "a:start");
-                let mut gate = gate.clone();
-                let first = first.clone();
-                Box::pin(async move {
-                    let _ = gate.wait_for(|open| *open).await;
-                    push(&first, "a:end");
-                    Ok(None)
-                })
-            }),
-        )
-        .unwrap();
+    root.on::<Ping>(move |_, _| {
+        push(&first, "a:start");
+        let mut gate = gate.clone();
+        let first = first.clone();
+        async move {
+            let _ = gate.wait_for(|open| *open).await;
+            push(&first, "a:end");
+            Ok(None)
+        }
+    })
+    .unwrap();
     let failing = order.clone();
-    root.events()
-        .on(
-            &root,
-            &PING,
-            on::<Ping, _>(move |_, _, _| {
-                push(&failing, "b");
-                Box::pin(async { Err(CordisError::PluginFailed("b failed".into())) })
-            }),
-        )
-        .unwrap();
-    root.events()
-        .on(&root, &PING, returns::<Ping>(&order, "c", None))
-        .unwrap();
-    root.events().emit(&root, &PING, Arc::new(Ping(1))).unwrap();
+    root.on::<Ping>(move |_, _| {
+        push(&failing, "b");
+        async { Err(ErrorKind::PluginFailed("b failed".into()).into()) }
+    })
+    .unwrap();
+    root.on::<Ping>(returns::<Ping>(&order, "c", None)).unwrap();
+    root.emit(Ping(1)).unwrap();
     rutis_test_support::until(|| entries(&order).len() == 3, "every listener started").await;
     assert_eq!(
         entries(&order),
@@ -310,7 +242,7 @@ async fn emit_does_not_wait_and_contains_failures() {
     let errors = errors.lock().unwrap();
     assert_eq!(errors.len(), 1, "{errors:?}");
     match &*errors[0] {
-        CordisError::ListenerFailed {
+        ErrorKind::ListenerFailed {
             name,
             listener,
             error,
@@ -332,21 +264,16 @@ async fn emits_of_one_name_start_in_emit_order() {
     let root = Ctx::root().unwrap();
     let seen = log();
     let out = seen.clone();
-    root.events()
-        .on(
-            &root,
-            &PING,
-            on::<Ping, _>(move |_, event, _| {
-                push(&out, event.0.to_string());
-                Box::pin(async {
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                    Ok(None)
-                })
-            }),
-        )
-        .unwrap();
+    root.on::<Ping>(move |event, _| {
+        push(&out, event.0.to_string());
+        async {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            Ok(None)
+        }
+    })
+    .unwrap();
     for i in 0..200 {
-        root.events().emit(&root, &PING, Arc::new(Ping(i))).unwrap();
+        root.emit(Ping(i)).unwrap();
     }
     rutis_test_support::until(|| entries(&seen).len() == 200, "all delivered").await;
     let expected: Vec<String> = (0..200).map(|i| i.to_string()).collect();
@@ -368,35 +295,26 @@ async fn parallel_aggregates_in_registration_order() {
     for (label, delay, fails) in [("a", 50, true), ("b", 0, true), ("c", 10, false)] {
         let started = started.clone();
         let finished = finished.clone();
-        root.events()
-            .on(
-                &root,
-                &PING,
-                on::<Ping, _>(move |_, _, _| {
-                    push(&started, label);
-                    let finished = finished.clone();
-                    Box::pin(async move {
-                        tokio::time::sleep(Duration::from_millis(delay)).await;
-                        finished.fetch_add(1, Ordering::SeqCst);
-                        if fails {
-                            Err(CordisError::PluginFailed(label.into()))
-                        } else {
-                            Ok(Some("ignored".into()))
-                        }
-                    })
-                }),
-            )
-            .unwrap();
+        root.on::<Ping>(move |_, _| {
+            push(&started, label);
+            let finished = finished.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                finished.fetch_add(1, Ordering::SeqCst);
+                if fails {
+                    Err(ErrorKind::PluginFailed(label.into()).into())
+                } else {
+                    Ok(Some("ignored".into()))
+                }
+            }
+        })
+        .unwrap();
     }
-    let error = root
-        .events()
-        .parallel(&root, &PING, Arc::new(Ping(0)))
-        .await
-        .unwrap_err();
+    let error = root.parallel(Ping(0)).await.unwrap_err();
     assert_eq!(entries(&started), ["a", "b", "c"]);
     assert_eq!(finished.load(Ordering::SeqCst), 3, "waited for all");
-    match &error {
-        CordisError::ListenersFailed { name, errors } => {
+    match &*error {
+        ErrorKind::ListenersFailed { name, errors } => {
             assert_eq!(name, "t/ping");
             let messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
             assert_eq!(messages, ["plugin failed: a", "plugin failed: b"]);
@@ -406,21 +324,13 @@ async fn parallel_aggregates_in_registration_order() {
     assert_eq!(error.wire_name(), Some("AggregateError"));
     assert_eq!(error.to_string(), "2 listeners of t/ping failed");
 
-    let one = EventKey::<Ping>::named("t/one");
-    root.events()
-        .on(
-            &root,
-            &one,
-            on::<Ping, _>(|_, _, _| Box::pin(async { Err(CordisError::Closed) })),
-        )
+    root.listen::<Ping>()
+        .name("t/one")
+        .on(|_, _| async { Err(ErrorKind::Closed.into()) })
         .unwrap();
-    let error = root
-        .events()
-        .parallel(&root, &one, Arc::new(Ping(0)))
-        .await
-        .unwrap_err();
+    let error = root.named("t/one").parallel(Ping(0)).await.unwrap_err();
     assert!(
-        matches!(&error, CordisError::ListenersFailed { errors, .. } if errors.len() == 1),
+        matches!(&*error, ErrorKind::ListenersFailed { errors, .. } if errors.len() == 1),
         "{error:?}"
     );
     root.shutdown().await.unwrap();
@@ -435,7 +345,6 @@ async fn parallel_aggregates_in_registration_order() {
 async fn serial_and_bail_skip_no_result() {
     let root = Ctx::root().unwrap();
     let order = log();
-    let key = EventKey::<Flag>::of();
     use serde_json::json;
     for (label, value) in [
         ("a", None),
@@ -445,21 +354,16 @@ async fn serial_and_bail_skip_no_result() {
         ("e", Some(json!("E"))),
     ] {
         let order = order.clone();
-        root.events()
-            .on_sync(&root, &key, move |_: &Ctx, _: &Flag, _: SyncCall<'_, _>| {
-                push(&order, label);
-                Ok(value.clone())
-            })
-            .unwrap();
-    }
-    let value = root
-        .events()
-        .serial(&root, &key, Arc::new(Flag))
-        .await
+        root.on_sync::<Flag>(move |_, _| {
+            push(&order, label);
+            Ok(value.clone())
+        })
         .unwrap();
+    }
+    let value = root.serial(Flag).await.unwrap();
     assert_eq!(value, Some(json!(0)));
     assert_eq!(entries(&order), ["a", "b", "c", "d"]);
-    let value = root.events().bail_sync(&root, &key, &Flag).unwrap();
+    let value = root.bail(Flag).unwrap();
     assert_eq!(value, Some(json!(0)));
 
     // A Rust `bool` value: `Some(false)` is no result too.
@@ -469,25 +373,10 @@ async fn serial_and_bail_skip_no_result() {
         const NAME: &'static str = "t/ask";
         type Value = bool;
     }
-    let ask = EventKey::<Ask>::of();
-    root.events()
-        .on_sync(&root, &ask, |_: &Ctx, _: &Ask, _: SyncCall<'_, bool>| {
-            Ok(Some(false))
-        })
-        .unwrap();
-    assert_eq!(root.events().bail_sync(&root, &ask, &Ask).unwrap(), None);
-    root.events()
-        .on_sync(&root, &ask, |_: &Ctx, _: &Ask, _: SyncCall<'_, bool>| {
-            Ok(Some(true))
-        })
-        .unwrap();
-    assert_eq!(
-        root.events()
-            .serial(&root, &ask, Arc::new(Ask))
-            .await
-            .unwrap(),
-        Some(true)
-    );
+    root.on_sync::<Ask>(|_, _| Ok(Some(false))).unwrap();
+    assert_eq!(root.bail(Ask).unwrap(), None);
+    root.on_sync::<Ask>(|_, _| Ok(Some(true))).unwrap();
+    assert_eq!(root.serial(Ask).await.unwrap(), Some(true));
     root.shutdown().await.unwrap();
 }
 
@@ -499,25 +388,15 @@ async fn serial_stops_at_an_error() {
     let root = Ctx::root().unwrap();
     let order = log();
     let failing = order.clone();
-    root.events()
-        .on(
-            &root,
-            &PING,
-            on::<Ping, _>(move |_, _, _| {
-                push(&failing, "a");
-                Box::pin(async { Err(CordisError::Closed) })
-            }),
-        )
+    root.on::<Ping>(move |_, _| {
+        push(&failing, "a");
+        async { Err(ErrorKind::Closed.into()) }
+    })
+    .unwrap();
+    root.on::<Ping>(returns::<Ping>(&order, "b", Some("B".into())))
         .unwrap();
-    root.events()
-        .on(&root, &PING, returns::<Ping>(&order, "b", Some("B".into())))
-        .unwrap();
-    let error = root
-        .events()
-        .serial(&root, &PING, Arc::new(Ping(0)))
-        .await
-        .unwrap_err();
-    assert!(matches!(error, CordisError::Closed), "{error:?}");
+    let error = root.serial(Ping(0)).await.unwrap_err();
+    assert!(matches!(&*error, ErrorKind::Closed), "{error:?}");
     assert_eq!(entries(&order), ["a"]);
     root.shutdown().await.unwrap();
 }
@@ -531,34 +410,33 @@ async fn bail_meets_an_async_listener() {
     let root = Ctx::root().unwrap();
     let order = log();
     let first = order.clone();
-    root.events()
-        .on_sync(
-            &root,
-            &PING,
-            move |_: &Ctx, _: &Ping, _: SyncCall<'_, String>| {
-                push(&first, "a");
-                Ok(None)
-            },
-        )
+    root.on_sync::<Ping>(move |_, _| {
+        push(&first, "a");
+        Ok(None)
+    })
+    .unwrap();
+    root.on::<Ping>(returns::<Ping>(&order, "b", Some("B".into())))
         .unwrap();
-    root.events()
-        .on(&root, &PING, returns::<Ping>(&order, "b", Some("B".into())))
-        .unwrap();
-    let error = root.events().bail_sync(&root, &PING, &Ping(0)).unwrap_err();
+    let error = root.bail(Ping(0)).unwrap_err();
     assert_eq!(entries(&order), ["a"]);
     assert_eq!(error.wire_name(), Some("AsyncListener"));
     assert_eq!(
         error.to_string(),
         "listener of t/ping in plugin root is asynchronous and cannot run in a synchronous bail"
     );
-    let only_async = EventKey::<Ping>::named("t/only-async");
-    root.events()
-        .on(&root, &only_async, returns::<Ping>(&order, "c", None))
+    root.listen::<Ping>()
+        .name("t/only-async")
+        .on(returns::<Ping>(&order, "c", None))
         .unwrap();
-    let error = root
-        .events()
-        .waterfall_sync(&root, &only_async, &Ping(0), |_, _| Ok(None))
-        .unwrap_err();
+    // `waterfall_sync` has no form taking a name chosen at run time: a type
+    // named `t/only-async` dispatches under that name.
+    #[derive(Serialize, Deserialize)]
+    struct OnlyAsync(i64);
+    impl Event for OnlyAsync {
+        const NAME: &'static str = "t/only-async";
+        type Value = String;
+    }
+    let error = root.waterfall_sync(OnlyAsync(0), |_| Ok(None)).unwrap_err();
     assert!(
         error.to_string().ends_with("synchronous waterfall-sync"),
         "{error}"
@@ -568,15 +446,15 @@ async fn bail_meets_an_async_listener() {
 
 // ── waterfall ───────────────────────────────────────────────────
 
-fn wrap(log: &Log, label: &'static str) -> impl rutis::Listener<Ping> {
+fn wrap(log: &Log, label: &'static str) -> impl Listener<Ping> {
     let log = log.clone();
-    on::<Ping, _>(move |_, _, call| {
+    move |_: Arc<Ping>, call: Call<Ping>| {
         push(&log, label);
-        Box::pin(async move {
+        async move {
             let inner = call.next().await?.unwrap_or_default();
             Ok(Some(format!("{label}{inner}")))
-        })
-    })
+        }
+    }
 }
 
 /// Outer to inner with `next`; not calling it vetoes the rest; the last
@@ -587,97 +465,60 @@ fn wrap(log: &Log, label: &'static str) -> impl rutis::Listener<Ping> {
 async fn waterfall_chains_vetoes_and_ends_in_the_terminal() {
     let root = Ctx::root().unwrap();
     let order = log();
-    root.events().on(&root, &PING, wrap(&order, "a")).unwrap();
-    root.events().on(&root, &PING, wrap(&order, "b")).unwrap();
+    root.on::<Ping>(wrap(&order, "a")).unwrap();
+    root.on::<Ping>(wrap(&order, "b")).unwrap();
     let terminal_log = order.clone();
-    let terminal = Terminal(
-        move |_: &Ctx, event: &Ping| -> BoxFuture<'static, Result<Option<String>, CordisError>> {
+    let out = root
+        .waterfall(Ping(7))
+        .terminal(move |event| {
             push(&terminal_log, "terminal");
             let n = event.0;
-            Box::pin(async move { Ok(Some(format!("t{n}"))) })
-        },
-    );
-    let out = root
-        .events()
-        .waterfall(&root, &PING, &Ping(7), terminal)
+            async move { Ok(Some(format!("t{n}"))) }
+        })
         .await
         .unwrap();
     assert_eq!(out.as_deref(), Some("abt7"));
     assert_eq!(entries(&order), ["a", "b", "terminal"]);
 
     // Without a terminal, the last next gives None.
-    let out = root
-        .events()
-        .waterfall(&root, &PING, &Ping(7), ())
-        .await
-        .unwrap();
+    let out = root.waterfall(Ping(7)).await.unwrap();
     assert_eq!(out.as_deref(), Some("ab"));
 
     // A veto.
-    let veto = EventKey::<Ping>::named("t/veto");
-    root.events().on(&root, &veto, wrap(&order, "x")).unwrap();
-    root.events()
-        .on(&root, &veto, returns::<Ping>(&order, "v", Some("v".into())))
+    root.listen::<Ping>()
+        .name("t/veto")
+        .on(wrap(&order, "x"))
         .unwrap();
-    root.events()
-        .on(&root, &veto, wrap(&order, "never"))
+    root.listen::<Ping>()
+        .name("t/veto")
+        .on(returns::<Ping>(&order, "v", Some("v".into())))
         .unwrap();
-    let out = root
-        .events()
-        .waterfall(&root, &veto, &Ping(0), ())
-        .await
+    root.listen::<Ping>()
+        .name("t/veto")
+        .on(wrap(&order, "never"))
         .unwrap();
+    let out = root.named("t/veto").waterfall(Ping(0)).await.unwrap();
     assert_eq!(out.as_deref(), Some("xv"));
     assert!(!entries(&order).contains(&"never".to_owned()));
 
     // No listeners: the terminal's value.
-    let empty = EventKey::<Ping>::named("t/empty");
     let out = root
-        .events()
-        .waterfall(
-            &root,
-            &empty,
-            &Ping(3),
-            Terminal(
-                |_: &Ctx, e: &Ping| -> BoxFuture<'static, Result<Option<String>, CordisError>> {
-                    let n = e.0;
-                    Box::pin(async move { Ok(Some(format!("t{n}"))) })
-                },
-            ),
-        )
+        .named("t/empty")
+        .waterfall(Ping(3))
+        .terminal(|e| {
+            let n = e.0;
+            async move { Ok(Some(format!("t{n}"))) }
+        })
         .await
         .unwrap();
     assert_eq!(out.as_deref(), Some("t3"));
 
     // The outermost value as it is: `false` stays `false`.
-    let flag = EventKey::<Flag>::of();
-    root.events()
-        .on_sync(&root, &flag, |_: &Ctx, _: &Flag, _: SyncCall<'_, _>| {
-            Ok(Some(serde_json::json!(false)))
-        })
+    root.on_sync::<Flag>(|_, _| Ok(Some(serde_json::json!(false))))
         .unwrap();
-    let out = root
-        .events()
-        .waterfall(&root, &flag, &Flag, ())
-        .await
-        .unwrap();
+    let out = root.waterfall(Flag).await.unwrap();
     assert_eq!(out, Some(serde_json::json!(false)));
     root.shutdown().await.unwrap();
-}
-
-/// A terminal from a closure returning a `'static` future.
-struct Terminal<F>(F);
-impl<F> rutis::Terminal<Ping> for Terminal<F>
-where
-    F: Fn(&Ctx, &Ping) -> BoxFuture<'static, Result<Option<String>, CordisError>> + Send + 'static,
-{
-    fn call<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-        event: &'a Ping,
-    ) -> BoxFuture<'a, Result<Option<String>, CordisError>> {
-        (self.0)(ctx, event)
-    }
 }
 
 /// `waterfall_sync` chains synchronous listeners into a borrowed terminal.
@@ -687,20 +528,14 @@ where
 async fn waterfall_sync_chains_into_a_borrowed_terminal() {
     let root = Ctx::root().unwrap();
     for label in ["a", "b"] {
-        root.events()
-            .on_sync(
-                &root,
-                &PING,
-                move |_: &Ctx, _: &Ping, call: SyncCall<'_, String>| {
-                    Ok(Some(format!("{label}{}", call.next()?.unwrap_or_default())))
-                },
-            )
-            .unwrap();
+        root.on_sync::<Ping>(move |_, call| {
+            Ok(Some(format!("{label}{}", call.next()?.unwrap_or_default())))
+        })
+        .unwrap();
     }
     let local = String::from("t");
     let out = root
-        .events()
-        .waterfall_sync(&root, &PING, &Ping(0), |_, _| Ok(Some(local.clone())))
+        .waterfall_sync(Ping(0), |_| Ok(Some(local.clone())))
         .unwrap();
     assert_eq!(out.as_deref(), Some("abt"));
     root.shutdown().await.unwrap();
@@ -716,31 +551,15 @@ async fn waterfall_sync_chains_into_a_borrowed_terminal() {
 #[tokio::test]
 async fn listeners_of_another_type_hear_the_same_name() {
     let root = Ctx::root().unwrap();
-    root.events()
-        .on(
-            &root,
-            &EventKey::<PingAlias>::of(),
-            on::<PingAlias, _>(|_, event, _| {
-                let n = event.0;
-                Box::pin(async move { Ok(Some(format!("alias {n}"))) })
-            }),
-        )
-        .unwrap();
-    let out = root
-        .events()
-        .serial(&root, &PING, Arc::new(Ping(5)))
-        .await
-        .unwrap();
+    root.on::<PingAlias>(|event, _| {
+        let n = event.0;
+        async move { Ok(Some(format!("alias {n}"))) }
+    })
+    .unwrap();
+    let out = root.serial(Ping(5)).await.unwrap();
     assert_eq!(out.as_deref(), Some("alias 5"));
     // A name of its own does not cross.
-    let other = EventKey::<Ping>::named("t/other");
-    assert_eq!(
-        root.events()
-            .serial(&root, &other, Arc::new(Ping(5)))
-            .await
-            .unwrap(),
-        None
-    );
+    assert_eq!(root.named("t/other").serial(Ping(5)).await.unwrap(), None);
     root.shutdown().await.unwrap();
 }
 
@@ -753,43 +572,35 @@ async fn listeners_of_another_type_hear_the_same_name() {
 async fn prefixes_prepend_and_once_keep_registration_order() {
     let root = Ctx::root().unwrap();
     let order = log();
-    let key = EventKey::<Ping>::named("room/1");
-    root.events()
-        .on(&root, &key, returns::<Ping>(&order, "exact-1", None))
+    let name = "room/1";
+    root.listen::<Ping>()
+        .name(name)
+        .on(returns::<Ping>(&order, "exact-1", None))
         .unwrap();
     let names = order.clone();
-    root.events()
-        .on_pattern(
-            &root,
-            &EventPattern::prefix("room/"),
-            on_prefix::<Ping, _>(move |_, key, _, _| {
-                push(&names, format!("prefix:{}", key.name()));
-                Box::pin(async { Ok(None) })
-            }),
-        )
+    root.listen::<Ping>()
+        .prefix("room/")
+        .on(move |_, call| {
+            push(&names, format!("prefix:{}", call.name()));
+            async { Ok(None) }
+        })
         .unwrap();
-    root.events()
-        .on(&root, &key, returns::<Ping>(&order, "exact-2", None))
+    root.listen::<Ping>()
+        .name(name)
+        .on(returns::<Ping>(&order, "exact-2", None))
         .unwrap();
-    root.events()
-        .on_opt(
-            &root,
-            &key,
-            returns::<Ping>(&order, "first", None),
-            EventOptions::default().prepend(true),
-        )
+    root.listen::<Ping>()
+        .name(name)
+        .prepend()
+        .on(returns::<Ping>(&order, "first", None))
         .unwrap();
-    root.events()
-        .once(&root, &key, returns::<Ping>(&order, "once", None))
+    root.listen::<Ping>()
+        .name(name)
+        .once()
+        .on(returns::<Ping>(&order, "once", None))
         .unwrap();
-    root.events()
-        .serial(&root, &key, Arc::new(Ping(0)))
-        .await
-        .unwrap();
-    root.events()
-        .serial(&root, &key, Arc::new(Ping(0)))
-        .await
-        .unwrap();
+    root.named(name).serial(Ping(0)).await.unwrap();
+    root.named(name).serial(Ping(0)).await.unwrap();
     assert_eq!(
         entries(&order),
         [
@@ -814,43 +625,42 @@ async fn prefixes_prepend_and_once_keep_registration_order() {
 async fn rutis_events_are_reserved() {
     let root = Ctx::root().unwrap();
     let order = log();
-    let key = EventKey::<Ping>::named("rutis/row");
-    root.events()
-        .on_sync(&root, &key, {
+    let name = "rutis/row";
+    root.listen::<Ping>()
+        .name(name)
+        .on_sync({
             let order = order.clone();
-            move |_: &Ctx, _: &Ping, _: SyncCall<'_, String>| {
+            move |_, _| {
                 push(&order, "heard");
                 Ok(None)
             }
         })
         .unwrap();
-    let reserved = |error: CordisError| {
+    let reserved = |error: Error| {
         assert_eq!(error.wire_name(), Some("ReservedEvent"));
         assert_eq!(
             error.to_string(),
             "rutis/* events are emitted by rutis only: rutis/row"
         );
     };
-    let bus = root.events();
-    reserved(bus.emit(&root, &key, Arc::new(Ping(0))).unwrap_err());
-    reserved(
-        bus.parallel(&root, &key, Arc::new(Ping(0)))
-            .await
-            .unwrap_err(),
-    );
-    reserved(
-        bus.serial(&root, &key, Arc::new(Ping(0)))
-            .await
-            .unwrap_err(),
-    );
-    reserved(bus.waterfall(&root, &key, &Ping(0), ()).await.unwrap_err());
-    reserved(bus.bail_sync(&root, &key, &Ping(0)).unwrap_err());
-    reserved(
-        bus.waterfall_sync(&root, &key, &Ping(0), |_, _| Ok(None))
-            .unwrap_err(),
-    );
+    reserved(root.named(name).emit(Ping(0)).unwrap_err());
+    reserved(root.named(name).parallel(Ping(0)).await.unwrap_err());
+    reserved(root.named(name).serial(Ping(0)).await.unwrap_err());
+    reserved(root.named(name).waterfall(Ping(0)).await.unwrap_err());
+    reserved(root.named(name).bail(Ping(0)).unwrap_err());
+    // `waterfall_sync` has no form taking a name chosen at run time: a type
+    // named `rutis/row` dispatches under that name.
+    #[derive(Serialize, Deserialize)]
+    struct Row(i64);
+    impl Event for Row {
+        const NAME: &'static str = "rutis/row";
+        type Value = String;
+    }
+    reserved(root.waterfall_sync(Row(0), |_| Ok(None)).unwrap_err());
     assert!(entries(&order).is_empty());
-    bus.emit_framework(&root, &key, Arc::new(Ping(0))).unwrap();
+    root.events()
+        .emit_framework(&root, &EventKey::<Ping>::named(name), Arc::new(Ping(0)))
+        .unwrap();
     rutis_test_support::until(|| entries(&order) == ["heard"], "framework emit heard").await;
     root.shutdown().await.unwrap();
 }
@@ -888,18 +698,14 @@ async fn events_reach_every_listener_on_the_bus() {
 
     let heard = log();
     for (label, ctx) in [("r", &root), ("u", &t1), ("s", &s1), ("v", &t2)] {
-        ctx.events()
-            .on(ctx, &PING, returns::<Ping>(&heard, label, None))
+        ctx.on::<Ping>(returns::<Ping>(&heard, label, None))
             .unwrap();
     }
     let round = |ctx: Ctx| {
         let heard = heard.clone();
         async move {
             heard.lock().unwrap().clear();
-            ctx.events()
-                .parallel(&ctx, &PING, Arc::new(Ping(0)))
-                .await
-                .unwrap();
+            ctx.parallel(Ping(0)).await.unwrap();
             let mut got = entries(&heard);
             got.sort();
             got
@@ -929,35 +735,24 @@ async fn filters_see_descriptors_and_global_entries_skip_them() {
     let (_b, b) = child(&root, "plugin-b").await;
     let (_t, t) = scope(&root, "tenant").await;
     let order = log();
-    a.events()
-        .on(&a, &PING, returns::<Ping>(&order, "a", None))
+    a.on::<Ping>(returns::<Ping>(&order, "a", None)).unwrap();
+    b.on::<Ping>(returns::<Ping>(&order, "b", None)).unwrap();
+    b.listen::<Ping>()
+        .global()
+        .on(returns::<Ping>(&order, "g", None))
         .unwrap();
-    b.events()
-        .on(&b, &PING, returns::<Ping>(&order, "b", None))
-        .unwrap();
-    b.events()
-        .on_opt(
-            &b,
-            &PING,
-            returns::<Ping>(&order, "g", None),
-            EventOptions::default().global(true),
-        )
-        .unwrap();
-    t.events()
-        .on(&t, &PING, returns::<Ping>(&order, "t", None))
-        .unwrap();
+    t.on::<Ping>(returns::<Ping>(&order, "t", None)).unwrap();
     let seen: Arc<Mutex<Vec<ListenerInfo>>> = Arc::default();
     let into = seen.clone();
     let filtered_log = order.clone();
-    root.events()
-        .filter(move |info| {
-            push(&filtered_log, format!("filter:{}", info.plugin));
-            into.lock().unwrap().push(info.clone());
-            info.row.as_deref() == Some("row-a")
-        })
-        .serial(&root, &PING, Arc::new(Ping(0)))
-        .await
-        .unwrap();
+    root.filter(move |info| {
+        push(&filtered_log, format!("filter:{}", info.plugin));
+        into.lock().unwrap().push(info.clone());
+        info.row.as_deref() == Some("row-a")
+    })
+    .serial(Ping(0))
+    .await
+    .unwrap();
     assert_eq!(
         entries(&order),
         [
@@ -987,9 +782,8 @@ async fn filters_see_descriptors_and_global_entries_skip_them() {
     // A failing filter fails the dispatch before any call.
     order.lock().unwrap().clear();
     let error = root
-        .events()
         .filter(|_| panic!("filter broke"))
-        .parallel(&root, &PING, Arc::new(Ping(0)))
+        .parallel(Ping(0))
         .await
         .unwrap_err();
     assert!(error.to_string().contains("filter broke"), "{error}");
@@ -1004,16 +798,11 @@ async fn filters_see_descriptors_and_global_entries_skip_them() {
 async fn a_failing_emit_filter_is_reported() {
     let (root, errors) = root_with_sink();
     let order = log();
-    root.events()
-        .on(&root, &PING, returns::<Ping>(&order, "a", None))
-        .unwrap();
-    root.events()
-        .filter(|_| panic!("no"))
-        .emit(&root, &PING, Arc::new(Ping(0)))
-        .unwrap();
+    root.on::<Ping>(returns::<Ping>(&order, "a", None)).unwrap();
+    root.filter(|_| panic!("no")).emit(Ping(0)).unwrap();
     rutis_test_support::until(|| !errors.lock().unwrap().is_empty(), "reported").await;
     assert!(
-        matches!(&*errors.lock().unwrap()[0], CordisError::FilterFailed { name, .. } if name == "t/ping")
+        matches!(&*errors.lock().unwrap()[0], ErrorKind::FilterFailed { name, .. } if name == "t/ping")
     );
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(entries(&order).is_empty());
@@ -1027,21 +816,19 @@ async fn a_failing_emit_filter_is_reported() {
 async fn a_try_filter_error_fails_the_dispatch_with_it() {
     let root = Ctx::root().unwrap();
     let order = log();
-    root.events()
-        .on(&root, &PING, returns::<Ping>(&order, "a", None))
-        .unwrap();
+    root.on::<Ping>(returns::<Ping>(&order, "a", None)).unwrap();
     let error = root
-        .events()
         .try_filter(|_| {
-            Err(CordisError::Validation {
+            Err(ErrorKind::Validation {
                 issues: vec!["no".into()],
-            })
+            }
+            .into())
         })
-        .serial(&root, &PING, Arc::new(Ping(0)))
+        .serial(Ping(0))
         .await
         .unwrap_err();
     assert!(
-        matches!(&error, CordisError::Validation { issues } if issues == &["no"]),
+        matches!(&*error, ErrorKind::Validation { issues } if issues == &["no"]),
         "{error:?}"
     );
     assert!(entries(&order).is_empty());
@@ -1062,35 +849,27 @@ async fn unload_cancels_and_waits_for_running_listeners() {
     let view = root.plugin(Apply("waiter", move |ctx: &Ctx| {
         let out = out.clone();
         let own = ctx.instance();
-        ctx.events().on(
-            ctx,
-            &PING,
-            on::<Ping, _>(move |ctx, _, _| {
-                assert_eq!(ctx.instance(), own, "called with its own context");
-                push(&out, "started");
-                let out = out.clone();
-                Box::pin(async move {
-                    ctx.cancelled().await;
-                    tokio::time::sleep(Duration::from_millis(30)).await;
-                    push(&out, "cancelled");
-                    Ok(None)
-                })
-            }),
-        )?;
+        ctx.on::<Ping>(move |_, call| {
+            assert_eq!(call.ctx().instance(), own, "called with its own context");
+            push(&out, "started");
+            let out = out.clone();
+            async move {
+                call.ctx().cancelled().await;
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                push(&out, "cancelled");
+                Ok(None)
+            }
+        })?;
         Ok(())
     }));
     (&view).await.unwrap();
     for mode in ["emit", "parallel"] {
         order.lock().unwrap().clear();
         if mode == "emit" {
-            root.events().emit(&root, &PING, Arc::new(Ping(0))).unwrap();
+            root.emit(Ping(0)).unwrap();
         } else {
             let root = root.clone();
-            tokio::spawn(async move {
-                root.events()
-                    .parallel(&root, &PING, Arc::new(Ping(0)))
-                    .await
-            });
+            tokio::spawn(async move { root.parallel(Ping(0)).await });
         }
         rutis_test_support::until(|| entries(&order) == ["started"], "listener running").await;
         view.restart().await.unwrap();
@@ -1111,31 +890,20 @@ async fn unloaded_listeners_are_not_called() {
     let root = Ctx::root().unwrap();
     let order = log();
     let (view, ctx) = child(&root, "gone").await;
-    ctx.events()
-        .on_sync(&ctx, &PING, {
-            let order = order.clone();
-            move |_: &Ctx, _: &Ping, _: SyncCall<'_, String>| {
-                push(&order, "gone");
-                Ok(Some("G".into()))
-            }
-        })
-        .unwrap();
-    root.events()
-        .on(&root, &PING, returns::<Ping>(&order, "root", None))
+    ctx.on_sync::<Ping>({
+        let order = order.clone();
+        move |_, _| {
+            push(&order, "gone");
+            Ok(Some("G".into()))
+        }
+    })
+    .unwrap();
+    root.on::<Ping>(returns::<Ping>(&order, "root", None))
         .unwrap();
     view.dispose().await.unwrap();
+    assert_eq!(root.serial(Ping(0)).await.unwrap(), None);
     assert_eq!(
-        root.events()
-            .serial(&root, &PING, Arc::new(Ping(0)))
-            .await
-            .unwrap(),
-        None
-    );
-    assert_eq!(
-        root.events()
-            .bail_sync(&root, &PING, &Ping(0))
-            .unwrap_err()
-            .wire_name(),
+        root.bail(Ping(0)).unwrap_err().wire_name(),
         Some("AsyncListener")
     );
     assert_eq!(entries(&order), ["root"]);
@@ -1172,10 +940,7 @@ impl RemoteListener for Remote {
     fn id(&self) -> Option<&str> {
         Some(self.label)
     }
-    fn call<'a>(
-        &'a self,
-        call: RemoteCall<'a>,
-    ) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
+    fn call<'a>(&'a self, call: RemoteCall<'a>) -> BoxFuture<'a, Result<Option<Value>, Error>> {
         push(
             &self.log,
             format!(
@@ -1193,7 +958,7 @@ impl RemoteListener for Remote {
                         next.call().await?;
                     }
                     let inner: String = match inner {
-                        Some(value) => value.into_typed(&rutis::events::JsonTranscoder)?,
+                        Some(value) => value.into_typed(&JsonTranscoder)?,
                         None => String::new(),
                     };
                     Ok(Some(Value::new(format!("{}{inner}", self.label))))
@@ -1202,13 +967,13 @@ impl RemoteListener for Remote {
             }
         })
     }
-    fn call_sync(&self, call: RemoteSyncCall<'_>) -> Result<Option<Value>, CordisError> {
+    fn call_sync(&self, call: RemoteSyncCall<'_>) -> Result<Option<Value>, Error> {
         push(&self.log, format!("{}:{}", self.label, call.mode()));
         match call.next() {
             Some(next) if self.wrap => {
                 let inner = next.call()?;
                 let inner: String = match inner {
-                    Some(value) => value.into_typed(&rutis::events::JsonTranscoder)?,
+                    Some(value) => value.into_typed(&JsonTranscoder)?,
                     None => String::new(),
                 };
                 Ok(Some(Value::new(format!("{}{inner}", self.label))))
@@ -1252,8 +1017,7 @@ async fn remote_entries_take_part_like_any_listener() {
     let root = Ctx::root().unwrap();
     let (_t, t) = scope(&root, "tenant").await;
     let order = log();
-    root.events()
-        .on(&root, &PING, returns::<Ping>(&order, "local", None))
+    root.on::<Ping>(returns::<Ping>(&order, "local", None))
         .unwrap();
     let withdraw = root
         .events()
@@ -1278,11 +1042,7 @@ async fn remote_entries_take_part_like_any_listener() {
             Arc::new(Remote::new("go", &order)),
         )
         .unwrap();
-    let out = root
-        .events()
-        .serial(&root, &PING, Arc::new(Ping(4)))
-        .await
-        .unwrap();
+    let out = root.serial(Ping(4)).await.unwrap();
     assert_eq!(
         out.as_deref(),
         Some("py"),
@@ -1298,14 +1058,13 @@ async fn remote_entries_take_part_like_any_listener() {
     order.lock().unwrap().clear();
     let seen = log();
     let into = seen.clone();
-    t.events()
-        .filter(move |info| {
-            push(&into, format!("{}@{:?}", info.plugin, info.runtime));
-            info.runtime.as_deref() == Some("go")
-        })
-        .parallel(&t, &PING, Arc::new(Ping(1)))
-        .await
-        .unwrap();
+    t.filter(move |info| {
+        push(&into, format!("{}@{:?}", info.plugin, info.runtime));
+        info.runtime.as_deref() == Some("go")
+    })
+    .parallel(Ping(1))
+    .await
+    .unwrap();
     assert_eq!(
         entries(&seen),
         [
@@ -1319,10 +1078,7 @@ async fn remote_entries_take_part_like_any_listener() {
     // Withdrawn: no longer called.
     withdraw.dispose().await.unwrap();
     order.lock().unwrap().clear();
-    root.events()
-        .serial(&root, &PING, Arc::new(Ping(2)))
-        .await
-        .unwrap();
+    root.serial(Ping(2)).await.unwrap();
     assert_eq!(entries(&order), ["local", "go:serial:2"]);
     root.shutdown().await.unwrap();
 }
@@ -1349,15 +1105,10 @@ async fn remote_waterfall_next_runs_once() {
             Arc::new(remote),
         )
         .unwrap();
-    root.events().on(&root, &PING, wrap(&order, "l")).unwrap();
-    let out = root
-        .events()
-        .waterfall(&root, &PING, &Ping(0), ())
-        .await
-        .unwrap();
+    root.on::<Ping>(wrap(&order, "l")).unwrap();
+    let out = root.waterfall(Ping(0)).await.unwrap();
     assert_eq!(out.as_deref(), Some("rl"));
 
-    let twice = EventKey::<Ping>::named("t/twice");
     let mut remote = Remote::new("r", &order);
     remote.wrap = true;
     remote.next_twice = true;
@@ -1372,32 +1123,24 @@ async fn remote_waterfall_next_runs_once() {
             Arc::new(remote),
         )
         .unwrap();
-    let error = root
-        .events()
-        .waterfall(&root, &twice, &Ping(0), ())
-        .await
-        .unwrap_err();
+    let error = root.named("t/twice").waterfall(Ping(0)).await.unwrap_err();
     assert_eq!(error.to_string(), "next of t/twice was already called");
 
     // Kept past its call: "ended".
-    struct Keeper(Mutex<Option<rutis::events::RemoteNext>>);
+    struct Keeper(Mutex<Option<RemoteNext>>);
     impl RemoteListener for Keeper {
         fn kind(&self) -> ListenerKind {
             ListenerKind::Async
         }
-        fn call<'a>(
-            &'a self,
-            call: RemoteCall<'a>,
-        ) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
+        fn call<'a>(&'a self, call: RemoteCall<'a>) -> BoxFuture<'a, Result<Option<Value>, Error>> {
             *self.0.lock().unwrap() = call.next();
             Box::pin(async { Ok(None) })
         }
-        fn call_sync(&self, _: RemoteSyncCall<'_>) -> Result<Option<Value>, CordisError> {
+        fn call_sync(&self, _: RemoteSyncCall<'_>) -> Result<Option<Value>, Error> {
             unreachable!()
         }
     }
     let keeper = Arc::new(Keeper(Mutex::new(None)));
-    let kept = EventKey::<Ping>::named("t/kept");
     root.events()
         .on_remote(
             &root,
@@ -1409,10 +1152,7 @@ async fn remote_waterfall_next_runs_once() {
             keeper.clone(),
         )
         .unwrap();
-    root.events()
-        .waterfall(&root, &kept, &Ping(0), ())
-        .await
-        .unwrap();
+    root.named("t/kept").waterfall(Ping(0)).await.unwrap();
     let next = keeper.0.lock().unwrap().take().unwrap();
     let error = next.call().await.unwrap_err();
     assert_eq!(
@@ -1420,7 +1160,7 @@ async fn remote_waterfall_next_runs_once() {
         "next of t/kept was called after its waterfall ended"
     );
     // An async remote entry in bail: AsyncListener, not called.
-    let error = root.events().bail_sync(&root, &kept, &Ping(0)).unwrap_err();
+    let error = root.named("t/kept").bail(Ping(0)).unwrap_err();
     assert_eq!(error.wire_name(), Some("AsyncListener"));
     root.shutdown().await.unwrap();
 }
@@ -1446,21 +1186,13 @@ async fn remote_entries_in_synchronous_modes() {
             Arc::new(remote),
         )
         .unwrap();
-    root.events()
-        .on_sync(
-            &root,
-            &PING,
-            |_: &Ctx, _: &Ping, call: SyncCall<'_, String>| {
-                Ok(Some(format!("s{}", call.next()?.unwrap_or_default())))
-            },
-        )
+    root.on_sync::<Ping>(|_, call| Ok(Some(format!("s{}", call.next()?.unwrap_or_default()))))
         .unwrap();
     let out = root
-        .events()
-        .waterfall_sync(&root, &PING, &Ping(0), |_, _| Ok(Some("t".into())))
+        .waterfall_sync(Ping(0), |_| Ok(Some("t".into())))
         .unwrap();
     assert_eq!(out.as_deref(), Some("rst"));
-    let out = root.events().bail_sync(&root, &PING, &Ping(0)).unwrap();
+    let out = root.bail(Ping(0)).unwrap();
     assert_eq!(out.as_deref(), Some("r"));
     assert_eq!(entries(&order), ["r:waterfall-sync", "r:bail"]);
     root.shutdown().await.unwrap();
@@ -1473,9 +1205,7 @@ async fn remote_entries_in_synchronous_modes() {
 #[tokio::test]
 async fn the_table_is_watched() {
     let root = Ctx::root().unwrap();
-    root.events()
-        .on(&root, &PING, returns::<Ping>(&log(), "a", None))
-        .unwrap();
+    root.on::<Ping>(returns::<Ping>(&log(), "a", None)).unwrap();
     let changes: Arc<Mutex<Vec<String>>> = Arc::default();
     let into = changes.clone();
     let (snapshot, _watch) = root
@@ -1492,12 +1222,9 @@ async fn the_table_is_watched() {
     assert_eq!(snapshot[0].name, "t/ping");
     assert_eq!(snapshot[0].kind, ListenerKind::Async);
     let added = root
-        .events()
-        .on(
-            &root,
-            &EventKey::<Ping>::named("t/b"),
-            returns::<Ping>(&log(), "b", None),
-        )
+        .listen::<Ping>()
+        .name("t/b")
+        .on(returns::<Ping>(&log(), "b", None))
         .unwrap();
     assert_eq!(entries(&changes), ["+t/b:None"]);
     let remote = root
@@ -1529,7 +1256,7 @@ async fn the_table_is_watched() {
 async fn raw_dispatch_and_entry_calls() {
     let root = Ctx::root().unwrap();
     let order = log();
-    root.events().on(&root, &PING, wrap(&order, "a")).unwrap();
+    root.on::<Ping>(wrap(&order, "a")).unwrap();
     root.events()
         .on_remote(
             &root,
@@ -1648,49 +1375,27 @@ async fn raw_dispatch_and_entry_calls() {
 async fn a_once_listener_is_used_up_only_by_a_call() {
     let root = Ctx::root().unwrap();
     let order = log();
-    root.events()
-        .on(
-            &root,
-            &PING,
-            returns::<Ping>(&order, "first", Some("1".into())),
-        )
+    root.on::<Ping>(returns::<Ping>(&order, "first", Some("1".into())))
         .unwrap();
-    root.events()
-        .on_opt(
-            &root,
-            &PING,
-            returns::<Ping>(&order, "once", Some("2".into())),
-            EventOptions::default().once(true),
-        )
+    root.listen::<Ping>()
+        .once()
+        .on(returns::<Ping>(&order, "once", Some("2".into())))
         .unwrap();
     // The filter drops it before any call.
-    let filtered = root
-        .events()
-        .filter(|info| info.plugin.is_empty())
-        .parallel(&root, &PING, Arc::new(Ping(0)));
+    let filtered = root.filter(|info| info.plugin.is_empty()).parallel(Ping(0));
     filtered.await.unwrap();
     assert!(entries(&order).is_empty(), "{:?}", entries(&order));
     // `serial` ends at the first result.
-    let first = root.events().serial(&root, &PING, Arc::new(Ping(0))).await;
+    let first = root.serial(Ping(0)).await;
     assert_eq!(first.unwrap().as_deref(), Some("1"));
     assert_eq!(entries(&order), ["first"]);
-    assert_eq!(
-        root.events().subscriptions().len(),
-        2,
-        "the once listener stays"
-    );
+    assert_eq!(root.subscriptions().len(), 2, "the once listener stays");
     // Reached now: called, then gone.
-    root.events()
-        .parallel(&root, &PING, Arc::new(Ping(0)))
-        .await
-        .unwrap();
+    root.parallel(Ping(0)).await.unwrap();
     assert_eq!(entries(&order), ["first", "first", "once"]);
-    root.events()
-        .parallel(&root, &PING, Arc::new(Ping(0)))
-        .await
-        .unwrap();
+    root.parallel(Ping(0)).await.unwrap();
     assert_eq!(entries(&order), ["first", "first", "once", "first"]);
-    assert_eq!(root.events().subscriptions().len(), 1);
+    assert_eq!(root.subscriptions().len(), 1);
     root.shutdown().await.unwrap();
 }
 
@@ -1734,12 +1439,9 @@ async fn table_changes_are_heard_in_the_order_they_were_made() {
         .unwrap();
     let ctx = root.clone();
     let a = std::thread::spawn(move || {
-        ctx.events()
-            .on(
-                &ctx,
-                &EventKey::<Ping>::named("t/a"),
-                returns::<Ping>(&log(), "a", None),
-            )
+        ctx.listen::<Ping>()
+            .name("t/a")
+            .on(returns::<Ping>(&log(), "a", None))
             .map(std::mem::forget)
             .unwrap();
     });
@@ -1752,22 +1454,19 @@ async fn table_changes_are_heard_in_the_order_they_were_made() {
     // `t/a` is in the table, its change half heard: `t/b` comes after it.
     let ctx = root.clone();
     let b = std::thread::spawn(move || {
-        ctx.events()
-            .on(
-                &ctx,
-                &EventKey::<Ping>::named("t/b"),
-                returns::<Ping>(&log(), "b", None),
-            )
+        ctx.listen::<Ping>()
+            .name("t/b")
+            .on(returns::<Ping>(&log(), "b", None))
             .map(std::mem::forget)
             .unwrap();
     });
     for _ in 0..500 {
-        if root.events().subscriptions().len() == 2 {
+        if root.subscriptions().len() == 2 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
-    assert_eq!(root.events().subscriptions().len(), 2);
+    assert_eq!(root.subscriptions().len(), 2);
     // Give a delivery out of order its chance.
     tokio::time::sleep(Duration::from_millis(50)).await;
     *release.0.lock().unwrap() = true;
@@ -1779,8 +1478,9 @@ async fn table_changes_are_heard_in_the_order_they_were_made() {
 }
 
 /// An event type with no name of its own (an empty `NAME`, as
-/// `rutis_bridge::events::Args`) cannot be used with `EventKey::of()`:
-/// registering and dispatching fail clearly (events protocol §12.1).
+/// `rutis_bridge::events::Args`) cannot be listened to or dispatched under
+/// its type alone: registering and dispatching fail clearly (events
+/// protocol §12.1).
 #[tokio::test]
 async fn an_event_without_a_name_needs_one() {
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1790,53 +1490,18 @@ async fn an_event_without_a_name_needs_one() {
         type Value = ();
     }
     let root = Ctx::root().unwrap();
-    let key = EventKey::<Unnamed>::of();
     let message = "Unnamed events need a name: EventKey::dynamic(name)";
-    let refused = root
-        .events()
-        .on(
-            &root,
-            &key,
-            on::<Unnamed, _>(|_, _, _| Box::pin(async { Ok(None) })),
-        )
-        .err()
-        .unwrap();
+    let refused = root.on::<Unnamed>(|_, _| async { Ok(None) }).err().unwrap();
     assert_eq!(refused.to_string(), message);
-    assert_eq!(
-        root.events()
-            .emit(&root, &key, Arc::new(Unnamed))
-            .unwrap_err()
-            .to_string(),
-        message
-    );
-    assert_eq!(
-        root.events()
-            .serial(&root, &key, Arc::new(Unnamed))
-            .await
-            .unwrap_err()
-            .to_string(),
-        message
-    );
-    assert_eq!(
-        root.events()
-            .bail_sync(&root, &key, &Unnamed)
-            .unwrap_err()
-            .to_string(),
-        message
-    );
+    assert_eq!(root.emit(Unnamed).unwrap_err().to_string(), message);
+    assert_eq!(root.serial(Unnamed).await.unwrap_err().to_string(), message);
+    assert_eq!(root.bail(Unnamed).unwrap_err().to_string(), message);
     // Given a name, it is an event like any.
-    let named = EventKey::<Unnamed>::dynamic("t/named");
-    root.events()
-        .on_sync(
-            &root,
-            &named,
-            |_: &Ctx, _: &Unnamed, _: SyncCall<'_, ()>| Ok(Some(())),
-        )
+    root.listen::<Unnamed>()
+        .name("t/named")
+        .on_sync(|_, _| Ok(Some(())))
         .unwrap();
-    assert_eq!(
-        root.events().bail_sync(&root, &named, &Unnamed).unwrap(),
-        Some(())
-    );
+    assert_eq!(root.named("t/named").bail(Unnamed).unwrap(), Some(()));
     root.shutdown().await.unwrap();
 }
 
@@ -1847,19 +1512,11 @@ async fn an_event_without_a_name_needs_one() {
 async fn an_entry_called_by_id_must_have_the_name() {
     let root = Ctx::root().unwrap();
     let order = log();
-    root.events()
-        .on(
-            &root,
-            &PING,
-            returns::<Ping>(&order, "ping", Some("p".into())),
-        )
+    root.on::<Ping>(returns::<Ping>(&order, "ping", Some("p".into())))
         .unwrap();
-    root.events()
-        .on_pattern(
-            &root,
-            &EventPattern::<Ping>::prefix("t/room/"),
-            on_prefix::<Ping, _>(|_, _, _, _| Box::pin(async { Ok(Some("room".to_string())) })),
-        )
+    root.listen::<Ping>()
+        .prefix("t/room/")
+        .on(|_, _| async { Ok(Some("room".to_string())) })
         .unwrap();
     let (snapshot, _watch) = root.events().watch_table(&root, |_| {}).unwrap();
     let exact = snapshot.iter().find(|e| !e.prefix).unwrap().id;

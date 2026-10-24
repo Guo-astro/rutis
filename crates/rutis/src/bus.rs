@@ -1,12 +1,13 @@
 //! The event bus: one listener table, five dispatch modes (protocol spec
 //! §4–§7, §12.1).
 
+use crate::host::CtxHost;
+use crate::internal::CtxInternal;
 pub(crate) mod run;
 pub(crate) mod table;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
-use std::marker::PhantomData;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
@@ -20,15 +21,14 @@ use run::{
 use table::{Body, Entry, Table};
 
 use crate::ctx::Ctx;
-use crate::error::{panic_error, CordisError};
+use crate::error::{panic_error, Error, ErrorKind};
 use crate::events::{
-    AsyncAdapter, AsyncPatternAdapter, Dispatch, EntryCall, Event, EventOptions, JsonTranscoder,
-    Listener, ListenerInfo, ListenerKind, Mode, PatternListener, Payload, PayloadRef, RemoteEntry,
-    RemoteListener, SyncAdapter, SyncListener, SyncPatternAdapter, SyncPatternListener,
-    TableChange, TableEntry, Terminal, Transcoder, Value, RESERVED_PREFIX,
+    Dispatch, EntryCall, Event, EventOptions, JsonTranscoder, ListenerInfo, ListenerKind, Mode,
+    Payload, PayloadRef, RemoteEntry, RemoteListener, TableChange, TableEntry, Transcoder, Value,
+    RESERVED_PREFIX,
 };
 use crate::fiber::{FiberInner, PluginId};
-use crate::key::{EventKey, EventPattern, InstanceId};
+use crate::key::{EventKey, InstanceId};
 use crate::{BoxFuture, Disposer, Effect};
 
 /// A dispatch before its listener snapshot is selected. Observers see it
@@ -193,49 +193,6 @@ struct Notices {
     delivering: bool,
 }
 
-struct TypedTerminal<E, T>(Mutex<Option<T>>, PhantomData<fn(E) -> E>);
-
-impl<E: Event, T: Terminal<E>> ErasedTerminal for TypedTerminal<E, T> {
-    fn call<'a>(&'a self, inv: &'a Inv<'a>) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
-        let terminal = self.0.lock().unwrap().take();
-        Box::pin(async move {
-            let Some(terminal) = terminal else {
-                return Ok(None);
-            };
-            let event = crate::events::typed::<E>(inv)?;
-            let out = crate::events::CatchUnwind::new(terminal.call(inv.emitter, &event))
-                .await
-                .unwrap_or_else(|panic| Err(panic_error(panic)))?;
-            Ok(out.map(Value::new))
-        })
-    }
-}
-
-struct TypedSyncTerminal<E, F>(RefCell<Option<F>>, PhantomData<fn(E) -> E>);
-
-impl<E, F> ErasedSyncTerminal for TypedSyncTerminal<E, F>
-where
-    E: Event,
-    F: FnOnce(&Ctx, &E) -> Result<Option<E::Value>, CordisError>,
-{
-    fn call(&self, inv: &Inv<'_>) -> Result<Option<Value>, CordisError> {
-        let Some(terminal) = self.0.borrow_mut().take() else {
-            return Ok(None);
-        };
-        let event = crate::events::typed::<E>(inv)?;
-        Ok(terminal(inv.emitter, &event)?.map(Value::new))
-    }
-}
-
-fn typed_value<V: serde::Serialize + serde::de::DeserializeOwned + Send + 'static>(
-    bus: &EventBus,
-    value: Option<Value>,
-) -> Result<Option<V>, CordisError> {
-    value
-        .map(|value| value.into_typed::<V>(&*bus.transcoder()))
-        .transpose()
-}
-
 impl EventBus {
     pub(crate) fn new() -> Self {
         Self {
@@ -249,13 +206,14 @@ impl EventBus {
         }
     }
 
-    fn ensure_bus(&self, ctx: &Ctx) -> Result<(), CordisError> {
+    fn ensure_bus(&self, ctx: &Ctx) -> Result<(), Error> {
         if Arc::ptr_eq(&self.core, &ctx.events().core) {
             Ok(())
         } else {
-            Err(CordisError::Validation {
+            Err(ErrorKind::Validation {
                 issues: vec!["the context belongs to another event bus".into()],
-            })
+            }
+            .into())
         }
     }
 
@@ -336,7 +294,7 @@ impl EventBus {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn register(
+    pub(crate) fn register(
         &self,
         ctx: &Ctx,
         name: Arc<str>,
@@ -345,12 +303,13 @@ impl EventBus {
         opts: EventOptions,
         remote: Option<(ListenerInfo, u64)>,
         label: &str,
-    ) -> Result<Disposer, CordisError> {
+    ) -> Result<Disposer, Error> {
         ctx.registration_preflight()?;
         if !Arc::ptr_eq(&self.core, &ctx.events().core) {
-            return Err(CordisError::Validation {
+            return Err(ErrorKind::Validation {
                 issues: vec!["listener belongs to another event bus".into()],
-            });
+            }
+            .into());
         }
         let (info, origin) = match remote {
             Some((mut info, origin)) => {
@@ -425,131 +384,6 @@ impl EventBus {
         registered
     }
 
-    /// Register an async listener of `key`'s name.
-    pub fn on<E: Event>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        listener: impl Listener<E>,
-    ) -> Result<Disposer, CordisError> {
-        self.on_opt(ctx, key, listener, EventOptions::default())
-    }
-
-    pub fn on_opt<E: Event>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        listener: impl Listener<E>,
-        opts: EventOptions,
-    ) -> Result<Disposer, CordisError> {
-        let body = Body::Async(Arc::new(AsyncAdapter(listener, PhantomData)));
-        self.register(
-            ctx,
-            key.checked_name()?,
-            false,
-            body,
-            opts,
-            None,
-            "event listener",
-        )
-    }
-
-    /// Register an async listener called at most once.
-    pub fn once<E: Event>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        listener: impl Listener<E>,
-    ) -> Result<Disposer, CordisError> {
-        self.on_opt(ctx, key, listener, EventOptions::default().once(true))
-    }
-
-    /// Register a synchronous listener: every mode can call it.
-    pub fn on_sync<E: Event>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        listener: impl SyncListener<E>,
-    ) -> Result<Disposer, CordisError> {
-        self.on_sync_opt(ctx, key, listener, EventOptions::default())
-    }
-
-    pub fn on_sync_opt<E: Event>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        listener: impl SyncListener<E>,
-        opts: EventOptions,
-    ) -> Result<Disposer, CordisError> {
-        let body = Body::Sync(Arc::new(SyncAdapter(listener, PhantomData)));
-        self.register(
-            ctx,
-            key.checked_name()?,
-            false,
-            body,
-            opts,
-            None,
-            "sync event listener",
-        )
-    }
-
-    /// Register an async listener of every name starting with the prefix.
-    pub fn on_pattern<E: Event>(
-        &self,
-        ctx: &Ctx,
-        pattern: &EventPattern<E>,
-        listener: impl PatternListener<E>,
-    ) -> Result<Disposer, CordisError> {
-        self.on_pattern_opt(ctx, pattern, listener, EventOptions::default())
-    }
-
-    pub fn on_pattern_opt<E: Event>(
-        &self,
-        ctx: &Ctx,
-        pattern: &EventPattern<E>,
-        listener: impl PatternListener<E>,
-        opts: EventOptions,
-    ) -> Result<Disposer, CordisError> {
-        let body = Body::Async(Arc::new(AsyncPatternAdapter(listener, PhantomData)));
-        self.register(
-            ctx,
-            pattern.prefix_arc(),
-            true,
-            body,
-            opts,
-            None,
-            "event pattern",
-        )
-    }
-
-    pub fn on_sync_pattern<E: Event>(
-        &self,
-        ctx: &Ctx,
-        pattern: &EventPattern<E>,
-        listener: impl SyncPatternListener<E>,
-    ) -> Result<Disposer, CordisError> {
-        self.on_sync_pattern_opt(ctx, pattern, listener, EventOptions::default())
-    }
-
-    pub fn on_sync_pattern_opt<E: Event>(
-        &self,
-        ctx: &Ctx,
-        pattern: &EventPattern<E>,
-        listener: impl SyncPatternListener<E>,
-        opts: EventOptions,
-    ) -> Result<Disposer, CordisError> {
-        let body = Body::Sync(Arc::new(SyncPatternAdapter(listener, PhantomData)));
-        self.register(
-            ctx,
-            pattern.prefix_arc(),
-            true,
-            body,
-            opts,
-            None,
-            "sync event pattern",
-        )
-    }
-
     /// Register a remote entry: its calls go to `listener` (protocol spec
     /// §4). Owned by `ctx`'s fiber like any listener; its disposer
     /// withdraws it.
@@ -558,7 +392,7 @@ impl EventBus {
         ctx: &Ctx,
         entry: RemoteEntry,
         listener: Arc<dyn RemoteListener>,
-    ) -> Result<Disposer, CordisError> {
+    ) -> Result<Disposer, Error> {
         let RemoteEntry {
             name,
             prefix,
@@ -584,7 +418,7 @@ impl EventBus {
         &self,
         owner: &Ctx,
         watcher: impl Fn(&TableChange) + Send + Sync + 'static,
-    ) -> Result<(Vec<TableEntry>, Disposer), CordisError> {
+    ) -> Result<(Vec<TableEntry>, Disposer), Error> {
         let bus = self.clone();
         let watcher: Watcher = Arc::new(watcher);
         let mut snapshot = Vec::new();
@@ -691,12 +525,13 @@ impl EventBus {
         &self,
         owner: &Ctx,
         observer: impl for<'a> Fn(&DispatchAttempt<'a>) + Send + Sync + 'static,
-    ) -> Result<Disposer, CordisError> {
+    ) -> Result<Disposer, Error> {
         owner.registration_preflight()?;
         if !Arc::ptr_eq(&self.core, &owner.events().core) {
-            return Err(CordisError::Validation {
+            return Err(ErrorKind::Validation {
                 issues: vec!["dispatch observer belongs to another event bus".into()],
-            });
+            }
+            .into());
         }
         let hook = Arc::new(DispatchObserver {
             call: Arc::new(observer),
@@ -780,7 +615,7 @@ impl EventBus {
                 continue;
             }
             if let Err(panic) = catch_unwind(AssertUnwindSafe(|| (observer.call)(&attempt))) {
-                let error = Arc::new(panic_error(panic));
+                let error = panic_error(panic).shared();
                 let _ = catch_unwind(AssertUnwindSafe(|| sink(error)));
             }
         }
@@ -796,12 +631,13 @@ impl EventBus {
         mode: Mode,
         event: &(dyn std::any::Any + Send + Sync),
         opts: &mut Opts,
-    ) -> Result<Vec<Arc<Entry>>, CordisError> {
+    ) -> Result<Vec<Arc<Entry>>, Error> {
         self.ensure_bus(ctx)?;
         if !opts.framework && name.starts_with(RESERVED_PREFIX) {
-            return Err(CordisError::ReservedEvent {
+            return Err(ErrorKind::ReservedEvent {
                 name: name.to_owned(),
-            });
+            }
+            .into());
         }
         self.observe(ctx, name, mode, event);
         Ok(self.core.state.lock().unwrap().table.select(name))
@@ -843,7 +679,7 @@ impl EventBus {
         name: Arc<str>,
         payload: Payload,
         mut opts: Opts,
-    ) -> Result<tokio::sync::oneshot::Receiver<()>, CordisError> {
+    ) -> Result<tokio::sync::oneshot::Receiver<()>, Error> {
         let (started, receiver) = tokio::sync::oneshot::channel();
         let mut entries = self.snapshot(ctx, &name, Mode::Emit, &**payload.arc(), &mut opts)?;
         let mut batch = None;
@@ -948,7 +784,7 @@ impl EventBus {
         name: Arc<str>,
         payload: Payload,
         mut opts: Opts,
-    ) -> BoxFuture<'a, Result<(), CordisError>> {
+    ) -> BoxFuture<'a, Result<(), Error>> {
         let bus = self.clone();
         Box::pin(async move {
             let entries = bus.snapshot(ctx, &name, Mode::Parallel, &**payload.arc(), &mut opts)?;
@@ -975,7 +811,7 @@ impl EventBus {
         name: Arc<str>,
         payload: Payload,
         mut opts: Opts,
-    ) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
+    ) -> BoxFuture<'a, Result<Option<Value>, Error>> {
         let bus = self.clone();
         Box::pin(async move {
             let entries = bus.snapshot(ctx, &name, Mode::Serial, &**payload.arc(), &mut opts)?;
@@ -1000,7 +836,7 @@ impl EventBus {
         event: PayloadRef<'a>,
         terminal: Box<dyn ErasedTerminal + Send + 'a>,
         mut opts: Opts,
-    ) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
+    ) -> BoxFuture<'a, Result<Option<Value>, Error>> {
         let bus = self.clone();
         Box::pin(async move {
             let entries = bus.snapshot(ctx, &name, Mode::Waterfall, event.as_any(), &mut opts)?;
@@ -1030,7 +866,7 @@ impl EventBus {
         name: Arc<str>,
         event: PayloadRef<'_>,
         mut opts: Opts,
-    ) -> Result<Option<Value>, CordisError> {
+    ) -> Result<Option<Value>, Error> {
         ctx.registration_preflight()?;
         let entries = self.snapshot(ctx, &name, Mode::Bail, event.as_any(), &mut opts)?;
         let entries = filter_sync(&name, entries, opts.filter.take())?;
@@ -1053,7 +889,7 @@ impl EventBus {
         event: PayloadRef<'_>,
         terminal: &dyn ErasedSyncTerminal,
         mut opts: Opts,
-    ) -> Result<Option<Value>, CordisError> {
+    ) -> Result<Option<Value>, Error> {
         ctx.registration_preflight()?;
         let entries = self.snapshot(ctx, &name, Mode::WaterfallSync, event.as_any(), &mut opts)?;
         let entries = filter_sync(&name, entries, opts.filter.take())?;
@@ -1076,204 +912,19 @@ impl EventBus {
 
     // ── typed dispatch ───────────────────────────────────────────
 
-    /// `emit`: returns at once. Every listener's call starts in
-    /// registration order; the calls of one name's emits start in emit
-    /// order. A listener's failure goes to the error sink
-    /// (`ListenerFailed`); it never stops the other listeners. `Err` only
-    /// for a rejected emit (`ReservedEvent`, another bus).
-    pub fn emit<E: Event>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        event: Arc<E>,
-    ) -> Result<(), CordisError> {
-        self.emit_erased(
-            ctx,
-            key.checked_name()?,
-            Payload::new(event),
-            Opts::default(),
-        )
-        .map(drop)
-    }
-
     /// `emit` of a framework event: only rutis emits `rutis/*`.
     pub fn emit_framework<E: Event>(
         &self,
         ctx: &Ctx,
         key: &EventKey<E>,
         event: Arc<E>,
-    ) -> Result<(), CordisError> {
+    ) -> Result<(), Error> {
         let opts = Opts {
             framework: true,
             ..Opts::default()
         };
         self.emit_erased(ctx, key.checked_name()?, Payload::new(event), opts)
             .map(drop)
-    }
-
-    /// `parallel`: starts every call in registration order and waits for
-    /// all. Failures: `ListenersFailed` (AggregateError), in registration
-    /// order, also for one. Dropping the future cancels the calls.
-    pub fn parallel<'a, E: Event>(
-        &self,
-        ctx: &'a Ctx,
-        key: &EventKey<E>,
-        event: Arc<E>,
-    ) -> BoxFuture<'a, Result<(), CordisError>> {
-        match key.checked_name() {
-            Ok(name) => self.parallel_erased(ctx, name, Payload::new(event), Opts::default()),
-            Err(error) => Box::pin(std::future::ready(Err(error))),
-        }
-    }
-
-    /// `serial`: one call at a time; the first result that is not "no
-    /// result" (`None`, `Some(false)`) ends it. An error stops it.
-    pub fn serial<'a, E: Event>(
-        &self,
-        ctx: &'a Ctx,
-        key: &EventKey<E>,
-        event: Arc<E>,
-    ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
-        self.serial_with(ctx, key, event, Opts::default())
-    }
-
-    fn serial_with<'a, E: Event>(
-        &self,
-        ctx: &'a Ctx,
-        key: &EventKey<E>,
-        event: Arc<E>,
-        opts: Opts,
-    ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
-        let bus = self.clone();
-        let name = match key.checked_name() {
-            Ok(name) => name,
-            Err(error) => return Box::pin(std::future::ready(Err(error))),
-        };
-        let run = self.serial_erased(ctx, name, Payload::new(event), opts);
-        Box::pin(async move { typed_value(&bus, run.await?) })
-    }
-
-    /// `waterfall`: the first listener is called with `next`; each `next`
-    /// calls the following listener, the last one's calls `terminal` (`()`:
-    /// none, `next` gives `None`). Returns the outermost listener's value as
-    /// it is.
-    pub fn waterfall<'a, E: Event, T: Terminal<E> + 'a>(
-        &self,
-        ctx: &'a Ctx,
-        key: &EventKey<E>,
-        event: &'a E,
-        terminal: T,
-    ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
-        self.waterfall_with(ctx, key, event, terminal, Opts::default())
-    }
-
-    fn waterfall_with<'a, E: Event, T: Terminal<E> + 'a>(
-        &self,
-        ctx: &'a Ctx,
-        key: &EventKey<E>,
-        event: &'a E,
-        terminal: T,
-        opts: Opts,
-    ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
-        let bus = self.clone();
-        let name = match key.checked_name() {
-            Ok(name) => name,
-            Err(error) => return Box::pin(std::future::ready(Err(error))),
-        };
-        let terminal = Box::new(TypedTerminal::<E, T>(
-            Mutex::new(Some(terminal)),
-            PhantomData,
-        ));
-        let run = self.waterfall_erased(ctx, name, PayloadRef::borrowed(event), terminal, opts);
-        Box::pin(async move { typed_value(&bus, run.await?) })
-    }
-
-    /// `bail`, synchronously: as `serial`, inline. An async listener is an
-    /// `AsyncListener` error.
-    ///
-    /// A listener may dispatch the same name again, synchronously, from
-    /// inside its call (as Cordis allows): the inner dispatch runs on the
-    /// same stack. Nothing bounds that recursion; a listener that always
-    /// dispatches its own name again overflows the stack like any unbounded
-    /// recursion. Only a wait that would form a cycle across processes
-    /// fails (`SyncWaitCycle`, as for a synchronous service call).
-    pub fn bail_sync<E: Event>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        event: &E,
-    ) -> Result<Option<E::Value>, CordisError> {
-        self.bail_with(ctx, key, event, Opts::default())
-    }
-
-    fn bail_with<E: Event>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        event: &E,
-        opts: Opts,
-    ) -> Result<Option<E::Value>, CordisError> {
-        let out = self.bail_erased(ctx, key.checked_name()?, PayloadRef::borrowed(event), opts)?;
-        typed_value(self, out)
-    }
-
-    /// `waterfall`, synchronously. The terminal can borrow the caller's
-    /// stack; it needs neither `Send` nor `'static`.
-    pub fn waterfall_sync<E: Event, F>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        event: &E,
-        terminal: F,
-    ) -> Result<Option<E::Value>, CordisError>
-    where
-        F: FnOnce(&Ctx, &E) -> Result<Option<E::Value>, CordisError>,
-    {
-        self.waterfall_sync_with(ctx, key, event, terminal, Opts::default())
-    }
-
-    fn waterfall_sync_with<E: Event, F>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        event: &E,
-        terminal: F,
-        opts: Opts,
-    ) -> Result<Option<E::Value>, CordisError>
-    where
-        F: FnOnce(&Ctx, &E) -> Result<Option<E::Value>, CordisError>,
-    {
-        let terminal = TypedSyncTerminal::<E, F>(RefCell::new(Some(terminal)), PhantomData);
-        let out = self.waterfall_sync_erased(
-            ctx,
-            key.checked_name()?,
-            PayloadRef::borrowed(event),
-            &terminal,
-            opts,
-        )?;
-        typed_value(self, out)
-    }
-
-    /// The same six emitting methods, filtered (§6): `keep` sees each
-    /// non-global candidate's descriptor, in this process, before any call.
-    pub fn filter(
-        &self,
-        keep: impl Fn(&ListenerInfo) -> bool + Send + Sync + 'static,
-    ) -> Filtered<'_> {
-        self.try_filter(move |info| Ok(keep(info)))
-    }
-
-    /// [`EventBus::filter`] with a predicate that can fail: its error fails
-    /// the dispatch before any call, as a throwing filter does in the other
-    /// languages (in `emit`: reported, nothing delivered).
-    pub fn try_filter(
-        &self,
-        keep: impl Fn(&ListenerInfo) -> Result<bool, CordisError> + Send + Sync + 'static,
-    ) -> Filtered<'_> {
-        Filtered {
-            bus: self,
-            keep: Arc::new(keep),
-        }
     }
 
     // ── raw dispatch ─────────────────────────────────────────────
@@ -1293,7 +944,7 @@ impl EventBus {
         &self,
         ctx: &'a Ctx,
         mut d: Dispatch,
-    ) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
+    ) -> BoxFuture<'a, Result<Option<Value>, Error>> {
         let opts = Self::raw_opts(&mut d);
         let name: Arc<str> = Arc::from(d.name.as_str());
         match d.mode {
@@ -1322,16 +973,16 @@ impl EventBus {
                         .await
                 })
             }
-            Mode::Bail | Mode::WaterfallSync => {
-                Box::pin(std::future::ready(Err(CordisError::Validation {
+            Mode::Bail | Mode::WaterfallSync => Box::pin(std::future::ready(Err(Error::from(
+                ErrorKind::Validation {
                     issues: vec![format!("{} is synchronous: use dispatch_sync", d.mode)],
-                })))
-            }
+                },
+            )))),
         }
     }
 
     /// Dispatch an erased event synchronously (`bail`, `waterfall-sync`).
-    pub fn dispatch_sync(&self, ctx: &Ctx, mut d: Dispatch) -> Result<Option<Value>, CordisError> {
+    pub fn dispatch_sync(&self, ctx: &Ctx, mut d: Dispatch) -> Result<Option<Value>, Error> {
         let opts = Self::raw_opts(&mut d);
         let name: Arc<str> = Arc::from(d.name.as_str());
         match d.mode {
@@ -1348,13 +999,14 @@ impl EventBus {
                     }
                 }
             }
-            mode => Err(CordisError::Validation {
+            mode => Err(ErrorKind::Validation {
                 issues: vec![format!("{mode} is asynchronous: use dispatch")],
-            }),
+            }
+            .into()),
         }
     }
 
-    fn live_entry(&self, id: u64, name: &str) -> Result<Arc<Entry>, CordisError> {
+    fn live_entry(&self, id: u64, name: &str) -> Result<Arc<Entry>, Error> {
         let entry = self.core.state.lock().unwrap().table.get(id);
         // An id the far end kept from before (its link restarted, this
         // entry's id reused) must not reach an entry of another name.
@@ -1362,12 +1014,12 @@ impl EventBus {
             true => name.starts_with(&*e.name),
             false => *e.name == *name,
         };
-        entry
-            .filter(|e| named(e) && e.live())
-            .ok_or_else(|| CordisError::ListenerWithdrawn {
+        entry.filter(|e| named(e) && e.live()).ok_or_else(|| {
+            Error::from(ErrorKind::ListenerWithdrawn {
                 id,
                 name: name.to_owned(),
             })
+        })
     }
 
     /// Call one entry, outside a dispatch, as `call.mode` would (a node
@@ -1379,20 +1031,21 @@ impl EventBus {
         ctx: &'a Ctx,
         id: u64,
         call: EntryCall,
-    ) -> BoxFuture<'a, Result<Option<Value>, CordisError>> {
+    ) -> BoxFuture<'a, Result<Option<Value>, Error>> {
         let bus = self.clone();
         Box::pin(async move {
             let entry = bus.live_entry(id, &call.name)?;
             let Some(flight) = bus.start(&entry) else {
-                return Err(CordisError::ListenerWithdrawn {
+                return Err(Error::from(ErrorKind::ListenerWithdrawn {
                     id,
                     name: call.name,
-                });
+                }));
             };
+            let name: Arc<str> = Arc::from(call.name.as_str());
             let inv = Inv {
                 bus: &bus,
                 emitter: ctx,
-                name: &call.name,
+                name: &name,
                 mode: call.mode,
                 event: call.payload.as_ref(),
                 dispatch: call.dispatch,
@@ -1411,12 +1064,12 @@ impl EventBus {
                     };
                     run::call_async(&entry, &inv, Some(next)).await
                 }
-                Mode::Bail | Mode::WaterfallSync => Err(CordisError::Validation {
+                Mode::Bail | Mode::WaterfallSync => Err(Error::from(ErrorKind::Validation {
                     issues: vec![format!(
                         "{} is synchronous: use invoke_entry_sync",
                         call.mode
                     )],
-                }),
+                })),
                 _ => run::call_async(&entry, &inv, None).await,
             };
             drop(flight);
@@ -1436,18 +1089,20 @@ impl EventBus {
         ctx: &Ctx,
         id: u64,
         call: EntryCall,
-    ) -> Result<Option<Value>, CordisError> {
+    ) -> Result<Option<Value>, Error> {
         let entry = self.live_entry(id, &call.name)?;
         let Some(flight) = self.start(&entry) else {
-            return Err(CordisError::ListenerWithdrawn {
+            return Err(ErrorKind::ListenerWithdrawn {
                 id,
                 name: call.name,
-            });
+            }
+            .into());
         };
+        let name: Arc<str> = Arc::from(call.name.as_str());
         let inv = Inv {
             bus: self,
             emitter: ctx,
-            name: &call.name,
+            name: &name,
             mode: call.mode,
             event: call.payload.as_ref(),
             dispatch: call.dispatch,
@@ -1464,9 +1119,9 @@ impl EventBus {
                 };
                 run::call_sync(&entry, &inv, Some(next))
             }
-            mode => Err(CordisError::Validation {
+            mode => Err(Error::from(ErrorKind::Validation {
                 issues: vec![format!("{mode} is asynchronous: use invoke_entry")],
-            }),
+            })),
         };
         drop(flight);
         out
@@ -1481,101 +1136,18 @@ fn notify(watchers: &[Watcher], changes: &[TableChange]) {
     }
 }
 
-fn report_filter(ctx: &Ctx, name: &str, error: CordisError) {
+fn report_filter(ctx: &Ctx, name: &str, error: Error) {
     let emitter = match ctx.row() {
         Some(row) => format!("row {row}"),
         None => format!("plugin {}", ctx.plugin_name()),
     };
     let sink = ctx.error_sink();
-    let report = CordisError::FilterFailed {
+    let report = ErrorKind::FilterFailed {
         name: name.to_owned(),
         emitter,
-        error: Arc::new(error),
+        error: error.shared(),
     };
     let _ = catch_unwind(AssertUnwindSafe(|| sink(Arc::new(report))));
-}
-
-/// The emitting methods of [`EventBus`], with a filter (§6).
-pub struct Filtered<'b> {
-    bus: &'b EventBus,
-    keep: Arc<run::Keep>,
-}
-
-impl Filtered<'_> {
-    fn opts(&self) -> Opts {
-        Opts {
-            filter: Some(FilterSpec::Each(self.keep.clone())),
-            ..Opts::default()
-        }
-    }
-
-    pub fn emit<E: Event>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        event: Arc<E>,
-    ) -> Result<(), CordisError> {
-        self.bus
-            .emit_erased(ctx, key.checked_name()?, Payload::new(event), self.opts())
-            .map(drop)
-    }
-
-    pub fn parallel<'a, E: Event>(
-        &self,
-        ctx: &'a Ctx,
-        key: &EventKey<E>,
-        event: Arc<E>,
-    ) -> BoxFuture<'a, Result<(), CordisError>> {
-        match key.checked_name() {
-            Ok(name) => self
-                .bus
-                .parallel_erased(ctx, name, Payload::new(event), self.opts()),
-            Err(error) => Box::pin(std::future::ready(Err(error))),
-        }
-    }
-
-    pub fn serial<'a, E: Event>(
-        &self,
-        ctx: &'a Ctx,
-        key: &EventKey<E>,
-        event: Arc<E>,
-    ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
-        self.bus.serial_with(ctx, key, event, self.opts())
-    }
-
-    pub fn waterfall<'a, E: Event, T: Terminal<E> + 'a>(
-        &self,
-        ctx: &'a Ctx,
-        key: &EventKey<E>,
-        event: &'a E,
-        terminal: T,
-    ) -> BoxFuture<'a, Result<Option<E::Value>, CordisError>> {
-        self.bus
-            .waterfall_with(ctx, key, event, terminal, self.opts())
-    }
-
-    pub fn bail_sync<E: Event>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        event: &E,
-    ) -> Result<Option<E::Value>, CordisError> {
-        self.bus.bail_with(ctx, key, event, self.opts())
-    }
-
-    pub fn waterfall_sync<E: Event, F>(
-        &self,
-        ctx: &Ctx,
-        key: &EventKey<E>,
-        event: &E,
-        terminal: F,
-    ) -> Result<Option<E::Value>, CordisError>
-    where
-        F: FnOnce(&Ctx, &E) -> Result<Option<E::Value>, CordisError>,
-    {
-        self.bus
-            .waterfall_sync_with(ctx, key, event, terminal, self.opts())
-    }
 }
 
 #[cfg(test)]

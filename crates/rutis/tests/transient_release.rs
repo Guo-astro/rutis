@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Event, FiberState, Listener, Plugin, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, Key};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error, Event};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Ping;
@@ -15,38 +17,26 @@ impl Event for Ping {
     type Value = ();
 }
 
-struct Nop;
-
-impl Listener<Ping> for Nop {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _e: &'a Ping,
-        _call: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        Box::pin(async { Ok(None) })
-    }
-}
-
 /// 每实例持有一个 keyed 服务、一条 keyed 监听;Drop 计数验证实例回收。
 struct Probe {
     dropped: Arc<AtomicUsize>,
     channel: Arc<str>,
-    service_key: TypeKey,
+    service_key: Key<u32>,
 }
 
-impl Plugin for Probe {
+impl DynPlugin for Probe {
     fn name(&self) -> &str {
         "probe"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         let key = self.service_key.clone();
         let channel = self.channel.clone();
         Box::pin(async move {
-            ctx.provide_as::<u32>(key, Arc::new(7))?;
-            ctx.events()
-                .on::<Ping>(ctx, &rutis::EventKey::dynamic(channel), Nop)?;
+            ctx.provide_at(key, Arc::new(7))?;
+            ctx.listen::<Ping>()
+                .name(channel)
+                .on(|_, _| async { Ok(None) })?;
             Ok(Effect::Done)
         })
     }
@@ -87,19 +77,15 @@ async fn churn_on_long_lived_root_releases_instances() {
         let probe = Probe {
             dropped: dropped.clone(),
             channel: Arc::from(format!("branch/{i}")),
-            service_key: TypeKey::keyed_dynamic::<u32>(format!("svc/{i}")),
+            service_key: Key::dynamic(format!("svc/{i}")),
         };
         let view = ctx.plugin(probe);
         await_active(&ctx, Duration::from_secs(10)).await;
         view.dispose().await.unwrap();
         drop(view);
         // 已销毁通道再派发:无监听器早退,不 panic
-        ctx.events()
-            .emit::<Ping>(
-                &ctx,
-                &rutis::EventKey::dynamic(format!("branch/{i}")),
-                Arc::new(Ping),
-            )
+        ctx.named(format!("branch/{i}"))
+            .emit(Ping)
             .expect("default event dispatch");
     }
     // 实例析构尾随 dispose 完成点(mount 记录 drain 释放最后引用)
@@ -116,7 +102,7 @@ async fn churn_on_long_lived_root_releases_instances() {
     let view = ctx.plugin(Probe {
         dropped: dropped.clone(),
         channel: Arc::from("branch/reuse"),
-        service_key: TypeKey::keyed_dynamic::<u32>("svc/reuse"),
+        service_key: Key::dynamic("svc/reuse"),
     });
     await_active(&ctx, Duration::from_secs(10)).await;
     view.dispose().await.unwrap();

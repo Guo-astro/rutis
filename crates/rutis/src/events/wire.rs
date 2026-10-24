@@ -6,6 +6,7 @@
 //! listener whose type differs from the emitter's gets it through the bus's
 //! [`Transcoder`]. Results travel as [`Value`]s the same way.
 
+use crate::error::ErrorKind;
 use std::any::Any;
 use std::sync::Arc;
 
@@ -13,7 +14,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value as Json;
 
-use crate::CordisError;
+use crate::Error;
 
 /// How one Rust type crosses as JSON. Built for a concrete type by
 /// [`Codec::of`]; carried by every [`Payload`] and [`Value`].
@@ -21,10 +22,10 @@ use crate::CordisError;
 pub struct Codec {
     type_name: &'static str,
     type_id: fn() -> std::any::TypeId,
-    to_json: fn(&dyn Any) -> Result<Json, CordisError>,
-    from_json: fn(Json) -> Result<Box<dyn Any + Send>, CordisError>,
-    to_args: fn(&dyn Any) -> Result<Vec<Json>, CordisError>,
-    from_args: fn(Vec<Json>) -> Result<Box<dyn Any + Send>, CordisError>,
+    to_json: fn(&dyn Any) -> Result<Json, Error>,
+    from_json: fn(Json) -> Result<Box<dyn Any + Send>, Error>,
+    to_args: fn(&dyn Any) -> Result<Vec<Json>, Error>,
+    from_args: fn(Vec<Json>) -> Result<Box<dyn Any + Send>, Error>,
 }
 
 impl std::fmt::Debug for Codec {
@@ -35,18 +36,20 @@ impl std::fmt::Debug for Codec {
     }
 }
 
-fn wrong_type(expected: &'static str) -> CordisError {
-    CordisError::EventValue {
+fn wrong_type(expected: &'static str) -> Error {
+    ErrorKind::EventValue {
         type_name: expected,
         message: "the value given to its codec has another type".into(),
     }
+    .into()
 }
 
-fn json_error<T>(error: serde_json::Error) -> CordisError {
-    CordisError::EventValue {
+fn json_error<T>(error: serde_json::Error) -> Error {
+    ErrorKind::EventValue {
         type_name: std::any::type_name::<T>(),
         message: error.to_string(),
     }
+    .into()
 }
 
 impl Codec {
@@ -98,25 +101,25 @@ impl Codec {
     }
 
     /// `value` (which must be of this codec's type) as JSON.
-    pub fn to_json(&self, value: &dyn Any) -> Result<Json, CordisError> {
+    pub fn to_json(&self, value: &dyn Any) -> Result<Json, Error> {
         (self.to_json)(value)
     }
 
     /// A value of this codec's type from JSON.
-    pub fn from_json(&self, json: Json) -> Result<Box<dyn Any + Send>, CordisError> {
+    pub fn from_json(&self, json: Json) -> Result<Box<dyn Any + Send>, Error> {
         (self.from_json)(json)
     }
 
     /// `value` as event arguments (protocol spec §12.1): a tuple or tuple
     /// struct of two or more fields is one argument per field, a unit or
     /// unit struct none, anything else one argument.
-    pub fn to_args(&self, value: &dyn Any) -> Result<Vec<Json>, CordisError> {
+    pub fn to_args(&self, value: &dyn Any) -> Result<Vec<Json>, Error> {
         (self.to_args)(value)
     }
 
     /// A value of this codec's type from event arguments: none decode from
     /// unit, one from itself, two or more as a tuple.
-    pub fn from_args(&self, args: Vec<Json>) -> Result<Box<dyn Any + Send>, CordisError> {
+    pub fn from_args(&self, args: Vec<Json>) -> Result<Box<dyn Any + Send>, Error> {
         (self.from_args)(args)
     }
 }
@@ -147,10 +150,7 @@ impl Payload {
 
     /// A payload whose type is known only by its codec. `value` must have
     /// the codec's type.
-    pub fn from_boxed(
-        value: Box<dyn Any + Send + Sync>,
-        codec: Codec,
-    ) -> Result<Self, CordisError> {
+    pub fn from_boxed(value: Box<dyn Any + Send + Sync>, codec: Codec) -> Result<Self, Error> {
         if (*value).type_id() != codec.type_id() {
             return Err(wrong_type(codec.type_name));
         }
@@ -164,6 +164,7 @@ impl Payload {
         PayloadRef {
             value: &*self.value,
             codec: self.codec,
+            shared: Some(&self.value),
         }
     }
 
@@ -175,11 +176,11 @@ impl Payload {
         &self.codec
     }
 
-    pub fn to_json(&self) -> Result<Json, CordisError> {
+    pub fn to_json(&self) -> Result<Json, Error> {
         self.as_ref().to_json()
     }
 
-    pub fn to_args(&self) -> Result<Vec<Json>, CordisError> {
+    pub fn to_args(&self) -> Result<Vec<Json>, Error> {
         self.as_ref().to_args()
     }
 
@@ -194,14 +195,16 @@ impl Payload {
 pub struct PayloadRef<'a> {
     value: &'a (dyn Any + Send + Sync),
     codec: Codec,
+    /// The payload's `Arc`, when it has one: a listener of the payload's
+    /// own type gets it without a copy.
+    shared: Option<&'a Arc<dyn Any + Send + Sync>>,
 }
 
 impl<'a> PayloadRef<'a> {
-    pub(crate) fn borrowed<E: crate::Event>(event: &'a E) -> Self {
-        Self {
-            value: event,
-            codec: Codec::of::<E>(),
-        }
+    /// The event as an `Arc<E>` without a copy, when the payload is an `E`
+    /// held in an `Arc`.
+    pub(crate) fn shared<E: crate::Event>(&self) -> Option<Arc<E>> {
+        self.shared.and_then(|arc| arc.clone().downcast::<E>().ok())
     }
 
     pub fn downcast<E: 'static>(&self) -> Option<&'a E> {
@@ -216,11 +219,11 @@ impl<'a> PayloadRef<'a> {
         &self.codec
     }
 
-    pub fn to_json(&self) -> Result<Json, CordisError> {
+    pub fn to_json(&self) -> Result<Json, Error> {
         self.codec.to_json(self.value)
     }
 
-    pub fn to_args(&self) -> Result<Vec<Json>, CordisError> {
+    pub fn to_args(&self) -> Result<Vec<Json>, Error> {
         self.codec.to_args(self.value)
     }
 }
@@ -249,7 +252,7 @@ impl Value {
 
     /// A value whose type is known only by its codec. `value` must have the
     /// codec's type.
-    pub fn from_boxed(value: Box<dyn Any + Send>, codec: Codec) -> Result<Self, CordisError> {
+    pub fn from_boxed(value: Box<dyn Any + Send>, codec: Codec) -> Result<Self, Error> {
         if (*value).type_id() != codec.type_id() {
             return Err(wrong_type(codec.type_name));
         }
@@ -268,7 +271,7 @@ impl Value {
         &self.codec
     }
 
-    pub fn to_json(&self) -> Result<Json, CordisError> {
+    pub fn to_json(&self) -> Result<Json, Error> {
         self.codec.to_json(&*self.value)
     }
 
@@ -277,7 +280,7 @@ impl Value {
     pub fn into_typed<T: Serialize + DeserializeOwned + Send + 'static>(
         self,
         transcoder: &dyn Transcoder,
-    ) -> Result<T, CordisError> {
+    ) -> Result<T, Error> {
         if self.value.is::<T>() {
             return Ok(*self.value.downcast::<T>().expect("checked type"));
         }
@@ -315,17 +318,13 @@ impl Value {
 /// type. The default goes through JSON: events by their arguments
 /// ([`Codec::to_args`] then [`Codec::from_args`]), values by
 /// [`Codec::to_json`] then [`Codec::from_json`]. Install another with
-/// [`EventBus::set_transcoder`](crate::EventBus::set_transcoder).
+/// [`EventBus::set_transcoder`](crate::internal::EventBus::set_transcoder).
 pub trait Transcoder: Send + Sync + 'static {
-    fn event(
-        &self,
-        from: PayloadRef<'_>,
-        into: &Codec,
-    ) -> Result<Box<dyn Any + Send>, CordisError> {
+    fn event(&self, from: PayloadRef<'_>, into: &Codec) -> Result<Box<dyn Any + Send>, Error> {
         into.from_args(from.to_args()?)
     }
 
-    fn value(&self, from: &Value, into: &Codec) -> Result<Box<dyn Any + Send>, CordisError> {
+    fn value(&self, from: &Value, into: &Codec) -> Result<Box<dyn Any + Send>, Error> {
         into.from_json(from.to_json()?)
     }
 }
@@ -339,7 +338,7 @@ impl Transcoder for JsonTranscoder {}
 pub(crate) fn decode_event<E: crate::Event>(
     t: &dyn Transcoder,
     event: PayloadRef<'_>,
-) -> Result<Box<E>, CordisError> {
+) -> Result<Box<E>, Error> {
     let codec = Codec::of::<E>();
     t.event(event, &codec)?
         .downcast::<E>()

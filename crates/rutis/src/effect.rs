@@ -3,7 +3,7 @@ use std::sync::{Arc, Weak};
 
 use tokio::sync::Notify;
 
-use crate::error::{aggregate_arcs, join_panic_error, panic_error, CordisError};
+use crate::error::{aggregate_arcs, join_panic_error, panic_error, Error, ErrorKind};
 use crate::fiber::FiberInner;
 use crate::BoxFuture;
 
@@ -12,9 +12,9 @@ pub enum Effect {
     /// 无清理。
     Done,
     /// 同步清理。
-    Disposer(Box<dyn FnOnce() -> Result<(), CordisError> + Send>),
+    Disposer(Box<dyn FnOnce() -> Result<(), Error> + Send>),
     /// 异步清理(在任务边界执行,panic 经 JoinError 包 `PluginFailed`,D30)。
-    AsyncDisposer(Box<dyn FnOnce() -> BoxFuture<'static, Result<(), CordisError>> + Send>),
+    AsyncDisposer(Box<dyn FnOnce() -> BoxFuture<'static, Result<(), Error>> + Send>),
     /// 多个清理,按声明序逆序(LIFO)执行。
     Many(Vec<Effect>),
 }
@@ -77,8 +77,8 @@ impl Effect {
 }
 
 pub(crate) enum Cleanup {
-    Sync(Box<dyn FnOnce() -> Result<(), CordisError> + Send>),
-    Async(Box<dyn FnOnce() -> BoxFuture<'static, Result<(), CordisError>> + Send>),
+    Sync(Box<dyn FnOnce() -> Result<(), Error> + Send>),
+    Async(Box<dyn FnOnce() -> BoxFuture<'static, Result<(), Error>> + Send>),
 }
 
 /// EffectRecord(§四):执行与清理分离;清理恰好一次,重复调用 join 同一结果;
@@ -96,7 +96,7 @@ pub(crate) struct EffectRecord {
 enum EffectState {
     Live(Vec<Cleanup>),
     Draining,
-    Done(Option<Arc<CordisError>>),
+    Done(Option<Arc<ErrorKind>>),
 }
 
 impl EffectRecord {
@@ -129,7 +129,7 @@ impl EffectRecord {
     pub(crate) async fn drain(
         self: &Arc<Self>,
         handle: &tokio::runtime::Handle,
-    ) -> Result<(), Arc<CordisError>> {
+    ) -> Result<(), Arc<ErrorKind>> {
         if let Some(mut cleanups) = self.claim() {
             let this = self.clone();
             let runner = handle.clone();
@@ -160,7 +160,7 @@ impl EffectRecord {
     }
 
     /// Record the cleanups' result and wake every join.
-    pub(crate) fn finish(self: &Arc<Self>, err: Option<Arc<CordisError>>) {
+    pub(crate) fn finish(self: &Arc<Self>, err: Option<Arc<ErrorKind>>) {
         *self.st.lock().unwrap() = EffectState::Done(err.clone());
         // 自摘与寄存(0.2.1)先于 notify:join 返回时宿主列表已无本记录。
         // 仅当记录仍在宿主 effects 列表(提前 drain,收集者不是 fiber
@@ -195,7 +195,7 @@ impl EffectRecord {
 
     /// Wait for the cleanups' result. The wakeup is registered before the
     /// state is read, so a `finish` between the two is not missed.
-    pub(crate) async fn join(&self) -> Result<(), Arc<CordisError>> {
+    pub(crate) async fn join(&self) -> Result<(), Arc<ErrorKind>> {
         loop {
             let notified = self.notify.notified();
             {
@@ -219,8 +219,8 @@ impl EffectRecord {
 pub(crate) async fn run_cleanups(
     cleanups: &mut Vec<Cleanup>,
     handle: &tokio::runtime::Handle,
-) -> Option<Arc<CordisError>> {
-    let mut errors: Vec<CordisError> = Vec::new();
+) -> Option<Arc<ErrorKind>> {
+    let mut errors: Vec<Error> = Vec::new();
     while let Some(cleanup) = cleanups.pop() {
         let result = match cleanup {
             Cleanup::Sync(f) => match std::panic::catch_unwind(AssertUnwindSafe(f)) {
@@ -249,24 +249,24 @@ pub(crate) async fn run_cleanups(
             errors.push(e);
         }
     }
-    aggregate_arcs(errors.into_iter().map(Arc::new).collect())
+    aggregate_arcs(errors.into_iter().map(Error::shared).collect())
 }
 
 /// 清理句柄(D28):仅表示提前释放,不需要也不应再放回 `Effect`;
 /// drop 不触发清理(fiber 卸载仍兜底)。
 pub struct Disposer {
-    run: Option<Box<dyn FnOnce() -> BoxFuture<'static, Result<(), Arc<CordisError>>> + Send>>,
+    run: Option<Box<dyn FnOnce() -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> + Send>>,
 }
 
 impl Disposer {
     pub(crate) fn new(
-        run: Box<dyn FnOnce() -> BoxFuture<'static, Result<(), Arc<CordisError>>> + Send>,
+        run: Box<dyn FnOnce() -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> + Send>,
     ) -> Self {
         Self { run: Some(run) }
     }
 
     /// 提前释放并等待清理完成(幂等:重复调用 join 同一终态)。
-    pub fn dispose(mut self) -> BoxFuture<'static, Result<(), Arc<CordisError>>> {
+    pub fn dispose(mut self) -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> {
         match self.run.take() {
             Some(run) => run(),
             None => Box::pin(async { Ok(()) }),
