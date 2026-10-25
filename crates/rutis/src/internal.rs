@@ -18,6 +18,36 @@ pub use crate::plugin::build_fn;
 pub mod service {
     pub use crate::service::*;
 }
+
+/// Plugin definitions another language handed over (rutis-bridge).
+pub mod definitions {
+    pub use crate::definition::{Source, WeakDefinition};
+    use crate::events::Scope;
+    use crate::host::BoxFuture;
+    use crate::{Ctx, Definition};
+
+    /// A definition built by `source`, belonging to `origin`'s generation;
+    /// with no origin, to a process, ended with [`end`]. Copies mount inside
+    /// `scope`, or the origin's scope chain when `scope` is `None`.
+    pub fn from_source(
+        origin: Option<&Ctx>,
+        scope: Option<Vec<Scope>>,
+        name: String,
+        source: Box<dyn Source>,
+    ) -> Definition {
+        Definition::from_source(origin, scope, name, source)
+    }
+
+    /// How `definition` builds its copies.
+    pub fn source(definition: &Definition) -> &dyn Source {
+        definition.source()
+    }
+
+    /// End `definition` now: its copies end, then it has ended.
+    pub fn end(definition: &Definition) -> BoxFuture<'static, ()> {
+        crate::definition::end(definition)
+    }
+}
 pub use rutis_macros::sdk_service as __sdk_service;
 
 use crate::effect::{Disposer, Effect};

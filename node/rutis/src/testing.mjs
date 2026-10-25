@@ -97,6 +97,10 @@ function cross(value, where, seen = new Set(), data = false, depth = 0) {
     }
   }
   if (typeof value !== 'object') return value
+  // A plugin definition crosses as itself: what receives it hands it back
+  // to the runtime that defined it, which loads it as it is
+  // (docs/design-plugin-values-2026-10-25.md R10), so `load` takes it.
+  if (isPlugin(value)) return value
   if (hasBehaviour(value)) return reference(value, where)
   if (seen.has(value)) throw new PluginTestError(`${where}: cyclic data cannot cross between processes`)
   if (depth >= MAX_DEPTH) throw new PluginTestError(`${where}: a value nested deeper than ${MAX_DEPTH} levels cannot cross between processes`)

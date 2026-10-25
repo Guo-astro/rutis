@@ -34,6 +34,13 @@ pub trait HostDispatch: Send + Sync + 'static {
     fn provider(&self) -> Option<String> {
         None
     }
+
+    /// The service as itself, for rutis's own code to recognize what it is
+    /// (a [`RowService`](crate::runtime::RowService), whose plugin
+    /// definitions [`crate::runtime::returned`] reads).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// The key a host service named `name` is provided under, for example

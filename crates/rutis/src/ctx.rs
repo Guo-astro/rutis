@@ -905,8 +905,33 @@ impl Ctx {
     /// 装载插件(支柱 1)。返回 FiberView;级联卸载:child dispose 注册为
     /// parent fiber 的 effect(D28:child plugin 自动归 parent fiber 所有)。
     pub fn plugin(&self, p: impl DynPlugin) -> FiberView {
+        // A copy of a plugin definition is recorded as it mounts, so it ends
+        // with the definition's origin even while it waits for dependencies.
+        let copy = crate::definition::copy_of(&p);
         let fiber = spawn_fiber(&self.0.shared, Some(self), Some(Arc::new(p)), false);
-        self.mount_fiber(fiber)
+        let view = self.mount_fiber(fiber);
+        if let Some(definition) = copy {
+            definition.mounted(&view);
+        }
+        view
+    }
+
+    /// Record a plugin definition this context's generation made: false when
+    /// the generation is already stopping (the definition ends at once).
+    pub(crate) fn register_definition(&self, definition: Weak<crate::definition::Inner>) -> bool {
+        let Some(fiber) = self.0.fiber.upgrade() else {
+            return false;
+        };
+        let _admission = self.0.shared.admission.lock().unwrap();
+        let tr = fiber.transition.lock().unwrap();
+        if self.0.shared.closing.load(Ordering::SeqCst)
+            || self.check_generation(tr.generation, tr.state).is_err()
+            || matches!(tr.state, FiberState::Unloading | FiberState::Disposed)
+        {
+            return false;
+        }
+        fiber.definitions.lock().unwrap().push(definition);
+        true
     }
 
     /// 装配收尾:级联卸载 effect + 初始装载意图(评审 #10:parent 失活时

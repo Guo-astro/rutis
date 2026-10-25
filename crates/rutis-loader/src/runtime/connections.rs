@@ -343,7 +343,7 @@ impl RuntimeInstances {
             JsFactory::with_keys(
                 row,
                 RowRuntime::Connection(process),
-                PathBuf::from(plugin),
+                super::RowEntry::Module(PathBuf::from(plugin)),
                 gated,
                 described.provides.clone(),
                 provided,

@@ -722,6 +722,16 @@ fn referenced<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Reference, D
         .ok_or_else(|| de::Error::custom("reference outside of a decode"))
 }
 
+/// A reference serialized as itself, wherever it is (a plugin definition
+/// going back to its runtime, `rutis::Definition`).
+pub(crate) struct Marked(pub(crate) Reference);
+
+impl Serialize for Marked {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        mark(&self.0, serializer)
+    }
+}
+
 fn mark<S: Serializer>(reference: &Reference, serializer: S) -> Result<S::Ok, S::Error> {
     let index = ENCODING.with(|references| {
         references.borrow_mut().as_mut().map(|references| {

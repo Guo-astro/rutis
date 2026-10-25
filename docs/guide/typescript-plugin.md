@@ -57,6 +57,8 @@ export default definePlugin<Config>({
 
 `weather` 不用声明：`ctx.provide` 提供的服务自动对外，方法取对象上的函数（这里是 `today`），按 `async` 调用。要把某个方法标成 `sync`，或让 `rutis-host check` 在运行前知道插件提供什么，再写 `provides`，例如 `provides: { weather: { unit: 'sync' } }`（写了的服务按声明，只有声明的方法能调用）。
 
+插件本身也是一个值：把 `definePlugin(...)` 的结果照常作为参数交给一个服务（比如应用的部件登记处），收的一方就能在别处挂它，每挂一次是一份，用的是你在 `apply` 里准备好的东西。见 [插件 API](plugin-api.md#插件定义)。
+
 ## 3. 测试
 
 `@arcships/rutis/testing` 不需要宿主，给插件提供假服务、调用它提供的服务：

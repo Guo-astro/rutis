@@ -14,6 +14,7 @@
 pub(crate) use crate::session::*;
 
 mod access;
+mod definitions;
 mod local;
 mod plugin;
 mod process;
@@ -30,9 +31,14 @@ pub(crate) mod unix;
 pub use crate::transport::local::Stdio;
 pub(crate) use access::peer_session;
 pub use access::RuntimeAccessPlugin;
+pub(crate) use definitions::read as read_definition;
+pub use definitions::{mounter_key, returned, ForeignPlugin, PluginMounter};
 pub use local::LocalRuntime;
 pub use plugin::{Runtime, RuntimeHandle, RuntimePlugin, RuntimeState};
-pub use process::{scoped_id, Host, HostLease, Launcher, Mount, Process, RowSchema, ServiceEvents};
+pub(crate) use process::calling as calling_process;
+pub use process::{
+    scoped_id, Host, HostLease, Launcher, Mount, PluginSchema, Process, RowSchema, ServiceEvents,
+};
 pub use projection::Projection;
 pub use rows::{row_projection, row_projection_of, row_projection_with, RowService};
 

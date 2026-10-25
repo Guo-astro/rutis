@@ -28,7 +28,9 @@ pub mod values;
 pub use objects::{
     arg, decode_value, Bytes, Dynamic, JsError, ObjectRef, RemoteFunction, ValueMap, ValueSet,
 };
-pub(crate) use objects::{decode_data, decode_data_with, decode_with, encode_with, transcode_with};
+pub(crate) use objects::{
+    decode_data, decode_data_with, decode_with, encode_with, transcode_with, Marked,
+};
 pub use rpc::*;
 pub(crate) use services::with_caller_row;
 pub use services::{caller_row, host_key, host_key_in, CallerRow, HostDispatch};

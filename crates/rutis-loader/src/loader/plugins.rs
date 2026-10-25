@@ -173,6 +173,14 @@ impl DynPlugin for LoaderPlugin {
         Box::pin(async move {
             // The service is released with the fiber.
             ctx.provide(self.loader.clone())?;
+            // Copies of plugin definitions other languages hand over are
+            // mounted through it, anywhere below.
+            #[cfg(feature = "runtimes")]
+            ctx.provide_as::<dyn rutis_bridge::runtime::PluginMounter>(Arc::new(
+                crate::runtime::DefinitionMounter {
+                    loader: self.loader.clone(),
+                },
+            ))?;
             // Exported Rust services outside instances, served from here.
             #[cfg(any(feature = "runtimes", feature = "peer"))]
             for export in self.loader.inner.catalog.exports_in(None) {

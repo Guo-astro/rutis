@@ -281,6 +281,35 @@ pub struct Loader {
 }
 
 impl Loader {
+    /// The instances enclosing a plugin mounted at `at`, innermost first:
+    /// what its keys are computed for, as a row's copy there would be.
+    #[cfg(feature = "runtimes")]
+    pub(crate) fn build_at(&self, at: &Ctx) -> crate::Build {
+        let scope = rutis::host::CtxHost::scope(at);
+        let state = self.inner.state.lock().unwrap();
+        let chain = scope
+            .iter()
+            .rev()
+            .filter_map(|link| {
+                state
+                    .instances
+                    .values()
+                    .find(|instance| instance.kernel.to_string() == link.id)
+                    .map(|instance| crate::resolver::BuildLink {
+                        group: instance.group.clone(),
+                        instance: instance.kernel,
+                        values: instance.values.clone(),
+                    })
+            })
+            .collect();
+        crate::Build { chain }
+    }
+
+    #[cfg(feature = "runtimes")]
+    pub(crate) fn catalog(&self) -> &ServiceCatalog {
+        &self.inner.catalog
+    }
+
     /// The key the catalog gives the service `name` for a copy running in
     /// `build`'s instances.
     #[cfg(feature = "peer")]

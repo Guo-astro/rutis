@@ -82,6 +82,8 @@ pub struct Projection {
     /// Slots refused because another provider has their key, and why
     /// (see [`Projection::take_refused`], [`Projection::on_refused`]).
     refused: Mutex<Refusals>,
+    /// The row whose services these are ([`Projection::owned_by`]).
+    owner: Mutex<Option<crate::session::CallerRow>>,
 }
 
 impl Projection {
@@ -92,7 +94,22 @@ impl Projection {
             me: me.clone(),
             announce: Mutex::new(None),
             refused: Mutex::default(),
+            owner: Mutex::new(None),
         })
+    }
+
+    /// The row whose services these are: a plugin definition one of them
+    /// returns belongs to it ([`crate::runtime::returned`]).
+    pub fn owned_by(&self, row: crate::session::CallerRow) {
+        *self.owner.lock().unwrap() = Some(row);
+    }
+
+    pub(crate) fn owner(&self) -> Option<crate::session::CallerRow> {
+        self.owner.lock().unwrap().clone()
+    }
+
+    pub(crate) fn weak(&self) -> Weak<Projection> {
+        self.me.clone()
     }
 
     /// Follow the services a row announces without declaring them

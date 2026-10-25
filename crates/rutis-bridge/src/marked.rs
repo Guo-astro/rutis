@@ -452,6 +452,15 @@ impl Wire for BridgeWire {
         }
     }
 
+    fn definition(
+        &self,
+        value: Encoded,
+    ) -> BoxFuture<'static, Result<rutis::Definition, CallError>> {
+        // Who calls is read now, while the call starts.
+        let reading = crate::exports::definition(value_of(value));
+        Box::pin(async move { reading.await.map_err(call_error) })
+    }
+
     fn caller(&self) -> Option<Ctx> {
         caller_row().map(|row| row.ctx().clone())
     }

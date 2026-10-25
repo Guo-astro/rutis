@@ -218,6 +218,7 @@ impl PartialEq for Reference {
         match (&self.0, &other.0) {
             (ReferenceInner::Local(a), ReferenceInner::Local(b)) => Arc::ptr_eq(a, b),
             (ReferenceInner::Remote(a), ReferenceInner::Remote(b)) => Arc::ptr_eq(a, b),
+            (ReferenceInner::Home(a), ReferenceInner::Home(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -226,18 +227,61 @@ impl PartialEq for Reference {
 enum ReferenceInner {
     Local(Arc<Object>),
     Remote(Arc<Import>),
+    /// An import that may only go back to its own session: a plugin
+    /// definition, never relayed to another runtime.
+    Home(Arc<Import>),
 }
 impl Reference {
+    /// A plugin definition the far end defined (`plugin` kind).
+    pub fn is_plugin(&self) -> bool {
+        match &self.0 {
+            ReferenceInner::Remote(import) | ReferenceInner::Home(import) => {
+                import.kind == Kind::Plugin
+            }
+            ReferenceInner::Local(_) => false,
+        }
+    }
+    /// This reference as one that may only go back to the session it came
+    /// from (a plugin definition): `None` for one this side owns.
+    pub(crate) fn home_only(&self) -> Option<Reference> {
+        match &self.0 {
+            ReferenceInner::Remote(import) | ReferenceInner::Home(import) => {
+                Some(Reference(ReferenceInner::Home(import.clone())))
+            }
+            ReferenceInner::Local(_) => None,
+        }
+    }
+    /// Whether the far end of `connection` owns this reference.
+    pub(crate) fn is_from(&self, connection: &Connection) -> bool {
+        match &self.0 {
+            ReferenceInner::Remote(import) | ReferenceInner::Home(import) => {
+                Weak::ptr_eq(&import.peer, &Arc::downgrade(&connection.0))
+            }
+            ReferenceInner::Local(_) => false,
+        }
+    }
+    /// The identity of the remote object: one per object the far end
+    /// exported, however often it was sent.
+    pub(crate) fn identity(&self) -> Option<usize> {
+        match &self.0 {
+            ReferenceInner::Remote(import) | ReferenceInner::Home(import) => {
+                Some(Arc::as_ptr(import) as usize)
+            }
+            ReferenceInner::Local(_) => None,
+        }
+    }
     pub fn is_future(&self) -> bool {
         match &self.0 {
             ReferenceInner::Local(object) => object.kind() == Kind::Future,
             ReferenceInner::Remote(import) => import.kind == Kind::Future,
+            ReferenceInner::Home(_) => false,
         }
     }
     pub fn is_function(&self) -> bool {
         match &self.0 {
             ReferenceInner::Local(object) => object.kind() == Kind::Function,
             ReferenceInner::Remote(import) => import.kind == Kind::Function,
+            ReferenceInner::Home(_) => false,
         }
     }
     pub fn is_object(&self) -> bool {
@@ -249,6 +293,7 @@ impl Reference {
             ReferenceInner::Remote(import) => import
                 .connection()?
                 .request_sync(Operation::Call(import.id, None, args)),
+            ReferenceInner::Home(_) => Err(not_callable()),
         }
     }
     pub async fn call_async(&self, args: Value) -> Reply {
@@ -260,6 +305,7 @@ impl Reference {
                     .request_async(Operation::Call(import.id, None, args))
                     .await
             }
+            ReferenceInner::Home(_) => Err(not_callable()),
         }
     }
     fn remote_object(&self) -> Result<&Arc<Import>, Error> {
@@ -299,6 +345,7 @@ impl Reference {
                     .request_async(Operation::Await(import.id, import.origin.clone()))
                     .await
             }
+            ReferenceInner::Home(_) => Err(not_callable()),
         }
     }
     pub fn wait(&self) -> Reply {
@@ -309,8 +356,19 @@ impl Reference {
             ReferenceInner::Local(_) => {
                 Err(Error::Value("local future requires wait_async".into()))
             }
+            ReferenceInner::Home(_) => Err(not_callable()),
         }
     }
+}
+
+/// A plugin definition held to be loaded is not called.
+fn not_callable() -> Error {
+    Error::Value("a plugin definition is loaded, not called".into())
+}
+
+/// What sending a plugin definition anywhere but home fails with.
+pub(crate) fn not_home() -> Error {
+    Error::Value("a plugin definition can only go back to the runtime that defined it".into())
 }
 
 #[derive(Clone)]
@@ -742,13 +800,19 @@ const VALUE_CAPABILITIES: [&str; 10] = [
 /// right after the handshake (`docs/design-events-protocol-2026-10-18.md`
 /// §2).
 pub const EVENTS_CAPABILITY: &str = "events-v2";
+/// Plugin definitions as values (`plugin` references,
+/// `docs/design-plugin-values-2026-10-25.md` §5): a side declaring it takes
+/// them. Rust declares it in both formats; the runtimes send one only to a
+/// far end that did.
+pub const PLUGINS_CAPABILITY: &str = "plugins";
 
 /// What this side declares in a compat-format handshake: it marks its
 /// synchronous waits, and takes such marks (#228); it takes every tagged
 /// value (#308); it speaks the event protocol of 0.13 (#464).
-const COMPAT_CAPABILITIES: [&str; 12] = [
+const COMPAT_CAPABILITIES: [&str; 13] = [
     "sync-wait",
     EVENTS_CAPABILITY,
+    PLUGINS_CAPABILITY,
     "value-instant",
     "value-datetime",
     "value-date",
@@ -1006,6 +1070,7 @@ impl Endpoint {
                 "forwarding",
                 "sync-wait",
                 EVENTS_CAPABILITY,
+                PLUGINS_CAPABILITY,
             ]
             .into_iter()
             .chain(VALUE_CAPABILITIES)
@@ -1802,6 +1867,13 @@ impl Connection {
             Value::Reference(Reference(ReferenceInner::Remote(import))) => {
                 self.encode_import(import, grants)?
             }
+            // A plugin definition only goes home (design-plugin-values §5).
+            Value::Reference(Reference(ReferenceInner::Home(import))) => {
+                if !Weak::ptr_eq(&import.peer, &Arc::downgrade(&self.0)) {
+                    return Err(not_home());
+                }
+                self.encode_import(import, grants)?
+            }
             // Decoding unwraps relays, so Rust code should never hold one;
             // if it does, forward from the innermost import all the same.
             Value::Reference(Reference(ReferenceInner::Local(object))) => match &object.body {
@@ -2025,6 +2097,16 @@ impl Connection {
                         import
                     }
                 };
+                // Imported first, so dropping it releases it on the far end.
+                if kind == Kind::Plugin && !self.declares(PLUGINS_CAPABILITY) {
+                    drop(imports);
+                    drop(import);
+                    return Err(Error::Value(
+                        "received a plugin definition, which this side does not take \
+                         (it did not declare the capability plugins)"
+                            .into(),
+                    ));
+                }
                 Value::Reference(Reference(ReferenceInner::Remote(import)))
             }
         })

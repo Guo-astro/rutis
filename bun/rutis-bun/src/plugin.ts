@@ -92,6 +92,14 @@ function check(plugin: any, entry: string): Plugin {
   return { name: typeof plugin.name === 'string' ? plugin.name : null, apply: plugin.apply, inject: [...inject], provides, announces, config: plugin.config ?? null, api }
 }
 
+// A plugin definition this runtime handed over, back to be described or
+// loaded as a row's entry: an SDK plugin (`definePlugin`), or an object with
+// `apply` written like a module's exports. Bun has no Cordis plugins.
+export function definition(value: any): Plugin {
+  if (value === null || typeof value !== 'object') throw new TypeError('not a plugin definition: expected a definePlugin result or an object with apply')
+  return check(value, typeof value.name === 'string' ? value.name : 'plugin definition')
+}
+
 // The plugin a module declares.
 export function declared(module: any, entry: string): Plugin {
   if (module?.default?.[PLUGIN] === true) return check(module.default, entry)

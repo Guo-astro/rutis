@@ -93,7 +93,7 @@ let client: Client
 try {
   // The logical bus (#464): `events.elsewhere` runs as its frame arrives;
   // a host older than 0.13 (no events-v2) is refused (protocol §2.2).
-  client = await Client.connect(channel, { dispatch: runtime.dispatch, token, endpoint, inline: ['events.elsewhere'], requires: [EVENTS_V2] })
+  client = await Client.connect(channel, { dispatch: runtime.dispatch, token, endpoint, inline: ['events.elsewhere', 'plugins.read'], requires: [EVENTS_V2] })
 } catch (error: any) {
   if (error?.message === NO_EVENTS_V2) {
     process.stderr.write(`rutis: refused: incompatible (${NO_EVENTS_V2}); stopping\n`)

@@ -618,6 +618,16 @@ pub trait Wire: Send + Sync + 'static {
     fn undefined(&self) -> Encoded;
     /// The function passed as `value`.
     fn function(&self, value: Encoded) -> Result<Arc<dyn Function>, CallError>;
+    /// The plugin definition passed as `value`: another language's, whose
+    /// declarations are read before the method runs. What the call needs
+    /// from its caller is read now, while the call starts.
+    fn definition(
+        &self,
+        value: Encoded,
+    ) -> BoxFuture<'static, Result<crate::Definition, CallError>> {
+        drop(value);
+        Box::pin(async { Err(CallError::new("plugin definitions cannot be passed here")) })
+    }
     /// The context of the row calling, read while the call starts.
     fn caller(&self) -> Option<Ctx>;
     /// A call that is wrong in itself (arity, a value of the wrong shape).
@@ -669,6 +679,15 @@ pub fn caller(wire: &'static dyn Wire, method: &str) -> Result<Ctx, CallError> {
 /// The function passed for a parameter taking one.
 pub fn function(wire: &'static dyn Wire, value: Encoded) -> Result<Arc<dyn Function>, CallError> {
     wire.function(value)
+}
+
+/// The plugin definition passed for a parameter taking one: read once the
+/// call's future runs (see [`Wire::definition`]).
+pub fn definition(
+    wire: &'static dyn Wire,
+    value: Encoded,
+) -> BoxFuture<'static, Result<crate::Definition, CallError>> {
+    wire.definition(value)
 }
 
 /// Encode an argument of a call back.

@@ -2,7 +2,7 @@
 
 [English](design-plugin-values-2026-10-25.en.md)
 
-状态：设计（2026-10-25），#642。
+状态：P1 已实现（2026-10-25，#642）：内核、rutis-bridge、rutis-loader、Node、Bun。P2（Python、Go）、P3（Swift、Kotlin）未做。
 
 ## 一、目标
 
@@ -182,19 +182,19 @@ for def in parts.of("session") {
 1. **类型（rutis 内核）：** `Definition` 放在 rutis 内核，是根上的第 10 个名字。它不能放在 rutis-bridge：dylib 插件只依赖 `rutis-sdk`，而 `rutis-sdk` 只再导出 rutis；`#[rutis::service]` 生成的代码也只依赖 rutis。内核只放类型和一个对象安全的接口：
    - Rust 造的定义由内核自己实现。`at` 解码配置、调用 `build`，把得到的插件包一层，记进这个定义的副本表。
    - 其他语言的定义由 rutis-bridge 在加载时装进内核的钩子实现，做法和 `#[rutis::service]` 的 `Exposer` 一样。
-   - 来源结束：内核在来源 fiber 停下时，先结束这个定义的副本并等它们清理完，再运行来源的清理（R6）。Rust 造的定义，来源就是 `new` 的 `ctx` 所在的 fiber；其他语言的定义，来源由 rutis-loader 在来源行的清理里处理（下面第 4 条）。
+   - 来源结束：内核在来源 fiber 停下时，先结束这个定义的副本并等它们清理完，再运行来源的清理（R6）。Rust 造的定义，来源就是 `new` 的 `ctx` 所在的 fiber；其他语言的定义，来源是交出它的那一行的 fiber（下面第 4 条）。
    - 位置检查（R4）：比较挂载位置和来源的作用域链（`ctx.scope()`），内核就能做。
 2. **解码（rutis-bridge）：** 其他语言的 `Definition` 持有引用、读到的声明，以及来源（来源行这一代的 key，或者进程）。
    - 生成的服务里，参数种类在"函数""数据"之外加一种"插件定义"（宏的 `Param` 和 `rutis::service` 的 `Wire`），`build.rs` 的 `Exports` 也认这个类型。
-   - 解码出 `Definition` 时发 `plugins.read`。参数：生成的分发代码等它完成再调用方法。返回值：Rust 调用其他语言的服务时，对方的回复到达后先读声明，再把结果交给 Rust 调用方。
+   - 解码出 `Definition` 时发 `plugins.read`。参数：生成的分发代码等它完成再调用方法。返回值：Rust 调用其他语言的服务，拿到回复后用 `rutis_bridge::runtime::returned(&*service, value).await` 读出定义，这一步读声明，读完才得到 `Definition`。
    - 来源在解码时确定：参数取 `caller_row()`，返回值取提供这个服务的行。
    - 编码 `Definition` 时检查要发往的会话：其他语言的定义发回定义它的运行时，就发原来的引用；其他情况都让这次调用失败（§五 第 2 条，R3）。
 3. **挂载其他语言的定义（rutis-loader）：** `at(&ctx, config)` 经 rutis-bridge 定义、rutis-loader 提供的一个接口，找到树上的 loader。
    - loader 沿父 fiber 找到 `ctx` 所在的行和实例（和 `Loader::locate` 的找法一样），算出实例链和键，造出这一份插件（一个 `DynPlugin`，依赖在这时定下）。
    - 这一份启动时，走和行在实例里的副本同一段代码（`JsRow::start`）：租用宿主服务、发布服务、`rows.load`、处理 `rows.ended`。区别只有两点：运行时是来源的进程（`RowRuntime::Connection`），`entry` 是插件定义。
-4. **结束其他语言的定义（rutis-loader）：** loader 为每个来源记下从它的定义挂出的副本。
-   - 来源行卸载时（`JsRow` 的清理），先让这些副本自己结束（`dispose_self`），等它们清理完，再撤下这一行发布的服务、发 `rows.unload`。
-   - 进程退出时，发布的服务随连接断开撤下，副本按 `rows.ended` 的同一条路径结束。
+4. **结束其他语言的定义：** 其他语言的定义的来源就是来源行的 fiber（调用方 `caller_row()` 的 `ctx`），所以和 Rust 造的定义一样由内核结束（第 1 条）：来源行停下时，先结束副本并等它们清理完，再运行 `JsRow` 的清理（撤下这一行发布的服务、发 `rows.unload`）。loader 不另记副本。
+   - 不属于任何行的定义，由 rutis-bridge 在进程的会话结束时结束。
+   - 进程退出时，来源行跟着停下（运行时不在了，行回到等待），副本因此结束。
    - 之后 `ended()` 完成；宿主丢掉引用，运行时随之释放这个值。
 5. **各运行时：**
    - Node、Bun：实现 `plugins.read` 和以插件定义为 `entry` 的 `rows.load`；`definePlugin` 的结果按 `plugin` 种类发出。

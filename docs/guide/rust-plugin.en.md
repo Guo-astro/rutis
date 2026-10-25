@@ -15,6 +15,7 @@ Writing a plugin takes only these:
 | `rutis::events::Mode` | Which mode a listener is called in |
 | `rutis::Disposer` | What `provide`, `on` and `effect` return, to withdraw early |
 | `#[rutis::service]` | Serves a service to other languages |
+| `rutis::Definition` | A plugin definition: a plugin to hand over and mount many times, see [Plugin definitions](#plugin-definitions) |
 
 The `Ctx` methods for plugins:
 
@@ -198,6 +199,59 @@ plugin = define_plugin(apply, inject=["calendar"])
 ```
 
 An unmarked type is not served. What crosses, how errors are thrown and methods taking `&Ctx`: [mark the type `#[rutis::service]`](rust-host.en.md#mark-the-type-rutisservice). For several copies of one service, use rutis-loader instances: mount one copy in each instance, and the rows of an instance use its own.
+
+### Plugin definitions
+
+A `Plugin` is an instance: its config is in its fields, and handing it to `ctx.plugin` uses it up. To hand a plugin elsewhere, to be mounted there many times (one per session, say), use `rutis::Definition`: `Definition::new(ctx, build)` makes a definition, whose `build` gets the `ctx` where a copy mounts and that copy's config, and returns a `Plugin`; the mounting side writes `ctx.plugin(def.at(&ctx, config)?)`.
+
+```rust
+use std::sync::{Arc, Mutex};
+use rutis::{Ctx, Definition, Plugin, Result};
+
+/// One per session; `depth` comes from its own config.
+struct Part {
+    depth: u32,
+}
+
+impl Plugin for Part {
+    type Deps = ();
+
+    async fn apply(&self, _: &Ctx, _: ()) -> Result {
+        println!("depth {}", self.depth);
+        Ok(())
+    }
+}
+
+/// Hands a definition of `Part` to whoever mounts parts (here just a list).
+struct Git {
+    parts: Arc<Mutex<Vec<Definition>>>,
+}
+
+impl Plugin for Git {
+    type Deps = ();
+
+    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
+        let pool = Arc::new(String::from("pool")); // prepared in apply
+        let definition = Definition::new(ctx, move |_at: &Ctx, depth: u32| {
+            let _pool = pool.clone();
+            Ok(Part { depth })
+        });
+        self.parts.lock().unwrap().push(definition);
+        Ok(())
+    }
+}
+
+/// The mounting side: each mount is one copy, with its own config.
+fn mount(at: &Ctx, definition: &Definition) -> Result {
+    at.plugin(definition.at(at, 3u32)?);
+    Ok(())
+}
+# fn main() {}
+```
+
+- A definition belongs to the current generation of the plugin that made it: when that plugin unloads, restarts or ends, every copy mounted from it ends first, and is cleaned up, before the plugin's own cleanups run; then `at` fails and `ended()` completes.
+- It can only be mounted inside the instance of the plugin that made it, or deeper.
+- A plugin definition another language hands over is a `Definition` too, mounted the same way; see the [plugin API](plugin-api.en.md#plugin-definitions). A definition made in Rust cannot be handed to another language.
 
 ### Events
 

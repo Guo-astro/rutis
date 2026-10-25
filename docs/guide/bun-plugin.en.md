@@ -37,6 +37,8 @@ test('greets', async () => {
 
 Without the SDK, a module can also export `apply(ctx, config)` directly, with `inject`, `provides` (optional, each method `'sync'` or `'async'`) and `config` (a JSON Schema). `provides` may be left out: what `ctx.provide` provides reaches rutis by itself, its methods the object's functions, called as `async`, by the same rules as on Node (see [Plugin API](plugin-api.en.md)).
 
+The result of `definePlugin(...)` can also be handed to a service as an ordinary argument, and the receiver mounts it elsewhere, as on Node; see the [plugin API](plugin-api.en.md#plugin-definitions).
+
 ### Events
 
 As for TypeScript plugins ([TypeScript plugins: events](typescript-plugin.en.md#events)): `ctx.on` listens, `ctx.emit` / `ctx.parallel` / `ctx.serial` / `ctx.waterfall` / `ctx.bail` emit, `ctx.filter` picks listeners. Listeners register themselves with the host: events emitted by Node, Python and Go plugins and by Rust code in the host reach listeners in Bun too, and the other way round. On unload the row's `ctx.signal` is aborted and its running listeners are waited for.

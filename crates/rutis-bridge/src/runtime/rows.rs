@@ -12,6 +12,7 @@ use serde_json::{Map, Value};
 
 use crate::runtime::rpc::{Reply, Value as RpcValue};
 use crate::runtime::{host_key, HostDispatch, Process, Projection};
+use crate::session::CallerRow;
 use rutis::internal::CtxInternal;
 
 /// One object a row's service slot holds, as a host service: calls go to
@@ -21,6 +22,7 @@ pub struct RowService {
     handle: String,
     methods: Value,
     provider: Option<String>,
+    owner: Option<CallerRow>,
 }
 
 impl RowService {
@@ -30,6 +32,7 @@ impl RowService {
             handle,
             methods,
             provider: None,
+            owner: None,
         }
     }
 
@@ -38,6 +41,23 @@ impl RowService {
     pub fn provided_by(mut self, provider: impl Into<String>) -> Self {
         self.provider = Some(provider.into());
         self
+    }
+
+    /// The row providing it: a plugin definition it returns belongs to that
+    /// row ([`crate::runtime::returned`]).
+    pub fn owned_by(mut self, row: Option<CallerRow>) -> Self {
+        self.owner = row;
+        self
+    }
+
+    /// The runtime serving it.
+    pub fn process(&self) -> &Arc<Process> {
+        &self.process
+    }
+
+    /// The row providing it, when it is known.
+    pub fn owner(&self) -> Option<&CallerRow> {
+        self.owner.as_ref()
     }
 }
 
@@ -85,6 +105,10 @@ impl HostDispatch for RowService {
 
     fn provider(&self) -> Option<String> {
         self.provider.clone()
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -166,12 +190,18 @@ fn row_slot(
 ) {
     let named = provider.to_owned();
     let holder = key.clone();
+    let owner = projection.weak();
     projection.service_keyed_occupied::<dyn HostDispatch>(
         name,
         key,
         move |process, handle| {
             let methods = methods.lock().unwrap().clone();
-            Arc::new(RowService::new(process, handle, methods).provided_by(named.clone()))
+            let row = owner.upgrade().and_then(|projection| projection.owner());
+            Arc::new(
+                RowService::new(process, handle, methods)
+                    .provided_by(named.clone())
+                    .owned_by(row),
+            )
         },
         provider.to_owned(),
         move |ctx| {
