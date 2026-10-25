@@ -2467,3 +2467,86 @@ async fn rust_declares_plugins_in_the_compat_format() {
         .any(|capability| capability == PLUGINS_CAPABILITY));
     drop(peer);
 }
+
+/// Test-only hooks into the session's code paths.
+pub(super) mod hooks {
+    use super::super::SessionState;
+    use super::Connection;
+    use std::sync::{Arc, Mutex};
+
+    type Hook = Box<dyn FnOnce() + Send>;
+    /// Hooks run once, by session, right after decoding a far-end
+    /// reference looked up the import it names.
+    static AFTER_IMPORT_UPGRADE: Mutex<Vec<(usize, Hook)>> = Mutex::new(Vec::new());
+
+    pub(super) fn on_import_upgrade(session: &Connection, hook: Hook) {
+        let key = Arc::as_ptr(&session.0) as usize;
+        AFTER_IMPORT_UPGRADE.lock().unwrap().push((key, hook));
+    }
+    pub(in crate::session::rpc) fn after_import_upgrade(session: &Arc<SessionState>) {
+        let key = Arc::as_ptr(session) as usize;
+        let hook = {
+            let mut hooks = AFTER_IMPORT_UPGRADE.lock().unwrap();
+            let found = hooks.iter().position(|(k, _)| *k == key);
+            found.map(|i| hooks.swap_remove(i).1)
+        };
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+}
+
+/// #621: a far-end reference whose kind does not match the import it names
+/// closes the session with a transport error, even when the import found is
+/// left as the last holder while it is checked. Dropping the last holder
+/// takes the imports lock, so the check must not hold it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mismatched_reference_to_an_import_left_last_closes_the_session() {
+    let (peer, far) = pair();
+    let remote = std::thread::spawn(move || {
+        let mut remote = Remote::start(far);
+        let Frame::Invoke { id, .. } = remote.read() else {
+            panic!("invoke expected")
+        };
+        remote.ret(id, reference(5, Kind::Function, false));
+        let Frame::Invoke { id, .. } = remote.read() else {
+            panic!("invoke expected")
+        };
+        // The same id, now claimed to be an object.
+        remote.ret(id, reference(5, Kind::Object, false));
+        // Stay connected until the session closes: the release of the
+        // dropped import must not be what ends it.
+        let mut released = 0;
+        while let Ok(Some(message)) = remote.reader.receiver.lock().unwrap().recv() {
+            if let Ok(Frame::Release { reference: 5, .. }) = serde_json::from_slice(&message) {
+                released += 1;
+            }
+        }
+        released
+    });
+    peer.ready().await.unwrap();
+    let held = peer
+        .invoke_async("", "first", Value::Undefined)
+        .await
+        .unwrap();
+    assert!(matches!(held, Value::Reference(_)));
+    // Between the reader's lookup and its check, the other holder goes.
+    hooks::on_import_upgrade(&peer, Box::new(move || drop(held)));
+    let second = {
+        let peer = peer.clone();
+        tokio::spawn(async move { peer.invoke_async("", "second", Value::Undefined).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), peer.closed())
+        .await
+        .expect("the session closes instead of hanging");
+    let reason = peer.close_reason();
+    assert!(
+        matches!(&reason, Some(Error::Transport(r)) if r.contains("reference kind mismatch")),
+        "{reason:?}"
+    );
+    assert!(second.await.unwrap().is_err());
+    assert!(peer.0.imports.lock().unwrap().is_empty());
+    drop(peer);
+    // The import was released once, when its last holder dropped.
+    assert_eq!(remote.join().unwrap(), 1);
+}

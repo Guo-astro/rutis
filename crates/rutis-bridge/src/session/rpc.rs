@@ -2072,9 +2072,17 @@ impl Connection {
                 if id == 0 || id > 9_007_199_254_740_991 {
                     return Err(transport("invalid reference identity"));
                 }
+                // Only look up and insert under the lock. The import found
+                // may become the last holder while it is checked, and
+                // dropping the last one takes this lock (`impl Drop for
+                // Import`), so every early return happens after unlocking.
                 let mut imports = self.0.imports.lock().unwrap();
-                let import = match imports.get(&id).and_then(Weak::upgrade) {
+                let existing = imports.get(&id).and_then(Weak::upgrade);
+                #[cfg(test)]
+                tests::hooks::after_import_upgrade(&self.0);
+                let import = match existing {
                     Some(import) => {
+                        drop(imports);
                         if import.kind != kind || import.origin != origin {
                             return Err(transport("reference kind mismatch"));
                         }
@@ -2094,12 +2102,12 @@ impl Connection {
                             origin,
                         });
                         imports.insert(id, Arc::downgrade(&import));
+                        drop(imports);
                         import
                     }
                 };
                 // Imported first, so dropping it releases it on the far end.
                 if kind == Kind::Plugin && !self.declares(PLUGINS_CAPABILITY) {
-                    drop(imports);
                     drop(import);
                     return Err(Error::Value(
                         "received a plugin definition, which this side does not take \
