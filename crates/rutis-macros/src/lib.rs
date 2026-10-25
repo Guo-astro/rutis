@@ -493,6 +493,10 @@ enum Param {
     /// Decoded to `ty` (data, or a function by `FromFunction`), passed as
     /// it is or by reference.
     Value { ty: Box<Type>, by_ref: bool },
+    /// A plugin definition (`rutis::Definition`): another language's has
+    /// its declarations read before the method runs, so the call is answered
+    /// later.
+    Definition { by_ref: bool },
 }
 
 fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<Tokens> {
@@ -586,6 +590,8 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
     let mut decode = Vec::new();
     let mut call = Vec::new();
     let mut takes_ctx = false;
+    // Definitions still being read when the call starts.
+    let mut pending = Vec::new();
     for (name, _) in &bounds {
         if !params.iter().any(
             |param| matches!(param, Param::Closure { param: Some(known), .. } if known == name),
@@ -622,6 +628,17 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
                     };
                 });
                 call.push(quote!(#local));
+            }
+            Param::Definition { by_ref } => {
+                decode.push(quote! {
+                    let #local = #rutis::internal::service::definition(wire, args.next().unwrap());
+                });
+                pending.push(local.clone());
+                call.push(if *by_ref {
+                    quote!(&#local)
+                } else {
+                    quote!(#local)
+                });
             }
             Param::Value {
                 ty: param_ty,
@@ -660,7 +677,17 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
             }
         }
     };
-    let body = if awaited {
+    let body = if !pending.is_empty() {
+        // A definition is read first; the method then runs as it would.
+        let then = awaited.then(|| quote!(.await));
+        quote! {
+            ::std::result::Result::Ok(#rutis::internal::service::Answer::Later(::std::boxed::Box::pin(async move {
+                #(let #pending = #pending.await?;)*
+                let returned = #invoke #then;
+                #reply
+            })))
+        }
+    } else if awaited {
         quote! {
             ::std::result::Result::Ok(#rutis::internal::service::Answer::Later(::std::boxed::Box::pin(async move {
                 let returned = #invoke.await;
@@ -710,6 +737,23 @@ fn param(
             )),
             Type::Reference(_) => Ok(Param::Ctx { by_ref: true }),
             _ => Ok(Param::Ctx { by_ref: false }),
+        };
+    }
+    // A plugin definition, read before the method runs.
+    if is_definition(ty) {
+        if static_reference(ty) {
+            return Err(refused(
+                ty.span(),
+                "it takes a plugin definition by a `'static` reference; take it by value",
+            ));
+        }
+        return match ty {
+            Type::Reference(reference) if reference.mutability.is_some() => Err(refused(
+                reference.span(),
+                "it takes a plugin definition by mutable reference",
+            )),
+            Type::Reference(_) => Ok(Param::Definition { by_ref: true }),
+            _ => Ok(Param::Definition { by_ref: false }),
         };
     }
     // A function: `impl Fn(..)`, or a type parameter bound by one.
@@ -852,6 +896,23 @@ fn is_ctx(ty: &Type) -> bool {
             .segments
             .last()
             .is_some_and(|segment| segment.ident == "Ctx" && segment.arguments.is_empty())
+}
+
+/// `Definition`, `rutis::Definition` or a reference to one.
+fn is_definition(ty: &Type) -> bool {
+    let ty = match ty {
+        Type::Reference(reference) => reference.elem.as_ref(),
+        ty => ty,
+    };
+    let Type::Path(path) = ty else {
+        return false;
+    };
+    path.qself.is_none()
+        && path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Definition" && segment.arguments.is_empty())
 }
 
 /// Whether a return type is a future: `BoxFuture<..>`, `Pin<Box<dyn

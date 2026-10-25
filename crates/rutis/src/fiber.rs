@@ -216,6 +216,9 @@ pub(crate) struct FiberInner {
     /// 常驻 receiver:保活 watch 通道(无 receiver 时通道视为关闭,send 静默失败)。
     pub snapshot_rx: watch::Receiver<Snapshot>,
     pub effects: Mutex<Vec<Arc<EffectRecord>>>,
+    /// The plugin definitions this fiber's current generation made or
+    /// handed over: their copies end before its cleanups run.
+    pub definitions: Mutex<Vec<Weak<crate::definition::Inner>>>,
     /// Weak index keeps draining records visible after `drain_effects` takes
     /// the active list, without retaining cleanups or finished child fibers.
     pub effect_index: Mutex<Vec<Weak<EffectRecord>>>,
@@ -792,6 +795,11 @@ impl FiberInner {
     /// 完成顺序确定、错误聚合可预期,方向性强化而非语义缺失。
     async fn drain_effects(this: &Arc<Self>) -> Vec<Arc<ErrorKind>> {
         let handle = this.ctx.handle().clone();
+        // The copies of the plugin definitions this generation made end
+        // first, and are waited for: they may use what the cleanups below
+        // close (design-plugin-values R6).
+        let definitions = std::mem::take(&mut *this.definitions.lock().unwrap());
+        let definitions = crate::definition::end_all(this, definitions).await;
         let effects: Vec<Arc<EffectRecord>> = std::mem::take(&mut *this.effects.lock().unwrap());
         let mut errors: Vec<Arc<ErrorKind>> = Vec::new();
         for record in effects.into_iter().rev() {
@@ -804,6 +812,7 @@ impl FiberInner {
         errors.extend(std::mem::take(&mut *this.drained_errors.lock().unwrap()));
         *this.last_deps.lock().unwrap() = None;
         this.provided.lock().unwrap().clear();
+        crate::definition::ended(definitions);
         errors
     }
 
@@ -1250,6 +1259,7 @@ fn spawn_fiber_inner(
             snapshot_tx: snapshot_tx.clone(),
             snapshot_rx,
             effects: Mutex::new(Vec::new()),
+            definitions: Mutex::new(Vec::new()),
             effect_index: Mutex::new(Vec::new()),
             drained_errors: Mutex::new(Vec::new()),
             mount: Mutex::new(None),

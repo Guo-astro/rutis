@@ -39,6 +39,7 @@
 
 mod bus;
 mod ctx;
+mod definition;
 mod deps;
 mod diagnostics;
 mod effect;
@@ -56,6 +57,7 @@ mod service;
 mod sync;
 
 pub use ctx::Ctx;
+pub use definition::Definition;
 pub use deps::Deps;
 pub use effect::Disposer;
 pub use error::{Error, Result};
