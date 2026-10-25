@@ -70,7 +70,10 @@ const hosts = new Map()
 // plugin's `ctx.provide`) reach rutis without a declaration, announced with
 // the methods they have (`service` with a fourth argument, to a host whose
 // mount asked for it).
-const FEATURES = ['rows.v2', 'hosts', 'leaf.js', 'scopes', 'rows.announce']
+// plugin-values: a plugin definition this runtime handed over comes back to
+// be described (`plugins.read`) and loaded as a row's entry
+// (docs/design-plugin-values-2026-10-25.md §5).
+const FEATURES = ['rows.v2', 'hosts', 'leaf.js', 'scopes', 'rows.announce', 'plugin-values']
 
 // The logical event bus (#464, ./events.mjs, ./cordis-events.mjs): every
 // Cordis listener that is not internal/* is registered with the host, and
@@ -367,6 +370,47 @@ async function pluginOf(entry) {
   return isLeaf(declared) ? toCordis(declared, undeclared) : declared
 }
 
+// A plugin definition this runtime handed over, back as a row's entry (a
+// copy) or to be described: a leaf plugin, or a Cordis plugin by Cordis's
+// own rule, a function or a class, or an object with `apply`. A leaf one is
+// wrapped once, so its copies are one plugin in Cordis.
+const isCordisPlugin = value => typeof value === 'function' || (value !== null && typeof value === 'object' && typeof value.apply === 'function')
+const wrappedDefinitions = new WeakMap()
+function definedPlugin(value) {
+  if (isLeaf(value)) {
+    let wrapped = wrappedDefinitions.get(value)
+    if (!wrapped) {
+      wrapped = toCordis(supported(value, value.name ?? 'plugin definition'), undeclared)
+      wrappedDefinitions.set(value, wrapped)
+    }
+    return wrapped
+  }
+  if (isCordisPlugin(value)) return value
+  throw new Error('not a plugin definition: expected a definePlugin result, a function, a class, or an object with apply')
+}
+
+// What a plugin definition declares (`plugins.read`), as `describe` says of
+// a module, with its name. Answered at once: the call may come while this
+// process waits on a synchronous call.
+function describeDefinition(value) {
+  if (isLeaf(value)) {
+    supported(value, value.name ?? 'plugin definition')
+    return { name: value.name ?? null, config: value.config ?? null, inject: value.inject, provides: value.provides, announces: value.announces === true }
+  }
+  if (!isCordisPlugin(value)) throw new Error('not a plugin definition: expected a definePlugin result, a function, a class, or an object with apply')
+  const schema = value.Config ?? value.schema
+  const name = typeof value.name === 'string' && value.name !== '' && value.name !== 'apply' ? value.name : null
+  return {
+    name,
+    config: schema ? toJsonSchema(schema) : null,
+    inject: Object.keys(Inject.resolve(value.inject)),
+    // A value has no package.json: what it provides is announced.
+    provides: {},
+    announces: true,
+    cordis: true,
+  }
+}
+
 // The module's plugin as written: a leaf plugin (`definePlugin`), or a
 // Cordis plugin.
 async function declaredOf(entry) {
@@ -414,7 +458,8 @@ async function loadRow([key, entry, config, isolate, inject, exports, place]) {
     const owner = [...rows].find(([, row]) => row.exports.includes(id))
     if (owner || slots.has(id)) throw new Error(`service ${id} is already exported${owner ? ` by row ${owner[0]}` : ''}`)
   }
-  const plugin = await pluginOf(entry)
+  // A module's path, or a plugin definition this runtime handed over.
+  const plugin = typeof entry === 'string' ? await pluginOf(entry) : definedPlugin(entry)
   let scope = ctx
   for (const [name, label] of isolate ?? []) {
     scopedId(name, label)
@@ -693,6 +738,7 @@ function dispatch(target, method, args) {
       case 'rows.update': return updateRow(args ?? [])
       case 'rows.unload': return unloadRow(args?.[0])
       case 'rows.schema': return describe(args?.[0])
+      case 'plugins.read': return describeDefinition(args?.[0])
       case 'hosts.provide': {
         // A rutis service, registered for the rows that use it; rutis counts
         // the users and withdraws it after the last one. With a label, only
@@ -749,7 +795,9 @@ function dispatch(target, method, args) {
 // Calls on exported objects and functions may replace services too.
 try {
   peer = await Process.connect(channelSpec, dispatch, () => { if (slots.size && !closing) refresh() }, endpoint, {
-    inline: ['events.elsewhere'],
+    // `plugins.read` only reads: answered even while a synchronous call
+    // waits (a definition handed to a synchronous host method).
+    inline: ['events.elsewhere', 'plugins.read'],
     // An `emit`-mode `events.call` waits while a synchronous call of this
     // process does, as every call not of its chain does; a local emit of
     // the name goes behind it (the bus's `behind`, §5.5).

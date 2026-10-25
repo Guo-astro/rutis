@@ -69,7 +69,8 @@ use std::sync::{Arc, Mutex};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, PluginFactory, TypeKey};
 use rutis::{Ctx, Error};
 use rutis_bridge::runtime::{
-    row_projection_of, HostLease, Process, Projection, Runtime, RuntimeHandle,
+    row_projection_of, ForeignPlugin, HostLease, PluginMounter, Process, Projection, Runtime,
+    RuntimeHandle,
 };
 use rutis_bridge::session::{host_key, CallerRow, HostDispatch};
 use serde_json::{json, Map, Value};
@@ -493,7 +494,7 @@ impl JsModule {
         Ok(JsFactory::with_keys(
             &self.name,
             RowRuntime::Named(self.runtime.clone()),
-            self.entry.clone(),
+            RowEntry::Module(self.entry.clone()),
             keyed(&mut self.gated.iter())?,
             self.provides.clone(),
             keyed(&mut self.provides.keys())?,
@@ -514,13 +515,24 @@ pub(crate) enum RowRuntime {
     Connection(Arc<Process>),
 }
 
+/// What a row loads: a module, or one copy of a plugin definition the
+/// runtime handed over (`docs/design-plugin-values-2026-10-25.md` §5).
+#[derive(Clone)]
+pub(crate) enum RowEntry {
+    Module(PathBuf),
+    Definition(rutis_bridge::session::Reference),
+}
+
 /// The key a service a row announces is published under, by name.
 pub(crate) type KeyOf = Arc<dyn Fn(&str) -> TypeKey + Send + Sync>;
 
 struct JsFactory {
     name: String,
     runtime: RowRuntime,
-    entry: PathBuf,
+    entry: RowEntry,
+    /// The id its copies are named by when it is not a loader row (a copy
+    /// of a definition, named after the row that handed it over).
+    id: Option<String>,
     /// The injected services that gate the row in rutis, with their keys.
     gated: Vec<(String, TypeKey)>,
     provides: Map<String, Value>,
@@ -592,6 +604,7 @@ impl JsFactory {
         gated: Vec<String>,
         provides: Map<String, Value>,
     ) -> Self {
+        let entry = RowEntry::Module(entry);
         let gated = gated
             .into_iter()
             .map(|name| {
@@ -617,7 +630,7 @@ impl JsFactory {
     pub(crate) fn with_keys(
         name: &str,
         runtime: RowRuntime,
-        entry: PathBuf,
+        entry: RowEntry,
         gated: Vec<(String, TypeKey)>,
         provides: Map<String, Value>,
         provided: Vec<(String, TypeKey)>,
@@ -635,6 +648,7 @@ impl JsFactory {
             name: name.to_owned(),
             runtime,
             entry,
+            id: None,
             gated,
             provides,
             provided,
@@ -648,6 +662,12 @@ impl JsFactory {
     /// Publish the services a row announces under `key(name)`.
     pub(crate) fn announcing(mut self, key: KeyOf) -> Self {
         self.announced = key;
+        self
+    }
+
+    /// Name its copies `id` (they are not loader rows).
+    pub(crate) fn named(mut self, id: Option<String>) -> Self {
+        self.id = id;
         self
     }
 }
@@ -666,6 +686,7 @@ impl PluginFactory<Value> for JsFactory {
             name: self.name.clone(),
             runtime: self.runtime.clone(),
             entry: self.entry.clone(),
+            id: self.id.clone(),
             config: config.clone(),
             gated: self.gated.clone(),
             provides: self.provides.clone(),
@@ -682,7 +703,8 @@ impl PluginFactory<Value> for JsFactory {
 struct JsRow {
     name: String,
     runtime: RowRuntime,
-    entry: PathBuf,
+    entry: RowEntry,
+    id: Option<String>,
     config: Value,
     gated: Vec<(String, TypeKey)>,
     provides: Map<String, Value>,
@@ -771,12 +793,21 @@ impl JsRow {
         runtime: Option<&Runtime>,
         leases: &mut Vec<HostLease>,
     ) -> Result<(String, Arc<Projection>), Error> {
-        let row = ctx
-            .get::<Loader>()
-            .and_then(|loader| loader.row(ctx.instance()));
+        let row = match &self.id {
+            // A copy of a definition: named after the row that handed it
+            // over, with nothing a row's config isolates or injects.
+            Some(_) => None,
+            None => ctx
+                .get::<Loader>()
+                .and_then(|loader| loader.row(ctx.instance())),
+        };
         let (id, mut isolate, inject) = match row {
             Some(row) => (row.id, row.isolate, row.inject),
-            None => (self.name.clone(), Vec::new(), Vec::new()),
+            None => (
+                self.id.clone().unwrap_or_else(|| self.name.clone()),
+                Vec::new(),
+                Vec::new(),
+            ),
         };
         // What its config isolates stays in the row's scope: a service it
         // provides there is not rutis's to publish.
@@ -851,6 +882,8 @@ impl JsRow {
             },
             move |name| private.contains(name),
         );
+        // A definition one of its services returns belongs to this row.
+        projection.owned_by(caller.clone());
         projection.attach(ctx, process.clone())?;
         // A plugin that disposes itself there ends this fiber, as a Rust
         // plugin disposing itself: the loader's monitor takes it from there.
@@ -861,19 +894,37 @@ impl JsRow {
         });
         // Its listeners' descriptions and failure reports name it by its id.
         process.name_row(&key, &id);
-        if let Err(error) = process
-            .load_row_exporting(
-                &key,
-                &self.entry,
-                self.config.clone(),
-                &isolate,
-                &inject,
-                &self.provides,
-                projection.clone(),
-                &ctx.scope(),
-            )
-            .await
-        {
+        let loaded = match &self.entry {
+            RowEntry::Module(entry) => {
+                process
+                    .load_row_exporting(
+                        &key,
+                        entry,
+                        self.config.clone(),
+                        &isolate,
+                        &inject,
+                        &self.provides,
+                        projection.clone(),
+                        &ctx.scope(),
+                    )
+                    .await
+            }
+            RowEntry::Definition(definition) => {
+                process
+                    .load_definition_exporting(
+                        &key,
+                        definition,
+                        self.config.clone(),
+                        &isolate,
+                        &inject,
+                        &self.provides,
+                        projection.clone(),
+                        &ctx.scope(),
+                    )
+                    .await
+            }
+        };
+        if let Err(error) = loaded {
             projection.close();
             return Err(failed(error));
         }
@@ -933,6 +984,72 @@ impl JsRow {
             });
         });
         Ok((key, projection))
+    }
+}
+
+/// Mounts the copies of plugin definitions other languages hand over: each
+/// is a row of the definition's runtime, keyed for the instance it mounts
+/// in (`docs/design-plugin-values-2026-10-25.md` §6.3).
+pub(crate) struct DefinitionMounter {
+    pub(crate) loader: Loader,
+}
+
+impl PluginMounter for DefinitionMounter {
+    fn mount(
+        &self,
+        at: &Ctx,
+        plugin: &ForeignPlugin,
+        config: Value,
+    ) -> Result<Box<dyn DynPlugin>, Error> {
+        let build = self.loader.build_at(at);
+        let catalog = self.loader.catalog().clone();
+        let process = plugin.process();
+        let schema = plugin.schema();
+        // As for a row of that runtime: a leaf runtime gates everything a
+        // plugin injects in rutis; in Cordis only the shared names.
+        let leaf = process.supports("leaf");
+        let key = |name: &str| -> Result<TypeKey, Error> {
+            match catalog.is_shared(name) {
+                true => catalog.key_in(name, &build).map_err(failed),
+                false => Ok(host_key(name).erase()),
+            }
+        };
+        let gated = schema
+            .inject
+            .iter()
+            .filter(|name| leaf || catalog.is_shared(name))
+            .map(|name| Ok((name.clone(), key(name)?)))
+            .collect::<Result<Vec<_>, Error>>()?;
+        let provided = schema
+            .provides
+            .keys()
+            .map(|name| Ok((name.clone(), key(name)?)))
+            .collect::<Result<Vec<_>, Error>>()?;
+        let scopes = catalog
+            .instance_names(&build)
+            .into_iter()
+            .filter(|(name, _)| catalog.is_shared(name))
+            .map(|(name, instance)| (name, format!("rutis-loader/instance/{instance}")))
+            .collect();
+        let announced: KeyOf = Arc::new(move |name| match catalog.is_shared(name) {
+            true => catalog
+                .key_in(name, &build)
+                .unwrap_or_else(|_| host_key(name).erase()),
+            false => host_key(name).erase(),
+        });
+        let id = plugin.row().map(str::to_owned);
+        JsFactory::with_keys(
+            plugin.name(),
+            RowRuntime::Connection(process.clone()),
+            RowEntry::Definition(plugin.reference().clone()),
+            gated,
+            schema.provides.clone(),
+            provided,
+            scopes,
+        )
+        .announcing(announced)
+        .named(id.or_else(|| Some(plugin.name().to_owned())))
+        .build(&config)
     }
 }
 

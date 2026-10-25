@@ -12,6 +12,11 @@ const builtins = [Date, RegExp, Map, Set, WeakMap, WeakSet, ArrayBuffer, DataVie
 // A plain object marked as a record crosses field by field even when it
 // holds functions: a protocol message such as `events.dispatch` (#464).
 export const RECORD = Symbol.for('rutis.session.record')
+// A leaf plugin (`definePlugin`, the symbol the SDK marks it with) crosses
+// as a plugin definition: a `plugin` reference, sent only to a far end that
+// declared `plugins` (docs/design-plugin-values-2026-10-25.md §5).
+const LEAF_PLUGIN = Symbol.for('rutis.leaf-plugin')
+const isPluginDefinition = (value: any) => value !== null && typeof value === 'object' && value[LEAF_PLUGIN] === true
 function isLive(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value) || ArrayBuffer.isView(value)) return false
   if (builtins.some(type => value instanceof type) || constructedTag(value) || value[RECORD] === true) return false
@@ -226,8 +231,9 @@ export class Session {
       if (!entry) {
         id = ++this.#ref
         if (!Number.isSafeInteger(id)) throw new Error('reference identifiers exhausted')
-        const kind = typeof value === 'function' ? 'function' : value instanceof Promise ? 'future' : 'object'
+        const kind = typeof value === 'function' ? 'function' : value instanceof Promise ? 'future' : isPluginDefinition(value) ? 'plugin' : 'object'
         if (kind === 'object' && this.#endpoint && !this.supports('objects')) throw new Error('the far end cannot receive object references')
+        if (kind === 'plugin' && !this.#declared.includes('plugins')) throw new ValueError('cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)')
         entry = { origin: [...this.#path()], value, kind, grants: 0, business, call: kind === 'future' ? this.#promiseCalls.get(value) : undefined }
         this.#identities.set(value, id); this.#exports.set(id, entry)
         if (entry.kind === 'future') {
@@ -354,10 +360,12 @@ export class Session {
       }
       case 'reference': {
         const { id, home, kind, origin } = wire.value
-        if (!Number.isSafeInteger(id) || id <= 0 || !['function', 'future', 'object'].includes(kind) || typeof home !== 'boolean' || !Array.isArray(origin) || origin.some(id => !this.#callId(id))) throw new Error('invalid reference')
+        if (!Number.isSafeInteger(id) || id <= 0 || !['function', 'future', 'object', 'plugin'].includes(kind) || typeof home !== 'boolean' || !Array.isArray(origin) || origin.some(id => !this.#callId(id))) throw new Error('invalid reference')
         if (home) return this.#export(id, kind).value
-        // Rust does not export objects; only JS objects travel back home.
+        // Rust does not export objects or plugin definitions; only this
+        // side's travel back home.
         if (kind === 'object') throw new Error('object references exported by Rust are not supported')
+        if (kind === 'plugin') throw new Error('plugin definitions exported by Rust are not supported')
         let proxy = this.#imports.get(id)?.deref()
         if (proxy) {
           const record = this.#proxies.get(proxy)

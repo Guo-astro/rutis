@@ -28,7 +28,7 @@
 // the name, a NUL and the label inside one.
 import type { Client } from './client.ts'
 import { Bus, refuseRemoved, refuseReserved } from './events.mjs'
-import { declared, locate, Modules, versionOf, type Kind } from './plugin.ts'
+import { declared, definition, locate, Modules, versionOf, type Kind } from './plugin.ts'
 import { MANIFEST } from './session.ts'
 
 // internal/* names Cordis's own events on Node; no leaf plugin listens to or
@@ -46,7 +46,10 @@ function reserved(name: unknown): asserts name is string {
 
 // rows.announce: services rows provide without declaring them are announced
 // with their methods, to a host whose mount says `announce`.
-export const FEATURES = ['rows.v2', 'hosts', 'leaf', 'scopes', 'rows.announce']
+// plugin-values: a plugin definition this runtime handed over comes back to
+// be described (`plugins.read`) and loaded as a row's entry
+// (docs/design-plugin-values-2026-10-25.md §5).
+export const FEATURES = ['rows.v2', 'hosts', 'leaf', 'scopes', 'rows.announce', 'plugin-values']
 
 // How long an unloading row's listeners are waited for: RUTIS_SHUTDOWN_TIMEOUT
 // seconds, 10 by default; in ms (protocol §7.1).
@@ -101,7 +104,8 @@ export const handleOf = (id: string, generation: number) =>
 
 interface Row {
   key: string
-  entry: string
+  /// A module, or a plugin definition this runtime handed over.
+  entry: unknown
   config: unknown
   exports: Record<string, Record<string, Kind>>
   isolate: Map<string, string>
@@ -259,7 +263,7 @@ export class Runtime {
 
   // ── Rows ──────────────────────────────────────────────────────
 
-  async load(key: string, entry: string, config: unknown, isolate: Array<[string, string]> | null, exports: Row['exports'] | null, scope?: unknown, id?: unknown) {
+  async load(key: string, entry: unknown, config: unknown, isolate: Array<[string, string]> | null, exports: Row['exports'] | null, scope?: unknown, id?: unknown) {
     if (this.#rows.has(key)) throw new Error(`row ${key} is already loaded`)
     // Descriptors and reported lines call the row by its id (protocol §4.2).
     this.#bus.nameRow(key, id)
@@ -359,8 +363,15 @@ export class Runtime {
     return this.load(key, row.entry, config, [...row.isolate], row.exports, row.chain, id)
   }
 
-  async #plugin(entry: string) {
+  async #plugin(entry: unknown) {
+    if (typeof entry !== 'string') return definition(entry)
     return declared(await this.#modules.import(locate(entry, this.#project)), entry)
+  }
+
+  // What a plugin definition declares (`plugins.read`), answered at once.
+  describeDefinition(value: unknown) {
+    const plugin = definition(value)
+    return { name: plugin.name, config: plugin.config, inject: plugin.inject, provides: plugin.provides, announces: plugin.announces, version: null }
   }
 
   async describe(entry: string) {
@@ -414,11 +425,13 @@ export class Runtime {
       case 'events.call': return this.#bus.call(args[0] ?? {})
       case 'rows.load': {
         const [key, entry, config, isolate, _inject, exports, place] = args
-        return this.load(key, String(entry), config, isolate, exports, place?.scope, place?.id)
+        // A module's name, or a plugin definition this runtime handed over.
+        return this.load(key, typeof entry === 'string' ? entry : entry ?? String(entry), config, isolate, exports, place?.scope, place?.id)
       }
       case 'rows.update': return this.update(args[0], args[1])
       case 'rows.unload': return this.unload(args[0])
       case 'rows.schema': return this.describe(String(args[0]))
+      case 'plugins.read': return this.describeDefinition(args[0])
       case 'hosts.provide': {
         // With a label, only rows isolating the name with it see it.
         const [name, methods, label] = args

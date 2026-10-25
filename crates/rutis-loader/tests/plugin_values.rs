@@ -1,0 +1,595 @@
+//! Plugin definitions across languages (`docs/design-plugin-values-2026-10-25.md`
+//! §9), the same cases for each runtime: a row hands a plugin definition to a
+//! Rust service in `apply`; Rust host parts in two instances each mount a
+//! copy, which runs in the row's runtime with the instance's services; the
+//! row's unload ends the copies first; a reloaded row's new definition
+//! mounts again.
+#![cfg(all(unix, any(feature = "node", feature = "bun")))]
+
+mod common;
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use common::runtimes::{repo, title, NoConfig, Probe, Title, Tools, COLD};
+use common::Scoped;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
+use rutis::{Ctx, Definition, Error};
+use rutis_bridge::runtime::LocalRuntime;
+use rutis_bridge::session::{host_key, host_key_in};
+use rutis_loader::edit::Instance;
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::{Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
+use serde_json::json;
+
+// ── The part registry (Dim's, in miniature) ─────────────────────
+
+/// What plugins hand their session parts to: an ordinary Rust service.
+#[derive(Default)]
+struct Parts {
+    registered: Mutex<Vec<(String, Definition)>>,
+}
+
+#[rutis::service]
+impl Parts {
+    pub fn register(&self, scope: String, def: Definition) {
+        self.registered.lock().unwrap().push((scope, def));
+    }
+
+    /// A data parameter: a plugin definition is refused here, as before.
+    pub fn takes_data(&self, value: serde_json::Value) -> String {
+        value.to_string()
+    }
+}
+
+impl Parts {
+    /// The definitions for `scope` that have not ended.
+    fn of(&self, scope: &str) -> Vec<Definition> {
+        self.registered
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(of, def)| of == scope && !def.is_ended())
+            .map(|(_, def)| def.clone())
+            .collect()
+    }
+
+    fn all(&self) -> Vec<Definition> {
+        self.registered
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, def)| def.clone())
+            .collect()
+    }
+
+    async fn wait_for(&self, count: usize) {
+        COLD.eventually_with(
+            || (self.of("session").len() >= count).then_some(()),
+            &format!("{count} session parts registered"),
+            || format!("{:?}", self.all()),
+        )
+        .await
+    }
+}
+
+// ── The host part: mounts every session part in its instance ─────
+
+struct Host {
+    title: String,
+    mounted: Arc<Mutex<Vec<FiberView>>>,
+}
+
+impl DynPlugin for Host {
+    fn name(&self) -> &str {
+        "host"
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        Box::pin(async move {
+            let parts = ctx.get::<Parts>().expect("the registry");
+            for def in parts.of("session") {
+                let view = ctx.plugin(def.at(ctx, json!({ "n": self.title }))?);
+                self.mounted.lock().unwrap().push(view);
+            }
+            Ok(Effect::Done)
+        })
+    }
+}
+
+struct HostFactory {
+    title: String,
+    mounted: Arc<Mutex<Vec<FiberView>>>,
+}
+
+impl PluginFactory<NoConfig> for HostFactory {
+    fn name(&self) -> &str {
+        "host"
+    }
+
+    fn build(&self, _: &NoConfig) -> Result<Box<dyn DynPlugin>, Error> {
+        Ok(Box::new(Host {
+            title: self.title.clone(),
+            mounted: self.mounted.clone(),
+        }))
+    }
+}
+
+/// The instance's `tools`.
+struct ToolsPlugin(
+    rutis::host::Key<dyn rutis_bridge::session::HostDispatch>,
+    String,
+);
+
+impl DynPlugin for ToolsPlugin {
+    fn name(&self) -> &str {
+        "tools"
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        Box::pin(async move {
+            ctx.provide_at(self.0.clone(), Arc::new(Tools(self.1.clone())))?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+struct ToolsFactory(
+    rutis::host::Key<dyn rutis_bridge::session::HostDispatch>,
+    String,
+);
+
+impl PluginFactory<NoConfig> for ToolsFactory {
+    fn name(&self) -> &str {
+        "tools"
+    }
+
+    fn build(&self, _: &NoConfig) -> Result<Box<dyn DynPlugin>, Error> {
+        Ok(Box::new(ToolsPlugin(self.0.clone(), self.1.clone())))
+    }
+}
+
+fn builtins(mounted: Arc<Mutex<Vec<FiberView>>>) -> Scoped {
+    let mut builtins = Scoped::new();
+    // The host part comes first: its copies wait for `tools`.
+    builtins.register::<NoConfig, _, _>("host", move |build| {
+        Ok(HostFactory {
+            title: title(build),
+            mounted: mounted.clone(),
+        })
+    });
+    builtins.register::<NoConfig, _, _>("tools", |build| {
+        let instance = build.instance("session")?;
+        Ok(ToolsFactory(host_key_in("tools", instance), title(build)))
+    });
+    builtins
+}
+
+// ── The rows ────────────────────────────────────────────────────
+
+/// The origin: prepares a value, hands a session part using it to `parts`,
+/// and provides `maker`, whose `make` returns another one.
+const ORIGIN: &str = r#"
+import { definePlugin } from 'PLUGIN'
+export default definePlugin({
+  inject: ['parts', 'probe'],
+  async apply(ctx) {
+    const probe = ctx.use('probe')
+    const prepared = 'prepared in apply'
+    const part = (tag) => definePlugin({
+      inject: ['tools', 'probe'],
+      apply(ctx, config) {
+        const probe = ctx.use('probe')
+        probe.record(`${tag} ${config.n} sees ${ctx.use('tools').title()} with ${prepared}`)
+        ctx.effect(() => { probe.record(`${tag} ${config.n} down`) })
+      },
+    })
+    await ctx.use('parts').register('session', part('part'))
+    try {
+      await ctx.use('parts').takesData(part('data'))
+      probe.record('data took a definition')
+    } catch (error) {
+      probe.record(`data refused: ${error.message}`)
+    }
+    ctx.provide('maker', { make() { return part('made') } })
+    ctx.effect(() => { probe.record('origin down') })
+  },
+})
+"#;
+
+/// A Cordis plugin handing over Cordis plugins as they are written: an
+/// object with `apply`, a function and a class (Node only).
+const CORDIS: &str = r#"
+export const inject = ['parts', 'probe']
+export async function apply(ctx) {
+  const prepared = 'cordis prepared'
+  const seen = (ctx, kind, config) =>
+    ctx.get('probe').record(`${kind} ${config.n} sees ${ctx.get('tools').title()} with ${prepared}`)
+  const object = { inject: ['tools', 'probe'], apply(ctx, config) { seen(ctx, 'object', config) } }
+  function functional(ctx, config) { seen(ctx, 'function', config) }
+  functional.inject = ['tools', 'probe']
+  class Classy {
+    static inject = ['tools', 'probe']
+    constructor(ctx, config) { seen(ctx, 'class', config) }
+  }
+  const parts = ctx.get('parts')
+  await parts.register('session', object)
+  await parts.register('session', functional)
+  await parts.register('session', Classy)
+}
+"#;
+
+/// Ends its runtime's process soon after it loads.
+const CRASH: &str = "export function apply() { setTimeout(() => process.exit(17), 200) }\n";
+
+#[derive(Clone, Copy, Debug)]
+enum Lang {
+    #[cfg(feature = "node")]
+    Node,
+    #[cfg(feature = "bun")]
+    Bun,
+}
+
+struct Fixture {
+    root: Ctx,
+    loader: Loader,
+    probe: Probe,
+    parts: Arc<Parts>,
+    mounted: Arc<Mutex<Vec<FiberView>>>,
+    origin: serde_json::Value,
+    lang: Lang,
+    /// Rows added besides the origin and the session group.
+    extra: Mutex<Vec<serde_json::Value>>,
+    dir: tempfile::TempDir,
+}
+
+async fn fixture(lang: Lang) -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+    let sdk = repo()
+        .join("node/rutis/src/index.mjs")
+        .canonicalize()
+        .unwrap();
+    let file: PathBuf = dir.path().join("origin.mjs");
+    std::fs::write(
+        &file,
+        ORIGIN.replace("PLUGIN", url::Url::from_file_path(&sdk).unwrap().as_str()),
+    )
+    .unwrap();
+
+    let probe = Probe::default();
+    let root = Ctx::root().unwrap();
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
+        .unwrap();
+    root.provide(Parts::default()).unwrap();
+    let parts = root.get::<Parts>().unwrap();
+    let mut catalog = ServiceCatalog::new();
+    catalog.register_shared("probe");
+    catalog.register_shared("parts");
+    catalog.register_shared("maker");
+    catalog.register_shared_instance("tools", "session");
+
+    let mounted = Arc::new(Mutex::new(Vec::new()));
+    let (rows, origin) = match lang {
+        #[cfg(feature = "node")]
+        Lang::Node => {
+            let node = LocalRuntime::node(
+                repo().join("node/rutis-runtime"),
+                repo().join("node/rutis-runtime/package.json"),
+            );
+            let rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
+            root.plugin(node);
+            (rows, json!(file.to_string_lossy()))
+        }
+        #[cfg(feature = "bun")]
+        Lang::Bun => {
+            let bun = LocalRuntime::bun(repo().join("bun/rutis-bun"), dir.path());
+            let rows = Arc::new(RuntimeResolver::modules(bun.handle()).with_catalog(&catalog));
+            root.plugin(bun);
+            (rows, json!("bun:./origin.mjs"))
+        }
+    };
+    let chain = Chain::new()
+        .with(builtins(mounted.clone()))
+        .with_shared(rows.clone());
+    let plugin = LoaderPlugin::new(
+        chain,
+        LoaderOptions {
+            catalog,
+            ..LoaderOptions::default()
+        },
+    );
+    let loader = plugin.handle();
+    root.plugin(plugin).await.unwrap();
+    root.plugin(RuntimeRowsPlugin::new(rows));
+
+    let report = loader
+        .reconcile(rows_with(Some(&origin), &[]), None)
+        .await
+        .unwrap();
+    assert!(report.failures.is_empty(), "{report:?}");
+    parts.wait_for(1).await;
+    Fixture {
+        root,
+        loader,
+        probe,
+        parts,
+        mounted,
+        origin,
+        lang,
+        extra: Mutex::default(),
+        dir,
+    }
+}
+
+/// The rows: the origin (when given), `extra`, and the session group.
+fn rows_with(origin: Option<&serde_json::Value>, extra: &[serde_json::Value]) -> Vec<Layer> {
+    let mut rows = Vec::new();
+    if let Some(origin) = origin {
+        rows.push(json!({ "id": "origin", "name": origin }));
+    }
+    rows.extend(extra.iter().cloned());
+    rows.push(
+        json!({ "id": "session", "group": true, "instanced": true, "config": [
+        { "id": "host", "name": "host" },
+        { "id": "tools", "name": "tools" }
+    ] }),
+    );
+    let patches: Vec<Patch> = serde_json::from_value(json!([{ "insert": rows }])).unwrap();
+    vec![Layer::new("rows", patches)]
+}
+
+impl Fixture {
+    /// Unload the origin row, or load it again.
+    async fn origin(&self, loaded: bool) {
+        let extra = self.extra.lock().unwrap().clone();
+        let report = self
+            .loader
+            .reconcile(rows_with(loaded.then_some(&self.origin), &extra), None)
+            .await
+            .unwrap();
+        assert!(report.failures.is_empty(), "{report:?}");
+    }
+
+    /// Add a row `id` running `source` in the fixture's runtime.
+    async fn add(&self, id: &str, source: &str) {
+        let file = self.dir.path().join(format!("{id}.mjs"));
+        std::fs::write(&file, source).unwrap();
+        let name = match self.lang {
+            #[cfg(feature = "node")]
+            Lang::Node => json!(file.to_string_lossy()),
+            #[cfg(feature = "bun")]
+            Lang::Bun => json!(format!("bun:./{id}.mjs")),
+        };
+        self.extra
+            .lock()
+            .unwrap()
+            .push(json!({ "id": id, "name": name }));
+        self.origin(true).await;
+    }
+
+    async fn create(&self, title: &str) -> Instance {
+        self.loader
+            .create_instance(&self.root, "session")
+            .with(Title(title.into()))
+            .await
+            .unwrap()
+    }
+
+    fn copies(&self) -> Vec<FiberView> {
+        self.mounted.lock().unwrap().clone()
+    }
+}
+
+async fn each_instance_mounts_its_own_copy(lang: Lang) {
+    let fixture = fixture(lang).await;
+    let definition = fixture.parts.of("session").pop().unwrap();
+    assert!(!definition.is_ended());
+    fixture.create("A").await;
+    fixture.create("B").await;
+    // Each copy uses what the origin's apply prepared, and only its own
+    // instance's `tools`: it waited for it (the host part comes first).
+    fixture
+        .probe
+        .wait_for("part A sees A with prepared in apply")
+        .await;
+    fixture
+        .probe
+        .wait_for("part B sees B with prepared in apply")
+        .await;
+    assert!(!fixture.probe.has("part A sees B with prepared in apply"));
+    // The same value handed over is one definition.
+    assert_eq!(fixture.parts.all().len(), 1);
+    // A data parameter refuses a definition, as it refuses any reference.
+    let refused = fixture
+        .probe
+        .lines()
+        .into_iter()
+        .find(|line| line.starts_with("data refused:"))
+        .expect("refused");
+    assert!(refused.contains("reference"), "{refused}");
+    fixture.root.shutdown().await.unwrap();
+}
+
+async fn the_origin_s_unload_ends_its_copies_first(lang: Lang) {
+    let fixture = fixture(lang).await;
+    let definition = fixture.parts.of("session").pop().unwrap();
+    fixture.create("A").await;
+    fixture.create("B").await;
+    fixture
+        .probe
+        .wait_for("part B sees B with prepared in apply")
+        .await;
+    fixture.probe.take();
+
+    fixture.origin(false).await;
+    fixture.probe.wait_for("origin down").await;
+    let lines = fixture.probe.lines();
+    let origin = fixture.probe.position("origin down").unwrap();
+    for part in ["part A down", "part B down"] {
+        let at = fixture
+            .probe
+            .position(part)
+            .unwrap_or_else(|| panic!("{part}: {lines:?}"));
+        assert!(at < origin, "{lines:?}");
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), definition.ended())
+        .await
+        .expect("ended");
+    for copy in fixture.copies() {
+        assert_eq!(copy.state().state, FiberState::Disposed);
+    }
+    assert!(definition
+        .at(&fixture.root, json!({ "n": "late" }))
+        .is_err());
+
+    // Loaded again: a new definition, mounted by the next instance.
+    fixture.origin(true).await;
+    fixture.parts.wait_for(1).await;
+    let again = fixture.parts.of("session").pop().unwrap();
+    assert_ne!(again, definition);
+    fixture.create("C").await;
+    fixture
+        .probe
+        .wait_for("part C sees C with prepared in apply")
+        .await;
+    fixture.root.shutdown().await.unwrap();
+}
+
+async fn a_returned_definition_belongs_to_the_row_providing_the_service(lang: Lang) {
+    let fixture = fixture(lang).await;
+    let key = host_key("maker");
+    let maker = COLD
+        .eventually_with(
+            || fixture.root.get_at(&key),
+            "maker provided",
+            || String::new(),
+        )
+        .await;
+    let made = rutis_bridge::session::settle(
+        maker
+            .invoke("make", rutis_bridge::session::Value::List(Vec::new()))
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    let definition = rutis_bridge::runtime::returned(&*maker, made)
+        .await
+        .unwrap();
+    // It injects a service inside `session` instances: not at the root.
+    let refused = definition
+        .at(&fixture.root, json!({ "n": "root" }))
+        .err()
+        .expect("outside the instances");
+    assert!(refused.to_string().contains("session"), "{refused}");
+    // Handed to the registry, it is mounted by the next instance's host part.
+    fixture.parts.register("session".into(), definition.clone());
+    fixture.create("M").await;
+    fixture
+        .probe
+        .wait_for("made M sees M with prepared in apply")
+        .await;
+    fixture.origin(false).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), definition.ended())
+        .await
+        .expect("ended with the row providing maker");
+    fixture.probe.wait_for("made M down").await;
+    let lines = fixture.probe.lines();
+    let made = fixture.probe.position("made M down").unwrap();
+    let origin = fixture.probe.position("origin down").unwrap();
+    assert!(made < origin, "{lines:?}");
+    fixture.root.shutdown().await.unwrap();
+}
+
+async fn a_dead_process_ends_its_copies(lang: Lang) {
+    let fixture = fixture(lang).await;
+    let definition = fixture.parts.of("session").pop().unwrap();
+    fixture.create("A").await;
+    fixture
+        .probe
+        .wait_for("part A sees A with prepared in apply")
+        .await;
+    fixture.add("crash", CRASH).await;
+    tokio::time::timeout(std::time::Duration::from_secs(20), definition.ended())
+        .await
+        .expect("ended with the process");
+    for copy in fixture.copies() {
+        assert_eq!(copy.state().state, FiberState::Disposed);
+    }
+    fixture.root.shutdown().await.unwrap();
+}
+
+#[cfg(feature = "node")]
+mod node {
+    use super::*;
+
+    /// Cordis plugins are handed over as they are written, and their
+    /// copies run as Cordis plugins.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cordis_plugins_are_handed_over_as_they_are() {
+        let fixture = fixture(Lang::Node).await;
+        fixture.add("cordis", CORDIS).await;
+        fixture.parts.wait_for(4).await;
+        fixture.create("A").await;
+        for kind in ["object", "function", "class"] {
+            fixture
+                .probe
+                .wait_for(&format!("{kind} A sees A with cordis prepared"))
+                .await;
+        }
+        let names: Vec<String> = fixture
+            .parts
+            .of("session")
+            .iter()
+            .map(|def| def.name().to_owned())
+            .collect();
+        assert!(names.contains(&"functional".to_owned()), "{names:?}");
+        assert!(names.contains(&"Classy".to_owned()), "{names:?}");
+        fixture.root.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dead_process_ends_its_copies() {
+        super::a_dead_process_ends_its_copies(Lang::Node).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_instance_mounts_its_own_copy() {
+        super::each_instance_mounts_its_own_copy(Lang::Node).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_origin_s_unload_ends_its_copies_first() {
+        super::the_origin_s_unload_ends_its_copies_first(Lang::Node).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_returned_definition_belongs_to_the_row_providing_the_service() {
+        super::a_returned_definition_belongs_to_the_row_providing_the_service(Lang::Node).await
+    }
+}
+
+#[cfg(feature = "bun")]
+mod bun {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dead_process_ends_its_copies() {
+        super::a_dead_process_ends_its_copies(Lang::Bun).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_instance_mounts_its_own_copy() {
+        super::each_instance_mounts_its_own_copy(Lang::Bun).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_origin_s_unload_ends_its_copies_first() {
+        super::the_origin_s_unload_ends_its_copies_first(Lang::Bun).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_returned_definition_belongs_to_the_row_providing_the_service() {
+        super::a_returned_definition_belongs_to_the_row_providing_the_service(Lang::Bun).await
+    }
+}
