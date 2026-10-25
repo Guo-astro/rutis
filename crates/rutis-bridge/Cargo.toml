@@ -3,7 +3,7 @@ name = "rutis-bridge"
 description = "Connect rutis to other processes, languages and machines: plugins in Node and Python, links between rutis nodes, Cordis plugins mounted with Rust bindings"
 # The release train: released together with rutis-loader, rutis-host, and the
 # npm and PyPI packages, at the same version.
-version = "0.17.0"
+version = "0.17.1"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -13,7 +13,7 @@ keywords = ["rutis", "plugin", "python", "node", "go"]
 categories = ["development-tools::ffi", "network-programming"]
 
 [dependencies]
-rutis = { path = "../rutis", version = "0.17.0" }
+rutis = { path = "../rutis", version = "0.17.1" }
 getrandom = "0.2"
 serde = { version = "1", features = ["derive"] }
 # float_roundtrip: a float in a frame reads back as the double sent (#290).

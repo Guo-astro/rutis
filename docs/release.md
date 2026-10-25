@@ -71,6 +71,12 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 每晚的 stress 工作流还跑两个浸泡测试（link 反复断开重连、进程反复拉起结束），检查文件描述符、线程数不增长、进程都被回收。
 
+## 0.17.1
+
+0.17.1 是补丁版本：插件定义补上 Python、Go、Swift、Kotlin（#642 的 P2、P3：#654、#653），并修复 #619、#620（#652）与 #621（#651）。所有包均为 0.17.1；见[发布说明](releases/0.17.1.md)。没有迁移指南：没有 API 删除或改名。
+
+补丁版本要和 0.17.0 兼容：`cargo-semver-checks` 与 0.17.0 比较，不接受不兼容的 Rust API 改动（这一版的 Rust 改动都在内部）。`rutis.json` 的 `format` 仍是 1，配置没有变化：持久化样本从 0.17.0 复制，期望不变；dsh 的用户层没有变化，`cordis.patch.yml` 原样复制。协议不变；发布门（`RUTIS_E2E_ONLY_OLDER=1`）的跨版本测试与 0.17.0 相遇，两端都声明 `plugins`，所以跨版本测试要按版本判断：上一版已经能传插件定义（0.12.1 的教训）。
+
 ## 0.17.0
 
 0.17.0 收敛 Rust 的公开 API（#617、#643），删除 `build.rs` 的服务清单（#647），并新增插件定义（#642 的 P1：Rust、Node、Bun）。所有包均为 0.17.0；见[发布说明](releases/0.17.0.md)与[迁移到 0.17](migration-0.17.md)。

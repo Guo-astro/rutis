@@ -71,6 +71,12 @@ Expected behavior: the dialer prints `clock: <n>` every second. After a network 
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
 
+## 0.17.1
+
+0.17.1 is a patch release: plugin definitions gain Python, Go, Swift and Kotlin (P2 and P3 of #642: #654, #653), and it fixes #619, #620 (#652) and #621 (#651). All packages are at 0.17.1; see [the release notes](releases/0.17.1.en.md). There is no migration guide: no API is removed or renamed.
+
+A patch release must stay compatible with 0.17.0: `cargo-semver-checks` compares with 0.17.0 and accepts no breaking Rust API change (this release's Rust changes are all internal). `format` of `rutis.json` stays 1 and no configuration changes: the persisted sample is copied from 0.17.0 and its expectations are unchanged; dsh's user layer has not changed, so `cordis.patch.yml` is copied as is. The protocol is unchanged; the release gate's cross-version tests (`RUTIS_E2E_ONLY_OLDER=1`) meet 0.17.0, where both ends declare `plugins`, so cross-version tests must decide by version: the previous release can already pass plugin definitions (the 0.12.1 lesson).
+
 ## 0.17.0
 
 0.17.0 converges the public Rust API (#617, #643), removes the `build.rs` service list (#647) and adds plugin definitions (P1 of #642: Rust, Node, Bun). All packages are at 0.17.0; see [the release notes](releases/0.17.0.en.md) and [migrating to 0.17](migration-0.17.en.md).
