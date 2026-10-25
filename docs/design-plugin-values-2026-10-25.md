@@ -140,8 +140,8 @@ for part in parts.of("session") {
 | # | 决定 |
 | --- | --- |
 | R1 | **什么能当插件交出：** 各 SDK 的插件定义，包括 Node 和 Bun 的 `definePlugin` 结果、Python 的 `define_plugin` 结果、Go 的 `rutis.Define` 结果、Swift 和 Kotlin 的 `Rutis.define` 结果。它们按新的引用种类 `plugin` 发出（§五）。今天它们大多传不过去（§二），所以这不会改变任何能用的写法。Node 运行时里的 Cordis 插件（函数、类、带 `apply` 的对象）照旧按函数或对象引用发出，由收的一方认（R2）。 |
-| R2 | **由收的一方决定：** Rust 的参数或返回值类型是 `ForeignPlugin` 时，收到的 `plugin`、函数或对象引用都当作插件。方法运行前，宿主向定义它的运行时读一次声明（名字、`inject`、`provides`、配置 schema）。如果那个值不是插件，这次调用失败，错误写明是第几个参数或返回值。其他类型照旧：要数据的参数收到 `plugin` 引用会报错，要函数的参数照旧按函数调用。一个 Cordis 对象交给要对象的参数，仍然是对象引用。 |
-| R3 | **Rust 一侧的类型：** `rutis_bridge::ForeignPlugin`，可以 `Clone`。它有四个方法：`name()`；`at(&ctx, config)` 造出挂在 `ctx` 这个位置、带着这份配置的插件，交给 `ctx.plugin`；`ended()` 等到它失效的那一刻；`is_ended()`。同一个值交出几次都是同一个插件：两个 `ForeignPlugin` 相等，它们挂出的副本记在一起。它不能再交给别的运行时，编码时会报错；交回定义它的运行时时，对方拿到的是原来的值。 |
+| R2 | **由收的一方决定：** Rust 的参数或返回值类型是 `ForeignPlugin` 时，收到的 `plugin`、函数或对象引用都当作插件，宿主向定义它的运行时读一次声明（名字、`inject`、`provides`、配置 schema）。读的时机分三种：<br>· 参数：收到引用 → 读声明 → 调用 Rust 方法；<br>· Rust 调用其他语言的服务，对方返回插件：对方的方法完成 → 读声明 → Rust 调用方拿到 `ForeignPlugin`；<br>· Rust 方法把 `ForeignPlugin` 作为返回值交出：只能交回定义它的运行时（R3），不再读声明。<br>读不到声明（那个值不是插件）时，这次调用失败，错误写明是第几个参数或返回值。其他类型照旧：要数据的参数收到 `plugin` 引用会报错，要函数的参数照旧按函数调用。一个 Cordis 对象交给要对象的参数，仍然是对象引用。 |
+| R3 | **Rust 一侧的类型：** `rutis_bridge::ForeignPlugin`，可以 `Clone`。它有四个方法：`name()`；`at(&ctx, config)` 造出挂在 `ctx` 这个位置、带着这份配置的插件，交给 `ctx.plugin`；`ended()` 等到它失效的那一刻；`is_ended()`。同一个值交出几次都是同一个插件：两个 `ForeignPlugin` 相等，它们挂出的副本记在一起。它不参与普通的引用转发（§五）：作为参数或返回值发给第三个运行时时，编码失败；交回定义它的运行时时，用的是原来的引用，对方拿到的是原来的值。 |
 | R4 | **挂在哪里：** `part.at(&ctx, config)` 按 `ctx` 所在的位置算出这一份的键。在实例里时，共享名字按实例隔离，门控和提供服务都用这个实例的键，与行在实例里的副本完全相同。得到的插件只能在这个 `ctx` 上挂，挂到别处会启动失败。只能挂在来源行所在的实例里，或者更里面的实例；来源行在根上时不限。属于进程的值（R6）：本地运行时的不限；连进来的运行时的，只能挂在它的连接所在的实例里，或者更里面。位置不对时 `at` 失败并说明原因。挂载要用 rutis-loader，树上没有 loader 时 `at` 失败。 |
 | R5 | **挂上的每一份：** <br>· 在定义它的进程里运行；<br>· 按它声明的 `inject` 在 rutis 里门控；<br>· 它提供的服务按 catalog 发布，和行提供的服务一样；<br>· 归挂它的 fiber 所有，那个 fiber 关闭，这一份就结束；<br>· 配置在挂上时定下，按它的 schema 校验，每一份可以不同；<br>· 要改配置，挂的一方卸掉这一份再用新配置重挂，和 0.17 里其他 Rust 子插件一样；<br>· 插件自己结束时，只有这一份结束。<br>在监听器描述、`CallerRow` 和错误里，它的 `row` 是来源行的 id（属于进程的值为空），`scope` 是挂载位置的实例链。这和行在实例里的副本一样：它们共用行的 id。 |
 | R6 | **跟着来源结束：** 插件值属于交出它的那一行的这一代：作为调用参数交出的，属于调用方的行；作为返回值交出的，属于提供这个服务的行；不在任何行的调用里交出的，属于那个运行时进程。同一个值属于第一次交出它的那一行。这一行卸载、重载、自己结束时：<br>1. 先结束从这个值挂出的每一份，等它们清理完；<br>2. 再卸载这一行；<br>3. 然后 `ended()` 完成，之后再调 `at` 会失败。<br>进程退出时，副本直接结束（连接已经断了），`ended()` 完成。这和 Cordis 重载插件时 `registry.delete` 结束全部副本一样。 |
@@ -153,17 +153,19 @@ for part in parts.of("session") {
 ## 五、线上格式与运行时契约
 
 1. **新的引用种类 `plugin`：** 格式是 `{"type":"reference","value":{"id","home","kind":"plugin","origin"}}`，其余字段和函数、对象引用相同，生命周期也一样：按会话计数，用 `Release` 释放，会话结束时作废。各 SDK 的插件定义按这个种类发出（R1）。
-2. **能力 `plugins`：** 宿主在握手里声明 `plugins`，endpoint 和 compat 两种握手都声明。对端没有声明时，运行时发 `plugin` 引用的那次调用失败，错误写明"对端不接收插件值"，会话继续。规则和值类型的能力一样（[值类型](design-value-types-2026-10-15.md) §四）。运行时在 `mount` 回复的 `features` 里加上 `plugin-values`；没有这个特性的运行时交出的引用，Rust 当插件收时报错，说明这个运行时的 SDK 太旧。
-3. **控制调用 `plugins.read [value]`：** 参数就是那个值，作为引用传回定义它的运行时，在那里解码成原来的值。运行时用描述行的同一段代码（`rows.schema` 的 `describe`）回答 `{ name, config, inject, provides, announces }`。不是插件时报错。在 Node 里，Cordis 插件按 Cordis 的规则认：函数、类，或带 `apply` 的对象。
-4. **`rows.load` 的 `entry` 可以是插件值本身：** 和 `plugins.read` 一样，它作为引用传回定义它的运行时。其余参数（`key`、配置、`isolate`、`inject`、`exports`、作用域）和行完全相同。这一份在运行时里就是一行：`rows.unload`、`rows.ended` 都照旧；它的配置挂上后不变，所以不会收到 `rows.update`。Node 运行时把叶子插件包成 Cordis 插件，Cordis 插件值直接 `ctx.plugin`，和行一样。
-5. **卸载顺序由宿主决定：** 宿主总是先卸载副本，再卸载来源行，运行时不需要记录副本属于哪一行。
+2. **不参与普通转发：** 今天宿主收到的引用可以作为中继对象转发给别的会话。`plugin` 引用和 `ForeignPlugin`（不论底下是 `plugin`、函数还是对象引用）不走这条路：宿主要把它发给第三个运行时时，这次调用失败，错误写明插件值只能交回定义它的运行时；交回定义它的运行时时，宿主发出原来的引用（`home: true`），不另建中继。
+3. **能力 `plugins`：** 宿主在握手里声明 `plugins`，endpoint 和 compat 两种握手都声明。对端没有声明时，运行时发 `plugin` 引用的那次调用失败，错误写明"对端不接收插件值"，会话继续。规则和值类型的能力一样（[值类型](design-value-types-2026-10-15.md) §四）。运行时在 `mount` 回复的 `features` 里加上 `plugin-values`；没有这个特性的运行时交出的引用，Rust 当插件收时报错，说明这个运行时的 SDK 太旧。
+4. **控制调用 `plugins.read [value]`：** 参数就是那个值，作为引用传回定义它的运行时，在那里解码成原来的值。运行时用描述行的同一段代码（`rows.schema` 的 `describe`）回答 `{ name, config, inject, provides, announces }`。不是插件时报错。在 Node 里，Cordis 插件按 Cordis 的规则认：函数、类，或带 `apply` 的对象。
+5. **`rows.load` 的 `entry` 可以是插件值本身：** 和 `plugins.read` 一样，它作为引用传回定义它的运行时。其余参数（`key`、配置、`isolate`、`inject`、`exports`、作用域）和行完全相同。这一份在运行时里就是一行：`rows.unload`、`rows.ended` 都照旧；它的配置挂上后不变，所以不会收到 `rows.update`。Node 运行时把叶子插件包成 Cordis 插件，Cordis 插件值直接 `ctx.plugin`，和行一样。
+6. **卸载顺序由宿主决定：** 宿主总是先卸载副本，再卸载来源行，运行时不需要记录副本属于哪一行。
 
 ## 六、宿主一侧怎么实现
 
 1. **类型和解码（rutis-bridge）：** `ForeignPlugin` 持有引用、读到的声明，以及来源（来源行这一代的 key，或者进程）。
    - 生成的服务里，参数种类在"函数""数据"之外加一种"插件"（宏的 `Param` 和 `rutis::service` 的 `Wire`），`build.rs` 的 `Exports` 也认这个类型。
-   - 解码出 `ForeignPlugin` 时发 `plugins.read`，生成的分发代码等它完成再调用方法。
+   - 解码出 `ForeignPlugin` 时发 `plugins.read`。参数：生成的分发代码等它完成再调用方法。返回值：Rust 调用其他语言的服务时，对方的回复到达后先读声明，再把结果交给 Rust 调用方。
    - 来源在解码时确定：参数取 `caller_row()`，返回值取提供这个服务的行。
+   - 编码 `ForeignPlugin` 时检查要发往的会话：是定义它的运行时，就发原来的引用；不是，就让这次调用失败（§五 第 2 条）。
 2. **挂载（rutis-loader）：** `at(&ctx, config)` 经 rutis-bridge 定义、rutis-loader 提供的一个接口，找到树上的 loader。
    - loader 沿父 fiber 找到 `ctx` 所在的行和实例（和 `Loader::locate` 的找法一样），算出实例链和键，造出这一份插件（一个 `DynPlugin`，依赖在这时定下）。
    - 这一份启动时，走和行在实例里的副本同一段代码（`JsRow::start`）：租用宿主服务、发布服务、`rows.load`、处理 `rows.ended`。区别只有两点：运行时是来源的进程（`RowRuntime::Connection`），`entry` 是插件值。
@@ -214,6 +216,8 @@ for part in parts.of("session") {
 - 那个 Node 行卸载时，两份先结束，这一行才卸载完；`ended()` 完成，之后 `at` 失败。行重载后交来新的值，能重新挂上。运行时进程被杀时，两份结束，`ended()` 完成。
 - 挂到来源行所在实例之外时，`at` 失败并说明原因。
 - 普通参数照旧：要数据的参数收到插件定义时报错；Cordis 对象交给要对象的参数，仍然是对象引用。
+- Rust 调用 Node 的服务，对方返回一个插件时，Rust 拿到的 `ForeignPlugin` 已经读好声明；返回的不是插件时，这次调用失败。
+- 把 `ForeignPlugin` 作为参数或返回值交给第三个运行时时，那次调用失败；交回定义它的运行时时，对方拿到原来的值。
 - 宿主没有声明 `plugins` 能力时，运行时交出插件的那次调用失败，会话继续。
 - 测试工具：Node 严格模式下，插件值交给测试替身，替身用 `load` 装上它；Python 测试工具和运行时的结果一致。
 - 这些用例写成各运行时共用的一致性测试（和事件的一致性测试一样），后面跟进的运行时直接复用。
