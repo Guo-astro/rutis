@@ -249,7 +249,7 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 | `Error` / 异常 | 作为值传递时复制为数据 `{ name, message }`（TypeScript 另带 `stack`）；抛出时另一端得到同名、同消息的错误（TypeScript 中内置错误类保留类，其余是 `Error`；Python 中是 `rutis.RemoteError`，`name` 是原来的类名；Go 中是 `*rutis.RemoteError`）。任何语言抛出的错误都可以带 code 和 data：TypeScript 中是字符串属性 `code` 和属性 `data`，Python 中是字符串属性 `code` 和属性 `data`，Go 中是方法 `Code() string` 和 `Data() any`，Rust 中是 [`rutis_bridge::exports::failure`](rust-host.md#手写-hostdispatch)（[导出的 Rust 服务](rust-host.md#导出服务参考)的 `Err(e)` 就变成它）。收到的一方从 `code`、`data` 读到它们（Go：`Code`、`Data`；Rust：`Error::code()`、`Error::data()`），再次抛出时继续传。`data` 按数据传（大整数为 bigint）；传不过去的 data 被略去，错误的其余部分照常传。其他属性不传 |
 | 函数、Promise / 协程 | 按引用：另一端调用或 await 的是原来那个 |
 | 带方法的对象、类的实例 | 按引用：另一端拿到代理，调用的是原对象 |
-| 插件定义（`definePlugin` 的结果；Node 里的 Cordis 插件） | 按引用，只交回定义它的运行时：Rust 服务把参数或返回值类型写成 `rutis::Definition`，收到的就是一个可以挂的插件定义，见下面的[插件定义](#插件定义)。目前 Node、Bun 能交出 |
+| 插件定义（`definePlugin` 的结果；Node 里的 Cordis 插件；Python 的 `define_plugin` 结果；Go 的 `*rutis.Definition`） | 按引用，只交回定义它的运行时：Rust 服务把参数或返回值类型写成 `rutis::Definition`，收到的就是一个可以挂的插件定义，见下面的[插件定义](#插件定义)。目前 Node、Bun、Python、Go 能交出 |
 | 数据里的 `undefined` | 变成 `null`（Python 收到 `None`） |
 | Go 的结构体、切片、map | 复制：结构体字段、切片和 map 的元素逐个按本节的规则传，字段名遵循 `json` 标签；结构体一律是数据，要按引用传对象写 `rutis.Ref(v)`。`map[string]T` 是对象，键不是字符串的 map 是 Map，`map[K]struct{}` 是 Set |
 | 超出 ±(2^53−1) 的整数 | 自动按大整数传，见[十种值](#十种值) |
@@ -312,7 +312,7 @@ export default definePlugin({
 })
 ```
 
-- 能交出的：Node、Bun 的 `definePlugin` 结果；Node 里的 Cordis 插件（函数、类、带 `apply` 的对象）。Python、Go、Swift、Kotlin 的插件定义随后跟进。
+- 能交出的：Node、Bun 的 `definePlugin` 结果；Node 里的 Cordis 插件（函数、类、带 `apply` 的对象）；Python 的 `define_plugin` 结果；Go 的 `rutis.Define` 结果（`*rutis.Definition`，客户端的函数字段直接写这个类型）。Swift、Kotlin 的插件定义随后跟进。
 - 收的一方是 Rust：参数或返回值的类型写 `rutis::Definition`，用 `ctx.plugin(def.at(&ctx, config)?)` 挂上，见 [Rust 宿主](rust-host.md#收插件定义)。其他类型的参数照旧：要数据的参数收到插件定义时这次调用失败。
 - 每一份在定义它的运行时里运行，按挂上它的实例隔离，按它的 `inject` 门控。
 - 插件定义属于交出它的那一行的这一代：这一行卸载、重载或结束时，先结束从它挂出的每一份，等它们清理完，再卸载这一行。之后再挂会失败。运行时进程退出时，这些副本也结束。

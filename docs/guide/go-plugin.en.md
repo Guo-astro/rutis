@@ -91,6 +91,23 @@ In short:
 
 **Always pass ctx on.** The call chain (`path`) lives in `context.Context`: when Node calls your method synchronously and your method calls back into Node synchronously, Node recognizes the chain it is waiting on only if the call carries the ctx you received; with `context.Background()` both sides wait for each other. Under `rutis-host dev`, a call that lost its chain is reported once on stderr.
 
+**A plugin is itself a value.** The result of `rutis.Define(...)` (a `*rutis.Definition`) can be handed to a service as an ordinary argument (an application's part registry, say), the function field's parameter typed `*rutis.Definition`; the receiver can mount it elsewhere, one copy per mount, each running in this process with what `Apply` prepared. A definition only handed over may leave out `Name`:
+
+```go
+var parts struct {
+	Register func(ctx context.Context, scope string, def *rutis.Definition) error
+}
+if err := ctx.Use("parts", &parts); err != nil {
+	return err
+}
+return parts.Register(ctx, "session", rutis.Define(rutis.Plugin[SessionConfig]{
+	Inject: []string{"history"},
+	Apply:  func(ctx *rutis.Ctx, config SessionConfig) error { /* use pool directly */ return nil },
+}))
+```
+
+When this row unloads or reloads, every copy mounted from a definition it handed over ends first. See [Plugin API](plugin-api.en.md#plugin-definitions).
+
 ### Events
 
 Every listener on a host, in any language and any process, is on one event bus ([design](../design-events-2026-10-18.en.md)): where an event is emitted and where its listeners are does not change the result.
@@ -223,6 +240,8 @@ func TestEvents(t *testing.T) {
 ```
 
 `Load` checks what a host would: the plugin uses only the services `Inject` declares; provided services are of the type `Provides` declares (an undeclared service is called as rutis calls it, by its exported methods, all async); cleanups succeed on unload. What works only within one process (passing a struct as an object, relying on shared memory) fails here.
+
+A plugin definition the plugin hands to a test double (the double's method takes a `*rutis.Definition`) can be passed to `rutistest.Load` as it is: like rutis mounting a copy, it loads another row in the runtime that defined it, with what the plugin's `Apply` prepared; the `services` given then are that copy's own, as the services of the instance it is in.
 
 ## 4. Run it in a local host
 

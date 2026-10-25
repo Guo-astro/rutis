@@ -91,6 +91,23 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 
 **一定把 ctx 传下去。** 调用链（`path`）放在 `context.Context` 里：Node 同步调用你的方法、你的方法又同步回调 Node 时，只有带着收到的 ctx，Node 才认得出这是它正在等的调用链；换成 `context.Background()` 两边会互相等。`rutis-host dev` 下，丢了调用链的调用会在 stderr 警告一次。
 
+**插件本身也是一个值。** `rutis.Define(...)` 的结果（`*rutis.Definition`）可以照常作为参数交给一个服务（比如应用的部件登记处），函数字段的参数类型直接写 `*rutis.Definition`；收的一方就能在别处挂它，每挂一次是一份，每一份在这个进程里运行，用的是 `Apply` 里准备好的东西。只用来交出的定义可以不写 `Name`：
+
+```go
+var parts struct {
+	Register func(ctx context.Context, scope string, def *rutis.Definition) error
+}
+if err := ctx.Use("parts", &parts); err != nil {
+	return err
+}
+return parts.Register(ctx, "session", rutis.Define(rutis.Plugin[SessionConfig]{
+	Inject: []string{"history"},
+	Apply:  func(ctx *rutis.Ctx, config SessionConfig) error { /* 直接用 pool */ return nil },
+}))
+```
+
+这一行卸载、重载时，从它交出的定义挂出的每一份先结束。见 [插件 API](plugin-api.md#插件定义)。
+
 ### 事件
 
 一个宿主上所有语言、所有进程的监听器都在一条事件总线上（[设计](../design-events-2026-10-18.md)）：事件在哪里发出、监听器在哪里，结果都一样。
@@ -223,6 +240,8 @@ func TestEvents(t *testing.T) {
 ```
 
 `Load` 会检查宿主会检查的事：插件只用 `Inject` 里声明的服务；提供的服务是 `Provides` 声明的类型（没有声明的服务，像 rutis 一样按导出方法、都按 async 调用）；卸载时清理都成功。只在同一个进程里才成立的写法（例如把结构体当对象传、靠共享内存）在这里就会失败。
+
+插件交给测试替身的定义（替身方法的参数是 `*rutis.Definition`）可以直接交给 `rutistest.Load`：它像 rutis 挂一份那样，在定义它的那个运行时里再加载一行，用的是插件 `Apply` 里准备好的东西；这次传的 `services` 是这一份自己的，像它所在实例的服务。
 
 ## 4. 在本地宿主里运行
 
