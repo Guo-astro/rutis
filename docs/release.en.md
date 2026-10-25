@@ -6,7 +6,7 @@ Except for `rutis-cli` (`cli-v*`, `release-cli.yml`), these packages share a ver
 
 | Registry | Packages |
 | --- | --- |
-| crates.io | `rutis` (the core) and its macros `rutis-macros`, `rutis-bridge`, `rutis-loader`, `rutis-host`; the dylib toolchain `rutis-sdk`, `rutis-dylib`, `rutis-dylib-meta`, `rutis-dylib-launcher` |
+| crates.io | `rutis` (the core) and its macros `rutis-macros`, `rutis-bridge`, `rutis-loader`, `rutis-host`; the dylib toolchain `rutis-sdk`, `rutis-dylib`, `rutis-dylib-meta`, `rutis-dylib-launcher`; the migration tool `rutis-migrate` |
 | npm | `@arcships/rutis`, `@arcships/rutis-runtime`, `@arcships/rutis-bun`, `@arcships/rutis-host` and `@arcships/rutis-host-{linux,darwin}-{x64,arm64}`, `@arcships/rutis-host-win32-x64` |
 | PyPI | `rutis`, `rutis-host` (wheels for each platform) |
 | Go | `github.com/arcships/rutis/go/rutis` (the tag `go/rutis/vX.Y.Z`, pushed by release.yml) |
@@ -70,6 +70,14 @@ Expected behavior: the dialer prints `clock: <n>` every second. After a network 
 [Write a TypeScript plugin](guide/typescript-plugin.en.md) and [Write a Python plugin](guide/python-plugin.en.md) are both followed by the check after publishing (their marked examples, `tools/doc-examples.mjs`).
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
+
+## 0.17.0
+
+0.17.0 converges the public Rust API (#617, #643), removes the `build.rs` service list (#647) and adds plugin definitions (P1 of #642: Rust, Node, Bun). All packages are at 0.17.0; see [the release notes](releases/0.17.0.en.md) and [migrating to 0.17](migration-0.17.en.md).
+
+The migration tool `rutis-migrate` is published to crates.io for the first time, last in the train (it depends on no other rutis crate): `CARGO_TOKEN` must be able to publish a new crate. A minor version change of 0.x allows breaking changes, so `cargo-semver-checks` accepts the Rust API changes when it compares with 0.16.0.
+
+`format` of `rutis.json` stays 1 and no configuration changes: the persisted sample is copied from 0.16.0 and its expectations are unchanged; dsh's user layer has not changed, so `cordis.patch.yml` is copied as is. The protocol only adds the capability `plugins`, used when both ends declare it; the release gate's cross-version tests (`RUTIS_E2E_ONLY_OLDER=1`) meet 0.16.0, which does not declare `plugins`, and the session works as before, without plugin definitions.
 
 ## 0.16.0
 

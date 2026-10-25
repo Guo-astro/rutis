@@ -2,9 +2,9 @@
 
 [English](migration-0.17.en.md)
 
-0.17 只改 Rust 的公开 API：插件只有一种写法，宿主用的东西放进 `rutis::host`，事件方法搬到 `Ctx` 上，错误只有一种类型 `rutis::Error`。没有新能力，也没有行为变化：迁移后能编译的代码，运行起来和 0.16 一样。
+0.17 要迁移的只有 Rust 的公开 API：插件只有一种写法，宿主用的东西放进 `rutis::host`，事件方法搬到 `Ctx` 上，错误只有一种类型 `rutis::Error`。这些改动没有新能力，也没有行为变化：迁移后能编译的代码，运行起来和 0.16 一样。0.17 另外新增的[插件定义](guide/plugin-api.md#插件定义)不需要改已有的代码。
 
-受影响的只有写 Rust 插件和用 Rust 嵌入 rutis 的项目。TypeScript、Python、Go、Swift、Kotlin 的 SDK、运行时、协议和 `rutis.json` 都不变。dylib 插件照常用新的 SDK 重新构建。
+受影响的只有写 Rust 插件和用 Rust 嵌入 rutis 的项目。TypeScript、Python、Go、Swift、Kotlin 的插件代码和 `rutis.json` 都不变；协议只为插件定义新增能力 `plugins`，与 0.16 照常连接。dylib 插件照常用新的 SDK 重新构建。
 
 每个旧名字的去向见设计的[附录 A](design-rust-api-convergence-2026-10-24.md#附录-a名字去向)；新的写法见 [写一个 Rust 插件](guide/rust-plugin.md) 和 [在 Rust 应用里嵌入](guide/rust-host.md)。
 
@@ -361,5 +361,5 @@ root.provide(Calendar(calendar_services::Calendar::new()))?;
 ## 没有变化的
 
 - 门控、重载、卸载、清理、事件的五种方式、作用域、过滤，以及[保证](guarantees.md)里的每一条；只有 `bridge/exported-services` 随服务清单撤回，它的规则都在 `bridge/marked-services` 里。
-- 协议和线上格式；Rust 服务抛出的 rutis 错误在其他语言里仍叫 `CordisError`。
-- 其他语言的 SDK、运行时、`rutis.json` 和 rutis-host。
+- 协议和线上格式（插件定义只新增能力 `plugins`）；Rust 服务抛出的 rutis 错误在其他语言里仍叫 `CordisError`。
+- 其他语言的插件代码、`rutis.json` 和 rutis-host。

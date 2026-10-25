@@ -2,9 +2,9 @@
 
 [中文](migration-0.17.md)
 
-0.17 changes the public Rust API only: a plugin is written one way, what hosts use moved to `rutis::host`, the event methods moved to `Ctx`, and there is one error type, `rutis::Error`. Nothing is added and no behaviour changes: code that compiles after migrating runs as it did on 0.16.
+In 0.17 only the public Rust API needs migrating: a plugin is written one way, what hosts use moved to `rutis::host`, the event methods moved to `Ctx`, and there is one error type, `rutis::Error`. These changes add nothing and change no behaviour: code that compiles after migrating runs as it did on 0.16. The [plugin definitions](guide/plugin-api.en.md#plugin-definitions) 0.17 also adds need no change to existing code.
 
-Only projects that write Rust plugins or embed rutis in Rust are affected. The TypeScript, Python, Go, Swift and Kotlin SDKs, the runtimes, the protocol and `rutis.json` are unchanged. Dylib plugins are rebuilt with the new SDK, as always.
+Only projects that write Rust plugins or embed rutis in Rust are affected. TypeScript, Python, Go, Swift and Kotlin plugin code and `rutis.json` are unchanged; the protocol only adds the capability `plugins` for plugin definitions and connects with 0.16 as before. Dylib plugins are rebuilt with the new SDK, as always.
 
 Where every old name went: the design's [appendix A](design-rust-api-convergence-2026-10-24.en.md#appendix-a-where-names-go); the new way to write things: [write a Rust plugin](guide/rust-plugin.en.md) and [embed rutis in a Rust application](guide/rust-host.en.md).
 
@@ -361,5 +361,5 @@ root.provide(Calendar(calendar_services::Calendar::new()))?;
 ## What did not change
 
 - Gating, reloads, unloading, cleanups, the five event modes, scopes, filters, and every entry of the [guarantees](guarantees.en.md) but `bridge/exported-services`, withdrawn with the service list: its rules are all in `bridge/marked-services`.
-- The protocol and the wire; a rutis error thrown by a Rust service is still named `CordisError` in other languages.
-- The SDKs of other languages, the runtimes, `rutis.json` and rutis-host.
+- The protocol and the wire (plugin definitions only add the capability `plugins`); a rutis error thrown by a Rust service is still named `CordisError` in other languages.
+- Plugin code in other languages, `rutis.json` and rutis-host.

@@ -6,7 +6,7 @@
 
 | 注册表 | 包 |
 | --- | --- |
-| crates.io | `rutis`（内核）及其宏 `rutis-macros`、`rutis-bridge`、`rutis-loader`、`rutis-host`；dylib 工具链 `rutis-sdk`、`rutis-dylib`、`rutis-dylib-meta`、`rutis-dylib-launcher` |
+| crates.io | `rutis`（内核）及其宏 `rutis-macros`、`rutis-bridge`、`rutis-loader`、`rutis-host`；dylib 工具链 `rutis-sdk`、`rutis-dylib`、`rutis-dylib-meta`、`rutis-dylib-launcher`；迁移工具 `rutis-migrate` |
 | npm | `@arcships/rutis`、`@arcships/rutis-runtime`、`@arcships/rutis-bun`、`@arcships/rutis-host`（及 `@arcships/rutis-host-{linux,darwin}-{x64,arm64}`、`@arcships/rutis-host-win32-x64`） |
 | PyPI | `rutis`、`rutis-host`（各平台的 wheel） |
 | Go | `github.com/arcships/rutis/go/rutis`（tag `go/rutis/vX.Y.Z`，由 release.yml 打） |
@@ -70,6 +70,14 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 [写一个 TypeScript 插件](guide/typescript-plugin.md) 和 [写一个 Python 插件](guide/python-plugin.md) 都由发布后验证照着走（标记过的示例，`tools/doc-examples.mjs`）。
 
 每晚的 stress 工作流还跑两个浸泡测试（link 反复断开重连、进程反复拉起结束），检查文件描述符、线程数不增长、进程都被回收。
+
+## 0.17.0
+
+0.17.0 收敛 Rust 的公开 API（#617、#643），删除 `build.rs` 的服务清单（#647），并新增插件定义（#642 的 P1：Rust、Node、Bun）。所有包均为 0.17.0；见[发布说明](releases/0.17.0.md)与[迁移到 0.17](migration-0.17.md)。
+
+迁移工具 `rutis-migrate` 首次发布到 crates.io，排在列车最后（它不依赖其他 rutis crate）：`CARGO_TOKEN` 要能发布新的 crate。0.x 的次版本号变化允许不兼容的改动，所以 `cargo-semver-checks` 与 0.16.0 比较时接受 Rust API 的改动。
+
+`rutis.json` 的 `format` 仍是 1，配置没有变化：持久化样本从 0.16.0 复制，期望不变；dsh 的用户层没有变化，`cordis.patch.yml` 原样复制。协议只新增能力 `plugins`，两端都声明才用；发布门（`RUTIS_E2E_ONLY_OLDER=1`）的跨版本测试与 0.16.0 相遇，0.16.0 一端不声明 `plugins`，会话照常工作，只是不传插件定义。
 
 ## 0.16.0
 

@@ -2,7 +2,7 @@
 name = "rutis-host"
 description = "A rutis host that needs no Rust: run plugins written in TypeScript, JavaScript, Python, Go and Swift (in Node, Bun, Python, Go or Swift binaries) from a rutis.json, develop them with live reload, link machines"
 # The release train.
-version = "0.16.0"
+version = "0.17.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -28,9 +28,9 @@ kotlin = []
 android = []
 
 [dependencies]
-rutis = { path = "../rutis", version = "0.16.0" }
-rutis-bridge = { path = "../rutis-bridge", version = "0.16.0", features = ["node", "python", "bun", "go", "swift", "websocket", "exports"] }
-rutis-loader = { path = "../rutis-loader", version = "0.16.0", features = ["node", "python", "bun", "go", "swift", "peer"] }
+rutis = { path = "../rutis", version = "0.17.0" }
+rutis-bridge = { path = "../rutis-bridge", version = "0.17.0", features = ["node", "python", "bun", "go", "swift", "websocket", "exports"] }
+rutis-loader = { path = "../rutis-loader", version = "0.17.0", features = ["node", "python", "bun", "go", "swift", "peer"] }
 # To say which file is not PEM (the transport only sees the contents).
 rustls-pki-types = { version = "1", features = ["std"] }
 serde = { version = "1", features = ["derive"] }

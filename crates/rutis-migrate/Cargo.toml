@@ -2,7 +2,7 @@
 name = "rutis-migrate"
 description = "Migrate Rust code that uses rutis to the next API (0.16 → 0.17: one plugin trait, rutis::host and rutis::internal, events on Ctx, rutis::Error)"
 edition.workspace = true
-version = "0.16.0"
+version = "0.17.0"
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
