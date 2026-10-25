@@ -1,0 +1,19 @@
+# What tools/public-api.sh runs: the public API of a package, one item a
+# line, as `cargo public-api --simplified` lists it, from the same libraries
+# at the same versions. The cargo-public-api CLI also links libcurl and
+# OpenSSL (to fetch published crates), so it does not build on a machine
+# without OpenSSL's headers and pkg-config; these libraries are pure Rust.
+#
+# Not a member of the rutis workspace: its own lockfile, outside the MSRV,
+# clippy and release checks.
+[package]
+name = "rutis-public-api"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+public-api = "=0.52.0"
+rustdoc-json = "=0.9.10"
+
+[workspace]
