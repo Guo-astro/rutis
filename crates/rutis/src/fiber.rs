@@ -649,17 +649,41 @@ impl FiberInner {
         if this.closing.load(Ordering::SeqCst) || shared.closing.load(Ordering::SeqCst) {
             return;
         }
-        this.new_generation_token();
-        this.accesses.lock().unwrap().clear();
+        // The terminal check and the new token share the lock
+        // `register_dispose` takes (#619): a dispose registered before this
+        // point stops the generation from starting (its queued Dispose
+        // runs next); one registered after it cancels the new token.
         let generation = {
             let mut tr = this.transition.lock().unwrap();
+            if tr.terminal_task.is_some() {
+                return;
+            }
+            this.new_generation_token();
             tr.generation += 1;
             tr.error = None;
             Self::set_state(this, &mut tr, FiberState::Loading);
             tr.generation
         };
+        this.accesses.lock().unwrap().clear();
         this.flush_status();
         drop(_admission);
+
+        // 依赖快照(D21:装载窗口内即"绑定中",驱逐判定读它)。Recorded
+        // before any plugin callback, after the new token, then the gate is
+        // checked again (#620): a withdrawal marks the binding removed and
+        // then reads `last_deps`, this side writes `last_deps` and then
+        // resolves, so at least one sees the other. A withdrawal that finds
+        // this fiber cancels the token of this generation.
+        *this.last_deps.lock().unwrap() = Some(deps.clone());
+        if !this.resolve_deps().1.is_empty() {
+            // Not run: back to Pending, as if the first check had refused.
+            // The unload clears `last_deps`, so the next refresh with the
+            // same dependencies is not skipped as unchanged. A withdrawal
+            // that found this fiber has queued that refresh already.
+            Self::unload(this, NextState::Pending).await;
+            this.flush_status();
+            return;
+        }
 
         // 当前代实例(D32):静态模式既有实例;工厂模式从当前 config 构造,
         // 构造失败按装载失败回滚(fail_load 保持装配原子性)。
@@ -684,9 +708,6 @@ impl FiberInner {
                 return;
             }
         }
-
-        // 依赖快照(D21:装载窗口内即"绑定中",驱逐判定读它)
-        *this.last_deps.lock().unwrap() = Some(deps.clone());
 
         // apply:直接等待退出(D7 第③步"等 apply 退出",不中止)。
         // 预取消(dispose/restart/驱逐)使观察 token 的插件经 ctx.cancelled()
